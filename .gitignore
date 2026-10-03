@@ -6,4 +6,3 @@ target/
 docs/design
 apps/gdb-desktop/target/
 docs/design-assets
-AGENTS.md

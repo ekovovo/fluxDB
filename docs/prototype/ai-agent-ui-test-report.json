@@ -1,0 +1,190 @@
+{
+  "scope": "HTML prototype only; simulated data. Not native GPUI, real databases, model APIs or MCP end-to-end.",
+  "browser": "Local Google Chrome headless on macOS",
+  "checks": 58,
+  "checkNames": [
+    "first preview is a drawer",
+    "default drawer width460 and <=60%",
+    "switch to embedded",
+    "embedded has no overlay",
+    "embedded occupies right edge and consumes content",
+    "same session survives mode switch",
+    "embedded drag ceiling40%",
+    "drawer has independent remembered width",
+    "close/open preserves embedded mode and width",
+    "new conversation is a draft without new history row",
+    "reload does not auto-open panel",
+    "restart remembers embedded mode",
+    "unsent new draft restores instead of old chat",
+    "dirty new draft asks before discard",
+    "cancel keeps draft",
+    "closing only hides; existing task finishes",
+    "opening does not add messages/re-run task",
+    "write asks approval before mock completion",
+    "close/open never approves automatically",
+    "deny produces denied state",
+    "page models renders",
+    "page agents renders",
+    "page prompts renders",
+    "page plugins renders",
+    "page tools renders",
+    "page mcp renders",
+    "page audit renders",
+    "page history renders",
+    "Redis tools are four bounded capabilities",
+    "tool definition dialog available",
+    "Esc closes modal",
+    "mandatory audit cannot be disabled",
+    "Jev disabled does not disable main model",
+    "Jev auto available again",
+    "Clear credential makes optional Jev unavailable",
+    "Set re-enables optional decision status",
+    "API key bytes never in localStorage",
+    "Agent editor saves independent configuration",
+    "published version text is read-only",
+    "new prompt publishes without overwriting old",
+    "MCP write mode is separate from tool availability",
+    "MCP test is a labeled simulation",
+    "exported example MCP config contains no auth headers or key",
+    "audit view filters denied operations",
+    "audit detail shows plan and rule",
+    "budget is an advanced dialog, not a settings page",
+    "budget settings update via UI",
+    "BI report is an artifact dialog, not settings navigation",
+    "BI chart has line marks and source metadata",
+    "report source SQL expands without leaving dialog",
+    "report export carries source and metric definition",
+    "narrow embedded <=40% with adaptive min and no third mode",
+    "wide drawer reaches60%, not obsolete720px max",
+    "dark theme rendered",
+    "execution group preserves failure and self-correction",
+    "no browser runtime errors",
+    "no external model/database/network requests",
+    "all evidence meets512KiB and1MP hard caps"
+  ],
+  "errors": [],
+  "externalRequests": [],
+  "screenshots": [
+    {
+      "file": "docs/prototype/ai-agent-shots/01-drawer.jpg",
+      "width": 1200,
+      "height": 780,
+      "pixels": 936000,
+      "bytes": 104117
+    },
+    {
+      "file": "docs/prototype/ai-agent-shots/02-embedded.jpg",
+      "width": 1200,
+      "height": 780,
+      "pixels": 936000,
+      "bytes": 117001
+    },
+    {
+      "file": "docs/prototype/ai-agent-shots/03-approval.jpg",
+      "width": 1200,
+      "height": 780,
+      "pixels": 936000,
+      "bytes": 110569
+    },
+    {
+      "file": "docs/prototype/ai-agent-shots/page-models.jpg",
+      "width": 1200,
+      "height": 780,
+      "pixels": 936000,
+      "bytes": 70036
+    },
+    {
+      "file": "docs/prototype/ai-agent-shots/page-agents.jpg",
+      "width": 1200,
+      "height": 780,
+      "pixels": 936000,
+      "bytes": 60339
+    },
+    {
+      "file": "docs/prototype/ai-agent-shots/page-prompts.jpg",
+      "width": 1200,
+      "height": 780,
+      "pixels": 936000,
+      "bytes": 66798
+    },
+    {
+      "file": "docs/prototype/ai-agent-shots/page-plugins.jpg",
+      "width": 1200,
+      "height": 780,
+      "pixels": 936000,
+      "bytes": 68890
+    },
+    {
+      "file": "docs/prototype/ai-agent-shots/page-tools.jpg",
+      "width": 1200,
+      "height": 780,
+      "pixels": 936000,
+      "bytes": 70978
+    },
+    {
+      "file": "docs/prototype/ai-agent-shots/page-mcp.jpg",
+      "width": 1200,
+      "height": 780,
+      "pixels": 936000,
+      "bytes": 70167
+    },
+    {
+      "file": "docs/prototype/ai-agent-shots/page-audit.jpg",
+      "width": 1200,
+      "height": 780,
+      "pixels": 936000,
+      "bytes": 62396
+    },
+    {
+      "file": "docs/prototype/ai-agent-shots/page-history.jpg",
+      "width": 1200,
+      "height": 780,
+      "pixels": 936000,
+      "bytes": 52656
+    },
+    {
+      "file": "docs/prototype/ai-agent-shots/report-dialog.jpg",
+      "width": 1200,
+      "height": 780,
+      "pixels": 936000,
+      "bytes": 67039
+    },
+    {
+      "file": "docs/prototype/ai-agent-shots/narrow-embedded.jpg",
+      "width": 700,
+      "height": 780,
+      "pixels": 546000,
+      "bytes": 81569
+    },
+    {
+      "file": "docs/prototype/ai-agent-shots/dark-drawer.jpg",
+      "width": 1200,
+      "height": 780,
+      "pixels": 936000,
+      "bytes": 99846
+    },
+    {
+      "file": "docs/prototype/ai-agent-shots/final-drawer.jpg",
+      "width": 1200,
+      "height": 780,
+      "pixels": 936000,
+      "bytes": 107296
+    },
+    {
+      "file": "docs/prototype/ai-agent-shots/execution-timeline.jpg",
+      "width": 1200,
+      "height": 780,
+      "pixels": 936000,
+      "bytes": 104593
+    },
+    {
+      "file": "docs/prototype/ai-agent-shots/report-in-chat.jpg",
+      "width": 1200,
+      "height": 780,
+      "pixels": 936000,
+      "bytes": 101033
+    }
+  ],
+  "maxScreenshotBytes": 117001,
+  "steps": 18
+}

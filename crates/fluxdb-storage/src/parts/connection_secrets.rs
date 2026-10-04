@@ -1,10 +1,9 @@
 //! 连接凭据：以 (connection_id, secret_kind) 为主键保存 AES-256-GCM 密文。
 //! 默认密钥内置，可只在 config.toml 中覆盖；不读取旧系统凭据或旧加密文件。
 
-use std::fs;
 use std::path::PathBuf;
 
-use aes_gcm::aead::{Aead, KeyInit, Payload};
+use aes_gcm::aead::{Aead, Payload};
 use aes_gcm::{Aes256Gcm, Nonce};
 use rand::RngCore;
 use rusqlite::{Connection, OptionalExtension, params};
@@ -27,9 +26,6 @@ const CREATE_SQL: &str = "CREATE TABLE IF NOT EXISTS connection_secrets (
     ciphertext BLOB NOT NULL,
     PRIMARY KEY(connection_id, secret_kind)
 );";
-// 内置密钥只避免 SQLite 明文，不能抵御同时取得程序与数据库的攻击者。
-const DEFAULT_KEY: [u8; 32] = *b"fluxdb-default-aes256-key-v1-001";
-const CONFIG_KEY: &str = "connection_secret_key";
 const VERSION: i64 = 1;
 
 pub(crate) fn ensure_schema(conn: &Connection) -> fluxdb_core::Result<()> {
@@ -67,23 +63,13 @@ impl SqliteEncryptedBackend {
         Ok(conn)
     }
 
-    fn key(&self) -> Result<[u8; 32], CredentialError> {
-        let text = match fs::read_to_string(self.root.join("config.toml")) {
-            Ok(text) => text,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(DEFAULT_KEY),
-            Err(e) => return Err(CredentialError::Failure(format!("读取密钥配置失败: {e}"))),
-        };
-        let config: toml::Value = toml::from_str(&text)
-            .map_err(|_| CredentialError::Failure("config.toml 格式无效".into()))?;
-        let Some(value) = config.get(CONFIG_KEY) else {
-            return Ok(DEFAULT_KEY);
-        };
-        let hex = value.as_str().ok_or_else(invalid_key)?;
-        decode_hex(hex)?.try_into().map_err(|_| invalid_key())
+    /// 与模型 Key 共享同一把数据密钥（`secret_key`，兼容 `connection_secret_key`）。
+    fn cipher(&self) -> Result<Aes256Gcm, CredentialError> {
+        crate::secret_crypto::load_cipher(&self.root).map(|(cipher, _)| cipher)
     }
 
     fn aad(connection_id: u64, secret_kind: &str) -> Vec<u8> {
-        format!("fluxdb-connection-secret\0v1\0{connection_id}\0{secret_kind}").into_bytes()
+        crate::secret_crypto::connection_aad(connection_id, secret_kind)
     }
 
     fn read_new(
@@ -103,8 +89,7 @@ impl SqliteEncryptedBackend {
         if version != VERSION || nonce.len() != 12 {
             return Err(CredentialError::Failure("连接凭据密文格式不识别".into()));
         }
-        let key = self.key()?;
-        let cipher = Aes256Gcm::new_from_slice(&key).map_err(|_| invalid_key())?;
+        let cipher = self.cipher()?;
         let plaintext = cipher
             .decrypt(
                 Nonce::from_slice(&nonce),
@@ -138,13 +123,12 @@ impl CredentialBackend for SqliteEncryptedBackend {
         secret: &str,
     ) -> Result<(), CredentialError> {
         let conn = self.open()?;
-        let key = self.key()?;
+        let cipher = self.cipher()?;
         // config.toml 改密钥后先认证现有密文，拒绝用错误密钥覆盖。
         let sample: Option<(u64, String, Vec<u8>, Vec<u8>)> = conn.query_row(
             "SELECT connection_id, secret_kind, nonce, ciphertext FROM connection_secrets WHERE version = 1 LIMIT 1", [],
             |r| Ok((r.get::<_, i64>(0)? as u64, r.get(1)?, r.get(2)?, r.get(3)?)),
         ).optional().map_err(db_error)?;
-        let cipher = Aes256Gcm::new_from_slice(&key).map_err(|_| invalid_key())?;
         if let Some((id, kind, nonce, ciphertext)) = sample {
             if nonce.len() != 12
                 || cipher
@@ -193,23 +177,6 @@ impl CredentialBackend for SqliteEncryptedBackend {
     }
 }
 
-fn decode_hex(text: &str) -> Result<Vec<u8>, CredentialError> {
-    let chunks = text.as_bytes().chunks_exact(2);
-    if !chunks.remainder().is_empty() {
-        return Err(CredentialError::Failure("凭据 hex 格式无效".into()));
-    }
-    chunks
-        .map(|pair| {
-            let pair = std::str::from_utf8(pair)
-                .map_err(|_| CredentialError::Failure("凭据 hex 格式无效".into()))?;
-            u8::from_str_radix(pair, 16)
-                .map_err(|_| CredentialError::Failure("凭据 hex 格式无效".into()))
-        })
-        .collect()
-}
-fn invalid_key() -> CredentialError {
-    CredentialError::Failure("config.toml 中 connection_secret_key 必须为 64 位十六进制字符".into())
-}
 fn db_error(error: rusqlite::Error) -> CredentialError {
     CredentialError::Failure(format!("连接凭据数据库操作失败: {error}"))
 }
@@ -218,6 +185,8 @@ fn storage_error(error: fluxdb_core::Error) -> CredentialError {
 }
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
 

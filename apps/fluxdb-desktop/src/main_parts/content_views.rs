@@ -148,6 +148,16 @@ fn content(
         Some(tab) if matches!(tab.kind, TabKind::Settings(_)) => {
             settings_content(
                 state,
+                AiSettingsPanelState {
+                    filter: this.ai_model_filter.clone(),
+                    filter_input: this.ai_model_filter_input.clone(),
+                    testing_id: this.ai_model_testing_id.clone(),
+                    default_model_menu_open: this.ai_default_model_menu_open,
+                    default_decision_menu_open: this.ai_default_decision_menu_open,
+                    tools_tab: this.ai_tools_tab,
+                    disabled_tools: this.ai_disabled_tools.clone(),
+                    agent_editor: this.ai_agent_editor.clone(),
+                },
                 this.theme_mode,
                 this.settings_panel_section,
                 colors,
@@ -247,6 +257,7 @@ include!("settings/appearance.rs");
 include!("settings/system.rs");
 include!("settings/native_client.rs");
 include!("settings/rows.rs");
+include!("settings/ai.rs");
 include!("settings/preferences.rs");
 
 fn home_stat_card(label: &'static str, value: usize, hint: &'static str, colors: UiColors) -> Div {

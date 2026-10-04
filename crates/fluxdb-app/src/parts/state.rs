@@ -2,6 +2,142 @@ pub const HEX_EDIT_LIMIT: u64 = 64 * 1024;
 pub const BINARY_FILE_UPLOAD_LIMIT: u64 = 64 * 1024 * 1024;
 const COMPLETION_METADATA_LIMIT: u64 = 500;
 
+/// 设置页「AI」分区缓存的模型列表（公开视图，不含任何凭据）。
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AiModelItem {
+    pub id: String,
+    pub display_name: String,
+    pub provider: String,
+    pub model: String,
+    /// 自定义 API base（未配置时为 None，运行期按 Provider 默认值补全）。
+    pub endpoint: Option<String>,
+    pub kind: String,
+    pub enabled: bool,
+    pub context_window_tokens: Option<i64>,
+    pub max_output_tokens: Option<i64>,
+    /// 计价：micro-USD / 百万 Token。
+    pub input_price_micros: Option<i64>,
+    pub output_price_micros: Option<i64>,
+    pub cached_input_price_micros: Option<i64>,
+    pub credential_status: String,
+    /// 最近一次连接探测结果：`unknown` / `ok` / `failed`。
+    pub connection_status: String,
+    /// 最近一次连接探测时间戳（毫秒）；从未探测为 `None`。
+    pub connection_checked_at_ms: Option<i64>,
+    pub revision: i64,
+}
+
+/// 模型新建/编辑的提交内容（T013）。
+///
+/// 明文 Key 只在 `api_key` 里短暂存在，经专用命令进入存储；不进 AppState、日志或事件。
+///
+/// 刻意不派生 PartialEq/Debug 之外的比较能力：命令枚举的比较不应牵扯明文凭据。
+#[derive(Clone, Default)]
+pub struct AiModelSaveInput {
+    /// `None` 表示新建。
+    pub id: Option<String>,
+    pub display_name: String,
+    pub provider: String,
+    pub model: String,
+    pub endpoint: Option<String>,
+    pub enabled: bool,
+    pub context_window_tokens: Option<i64>,
+    pub max_output_tokens: Option<i64>,
+    /// 计价单位：micro-USD / 百万 Token。
+    pub input_price_micros: Option<i64>,
+    pub output_price_micros: Option<i64>,
+    pub cached_input_price_micros: Option<i64>,
+    /// `Some` 表示替换 Key；`None` 且 `clear_key=false` 表示 Keep。
+    pub api_key: Option<String>,
+    pub clear_key: bool,
+    /// 新建为 `None`；编辑必须带上打开弹框时的 revision 做 CAS。
+    pub expected_revision: Option<i64>,
+}
+
+impl std::fmt::Debug for AiModelSaveInput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AiModelSaveInput")
+            .field("id", &self.id)
+            .field("display_name", &self.display_name)
+            .field("provider", &self.provider)
+            .field("model", &self.model)
+            .field("enabled", &self.enabled)
+            .field("api_key", &self.api_key.as_ref().map(|_| "[REDACTED]"))
+            .field("clear_key", &self.clear_key)
+            .field("expected_revision", &self.expected_revision)
+            .finish_non_exhaustive()
+    }
+}
+
+impl PartialEq for AiModelSaveInput {
+    /// 比较刻意忽略 `api_key`：明文不参与相等性判断，也不应出现在断言输出里。
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+            && self.display_name == other.display_name
+            && self.provider == other.provider
+            && self.model == other.model
+            && self.endpoint == other.endpoint
+            && self.enabled == other.enabled
+            && self.context_window_tokens == other.context_window_tokens
+            && self.max_output_tokens == other.max_output_tokens
+            && self.input_price_micros == other.input_price_micros
+            && self.output_price_micros == other.output_price_micros
+            && self.cached_input_price_micros == other.cached_input_price_micros
+            && self.api_key.is_some() == other.api_key.is_some()
+            && self.clear_key == other.clear_key
+            && self.expected_revision == other.expected_revision
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AiAgentItem {
+    pub id: String,
+    pub display_name: String,
+    pub description: String,
+    /// 直接编辑的 Agent 提示词（随 Agent 行 CAS，不做模板/多版本）。
+    pub system_prompt: String,
+    /// 默认生成模型档案 id（`ai_agents.default_model_profile_id`）。
+    pub model_profile_id: Option<String>,
+    pub enabled: bool,
+    pub revision: i64,
+}
+
+/// Agent 新建/编辑的提交内容（T013/T014）。
+///
+/// 提示词直接随 Agent 保存；`id` 为 `None` 表示新建，编辑用 `expected_revision` 做 CAS。
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AiAgentSaveInput {
+    /// `None` 表示新建。
+    pub id: Option<String>,
+    pub display_name: String,
+    pub description: String,
+    pub system_prompt: String,
+    pub model_profile_id: Option<String>,
+    pub enabled: bool,
+    /// 新建忽略；编辑必须带上打开时的 revision 做 CAS。
+    pub expected_revision: i64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AiPluginItem {
+    pub id: String,
+    pub display_name: String,
+    pub package_key: String,
+    pub enabled: bool,
+    /// 内核强制（安全审计/执行护栏），UI 需禁用开关并展示"内核约束"。
+    pub mandatory: bool,
+    pub revision: i64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AiMcpItem {
+    pub id: String,
+    pub display_name: String,
+    pub transport: String,
+    pub enabled: bool,
+    pub revision: i64,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct AppState {
     pub connections: Vec<ConnectionState>,
@@ -10,6 +146,17 @@ pub struct AppState {
     pub pending_dirty_tab_close: Option<TabId>,
     pub settings: Settings,
     pub sidebar_layout: SidebarLayout,
+    /// 设置页「AI」分区缓存（模型/Agent/插件/MCP），加载失败时保持空列表。
+    pub ai_models: Vec<AiModelItem>,
+    pub ai_agents: Vec<AiAgentItem>,
+    pub ai_plugin_instances: Vec<AiPluginItem>,
+    pub ai_mcp_settings: Vec<AiMcpItem>,
+    /// 默认主模型档案 id（`ai_runtime_settings.default_model_profile_id`）。
+    pub ai_default_model_id: Option<String>,
+    /// 默认决策（Jev）模型档案 id。
+    pub ai_default_decision_model_id: Option<String>,
+    /// 运行设置行 revision（默认模型选择的 CAS 期望值）。
+    pub ai_runtime_revision: i64,
     pub tasks: Vec<TaskState>,
     pub query_history: Vec<QueryHistoryEntry>,
     /// Redis Workbench 命令历史（全量扁平，按连接 + 逻辑库过滤展示），持久化到
@@ -36,6 +183,13 @@ impl Default for AppState {
             pending_dirty_tab_close: None,
             settings: Settings::default(),
             sidebar_layout: SidebarLayout::default(),
+            ai_models: Vec::new(),
+            ai_agents: Vec::new(),
+            ai_plugin_instances: Vec::new(),
+            ai_mcp_settings: Vec::new(),
+            ai_default_model_id: None,
+            ai_default_decision_model_id: None,
+            ai_runtime_revision: 0,
             tasks: Vec::new(),
             query_history: Vec::new(),
             redis_workbench_history: Vec::new(),
@@ -2338,12 +2492,68 @@ pub enum AppCommand {
     PinTab(TabId),
     ReplaceQueryHistory(Vec<QueryHistoryEntry>),
     SaveSettings(Settings),
+    /// 刷新设置页「大模型 / 工具与MCP」列表（模型、Agent、插件实例、MCP Client）。
+    RefreshAiSettings,
+    /// 新建或保存模型档案（含 Key 的 Keep/Set/Clear）。
+    SaveAiModel(AiModelSaveInput),
+    /// 新建或保存 Agent 配置（提示词直接随 Agent 保存）。
+    SaveAiAgent(AiAgentSaveInput),
+    /// 切换模型启用状态（对象级 CAS）。
+    SetAiModelEnabled {
+        id: String,
+        enabled: bool,
+        expected_revision: i64,
+    },
+    /// 切换内置插件实例启停（对象级 CAS）。
+    SetAiPluginInstanceEnabled {
+        id: String,
+        enabled: bool,
+        expected_revision: i64,
+    },
+    /// 保存默认主模型 / 默认决策模型选择（运行设置单例 CAS）。
+    SaveAiDefaultModels {
+        default_model_id: Option<String>,
+        default_decision_model_id: Option<String>,
+        expected_revision: i64,
+    },
+    /// 测试模型连接（按协议探测 `/v1/models`，只读、不落库）。
+    TestAiModel {
+        id: String,
+    },
+    /// 拉取 Provider 的可用模型列表（模型 ID 下拉用）。
+    ///
+    /// `api_key` 仅为本次请求的内存载荷：不落库、不写日志、不回显，命令返回即丢弃。
+    FetchAiModels {
+        provider: String,
+        endpoint: Option<String>,
+        api_key: String,
+    },
     SetTabDirty { tab_id: TabId, dirty: bool },
     ClearCompletionIndexCache,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum AppEvent {
+    /// AI 设置列表已刷新。
+    AiSettingsLoaded,
+    /// 模型启停状态已变化（id、启用、revision）。
+    AiModelEnabled { id: String, enabled: bool, revision: i64 },
+    /// 内置插件实例启停状态已变化。
+    AiPluginInstanceEnabled { id: String, enabled: bool, revision: i64 },
+    /// AI 设置操作失败（CAS 冲突、存储未初始化等）；UI 用主窗口 show_message 展示。
+    AiSettingsError(String),
+    /// 模型已保存（id、新 revision）。
+    AiModelSaved { id: String, revision: i64 },
+    /// Agent 已保存（id、新 revision）。
+    AiAgentSaved { id: String, revision: i64 },
+    /// 默认模型选择已保存（运行设置新 revision）。
+    AiDefaultModelsSaved { revision: i64 },
+    /// 模型连接探测结果（status 见 `test_ai_model`）。
+    AiModelTested { id: String, status: String },
+    /// 已拉取到 Provider 的模型 ID 列表（已排序去重）。
+    AiModelsFetched { models: Vec<String> },
+    /// 拉取模型列表失败（message 为脱敏后的可读原因）。
+    AiModelsFetchFailed { message: String },
     ErRelationshipsLoaded { scope_key: String, relationships: Vec<ErRelationship> },
     ErRelationshipChanged { scope_key: String, relationship: ErRelationship },
     ErRelationshipDeleted { scope_key: String, id: String },
@@ -2610,6 +2820,9 @@ pub struct AppController {
     completion_cache: Arc<Mutex<CompletionCache>>,
     completion_index: Arc<Mutex<CompletionIndex>>,
     completion_index_storage: Option<fluxdb_storage::FileStorage>,
+    /// AI 平台存储：设置页「大模型 / 工具与MCP」读写模型、Agent、插件与MCP 配置。
+    /// UI 只通过 AppCommand 访问，不直接持有。
+    ai_storage: Option<fluxdb_storage::FileStorage>,
     /// ER 逻辑关系服务按作用域复用；生命周期由应用层管理，UI 不直接持有文件 store。
     er_model_storage: Option<fluxdb_storage::FileStorage>,
     er_model_services: Arc<Mutex<BTreeMap<String, Arc<ErModelService>>>>,

@@ -111,6 +111,10 @@ enum SettingsPanelSection {
     Data,
     ConnectionSecurity,
     DatabaseSupport,
+    AiModels,
+    AiToolsMcp,
+    AiAgents,
+    AiSessions,
     About,
 }
 
@@ -634,6 +638,32 @@ struct NavicatMain {
     new_connection_tab: NewConnectionTab,
     new_connection_form: NewConnectionForm,
     new_connection_inputs: NewConnectionInputs,
+    /// 模型新建/编辑弹框；`None` 表示未打开（T013）。
+    ai_model_dialog: Option<AiModelDialog>,
+    /// 弹框内「获取模型列表」面板的搜索框（弹框关闭后保留实体但清空文本）。
+    ai_model_dialog_filter_input: Entity<InputState>,
+    _ai_model_dialog_filter_subscription: Subscription,
+    ai_model_dialog_filter: String,
+    /// 调试用：首帧后自动打开模型弹框（仅 debug 构建读取）。
+    ai_model_dialog_debug_pending: bool,
+    /// 「大模型」页搜索框与过滤文本（T013）。
+    ai_model_filter_input: Entity<InputState>,
+    _ai_model_filter_subscription: Subscription,
+    ai_model_filter: String,
+    /// 正在测试连接的模型 id（行内显示「测试中…」）。
+    ai_model_testing_id: Option<String>,
+    /// 默认主模型 / 默认决策模型下拉的展开状态。
+    ai_default_model_menu_open: bool,
+    ai_default_decision_menu_open: bool,
+    /// 「工具与 MCP」页签与本次会话内被关闭的工具集合。
+    ai_tools_tab: AiToolsTab,
+    ai_disabled_tools: std::collections::HashSet<String>,
+    /// 「Agent 配置」编辑草稿；`None` 表示未选中任何 Agent。
+    ai_agent_editor: Option<AiAgentEditorState>,
+    /// 调试用：首帧后自动打开 Agent 新建草稿（仅 debug 构建读取）。
+    ai_agent_editor_debug_pending: bool,
+    /// 调试用：首帧后自动对第一个模型发起测试连接（仅 debug 构建读取）。
+    ai_model_test_debug_pending: bool,
     new_connection_password_visible: bool,
     editing_connection_id: Option<ConnectionId>,
     rename_group_input: Entity<InputState>,

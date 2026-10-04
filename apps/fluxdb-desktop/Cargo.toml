@@ -72,6 +72,10 @@ category = "Developer Tool"
 short_description = "Desktop database client"
 
 [dev-dependencies]
+# §39.3 第 2 步：UI 交互回归需要 gpui 的测试接口（simulate_click / simulate_input /
+# simulate_keystrokes / VisualTestContext）。仅在测试依赖中启用，发布构建不受影响。
+# proptest 等传递依赖已在本地 registry 缓存，使用 --offline 可避免新增下载。
+gpui = { package = "gpui-pre", version = "0.3.3", features = ["test-support"] }
 # ER 画布布局回归测试：复用 gpui 已锁定并编译的同一 taffy 0.13 引擎，模拟真实 div 树
 # 计算画布非零剩余高度（见 tests.rs::er_canvas_layout_fills_below_toolbar）。无需新增下载。
 taffy = "0.13"

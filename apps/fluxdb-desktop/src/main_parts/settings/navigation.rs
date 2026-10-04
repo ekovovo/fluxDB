@@ -1,5 +1,6 @@
 fn settings_content(
     state: &AppState,
+    ai_settings_panel: AiSettingsPanelState,
     theme_mode: ThemeMode,
     active_section: SettingsPanelSection,
     colors: UiColors,
@@ -52,6 +53,7 @@ fn settings_content(
                                 .py_3()
                                 .child(settings_panel_body(
                                     state,
+                                    ai_settings_panel,
                                     theme_mode,
                                     active_section,
                                     colors,
@@ -99,7 +101,7 @@ fn settings_sidebar(
         )
 }
 
-fn settings_panel_sections() -> [SettingsPanelSection; 8] {
+fn settings_panel_sections() -> [SettingsPanelSection; 12] {
     [
         SettingsPanelSection::Editor,
         SettingsPanelSection::Shortcuts,
@@ -108,6 +110,10 @@ fn settings_panel_sections() -> [SettingsPanelSection; 8] {
         SettingsPanelSection::Data,
         SettingsPanelSection::ConnectionSecurity,
         SettingsPanelSection::DatabaseSupport,
+        SettingsPanelSection::AiModels,
+        SettingsPanelSection::AiToolsMcp,
+        SettingsPanelSection::AiAgents,
+        SettingsPanelSection::AiSessions,
         SettingsPanelSection::About,
     ]
 }
@@ -257,7 +263,8 @@ fn settings_panel_header(
 }
 
 fn settings_panel_body(
-    _state: &AppState,
+    state: &AppState,
+    ai_settings_panel: AiSettingsPanelState,
     theme_mode: ThemeMode,
     active_section: SettingsPanelSection,
     colors: UiColors,
@@ -306,6 +313,16 @@ fn settings_panel_body(
         SettingsPanelSection::DatabaseSupport => {
             div().child(settings_database_support_panel(colors))
         }
+        SettingsPanelSection::AiModels => {
+            settings_ai_models_panel(state, ai_settings_panel, colors, cx)
+        }
+        SettingsPanelSection::AiToolsMcp => {
+            settings_ai_tools_mcp_panel(state, &ai_settings_panel, colors, cx)
+        }
+        SettingsPanelSection::AiAgents => {
+            settings_ai_agents_panel(state, &ai_settings_panel, colors, cx)
+        }
+        SettingsPanelSection::AiSessions => settings_ai_sessions_panel(colors),
         SettingsPanelSection::About => settings_about_panel(colors),
     }
 }

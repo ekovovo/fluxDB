@@ -82,6 +82,10 @@ struct UiColors {
     // 圆角风格：跟随 gpui-component theme.radius / radius_lg，按钮/输入框/面板共用。
     radius: gpui::Pixels,
     radius_lg: gpui::Pixels,
+    success: gpui::Rgba,
+    warning: gpui::Rgba,
+    danger: gpui::Rgba,
+    info: gpui::Rgba,
 }
 
 fn ui_colors_from_theme(mode: ThemeMode, cx: &App) -> UiColors {
@@ -281,6 +285,10 @@ fn ui_colors(mode: ThemeMode) -> UiColors {
             input_bg: rgb(0x111418),
             status_bg: rgb(0x15181c),
             canvas_bg: rgb(0x0e1013),
+            success: rgb(0x6fca9b),
+            warning: rgb(0xd9b27b),
+            danger: rgb(0xe08179),
+            info: rgb(0x8fb2f0),
             radius: px(6.),
             radius_lg: px(8.),
         }
@@ -302,6 +310,10 @@ fn ui_colors(mode: ThemeMode) -> UiColors {
             input_bg: rgb(0xffffff),
             status_bg: rgb(0xf0f0f0),
             canvas_bg: rgb(0xf0f1f4),
+            success: rgb(0x1f7a4d),
+            warning: rgb(0x9a6a15),
+            danger: rgb(0xb53b3b),
+            info: rgb(0x3a63b8),
             radius: px(6.),
             radius_lg: px(8.),
         }

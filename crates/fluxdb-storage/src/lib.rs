@@ -5,6 +5,14 @@ use std::path::PathBuf;
 mod credential;
 mod sqlite;
 
+/// 共享数据密钥加载（AES-256-GCM）：连接凭据与模型 Key 共用一把密钥。
+#[path = "parts/secret_crypto.rs"]
+pub(crate) mod secret_crypto;
+
+/// AI 平台持久化：管理实体与运行记录的建表与结构校验（设计文档 §42）。
+#[path = "parts/ai_platform/mod.rs"]
+pub mod ai_platform;
+
 #[path = "parts/connection_secrets.rs"]
 mod connection_secrets;
 
@@ -72,6 +80,29 @@ pub struct FileStorage {
 impl FileStorage {
     pub fn new(root: impl Into<PathBuf>) -> Self {
         Self { root: root.into() }
+    }
+
+    /// 存储根目录（密钥加载需要；UI 不直接使用）。
+    pub fn root_dir(&self) -> &std::path::Path {
+        &self.root
+    }
+
+    /// 在 AI 平台连接上执行一次操作（连接在本方法内打开并关闭）。
+    pub fn with_ai_connection<T>(
+        &self,
+        f: impl FnOnce(&rusqlite::Connection) -> Result<T>,
+    ) -> Result<T> {
+        let conn = self.open_ai_connection()?;
+        f(&conn)
+    }
+
+    /// 打开 AI 平台使用的 SQLite 连接（已建好全部 AI 表）。
+    ///
+    /// 每次调用新开连接，与其他存储入口保持一致；UI 不直接持有该连接。
+    pub fn open_ai_connection(&self) -> Result<rusqlite::Connection> {
+        let conn = sqlite::open(&self.root)?;
+        sqlite::create_schema(&conn)?;
+        Ok(conn)
     }
 
     /// 解析默认持久化根目录（目录策略统一在此定义，见方案 §4.1）：

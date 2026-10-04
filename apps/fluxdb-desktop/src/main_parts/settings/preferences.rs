@@ -20,6 +20,10 @@ fn settings_section_changed(
     draft: &Settings,
 ) -> bool {
     match section {
+        SettingsPanelSection::AiModels
+        | SettingsPanelSection::AiToolsMcp
+        | SettingsPanelSection::AiAgents
+        | SettingsPanelSection::AiSessions => false,
         SettingsPanelSection::Editor => settings_editor_changed(saved, draft),
         SettingsPanelSection::Shortcuts => saved.custom_keybindings != draft.custom_keybindings,
         SettingsPanelSection::Appearance => {
@@ -85,6 +89,10 @@ fn settings_apply_section_fields(
     section: SettingsPanelSection,
 ) {
     match section {
+        SettingsPanelSection::AiModels
+        | SettingsPanelSection::AiToolsMcp
+        | SettingsPanelSection::AiAgents
+        | SettingsPanelSection::AiSessions => {}
         SettingsPanelSection::Editor => settings_apply_editor_fields(settings, draft),
         SettingsPanelSection::Shortcuts => {
             settings.custom_keybindings = draft.custom_keybindings.clone();

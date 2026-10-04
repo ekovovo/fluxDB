@@ -1,8 +1,9 @@
 //! SQLite 本地持久化原语。
 //!
 //! 数据分两类落盘：
-//! - **真表**：`connections`（一条连接一行，见 [`crate::connection_store`]）与
-//!   `history`（所有数据库类型的执行历史，见 [`crate::history_store`]）；
+//! - **真表**：`connections`（一条连接一行，见 [`crate::connection_store`]）、
+//!   `history`（所有数据库类型的执行历史，见 [`crate::history_store`]）与
+//!   AI 实体（见 [`crate::ai_platform`]，首次打开时幂等创建）；
 //! - **kv 表**：仍是 load-all / save-all 全量读写的设置类数据（settings、
 //!   sidebar layout、saved queries、ER 视图与关系、备份记录等），每条记录序列化为
 //!   JSON blob，避免按字段建列导致的 serde 漂移风险。
@@ -72,6 +73,8 @@ pub fn create_schema(conn: &Connection) -> Result<i64> {
     conn.execute_batch(crate::history_store::CREATE_SQL)
         .map_err(sqlite_error)?;
     crate::connection_secrets::ensure_schema(conn)?;
+    crate::ai_platform::ensure_schema(conn)?;
+    crate::ai_platform::verify_ai_schema(conn)?;
     conn.query_row("PRAGMA user_version", [], |row| row.get(0))
         .map_err(sqlite_error)
 }

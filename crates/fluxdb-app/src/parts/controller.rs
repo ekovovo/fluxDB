@@ -1,6 +1,7 @@
 // Included in crate-root scope by ../lib.rs; AppController behavior is split by responsibility.
 
 include!("controller/api.rs");
+include!("controller/ai_settings.rs");
 include!("controller/dispatch.rs");
 include!("controller/dispatch_table.rs");
 include!("controller/tabs.rs");

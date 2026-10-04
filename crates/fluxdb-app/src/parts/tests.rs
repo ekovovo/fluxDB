@@ -29,4 +29,5 @@ mod tests {
     include!("tests/workbench_history.rs");
     include!("tests/tree_hover.rs");
     include!("tests/pg_client_tools.rs");
+    include!("tests/ai_settings.rs");
 }

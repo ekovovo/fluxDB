@@ -8,6 +8,7 @@ impl AppController {
             completion_cache: Arc::new(Mutex::new(CompletionCache::default())),
             completion_index: Arc::new(Mutex::new(CompletionIndex::default())),
             completion_index_storage: None,
+            ai_storage: None,
             er_model_storage: None,
             er_model_services: Arc::new(Mutex::new(BTreeMap::new())),
             recency: Arc::new(Mutex::new(RecencyFrequency::new())),
@@ -66,6 +67,11 @@ impl AppController {
         let mut controller = Self::new();
         let _ = controller.dispatch(AppCommand::LoadConnections);
         controller
+    }
+
+    /// 注入 AI 平台存储（模型/Agent/插件/MCP 管理页使用）。
+    pub fn set_ai_storage(&mut self, storage: fluxdb_storage::FileStorage) {
+        self.ai_storage = Some(storage);
     }
 
     pub fn set_completion_index_storage(&mut self, storage: fluxdb_storage::FileStorage) {

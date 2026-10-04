@@ -1,5 +1,34 @@
 impl Render for NavicatMain {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // 调试入口：首帧后打开模型弹框（需要 window 创建 Input 实体；仅 debug 构建会置位）。
+        if self.ai_model_dialog_debug_pending && self.ai_model_dialog.is_none() {
+            self.ai_model_dialog_debug_pending = false;
+            // `FLUXDB_DEBUG_AI_MODEL_DIALOG=edit` 打开第一个已有模型的编辑态（验证字段回填）。
+            let edit_first = cfg!(debug_assertions)
+                && std::env::var("FLUXDB_DEBUG_AI_MODEL_DIALOG").is_ok_and(|v| v == "edit");
+            let first_id = edit_first
+                .then(|| {
+                    self.controller
+                        .state()
+                        .ai_models
+                        .first()
+                        .map(|m| m.id.clone())
+                })
+                .flatten();
+            self.open_ai_model_dialog(first_id, window, cx);
+        }
+        // 调试入口：首帧后自动对第一个模型跑一次测试连接（截图核对 Alert 与状态标签）。
+        if self.ai_model_test_debug_pending {
+            self.ai_model_test_debug_pending = false;
+            if let Some(id) = self.controller.state().ai_models.first().map(|m| m.id.clone()) {
+                self.start_ai_model_test(id, cx);
+            }
+        }
+        // 调试入口：首帧后打开 Agent 新建草稿（同样需要 window 创建 Input 实体）。
+        if self.ai_agent_editor_debug_pending && self.ai_agent_editor.is_none() {
+            self.ai_agent_editor_debug_pending = false;
+            self.open_ai_agent_editor(None, window, cx);
+        }
         let width = window.viewport_size().width;
         let compact = width < px(760.);
         let app_state = self.controller.state();
@@ -333,6 +362,16 @@ impl Render for NavicatMain {
             .when_some(self.pending_delete_data_row.clone(), |this, menu| {
                 this.child(delete_data_row_modal(menu, colors, cx))
             })
+            .when_some(
+                ai_model_dialog(
+                    self.ai_model_dialog.clone(),
+                    self.ai_model_dialog_filter_input.clone(),
+                    self.ai_model_dialog_filter.clone(),
+                    colors,
+                    cx,
+                ),
+                |this, dialog| this.child(dialog),
+            )
             .when_some(self.data_row_viewer.clone(), |this, viewer| {
                 this.child(data_row_viewer_modal(
                     viewer,
@@ -675,6 +714,13 @@ impl Render for NavicatMain {
 
 fn render_state_snapshot(state: &AppState) -> AppState {
     AppState {
+        ai_models: state.ai_models.clone(),
+        ai_agents: state.ai_agents.clone(),
+        ai_plugin_instances: state.ai_plugin_instances.clone(),
+        ai_mcp_settings: state.ai_mcp_settings.clone(),
+        ai_default_model_id: state.ai_default_model_id.clone(),
+        ai_default_decision_model_id: state.ai_default_decision_model_id.clone(),
+        ai_runtime_revision: state.ai_runtime_revision,
         connections: state.connections.clone(),
         tabs: state
             .tabs

@@ -47,6 +47,9 @@ fn main() {
             // 无持久连接时保持为空（空连接不造假数据显示）。
             let mut controller = AppController::new();
             controller.set_completion_index_storage(storage.clone());
+            controller.set_ai_storage(storage.clone());
+            // 首帧后加载 AI 设置列表，避免阻塞开窗；空列表由设置页给出空状态。
+            let _ = controller.dispatch(AppCommand::RefreshAiSettings);
             controller.set_er_model_storage(storage.clone());
             let theme_mode = theme_mode_from_app_theme(saved_settings.theme);
             let _ = controller.dispatch(AppCommand::SaveSettings(saved_settings));
@@ -275,6 +278,30 @@ fn main() {
                             |this: &mut NavicatMain, input, event: &InputEvent, cx| {
                                 if matches!(event, InputEvent::Change) {
                                     this.sidebar_search = input.read(cx).value().to_string();
+                                    cx.notify();
+                                }
+                            },
+                        );
+                        let ai_model_dialog_filter_input =
+                            cx.new(|cx| InputState::new(window, cx).placeholder("搜索模型…"));
+                        let ai_model_dialog_filter_subscription = cx.subscribe(
+                            &ai_model_dialog_filter_input,
+                            |this: &mut NavicatMain, input, event: &InputEvent, cx| {
+                                if matches!(event, InputEvent::Change) {
+                                    this.ai_model_dialog_filter =
+                                        input.read(cx).value().to_string();
+                                    cx.notify();
+                                }
+                            },
+                        );
+                        let ai_model_filter_input =
+                            cx.new(|cx| InputState::new(window, cx).placeholder("搜索名称、Provider…"));
+                        let ai_model_filter_subscription = cx.subscribe(
+                            &ai_model_filter_input,
+                            |this: &mut NavicatMain, input, event: &InputEvent, cx| {
+                                if matches!(event, InputEvent::Change) {
+                                    this.ai_model_filter =
+                                        input.read(cx).value().to_string();
                                     cx.notify();
                                 }
                             },
@@ -2304,6 +2331,7 @@ fn main() {
                                 1,
                             ),
                             new_connection_inputs: NewConnectionInputs::new(window, cx),
+                            ai_model_dialog: None,
                             new_connection_password_visible: false,
                             editing_connection_id: None,
                             rename_group_input,
@@ -2925,7 +2953,23 @@ fn main() {
                             // 工具栏上的切换按钮只改这个运行时值，不回写设置。
                             results_placement: settings_editor_draft.results_placement,
                             query_result_display_pages: BTreeMap::new(),
-                            settings_panel_section: SettingsPanelSection::Editor,
+                            settings_panel_section: debug_ai_settings_section(),
+                            ai_model_dialog_debug_pending: debug_ai_model_dialog_requested(),
+                            ai_model_dialog_filter_input,
+                            _ai_model_dialog_filter_subscription:
+                                ai_model_dialog_filter_subscription,
+                            ai_model_dialog_filter: String::new(),
+                            ai_model_filter_input,
+                            _ai_model_filter_subscription: ai_model_filter_subscription,
+                            ai_model_filter: String::new(),
+                            ai_model_testing_id: None,
+                            ai_default_model_menu_open: false,
+                            ai_default_decision_menu_open: false,
+                            ai_tools_tab: debug_ai_tools_tab(),
+                            ai_disabled_tools: std::collections::HashSet::new(),
+                            ai_agent_editor: None,
+                            ai_agent_editor_debug_pending: debug_ai_agent_draft_requested(),
+                            ai_model_test_debug_pending: debug_ai_model_test_requested(),
                             settings_editor_draft,
                             settings_dangerous_actions_collapsed: false,
                             // 备份默认展开（常用），客户端默认折叠（标题右侧有状态摘要）。
@@ -3010,6 +3054,15 @@ fn main() {
                     // saved_queries 经内部 notify 补显，详见 load_persisted_history_in_background）。
                     view.update(cx, |this, cx| {
                         this.load_persisted_history_in_background(cx);
+                        // 调试入口：打开设置页的 AI 分区（仅 debug 构建，用于 UI 截图验证）。
+                        if debug_ai_settings_requested() {
+                            let _ = this.controller.dispatch(AppCommand::OpenSettings);
+                            cx.notify();
+                        }
+                        // 调试入口：直接打开模型编辑弹框（仅 debug 构建）。
+                        if debug_ai_model_dialog_requested() {
+                            let _ = this.controller.dispatch(AppCommand::OpenSettings);
+                        }
                     });
                     cx.new(|cx| Root::new(view, window, cx))
                 },
@@ -3017,4 +3070,60 @@ fn main() {
             .unwrap();
             cx.activate(true);
         });
+}
+
+
+/// 调试用：从环境变量读取要打开的 AI 设置分区。
+///
+/// 仅 debug 构建生效，用于 UI 截图/交互验证；发布构建始终返回编辑器分区。
+/// 例：`FLUXDB_DEBUG_AI_SETTINGS=models cargo run -p fluxdb-desktop`
+fn debug_ai_settings_section() -> SettingsPanelSection {
+    if !cfg!(debug_assertions) {
+        return SettingsPanelSection::Editor;
+    }
+    match std::env::var("FLUXDB_DEBUG_AI_SETTINGS").as_deref() {
+        Ok("models") => SettingsPanelSection::AiModels,
+        Ok("tools") => SettingsPanelSection::AiToolsMcp,
+        Ok("agents") => SettingsPanelSection::AiAgents,
+        Ok("sessions") => SettingsPanelSection::AiSessions,
+        _ => SettingsPanelSection::Editor,
+    }
+}
+
+/// 调试用：从环境变量选择「工具与 MCP」初始页签（仅 debug 构建）。
+///
+/// 例：`FLUXDB_DEBUG_AI_SETTINGS=tools FLUXDB_DEBUG_AI_TAB=plugins cargo run -p fluxdb-desktop`
+fn debug_ai_tools_tab() -> AiToolsTab {
+    if !cfg!(debug_assertions) {
+        return AiToolsTab::Tools;
+    }
+    match std::env::var("FLUXDB_DEBUG_AI_TAB").as_deref() {
+        Ok("mcp") => AiToolsTab::Mcp,
+        Ok("plugins") => AiToolsTab::Plugins,
+        Ok("audit") => AiToolsTab::Audit,
+        _ => AiToolsTab::Tools,
+    }
+}
+
+/// 调试用：是否请求打开 AI 设置分区。
+fn debug_ai_settings_requested() -> bool {
+    cfg!(debug_assertions) && std::env::var("FLUXDB_DEBUG_AI_SETTINGS").is_ok()
+}
+
+/// 调试用：是否请求首帧自动测试第一个模型的连接（用于截图核对 Alert/状态标签）。
+fn debug_ai_model_test_requested() -> bool {
+    cfg!(debug_assertions)
+        && std::env::var("FLUXDB_DEBUG_AI_TEST_MODEL").is_ok_and(|v| v == "1")
+}
+
+/// 调试用：是否请求直接打开 Agent 新建草稿。
+fn debug_ai_agent_draft_requested() -> bool {
+    cfg!(debug_assertions)
+        && std::env::var("FLUXDB_DEBUG_AI_AGENT_DRAFT").is_ok_and(|v| v == "1")
+}
+
+/// 调试用：是否请求直接打开模型编辑弹框。
+fn debug_ai_model_dialog_requested() -> bool {
+    cfg!(debug_assertions)
+        && std::env::var("FLUXDB_DEBUG_AI_MODEL_DIALOG").is_ok_and(|v| v == "1" || v == "edit")
 }

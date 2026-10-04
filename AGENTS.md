@@ -40,4 +40,8 @@
 ## 验证
 - Rust 代码修改后运行 `cargo fmt` 和 `cargo check`。
 - 修改 core/app/storage/connectors 逻辑后运行相关测试；影响范围不明确时运行 `cargo test`。
-- UI 行为修改后验证 `cargo run -p fluxdb-desktop` 可启动主窗口。
+- UI 交互回归优先使用 GPUI 官方测试能力（`#[gpui::test]`、`TestAppContext` / `VisualTestContext`），按当前锁定版本核对接口并启用 `test-support`；模拟按钮点击、输入、快捷键与弹框开关，断言状态和业务结果，不以直接调用处理函数代替交互测试。
+- UI 修改必须运行 `cargo run -p fluxdb-desktop`，在真实窗口执行受影响流程的端到端测试（实际点击、输入、提交并检查结果），覆盖相关 loading/disabled、空态、错误态；进程内测试、编译通过或仅启动成功不能替代此项。
+- 结合实际界面截图，对照设计稿（如有）、需求和 `docs/ui-style.md` 检查 UI 还原度、布局间距、文字、颜色及控件状态，验证明暗主题。
+- 按模块测试、修复并复测；截图少截、裁准，首次读取前缩放并压缩，避免重复加载大图。允许委派 UI 测试子 agent，共享 GUI 操作须串行，返回简短结论与必要截图路径，完成后关闭。
+- 验收仅汇总场景、结果、问题与必要截图路径；无法启动、截图或执行测试时明确阻碍及未验证项，不得宣称通过。

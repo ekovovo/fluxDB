@@ -9,8 +9,11 @@ fluxdb-core = { path = "../fluxdb-core" }
 fluxdb-storage = { path = "../fluxdb-storage" }
 sqlformat = "0.5.0"
 sqlparser = { version = "0.62.0", features = ["visitor"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
 tracing = "0.1"
+uuid = { version = "1.23", features = ["v4"] }
 ureq = { version = "3", default-features = false, features = ["rustls", "gzip"] }
+serde_json = "1"
 zip = { version = "8", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]

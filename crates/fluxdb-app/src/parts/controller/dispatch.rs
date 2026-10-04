@@ -3447,6 +3447,151 @@ impl AppController {
                 self.state.query_history = history;
                 AppEvent::SettingsSaved
             }
+            AppCommand::SaveAiModel(input) => {
+                let storage = self.ai_storage();
+                let result = storage.and_then(|st| save_ai_model(&mut self.state, &st, &input));
+                match result {
+                    Ok((id, revision)) => {
+                        return AppEvent::AiModelSaved { id, revision };
+                    }
+                    Err(e) => return AppEvent::AiSettingsError(e.message),
+                }
+            }
+            AppCommand::SaveAiAgent(input) => {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or(0);
+                let storage = self.ai_storage();
+                let result = storage.and_then(|st| save_ai_agent(&mut self.state, &st, input, now));
+                match result {
+                    Ok(id) => {
+                        let revision = self
+                            .state
+                            .ai_agents
+                            .iter()
+                            .find(|a| a.id == id)
+                            .map(|a| a.revision)
+                            .unwrap_or(0);
+                        return AppEvent::AiAgentSaved { id, revision };
+                    }
+                    Err(e) => return AppEvent::AiSettingsError(e.message),
+                }
+            }
+            AppCommand::RefreshAiSettings => {
+                let storage = self.ai_storage();
+                let result = storage.and_then(|st| refresh_ai_settings(&mut self.state, &st));
+                match result {
+                    Ok(()) => return AppEvent::AiSettingsLoaded,
+                    Err(e) => return AppEvent::AiSettingsError(e.message),
+                }
+            }
+            AppCommand::SetAiModelEnabled {
+                id,
+                enabled,
+                expected_revision,
+            } => {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or(0);
+                let storage = self.ai_storage();
+                let result = storage.and_then(|st| {
+                    set_ai_model_enabled(
+                        &mut self.state,
+                        &st,
+                        &id,
+                        enabled,
+                        expected_revision,
+                        now,
+                    )
+                });
+                match result {
+                    Ok(()) => {
+                        return AppEvent::AiModelEnabled {
+                            id,
+                            enabled,
+                            revision: expected_revision + 1,
+                        };
+                    }
+                    Err(e) => return AppEvent::AiSettingsError(e.message),
+                }
+            }
+            AppCommand::SetAiPluginInstanceEnabled {
+                id,
+                enabled,
+                expected_revision,
+            } => {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or(0);
+                let storage = self.ai_storage();
+                let result = storage.and_then(|st| {
+                    set_ai_plugin_enabled(
+                        &mut self.state,
+                        &st,
+                        &id,
+                        enabled,
+                        expected_revision,
+                        now,
+                    )
+                });
+                match result {
+                    Ok(()) => {
+                        return AppEvent::AiPluginInstanceEnabled {
+                            id,
+                            enabled,
+                            revision: expected_revision + 1,
+                        };
+                    }
+                    Err(e) => return AppEvent::AiSettingsError(e.message),
+                }
+            }
+            AppCommand::SaveAiDefaultModels {
+                default_model_id,
+                default_decision_model_id,
+                expected_revision,
+            } => {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or(0);
+                let storage = self.ai_storage();
+                let result = storage.and_then(|st| {
+                    save_ai_default_models(
+                        &mut self.state,
+                        &st,
+                        default_model_id,
+                        default_decision_model_id,
+                        expected_revision,
+                        now,
+                    )
+                });
+                match result {
+                    Ok(revision) => return AppEvent::AiDefaultModelsSaved { revision },
+                    Err(e) => return AppEvent::AiSettingsError(e.message),
+                }
+            }
+            AppCommand::TestAiModel { id } => {
+                let storage = self.ai_storage();
+                let result = storage.and_then(|st| test_ai_model(&self.state, &st, &id));
+                match result {
+                    Ok((id, status)) => return AppEvent::AiModelTested { id, status },
+                    Err(e) => return AppEvent::AiSettingsError(e.message),
+                }
+            }
+            AppCommand::FetchAiModels {
+                provider,
+                endpoint,
+                api_key,
+            } => {
+                // 纯网络读取：不触碰 storage，api_key 仅用于本次请求头。
+                match fetch_ai_models(&provider, endpoint.as_deref(), &api_key) {
+                    Ok(models) => return AppEvent::AiModelsFetched { models },
+                    Err(e) => return AppEvent::AiModelsFetchFailed { message: e.message },
+                }
+            }
             AppCommand::SaveSettings(settings) => {
                 self.state.settings = settings;
                 AppEvent::SettingsSaved

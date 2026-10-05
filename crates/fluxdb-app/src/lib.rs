@@ -96,4 +96,7 @@ pub use fluxdb_connectors::{
     mysql_dump_invocation,
 };
 
+include!("parts/ai_transport.rs");
+include!("parts/ai_runtime.rs");
+include!("parts/ai_scripted.rs");
 include!("parts/backup_restore.rs");

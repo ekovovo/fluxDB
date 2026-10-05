@@ -143,6 +143,8 @@ pub struct PanelPreferences {
     pub drawer_width_dp: f64,
     pub embedded_width_dp: f64,
     pub last_session_id: Option<String>,
+    /// 尚未成为消息的新草稿（面板关闭/重启后恢复），`None` 表示无草稿。
+    pub pending_draft_json: Option<String>,
     pub revision: i64,
 }
 
@@ -154,6 +156,7 @@ impl Default for PanelPreferences {
             drawer_width_dp: 460.0,
             embedded_width_dp: 420.0,
             last_session_id: None,
+            pending_draft_json: None,
             revision: 0,
         }
     }
@@ -163,7 +166,8 @@ impl Default for PanelPreferences {
 pub fn load_panel_preferences(conn: &Connection) -> Result<PanelPreferences> {
     let row = conn
         .query_row(
-            "SELECT preferred_mode, drawer_width_dp, embedded_width_dp, last_session_id, revision
+            "SELECT preferred_mode, drawer_width_dp, embedded_width_dp, last_session_id,
+                    pending_draft_json, revision
                FROM ai_panel_preferences WHERE id=1",
             [],
             |row| {
@@ -172,7 +176,8 @@ pub fn load_panel_preferences(conn: &Connection) -> Result<PanelPreferences> {
                     row.get::<_, f64>(1)?,
                     row.get::<_, f64>(2)?,
                     row.get::<_, Option<String>>(3)?,
-                    row.get::<_, i64>(4)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, i64>(5)?,
                 ))
             },
         )
@@ -184,7 +189,8 @@ pub fn load_panel_preferences(conn: &Connection) -> Result<PanelPreferences> {
             drawer_width_dp: r.1,
             embedded_width_dp: r.2,
             last_session_id: r.3,
-            revision: r.4,
+            pending_draft_json: r.4,
+            revision: r.5,
         },
         None => PanelPreferences::default(),
     })
@@ -202,23 +208,29 @@ pub fn save_panel_preferences(
             return Err(Error::new(ErrorKind::Internal, "面板宽度必须为正数"));
         }
     }
+    if let Some(draft) = prefs.pending_draft_json.as_deref() {
+        serde_json::from_str::<serde_json::Value>(draft)
+            .map_err(|e| Error::new(ErrorKind::Internal, format!("草稿不是合法 JSON: {e}")))?;
+    }
     let changed = conn
         .execute(
             "INSERT INTO ai_panel_preferences (id, preferred_mode, drawer_width_dp,
-                embedded_width_dp, last_session_id, revision, updated_at_ms)
-             VALUES (1,?1,?2,?3,?4,1,?5)
+                embedded_width_dp, last_session_id, pending_draft_json, revision, updated_at_ms)
+             VALUES (1,?1,?2,?3,?4,?5,1,?6)
              ON CONFLICT(id) DO UPDATE SET
                 preferred_mode=excluded.preferred_mode,
                 drawer_width_dp=excluded.drawer_width_dp,
                 embedded_width_dp=excluded.embedded_width_dp,
                 last_session_id=excluded.last_session_id,
+                pending_draft_json=excluded.pending_draft_json,
                 revision=ai_panel_preferences.revision+1, updated_at_ms=excluded.updated_at_ms
-              WHERE ai_panel_preferences.revision=?6",
+              WHERE ai_panel_preferences.revision=?7",
             params![
                 prefs.preferred_mode.as_str(),
                 prefs.drawer_width_dp,
                 prefs.embedded_width_dp,
                 prefs.last_session_id,
+                prefs.pending_draft_json,
                 now_ms,
                 expected_revision,
             ],

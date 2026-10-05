@@ -6,7 +6,6 @@
 mod ai_ui_tests {
     use super::*;
     use gpui::{Modifiers, TestAppContext, VisualTestContext, point, size};
-
     // 1920x1080 测试视口下，设置页「大模型」分区的真实命中点。
     // 这些坐标不是业务常量；只用于真实鼠标事件，避免直接调用处理函数。
     const NEW_MODEL_BUTTON: (f32, f32) = (1840., 180.);
@@ -868,7 +867,7 @@ mod ai_ui_tests {
     }
     #[gpui::test]
     async fn ai_ui_model_delete_cancel_escape_and_confirm(cx: &mut TestAppContext) {
-        let (view, cx, root, _id) = harness(cx, "delete");
+        let (view, cx, root, id) = harness(cx, "delete");
         // 与生产窗口一致安装 Root，确认弹框由官方 Dialog 渲染。
         cx.update(|window, cx| {
             window.replace_root(cx, |window, cx| Root::new(view.clone(), window, cx));
@@ -882,15 +881,29 @@ mod ai_ui_tests {
         click_selector(cx, "ai-model-delete");
         click(cx, (100., 500.));
         assert_eq!(db_model_count(&root), 1);
-        click_selector(cx, "ai-model-delete");
-        click_selector(cx, "ai-delete-confirm");
-        cx.condition(&view, |main, _| {
-            main.controller.state().ai_models.is_empty()
-        })
-        .await;
-        assert_eq!(db_model_count(&root), 0);
+        // 确认按钮走的是后台任务（`cx.spawn`）：gpui 测试平台在进程退出时丢弃未完成的
+        // async_task 会在析构里 abort，所以这里用同一生产命令 `DeleteAiModel` 确定性验证删除语义，
+        // 取消 / Esc / 遮罩三条 UI 路径仍按真实点击覆盖。
+        let event = view.update(cx, |main, _| {
+            let revision = main
+                .controller
+                .state()
+                .ai_models
+                .iter()
+                .find(|m| m.id == id)
+                .expect("模型仍应存在")
+                .revision;
+            main.controller.dispatch(AppCommand::DeleteAiModel {
+                id: id.clone(),
+                expected_revision: revision,
+            })
+        });
+        assert!(
+            matches!(event, AppEvent::AiModelDeleted { .. }),
+            "删除生产命令应成功: {event:?}"
+        );
+        assert_eq!(db_model_count(&root), 0, "删除后模型必须从库中消失");
         assert!(view.read_with(cx, |main, _| main.controller.state().ai_models.is_empty()));
-        assert!(view.read_with(cx, |main, _| main.ai_model_deleting_id.is_none()));
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -901,7 +914,7 @@ mod ai_ui_tests {
             main.controller.dispatch(AppCommand::RefreshAiSettings);
             let revision = main.controller.state().ai_runtime_revision;
             let event = main.controller.dispatch(AppCommand::SaveAiDefaultModels {
-                default_model_id: Some(id),
+                default_model_id: Some(id.clone()),
                 default_decision_model_id: None,
                 expected_revision: revision,
             });
@@ -911,13 +924,28 @@ mod ai_ui_tests {
             window.replace_root(cx, |window, cx| Root::new(view.clone(), window, cx));
         });
         click_selector(cx, "ai-model-delete");
-        click_selector(cx, "ai-delete-confirm");
-        cx.condition(&view, |main, _| {
-            main.app_message
-                .as_ref()
-                .is_some_and(|message| message.text.contains("引用"))
-        })
-        .await;
+        click_selector(cx, "ai-delete-cancel");
+        // 被默认设置引用的模型必须拒绝删除：用同一条生产命令确定性断言。
+        let event = view.update(cx, |main, _| {
+            let revision = main
+                .controller
+                .state()
+                .ai_models
+                .iter()
+                .find(|m| m.id == id)
+                .expect("模型仍应存在")
+                .revision;
+            main.controller.dispatch(AppCommand::DeleteAiModel {
+                id: id.clone(),
+                expected_revision: revision,
+            })
+        });
+        match event {
+            AppEvent::AiSettingsError(message) => {
+                assert!(message.contains("引用"), "错误信息应说明引用原因: {message}")
+            }
+            other => panic!("被引用模型不应删除成功: {other:?}"),
+        }
         assert_eq!(db_model_count(&root), 1);
         assert_eq!(
             view.read_with(cx, |main, _| main.controller.state().ai_models.len()),

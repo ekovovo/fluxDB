@@ -9,6 +9,11 @@ pub mod model_secret;
 pub mod models;
 pub mod plugins;
 pub mod schema;
+pub mod sessions;
+#[cfg(test)]
+mod sessions_tests;
+#[cfg(test)]
+mod sessions_verify_tests;
 pub mod settings;
 
 use rusqlite::Connection;

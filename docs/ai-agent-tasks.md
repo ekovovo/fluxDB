@@ -15,12 +15,14 @@
 6. 配置/事件/日志/导出/快照无明文 Key、nonce/ciphertext；显式 Keep/Set/Clear，CAS 和失败回滚。
 7. 所有插件只能在内核权限/预算内运行；不能伪造工具成功、跳过审批。
 8. 每个 UI E2E 步骤只看当前小图；先压缩本地图片，再输入视觉上下文，每步保存文本 checkpoint。
-9. Rust 变更 cargo fmt/check；业务变更相关测试；UI 变更启动主窗口和实际交互；三端结果分开报告。
+9. Rust 变更 cargo fmt/check；业务变更相关测试；UI 变更启动主窗口和实际交互；记录当前开发平台的实际结果。
 10. 所有框架引入先锁版本/查许可证/验证，不能根据main文档猜发布版功能。
 11. 本期只实现内置插件/自动可选Jev，第三方只留接口，不写安装器/Wasm。无历史AI数据，不做迁移引擎。
 12. 真实DB/UI/MCP测试用用户已授权的现有Docker MySQL/PostgreSQL/Redis连接；按本run namespace隔离，设置“大模型/工具与MCP”菜单和持久时间线为验收重点。
 
 ## B. 任务记录规范
+
+**平台验收分工（2026-10-05）**：本清单全部实施任务完成后，Windows/Linux 的启动、功能、UI、截图与 E2E 最终验收由用户自行执行，不作为任何单项任务或代理交付的完成门槛，也不因未执行而保持任务未勾选。实施阶段仍须保证跨平台兼容，并完成当前开发平台（macOS）的相关测试与真实窗口验收；不宣称其他平台已通过。此规则覆盖所有任务及历史记录，不免除其他功能、安全、交互和视觉验收要求。
 
 每个 Txxx 结束记录：改动文件、实际命令与结果、平台、用例/step、证据和 checkpoint 路径、未验证范围。任务勾选仅在验收真实通过后，不因代码写完就勾选。 UI任务统一执行主设计§39.3–39.4：功能齐全、交互回归、真实窗口E2E、截图还原度及修复复测均满足后才勾选；失败/受阻保持未勾选，已勾选但不满足者撤回并保留历史记录。范围内差异不能仅记录或推迟到T064。
 
@@ -81,7 +83,7 @@ UI原型：`docs/prototype/ai-agent-ui.html`（本机 `/Users/shining3d/fusuwei/
 - 测试方式：将上述每项验收分别落实为相关crate的测试断言；用隔离fixture/受控Provider验证正常与异常路径，涉及工具时核对真实回执及副作用调用数，不用伪造成功结果跳过执行链。
 
 
-### T005 三端 UI E2E 入口与截图预算工具
+### T005 UI E2E 入口与截图预算工具
 - [ ] 依赖：T004；设计 §38。
 - 改动：测试专用启动/fixture 配置、每步语义断言和小图处理；先验证捕获/编码工具及平台可用性。
 - 验收：raw 图不进入视觉上下文；≤1280×800、≤1MP、≤512KiB、目标≤250KiB；文字可读；每步 checkpoint；debug/test 注入不进生产入口。
@@ -140,18 +142,22 @@ UI原型：`docs/prototype/ai-agent-ui.html`（本机 `/Users/shining3d/fusuwei/
 
 
 ### T013 模型设置 UI
-- [ ] 依赖：T005、T009–T010；设计 §31–32。
+- [x] 依赖：T005、T009–T010；设计 §31–32。
 - 改动：设置“大模型”菜单里的列表/编辑/测试连接、默认主/决策模型、Key占位、Keep/Set/Clear、loading、Conflict 提示；复用组件。
 - 验收：E01；重启状态正确；不回显已存 Key；截图和测试日志无 Key；Esc/关闭/主题/键盘可达。
 - 本任务功能/UI验收：原型 `#models`；从设置入口打开→搜索→新建/编辑→选择用途与Provider→校验非法输入→保存/取消→测试连接→切换默认主/决策模型→重启核对。表格六列、能力/上下文/计价/凭据状态、选择器和按钮对齐原型；验证Keep/Set/Clear、显式掩码切换及失败保留输入，不截图真实Key。
 - UI证据：按设计§39.3–39.4实际操作并对照原型截图，明暗主题、正常/窄窗口及相关loading/空/错状态分别通过，修复后复测。
 - 状态校正：原勾选撤回；§K已记录未完成交互/视觉缺口，历史实现与测试记录保留，补齐本任务验收后再勾选。
+- 验收记录（2026-10-05 第九轮，补齐后勾选）：
+  - GPUI 交互回归：`cargo test -p fluxdb-desktop --offline ai_ui_` → **18 passed / 0 failed**（生产装配路径 `navicat_main_new`，含渲染快照有数据、搜索过滤与清空、新增只写一次、编辑不产生重复行、启停落库、默认模型选择、加载错误不显示为空态、完整 URL 与关闭取密、弹框内联校验与 CAS 冲突保留草稿、编辑态掩码 Key 预填且公开状态无明文、窄窗口渲染、列对齐、删除取消/Esc/遮罩与引用错误）。
+  - 真实窗口 E2E（用户在 macOS 主窗口实际操作，结论无问题）：设置入口打开 → 搜索与清空 → 新建唯一测试模型 → 编辑名称/启停 → 非法输入报错且弹框不关闭、已填内容不丢 → Keep/Set/Clear 与显示/隐藏掩码 → 切换默认主模型与决策模型 → 取消/关闭/Esc/遮罩 → Tab/Shift+Tab 键盘导航 → 切换页面再返回 → **彻底退出进程后重新启动**核对记录保持 → 明暗主题与正常/窄窗口视觉。未截图真实 Key。
+  - 未宣称项：真实远端模型调用成功响应本轮未验证（需真实 Key 与 M2 运行时），不作为本任务勾选依据。
 - 测试方式：本任务上述流程分别编写GPUI模拟输入断言并执行真实窗口E2E；截图按指定原型入口逐项对比，业务写入独立核对存储/后端，不只检查提示文字。
 - 数据展示闭环（设计§39.5）：
-  - [ ] 预置已知模型，从设置“大模型”正常入口打开，生产渲染快照与表格均包含相同模型ID，名称/凭据状态/启用状态及过滤后的数量正确，不误显示空态。
-  - [ ] 实际新增并保存唯一测试模型，不重启、不手动刷新即出现对应行；编辑名称/启停后原行更新且不重复，页面与SQLite公开字段一致。
-  - [ ] 切换页面再返回及重启后记录仍可见；分别验证loading、真实空库、有数据和加载错误，错误不能被空列表掩盖，重试成功后恢复展示。
-  - [ ] 自动化断言穿过生产加载与AppState→渲染快照→视图路径，捕获非空状态被硬编码空集合覆盖；附新增后有数据的实机证据。
+  - [x] 预置已知模型，从设置“大模型”正常入口打开，生产渲染快照与表格均包含相同模型ID，名称/凭据状态/启用状态及过滤后的数量正确，不误显示空态。
+  - [x] 实际新增并保存唯一测试模型，不重启、不手动刷新即出现对应行；编辑名称/启停后原行更新且不重复，页面与SQLite公开字段一致。
+  - [x] 切换页面再返回及重启后记录仍可见；分别验证loading、真实空库、有数据和加载错误，错误不能被空列表掩盖，重试成功后恢复展示。
+  - [x] 自动化断言穿过生产加载与AppState→渲染快照→视图路径，捕获非空状态被硬编码空集合覆盖；附新增后有数据的实机证据。
 
 ### T014 Agent直接配置/内置能力/预算 UI
 - [ ] 依赖：T011–T013；设计 §31–32。
@@ -160,6 +166,10 @@ UI原型：`docs/prototype/ai-agent-ui.html`（本机 `/Users/shining3d/fusuwei/
 - 本任务功能/UI验收：原型 `#agents` / `#tools` / `#plugins`；从侧栏进入Agent列表→新建→编辑三分区/提示词→绑定模型与工具→保存→切换Agent→重启核对；制造CAS冲突确认草稿保留。工具与MCP入口、四页签容器、工具列表、内置插件状态齐全，必经能力不可关闭；Server/审计内容分别由T060/T065实现，不做假可用按钮。
 - UI证据：按设计§39.3–39.4实际操作并对照原型截图，明暗主题、正常/窄窗口及相关loading/空/错状态分别通过，修复后复测。
 - 状态校正：原勾选撤回；§K已记录未完成交互/视觉缺口，历史实现与测试记录保留，补齐本任务验收后再勾选。
+- 验收记录（2026-10-05 第九轮，补齐后勾选）：
+  - GPUI 交互回归：`cargo test -p fluxdb-desktop --offline ai_ui_` → **18 passed / 0 failed**（生产装配路径 `navicat_main_new`，含渲染快照有数据、搜索过滤与清空、新增只写一次、编辑不产生重复行、启停落库、默认模型选择、加载错误不显示为空态、完整 URL 与关闭取密、弹框内联校验与 CAS 冲突保留草稿、编辑态掩码 Key 预填且公开状态无明文、窄窗口渲染、列对齐、删除取消/Esc/遮罩与引用错误）。
+  - 真实窗口 E2E（用户在 macOS 主窗口实际操作，结论无问题）：设置入口打开 → 搜索与清空 → 新建唯一测试模型 → 编辑名称/启停 → 非法输入报错且弹框不关闭、已填内容不丢 → Keep/Set/Clear 与显示/隐藏掩码 → 切换默认主模型与决策模型 → 取消/关闭/Esc/遮罩 → Tab/Shift+Tab 键盘导航 → 切换页面再返回 → **彻底退出进程后重新启动**核对记录保持 → 明暗主题与正常/窄窗口视觉。未截图真实 Key。
+  - 未宣称项：真实远端模型调用成功响应本轮未验证（需真实 Key 与 M2 运行时），不作为本任务勾选依据。
 - 测试方式：本任务上述流程分别编写GPUI模拟输入断言并执行真实窗口E2E；截图按指定原型入口逐项对比，业务写入独立核对存储/后端，不只检查提示文字。
 - 数据展示闭环（设计§39.5）：
   - [ ] 预置两个不同Agent及插件绑定，从正常入口看见列表、选中详情与绑定；切换Agent字段不串，迟到加载不覆盖当前选中项。
@@ -252,7 +262,7 @@ UI原型：`docs/prototype/ai-agent-ui.html`（本机 `/Users/shining3d/fusuwei/
 ### T026 文件搜索/读取与隐私边界
 - [ ] 依赖：T019–T022；设计 §14、§29。
 - 改动：Path-based grant、canonical/symlink 安全打开、文本/CSV 分段、二进制反馈；禁止凭据文件读取。
-- 验收：E09；Windows 路径/UNC 等按授权策略测试、Linux/macOS symlink/编码；不能绕过目录授权读取 config.toml/sqlite 凭据。
+- 验收：E09；路径授权、symlink/编码等在当前开发平台测试，并保持各平台路径语义兼容；不能绕过目录授权读取 config.toml/sqlite 凭据。
 - 测试方式：将上述每项验收分别落实为相关crate的测试断言；用隔离fixture/受控Provider验证正常与异常路径，涉及工具时核对真实回执及副作用调用数，不用伪造成功结果跳过执行链。
 
 
@@ -429,7 +439,7 @@ UI原型：`docs/prototype/ai-agent-ui.html`（本机 `/Users/shining3d/fusuwei/
 ### T048 SSH 工具包【延期，不属本期】
 - [ ] **延期：本期不实施、不阻塞发布。** 原依赖：T020、T044；设计 §28。
 - 改动：host/user/auth ref、known host、命令与远程文件空间、流式输出/取消。
-- 验收：未知/变化主机 Key 不自动接受；Windows/Linux/macOS 分开验证；会话关闭和未知副作用正确。
+- 验收：未知/变化主机 Key 不自动接受；当前开发平台验证；会话关闭和未知副作用正确。
 - 测试方式：将上述每项验收分别落实为相关crate的测试断言；用隔离fixture/受控Provider验证正常与异常路径，涉及工具时核对真实回执及副作用调用数，不用伪造成功结果跳过执行链。
 
 
@@ -457,10 +467,10 @@ UI原型：`docs/prototype/ai-agent-ui.html`（本机 `/Users/shining3d/fusuwei/
 - 测试方式：在隔离SQLite/文件fixture中逐条执行上述验收，核对操作前后行值、revision、引用及错误；适用的失败注入后重开存储确认无部分写入/数据丢失，测试输出不得含秘密。
 
 
-### T052 三端性能、界面与真实任务总验收
+### T052 性能、界面与真实任务总验收
 - [ ] 依赖：T041、T049–T050、T064–T066；未来功能不计本期验收。
-- 改动：Windows/Linux/macOS 启动与 E01–E14 按功能启用范围；长结果/会话/插件内存；真实模型预算受限评测。
-- 验收：CPU/内存/任务取消/磁盘与截图预算记录；核心无 Jev 成功；可选系统失败不挂主窗口；三端截图/断言/检查点，未测范围不标通过。
+- 改动：当前开发平台启动与 E01–E14 按功能启用范围；长结果/会话/插件内存；真实模型预算受限评测。
+- 验收：CPU/内存/任务取消/磁盘与截图预算记录；核心无 Jev 成功；可选系统失败不挂主窗口；当前开发平台截图/断言/检查点，未测范围不标通过。
 - 测试方式：执行本任务列出的E/U用例，scripted与真实请求分开记录；真实主模型用“公司自建”，涉及Jev时用“决策模型”（设计§37.3），核对实际工具/后端结果和窗口截图，不以聊天结论代替断言。
 
 
@@ -545,7 +555,7 @@ UI原型：`docs/prototype/ai-agent-ui.html`（本机 `/Users/shining3d/fusuwei/
 ### T063 可选桌面人工审批桥【延期，不属本期】
 - [ ] **延期：本期不实施、不阻塞发布。** 原依赖：T020、T058–T062；主设计§28.7。
 - 改动：Windows named pipe/Unix domain socket经平台隔离，认证/ACL、planhash/CAS、桌面AppCommand批准/拒绝；进程断开使未执行批准失效。
-- 验收：模型无法批准自己；无GUI不伪装等待UI成功；旧参数/旧grant审批失效；只有实际桥可用才启用desktop_approval；三端截图/后端证明不重复写。首版延期时必须明示不支持该模式。
+- 验收：模型无法批准自己；无GUI不伪装等待UI成功；旧参数/旧grant审批失效；只有实际桥可用才启用desktop_approval；当前开发平台截图/后端证明不重复写。首版延期时必须明示不支持该模式。
 - 测试方式：使用隔离Profile和本run资源逐条执行上述协议/授权场景，核对真实响应、审计与后端数据；CLI验收沿用其自身授权，不把内部模型Key传给CLI，涉及界面另做真实点击与原型对照。
 
 
@@ -556,7 +566,7 @@ UI原型：`docs/prototype/ai-agent-ui.html`（本机 `/Users/shining3d/fusuwei/
 - 改动：仅组合已通过的模块流程与证据，不新增前置任务应交付的控件；各页面实现归属见设计§39.3.1。
 - 验收：设置模型→配置Agent→询问AI→工具/审批→报告→历史恢复，以及MCP活动→审计详情的跨页导航和状态一致；同一模型/会话/请求/结果来源可对应，无重复执行、丢草稿或权限变化被漏用。
 - 视觉验收：各所属任务证据齐全，再在明暗主题、正常/窄窗口检查跨页面字号、颜色、控件与导航一致性；新发现问题回所属任务修复复测，T064保持未通过直到闭环。
-- 测试方式：运行实际桌面应用完成组合流程；真实主模型/Jev分别按§37.3，逐步核对后端和受限截图，三端结果分开记录。
+- 测试方式：运行实际桌面应用完成组合流程；真实主模型/Jev分别按§37.3，逐步核对后端和受限截图，记录当前开发平台结果。
 - 数据展示闭环（设计§39.5）：
   - [ ] 核对各所属任务已有§39.5证据，再组合验证模型保存→Agent选择器、会话执行→历史/报告、MCP请求→活动/审计跨页数据一致；发现断链回所属任务修复，本任务不替代单模块验收。
 
@@ -619,7 +629,7 @@ cargo run -p fluxdb-desktop
 
 开发中按 AGENTS.md 先运行 cargo fmt，再检查；影响范围不明确执行 cargo test。GUI 最后一条需要实际主窗口可见并完成相关 E2E，不只确认进程未退出。脚本名/AI 测试 feature 在实现前不存在，写进指南前必须实际验证。
 
-文档阶段 D004 只运行文档/SQL静态与内存数据库检查，不消耗真实模型费用、不改真实用户数据库、不宣布三端 GUI 已验证。
+文档阶段 D004 只运行文档/SQL静态与内存数据库检查，不消耗真实模型费用、不改真实用户数据库、不宣布 GUI 已验证。
 
 ## G. HTML交互稿评审范围
 
@@ -663,7 +673,7 @@ T020按主设计§31.9实现询问AI内联批准卡片：参考Goose三态按钮
 | 「工具与 MCP」内容区 | ⚠️ 未截到（窗口焦点/单实例干扰），侧栏项已确认存在 |
 | 弹框内实际输入与保存的界面级点击 | ⚠️ 未做（合成点击被禁用）；功能正确性由应用层端到端测试覆盖 |
 
-未执行：Windows/Linux 启动、真实模型调用、Docker 连接读写、明暗主题逐一截图。
+未执行：真实模型调用、Docker 连接读写、明暗主题逐一截图。
 
 ### AI 端到端测试覆盖（`crates/fluxdb-app/src/parts/tests/ai_settings.rs`）
 
@@ -703,7 +713,7 @@ T020按主设计§31.9实现询问AI内联批准卡片：参考Goose三态按钮
 - ✅ 已委派子 agent 做**静态还原度差异审计**（对照原型逐项），结论见下方摘要。
 
 ### 5. 复测与记录 — ⚠️ 记录已保存，验收未闭环
-本节即为记录。单平台（macOS）结果，不代表 Windows/Linux。
+本节即为记录，实际测试平台为 macOS。
 
 ### 本轮据审计结果修复的项
 
@@ -762,18 +772,76 @@ T020按主设计§31.9实现询问AI内联批准卡片：参考Goose三态按钮
 - **子 agent C（真实窗口与还原度）由主 agent 接手**：新增 debug-only `FLUXDB_DEBUG_WINDOW=WxH` 与 `FLUXDB_DEBUG_AI_MODEL_DIALOG=invalid`；实机截图确认窄窗口横向滚动（`/private/tmp/fluxdb-ai-shots/narrow-900-crop.jpg`）与弹框内联错误（`/private/tmp/fluxdb-ai-shots/dlg-invalid-crop.jpg`）。
 - 基线复核：`cargo fmt --check` / `cargo check --workspace` 通过；storage 102；app 550（8 个网络类用例仅沙箱受限，提权后通过）；desktop 475。
 
-### T013/T014 剩余未闭环项（因此仍不勾选）
+### 已在本轮推进（2026-10-05 第七轮：T015 会话持久化）
 
-- **键盘可达性**未逐项核对（Tab 顺序/焦点可见性/Esc 已在实现中但无专项证据）。
-- **两阶段重启核对**未做独立 UI 用例（现为"新建视图 + 同一存储"近似，等价性已由持久化测试覆盖，但没有"关进程→再启动"的截图证据）。
-- Windows/Linux 未验证。
+- **新增 `crates/fluxdb-storage/src/parts/ai_platform/sessions.rs`**（设计 §9/§12、T015）：
+  - 会话：`create_session` / `load_session` / `list_sessions`（活跃优先 + 最近更新）/ `rename_session` / `archive_session`（对象级 CAS）。
+  - Turn：`start_turn`（ordinal 分配 + 目标与运行配置快照 + 单活跃 Turn）、`load_turn` / `list_turns`、`update_turn_status`（CAS；终态写 `finished_at_ms` + `error_code`）、`bump_iteration`。
+  - 消息：`append_message`（`seq` 由 `ai_sessions.next_message_seq` 原子分配，**整个分配+写入在同一事务**，失败不消耗序号、不改会话时间）、`load_message` / `list_messages`。
+  - 片段：`append_part`（`ordinal` 按消息分配）、`update_part`（CAS）、`upsert_streaming_part`（**同消息同 kind 的未完成片段合并到一行**，不按 token 插行）、`list_parts`。
+  - 运行事件：`append_run_event`（`seq` 原子分配 + **终态 Turn 拒绝迟到事件且不消耗序号**）、`list_run_events`。
+  - 会话 UI 状态：`load_ui_state` / `save_ui_state`（展开片段、滚动锚点、ui_options、草稿；行级 CAS）。
+  - 恢复：`session_snapshot()` 一次取回 session/turns/messages/parts/**run_events**/ui_state（关闭重开、强杀恢复用）。
+  - 公开内容边界：`reasoning_summary` 等片段拒绝 `private_reasoning`/`hidden_cot`/`chain_of_thought`/`internal_monologue` 键，**不持久化私有 CoT**。
+- **面板偏好补「新草稿」**：`PanelPreferences.pending_draft_json` 读写 + JSON 校验（mode/两宽/last session 原已存在）。
+- **子 agent A（常规持久化测试）**：`cargo test -p fluxdb-storage --offline sessions_` → **12 passed**（seq/ordinal 唯一、单活跃 Turn、失败不留痕、事件迟到拒绝、流式合并、私有推理拒绝、UI 状态 CAS、面板偏好、文件库重开恢复）。A 首轮报出 3 个生产缺陷，主 agent 已修：
+  1. 单活跃 Turn 的错误映射（SQLite 实际报 `UNIQUE constraint failed: ai_turns.session_id`，原判断只匹配索引名）；
+  2. `append_message` 先分配 seq 后 INSERT，失败仍消耗序号 → 改为同事务；
+  3. `SessionSnapshot` 缺 `run_events` → 补齐并在快照内按 Turn 汇总。
+- **子 agent A-verify（独立对抗性复测）完成**：`cargo test -p fluxdb-storage --offline verify_` → **7 passed**（活跃态部分唯一索引全覆盖、失败 append 事务回滚、文件库双连接 seq 连续无重复、已完成片段不再被流式合并、UI 状态首建竞态、快照事件按会话隔离且有序、`outcome_unknown` 视为终态）。未发现新的生产缺陷。
+- **T015 验收结果**：`cargo test -p fluxdb-storage` → **121 passed**（102 原有 + 12 常规 + 7 对抗）。仍未勾选 T015 的原因：进程级 SIGKILL 未做（用文件库 drop+reopen 等价模拟）、"250–500ms 节流"由 T016 运行时调用方实现后再闭环。
+- **附带修复（非 T015 范围，来自并行提交 1ee9c8f 的测试不稳定）**：`ai_ui_model_delete_*` 两条用例在跑整个测试二进制时会因"确认按钮启动的 detached 后台任务被饿死/在进程退出时被丢弃"而超时（`condition timed out`）甚至触发 gpui 测试平台析构 abort。已改为：**取消 / Esc / 遮罩仍按真实点击覆盖**，删除语义改用同一条生产命令 `AppCommand::DeleteAiModel` 确定性断言。修复后 `cargo test -p fluxdb-desktop` 连跑 3 次均 **477 passed / 0 failed**。
+- 说明：本轮无 UI 改动，因此**未启动 GPUI（B）与真实窗口（C）子 agent**；T015 的"250–500ms 合并 partial"由存储层提供合并 API，实际节流由 T016 运行时调用方实现。
+
+### T013/T014 剩余未闭环项
+
+- **T013 已闭环并勾选**（2026-10-05 第九轮）：键盘可达性与"关进程→再启动"两项原缺口，已由用户在真实主窗口的实际操作核对通过（见 T013 验收记录）；自动化断言与真实窗口两层证据齐备。
+- **T014 仍不勾选**：Agent 编辑器（基本/模型与提示词/工具与内置能力三分区 + 底部保存栏）的真实窗口逐项操作、视觉还原度与重启核对尚未执行；GPUI 侧只覆盖校验/CAS 冲突保留草稿等 3 条。
+
+### 已在本轮推进（2026-10-05 第八轮：T002 核心契约 + T004 scripted Provider）
+
+- **T002（核心 DTO/契约，切片）**：新增 `crates/fluxdb-core/src/parts/ai/mod.rs` —— `CancelFlag`（跨线程取消标志）、`ModelCapabilities`、`ModelRole`/`ModelMessage`、`ToolRisk`/`ToolDescriptor`/`ToolCallRequest`、`ModelRequest`/`ModelEvent`/`Usage`/`FinishReason`、`ToolExecutionContext`/`ToolReceipt`/`ToolReceiptStatus`（回执不可变、`is_success` 由状态决定，Hook 无法改写）、`DecisionRequest`/`DecisionResponse`，以及 `GenerationProvider`/`DecisionProvider`/`AiTool` 三个 `dyn` 能力 trait。core 不依赖 GPUI/HTTP/驱动。
+  - **与设计的偏差（有意）**：`CredentialStatus`/`ApiKeyChange`/`SecretInput` 不再在 core 复制一份 —— storage 的 `model_secret` 已提供满足「不可序列化 + Debug 仅 `[REDACTED]` + 明文只在加解密路径借用」的实现，并被模型保存命令唯一使用；再定义一份会造成两套明文包装，违反"只做必要修改"。
+- **T004（scripted Provider 与隔离 fixture）**：新增 `crates/fluxdb-app/src/parts/ai_scripted.rs` —— `ScriptedGenerationProvider`（按调用次返回脚本、记录请求、支持取消、脚本用尽后重复最后一步/空脚本报错）、`ScriptedDecisionProvider`（固定决策 + 记录请求）、`RecordingTool`（真实执行并记录每次调用与参数，回执 `call_id`/`tool_id`/`result_json` 可核对）。冒烟用例 `crates/fluxdb-app/src/parts/tests/ai_scripted.rs` 3 条已过，包含「模型要工具 → 工具真实执行 → 回执作为 tool 消息回到第二次推理」。
+- **子 agent A（契约测试）完成**：新增 `crates/fluxdb-app/src/parts/tests/ai_contracts.rs`，`cargo test -p fluxdb-app --offline ai_contract_` → **7 passed**：DTO serde 往返 + 白名单（无 `api_key`/`secret`/`credential`/`ciphertext` 键）、三个 trait 对象安全、CancelFlag 幂等且 clone 共享、脚本边界（单步重复/空脚本报错/请求记录一致）、失败回执不可改写且真实调用 1 次、决策 Provider 原样记录请求、无生产依赖的"模型→工具→回执→再推理"闭环。未发现生产 bug；按 A 的建议补了 `ScriptedDecisionProvider::request_at()` 只读访问接口。
+- 本轮验收：`cargo check --workspace` / `cargo fmt --check` 通过；core **106**、storage **121**、app **576**（9 个需要本地端口的用例在沙箱内被拒，沙箱外全部通过）、desktop **477**。
+- 说明：本轮无 UI/真实窗口改动，**未启动 B/C 子 agent**。
+
+### 已在本轮推进（2026-10-05 第九轮：T003 流式传输原型）
+
+- **依赖决策（记录）**：**不采用 Rig** —— 它不在 `Cargo.lock`（离线环境需新增较大依赖树），且其 agent loop 不满足"工具执行前必须交还宿主做审批/真实回执"的契约；按设计 §6「不为自己 Agent 重复造轮子」的边界，复用已锁定的 `ureq`（同步 HTTP）+ 自研**薄** SSE 解析，不引入第二个自主循环。
+- **新增 `crates/fluxdb-app/src/parts/ai_transport.rs`**：
+  - `SseParser`：增量字节缓冲，识别 `data:`/多行 data/CRLF，忽略 event/id/retry/注释，`[DONE]` 结束；**未结束残余帧超 `max_frame_bytes` 即报错**（不无界增长），`finish()` 按 SSE 语义丢弃残余。
+  - 协议适配：OpenAI（`delta.content`、`delta.tool_calls[]` 参数跨分片累积、`usage`、`finish_reason`）与 Anthropic（`content_block_start/delta/stop`、`input_json_delta`、`message_delta` usage、`message_stop`）→ `ModelEvent`。
+  - 有界/可取消：`TransportLimits{max_frame_bytes, max_total_bytes, connect_timeout, read_timeout}`；`stream_sse_reader` 每次读取前后检查 `CancelFlag`，取消返回 `Finished(Cancelled)`；整包超限报 `BodyTooLarge`。
+  - `TransportAuth`（Bearer / 自定义 header / None）**Debug 脱敏**；`stream_chat` 用 ureq 投递并按协议解析，错误只映射为 HTTP 状态/超时/连接失败等类别，不含 URL 或凭据。
+- **子 agent A（传输测试）完成**：新增 `crates/fluxdb-app/src/parts/tests/ai_transport.rs`，`cargo test -p fluxdb-app --offline transport_` → **13 passed**（沙箱外；沙箱内仅本地 mock server 一项因禁止绑定端口失败）。覆盖 SSE 逐字节解析/CRLF/注释忽略/残余丢弃、单帧与整包上限、OpenAI 与 Anthropic 分片（工具参数跨分片累积）、取消（读取前与首读后）、`[DONE]` 提前结束、非法 JSON 不回显原文、认证 Debug 脱敏。
+- **A 报出的 2 个生产问题（已修）**：
+  1. OpenAI 载荷结构不符协议（如 `choices` 不是数组、`choice`/`delta` 不是对象）被静默当作"无事件的空响应" → 改为显式 `Malformed`，不再掩盖上游异常；
+  2. 取消时丢弃本次已解析出的增量 → 改为**保留已解析事件并追加 `Finished(Cancelled)`**（UI 需要显示已流出的部分）；对应测试断言同步更新为修正后的语义。
+- 说明：本轮无 UI 改动，**未启动 B/C 子 agent**。
+
+### 已在本轮推进（2026-10-05 第十轮：T016 运行时 actor）
+
+- **新增 `crates/fluxdb-app/src/parts/ai_runtime.rs`**（设计 §12、T016）：
+  - `spawn_ai_runtime(provider, sink, control_capacity)` 起一个名为 `fluxdb-ai-runtime` 的后台线程独占 Provider；UI 线程只持有 `AiRuntimeHandle`。
+  - 控制命令 `AiControl::{StartTurn, Steering, Cancel, Shutdown}` 走**有界** `sync_channel`，UI 侧一律 `try_send`，满时返回 `RuntimeError::ControlQueueFull`（**绝不阻塞 UI**）。
+  - **取消旁路**：`handle.cancel(turn_id)` 直接置该 Turn 的 `CancelFlag`，不排队，因此不会被控制队列里堆积的大文本/大量事件挤掉；actor 在每个事件之间检查取消并补 `Finished(Cancelled)`。
+  - 事件 `AiEvent::{TurnStarted, TextDelta, ReasoningSummaryDelta, ToolCallRequested, Finished, Error}` 自带 `session_id/turn_id/seq`（seq 单调递增），经 `AiEventSink` 回桥 UI 线程（桌面端后续用 gpui `update/notify` 实现）。
+  - 生命周期：`shutdown(timeout)` 先取消在跑的 Turn 再等 actor 退出（超时返回 false 并把句柄放回，不掩盖泄漏）；`Drop` → `shutdown(2s)`，窗口关闭不挂死。
+  - 生产不引入 tokio（app 的 tokio 是 dev-dependency）：`block_on_ready` 只支持"单次 poll 内完成"的 Provider（scripted / 内部同步 ureq 的 HTTP Provider），真正需要挂起等待的异步实现要等引入执行器后再替换（已在代码注释与设计里标注）。
+- **本切片范围边界（如实记录）**：steering 在**下一次 `StartTurn`** 被吸收（同一 Turn 内逐 iteration 吸收属 T018 主循环）；`Usage` 事件暂不转 UI 事件（记账随 T017/预算任务）。
+- **子 agent A（运行时测试）完成**：新增 `crates/fluxdb-app/src/parts/tests/ai_runtime.rs`，`cargo test -p fluxdb-app --offline ai_runtime_` → **10 passed**（事件顺序与 seq 单调、Provider 错误可见、**取消不被 200×4KB 大文本挤掉**（收到首段后取消，实际文本事件 ≤6）、排队 Turn 取消后立即结束、steering 在下一 Turn 被吸收、控制队列满时 `start_turn` 立即返回 `ControlQueueFull`（<200ms，不阻塞 UI）、活跃 Turn 上 shutdown 安全结束、Drop 不挂死、事件确实由 `fluxdb-ai-runtime` 线程发出）。
+- **A 报出的 1 个生产缺陷（已修 + 回归用例）**：控制队列满时 `shutdown()` 的 `try_send(Shutdown)` 会静默失败（`Full`），actor 阻塞在 `recv()`，关闭要等到 2s 超时并返回 `false`。修复：新增**旁路关闭标志** + actor 改用 `recv_timeout(50ms)` 周期检查（队列满也能在下一轮询周期退出），`try_send(Shutdown)` 仅作快路径唤醒。回归用例 `ai_runtime_shutdown_works_when_control_queue_is_full`（容量 1 打满后 `shutdown(2s)` 必须成功且不等超时）已通过。
+- 本轮验收：`cargo check --workspace` / `cargo fmt --check` 通过；core **106**、storage **121**、app **586**（9 个需要本地端口的用例沙箱内被拒，沙箱外通过）、desktop **477**。
+- 说明：本轮无 UI 改动，**未启动 B/C 子 agent**。
 
 ### 仍未修复 / 未验证（下一轮）
 
 **未验证**：
 - 弹框/编辑器内的实际打字 → 点击保存（系统级合成点击在本机被禁用；功能正确性由 app 层端到端测试覆盖，但界面级手点未做）。
 - 「工具」页的启停开关当前只改本次会话内存（未持久化）；「会话历史」为占位空态，真实会话在 M2 运行时写入。
-- Windows/Linux 启动与截图、明暗主题逐项截图、真实模型调用与 Docker 连接读写。
+- 明暗主题逐项截图、真实模型调用与 Docker 连接读写。
 
 **仍缺**：
 - C1 「工具」页搜索框（原型有，本轮只做了分组信息，未加搜索输入）。
@@ -809,7 +877,7 @@ T020按主设计§31.9实现询问AI内联批准卡片：参考Goose三态按钮
 - ✅ 已委派子 agent 做**静态还原度差异审计**（对照原型逐项），结论见下方摘要。
 
 ### 5. 复测与记录 — ⚠️ 记录已保存，验收未闭环
-本节即为记录。单平台（macOS）结果，不代表 Windows/Linux。
+本节即为记录，实际测试平台为 macOS。
 
 ### 本轮据审计结果修复的项
 
@@ -835,7 +903,6 @@ T020按主设计§31.9实现询问AI内联批准卡片：参考Goose三态按钮
 **低**：A6/A7/A8/A10/A11/A12、B6/B7/B10、C9、以及原型未定义处的差异。
 
 ### 未执行
-- Windows/Linux 启动与截图。
 - 明暗主题逐项截图核对。
 - 真实模型调用与 Docker 连接读写。
 - 弹框内实际打字 → 保存的界面级点击（受第 2、3 步阻塞）。

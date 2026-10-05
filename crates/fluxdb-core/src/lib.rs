@@ -33,4 +33,5 @@ include!("parts/er_model.rs");
 include!("parts/er_relationship.rs");
 include!("parts/er_rebind.rs");
 
+include!("parts/ai/mod.rs");
 include!("parts/backup_restore.rs");

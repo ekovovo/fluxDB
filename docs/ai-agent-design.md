@@ -1989,6 +1989,8 @@ CLI 测试不必为了截图输出终端整屏长图。实际界面串行步骤�
 
 每个 UI 任务按以下顺序验收，范围对应本章 E/U 用例；以下是执行要求，不代表测试基础设施已接入或用例已通过。
 
+0. **测试入口（实现现状）**：`NavicatMain` 已由模块级 `navicat_main_new(window, cx, controller, storage, theme_mode)` 构造，生产启动与 `#[gpui::test]` 共用同一装配路径；测试用隔离临时存储与 `VisualTestContext`（`simulate_click` / `simulate_input` / `capture_screenshot`），不通过直接调用处理函数替代交互。
+
 1. **确定基准与场景**：打开 [AI Agent 交互稿](prototype/ai-agent-ui.html)，结合本设计与 [UI 样式规范](ui-style.md)，列出受影响页面、按钮及预期结果。原型只作视觉/交互基准，原型的浏览器测试或 `ai-agent-ui-test-report.json` 不能证明原生应用通过。
 2. **GPUI 交互回归**：先核对锁定的 `gpui-pre` 测试接口，在测试依赖中启用 `test-support`；用 `#[gpui::test]`、`TestAppContext` / `VisualTestContext` 创建被测视图，模拟鼠标点击、输入、快捷键、焦点切换和弹框关闭，断言状态及发出的业务命令。用受控异步响应验证 loading/disabled、成功、空态和错误态；不以直接调用按钮处理函数代替点击。通过 `cargo test -p fluxdb-desktop <测试名过滤器>` 执行，过滤器替换为实际测试名并确认匹配用例非零；进程内测试不替代真实窗口 E2E。
 3. **真实窗口端到端**：按§37准备隔离配置与测试数据，运行 `cargo run -p fluxdb-desktop`，用桌面自动化或人工实际点击入口→输入→提交→检查结果，按§38等待明确状态且设置超时。覆盖受影响的保存/取消、菜单、Esc/遮罩关闭、防穿透、审批/拒绝、停止与重启恢复；涉及写入必须检查真实后端 before/after 和审计，不能仅看成功提示。错误/慢响应通过测试 fixture 或受控服务构造，不改生产行为；真实模型与数据库验证仍遵循本章原有要求。

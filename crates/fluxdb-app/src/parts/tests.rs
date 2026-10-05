@@ -30,4 +30,5 @@ mod tests {
     include!("tests/tree_hover.rs");
     include!("tests/pg_client_tools.rs");
     include!("tests/ai_settings.rs");
+    include!("tests/ai_settings_persistence.rs");
 }

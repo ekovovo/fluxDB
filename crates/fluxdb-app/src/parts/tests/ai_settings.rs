@@ -26,6 +26,7 @@ fn sample_model_input(api_key: Option<&str>) -> AiModelSaveInput {
         provider: "openai".into(),
         model: "main-model".into(),
         endpoint: Some("https://model.example.invalid/v1".into()),
+        endpoint_is_full_url: false,
         enabled: true,
         context_window_tokens: Some(400_000),
         max_output_tokens: Some(32_000),
@@ -269,6 +270,7 @@ fn ai_settings_provider_maps_to_protocol_and_kind_in_database() {
     let (mut controller, dir) = controller_with_ai_storage("provider-map");
     let cases = [
         ("openai", "openai-compatible", "generation"),
+        ("openai-responses", "openai-responses", "generation"),
         ("anthropic", "anthropic-messages", "generation"),
         ("decisions", "system-one", "decision"),
     ];
@@ -449,6 +451,7 @@ fn create_model(
         provider: provider.into(),
         model: format!("{provider}-model"),
         endpoint: None,
+        endpoint_is_full_url: false,
         enabled: true,
         context_window_tokens: Some(8192),
         max_output_tokens: Some(2048),
@@ -534,7 +537,7 @@ fn ai_settings_default_models_round_trip_and_validate_kind() {
 }
 
 #[test]
-fn ai_settings_test_ai_model_missing_key_and_unsupported_without_network() {
+fn ai_settings_test_ai_model_missing_key_without_network() {
     let (mut controller, dir) = controller_with_ai_storage("probe");
 
     // openai + ApiKey 认证但没有密文 → missing_key（不触网）。
@@ -545,6 +548,7 @@ fn ai_settings_test_ai_model_missing_key_and_unsupported_without_network() {
             provider: "openai".into(),
             model: "gpt-4o".into(),
             endpoint: Some("https://example.invalid/v1".into()),
+        endpoint_is_full_url: false,
             enabled: true,
             context_window_tokens: Some(8192),
             max_output_tokens: Some(2048),
@@ -569,7 +573,7 @@ fn ai_settings_test_ai_model_missing_key_and_unsupported_without_network() {
     assert_eq!(id, missing_id);
     assert_eq!(status, "missing_key");
 
-    // decisions / system-one → unsupported（不触网）。
+    // 决策模型同样要求 API Key，不使用聊天协议假探测。
     let decision_id = create_model(&mut controller, "decisions", "决策模型", None);
     let event = controller.dispatch(AppCommand::TestAiModel {
         id: decision_id.clone(),
@@ -578,7 +582,7 @@ fn ai_settings_test_ai_model_missing_key_and_unsupported_without_network() {
         panic!("测试连接应返回 AiModelTested，实际: {event:?}");
     };
     assert_eq!(id, decision_id);
-    assert_eq!(status, "unsupported");
+    assert_eq!(status, "missing_key");
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -591,6 +595,7 @@ fn create_agent(controller: &mut AppController, display_name: &str, system_promp
         description: "描述".into(),
         system_prompt: system_prompt.into(),
         model_profile_id: None,
+        allowed_tools: Vec::new(),
         enabled: true,
         expected_revision: 0,
     })) {
@@ -608,6 +613,7 @@ fn ai_settings_agent_create_round_trip() {
         description: "探索并交付可追溯结果".into(),
         system_prompt: "先确认真实结构再行动。".into(),
         model_profile_id: None,
+        allowed_tools: Vec::new(),
         enabled: true,
         expected_revision: 0,
     }));
@@ -656,6 +662,7 @@ fn ai_settings_agent_edit_updates_prompt_and_revision() {
         description: "新描述".into(),
         system_prompt: "新提示词".into(),
         model_profile_id: None,
+        allowed_tools: Vec::new(),
         enabled: false,
         expected_revision: 1,
     }));
@@ -694,6 +701,7 @@ fn ai_settings_agent_blank_name_rejected() {
         description: "".into(),
         system_prompt: "".into(),
         model_profile_id: None,
+        allowed_tools: Vec::new(),
         enabled: true,
         expected_revision: 0,
     }));
@@ -724,6 +732,7 @@ fn ai_settings_agent_stale_revision_rejected() {
         description: "描述".into(),
         system_prompt: "提示词".into(),
         model_profile_id: None,
+        allowed_tools: Vec::new(),
         enabled: true,
         expected_revision: 99,
     }));
@@ -811,6 +820,7 @@ fn ai_settings_test_ai_model_network_failure_is_persisted() {
         provider: "openai".into(),
         model: "gpt-4o".into(),
         endpoint: Some("http://127.0.0.1:1/v1".into()),
+        endpoint_is_full_url: false,
         enabled: true,
         context_window_tokens: Some(8192),
         max_output_tokens: Some(2048),
@@ -853,3 +863,7 @@ fn ai_settings_test_ai_model_network_failure_is_persisted() {
     assert!(checked.is_some(), "失败也应记录探测时间");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+include!("ai_model_network.rs");
+
+include!("ai_model_delete.rs");

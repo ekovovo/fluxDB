@@ -77,6 +77,7 @@ pub struct ModelEdit {
     pub kind: ModelKind,
     pub model: String,
     pub endpoint: Option<String>,
+    pub endpoint_is_full_url: bool,
     pub enabled: bool,
     pub auth_mode: AuthMode,
     pub context_window_tokens: Option<i64>,
@@ -96,6 +97,7 @@ pub struct ModelProfileView {
     pub kind: ModelKind,
     pub model: String,
     pub endpoint: Option<String>,
+    pub endpoint_is_full_url: bool,
     pub enabled: bool,
     pub auth_mode: AuthMode,
     pub context_window_tokens: Option<i64>,
@@ -188,6 +190,44 @@ pub fn save_model(
     }
 }
 
+/// 删除模型及同一行的加密凭据；引用检查和 CAS 在同一个写事务内完成。
+pub fn delete_model(conn: &Connection, id: &str, expected_revision: i64) -> Result<()> {
+    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)
+        .map_err(sqlite_error)?;
+    let row = load_model_row(&tx, id)?
+        .ok_or_else(|| Error::new(ErrorKind::Internal, "模型不存在，请刷新列表"))?;
+    if row.revision != expected_revision {
+        return Err(Error::new(
+            ErrorKind::Internal,
+            "配置已被其他窗口修改，请重新加载",
+        ));
+    }
+    // 默认主模型目前无外键，必须显式保护；其余引用仍保留数据库 RESTRICT 防线。
+    let referenced: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM ai_runtime_settings WHERE default_model_profile_id=?1 OR default_decision_model_profile_id=?1)
+             OR EXISTS(SELECT 1 FROM ai_agents WHERE default_model_profile_id=?1)
+             OR EXISTS(SELECT 1 FROM ai_agent_model_bindings WHERE model_profile_id=?1)
+             OR EXISTS(SELECT 1 FROM ai_context_checkpoints WHERE model_profile_id=?1)
+             OR EXISTS(SELECT 1 FROM ai_usage_ledger WHERE model_profile_id=?1)",
+        [id], |row| row.get(0)).map_err(sqlite_error)?;
+    if referenced {
+        return Err(Error::new(
+            ErrorKind::Internal,
+            "模型仍被默认设置、Agent 或历史会话引用，请先解除引用；历史会话引用的模型可改为停用",
+        ));
+    }
+    let changed = tx
+        .execute(
+            "DELETE FROM ai_model_profiles WHERE id=?1 AND revision=?2",
+            params![id, expected_revision],
+        )
+        .map_err(sqlite_error)?;
+    if changed != 1 {
+        return Err(Error::new(ErrorKind::Internal, "模型已变化，请刷新后重试"));
+    }
+    tx.commit().map_err(sqlite_error)
+}
+
 fn insert_model(
     conn: &Connection,
     cipher: &Aes256Gcm,
@@ -207,8 +247,8 @@ fn insert_model(
             auth_mode, context_window_tokens, max_output_tokens,
             input_price_micros_per_million, output_price_micros_per_million,
             cached_input_price_micros_per_million, revision, created_at_ms, updated_at_ms,
-            secret_revision, credential_ciphertext, credential_nonce, cipher_version, key_id
-         ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,1,?15,?15,?16,?17,?18,?19,?20)",
+            secret_revision, credential_ciphertext, credential_nonce, cipher_version, key_id, provider_options_json
+         ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,1,?15,?15,?16,?17,?18,?19,?20,?21)",
         params![
             edit.id,
             edit.display_name,
@@ -230,6 +270,7 @@ fn insert_model(
             sealed.as_ref().map(|s| s.nonce.clone()),
             sealed.as_ref().map(|s| s.cipher_version),
             sealed.as_ref().map(|s| s.key_id.clone()),
+            serde_json::json!({"endpoint_is_full_url": edit.endpoint_is_full_url}).to_string(),
         ],
     )
     .map_err(sqlite_error)?;
@@ -271,7 +312,8 @@ fn update_model(
                 input_price_micros_per_million=?12, output_price_micros_per_million=?13,
                 cached_input_price_micros_per_million=?14, secret_revision=?15,
                 credential_ciphertext=?16, credential_nonce=?17, cipher_version=?18, key_id=?19,
-                revision=revision+1, updated_at_ms=?20
+                revision=revision+1, updated_at_ms=?20,
+                provider_options_json=json_set(provider_options_json, '$.endpoint_is_full_url', json(?22))
               WHERE id=?1 AND revision=?21",
             params![
                 edit.id,
@@ -295,6 +337,7 @@ fn update_model(
                 secret.key_id,
                 now_ms,
                 expected,
+                if edit.endpoint_is_full_url { "true" } else { "false" },
             ],
         ),
         None if row.secret_revision != secret_revision => conn.execute(
@@ -304,7 +347,8 @@ fn update_model(
                 input_price_micros_per_million=?12, output_price_micros_per_million=?13,
                 cached_input_price_micros_per_million=?14, secret_revision=?15,
                 credential_ciphertext=NULL, credential_nonce=NULL, cipher_version=NULL, key_id=NULL,
-                revision=revision+1, updated_at_ms=?16
+                revision=revision+1, updated_at_ms=?16,
+                provider_options_json=json_set(provider_options_json, '$.endpoint_is_full_url', json(?18))
               WHERE id=?1 AND revision=?17",
             params![
                 edit.id,
@@ -324,6 +368,7 @@ fn update_model(
                 secret_revision,
                 now_ms,
                 expected,
+                if edit.endpoint_is_full_url { "true" } else { "false" },
             ],
         ),
         None => conn.execute(
@@ -332,7 +377,8 @@ fn update_model(
                 enabled=?8, auth_mode=?9, context_window_tokens=?10, max_output_tokens=?11,
                 input_price_micros_per_million=?12, output_price_micros_per_million=?13,
                 cached_input_price_micros_per_million=?14,
-                revision=revision+1, updated_at_ms=?15
+                revision=revision+1, updated_at_ms=?15,
+                provider_options_json=json_set(provider_options_json, '$.endpoint_is_full_url', json(?17))
               WHERE id=?1 AND revision=?16",
             params![
                 edit.id,
@@ -351,6 +397,7 @@ fn update_model(
                 edit.cached_input_price_micros_per_million,
                 now_ms,
                 expected,
+                if edit.endpoint_is_full_url { "true" } else { "false" },
             ],
         ),
     }
@@ -439,6 +486,7 @@ pub fn load_model(conn: &Connection, id: &str) -> Result<ModelProfileView> {
         i64,
         String,
         Option<i64>,
+        bool,
     );
     let row = conn
         .query_row(
@@ -446,7 +494,8 @@ pub fn load_model(conn: &Connection, id: &str) -> Result<ModelProfileView> {
                     auth_mode, context_window_tokens, max_output_tokens,
                     input_price_micros_per_million, output_price_micros_per_million,
                     cached_input_price_micros_per_million, secret_revision, revision,
-                    credential_ciphertext IS NOT NULL, connection_status, connection_checked_at_ms
+                    credential_ciphertext IS NOT NULL, connection_status, connection_checked_at_ms,
+                    COALESCE(json_extract(provider_options_json, '$.endpoint_is_full_url'), 0)
                FROM ai_model_profiles WHERE id=?1",
             [id],
             |row| -> rusqlite::Result<Row> {
@@ -470,6 +519,7 @@ pub fn load_model(conn: &Connection, id: &str) -> Result<ModelProfileView> {
                     row.get(16)?,
                     row.get(17)?,
                     row.get(18)?,
+                    row.get(19)?,
                 ))
             },
         )
@@ -496,6 +546,7 @@ pub fn load_model(conn: &Connection, id: &str) -> Result<ModelProfileView> {
         has_secret,
         connection_status,
         connection_checked_at_ms,
+        endpoint_is_full_url,
     ) = row;
     let auth = AuthMode::parse(&auth_mode)?;
     Ok(ModelProfileView {
@@ -506,6 +557,7 @@ pub fn load_model(conn: &Connection, id: &str) -> Result<ModelProfileView> {
         kind: ModelKind::parse(&kind)?,
         model,
         endpoint,
+        endpoint_is_full_url,
         enabled: enabled != 0,
         auth_mode: auth,
         context_window_tokens,
@@ -659,6 +711,7 @@ mod tests {
             kind: ModelKind::Generation,
             model: "main-model".into(),
             endpoint: Some("https://model.example.invalid/v1".into()),
+            endpoint_is_full_url: false,
             enabled: true,
             auth_mode: AuthMode::ApiKey,
             context_window_tokens: Some(400_000),

@@ -1541,7 +1541,21 @@ fn set_dock_icon() {
 #[cfg(not(target_os = "macos"))]
 fn set_dock_icon() {}
 
+/// 调试用：从 `FLUXDB_DEBUG_WINDOW=WxH` 解析启动窗口尺寸（仅 debug 构建）。
+fn debug_window_size_override() -> Option<Size<Pixels>> {
+    if !cfg!(debug_assertions) {
+        return None;
+    }
+    let raw = std::env::var("FLUXDB_DEBUG_WINDOW").ok()?;
+    let (w, h) = raw.split_once('x')?;
+    Some(size(px(w.trim().parse().ok()?), px(h.trim().parse().ok()?)))
+}
+
 fn startup_window_bounds(cx: &App) -> Bounds<Pixels> {
+    // 调试用（仅 debug）：`FLUXDB_DEBUG_WINDOW=900x700` 覆写启动尺寸，用于窄窗口还原度核对。
+    if let Some(size_override) = debug_window_size_override() {
+        return Bounds::centered(None, size_override, cx);
+    }
     let desired_size = size(px(2048.), px(1024.));
     let Some(display) = cx.primary_display() else {
         return Bounds::centered(None, desired_size, cx);

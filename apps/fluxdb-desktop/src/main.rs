@@ -196,3 +196,5 @@ include!("main_parts/tray_icon.rs");
 include!("main_parts/app_boot.rs");
 include!("main_parts/app_boot_helpers.rs");
 include!("main_parts/tests.rs");
+#[cfg(test)]
+include!("main_parts/tests_ai_ui.rs");

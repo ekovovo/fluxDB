@@ -51,7 +51,8 @@ fn main() {
             // 首帧后加载 AI 设置列表，避免阻塞开窗；空列表由设置页给出空状态。
             let _ = controller.dispatch(AppCommand::RefreshAiSettings);
             controller.set_er_model_storage(storage.clone());
-            let theme_mode = theme_mode_from_app_theme(saved_settings.theme);
+            let theme_mode = debug_theme_mode_override()
+                .unwrap_or_else(|| theme_mode_from_app_theme(saved_settings.theme));
             let _ = controller.dispatch(AppCommand::SaveSettings(saved_settings));
             apply_registered_theme(&controller.state().settings, theme_mode, cx);
             apply_component_theme_colors(theme_mode, cx);
@@ -86,7 +87,112 @@ fn main() {
                     // Windows/Linux 默认正常关闭。当前只有 macOS 的隐藏/恢复行为经过验证。
                     #[cfg(target_os = "macos")]
                     install_close_to_tray(window, cx);
-                    let view = cx.new(|cx| {
+                    let view = cx.new(|cx| navicat_main_new(window, cx, controller, storage, theme_mode));
+                    // Tab 拦截已迁移到通用 Editor 的键绑定体系，不再需要全局拦截。
+                    // 首帧后异步恢复查询/工作台历史与保存的查询（不阻塞建窗；
+                    // saved_queries 经内部 notify 补显，详见 load_persisted_history_in_background）。
+                    view.update(cx, |this, cx| {
+                        this.load_persisted_history_in_background(cx);
+                        // 调试入口：打开设置页的 AI 分区（仅 debug 构建，用于 UI 截图验证）。
+                        if debug_ai_settings_requested() {
+                            let _ = this.controller.dispatch(AppCommand::OpenSettings);
+                            cx.notify();
+                        }
+                        // 调试入口：直接打开模型编辑弹框（仅 debug 构建）。
+                        if debug_ai_model_dialog_requested() {
+                            let _ = this.controller.dispatch(AppCommand::OpenSettings);
+                        }
+                    });
+                    cx.new(|cx| Root::new(view, window, cx))
+                },
+            )
+            .unwrap();
+            cx.activate(true);
+        });
+}
+
+
+/// 调试用：从环境变量读取要打开的 AI 设置分区。
+///
+/// 仅 debug 构建生效，用于 UI 截图/交互验证；发布构建始终返回编辑器分区。
+/// 例：`FLUXDB_DEBUG_AI_SETTINGS=models cargo run -p fluxdb-desktop`
+fn debug_ai_settings_section() -> SettingsPanelSection {
+    if !cfg!(debug_assertions) {
+        return SettingsPanelSection::Editor;
+    }
+    match std::env::var("FLUXDB_DEBUG_AI_SETTINGS").as_deref() {
+        Ok("models") => SettingsPanelSection::AiModels,
+        Ok("tools") => SettingsPanelSection::AiToolsMcp,
+        Ok("agents") => SettingsPanelSection::AiAgents,
+        Ok("sessions") => SettingsPanelSection::AiSessions,
+        _ => SettingsPanelSection::Editor,
+    }
+}
+
+/// 调试用：从环境变量选择「工具与 MCP」初始页签（仅 debug 构建）。
+///
+/// 例：`FLUXDB_DEBUG_AI_SETTINGS=tools FLUXDB_DEBUG_AI_TAB=plugins cargo run -p fluxdb-desktop`
+fn debug_ai_tools_tab() -> AiToolsTab {
+    if !cfg!(debug_assertions) {
+        return AiToolsTab::Tools;
+    }
+    match std::env::var("FLUXDB_DEBUG_AI_TAB").as_deref() {
+        Ok("mcp") => AiToolsTab::Mcp,
+        Ok("plugins") => AiToolsTab::Plugins,
+        Ok("audit") => AiToolsTab::Audit,
+        _ => AiToolsTab::Tools,
+    }
+}
+
+/// 调试用：是否请求打开 AI 设置分区。
+fn debug_ai_settings_requested() -> bool {
+    cfg!(debug_assertions) && std::env::var("FLUXDB_DEBUG_AI_SETTINGS").is_ok()
+}
+
+/// 调试用：覆写主题（仅 debug 构建），用于明暗主题截图核对。
+///
+/// 例：`FLUXDB_DEBUG_THEME=dark cargo run -p fluxdb-desktop`
+fn debug_theme_mode_override() -> Option<ThemeMode> {
+    if !cfg!(debug_assertions) {
+        return None;
+    }
+    match std::env::var("FLUXDB_DEBUG_THEME").as_deref() {
+        Ok("dark") => Some(ThemeMode::Dark),
+        Ok("light") => Some(ThemeMode::Light),
+        _ => None,
+    }
+}
+
+/// 调试用：是否请求首帧自动测试第一个模型的连接（用于截图核对 Alert/状态标签）。
+fn debug_ai_model_test_requested() -> bool {
+    cfg!(debug_assertions)
+        && std::env::var("FLUXDB_DEBUG_AI_TEST_MODEL").is_ok_and(|v| v == "1")
+}
+
+/// 调试用：是否请求直接打开 Agent 新建草稿。
+fn debug_ai_agent_draft_requested() -> bool {
+    cfg!(debug_assertions)
+        && std::env::var("FLUXDB_DEBUG_AI_AGENT_DRAFT").is_ok_and(|v| v == "1")
+}
+
+/// 调试用：是否请求直接打开模型编辑弹框。
+fn debug_ai_model_dialog_requested() -> bool {
+    cfg!(debug_assertions)
+        && std::env::var("FLUXDB_DEBUG_AI_MODEL_DIALOG")
+            .is_ok_and(|v| v == "1" || v == "edit" || v == "invalid")
+}
+
+/// 构造主视图 `NavicatMain`。
+///
+/// 从 `main()` 里约 3000 行的内联结构体字面量抽出：生产启动与 `#[gpui::test]` 交互测试
+/// 走**同一条**构造路径，测试不能靠给孤立组件塞数据绕过生产装配（AGENTS.md / 设计 §39.5）。
+fn navicat_main_new(
+    window: &mut Window,
+    cx: &mut Context<NavicatMain>,
+    controller: AppController,
+    storage: FileStorage,
+    theme_mode: ThemeMode,
+) -> NavicatMain {
                         let rename_group_input =
                             cx.new(|cx| InputState::new(window, cx).placeholder("分组名称"));
                         let rename_group_subscription = cx.subscribe(
@@ -2963,8 +3069,11 @@ fn main() {
                             _ai_model_filter_subscription: ai_model_filter_subscription,
                             ai_model_filter: String::new(),
                             ai_model_testing_id: None,
+                            ai_model_deleting_id: None,
                             ai_default_model_menu_open: false,
                             ai_default_decision_menu_open: false,
+        ai_settings_loading: false,
+        ai_settings_error: None,
                             ai_tools_tab: debug_ai_tools_tab(),
                             ai_disabled_tools: std::collections::HashSet::new(),
                             ai_agent_editor: None,
@@ -3048,82 +3157,4 @@ fn main() {
                             connection_browser_resize_start: None,
                             table_info_resize_start: None,
                         }
-                    });
-                    // Tab 拦截已迁移到通用 Editor 的键绑定体系，不再需要全局拦截。
-                    // 首帧后异步恢复查询/工作台历史与保存的查询（不阻塞建窗；
-                    // saved_queries 经内部 notify 补显，详见 load_persisted_history_in_background）。
-                    view.update(cx, |this, cx| {
-                        this.load_persisted_history_in_background(cx);
-                        // 调试入口：打开设置页的 AI 分区（仅 debug 构建，用于 UI 截图验证）。
-                        if debug_ai_settings_requested() {
-                            let _ = this.controller.dispatch(AppCommand::OpenSettings);
-                            cx.notify();
-                        }
-                        // 调试入口：直接打开模型编辑弹框（仅 debug 构建）。
-                        if debug_ai_model_dialog_requested() {
-                            let _ = this.controller.dispatch(AppCommand::OpenSettings);
-                        }
-                    });
-                    cx.new(|cx| Root::new(view, window, cx))
-                },
-            )
-            .unwrap();
-            cx.activate(true);
-        });
-}
-
-
-/// 调试用：从环境变量读取要打开的 AI 设置分区。
-///
-/// 仅 debug 构建生效，用于 UI 截图/交互验证；发布构建始终返回编辑器分区。
-/// 例：`FLUXDB_DEBUG_AI_SETTINGS=models cargo run -p fluxdb-desktop`
-fn debug_ai_settings_section() -> SettingsPanelSection {
-    if !cfg!(debug_assertions) {
-        return SettingsPanelSection::Editor;
-    }
-    match std::env::var("FLUXDB_DEBUG_AI_SETTINGS").as_deref() {
-        Ok("models") => SettingsPanelSection::AiModels,
-        Ok("tools") => SettingsPanelSection::AiToolsMcp,
-        Ok("agents") => SettingsPanelSection::AiAgents,
-        Ok("sessions") => SettingsPanelSection::AiSessions,
-        _ => SettingsPanelSection::Editor,
-    }
-}
-
-/// 调试用：从环境变量选择「工具与 MCP」初始页签（仅 debug 构建）。
-///
-/// 例：`FLUXDB_DEBUG_AI_SETTINGS=tools FLUXDB_DEBUG_AI_TAB=plugins cargo run -p fluxdb-desktop`
-fn debug_ai_tools_tab() -> AiToolsTab {
-    if !cfg!(debug_assertions) {
-        return AiToolsTab::Tools;
-    }
-    match std::env::var("FLUXDB_DEBUG_AI_TAB").as_deref() {
-        Ok("mcp") => AiToolsTab::Mcp,
-        Ok("plugins") => AiToolsTab::Plugins,
-        Ok("audit") => AiToolsTab::Audit,
-        _ => AiToolsTab::Tools,
-    }
-}
-
-/// 调试用：是否请求打开 AI 设置分区。
-fn debug_ai_settings_requested() -> bool {
-    cfg!(debug_assertions) && std::env::var("FLUXDB_DEBUG_AI_SETTINGS").is_ok()
-}
-
-/// 调试用：是否请求首帧自动测试第一个模型的连接（用于截图核对 Alert/状态标签）。
-fn debug_ai_model_test_requested() -> bool {
-    cfg!(debug_assertions)
-        && std::env::var("FLUXDB_DEBUG_AI_TEST_MODEL").is_ok_and(|v| v == "1")
-}
-
-/// 调试用：是否请求直接打开 Agent 新建草稿。
-fn debug_ai_agent_draft_requested() -> bool {
-    cfg!(debug_assertions)
-        && std::env::var("FLUXDB_DEBUG_AI_AGENT_DRAFT").is_ok_and(|v| v == "1")
-}
-
-/// 调试用：是否请求直接打开模型编辑弹框。
-fn debug_ai_model_dialog_requested() -> bool {
-    cfg!(debug_assertions)
-        && std::env::var("FLUXDB_DEBUG_AI_MODEL_DIALOG").is_ok_and(|v| v == "1" || v == "edit")
 }

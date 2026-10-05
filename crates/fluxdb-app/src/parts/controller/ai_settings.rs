@@ -86,6 +86,7 @@ pub fn refresh_ai_settings(
             provider: m.provider,
             model: m.model,
             endpoint: m.endpoint,
+            endpoint_is_full_url: m.endpoint_is_full_url,
             kind: match m.kind {
                 fluxdb_storage::ai_platform::models::ModelKind::Generation => "生成".into(),
                 fluxdb_storage::ai_platform::models::ModelKind::Decision => "决策".into(),
@@ -123,6 +124,7 @@ pub fn refresh_ai_settings(
             description: a.description,
             system_prompt: a.system_prompt,
             model_profile_id: a.default_model_profile_id,
+            allowed_tools: a.allowed_tools,
             enabled: a.enabled,
             revision: a.revision,
         })
@@ -214,7 +216,8 @@ pub fn load_panel_preferences(
 /// 选了 `decisions` 即表示 Jev 决策模型（§18 内置可选）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModelProvider {
-    OpenAi,
+    OpenAiChat,
+    OpenAiResponses,
     Anthropic,
     Decisions,
 }
@@ -222,14 +225,16 @@ pub enum ModelProvider {
 /// Provider 稳定标识（落库到 `ai_model_profiles.provider`）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderId {
-    OpenAi,
+    OpenAiChat,
+    OpenAiResponses,
     Anthropic,
     Decisions,
 }
 
 impl ModelProvider {
-    pub const ALL: [ModelProvider; 3] = [
-        ModelProvider::OpenAi,
+    pub const ALL: [ModelProvider; 4] = [
+        ModelProvider::OpenAiChat,
+        ModelProvider::OpenAiResponses,
         ModelProvider::Anthropic,
         ModelProvider::Decisions,
     ];
@@ -237,32 +242,46 @@ impl ModelProvider {
     /// UI 展示名。
     pub fn label(self) -> &'static str {
         match self {
-            ModelProvider::OpenAi => "openai",
-            ModelProvider::Anthropic => "anthropic",
-            ModelProvider::Decisions => "decisions",
+            ModelProvider::OpenAiChat => "OpenAI Chat Completions",
+            ModelProvider::OpenAiResponses => "OpenAI Responses",
+            ModelProvider::Anthropic => "Anthropic Messages",
+            ModelProvider::Decisions => "Decisions",
         }
     }
 
     pub fn id(self) -> ProviderId {
         match self {
-            ModelProvider::OpenAi => ProviderId::OpenAi,
+            ModelProvider::OpenAiChat => ProviderId::OpenAiChat,
+            ModelProvider::OpenAiResponses => ProviderId::OpenAiResponses,
             ModelProvider::Anthropic => ProviderId::Anthropic,
             ModelProvider::Decisions => ProviderId::Decisions,
         }
     }
 
-    /// 解析落库字符串；未知值回退 OpenAI（老数据兼容）。
+    /// 解析落库字符串或 UI 展示名；未知值回退 OpenAI Chat（老数据兼容）。
     pub fn from_stored(value: &str) -> Self {
         match value {
-            "anthropic" => ModelProvider::Anthropic,
-            "decisions" => ModelProvider::Decisions,
-            _ => ModelProvider::OpenAi,
+            "openai-responses" | "OpenAI Responses" => ModelProvider::OpenAiResponses,
+            "anthropic" | "Anthropic Messages" => ModelProvider::Anthropic,
+            "decisions" | "Decisions" => ModelProvider::Decisions,
+            _ => ModelProvider::OpenAiChat,
+        }
+    }
+
+    /// 数据库中的稳定 Provider 标识；UI 改名不能改变历史值语义。
+    pub fn stored_id(self) -> &'static str {
+        match self {
+            ModelProvider::OpenAiChat => "openai",
+            ModelProvider::OpenAiResponses => "openai-responses",
+            ModelProvider::Anthropic => "anthropic",
+            ModelProvider::Decisions => "decisions",
         }
     }
 
     fn api_protocol(self) -> &'static str {
         match self {
-            ModelProvider::OpenAi => "openai-compatible",
+            ModelProvider::OpenAiChat => "openai-compatible",
+            ModelProvider::OpenAiResponses => "openai-responses",
             ModelProvider::Anthropic => "anthropic-messages",
             ModelProvider::Decisions => "system-one",
         }
@@ -280,9 +299,9 @@ pub fn resolve_provider(
     let kind = match p {
         // Jev 决策模型：只做 Choice/Score 分类，不做工具调用。
         ModelProvider::Decisions => fluxdb_storage::ai_platform::models::ModelKind::Decision,
-        ModelProvider::OpenAi | ModelProvider::Anthropic => {
-            fluxdb_storage::ai_platform::models::ModelKind::Generation
-        }
+        ModelProvider::OpenAiChat
+        | ModelProvider::OpenAiResponses
+        | ModelProvider::Anthropic => fluxdb_storage::ai_platform::models::ModelKind::Generation,
     };
     (kind, p.api_protocol())
 }
@@ -333,16 +352,22 @@ pub fn save_ai_model(
         fluxdb_storage::ai_platform::models::ApiKeyChange::Keep
     };
 
+    if let Some(endpoint) = &input.endpoint {
+        ai_endpoint_url(endpoint)?;
+    } else if input.endpoint_is_full_url {
+        return Err(fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, "完整 URL 模式必须填写请求地址"));
+    }
     let provider = ModelProvider::from_stored(&input.provider);
     let (kind, api_protocol) = resolve_provider(input.provider.as_str());
     let edit = fluxdb_storage::ai_platform::models::ModelEdit {
         id: input.id.clone().unwrap_or_else(|| new_entity_id("model")),
         display_name: input.display_name.clone(),
-        provider: provider.label().to_string(),
+        provider: provider.stored_id().to_string(),
         api_protocol: api_protocol.to_string(),
         kind,
         model: input.model.clone(),
         endpoint: input.endpoint.clone(),
+        endpoint_is_full_url: input.endpoint_is_full_url,
         enabled: input.enabled,
         auth_mode,
         context_window_tokens: input.context_window_tokens,
@@ -372,6 +397,7 @@ pub fn save_ai_model(
             existing.provider = saved.provider;
             existing.model = saved.model;
             existing.endpoint = saved.endpoint;
+            existing.endpoint_is_full_url = saved.endpoint_is_full_url;
             // Provider 变化会同时改变模型类型（decisions=决策模型），就地列表必须同步。
             existing.kind = if saved.kind == fluxdb_storage::ai_platform::models::ModelKind::Decision {
                 "决策".into()
@@ -394,6 +420,7 @@ pub fn save_ai_model(
             provider: saved.provider,
             model: saved.model,
             endpoint: saved.endpoint,
+            endpoint_is_full_url: saved.endpoint_is_full_url,
             kind: if saved.kind == fluxdb_storage::ai_platform::models::ModelKind::Decision {
                 "决策".into()
             } else {
@@ -458,10 +485,7 @@ pub fn save_ai_agent(
             default_model_profile_id: input.model_profile_id.clone(),
             system_prompt: input.system_prompt.clone(),
             budget_policy_id: existing.as_ref().and_then(|a| a.budget_policy_id.clone()),
-            allowed_tools: existing
-                .as_ref()
-                .map(|a| a.allowed_tools.clone())
-                .unwrap_or_default(),
+            allowed_tools: input.allowed_tools.clone(),
         };
         match &input.id {
             None => agents::create_agent(conn, now_ms, &edit),
@@ -476,6 +500,7 @@ pub fn save_ai_agent(
         description: saved.description,
         system_prompt: saved.system_prompt,
         model_profile_id: saved.default_model_profile_id,
+        allowed_tools: saved.allowed_tools,
         enabled: saved.enabled,
         revision: saved.revision,
     };
@@ -535,253 +560,4 @@ pub fn save_ai_default_models(
     Ok(saved.revision)
 }
 
-/// 测试模型连接：每个协议发一条最小聊天请求（提示词「你好」），并落库连接状态。
-///
-/// 返回 `(id, status)`，status ∈ `ok` / `missing_key` / `not_required` /
-/// `unsupported` / `failed:<一句话中文原因>`；任何分支都不会把 API Key 写入结果。
-/// 2xx → 落库 `ok`；非 2xx 或网络错误 → 落库 `failed`；
-/// `missing_key`/`not_required`/`unsupported` 不落库（保持 `unknown`）。
-pub fn test_ai_model(
-    _state: &AppState,
-    storage: &fluxdb_storage::FileStorage,
-    id: &str,
-) -> fluxdb_core::Result<(String, String)> {
-    use fluxdb_storage::ai_platform::model_secret::CredentialStatus;
-
-    // 只读模型公开视图与密文材料；密文只在本地解密，不进入事件/日志。
-    let (view, sealed) = with_ai_storage(storage, |conn| {
-        Ok((
-            models::load_model(conn, id)?,
-            models::load_encrypted_secret(conn, id)?,
-        ))
-    })?;
-
-    if view.credential_status == CredentialStatus::Missing {
-        return Ok((id.to_string(), "missing_key".to_string()));
-    }
-    let protocol = view.api_protocol.as_str();
-    if protocol != "openai-compatible" && protocol != "anthropic-messages" {
-        // system-one（Jev 决策）等协议本期不做联网探测。
-        return Ok((id.to_string(), "unsupported".to_string()));
-    }
-    if view.credential_status == CredentialStatus::NotRequired {
-        return Ok((id.to_string(), "not_required".to_string()));
-    }
-    let Some(sealed) = sealed else {
-        return Ok((id.to_string(), "missing_key".to_string()));
-    };
-    let (cipher, _source) = fluxdb_storage::ai_platform::load_ai_cipher(storage.root_dir())
-        .map_err(|e| fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, e.to_string()))?;
-    let key = fluxdb_storage::ai_platform::model_secret::open(&cipher, id, &sealed)
-        .map_err(|e| fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, e.to_string()))?;
-
-    // base_url：优先模型行 endpoint，否则按协议取官方默认。
-    let default_base = match protocol {
-        "anthropic-messages" => "https://api.anthropic.com",
-        _ => "https://api.openai.com",
-    };
-    let base = view
-        .endpoint
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or(default_base)
-        .trim_end_matches('/')
-        .to_string();
-
-    // 最小聊天请求：提示词固定「你好」，只用于连通性验证。
-    let agent = ureq::Agent::config_builder()
-        .http_status_as_error(false)
-        .timeout_global(Some(std::time::Duration::from_secs(10)))
-        .build()
-        .new_agent();
-
-    // ureq 未启用 json feature，这里自行序列化并显式带 Content-Type。
-    let (url, body) = if protocol == "anthropic-messages" {
-        (
-            format!("{base}/v1/messages"),
-            serde_json::json!({
-                "model": view.model,
-                "max_tokens": 8,
-                "messages": [{ "role": "user", "content": "你好" }],
-            }),
-        )
-    } else {
-        (
-            format!("{base}/v1/chat/completions"),
-            serde_json::json!({
-                "model": view.model,
-                "messages": [{ "role": "user", "content": "你好" }],
-                "max_tokens": 8,
-                "stream": false,
-            }),
-        )
-    };
-    let body = serde_json::to_string(&body).map_err(|e| {
-        fluxdb_core::Error::new(
-            fluxdb_core::ErrorKind::Internal,
-            format!("测试请求序列化失败: {e}"),
-        )
-    })?;
-    let request = agent
-        .post(&url)
-        .header("Content-Type", "application/json");
-    let response = if protocol == "anthropic-messages" {
-        request
-            .header("x-api-key", &key)
-            .header("anthropic-version", "2023-06-01")
-            .send(body)
-    } else {
-        request
-            .header("Authorization", &format!("Bearer {key}"))
-            .send(body)
-    };
-
-    match response {
-        Ok(response) => {
-            let status = response.status().as_u16();
-            if (200..300).contains(&status) {
-                write_connection_status(storage, id, "ok")?;
-                Ok((id.to_string(), "ok".to_string()))
-            } else {
-                write_connection_status(storage, id, "failed")?;
-                Ok((id.to_string(), format!("failed:HTTP {status}")))
-            }
-        }
-        // 只映射为固定中文原因，绝不透出底层错误文本（避免任何凭据外泄风险）。
-        Err(error) => {
-            write_connection_status(storage, id, "failed")?;
-            Ok((
-                id.to_string(),
-                format!("failed:{}", ai_net_error_reason(&error)),
-            ))
-        }
-    }
-}
-
-/// 记录一次连接探测结果（运行时元数据，不改配置 revision）。
-fn write_connection_status(
-    storage: &fluxdb_storage::FileStorage,
-    id: &str,
-    status: &str,
-) -> fluxdb_core::Result<()> {
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0);
-    with_ai_storage(storage, |conn| {
-        models::set_connection_status(conn, now_ms, id, status)
-    })
-}
-
-/// 拉取 Provider 的可用模型 ID 列表（设置页「模型 ID」下拉用）。
-///
-/// `provider` 用存储里的 Provider 标识（`openai`/`anthropic`/`decisions`）。
-/// `api_key` 只作为本次请求头使用：不落库、不写日志、不进入任何事件或错误文本。
-pub fn fetch_ai_models(
-    provider: &str,
-    endpoint: Option<&str>,
-    api_key: &str,
-) -> fluxdb_core::Result<Vec<String>> {
-    let provider = ModelProvider::from_stored(provider);
-    let protocol = provider.api_protocol();
-    if protocol == "system-one" {
-        return Err(fluxdb_core::Error::new(
-            fluxdb_core::ErrorKind::Internal,
-            "该 Provider 不支持拉取模型列表，请手工填写模型 ID",
-        ));
-    }
-    let api_key = api_key.trim();
-    if api_key.is_empty() {
-        return Err(fluxdb_core::Error::new(
-            fluxdb_core::ErrorKind::Internal,
-            "请先填写 API Key 再拉取模型列表",
-        ));
-    }
-    let default_base = match protocol {
-        "anthropic-messages" => "https://api.anthropic.com",
-        _ => "https://api.openai.com",
-    };
-    let base = endpoint
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or(default_base);
-    let url = format!("{}/v1/models", base.trim_end_matches('/'));
-
-    let agent = ureq::Agent::config_builder()
-        .http_status_as_error(false)
-        .timeout_global(Some(std::time::Duration::from_secs(8)))
-        .build()
-        .new_agent();
-    let request = agent.get(&url);
-    let request = if protocol == "anthropic-messages" {
-        request
-            .header("x-api-key", api_key)
-            .header("anthropic-version", "2023-06-01")
-    } else {
-        request.header("Authorization", &format!("Bearer {api_key}"))
-    };
-    let mut response = match request.call() {
-        Ok(response) => response,
-        // 只映射为固定中文原因，绝不透出底层错误文本。
-        Err(error) => {
-            return Err(fluxdb_core::Error::new(
-                fluxdb_core::ErrorKind::Internal,
-                ai_net_error_reason(&error),
-            ));
-        }
-    };
-    let status = response.status().as_u16();
-    if !(200..300).contains(&status) {
-        return Err(fluxdb_core::Error::new(
-            fluxdb_core::ErrorKind::Internal,
-            format!("拉取模型列表失败：HTTP {status}"),
-        ));
-    }
-    let body = response
-        .body_mut()
-        .read_to_string()
-        .map_err(|_| fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, "读取响应失败"))?;
-    let parsed: serde_json::Value = serde_json::from_str(&body).map_err(|_| {
-        fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, "响应不是合法 JSON")
-    })?;
-    // OpenAI 兼容与 Anthropic 都用 `{"data":[{"id": "..."}]}`；兼容 `models[].id`。
-    let mut models: Vec<String> = parsed
-        .get("data")
-        .and_then(|v| v.as_array())
-        .or_else(|| parsed.get("models").and_then(|v| v.as_array()))
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(|item| item.get("id").and_then(|id| id.as_str()))
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default();
-    models.sort();
-    models.dedup();
-    if models.is_empty() {
-        return Err(fluxdb_core::Error::new(
-            fluxdb_core::ErrorKind::Internal,
-            "未返回任何模型 ID，请检查 Endpoint 与 API Key",
-        ));
-    }
-    Ok(models)
-}
-
-/// 把 ureq 错误映射为不含敏感信息的中文原因。
-fn ai_net_error_reason(error: &ureq::Error) -> &'static str {
-    match error {
-        ureq::Error::StatusCode(code) => match code {
-            401 | 403 => "鉴权失败",
-            404 => "接口不存在",
-            _ => "服务返回错误",
-        },
-        ureq::Error::Timeout(_) => "连接超时",
-        ureq::Error::HostNotFound => "域名解析失败",
-        ureq::Error::ConnectionFailed => "无法连接服务器",
-        ureq::Error::Io(_) => "网络读写失败",
-        ureq::Error::BadUri(_) => "请求地址无效",
-        _ => "网络请求失败",
-    }
-}
+include!("ai_model_network.rs");

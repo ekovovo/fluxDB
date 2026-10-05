@@ -515,10 +515,12 @@ impl AiModelDialog {
             expected_revision: 0,
             inputs: AiModelDialogInputs::new(window, cx),
             enabled: true,
+            endpoint_is_full_url: false,
             fetching_models: false,
             model_options: Vec::new(),
             model_options_open: false,
             original_api_key: None,
+            validation_error: None,
         }
     }
 }
@@ -563,6 +565,10 @@ struct AiAgentEditorState {
     tab: AiAgentTab,
     selected_model_id: Option<String>,
     model_menu_open: bool,
+    /// 允许的工具白名单（勾选集合）；等于「全部」时保存为空 = 不限制。
+    selected_tools: std::collections::HashSet<String>,
+    /// 校验/保存失败原因（有值时编辑器保留草稿并内联提示）。
+    error: Option<String>,
     inputs: AiAgentEditorInputs,
 }
 
@@ -574,6 +580,7 @@ struct AiModelDialog {
     expected_revision: i64,
     inputs: AiModelDialogInputs,
     enabled: bool,
+    endpoint_is_full_url: bool,
     /// 正在拉取 Provider 模型列表（「获取模型列表」按钮的 loading/disabled）。
     fetching_models: bool,
     /// 拉取到的模型 ID 候选；点击填入「模型 ID」输入框。
@@ -582,6 +589,8 @@ struct AiModelDialog {
     model_options_open: bool,
     /// 编辑态预填的 API Key 明文（仅存活于本次弹框内）：与输入相同表示 Keep。
     original_api_key: Option<String>,
+    /// 弹框内联校验/保存失败原因（有值时保持弹框打开并保留草稿）。
+    validation_error: Option<String>,
 }
 
 struct NewConnectionInputs {

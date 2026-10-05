@@ -3457,6 +3457,31 @@ impl AppController {
                     Err(e) => return AppEvent::AiSettingsError(e.message),
                 }
             }
+            AppCommand::DeleteAiModel { id, expected_revision } => {
+                let result = self.ai_storage().and_then(|storage| {
+                    with_ai_storage(&storage, |conn| models::delete_model(conn, &id, expected_revision))
+                });
+                match result {
+                    Ok(()) => {
+                        self.state.ai_models.retain(|model| model.id != id);
+                        tracing::info!(model_id = %id, "AI 模型已删除");
+                        return AppEvent::AiModelDeleted { id };
+                    }
+                    Err(error) => {
+                        tracing::warn!(model_id = %id, reason = %error.message, "删除 AI 模型失败");
+                        return AppEvent::AiSettingsError(error.message);
+                    }
+                }
+            }
+            AppCommand::CompleteAiModelDelete { id, result } => {
+                match result {
+                    Ok(()) => {
+                        self.state.ai_models.retain(|model| model.id != id);
+                        return AppEvent::AiModelDeleted { id };
+                    }
+                    Err(message) => return AppEvent::AiSettingsError(message),
+                }
+            }
             AppCommand::SaveAiAgent(input) => {
                 let now = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -3584,8 +3609,12 @@ impl AppController {
             AppCommand::FetchAiModels {
                 provider,
                 endpoint,
+                endpoint_is_full_url,
                 api_key,
             } => {
+                if endpoint_is_full_url {
+                    return AppEvent::AiModelsFetchFailed { message: "完整 URL 模式不自动获取模型列表，请手工填写模型 ID".into() };
+                }
                 // 纯网络读取：不触碰 storage，api_key 仅用于本次请求头。
                 match fetch_ai_models(&provider, endpoint.as_deref(), &api_key) {
                     Ok(models) => return AppEvent::AiModelsFetched { models },

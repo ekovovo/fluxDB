@@ -2142,6 +2142,7 @@ dependencies = [
  "tokio",
  "tracing",
  "ureq",
+ "url",
  "uuid",
  "zip",
 ]

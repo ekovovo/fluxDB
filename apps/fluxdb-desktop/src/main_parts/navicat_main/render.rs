@@ -15,7 +15,13 @@ impl Render for NavicatMain {
                         .map(|m| m.id.clone())
                 })
                 .flatten();
+            // `FLUXDB_DEBUG_AI_MODEL_DIALOG=invalid` 额外预置内联校验错误，便于截图核对错误态。
+            let show_invalid = cfg!(debug_assertions)
+                && std::env::var("FLUXDB_DEBUG_AI_MODEL_DIALOG").is_ok_and(|v| v == "invalid");
             self.open_ai_model_dialog(first_id, window, cx);
+            if show_invalid {
+                self.set_ai_model_dialog_error("请填写显示名称与模型标识", cx);
+            }
         }
         // 调试入口：首帧后自动对第一个模型跑一次测试连接（截图核对 Alert 与状态标签）。
         if self.ai_model_test_debug_pending {

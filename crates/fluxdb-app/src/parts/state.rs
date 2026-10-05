@@ -11,6 +11,8 @@ pub struct AiModelItem {
     pub model: String,
     /// 自定义 API base（未配置时为 None，运行期按 Provider 默认值补全）。
     pub endpoint: Option<String>,
+    /// 完整请求地址，不追加协议路由。
+    pub endpoint_is_full_url: bool,
     pub kind: String,
     pub enabled: bool,
     pub context_window_tokens: Option<i64>,
@@ -40,6 +42,8 @@ pub struct AiModelSaveInput {
     pub provider: String,
     pub model: String,
     pub endpoint: Option<String>,
+    /// 完整请求地址，不追加协议路由。
+    pub endpoint_is_full_url: bool,
     pub enabled: bool,
     pub context_window_tokens: Option<i64>,
     pub max_output_tokens: Option<i64>,
@@ -77,6 +81,7 @@ impl PartialEq for AiModelSaveInput {
             && self.provider == other.provider
             && self.model == other.model
             && self.endpoint == other.endpoint
+            && self.endpoint_is_full_url == other.endpoint_is_full_url
             && self.enabled == other.enabled
             && self.context_window_tokens == other.context_window_tokens
             && self.max_output_tokens == other.max_output_tokens
@@ -98,6 +103,8 @@ pub struct AiAgentItem {
     pub system_prompt: String,
     /// 默认生成模型档案 id（`ai_agents.default_model_profile_id`）。
     pub model_profile_id: Option<String>,
+    /// 允许的工具 ID 白名单；空表示不限制（内核默认全集）。
+    pub allowed_tools: Vec<String>,
     pub enabled: bool,
     pub revision: i64,
 }
@@ -113,6 +120,8 @@ pub struct AiAgentSaveInput {
     pub description: String,
     pub system_prompt: String,
     pub model_profile_id: Option<String>,
+    /// 允许的工具 ID 白名单；空 = 不限制。
+    pub allowed_tools: Vec<String>,
     pub enabled: bool,
     /// 新建忽略；编辑必须带上打开时的 revision 做 CAS。
     pub expected_revision: i64,
@@ -2496,6 +2505,10 @@ pub enum AppCommand {
     RefreshAiSettings,
     /// 新建或保存模型档案（含 Key 的 Keep/Set/Clear）。
     SaveAiModel(AiModelSaveInput),
+    /// 删除无引用的模型（对象级 CAS，UI 在后台执行）。
+    DeleteAiModel { id: String, expected_revision: i64 },
+    /// 将后台删除结果合并到主窗口状态，不覆盖其他页面的并发变化。
+    CompleteAiModelDelete { id: String, result: std::result::Result<(), String> },
     /// 新建或保存 Agent 配置（提示词直接随 Agent 保存）。
     SaveAiAgent(AiAgentSaveInput),
     /// 切换模型启用状态（对象级 CAS）。
@@ -2516,7 +2529,7 @@ pub enum AppCommand {
         default_decision_model_id: Option<String>,
         expected_revision: i64,
     },
-    /// 测试模型连接（按协议探测 `/v1/models`，只读、不落库）。
+    /// 测试模型连接（真实协议请求并记录结果，不改配置 revision）。
     TestAiModel {
         id: String,
     },
@@ -2526,6 +2539,7 @@ pub enum AppCommand {
     FetchAiModels {
         provider: String,
         endpoint: Option<String>,
+        endpoint_is_full_url: bool,
         api_key: String,
     },
     SetTabDirty { tab_id: TabId, dirty: bool },
@@ -2544,6 +2558,7 @@ pub enum AppEvent {
     AiSettingsError(String),
     /// 模型已保存（id、新 revision）。
     AiModelSaved { id: String, revision: i64 },
+    AiModelDeleted { id: String },
     /// Agent 已保存（id、新 revision）。
     AiAgentSaved { id: String, revision: i64 },
     /// 默认模型选择已保存（运行设置新 revision）。

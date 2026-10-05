@@ -739,7 +739,34 @@ T020按主设计§31.9实现询问AI内联批准卡片：参考Goose三态按钮
 - **候选下拉重做**：`获取模型列表` 结果由裸列表改为候选卡片——顶部搜索框、按模型 ID 前缀（`inclusionai/...`）分组、悬停高亮、限高滚动、圆角+描边+阴影；放弹框滚动容器内联展开而不是绝对浮层（绝对定位会被滚动视口裁切）。截图 `dlg-options-crop.jpg`。
 - **连接状态常驻并落库**：`ai_model_profiles` 增 `connection_status`（`unknown`/`ok`/`failed`，CHECK 约束）与 `connection_checked_at_ms`；老库走 `ensure_model_columns` 幂等补列。行内状态标签：连接成功(绿)/连接失败(红)/未连接(灰)。截图 `m-test-crop.jpg`。
 - **失败改走 Alert**：列表行不再显示「失败：HTTP 404」等文本，只保留状态标签；失败原因用红色 Alert 提示（复用主窗口 `show_message(AppMessageKind::Error)` 的 Alert 浮层），约 3s 后自动消失。截图 `toast-region.jpg`。
-- **测试连接 = 真实聊天请求**：不再探测 `/v1/models`，改为发一条最小对话请求，提示词固定「你好」——openai-compatible `POST /v1/chat/completions`（Bearer）；anthropic-messages `POST /v1/messages`（x-api-key + anthropic-version）；system-one 仍 `unsupported` 且不联网。2xx 落库 `ok`，非 2xx / 网络错误落库 `failed` 并返回 `failed:<脱敏原因>`。
+- **测试连接 = 真实聊天请求**：不再探测 `/v1/models`，改为发一条最小对话请求，提示词固定「你好」——openai-compatible `POST /v1/chat/completions`（Bearer）；openai-responses `POST /v1/responses`（Bearer，`input`/`max_output_tokens`）；anthropic-messages `POST /v1/messages`（x-api-key + anthropic-version）；system-one 仍 `unsupported` 且不联网。2xx 落库 `ok`，非 2xx / 网络错误落库 `failed` 并返回 `failed:<脱敏原因>`。
+
+### 已在本轮推进（2026-10-05 第五轮：GPUI 测试入口 + 错误态）
+
+- **解锁 GPUI 交互测试（T013/T014 的前置阻塞）**：把 `NavicatMain` 的构造从 `main()` 里约 3000 行的内联结构体字面量抽成模块级 `navicat_main_new(window, cx, controller, storage, theme_mode) -> NavicatMain`。生产启动与 `#[gpui::test]` 走**同一条装配路径**（AGENTS.md：不得给孤立组件塞数据绕过生产链路）。净行为不变；`cargo check`/`cargo test -p fluxdb-desktop` 通过。
+- **GPUI 测试骨架**：新增 `apps/fluxdb-desktop/src/main_parts/tests_ai_ui.rs`（已注册到 `main.rs`），fixture 用隔离临时目录；已通过 2 条：
+  - `ai_models_render_snapshot_carries_saved_model`：生产命令写入 → 正常入口打开设置 → `render_state_snapshot` 必须带上该模型（正是"渲染快照被硬编码空集合覆盖"的回归守卫）。
+  - `clicking_new_model_button_opens_dialog`：`simulate_click` 驱动真实控件。
+- **列表 loading / 错误态**：新增 `reload_ai_settings`（后台刷新 + 渲染期可见 loading），模型页与工具页刷新按钮改走它；`ai_settings_error` 渲染为红色错误块 + 「重试」，**不再把加载失败伪装成空库**（设计 §39.5）。
+- **子 agent A（业务与持久化测试）完成**：新增 `crates/fluxdb-app/src/parts/tests/ai_settings_persistence.rs`，8 条用例（Keep/Set/Clear 逐字节密文与 `secret_revision`、过期 CAS 不改写、失败保留原值、默认模型非法 kind/过期、插件启停与内核强制项、Agent 行级隔离、§39.5 后端闭环且公开视图无密文、缺失实体不产生幽灵行）。`cargo test -p fluxdb-app ai_settings_ --offline` → 29 passed；`cargo test -p fluxdb-storage` → 102 passed。未发现生产 bug。
+- **子 agent B（GPUI 交互与数据绑定测试）完成**：`cargo test -p fluxdb-desktop --offline ai_ui_` → **8 passed**。覆盖：有数据渲染快照（含与 SQLite 行一致）、搜索过滤+清空恢复、新建模型端到端（点击/输入/保存 → AppState + SQLite 恰好一行）、编辑同行更新不重复、行内启停落库、默认主模型选择落 `ai_runtime_settings`、Agent A/B 切换提示词不串、未注入存储在点击刷新后进入错误态而非空态。受限：GPUI offscreen 测试平台未配置 HeadlessRenderer，`render_to_image` 不可用，故像素级证据由真实窗口截图补充。
+- **T014 按 Agent 绑定工具**：`AiAgentItem`/`AiAgentSaveInput` 增 `allowed_tools`（空 = 不限制），Agent「工具与内置能力」分区改为 13 个工具开关；全选保存空列表、部分选中保存白名单。storage/app/UI 三层打通，新增用例 `ai_settings_agent_allowed_tools_round_trip_and_narrowing`（`cargo test -p fluxdb-app ai_settings` → 30 passed）。
+- **子 agent C（真实窗口 E2E 与还原度）由主 agent 接手**（子 agent 无桌面操作能力，符合分工约束）：实机截图确认 Agent 工具绑定分区（13 开关 + 读写风险标签）与**暗色主题**大模型页（深色底、状态标签、刷新按钮）。新增 debug-only `FLUXDB_DEBUG_THEME` / `FLUXDB_DEBUG_AI_AGENT_TAB` 截图入口（仅 `cfg!(debug_assertions)`）。
+
+### 已在本轮推进（2026-10-05 第六轮：T013/T014 验收缺口闭环）
+
+- **弹框内联校验 + 失败保留草稿（T013「失败保留输入」）**：`AiModelDialog.validation_error`；校验失败与保存失败（含 CAS 冲突）都不再关闭弹框，改为弹框内红色错误行，已填内容保留。此前是"先关框再提交"，失败会丢草稿——已改为**先提交、成功才关框**。
+- **Agent 编辑器同理（T014「CAS 冲突可见 / 失败保留草稿」）**：`AiAgentEditorState.error` 内联红条；CAS 冲突时编辑器保持打开、提示词等草稿不丢。
+- **窄窗口还原度**：真机 900×700 截图发现模型表把「模型」列压成竖排、启用开关被裁掉；已给模型表（min 880px）与工具表（min 760px）加**横向滚动**，窄窗口下不再压扁/裁切。
+- **子 agent B（GPUI 交互测试）完成**：`cargo test -p fluxdb-desktop --offline ai_ui_` → **16 passed**。本轮新增 6 条：弹框内联校验保留草稿、弹框 CAS 冲突保留草稿、编辑态掩码 Key 预填且公开状态无明文、Agent 校验保留草稿、Agent CAS 冲突保留提示词、900×700/760×640 窄窗口不 panic 且快照仍有数据。
+- **子 agent C（真实窗口与还原度）由主 agent 接手**：新增 debug-only `FLUXDB_DEBUG_WINDOW=WxH` 与 `FLUXDB_DEBUG_AI_MODEL_DIALOG=invalid`；实机截图确认窄窗口横向滚动（`/private/tmp/fluxdb-ai-shots/narrow-900-crop.jpg`）与弹框内联错误（`/private/tmp/fluxdb-ai-shots/dlg-invalid-crop.jpg`）。
+- 基线复核：`cargo fmt --check` / `cargo check --workspace` 通过；storage 102；app 550（8 个网络类用例仅沙箱受限，提权后通过）；desktop 475。
+
+### T013/T014 剩余未闭环项（因此仍不勾选）
+
+- **键盘可达性**未逐项核对（Tab 顺序/焦点可见性/Esc 已在实现中但无专项证据）。
+- **两阶段重启核对**未做独立 UI 用例（现为"新建视图 + 同一存储"近似，等价性已由持久化测试覆盖，但没有"关进程→再启动"的截图证据）。
+- Windows/Linux 未验证。
 
 ### 仍未修复 / 未验证（下一轮）
 

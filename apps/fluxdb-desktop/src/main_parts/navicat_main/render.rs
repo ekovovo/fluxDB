@@ -35,6 +35,7 @@ impl Render for NavicatMain {
             self.ai_agent_editor_debug_pending = false;
             self.open_ai_agent_editor(None, window, cx);
         }
+        if self.ai_chat.debug_open_pending {self.ai_chat.debug_open_pending=false;self.open_ai_chat(window,cx);}
         let width = window.viewport_size().width;
         let compact = width < px(760.);
         let app_state = self.controller.state();
@@ -197,7 +198,7 @@ impl Render for NavicatMain {
                 }),
             )
             .child(topbar(&state, self.show_connection_browser, window, colors, cx))
-            .child(
+            .child(ai_chat_workspace(
                 div()
                     .flex()
                     .flex_1()
@@ -245,8 +246,8 @@ impl Render for NavicatMain {
                                     cx,
                                 ))
                             }),
-                    ),
-            )
+                    )
+                .into_any_element(), self, window, colors, cx))
             .when(show_status_bar, |this| {
                 this.child(statusbar(
                     &state,
@@ -720,6 +721,7 @@ impl Render for NavicatMain {
 
 fn render_state_snapshot(state: &AppState) -> AppState {
     AppState {
+        ai_conversation:state.ai_conversation.clone(),
         ai_models: state.ai_models.clone(),
         ai_agents: state.ai_agents.clone(),
         ai_plugin_instances: state.ai_plugin_instances.clone(),

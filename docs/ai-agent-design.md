@@ -2812,3 +2812,11 @@ append 路径：`create_session/start_turn/append_message_header/append_message_
 ### 42.22 实现与UI稿对照
 
 实现顺序按 `docs/ai-agent-tasks.md`，每完成一个 UI 相关任务（T013/T014/T028/T040/T064等）必须打开 `docs/prototype/ai-agent-ui.html` 对照布局、字号、状态与空/错/loading态；原生控件仍遵守仓库 UI 约定（gpui-component 0.6.0、UiColors、AppIcon、docs/ui-style.md），交互稿只是视觉与交互基准，不引入其HTML/CSS/JS到生产代码。 具体执行按§39.3：GPUI模拟交互回归、真实窗口端到端操作、系统截图还原度验收三层分别记录结果；截图处理遵循§38，不以原型测试报告或编译成功代替原生UI验收。
+
+
+### T028 实现状态补记（2026-10-06）
+
+- 本轮原生面板入口启用，生产路径落点 `main_parts/ai`、app `ai_conversation`、storage `ai_platform/conversation`；单一Input Entity/内容树在抽屉与内嵌间迁移，复用0.6.0 `h_resizable/resizable_panel`及尺寸范围。§31.4的比例规则仍为唯一布局规则。
+- 会话关闭不取消；实际发送通过事务生成Session/Turn/消息，普通打开/新建草稿不生成空会话；既有历史经数据库→AppState→生产render_state_snapshot加载。实时回复复用原SSE解析器的新callback入口，不等待整个Vec返回才显示；checkpoint每300ms、终态必保存。
+- 正式发送现阶段仅单轮解释/问答（30s、512KiB响应、1024输出Token、64KiB输入保护），不执行未审计工具；这不是完整主循环/审批/数据库工具闭环，金额预算还由T030完成。未配置Jev无需等待。
+- 工具/审批/@/附件/报告的依赖不能用模拟按钮冒充可用；T028尚未达完整验收、不勾选。实际场景/命令/证据/未验证项见任务清单引用的T028验收记录。

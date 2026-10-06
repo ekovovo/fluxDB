@@ -15,6 +15,9 @@ fn main() {
             std::process::exit(1);
         }
     };
+    let storage = if cfg!(debug_assertions) {
+        std::env::var_os("FLUXDB_AI_TEST_ROOT").map(|p|FileStorage::new(std::path::PathBuf::from(p))).unwrap_or(storage)
+    } else {storage};
     let saved_settings = storage.load_settings().unwrap_or_default();
     // 最先初始化日志系统；guard 持有到 main 结束，保证日志 worker 线程存活。
     let _log_guard = init_logging(saved_settings.log_level, &saved_settings.log_path);
@@ -2426,6 +2429,7 @@ fn navicat_main_new(
                             er_minimap_rect: BTreeMap::new(),
                         }));
                         NavicatMain {
+        ai_chat: AiChatUi::new(window,cx),
                             focus_handle: cx.focus_handle(),
                             controller,
                             storage,

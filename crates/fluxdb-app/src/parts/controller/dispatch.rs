@@ -20,6 +20,7 @@ impl AppController {
         }
 
         match command {
+            AppCommand::AiConversation(command) => return self.dispatch_ai_conversation(command),
             command @ (AppCommand::PrepareBackup { .. } | AppCommand::RunBackup(_) | AppCommand::PrepareRestore(_) | AppCommand::ProbeRestore(_) | AppCommand::RunRestore { .. }) => {
                 self.dispatch_database_task(command, &AtomicBool::new(false), &mut |_| {})
             }

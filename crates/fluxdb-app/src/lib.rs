@@ -54,6 +54,7 @@ use sqlparser::{
 };
 
 // First-pass source split: included files remain in crate-root scope while module boundaries are refined.
+include!("parts/ai_conversation_state.rs");
 include!("parts/state.rs");
 include!("parts/create_table_model.rs");
 include!("parts/create_table_state.rs");
@@ -105,3 +106,5 @@ include!("parts/ai_permission.rs");
 include!("parts/ai_context.rs");
 include!("parts/ai_scripted.rs");
 include!("parts/backup_restore.rs");
+
+include!("parts/ai_conversation.rs");

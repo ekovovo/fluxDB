@@ -150,8 +150,8 @@ fn topbar(
                 }),
             ),
         )
-        // AI 能力尚未接入，先置灰占位；tooltip 说明原因，避免看起来像坏掉的按钮。
-        .child(topbar_icon_button(AppIcon::Bot, "询问 AI（暂未开放）", false, colors))
+        // 全局入口：关闭/重新打开不会重放任务。
+        .child(Button::new("ask-ai").debug_selector(||"ask-ai".into()).small().ghost().cursor_pointer().child(app_icon(AppIcon::Bot,16.,colors.muted)).tooltip("询问 AI").on_click(cx.listener(|this,_,window,cx|this.open_ai_chat(window,cx))))
         .child(topbar_icon_button(AppIcon::CalendarClock, "历史", true, colors).on_mouse_down(
             MouseButton::Left,
             cx.listener(|this, _, window, cx| {

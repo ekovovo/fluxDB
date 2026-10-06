@@ -976,3 +976,14 @@ T020按主设计§31.9实现询问AI内联批准卡片：参考Goose三态按钮
 - 明暗主题逐项截图核对。
 - 真实模型调用与 Docker 连接读写。
 - 弹框内实际打字 → 保存的界面级点击（受第 2、3 步阻塞）。
+
+
+## T028 本轮实施与验收（2026-10-06，仍未完成）
+
+- 范围：面板骨架、会话生产加载/保存、抽屉与内嵌/原生ResizablePanelGroup、关闭/新建/历史/折叠/草稿、live SSE到生产状态回桥；不冒充工具/审批/附件/报告已接通。
+- 先机械拆分 `state.rs` 内的 AppCommand/AppEvent 到 `state_commands.rs`/`state_events.rs`，保留include作用域；UI新增 `main_parts/ai/{state,actions,panel,tests}.rs`，app新增 `ai_conversation{,_state}.rs`，storage新增 `ai_platform/conversation.rs`，使用既有AI真表，不新增kv blob。
+- 首次send事务包含Session/Turn/用户消息/parts/上次指针与草稿清空；不会每次新建/打开创建空历史；100条消息加载上限保留旧历史。stream同message/parts稳定身份，300ms保存checkpoint、60msUI消费，终态强制flush，迟到Turn事件拒绝。
+- A（存储）首轮发现终态空内容没有收尾旧parts，主修复并复测；storage16通过、app集成10通过。
+- B（GPUI）正常生产构造/加载→AppState→`render_state_snapshot`→实际控件，首轮11通过，补发送/停止后日志13通过；不把offscreen截图受阻视为截图通过。
+- 主/C真实窗口验收与各项证据见 [T028验收记录](testing/ai-agent/t028-2026-10-06.md)。本轮实际GUI使用隔离离线fixture，不访问生产凭据、不消耗模型费用。
+- **T028仍为[ ]**：T020审批→执行、T022 @/附件、T027结果分页、T040报告及完整真实模型门槛未接；不能以基础面板/编译/数据库成功降低门槛或勾选。

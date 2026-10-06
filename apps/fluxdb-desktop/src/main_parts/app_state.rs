@@ -630,6 +630,7 @@ struct ErCanvasShared {
 }
 
 struct NavicatMain {
+    ai_chat: AiChatUi,
     focus_handle: FocusHandle,
     controller: AppController,
     storage: FileStorage,

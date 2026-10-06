@@ -5,6 +5,7 @@
 
 pub mod agents;
 pub mod audits;
+pub mod conversation;
 pub mod mcp;
 pub mod model_secret;
 pub mod models;

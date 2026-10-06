@@ -193,6 +193,11 @@ include!("main_parts/single_instance.rs");
 // Linux 首版不启用系统托盘（tray-icon 在 Linux 会无条件链接 GTK），托盘实现仅限 macOS/Windows。
 #[cfg(not(target_os = "linux"))]
 include!("main_parts/tray_icon.rs");
+include!("main_parts/ai/state.rs");
+include!("main_parts/ai/actions.rs");
+include!("main_parts/ai/panel.rs");
+#[cfg(test)]
+include!("main_parts/ai/tests.rs");
 include!("main_parts/app_boot.rs");
 include!("main_parts/app_boot_helpers.rs");
 include!("main_parts/tests.rs");

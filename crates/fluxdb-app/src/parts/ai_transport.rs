@@ -168,10 +168,17 @@ fn frame_data_payload(frame: &str) -> Option<String> {
 ///
 /// 大多数测试传 `std::io::Cursor`；生产调用方传 ureq 的响应体 reader。
 pub fn stream_sse_reader<R: std::io::Read>(
+    reader: &mut R, limits: TransportLimits, protocol: ChatProtocol, cancel: &fluxdb_core::CancelFlag,
+) -> Result<Vec<fluxdb_core::ModelEvent>, TransportError> {
+    stream_sse_reader_emit(reader,limits,protocol,cancel,&mut |_| {})
+}
+
+pub fn stream_sse_reader_emit<R: std::io::Read>(
     reader: &mut R,
     limits: TransportLimits,
     protocol: ChatProtocol,
     cancel: &fluxdb_core::CancelFlag,
+    emit: &mut dyn FnMut(&fluxdb_core::ModelEvent),
 ) -> Result<Vec<fluxdb_core::ModelEvent>, TransportError> {
     let mut parser = SseParser::new(limits.max_frame_bytes);
     let mut state = StreamState::default();
@@ -181,6 +188,7 @@ pub fn stream_sse_reader<R: std::io::Read>(
     loop {
         if cancel.is_cancelled() {
             // 保留取消前已经解析出的内容（UI 需要显示已流出的部分），再补一个取消结束事件。
+            emit(&fluxdb_core::ModelEvent::Finished(fluxdb_core::FinishReason::Cancelled));
             events.push(fluxdb_core::ModelEvent::Finished(
                 fluxdb_core::FinishReason::Cancelled,
             ));
@@ -204,6 +212,7 @@ pub fn stream_sse_reader<R: std::io::Read>(
                 return Ok(events);
             }
             let parsed = parse_sse_payload(protocol, &payload, &mut state)?;
+            for event in &parsed { emit(event); }
             events.extend(parsed);
         }
     }
@@ -461,6 +470,13 @@ impl fmt::Debug for TransportAuth {
 ///
 /// `body_json` 由调用方按协议构造；本函数只负责投递、按协议解析 SSvE、施加 deadline 与大小上限。
 pub fn stream_chat(
+    limits: TransportLimits, protocol: ChatProtocol, url: &str, auth: &TransportAuth, body_json: &str, extra_headers: &[(&str,&str)], cancel:&fluxdb_core::CancelFlag,
+) -> Result<Vec<fluxdb_core::ModelEvent>,TransportError> {
+    stream_chat_emit(limits,protocol,url,auth,body_json,extra_headers,cancel,&mut |_| {})
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn stream_chat_emit(
     limits: TransportLimits,
     protocol: ChatProtocol,
     url: &str,
@@ -468,6 +484,7 @@ pub fn stream_chat(
     body_json: &str,
     extra_headers: &[(&str, &str)],
     cancel: &fluxdb_core::CancelFlag,
+    emit: &mut dyn FnMut(&fluxdb_core::ModelEvent),
 ) -> Result<Vec<fluxdb_core::ModelEvent>, TransportError> {
     if cancel.is_cancelled() {
         return Ok(vec![fluxdb_core::ModelEvent::Finished(fluxdb_core::FinishReason::Cancelled)]);
@@ -501,7 +518,7 @@ pub fn stream_chat(
         return Err(TransportError::HttpStatus(status));
     }
     let mut reader = response.body_mut().as_reader();
-    stream_sse_reader(&mut reader, limits, protocol, cancel)
+    stream_sse_reader_emit(&mut reader, limits, protocol, cancel, emit)
 }
 
 /// 只映射错误类别，不带底层文本（避免 URL/凭据细节外泄）。

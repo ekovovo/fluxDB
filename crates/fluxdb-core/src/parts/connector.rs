@@ -225,6 +225,18 @@ pub trait Connector {
     }
     fn apply_changes(&self, changes: &DataChangeSet) -> Result<AppliedChangeOutcome>;
     fn execute(&self, request: &QueryRequest) -> Result<QueryExecutionResult>;
+    /// 参数化执行：**必须**由驱动真实 bind（如 MySQL/SQLite 的 `?`、PostgreSQL 的 `$n`）。
+    ///
+    /// 默认明确拒绝：不支持绑定的连接器绝不能把参数拼进 SQL（字符串插值＝注入面）。
+    fn execute_parameterized(
+        &self,
+        _request: &ParameterizedQueryRequest,
+    ) -> Result<QueryExecutionResult> {
+        Err(Error::new(
+            ErrorKind::Unsupported,
+            "该连接暂不支持参数绑定；请改用内联字面量",
+        ))
+    }
     fn execute_command_workbench(
         &self,
         request: &CommandWorkbenchRequest,

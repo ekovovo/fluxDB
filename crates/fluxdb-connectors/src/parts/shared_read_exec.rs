@@ -136,6 +136,120 @@ async fn mysql_send_kill_query(url: &str, conn_id: u64) -> fluxdb_core::Result<(
     killed.map(|_| ())
 }
 
+/// 参数化单语句执行（MySQL）：**必须**预编译 + bind，绝不做字符串插值。
+///
+/// 只接受单条语句（多语句会破坏"参数属于哪条语句"的绑定语义，直接拒绝）。
+pub(crate) fn mysql_execute_parameterized(
+    config: &ConnectionConfig,
+    request: &QueryRequest,
+    parameters: &[fluxdb_core::SqlParameter],
+) -> fluxdb_core::Result<QueryExecutionResult> {
+    let statement = request.text.trim().to_string();
+    if statement.is_empty() {
+        return Err(Error::new(ErrorKind::Query, "查询不能为空"));
+    }
+    if statement.contains(';') && statement.trim_end().trim_end_matches(';').contains(';') {
+        return Err(Error::new(
+            ErrorKind::Query,
+            "参数化执行只接受单条语句；不支持多语句脚本",
+        ));
+    }
+    let url = mysql_connection_url(config)?;
+    let options = url
+        .parse::<MySqlConnectOptions>()
+        .map_err(|error| Error::new(ErrorKind::Connection, error.to_string()))?;
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| Error::new(ErrorKind::Internal, error.to_string()))?;
+    runtime.block_on(async {
+        let connect = tokio::time::timeout(Duration::from_secs(5), options.connect()).await;
+        let mut connection = match connect {
+            Ok(Ok(connection)) => connection,
+            Ok(Err(error)) => return Err(mysql_error(error)),
+            Err(_) => return Err(Error::new(ErrorKind::Connection, "连接超时")),
+        };
+        if let Some(database) = request.database.as_deref().filter(|database| !database.is_empty()) {
+            sqlx::raw_sql(&format!("USE {}", mysql_quote_identifier(database)))
+                .execute(&mut connection)
+                .await
+                .map_err(mysql_error)?;
+        }
+        let pagination = query_execution_pagination(request.options.page_offset, request.options.page_size);
+        let started = std::time::Instant::now();
+        if statement_returns_rows(&statement) {
+            let mut query = sqlx::query(&statement);
+            for parameter in parameters {
+                query = mysql_bind_parameter(query, parameter)?;
+            }
+            let rows = query.fetch_all(&mut connection).await.map_err(mysql_error)?;
+            let page = mysql_query_rows_to_page(rows, pagination.offset, pagination.limit);
+            let returned = page.rows.len() as u64;
+            let summary = QueryExecutionSummary {
+                sql: statement,
+                kind: QueryStatementKind::ResultSet,
+                success: true,
+                message: format!("返回 {returned} 行结果表（参数化绑定）"),
+                returned_rows: returned,
+                affected_rows: 0,
+                elapsed_ms: started.elapsed().as_millis() as u64,
+            };
+            return Ok(QueryExecutionResult {
+                summaries: vec![summary],
+                results: vec![page],
+                rollback_snapshots: Vec::new(),
+            });
+        }
+        let mut query = sqlx::query(&statement);
+        for parameter in parameters {
+            query = mysql_bind_parameter(query, parameter)?;
+        }
+        let outcome = query.execute(&mut connection).await.map_err(mysql_error)?;
+        let affected = outcome.rows_affected();
+        let summary = QueryExecutionSummary {
+            sql: statement,
+            kind: QueryStatementKind::Command,
+            success: true,
+            message: format!("影响 {affected} 行（参数化绑定）"),
+            returned_rows: 0,
+            affected_rows: affected,
+            elapsed_ms: started.elapsed().as_millis() as u64,
+        };
+        Ok(QueryExecutionResult {
+            summaries: vec![summary],
+            results: Vec::new(),
+            rollback_snapshots: Vec::new(),
+        })
+    })
+}
+
+/// 精确参数 → MySQL 绑定值。十进制用文本绑定（仍走协议参数，不做 SQL 拼接）。
+fn mysql_bind_parameter<'q>(
+    query: sqlx::query::Query<'q, sqlx::MySql, sqlx::mysql::MySqlArguments>,
+    parameter: &'q fluxdb_core::SqlParameter,
+) -> fluxdb_core::Result<sqlx::query::Query<'q, sqlx::MySql, sqlx::mysql::MySqlArguments>> {
+    use fluxdb_core::SqlParameter;
+    Ok(match parameter {
+        SqlParameter::Null => query.bind(None::<String>),
+        SqlParameter::Bool(value) => query.bind(*value),
+        SqlParameter::I64(text) => query.bind(text.parse::<i64>().map_err(|_| {
+            Error::new(ErrorKind::Query, "i64 参数不是合法的十进制文本")
+        })?),
+        SqlParameter::U64(text) => query.bind(text.parse::<u64>().map_err(|_| {
+            Error::new(ErrorKind::Query, "u64 参数不是合法的十进制文本")
+        })?),
+        SqlParameter::Decimal(text) => query.bind(text.clone()),
+        SqlParameter::F64(value) => {
+            if !value.is_finite() {
+                return Err(Error::new(ErrorKind::Query, "f64 参数必须是有限数值"));
+            }
+            query.bind(*value)
+        }
+        SqlParameter::Text(value) => query.bind(value.clone()),
+        SqlParameter::Bytes(value) => query.bind(value.clone()),
+    })
+}
+
 fn mysql_execute_query_with_progress(
     config: &ConnectionConfig,
     request: &QueryRequest,

@@ -130,6 +130,8 @@ struct ParsedSqlArgs {
     max_rows: u64,
     /// `db.explain` 的模式（`plan` 默认；`execute` 当前不开放）。
     mode: Option<String>,
+    /// 精确 tagged 参数（驱动真实 bind；不支持绑定的连接器会明确拒绝）。
+    parameters: Vec<fluxdb_core::SqlParameter>,
 }
 
 fn parse_sql_args(arguments_json: &str) -> Result<ParsedSqlArgs, SqlExecError> {
@@ -147,19 +149,7 @@ fn parse_sql_args(arguments_json: &str) -> Result<ParsedSqlArgs, SqlExecError> {
     if sql.trim().is_empty() {
         return Err(SqlExecError::new("invalid_arguments", "sql 不能为空"));
     }
-    if let Some(parameters) = value.get("parameters") {
-        let non_empty = parameters
-            .as_array()
-            .map(|items| !items.is_empty())
-            .unwrap_or(false);
-        if non_empty {
-            // Connector 还没有真实 bind 能力；宁可拒绝也不能插值拼接。
-            return Err(SqlExecError::new(
-                "parameters_unsupported",
-                "当前执行链尚未支持参数化绑定，已拒绝带参数的请求",
-            ));
-        }
-    }
+    let parameters = parse_sql_parameters(value.get("parameters"))?;
     let max_rows = value
         .get("max_rows")
         .and_then(|v| v.as_u64())
@@ -174,7 +164,170 @@ fn parse_sql_args(arguments_json: &str) -> Result<ParsedSqlArgs, SqlExecError> {
         sql,
         max_rows,
         mode,
+        parameters,
     })
+}
+
+/// 参数上限：schema 允许 1024 项，但执行链给更小的硬上限（避免一次调用把驱动压垮）。
+const SQL_PARAM_MAX_ITEMS: usize = 64;
+const SQL_PARAM_MAX_TEXT_BYTES: usize = 16 * 1024;
+const SQL_PARAM_MAX_BYTES: usize = 64 * 1024;
+const SQL_PARAM_MAX_DECIMAL_CHARS: usize = 64;
+
+/// 解析设计 §20.2 的 tagged wire 值：`{type:"text",value:"..."}` / `{type:"null"}` / …
+///
+/// 只做**类型与范围校验**，值原样交给驱动 bind；这里绝不把值格式化成 SQL 文本。
+fn parse_sql_parameters(
+    value: Option<&serde_json::Value>,
+) -> Result<Vec<fluxdb_core::SqlParameter>, SqlExecError> {
+    use fluxdb_core::SqlParameter;
+    let Some(value) = value else {
+        return Ok(Vec::new());
+    };
+    let items = value.as_array().ok_or_else(|| {
+        SqlExecError::new("invalid_parameters", "parameters 必须是 tagged 值数组")
+    })?;
+    if items.len() > SQL_PARAM_MAX_ITEMS {
+        return Err(SqlExecError::new(
+            "invalid_parameters",
+            format!("参数个数超过上限 {SQL_PARAM_MAX_ITEMS}"),
+        ));
+    }
+    let mut parameters = Vec::with_capacity(items.len());
+    for (index, item) in items.iter().enumerate() {
+        let tag = item
+            .get("type")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                SqlExecError::new("invalid_parameters", format!("parameters[{index}] 缺少 type"))
+            })?;
+        let text_value = || -> Result<&str, SqlExecError> {
+            item.get("value")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| {
+                    SqlExecError::new(
+                        "invalid_parameters",
+                        format!("parameters[{index}] 缺少字符串 value"),
+                    )
+                })
+        };
+        let parameter = match tag {
+            "null" => SqlParameter::Null,
+            "bool" => SqlParameter::Bool(
+                item.get("value")
+                    .and_then(serde_json::Value::as_bool)
+                    .ok_or_else(|| {
+                        SqlExecError::new(
+                            "invalid_parameters",
+                            format!("parameters[{index}] 不是布尔值"),
+                        )
+                    })?,
+            ),
+            "text" => {
+                let value = text_value()?;
+                if value.len() > SQL_PARAM_MAX_TEXT_BYTES {
+                    return Err(SqlExecError::new(
+                        "invalid_parameters",
+                        format!("parameters[{index}] 文本超过 {SQL_PARAM_MAX_TEXT_BYTES} 字节"),
+                    ));
+                }
+                SqlParameter::Text(value.to_string())
+            }
+            "i64" => {
+                let value = text_value()?;
+                value.parse::<i64>().map_err(|_| {
+                    SqlExecError::new(
+                        "invalid_parameters",
+                        format!("parameters[{index}] 不是合法 i64 文本"),
+                    )
+                })?;
+                SqlParameter::I64(value.to_string())
+            }
+            "u64" => {
+                let value = text_value()?;
+                value.parse::<u64>().map_err(|_| {
+                    SqlExecError::new(
+                        "invalid_parameters",
+                        format!("parameters[{index}] 不是合法 u64 文本"),
+                    )
+                })?;
+                SqlParameter::U64(value.to_string())
+            }
+            "f64" => {
+                let value = item
+                    .get("value")
+                    .and_then(serde_json::Value::as_f64)
+                    .ok_or_else(|| {
+                        SqlExecError::new(
+                            "invalid_parameters",
+                            format!("parameters[{index}] 不是数值"),
+                        )
+                    })?;
+                if !value.is_finite() {
+                    return Err(SqlExecError::new(
+                        "invalid_parameters",
+                        format!("parameters[{index}] 必须是有限数值"),
+                    ));
+                }
+                SqlParameter::F64(value)
+            }
+            "decimal" => {
+                let value = text_value()?;
+                if value.len() > SQL_PARAM_MAX_DECIMAL_CHARS
+                    || !looks_like_decimal(value)
+                {
+                    return Err(SqlExecError::new(
+                        "invalid_parameters",
+                        format!("parameters[{index}] 不是合法十进制文本"),
+                    ));
+                }
+                SqlParameter::Decimal(value.to_string())
+            }
+            "bytes" => {
+                let value = text_value()?;
+                use base64::Engine as _;
+                let decoded = base64::engine::general_purpose::STANDARD
+                    .decode(value)
+                    .map_err(|_| {
+                        SqlExecError::new(
+                            "invalid_parameters",
+                            format!("parameters[{index}] 不是合法 base64"),
+                        )
+                    })?;
+                if decoded.len() > SQL_PARAM_MAX_BYTES {
+                    return Err(SqlExecError::new(
+                        "invalid_parameters",
+                        format!("parameters[{index}] 字节数超过 {SQL_PARAM_MAX_BYTES}"),
+                    ));
+                }
+                SqlParameter::Bytes(decoded)
+            }
+            other => {
+                return Err(SqlExecError::new(
+                    "invalid_parameters",
+                    format!("parameters[{index}] 未知类型标记: {other}"),
+                ))
+            }
+        };
+        parameters.push(parameter);
+    }
+    Ok(parameters)
+}
+
+/// 只接受 `[+-]?digits[.digits]`（不做浮点转换，避免丢精度）。
+fn looks_like_decimal(value: &str) -> bool {
+    let body = value.strip_prefix(['+', '-']).unwrap_or(value);
+    let mut parts = body.split('.');
+    let (Some(int_part), frac, None) = (parts.next(), parts.next(), parts.next()) else {
+        return false;
+    };
+    if int_part.is_empty() || !int_part.bytes().all(|byte| byte.is_ascii_digit()) {
+        return false;
+    }
+    match frac {
+        None => true,
+        Some(frac) => !frac.is_empty() && frac.bytes().all(|byte| byte.is_ascii_digit()),
+    }
 }
 
 fn dialect_for(kind: fluxdb_core::DatabaseKind) -> Option<SqlDialectKind> {
@@ -252,6 +405,27 @@ pub fn execute_sql(
     read_only: bool,
     should_cancel: &dyn Fn() -> bool,
 ) -> Result<SqlExecutionOutcome, SqlExecError> {
+    execute_sql_with_parameters(
+        resolver,
+        target,
+        sql,
+        max_rows,
+        &[],
+        read_only,
+        should_cancel,
+    )
+}
+
+/// 带精确参数（驱动真实 bind）的受控执行；无参数时等价于 [`execute_sql`]。
+pub fn execute_sql_with_parameters(
+    resolver: &dyn SqlExecutionResolver,
+    target: &AiSqlTarget,
+    sql: &str,
+    max_rows: u64,
+    parameters: &[fluxdb_core::SqlParameter],
+    read_only: bool,
+    should_cancel: &dyn Fn() -> bool,
+) -> Result<SqlExecutionOutcome, SqlExecError> {
     let config = resolver
         .connection_config(target.connection_id)
         .ok_or_else(|| {
@@ -302,17 +476,36 @@ pub fn execute_sql(
 
     let started = Instant::now();
     let mut first_error: Option<String> = None;
-    let execution = connector
-        .execute_with_progress(
-            &request,
-            &mut |summary| {
-                if !summary.success && first_error.is_none() {
-                    first_error = Some(summary.message.clone());
-                }
-            },
-            should_cancel,
-        )
-        .map_err(|error| SqlExecError::new("execution_error", format!("执行失败: {error}")))?;
+    let execution = if parameters.is_empty() {
+        connector
+            .execute_with_progress(
+                &request,
+                &mut |summary| {
+                    if !summary.success && first_error.is_none() {
+                        first_error = Some(summary.message.clone());
+                    }
+                },
+                should_cancel,
+            )
+            .map_err(|error| SqlExecError::new("execution_error", format!("执行失败: {error}")))?
+    } else {
+        // 有参数就必须真 bind；不支持绑定的连接器由默认实现明确拒绝（绝不插值）。
+        connector
+            .execute_parameterized(&fluxdb_core::ParameterizedQueryRequest {
+                request: request.clone(),
+                parameters: parameters.to_vec(),
+            })
+            .map_err(|error| {
+                SqlExecError::new(
+                    if error.kind == fluxdb_core::ErrorKind::Unsupported {
+                        "parameters_unsupported"
+                    } else {
+                        "execution_error"
+                    },
+                    format!("参数化执行失败: {}", error.message),
+                )
+            })?
+    };
     let elapsed_ms = started.elapsed().as_millis() as u64;
     if should_cancel() {
         // 读操作取消 = 没有副作用，直接报告已取消；
@@ -578,11 +771,12 @@ impl<R: SqlExecutionResolver + 'static> fluxdb_core::AiTool for AiSqlReadTool<R>
                         Ok(())
                     };
                     match prepared {
-                        Ok(()) => execute_sql(
+                        Ok(()) => execute_sql_with_parameters(
                             resolver.as_ref(),
                             &args.target,
                             &args.sql,
                             args.max_rows,
+                            &args.parameters,
                             true,
                             &|| cancel.is_cancelled(),
                         ),
@@ -745,11 +939,12 @@ impl<R: SqlExecutionResolver + 'static> fluxdb_core::AiTool for AiSqlExecuteTool
         let cancel = ctx.cancel.clone();
         Box::pin(async move {
             let outcome = match parse_sql_args(&arguments_json) {
-                Ok(args) => execute_sql(
+                Ok(args) => execute_sql_with_parameters(
                     resolver.as_ref(),
                     &args.target,
                     &args.sql,
                     args.max_rows,
+                    &args.parameters,
                     // 修改入口：不做只读分类拦截，但仍受"单条语句/事务控制拒绝"约束。
                     false,
                     &|| cancel.is_cancelled(),

@@ -345,3 +345,84 @@ fn ai_sql_exec_standard_catalog_omits_write_tools_until_approval_is_ready() {
         );
     }
 }
+
+// ---- tagged 参数解析（设计 §20.2 / §21.4 同一 schema）----
+
+fn ai_sql_exec_demo_resolver() -> MapSqlResolver {
+    MapSqlResolver::new([ai_sql_exec_demo_config(1)])
+}
+
+fn ai_sql_exec_param_error_code(sql: &str, parameters: serde_json::Value) -> String {
+    let resolver = ai_sql_exec_demo_resolver();
+    let target = AiSqlTarget::parse("conn:1").expect("target");
+    let arguments =
+        serde_json::json!({ "target": "conn:1", "sql": sql, "parameters": parameters }).to_string();
+    let tool = AiSqlReadTool::query(std::sync::Arc::new(resolver)).expect("db.query 工具");
+    let cancel = fluxdb_core::CancelFlag::new();
+    let receipt = ai_sql_exec_block_on(tool.execute(
+        ai_sql_exec_ctx("call-param", cancel),
+        arguments,
+    ))
+    .expect("工具调用");
+    receipt.error_code.unwrap_or_default()
+}
+
+#[test]
+fn ai_sql_exec_parses_all_tagged_parameter_kinds() {
+    // 合法 tagged 参数必须通过解析，最终失败只能是因为"该连接不支持绑定"（demo 无 bind 实现）。
+    for value in [
+        serde_json::json!([{ "type": "null" }]),
+        serde_json::json!([{ "type": "bool", "value": true }]),
+        serde_json::json!([{ "type": "i64", "value": "-9223372036854775808" }]),
+        serde_json::json!([{ "type": "u64", "value": "18446744073709551615" }]),
+        serde_json::json!([{ "type": "f64", "value": 1.5 }]),
+        serde_json::json!([{ "type": "decimal", "value": "12345.6789" }]),
+        serde_json::json!([{ "type": "text", "value": "hello ' OR 1=1 --" }]),
+        serde_json::json!([{ "type": "bytes", "value": "AAEC" }]),
+    ] {
+        assert_eq!(
+            ai_sql_exec_param_error_code("SELECT ?", value.clone()),
+            "parameters_unsupported",
+            "合法参数应通过解析: {value}"
+        );
+    }
+}
+
+#[test]
+fn ai_sql_exec_rejects_malformed_tagged_parameters() {
+    for value in [
+        // 未知类型标记
+        serde_json::json!([{ "type": "sql", "value": "1 OR 1=1" }]),
+        // 缺 value
+        serde_json::json!([{ "type": "text" }]),
+        // i64 越界 / 非法
+        serde_json::json!([{ "type": "i64", "value": "9223372036854775808" }]),
+        serde_json::json!([{ "type": "i64", "value": "1;DROP TABLE t" }]),
+        // u64 负数
+        serde_json::json!([{ "type": "u64", "value": "-1" }]),
+        // f64 必须是 JSON number（字符串不接受）
+        serde_json::json!([{ "type": "f64", "value": "1.5" }]),
+        // decimal 非法与超长
+        serde_json::json!([{ "type": "decimal", "value": "1.2.3" }]),
+        serde_json::json!([{ "type": "decimal", "value": "12e5" }]),
+        // base64 非法
+        serde_json::json!([{ "type": "bytes", "value": "!!!not-base64!!!" }]),
+        // parameters 不是数组
+        serde_json::json!({ "type": "text", "value": "x" }),
+    ] {
+        assert_eq!(
+            ai_sql_exec_param_error_code("SELECT ?", value.clone()),
+            "invalid_parameters",
+            "非法参数必须被拒绝: {value}"
+        );
+    }
+
+    // 参数个数硬上限：超限直接拒绝（不进入执行链）。
+    let too_many: Vec<serde_json::Value> = (0..65)
+        .map(|index| serde_json::json!({ "type": "i64", "value": index.to_string() }))
+        .collect();
+    assert_eq!(
+        ai_sql_exec_param_error_code("SELECT ?", serde_json::Value::Array(too_many)),
+        "invalid_parameters"
+    );
+}

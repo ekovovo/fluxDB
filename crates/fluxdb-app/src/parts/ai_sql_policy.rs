@@ -68,9 +68,22 @@ const SIDE_EFFECT_MARKERS: &[&str] = &[
     "dblink(",
     "lo_import(",
     "lo_export(",
+    "lo_unlink(",
     "nextval(",
     "setval(",
     "copy ",
+    // 通知/外部连接/文件/进程类副作用：命中即降级为需授权（宁可误判，不放过真实副作用）。
+    "pg_notify(",
+    "pg_read_binary_file(",
+    "pg_write_file(",
+    "dblink_exec(",
+    "dblink_connect(",
+    "pg_terminate_backend(",
+    "pg_cancel_backend(",
+    "pg_advisory_xact_lock(",
+    "set_config(",
+    "load_extension(",
+    "pg_reload_conf(",
     "for update",
     "for share",
     "lock in share mode",
@@ -179,7 +192,9 @@ fn classify_query(query: &sqlparser::ast::Query, reasons: &mut Vec<String>) {
     classify_set_expr(&query.body, reasons);
     if let Some(with) = &query.with {
         for cte in &with.cte_tables {
-            classify_set_expr(&cte.query.body, reasons);
+            // 递归整段 CTE 查询（含嵌套 WITH），不能只看最外层 body：
+            // `WITH outer AS (WITH inner AS (DELETE ...) SELECT ...) SELECT ...` 必须被识别。
+            classify_query(&cte.query, reasons);
         }
     }
 }
@@ -273,6 +288,18 @@ pub const DB_EXPLAIN_INPUT_SCHEMA: &str = r#"{
   }
 }"#;
 
+/// `db.search_objects` 的输入 schema（渐进元数据，不 dump 全库 DDL）。
+pub const DB_SEARCH_OBJECTS_INPUT_SCHEMA: &str = r#"{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["target"],
+  "properties": {
+    "target": { "type": "string", "minLength": 1 },
+    "query": { "type": "string", "maxLength": 256 },
+    "limit": { "type": "integer", "minimum": 1, "maximum": 100 }
+  }
+}"#;
+
 /// 按分类决定工具入口：只读走 `db.query`，其余必须走 `db.execute`（审批）。
 pub fn route_for_sql(sql: &str, dialect: SqlDialectKind) -> (&'static str, SqlRisk) {
     let risk = analyze_sql(sql, dialect);
@@ -303,6 +330,13 @@ pub fn standard_sql_tool_specs() -> fluxdb_core::Result<Vec<ToolSpec>> {
             description: "单条修改语句（范围授权 + 审批绑定 plan hash）".into(),
             risk: fluxdb_core::ToolRisk::Write,
             input_schema_json: DB_EXECUTE_INPUT_SCHEMA.into(),
+        },
+        fluxdb_core::ToolDescriptor {
+            id: "db.search_objects".into(),
+            version: 1,
+            description: "按名字模糊搜索表/视图（渐进元数据，只读）".into(),
+            risk: fluxdb_core::ToolRisk::Read,
+            input_schema_json: DB_SEARCH_OBJECTS_INPUT_SCHEMA.into(),
         },
         fluxdb_core::ToolDescriptor {
             id: "db.explain".into(),

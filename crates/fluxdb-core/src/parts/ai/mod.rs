@@ -191,6 +191,8 @@ pub struct ToolExecutionContext {
     pub iteration: i64,
     /// 本次调用的稳定 ID（与 `ToolReceipt.call_id` 对应）。
     pub call_id: String,
+    /// 本轮 Turn 的取消标志；会阻塞/批量的工具必须在检查点轮询它并尽快收尾。
+    pub cancel: CancelFlag,
 }
 
 /// 决策（Jev）请求：只在需要做选择/排序/分类时调用，不参与主模型 tool calling。

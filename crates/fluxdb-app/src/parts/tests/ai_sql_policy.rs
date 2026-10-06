@@ -299,3 +299,26 @@ fn ai_sql_policy_dialect_changes_backtick_identifier_classification() {
         "PostgreSQL must not treat MySQL backtick syntax as read-only: {postgres:?}"
     );
 }
+
+#[test]
+fn ai_sql_policy_nested_ctes_and_extended_side_effect_markers_require_authorization() {
+    // 嵌套 CTE：只看最外层 body 会漏掉内层 DELETE。
+    let reasons = ai_sql_policy_assert_requires(
+        "WITH outer_c AS (WITH inner_c AS (DELETE FROM orders RETURNING id) SELECT * FROM inner_c) \
+         SELECT * FROM outer_c",
+        SqlDialectKind::Postgres,
+    );
+    ai_sql_policy_assert_reason_prefix(&reasons, "modifying_cte_");
+
+    // 评审发现的副作用/越权函数：不在旧 marker 列表里也不能当只读。
+    for sql in [
+        "SELECT pg_notify('chan', 'payload')",
+        "SELECT lo_unlink(12345)",
+        "SELECT pg_read_binary_file('/etc/hosts')",
+        "SELECT dblink_exec('conn', 'UPDATE t SET v=1')",
+        "SELECT load_extension('evil')",
+    ] {
+        let reasons = ai_sql_policy_assert_requires(sql, SqlDialectKind::Postgres);
+        ai_sql_policy_assert_reason_prefix(&reasons, "side_effect_marker:");
+    }
+}

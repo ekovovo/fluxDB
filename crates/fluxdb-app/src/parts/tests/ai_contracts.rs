@@ -179,6 +179,7 @@ fn ai_contract_traits_are_object_safe_for_runtime_heterogeneity() {
             turn_id: "t-contract".into(),
             iteration: 1,
             call_id: "call-contract".into(),
+            cancel: fluxdb_core::CancelFlag::new(),
         },
         r#"{"sql":"select 1"}"#.into(),
     ))
@@ -257,6 +258,7 @@ fn ai_contract_recording_tool_receipt_is_failed_and_not_skipped() {
         turn_id: "t-tool".into(),
         iteration: 2,
         call_id: "call-tool-2".into(),
+        cancel: fluxdb_core::CancelFlag::new(),
     };
     let arguments_json = r#"{"sql":"update t set n=n+1","expected_affected":1}"#.to_string();
 
@@ -356,6 +358,7 @@ fn ai_contract_model_tool_receipt_rereasoning_loop_has_no_production_deps() {
             turn_id: "t-loop".into(),
             iteration: 1,
             call_id: call.provider_call_id.clone(),
+            cancel: fluxdb_core::CancelFlag::new(),
         },
         call.arguments_json.clone(),
     ))

@@ -225,6 +225,7 @@ impl<'a> TurnRunner<'a> {
                     turn_id: String::new(),
                     iteration: iteration as i64,
                     call_id: call.provider_call_id.clone(),
+                    cancel: cancel.clone(),
                 };
                 let receipt = match block_on_ready(tool.execute(ctx, call.arguments_json.clone())) {
                     Ok(Ok(receipt)) => receipt,

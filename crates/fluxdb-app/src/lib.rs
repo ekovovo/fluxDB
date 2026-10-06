@@ -105,6 +105,7 @@ include!("parts/ai_tool_registry.rs");
 include!("parts/ai_permission.rs");
 include!("parts/ai_context.rs");
 include!("parts/ai_sql_policy.rs");
+include!("parts/ai_sql_exec.rs");
 include!("parts/ai_scripted.rs");
 include!("parts/backup_restore.rs");
 

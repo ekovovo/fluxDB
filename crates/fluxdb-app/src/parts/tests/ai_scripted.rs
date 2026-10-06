@@ -66,6 +66,7 @@ fn scripted_round_trip_executes_real_tool_and_feeds_receipt_back() {
             turn_id: "t-1".into(),
             iteration: 1,
             call_id: provider_call_id.clone(),
+            cancel: fluxdb_core::CancelFlag::new(),
         },
         arguments_json.clone(),
     ))

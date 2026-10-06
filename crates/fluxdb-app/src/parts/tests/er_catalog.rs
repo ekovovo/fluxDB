@@ -511,7 +511,7 @@ fn relation_retry_requeries_connector() {
     let mut cols = BTreeMap::new();
     cols.insert("a".to_string(), vec![("id".to_string(), true)]);
     cols.insert("b".to_string(), vec![("id".to_string(), true)]);
-    let (mut conn, _, objects) = RecordingConnector::new(
+    let (conn, _, objects) = RecordingConnector::new(
         DatabaseKind::Sqlite,
         cols,
         vec![("a".to_string(), "b".to_string())],

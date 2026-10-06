@@ -83,10 +83,6 @@ fn redis_argv(parts: &[&str]) -> Vec<String> {
     parts.iter().map(|value| (*value).to_string()).collect()
 }
 
-fn redis_tool_error_outcome(error: SqlExecError) -> Result<SqlExecutionOutcome, SqlExecError> {
-    Err(error)
-}
-
 // ---- redis.scan ----
 
 pub struct AiRedisScanTool<R: SqlExecutionResolver> {

@@ -402,7 +402,7 @@ fn run_actor(
                 }
             }
             AiControl::Cancel { turn_id } => {
-                let mut guard = match cancel_slot.lock() {
+                let guard = match cancel_slot.lock() {
                     Ok(guard) => guard,
                     Err(_) => break,
                 };

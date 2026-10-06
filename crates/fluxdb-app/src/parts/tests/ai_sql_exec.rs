@@ -354,7 +354,6 @@ fn ai_sql_exec_demo_resolver() -> MapSqlResolver {
 
 fn ai_sql_exec_param_error_code(sql: &str, parameters: serde_json::Value) -> String {
     let resolver = ai_sql_exec_demo_resolver();
-    let target = AiSqlTarget::parse("conn:1").expect("target");
     let arguments =
         serde_json::json!({ "target": "conn:1", "sql": sql, "parameters": parameters }).to_string();
     let tool = AiSqlReadTool::query(std::sync::Arc::new(resolver)).expect("db.query 工具");

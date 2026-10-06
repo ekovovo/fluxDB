@@ -44,6 +44,5 @@ mod tests {
     include!("tests/ai_sql_policy.rs");
     include!("tests/ai_sql_exec.rs");
     include!("tests/ai_redis_policy.rs");
+    include!("tests/ai_tool_registry.rs");
 }
-
-include!("tests/ai_tool_registry.rs");

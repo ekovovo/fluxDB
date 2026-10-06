@@ -39,10 +39,30 @@
 分层结论（重要）：连接器只挡"长连接/阻塞"这类**协议层**命令；`CONFIG/ACL/FLUSH*/BLPOP` 等业务分级由
 `ai_redis_policy::classify_redis_command` 负责，因此**四个 Redis 工具必须先分类再执行**，不能直接调 `execute_argv`。
 
+## 四个工具实现 + 真实 Redis 验收（本轮）
+
+新增 `crates/fluxdb-app/src/parts/ai_redis_exec.rs`：`AiRedisScanTool` / `AiRedisInspectTool` /
+`AiRedisServerInfoTool` / `AiRedisExecuteTool`，以及 `standard_redis_catalog(resolver, include_write)`
+（`include_write=false` 时连 `redis.execute` 的 spec 一起去掉，避免"可见但没接审批"）。
+`AiRedisTarget` 解析 `conn:<id>/db:<n>`（n 限 0-15）；回包经 `redis_reply_to_json` 有界投影；
+`server_info` 默认只取 server/memory/clients 且输出截断 16KiB；`inspect` 只对 string 直接取值，
+其它类型给出"按需读取"提示，避免一次拉全集合。
+
+真实 Redis 验收（podman `docker-redis`，连接 id=3，隔离配置库副本，`examples/ai_live_redis_tools.rs`）：
+
+| 工具 | 结果 |
+|---|---|
+| `redis.execute SET` | Succeeded，回包 `OK` |
+| `redis.inspect`（view=value） | `type=string, ttl=-1, value="hello"` |
+| `redis.scan`（pattern=`fluxdb:ai:smoke:*`） | cursor `0` + 命中测试键 |
+| `redis.server_info`（server） | Succeeded，输出 845 字节 |
+| `redis.execute CONFIG/MONITOR/SUBSCRIBE` | **Failed `redis_command_rejected`**（策略层拒绝，长连接类连接器也会拒） |
+| `DEL` 清理 | Succeeded，测试键已删除 |
+
 ## 未完成（因此 T025 不勾选）
 
-- **工具执行器未实现**：连接器 argv 原语已就绪（见上），但 `redis.scan/inspect/execute/server_info`
-  还没有实现成 `AiTool`、也没有注册进 `standard_redis_catalog`。
+- **未接运行时目录**：四个工具已实现并有真实 Redis 验收，但桌面运行时仍只装 SQL 目录；
+  `redis.execute` 的**审批卡与恢复执行**还没在真实窗口走过（审批机制本身在 SQL 路径已验证）。
 - **审批接线**：`redis.execute` 尚未注册进目录（`include_write` 路径），因此没有真实审批卡与恢复执行。
 - **真实 Redis E2E 未做**：scan → inspect → 受控 execute（含审批）与后端键值核对（你的 `docker-redis` 已在跑，下一步直接用它）。
 - 大集合分段、长订阅停止、Cluster/DB scope 校验、结果分页（T027）未做。

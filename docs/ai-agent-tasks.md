@@ -878,6 +878,22 @@ T020按主设计§31.9实现询问AI内联批准卡片：参考Goose三态按钮
 - **主 agent 独立复核（勾选依据）**：亲自复跑确认 9 passed；逐条比对 T019 验收时发现缺口 —— `ToolSpec.output_limit_bytes` **只声明未生效**（投影上限由调用方自由传入）。已补 `ToolCatalog::project(id, receipt, result_ref)`，由目录按该工具声明的输出上限投影（未注册工具返回受控 `unknown_tool`），并新增用例 `ai_tool_registry_projection_honors_spec_output_limit`（超限必须 `truncated`、`text.len() <= output_limit_bytes`、原回执不变）。补测后 `ai_tool_registry_` → **10 passed**，T019 的 input/output 大小限制才闭环。
 - 说明：本轮无 UI 改动，**未启动 B/C 子 agent**；T019 勾选等主 agent 复核后处理。
 
+### 已在本轮推进（2026-10-06 第十四轮：T020 审批/审计/授权策略）
+
+- **存储侧（新增 `crates/fluxdb-storage/src/parts/ai_platform/audits.rs`）**：
+  - `ai_tool_audits` 是 **append-only**：只提供 `insert_tool_audit` / `list_tool_audits`，没有 update/delete；插入要求 `plan_hash` 非空、`tool_call_id` 与 `mcp_request_id` **恰好一个**；同一 plan 的重新审计（`revalidate`）只会新增记录，判断历史可完整回放。
+  - `ai_approvals` **绑定 plan_hash**：`create_approval`（scope 必须合法 JSON、同一 (call, plan_hash) 只允许一条）→ `decide_approval`（只有 pending 能决定，行级 CAS，重复点击报"审批状态已变化"）→ `invalidate_approval`（pending/approved → invalidated，**撤销即时生效**）/ `expire_approval`；`find_valid_approval` 要求 approved + 未过期 + **plan_hash 完全一致**（参数/目标/插件摘要变化 → 换 hash → 旧批准自然查不到）。
+- **策略侧（新增 `crates/fluxdb-app/src/parts/ai_permission.rs`）**：
+  - `plan_hash(tool_id, version, target_json, normalized_arguments_json, plugin_digest)`（FNV-1a 64，任一变化即变化；仅用于"变化即失效"，不作为安全哈希）。
+  - `KernelPolicy{read_allowed, write_allowed, admin_allowed}`（默认：可读/不可写/不可管理）与 `authorize()`：Agent 白名单（空=不限制）→ 连接/内核权限 ∧ 风险 → 强制审计；**Deny 优先于 RequireApproval 优先于 Allow**；写操作一律 `RequireApproval`；`audit=None` 视为需审批而**不放行**。
+  - `audit_or_fail_closed`：安全审计 Hook 返回 Err → `Deny`（fail closed）；`ApprovalScope` 写入 session/turn/tool/version/target/resource，供执行前复核。
+  - `approval_matches(...)`：批准必须 hash 一致 + approved + 未过期。
+- **受阻（如实记录）**：T020 的 UI 部分（"询问 AI 内联批准卡片"）**依赖尚不存在的会话面板（T028）**——当前 desktop 只有设置页，没有 AI 抽屉/面板组件。因此本轮只交付存储+策略，**T020 不勾选**；等 T028 面板落地后再接卡片（原型 `询问AI审批卡`，含明暗主题/窄窗口/loading/空/错态截图）。
+- **子 agent A（审批/审计/策略测试）完成**：新增 `crates/fluxdb-app/src/parts/tests/ai_permission.rs`，`cargo test -p fluxdb-app --offline ai_permission_` → **13 passed**：审计 append-only 且同 plan 可重复审计、归属/plan_hash 校验失败不落行、审批决定行级 CAS（重复点击报"状态已变化"且库内不二次生效）、**撤销即时生效**、过期与 **plan_hash 不一致即失效**、scope 必须合法 JSON、**审计 Deny 优先于一切**、写操作需审批/只读连接直接拒绝、管理类默认拒绝、Agent 白名单交集、plan_hash 对 参数/目标/插件摘要/版本 敏感、**审计不可用 fail closed**、`approval_matches` 语义。A 本轮未执行 git 写操作、未改 docs（符合委派约束）。
+- **A 的观察（记为后续项，本轮未改）**：`authorize()` 产出的 `ApprovalScope.session_id`/`turn_id` 目前是空串、`resource_json` 复用 `target_json`；等 T021（Turn 固定 target）与 T028（审批卡片）接线时由调用方回填会话/资源，否则审批卡片无法按会话/资源展示。
+- 本轮验收：core **106**、storage **121**、app **627**（11 个需要本地回环端口的用例沙箱内被拒，沙箱外通过）、desktop **477**；`fmt --check` / `check --workspace` 通过。
+- 说明：本轮无 UI 改动，**未启动 B/C 子 agent**。
+
 ### 仍未修复 / 未验证（下一轮）
 
 **未验证**：

@@ -301,6 +301,23 @@ Turn：`queued → preparing → generating → executing_tools ↔ waiting_appr
 
 **就近参考：**[Goose执行/取消编排](/Users/shining3d/fusuwei/code/goose/crates/goose/src/agents/agent.rs)；[当前带scope查询服务](/Users/shining3d/fusuwei/code/fluxDB/crates/fluxdb-app/src/parts/controller/query_completion.rs)。实际落点按本章/§7，不照搬源项目私有状态。
 
+### 11.1 T029 启动恢复的实现边界（2026-10-06）
+
+当前实现只处理**本地恢复与禁止自动重放**，不在本阶段注册写工具或发真实模型请求：
+
+- 存储入口：`crates/fluxdb-storage/src/parts/ai_platform/recovery.rs::recover_on_startup`。使用 SQLite `IMMEDIATE` 短事务，在宿主启动且尚无任务执行时扫描；失败整批回滚。不能在普通 `Load`、切会话或打开面板时重复扫描活跃任务。
+- 应用入口：`AiConversationCommand::RecoverOnStartup`，实现为 `crates/fluxdb-app/src/parts/ai_recovery.rs`。桌面首帧在 `main_parts/navicat_main/render.rs` 排入 AI IO 串行队列，后台执行；失败保留错误并禁用发送，不能装作空会话。
+- `queued/preparing/generating/executing_tools/cancel_requested` 未完成轮次：无未知副作用则 `interrupted`；专用只读工具的 `running` 记为读取中断（call=`cancelled`、不伪造 receipt），写/未知工具的 `running` 则 call=`unknown`、Turn=`outcome_unknown`。已有终态成功回执不改写。`prepared` 只表示未执行，结束为 cancelled，不重放。
+- 未执行待审批项：pending 保留；历史 approved 退回 pending 并递增 revision，卡片同步新的 `approval_revision`，旧 UI 的 CAS 决定失效；过期批准不可使用。片段/审批事实不一致时 fail closed，不重新开放陈旧按钮。
+- 正文、公开摘要、草稿、展开选项、原目标和滚动锚点保留；未完成流式片段标 interrupted。补一条稳定 ID 的恢复 notice，重复启动扫描不会重复建卡或增加相同 revision。未知执行在工具卡显示“结果未知”，与普通“已停止”区分。
+- 默认内存结果在重启后 expired；retained 结果不在本扫描中删除或假设重建。结果分页、文件校验与空间管理仍属 T027。
+- 审批决定、调用状态和原卡片更新在同事务完成。恢复执行在另一短事务中重新检查当前 Agent 权限/审计、规范化参数、工具版本、固定目标和 plan hash，再把 waiting_approval 占用为 running 并消费批准，事务外才执行。已有 running/unknown/终态或同连接存在未核实未知副作用时拒绝重复/冲突写入。
+- 已拒绝的重启任务立即撤下操作按钮并更新恢复提示，不继续显示“等待批准”。未知结果没有“一键重试写操作”或假装核实成功的入口；需先核对真实数据库/外部系统。
+
+就近代码：`ai_platform/tool_calls.rs`（保留 sessions re-export，事实行 API），`main_parts/ai/actions.rs`/`panel.rs`（启动排队、恢复提示）、`crates/fluxdb-app/tests/ai_restart_recovery.rs` 与 `tests/support/ai_restart_recovery_approval.rs`（故障窗口、幂等、CAS、防重放）、`main_parts/ai/tests_recovery.rs`（生产加载→AppState→控件）。
+
+**本节不宣称**完整 T029 已验收：跨系统提交结果核实/幂等键、连接资源 revision 的完整授权复核、真正恢复模型工具消息配对及关闭窗口时的未知写收尾仍须按任务清单继续完成；不因本地扫描通过而勾选全部 T029。
+
 ## 12. 运行时、AppCommand 与 AppEvent
 
 拟新增命令：`StartAiTurn`、`SendAiSteering`、`CancelAiTurn`、`ResolveAiApproval`、`ResumeAiTurn`、`LoadAiSessionPage`；管理命令按实体分开，如 `SaveAiModelProfile`、`SaveAiAgent`、`SaveAiAgent`（包含system_prompt）、`SaveAiPluginBinding`。

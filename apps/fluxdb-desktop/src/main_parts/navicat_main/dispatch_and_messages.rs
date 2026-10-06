@@ -545,7 +545,8 @@ impl NavicatMain {
         let message_id = message.id;
         self.app_message = Some(message);
         self._app_message_task = Some(cx.spawn(async move |view, cx| {
-            smol::Timer::after(APP_MESSAGE_DURATION).await;
+            // 跟随 GPUI executor，窗口销毁/测试结束时不由外部 reactor 唤醒失效 UI 任务。
+            cx.background_executor().timer(APP_MESSAGE_DURATION).await;
             view.update(cx, move |this, cx| {
                 if this
                     .app_message

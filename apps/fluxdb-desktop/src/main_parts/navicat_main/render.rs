@@ -35,6 +35,11 @@ impl Render for NavicatMain {
             self.ai_agent_editor_debug_pending = false;
             self.open_ai_agent_editor(None, window, cx);
         }
+        // 首帧异步启动恢复；命令与后续 Load/Save 共用串行队列，不在 UI 线程扫描 SQLite。
+        if self.ai_chat.recovery_pending {
+            self.ai_chat.recovery_pending=false;
+            self.ai_chat_request(fluxdb_app::AiConversationCommand::RecoverOnStartup,window,cx);
+        }
         if self.ai_chat.debug_open_pending {self.ai_chat.debug_open_pending=false;self.open_ai_chat(window,cx);}
         let width = window.viewport_size().width;
         let compact = width < px(760.);

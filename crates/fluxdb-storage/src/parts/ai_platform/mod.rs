@@ -12,6 +12,8 @@ pub mod models;
 pub mod plugins;
 pub mod schema;
 pub mod sessions;
+pub mod tool_calls;
+pub mod recovery;
 #[cfg(test)]
 mod sessions_tests;
 #[cfg(test)]

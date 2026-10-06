@@ -110,3 +110,6 @@ include!("parts/ai_scripted.rs");
 include!("parts/backup_restore.rs");
 
 include!("parts/ai_conversation.rs");
+include!("parts/ai_conversation_provider.rs");
+include!("parts/ai_conversation_records.rs");
+include!("parts/ai_recovery.rs");

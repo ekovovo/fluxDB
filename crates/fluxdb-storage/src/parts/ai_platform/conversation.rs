@@ -82,7 +82,14 @@ pub fn checkpoint(conn:&Connection, now:i64, session_id:&str, turn_id:&str, mess
         let seq:i64=tx.query_row("UPDATE ai_sessions SET next_message_seq=next_message_seq+1,updated_at_ms=?2 WHERE id=?1 RETURNING next_message_seq-1",params![session_id,now],|r|r.get(0)).map_err(sqlite_error)?;
         tx.execute("INSERT INTO ai_messages(id,session_id,turn_id,seq,role,persistence_kind,created_at_ms) VALUES(?1,?2,?3,?4,'assistant','checkpoint',?5)",params![message_id,session_id,turn_id,seq,now]).map_err(sqlite_error)?;
     }
-    let status=match terminal { None=>sessions::PartStatus::Streaming, Some(sessions::TurnStatus::Completed)=>sessions::PartStatus::Complete, Some(sessions::TurnStatus::Cancelled)=>sessions::PartStatus::Interrupted,_=>sessions::PartStatus::Error };
+    // 等待审批/等待用户不是失败：片段保持 pending，UI 才能区分"暂停"与"出错"。
+    let status=match terminal {
+        None=>sessions::PartStatus::Streaming,
+        Some(sessions::TurnStatus::Completed)=>sessions::PartStatus::Complete,
+        Some(sessions::TurnStatus::Cancelled)=>sessions::PartStatus::Interrupted,
+        Some(sessions::TurnStatus::WaitingApproval)|Some(sessions::TurnStatus::WaitingUser)=>sessions::PartStatus::Pending,
+        _=>sessions::PartStatus::Error,
+    };
     for (suffix,kind,value) in [("text",sessions::PartKind::Text,text),("summary",sessions::PartKind::ReasoningSummary,summary)] {
         if value.is_empty() {continue;}
         let id=format!("{message_id}-{suffix}"); let payload=serde_json::json!({"text":value}).to_string();
@@ -95,6 +102,30 @@ pub fn checkpoint(conn:&Connection, now:i64, session_id:&str, turn_id:&str, mess
     if let Some(status)=terminal {
         sessions::update_turn_status(&tx,now,turn_id,status,error,turn.revision)?;
         tx.execute("UPDATE ai_messages SET persistence_kind='final' WHERE id=?1",[message_id]).map_err(sqlite_error)?;
+    }
+    tx.commit().map_err(sqlite_error)
+}
+
+/// 追加/更新一条事件片段（工具卡、结果引用、通知、审批等）。
+///
+/// 与 `checkpoint` 同样的安全边界：Turn 归属必须匹配、终态 Turn 拒绝迟到事件；
+/// 片段内容经 `validate_public_payload` 校验，不允许把凭据或加密载荷写进 UI 片段。
+#[allow(clippy::too_many_arguments)]
+pub fn upsert_event_part(conn:&Connection, now:i64, session_id:&str, turn_id:&str, message_id:&str,
+    part_id:&str, kind:sessions::PartKind, status:sessions::PartStatus, payload_json:&str,
+    tool_call_id:Option<&str>, result_id:Option<&str>) -> Result<()> {
+    let tx=conn.unchecked_transaction().map_err(sqlite_error)?;
+    let turn=sessions::load_turn(&tx,turn_id)?;
+    if turn.session_id!=session_id || turn.status.is_terminal() { return Err(Error::new(ErrorKind::Internal,"拒绝迟到或归属不符的任务事件")); }
+    let exists:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM ai_messages WHERE id=?1 AND session_id=?2 AND turn_id=?3)",params![message_id,session_id,turn_id],|r|r.get(0)).map_err(sqlite_error)?;
+    if !exists {
+        let seq:i64=tx.query_row("UPDATE ai_sessions SET next_message_seq=next_message_seq+1,updated_at_ms=?2 WHERE id=?1 RETURNING next_message_seq-1",params![session_id,now],|r|r.get(0)).map_err(sqlite_error)?;
+        tx.execute("INSERT INTO ai_messages(id,session_id,turn_id,seq,role,persistence_kind,created_at_ms) VALUES(?1,?2,?3,?4,'assistant','checkpoint',?5)",params![message_id,session_id,turn_id,seq,now]).map_err(sqlite_error)?;
+    }
+    let rev:Option<i64>=tx.query_row("SELECT revision FROM ai_message_parts WHERE id=?1",[part_id],|r|r.get(0)).optional().map_err(sqlite_error)?;
+    match rev {
+        Some(rev)=>{sessions::update_part(&tx,now,part_id,status,payload_json,rev)?;},
+        None=>{sessions::append_part(&tx,now,part_id,message_id,kind,status,payload_json,tool_call_id,result_id,None)?;},
     }
     tx.commit().map_err(sqlite_error)
 }

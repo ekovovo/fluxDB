@@ -81,6 +81,8 @@ impl NavicatMain {
         let cancel=fluxdb_core::CancelFlag::new();self.ai_chat.cancel=Some(cancel.clone());self.ai_chat.running=Some(job.clone());
         let (tx,rx)=std::sync::mpsc::sync_channel(4);
         let debug_scripted=cfg!(debug_assertions)&&self.ai_chat.scripted_fixture;
+        // 工具执行只读借用当前已配置连接；连接配置不含凭据（凭据在 connector 层解密）。
+        let connection_configs:Vec<fluxdb_core::ConnectionConfig>=self.controller.state().connections.iter().map(|c|c.config.clone()).collect();
         std::thread::spawn(move||{
             if debug_scripted {
                 fluxdb_app::run_ai_conversation_source(&storage,&job,&cancel,&tx,|emit|{
@@ -90,7 +92,22 @@ impl NavicatMain {
                     }
                     let e=fluxdb_core::ModelEvent::Finished(fluxdb_core::FinishReason::Stop);emit(&e);Ok(vec![e])
                 });
-            } else {fluxdb_app::run_ai_conversation(storage,job,cancel,tx);}
+            } else {
+                match fluxdb_app::AiConversationProvider::from_storage(&storage,&job.model_profile_id) {
+                    Ok(provider)=>{
+                        let resolver=std::sync::Arc::new(fluxdb_app::MapSqlResolver::new(connection_configs));
+                        match fluxdb_app::standard_sql_catalog(resolver,false) {
+                            Ok(catalog)=>{
+                                // 只读工具 + 内核权限：写操作既没有工具实现，也会被 authorize 拒绝。
+                                let permission=fluxdb_app::TurnPermissionContext{agent_allowed_tools:Vec::new(),policy:fluxdb_app::KernelPolicy::default(),plugin_digest:None};
+                                fluxdb_app::run_ai_conversation_turn(&storage,&job,&cancel,&tx,&provider,&catalog,&fluxdb_app::KernelAuditHook,permission);
+                            }
+                            Err(error)=>{fluxdb_app::run_ai_conversation_failure(&storage,&job,&tx,format!("工具目录不可用：{}",error.message));}
+                        }
+                    }
+                    Err(error)=>{fluxdb_app::run_ai_conversation_failure(&storage,&job,&tx,error.message);}
+                }
+            }
         });
         self.ai_chat._pump=Some(cx.spawn(async move|view,cx|{
             loop {

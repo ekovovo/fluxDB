@@ -65,8 +65,12 @@ pub enum LoopEvent {
     ReasoningSummaryDelta(String),
     /// 模型请求调用工具（尚未校验/授权；UI 用它展示"打算调用什么"）。
     ToolCallRequested(fluxdb_core::ToolCallRequest),
-    /// 工具开始执行。
-    ToolStarted { call: fluxdb_core::ToolCallRequest },
+    /// 工具开始执行（此时 schema 校验、审计与授权都已完成）。
+    ToolStarted {
+        call: fluxdb_core::ToolCallRequest,
+        plan_hash: String,
+        tool_version: u32,
+    },
     /// 工具真实回执。
     ToolFinished { receipt: fluxdb_core::ToolReceipt },
     /// 需要用户审批：**不执行**、不产生工具回执，等审批决定后继续（设计 §25.3）。
@@ -410,6 +414,8 @@ impl<'a> TurnRunner<'a> {
 
                 emit(LoopEvent::ToolStarted {
                     call: call.clone(),
+                    plan_hash: hash.clone(),
+                    tool_version: spec.version,
                 });
                 let ctx = fluxdb_core::ToolExecutionContext {
                     session_id: String::new(),

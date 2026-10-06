@@ -246,3 +246,16 @@ pub fn approval_matches(
         && status == ApprovalStatus::Approved
         && expires_at_ms.is_none_or(|expiry| expiry > now_ms)
 }
+
+/// 内置规则审计（内核自带规则集）。
+///
+/// 当前规则集只有"内核自身的风险 / Agent 白名单 / 连接权限"，这些由 `authorize` 强制执行；
+/// 所以这里放行，不代表跳过审计——`authorize` 仍会对写操作强制审批。
+/// 新增规则（命令黑名单、路径/前缀限制、跨库限制等）在此实现，且**不能被插件禁用**。
+pub struct KernelAuditHook;
+
+impl SecurityAuditHook for KernelAuditHook {
+    fn audit(&self, _input: &AuditInput) -> fluxdb_core::Result<AuditOutcome> {
+        Ok(AuditOutcome::Allow)
+    }
+}

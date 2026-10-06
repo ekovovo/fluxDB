@@ -561,7 +561,7 @@ fn runtime_event_from_loop(
                 call,
             })
         }
-        LoopEvent::ToolStarted { call } => {
+        LoopEvent::ToolStarted { call, .. } => {
             *seq += 1;
             Some(AiEvent::ToolStarted {
                 session_id,

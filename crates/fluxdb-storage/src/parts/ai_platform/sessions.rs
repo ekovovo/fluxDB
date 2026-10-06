@@ -1145,3 +1145,38 @@ pub fn session_snapshot(conn: &Connection, session_id: &str) -> Result<SessionSn
         ui_state,
     })
 }
+
+/// 记录一次工具调用（状态机由运行时推进；这里只写事实）。
+#[allow(clippy::too_many_arguments)]
+pub fn start_tool_call(conn:&Connection, now:i64, id:&str, session_id:&str, turn_id:&str,
+    iteration:i64, source_ordinal:i64, provider_call_id:&str, tool_id:&str, tool_version:u32,
+    plugin_digest:Option<&str>, arguments_redacted_json:&str, target_json:&str, plan_hash:&str) -> Result<()> {
+    for raw in [arguments_redacted_json,target_json] {
+        serde_json::from_str::<serde_json::Value>(raw).map_err(|_| Error::new(ErrorKind::Internal,"工具调用字段不是合法 JSON"))?;
+    }
+    conn.execute("INSERT INTO ai_tool_calls(id,session_id,turn_id,iteration,source_ordinal,provider_call_id,tool_id,tool_version,plugin_digest,arguments_redacted_json,target_json,plan_hash,status,started_at_ms) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,'running',?13)",
+        params![id,session_id,turn_id,iteration,source_ordinal,provider_call_id,tool_id,tool_version,plugin_digest,arguments_redacted_json,target_json,plan_hash,now]).map_err(sqlite_error)?;
+    Ok(())
+}
+
+/// 写回工具真实回执：回执是事实来源，UI/Hook 不得改写成功与否。
+pub fn finish_tool_call(conn:&Connection, id:&str, status:&str, receipt_json:Option<&str>,
+    started_at_ms:Option<i64>, finished_at_ms:Option<i64>) -> Result<()> {
+    const ALLOWED:&[&str]=&["prepared","waiting_approval","running","succeeded","failed","denied","cancelled","unknown"];
+    if !ALLOWED.contains(&status) { return Err(Error::new(ErrorKind::Internal,"非法工具调用状态")); }
+    if let Some(raw)=receipt_json { serde_json::from_str::<serde_json::Value>(raw).map_err(|_| Error::new(ErrorKind::Internal,"回执不是合法 JSON"))?; }
+    conn.execute("UPDATE ai_tool_calls SET status=?2,receipt_json=?3,started_at_ms=COALESCE(?4,started_at_ms),finished_at_ms=?5 WHERE id=?1",
+        params![id,status,receipt_json,started_at_ms,finished_at_ms]).map_err(sqlite_error)?;
+    Ok(())
+}
+
+/// 登记一个有界结果句柄（T027 结果分页/保留；内存结果也要有稳定 ID 才能被引用）。
+#[allow(clippy::too_many_arguments)]
+pub fn insert_result(conn:&Connection, now:i64, id:&str, session_id:&str, turn_id:&str, source_call_id:&str,
+    metadata_json:&str, status:&str, byte_count:i64) -> Result<()> {
+    serde_json::from_str::<serde_json::Value>(metadata_json).map_err(|_| Error::new(ErrorKind::Internal,"结果元数据不是合法 JSON"))?;
+    if !["available","expired","deleted","failed"].contains(&status) { return Err(Error::new(ErrorKind::Internal,"非法结果状态")); }
+    conn.execute("INSERT INTO ai_results(id,session_id,turn_id,source_call_id,metadata_json,retention_kind,status,byte_count,created_at_ms) VALUES(?1,?2,?3,?4,?5,'memory',?6,?7,?8)",
+        params![id,session_id,turn_id,source_call_id,metadata_json,status,byte_count,now]).map_err(sqlite_error)?;
+    Ok(())
+}

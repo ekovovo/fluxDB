@@ -23,18 +23,43 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     storage.save_settings(&conf)?;
     let mut controller = AppController::new();
     controller.set_ai_storage(storage.clone());
+    // 夹具也要有可用的模型绑定：恢复执行时宿主必须能按快照里的原模型构造 Provider。
+    let model_id = match controller.dispatch(AppCommand::SaveAiModel(AiModelSaveInput {
+        display_name: "恢复夹具离线模型".into(),
+        provider: "openai".into(),
+        model: "recovery-fixture-offline".into(),
+        endpoint: Some("http://127.0.0.1:1/v1".into()),
+        enabled: true,
+        context_window_tokens: Some(8_192),
+        max_output_tokens: Some(1_024),
+        ..Default::default()
+    })) {
+        AppEvent::AiModelSaved { id, .. } => id,
+        event => return Err(format!("{event:?}").into()),
+    };
     let agent = match controller.dispatch(AppCommand::SaveAiAgent(AiAgentSaveInput {
         display_name: "重启恢复 fixture".into(),
         system_prompt: "离线 fixture，不调用模型。".into(),
+        model_profile_id: Some(model_id.clone()),
         enabled: true,
         ..Default::default()
     })) {
         AppEvent::AiAgentSaved { id, .. } => id,
         event => return Err(format!("{event:?}").into()),
     };
-    for (session, tool) in [
-        ("recovery-read", "db.query"),
-        ("recovery-unknown", "db.execute"),
+    // 运行快照与生产一致：恢复时按快照里的原模型/Agent 复核，不能改用当前绑定。
+    let snapshot = serde_json::json!({
+        "model_profile_id": model_id,
+        "agent_id": agent,
+        "agent_revision": 1,
+        "system_prompt": "离线恢复夹具，不调用真实模型。",
+    })
+    .to_string();
+    // 未知写用另一条连接(30)：既不干扰对连接 29 的批准写入，
+    // 也让"同连接存在未知副作用就拒绝冲突写入"的守卫能被单独验证。
+    for (session, tool, connection) in [
+        ("recovery-read", "db.query", 29),
+        ("recovery-unknown", "db.execute", 30),
     ] {
         let turn = format!("{session}-turn");
         let msg = format!("{session}-assistant");
@@ -47,8 +72,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &turn,
             &format!("{session}-user"),
             "查看上次中断的任务",
-            "{\"connection_id\":29,\"database\":\"fixture_only\"}",
-            "{}",
+            &serde_json::json!({"connection_id": connection, "database": "fixture_only"})
+                .to_string(),
+            &snapshot,
         )?;
         conversation::checkpoint(
             &conn,
@@ -62,6 +88,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             None,
         )?;
         let call = format!("{turn}-call");
+        // 工具事实行与本轮固定目标保持一致，否则冲突守卫会误判同连接。
+        let target = serde_json::json!({"connection_id": connection, "database": "fixture_only"});
         sessions::start_tool_call(
             &conn,
             1003,
@@ -75,7 +103,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             1,
             None,
             "{}",
-            "{\"connection_id\":29,\"database\":\"fixture_only\"}",
+            &target.to_string(),
             "fixture-plan",
         )?;
         sessions::append_part(
@@ -106,6 +134,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ui.revision,
         )?;
     }
+    // 可写的 demo 连接（内存 MockConnector）：真实窗口"批准执行"用它验证写操作确实执行且只执行一次。
+    let target_json = "{\"connection_id\":29}";
+    let mut demo_options = std::collections::BTreeMap::new();
+    demo_options.insert("demo".to_string(), "true".to_string());
+    storage.save_connections(&[fluxdb_core::ConnectionConfig {
+        id: fluxdb_core::ConnectionId(29),
+        name: "T029 demo 可写".into(),
+        kind: fluxdb_core::DatabaseKind::Sqlite,
+        endpoint: fluxdb_core::Endpoint::SqliteFile {
+            path: "t029-demo.db".into(),
+            read_only: false,
+        },
+        options: demo_options,
+        redis_profile: None,
+        mysql_profile: None,
+        postgres_profile: None,
+    }])?;
     // 模拟“已批准但尚未执行就退出”的窗口；重启应要求新 revision 再次审批。
     conversation::send(
         &conn,
@@ -116,13 +161,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "recovery-approval-turn",
         "recovery-approval-user",
         "等待重新审批的离线任务",
-        "{\"connection_id\":29}",
-        "{}",
+        target_json,
+        &snapshot,
     )?;
+    let arguments =
+        "{\"target\":\"conn:29/db:main\",\"sql\":\"UPDATE product SET name='x' WHERE id=1\"}";
+    // plan_hash 必须与运行时一致（规范化参数 = 解析后重新序列化），否则批准会按设计失效。
+    let normalized = serde_json::from_str::<serde_json::Value>(arguments)?.to_string();
+    let plan = plan_hash("db.execute", 1, target_json, &normalized, None);
     sessions::create_tool_call(
         &conn,
         1008,
-        "recovery-approval-call",
+        "recovery-approval-turn-toolcall-approval-provider",
         "recovery-approval",
         "recovery-approval-turn",
         1,
@@ -131,17 +181,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "db.execute",
         1,
         None,
-        "{}",
-        "{\"connection_id\":29}",
-        "fixture-approval-plan",
+        arguments,
+        target_json,
+        &plan,
         "waiting_approval",
     )?;
     let approval = fluxdb_storage::ai_platform::audits::create_approval(
         &conn,
         1009,
         "recovery-approval-id",
-        "recovery-approval-call",
-        "fixture-approval-plan",
+        "recovery-approval-turn-toolcall-approval-provider",
+        &plan,
         "{}",
         None,
     )?;
@@ -154,7 +204,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         approval.revision,
     )?;
     conversation::upsert_event_part(&conn,1011,"recovery-approval","recovery-approval-turn","recovery-approval-assistant","recovery-approval-assistant-approval-approval-provider",sessions::PartKind::Notice,sessions::PartStatus::Complete,
-        &serde_json::json!({"text":"上次已批准，但工具尚未执行。","approval_id":approval.id,"approval_revision":2,"decision":"approved"}).to_string(),Some("recovery-approval-call"),None)?;
+        &serde_json::json!({"text":"上次已批准，但工具尚未执行。","approval_id":approval.id,"approval_revision":2,"decision":"approved"}).to_string(),Some("recovery-approval-turn-toolcall-approval-provider"),None)?;
     let turn = sessions::load_turn(&conn, "recovery-approval-turn")?;
     sessions::update_turn_status(
         &conn,

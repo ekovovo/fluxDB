@@ -42,8 +42,12 @@ pub fn plan_hash(
     normalized_arguments_json: &str,
     plugin_digest: Option<&str>,
 ) -> String {
+    // 规范化必须在哈希内部完成：serde_json 的 `Map` 顺序会随 `preserve_order` 特性
+    // 在不同编译单元/依赖图里变化，同一语义参数会算出不同 hash（跨进程复核会误判失效）。
+    let canonical_target = canonical_json_str(target_json);
+    let canonical_arguments = canonical_json_str(normalized_arguments_json);
     let material = format!(
-        "v1\u{1f}{tool_id}\u{1f}{tool_version}\u{1f}{target_json}\u{1f}{normalized_arguments_json}\u{1f}{}",
+        "v1\u{1f}{tool_id}\u{1f}{tool_version}\u{1f}{canonical_target}\u{1f}{canonical_arguments}\u{1f}{}",
         plugin_digest.unwrap_or("-")
     );
     // FNV-1a 64：稳定、无额外依赖；这里只用于"变化即失效"，不作为安全哈希。
@@ -104,8 +108,13 @@ pub enum AuditOutcome {
 /// 授权结论。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PermissionDecision {
-    Allow { plan_hash: String },
-    RequireApproval { plan_hash: String, scope: ApprovalScope },
+    Allow {
+        plan_hash: String,
+    },
+    RequireApproval {
+        plan_hash: String,
+        scope: ApprovalScope,
+    },
     Deny {
         code: &'static str,
         reason: String,
@@ -129,10 +138,7 @@ impl PermissionDecision {
 }
 
 /// 强制安全审计：审计无法执行时 **fail closed**（返回 Deny）。
-pub fn audit_or_fail_closed(
-    hook: &dyn SecurityAuditHook,
-    input: &AuditInput,
-) -> AuditOutcome {
+pub fn audit_or_fail_closed(hook: &dyn SecurityAuditHook, input: &AuditInput) -> AuditOutcome {
     match hook.audit(input) {
         Ok(outcome) => outcome,
         // 审计不可用 = 拒绝，绝不"先执行再说"。
@@ -176,7 +182,10 @@ pub fn authorize(input: &AuthorizeInput) -> PermissionDecision {
 
     // 1) Agent 白名单（空 = 不限制）。
     if !input.agent_allowed_tools.is_empty()
-        && !input.agent_allowed_tools.iter().any(|id| id == &input.tool_id)
+        && !input
+            .agent_allowed_tools
+            .iter()
+            .any(|id| id == &input.tool_id)
     {
         return deny(
             "tool_not_allowed",
@@ -215,8 +224,8 @@ pub fn authorize(input: &AuthorizeInput) -> PermissionDecision {
     };
 
     // 4) 写操作一律需要审批（内核规则），读操作按审计结论。
-    let needs_approval = audit == AuditOutcome::RequireApproval
-        || input.risk != fluxdb_core::ToolRisk::Read;
+    let needs_approval =
+        audit == AuditOutcome::RequireApproval || input.risk != fluxdb_core::ToolRisk::Read;
     if needs_approval {
         return PermissionDecision::RequireApproval {
             plan_hash: hash,
@@ -257,5 +266,76 @@ pub struct KernelAuditHook;
 impl SecurityAuditHook for KernelAuditHook {
     fn audit(&self, _input: &AuditInput) -> fluxdb_core::Result<AuditOutcome> {
         Ok(AuditOutcome::Allow)
+    }
+}
+
+/// 连接是否被标记为只读：SQLite 走 endpoint 标记，其它类型走显式 `options["read_only"]`。
+pub fn connection_is_read_only(config: &fluxdb_core::ConnectionConfig) -> bool {
+    matches!(
+        config.endpoint,
+        fluxdb_core::Endpoint::SqliteFile {
+            read_only: true,
+            ..
+        }
+    ) || config
+        .options
+        .get("read_only")
+        .is_some_and(|value| value == "true")
+}
+
+/// 由**本轮固定目标连接**推导内核权限（设计 §25、§29）。
+///
+/// - 读：允许（真正的资源校验仍在 resolver/连接层，未固定连接时工具会因目标无效失败）；
+/// - 写：只有目标连接未被标记只读才允许，且**仍需逐次审批**（`authorize` 对 Write 强制 RequireApproval）；
+/// - 管理：默认拒绝。
+///
+/// 没有固定连接时写权限为 false：不能因为"没指定目标"就落到任意连接去写。
+pub fn kernel_policy_for_connection(
+    config: Option<&fluxdb_core::ConnectionConfig>,
+) -> KernelPolicy {
+    KernelPolicy {
+        read_allowed: true,
+        write_allowed: config.is_some_and(|config| !connection_is_read_only(config)),
+        admin_allowed: false,
+    }
+}
+
+/// 规范化 JSON：对象键递归按字典序排序，数组保持顺序；解析失败时原样返回。
+///
+/// `plan_hash` 的输入必须经过它，否则同一语义的 JSON 只因键顺序不同就会得到不同 hash。
+pub fn canonical_json_str(raw: &str) -> String {
+    match serde_json::from_str::<serde_json::Value>(raw) {
+        Ok(value) => canonical_json(&value),
+        Err(_) => raw.to_string(),
+    }
+}
+
+fn canonical_json(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::Object(map) => {
+            let mut keys: Vec<&String> = map.keys().collect();
+            keys.sort();
+            let body = keys
+                .into_iter()
+                .map(|key| {
+                    format!(
+                        "{}:{}",
+                        serde_json::Value::String(key.clone()),
+                        canonical_json(&map[key])
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(",");
+            format!("{{{body}}}")
+        }
+        serde_json::Value::Array(items) => {
+            let body = items
+                .iter()
+                .map(canonical_json)
+                .collect::<Vec<_>>()
+                .join(",");
+            format!("[{body}]")
+        }
+        other => other.to_string(),
     }
 }

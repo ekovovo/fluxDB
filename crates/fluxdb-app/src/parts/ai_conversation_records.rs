@@ -121,7 +121,47 @@ fn ai_conversation_record_tool_result(
     })
     .to_string();
     let byte_count = receipt.result_json.len() as i64;
+    let plan_hash = serde_json::from_str::<serde_json::Value>(&receipt.result_json)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("plan_hash")
+                .and_then(|v| v.as_str())
+                .map(str::to_owned)
+        })
+        .unwrap_or_default();
     with_ai_storage(storage, |conn| {
+        // 行 ID 可能是运行时约定、也可能来自别的来源：先按 ID 找，再按 (turn, provider_call_id) 找，
+        // 都找不到才补行（内核拒绝不经过 ToolStarted，本来就没有事实行）。
+        let call_row = if fluxdb_storage::ai_platform::sessions::load_tool_call(conn, &call_row).is_ok() {
+            call_row
+        } else if let Some(existing) = fluxdb_storage::ai_platform::sessions::find_tool_call_id_by_provider_call(conn, &job.turn_id, &receipt.call_id)? {
+            existing
+        } else {
+            let target = fluxdb_storage::ai_platform::sessions::load_turn(conn, &job.turn_id)
+                .map(|turn| turn.target_json)
+                .unwrap_or_else(|_| "{}".into());
+            let (iteration, ordinal) =
+                fluxdb_storage::ai_platform::sessions::next_tool_call_ordinal(conn, &job.turn_id)?;
+            fluxdb_storage::ai_platform::sessions::create_tool_call(
+                conn,
+                ai_chat_now(),
+                &call_row,
+                &job.session_id,
+                &job.turn_id,
+                iteration,
+                ordinal,
+                &receipt.call_id,
+                &receipt.tool_id,
+                1,
+                None,
+                "{}",
+                &target,
+                &plan_hash,
+                "denied",
+            )?;
+            call_row
+        };
         fluxdb_storage::ai_platform::sessions::finish_tool_call(
             conn,
             &call_row,
@@ -130,17 +170,42 @@ fn ai_conversation_record_tool_result(
             Some(receipt.started_at_ms),
             Some(receipt.finished_at_ms),
         )?;
-        fluxdb_storage::ai_platform::sessions::insert_result(
-            conn,
-            ai_chat_now(),
-            &result_row,
-            &job.session_id,
-            &job.turn_id,
-            &call_row,
-            &serde_json::json!({"tool":receipt.tool_id,"call_id":receipt.call_id}).to_string(),
-            "available",
-            byte_count,
-        )?;
+        // 拒绝不是"执行结果"：只留调用事实与卡片，不登记结果句柄。
+        let result_ref = if receipt.status == fluxdb_core::ToolReceiptStatus::Denied {
+            None
+        } else {
+            fluxdb_storage::ai_platform::sessions::insert_result(
+                conn,
+                ai_chat_now(),
+                &result_row,
+                &job.session_id,
+                &job.turn_id,
+                &call_row,
+                &serde_json::json!({"tool":receipt.tool_id,"call_id":receipt.call_id}).to_string(),
+                "available",
+                byte_count,
+            )?;
+            Some(result_row.clone())
+        };
+        // 恢复横幅若还在说"尚未执行"，执行完必须同步更新，不能让 UI 与事实相反。
+        let notice = format!("{}-restart-notice", job.turn_id);
+        if let Ok(part) = fluxdb_storage::ai_platform::sessions::load_part(conn, &notice) {
+            let text = match call_status {
+                "succeeded" => "重启后的调用已执行完成，结果见下方结果引用。",
+                "failed" => "重启后的调用已执行但失败，详见结果卡与错误码。",
+                "unknown" => "重启后的调用已执行，但结果无法确认；请先核对数据库/外部系统。",
+                "denied" => "重启后的调用已被拒绝，没有执行。",
+                _ => "重启后的调用已处理。",
+            };
+            fluxdb_storage::ai_platform::sessions::update_part(
+                conn,
+                ai_chat_now(),
+                &notice,
+                fluxdb_storage::ai_platform::sessions::PartStatus::Complete,
+                &serde_json::json!({"text":text,"recovery_status":"resolved"}).to_string(),
+                part.revision,
+            )?;
+        }
         fluxdb_storage::ai_platform::conversation::upsert_event_part(
             conn,
             ai_chat_now(),
@@ -152,7 +217,7 @@ fn ai_conversation_record_tool_result(
             part_status,
             &payload,
             Some(&call_row),
-            Some(&result_row),
+            result_ref.as_deref(),
         )
     })
 }

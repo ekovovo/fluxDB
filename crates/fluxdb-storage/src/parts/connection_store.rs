@@ -260,13 +260,17 @@ fn from_config(connection: &ConnectionConfig) -> Result<StoredInsert> {
         }
         Endpoint::Uri { uri } => (ENDPOINT_URI, None, None, None, Some(uri.clone()), None),
     };
+    // SQLite 走 endpoint 标记；其它类型用显式 options 表达只读，保证读-only 语义可跨类型往返。
     let read_only = matches!(
         connection.endpoint,
         Endpoint::SqliteFile {
             read_only: true,
             ..
         }
-    );
+    ) || connection
+        .options
+        .get("read_only")
+        .is_some_and(|value| value == "true");
     Ok(StoredInsert {
         id: connection.id.0 as i64,
         name: connection.name.clone(),
@@ -344,12 +348,17 @@ fn to_config(row: StoredRow) -> Result<ConnectionConfig> {
             format!("连接 {} 的类型专属参数无法解析: {error}", row.id),
         )
     })?;
+    let mut options = extra.options;
+    // 非 SQLite 的 endpoint 不带只读位；把行级标记投影到 options，读-only 语义才不会在加载时丢失。
+    if row.read_only && !matches!(endpoint, Endpoint::SqliteFile { .. }) {
+        options.insert("read_only".into(), "true".into());
+    }
     Ok(ConnectionConfig {
         id: fluxdb_core::ConnectionId(row.id as u64),
         name: row.name,
         kind,
         endpoint,
-        options: extra.options,
+        options,
         redis_profile: extra.redis_profile,
         mysql_profile: extra.mysql_profile,
         postgres_profile: extra.postgres_profile,

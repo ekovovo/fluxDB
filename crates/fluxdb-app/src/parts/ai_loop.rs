@@ -136,6 +136,7 @@ fn loop_denied_receipt(
     call: &fluxdb_core::ToolCallRequest,
     code: &str,
     reason: &str,
+    plan_hash: &str,
     started_at_ms: i64,
 ) -> fluxdb_core::ToolReceipt {
     fluxdb_core::ToolReceipt {
@@ -147,6 +148,8 @@ fn loop_denied_receipt(
             "code": code,
             "message": reason,
             "retryable": false,
+            // 内核拒绝也要留下 plan_hash：宿主据此落审计事实行（拒绝不是"没有发生过"）。
+            "plan_hash": plan_hash,
         })
         .to_string(),
         error_code: Some(code.to_string()),
@@ -376,7 +379,7 @@ impl<'a> TurnRunner<'a> {
                 match decision {
                     // 4a) 拒绝：合成 Denied 回执回给模型，永不执行。
                     PermissionDecision::Deny { code, reason, .. } => {
-                        let receipt = loop_denied_receipt(&call, code, &reason, loop_now_ms());
+                        let receipt = loop_denied_receipt(&call, code, &reason, &hash, loop_now_ms());
                         emit(LoopEvent::ToolFinished {
                             receipt: receipt.clone(),
                         });

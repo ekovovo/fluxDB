@@ -1034,7 +1034,22 @@ pub fn run_ai_conversation_resume_approval(
         }
     };
     if let Err(error) = ai_conversation_record_tool_result(storage, &job, &receipt) {
-        tracing::warn!(turn_id=%job.turn_id,"工具回执保存失败");
+        // 工具已经真实执行，但回执没能落盘：绝不能让调用停在 running 假装"还在跑"。
+        // 先尽力标记 unknown（T029 按未知副作用处理），再把错误显式交给用户。
+        tracing::warn!(turn_id=%job.turn_id, error=%error.message, "工具回执保存失败");
+        let _ = with_ai_storage(storage, |conn| {
+            fluxdb_storage::ai_platform::sessions::finish_tool_call(
+                conn,
+                &format!("{}-toolcall-{}", job.turn_id, receipt.call_id),
+                "unknown",
+                Some(&receipt.result_json),
+                Some(receipt.started_at_ms),
+                Some(receipt.finished_at_ms),
+            )
+        });
+        run_ai_conversation_failure(storage, &job, sender,
+            format!("工具已执行但回执保存失败，已标记为结果未知：{}", error.message));
+        return;
     }
 
     let message = fluxdb_core::ModelMessage::new(

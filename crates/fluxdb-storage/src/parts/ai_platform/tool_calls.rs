@@ -184,3 +184,28 @@ pub fn list_tool_calls_for_turn(conn: &Connection, turn_id: &str) -> Result<Vec<
         .map(|id| load_tool_call(conn, &id))
         .collect()
 }
+
+/// 按 `(turn_id, provider_call_id)` 找工具调用（语义键；ID 命名约定可能不同来源）。
+pub fn find_tool_call_id_by_provider_call(
+    conn: &Connection,
+    turn_id: &str,
+    provider_call_id: &str,
+) -> Result<Option<String>> {
+    conn.query_row(
+        "SELECT id FROM ai_tool_calls WHERE turn_id=?1 AND provider_call_id=?2 ORDER BY iteration DESC LIMIT 1",
+        params![turn_id, provider_call_id],
+        |row| row.get::<_, String>(0),
+    )
+    .optional()
+    .map_err(sqlite_error)
+}
+
+/// 该 Turn 下一个可用的调用序号（回执补行时避免撞 UNIQUE(turn_id, iteration, source_ordinal)）。
+pub fn next_tool_call_ordinal(conn: &Connection, turn_id: &str) -> Result<(i64, i64)> {
+    conn.query_row(
+        "SELECT COALESCE(MAX(iteration),0)+1, COALESCE(MAX(source_ordinal),-1)+1 FROM ai_tool_calls WHERE turn_id=?1",
+        [turn_id],
+        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+    )
+    .map_err(sqlite_error)
+}

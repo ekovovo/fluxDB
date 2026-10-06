@@ -246,6 +246,7 @@ UI原型：`docs/prototype/ai-agent-ui.html`（本机 `/Users/shining3d/fusuwei/
 
 
 ### T024 SQL 只读保证、风险分类和修改执行
+- 2026-10-06：② 注册写工具 `db.execute`（写权限取固定目标连接只读标记 + 逐次审批；计划哈希改为规范化 JSON；拒绝补事实行）已完成并有 app 集成与真实窗口验收记录：`docs/testing/ai-agent/t024-write-tool-2026-10-06.md`；真实 MySQL/PostgreSQL 写入属 ③，未做，保持未勾选。
 - [ ] 依赖：T023；设计 §21。
 - 改动：对应 dialect AST、服务端读取策略、db.query/db.execute/db.explain、批量计划/审批。
 - 验收：WITH 修改、SELECT INTO、副作用函数、EXPLAIN ANALYZE、锁语句、未知语法、跨 schema；E05；不能保证的数据库明确降为需授权风险，不宣称安全读取。

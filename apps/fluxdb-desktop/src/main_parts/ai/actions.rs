@@ -242,15 +242,28 @@ impl NavicatMain {
                     &job.model_profile_id,
                 ) {
                     Ok(provider) => {
+                        // 工具只暴露**本轮固定目标连接**：模型不能借 conn:<其它 id> 越权访问别的连接。
+                        let (connection_id, agent_allowed_tools) =
+                            fluxdb_app::ai_turn_security_context(&storage, &job.turn_id)
+                                .unwrap_or((None, Vec::new()));
+                        let pinned = connection_id.and_then(|id| {
+                            connection_configs
+                                .iter()
+                                .find(|config| config.id.0 as i64 == id)
+                                .cloned()
+                        });
+                        let include_write = pinned
+                            .as_ref()
+                            .is_some_and(|config| !fluxdb_app::connection_is_read_only(config));
                         let resolver = std::sync::Arc::new(fluxdb_app::MapSqlResolver::new(
-                            connection_configs,
+                            pinned.iter().cloned().collect::<Vec<_>>(),
                         ));
-                        match fluxdb_app::standard_sql_catalog(resolver, false) {
+                        match fluxdb_app::standard_sql_catalog(resolver, include_write) {
                             Ok(catalog) => {
-                                // 只读工具 + 内核权限：写操作既没有工具实现，也会被 authorize 拒绝。
+                                // 写权限来自目标连接（只读连接连写工具都不注册），且 authorize 对 Write 强制逐次审批。
                                 let permission = fluxdb_app::TurnPermissionContext {
-                                    agent_allowed_tools: Vec::new(),
-                                    policy: fluxdb_app::KernelPolicy::default(),
+                                    agent_allowed_tools,
+                                    policy: fluxdb_app::kernel_policy_for_connection(pinned.as_ref()),
                                     plugin_digest: None,
                                 };
                                 match resume_approval.as_deref() {

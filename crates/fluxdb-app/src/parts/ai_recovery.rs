@@ -198,3 +198,43 @@ impl AppController {
         }
     }
 }
+
+/// 本轮安全上下文（全部非敏感）：固定目标连接 ID + Agent 允许工具。
+///
+/// 两者都必须来自**本轮固定快照**而不是"当前界面"：否则切标签/换 Agent 会让旧任务悄悄扩大权限。
+pub fn ai_turn_security_context(
+    storage: &fluxdb_storage::FileStorage,
+    turn_id: &str,
+) -> fluxdb_core::Result<(Option<i64>, Vec<String>)> {
+    with_ai_storage(storage, |conn| {
+        let turn = fluxdb_storage::ai_platform::sessions::load_turn(conn, turn_id)?;
+        let target: serde_json::Value = serde_json::from_str(&turn.target_json).map_err(|_| {
+            fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, "任务目标不是合法 JSON")
+        })?;
+        let connection_id = target
+            .get("connection_id")
+            .and_then(serde_json::Value::as_i64);
+        let session = fluxdb_storage::ai_platform::sessions::load_session(conn, &turn.session_id)?;
+        let allowed_tools =
+            fluxdb_storage::ai_platform::agents::load_agent(conn, &session.agent_id)
+                .map(|agent| agent.allowed_tools)
+                .unwrap_or_default();
+        Ok((connection_id, allowed_tools))
+    })
+}
+
+/// 读取某轮固定的目标连接 ID（T021 固定目标；恢复与工具 resolver 都按它构造）。
+pub fn ai_turn_connection_id(
+    storage: &fluxdb_storage::FileStorage,
+    turn_id: &str,
+) -> fluxdb_core::Result<Option<i64>> {
+    with_ai_storage(storage, |conn| {
+        let turn = fluxdb_storage::ai_platform::sessions::load_turn(conn, turn_id)?;
+        let target: serde_json::Value = serde_json::from_str(&turn.target_json).map_err(|_| {
+            fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, "任务目标不是合法 JSON")
+        })?;
+        Ok(target
+            .get("connection_id")
+            .and_then(serde_json::Value::as_i64))
+    })
+}

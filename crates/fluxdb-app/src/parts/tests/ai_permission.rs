@@ -483,3 +483,38 @@ fn ai_permission_approval_matches_semantics() {
         5_000
     ));
 }
+
+#[test]
+fn plan_hash_is_order_independent_and_canonical() {
+    // serde_json 的 Map 顺序在不同编译单元/依赖图下可能不同；同一语义参数必须得到同一 hash。
+    let a = plan_hash(
+        "db.execute",
+        1,
+        r#"{"connection_id":29,"database":"main"}"#,
+        r#"{"target":"conn:29","sql":"UPDATE t SET a=1"}"#,
+        None,
+    );
+    let b = plan_hash(
+        "db.execute",
+        1,
+        r#"{"database":"main","connection_id":29}"#,
+        r#"{"sql":"UPDATE t SET a=1","target":"conn:29"}"#,
+        None,
+    );
+    assert_eq!(a, b, "同一语义、不同键顺序必须得到同一 plan_hash");
+
+    // 嵌套对象/数组同样要规范化。
+    let nested_a = plan_hash("t", 1, "{}", r#"{"p":{"b":2,"a":1},"l":[{"y":1,"x":2}]}"#, None);
+    let nested_b = plan_hash("t", 1, "{}", r#"{"l":[{"x":2,"y":1}],"p":{"a":1,"b":2}}"#, None);
+    assert_eq!(nested_a, nested_b);
+
+    // 语义变化必须换 hash（旧审批自然失效）。
+    assert_ne!(
+        nested_a,
+        plan_hash("t", 1, "{}", r#"{"p":{"a":1,"b":3},"l":[{"x":2,"y":1}]}"#, None)
+    );
+    assert_ne!(a, plan_hash("db.execute", 2, r#"{"connection_id":29,"database":"main"}"#, r#"{"sql":"UPDATE t SET a=1","target":"conn:29"}"#, None));
+    assert_ne!(a, plan_hash("db.execute", 1, r#"{"connection_id":30,"database":"main"}"#, r#"{"sql":"UPDATE t SET a=1","target":"conn:29"}"#, None));
+    // 非 JSON 输入退化为原样哈希，不 panic。
+    assert!(!plan_hash("t", 1, "not-json", "not-json", None).is_empty());
+}

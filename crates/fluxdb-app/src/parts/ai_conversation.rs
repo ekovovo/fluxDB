@@ -414,7 +414,7 @@ pub fn run_ai_conversation(
             let sealed=sealed.ok_or_else(||fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal,"模型缺少 API Key"))?;
             let (cipher,_)=fluxdb_storage::ai_platform::load_ai_cipher(storage.root_dir())?;
             let key=fluxdb_storage::ai_platform::model_secret::open(&cipher,&model.id,&sealed).map_err(|_|fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal,"模型凭据不可用"))?;
-            match protocol{ChatProtocol::OpenAiCompatible=>TransportAuth::Bearer(key),ChatProtocol::AnthropicMessages=>TransportAuth::Header{name:"x-api-key",value:key}}
+            match protocol{ChatProtocol::OpenAiCompatible|ChatProtocol::OpenAiResponses=>TransportAuth::Bearer(key),ChatProtocol::AnthropicMessages=>TransportAuth::Header{name:"x-api-key",value:key}}
         };
         let base=model.endpoint.as_deref().unwrap_or(if protocol==ChatProtocol::OpenAiCompatible {"https://api.openai.com/v1"} else {"https://api.anthropic.com/v1"});
         let endpoint=ai_request_url(base,&model.api_protocol,model.endpoint_is_full_url)?;

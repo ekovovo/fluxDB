@@ -450,3 +450,95 @@ fn transport_stream_chat_local_mock_server_round_trip() {
     let request = String::from_utf8_lossy(&request);
     assert!(request.starts_with("POST /v1/chat/completions "));
 }
+
+// ---- OpenAI Responses（openai-responses）SSE 投影 ----
+
+#[test]
+fn ai_transport_responses_projects_text_tool_and_completion() {
+    let mut state = StreamState::default();
+    let payloads = [
+        r#"{"type":"response.created","response":{"id":"r1"}}"#,
+        r#"{"type":"response.output_text.delta","delta":"就"}"#,
+        r#"{"type":"response.output_text.delta","delta":"绪"}"#,
+        r#"{"type":"response.output_item.added","item":{"id":"fc1","type":"function_call","call_id":"call_1","name":"db_query","arguments":""}}"#,
+        r#"{"type":"response.function_call_arguments.delta","item_id":"fc1","delta":"{\"sql\":\"SELECT 1\"}"}"#,
+        r#"{"type":"response.output_item.done","item":{"id":"fc1","type":"function_call","call_id":"call_1","name":"db_query","arguments":"{\"sql\":\"SELECT 1\"}"}}"#,
+        r#"{"type":"response.completed","response":{"usage":{"input_tokens":18,"output_tokens":68,"input_tokens_details":{"cached_tokens":4}}}}"#,
+    ];
+    let mut events = Vec::new();
+    for payload in payloads {
+        events.extend(
+            parse_sse_payload(ChatProtocol::OpenAiResponses, payload, &mut state).expect("解析"),
+        );
+    }
+    assert!(matches!(&events[0], fluxdb_core::ModelEvent::TextDelta(text) if text == "就"));
+    assert!(matches!(&events[1], fluxdb_core::ModelEvent::TextDelta(text) if text == "绪"));
+    let call = events
+        .iter()
+        .find_map(|event| match event {
+            fluxdb_core::ModelEvent::ToolCallRequested(call) => Some(call.clone()),
+            _ => None,
+        })
+        .expect("工具调用");
+    assert_eq!(call.provider_call_id, "call_1");
+    assert_eq!(call.tool_id, "db_query");
+    assert_eq!(call.arguments_json, r#"{"sql":"SELECT 1"}"#);
+    let usage = events
+        .iter()
+        .find_map(|event| match event {
+            fluxdb_core::ModelEvent::Usage(usage) => Some(*usage),
+            _ => None,
+        })
+        .expect("usage");
+    assert_eq!(usage.input_tokens, 18);
+    assert_eq!(usage.output_tokens, 68);
+    assert_eq!(usage.cached_input_tokens, 4);
+    assert_eq!(
+        events.last(),
+        Some(&fluxdb_core::ModelEvent::Finished(fluxdb_core::FinishReason::Stop))
+    );
+}
+
+#[test]
+fn ai_transport_responses_maps_incomplete_and_failed_without_leaking_reasoning() {
+    // 私有推理增量（reasoning_text.*）必须被忽略：不能进事件、不能落库。
+    let mut state = StreamState::default();
+    let reasoning = parse_sse_payload(
+        ChatProtocol::OpenAiResponses,
+        r#"{"type":"response.reasoning_text.delta","delta":"private chain of thought"}"#,
+        &mut state,
+    )
+    .expect("解析");
+    assert!(reasoning.is_empty(), "私有推理不得投影成事件");
+
+    // 公开摘要增量仍然映射。
+    let summary = parse_sse_payload(
+        ChatProtocol::OpenAiResponses,
+        r#"{"type":"response.reasoning_summary_text.delta","delta":"先看表结构"}"#,
+        &mut state,
+    )
+    .expect("解析");
+    assert!(matches!(
+        summary.as_slice(),
+        [fluxdb_core::ModelEvent::ReasoningSummaryDelta(text)] if text == "先看表结构"
+    ));
+
+    // 长度截断 / 失败 / 连接中途断开都要有明确终态，不能静默"空回复"。
+    for (payload, expected) in [
+        (
+            r#"{"type":"response.incomplete","response":{"incomplete_details":{"reason":"max_output_tokens"}}}"#,
+            fluxdb_core::FinishReason::Length,
+        ),
+        (r#"{"type":"response.failed"}"#, fluxdb_core::FinishReason::Error),
+        (r#"{"type":"error","message":"boom"}"#, fluxdb_core::FinishReason::Error),
+    ] {
+        let mut state = StreamState::default();
+        let events = parse_sse_payload(ChatProtocol::OpenAiResponses, payload, &mut state)
+            .expect("解析");
+        assert_eq!(
+            events,
+            vec![fluxdb_core::ModelEvent::Finished(expected)],
+            "payload={payload}"
+        );
+    }
+}

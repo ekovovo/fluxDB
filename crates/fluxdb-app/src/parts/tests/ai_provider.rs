@@ -645,3 +645,78 @@ fn ai_provider_does_not_follow_redirects_and_sends_anthropic_version() {
         "Anthropic 形态必须带 anthropic-version 头，实际请求头:\n{head}"
     );
 }
+
+#[test]
+fn ai_provider_responses_body_pairs_tool_calls_and_outputs() {
+    use fluxdb_core::{ModelMessage, ModelRole, ModelToolCall};
+    let mapper = ToolNameMapper::new(&[fluxdb_core::ToolDescriptor {
+        id: "db.query".into(),
+        version: 1,
+        description: "查询".into(),
+        risk: fluxdb_core::ToolRisk::Read,
+        input_schema_json: r#"{"type":"object"}"#.into(),
+    }])
+    .expect("映射");
+    let request = fluxdb_core::ModelRequest {
+        model: "m".into(),
+        messages: vec![
+            ModelMessage::new(ModelRole::System, "你是数据库助手"),
+            ModelMessage::new(ModelRole::User, "查一下"),
+            ModelMessage::assistant_with_tool_calls(
+                "",
+                vec![ModelToolCall {
+                    provider_call_id: "call_1".into(),
+                    tool_id: "db.query".into(),
+                    arguments_json: r#"{"sql":"select 1"}"#.into(),
+                }],
+            ),
+            ModelMessage::tool_result("call_1", "db.query", r#"{"tool":"db.query"}"#),
+        ],
+        tools: vec![fluxdb_core::ToolDescriptor {
+            id: "db.query".into(),
+            version: 1,
+            description: "查询".into(),
+            risk: fluxdb_core::ToolRisk::Read,
+            input_schema_json: r#"{"type":"object"}"#.into(),
+        }],
+        max_output_tokens: Some(64),
+    };
+    let body = build_chat_body(
+        ChatProtocol::OpenAiResponses,
+        "m",
+        &request,
+        &mapper,
+        fluxdb_core::ModelCapabilities {
+            streaming: true,
+            tool_calling: true,
+            reasoning_summary: false,
+        },
+        Some(64),
+    );
+    // system 进顶层 instructions，不进 input。
+    assert_eq!(body["instructions"], serde_json::json!("你是数据库助手"));
+    assert_eq!(body["stream"], serde_json::json!(true));
+    assert_eq!(body["max_output_tokens"], serde_json::json!(64));
+    // 工具名必须用 Provider 安全名（点号会被替换）。
+    assert_eq!(body["tools"][0]["name"], serde_json::json!("db_query"));
+    assert_eq!(body["tools"][0]["type"], serde_json::json!("function"));
+    let input = body["input"].as_array().expect("input 数组");
+    let kinds: Vec<&str> = input
+        .iter()
+        .map(|item| item["type"].as_str().unwrap_or("message"))
+        .collect();
+    assert_eq!(kinds, vec!["message", "function_call", "function_call_output"]);
+    // assistant 的 function_call 必须带 call_id + Provider 名；结果必须回到同一 call_id。
+    let call = input
+        .iter()
+        .find(|item| item["type"] == "function_call")
+        .expect("function_call");
+    assert_eq!(call["call_id"], serde_json::json!("call_1"));
+    assert_eq!(call["name"], serde_json::json!("db_query"));
+    let output = input
+        .iter()
+        .find(|item| item["type"] == "function_call_output")
+        .expect("function_call_output");
+    assert_eq!(output["call_id"], serde_json::json!("call_1"));
+    assert_eq!(output["output"], serde_json::json!(r#"{"tool":"db.query"}"#));
+}

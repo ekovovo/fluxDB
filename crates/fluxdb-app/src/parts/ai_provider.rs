@@ -212,6 +212,86 @@ pub fn build_chat_body(
             }
             body
         }
+        crate::ChatProtocol::OpenAiResponses => {
+            // Responses API：system 走顶层 `instructions`；function_call / function_call_output 必须成对重放。
+            let instructions: Vec<String> = request
+                .messages
+                .iter()
+                .filter(|message| message.role == fluxdb_core::ModelRole::System)
+                .map(|message| message.text.clone())
+                .collect();
+            let mut input: Vec<serde_json::Value> = Vec::new();
+            for message in &request.messages {
+                match message.role {
+                    fluxdb_core::ModelRole::System => {}
+                    fluxdb_core::ModelRole::User => input.push(serde_json::json!({
+                        "type": "message",
+                        "role": "user",
+                        "content": [{ "type": "input_text", "text": message.text }],
+                    })),
+                    fluxdb_core::ModelRole::Assistant => {
+                        if !message.text.is_empty() {
+                            input.push(serde_json::json!({
+                                "type": "message",
+                                "role": "assistant",
+                                "content": [{ "type": "output_text", "text": message.text }],
+                            }));
+                        }
+                        for call in &message.tool_calls {
+                            input.push(serde_json::json!({
+                                "type": "function_call",
+                                "call_id": call.provider_call_id,
+                                "name": mapper.to_provider(&call.tool_id).unwrap_or(call.tool_id.as_str()),
+                                "arguments": call.arguments_json,
+                            }));
+                        }
+                    }
+                    fluxdb_core::ModelRole::Tool => match &message.tool_call_id {
+                        Some(call_id) => input.push(serde_json::json!({
+                            "type": "function_call_output",
+                            "call_id": call_id,
+                            "output": message.text,
+                        })),
+                        None => input.push(serde_json::json!({
+                            "type": "message",
+                            "role": "user",
+                            "content": [{ "type": "input_text", "text": message.text }],
+                        })),
+                    },
+                }
+            }
+            let mut body = serde_json::json!({
+                "model": model,
+                "input": input,
+                "stream": true,
+            });
+            if !instructions.is_empty() {
+                body["instructions"] = serde_json::json!(instructions.join("\n"));
+            }
+            if let Some(max) = max_tokens {
+                body["max_output_tokens"] = serde_json::json!(max);
+            }
+            if capabilities.tool_calling && !request.tools.is_empty() {
+                let tools: Vec<serde_json::Value> = request
+                    .tools
+                    .iter()
+                    .filter_map(|tool| {
+                        mapper.to_provider(&tool.id).map(|name| {
+                            serde_json::json!({
+                                "type": "function",
+                                "name": name,
+                                "description": tool.description,
+                                "parameters": serde_json::from_str::<serde_json::Value>(
+                                    &tool.input_schema_json
+                                ).unwrap_or_else(|_| serde_json::json!({"type":"object"})),
+                            })
+                        })
+                    })
+                    .collect();
+                body["tools"] = serde_json::json!(tools);
+            }
+            body
+        }
         crate::ChatProtocol::AnthropicMessages => {
             // Anthropic 的 system 是顶层字段，消息里只放 user/assistant（tool 结果用 user 承载）。
             let system: Vec<String> = request

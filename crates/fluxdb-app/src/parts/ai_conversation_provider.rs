@@ -26,6 +26,7 @@ impl AiConversationProvider {
         let protocol = match model.api_protocol.as_str() {
             "openai-compatible" => ChatProtocol::OpenAiCompatible,
             "anthropic-messages" => ChatProtocol::AnthropicMessages,
+            "openai-responses" => ChatProtocol::OpenAiResponses,
             _ => {
                 return Err(fluxdb_core::Error::new(
                     fluxdb_core::ErrorKind::Internal,
@@ -45,7 +46,9 @@ impl AiConversationProvider {
                     fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, "模型凭据不可用")
                 })?;
             match protocol {
-                ChatProtocol::OpenAiCompatible => TransportAuth::Bearer(key),
+                ChatProtocol::OpenAiCompatible | ChatProtocol::OpenAiResponses => {
+                    TransportAuth::Bearer(key)
+                }
                 ChatProtocol::AnthropicMessages => TransportAuth::Header {
                     name: "x-api-key",
                     value: key,
@@ -122,7 +125,7 @@ impl fluxdb_core::GenerationProvider for AiConversationProvider {
             };
             let mut events: Vec<fluxdb_core::ModelEvent> = Vec::new();
             let mut emit = |event: &fluxdb_core::ModelEvent| events.push(event.clone());
-            stream_chat_emit(
+            let events = stream_chat_emit(
                 TransportLimits {
                     max_total_bytes: 512 * 1024,
                     read_timeout: std::time::Duration::from_secs(30),
@@ -137,7 +140,36 @@ impl fluxdb_core::GenerationProvider for AiConversationProvider {
                 &mut emit,
             )
             .map_err(TransportError::to_core_error)?;
-            Ok(events)
+            // 回程：Provider 安全名称 → 宿主稳定 ID（`db_query` → `db.query`）。
+            // 不做这步，真实模型返回的工具名会被当成"未注册工具"拒绝；声明了工具能力却收到未知名称属协议错误。
+            let mut mapped = Vec::with_capacity(events.len());
+            for event in events {
+                match event {
+                    fluxdb_core::ModelEvent::ToolCallRequested(call) => {
+                        if !self.capabilities.tool_calling {
+                            return Err(fluxdb_core::Error::new(
+                                fluxdb_core::ErrorKind::Internal,
+                                "模型未声明工具能力却返回工具调用",
+                            ));
+                        }
+                        let Some(host_id) = mapper.to_host(&call.tool_id) else {
+                            return Err(fluxdb_core::Error::new(
+                                fluxdb_core::ErrorKind::Internal,
+                                format!("模型返回了未注册的工具: {}", call.tool_id),
+                            ));
+                        };
+                        mapped.push(fluxdb_core::ModelEvent::ToolCallRequested(
+                            fluxdb_core::ToolCallRequest {
+                                provider_call_id: call.provider_call_id,
+                                tool_id: host_id.to_string(),
+                                arguments_json: call.arguments_json,
+                            },
+                        ));
+                    }
+                    other => mapped.push(other),
+                }
+            }
+            Ok(mapped)
         })
     }
 }

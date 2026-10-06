@@ -39,6 +39,8 @@ impl Default for TransportLimits {
 pub enum ChatProtocol {
     OpenAiCompatible,
     AnthropicMessages,
+    /// OpenAI Responses API（`POST /v1/responses`，SSE 事件以 `response.*` 命名）。
+    OpenAiResponses,
 }
 
 /// 传输层错误（不含任何凭据/响应正文碎片）。
@@ -236,11 +238,13 @@ pub struct StreamState {
     openai_tools: Vec<OpenAiToolAccumulator>,
     /// Anthropic 工具调用：按 content block index 累积。
     anthropic_tools: Vec<AnthropicToolAccumulator>,
+    /// Responses 工具调用：按 output item id 累积（`response.output_item.added` → delta → done）。
+    responses_tools: Vec<(String, OpenAiToolAccumulator)>,
     /// 是否已经报过 usage（避免重复）。
     usage_seen: bool,
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct OpenAiToolAccumulator {
     provider_call_id: String,
     tool_id: String,
@@ -265,6 +269,7 @@ pub fn parse_sse_payload(
     match protocol {
         ChatProtocol::OpenAiCompatible => parse_openai_chunk(&value, state),
         ChatProtocol::AnthropicMessages => parse_anthropic_chunk(&value, state),
+        ChatProtocol::OpenAiResponses => parse_responses_chunk(&value, state),
     }
 }
 
@@ -529,4 +534,133 @@ fn sanitize_ureq_error(error: &ureq::Error) -> String {
         ureq::Error::ConnectionFailed => "连接失败".to_string(),
         _ => "传输失败".to_string(),
     }
+}
+
+/// Responses API 的 SSE 事件投影。
+///
+/// 关键事件：`response.output_text.delta`（正文）、`response.reasoning_summary_text.delta`（公开摘要）、
+/// `response.output_item.added` + `response.function_call_arguments.delta` + `response.output_item.done`（工具调用）、
+/// `response.completed`（结束 + usage）、`response.incomplete`（长度截断）、`response.failed` / `error`（失败）。
+fn parse_responses_chunk(
+    value: &serde_json::Value,
+    state: &mut StreamState,
+) -> Result<Vec<fluxdb_core::ModelEvent>, TransportError> {
+    let mut events = Vec::new();
+    let kind = value.get("type").and_then(|v| v.as_str()).unwrap_or("");
+    match kind {
+        "response.output_text.delta" => {
+            if let Some(delta) = value.get("delta").and_then(|v| v.as_str()) {
+                if !delta.is_empty() {
+                    events.push(fluxdb_core::ModelEvent::TextDelta(delta.to_string()));
+                }
+            }
+        }
+        "response.reasoning_summary_text.delta" => {
+            if let Some(delta) = value.get("delta").and_then(|v| v.as_str()) {
+                if !delta.is_empty() {
+                    events.push(fluxdb_core::ModelEvent::ReasoningSummaryDelta(delta.to_string()));
+                }
+            }
+        }
+        "response.output_item.added" => {
+            if let Some(item) = value.get("item") {
+                if item.get("type").and_then(|v| v.as_str()) == Some("function_call") {
+                    let item_id = item.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    state.responses_tools.push((
+                        item_id,
+                        OpenAiToolAccumulator {
+                            provider_call_id: item
+                                .get("call_id")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string(),
+                            tool_id: item.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                            arguments: item
+                                .get("arguments")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string(),
+                        },
+                    ));
+                }
+            }
+        }
+        "response.function_call_arguments.delta" => {
+            let item_id = value.get("item_id").and_then(|v| v.as_str()).unwrap_or("");
+            if let Some(delta) = value.get("delta").and_then(|v| v.as_str()) {
+                if let Some((_, tool)) = state
+                    .responses_tools
+                    .iter_mut()
+                    .find(|(id, _)| id == item_id)
+                {
+                    tool.arguments.push_str(delta);
+                }
+            }
+        }
+        "response.output_item.done" => {
+            if let Some(item) = value.get("item") {
+                if item.get("type").and_then(|v| v.as_str()) == Some("function_call") {
+                    let item_id = item.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                    // 以 done 事件里的最终参数为准（delta 可能只覆盖一部分）。
+                    let accumulated = state
+                        .responses_tools
+                        .iter()
+                        .find(|(id, _)| id == item_id)
+                        .map(|(_, tool)| (*tool).clone())
+                        .unwrap_or_default();
+                    state.responses_tools.retain(|(id, _)| id != item_id);
+                    let call_id = item
+                        .get("call_id")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string)
+                        .unwrap_or(accumulated.provider_call_id);
+                    let name = item
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string)
+                        .unwrap_or(accumulated.tool_id);
+                    let arguments = item
+                        .get("arguments")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string)
+                        .filter(|args| !args.is_empty())
+                        .unwrap_or(accumulated.arguments);
+                    if !call_id.is_empty() && !name.is_empty() {
+                        events.push(fluxdb_core::ModelEvent::ToolCallRequested(
+                            fluxdb_core::ToolCallRequest {
+                                provider_call_id: call_id,
+                                tool_id: name,
+                                arguments_json: arguments,
+                            },
+                        ));
+                    }
+                }
+            }
+        }
+        "response.completed" => {
+            if !state.usage_seen {
+                if let Some(usage) = value.get("response").and_then(|r| r.get("usage")) {
+                    state.usage_seen = true;
+                    events.push(fluxdb_core::ModelEvent::Usage(fluxdb_core::Usage {
+                        input_tokens: usage.get("input_tokens").and_then(|v| v.as_i64()).unwrap_or(0),
+                        output_tokens: usage.get("output_tokens").and_then(|v| v.as_i64()).unwrap_or(0),
+                        cached_input_tokens: usage
+                            .get("input_tokens_details")
+                            .and_then(|d| d.get("cached_tokens"))
+                            .and_then(|v| v.as_i64())
+                            .unwrap_or(0),
+                    }));
+                }
+            }
+            events.push(fluxdb_core::ModelEvent::Finished(fluxdb_core::FinishReason::Stop));
+        }
+        "response.incomplete" => {
+            events.push(fluxdb_core::ModelEvent::Finished(fluxdb_core::FinishReason::Length));
+        }
+        "response.failed" | "error" => {
+            events.push(fluxdb_core::ModelEvent::Finished(fluxdb_core::FinishReason::Error));
+        }
+        _ => {}
+    }
+    Ok(events)
 }

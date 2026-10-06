@@ -66,6 +66,23 @@ pub enum ModelRole {
 pub struct ModelMessage {
     pub role: ModelRole,
     pub text: String,
+    /// 工具结果的配对 ID（仅 `role=Tool`）：无状态重放时协议要求它与 assistant 的调用一一对应。
+    #[serde(default)]
+    pub tool_call_id: Option<String>,
+    /// 工具名（仅 `role=Tool`；部分协议用它做展示或校验）。
+    #[serde(default)]
+    pub tool_name: Option<String>,
+    /// assistant 回合里模型请求的工具调用（按顺序）；无状态协议必须原样重放才能配对结果。
+    #[serde(default)]
+    pub tool_calls: Vec<ModelToolCall>,
+}
+
+/// assistant 请求过的一次工具调用（用于下一轮重放）。
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ModelToolCall {
+    pub provider_call_id: String,
+    pub tool_id: String,
+    pub arguments_json: String,
 }
 
 impl ModelMessage {
@@ -73,6 +90,38 @@ impl ModelMessage {
         Self {
             role,
             text: text.into(),
+            tool_call_id: None,
+            tool_name: None,
+            tool_calls: Vec::new(),
+        }
+    }
+
+    /// 工具结果消息：带上配对 ID，协议层才能把它与 assistant 的调用连起来。
+    pub fn tool_result(
+        provider_call_id: impl Into<String>,
+        tool_id: impl Into<String>,
+        text: impl Into<String>,
+    ) -> Self {
+        Self {
+            role: ModelRole::Tool,
+            text: text.into(),
+            tool_call_id: Some(provider_call_id.into()),
+            tool_name: Some(tool_id.into()),
+            tool_calls: Vec::new(),
+        }
+    }
+
+    /// assistant 回合：正文 + 本回合请求的工具调用（可能只有工具调用没有正文）。
+    pub fn assistant_with_tool_calls(
+        text: impl Into<String>,
+        tool_calls: Vec<ModelToolCall>,
+    ) -> Self {
+        Self {
+            role: ModelRole::Assistant,
+            text: text.into(),
+            tool_call_id: None,
+            tool_name: None,
+            tool_calls,
         }
     }
 }

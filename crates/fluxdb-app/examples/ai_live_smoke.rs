@@ -30,6 +30,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let provider = AiConversationProvider::from_storage(&storage, &model_id)?;
     println!("provider 就绪（凭据已在进程内解密，不外显）");
 
+    if std::env::var("FLUXDB_AI_LIVE_TOOLS").ok().as_deref() == Some("1") {
+        return live_tools_smoke(&provider);
+    }
+
     let cancel = fluxdb_core::CancelFlag::new();
     let request = fluxdb_core::ModelRequest {
         model: model_id,
@@ -38,7 +42,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "只回复两个字：就绪",
         )],
         tools: Vec::new(),
-        max_output_tokens: Some(16),
+        // 注意：Responses 协议下推理模型会先花 token 做思考，上限太小会被思考吃光而拿不到正文。
+        max_output_tokens: Some(
+            std::env::var("FLUXDB_AI_LIVE_MAX_TOKENS")
+                .ok()
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(256),
+        ),
     };
     let events = ai_block_on(provider.stream(request, cancel.clone()))??;
     let text: String = events
@@ -83,4 +93,75 @@ fn ai_block_on<F: std::future::Future>(future: F) -> Result<F::Output, fluxdb_co
         fluxdb_core::ErrorKind::Internal,
         "真实 Provider 未在就绪轮次内完成",
     ))
+}
+
+/// 真实模型的工具回合：合成一个内存 demo 连接（不写用户库），走完整
+/// schema 校验 → 审计 → 授权 → 执行 → 回执 → 回灌模型 链路。
+fn live_tools_smoke(
+    provider: &AiConversationProvider,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut options = std::collections::BTreeMap::new();
+    options.insert("demo".to_string(), "true".to_string());
+    let config = fluxdb_core::ConnectionConfig {
+        id: fluxdb_core::ConnectionId(1),
+        name: "live-smoke demo".into(),
+        kind: fluxdb_core::DatabaseKind::Sqlite,
+        endpoint: fluxdb_core::Endpoint::SqliteFile {
+            path: "live-smoke.db".into(),
+            read_only: true,
+        },
+        options,
+        redis_profile: None,
+        mysql_profile: None,
+        postgres_profile: None,
+    };
+    let catalog = fluxdb_app::standard_sql_catalog(
+        std::sync::Arc::new(fluxdb_app::MapSqlResolver::new([config.clone()])),
+        false,
+    )?;
+    println!("工具目录: {:?}", catalog.specs().iter().map(|s| s.id.clone()).collect::<Vec<_>>());
+
+    let runner = fluxdb_app::TurnRunner {
+        provider,
+        tools: &catalog,
+        limits: fluxdb_app::LoopLimits::default(),
+        permission: fluxdb_app::TurnPermissionContext {
+            agent_allowed_tools: Vec::new(),
+            policy: fluxdb_app::kernel_policy_for_connection(Some(&config)),
+            plugin_digest: None,
+        },
+        audit: &fluxdb_app::KernelAuditHook,
+    };
+    let state = fluxdb_app::TurnState {
+        model: "live-smoke".into(),
+        messages: vec![fluxdb_core::ModelMessage::new(
+            fluxdb_core::ModelRole::User,
+            "请用工具查询 product 表的行，然后只用一句话说明你查到了什么。",
+        )],
+        max_output_tokens: Some(512),
+        target_json: "{\"connection_id\":1}".into(),
+    };
+    let cancel = fluxdb_core::CancelFlag::new();
+    let mut steering = Vec::new();
+    let mut text = String::new();
+    let mut tools_used: Vec<String> = Vec::new();
+    let outcome = runner.run(state, &mut steering, &cancel, &mut |event| match event {
+        fluxdb_app::LoopEvent::TextDelta(delta) => text.push_str(&delta),
+        fluxdb_app::LoopEvent::ToolStarted { call, .. } => tools_used.push(format!("start:{}", call.tool_id)),
+        fluxdb_app::LoopEvent::ToolFinished { receipt } => tools_used.push(format!(
+            "done:{}:{}:affected={:?}",
+            receipt.tool_id,
+            if receipt.is_success() { "ok" } else { "fail" },
+            receipt.affected_rows
+        )),
+        fluxdb_app::LoopEvent::Notice(notice) => tools_used.push(format!("notice:{notice}")),
+        _ => {}
+    });
+    println!("outcome={outcome:?}");
+    println!("tools={tools_used:?}");
+    println!("final_text={text:?}");
+    if !tools_used.iter().any(|entry| entry.starts_with("done:")) {
+        return Err("真实模型没有走完工具调用链路".into());
+    }
+    Ok(())
 }

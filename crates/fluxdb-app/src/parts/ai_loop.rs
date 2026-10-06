@@ -239,11 +239,22 @@ impl<'a> TurnRunner<'a> {
             if cancel.is_cancelled() {
                 return TurnOutcome::Cancelled;
             }
-            if !text.is_empty() {
+            if !text.is_empty() || !tool_calls.is_empty() {
                 last_text = text.clone();
-                state
-                    .messages
-                    .push(fluxdb_core::ModelMessage::new(fluxdb_core::ModelRole::Assistant, text.clone()));
+                // assistant 回合必须把本回合的工具调用一起记住：无状态协议（Responses/Chat）
+                // 需要重放 function_call 才能与下一轮的 function_call_output 配对。
+                let calls = tool_calls
+                    .iter()
+                    .map(|call| fluxdb_core::ModelToolCall {
+                        provider_call_id: call.provider_call_id.clone(),
+                        tool_id: call.tool_id.clone(),
+                        arguments_json: call.arguments_json.clone(),
+                    })
+                    .collect::<Vec<_>>();
+                state.messages.push(fluxdb_core::ModelMessage::assistant_with_tool_calls(
+                    text.clone(),
+                    calls,
+                ));
             }
             match finish {
                 Some(fluxdb_core::FinishReason::Error) => {
@@ -273,8 +284,9 @@ impl<'a> TurnRunner<'a> {
                         call.tool_id
                     );
                     emit(LoopEvent::Notice(notice.clone()));
-                    state.messages.push(fluxdb_core::ModelMessage::new(
-                        fluxdb_core::ModelRole::Tool,
+                    state.messages.push(fluxdb_core::ModelMessage::tool_result(
+                        call.provider_call_id.clone(),
+                        call.tool_id.clone(),
                         format!("{{\"error\":\"truncated\",\"tool\":\"{}\"}}", call.tool_id),
                     ));
                 }
@@ -292,8 +304,9 @@ impl<'a> TurnRunner<'a> {
                         call.tool_id
                     );
                     emit(LoopEvent::Notice(notice.clone()));
-                    state.messages.push(fluxdb_core::ModelMessage::new(
-                        fluxdb_core::ModelRole::Tool,
+                    state.messages.push(fluxdb_core::ModelMessage::tool_result(
+                        call.provider_call_id.clone(),
+                        call.tool_id.clone(),
                         format!("{{\"error\":\"invalid_json\",\"tool\":\"{}\"}}", call.tool_id),
                     ));
                     continue;
@@ -302,8 +315,9 @@ impl<'a> TurnRunner<'a> {
                 let Some(spec) = self.tools.describe(&call.tool_id).cloned() else {
                     let notice = format!("工具 {} 未注册，已拒绝执行。", call.tool_id);
                     emit(LoopEvent::Notice(notice.clone()));
-                    state.messages.push(fluxdb_core::ModelMessage::new(
-                        fluxdb_core::ModelRole::Tool,
+                    state.messages.push(fluxdb_core::ModelMessage::tool_result(
+                        call.provider_call_id.clone(),
+                        call.tool_id.clone(),
                         format!(
                             "{{\"error\":\"unknown_tool\",\"tool\":\"{}\"}}",
                             call.tool_id
@@ -319,8 +333,9 @@ impl<'a> TurnRunner<'a> {
                             call.tool_id, error.code
                         );
                         emit(LoopEvent::Notice(notice));
-                        state.messages.push(fluxdb_core::ModelMessage::new(
-                            fluxdb_core::ModelRole::Tool,
+                        state.messages.push(fluxdb_core::ModelMessage::tool_result(
+                            call.provider_call_id.clone(),
+                            call.tool_id.clone(),
                             format!(
                                 "{{\"tool\":\"{}\",\"status\":\"failed\",\"error\":\"{}\",\"message\":{}}}",
                                 call.tool_id,
@@ -383,8 +398,9 @@ impl<'a> TurnRunner<'a> {
                         emit(LoopEvent::ToolFinished {
                             receipt: receipt.clone(),
                         });
-                        state.messages.push(fluxdb_core::ModelMessage::new(
-                            fluxdb_core::ModelRole::Tool,
+                        state.messages.push(fluxdb_core::ModelMessage::tool_result(
+                            receipt.call_id.clone(),
+                            receipt.tool_id.clone(),
                             format!(
                                 "{{\"tool\":\"{}\",\"status\":\"{}\",\"result\":{}}}",
                                 receipt.tool_id,
@@ -412,8 +428,9 @@ impl<'a> TurnRunner<'a> {
                 let Some(tool) = self.tools.executable(&call.tool_id) else {
                     let notice = format!("工具 {} 没有可执行实现，已拒绝执行。", call.tool_id);
                     emit(LoopEvent::Notice(notice));
-                    state.messages.push(fluxdb_core::ModelMessage::new(
-                        fluxdb_core::ModelRole::Tool,
+                    state.messages.push(fluxdb_core::ModelMessage::tool_result(
+                        call.provider_call_id.clone(),
+                        call.tool_id.clone(),
                         format!(
                             "{{\"error\":\"tool_not_executable\",\"tool\":\"{}\"}}",
                             call.tool_id
@@ -459,8 +476,9 @@ impl<'a> TurnRunner<'a> {
                         result_ref: None,
                     },
                 };
-                state.messages.push(fluxdb_core::ModelMessage::new(
-                    fluxdb_core::ModelRole::Tool,
+                state.messages.push(fluxdb_core::ModelMessage::tool_result(
+                    receipt.call_id.clone(),
+                    receipt.tool_id.clone(),
                     format!(
                         "{{\"tool\":\"{}\",\"status\":\"{}\",\"truncated\":{},\"result\":{}}}",
                         receipt.tool_id,

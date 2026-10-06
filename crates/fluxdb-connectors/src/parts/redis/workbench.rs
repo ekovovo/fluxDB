@@ -341,6 +341,34 @@ impl RedisConnector {
         Ok(executions)
     }
 
+    /// Agent/MCP 用的**单条 argv 命令**执行：不做命令文本解析、不做多语句 pipeline。
+    ///
+    /// 调用方（内核）必须先过风险分类与审批；这里只负责"有界地跑一条命令并映射回包"，
+    /// 并复用 Workbench 的受控边界（长连接/阻塞/管理命令一律拒绝）。
+    pub fn execute_argv(
+        &self,
+        database: u32,
+        argv: &[String],
+    ) -> fluxdb_core::Result<CommandReply> {
+        let Some(config) = self.config.as_ref() else {
+            return Err(Error::new(
+                ErrorKind::Connection,
+                "Redis 命令执行需要连接配置上下文",
+            ));
+        };
+        if argv.is_empty() {
+            return Err(Error::new(ErrorKind::Query, "命令不能为空"));
+        }
+        if is_unsupported_command(argv) {
+            return Err(Error::new(
+                ErrorKind::Unsupported,
+                format!("命令「{}」在受控执行中不支持", argv[0]),
+            ));
+        }
+        let mut connection = redis_connect(config)?;
+        self.execute_single_command(&mut connection, database, argv)
+    }
+
     /// 在指定 DB 上执行单条命令并映射回包。
     fn execute_single_command(
         &self,

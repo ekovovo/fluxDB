@@ -13,7 +13,7 @@ use std::task::{Context, Poll, Wake, Waker};
 use std::time::Instant;
 
 use fluxdb_core::{
-    CancelFlag, FinishReason, GenerationProvider, ModelEvent, ModelRequest, ToolCallRequest,
+    CancelFlag, FinishReason, GenerationProvider, ModelRequest, ToolCallRequest, ToolReceipt,
 };
 
 /// 每个 Turn 允许排队的 steering 条数（超出丢弃最旧的，保证有界）。
@@ -25,7 +25,7 @@ pub enum AiControl {
     StartTurn {
         session_id: String,
         turn_id: String,
-        request: ModelRequest,
+        spec: TurnSpec,
     },
     /// 用户补充（在下一个安全边界被吸收进下一轮请求）。
     Steering {
@@ -37,6 +37,31 @@ pub enum AiControl {
         turn_id: String,
     },
     Shutdown,
+}
+
+/// 启动一轮 Turn 所需的全部输入（不含凭据）。
+#[derive(Clone, Debug)]
+pub struct TurnSpec {
+    pub model: String,
+    pub messages: Vec<fluxdb_core::ModelMessage>,
+    pub max_output_tokens: Option<i64>,
+    /// 本轮固定目标（`TargetRef::to_json()`），参与 plan hash。
+    pub target_json: String,
+    /// Agent 白名单 + 目标/内核权限。
+    pub permission: TurnPermissionContext,
+}
+
+impl TurnSpec {
+    /// 只给定模型与消息（目标为空、权限取内核默认：可读不可写）。
+    pub fn from_request(request: ModelRequest) -> Self {
+        Self {
+            model: request.model,
+            messages: request.messages,
+            max_output_tokens: request.max_output_tokens,
+            target_json: String::new(),
+            permission: TurnPermissionContext::default(),
+        }
+    }
 }
 
 /// actor → UI 的事件（带会话/Turn/序号，旧的迟到事件不会污染新 Turn）。
@@ -65,6 +90,42 @@ pub enum AiEvent {
         seq: u64,
         call: ToolCallRequest,
     },
+    /// 工具开始真实执行（已通过 schema 校验 + 审计 + 授权）。
+    ToolStarted {
+        session_id: String,
+        turn_id: String,
+        seq: u64,
+        call: ToolCallRequest,
+    },
+    /// 工具真实回执（不可修改的事实；UI 只渲染，不重算）。
+    ToolFinished {
+        session_id: String,
+        turn_id: String,
+        seq: u64,
+        receipt: ToolReceipt,
+    },
+    /// 需要用户审批：本 Turn 暂停，**没有执行任何工具**。
+    ApprovalRequired {
+        session_id: String,
+        turn_id: String,
+        seq: u64,
+        plan_hash: String,
+        scope: ApprovalScope,
+    },
+    /// 运行时的可见说明（未知工具、参数不合法、无进展暂停等）。
+    Notice {
+        session_id: String,
+        turn_id: String,
+        seq: u64,
+        text: String,
+    },
+    /// Turn 安全暂停（等审批/达到限制）；之后不会再有该 Turn 的事件。
+    Paused {
+        session_id: String,
+        turn_id: String,
+        seq: u64,
+        reason: String,
+    },
     Finished {
         session_id: String,
         turn_id: String,
@@ -86,6 +147,11 @@ impl AiEvent {
             | AiEvent::TextDelta { turn_id, .. }
             | AiEvent::ReasoningSummaryDelta { turn_id, .. }
             | AiEvent::ToolCallRequested { turn_id, .. }
+            | AiEvent::ToolStarted { turn_id, .. }
+            | AiEvent::ToolFinished { turn_id, .. }
+            | AiEvent::ApprovalRequired { turn_id, .. }
+            | AiEvent::Notice { turn_id, .. }
+            | AiEvent::Paused { turn_id, .. }
             | AiEvent::Finished { turn_id, .. }
             | AiEvent::Error { turn_id, .. } => turn_id,
         }
@@ -97,6 +163,11 @@ impl AiEvent {
             | AiEvent::TextDelta { seq, .. }
             | AiEvent::ReasoningSummaryDelta { seq, .. }
             | AiEvent::ToolCallRequested { seq, .. }
+            | AiEvent::ToolStarted { seq, .. }
+            | AiEvent::ToolFinished { seq, .. }
+            | AiEvent::ApprovalRequired { seq, .. }
+            | AiEvent::Notice { seq, .. }
+            | AiEvent::Paused { seq, .. }
             | AiEvent::Finished { seq, .. }
             | AiEvent::Error { seq, .. } => *seq,
         }
@@ -141,16 +212,27 @@ pub struct AiRuntimeHandle {
 
 impl AiRuntimeHandle {
     /// 放弃投递而不是阻塞 UI（bounded channel 满 = 运行时不健康）。
+    /// 兼容入口：只用模型与消息启动一轮（目标为空、权限取内核默认）。
     pub fn start_turn(
         &self,
         session_id: impl Into<String>,
         turn_id: impl Into<String>,
         request: ModelRequest,
     ) -> Result<(), RuntimeError> {
+        self.start_turn_with_spec(session_id, turn_id, TurnSpec::from_request(request))
+    }
+
+    /// 完整入口：携带固定目标与权限上下文（审批/授权按它判定）。
+    pub fn start_turn_with_spec(
+        &self,
+        session_id: impl Into<String>,
+        turn_id: impl Into<String>,
+        spec: TurnSpec,
+    ) -> Result<(), RuntimeError> {
         self.send(AiControl::StartTurn {
             session_id: session_id.into(),
             turn_id: turn_id.into(),
-            request,
+            spec,
         })
     }
 
@@ -224,10 +306,40 @@ impl Drop for AiRuntimeHandle {
 }
 
 /// 启动 actor：独占 Provider，控制通道容量 `control_capacity`。
+/// 默认审计 Hook：**拒绝一切**工具调用（fail closed）。
+///
+/// 只有显式接入规则化审计的实现才放行；"没接审计"= 工具一律不执行，
+/// 而不是默默放行。
+pub struct DenyAllAudit;
+
+impl SecurityAuditHook for DenyAllAudit {
+    fn audit(&self, _input: &AuditInput) -> fluxdb_core::Result<AuditOutcome> {
+        Ok(AuditOutcome::Deny)
+    }
+}
+
+/// 简易入口：不注册任何工具（因此任何工具调用都会被审计拒绝）。
 pub fn spawn_ai_runtime(
     provider: Box<dyn GenerationProvider>,
     sink: Box<dyn AiEventSink>,
     control_capacity: usize,
+) -> AiRuntimeHandle {
+    spawn_ai_runtime_with_tools(
+        provider,
+        sink,
+        control_capacity,
+        ToolCatalog::new(Vec::new()),
+        Box::new(DenyAllAudit),
+    )
+}
+
+/// 启动 actor：独占 Provider、工具目录与强制审计 Hook。
+pub fn spawn_ai_runtime_with_tools(
+    provider: Box<dyn GenerationProvider>,
+    sink: Box<dyn AiEventSink>,
+    control_capacity: usize,
+    tools: ToolCatalog,
+    audit: Box<dyn SecurityAuditHook>,
 ) -> AiRuntimeHandle {
     let capacity = control_capacity.max(1);
     let (tx, rx) = sync_channel::<AiControl>(capacity);
@@ -237,7 +349,17 @@ pub fn spawn_ai_runtime(
     let shutdown_for_thread = shutdown_flag.clone();
     let join = std::thread::Builder::new()
         .name("fluxdb-ai-runtime".to_string())
-        .spawn(move || run_actor(provider, sink, rx, cancel_for_thread, shutdown_for_thread))
+        .spawn(move || {
+            run_actor(
+                provider,
+                sink,
+                rx,
+                cancel_for_thread,
+                shutdown_for_thread,
+                tools,
+                audit,
+            )
+        })
         .ok();
     AiRuntimeHandle {
         control: tx,
@@ -253,6 +375,8 @@ fn run_actor(
     control: std::sync::mpsc::Receiver<AiControl>,
     cancel_slot: Arc<Mutex<Option<(String, CancelFlag)>>>,
     shutdown_flag: Arc<std::sync::atomic::AtomicBool>,
+    tools: ToolCatalog,
+    audit: Box<dyn SecurityAuditHook>,
 ) {
     // 每个 Turn 的 steering 缓冲（有界）。
     let mut pending_steering: Vec<String> = Vec::new();
@@ -290,16 +414,12 @@ fn run_actor(
             AiControl::StartTurn {
                 session_id,
                 turn_id,
-                mut request,
+                spec,
             } => {
-                // 吸收上一轮排队的 steering（安全边界）。
-                if !pending_steering.is_empty() {
-                    for text in pending_steering.drain(..) {
-                        request
-                            .messages
-                            .push(fluxdb_core::ModelMessage::new(fluxdb_core::ModelRole::User, text));
-                    }
-                }
+                // 吸收上一轮排队的 steering（安全边界，不改执行目标）。
+                let mut steering: Vec<String> = Vec::new();
+                steering.extend(pending_steering.drain(..));
+
                 let flag = CancelFlag::new();
                 if cancelled_before_start.iter().any(|id| id == &turn_id) {
                     flag.request();
@@ -310,11 +430,8 @@ fn run_actor(
                 }
 
                 let mut seq: u64 = 0;
-                let mut emit = |event: AiEvent| {
-                    sink.emit(event);
-                };
                 seq += 1;
-                emit(AiEvent::TurnStarted {
+                sink.emit(AiEvent::TurnStarted {
                     session_id: session_id.clone(),
                     turn_id: turn_id.clone(),
                     seq,
@@ -322,84 +439,78 @@ fn run_actor(
 
                 if flag.is_cancelled() {
                     seq += 1;
-                    emit(AiEvent::Finished {
+                    sink.emit(AiEvent::Finished {
                         session_id: session_id.clone(),
                         turn_id: turn_id.clone(),
                         seq,
                         reason: FinishReason::Cancelled,
                     });
                 } else {
-                    match block_on_ready(provider.stream(request, flag.clone())) {
-                        Ok(Ok(events)) => {
-                            for event in events {
-                                if flag.is_cancelled() {
-                                    seq += 1;
-                                    emit(AiEvent::Finished {
-                                        session_id: session_id.clone(),
-                                        turn_id: turn_id.clone(),
-                                        seq,
-                                        reason: FinishReason::Cancelled,
-                                    });
-                                    break;
-                                }
-                                match event {
-                                    ModelEvent::TextDelta(text) => {
-                                        seq += 1;
-                                        emit(AiEvent::TextDelta {
-                                            session_id: session_id.clone(),
-                                            turn_id: turn_id.clone(),
-                                            seq,
-                                            text,
-                                        });
-                                    }
-                                    ModelEvent::ReasoningSummaryDelta(text) => {
-                                        seq += 1;
-                                        emit(AiEvent::ReasoningSummaryDelta {
-                                            session_id: session_id.clone(),
-                                            turn_id: turn_id.clone(),
-                                            seq,
-                                            text,
-                                        });
-                                    }
-                                    ModelEvent::ToolCallRequested(call) => {
-                                        seq += 1;
-                                        emit(AiEvent::ToolCallRequested {
-                                            session_id: session_id.clone(),
-                                            turn_id: turn_id.clone(),
-                                            seq,
-                                            call,
-                                        });
-                                    }
-                                    ModelEvent::Usage(_) => {
-                                        // usage 由运行时记账，不在本切片里转成 UI 事件。
-                                    }
-                                    ModelEvent::Finished(reason) => {
-                                        seq += 1;
-                                        emit(AiEvent::Finished {
-                                            session_id: session_id.clone(),
-                                            turn_id: turn_id.clone(),
-                                            seq,
-                                            reason,
-                                        });
-                                        break;
-                                    }
-                                }
-                            }
+                    let runner = TurnRunner {
+                        provider: provider.as_ref(),
+                        tools: &tools,
+                        limits: LoopLimits::default(),
+                        permission: spec.permission.clone(),
+                        audit: audit.as_ref(),
+                    };
+                    let state = TurnState {
+                        model: spec.model.clone(),
+                        messages: spec.messages.clone(),
+                        max_output_tokens: spec.max_output_tokens,
+                        target_json: spec.target_json.clone(),
+                    };
+                    let outcome = runner.run(state, &mut steering, &flag, &mut |event| {
+                        if let Some(event) =
+                            runtime_event_from_loop(&session_id, &turn_id, &mut seq, event)
+                        {
+                            sink.emit(event);
                         }
-                        Ok(Err(error)) | Err(error) => {
+                    });
+
+                    match outcome {
+                        TurnOutcome::Completed { .. } => {
                             seq += 1;
-                            emit(AiEvent::Error {
+                            sink.emit(AiEvent::Finished {
                                 session_id: session_id.clone(),
                                 turn_id: turn_id.clone(),
                                 seq,
-                                message: error.message,
+                                reason: FinishReason::Stop,
+                            });
+                        }
+                        TurnOutcome::Cancelled => {
+                            seq += 1;
+                            sink.emit(AiEvent::Finished {
+                                session_id: session_id.clone(),
+                                turn_id: turn_id.clone(),
+                                seq,
+                                reason: FinishReason::Cancelled,
+                            });
+                        }
+                        TurnOutcome::Failed { message } => {
+                            seq += 1;
+                            sink.emit(AiEvent::Error {
+                                session_id: session_id.clone(),
+                                turn_id: turn_id.clone(),
+                                seq,
+                                message,
                             });
                             seq += 1;
-                            emit(AiEvent::Finished {
+                            sink.emit(AiEvent::Finished {
                                 session_id: session_id.clone(),
                                 turn_id: turn_id.clone(),
                                 seq,
                                 reason: FinishReason::Error,
+                            });
+                        }
+                        // 暂停（等审批/达到限制）：这是该 Turn 的终态事件，不再补 Finished，
+                        // 避免 UI 把"等待用户决定"误判成"本轮已完成"。
+                        TurnOutcome::Paused { reason } => {
+                            seq += 1;
+                            sink.emit(AiEvent::Paused {
+                                session_id: session_id.clone(),
+                                turn_id: turn_id.clone(),
+                                seq,
+                                reason,
                             });
                         }
                     }
@@ -408,6 +519,84 @@ fn run_actor(
                     *guard = None;
                 }
             }
+        }
+    }
+}
+
+/// `LoopEvent` → UI 事件；纯内部事件（迭代开始）不投影给 UI。
+fn runtime_event_from_loop(
+    session_id: &str,
+    turn_id: &str,
+    seq: &mut u64,
+    event: LoopEvent,
+) -> Option<AiEvent> {
+    let session_id = session_id.to_string();
+    let turn_id = turn_id.to_string();
+    match event {
+        LoopEvent::IterationStarted { .. } => None,
+        LoopEvent::TextDelta(text) => {
+            *seq += 1;
+            Some(AiEvent::TextDelta {
+                session_id,
+                turn_id,
+                seq: *seq,
+                text,
+            })
+        }
+        LoopEvent::ReasoningSummaryDelta(text) => {
+            *seq += 1;
+            Some(AiEvent::ReasoningSummaryDelta {
+                session_id,
+                turn_id,
+                seq: *seq,
+                text,
+            })
+        }
+        LoopEvent::ToolCallRequested(call) => {
+            *seq += 1;
+            Some(AiEvent::ToolCallRequested {
+                session_id,
+                turn_id,
+                seq: *seq,
+                call,
+            })
+        }
+        LoopEvent::ToolStarted { call } => {
+            *seq += 1;
+            Some(AiEvent::ToolStarted {
+                session_id,
+                turn_id,
+                seq: *seq,
+                call,
+            })
+        }
+        LoopEvent::ToolFinished { receipt } => {
+            *seq += 1;
+            Some(AiEvent::ToolFinished {
+                session_id,
+                turn_id,
+                seq: *seq,
+                receipt,
+            })
+        }
+        LoopEvent::ApprovalRequired { plan_hash, scope } => {
+            *seq += 1;
+            Some(AiEvent::ApprovalRequired {
+                session_id,
+                turn_id,
+                seq: *seq,
+                plan_hash,
+                scope,
+            })
+        }
+        LoopEvent::Notice(text) => {
+            *seq += 1;
+            Some(AiEvent::Notice {
+                session_id,
+                turn_id,
+                seq: *seq,
+                text,
+            })
         }
     }
 }

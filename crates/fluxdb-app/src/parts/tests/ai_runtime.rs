@@ -32,6 +32,11 @@ mod ai_runtime_test_support {
             | AiEvent::TextDelta { session_id, .. }
             | AiEvent::ReasoningSummaryDelta { session_id, .. }
             | AiEvent::ToolCallRequested { session_id, .. }
+            | AiEvent::ToolStarted { session_id, .. }
+            | AiEvent::ToolFinished { session_id, .. }
+            | AiEvent::ApprovalRequired { session_id, .. }
+            | AiEvent::Notice { session_id, .. }
+            | AiEvent::Paused { session_id, .. }
             | AiEvent::Finished { session_id, .. }
             | AiEvent::Error { session_id, .. } => session_id,
         }

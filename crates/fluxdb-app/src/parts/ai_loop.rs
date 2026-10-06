@@ -63,6 +63,8 @@ pub enum LoopEvent {
     TextDelta(String),
     /// 公开推理摘要增量。
     ReasoningSummaryDelta(String),
+    /// 模型请求调用工具（尚未校验/授权；UI 用它展示"打算调用什么"）。
+    ToolCallRequested(fluxdb_core::ToolCallRequest),
     /// 工具开始执行。
     ToolStarted { call: fluxdb_core::ToolCallRequest },
     /// 工具真实回执。
@@ -199,8 +201,33 @@ impl<'a> TurnRunner<'a> {
                 }
             };
 
-            let (text, tool_calls, finish, cancelled) = assemble(events, emit);
-            if cancelled || cancel.is_cancelled() {
+            // 逐事件消费：取消在事件之间即刻生效，流式输出不会"取消后继续刷"。
+            let mut text = String::new();
+            let mut tool_calls: Vec<fluxdb_core::ToolCallRequest> = Vec::new();
+            let mut finish: Option<fluxdb_core::FinishReason> = None;
+            for event in events {
+                if cancel.is_cancelled() {
+                    return TurnOutcome::Cancelled;
+                }
+                match event {
+                    fluxdb_core::ModelEvent::TextDelta(delta) => {
+                        text.push_str(&delta);
+                        emit(LoopEvent::TextDelta(delta));
+                    }
+                    fluxdb_core::ModelEvent::ReasoningSummaryDelta(delta) => {
+                        emit(LoopEvent::ReasoningSummaryDelta(delta));
+                    }
+                    fluxdb_core::ModelEvent::ToolCallRequested(call) => {
+                        emit(LoopEvent::ToolCallRequested(call.clone()));
+                        tool_calls.push(call);
+                    }
+                    fluxdb_core::ModelEvent::Usage(_) => {
+                        // usage 记账由预算任务（T030）接管；本切片不丢弃也不伪造。
+                    }
+                    fluxdb_core::ModelEvent::Finished(reason) => finish = Some(reason),
+                }
+            }
+            if cancel.is_cancelled() {
                 return TurnOutcome::Cancelled;
             }
             if !text.is_empty() {
@@ -219,6 +246,13 @@ impl<'a> TurnRunner<'a> {
                 _ => {}
             }
             if tool_calls.is_empty() {
+                // 纯文本回合也可能被长度截断：给用户/UI 一个可见提示，
+                // 不要静默当成正常结束（finish_reason 由 Provider 给出）。
+                if finish == Some(fluxdb_core::FinishReason::Length) {
+                    emit(LoopEvent::Notice(
+                        "回答达到长度上限，内容可能被截断。".to_string(),
+                    ));
+                }
                 return TurnOutcome::Completed { text: last_text };
             }
 
@@ -435,35 +469,3 @@ impl<'a> TurnRunner<'a> {
     }
 }
 
-/// 把一次 stream 的事件折叠成（最终文本、工具调用、结束原因、是否取消）。
-fn assemble(
-    events: Vec<fluxdb_core::ModelEvent>,
-    emit: &mut dyn FnMut(LoopEvent),
-) -> (String, Vec<fluxdb_core::ToolCallRequest>, Option<fluxdb_core::FinishReason>, bool) {
-    let mut text = String::new();
-    let mut tool_calls = Vec::new();
-    let mut finish = None;
-    let mut cancelled = false;
-    for event in events {
-        match event {
-            fluxdb_core::ModelEvent::TextDelta(delta) => {
-                text.push_str(&delta);
-                emit(LoopEvent::TextDelta(delta));
-            }
-            fluxdb_core::ModelEvent::ReasoningSummaryDelta(delta) => {
-                emit(LoopEvent::ReasoningSummaryDelta(delta));
-            }
-            fluxdb_core::ModelEvent::ToolCallRequested(call) => tool_calls.push(call),
-            fluxdb_core::ModelEvent::Usage(_) => {
-                // usage 记账由预算任务（T030）接管；本切片不丢弃也不伪造。
-            }
-            fluxdb_core::ModelEvent::Finished(reason) => {
-                if reason == fluxdb_core::FinishReason::Cancelled {
-                    cancelled = true;
-                }
-                finish = Some(reason);
-            }
-        }
-    }
-    (text, tool_calls, finish, cancelled)
-}

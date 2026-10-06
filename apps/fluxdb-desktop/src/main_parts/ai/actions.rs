@@ -140,7 +140,10 @@ impl NavicatMain {
             return;
         }
         let context = self.capture_ai_active_context(cx);
-        let pin = fluxdb_app::pin_target(&context);
+        // debug 覆盖优先：GUI E2E 需要固定目标；生产永远是真实界面捕获。
+        let pin = self
+            .ai_debug_target_override()
+            .unwrap_or_else(|| fluxdb_app::pin_target(&context));
         let context_text = context
             .selected_text
             .or_else(|| context.excerpt.map(|e| e.text))
@@ -399,6 +402,29 @@ impl NavicatMain {
         }
         cx.notify();
     }
+    /// 调试用目标覆盖（仅 debug 构建）：GUI E2E 需要确定性 target，避免依赖"当前标签页"状态。
+    /// 生产构建不读取该环境变量，永远使用真实界面捕获。
+    fn ai_debug_target_override(&self) -> Option<fluxdb_app::TurnTargetPin> {
+        if !cfg!(debug_assertions) {
+            return None;
+        }
+        let raw = std::env::var("FLUXDB_DEBUG_AI_TARGET").ok()?;
+        let value: serde_json::Value = serde_json::from_str(&raw).ok()?;
+        let target = fluxdb_app::TargetRef {
+            connection_id: value.get("connection_id").and_then(|v| v.as_i64()),
+            database: value.get("database").and_then(|v| v.as_str()).map(str::to_owned),
+            schema: value.get("schema").and_then(|v| v.as_str()).map(str::to_owned),
+            object: value.get("object").and_then(|v| v.as_str()).map(str::to_owned),
+            redis_db: value.get("redis_db").and_then(|v| v.as_u64()).map(|v| v as u32),
+        };
+        Some(fluxdb_app::TurnTargetPin {
+            target_json: target.to_json(),
+            target,
+            captured_tab_id: None,
+            captured_tab_revision: 0,
+        })
+    }
+
     fn capture_ai_active_context(&self, cx: &App) -> fluxdb_app::UiContextSnapshot {
         let state = self.controller.state();
         let tab = state.active_tab();

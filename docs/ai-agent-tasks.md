@@ -222,7 +222,7 @@ UI原型：`docs/prototype/ai-agent-ui.html`（本机 `/Users/shining3d/fusuwei/
 
 
 ### T021 自动捕获当前界面并固定执行 scope（无用户确认）
-- [ ] 依赖：T016、T020；设计 §13。
+- [x] 依赖：T016、T020；设计 §13。
 - 改动：UI capture 小型 DTO，Turn target pin、显式 retarget/缓存失效；不打包连接敏感配置。
 - 验收：E04；切标签不改 SQL/Redis 目标；retarget 使旧批准失效；无目标时解释任务仍可进行。
 - 测试方式：将上述每项验收分别落实为相关crate的测试断言；用隔离fixture/受控Provider验证正常与异常路径，涉及工具时核对真实回执及副作用调用数，不用伪造成功结果跳过执行链。
@@ -893,6 +893,18 @@ T020按主设计§31.9实现询问AI内联批准卡片：参考Goose三态按钮
 - **A 的观察（记为后续项，本轮未改）**：`authorize()` 产出的 `ApprovalScope.session_id`/`turn_id` 目前是空串、`resource_json` 复用 `target_json`；等 T021（Turn 固定 target）与 T028（审批卡片）接线时由调用方回填会话/资源，否则审批卡片无法按会话/资源展示。
 - 本轮验收：core **106**、storage **121**、app **627**（11 个需要本地回环端口的用例沙箱内被拒，沙箱外通过）、desktop **477**；`fmt --check` / `check --workspace` 通过。
 - 说明：本轮无 UI 改动，**未启动 B/C 子 agent**。
+
+### 已在本轮推进（2026-10-06 第十五轮：T021 界面上下文捕获与目标固定）
+
+- **新增 `crates/fluxdb-app/src/parts/ai_context.rs`**（设计 §13、T021）：
+  - 宿主侧**小 DTO** `CapturedTab`：`SqlEditor`（选区/全文/光标语句）、`TableData`（列/筛选/排序/样本/结果句柄）、`RedisKey`（key/类型/TTL/预览）、`Design`（对象路径/摘要）、`NoTab`（侧栏选中连接 + 最近对象）——**不含 endpoint/凭据等敏感配置**。
+  - `capture()` 分级：**选区优先**（有选区时 `excerpt=None`），否则整段按限额截断；`bound_excerpt` 默认 **16 KiB / 400 行**、超限保留**头 60% + 尾 40%** 并插入 `… [省略 N 行，可用 editor.read_range 读取] …`（字节超限按 UTF-8 边界裁剪，给出 `next_offset` 便于续读）。
+  - `TargetRef`（connection_id/database/schema/object/redis_db）+ `to_json()`：**只含非敏感定位信息**，作为 plan_hash 的 target 部分。
+  - `pin_target()` 固化 Turn 目标：**之后切标签页不改变已启动任务的目标**；`retarget()` 只在用户显式换目标时调用，返回 `Changed{invalidated_target_json}`（target 变 → plan_hash 变 → 旧审计/审批自然失效）或 `Unchanged`。
+  - 无目标时 `notes` 给一次性说明（不是确认弹框），`can_proceed()` 恒 true —— 解释/规划类任务照常进行。
+- **子 agent A（上下文捕获测试）完成**：新增 `crates/fluxdb-app/src/parts/tests/ai_context.rs`，`cargo test -p fluxdb-app --offline ai_context_` → **13 passed**（主 agent 已复跑确认）：SQL 选区优先且 `excerpt=None`、无选区走限额截断、短文本不截断、1000 行→保留首尾并省略 990 行且带 `editor.read_range` 提示、单行超长中文按 UTF-8 边界截断且去标记内容不超上限、表数据/Redis/设计页三类捕获字段正确、无标签页给一次性说明且可继续、**pin 在切标签后不变（E04）**、**retarget 仅显式更换并返回旧 target_json（→ plan_hash 变 → 旧审批失效）**、target_json 只含 5 个非敏感定位字段、默认限额 16KiB/400 行/0.6。A 本轮未执行 git 写操作、未改 docs（符合委派约束）。
+- **主 agent 复核结论**：T021 的 改动/验收（小型捕获 DTO、Turn target pin、显式 retarget 失效、切标签不改目标、无目标可继续）已在本层闭环，**勾选 T021**；桌面侧"把真实激活标签/侧栏选中连接填进 DTO"的适配器随 AI 面板（T028）接线，届时用 GPUI/真实窗口补 UI 证据（不改本层契约）。
+- **说明**：桌面侧把真实激活标签/侧栏选中连接填进该 DTO 的适配器，随 AI 面板（T028）接线；本轮交付的是被面板与运行时消费的**契约与策略**。T021 勾选等主 agent 复核后处理。
 
 ### 仍未修复 / 未验证（下一轮）
 

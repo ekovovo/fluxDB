@@ -102,5 +102,6 @@ include!("parts/ai_provider.rs");
 include!("parts/ai_loop.rs");
 include!("parts/ai_tool_registry.rs");
 include!("parts/ai_permission.rs");
+include!("parts/ai_context.rs");
 include!("parts/ai_scripted.rs");
 include!("parts/backup_restore.rs");

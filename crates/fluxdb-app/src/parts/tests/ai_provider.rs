@@ -550,3 +550,98 @@ fn ai_provider_ureq_transport_preserves_http_429_and_drops_truncated_sse() {
     assert!(events.is_empty(), "未以空行结束的残余帧不得产出事件");
     handle.join().expect("truncated mock server");
 }
+
+/// T017 缺口补测：1) 3xx 不跟随重定向（`max_redirects(0)`）；2) Anthropic 形态带 `anthropic-version` 头。
+///
+/// 沙箱内禁止绑定回环端口，本用例需在沙箱外运行（与其它 mock server 用例一致）。
+#[test]
+fn ai_provider_does_not_follow_redirects_and_sends_anthropic_version() {
+    use std::io::{Read as _, Write as _};
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("绑定回环 mock 端口");
+    listener.set_nonblocking(true).expect("非阻塞");
+    let addr = listener.local_addr().expect("mock 地址");
+    let url = format!("http://{addr}/v1/messages");
+
+    let server = std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut stream = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock
+                    && std::time::Instant::now() < deadline =>
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                other => panic!("未收到请求: {other:?}"),
+            }
+        };
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(3)))
+            .expect("读取超时");
+        let mut request = Vec::new();
+        let mut chunk = [0u8; 4096];
+        while let Ok(read) = stream.read(&mut chunk) {
+            if read == 0 {
+                break;
+            }
+            request.extend_from_slice(&chunk[..read]);
+            if request.windows(4).any(|w| w == b"\r\n\r\n") {
+                break;
+            }
+        }
+        let head = String::from_utf8_lossy(&request).to_string();
+        // 3xx + 指向同主机的另一个路径：如果实现跟随重定向，就会产生第二次连接。
+        let response = format!(
+            "HTTP/1.1 302 Found\r\nLocation: http://{addr}/elsewhere\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        );
+        let _ = stream.write_all(response.as_bytes());
+        let _ = stream.flush();
+        drop(stream);
+
+        // 短暂窗口内是否出现第二次连接（出现即说明跟随了重定向）。
+        let followed = {
+            let start = std::time::Instant::now();
+            let mut seen = false;
+            while start.elapsed() < std::time::Duration::from_millis(300) {
+                match listener.accept() {
+                    Ok(_) => {
+                        seen = true;
+                        break;
+                    }
+                    Err(_) => std::thread::sleep(std::time::Duration::from_millis(10)),
+                }
+            }
+            seen
+        };
+        (head, followed)
+    });
+
+    let mut config = ai_provider_config(
+        crate::ChatProtocol::AnthropicMessages,
+        ai_provider_capabilities(false),
+    );
+    config.endpoint = url;
+    config.auth_style = crate::AuthStyle::AnthropicApiKey;
+
+    let error = crate::UreqChatTransport
+        .call(
+            &config,
+            &crate::TransportAuth::Header {
+                name: "x-api-key",
+                value: "sk-provider-test-secret".to_string(),
+            },
+            "{}",
+            &fluxdb_core::CancelFlag::new(),
+        )
+        .expect_err("3xx 必须按 HTTP 状态返回，而不是跟随重定向");
+    assert!(error.message.contains("HTTP 302"), "实际错误：{error}");
+
+    let (head, followed) = server.join().expect("redirect mock server");
+    assert!(!followed, "不得跟随重定向（max_redirects(0)）");
+    let lower = head.to_ascii_lowercase();
+    assert!(
+        lower.contains("anthropic-version: 2023-06-01"),
+        "Anthropic 形态必须带 anthropic-version 头，实际请求头:\n{head}"
+    );
+}

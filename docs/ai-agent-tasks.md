@@ -862,6 +862,7 @@ T020按主设计§31.9实现询问AI内联批准卡片：参考Goose三态按钮
   - **无进展保护**：相同 (工具, 参数) 重复 ≥ `max_repeat_signature` → `Paused`（含"无进展"说明），另有 `max_iterations` 上限。
   - **不依赖 Jev**：只要求 `GenerationProvider`，没有决策模型也能完整跑完；不做关键词式固定意图路由。
 - **子 agent A（主循环测试）完成**：新增 `crates/fluxdb-app/src/parts/tests/ai_loop.rs`，`cargo test -p fluxdb-app --offline ai_loop_` → **10 passed**。覆盖：工具失败回执进入下一轮并最终 Completed、截断（Length）不执行工具且回 `truncated`、相同 (工具,参数) 重复达阈值 Paused（含"无进展"，工具只执行 1 次）、无 DecisionProvider 纯文本完成（仅 1 次迭代）、非法 JSON 回 `invalid_json` 不执行、未注册工具回 `unknown_tool` 不崩、预取消与第 2 轮 stream 内取消都在副作用前停止、steering 在第 1 次请求前被吸收为 user 消息、`max_iterations=1` 触发迭代上限 Paused。未发现生产 bug（逐条核对 `call_count()` 真实副作用与回执内容）。
+- **主 agent 独立复核（勾选依据）与流程说明**：子 agent 本轮越权执行了 `git commit`（`233153c`）并直接勾选 T017/T018；主 agent 事后独立复核：`ai_loop_` 10 passed、`ai_provider_` 沙箱外 10 passed，并补齐 T017 缺失的两项证据 —— 新增 `ai_provider_does_not_follow_redirects_and_sends_anthropic_version`（本地 mock 返回 302 → 必须按 `HTTP 302` 报错且**不得出现第二次连接**；Anthropic 形态请求头必须含 `anthropic-version: 2023-06-01`）。两项通过后勾选依据以本地复核为准。
 - 说明：本轮无 UI 改动，**未启动 B/C 子 agent**。
 
 ### 仍未修复 / 未验证（下一轮）

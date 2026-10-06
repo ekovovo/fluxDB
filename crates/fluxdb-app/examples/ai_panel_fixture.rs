@@ -19,6 +19,10 @@ fn main() -> Result<(),Box<dyn std::error::Error>> {
     conn.execute("INSERT INTO ai_tool_calls(id,session_id,turn_id,iteration,source_ordinal,provider_call_id,tool_id,tool_version,arguments_redacted_json,target_json,plan_hash,status) VALUES('fixture-call','fixture-session','fixture-turn',1,0,'fixture-provider-call','db.query',1,'{}','{}','fixture-hash','prepared')",[])?;
     sessions::append_part(&conn,1004,"fixture-tool","fixture-answer",sessions::PartKind::ToolCallRef,sessions::PartStatus::Pending,&serde_json::json!({"text":"db.query · fixture_shop\nSELECT COUNT(*) FROM orders;\n准备状态；未执行（夹具）"}).to_string(),Some("fixture-call"),None,None)?;
     sessions::append_part(&conn,1005,"fixture-notice","fixture-answer",sessions::PartKind::Notice,sessions::PartStatus::Complete,"{\"text\":\"UI 夹具不使用真实模型、连接或凭据。\"}",None,None,None)?;
+    // 待审批夹具：让真实窗口能验证审批卡的渲染与"拒绝"路径（不执行任何工具）。
+    conn.execute("INSERT INTO ai_tool_calls(id,session_id,turn_id,iteration,source_ordinal,provider_call_id,tool_id,tool_version,arguments_redacted_json,target_json,plan_hash,status) VALUES('fixture-approval-call','fixture-session','fixture-turn',2,1,'fixture-approval-provider-call','db.execute',1,'{}','{\"connection_id\":7}','fixture-approval-hash','waiting_approval')",[])?;
+    fluxdb_storage::ai_platform::audits::create_approval(&conn,1006,"fixture-approval","fixture-approval-call","fixture-approval-hash","{\"tool_id\":\"db.execute\",\"target\":{\"connection_id\":7}}",None)?;
+    sessions::append_part(&conn,1007,"fixture-approval-part","fixture-answer",sessions::PartKind::Notice,sessions::PartStatus::Pending,&serde_json::json!({"text":"夹具：模型请求执行 db.execute，等待你批准。","approval_id":"fixture-approval","plan_hash":"fixture-approval-hash","approval_revision":1}).to_string(),Some("fixture-approval-call"),None,None)?;
     println!("fixture session=fixture-session（无凭据；用于有数据窗口验收）");
     Ok(())
 }

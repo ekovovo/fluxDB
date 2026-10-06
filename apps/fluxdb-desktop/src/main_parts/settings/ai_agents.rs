@@ -11,6 +11,7 @@ fn ai_agent_tab_button(
     let is_active = value == active;
     div()
         .id(SharedString::from(format!("ai-agent-tab:{label}")))
+        .debug_selector(|| format!("ai-agent-tab:{label}"))
         .px_3()
         .pt_1()
         .pb_2()
@@ -56,7 +57,11 @@ fn ai_prompt_field(label: &str, input: &Entity<InputState>, colors: UiColors) ->
                 .text_color(colors.text)
                 .child(label.to_string()),
         )
-        .child(Input::new(input))
+        .child(
+            div()
+                .debug_selector(|| "ai-agent-prompt".into())
+                .child(Input::new(input)),
+        )
 }
 
 /// Agent 编辑器：页签 + 表单 + 底部保存栏。
@@ -105,12 +110,6 @@ fn ai_agent_editor_form(
                 .child(ai_field("职责描述", &editor.inputs.description, colors))
                 .child(
                     div()
-                        .text_size(px(11.))
-                        .text_color(colors.muted)
-                        .child("描述用于路由与用户识别，不是硬流程约束。"),
-                )
-                .child(
-                    div()
                         .flex()
                         .items_center()
                         .justify_between()
@@ -131,12 +130,6 @@ fn ai_agent_editor_form(
                                 }),
                             ),
                         ),
-                )
-                .child(
-                    div()
-                        .text_size(px(11.))
-                        .text_color(colors.muted)
-                        .child("执行目标自动跟随当前界面（SQL 编辑器、表数据、Redis Key）；切换标签页不改变已启动任务的目标。"),
                 )
                 .into_any_element()
         }
@@ -224,12 +217,6 @@ fn ai_agent_editor_form(
                 &editor.inputs.system_prompt,
                 colors,
             ))
-            .child(
-                div()
-                    .text_size(px(11.))
-                    .text_color(colors.muted)
-                    .child("保存在此 Agent 中，没有模板/多版本。编辑只影响下一个 Turn；权限、预算与工具校验仍由内核保证。"),
-            )
             .into_any_element()
         }
         AiAgentTab::Tools => {
@@ -302,12 +289,6 @@ fn ai_agent_editor_form(
                         .child("此 Agent 可用的工具与内置能力"),
                 )
                 .child(list)
-                .child(
-                    div()
-                        .text_size(px(11.))
-                        .text_color(colors.muted)
-                        .child("按 Agent 收窄工具白名单；全部勾选 = 不限制。绑定关系随 Agent 行 CAS 保存，运行时按此收窄（M2 执行）。"),
-                )
                 .into_any_element()
         }
     };
@@ -360,6 +341,7 @@ fn ai_agent_editor_form(
                     Button::new("ai-agent-save")
                         .small()
                         .primary()
+                        .debug_selector(|| "ai-agent-save".into())
                         .child(if is_new {
                             "创建 Agent"
                         } else {
@@ -457,12 +439,6 @@ fn settings_ai_agents_panel(
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
                                 .text_color(colors.text)
                                 .child("Agent"),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(11.))
-                                .text_color(colors.muted)
-                                .child("每个 Agent 直接配置提示词、模型角色与插件能力。"),
                         ),
                 )
                 .child(
@@ -515,7 +491,7 @@ fn settings_ai_sessions_panel(colors: UiColors) -> Div {
                     .child(div().flex_1()),
             )
             .child(ai_empty_state(
-                "暂无会话记录。普通打开恢复上次查看的会话，新建才开始新的草稿；运行时阶段（M2）写入后在此列出。",
+                "暂无会话记录。",
                 colors,
             )),
     )

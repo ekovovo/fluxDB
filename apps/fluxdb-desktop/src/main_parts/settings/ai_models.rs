@@ -378,9 +378,6 @@ fn settings_ai_models_panel(
             .collect()
     };
 
-    let model_count = state.ai_models.len();
-    let model_total_note = format!("{model_count} 个模型 · 密钥不回显");
-
     div()
         .flex()
         .flex_col()
@@ -413,7 +410,7 @@ fn settings_ai_models_panel(
                                 })),
                         ),
                 )
-                // 工具栏：搜索框 + 「N 个模型 · 密钥不回显」。
+                // 工具栏：搜索框 + 刷新。
                 .child(
                     div()
                         .border_t_1()
@@ -430,12 +427,6 @@ fn settings_ai_models_panel(
                                 .flex()
                                 .items_center()
                                 .gap_2()
-                                .child(
-                                    div()
-                                        .text_size(px(11.))
-                                        .text_color(colors.muted)
-                                        .child(model_total_note),
-                                )
                                 .child(
                                     Button::new("ai-refresh-models")
                                         .small()
@@ -466,17 +457,7 @@ fn settings_ai_models_panel(
         )
         .child(
             settings_panel_group("默认模型与决策", colors)
-                .child(ai_default_model_section(state, &panel, colors, cx))
-                .child(
-                    div()
-                        .border_t_1()
-                        .border_color(colors.border_soft)
-                        .px_4()
-                        .py_3()
-                        .text_size(px(11.))
-                        .text_color(colors.muted)
-                        .child("Jev 是内置可选能力；未配置决策模型时也可运行主 Agent。"),
-                ),
+                .child(ai_default_model_section(state, &panel, colors, cx)),
         )
 }
 
@@ -607,12 +588,7 @@ fn ai_default_model_section(
             }
             col = col.child(menu);
         }
-        col.child(
-            div()
-                .text_size(px(11.))
-                .text_color(colors.muted)
-                .child("用户在会话中固定模型时，不被自动路由覆盖。"),
-        )
+        col
     };
 
     let right = {
@@ -651,12 +627,7 @@ fn ai_default_model_section(
             }
             col = col.child(menu);
         }
-        col.child(
-            div()
-                .text_size(px(11.))
-                .text_color(colors.muted)
-                .child("Jev 为内置可选能力，未配置也可运行主 Agent。"),
-        )
+        col
     };
 
     div().px_4().py_3().flex().gap_4().child(left).child(right)

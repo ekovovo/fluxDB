@@ -181,12 +181,6 @@ fn ai_tools_catalog_panel(
                         .gap_3()
                         .child(
                             div()
-                                .text_size(px(12.))
-                                .text_color(colors.muted)
-                                .child("内部 Agent 与本地 MCP 共用工具、授权和不可变执行回执。"),
-                        )
-                        .child(
-                            div()
                                 .text_size(px(11.))
                                 .text_color(colors.muted)
                                 .child(format!("{} 个标准工具", AI_TOOL_CATALOG.len())),
@@ -206,16 +200,6 @@ fn ai_tools_catalog_panel(
                                 .child(rows),
                         ),
                 ),
-        )
-        .child(
-            settings_panel_group("启用说明", colors).child(
-                div()
-                    .px_4()
-                    .py_3()
-                    .text_size(px(11.))
-                    .text_color(colors.muted)
-                    .child("启用工具只是让它可被发现。每次调用仍重新检查目标、参数、连接权限、安全审计与审批范围。"),
-            ),
         )
 }
 
@@ -286,7 +270,7 @@ fn ai_tool_row(
 fn ai_plugins_panel(state: &AppState, colors: UiColors, cx: &mut Context<NavicatMain>) -> Div {
     let body: Vec<gpui::AnyElement> = if state.ai_plugin_instances.is_empty() {
         vec![ai_empty_state(
-            "暂无内置插件实例。Jev 等内置能力随应用注册，无需安装包。",
+            "暂无内置插件实例。",
             colors,
         )]
     } else {
@@ -353,20 +337,7 @@ fn ai_plugins_panel(state: &AppState, colors: UiColors, cx: &mut Context<Navicat
             .collect()
     };
     div().flex().flex_col().gap_3().child(
-        settings_panel_group("内置能力", colors)
-            .child(div().children(body))
-            .child(
-                div()
-                    .border_t_1()
-                    .border_color(colors.border_soft)
-                    .px_4()
-                    .py_3()
-                    .text_size(px(11.))
-                    .text_color(colors.muted)
-                    .child(
-                        "安全审计与内核执行保护不可关闭；第三方插件本期仅预留接口，未实现安装。",
-                    ),
-            ),
+        settings_panel_group("内置能力", colors).child(div().children(body)),
     )
 }
 
@@ -391,12 +362,6 @@ fn ai_audit_panel(colors: UiColors) -> Div {
                             .text_color(colors.text)
                             .child("安全审计始终开启（只读）"),
                     )
-                    .child(
-                        div()
-                            .text_size(px(11.))
-                            .text_color(colors.muted)
-                            .child("参数或目标变化会使旧审计与审批失效；审计无法执行或保存时，操作不会继续。本页只查看内核判定，规则调整在「内置插件 / 安全审计」。"),
-                    ),
             ),
         )
         .child(
@@ -417,7 +382,7 @@ fn ai_audit_panel(colors: UiColors) -> Div {
                         .child(div().flex_1()),
                 )
                 .child(ai_empty_state(
-                    "暂无审计记录。真实工具调用在运行时阶段（M2）写入后在此按判定筛选查看。",
+                    "暂无审计记录。",
                     colors,
                 )),
         )
@@ -509,25 +474,9 @@ fn ai_mcp_panel(state: &AppState, colors: UiColors, cx: &mut Context<NavicatMain
                                         .text_color(colors.text)
                                         .child("本地 Server · stdio"),
                                 )
-                                .child(
-                                    div()
-                                        .text_size(px(11.))
-                                        .text_color(colors.muted)
-                                        .child("不需要配置内部主模型或 Jev；外部 Agent（Claude Code 等）可调用。"),
-                                ),
                         )
                         .child(ai_pill("13 个候选工具", colors.info, colors)),
                 )
-                .child(
-                    div()
-                        .border_t_1()
-                        .border_color(colors.border_soft)
-                        .px_4()
-                        .py_3()
-                        .text_size(px(11.))
-                        .text_color(colors.muted)
-                        .child("默认只读 · 不暴露修改工具。客户端允许调用工具不等于 fluxDB 的写入授权；Server 本体在 M2-MCP 阶段交付。"),
-                ),
         )
         .child(
             settings_panel_group("已配置连接的授权范围", colors)

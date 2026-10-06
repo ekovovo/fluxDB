@@ -723,7 +723,7 @@ mod ai_ui_tests {
         click(cx, AGENT_A_ROW);
         click_selector(cx, "ai-field:名称");
         cx.simulate_keystrokes("cmd-a backspace");
-        click(cx, (1865., 487.));
+        click_selector(cx, "ai-agent-save");
         let (error, draft_name) = view.read_with(cx, |main, app| {
             let editor = main
                 .ai_agent_editor
@@ -774,10 +774,7 @@ mod ai_ui_tests {
         );
 
         // 切到「模型与提示词」编辑草稿，再切回基本页点击保存，验证提示词不被 CAS 失败清空。
-        click(cx, (805., 222.));
-        cx.update(|window, cx| {
-            let _ = window.draw(cx).clear(cx);
-        });
+        click_selector(cx, "ai-agent-tab:模型与提示词");
         let tab_is_model = view.read_with(cx, |main, _| {
             matches!(
                 main.ai_agent_editor
@@ -788,14 +785,11 @@ mod ai_ui_tests {
             )
         });
         assert!(tab_is_model, "点击页签后应切换到「模型与提示词」");
-        click(cx, (1000., 340.));
+        click_selector(cx, "ai-agent-prompt");
         cx.simulate_keystrokes("cmd-a");
         cx.simulate_input("我的过期提示词");
-        click(cx, (720., 222.));
-        cx.update(|window, cx| {
-            let _ = window.draw(cx).clear(cx);
-        });
-        click(cx, (1865., 487.));
+        click_selector(cx, "ai-agent-tab:基本");
+        click_selector(cx, "ai-agent-save");
 
         let (error, draft_prompt) = view.read_with(cx, |main, app| {
             let editor = main

@@ -250,31 +250,59 @@ fn variant_name(statement: &sqlparser::ast::Statement) -> String {
 }
 
 /// `db.query` 的输入 schema（设计 §21.3）。
-pub const DB_QUERY_INPUT_SCHEMA: &str = r#"{
+pub const DB_QUERY_INPUT_SCHEMA: &str = r##"{
   "type": "object",
   "additionalProperties": false,
   "required": ["target", "sql"],
   "properties": {
     "target": { "type": "string", "minLength": 1 },
     "sql": { "type": "string", "minLength": 1, "maxLength": 65536 },
-    "parameters": { "type": "array", "maxItems": 1024 },
+        "parameters": { "type": "array", "maxItems": 1024, "items": { "$ref": "#/$defs/parameter" } },
     "max_rows": { "type": "integer", "minimum": 1, "maximum": 1000 },
     "timeout_ms": { "type": "integer", "minimum": 100, "maximum": 30000 }
+  },
+  "$defs": {
+    "parameter": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["type"], "properties": { "type": { "const": "null" } } },
+        { "type": "object", "additionalProperties": false, "required": ["type", "value"], "properties": { "type": { "const": "bool" }, "value": { "type": "boolean" } } },
+        { "type": "object", "additionalProperties": false, "required": ["type", "value"], "properties": { "type": { "const": "i64" }, "value": { "type": "string" } } },
+        { "type": "object", "additionalProperties": false, "required": ["type", "value"], "properties": { "type": { "const": "u64" }, "value": { "type": "string" } } },
+        { "type": "object", "additionalProperties": false, "required": ["type", "value"], "properties": { "type": { "const": "f64" }, "value": { "type": "number" } } },
+        { "type": "object", "additionalProperties": false, "required": ["type", "value"], "properties": { "type": { "const": "decimal" }, "value": { "type": "string" } } },
+        { "type": "object", "additionalProperties": false, "required": ["type", "value"], "properties": { "type": { "const": "text" }, "value": { "type": "string" } } },
+        { "type": "object", "additionalProperties": false, "required": ["type", "value"], "properties": { "type": { "const": "bytes" }, "value": { "type": "string" } } }
+      ]
+    }
   }
-}"#;
+}"##;
 
 /// `db.execute` 的输入 schema：修改专用入口（审批绑定 plan hash）。
-pub const DB_EXECUTE_INPUT_SCHEMA: &str = r#"{
+pub const DB_EXECUTE_INPUT_SCHEMA: &str = r##"{
   "type": "object",
   "additionalProperties": false,
   "required": ["target", "sql"],
   "properties": {
     "target": { "type": "string", "minLength": 1 },
     "sql": { "type": "string", "minLength": 1, "maxLength": 65536 },
-    "parameters": { "type": "array", "maxItems": 1024 },
+        "parameters": { "type": "array", "maxItems": 1024, "items": { "$ref": "#/$defs/parameter" } },
     "timeout_ms": { "type": "integer", "minimum": 100, "maximum": 30000 }
+  },
+  "$defs": {
+    "parameter": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["type"], "properties": { "type": { "const": "null" } } },
+        { "type": "object", "additionalProperties": false, "required": ["type", "value"], "properties": { "type": { "const": "bool" }, "value": { "type": "boolean" } } },
+        { "type": "object", "additionalProperties": false, "required": ["type", "value"], "properties": { "type": { "const": "i64" }, "value": { "type": "string" } } },
+        { "type": "object", "additionalProperties": false, "required": ["type", "value"], "properties": { "type": { "const": "u64" }, "value": { "type": "string" } } },
+        { "type": "object", "additionalProperties": false, "required": ["type", "value"], "properties": { "type": { "const": "f64" }, "value": { "type": "number" } } },
+        { "type": "object", "additionalProperties": false, "required": ["type", "value"], "properties": { "type": { "const": "decimal" }, "value": { "type": "string" } } },
+        { "type": "object", "additionalProperties": false, "required": ["type", "value"], "properties": { "type": { "const": "text" }, "value": { "type": "string" } } },
+        { "type": "object", "additionalProperties": false, "required": ["type", "value"], "properties": { "type": { "const": "bytes" }, "value": { "type": "string" } } }
+      ]
+    }
   }
-}"#;
+}"##;
 
 /// `db.explain` 的输入 schema（默认不执行 ANALYZE）。
 pub const DB_EXPLAIN_INPUT_SCHEMA: &str = r#"{

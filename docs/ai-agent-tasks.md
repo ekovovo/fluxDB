@@ -254,6 +254,8 @@ UI原型：`docs/prototype/ai-agent-ui.html`（本机 `/Users/shining3d/fusuwei/
 - 测试方式：将上述每项验收分别落实为相关crate的测试断言；用隔离fixture/受控Provider验证正常与异常路径，涉及工具时核对真实回执及副作用调用数，不用伪造成功结果跳过执行链。
 
 
+- 2026-10-06（A）：真实模型 + 真实 MySQL 端到端（含 parameters 绑定）通过，见 `docs/testing/ai-agent/t024-live-mysql-e2e-2026-10-06.md`。
+
 ### T025 Redis 探索与命令执行工具
 - [ ] 依赖：T019–T021；设计 §22。
 - 改动：SCAN/inspect 范围工具、命令/子命令/参数风险、Cluster/DB scope、长订阅停止。

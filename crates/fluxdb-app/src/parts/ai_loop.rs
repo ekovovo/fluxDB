@@ -14,28 +14,6 @@
 
 use std::collections::HashMap;
 
-/// 工具注册表：宿主稳定 ID → 工具实现。
-pub struct ToolRegistry {
-    tools: Vec<Box<dyn fluxdb_core::AiTool>>,
-}
-
-impl ToolRegistry {
-    pub fn new(tools: Vec<Box<dyn fluxdb_core::AiTool>>) -> Self {
-        Self { tools }
-    }
-
-    pub fn descriptors(&self) -> Vec<fluxdb_core::ToolDescriptor> {
-        self.tools.iter().map(|t| t.descriptor().clone()).collect()
-    }
-
-    pub fn get(&self, host_id: &str) -> Option<&dyn fluxdb_core::AiTool> {
-        self.tools
-            .iter()
-            .find(|t| t.descriptor().id == host_id)
-            .map(|t| t.as_ref())
-    }
-}
-
 /// 运行限制。
 #[derive(Clone, Copy, Debug)]
 pub struct LoopLimits {
@@ -60,6 +38,21 @@ pub struct TurnState {
     pub model: String,
     pub messages: Vec<fluxdb_core::ModelMessage>,
     pub max_output_tokens: Option<i64>,
+    /// Turn 开始即固定的执行目标（T021 的 `TargetRef::to_json()`）。
+    ///
+    /// 参与 plan hash：目标变化 → 旧审批/审计自然失效。空串表示"本轮无绑定目标"。
+    pub target_json: String,
+}
+
+/// 一轮 Turn 的权限上下文（Agent 白名单 + 目标/内核权限）。
+#[derive(Clone, Debug, Default)]
+pub struct TurnPermissionContext {
+    /// Agent 允许的工具（空 = 不限制）。
+    pub agent_allowed_tools: Vec<String>,
+    /// 当前目标的连接/内核权限（写/管理默认关闭）。
+    pub policy: KernelPolicy,
+    /// 工具/插件摘要，参与 plan hash。
+    pub plugin_digest: Option<String>,
 }
 
 /// 循环对外发出的事件（actor 转成 `AiEvent` / 持久化片段）。
@@ -74,6 +67,11 @@ pub enum LoopEvent {
     ToolStarted { call: fluxdb_core::ToolCallRequest },
     /// 工具真实回执。
     ToolFinished { receipt: fluxdb_core::ToolReceipt },
+    /// 需要用户审批：**不执行**、不产生工具回执，等审批决定后继续（设计 §25.3）。
+    ApprovalRequired {
+        plan_hash: String,
+        scope: ApprovalScope,
+    },
     /// 给用户/模型的可见说明（未知工具、截断未执行、无进展暂停等）。
     Notice(String),
 }
@@ -91,10 +89,73 @@ pub enum TurnOutcome {
 }
 
 /// 主循环执行器。
+///
+/// 工具不再"直接调用"：每次调用都必须经过 `ToolCatalog::prepare`（schema 校验）→
+/// 强制安全审计 → 内核授权（风险/白名单/连接权限求交集）→ 执行 → `project`（有界投影）。
 pub struct TurnRunner<'a> {
     pub provider: &'a dyn fluxdb_core::GenerationProvider,
-    pub tools: &'a ToolRegistry,
+    pub tools: &'a ToolCatalog,
     pub limits: LoopLimits,
+    pub permission: TurnPermissionContext,
+    /// 强制安全审计 Hook（不可禁用；审计失败 fail closed）。
+    pub audit: &'a dyn SecurityAuditHook,
+}
+
+/// `ToolSpec` → Provider 可见的 `ToolDescriptor`（只暴露描述与 schema）。
+fn loop_tool_descriptors(catalog: &ToolCatalog) -> Vec<fluxdb_core::ToolDescriptor> {
+    catalog
+        .specs()
+        .iter()
+        .map(|spec| fluxdb_core::ToolDescriptor {
+            id: spec.id.clone(),
+            version: spec.version,
+            description: spec.description.clone(),
+            risk: spec.risk,
+            input_schema_json: spec.input_schema.to_string(),
+        })
+        .collect()
+}
+
+fn loop_now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// 内核合成的拒绝回执（不是工具产出，但同样是不可改写的事实）。
+fn loop_denied_receipt(
+    call: &fluxdb_core::ToolCallRequest,
+    code: &str,
+    reason: &str,
+    started_at_ms: i64,
+) -> fluxdb_core::ToolReceipt {
+    fluxdb_core::ToolReceipt {
+        call_id: call.provider_call_id.clone(),
+        tool_id: call.tool_id.clone(),
+        status: fluxdb_core::ToolReceiptStatus::Denied,
+        result_json: serde_json::json!({
+            "ok": false,
+            "code": code,
+            "message": reason,
+            "retryable": false,
+        })
+        .to_string(),
+        error_code: Some(code.to_string()),
+        affected_rows: None,
+        started_at_ms,
+        finished_at_ms: loop_now_ms(),
+    }
+}
+
+fn loop_tool_status_label(status: fluxdb_core::ToolReceiptStatus) -> &'static str {
+    match status {
+        fluxdb_core::ToolReceiptStatus::Succeeded => "succeeded",
+        fluxdb_core::ToolReceiptStatus::Failed => "failed",
+        fluxdb_core::ToolReceiptStatus::Denied => "denied",
+        fluxdb_core::ToolReceiptStatus::Cancelled => "cancelled",
+        fluxdb_core::ToolReceiptStatus::Unknown => "unknown",
+    }
 }
 
 impl<'a> TurnRunner<'a> {
@@ -121,7 +182,7 @@ impl<'a> TurnRunner<'a> {
             let request = fluxdb_core::ModelRequest {
                 model: state.model.clone(),
                 messages: state.messages.clone(),
-                tools: self.tools.descriptors(),
+                tools: loop_tool_descriptors(self.tools),
                 max_output_tokens: state.max_output_tokens,
             };
             let events = match block_on_ready(self.provider.stream(request, cancel.clone())) {
@@ -194,17 +255,41 @@ impl<'a> TurnRunner<'a> {
                     ));
                     continue;
                 }
-                let Some(tool) = self.tools.get(&call.tool_id) else {
+                // 1) 先校验 schema：未知工具 / 非法参数都是受控错误，不进入执行。
+                let Some(spec) = self.tools.describe(&call.tool_id).cloned() else {
                     let notice = format!("工具 {} 未注册，已拒绝执行。", call.tool_id);
                     emit(LoopEvent::Notice(notice.clone()));
                     state.messages.push(fluxdb_core::ModelMessage::new(
                         fluxdb_core::ModelRole::Tool,
-                        format!("{{\"error\":\"unknown_tool\",\"tool\":\"{}\"}}", call.tool_id),
+                        format!(
+                            "{{\"error\":\"unknown_tool\",\"tool\":\"{}\"}}",
+                            call.tool_id
+                        ),
                     ));
                     continue;
                 };
+                let prepared = match self.tools.prepare(&call.tool_id, &call.arguments_json) {
+                    Ok(prepared) => prepared,
+                    Err(error) => {
+                        let notice = format!(
+                            "工具 {} 未执行：参数未通过校验（{}）。",
+                            call.tool_id, error.code
+                        );
+                        emit(LoopEvent::Notice(notice));
+                        state.messages.push(fluxdb_core::ModelMessage::new(
+                            fluxdb_core::ModelRole::Tool,
+                            format!(
+                                "{{\"tool\":\"{}\",\"status\":\"failed\",\"error\":\"{}\",\"message\":{}}}",
+                                call.tool_id,
+                                error.code,
+                                serde_json::Value::String(error.message).to_string()
+                            ),
+                        ));
+                        continue;
+                    }
+                };
 
-                // 无进展检测：相同工具 + 相同参数反复出现。
+                // 2) 无进展检测：相同工具 + 相同参数反复出现。
                 let signature = format!("{}|{}", call.tool_id, call.arguments_json);
                 let count = signature_counts.entry(signature).or_insert(0);
                 *count += 1;
@@ -217,6 +302,78 @@ impl<'a> TurnRunner<'a> {
                     return TurnOutcome::Paused { reason };
                 }
 
+                // 3) 强制安全审计（fail closed）→ 内核授权（deny 优先）。
+                let hash = plan_hash(
+                    &spec.id,
+                    spec.version,
+                    &state.target_json,
+                    &prepared.to_json_string(),
+                    self.permission.plugin_digest.as_deref(),
+                );
+                let audit = audit_or_fail_closed(
+                    self.audit,
+                    &AuditInput {
+                        tool_id: spec.id.clone(),
+                        tool_version: spec.version,
+                        plan_hash: hash.clone(),
+                        target_json: state.target_json.clone(),
+                        normalized_arguments_json: prepared.to_json_string(),
+                        ruleset_version: "kernel-v1".to_string(),
+                    },
+                );
+                let decision = authorize(&AuthorizeInput {
+                    tool_id: spec.id.clone(),
+                    tool_version: spec.version,
+                    risk: spec.risk,
+                    target_json: state.target_json.clone(),
+                    normalized_arguments_json: prepared.to_json_string(),
+                    plugin_digest: self.permission.plugin_digest.clone(),
+                    agent_allowed_tools: self.permission.agent_allowed_tools.clone(),
+                    policy: self.permission.policy,
+                    audit: Some(audit),
+                });
+
+                match decision {
+                    // 4a) 拒绝：合成 Denied 回执回给模型，永不执行。
+                    PermissionDecision::Deny { code, reason, .. } => {
+                        let receipt = loop_denied_receipt(&call, code, &reason, loop_now_ms());
+                        emit(LoopEvent::ToolFinished {
+                            receipt: receipt.clone(),
+                        });
+                        state.messages.push(fluxdb_core::ModelMessage::new(
+                            fluxdb_core::ModelRole::Tool,
+                            format!(
+                                "{{\"tool\":\"{}\",\"status\":\"{}\",\"result\":{}}}",
+                                receipt.tool_id,
+                                loop_tool_status_label(receipt.status),
+                                receipt.result_json
+                            ),
+                        ));
+                        continue;
+                    }
+                    // 4b) 需要审批：不执行、不回执，暂停等用户决定（审批绑定 plan_hash）。
+                    PermissionDecision::RequireApproval { plan_hash, scope } => {
+                        let reason = format!("工具 {} 需要审批后才能执行。", spec.id);
+                        emit(LoopEvent::Notice(reason.clone()));
+                        emit(LoopEvent::ApprovalRequired { plan_hash, scope });
+                        return TurnOutcome::Paused { reason };
+                    }
+                    // 4c) 放行：必须有可执行实现（只有 spec 没有实现 = 受控错误）。
+                    PermissionDecision::Allow { .. } => {}
+                }
+                let Some(tool) = self.tools.executable(&call.tool_id) else {
+                    let notice = format!("工具 {} 没有可执行实现，已拒绝执行。", call.tool_id);
+                    emit(LoopEvent::Notice(notice));
+                    state.messages.push(fluxdb_core::ModelMessage::new(
+                        fluxdb_core::ModelRole::Tool,
+                        format!(
+                            "{{\"error\":\"tool_not_executable\",\"tool\":\"{}\"}}",
+                            call.tool_id
+                        ),
+                    ));
+                    continue;
+                };
+
                 emit(LoopEvent::ToolStarted {
                     call: call.clone(),
                 });
@@ -227,10 +384,10 @@ impl<'a> TurnRunner<'a> {
                     call_id: call.provider_call_id.clone(),
                     cancel: cancel.clone(),
                 };
-                let receipt = match block_on_ready(tool.execute(ctx, call.arguments_json.clone())) {
+                let receipt = match block_on_ready(tool.execute(ctx, prepared.to_json_string())) {
                     Ok(Ok(receipt)) => receipt,
                     Ok(Err(error)) | Err(error) => {
-                        // 基础设施失败：退出整个任务（普通工具错误走下面的 Failed 回执分支）。
+                        // 基础设施失败：退出整个任务（普通工具错误走 Failed 回执分支）。
                         return TurnOutcome::Failed {
                             message: error.message,
                         };
@@ -239,23 +396,30 @@ impl<'a> TurnRunner<'a> {
                 emit(LoopEvent::ToolFinished {
                     receipt: receipt.clone(),
                 });
-                // 真实回执（含失败）都回到模型，让它观察并决定下一步。
+                // 5) 回给模型的是**该工具有界投影**，原始回执保持不变。
+                let projection = match self.tools.project(&receipt.tool_id, &receipt, None) {
+                    Ok(projection) => projection,
+                    Err(error) => ModelProjection {
+                        text: format!(
+                            "{{\"error\":\"{}\",\"message\":{}}}",
+                            error.code,
+                            serde_json::Value::String(error.message).to_string()
+                        ),
+                        truncated: false,
+                        result_ref: None,
+                    },
+                };
                 state.messages.push(fluxdb_core::ModelMessage::new(
                     fluxdb_core::ModelRole::Tool,
                     format!(
-                        "{{\"tool\":\"{}\",\"status\":\"{}\",\"result\":{}}}",
+                        "{{\"tool\":\"{}\",\"status\":\"{}\",\"truncated\":{},\"result\":{}}}",
                         receipt.tool_id,
-                        match receipt.status {
-                            fluxdb_core::ToolReceiptStatus::Succeeded => "succeeded",
-                            fluxdb_core::ToolReceiptStatus::Failed => "failed",
-                            fluxdb_core::ToolReceiptStatus::Denied => "denied",
-                            fluxdb_core::ToolReceiptStatus::Cancelled => "cancelled",
-                            fluxdb_core::ToolReceiptStatus::Unknown => "unknown",
-                        },
-                        if receipt.result_json.trim().is_empty() {
-                            "null"
+                        loop_tool_status_label(receipt.status),
+                        projection.truncated,
+                        if projection.text.trim().is_empty() {
+                            "null".to_string()
                         } else {
-                            receipt.result_json.as_str()
+                            projection.text
                         }
                     ),
                 ));

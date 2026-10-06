@@ -695,3 +695,97 @@ impl<R: SqlExecutionResolver + 'static> fluxdb_core::AiTool for AiSqlSearchTool<
         })
     }
 }
+
+/// 修改工具：`db.execute`（Write）。
+///
+/// 只由**审批通过之后**的运行时调用：本工具自身不判断审批，内核（`TurnRunner` 的
+/// `authorize` + 审批行 plan_hash 复核）是唯一放行点；未接审批时不得注册给模型。
+pub struct AiSqlExecuteTool<R: SqlExecutionResolver> {
+    descriptor: fluxdb_core::ToolDescriptor,
+    resolver: Arc<R>,
+}
+
+impl<R: SqlExecutionResolver> AiSqlExecuteTool<R> {
+    pub fn new(resolver: Arc<R>) -> fluxdb_core::Result<Self> {
+        let spec = standard_sql_tool_specs()?
+            .into_iter()
+            .find(|spec| spec.id == "db.execute")
+            .ok_or_else(|| {
+                fluxdb_core::Error::new(
+                    fluxdb_core::ErrorKind::Internal,
+                    "缺少标准 SQL 工具定义: db.execute",
+                )
+            })?;
+        Ok(Self {
+            descriptor: fluxdb_core::ToolDescriptor {
+                id: spec.id,
+                version: spec.version,
+                description: spec.description,
+                risk: spec.risk,
+                input_schema_json: spec.input_schema.to_string(),
+            },
+            resolver,
+        })
+    }
+}
+
+impl<R: SqlExecutionResolver + 'static> fluxdb_core::AiTool for AiSqlExecuteTool<R> {
+    fn descriptor(&self) -> &fluxdb_core::ToolDescriptor {
+        &self.descriptor
+    }
+
+    fn execute(
+        &self,
+        ctx: fluxdb_core::ToolExecutionContext,
+        arguments_json: String,
+    ) -> fluxdb_core::AiFuture<'_, fluxdb_core::ToolReceipt> {
+        let started_at_ms = now_ms();
+        let descriptor = self.descriptor.clone();
+        let resolver = Arc::clone(&self.resolver);
+        let cancel = ctx.cancel.clone();
+        Box::pin(async move {
+            let outcome = match parse_sql_args(&arguments_json) {
+                Ok(args) => execute_sql(
+                    resolver.as_ref(),
+                    &args.target,
+                    &args.sql,
+                    args.max_rows,
+                    // 修改入口：不做只读分类拦截，但仍受"单条语句/事务控制拒绝"约束。
+                    false,
+                    &|| cancel.is_cancelled(),
+                ),
+                Err(error) => Err(error),
+            };
+            Ok(receipt_from(
+                &descriptor,
+                &ctx.call_id,
+                started_at_ms,
+                outcome,
+            ))
+        })
+    }
+}
+
+/// 用标准 SQL 工具集装配 `ToolCatalog`。
+///
+/// - `include_write=false`（默认）：只装只读工具（search/query/explain），
+///   `db.execute` 的 spec 也一并去掉，避免"工具可见但不可执行"的不一致；
+/// - `include_write=true`：只有审批链（T020 审批行 + plan_hash 复核）就绪后才可传，
+///   否则写工具会停在 `RequireApproval`（这也是安全默认）。
+pub fn standard_sql_catalog<R: SqlExecutionResolver + 'static>(
+    resolver: Arc<R>,
+    include_write: bool,
+) -> fluxdb_core::Result<ToolCatalog> {
+    let mut specs = standard_sql_tool_specs()?;
+    if !include_write {
+        specs.retain(|spec| spec.risk != fluxdb_core::ToolRisk::Write);
+    }
+    let mut catalog = ToolCatalog::new(specs);
+    catalog.register(Box::new(AiSqlReadTool::query(Arc::clone(&resolver))?))?;
+    catalog.register(Box::new(AiSqlReadTool::explain(Arc::clone(&resolver))?))?;
+    catalog.register(Box::new(AiSqlSearchTool::new(Arc::clone(&resolver))?))?;
+    if include_write {
+        catalog.register(Box::new(AiSqlExecuteTool::new(resolver)?))?;
+    }
+    Ok(catalog)
+}

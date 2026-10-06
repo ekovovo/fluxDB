@@ -4,31 +4,51 @@
 // 不读生产配置或 SQLite。重点是"真实副作用次数 + 真实回执内容 + 分支终态"。
 
 mod ai_loop_test_support {
-    use crate::{LoopEvent, LoopLimits, ToolRegistry, TurnOutcome, TurnRunner, TurnState};
+    use crate::{
+        AuditInput, AuditOutcome, KernelPolicy, LoopEvent, LoopLimits, SecurityAuditHook,
+        ToolCatalog, ToolSpec, TurnOutcome, TurnPermissionContext, TurnRunner, TurnState,
+    };
     use fluxdb_core::{
         AiFuture, AiTool, CancelFlag, FinishReason, GenerationProvider, ModelCapabilities,
         ModelEvent, ModelMessage, ModelRequest, ModelRole, ToolCallRequest,
     };
 
     /// 折叠事件，便于断言 "某个 Notice 包含..." 之类。
+    /// 测试用"放行"审计 Hook：真实实现由内核注册，测试里只证明链路经过审计。
+    pub struct AllowAllAudit;
+
+    impl SecurityAuditHook for AllowAllAudit {
+        fn audit(&self, _input: &AuditInput) -> fluxdb_core::Result<AuditOutcome> {
+            Ok(AuditOutcome::Allow)
+        }
+    }
+
     pub fn run(
         provider: &dyn GenerationProvider,
-        tools: &ToolRegistry,
+        tools: &ToolCatalog,
         limits: LoopLimits,
         model: &str,
         messages: Vec<ModelMessage>,
         steering: &mut Vec<String>,
         cancel: &CancelFlag,
     ) -> (TurnOutcome, Vec<LoopEvent>) {
+        let audit = AllowAllAudit;
         let runner = TurnRunner {
             provider,
             tools,
             limits,
+            permission: TurnPermissionContext {
+                agent_allowed_tools: Vec::new(),
+                policy: KernelPolicy::default(),
+                plugin_digest: None,
+            },
+            audit: &audit,
         };
         let state = TurnState {
             model: model.to_string(),
             messages,
             max_output_tokens: Some(64),
+            target_json: "{\"connection_id\":1}".to_string(),
         };
         let mut events = Vec::new();
         let outcome = runner.run(state, steering, cancel, &mut |event| events.push(event));
@@ -144,9 +164,14 @@ mod ai_loop_test_support {
         }
     }
 
-    /// 把共享的 `RecordingTool` 包一层交给 `ToolRegistry`，外部仍持有 `Arc`。
-    pub fn registry_with_shared_tool(tool: std::sync::Arc<crate::RecordingTool>) -> ToolRegistry {
-        ToolRegistry::new(vec![Box::new(SharedRecordingTool(tool))])
+    /// 把共享的 `RecordingTool` 注册进 `ToolCatalog`，外部仍持有 `Arc` 做副作用计数。
+    pub fn catalog_with_shared_tool(tool: std::sync::Arc<crate::RecordingTool>) -> ToolCatalog {
+        let spec = ToolSpec::from_descriptor(tool.descriptor()).expect("tool spec");
+        let mut catalog = ToolCatalog::new(vec![spec]);
+        catalog
+            .register(Box::new(SharedRecordingTool(tool)))
+            .expect("register tool");
+        catalog
     }
 }
 
@@ -171,7 +196,7 @@ fn ai_loop_failed_tool_receipt_is_fed_back_and_completes() {
             .with_status(fluxdb_core::ToolReceiptStatus::Failed)
             .with_result(r#"{"error":"syntax"}"#),
     );
-    let tools = registry_with_shared_tool(tool.clone());
+    let tools = catalog_with_shared_tool(tool.clone());
     let cancel = fluxdb_core::CancelFlag::new();
     let mut steering = Vec::new();
 
@@ -228,7 +253,7 @@ fn ai_loop_truncated_output_does_not_execute_tool() {
         "db.query",
         fluxdb_core::ToolRisk::Read,
     ));
-    let tools = registry_with_shared_tool(tool.clone());
+    let tools = catalog_with_shared_tool(tool.clone());
     let cancel = fluxdb_core::CancelFlag::new();
     let mut steering = Vec::new();
 
@@ -277,7 +302,7 @@ fn ai_loop_repeated_signature_pauses_with_no_progress() {
         "db.query",
         fluxdb_core::ToolRisk::Read,
     ));
-    let tools = registry_with_shared_tool(tool.clone());
+    let tools = catalog_with_shared_tool(tool.clone());
     let cancel = fluxdb_core::CancelFlag::new();
     let mut steering = Vec::new();
 
@@ -314,7 +339,7 @@ fn ai_loop_repeated_signature_pauses_with_no_progress() {
 fn ai_loop_completes_without_decision_provider() {
     // 本文件不构造任何 DecisionProvider，纯文本脚本即可完成。
     let provider = crate::ScriptedGenerationProvider::text_only("你好");
-    let tools = crate::ToolRegistry::new(Vec::new());
+    let tools = crate::ToolCatalog::new(Vec::new());
     let cancel = fluxdb_core::CancelFlag::new();
     let mut steering = Vec::new();
 
@@ -358,7 +383,7 @@ fn ai_loop_invalid_json_is_rejected_then_completes() {
         "db.query",
         fluxdb_core::ToolRisk::Read,
     ));
-    let tools = registry_with_shared_tool(tool.clone());
+    let tools = catalog_with_shared_tool(tool.clone());
     let cancel = fluxdb_core::CancelFlag::new();
     let mut steering = Vec::new();
 
@@ -406,7 +431,7 @@ fn ai_loop_unknown_tool_is_rejected_without_panic() {
             text_stop("换一条路"),
         ],
     );
-    let tools = crate::ToolRegistry::new(Vec::new());
+    let tools = crate::ToolCatalog::new(Vec::new());
     let cancel = fluxdb_core::CancelFlag::new();
     let mut steering = Vec::new();
 
@@ -447,7 +472,7 @@ fn ai_loop_pre_cancel_stops_before_anything() {
         "db.query",
         fluxdb_core::ToolRisk::Read,
     ));
-    let tools = registry_with_shared_tool(tool.clone());
+    let tools = catalog_with_shared_tool(tool.clone());
     let cancel = fluxdb_core::CancelFlag::new();
     cancel.request();
     let mut steering = Vec::new();
@@ -476,7 +501,7 @@ fn ai_loop_cancel_on_second_stream_stops_iteration() {
         "db.query",
         fluxdb_core::ToolRisk::Read,
     ));
-    let tools = registry_with_shared_tool(tool.clone());
+    let tools = catalog_with_shared_tool(tool.clone());
     let mut steering = Vec::new();
 
     let (outcome, _events) = run(
@@ -501,7 +526,7 @@ fn ai_loop_cancel_on_second_stream_stops_iteration() {
 #[test]
 fn ai_loop_steering_is_absorbed_before_first_request() {
     let provider = crate::ScriptedGenerationProvider::text_only("ok");
-    let tools = crate::ToolRegistry::new(Vec::new());
+    let tools = crate::ToolCatalog::new(Vec::new());
     let cancel = fluxdb_core::CancelFlag::new();
     let mut steering = vec!["补充要求".to_string()];
 
@@ -546,7 +571,7 @@ fn ai_loop_iteration_limit_pauses() {
         "db.query",
         fluxdb_core::ToolRisk::Read,
     ));
-    let tools = registry_with_shared_tool(tool.clone());
+    let tools = catalog_with_shared_tool(tool.clone());
     let cancel = fluxdb_core::CancelFlag::new();
     let mut steering = Vec::new();
 

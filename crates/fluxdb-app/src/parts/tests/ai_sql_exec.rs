@@ -315,3 +315,33 @@ fn ai_sql_exec_explain_tool_builds_plan_and_refuses_execute_mode() {
         Some("explain_execute_unsupported")
     );
 }
+
+#[test]
+fn ai_sql_exec_standard_catalog_omits_write_tools_until_approval_is_ready() {
+    let resolver = Arc::new(MapSqlResolver::new([ai_sql_exec_demo_config(1)]));
+
+    let read_only = standard_sql_catalog(Arc::clone(&resolver), false).expect("只读目录");
+    assert!(read_only.describe("db.query").is_some());
+    assert!(read_only.describe("db.search_objects").is_some());
+    assert!(read_only.describe("db.explain").is_some());
+    assert!(
+        read_only.describe("db.execute").is_none(),
+        "审批链未就绪时不得暴露写工具"
+    );
+    assert!(read_only.executable("db.execute").is_none());
+
+    let with_write = standard_sql_catalog(resolver, true).expect("含写目录");
+    assert!(with_write.describe("db.execute").is_some());
+    assert!(
+        with_write.executable("db.execute").is_some(),
+        "显式开启后必须有可执行实现，避免 spec/实现不一致"
+    );
+    // 每个公开 spec 都必须有实现（describe 得到就必须能 prepare+execute）。
+    for spec in with_write.specs() {
+        assert!(
+            with_write.executable(&spec.id).is_some(),
+            "spec {} 没有可执行实现",
+            spec.id
+        );
+    }
+}

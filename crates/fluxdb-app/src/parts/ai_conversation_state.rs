@@ -24,6 +24,8 @@ pub enum AiConversationCommand {
     Load { session_id: Option<String> },
     New,
     SaveUi { draft: String, expanded_parts: Vec<String>, mode: fluxdb_storage::ai_platform::settings::PanelMode, drawer_width: f64, embedded_width: f64 },
+    /// 审批决定（对象级 CAS：expected_revision 不符即失败，重复点击不再生效）。
+    DecideApproval { approval_id: String, approved: bool, expected_revision: i64 },
     /// 后台已真实保存/加载的数据回桥；生产 UI 只接收宿主 service 返回值。
     Apply { view: AiConversationView },
 }

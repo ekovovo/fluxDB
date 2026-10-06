@@ -38,6 +38,24 @@ fn ai_chat_part(part:&fluxdb_app::AiConversationPart,expanded:bool,colors:UiColo
     let payload:serde_json::Value=serde_json::from_str(&part.payload_json).unwrap_or(serde_json::Value::Null);
     let text=payload.get("text").or_else(||payload.get("summary")).and_then(|s|s.as_str()).unwrap_or("").to_string();
     if part.kind=="text" {return div().text_size(px(12.)).line_height(px(18.)).text_color(colors.text).child(text).into_any_element();}
+    // 审批卡：必须在这里决定（批准/拒绝），决定后由宿主按 plan_hash 复核再执行。
+    if part.kind=="notice" {
+        if let Some(approval_id)=payload.get("approval_id").and_then(|value|value.as_str()) {
+            let revision=payload.get("approval_revision").and_then(serde_json::Value::as_i64).unwrap_or(1);
+            let decided=payload.get("decision").and_then(|value|value.as_str()).is_some();
+            if !decided && part.status=="pending" {
+                let approve_id=approval_id.to_string();
+                let deny_id=approval_id.to_string();
+                return div().border_1().border_color(colors.danger).rounded(colors.radius).p_2().flex().flex_col().gap_2()
+                    .child(div().text_size(px(11.)).line_height(px(16.)).text_color(colors.text).child(text))
+                    .child(div().flex().items_center().gap_2()
+                        .child(Button::new(SharedString::from(format!("ai-approve:{approval_id}"))).debug_selector({let id=approval_id.to_string();move||format!("ai-approve:{id}")}).small().primary().cursor_pointer().child("批准执行").on_click(cx.listener(move|this,_,window,cx|this.decide_ai_chat_approval(approve_id.clone(),true,revision,window,cx))))
+                        .child(Button::new(SharedString::from(format!("ai-deny:{approval_id}"))).debug_selector({let id=approval_id.to_string();move||format!("ai-deny:{id}")}).small().ghost().cursor_pointer().child("拒绝").on_click(cx.listener(move|this,_,window,cx|this.decide_ai_chat_approval(deny_id.clone(),false,revision,window,cx))))
+                        .child(div().text_size(px(10.)).text_color(colors.muted).child("批准后仍会复核 plan_hash，参数/目标变了就失效")))
+                    .into_any_element();
+            }
+        }
+    }
     let (icon,label)=match part.kind.as_str(){"reasoning_summary"=>(AppIcon::Workflow,"公开思考摘要"),"plan"=>(AppIcon::List,"计划"),"tool_call_ref"=>(AppIcon::Database,"工具调用"),"tool_result_ref"=>(AppIcon::Table,"结果引用"),"artifact_ref"=>(AppIcon::Activity,"任务产物"),"context_ref"=>(AppIcon::FileSearch,"上下文"),_=>(AppIcon::CircleSlash,"任务说明")};
     let id=part.id.clone();let status=match part.status.as_str(){"streaming"=>"进行中","interrupted"=>"已停止","error"=>"失败","pending"=>"准备中",_=>"已保存"};
     div().border_1().border_color(colors.border_soft).rounded(colors.radius).p_2().flex().flex_col().gap_2()

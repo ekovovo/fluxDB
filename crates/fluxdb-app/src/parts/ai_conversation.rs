@@ -48,12 +48,54 @@ impl AppController {
                         fluxdb_storage::ai_platform::settings::save_panel_preferences(&tx,ai_chat_now(),&prefs,rev)?;
                         tx.commit().map_err(|e|fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal,e.to_string()))?;
                     },
+                    AiConversationCommand::DecideApproval{ref approval_id,approved,expected_revision}=>{
+                        let approval=fluxdb_storage::ai_platform::audits::decide_approval(conn,ai_chat_now(),approval_id,approved,None,expected_revision)?;
+                        let Some(call_id)=approval.tool_call_id.clone() else {
+                            return Err(fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal,"该审批没有绑定工具调用"));
+                        };
+                        let call=fluxdb_storage::ai_platform::sessions::load_tool_call(conn,&call_id)?;
+                        let message_id=fluxdb_storage::ai_platform::sessions::find_assistant_message_for_turn(conn,&call.turn_id)?
+                            .ok_or_else(||fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal,"该任务还没有助手消息"))?;
+                        if !approved {
+                            // 拒绝：工具永不执行，写回 denied 事实。
+                            fluxdb_storage::ai_platform::sessions::finish_tool_call(conn,&call_id,"denied",None,None,None)?;
+                        }
+                        // 就地更新原审批片段（同 id）：状态离开 pending 并写入 decision，
+                        // 否则已决定的卡片还会保留可点的批准/拒绝按钮（子 Agent B 发现的 P2）。
+                        let (decision,text)=if approved {
+                            ("approved","已批准；宿主会按 plan_hash 复核后执行一次。")
+                        } else {
+                            ("denied","你已拒绝该工具调用，未执行任何操作。")
+                        };
+                        fluxdb_storage::ai_platform::conversation::upsert_event_part(conn,ai_chat_now(),&call.session_id,&call.turn_id,
+                            &message_id,&format!("{}-approval-{}",message_id,call.provider_call_id),
+                            fluxdb_storage::ai_platform::sessions::PartKind::Notice,
+                            fluxdb_storage::ai_platform::sessions::PartStatus::Complete,
+                            &serde_json::json!({"text":text,"approval_id":approval_id,"decision":decision,"plan_hash":approval.plan_hash}).to_string(),
+                            Some(&call_id),None)?;
+                    },
                     AiConversationCommand::Apply{..}=>unreachable!(),
                 }
                 fluxdb_storage::ai_platform::conversation::load(conn,None).map(ai_chat_project)
             })
         });
         match result {Ok(view)=>{self.state.ai_conversation=view.clone();AppEvent::AiConversationLoaded(view)},Err(e)=>AppEvent::AiSettingsError(e.message)}
+    }
+
+    /// 恢复被审批暂停的 Turn：重建同一个会话/轮次/助手消息与原模型（不新建消息、不改目标）。
+    pub fn prepare_ai_resume_job(&mut self, approval_id:&str) -> fluxdb_core::Result<AiConversationJob> {
+        let storage=self.ai_storage()?;
+        with_ai_storage(&storage,|conn|{
+            let approval=fluxdb_storage::ai_platform::audits::load_approval(conn,approval_id)?;
+            let call_id=approval.tool_call_id.clone().ok_or_else(||fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal,"该审批没有绑定工具调用"))?;
+            let call=fluxdb_storage::ai_platform::sessions::load_tool_call(conn,&call_id)?;
+            let session=fluxdb_storage::ai_platform::sessions::load_session(conn,&call.session_id)?;
+            let agent=fluxdb_storage::ai_platform::agents::load_agent(conn,&session.agent_id)?;
+            let model_id=agent.default_model_profile_id.clone().ok_or_else(||fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal,"该 Agent 已解绑模型，无法恢复任务"))?;
+            let message_id=fluxdb_storage::ai_platform::sessions::find_assistant_message_for_turn(conn,&call.turn_id)?
+                .ok_or_else(||fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal,"该任务还没有助手消息"))?;
+            Ok(AiConversationJob{session_id:call.session_id.clone(),turn_id:call.turn_id.clone(),assistant_message_id:message_id,model_profile_id:model_id})
+        })
     }
 
     /// 正式发送前读取现有模型/Agent 配置。无可用配置明确失败，不能静默启动模拟回答。
@@ -479,6 +521,37 @@ fn ai_conversation_record_tool_result(
     })
 }
 
+
+/// 记录"等待审批"：工具调用事实行（waiting_approval）+ 审批行（pending）+ 可见审批片段。
+///
+/// 返回 approval_id（UI 用它提交批准/拒绝）。
+#[allow(clippy::too_many_arguments)]
+fn ai_conversation_record_approval(
+    storage:&fluxdb_storage::FileStorage, job:&AiConversationJob, ordinal:usize,
+    call:&fluxdb_core::ToolCallRequest, tool_version:u32, plan_hash:&str, scope_json:&str, target_json:&str,
+) -> fluxdb_core::Result<String> {
+    let call_row=format!("{}-toolcall-{}",job.turn_id,call.provider_call_id);
+    let approval_id=format!("{}-approval-{}",job.turn_id,call.provider_call_id);
+    with_ai_storage(storage,|conn|{
+        fluxdb_storage::ai_platform::sessions::create_tool_call(conn,ai_chat_now(),&call_row,&job.session_id,&job.turn_id,
+            ordinal as i64+1,ordinal as i64,&call.provider_call_id,&call.tool_id,tool_version,None,
+            &ai_conversation_redact_arguments(&call.arguments_json),target_json,plan_hash,"waiting_approval")?;
+        let approval=fluxdb_storage::ai_platform::audits::create_approval(conn,ai_chat_now(),&approval_id,&call_row,plan_hash,scope_json,None)?;
+        let payload=serde_json::json!({
+            "text":format!("工具 {} 需要你先批准后才会执行。",call.tool_id),
+            "approval_id":approval_id,
+            "plan_hash":plan_hash,
+            "approval_revision":approval.revision,
+            "scope":serde_json::from_str::<serde_json::Value>(scope_json).unwrap_or(serde_json::Value::Null),
+        }).to_string();
+        fluxdb_storage::ai_platform::conversation::upsert_event_part(conn,ai_chat_now(),&job.session_id,&job.turn_id,
+            &job.assistant_message_id,&format!("{}-approval-{}",job.assistant_message_id,call.provider_call_id),
+            fluxdb_storage::ai_platform::sessions::PartKind::Notice,
+            fluxdb_storage::ai_platform::sessions::PartStatus::Pending,&payload,Some(&call_row),None)
+    })?;
+    Ok(approval_id)
+}
+
 /// 工具回合：用 `TurnRunner` 跑完整链路（schema → 审计 → 授权 → 执行 → 有界投影）。
 ///
 /// 只有**真实回执**才允许写成工具结果片段；模型文案不会被执行结果替代或伪造。
@@ -492,7 +565,24 @@ pub fn run_ai_conversation_turn(
     audit: &dyn SecurityAuditHook,
     permission: TurnPermissionContext,
 ) {
-    let (target_json, messages) = match ai_conversation_turn_messages(storage, job) {
+    ai_conversation_run_turn(storage, job, cancel, sender, provider, tools, audit, permission, Vec::new(), String::new());
+}
+
+/// 跑一轮工具回合的公共实现；`extra_messages`/`initial_text` 供"审批后恢复"续写同一条助手消息。
+#[allow(clippy::too_many_arguments)]
+fn ai_conversation_run_turn(
+    storage: &fluxdb_storage::FileStorage,
+    job: &AiConversationJob,
+    cancel: &fluxdb_core::CancelFlag,
+    sender: &std::sync::mpsc::SyncSender<AiConversationUpdate>,
+    provider: &dyn fluxdb_core::GenerationProvider,
+    tools: &ToolCatalog,
+    audit: &dyn SecurityAuditHook,
+    permission: TurnPermissionContext,
+    extra_messages: Vec<fluxdb_core::ModelMessage>,
+    initial_text: String,
+) {
+    let (target_json, mut messages) = match ai_conversation_turn_messages(storage, job) {
         Ok(value) => value,
         Err(error) => {
             let mut view = with_ai_storage(storage, |conn| {
@@ -511,13 +601,15 @@ pub fn run_ai_conversation_turn(
         }
     };
 
-    let mut text = String::new();
+    messages.extend(extra_messages);
+    let mut text = initial_text;
     let mut summary = String::new();
     let mut saved = std::time::Instant::now();
     let mut persist_error: Option<String> = None;
     let mut paused_reason: Option<String> = None;
     let mut notice_count: usize = 0;
     let mut tool_index: usize = 0;
+    let mut approval_id: Option<String> = None;
     let mut part_error: Option<String> = None;
     let mut tool_error: Option<String> = None;
 
@@ -576,8 +668,12 @@ pub fn run_ai_conversation_turn(
                 }
                 notice_count += 1;
             }
-            // 审批卡由后续切片（审批持久化 + 决定入口）接通；本轮只把等待原因写进通知片段。
-            LoopEvent::ApprovalRequired { .. } => {}
+            // 需要审批：写工具调用事实行（waiting_approval）+ 审批行（pending）+ 可见审批片段。
+            LoopEvent::ApprovalRequired { call, tool_version, plan_hash, scope } => {
+                let saved=ai_conversation_record_approval(storage,job,tool_index,&call,tool_version,&plan_hash,&scope.to_json(),&target_json_for_parts);
+                match saved { Ok(id)=>approval_id=Some(id), Err(error)=>{part_error.get_or_insert_with(||error.message.clone());} }
+                tool_index += 1;
+            }
             LoopEvent::IterationStarted { .. } => {}
         }
         if saved.elapsed() >= std::time::Duration::from_millis(300) && persist_error.is_none() {
@@ -600,7 +696,9 @@ pub fn run_ai_conversation_turn(
         }
         TurnOutcome::Paused { reason } => {
             paused_reason = Some(reason);
-            fluxdb_storage::ai_platform::sessions::TurnStatus::WaitingApproval
+            // 只有真的产生了待审批项才算 waiting_approval；达到迭代上限等属于 waiting_user。
+            if approval_id.is_some() { fluxdb_storage::ai_platform::sessions::TurnStatus::WaitingApproval }
+            else { fluxdb_storage::ai_platform::sessions::TurnStatus::WaitingUser }
         }
     };
     let error = persist_error.clone().or(part_error.clone());
@@ -671,4 +769,87 @@ pub fn run_ai_conversation_failure(
             let _=sender.send(AiConversationUpdate{job:job.clone(),view,terminal:true});
         }
     }
+}
+
+/// 读取当前助手消息已保存的正文（恢复续写时不能覆盖已展示内容）。
+fn ai_conversation_existing_text(storage:&fluxdb_storage::FileStorage, job:&AiConversationJob)->String {
+    with_ai_storage(storage,|conn|{
+        let data=fluxdb_storage::ai_platform::conversation::load(conn,Some(&job.session_id))?;
+        Ok(ai_chat_project(data).messages.into_iter().find(|m|m.id==job.assistant_message_id)
+            .and_then(|m|m.parts.into_iter().find(|p|p.kind=="text"))
+            .and_then(|p|serde_json::from_str::<serde_json::Value>(&p.payload_json).ok())
+            .and_then(|v|v.get("text").and_then(|t|t.as_str()).map(str::to_owned)).unwrap_or_default())
+    }).unwrap_or_default()
+}
+
+/// 审批通过后恢复执行：按 plan_hash 复核批准（fail closed）→ 执行该工具 → 把真实回执交给模型继续本轮。
+///
+/// 批准只解除"需要审批"，**不放宽** schema 校验与连接/内核权限：参数会重新校验，工具仍走同一实现。
+#[allow(clippy::too_many_arguments)]
+pub fn run_ai_conversation_resume_approval(
+    storage:&fluxdb_storage::FileStorage,
+    job:&AiConversationJob,
+    cancel:&fluxdb_core::CancelFlag,
+    sender:&std::sync::mpsc::SyncSender<AiConversationUpdate>,
+    provider:&dyn fluxdb_core::GenerationProvider,
+    tools:&ToolCatalog,
+    audit:&dyn SecurityAuditHook,
+    permission:TurnPermissionContext,
+    approval_id:&str,
+) {
+    let loaded=with_ai_storage(storage,|conn|{
+        let approval=fluxdb_storage::ai_platform::audits::load_approval(conn,approval_id)?;
+        if approval.status!=fluxdb_storage::ai_platform::audits::ApprovalStatus::Approved {
+            return Err(fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal,"审批未通过，拒绝恢复执行"));
+        }
+        let call_id=approval.tool_call_id.clone().ok_or_else(||fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal,"该审批没有绑定工具调用"))?;
+        let call=fluxdb_storage::ai_platform::sessions::load_tool_call(conn,&call_id)?;
+        // 只能执行"还没跑过"的待审批调用：已经 running/有回执的一律拒绝，避免重复副作用。
+        if call.status!="waiting_approval" || call.receipt_json.is_some() {
+            return Err(fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal,"该工具调用已被处理，拒绝重复执行"));
+        }
+        if fluxdb_storage::ai_platform::audits::find_valid_approval(conn,ai_chat_now(),&call_id,&call.plan_hash)?.is_none() {
+            return Err(fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal,"批准与当前 plan_hash 不匹配或已过期，拒绝执行"));
+        }
+        // 原子占用：先推进到 running 并把批准置为已消费，再执行。
+        // 重复 resume 会在上面的守卫直接 fail closed；此时崩溃则留下 running 无回执，由 T029 按未知状态处理。
+        fluxdb_storage::ai_platform::sessions::finish_tool_call(conn,&call_id,"running",None,None,None)?;
+        fluxdb_storage::ai_platform::audits::invalidate_approval(conn,ai_chat_now(),approval_id,"consumed")?;
+        let message_id=fluxdb_storage::ai_platform::sessions::find_assistant_message_for_turn(conn,&call.turn_id)?
+            .ok_or_else(||fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal,"该任务还没有助手消息"))?;
+        Ok((call,message_id))
+    });
+    let (call,message_id)=match loaded {
+        Ok(value)=>value,
+        Err(error)=>{run_ai_conversation_failure(storage,job,sender,error.message);return;}
+    };
+    let job=AiConversationJob{session_id:job.session_id.clone(),turn_id:call.turn_id.clone(),assistant_message_id:message_id,model_profile_id:job.model_profile_id.clone()};
+
+    let prepared=match tools.prepare(&call.tool_id,&call.arguments_redacted_json) {
+        Ok(prepared)=>prepared,
+        Err(error)=>{run_ai_conversation_failure(storage,&job,sender,format!("批准后的参数未通过校验：{}",error.message));return;}
+    };
+    let Some(tool)=tools.executable(&call.tool_id) else {
+        run_ai_conversation_failure(storage,&job,sender,format!("工具 {} 没有可执行实现",call.tool_id));return;
+    };
+    let ctx=fluxdb_core::ToolExecutionContext{
+        session_id:job.session_id.clone(),turn_id:job.turn_id.clone(),iteration:1,
+        call_id:call.provider_call_id.clone(),cancel:cancel.clone(),
+    };
+    let receipt=match block_on_ready(tool.execute(ctx,prepared.to_json_string())) {
+        Ok(Ok(receipt))=>receipt,
+        Ok(Err(error))|Err(error)=>{run_ai_conversation_failure(storage,&job,sender,format!("工具执行失败：{}",error.message));return;}
+    };
+    if let Err(error)=ai_conversation_record_tool_result(storage,&job,&receipt) {
+        tracing::warn!(turn_id=%job.turn_id,"工具回执保存失败");
+    }
+
+    let message=fluxdb_core::ModelMessage::new(fluxdb_core::ModelRole::Tool,format!(
+        "{{\"tool\":\"{}\",\"status\":\"{}\",\"result\":{}}}",
+        receipt.tool_id,
+        if receipt.is_success(){"succeeded"}else{"failed"},
+        if receipt.result_json.trim().is_empty(){"null".to_string()}else{receipt.result_json.clone()}
+    ));
+    let existing=ai_conversation_existing_text(storage,&job);
+    ai_conversation_run_turn(storage,&job,cancel,sender,provider,tools,audit,permission,vec![message],existing);
 }

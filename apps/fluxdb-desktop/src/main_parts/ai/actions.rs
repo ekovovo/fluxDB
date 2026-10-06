@@ -77,6 +77,10 @@ impl NavicatMain {
         }));
     }
     fn start_ai_chat_job(&mut self,job:fluxdb_app::AiConversationJob,cx:&mut Context<Self>) {
+        self.start_ai_chat_job_with(job,None,cx);
+    }
+    /// `resume_approval` 为 Some 时表示"审批已通过，恢复执行那个被暂停的工具调用"。
+    fn start_ai_chat_job_with(&mut self,job:fluxdb_app::AiConversationJob,resume_approval:Option<String>,cx:&mut Context<Self>) {
         let Ok(storage)=self.controller.ai_storage()else{return;};
         let cancel=fluxdb_core::CancelFlag::new();self.ai_chat.cancel=Some(cancel.clone());self.ai_chat.running=Some(job.clone());
         let (tx,rx)=std::sync::mpsc::sync_channel(4);
@@ -100,7 +104,10 @@ impl NavicatMain {
                             Ok(catalog)=>{
                                 // 只读工具 + 内核权限：写操作既没有工具实现，也会被 authorize 拒绝。
                                 let permission=fluxdb_app::TurnPermissionContext{agent_allowed_tools:Vec::new(),policy:fluxdb_app::KernelPolicy::default(),plugin_digest:None};
-                                fluxdb_app::run_ai_conversation_turn(&storage,&job,&cancel,&tx,&provider,&catalog,&fluxdb_app::KernelAuditHook,permission);
+                                match resume_approval.as_deref() {
+                                    Some(approval_id)=>fluxdb_app::run_ai_conversation_resume_approval(&storage,&job,&cancel,&tx,&provider,&catalog,&fluxdb_app::KernelAuditHook,permission,approval_id),
+                                    None=>fluxdb_app::run_ai_conversation_turn(&storage,&job,&cancel,&tx,&provider,&catalog,&fluxdb_app::KernelAuditHook,permission),
+                                }
                             }
                             Err(error)=>{fluxdb_app::run_ai_conversation_failure(&storage,&job,&tx,format!("工具目录不可用：{}",error.message));}
                         }
@@ -132,6 +139,21 @@ impl NavicatMain {
                 if view.upgrade().is_none(){break;}
             }
         }));
+    }
+    /// 审批决定：先做对象级 CAS 决定，批准后再恢复执行该工具调用。
+    fn decide_ai_chat_approval(&mut self,approval_id:String,approved:bool,expected_revision:i64,window:&mut Window,cx:&mut Context<Self>) {
+        let event=self.controller.dispatch(AppCommand::AiConversation(fluxdb_app::AiConversationCommand::DecideApproval{
+            approval_id:approval_id.clone(),approved,expected_revision}));
+        if matches!(event,AppEvent::AiSettingsError(_)) {
+            self.show_message("审批状态已变化（可能已处理或失效），请刷新后重试",AppMessageKind::Warning,cx);cx.notify();return;
+        }
+        if !approved {cx.notify();return;}
+        let _=window;
+        match self.controller.prepare_ai_resume_job(&approval_id) {
+            Ok(job)=>self.start_ai_chat_job_with(job,Some(approval_id),cx),
+            Err(error)=>self.show_message(&format!("无法恢复任务：{}",error.message),AppMessageKind::Warning,cx),
+        }
+        cx.notify();
     }
     fn capture_ai_active_context(&self,cx:&App)->fluxdb_app::UiContextSnapshot {
         let state=self.controller.state();

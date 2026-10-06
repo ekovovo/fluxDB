@@ -579,7 +579,7 @@ fn runtime_event_from_loop(
                 receipt,
             })
         }
-        LoopEvent::ApprovalRequired { plan_hash, scope } => {
+        LoopEvent::ApprovalRequired { plan_hash, scope, .. } => {
             *seq += 1;
             Some(AiEvent::ApprovalRequired {
                 session_id,

@@ -84,7 +84,7 @@ fn authz_approvals(events: &[crate::LoopEvent]) -> Vec<(String, crate::ApprovalS
     events
         .iter()
         .filter_map(|e| match e {
-            crate::LoopEvent::ApprovalRequired { plan_hash, scope } => {
+            crate::LoopEvent::ApprovalRequired { plan_hash, scope, .. } => {
                 Some((plan_hash.clone(), scope.clone()))
             }
             _ => None,

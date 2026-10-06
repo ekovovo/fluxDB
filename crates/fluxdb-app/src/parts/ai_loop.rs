@@ -75,6 +75,8 @@ pub enum LoopEvent {
     ToolFinished { receipt: fluxdb_core::ToolReceipt },
     /// 需要用户审批：**不执行**、不产生工具回执，等审批决定后继续（设计 §25.3）。
     ApprovalRequired {
+        call: fluxdb_core::ToolCallRequest,
+        tool_version: u32,
         plan_hash: String,
         scope: ApprovalScope,
     },
@@ -393,7 +395,12 @@ impl<'a> TurnRunner<'a> {
                     PermissionDecision::RequireApproval { plan_hash, scope } => {
                         let reason = format!("工具 {} 需要审批后才能执行。", spec.id);
                         emit(LoopEvent::Notice(reason.clone()));
-                        emit(LoopEvent::ApprovalRequired { plan_hash, scope });
+                        emit(LoopEvent::ApprovalRequired {
+                            call: call.clone(),
+                            tool_version: spec.version,
+                            plan_hash,
+                            scope,
+                        });
                         return TurnOutcome::Paused { reason };
                     }
                     // 4c) 放行：必须有可执行实现（只有 spec 没有实现 = 受控错误）。

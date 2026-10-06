@@ -238,3 +238,30 @@ pub fn ai_turn_connection_id(
             .and_then(serde_json::Value::as_i64))
     })
 }
+
+/// 把固定目标渲染成**工具句柄**（`conn:<id>[/db:<database>][/schema:<schema>]`）。
+///
+/// 模型必须用这个字符串作为工具的 `target`：只给它 JSON 目标时，它无从得知句柄格式，
+/// 只能瞎猜（真实模型实测会直接编一个不存在的 target）。
+pub fn ai_tool_target_handle(target_json: &str) -> Option<String> {
+    let target: serde_json::Value = serde_json::from_str(target_json).ok()?;
+    let id = target
+        .get("connection_id")
+        .and_then(serde_json::Value::as_i64)?;
+    let mut handle = format!("conn:{id}");
+    if let Some(database) = target
+        .get("database")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty())
+    {
+        handle.push_str(&format!("/db:{database}"));
+    }
+    if let Some(schema) = target
+        .get("schema")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty())
+    {
+        handle.push_str(&format!("/schema:{schema}"));
+    }
+    Some(handle)
+}

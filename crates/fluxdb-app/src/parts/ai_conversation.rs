@@ -543,8 +543,9 @@ fn ai_conversation_turn_messages(
         let mut messages = vec![fluxdb_core::ModelMessage::new(
             fluxdb_core::ModelRole::System,
             format!(
-                "{system_prompt}\n当前执行目标：{}。你可以调用被授权的工具；只能依据工具真实回执陈述执行结果，不得臆造。",
-                turn.target_json
+                "{system_prompt}\n当前执行目标：{}。工具的 target 参数必须使用句柄：{}。你可以调用被授权的工具；只能依据工具真实回执陈述执行结果，不得臆造。",
+                turn.target_json,
+                ai_tool_target_handle(&turn.target_json).unwrap_or_else(|| "（无可用句柄）".to_string())
             ),
         )];
         if let Some(context) = snapshot

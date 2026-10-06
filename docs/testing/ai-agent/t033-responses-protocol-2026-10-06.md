@@ -53,8 +53,15 @@
 |---|---|
 | 新增 `ai_transport_responses_projects_text_tool_and_completion` / `ai_transport_responses_maps_incomplete_and_failed_without_leaking_reasoning` | 通过（含"私有推理不得投影"断言） |
 | 新增 `ai_provider_responses_body_pairs_tool_calls_and_outputs` | 通过（instructions/工具安全名/function_call 与 function_call_output 配对） |
-| `cargo test -p fluxdb-core / -p fluxdb-storage / -p fluxdb-app / -p fluxdb-desktop --offline` | 106 / 121+16 / 696(1 ignored)+集成 10·2·6·2·6·4·11 / 505(4 ignored) |
+| `cargo test -p fluxdb-core / -p fluxdb-storage / -p fluxdb-app / -p fluxdb-desktop --offline` | 106 / 121+16 / **697**(1 ignored)+集成 10·2·6·2·6·4·11 / 505(4 ignored) |
 | `cargo check --workspace --offline` | 通过 |
+
+### 一致性补齐：`openai-compatible` 的工具配对
+
+排查 Responses 时发现同一处缺口也影响 chat-completions 路径：assistant 回合不回带 `tool_calls`、
+工具结果不带 `tool_call_id`，真实 OpenAI 兼容模型在第二轮会收到"无来源的工具输出"。
+已按同一约定补齐（assistant：`content=null` + `tool_calls[{id,type:function,function:{name,arguments}}]`；
+工具结果：`tool_call_id`），并新增 `ai_provider_chat_completions_body_pairs_tool_calls_and_outputs` 断言。
 
 ## 未验证 / 未完成
 

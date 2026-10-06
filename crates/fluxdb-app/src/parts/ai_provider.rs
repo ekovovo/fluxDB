@@ -166,7 +166,7 @@ pub fn build_chat_body(
         .messages
         .iter()
         .map(|m| {
-            serde_json::json!({
+            let mut item = serde_json::json!({
                 "role": match m.role {
                     fluxdb_core::ModelRole::System => "system",
                     fluxdb_core::ModelRole::User => "user",
@@ -174,7 +174,38 @@ pub fn build_chat_body(
                     fluxdb_core::ModelRole::Tool => "tool",
                 },
                 "content": m.text,
-            })
+            });
+            // 工具配对：assistant 要回带 tool_calls，工具结果要带 tool_call_id，
+            // 否则真实模型在第二轮会收到"无来源的工具输出"。
+            match m.role {
+                fluxdb_core::ModelRole::Assistant if !m.tool_calls.is_empty() => {
+                    if m.text.is_empty() {
+                        item["content"] = serde_json::Value::Null;
+                    }
+                    item["tool_calls"] = serde_json::json!(
+                        m.tool_calls
+                            .iter()
+                            .map(|call| serde_json::json!({
+                                "id": call.provider_call_id,
+                                "type": "function",
+                                "function": {
+                                    "name": mapper
+                                        .to_provider(&call.tool_id)
+                                        .unwrap_or(call.tool_id.as_str()),
+                                    "arguments": call.arguments_json,
+                                },
+                            }))
+                            .collect::<Vec<_>>()
+                    );
+                }
+                fluxdb_core::ModelRole::Tool => {
+                    if let Some(call_id) = &m.tool_call_id {
+                        item["tool_call_id"] = serde_json::json!(call_id);
+                    }
+                }
+                _ => {}
+            }
+            item
         })
         .collect();
     let max_tokens = request.max_output_tokens.or(max_output_tokens);

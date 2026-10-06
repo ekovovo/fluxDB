@@ -720,3 +720,58 @@ fn ai_provider_responses_body_pairs_tool_calls_and_outputs() {
     assert_eq!(output["call_id"], serde_json::json!("call_1"));
     assert_eq!(output["output"], serde_json::json!(r#"{"tool":"db.query"}"#));
 }
+
+#[test]
+fn ai_provider_chat_completions_body_pairs_tool_calls_and_outputs() {
+    use fluxdb_core::{ModelMessage, ModelRole, ModelToolCall};
+    let mapper = ToolNameMapper::new(&[fluxdb_core::ToolDescriptor {
+        id: "db.query".into(),
+        version: 1,
+        description: "查询".into(),
+        risk: fluxdb_core::ToolRisk::Read,
+        input_schema_json: r#"{"type":"object"}"#.into(),
+    }])
+    .expect("映射");
+    let request = fluxdb_core::ModelRequest {
+        model: "m".into(),
+        messages: vec![
+            ModelMessage::new(ModelRole::User, "查一下"),
+            ModelMessage::assistant_with_tool_calls(
+                "",
+                vec![ModelToolCall {
+                    provider_call_id: "call_9".into(),
+                    tool_id: "db.query".into(),
+                    arguments_json: r#"{"sql":"select 1"}"#.into(),
+                }],
+            ),
+            ModelMessage::tool_result("call_9", "db.query", r#"{"status":"succeeded"}"#),
+        ],
+        tools: Vec::new(),
+        max_output_tokens: Some(32),
+    };
+    let body = build_chat_body(
+        ChatProtocol::OpenAiCompatible,
+        "m",
+        &request,
+        &mapper,
+        fluxdb_core::ModelCapabilities::default(),
+        Some(32),
+    );
+    let messages = body["messages"].as_array().expect("messages");
+    let assistant = messages
+        .iter()
+        .find(|m| m["role"] == serde_json::json!("assistant"))
+        .expect("assistant 消息");
+    // 只有工具调用没有正文时 content 必须是 null，且 tool_calls 带 id 与 Provider 安全名。
+    assert!(assistant["content"].is_null());
+    assert_eq!(assistant["tool_calls"][0]["id"], serde_json::json!("call_9"));
+    assert_eq!(
+        assistant["tool_calls"][0]["function"]["name"],
+        serde_json::json!("db_query")
+    );
+    let tool = messages
+        .iter()
+        .find(|m| m["role"] == serde_json::json!("tool"))
+        .expect("tool 消息");
+    assert_eq!(tool["tool_call_id"], serde_json::json!("call_9"));
+}

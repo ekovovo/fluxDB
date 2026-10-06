@@ -261,7 +261,16 @@ impl NavicatMain {
                         let resolver = std::sync::Arc::new(fluxdb_app::MapSqlResolver::new(
                             pinned.iter().cloned().collect::<Vec<_>>(),
                         ));
-                        match fluxdb_app::standard_sql_catalog(resolver, include_write) {
+                        // 按**本轮固定目标连接**类型装配工具目录：Redis 目标装 Redis 工具集，其余装 SQL 工具集。
+                        let target_is_redis = pinned.as_ref().is_some_and(|config| {
+                            config.kind == fluxdb_core::DatabaseKind::Redis
+                        });
+                        let catalog = if target_is_redis {
+                            fluxdb_app::standard_redis_catalog(resolver, include_write)
+                        } else {
+                            fluxdb_app::standard_sql_catalog(resolver, include_write)
+                        };
+                        match catalog {
                             Ok(catalog) => {
                                 // 写权限来自目标连接（只读连接连写工具都不注册），且 authorize 对 Write 强制逐次审批。
                                 let permission = fluxdb_app::TurnPermissionContext {

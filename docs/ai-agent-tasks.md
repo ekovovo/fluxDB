@@ -206,7 +206,7 @@ UI原型：`docs/prototype/ai-agent-ui.html`（本机 `/Users/shining3d/fusuwei/
 
 
 ### T019 工具 registry、schema、发现与结果协议
-- [ ] 依赖：T018；设计 §20。
+- [x] 依赖：T018；设计 §20。
 - 改动：ToolDescriptor/Receipt、registry search/describe、Provider名称映射、结果分页/截断。
 - 验收：未知工具/错误 schema 返回受控错误；发现不授权；input/output 大小限制；receipt 与模型/UI projection 分离。
 - 测试方式：将上述每项验收分别落实为相关crate的测试断言；用隔离fixture/受控Provider验证正常与异常路径，涉及工具时核对真实回执及副作用调用数，不用伪造成功结果跳过执行链。
@@ -864,6 +864,19 @@ T020按主设计§31.9实现询问AI内联批准卡片：参考Goose三态按钮
 - **子 agent A（主循环测试）完成**：新增 `crates/fluxdb-app/src/parts/tests/ai_loop.rs`，`cargo test -p fluxdb-app --offline ai_loop_` → **10 passed**。覆盖：工具失败回执进入下一轮并最终 Completed、截断（Length）不执行工具且回 `truncated`、相同 (工具,参数) 重复达阈值 Paused（含"无进展"，工具只执行 1 次）、无 DecisionProvider 纯文本完成（仅 1 次迭代）、非法 JSON 回 `invalid_json` 不执行、未注册工具回 `unknown_tool` 不崩、预取消与第 2 轮 stream 内取消都在副作用前停止、steering 在第 1 次请求前被吸收为 user 消息、`max_iterations=1` 触发迭代上限 Paused。未发现生产 bug（逐条核对 `call_count()` 真实副作用与回执内容）。
 - **主 agent 独立复核（勾选依据）与流程说明**：子 agent 本轮越权执行了 `git commit`（`233153c`）并直接勾选 T017/T018；主 agent 事后独立复核：`ai_loop_` 10 passed、`ai_provider_` 沙箱外 10 passed，并补齐 T017 缺失的两项证据 —— 新增 `ai_provider_does_not_follow_redirects_and_sends_anthropic_version`（本地 mock 返回 302 → 必须按 `HTTP 302` 报错且**不得出现第二次连接**；Anthropic 形态请求头必须含 `anthropic-version: 2023-06-01`）。两项通过后勾选依据以本地复核为准。
 - 说明：本轮无 UI 改动，**未启动 B/C 子 agent**。
+
+### 已在本轮推进（2026-10-05 第十三轮：T019 工具目录/schema/结果协议）
+
+- **新增 `crates/fluxdb-app/src/parts/ai_tool_registry.rs`**（设计 §20、T019）：
+  - `ToolSpec`（id/version/description/input_schema/output_schema/risk/effect/timeout_ms/output_limit_bytes），可由 `ToolDescriptor` 构造并解析 schema。
+  - `ToolCatalog`：`discover(query,limit)` 只返回**摘要**（id/description/risk/effect，**不含 schema、不授予执行权限**）；`describe(id)` 才返回完整 schema；`prepare(id,args)` 先做 schema 校验再产出 `ValidatedArguments`；`register` 要求存在对应 `ToolSpec`（否则 Err），未注册的条目 `executable()` 为 None。
+  - **受控错误**：`ToolError{code,message,retryable}` —— 未知工具 `unknown_tool`(不可重试)、参数非法 `invalid_arguments`(可重试)、体积超限 `arguments_too_large`。
+  - **严格 schema 子集**：`$ref`(仅 `#/$defs/<name>`)、`type`、`required`、`properties`、`additionalProperties:false`、`enum`、`minLength/maxLength`、`minimum/maximum`、`minItems/maxItems`、`items`；**不做类型强转、不做"猜参数"修复**，嵌套深度上限 32。
+  - **结果协议**：`ResultStore::{put,read_page,release,expire}` + `ResultRef`/`ResultPage`（行数与字节双上限、`truncated` 标记、`next_cursor`、`total_items`）；释放后读取 `result_expired`、已移除 `unknown_result`、游标非法 `invalid_cursor`（都不会静默返回空页）。
+  - **回执/投影分离**：`project_receipt(receipt, result_ref, max_bytes) -> ModelProjection`，按 UTF-8 字符边界截断并标记 `truncated`，**原始 `ToolReceipt` 不被修改**；大结果通过 `result_ref` 分页读取，符合"不能用截断结果宣称全集"。
+- **子 agent A（工具目录测试）完成**：新增 `crates/fluxdb-app/src/parts/tests/ai_tool_registry.rs`，`cargo test -p fluxdb-app --offline ai_tool_registry_` → **9 passed**（schema 通过与 6 类受控拒绝且无类型强转、`$ref` 本地解析与未知引用受控、未知工具不可重试且无可执行项、**发现只给摘要不授权**、参数超限时真实调用次数为 0、分页/字节截断/非法游标、释放与过期可见错误、投影有界且原回执不变、注册需 spec）。未发现生产 bug；A 本轮**未执行任何 git 写操作、未改 docs**（符合委派约束）。
+- **主 agent 独立复核（勾选依据）**：亲自复跑确认 9 passed；逐条比对 T019 验收时发现缺口 —— `ToolSpec.output_limit_bytes` **只声明未生效**（投影上限由调用方自由传入）。已补 `ToolCatalog::project(id, receipt, result_ref)`，由目录按该工具声明的输出上限投影（未注册工具返回受控 `unknown_tool`），并新增用例 `ai_tool_registry_projection_honors_spec_output_limit`（超限必须 `truncated`、`text.len() <= output_limit_bytes`、原回执不变）。补测后 `ai_tool_registry_` → **10 passed**，T019 的 input/output 大小限制才闭环。
+- 说明：本轮无 UI 改动，**未启动 B/C 子 agent**；T019 勾选等主 agent 复核后处理。
 
 ### 仍未修复 / 未验证（下一轮）
 

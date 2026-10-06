@@ -38,3 +38,5 @@ mod tests {
     include!("tests/ai_provider.rs");
     include!("tests/ai_loop.rs");
 }
+
+include!("tests/ai_tool_registry.rs");

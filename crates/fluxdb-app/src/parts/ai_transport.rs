@@ -474,6 +474,9 @@ pub fn stream_chat(
     }
     let agent = ureq::Agent::config_builder()
         .http_status_as_error(false)
+        // 不跟随重定向：跨域 302 可能把请求（含认证头）引向非预期主机。
+        // 3xx 直接按 HTTP 状态返回，由调用方决定如何处理。
+        .max_redirects(0)
         .timeout_connect(Some(limits.connect_timeout))
         .timeout_global(Some(limits.read_timeout))
         .build()

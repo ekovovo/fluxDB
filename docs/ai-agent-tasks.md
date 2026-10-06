@@ -192,14 +192,14 @@ UI原型：`docs/prototype/ai-agent-ui.html`（本机 `/Users/shining3d/fusuwei/
 
 
 ### T017 主模型适配与秘密 transport 边界
-- [ ] 依赖：T003、T008、T016；设计 §8、§17。
+- [x] 依赖：T003、T008、T016；设计 §8、§17。
 - 改动：generation Provider 流、模型能力和工具名称映射、请求前 credential lease、usage。
 - 验收：调试默认 scripted，真实模型调用要等 T030 预算就绪；模型请求/日志/快照无 Key；HTTP 默认跨域 redirect 不带认证；分片/断流/429/截断测试；版本与 capabilities 匹配。
 - 测试方式：将上述每项验收分别落实为相关crate的测试断言；用隔离fixture/受控Provider验证正常与异常路径，涉及工具时核对真实回执及副作用调用数，不用伪造成功结果跳过执行链。
 
 
 ### T018 主循环与工具调用状态机
-- [ ] 依赖：T017；设计 §10–11。
+- [x] 依赖：T017；设计 §10–11。
 - 改动：prepare→stream→校验工具→执行→观察→下一轮；安全边界吸收用户补充。
 - 验收：真实工具错误进入下一轮；输出截断不执行；同参数无进展可停止；不是固定意图路由；无 Jev 完整运行。
 - 测试方式：将上述每项验收分别落实为相关crate的测试断言；用隔离fixture/受控Provider验证正常与异常路径，涉及工具时核对真实回执及副作用调用数，不用伪造成功结果跳过执行链。
@@ -834,6 +834,34 @@ T020按主设计§31.9实现询问AI内联批准卡片：参考Goose三态按钮
 - **子 agent A（运行时测试）完成**：新增 `crates/fluxdb-app/src/parts/tests/ai_runtime.rs`，`cargo test -p fluxdb-app --offline ai_runtime_` → **10 passed**（事件顺序与 seq 单调、Provider 错误可见、**取消不被 200×4KB 大文本挤掉**（收到首段后取消，实际文本事件 ≤6）、排队 Turn 取消后立即结束、steering 在下一 Turn 被吸收、控制队列满时 `start_turn` 立即返回 `ControlQueueFull`（<200ms，不阻塞 UI）、活跃 Turn 上 shutdown 安全结束、Drop 不挂死、事件确实由 `fluxdb-ai-runtime` 线程发出）。
 - **A 报出的 1 个生产缺陷（已修 + 回归用例）**：控制队列满时 `shutdown()` 的 `try_send(Shutdown)` 会静默失败（`Full`），actor 阻塞在 `recv()`，关闭要等到 2s 超时并返回 `false`。修复：新增**旁路关闭标志** + actor 改用 `recv_timeout(50ms)` 周期检查（队列满也能在下一轮询周期退出），`try_send(Shutdown)` 仅作快路径唤醒。回归用例 `ai_runtime_shutdown_works_when_control_queue_is_full`（容量 1 打满后 `shutdown(2s)` 必须成功且不等超时）已通过。
 - 本轮验收：`cargo check --workspace` / `cargo fmt --check` 通过；core **106**、storage **121**、app **586**（9 个需要本地端口的用例沙箱内被拒，沙箱外通过）、desktop **477**。
+- 说明：本轮无 UI 改动，**未启动 B/C 子 agent**。
+
+### 已在本轮推进（2026-10-05 第十一轮：T017 主模型 Provider 适配）
+
+- **新增 `crates/fluxdb-app/src/parts/ai_provider.rs`**（设计 §8/§17、T017）：
+  - **秘密边界**：`SecretLease` 不实现 Clone/Serialize/Display，Debug 固定 `SecretLease([REDACTED])`，`expose()` 仅 crate 内可见；`HttpChatProvider::stream()` **先构造请求体、再做 credential lease**，租约只在"构造 `TransportAuth` → 发起请求"这一段作用域内存在，随后显式 drop。请求体（`build_chat_body`）**从不包含凭据**。
+  - **工具名映射**：`ToolNameMapper` 做宿主稳定 ID ↔ Provider 安全名称（`db.query` → `db_query`）双向映射，注册时冲突直接报错；回程把 Provider 名称还原成宿主 ID，未注册名视为协议错误。
+  - **能力门控**：只有 `capabilities.tool_calling` 为真才把工具写进请求；模型未声明工具能力却返回工具调用 → 报错而不是静默丢弃。
+  - **协议形态**：OpenAI（`messages` + `tools[].function`，工具 schema 作为对象）与 Anthropic（system 提到顶层 `system`、`tools[].input_schema`）两种请求体。
+  - **可测试性**：`ChatTransport` 抽象出真实 HTTP，生产用 `UreqChatTransport`（`stream_chat`），测试注入假实现即可在无网络下断言"请求体/认证/事件映射"。
+  - **重定向**：`stream_chat` 显式 `max_redirects(0)`（ureq 默认跟随 10 次；不跟随可避免跨域 302 把含认证头的请求引向非预期主机），3xx 直接按 HTTP 状态返回。
+- **真实模型调用边界**：本任务只交付适配层与秘密边界；**默认仍是 scripted**，真实「公司自建 / 决策模型」调用按设计 §37.3 要等 T030 预算与显式开关就绪后由主 agent 统一安排，不在单测里发起。
+- **子 agent A（Provider 测试）完成**：新增 `crates/fluxdb-app/src/parts/tests/ai_provider.rs`，`cargo test -p fluxdb-app --offline ai_provider_` → **9 passed**（沙箱外；沙箱内仅本地 mock 一项因禁止绑定回环端口失败）。覆盖：工具名映射可逆 + sanitize 冲突拒绝、OpenAI/Anthropic 请求体不含凭据且工具名已映射（Anthropic system 在顶层）、`tool_calling=false` 不发 `tools` 且收到工具调用报错、回程 Provider 名→宿主 ID、未注册工具报错、每次 `stream` 恰好 lease 一次且 body/Debug 无明文、**预取消完全不触碰凭据与传输**、传输错误透传、本地真实 HTTP 429 + 截断 SSE 不 panic。未发现生产 bug。
+- 测试口径说明：`sanitize_tool_name` 保留 `-`，所以 `db.query` 与 `db-query` 不会冲突；A 改用 `db.query` 与 `db/query` 构造真实冲突（实现行为符合其规则）。
+- 本轮验收：`cargo check --workspace` / `cargo fmt --check` 通过；core **106**、storage **121**、app **594**（10 个需要本地回环端口的用例沙箱内被拒，沙箱外通过）、desktop **477**。
+- 说明：本轮无 UI 改动，**未启动 B/C 子 agent**。
+
+### 已在本轮推进（2026-10-05 第十二轮：T018 主循环与工具状态机）
+
+- **新增 `crates/fluxdb-app/src/parts/ai_loop.rs`**（设计 §10–11、T018）：
+  - `ToolRegistry`（宿主稳定 ID → `AiTool`）；`TurnRunner::{provider, tools, limits}.run(state, steering, cancel, emit)`。
+  - 控制流：吸收 steering（安全边界）→ `stream` → 组装文本/工具调用/结束原因 → 分支处理 → 下一 iteration；循环同步执行（复用 crate 内 `block_on_ready`），不需要 tokio。
+  - **截断不执行**：`finish_reason=length` 时工具可能不完整 → 一个都不执行，回结构化 `"error":"truncated"` 给模型让它重新请求。
+  - **不猜参数**：`arguments_json` 非法 JSON → 不执行，回 `"error":"invalid_json"`；未注册工具 → 回 `"error":"unknown_tool"`（不崩、不静默丢）。
+  - **真实回执**：工具顺序执行并取真实 `ToolReceipt`（`ToolFinished` 事件），无论 Succeeded/Failed 都作为 Tool 消息进入下一轮让模型观察；只有工具 `Err`（基础设施失败）才终止为 `Failed`。
+  - **无进展保护**：相同 (工具, 参数) 重复 ≥ `max_repeat_signature` → `Paused`（含"无进展"说明），另有 `max_iterations` 上限。
+  - **不依赖 Jev**：只要求 `GenerationProvider`，没有决策模型也能完整跑完；不做关键词式固定意图路由。
+- **子 agent A（主循环测试）完成**：新增 `crates/fluxdb-app/src/parts/tests/ai_loop.rs`，`cargo test -p fluxdb-app --offline ai_loop_` → **10 passed**。覆盖：工具失败回执进入下一轮并最终 Completed、截断（Length）不执行工具且回 `truncated`、相同 (工具,参数) 重复达阈值 Paused（含"无进展"，工具只执行 1 次）、无 DecisionProvider 纯文本完成（仅 1 次迭代）、非法 JSON 回 `invalid_json` 不执行、未注册工具回 `unknown_tool` 不崩、预取消与第 2 轮 stream 内取消都在副作用前停止、steering 在第 1 次请求前被吸收为 user 消息、`max_iterations=1` 触发迭代上限 Paused。未发现生产 bug（逐条核对 `call_count()` 真实副作用与回执内容）。
 - 说明：本轮无 UI 改动，**未启动 B/C 子 agent**。
 
 ### 仍未修复 / 未验证（下一轮）

@@ -280,18 +280,41 @@ impl AppController {
                 .map(|id| fluxdb_storage::ai_platform::sessions::load_session(conn, id))
                 .transpose()?;
             let agents = fluxdb_storage::ai_platform::agents::list_agents(conn)?;
-            let agent_id = current
-                .as_ref()
-                .map(|s| s.agent_id.as_str())
-                .or(runtime.default_agent_id.as_deref());
-            let agent = match agent_id {
-                Some(id) => agents.iter().find(|a| a.id == id),
-                None => agents.iter().filter(|a| a.enabled).next(),
+            // 新会话的 Agent 选择：内置默认 Agent 是代码内置入口，但如果它没有可用的
+            // 生成模型（既未绑定、也没有全局默认模型），就回退到"已绑定可用模型的自定义
+            // Agent"，避免用户配好自定义 Agent + 模型后仍无法对话。
+            let agent_has_usable_model = |agent: &&fluxdb_storage::ai_platform::agents::AgentView| {
+                agent.default_model_profile_id.is_some() || runtime.default_model_profile_id.is_some()
+            };
+            let agent = if let Some(session) = current.as_ref() {
+                // 已有会话维持原身份。
+                agents.iter().find(|a| a.id == session.agent_id)
+            } else {
+                let preferred = runtime
+                    .default_agent_id
+                    .as_deref()
+                    .and_then(|id| agents.iter().find(|a| a.id == id && a.enabled));
+                let builtin = agents.iter().find(|a| {
+                    a.id == fluxdb_storage::ai_platform::agents::BUILTIN_AGENT_ID && a.enabled
+                });
+                preferred
+                    .filter(|agent| agent_has_usable_model(agent))
+                    .or_else(|| {
+                        builtin.filter(|agent| agent_has_usable_model(agent))
+                    })
+                    .or_else(|| {
+                        // 兜底：任一已启用且绑定了模型的 Agent；都没有时再退回内置
+                        // （此时会给出"请先配置默认主模型"的明确提示）。
+                        agents
+                            .iter()
+                            .find(|a| a.enabled && a.default_model_profile_id.is_some())
+                            .or(builtin)
+                    })
             }
             .ok_or_else(|| {
                 fluxdb_core::Error::new(
                     fluxdb_core::ErrorKind::Internal,
-                    "请先在 Agent 配置中新建并启用一个 Agent",
+                    "会话使用的 Agent 已不可用，请新建会话使用默认助手",
                 )
             })?;
             if !agent.enabled {
@@ -307,7 +330,7 @@ impl AppController {
                 .ok_or_else(|| {
                     fluxdb_core::Error::new(
                         fluxdb_core::ErrorKind::Internal,
-                        "请给 Agent 绑定模型，或设置默认主模型",
+                        "请先在大模型设置中配置默认主模型",
                     )
                 })?;
             let model = fluxdb_storage::ai_platform::models::load_model(conn, model_id)?;
@@ -324,7 +347,7 @@ impl AppController {
                 .map(|s| s.id.clone())
                 .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
             let turn_id = uuid::Uuid::new_v4().to_string();
-            fluxdb_storage::ai_platform::conversation::send(conn,ai_chat_now(),current.is_none(),&session_id,&agent.id,&turn_id,&uuid::Uuid::new_v4().to_string(),prompt,&target.target_json,&serde_json::json!({"model_profile_id":model_id,"agent_id":agent.id,"agent_revision":agent.revision,"system_prompt":agent.system_prompt,"ui_context":context}).to_string())?;
+            fluxdb_storage::ai_platform::conversation::send(conn,ai_chat_now(),current.is_none(),&session_id,&agent.id,&turn_id,&uuid::Uuid::new_v4().to_string(),prompt,&target.target_json,&serde_json::json!({"model_profile_id":model_id,"agent_id":agent.id,"agent_revision":agent.revision,"compression_trigger_percent":agent.compression_trigger_percent,"system_prompt":agent.system_prompt,"ui_context":context}).to_string())?;
             let job = AiConversationJob {
                 session_id: session_id.clone(),
                 turn_id,
@@ -525,10 +548,26 @@ pub fn run_ai_conversation_source(
 }
 
 /// 组装本轮公开消息：系统提示 + 界面摘录 + 历史文本片段（不含工具输出，避免把上次执行结果当新上下文）。
+/// 一轮 Turn 的上下文装配结果：系统消息与历史分离，便于压缩时只处理历史部分。
+struct AiTurnContext {
+    target_json: String,
+    /// 永远保留的系统约束 + 当前目标 + 界面摘录。
+    system_messages: Vec<fluxdb_core::ModelMessage>,
+    /// 历史消息及其 `ai_messages.seq`（压缩切点/来源 hash 用）。
+    history: Vec<(i64, fluxdb_core::ModelMessage)>,
+    /// 已有 checkpoint 的摘要与其覆盖的最后 seq；没有则为 None。
+    previous_summary: Option<(String, i64, i64)>,
+    /// 下一个可用的 generation。
+    next_generation: i64,
+    context_window_tokens: Option<i64>,
+    max_output_tokens: Option<i64>,
+    trigger_percent: u8,
+}
+
 fn ai_conversation_turn_messages(
     storage: &fluxdb_storage::FileStorage,
     job: &AiConversationJob,
-) -> fluxdb_core::Result<(String, Vec<fluxdb_core::ModelMessage>)> {
+) -> fluxdb_core::Result<AiTurnContext> {
     with_ai_storage(storage, |conn| {
         let data = fluxdb_storage::ai_platform::conversation::load(conn, Some(&job.session_id))?;
         let turn = fluxdb_storage::ai_platform::sessions::load_turn(conn, &job.turn_id)?;
@@ -540,12 +579,13 @@ fn ai_conversation_turn_messages(
             .get("system_prompt")
             .and_then(|value| value.as_str())
             .unwrap_or("");
-        let mut messages = vec![fluxdb_core::ModelMessage::new(
+        let mut system_messages = vec![fluxdb_core::ModelMessage::new(
             fluxdb_core::ModelRole::System,
             format!(
                 "{system_prompt}\n当前执行目标：{}。工具的 target 参数必须使用句柄：{}。你可以调用被授权的工具；只能依据工具真实回执陈述执行结果，不得臆造。",
                 turn.target_json,
-                ai_tool_target_handle(&turn.target_json).unwrap_or_else(|| "（无可用句柄）".to_string())
+                ai_tool_target_handle(&turn.target_json)
+                    .unwrap_or_else(|| "（无可用句柄）".to_string())
             ),
         )];
         if let Some(context) = snapshot
@@ -553,11 +593,19 @@ fn ai_conversation_turn_messages(
             .and_then(|value| value.as_str())
             .filter(|text| !text.is_empty())
         {
-            messages.push(fluxdb_core::ModelMessage::new(
+            system_messages.push(fluxdb_core::ModelMessage::new(
                 fluxdb_core::ModelRole::User,
                 format!("当前页面的有界摘录：\n{context}"),
             ));
         }
+
+        // 历史消息按 seq 排序；只取文本片段（工具回执走另一条链路）。
+        let seq_by_message: std::collections::HashMap<String, i64> = data
+            .messages
+            .iter()
+            .map(|m| (m.id.clone(), m.seq))
+            .collect();
+        let mut history: Vec<(i64, fluxdb_core::ModelMessage)> = Vec::new();
         for message in ai_chat_project(data).messages {
             let text = message
                 .parts
@@ -574,25 +622,238 @@ fn ai_conversation_turn_messages(
                 })
                 .collect::<Vec<_>>()
                 .join("\n");
-            if !text.is_empty() {
-                messages.push(fluxdb_core::ModelMessage::new(
+            if text.is_empty() {
+                continue;
+            }
+            let seq = seq_by_message.get(&message.id).copied().unwrap_or(0);
+            history.push((
+                seq,
+                fluxdb_core::ModelMessage::new(
                     if message.role == "user" {
                         fluxdb_core::ModelRole::User
                     } else {
                         fluxdb_core::ModelRole::Assistant
                     },
                     text,
-                ));
-            }
+                ),
+            ));
         }
-        if messages.iter().map(|m| m.text.len()).sum::<usize>() > 64 * 1024 {
+        if history
+            .iter()
+            .map(|(_, m)| m.text.len())
+            .sum::<usize>()
+            > 64 * 1024
+        {
             return Err(fluxdb_core::Error::new(
                 fluxdb_core::ErrorKind::Internal,
                 "上下文超过本轮 64 KiB 保护上限；请新建会话",
             ));
         }
-        Ok((turn.target_json.clone(), messages))
+
+        let previous = fluxdb_storage::ai_platform::context_checkpoints::load_latest(
+            conn,
+            &job.session_id,
+        )?;
+        let (previous_summary, next_generation) = match previous {
+            Some(checkpoint) => (
+                Some((
+                    checkpoint.summary_text.clone(),
+                    checkpoint.last_message_seq,
+                    checkpoint.generation,
+                )),
+                checkpoint.generation + 1,
+            ),
+            None => (None, 1),
+        };
+        let model = fluxdb_storage::ai_platform::models::load_model(
+            conn,
+            job.model_profile_id.as_str(),
+        )?;
+        let trigger_percent = snapshot
+            .get("compression_trigger_percent")
+            .and_then(serde_json::Value::as_u64)
+            .map(|value| value as u8)
+            .unwrap_or(80);
+        Ok(AiTurnContext {
+            target_json: turn.target_json.clone(),
+            system_messages,
+            history,
+            previous_summary,
+            next_generation,
+            context_window_tokens: model.context_window_tokens,
+            max_output_tokens: Some(
+                model
+                    .max_output_tokens
+                    .unwrap_or(1024)
+                    .min(1024)
+                    .max(0),
+            ),
+            trigger_percent,
+        })
     })
+}
+
+/// T069：按窗口百分比/输出预留判断是否压缩；需要时调用模型生成增量摘要并原子提交 checkpoint。
+///
+/// 返回压缩后仍可见的历史（未被摘要覆盖的近期消息）与可选的 UI 提示。任何一步失败都退回
+/// 原始历史并给出提示，绝不返回"部分压缩"的半成品，也不覆盖既有 checkpoint。
+#[allow(clippy::too_many_arguments)]
+fn ai_conversation_maybe_compact(
+    storage: &fluxdb_storage::FileStorage,
+    job: &AiConversationJob,
+    provider: &dyn fluxdb_core::GenerationProvider,
+    cancel: &fluxdb_core::CancelFlag,
+    history: Vec<(i64, fluxdb_core::ModelMessage)>,
+    system_tokens: i64,
+    previous_summary: Option<(String, i64, i64)>,
+    next_generation: i64,
+    context_window_tokens: Option<i64>,
+    max_output_tokens: Option<i64>,
+    trigger_percent: u8,
+) -> (Vec<(i64, fluxdb_core::ModelMessage)>, Option<String>) {
+    let estimated = system_tokens + estimate_messages_tokens(
+        &history.iter().map(|(_, m)| m.clone()).collect::<Vec<_>>(),
+    );
+    let Some(reason) = should_compact(
+        estimated,
+        CompactionTrigger {
+            context_window_tokens,
+            max_output_tokens,
+            trigger_percent,
+        },
+    ) else {
+        return (history, None);
+    };
+    if cancel.is_cancelled() {
+        return (history, None);
+    }
+
+    let messages: Vec<fluxdb_core::ModelMessage> =
+        history.iter().map(|(_, m)| m.clone()).collect();
+    // 保留最近 1/3 的历史消息（至少 4 条，至多 24 条），对齐 Pi "保留近期完整交互"。
+    let keep_recent = (messages.len() / 3).clamp(4, 24);
+    let Some(cut) = compute_cut(&messages, keep_recent, |index| {
+        history.get(index).map(|(seq, _)| *seq).unwrap_or(0)
+    }) else {
+        return (history, Some("上下文接近上限，但暂无可安全压缩的完整历史".into()));
+    };
+
+    // 若有旧摘要，它已覆盖 [..previous_last_seq]，这次只把其后、切点之前的消息作为增量。
+    let previous_last_seq = previous_summary.as_ref().map(|(_, seq, _)| *seq).unwrap_or(0);
+    let previous_text = previous_summary.as_ref().map(|(text, _, _)| text.clone());
+    let digest = history[..cut.cut]
+        .iter()
+        .filter(|(seq, _)| *seq > previous_last_seq)
+        .map(|(_, message)| {
+            let role = match message.role {
+                fluxdb_core::ModelRole::User => "用户",
+                fluxdb_core::ModelRole::Assistant => "助手",
+                fluxdb_core::ModelRole::System => "系统",
+                fluxdb_core::ModelRole::Tool => "工具",
+            };
+            format!("[{role}] {}", message.text)
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    if digest.trim().is_empty() {
+        // 没有新增可摘要内容：不重复提交，也不阻塞正常请求。
+        return (history, None);
+    }
+
+    let prompt = build_summary_prompt(previous_text.as_deref(), &digest);
+    let request = fluxdb_core::ModelRequest {
+        model: job.model_profile_id.clone(),
+        messages: vec![fluxdb_core::ModelMessage::new(
+            fluxdb_core::ModelRole::User,
+            prompt,
+        )],
+        tools: Vec::new(),
+        max_output_tokens: Some(1024),
+    };
+    let mut summary_text = String::new();
+    let summary_result = match block_on_ready(provider.stream(request, cancel.clone())) {
+        Ok(Ok(events)) => {
+            for event in events {
+                if let fluxdb_core::ModelEvent::TextDelta(delta) = event {
+                    summary_text.push_str(&delta);
+                }
+            }
+            Ok(())
+        }
+        Ok(Err(error)) => Err(error.message),
+        Err(error) => Err(error.message),
+    };
+    if cancel.is_cancelled() {
+        return (history, None);
+    }
+
+    if let Err(reason) = summary_result {
+        return (
+            history,
+            Some(format!("上下文压缩未完成（摘要失败：{reason}），本轮暂用原始历史")),
+        );
+    }
+    if let Err(reason) = validate_summary(&summary_text) {
+        return (
+            history,
+            Some(format!("上下文压缩未完成（{reason}），本轮暂用原始历史")),
+        );
+    }
+
+    let first_message_seq = history.first().map(|(seq, _)| *seq).unwrap_or(1).max(1);
+    let hash = source_hash(&[
+        &job.session_id,
+        &cut.last_message_seq.to_string(),
+        &summary_text,
+        previous_text.as_deref().unwrap_or(""),
+    ]);
+    let edit = fluxdb_storage::ai_platform::context_checkpoints::ContextCheckpointEdit {
+        id: uuid::Uuid::new_v4().to_string(),
+        session_id: job.session_id.clone(),
+        turn_id: job.turn_id.clone(),
+        generation: next_generation,
+        first_message_seq,
+        last_message_seq: cut.last_message_seq,
+        summary_text: summary_text.clone(),
+        protected_items_json: serde_json::json!({
+            "items": REQUIRED_PROTECTED_ITEMS,
+            "previous_last_message_seq": previous_last_seq,
+        })
+        .to_string(),
+        source_hash: hash,
+        model_profile_id: Some(job.model_profile_id.clone()),
+    };
+    let commit = with_ai_storage(storage, |conn| {
+        fluxdb_storage::ai_platform::context_checkpoints::insert(conn, ai_chat_now(), &edit)
+    });
+    if let Err(error) = commit {
+        return (
+            history,
+            Some(format!("上下文压缩未提交（{}），本轮暂用原始历史", error.message)),
+        );
+    }
+
+    // 压缩成功后，请求里用"旧摘要 + 新摘要"这一条合成消息替换被压掉的历史。
+    let remaining = history[cut.cut..].to_vec();
+    let mut compacted = Vec::with_capacity(remaining.len() + 1);
+    compacted.push((
+        cut.last_message_seq,
+        fluxdb_core::ModelMessage::new(
+            fluxdb_core::ModelRole::User,
+            format!("[历史上下文摘要]\n{summary_text}"),
+        ),
+    ));
+    compacted.extend(remaining);
+    let reason_label = match reason {
+        CompactionReason::Percent => format!("达到上下文 {}%", trigger_percent),
+        CompactionReason::OutputReserve => "输出预留空间不足".to_string(),
+    };
+    (
+        compacted,
+        Some(format!(
+            "已自动压缩上下文（{reason_label}）；原始历史与审计保持不变"
+        )),
+    )
 }
 
 /// 保存一条事件片段（工具卡/结果/通知）；失败只记错误，不让持久化问题吞掉真实回执。
@@ -664,7 +925,7 @@ fn ai_conversation_run_turn(
     extra_messages: Vec<fluxdb_core::ModelMessage>,
     initial_text: String,
 ) {
-    let (target_json, mut messages) = match ai_conversation_turn_messages(storage, job) {
+    let context = match ai_conversation_turn_messages(storage, job) {
         Ok(value) => value,
         Err(error) => {
             let mut view = with_ai_storage(storage, |conn| {
@@ -683,6 +944,36 @@ fn ai_conversation_run_turn(
         }
     };
 
+    let AiTurnContext {
+        target_json,
+        system_messages,
+        history,
+        previous_summary,
+        next_generation,
+        context_window_tokens,
+        max_output_tokens,
+        trigger_percent,
+    } = context;
+
+    // —— T069：按模型窗口百分比/输出预留触发，自动压缩（无需用户确认）。 ——
+    // 压缩失败只记 notice，不影响本轮正常对话（设计 §16.1：不能悄悄删用户限制）。
+    let system_tokens = estimate_messages_tokens(&system_messages);
+    let (history, compaction_notice) = ai_conversation_maybe_compact(
+        storage,
+        job,
+        provider,
+        cancel,
+        history,
+        system_tokens,
+        previous_summary,
+        next_generation,
+        context_window_tokens,
+        max_output_tokens,
+        trigger_percent,
+    );
+
+    let mut messages = system_messages;
+    messages.extend(history.into_iter().map(|(_, message)| message));
     messages.extend(extra_messages);
     let mut text = initial_text;
     let mut summary = String::new();
@@ -694,6 +985,21 @@ fn ai_conversation_run_turn(
     let mut approval_id: Option<String> = None;
     let mut part_error: Option<String> = None;
     let mut tool_error: Option<String> = None;
+
+    // 压缩提示作为一条 notice 片段落库，UI 才能显示"正在压缩/已压缩"及失败原因。
+    if let Some(notice) = compaction_notice {
+        let _ = ai_conversation_save_part(
+            storage,
+            job,
+            &format!("compaction-{notice_count}"),
+            fluxdb_storage::ai_platform::sessions::PartKind::Notice,
+            fluxdb_storage::ai_platform::sessions::PartStatus::Complete,
+            &serde_json::json!({ "text": notice }).to_string(),
+            None,
+            None,
+        );
+        notice_count += 1;
+    }
 
     let runner = TurnRunner {
         provider,
@@ -1048,8 +1354,15 @@ pub fn run_ai_conversation_resume_approval(
                 Some(receipt.finished_at_ms),
             )
         });
-        run_ai_conversation_failure(storage, &job, sender,
-            format!("工具已执行但回执保存失败，已标记为结果未知：{}", error.message));
+        run_ai_conversation_failure(
+            storage,
+            &job,
+            sender,
+            format!(
+                "工具已执行但回执保存失败，已标记为结果未知：{}",
+                error.message
+            ),
+        );
         return;
     }
 

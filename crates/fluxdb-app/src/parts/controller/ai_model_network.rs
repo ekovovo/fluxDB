@@ -171,6 +171,15 @@ pub fn fetch_ai_models(
     endpoint: Option<&str>,
     api_key: &str,
 ) -> fluxdb_core::Result<Vec<String>> {
+    fetch_ai_model_capabilities(provider, endpoint, api_key)
+        .map(|items| items.into_iter().map(|m| m.id).collect())
+}
+
+pub fn fetch_ai_model_capabilities(
+    provider: &str,
+    endpoint: Option<&str>,
+    api_key: &str,
+) -> fluxdb_core::Result<Vec<AiDiscoveredModel>> {
     let provider = ModelProvider::from_stored(provider);
     let protocol = provider.api_protocol();
     if protocol == "system-one" {
@@ -197,13 +206,14 @@ pub fn fetch_ai_models(
     let candidates = ai_models_url_candidates(base)?;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
     for (index, url) in candidates.iter().enumerate() {
-        let agent = ureq::Agent::config_builder()
-            .http_status_as_error(false)
-            .timeout_global(Some(
-                deadline.saturating_duration_since(std::time::Instant::now()),
-            ))
-            .build()
-            .new_agent();
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            return Err(fluxdb_core::Error::new(
+                fluxdb_core::ErrorKind::Internal,
+                "获取模型能力超时",
+            ));
+        }
+        let agent = ai_agent(remaining);
         let request = agent.get(url.as_str());
         let request = if protocol == "anthropic-messages" {
             request
@@ -237,38 +247,18 @@ pub fn fetch_ai_models(
                 format!("拉取模型列表失败：HTTP {status}"),
             ));
         }
-        let body = response.body_mut().read_to_string().map_err(|_| {
-            fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, "读取响应失败")
-        })?;
+        let body = response
+            .body_mut()
+            .with_config()
+            .limit(1024 * 1024)
+            .read_to_string()
+            .map_err(|_| {
+                fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, "读取响应失败")
+            })?;
         let parsed: serde_json::Value = serde_json::from_str(&body).map_err(|_| {
             fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, "响应不是合法 JSON")
         })?;
-        // OpenAI 兼容与 Anthropic 都用 `{"data":[{"id": "..."}]}`；兼容 `models[].id`。
-        let mut models: Vec<String> = parsed
-            .get("data")
-            .and_then(|v| v.as_array())
-            .or_else(|| parsed.get("models").and_then(|v| v.as_array()))
-            .map(|items| {
-                items
-                    .iter()
-                    .filter_map(|item| {
-                        item.get("id")
-                            .or_else(|| item.get("slug"))
-                            .and_then(|id| id.as_str())
-                    })
-                    .filter(|id| !id.trim().is_empty())
-                    .map(str::to_string)
-                    .collect()
-            })
-            .unwrap_or_default();
-        models.sort();
-        models.dedup();
-        if models.is_empty() {
-            return Err(fluxdb_core::Error::new(
-                fluxdb_core::ErrorKind::Internal,
-                "未返回任何模型 ID，请检查 Endpoint 与 API Key",
-            ));
-        }
+        let models = parse_ai_model_capabilities(&parsed)?;
         return Ok(models);
     }
     Err(fluxdb_core::Error::new(
@@ -306,6 +296,7 @@ fn ai_agent(timeout: std::time::Duration) -> ureq::Agent {
     let config = ureq::Agent::config_builder()
         .http_status_as_error(false)
         .timeout_global(Some(timeout))
+        .max_redirects(0)
         .build();
     ureq::Agent::with_parts(
         config,
@@ -449,17 +440,21 @@ fn ai_test_response_valid(protocol: &str, body: &serde_json::Value) -> bool {
                 })
         }
         "openai-responses" => {
-            let completed = body.get("status").and_then(|v| v.as_str()).is_none_or(|s| s == "completed");
-            completed && body["output"].as_array().is_some_and(|items| {
-                items.iter().any(|item| {
-                    item["content"].as_array().is_some_and(|parts| {
-                        parts.iter().any(|part| {
-                            part["type"] == "output_text"
-                                && part["text"].as_str().is_some_and(|s| !s.is_empty())
+            let completed = body
+                .get("status")
+                .and_then(|v| v.as_str())
+                .is_none_or(|s| s == "completed");
+            completed
+                && body["output"].as_array().is_some_and(|items| {
+                    items.iter().any(|item| {
+                        item["content"].as_array().is_some_and(|parts| {
+                            parts.iter().any(|part| {
+                                part["type"] == "output_text"
+                                    && part["text"].as_str().is_some_and(|s| !s.is_empty())
+                            })
                         })
                     })
                 })
-            })
         }
         _ => body["choices"].as_array().is_some_and(|items| {
             items.iter().any(|item| {
@@ -472,4 +467,83 @@ fn ai_test_response_valid(protocol: &str, body: &serde_json::Value) -> bool {
             })
         }),
     }
+}
+
+/// 有界、严格读取 Provider 容量字段；未知容量为 None，不能当成已探测。
+pub fn parse_ai_model_capabilities(
+    body: &serde_json::Value,
+) -> fluxdb_core::Result<Vec<AiDiscoveredModel>> {
+    let items = body
+        .get("data")
+        .or_else(|| body.get("models"))
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| {
+            fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, "未返回模型列表")
+        })?;
+    if items.len() > 4096 {
+        return Err(fluxdb_core::Error::new(
+            fluxdb_core::ErrorKind::Internal,
+            "模型列表超过上限",
+        ));
+    }
+    let positive =
+        |value: &serde_json::Value| value.as_i64().filter(|n| (1..=1_000_000_000).contains(n));
+    let mut models = Vec::new();
+    for item in items {
+        let Some(id) = item
+            .get("id")
+            .or_else(|| item.get("slug"))
+            .and_then(|v| v.as_str())
+            .filter(|id| {
+                !id.trim().is_empty() && id.len() <= 512 && !id.chars().any(char::is_control)
+            })
+        else {
+            continue;
+        };
+        let window = [
+            &item["top_provider"]["context_length"],
+            &item["context_window_tokens"],
+            &item["max_input_tokens"],
+            &item["context_length"],
+            &item["context_window"],
+        ]
+        .into_iter()
+        .find_map(positive);
+        let output = [
+            &item["top_provider"]["max_completion_tokens"],
+            &item["max_output_tokens"],
+            &item["max_tokens"],
+            &item["max_completion_tokens"],
+        ]
+        .into_iter()
+        .find_map(positive)
+        .filter(|n| window.is_none_or(|w| *n <= w));
+        models.push(AiDiscoveredModel {
+            id: id.into(),
+            context_window_tokens: window,
+            max_output_tokens: output,
+        });
+    }
+    models.sort_by(|a, b| a.id.cmp(&b.id));
+    // 同 ID 容量冲突时不猜，丢弃冲突容量并保持可手工输入。
+    let mut unique: Vec<AiDiscoveredModel> = Vec::new();
+    for model in models {
+        if let Some(last) = unique.last_mut().filter(|last| last.id == model.id) {
+            if last.context_window_tokens != model.context_window_tokens {
+                last.context_window_tokens = None;
+            }
+            if last.max_output_tokens != model.max_output_tokens {
+                last.max_output_tokens = None;
+            }
+        } else {
+            unique.push(model);
+        }
+    }
+    if unique.is_empty() {
+        return Err(fluxdb_core::Error::new(
+            fluxdb_core::ErrorKind::Internal,
+            "未返回任何模型 ID，请检查 Endpoint 与 API Key",
+        ));
+    }
+    Ok(unique)
 }

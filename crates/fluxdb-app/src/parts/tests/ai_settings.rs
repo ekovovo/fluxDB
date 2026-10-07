@@ -115,8 +115,8 @@ fn ai_settings_save_model_with_key_encrypts_and_lists_as_configured() {
     let sealed = fluxdb_storage::ai_platform::models::load_encrypted_secret(&conn, &id)
         .expect("读取密文行")
         .expect("应有密文");
-    let opened = fluxdb_storage::ai_platform::model_secret::open(&cipher, &id, &sealed)
-        .expect("解密");
+    let opened =
+        fluxdb_storage::ai_platform::model_secret::open(&cipher, &id, &sealed).expect("解密");
     assert_eq!(opened, secret);
 
     let _ = std::fs::remove_dir_all(&dir);
@@ -176,7 +176,10 @@ fn ai_settings_stale_revision_save_is_rejected_and_surfaces_error() {
     let event = controller.dispatch(AppCommand::SaveAiModel(edit));
     match event {
         AppEvent::AiSettingsError(message) => {
-            assert!(message.contains("重新加载"), "应提示重新加载，实际: {message}");
+            assert!(
+                message.contains("重新加载"),
+                "应提示重新加载，实际: {message}"
+            );
         }
         other => panic!("过期 revision 应返回错误，实际: {other:?}"),
     }
@@ -243,7 +246,10 @@ fn ai_settings_ai_storage_missing_reports_clear_error_instead_of_silent_empty() 
     let event = controller.dispatch(AppCommand::RefreshAiSettings);
     match event {
         AppEvent::AiSettingsError(message) => {
-            assert!(message.contains("AI 存储"), "错误应说明存储未初始化: {message}")
+            assert!(
+                message.contains("AI 存储"),
+                "错误应说明存储未初始化: {message}"
+            )
         }
         other => panic!("未注入存储应报错，实际: {other:?}"),
     }
@@ -400,7 +406,10 @@ fn ai_settings_invalid_display_name_or_model_is_rejected_without_touching_stored
     blank_name.expected_revision = Some(created_revision);
     match controller.dispatch(AppCommand::SaveAiModel(blank_name)) {
         AppEvent::AiSettingsError(message) => {
-            assert!(message.contains("不能为空"), "空名称应提示不能为空: {message}");
+            assert!(
+                message.contains("不能为空"),
+                "空名称应提示不能为空: {message}"
+            );
         }
         other => panic!("空名称应返回 AiSettingsError，实际: {other:?}"),
     }
@@ -421,7 +430,9 @@ fn ai_settings_invalid_display_name_or_model_is_rejected_without_touching_stored
     let conn = storage.open_ai_connection().unwrap();
     let (name, revision, count): (String, i64, i64) = {
         let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM ai_model_profiles", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) FROM ai_model_profiles", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         let (name, revision): (String, i64) = conn
             .query_row(
@@ -517,7 +528,10 @@ fn ai_settings_default_models_round_trip_and_validate_kind() {
     });
     match event {
         AppEvent::AiSettingsError(message) => {
-            assert!(message.contains("生成模型"), "错误信息应说明 kind: {message}");
+            assert!(
+                message.contains("生成模型"),
+                "错误信息应说明 kind: {message}"
+            );
         }
         other => panic!("决策模型作为主模型应被拒，实际: {other:?}"),
     }
@@ -548,7 +562,7 @@ fn ai_settings_test_ai_model_missing_key_without_network() {
             provider: "openai".into(),
             model: "gpt-4o".into(),
             endpoint: Some("https://example.invalid/v1".into()),
-        endpoint_is_full_url: false,
+            endpoint_is_full_url: false,
             enabled: true,
             context_window_tokens: Some(8192),
             max_output_tokens: Some(2048),
@@ -590,6 +604,7 @@ fn ai_settings_test_ai_model_missing_key_without_network() {
 /// 建一个 Agent，返回新 id（走真实 SaveAiAgent）。
 fn create_agent(controller: &mut AppController, display_name: &str, system_prompt: &str) -> String {
     match controller.dispatch(AppCommand::SaveAiAgent(AiAgentSaveInput {
+        compression_trigger_percent: 80,
         id: None,
         display_name: display_name.into(),
         description: "描述".into(),
@@ -608,6 +623,7 @@ fn create_agent(controller: &mut AppController, display_name: &str, system_promp
 fn ai_settings_agent_create_round_trip() {
     let (mut controller, dir) = controller_with_ai_storage("agent-create");
     let event = controller.dispatch(AppCommand::SaveAiAgent(AiAgentSaveInput {
+        compression_trigger_percent: 80,
         id: None,
         display_name: "通用数据库 Agent".into(),
         description: "探索并交付可追溯结果".into(),
@@ -657,6 +673,7 @@ fn ai_settings_agent_edit_updates_prompt_and_revision() {
     let id = create_agent(&mut controller, "旧名", "旧提示词");
 
     let event = controller.dispatch(AppCommand::SaveAiAgent(AiAgentSaveInput {
+        compression_trigger_percent: 80,
         id: Some(id.clone()),
         display_name: "新名".into(),
         description: "新描述".into(),
@@ -696,6 +713,7 @@ fn ai_settings_agent_edit_updates_prompt_and_revision() {
 fn ai_settings_agent_blank_name_rejected() {
     let (mut controller, dir) = controller_with_ai_storage("agent-blank");
     let event = controller.dispatch(AppCommand::SaveAiAgent(AiAgentSaveInput {
+        compression_trigger_percent: 80,
         id: None,
         display_name: "   ".into(),
         description: "".into(),
@@ -707,15 +725,22 @@ fn ai_settings_agent_blank_name_rejected() {
     }));
     match event {
         AppEvent::AiSettingsError(message) => {
-            assert!(message.contains("名称不能为空"), "错误信息应说明原因: {message}");
+            assert!(
+                message.contains("名称不能为空"),
+                "错误信息应说明原因: {message}"
+            );
         }
         other => panic!("空名称应返回 AiSettingsError，实际: {other:?}"),
     }
-    // 失败的保存不应插入任何 Agent 行。
+    // 初始化已注册内置身份；失败的保存不能插入任何自定义 Agent。
     let storage = fluxdb_storage::FileStorage::new(dir.clone());
     let conn = storage.open_ai_connection().unwrap();
     let count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM ai_agents", [], |row| row.get(0))
+        .query_row(
+            "SELECT COUNT(*) FROM ai_agents WHERE id<>?1",
+            [fluxdb_storage::ai_platform::agents::BUILTIN_AGENT_ID],
+            |row| row.get(0),
+        )
         .unwrap();
     assert_eq!(count, 0, "空名称不应落库");
     let _ = std::fs::remove_dir_all(&dir);
@@ -727,6 +752,7 @@ fn ai_settings_agent_stale_revision_rejected() {
     let id = create_agent(&mut controller, "并发", "提示词");
 
     let event = controller.dispatch(AppCommand::SaveAiAgent(AiAgentSaveInput {
+        compression_trigger_percent: 80,
         id: Some(id.clone()),
         display_name: "改名".into(),
         description: "描述".into(),
@@ -738,7 +764,10 @@ fn ai_settings_agent_stale_revision_rejected() {
     }));
     match event {
         AppEvent::AiSettingsError(message) => {
-            assert!(message.contains("重新加载"), "过期 revision 应提示重新加载: {message}");
+            assert!(
+                message.contains("重新加载"),
+                "过期 revision 应提示重新加载: {message}"
+            );
         }
         other => panic!("过期 revision 应返回 AiSettingsError，实际: {other:?}"),
     }
@@ -753,8 +782,7 @@ fn ai_settings_fetch_models_rejects_blank_key_and_system_one_without_network() {
     assert!(err.message.contains("API Key"), "错误信息: {}", err.message);
 
     // decisions（system-one）不支持拉取模型列表，同样不联网。
-    let err = fetch_ai_models("decisions", None, "sk-whatever")
-        .expect_err("system-one 应被拒绝");
+    let err = fetch_ai_models("decisions", None, "sk-whatever").expect_err("system-one 应被拒绝");
     assert!(err.message.contains("不支持"), "错误信息: {}", err.message);
 }
 
@@ -793,8 +821,7 @@ fn ai_settings_model_connection_status_persists_and_reloads() {
         .expect("写入连接状态");
     // 非法状态被拒绝。
     assert!(
-        fluxdb_storage::ai_platform::models::set_connection_status(&conn, 1, &id, "bogus")
-            .is_err(),
+        fluxdb_storage::ai_platform::models::set_connection_status(&conn, 1, &id, "bogus").is_err(),
         "非法连接状态必须被拒"
     );
 
@@ -836,11 +863,7 @@ fn ai_settings_test_ai_model_network_failure_is_persisted() {
     };
 
     let event = controller.dispatch(AppCommand::TestAiModel { id: id.clone() });
-    let AppEvent::AiModelTested {
-        id: got_id,
-        status,
-    } = event
-    else {
+    let AppEvent::AiModelTested { id: got_id, status } = event else {
         panic!("测试连接应返回 AiModelTested，实际: {event:?}");
     };
     assert_eq!(got_id, id);

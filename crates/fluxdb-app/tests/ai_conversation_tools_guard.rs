@@ -7,18 +7,18 @@
 use std::{fs, path::PathBuf, sync::Arc};
 
 use fluxdb_app::{
-    run_ai_conversation_failure, run_ai_conversation_turn, standard_sql_catalog, AiAgentSaveInput,
-    AiConversationJob, AiConversationUpdate, AiModelSaveInput, AppCommand, AppController, AppEvent,
-    AuditInput, AuditOutcome, KernelPolicy, MapSqlResolver, ScriptedGenerationProvider,
-    SecurityAuditHook, TargetRef, ToolCatalog, TurnPermissionContext, TurnTargetPin,
+    AiAgentSaveInput, AiConversationJob, AiConversationUpdate, AiModelSaveInput, AppCommand,
+    AppController, AppEvent, AuditInput, AuditOutcome, KernelPolicy, MapSqlResolver,
+    ScriptedGenerationProvider, SecurityAuditHook, TargetRef, ToolCatalog, TurnPermissionContext,
+    TurnTargetPin, run_ai_conversation_failure, run_ai_conversation_turn, standard_sql_catalog,
 };
 use fluxdb_core::{
     CancelFlag, ConnectionConfig, ConnectionId, DatabaseKind, FinishReason, ModelCapabilities,
     ModelEvent, ToolCallRequest,
 };
 use fluxdb_storage::{
-    ai_platform::{conversation, sessions},
     FileStorage,
+    ai_platform::{conversation, sessions},
 };
 use rusqlite::OptionalExtension;
 

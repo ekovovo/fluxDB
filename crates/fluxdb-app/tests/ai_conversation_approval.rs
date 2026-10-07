@@ -3,18 +3,18 @@
 use std::{fs, path::PathBuf, sync::Arc};
 
 use fluxdb_app::{
-    run_ai_conversation_resume_approval, run_ai_conversation_turn, standard_sql_catalog,
     AiAgentSaveInput, AiConversationCommand, AiModelSaveInput, AppCommand, AppController, AppEvent,
     AuditInput, AuditOutcome, KernelPolicy, MapSqlResolver, ScriptedGenerationProvider,
     SecurityAuditHook, TargetRef, TurnPermissionContext, TurnTargetPin,
+    run_ai_conversation_resume_approval, run_ai_conversation_turn, standard_sql_catalog,
 };
 use fluxdb_core::{
     CancelFlag, ConnectionConfig, ConnectionId, DatabaseKind, FinishReason, ModelCapabilities,
     ModelEvent, ToolCallRequest,
 };
 use fluxdb_storage::{
-    ai_platform::{audits, sessions},
     FileStorage,
+    ai_platform::{audits, sessions},
 };
 
 struct Fixture {

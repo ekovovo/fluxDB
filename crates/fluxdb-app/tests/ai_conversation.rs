@@ -681,7 +681,8 @@ fn background_old_turn_finishing_keeps_current_session_pointer() {
     assert_eq!(loaded.messages, before.messages);
     f.storage
         .with_ai_connection(|conn| {
-            assert_eq!(agents::list_agents(conn)?.len(), 1);
+            // 内置默认 Agent 由 schema 播种，fixture 自定义 Agent 之外还有它。
+            assert_eq!(agents::list_agents(conn)?.len(), 2);
             assert_eq!(models::count_models(conn)?, 1);
             let old = conversation::load(conn, Some(&old.session_id))?;
             assert_eq!(old.messages.len(), 2);

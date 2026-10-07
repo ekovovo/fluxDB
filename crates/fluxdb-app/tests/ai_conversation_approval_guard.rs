@@ -12,19 +12,19 @@
 use std::{fs, path::PathBuf, sync::Arc};
 
 use fluxdb_app::{
-    run_ai_conversation_resume_approval, run_ai_conversation_turn, AiAgentSaveInput,
-    AiConversationCommand, AiConversationJob, AiConversationUpdate, AiModelSaveInput, AppCommand,
-    AppController, AppEvent, AuditInput, AuditOutcome, KernelPolicy, RecordingTool,
-    ScriptedGenerationProvider, SecurityAuditHook, TargetRef, ToolCatalog, ToolSpec,
-    TurnPermissionContext, TurnTargetPin,
+    AiAgentSaveInput, AiConversationCommand, AiConversationJob, AiConversationUpdate,
+    AiModelSaveInput, AppCommand, AppController, AppEvent, AuditInput, AuditOutcome, KernelPolicy,
+    RecordingTool, ScriptedGenerationProvider, SecurityAuditHook, TargetRef, ToolCatalog, ToolSpec,
+    TurnPermissionContext, TurnTargetPin, run_ai_conversation_resume_approval,
+    run_ai_conversation_turn,
 };
 use fluxdb_core::{
     AiFuture, AiTool, CancelFlag, FinishReason, ModelCapabilities, ModelEvent, ToolCallRequest,
     ToolDescriptor, ToolExecutionContext, ToolReceipt, ToolRisk,
 };
 use fluxdb_storage::{
-    ai_platform::{audits, sessions},
     FileStorage,
+    ai_platform::{audits, sessions},
 };
 use rusqlite::params;
 
@@ -619,9 +619,11 @@ fn denied_approval_never_executes_and_cannot_be_reopened() {
         .expect("重建恢复 job");
     resume(&fixture, &tool, &job, &paused.approval_id);
     assert_eq!(tool.call_count(), 0, "拒绝后再 resume 仍不得执行");
-    assert!(call_fact(&fixture.storage, &paused.call_id)
-        .receipt_json
-        .is_none());
+    assert!(
+        call_fact(&fixture.storage, &paused.call_id)
+            .receipt_json
+            .is_none()
+    );
     assert_eq!(result_rows(&fixture.storage, &paused.job.turn_id), 0);
 }
 

@@ -203,3 +203,8 @@ include!("main_parts/app_boot_helpers.rs");
 include!("main_parts/tests.rs");
 #[cfg(test)]
 include!("main_parts/tests_ai_ui.rs");
+
+#[cfg(test)]
+include!("main_parts/tests/ai_agent_defaults.rs");
+#[cfg(test)]
+include!("main_parts/tests/ai_model_capacity.rs");

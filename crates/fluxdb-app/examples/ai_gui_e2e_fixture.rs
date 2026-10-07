@@ -79,7 +79,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 )
             })
     })?;
-    let existing = storage.with_ai_connection(|conn| fluxdb_storage::ai_platform::agents::list_agents(conn))?;
+    let existing = storage
+        .with_ai_connection(|conn| fluxdb_storage::ai_platform::agents::list_agents(conn))?;
     if existing.iter().any(|agent| agent.enabled) {
         println!("已有启用 Agent，保持不动（{} 个）", existing.len());
     } else {

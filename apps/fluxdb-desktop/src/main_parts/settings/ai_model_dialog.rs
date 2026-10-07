@@ -5,17 +5,6 @@ fn ai_input_text(input: &Entity<InputState>, cx: &App) -> String {
     input.read(cx).value().trim().to_string()
 }
 
-/// 解析可选正整数；空串返回 None，非法值返回 Err。
-fn ai_input_optional_i64(input: &Entity<InputState>, cx: &App) -> Result<Option<i64>, String> {
-    let raw = ai_input_text(input, cx);
-    if raw.is_empty() {
-        return Ok(None);
-    }
-    raw.parse::<i64>()
-        .map(Some)
-        .map_err(|_| format!("`{raw}` 不是有效数字"))
-}
-
 /// 把「美元 / 百万 Token」换算成 micro-USD（1 USD = 1_000_000 micro）。
 fn ai_input_price_micros(input: &Entity<InputState>, cx: &App) -> Result<Option<i64>, String> {
     let raw = ai_input_text(input, cx);
@@ -63,7 +52,11 @@ fn ai_secret_field(label: &str, input: &Entity<InputState>, colors: UiColors) ->
                 .child(label.to_string()),
         )
         // mask_toggle 必须加在渲染的 Input 上（组件级开关），只设 state 不会出现眼睛。
-        .child(Input::new(input).mask_toggle().text_size(px(13.)))
+        .child(
+            div()
+                .debug_selector(|| "ai-secret-input".into())
+                .child(Input::new(input).mask_toggle().text_size(px(13.))),
+        )
 }
 
 /// Provider 下拉字段。
@@ -130,8 +123,8 @@ fn ai_model_id_field(
                         } else {
                             "获取模型列表"
                         })
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.fetch_ai_model_list(cx);
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.fetch_ai_model_list(window, cx);
                         })),
                 ),
         )
@@ -241,6 +234,7 @@ fn ai_model_options_panel(
                                 });
                                 dialog.model_options_open = false;
                             }
+                            this.apply_ai_model_capacity(window, cx);
                             cx.notify();
                             cx.stop_propagation();
                         }),
@@ -465,14 +459,16 @@ fn ai_model_dialog(
                     div()
                         .flex()
                         .gap_3()
-                        .child(div().flex_1().child(ai_field(
+                        .child(div().flex_1().min_w(px(0.)).child(ai_capacity_field(
                             "上下文窗口（Token）",
                             &inputs.context_window,
+                            &inputs.context_unit,
                             colors,
                         )))
-                        .child(div().flex_1().child(ai_field(
+                        .child(div().flex_1().min_w(px(0.)).child(ai_capacity_field(
                             "最大输出（Token）",
                             &inputs.max_output,
+                            &inputs.output_unit,
                             colors,
                         ))),
                 )
@@ -514,6 +510,7 @@ fn ai_model_dialog(
                 .gap_2()
                 .child(
                     Button::new("ai-model-cancel")
+                        .debug_selector(|| "ai-model-cancel".into())
                         .small()
                         .ghost()
                         .child("取消")

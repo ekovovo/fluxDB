@@ -297,6 +297,7 @@ mod tests {
             &conn,
             1_000,
             &crate::ai_platform::agents::AgentEdit {
+                compression_trigger_percent: 80,
                 id: "a1".into(),
                 display_name: "Agent".into(),
                 description: String::new(),

@@ -97,9 +97,7 @@ fn ai_block_on<F: std::future::Future>(future: F) -> Result<F::Output, fluxdb_co
 
 /// 真实模型的工具回合：合成一个内存 demo 连接（不写用户库），走完整
 /// schema 校验 → 审计 → 授权 → 执行 → 回执 → 回灌模型 链路。
-fn live_tools_smoke(
-    provider: &AiConversationProvider,
-) -> Result<(), Box<dyn std::error::Error>> {
+fn live_tools_smoke(provider: &AiConversationProvider) -> Result<(), Box<dyn std::error::Error>> {
     let mut options = std::collections::BTreeMap::new();
     options.insert("demo".to_string(), "true".to_string());
     let config = fluxdb_core::ConnectionConfig {
@@ -119,7 +117,14 @@ fn live_tools_smoke(
         std::sync::Arc::new(fluxdb_app::MapSqlResolver::new([config.clone()])),
         false,
     )?;
-    println!("工具目录: {:?}", catalog.specs().iter().map(|s| s.id.clone()).collect::<Vec<_>>());
+    println!(
+        "工具目录: {:?}",
+        catalog
+            .specs()
+            .iter()
+            .map(|s| s.id.clone())
+            .collect::<Vec<_>>()
+    );
 
     let runner = fluxdb_app::TurnRunner {
         provider,
@@ -147,7 +152,9 @@ fn live_tools_smoke(
     let mut tools_used: Vec<String> = Vec::new();
     let outcome = runner.run(state, &mut steering, &cancel, &mut |event| match event {
         fluxdb_app::LoopEvent::TextDelta(delta) => text.push_str(&delta),
-        fluxdb_app::LoopEvent::ToolStarted { call, .. } => tools_used.push(format!("start:{}", call.tool_id)),
+        fluxdb_app::LoopEvent::ToolStarted { call, .. } => {
+            tools_used.push(format!("start:{}", call.tool_id))
+        }
         fluxdb_app::LoopEvent::ToolFinished { receipt } => tools_used.push(format!(
             "done:{}:{}:affected={:?}",
             receipt.tool_id,

@@ -73,7 +73,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     println!(
         "工具目录: {:?}",
-        catalog.specs().iter().map(|s| s.id.clone()).collect::<Vec<_>>()
+        catalog
+            .specs()
+            .iter()
+            .map(|s| s.id.clone())
+            .collect::<Vec<_>>()
     );
 
     let (status, body) = call(
@@ -112,9 +116,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 受控边界：管理/长连接命令在工具层也必须被拒（不依赖模型自觉）。
     for argv in [
-        serde_json::json!(["CONFIG","GET","maxmemory"]),
+        serde_json::json!(["CONFIG", "GET", "maxmemory"]),
         serde_json::json!(["MONITOR"]),
-        serde_json::json!(["SUBSCRIBE","ch"]),
+        serde_json::json!(["SUBSCRIBE", "ch"]),
     ] {
         let (status, body) = call(
             &catalog,

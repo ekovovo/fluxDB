@@ -4,30 +4,71 @@ pub enum AppEvent {
     /// AI 设置列表已刷新。
     AiSettingsLoaded,
     /// 模型启停状态已变化（id、启用、revision）。
-    AiModelEnabled { id: String, enabled: bool, revision: i64 },
+    AiModelEnabled {
+        id: String,
+        enabled: bool,
+        revision: i64,
+    },
     /// 内置插件实例启停状态已变化。
-    AiPluginInstanceEnabled { id: String, enabled: bool, revision: i64 },
+    AiPluginInstanceEnabled {
+        id: String,
+        enabled: bool,
+        revision: i64,
+    },
     /// AI 设置操作失败（CAS 冲突、存储未初始化等）；UI 用主窗口 show_message 展示。
     AiSettingsError(String),
     /// 模型已保存（id、新 revision）。
-    AiModelSaved { id: String, revision: i64 },
-    AiModelDeleted { id: String },
+    AiModelSaved {
+        id: String,
+        revision: i64,
+    },
+    AiModelDeleted {
+        id: String,
+    },
     /// Agent 已保存（id、新 revision）。
-    AiAgentSaved { id: String, revision: i64 },
+    AiAgentSaved {
+        id: String,
+        revision: i64,
+    },
+    AiAgentDeleted {
+        id: String,
+    },
     /// 默认模型选择已保存（运行设置新 revision）。
-    AiDefaultModelsSaved { revision: i64 },
+    AiDefaultModelsSaved {
+        revision: i64,
+    },
     /// 模型连接探测结果（status 见 `test_ai_model`）。
-    AiModelTested { id: String, status: String },
+    AiModelTested {
+        id: String,
+        status: String,
+    },
     /// 已拉取到 Provider 的模型 ID 列表（已排序去重）。
-    AiModelsFetched { models: Vec<String> },
+    AiModelsFetched {
+        models: Vec<String>,
+        capabilities: Vec<AiDiscoveredModel>,
+    },
     /// 拉取模型列表失败（message 为脱敏后的可读原因）。
-    AiModelsFetchFailed { message: String },
-    ErRelationshipsLoaded { scope_key: String, relationships: Vec<ErRelationship> },
-    ErRelationshipChanged { scope_key: String, relationship: ErRelationship },
-    ErRelationshipDeleted { scope_key: String, id: String },
+    AiModelsFetchFailed {
+        message: String,
+    },
+    ErRelationshipsLoaded {
+        scope_key: String,
+        relationships: Vec<ErRelationship>,
+    },
+    ErRelationshipChanged {
+        scope_key: String,
+        relationship: ErRelationship,
+    },
+    ErRelationshipDeleted {
+        scope_key: String,
+        id: String,
+    },
     BackupPrepared(BackupRequest),
     BackupCompleted(BackupManifest),
-    RestorePrepared { request: RestoreRequest, plan: RestorePlan },
+    RestorePrepared {
+        request: RestoreRequest,
+        plan: RestorePlan,
+    },
     RestoreObjectsProbed(Vec<RestoreObjectProbe>),
     RestoreCompleted(RestoreOutcome),
     ConnectionsLoaded(Vec<ConnectionConfig>),
@@ -70,11 +111,7 @@ pub enum AppEvent {
     /// PG 变更计划脱敏预览生成完成。
     UserAdminPgPlanPreview(TabId, Vec<String>),
     /// PG 变更计划应用完成（含计划本体，供 Finish 回填；Err 为失败/结果不确定）。
-    UserAdminPgRolePlanFinished(
-        TabId,
-        PgRoleSavePlan,
-        Result<Vec<String>, UserFacingError>,
-    ),
+    UserAdminPgRolePlanFinished(TabId, PgRoleSavePlan, Result<Vec<String>, UserFacingError>),
     /// PG 变更计划应用成功（UI 刷新角色列表并清空草稿）。
     UserAdminPgRolePlanApplied(TabId),
     DataLoaded(TabId, DataPage),

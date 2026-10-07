@@ -5,20 +5,21 @@
 
 pub mod agents;
 pub mod audits;
+pub mod context_checkpoints;
 pub mod conversation;
 pub mod mcp;
 pub mod model_secret;
 pub mod models;
 pub mod plugins;
+pub mod recovery;
 pub mod schema;
 pub mod sessions;
-pub mod tool_calls;
-pub mod recovery;
 #[cfg(test)]
 mod sessions_tests;
 #[cfg(test)]
 mod sessions_verify_tests;
 pub mod settings;
+pub mod tool_calls;
 
 use rusqlite::Connection;
 
@@ -84,6 +85,7 @@ pub fn ensure_schema(conn: &Connection) -> Result<()> {
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0);
     plugins::seed_builtin_plugins(conn, now_ms)?;
+    agents::seed_builtin_agent(conn, now_ms)?;
     Ok(())
 }
 

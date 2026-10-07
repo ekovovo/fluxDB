@@ -44,7 +44,11 @@ fn ai_agent_tab_button(
 }
 
 /// 多行提示词输入（保留换行）。
-fn ai_prompt_field(label: &str, input: &Entity<InputState>, colors: UiColors) -> impl IntoElement {
+fn ai_prompt_field(
+    label: &str,
+    input: &Entity<gpui_component::input::TextareaState>,
+    colors: UiColors,
+) -> impl IntoElement {
     div()
         .flex()
         .flex_col()
@@ -60,7 +64,7 @@ fn ai_prompt_field(label: &str, input: &Entity<InputState>, colors: UiColors) ->
         .child(
             div()
                 .debug_selector(|| "ai-agent-prompt".into())
-                .child(Input::new(input)),
+                .child(gpui_component::input::Textarea::new(input).h(px(180.))),
         )
 }
 
@@ -121,14 +125,20 @@ fn ai_agent_editor_form(
                                 .child("启用 Agent"),
                         )
                         .child(
-                            Switch::new("ai-agent-enabled").checked(enabled).on_click(
-                                cx.listener(move |this, checked, _, cx| {
+                            Switch::new("ai-agent-enabled")
+                                .checked(enabled)
+                                .disabled(
+                                    editor.agent_id.as_deref()
+                                        == Some(
+                                            fluxdb_storage::ai_platform::agents::BUILTIN_AGENT_ID,
+                                        ),
+                                )
+                                .on_click(cx.listener(move |this, checked, _, cx| {
                                     if let Some(editor) = this.ai_agent_editor.as_mut() {
                                         editor.enabled = *checked;
                                     }
                                     cx.notify();
-                                }),
-                            ),
+                                })),
                         ),
                 )
                 .into_any_element()
@@ -212,7 +222,12 @@ fn ai_agent_editor_form(
                 }
                 col = col.child(menu);
             }
-            col.child(ai_prompt_field(
+            col.child(ai_field(
+                "上下文压缩触发（%）",
+                &editor.inputs.compression_percent,
+                colors,
+            ))
+            .child(ai_prompt_field(
                 "提示词 · 直接输入",
                 &editor.inputs.system_prompt,
                 colors,
@@ -337,9 +352,44 @@ fn ai_agent_editor_form(
                             cx.notify();
                         })),
                 )
+                .children(
+                    editor
+                        .agent_id
+                        .as_ref()
+                        .filter(|id| {
+                            id.as_str() != fluxdb_storage::ai_platform::agents::BUILTIN_AGENT_ID
+                        })
+                        .map(|id| {
+                            let id = id.clone();
+                            let revision = editor.expected_revision;
+                            let name = state
+                                .ai_agents
+                                .iter()
+                                .find(|a| a.id == id)
+                                .map(|a| a.display_name.clone())
+                                .unwrap_or_default();
+                            Button::new("ai-agent-delete")
+                                .small()
+                                .disabled(editor.deleting)
+                                .danger()
+                                .cursor_pointer()
+                                .debug_selector(|| "ai-agent-delete".into())
+                                .child("删除")
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.confirm_ai_agent_delete(
+                                        id.clone(),
+                                        name.clone(),
+                                        revision,
+                                        window,
+                                        cx,
+                                    )
+                                }))
+                        }),
+                )
                 .child(
                     Button::new("ai-agent-save")
                         .small()
+                        .disabled(editor.deleting)
                         .primary()
                         .debug_selector(|| "ai-agent-save".into())
                         .child(if is_new {
@@ -363,55 +413,58 @@ fn settings_ai_agents_panel(
 ) -> Div {
     let selected_id = panel.agent_editor.as_ref().and_then(|e| e.agent_id.clone());
 
-    let list_rows: Vec<gpui::AnyElement> =
-        if state.ai_agents.is_empty() {
-            vec![ai_empty_state("暂无 Agent。点击「新建」创建。", colors)]
-        } else {
-            state
-                .ai_agents
-                .iter()
-                .map(|a| {
-                    let id = a.id.clone();
-                    let selected = selected_id.as_deref() == Some(a.id.as_str());
-                    div()
-                        .id(SharedString::from(format!("ai-agent-item:{}", a.id)))
-                        .px_3()
-                        .py_2()
-                        .cursor_pointer()
-                        .bg(if selected {
-                            colors.hover
+    let list_rows: Vec<gpui::AnyElement> = if state.ai_agents.is_empty() {
+        vec![ai_empty_state("暂无 Agent。点击「新建」创建。", colors)]
+    } else {
+        state
+            .ai_agents
+            .iter()
+            .map(|a| {
+                let id = a.id.clone();
+                let id_for_debug = id.clone();
+                let selected = selected_id.as_deref() == Some(a.id.as_str());
+                div()
+                    .id(SharedString::from(format!("ai-agent-item:{}", a.id)))
+                    .debug_selector(move || format!("ai-agent-item:{id_for_debug}"))
+                    .px_3()
+                    .py_2()
+                    .cursor_pointer()
+                    .bg(if selected {
+                        colors.hover
+                    } else {
+                        colors.panel_bg
+                    })
+                    .hover(move |style| style.bg(colors.hover))
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_size(px(13.))
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(colors.text)
+                            .child(a.display_name.clone()),
+                    )
+                    .child(div().text_size(px(11.)).text_color(colors.muted).child(
+                        if a.id == fluxdb_storage::ai_platform::agents::BUILTIN_AGENT_ID {
+                            "内置 · 可编辑".to_string()
+                        } else if a.enabled {
+                            "已启用".to_string()
                         } else {
-                            colors.panel_bg
-                        })
-                        .hover(move |style| style.bg(colors.hover))
-                        .flex()
-                        .flex_col()
-                        .gap_1()
-                        .child(
-                            div()
-                                .text_size(px(13.))
-                                .font_weight(gpui::FontWeight::SEMIBOLD)
-                                .text_color(colors.text)
-                                .child(a.display_name.clone()),
-                        )
-                        .child(div().text_size(px(11.)).text_color(colors.muted).child(
-                            if a.enabled {
-                                "已启用".to_string()
-                            } else {
-                                "未启用".to_string()
-                            },
-                        ))
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |this, _, window, cx| {
-                                this.open_ai_agent_editor(Some(id.clone()), window, cx);
-                                cx.stop_propagation();
-                            }),
-                        )
-                        .into_any_element()
-                })
-                .collect()
-        };
+                            "未启用".to_string()
+                        },
+                    ))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _, window, cx| {
+                            this.open_ai_agent_editor(Some(id.clone()), window, cx);
+                            cx.stop_propagation();
+                        }),
+                    )
+                    .into_any_element()
+            })
+            .collect()
+    };
 
     let editor_body: gpui::AnyElement = match panel.agent_editor.as_ref() {
         None => ai_empty_state("从左侧选择一个 Agent，或点击「新建」。", colors),
@@ -429,17 +482,13 @@ fn settings_ai_agents_panel(
                 .justify_between()
                 .gap_3()
                 .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap_1()
-                        .child(
-                            div()
-                                .text_size(px(14.))
-                                .font_weight(gpui::FontWeight::SEMIBOLD)
-                                .text_color(colors.text)
-                                .child("Agent"),
-                        ),
+                    div().flex().flex_col().gap_1().child(
+                        div()
+                            .text_size(px(14.))
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(colors.text)
+                            .child("Agent"),
+                    ),
                 )
                 .child(
                     Button::new("ai-agent-new")
@@ -490,9 +539,6 @@ fn settings_ai_sessions_panel(colors: UiColors) -> Div {
                     .child(ai_table_head("状态", 120., colors))
                     .child(div().flex_1()),
             )
-            .child(ai_empty_state(
-                "暂无会话记录。",
-                colors,
-            )),
+            .child(ai_empty_state("暂无会话记录。", colors)),
     )
 }

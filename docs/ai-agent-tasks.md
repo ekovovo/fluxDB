@@ -992,3 +992,32 @@ T020按主设计§31.9实现询问AI内联批准卡片：参考Goose三态按钮
 - B（GPUI）正常生产构造/加载→AppState→`render_state_snapshot`→实际控件，首轮11通过，补发送/停止后日志13通过；不把offscreen截图受阻视为截图通过。
 - 主/C真实窗口验收与各项证据见 [T028验收记录](testing/ai-agent/t028-2026-10-06.md)。本轮实际GUI使用隔离离线fixture，不访问生产凭据、不消耗模型费用。
 - **T028仍为[ ]**：T020审批→执行、T022 @/附件、T027结果分页、T040报告及完整真实模型门槛未接；不能以基础面板/编译/数据库成功降低门槛或勾选。
+
+## 2026-10-06 用户修订：默认助手、压缩与容量
+
+### T067 内置可编辑默认 Agent 与自定义删除
+- [x] seed 幂等,不覆盖编辑;内置不可删/停用;只配置模型可对话。新建预填,列表置顶,删除确认/CAS/活动拒绝/历史保留/默认清理。证据:storage 11/11、app 24/24(`/private/tmp/fluxdb-agent-a-20261006-DA71lz/`)。
+- [x] 真实存储 → AppState → GPUI 控件,编辑保存即更新、返回/重启恢复、删除取消/失败草稿保留。证据:GPUI 7/7 + 旧 `ai_ui_` 回归 37/37(`/private/tmp/fluxdb-b-ai-ui-regression.log`);修复两处缺陷并复测:Agent 提示词改真实多行控件(原单行控件吞换行)、删除默认自定义 Agent 后同步 `ai_runtime_revision`(原会导致保存默认模型 CAS 过期)。
+- [x] **真实窗口验收已执行**(2026-10-06,隔离 fixture `FLUXDB_AI_TEST_ROOT=/private/tmp/fluxdb-t067-e2e-fixture`,不读生产凭据、不联网):真实点击选中内置 Agent → 显示「上下文压缩触发 (%) 80」且**无删除按钮**;选中自定义 Agent → 出现「删除」且确认框文案为「确认删除「E2E 数据库助手」？历史会话和审计记录保留;正在运行或待审批时不能删除。」;取消后记录不变。证据:`/private/tmp/fluxdb-t067-c-evidence/t069-builtin-prompt2.jpg`、`t069-custom-selected.jpg`、`t069-delete-confirm4.jpg`、`t069-backend.json`(backend:内置 `fluxdb.agent.default` deleted=0、自定义 enabled=1、两条 compression_trigger_percent=80)。窄窗/明暗主题仍属 T070 之后整体 UI 验收范围,本项未宣称全主题通过。
+
+### T068 百分比压缩配置与模型容量获取
+- [x] Agent 比例默认 80%、10–95 校验、随对象 CAS 且 next-turn 捕获;UI 百分比真实保存/恢复。证据:storage/app/GPUI 用例(73 保存→重启恢复 73)。
+- [x] 模型列表容量正整数解析/缺失保留/迟到隔离,Provider 差异/错误/认证不泄漏;K/M tokens 无损换算、API 缺字段不假填,保存后立即展示及重启恢复。证据:GPUI 容量/元数据 12/12、本地 mock 真实 `GET /v1/models`、来源 fingerprint 防迟到(`/private/tmp/fluxdb-b-metadata-handfilled.log`)。保留既有保存下限:窗口 ≥1024、输出 ≥256,未引入 migration。
+- [x] **真实窗口证据已补**:大模型列表显示「32k ctx / 1k out」;打开编辑弹框可见「上下文窗口 (Token)=32.768 K」与「最大输出 (Token)=1.024 K」右侧 K/M 单位选择器。证据:`/private/tmp/fluxdb-t067-c-evidence/t069-models4.jpg`、`t069-model-edit.jpg`、`t069-backend.json`(context_window_tokens=32768、max_output_tokens=1024)。明暗/窄窗整体验收仍随 T070 之后的 UI 阶段执行。
+
+### 验收基线(2026-10-06)
+- `cargo test -p fluxdb-desktop --offline` → **524 passed / 0 failed / 4 ignored**。
+- `cargo test -p fluxdb-app --offline`(沙箱外,含集成测试)→ **716 lib passed + 24 + 4 + 10 + 2 + 6 + 2 + 6 + 4 + 11 集成 passed / 0 failed / 1 ignored**;连续 3 次稳定。
+- `cargo test -p fluxdb-storage --offline` → **121 + 11 + 5 + 16 passed / 0 failed**。
+- `cargo fmt --all -- --check`、`git diff --check`、`cargo check --workspace --offline` 通过。
+- 未验证:Windows/Linux;一层子会话委派(T070)。
+
+
+### T069 增量压缩运行闭环（细化 T034/T035）
+- [x] 实际模型窗口百分比触发 + 输出余量:`should_compact` 同时判断 `context_window × trigger_percent` 与 `window − max_output − 安全余量`,哪个先到先压缩;窗口未知时不触发、不阻断。纯逻辑 12/12 通过(`crates/fluxdb-app/src/parts/tests/ai_compaction.rs`)。
+- [x] 合法切点、保护项、增量摘要、原始历史不删、原子 checkpoint:`ai_context_checkpoints` 真表读写 + `UNIQUE(turn_id,generation)` 冲突不覆盖;摘要缺保护项/为空/被截断一律不落盘。storage 5/5(`crates/fluxdb-storage/tests/ai_context_checkpoints.rs`)、app 端到端 4/4(`crates/fluxdb-app/tests/ai_context_compaction.rs`):真实触发产生 checkpoint、generation 单调递增、后续摘要携带旧摘要做增量、校验失败不落盘、窗口未知不阻断对话、原始消息完整保留。
+- [ ] 真实模型(公司自建/决策模型)下的压缩 UI 表现与费用计量、模型切换中途压缩、取消/CAS 竞争的高并发压测尚未执行;未配置真实模型前不勾选该项。
+
+### T070 一层子会话委派（原生循环复用）
+- [ ] 父/子独立会话与任务身份、默认25迭代、禁止递归、共享安全内核、父取消联动、结果有界。
+- [ ] 父面板子任务与写审批归属，恢复不重复委派/未知写不重放、真实模型与真实库/GPUI/窗口验收。

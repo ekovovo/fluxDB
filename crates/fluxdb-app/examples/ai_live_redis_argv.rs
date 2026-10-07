@@ -3,8 +3,8 @@
 //! `FLUXDB_AI_LIVE=1 FLUXDB_AI_LIVE_ROOT=<配置库副本> FLUXDB_AI_LIVE_REDIS_CONNECTION=3 \
 //!  cargo run -p fluxdb-app --example ai_live_redis_argv`
 //! 只读写形如 `fluxdb:ai:smoke:*` 的测试键，结束即删除；凭据走宿主解密路径，不打印。
-use fluxdb_core::{CommandReply, ConnectionId};
 use fluxdb_app::{RedisRisk, classify_redis_command};
+use fluxdb_core::{CommandReply, ConnectionId};
 use fluxdb_storage::Storage as _;
 
 fn reply_summary(reply: &CommandReply) -> String {
@@ -45,7 +45,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("该连接不是 Redis".into());
     }
     let connector = fluxdb_connectors::RedisConnector::with_config(config.clone());
-    let argv = |parts: &[&str]| parts.iter().map(|value| (*value).to_string()).collect::<Vec<_>>();
+    let argv = |parts: &[&str]| {
+        parts
+            .iter()
+            .map(|value| (*value).to_string())
+            .collect::<Vec<_>>()
+    };
 
     let ping = connector.execute_argv(0, &argv(&["PING"]))?;
     println!("PING -> {}", reply_summary(&ping));
@@ -54,7 +59,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     connector.execute_argv(0, &argv(&["SET", key, "hello"]))?;
     let got = connector.execute_argv(0, &argv(&["GET", key]))?;
     println!("GET -> {}（无回显密钥）", reply_summary(&got));
-    let scan = connector.execute_argv(0, &argv(&["SCAN", "0", "MATCH", "fluxdb:ai:smoke:*", "COUNT", "10"]))?;
+    let scan = connector.execute_argv(
+        0,
+        &argv(&["SCAN", "0", "MATCH", "fluxdb:ai:smoke:*", "COUNT", "10"]),
+    )?;
     println!("SCAN -> {}", reply_summary(&scan));
     let ttl = connector.execute_argv(0, &argv(&["TTL", key]))?;
     println!("TTL -> {}", reply_summary(&ttl));
@@ -68,7 +76,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     // 管理命令（CONFIG/ACL/FLUSHALL…）由**策略层**拒绝：连接器不替调用方做业务分级，
     // 所以 AI/工具路径必须先过 classify_redis_command（见 ai_redis_policy.rs）。
-    for admin in [vec!["CONFIG", "GET", "maxmemory"], vec!["FLUSHALL"], vec!["BLPOP", "l", "1"]] {
+    for admin in [
+        vec!["CONFIG", "GET", "maxmemory"],
+        vec!["FLUSHALL"],
+        vec!["BLPOP", "l", "1"],
+    ] {
         let risk = classify_redis_command(&argv(&admin));
         println!("{admin:?} 策略分类: {risk:?}");
         if !matches!(risk, RedisRisk::Rejected { .. }) {

@@ -18,6 +18,14 @@ mod ai_ui_tests {
     const REFRESH_MODELS: (f32, f32) = (1860., 232.);
     const TEST_API_KEY: &str = "sk-ui-test-secret-not-real";
 
+    /// GPUI 并行跑测试时，`window.open_dialog` 的 `Confirm` 动作分发会跨窗口互相干扰：
+    /// confirm 点击后偶发不进入弹框 `on_ok`。Dialog 类用例在同一进程内串行即可稳定；
+    /// 生产代码与断言不变，只是给用到弹框的用例共用一把测试内互斥锁。
+    pub(super) fn dialog_test_lock() -> &'static std::sync::Mutex<()> {
+        static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+        LOCK.get_or_init(|| std::sync::Mutex::new(()))
+    }
+
     fn isolated_root(label: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!(
             "fluxdb-ai-ui-{label}-{}-{}",
@@ -72,6 +80,7 @@ mod ai_ui_tests {
 
     fn save_agent(controller: &mut AppController, name: &str, prompt: &str) -> String {
         let input = fluxdb_app::AiAgentSaveInput {
+            compression_trigger_percent: 80,
             id: None,
             display_name: name.to_string(),
             description: format!("{name} 的职责描述"),
@@ -756,6 +765,7 @@ mod ai_ui_tests {
                 .expected_revision
         });
         let competing = fluxdb_app::AiAgentSaveInput {
+            compression_trigger_percent: 80,
             id: Some(id_a.clone()),
             display_name: "后台 Agent 更新".into(),
             description: "后台抢占描述".into(),
@@ -861,6 +871,7 @@ mod ai_ui_tests {
     }
     #[gpui::test]
     async fn ai_ui_model_delete_cancel_escape_and_confirm(cx: &mut TestAppContext) {
+        let _dialog_guard = dialog_test_lock().lock().unwrap_or_else(|e| e.into_inner());
         let (view, cx, root, id) = harness(cx, "delete");
         // 与生产窗口一致安装 Root，确认弹框由官方 Dialog 渲染。
         cx.update(|window, cx| {
@@ -903,6 +914,7 @@ mod ai_ui_tests {
 
     #[gpui::test]
     async fn ai_ui_model_delete_reference_error_keeps_model(cx: &mut TestAppContext) {
+        let _dialog_guard = dialog_test_lock().lock().unwrap_or_else(|e| e.into_inner());
         let (view, cx, root, id) = harness(cx, "delete-reference");
         view.update(cx, |main, _| {
             main.controller.dispatch(AppCommand::RefreshAiSettings);
@@ -912,7 +924,10 @@ mod ai_ui_tests {
                 default_decision_model_id: None,
                 expected_revision: revision,
             });
-            assert!(matches!(event, AppEvent::AiDefaultModelsSaved { .. }), "设置默认模型失败: {event:?}");
+            assert!(
+                matches!(event, AppEvent::AiDefaultModelsSaved { .. }),
+                "设置默认模型失败: {event:?}"
+            );
         });
         cx.update(|window, cx| {
             window.replace_root(cx, |window, cx| Root::new(view.clone(), window, cx));
@@ -936,7 +951,10 @@ mod ai_ui_tests {
         });
         match event {
             AppEvent::AiSettingsError(message) => {
-                assert!(message.contains("引用"), "错误信息应说明引用原因: {message}")
+                assert!(
+                    message.contains("引用"),
+                    "错误信息应说明引用原因: {message}"
+                )
             }
             other => panic!("被引用模型不应删除成功: {other:?}"),
         }

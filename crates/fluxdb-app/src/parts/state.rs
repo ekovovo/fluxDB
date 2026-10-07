@@ -1,3 +1,11 @@
+/// Provider 公布的模型能力，缺失字段不伪造默认窗口。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AiDiscoveredModel {
+    pub id: String,
+    pub context_window_tokens: Option<i64>,
+    pub max_output_tokens: Option<i64>,
+}
+
 pub const HEX_EDIT_LIMIT: u64 = 64 * 1024;
 pub const BINARY_FILE_UPLOAD_LIMIT: u64 = 64 * 1024 * 1024;
 const COMPLETION_METADATA_LIMIT: u64 = 500;
@@ -96,6 +104,7 @@ impl PartialEq for AiModelSaveInput {
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct AiAgentItem {
+    pub compression_trigger_percent: u8,
     pub id: String,
     pub display_name: String,
     pub description: String,
@@ -112,8 +121,9 @@ pub struct AiAgentItem {
 /// Agent 新建/编辑的提交内容（T013/T014）。
 ///
 /// 提示词直接随 Agent 保存；`id` 为 `None` 表示新建，编辑用 `expected_revision` 做 CAS。
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct AiAgentSaveInput {
+    pub compression_trigger_percent: u8,
     /// `None` 表示新建。
     pub id: Option<String>,
     pub display_name: String,
@@ -125,6 +135,22 @@ pub struct AiAgentSaveInput {
     pub enabled: bool,
     /// 新建忽略；编辑必须带上打开时的 revision 做 CAS。
     pub expected_revision: i64,
+}
+
+impl Default for AiAgentSaveInput {
+    fn default() -> Self {
+        Self {
+            id: None,
+            display_name: String::new(),
+            description: String::new(),
+            system_prompt: String::new(),
+            model_profile_id: None,
+            allowed_tools: Vec::new(),
+            enabled: true,
+            expected_revision: 0,
+            compression_trigger_percent: 80,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -636,7 +662,11 @@ pub enum UserAdminDetailTab {
 }
 
 impl UserAdminState {
-    pub fn new(connection_id: ConnectionId, database: Option<String>, scope: PrivilegeScope) -> Self {
+    pub fn new(
+        connection_id: ConnectionId,
+        database: Option<String>,
+        scope: PrivilegeScope,
+    ) -> Self {
         Self {
             connection_id,
             active_detail_tab: UserAdminDetailTab::General,
@@ -845,20 +875,36 @@ impl UserAdminState {
     /// 成员关系草稿是否已包含对该 (role, member) 的变更（避免重复条目）。
     pub fn pg_membership_edit_index(&self, role: &str, member: &str) -> Option<usize> {
         self.pg_membership_edits.iter().position(|edit| match edit {
-            PgRoleChange::GrantMembership { role: r, member: m, .. }
+            PgRoleChange::GrantMembership {
+                role: r, member: m, ..
+            }
             | PgRoleChange::RevokeMembership { role: r, member: m } => r == role && m == member,
             _ => false,
         })
     }
 
     /// 对象授权草稿定位：同 privilege + 同 scope 的既有变更条目。
-    pub fn pg_grant_edit_index(&self, privilege: &str, scope: &PgObjectGrantScope) -> Option<usize> {
+    pub fn pg_grant_edit_index(
+        &self,
+        privilege: &str,
+        scope: &PgObjectGrantScope,
+    ) -> Option<usize> {
         self.pg_grant_edits.iter().position(|edit| match edit {
-            PgRoleChange::GrantObject { privilege: p, scope: s, .. }
-            | PgRoleChange::RevokeObject { privilege: p, scope: s, .. }
-            | PgRoleChange::RevokeGrantOption { privilege: p, scope: s, .. } => {
-                p == privilege && s == scope
+            PgRoleChange::GrantObject {
+                privilege: p,
+                scope: s,
+                ..
             }
+            | PgRoleChange::RevokeObject {
+                privilege: p,
+                scope: s,
+                ..
+            }
+            | PgRoleChange::RevokeGrantOption {
+                privilege: p,
+                scope: s,
+                ..
+            } => p == privilege && s == scope,
             _ => false,
         })
     }
@@ -957,21 +1003,13 @@ impl UserAdminState {
     }
 
     pub fn set_privilege_row_database(&mut self, row_id: u64, database: String) {
-        if let Some(row) = self
-            .privilege_rows
-            .iter_mut()
-            .find(|row| row.id == row_id)
-        {
+        if let Some(row) = self.privilege_rows.iter_mut().find(|row| row.id == row_id) {
             row.database = database;
         }
     }
 
     pub fn toggle_privilege_row_privilege(&mut self, row_id: u64, privilege: String) {
-        let Some(row) = self
-            .privilege_rows
-            .iter_mut()
-            .find(|row| row.id == row_id)
-        else {
+        let Some(row) = self.privilege_rows.iter_mut().find(|row| row.id == row_id) else {
             return;
         };
         if let Some(index) = row.privileges.iter().position(|item| item == &privilege) {
@@ -982,11 +1020,7 @@ impl UserAdminState {
     }
 
     pub fn set_privilege_row_grant_option(&mut self, row_id: u64, enabled: bool) {
-        if let Some(row) = self
-            .privilege_rows
-            .iter_mut()
-            .find(|row| row.id == row_id)
-        {
+        if let Some(row) = self.privilege_rows.iter_mut().find(|row| row.id == row_id) {
             row.grant_option = enabled;
         }
     }
@@ -1019,7 +1053,9 @@ impl UserAdminState {
             .effective_role_memberships()
             .into_iter()
             .find(|membership| membership.role == role);
-        let default_role = current.as_ref().is_some_and(|membership| membership.default_role);
+        let default_role = current
+            .as_ref()
+            .is_some_and(|membership| membership.default_role);
         self.set_role_membership_edit(role, granted, default_role);
     }
 
@@ -1028,7 +1064,9 @@ impl UserAdminState {
             .effective_role_memberships()
             .into_iter()
             .find(|membership| membership.role == role);
-        let granted = current.as_ref().is_some_and(|membership| membership.granted);
+        let granted = current
+            .as_ref()
+            .is_some_and(|membership| membership.granted);
         self.set_role_membership_edit(role, granted, default_role);
     }
 
@@ -1040,7 +1078,8 @@ impl UserAdminState {
         {
             edit.granted = granted;
         } else {
-            self.member_grant_edits.push(UserRoleMember { member, granted });
+            self.member_grant_edits
+                .push(UserRoleMember { member, granted });
         }
     }
 
@@ -1368,7 +1407,6 @@ pub struct TaskState {
 
 include!("state_commands.rs");
 include!("state_events.rs");
-
 
 #[derive(Clone, Debug)]
 struct CompletionCacheEntry<T> {

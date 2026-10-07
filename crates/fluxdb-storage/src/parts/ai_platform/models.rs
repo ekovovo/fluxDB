@@ -138,14 +138,28 @@ fn validate(edit: &ModelEdit) -> Result<()> {
         return Err(Error::new(ErrorKind::Internal, "模型标识不能为空"));
     }
     if let Some(window) = edit.context_window_tokens
-        && window < 1024
+        && !(1024..=1_000_000_000).contains(&window)
     {
-        return Err(Error::new(ErrorKind::Internal, "上下文窗口至少 1024 Token"));
+        return Err(Error::new(
+            ErrorKind::Internal,
+            "上下文窗口必须为 1,024–1,000,000,000 tokens",
+        ));
     }
     if let Some(out) = edit.max_output_tokens
-        && out < 256
+        && !(256..=1_000_000_000).contains(&out)
     {
-        return Err(Error::new(ErrorKind::Internal, "最大输出至少 256 Token"));
+        return Err(Error::new(
+            ErrorKind::Internal,
+            "最大输出必须为 256–1,000,000,000 tokens",
+        ));
+    }
+    if let (Some(window), Some(output)) = (edit.context_window_tokens, edit.max_output_tokens) {
+        if output > window {
+            return Err(Error::new(
+                ErrorKind::Internal,
+                "最大输出不能超过上下文窗口",
+            ));
+        }
     }
     for price in [
         edit.input_price_micros_per_million,

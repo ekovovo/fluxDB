@@ -39,6 +39,7 @@ mod tests {
     include!("tests/ai_provider.rs");
     include!("tests/ai_loop.rs");
     include!("tests/ai_loop_authz.rs");
+    include!("tests/ai_compaction.rs");
     include!("tests/ai_permission.rs");
     include!("tests/ai_context.rs");
     include!("tests/ai_sql_policy.rs");

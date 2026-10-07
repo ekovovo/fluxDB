@@ -26,6 +26,7 @@ pub(super) fn setup() -> Connection {
         &conn,
         1_000,
         &agents::AgentEdit {
+            compression_trigger_percent: 80,
             id: "agent-1".into(),
             display_name: "通用 Agent".into(),
             description: String::new(),
@@ -704,6 +705,7 @@ fn sessions_file_db_reopen_recovers_public_snapshot_and_ui_state() {
             &conn,
             1_000,
             &agents::AgentEdit {
+                compression_trigger_percent: 80,
                 id: "agent-recovery".into(),
                 display_name: "恢复 Agent".into(),
                 description: String::new(),

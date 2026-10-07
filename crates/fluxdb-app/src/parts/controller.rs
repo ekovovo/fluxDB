@@ -2,6 +2,7 @@
 
 include!("controller/api.rs");
 include!("controller/ai_settings.rs");
+include!("controller/ai_settings_dispatch.rs");
 include!("controller/dispatch.rs");
 include!("controller/dispatch_table.rs");
 include!("controller/tabs.rs");

@@ -46,6 +46,7 @@ mod ai_panel_tests {
             match self
                 .controller()
                 .dispatch(AppCommand::SaveAiAgent(AiAgentSaveInput {
+                    compression_trigger_percent: 80,
                     id: None,
                     display_name: "Panel fixture Agent".into(),
                     description: "只用于交互回归".into(),
@@ -941,6 +942,8 @@ mod ai_panel_tests {
         assert_eq!(fixture.counts(), before);
     }
 
+    // 内置默认 Agent 随库注册后，未配置场景的阻塞点是「没有默认主模型」；
+    // with_agent 仍控制是否额外建一个自定义 Agent，用于区分两条入口。
     fn invalid_send(cx: &mut TestAppContext, with_agent: bool, expected_error: &str) {
         let fixture = Fixture::new();
         if with_agent {
@@ -984,20 +987,21 @@ mod ai_panel_tests {
             preferences,
             "失败不能写入偏好或新草稿"
         );
+        // 内置默认 Agent 随库注册，任何情况下都存在；with_agent 只决定是否多一个自定义 Agent。
         assert_eq!(
             view.read_with(cx, |main, _| main.controller.state().ai_agents.len()),
-            usize::from(with_agent)
+            1 + usize::from(with_agent)
         );
     }
 
     #[gpui::test]
     fn ai_panel_invalid_send_missing_agent_preserves_input_and_database(cx: &mut TestAppContext) {
-        invalid_send(cx, false, "Agent");
+        invalid_send(cx, false, "默认主模型");
     }
 
     #[gpui::test]
     fn ai_panel_invalid_send_missing_model_preserves_input_and_database(cx: &mut TestAppContext) {
-        invalid_send(cx, true, "绑定模型");
+        invalid_send(cx, true, "默认主模型");
     }
 
     #[gpui::test]

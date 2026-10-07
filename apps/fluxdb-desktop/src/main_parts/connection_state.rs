@@ -88,7 +88,6 @@ impl Render for RedisWorkbenchPanelResizeDrag {
     }
 }
 
-
 #[derive(Clone)]
 struct TableInfoResizeDrag;
 
@@ -458,140 +457,8 @@ struct NewConnectionForm {
     test_status: Option<ConnectionTestStatus>,
 }
 
-/// 模型新建/编辑弹框的输入实体（T013）。弹框打开时按需创建，不常驻内存。
-///
-/// Key 输入用 `mask_toggle()`：默认掩码，眼睛按钮由组件内置，不自绘输入框。
-#[derive(Clone)]
-struct AiModelDialogInputs {
-    provider: Entity<SelectState<SearchableVec<String>>>,
-    display_name: Entity<InputState>,
-    model_key: Entity<InputState>,
-    endpoint: Entity<InputState>,
-    api_key: Entity<InputState>,
-    context_window: Entity<InputState>,
-    max_output: Entity<InputState>,
-    price_input: Entity<InputState>,
-    price_output: Entity<InputState>,
-    price_cache: Entity<InputState>,
-}
-
-impl AiModelDialogInputs {
-    fn new(window: &mut Window, cx: &mut Context<NavicatMain>) -> Self {
-        fn input_state(
-            placeholder: &'static str,
-            window: &mut Window,
-            cx: &mut Context<NavicatMain>,
-        ) -> Entity<InputState> {
-            cx.new(|cx| InputState::new(window, cx).placeholder(placeholder))
-        }
-        let provider_labels: Vec<String> = fluxdb_app::ModelProvider::ALL
-            .iter()
-            .map(|p| p.label().to_string())
-            .collect();
-        let provider_items = SearchableVec::new(provider_labels);
-        Self {
-            provider: cx.new(|cx| {
-                SelectState::new(provider_items, Some(IndexPath::new(0)), window, cx)
-                    .searchable(false)
-            }),
-            display_name: input_state("例如 主模型 · 高能力", window, cx),
-            model_key: input_state("Provider 模型标识", window, cx),
-            endpoint: input_state("https://…/v1", window, cx),
-            // Key 默认掩码；眼睛切换由组件内置，不自绘输入框。
-            api_key: cx.new(|cx| InputState::new(window, cx).placeholder("输入 API Key").masked(true)),
-            context_window: input_state("上下文窗口 Token", window, cx),
-            max_output: input_state("最大输出 Token", window, cx),
-            price_input: input_state("输入计价 $/1M Token", window, cx),
-            price_output: input_state("输出计价 $/1M Token", window, cx),
-            price_cache: input_state("缓存读取 $/1M Token", window, cx),
-        }
-    }
-}
-
-impl AiModelDialog {
-    fn new(window: &mut Window, cx: &mut Context<NavicatMain>) -> Self {
-        Self {
-            model_id: None,
-            expected_revision: 0,
-            inputs: AiModelDialogInputs::new(window, cx),
-            enabled: true,
-            endpoint_is_full_url: false,
-            fetching_models: false,
-            model_options: Vec::new(),
-            model_options_open: false,
-            original_api_key: None,
-            validation_error: None,
-        }
-    }
-}
-
-/// Agent 编辑分区页签。
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum AiAgentTab {
-    Basic,
-    Model,
-    Tools,
-}
-
-/// Agent 编辑器输入实体（列表选中或新建时按需创建，不常驻）。
-#[derive(Clone)]
-struct AiAgentEditorInputs {
-    display_name: Entity<InputState>,
-    description: Entity<InputState>,
-    system_prompt: Entity<InputState>,
-}
-
-impl AiAgentEditorInputs {
-    fn new(window: &mut Window, cx: &mut Context<NavicatMain>) -> Self {
-        let input = |placeholder: &'static str,
-                     window: &mut Window,
-                     cx: &mut Context<NavicatMain>| {
-            cx.new(|cx| InputState::new(window, cx).placeholder(placeholder))
-        };
-        Self {
-            display_name: input("例如 通用数据库 Agent", window, cx),
-            description: input("职责描述（用于路由与用户识别）", window, cx),
-            system_prompt: input("直接输入此 Agent 的系统提示词", window, cx),
-        }
-    }
-}
-
-/// Agent 编辑器状态：`agent_id=None` 表示新建草稿。
-#[derive(Clone)]
-struct AiAgentEditorState {
-    agent_id: Option<String>,
-    expected_revision: i64,
-    enabled: bool,
-    tab: AiAgentTab,
-    selected_model_id: Option<String>,
-    model_menu_open: bool,
-    /// 允许的工具白名单（勾选集合）；等于「全部」时保存为空 = 不限制。
-    selected_tools: std::collections::HashSet<String>,
-    /// 校验/保存失败原因（有值时编辑器保留草稿并内联提示）。
-    error: Option<String>,
-    inputs: AiAgentEditorInputs,
-}
-
-/// 模型弹框的非输入状态。
-#[derive(Clone)]
-struct AiModelDialog {
-    /// `None` 表示新建。
-    model_id: Option<String>,
-    expected_revision: i64,
-    inputs: AiModelDialogInputs,
-    enabled: bool,
-    endpoint_is_full_url: bool,
-    /// 正在拉取 Provider 模型列表（「获取模型列表」按钮的 loading/disabled）。
-    fetching_models: bool,
-    /// 拉取到的模型 ID 候选；点击填入「模型 ID」输入框。
-    model_options: Vec<String>,
-    /// 候选列表是否展开。
-    model_options_open: bool,
-    /// 编辑态预填的 API Key 明文（仅存活于本次弹框内）：与输入相同表示 Keep。
-    original_api_key: Option<String>,
-    /// 弹框内联校验/保存失败原因（有值时保持弹框打开并保留草稿）。
-    validation_error: Option<String>,
-}
+// AI 配置草稿独立职责，仍保持 include! 的原有作用域。
+include!("settings/ai_state.rs");
 
 struct NewConnectionInputs {
     name: Entity<InputState>,
@@ -804,10 +671,11 @@ impl NewConnectionForm {
 
         // Redis 档案回填：优先结构化档案；缺省时用历史扁平参数迁移（兼容旧连接）。
         if config.kind == DatabaseKind::Redis {
-            let profile = config
-                .redis_profile
-                .clone()
-                .or_else(|| Some(fluxdb_core::RedisConnectionProfile::from_options(&config.options)));
+            let profile = config.redis_profile.clone().or_else(|| {
+                Some(fluxdb_core::RedisConnectionProfile::from_options(
+                    &config.options,
+                ))
+            });
             if let Some(profile) = profile {
                 form.apply_profile(&profile);
                 // 档案是事实来源，其派生的 host/port/账号覆盖上面的扁平 endpoint 值。
@@ -820,10 +688,11 @@ impl NewConnectionForm {
 
         // MySQL / TiDB 档案回填：同样优先结构化档案，缺省时用历史扁平参数迁移。
         if matches!(config.kind, DatabaseKind::MySql | DatabaseKind::TiDb) {
-            let profile = config
-                .mysql_profile
-                .clone()
-                .or_else(|| Some(fluxdb_core::MysqlConnectionProfile::from_options(&config.options)));
+            let profile = config.mysql_profile.clone().or_else(|| {
+                Some(fluxdb_core::MysqlConnectionProfile::from_options(
+                    &config.options,
+                ))
+            });
             if let Some(profile) = profile {
                 form.apply_mysql_profile(&profile);
             }
@@ -1018,7 +887,7 @@ impl NewConnectionForm {
     /// - 证书/私钥文件：以文件路径作 `key`、`inline` 为 None（非密码语义，不落 SQLite 加密凭据表）。
     fn build_redis_profile(&self) -> fluxdb_core::RedisConnectionProfile {
         use fluxdb_core::{
-            RedisBasicOptions, RedisClusterOptions, RedisCloudOptions, RedisConnectionProfile,
+            RedisBasicOptions, RedisCloudOptions, RedisClusterOptions, RedisConnectionProfile,
             RedisSentinelOptions, RedisSshAuth, RedisSshOptions, RedisTlsOptions, RedisTopology,
             RedisTopologyKind, SecretRef,
         };
@@ -1059,7 +928,8 @@ impl NewConnectionForm {
         let sentinel_endpoints = split_endpoints(&self.sentinel_endpoints);
         let cluster_start_nodes = split_endpoints(&self.cluster_start_nodes);
         // 依据已填写的字段推断拓扑类型：优先 Sentinel，其次 Cluster，否则单点。
-        let kind = if !self.sentinel_master_name.trim().is_empty() || !sentinel_endpoints.is_empty() {
+        let kind = if !self.sentinel_master_name.trim().is_empty() || !sentinel_endpoints.is_empty()
+        {
             RedisTopologyKind::Sentinel
         } else if !cluster_start_nodes.is_empty() {
             RedisTopologyKind::Cluster
@@ -1190,11 +1060,7 @@ impl NewConnectionForm {
             tls,
             transport,
             advanced: MysqlAdvancedOptions {
-                connect_timeout_secs: self
-                    .mysql_connect_timeout_secs
-                    .trim()
-                    .parse()
-                    .unwrap_or(5),
+                connect_timeout_secs: self.mysql_connect_timeout_secs.trim().parse().unwrap_or(5),
                 query_timeout_secs: self.mysql_query_timeout_secs.trim().parse().unwrap_or(0),
                 idle_ttl_secs: self.mysql_idle_ttl_secs.trim().parse().unwrap_or(0),
                 tcp_keepalive: self.mysql_tcp_keepalive,
@@ -1209,9 +1075,8 @@ impl NewConnectionForm {
     fn build_postgres_profile(&self) -> fluxdb_core::PostgresConnectionProfile {
         use fluxdb_core::{
             PostgresAdvancedOptions, PostgresBasicOptions, PostgresProxy, PostgresProxyType,
-            PostgresScopeOptions, PostgresSshAuth,
-            PostgresSshOptions, PostgresSslMode, PostgresTlsOptions, PostgresTransportLayer,
-            SecretRef,
+            PostgresScopeOptions, PostgresSshAuth, PostgresSshOptions, PostgresSslMode,
+            PostgresTlsOptions, PostgresTransportLayer, SecretRef,
         };
         let file_ref = |path: &str| SecretRef::ref_key(path.trim().to_string());
         let inline_secret = |value: &str| SecretRef::inline(value.trim().to_string());
@@ -1357,9 +1222,12 @@ impl NewConnectionInputs {
             input_state(ConnectionField::TlsClientCert, false, window, cx);
         let (tls_client_key, tls_client_key_subscription) =
             input_state(ConnectionField::TlsClientKey, false, window, cx);
-        let (tls_sni, tls_sni_subscription) = input_state(ConnectionField::TlsSni, false, window, cx);
-        let (ssh_host, ssh_host_subscription) = input_state(ConnectionField::SshHost, false, window, cx);
-        let (ssh_port, ssh_port_subscription) = input_state(ConnectionField::SshPort, false, window, cx);
+        let (tls_sni, tls_sni_subscription) =
+            input_state(ConnectionField::TlsSni, false, window, cx);
+        let (ssh_host, ssh_host_subscription) =
+            input_state(ConnectionField::SshHost, false, window, cx);
+        let (ssh_port, ssh_port_subscription) =
+            input_state(ConnectionField::SshPort, false, window, cx);
         let (ssh_username, ssh_username_subscription) =
             input_state(ConnectionField::SshUsername, false, window, cx);
         let (ssh_password, ssh_password_subscription) =
@@ -1687,17 +1555,42 @@ impl NewConnectionInputs {
         );
         // —— Redis 专用 ——
         self.set_value(ConnectionField::TlsCa, &form.tls_ca, window, cx);
-        self.set_value(ConnectionField::TlsClientCert, &form.tls_client_cert, window, cx);
-        self.set_value(ConnectionField::TlsClientKey, &form.tls_client_key, window, cx);
+        self.set_value(
+            ConnectionField::TlsClientCert,
+            &form.tls_client_cert,
+            window,
+            cx,
+        );
+        self.set_value(
+            ConnectionField::TlsClientKey,
+            &form.tls_client_key,
+            window,
+            cx,
+        );
         self.set_value(ConnectionField::TlsSni, &form.tls_sni, window, cx);
         self.set_value(ConnectionField::SshHost, &form.ssh_host, window, cx);
         self.set_value(ConnectionField::SshPort, &form.ssh_port, window, cx);
         self.set_value(ConnectionField::SshUsername, &form.ssh_username, window, cx);
         self.set_value(ConnectionField::SshPassword, &form.ssh_password, window, cx);
-        self.set_value(ConnectionField::SshPrivateKey, &form.ssh_private_key, window, cx);
-        self.set_value(ConnectionField::SshPassphrase, &form.ssh_passphrase, window, cx);
+        self.set_value(
+            ConnectionField::SshPrivateKey,
+            &form.ssh_private_key,
+            window,
+            cx,
+        );
+        self.set_value(
+            ConnectionField::SshPassphrase,
+            &form.ssh_passphrase,
+            window,
+            cx,
+        );
         // —— MySQL / TiDB 专用 ——
-        self.set_value(ConnectionField::MysqlCharset, &form.mysql_charset, window, cx);
+        self.set_value(
+            ConnectionField::MysqlCharset,
+            &form.mysql_charset,
+            window,
+            cx,
+        );
         self.set_value(
             ConnectionField::MysqlProxyType,
             &form.mysql_proxy_type,
@@ -1716,8 +1609,18 @@ impl NewConnectionInputs {
             window,
             cx,
         );
-        self.set_value(ConnectionField::MysqlProxyHost, &form.mysql_proxy_host, window, cx);
-        self.set_value(ConnectionField::MysqlProxyPort, &form.mysql_proxy_port, window, cx);
+        self.set_value(
+            ConnectionField::MysqlProxyHost,
+            &form.mysql_proxy_host,
+            window,
+            cx,
+        );
+        self.set_value(
+            ConnectionField::MysqlProxyPort,
+            &form.mysql_proxy_port,
+            window,
+            cx,
+        );
         self.set_value(
             ConnectionField::MysqlProxyUsername,
             &form.mysql_proxy_username,
@@ -1742,7 +1645,12 @@ impl NewConnectionInputs {
             window,
             cx,
         );
-        self.set_value(ConnectionField::MysqlIdleTtl, &form.mysql_idle_ttl_secs, window, cx);
+        self.set_value(
+            ConnectionField::MysqlIdleTtl,
+            &form.mysql_idle_ttl_secs,
+            window,
+            cx,
+        );
         self.set_value(
             ConnectionField::SentinelMasterName,
             &form.sentinel_master_name,
@@ -1767,10 +1675,19 @@ impl NewConnectionInputs {
             window,
             cx,
         );
-        self.set_value(ConnectionField::CloudResource, &form.cloud_resource, window, cx);
-        self.set_value(ConnectionField::DiscoveryUri, &form.discovery_uri, window, cx);
+        self.set_value(
+            ConnectionField::CloudResource,
+            &form.cloud_resource,
+            window,
+            cx,
+        );
+        self.set_value(
+            ConnectionField::DiscoveryUri,
+            &form.discovery_uri,
+            window,
+            cx,
+        );
     }
-
 
     fn set_value(
         &self,

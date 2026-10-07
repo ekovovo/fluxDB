@@ -101,6 +101,7 @@ include!("parts/ai_transport.rs");
 include!("parts/ai_runtime.rs");
 include!("parts/ai_provider.rs");
 include!("parts/ai_loop.rs");
+include!("parts/ai_compaction.rs");
 include!("parts/ai_tool_registry.rs");
 include!("parts/ai_permission.rs");
 include!("parts/ai_context.rs");

@@ -396,6 +396,14 @@ ContextProcessor 返回 `Keep / Summarize / Offload / OmitFromActiveContext` 计
 
 **就近参考：**[Pi摘要失败/保留边界](/Users/shining3d/fusuwei/code/pi/packages/coding-agent/src/core/compaction/compaction.ts)；[Goose工具配对压缩](/Users/shining3d/fusuwei/code/goose/crates/goose/src/context_mgmt/mod.rs)。实际落点按本章/§7，不照搬源项目私有状态。
 
+### 16.1 百分比触发与增量摘要（2026-10-06 用户修订）
+
+Agent 配置 `compression_trigger_percent` 默认 80，范围 10–95，存在 `ai_agents.options_json` 并随 Agent revision/CAS 保存；不是 KV，也不新建提示词或策略版本表。按本轮实际生成模型的有效上下文窗口计算阈值，模型路由变化需重新计算，不以消息条数或累计账单 usage 触发。输入预算同时扣除实际最大输出与安全余量：达到百分比或输出预留空间不足时自动处理，不需审批；未配置 Jev 时完全可用。
+
+采用 Pi 的合法切点与增量策略：旧有效摘要 + 新增旧消息生成新摘要，保留最近完整工具请求/回执、当前用户要求、目标、业务口径及待审批事实；不能拆未完成工具对。摘要结构为目标、限制、已验证事实/来源、已完成/进行中/阻碍、决策、下一步；兼容可验证 JSON/文本但不把解析失败原文当成通过安全校验的 checkpoint。保留原始消息/审计，只有完整、非截断且保护项及来源校验通过的摘要才原子提交 `ai_context_checkpoints`。取消、失败、迟到结果、无进展均不得覆盖旧 checkpoint。分离窗口上限、请求上下文用量、累计计费用量。
+
+参考：[Pi 切点/摘要失败检查](/Users/shining3d/fusuwei/code/pi/packages/coding-agent/src/core/compaction/compaction.ts)、[Goose 比例阈值/可见性投影](/Users/shining3d/fusuwei/code/goose/crates/goose/src/context_mgmt/mod.rs)。配置与完整运行压缩分别验收，不把保存百分比等同 T035 已完成。
+
 ## 17. 模型配置与路由
 
 模型分 `generation / decision` 能力，不把 Jev当作 tool-calling 主模型。Profile 包含 Provider、协议、模型 ID、endpoint、**上下文窗口Token**、**最大输出Token**、能力声明/探测、启用状态、**计价（输入/输出/缓存读取，每百万Token）**、非敏感 options、凭据状态，以及**连接状态**（`unknown`/`ok`/`failed` + 最近检测时间，属运行时元数据，不参与配置 `revision` CAS）。测试连接发送真实最小对话请求（提示词固定「你好」），按 Provider 协议走 `/v1/chat/completions` 或 `/v1/messages`。
@@ -407,6 +415,14 @@ ContextProcessor 返回 `Keep / Summarize / Offload / OmitFromActiveContext` 计
 所有模型步骤，包括 Jev、压缩、报表生成，进入统一 usage/budget 路径。新模型不支持当前工具/上下文时重新选择或暂停，不清空历史凑合运行。
 
 **就近参考：**[Pi prepareNextTurn/prepareRequest](/Users/shining3d/fusuwei/code/pi/packages/agent/src/agent-loop.ts)。实际落点按本章/§7，不照搬源项目私有状态。
+
+### 17.1 模型能力自动获取与输入单位（2026-10-06）
+
+获取模型列表返回结构化 `id/context_window_tokens/max_output_tokens`，只解析正整数或可精确转换的数字，限定响应、候选数量与token上限，不根据名称臆测、不用聊天询问模型自身窗口。优先 Provider 当前部署元数据（Anthropic max_input_tokens/max_tokens，OpenRouter context_length/top_provider.context_length/max_completion_tokens，兼容服务可声明同名字段）；普通 OpenAI `/models` 没有窗口字段，缺失显示“未提供”，保留手填不填假值。用户手动值优先，显式获取及选择模型可填入未手改字段；Provider/endpoint/key/弹框实例变化使旧结果失效，获取期间 loading/disabled。凭据复用 AES 宿主链，认证不随redirect泄漏。
+
+上下文/输出输入框右侧各放 `K / M` 单位选择，标签明确 tokens，默认 K（不是 KB 字节）：1K=1000 tokens，1M=1000000 tokens，支持可精确换算的小数，数据库存正整数token。切换单位保持实际数值，编辑重开与自动获取不损精度；保留已有保存下限（窗口≥1024、最大输出≥256），最大输出不能超过已知窗口。不把测试连接成功视为容量已探测。
+
+UI参考唯一入口 [ai-agent-ui.html](/Users/shining3d/fusuwei/code/fluxDB/docs/prototype/ai-agent-ui.html)，需同步HTML原型；符合 §39.3–39.5 正常/窄窗、明暗主题、真实点击与有数据闭环。
 
 ## 18. Jev 内置插件：自动可用且完全可选
 
@@ -461,6 +477,20 @@ Skills 是按需加载的专业说明、工具使用原则和输出要求，不�
 首版使用结构化知识条目和检索，不依赖全库向量索引；模型提出的新规则必须用户确认才能成为长期事实。知识与上下文隔离到连接/库/Agent，不能把另一生产库的口径当作当前库真相。
 
 **就近参考：**[Pi Skills](/Users/shining3d/fusuwei/code/pi/packages/coding-agent/src/core/skills.ts)。实际落点按本章/§7，不照搬源项目私有状态。
+
+### 19.1 内置默认 Agent 与自定义助手（2026-10-06 用户修订）
+
+代码提供默认定义，首次开库幂等 seed 一条稳定 ID `fluxdb.agent.default` 到 `ai_agents`，在设置页置顶并标“内置”。用户允许修改名称、提示词、模型、工具及压缩比例；不可删除、不可停用。重启只补缺失行，不覆盖用户编辑。不绑定凭据/默认付费模型，模型未绑定则跟随全局主模型；只配置模型即可开始询问，不要求手动建 Agent。
+
+新会话优先用户显式默认 Agent，否则内置默认；不自动选择列表第一项。已有会话维持原身份，身份不可用时给出明确错误而不偷偷替换正在运行的审批目标。自定义助手可新建（以默认定义预填）、复制、编辑、删除；删除采用对象级 CAS 与确认，有运行/待审批 turn 时拒绝，逻辑删除以保留会话、审计和外键事实并清理可编辑绑定/默认引用，列表隐藏。配置只影响下一轮，内核安全不能被提示词修改。
+
+参考：[Pi prompt 拼装](/Users/shining3d/fusuwei/code/pi/packages/coding-agent/src/core/system-prompt.ts)、[Goose PromptManager](/Users/shining3d/fusuwei/code/goose/crates/goose/src/agents/prompt_manager.rs)。这是默认定义加数据库可编辑持久化，不声称 Pi/Goose 有同样管理页。
+
+### 19.2 子 Agent 的独立循环与交付边界
+
+子 Agent 是委派产生的独立子会话，不是设置页新建的助手配置。复用 `TurnRunner`，继承经过父权限交集收窄的工具/目标和模型配置，有独立上下文及压缩；只允许一层。默认最大 25 次模型迭代，父取消联动，父仅接收有界最终结果及状态；真实子工具/审批走原审计链，审批在询问AI面板显示并标明归属，不能用“delegate工具获批”代替具体写入审批。必须记录父会话、父调用、任务身份，恢复不能重复委派或重放未知写入。没有对应实现/验收前不得显示可用开关或声称已有子 Agent 能力。
+
+参考：[Pi durable subagent](/Users/shining3d/fusuwei/code/pi/packages/coding-agent/src/experimental/durable/subagent.ts)、[Goose 子会话 reply 循环](/Users/shining3d/fusuwei/code/goose/crates/goose/src/agents/subagent_handler.rs)。后续按本次追加任务实现与验收，不用外部 pi/goose 进程替代原生运行。
 
 ## 20. 工具定义、发现与返回协议
 
@@ -1560,7 +1590,7 @@ API Key输入框默认掩码`***`，输入框内末尾提供眼睛按钮：点�
 | 分区 | 当前字段 | 对应存储 / 行为 |
 |---|---|---|
 | 基本 | 名称、说明、启用 | ai_agents通用列 |
-| 模型与提示词 | 默认生成模型、system_prompt直接输入、max_output_tokens/temperature提示 | default_model_profile_id列、system_prompt列、options_json经能力校验 |
+| 模型与提示词 | 默认生成模型、system_prompt直接输入、压缩触发比例（默认80%） | default_model_profile_id列、system_prompt列、options_json经能力校验 |
 | 工具与内置能力 | 可用工具、BI/文件/上下文/路由/压缩等内置能力 | allowed_tools_json及独立plugin binding；安全审计/内核护栏不能关闭 |
 
 不再作为 Agent 用户配置：权限（只读/写入、文件根、数据出站）由连接只读标记、内核安全审计与§29权限交集决定，用户在“工具与MCP/连接”层管理；运行限制是§30.1的内部护栏；目标自动捕获（§13）；路由属插件；费用无上限。
@@ -1571,7 +1601,7 @@ Agent直接编辑提示词与其他字段一起SaveAiAgent(expected_revision)；
 
 修改运行中Agent只影响下一Turn。当前Turn快照包含agent_id/revision/system_prompt/hash、实际模型、权限和限额；编辑不会篡改历史消息/工具/审计。数据出站或读写策略变化需下一执行边界重新校验。
 
-Agent配置是主页面而非弹框：左侧Agent列表，右侧标题/启用+五个分区，底部未修改/复制/保存栏。分区切换保留未保存输入；切换Agent时若未保存需确认放弃；保存失败保留输入并显示原因。文本域都是直接输入；在询问AI内只显示所用Agent/配置状态，不堆版本ID。
+Agent配置是主页面而非弹框：左侧Agent列表（内置置顶），右侧标题/启用+三个分区，底部未修改/复制/保存栏。分区切换保留未保存输入；切换Agent时若未保存需确认放弃；保存失败保留输入并显示原因。文本域都是直接输入；在询问AI内只显示所用Agent/配置状态，不堆版本ID。
 
 **参考与落点：**用户参考HTML的Agent主页面/分区（只借鉴结构/视觉，不直接替换文件）；[Agent状态/命令](/Users/shining3d/fusuwei/code/fluxDB/crates/fluxdb-app/src/parts/state.rs)、本文§19/§23/§29–30/§42.10。落ai/agent_editor与Agent repository，UI不读写驱动/凭据。
 
@@ -2170,7 +2200,7 @@ ai_usage_ledger 每次实际请求/attempt 一行，包含 main/decision/compact
 
 ### 42.9 首次建表与内置能力种子
 
-先创建 schema，再创建基础预算/运行设置/内置插件 package manifest 与实例；没有APIKey/默认付费模型的种子配置；默认内置插件由代码注册/system绑定自动建立，安全审计不可关闭，Jev没模型时idle不报错。可以创建禁用的默认 Agent 草稿；用户明确配置主模型后才能运行。无 Jev 的种子数据完整工作。
+先创建 schema，再创建基础预算/运行设置/内置插件 package manifest 与实例；没有APIKey/默认付费模型的种子配置；默认内置插件由代码注册/system绑定自动建立，安全审计不可关闭，Jev没模型时idle不报错。必须幂等建立可编辑但不可删除/停用的内置默认 Agent；用户配置主模型后即可运行。无 Jev 的种子数据完整工作。
 
 下面 DDL 分两个代码块，按 §42.10→§42.11 顺序执行；SQLite 允许引用后续定义的表，但**所有表创建完成后**才插入种子。本期对同名不匹配表明确报错，不自动转换旧数据。
 

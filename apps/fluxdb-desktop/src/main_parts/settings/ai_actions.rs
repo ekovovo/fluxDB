@@ -104,79 +104,6 @@ impl NavicatMain {
         .detach();
     }
 
-    /// 拉取 Provider 的模型列表：真实网络 I/O 走后台线程，结果填入候选下拉。
-    ///
-    /// API Key 只从当前弹框内存读取并随命令一次性使用，不落库、不写日志。
-    fn fetch_ai_model_list(&mut self, cx: &mut Context<Self>) {
-        let Some(dialog) = self.ai_model_dialog.as_ref() else {
-            return;
-        };
-        if dialog.endpoint_is_full_url || dialog.fetching_models {
-            return;
-        }
-        let provider = dialog
-            .inputs
-            .provider
-            .read(cx)
-            .selected_value()
-            .cloned()
-            .unwrap_or_else(|| "openai".to_string());
-        let endpoint = dialog.inputs.endpoint.read(cx).value().trim().to_string();
-        let api_key = dialog.inputs.api_key.read(cx).value().to_string();
-        if api_key.trim().is_empty() {
-            self.show_message(
-                "请先填写 API Key 再拉取模型列表",
-                AppMessageKind::Warning,
-                cx,
-            );
-            return;
-        }
-        if let Some(dialog) = self.ai_model_dialog.as_mut() {
-            dialog.fetching_models = true;
-            dialog.model_options_open = false;
-        }
-        cx.notify();
-        let mut controller = self.controller.clone();
-        cx.spawn(async move |view, cx| {
-            let event = cx
-                .background_spawn(async move {
-                    controller.dispatch(AppCommand::FetchAiModels {
-                        provider,
-                        endpoint_is_full_url: false,
-                        endpoint: (!endpoint.is_empty()).then_some(endpoint),
-                        api_key,
-                    })
-                })
-                .await;
-            let _ = cx.update(|cx| {
-                let Some(view) = view.upgrade() else {
-                    return;
-                };
-                view.update(cx, |this, cx| {
-                    let mut error = None;
-                    if let Some(dialog) = this.ai_model_dialog.as_mut() {
-                        dialog.fetching_models = false;
-                        match &event {
-                            AppEvent::AiModelsFetched { models } => {
-                                dialog.model_options = models.clone();
-                                dialog.model_options_open = true;
-                            }
-                            AppEvent::AiModelsFetchFailed { message } => {
-                                error = Some(message.clone());
-                            }
-                            _ => {}
-                        }
-                    }
-                    if let Some(message) = error {
-                        this.show_message(&message, AppMessageKind::Error, cx);
-                    }
-                    cx.notify();
-                });
-            });
-        })
-        .detach();
-    }
-
     /// 打开 Agent 编辑器：`Some(id)` 选中已有 Agent，`None` 新建草稿。
     fn open_ai_agent_editor(
         &mut self,
@@ -197,6 +124,18 @@ impl NavicatMain {
             return;
         }
         let inputs = AiAgentEditorInputs::new(window, cx);
+        inputs
+            .compression_percent
+            .update(cx, |state, cx| state.set_value("80", window, cx));
+        if existing.is_none() {
+            inputs.system_prompt.update(cx, |state, cx| {
+                state.set_value(
+                    fluxdb_storage::ai_platform::agents::DEFAULT_SYSTEM_PROMPT,
+                    window,
+                    cx,
+                )
+            });
+        }
         // 调试用（仅 debug）：直接打开指定分区，便于截图核对。
         let debug_tab = if cfg!(debug_assertions)
             && std::env::var("FLUXDB_DEBUG_AI_AGENT_TAB").is_ok_and(|v| v == "tools")
@@ -206,6 +145,7 @@ impl NavicatMain {
             AiAgentTab::Basic
         };
         let mut editor = AiAgentEditorState {
+            deleting: false,
             agent_id: None,
             expected_revision: 0,
             enabled: true,
@@ -222,6 +162,9 @@ impl NavicatMain {
         };
         if let Some(agent) = &existing {
             editor.agent_id = Some(agent.id.clone());
+            editor.inputs.compression_percent.update(cx, |state, cx| {
+                state.set_value(agent.compression_trigger_percent.to_string(), window, cx)
+            });
             editor.expected_revision = agent.revision;
             editor.enabled = agent.enabled;
             editor.selected_model_id = agent.model_profile_id.clone();
@@ -246,12 +189,9 @@ impl NavicatMain {
                 window,
                 cx,
             );
-            set(
-                &editor.inputs.system_prompt,
-                agent.system_prompt.clone(),
-                window,
-                cx,
-            );
+            editor.inputs.system_prompt.update(cx, |state, cx| {
+                state.set_value(agent.system_prompt.clone(), window, cx)
+            });
         }
         self.ai_agent_editor = Some(editor);
         cx.notify();
@@ -285,11 +225,22 @@ impl NavicatMain {
             list.sort();
             list
         };
+        let percent = match ai_input_text(&editor.inputs.compression_percent, cx).parse::<u8>() {
+            Ok(p) if (10..=95).contains(&p) => p,
+            _ => return self.set_ai_agent_editor_error("压缩触发比例必须在 10–95% 之间", cx),
+        };
         let input = fluxdb_app::AiAgentSaveInput {
+            compression_trigger_percent: percent,
             id: editor.agent_id.clone(),
             display_name,
             description: ai_input_text(&editor.inputs.description, cx),
-            system_prompt: ai_input_text(&editor.inputs.system_prompt, cx),
+            system_prompt: editor
+                .inputs
+                .system_prompt
+                .read(cx)
+                .value()
+                .trim()
+                .to_string(),
             model_profile_id: editor.selected_model_id.clone(),
             allowed_tools,
             enabled: editor.enabled,
@@ -382,6 +333,64 @@ impl NavicatMain {
                 }
             }
         }
+        let mut subscriptions = Vec::new();
+        for (index, select) in [&dialog.inputs.context_unit, &dialog.inputs.output_unit]
+            .into_iter()
+            .enumerate()
+        {
+            subscriptions.push(cx.subscribe_in(
+                select,
+                window,
+                move |this: &mut NavicatMain,
+                      _,
+                      event: &gpui_component::select::SelectEvent<SearchableVec<String>>,
+                      window,
+                      cx| {
+                    if let gpui_component::select::SelectEvent::Confirm(Some(label)) = event {
+                        this.change_ai_token_unit(
+                            index,
+                            AiTokenUnit::from_label(label),
+                            window,
+                            cx,
+                        );
+                    }
+                },
+            ));
+        }
+        subscriptions.push(cx.subscribe_in(
+            &dialog.inputs.model_key,
+            window,
+            |this: &mut NavicatMain, _, event: &InputEvent, window, cx| {
+                if matches!(event, InputEvent::Change) {
+                    this.apply_ai_model_capacity(window, cx);
+                }
+            },
+        ));
+        subscriptions.push(cx.subscribe_in(
+            &dialog.inputs.provider,
+            window,
+            |this: &mut NavicatMain,
+             _,
+             event: &gpui_component::select::SelectEvent<SearchableVec<String>>,
+             window,
+             cx| {
+                if matches!(event, gpui_component::select::SelectEvent::Confirm(_)) {
+                    this.invalidate_ai_model_catalog(window, cx);
+                }
+            },
+        ));
+        for input in [&dialog.inputs.endpoint, &dialog.inputs.api_key] {
+            subscriptions.push(cx.subscribe_in(
+                input,
+                window,
+                |this: &mut NavicatMain, _, event: &InputEvent, window, cx| {
+                    if matches!(event, InputEvent::Change) {
+                        this.invalidate_ai_model_catalog(window, cx);
+                    }
+                },
+            ));
+        }
+        dialog.subscriptions = std::rc::Rc::new(subscriptions);
         self.ai_model_dialog = Some(dialog);
         cx.notify();
     }
@@ -400,11 +409,17 @@ impl NavicatMain {
         if display_name.is_empty() || model.is_empty() {
             return self.set_ai_model_dialog_error("请填写显示名称与模型标识", cx);
         }
-        let context_window = match ai_input_optional_i64(&dialog.inputs.context_window, cx) {
+        let context_window = match ai_parse_token_count(
+            &ai_input_text(&dialog.inputs.context_window, cx),
+            dialog.capacity_units[0],
+        ) {
             Ok(v) => v,
             Err(msg) => return self.set_ai_model_dialog_error(msg, cx),
         };
-        let max_output = match ai_input_optional_i64(&dialog.inputs.max_output, cx) {
+        let max_output = match ai_parse_token_count(
+            &ai_input_text(&dialog.inputs.max_output, cx),
+            dialog.capacity_units[1],
+        ) {
             Ok(v) => v,
             Err(msg) => return self.set_ai_model_dialog_error(msg, cx),
         };
@@ -518,7 +533,7 @@ fn fill_ai_model_inputs(
         &inputs.context_window,
         model
             .context_window_tokens
-            .map(|v| v.to_string())
+            .map(|v| ai_format_token_count(v, AiTokenUnit::K))
             .unwrap_or_default(),
         window,
         cx,
@@ -527,7 +542,7 @@ fn fill_ai_model_inputs(
         &inputs.max_output,
         model
             .max_output_tokens
-            .map(|v| v.to_string())
+            .map(|v| ai_format_token_count(v, AiTokenUnit::K))
             .unwrap_or_default(),
         window,
         cx,

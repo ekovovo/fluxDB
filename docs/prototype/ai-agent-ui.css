@@ -219,3 +219,6 @@ html[data-theme="dark"] {--brand:#87c7a4;--brand-soft:#20352b;--selected:#27372f
 .secret-field input {border:0;outline:none;background:transparent;height:32px;flex:1;min-width:0;padding:0 9px;font-size:12px}
 .secret-eye {width:28px;height:28px;border:0;background:transparent;color:var(--muted);display:flex;align-items:center;justify-content:center;border-radius:5px;cursor:pointer}
 .secret-eye:hover {background:var(--hover);color:var(--text)}.secret-eye .icon{width:15px;height:15px}
+
+/* 容量单位贴近数值输入；K/M均为tokens，不是字节。 */
+.token-capacity-input{display:flex;gap:6px;align-items:center}.token-capacity-input input{flex:1;min-width:0}.token-capacity-input select{width:68px;flex:none}.token-capacity-input .button{flex:none}.model-price-row{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;grid-column:1/-1}

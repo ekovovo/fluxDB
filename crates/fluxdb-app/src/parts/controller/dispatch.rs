@@ -6,14 +6,25 @@ impl AppController {
         // 对象刷新保留旧候选，仅标记相关索引失效，避免主线程释放并重建整个索引。
         match &command {
             AppCommand::RefreshObject(Some(object)) => self.invalidate_completion_metadata(
-                object.connection_id, object.database.as_deref(), object.schema.as_deref(), None,
+                object.connection_id,
+                object.database.as_deref(),
+                object.schema.as_deref(),
+                None,
             ),
             AppCommand::RefreshObject(None) | AppCommand::RefreshConnectionTree => {
-                let scopes = self.completion_index.lock().ok()
+                let scopes = self
+                    .completion_index
+                    .lock()
+                    .ok()
                     .map(|index| index.metas.keys().cloned().collect::<Vec<_>>())
                     .unwrap_or_default();
                 for scope in scopes {
-                    self.invalidate_completion_metadata(scope.connection_id, scope.database.as_deref(), scope.schema.as_deref(), None);
+                    self.invalidate_completion_metadata(
+                        scope.connection_id,
+                        scope.database.as_deref(),
+                        scope.schema.as_deref(),
+                        None,
+                    );
                 }
             }
             _ => {}
@@ -21,7 +32,11 @@ impl AppController {
 
         match command {
             AppCommand::AiConversation(command) => return self.dispatch_ai_conversation(command),
-            command @ (AppCommand::PrepareBackup { .. } | AppCommand::RunBackup(_) | AppCommand::PrepareRestore(_) | AppCommand::ProbeRestore(_) | AppCommand::RunRestore { .. }) => {
+            command @ (AppCommand::PrepareBackup { .. }
+            | AppCommand::RunBackup(_)
+            | AppCommand::PrepareRestore(_)
+            | AppCommand::ProbeRestore(_)
+            | AppCommand::RunRestore { .. }) => {
                 self.dispatch_database_task(command, &AtomicBool::new(false), &mut |_| {})
             }
             AppCommand::LoadConnections => {
@@ -213,8 +228,7 @@ impl AppController {
                             profile.cloud.imported_name = redact_uri_password(&connection_string);
                             // 从托管主机名推断资源/订阅标识，让云元数据有真实语义。
                             let (host, _) = profile.dial_endpoint();
-                            let (resource, subscription) =
-                                infer_cloud_from_host(&provider, &host);
+                            let (resource, subscription) = infer_cloud_from_host(&provider, &host);
                             if profile.cloud.resource.is_empty() {
                                 profile.cloud.resource = resource;
                             }
@@ -334,8 +348,10 @@ impl AppController {
                 };
 
                 connection.objects.retain(|object| {
-                    matches!(object.path.kind, ObjectKind::Database | ObjectKind::Schema | ObjectKind::RedisDb)
-                        || object.path.database.as_deref().unwrap_or("main") != database
+                    matches!(
+                        object.path.kind,
+                        ObjectKind::Database | ObjectKind::Schema | ObjectKind::RedisDb
+                    ) || object.path.database.as_deref().unwrap_or("main") != database
                 });
                 self.state
                     .tabs
@@ -462,7 +478,10 @@ impl AppController {
                     return self.fail(error);
                 }
                 // 建 schema 成功后通知 UI 失效该库 schema 缓存并重取（见 SchemaCreated 消费点）。
-                AppEvent::SchemaCreated { connection_id, schema }
+                AppEvent::SchemaCreated {
+                    connection_id,
+                    schema,
+                }
             }
             AppCommand::LoadPgRoles(connection_id) => {
                 let Some(config) = self.connection_config(connection_id).cloned() else {
@@ -521,7 +540,10 @@ impl AppController {
                     Err(error) => self.fail(error),
                 }
             }
-            AppCommand::DropPgRole { connection_id, name } => {
+            AppCommand::DropPgRole {
+                connection_id,
+                name,
+            } => {
                 let Some(config) = self.connection_config(connection_id).cloned() else {
                     return self.fail(Error::new(ErrorKind::Connection, "连接不存在"));
                 };
@@ -569,11 +591,9 @@ impl AppController {
                             }
                             _ => true,
                         });
-                        if self
-                            .state
-                            .active_tab
-                            .is_some_and(|tab_id| !self.state.tabs.iter().any(|tab| tab.id == tab_id))
-                        {
+                        if self.state.active_tab.is_some_and(|tab_id| {
+                            !self.state.tabs.iter().any(|tab| tab.id == tab_id)
+                        }) {
                             self.state.active_tab = self.state.tabs.last().map(|tab| tab.id);
                         }
                         self.state.last_error = None;
@@ -782,69 +802,229 @@ impl AppController {
                 AppEvent::TabOpened(tab_id)
             }
             AppCommand::LoadErRelationships { scope_key } => {
-                let service = self.er_model_service(scope_key.clone()).ok_or_else(|| UserFacingError {
-                    title: "ER 关系加载失败".into(), message: "ER 存储尚未初始化".into(), detail: None, retryable: true,
-                });
-                match service.and_then(|service| service.list().map_err(|error| UserFacingError {
-                    title: "ER 关系加载失败".into(), message: error.to_string(), detail: None, retryable: true,
-                })) {
-                    Ok(relationships) => AppEvent::ErRelationshipsLoaded { scope_key, relationships },
+                let service =
+                    self.er_model_service(scope_key.clone())
+                        .ok_or_else(|| UserFacingError {
+                            title: "ER 关系加载失败".into(),
+                            message: "ER 存储尚未初始化".into(),
+                            detail: None,
+                            retryable: true,
+                        });
+                match service.and_then(|service| {
+                    service.list().map_err(|error| UserFacingError {
+                        title: "ER 关系加载失败".into(),
+                        message: error.to_string(),
+                        detail: None,
+                        retryable: true,
+                    })
+                }) {
+                    Ok(relationships) => AppEvent::ErRelationshipsLoaded {
+                        scope_key,
+                        relationships,
+                    },
                     Err(error) => AppEvent::Failed(error),
                 }
             }
-            AppCommand::CreateErRelationship { scope_key, relationship } => {
-                let result = self.er_model_service(scope_key.clone())
-                    .ok_or_else(|| UserFacingError { title: "ER 关系创建失败".into(), message: "ER 存储尚未初始化".into(), detail: None, retryable: true })
-                    .and_then(|service| service.create(relationship).map_err(|error| UserFacingError { title: "ER 关系创建失败".into(), message: error.to_string(), detail: None, retryable: false }));
-                match result { Ok(relationship) => AppEvent::ErRelationshipChanged { scope_key, relationship }, Err(error) => AppEvent::Failed(error) }
+            AppCommand::CreateErRelationship {
+                scope_key,
+                relationship,
+            } => {
+                let result = self
+                    .er_model_service(scope_key.clone())
+                    .ok_or_else(|| UserFacingError {
+                        title: "ER 关系创建失败".into(),
+                        message: "ER 存储尚未初始化".into(),
+                        detail: None,
+                        retryable: true,
+                    })
+                    .and_then(|service| {
+                        service
+                            .create(relationship)
+                            .map_err(|error| UserFacingError {
+                                title: "ER 关系创建失败".into(),
+                                message: error.to_string(),
+                                detail: None,
+                                retryable: false,
+                            })
+                    });
+                match result {
+                    Ok(relationship) => AppEvent::ErRelationshipChanged {
+                        scope_key,
+                        relationship,
+                    },
+                    Err(error) => AppEvent::Failed(error),
+                }
             }
-            AppCommand::UpdateErRelationship { scope_key, relationship, expected_revision } => {
+            AppCommand::UpdateErRelationship {
+                scope_key,
+                relationship,
+                expected_revision,
+            } => {
                 let id = relationship.id.clone();
-                let result = self.er_model_service(scope_key.clone())
-                    .ok_or_else(|| UserFacingError { title: "ER 关系更新失败".into(), message: "ER 存储尚未初始化".into(), detail: None, retryable: true })
-                    .and_then(|service| service.update(&id, expected_revision, move |current| { *current = relationship; Ok(()) }).map_err(|error| UserFacingError { title: "ER 关系更新失败".into(), message: error.to_string(), detail: None, retryable: false }));
-                match result { Ok(relationship) => AppEvent::ErRelationshipChanged { scope_key, relationship }, Err(error) => AppEvent::Failed(error) }
+                let result = self
+                    .er_model_service(scope_key.clone())
+                    .ok_or_else(|| UserFacingError {
+                        title: "ER 关系更新失败".into(),
+                        message: "ER 存储尚未初始化".into(),
+                        detail: None,
+                        retryable: true,
+                    })
+                    .and_then(|service| {
+                        service
+                            .update(&id, expected_revision, move |current| {
+                                *current = relationship;
+                                Ok(())
+                            })
+                            .map_err(|error| UserFacingError {
+                                title: "ER 关系更新失败".into(),
+                                message: error.to_string(),
+                                detail: None,
+                                retryable: false,
+                            })
+                    });
+                match result {
+                    Ok(relationship) => AppEvent::ErRelationshipChanged {
+                        scope_key,
+                        relationship,
+                    },
+                    Err(error) => AppEvent::Failed(error),
+                }
             }
-            AppCommand::RebindErRelationship { scope_key, relationship, expected_revision } => {
+            AppCommand::RebindErRelationship {
+                scope_key,
+                relationship,
+                expected_revision,
+            } => {
                 let id = relationship.id.clone();
-                let result = self.er_model_service(scope_key.clone())
-                    .ok_or_else(|| UserFacingError { title: "ER 自动重绑失败".into(), message: "ER 存储尚未初始化".into(), detail: None, retryable: true })
-                    .and_then(|service| service.rebind_identity(&id, expected_revision, relationship)
-                        .map_err(|error| UserFacingError { title: "ER 自动重绑失败".into(), message: error.to_string(), detail: None, retryable: false }));
-                match result { Ok(relationship) => AppEvent::ErRelationshipChanged { scope_key, relationship }, Err(error) => AppEvent::Failed(error) }
+                let result = self
+                    .er_model_service(scope_key.clone())
+                    .ok_or_else(|| UserFacingError {
+                        title: "ER 自动重绑失败".into(),
+                        message: "ER 存储尚未初始化".into(),
+                        detail: None,
+                        retryable: true,
+                    })
+                    .and_then(|service| {
+                        service
+                            .rebind_identity(&id, expected_revision, relationship)
+                            .map_err(|error| UserFacingError {
+                                title: "ER 自动重绑失败".into(),
+                                message: error.to_string(),
+                                detail: None,
+                                retryable: false,
+                            })
+                    });
+                match result {
+                    Ok(relationship) => AppEvent::ErRelationshipChanged {
+                        scope_key,
+                        relationship,
+                    },
+                    Err(error) => AppEvent::Failed(error),
+                }
             }
-            AppCommand::ConfirmErRelationship { scope_key, id, expected_revision, by } => {
-                let result = self.er_model_service(scope_key.clone())
-                    .ok_or_else(|| UserFacingError { title: "ER 关系确认失败".into(), message: "ER 存储尚未初始化".into(), detail: None, retryable: true })
-                    .and_then(|service| service.confirm(&id, expected_revision, &by).map_err(|error| UserFacingError { title: "ER 关系确认失败".into(), message: error.to_string(), detail: None, retryable: false }));
-                match result { Ok(relationship) => AppEvent::ErRelationshipChanged { scope_key, relationship }, Err(error) => AppEvent::Failed(error) }
+            AppCommand::ConfirmErRelationship {
+                scope_key,
+                id,
+                expected_revision,
+                by,
+            } => {
+                let result = self
+                    .er_model_service(scope_key.clone())
+                    .ok_or_else(|| UserFacingError {
+                        title: "ER 关系确认失败".into(),
+                        message: "ER 存储尚未初始化".into(),
+                        detail: None,
+                        retryable: true,
+                    })
+                    .and_then(|service| {
+                        service
+                            .confirm(&id, expected_revision, &by)
+                            .map_err(|error| UserFacingError {
+                                title: "ER 关系确认失败".into(),
+                                message: error.to_string(),
+                                detail: None,
+                                retryable: false,
+                            })
+                    });
+                match result {
+                    Ok(relationship) => AppEvent::ErRelationshipChanged {
+                        scope_key,
+                        relationship,
+                    },
+                    Err(error) => AppEvent::Failed(error),
+                }
             }
-            AppCommand::RejectErRelationship { scope_key, id, expected_revision } => {
-                let result = self.er_model_service(scope_key.clone())
-                    .ok_or_else(|| UserFacingError { title: "ER 关系拒绝失败".into(), message: "ER 存储尚未初始化".into(), detail: None, retryable: true })
-                    .and_then(|service| service.reject(&id, expected_revision).map_err(|error| UserFacingError { title: "ER 关系拒绝失败".into(), message: error.to_string(), detail: None, retryable: false }));
-                match result { Ok(relationship) => AppEvent::ErRelationshipChanged { scope_key, relationship }, Err(error) => AppEvent::Failed(error) }
+            AppCommand::RejectErRelationship {
+                scope_key,
+                id,
+                expected_revision,
+            } => {
+                let result = self
+                    .er_model_service(scope_key.clone())
+                    .ok_or_else(|| UserFacingError {
+                        title: "ER 关系拒绝失败".into(),
+                        message: "ER 存储尚未初始化".into(),
+                        detail: None,
+                        retryable: true,
+                    })
+                    .and_then(|service| {
+                        service
+                            .reject(&id, expected_revision)
+                            .map_err(|error| UserFacingError {
+                                title: "ER 关系拒绝失败".into(),
+                                message: error.to_string(),
+                                detail: None,
+                                retryable: false,
+                            })
+                    });
+                match result {
+                    Ok(relationship) => AppEvent::ErRelationshipChanged {
+                        scope_key,
+                        relationship,
+                    },
+                    Err(error) => AppEvent::Failed(error),
+                }
             }
-            AppCommand::DeleteErRelationship { scope_key, id, expected_revision } => {
-                let result = self.er_model_service(scope_key.clone())
-                    .ok_or_else(|| UserFacingError { title: "ER 关系删除失败".into(), message: "ER 存储尚未初始化".into(), detail: None, retryable: true })
-                    .and_then(|service| service.delete(&id, expected_revision).map_err(|error| UserFacingError { title: "ER 关系删除失败".into(), message: error.to_string(), detail: None, retryable: false }));
-                match result { Ok(()) => AppEvent::ErRelationshipDeleted { scope_key, id }, Err(error) => AppEvent::Failed(error) }
+            AppCommand::DeleteErRelationship {
+                scope_key,
+                id,
+                expected_revision,
+            } => {
+                let result = self
+                    .er_model_service(scope_key.clone())
+                    .ok_or_else(|| UserFacingError {
+                        title: "ER 关系删除失败".into(),
+                        message: "ER 存储尚未初始化".into(),
+                        detail: None,
+                        retryable: true,
+                    })
+                    .and_then(|service| {
+                        service
+                            .delete(&id, expected_revision)
+                            .map_err(|error| UserFacingError {
+                                title: "ER 关系删除失败".into(),
+                                message: error.to_string(),
+                                detail: None,
+                                retryable: false,
+                            })
+                    });
+                match result {
+                    Ok(()) => AppEvent::ErRelationshipDeleted { scope_key, id },
+                    Err(error) => AppEvent::Failed(error),
+                }
             }
             AppCommand::OpenErDiagram(path) => {
                 // 表级 path → 当前表关联 ER（以该表为中心 1 跳）；库/其它 → 整库 ER。
-                let database = path
-                    .database
-                    .clone()
-                    .unwrap_or_else(|| path.name.clone());
+                let database = path.database.clone().unwrap_or_else(|| path.name.clone());
                 let schema = path.schema.clone();
                 // 中心表用结构化身份（schema + 裸名）：PG 跨 schema 与含点标识符都安全；
                 // 展示名由身份统一生成，匹配关系边不靠字符串拆解。
-                let center_table = (path.kind == ObjectKind::Table).then(|| fluxdb_core::ErTableRef {
-                    database: database.clone(),
-                    schema: schema.clone(),
-                    name: path.name.clone(),
-                });
+                let center_table =
+                    (path.kind == ObjectKind::Table).then(|| fluxdb_core::ErTableRef {
+                        database: database.clone(),
+                        schema: schema.clone(),
+                        name: path.name.clone(),
+                    });
                 let connection_id = path.connection_id;
                 // 按「连接+库+schema+中心表」去重：整库与当前表关联视图各自唯一。
                 if let Some(existing_tab_id) = self.state.tabs.iter().find_map(|tab| {
@@ -978,11 +1158,9 @@ impl AppController {
                 field,
                 ttl,
             } => self.apply_redis_hash_field_ttl_command(tab_id, key, field, ttl),
-            AppCommand::LoadRedisHashFieldFull {
-                tab_id,
-                key,
-                field,
-            } => self.load_redis_hash_field_full_command(tab_id, key, field),
+            AppCommand::LoadRedisHashFieldFull { tab_id, key, field } => {
+                self.load_redis_hash_field_full_command(tab_id, key, field)
+            }
             AppCommand::LoadRedisStringValue { tab_id, key, full } => {
                 self.load_redis_string_value_command(tab_id, key, full)
             }
@@ -995,7 +1173,9 @@ impl AppController {
                 old_field,
                 new_field,
                 value,
-            } => self.apply_redis_hash_field_rename_command(tab_id, key, old_field, new_field, value),
+            } => {
+                self.apply_redis_hash_field_rename_command(tab_id, key, old_field, new_field, value)
+            }
             AppCommand::DeleteRedisHashField { tab_id, key, field } => {
                 self.apply_redis_hash_field_delete_command(tab_id, key, field)
             }
@@ -1511,7 +1691,10 @@ impl AppController {
                     tab.dirty = workbench.has_unsaved_text();
                     AppEvent::TabActivated(tab_id)
                 } else {
-                    self.fail(Error::new(ErrorKind::Internal, "Redis Workbench 标签页不存在"))
+                    self.fail(Error::new(
+                        ErrorKind::Internal,
+                        "Redis Workbench 标签页不存在",
+                    ))
                 }
             }
             AppCommand::BeginRedisWorkbenchExecution {
@@ -1521,7 +1704,8 @@ impl AppController {
                 // 准备步只做状态变更：真实 RESP 往返由 UI 派发到后台线程跑
                 // `RunRedisWorkbench`，结果再经 `FinishRedisWorkbenchExecution` 落回。
                 // 重跑要按 id 定位记录，记录已被删除时明确失败，不进入运行态。
-                if execution_id.is_some() && self.redis_workbench_text(tab_id, execution_id).is_none()
+                if execution_id.is_some()
+                    && self.redis_workbench_text(tab_id, execution_id).is_none()
                 {
                     return self.fail(Error::new(
                         ErrorKind::Internal,
@@ -1654,7 +1838,10 @@ impl AppController {
                     AppEvent::Failed(user_error)
                 }
             },
-            AppCommand::DeleteRedisWorkbenchRecord { tab_id, execution_id } => {
+            AppCommand::DeleteRedisWorkbenchRecord {
+                tab_id,
+                execution_id,
+            } => {
                 let Some(tab) = self.find_tab_mut(tab_id) else {
                     return self.fail(Error::new(
                         ErrorKind::Internal,
@@ -1663,7 +1850,9 @@ impl AppController {
                 };
                 if let TabKind::RedisWorkbench(workbench) = &mut tab.kind {
                     // 只删除指定 id 的一条记录，不影响其他记录；同时清理其折叠态与 JSON 视图标记。
-                    workbench.executions.retain(|execution| execution.id != execution_id);
+                    workbench
+                        .executions
+                        .retain(|execution| execution.id != execution_id);
                     workbench.collapsed.remove(&execution_id);
                     workbench
                         .json_views
@@ -1678,7 +1867,10 @@ impl AppController {
             }
             AppCommand::ClearRedisWorkbenchResults(tab_id) => {
                 let Some(tab) = self.find_tab_mut(tab_id) else {
-                    return self.fail(Error::new(ErrorKind::Internal, "Redis Workbench 标签页不存在"));
+                    return self.fail(Error::new(
+                        ErrorKind::Internal,
+                        "Redis Workbench 标签页不存在",
+                    ));
                 };
                 if let TabKind::RedisWorkbench(workbench) = &mut tab.kind {
                     workbench.executions.clear();
@@ -1891,9 +2083,8 @@ impl AppController {
                 };
 
                 let cancel_flag = self.query_cancel_flag(tab_id);
-                let result = self.execute_query_with_cancel(&request, &|| {
-                    query_cancel_requested(&cancel_flag)
-                });
+                let result = self
+                    .execute_query_with_cancel(&request, &|| query_cancel_requested(&cancel_flag));
                 // 取消标志只属于本次执行。执行器已经返回后立即回收，不能等 UI 的异步
                 // Finish 命令，否则直接调用 App 层的入口会遗留已置位标志。
                 self.clear_query_cancel_flag(tab_id);
@@ -1969,9 +2160,8 @@ impl AppController {
                 };
 
                 let cancel_flag = self.query_cancel_flag(tab_id);
-                let result = self.execute_query_with_cancel(&request, &|| {
-                    query_cancel_requested(&cancel_flag)
-                });
+                let result = self
+                    .execute_query_with_cancel(&request, &|| query_cancel_requested(&cancel_flag));
                 self.clear_query_cancel_flag(tab_id);
                 match result {
                     Ok(execution) => {
@@ -2042,10 +2232,8 @@ impl AppController {
                         editor.error = None;
                         tab.dirty = false;
                     } else {
-                        return self.fail(Error::new(
-                            ErrorKind::Internal,
-                            "查询编辑器标签页不存在",
-                        ));
+                        return self
+                            .fail(Error::new(ErrorKind::Internal, "查询编辑器标签页不存在"));
                     }
                     if let Some(request) = history_request {
                         self.record_query_execution_history(&request, &execution);
@@ -2098,10 +2286,14 @@ impl AppController {
             } => match result {
                 Ok(execution) => {
                     let Some(page) = execution.results.first().cloned() else {
-                        return self.fail(Error::new(ErrorKind::Internal, "刷新结果页没有返回结果表"));
+                        return self
+                            .fail(Error::new(ErrorKind::Internal, "刷新结果页没有返回结果表"));
                     };
                     let Some(summary) = first_successful_result_summary(&execution).cloned() else {
-                        return self.fail(Error::new(ErrorKind::Internal, "刷新结果页没有返回结果摘要"));
+                        return self.fail(Error::new(
+                            ErrorKind::Internal,
+                            "刷新结果页没有返回结果摘要",
+                        ));
                     };
                     let Some((connection_id, database, schema)) =
                         self.find_tab(tab_id).and_then(|tab| match &tab.kind {
@@ -2113,10 +2305,8 @@ impl AppController {
                             _ => None,
                         })
                     else {
-                        return self.fail(Error::new(
-                            ErrorKind::Internal,
-                            "查询编辑器标签页不存在",
-                        ));
+                        return self
+                            .fail(Error::new(ErrorKind::Internal, "查询编辑器标签页不存在"));
                     };
                     let request = QueryRequest {
                         connection_id,
@@ -2163,10 +2353,8 @@ impl AppController {
                         editor.error = None;
                         tab.dirty = false;
                     } else {
-                        return self.fail(Error::new(
-                            ErrorKind::Internal,
-                            "查询编辑器标签页不存在",
-                        ));
+                        return self
+                            .fail(Error::new(ErrorKind::Internal, "查询编辑器标签页不存在"));
                     }
                     AppEvent::QueryResultPageRefreshed {
                         tab_id,
@@ -2194,12 +2382,10 @@ impl AppController {
                 }
                 AppEvent::TabActivated(tab_id)
             }
-            AppCommand::LoadUserAdminUsers(tab_id) => {
-                match self.load_user_admin_users(tab_id) {
-                    Ok(users) => AppEvent::UserAdminUsersLoaded(tab_id, users),
-                    Err(error) => AppEvent::Failed(UserFacingError::from(error)),
-                }
-            }
+            AppCommand::LoadUserAdminUsers(tab_id) => match self.load_user_admin_users(tab_id) {
+                Ok(users) => AppEvent::UserAdminUsersLoaded(tab_id, users),
+                Err(error) => AppEvent::Failed(UserFacingError::from(error)),
+            },
             AppCommand::StartUserAdminUsersLoad(tab_id) => {
                 if let Some(admin) = self.user_admin_state_mut(tab_id) {
                     admin.loading_users = true;
@@ -2409,7 +2595,9 @@ impl AppController {
             AppCommand::BeginUserAdminDeleteUser(tab_id) => {
                 if let Some(admin) = self.user_admin_state_mut(tab_id) {
                     // 仅在选中了已有用户（非新建草稿态）时允许弹出删除确认。
-                    if let Some(selected) = admin.selected_user.clone().filter(|_| !admin.creating_user) {
+                    if let Some(selected) =
+                        admin.selected_user.clone().filter(|_| !admin.creating_user)
+                    {
                         admin.pending_delete_user = Some(selected);
                     }
                     AppEvent::TabActivated(tab_id)
@@ -2506,7 +2694,11 @@ impl AppController {
                     self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
                 }
             }
-            AppCommand::SetPgDraftAttr { tab_id, field, value } => {
+            AppCommand::SetPgDraftAttr {
+                tab_id,
+                field,
+                value,
+            } => {
                 if let Some(admin) = self.user_admin_state_mut(tab_id)
                     && let Some(draft) = admin.pg_draft.as_mut()
                 {
@@ -2588,9 +2780,15 @@ impl AppController {
                             admin.pg_roles = roles;
                             admin.pg_roles_error = None;
                             // 选中角色被删除后回退到第一个角色；无角色则清空选择。
-                            let names: Vec<String> =
-                                admin.pg_roles.iter().map(|role| role.name.clone()).collect();
-                            if !names.iter().any(|name| Some(name) == admin.pg_selected_role.as_ref()) {
+                            let names: Vec<String> = admin
+                                .pg_roles
+                                .iter()
+                                .map(|role| role.name.clone())
+                                .collect();
+                            if !names
+                                .iter()
+                                .any(|name| Some(name) == admin.pg_selected_role.as_ref())
+                            {
                                 admin.pg_selected_role = names.first().cloned();
                             }
                             // 刷新是重新读取服务端基线：右侧会话态与权限目标都回到初始态。
@@ -2625,10 +2823,11 @@ impl AppController {
                 let Some(config) = self.connection_config(connection_id).cloned() else {
                     return self.fail(Error::new(ErrorKind::Connection, "连接不存在"));
                 };
-                let member_options_supported = role_operation_for_connection(&config, |connector| {
-                    connector.supports_member_options(connection_id)
-                })
-                .unwrap_or(false);
+                let member_options_supported =
+                    role_operation_for_connection(&config, |connector| {
+                        connector.supports_member_options(connection_id)
+                    })
+                    .unwrap_or(false);
                 match self.list_pg_memberships_for_connection(connection_id) {
                     Ok(memberships) => AppEvent::UserAdminPgMembershipsLoaded(
                         tab_id,
@@ -2638,7 +2837,11 @@ impl AppController {
                     Err(error) => AppEvent::Failed(UserFacingError::from(error)),
                 }
             }
-            AppCommand::FinishPgMembershipsLoad { tab_id, result, member_options_supported } => {
+            AppCommand::FinishPgMembershipsLoad {
+                tab_id,
+                result,
+                member_options_supported,
+            } => {
                 if let Some(admin) = self.user_admin_state_mut(tab_id) {
                     admin.pg_member_options_supported = Some(member_options_supported);
                     match result {
@@ -2657,7 +2860,14 @@ impl AppController {
                     self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
                 }
             }
-            AppCommand::PgMembershipGrant { tab_id, role, member, admin: admin_option, inherit, set } => {
+            AppCommand::PgMembershipGrant {
+                tab_id,
+                role,
+                member,
+                admin: admin_option,
+                inherit,
+                set,
+            } => {
                 if let Some(admin) = self.user_admin_state_mut(tab_id) {
                     let edit = PgRoleChange::GrantMembership {
                         role: role.clone(),
@@ -2677,7 +2887,11 @@ impl AppController {
                     self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
                 }
             }
-            AppCommand::PgMembershipRevoke { tab_id, role, member } => {
+            AppCommand::PgMembershipRevoke {
+                tab_id,
+                role,
+                member,
+            } => {
                 if let Some(admin) = self.user_admin_state_mut(tab_id) {
                     let edit = PgRoleChange::RevokeMembership {
                         role: role.clone(),
@@ -2754,7 +2968,13 @@ impl AppController {
                     self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
                 }
             }
-            AppCommand::PgToggleGrant { tab_id, privilege, scope, op, grant_option } => {
+            AppCommand::PgToggleGrant {
+                tab_id,
+                privilege,
+                scope,
+                op,
+                grant_option,
+            } => {
                 if let Some(admin) = self.user_admin_state_mut(tab_id) {
                     let edit = match op {
                         PgGrantEditOp::Grant => PgRoleChange::GrantObject {
@@ -2834,10 +3054,8 @@ impl AppController {
                     match result {
                         Ok(stmts) => {
                             admin.pg_plan_preview = Some(stmts.clone());
-                            admin.pg_plan_preview_masked = admin
-                                .pg_draft
-                                .as_ref()
-                                .is_some_and(|draft| {
+                            admin.pg_plan_preview_masked =
+                                admin.pg_draft.as_ref().is_some_and(|draft| {
                                     matches!(&draft.password, PgPasswordOp::Set(_))
                                 });
                             admin.pg_plan_error = None;
@@ -2878,10 +3096,9 @@ impl AppController {
                         let Some(config) = self.connection_config(connection_id).cloned() else {
                             return self.fail(Error::new(ErrorKind::Connection, "连接不存在"));
                         };
-                        let result =
-                            role_operation_for_connection(&config, |connector| {
-                                connector.apply_role_plan(connection_id, &plan)
-                            });
+                        let result = role_operation_for_connection(&config, |connector| {
+                            connector.apply_role_plan(connection_id, &plan)
+                        });
                         match result {
                             Ok(_) => {
                                 AppEvent::UserAdminPgRolePlanFinished(tab_id, plan, Ok(Vec::new()))
@@ -2904,7 +3121,11 @@ impl AppController {
                     ),
                 }
             }
-            AppCommand::FinishPgRolePlanApply { tab_id, plan, result } => {
+            AppCommand::FinishPgRolePlanApply {
+                tab_id,
+                plan,
+                result,
+            } => {
                 if let Some(admin) = self.user_admin_state_mut(tab_id) {
                     match result {
                         Ok(_) => {
@@ -2986,10 +3207,9 @@ impl AppController {
             AppCommand::LoadUserAdminPgObjectGrants(tab_id) => {
                 match self.load_pg_object_grants(tab_id) {
                     Ok(result) => AppEvent::UserAdminPgObjectGrantsLoaded(tab_id, Ok(result)),
-                    Err(error) => AppEvent::UserAdminPgObjectGrantsLoaded(
-                        tab_id,
-                        Err(error.into()),
-                    ),
+                    Err(error) => {
+                        AppEvent::UserAdminPgObjectGrantsLoaded(tab_id, Err(error.into()))
+                    }
                 }
             }
             AppCommand::StartUserAdminPgObjectGrantsLoad(tab_id) => {
@@ -3288,7 +3508,11 @@ impl AppController {
                     self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
                 }
             }
-            AppCommand::PreviewUserAdminSql { tab_id, sql, danger } => {
+            AppCommand::PreviewUserAdminSql {
+                tab_id,
+                sql,
+                danger,
+            } => {
                 if let Some(admin) = self.user_admin_state_mut(tab_id) {
                     admin.pending_sql = Some(UserAdminPendingSql { sql, danger });
                     admin.apply_error = None;
@@ -3448,180 +3672,18 @@ impl AppController {
                 self.state.query_history = history;
                 AppEvent::SettingsSaved
             }
-            AppCommand::SaveAiModel(input) => {
-                let storage = self.ai_storage();
-                let result = storage.and_then(|st| save_ai_model(&mut self.state, &st, &input));
-                match result {
-                    Ok((id, revision)) => {
-                        return AppEvent::AiModelSaved { id, revision };
-                    }
-                    Err(e) => return AppEvent::AiSettingsError(e.message),
-                }
-            }
-            AppCommand::DeleteAiModel { id, expected_revision } => {
-                let result = self.ai_storage().and_then(|storage| {
-                    with_ai_storage(&storage, |conn| models::delete_model(conn, &id, expected_revision))
-                });
-                match result {
-                    Ok(()) => {
-                        self.state.ai_models.retain(|model| model.id != id);
-                        tracing::info!(model_id = %id, "AI 模型已删除");
-                        return AppEvent::AiModelDeleted { id };
-                    }
-                    Err(error) => {
-                        tracing::warn!(model_id = %id, reason = %error.message, "删除 AI 模型失败");
-                        return AppEvent::AiSettingsError(error.message);
-                    }
-                }
-            }
-            AppCommand::CompleteAiModelDelete { id, result } => {
-                match result {
-                    Ok(()) => {
-                        self.state.ai_models.retain(|model| model.id != id);
-                        return AppEvent::AiModelDeleted { id };
-                    }
-                    Err(message) => return AppEvent::AiSettingsError(message),
-                }
-            }
-            AppCommand::SaveAiAgent(input) => {
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis() as i64)
-                    .unwrap_or(0);
-                let storage = self.ai_storage();
-                let result = storage.and_then(|st| save_ai_agent(&mut self.state, &st, input, now));
-                match result {
-                    Ok(id) => {
-                        let revision = self
-                            .state
-                            .ai_agents
-                            .iter()
-                            .find(|a| a.id == id)
-                            .map(|a| a.revision)
-                            .unwrap_or(0);
-                        return AppEvent::AiAgentSaved { id, revision };
-                    }
-                    Err(e) => return AppEvent::AiSettingsError(e.message),
-                }
-            }
-            AppCommand::RefreshAiSettings => {
-                let storage = self.ai_storage();
-                let result = storage.and_then(|st| refresh_ai_settings(&mut self.state, &st));
-                match result {
-                    Ok(()) => return AppEvent::AiSettingsLoaded,
-                    Err(e) => return AppEvent::AiSettingsError(e.message),
-                }
-            }
-            AppCommand::SetAiModelEnabled {
-                id,
-                enabled,
-                expected_revision,
-            } => {
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis() as i64)
-                    .unwrap_or(0);
-                let storage = self.ai_storage();
-                let result = storage.and_then(|st| {
-                    set_ai_model_enabled(
-                        &mut self.state,
-                        &st,
-                        &id,
-                        enabled,
-                        expected_revision,
-                        now,
-                    )
-                });
-                match result {
-                    Ok(()) => {
-                        return AppEvent::AiModelEnabled {
-                            id,
-                            enabled,
-                            revision: expected_revision + 1,
-                        };
-                    }
-                    Err(e) => return AppEvent::AiSettingsError(e.message),
-                }
-            }
-            AppCommand::SetAiPluginInstanceEnabled {
-                id,
-                enabled,
-                expected_revision,
-            } => {
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis() as i64)
-                    .unwrap_or(0);
-                let storage = self.ai_storage();
-                let result = storage.and_then(|st| {
-                    set_ai_plugin_enabled(
-                        &mut self.state,
-                        &st,
-                        &id,
-                        enabled,
-                        expected_revision,
-                        now,
-                    )
-                });
-                match result {
-                    Ok(()) => {
-                        return AppEvent::AiPluginInstanceEnabled {
-                            id,
-                            enabled,
-                            revision: expected_revision + 1,
-                        };
-                    }
-                    Err(e) => return AppEvent::AiSettingsError(e.message),
-                }
-            }
-            AppCommand::SaveAiDefaultModels {
-                default_model_id,
-                default_decision_model_id,
-                expected_revision,
-            } => {
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis() as i64)
-                    .unwrap_or(0);
-                let storage = self.ai_storage();
-                let result = storage.and_then(|st| {
-                    save_ai_default_models(
-                        &mut self.state,
-                        &st,
-                        default_model_id,
-                        default_decision_model_id,
-                        expected_revision,
-                        now,
-                    )
-                });
-                match result {
-                    Ok(revision) => return AppEvent::AiDefaultModelsSaved { revision },
-                    Err(e) => return AppEvent::AiSettingsError(e.message),
-                }
-            }
-            AppCommand::TestAiModel { id } => {
-                let storage = self.ai_storage();
-                let result = storage.and_then(|st| test_ai_model(&self.state, &st, &id));
-                match result {
-                    Ok((id, status)) => return AppEvent::AiModelTested { id, status },
-                    Err(e) => return AppEvent::AiSettingsError(e.message),
-                }
-            }
-            AppCommand::FetchAiModels {
-                provider,
-                endpoint,
-                endpoint_is_full_url,
-                api_key,
-            } => {
-                if endpoint_is_full_url {
-                    return AppEvent::AiModelsFetchFailed { message: "完整 URL 模式不自动获取模型列表，请手工填写模型 ID".into() };
-                }
-                // 纯网络读取：不触碰 storage，api_key 仅用于本次请求头。
-                match fetch_ai_models(&provider, endpoint.as_deref(), &api_key) {
-                    Ok(models) => return AppEvent::AiModelsFetched { models },
-                    Err(e) => return AppEvent::AiModelsFetchFailed { message: e.message },
-                }
-            }
+            command @ (AppCommand::SaveAiModel(_)
+            | AppCommand::DeleteAiModel { .. }
+            | AppCommand::CompleteAiModelDelete { .. }
+            | AppCommand::DeleteAiAgent { .. }
+            | AppCommand::CompleteAiAgentDelete { .. }
+            | AppCommand::SaveAiAgent(_)
+            | AppCommand::RefreshAiSettings
+            | AppCommand::SetAiModelEnabled { .. }
+            | AppCommand::SetAiPluginInstanceEnabled { .. }
+            | AppCommand::SaveAiDefaultModels { .. }
+            | AppCommand::TestAiModel { .. }
+            | AppCommand::FetchAiModels { .. }) => self.dispatch_ai_settings(command),
             AppCommand::SaveSettings(settings) => {
                 self.state.settings = settings;
                 AppEvent::SettingsSaved
@@ -3670,7 +3732,11 @@ impl AppController {
                     editor.connection_id,
                     fluxdb_core::QuerySessionId(tab.id.0),
                 );
-                settle_closed_query_history(&mut self.state.query_history, editor.connection_id, Some(fluxdb_core::QuerySessionId(tab.id.0)));
+                settle_closed_query_history(
+                    &mut self.state.query_history,
+                    editor.connection_id,
+                    Some(fluxdb_core::QuerySessionId(tab.id.0)),
+                );
             }
         }
     }
@@ -3751,7 +3817,9 @@ impl AppController {
             .map_err(|message| Error::new(ErrorKind::Query, message))?;
         let mut statements = vec![(base_sql, true)];
         let trigger_statements = match create.database_kind {
-            DatabaseKind::MySql | DatabaseKind::TiDb => create_table_mysql_trigger_statements(&create),
+            DatabaseKind::MySql | DatabaseKind::TiDb => {
+                create_table_mysql_trigger_statements(&create)
+            }
             DatabaseKind::Sqlite => create_table_sqlite_trigger_statements(&create),
             _ => Ok(Vec::new()),
         }
@@ -3796,9 +3864,11 @@ impl AppController {
         create: &CreateTableState,
         sql: &str,
     ) -> fluxdb_core::Result<()> {
-        let text = format!("BEGIN;
+        let text = format!(
+            "BEGIN;
 {sql}
-COMMIT;");
+COMMIT;"
+        );
         let request = QueryRequest {
             connection_id: create.connection_id,
             database: create.database.clone(),
@@ -3828,7 +3898,10 @@ COMMIT;");
     /// 外部 DDL 保护：保存前重查表结构，与打开设计器时的 DDL 不一致就拒绝应用（§9.2）。
     ///
     /// 不拿过期快照覆盖别人的改动；用户刷新后重新预览即可继续。
-    fn ensure_postgres_design_not_stale(&self, create: &CreateTableState) -> fluxdb_core::Result<()> {
+    fn ensure_postgres_design_not_stale(
+        &self,
+        create: &CreateTableState,
+    ) -> fluxdb_core::Result<()> {
         let CreateTableMode::Design {
             object,
             original_ddl: Some(original_ddl),
@@ -3890,8 +3963,7 @@ fn query_result_summary_index(
 fn first_successful_result_summary(
     execution: &QueryExecutionResult,
 ) -> Option<&QueryExecutionSummary> {
-    execution
-        .summaries
-        .iter()
-        .find(|summary| summary.kind == fluxdb_core::QueryStatementKind::ResultSet && summary.success)
+    execution.summaries.iter().find(|summary| {
+        summary.kind == fluxdb_core::QueryStatementKind::ResultSet && summary.success
+    })
 }

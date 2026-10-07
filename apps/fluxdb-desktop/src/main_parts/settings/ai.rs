@@ -135,3 +135,7 @@ include!("ai_tools.rs");
 include!("ai_model_dialog.rs");
 include!("ai_actions.rs");
 include!("ai_agents.rs");
+
+include!("ai_capacity.rs");
+include!("ai_agent_delete.rs");
+include!("ai_model_fetch.rs");

@@ -4,15 +4,18 @@ use std::{fs, path::PathBuf, sync::Arc};
 
 use fluxdb_app::{
     AiAgentSaveInput, AiConversationCommand, AiModelSaveInput, AppCommand, AppController, AppEvent,
-    KernelAuditHook, KernelPolicy, MapSqlResolver, ScriptedGenerationProvider, TargetRef, TurnPermissionContext,
-    TurnTargetPin, connection_is_read_only, kernel_policy_for_connection,
+    KernelAuditHook, KernelPolicy, MapSqlResolver, ScriptedGenerationProvider, TargetRef,
+    TurnPermissionContext, TurnTargetPin, connection_is_read_only, kernel_policy_for_connection,
     run_ai_conversation_resume_approval, run_ai_conversation_turn, standard_sql_catalog,
 };
 use fluxdb_core::{
     CancelFlag, ConnectionConfig, ConnectionId, DatabaseKind, FinishReason, ModelCapabilities,
     ModelEvent, ToolCallRequest,
 };
-use fluxdb_storage::{FileStorage, Storage as _, ai_platform::{audits, sessions}};
+use fluxdb_storage::{
+    FileStorage, Storage as _,
+    ai_platform::{audits, sessions},
+};
 
 struct Fixture {
     dir: PathBuf,
@@ -188,11 +191,8 @@ fn write_tool_requires_approval_then_executes_exactly_once() {
         policy: kernel_policy_for_connection(Some(&config)),
         plugin_digest: None,
     };
-    let catalog = standard_sql_catalog(
-        Arc::new(MapSqlResolver::new([config.clone()])),
-        true,
-    )
-    .expect("含写工具目录");
+    let catalog = standard_sql_catalog(Arc::new(MapSqlResolver::new([config.clone()])), true)
+        .expect("含写工具目录");
     let cancel = CancelFlag::new();
     let (tx, rx) = std::sync::mpsc::sync_channel(16);
 
@@ -259,12 +259,7 @@ fn write_tool_requires_approval_then_executes_exactly_once() {
     assert!(executed[0].receipt_json.is_some(), "必须写回真实回执");
     let results = fixture
         .storage
-        .with_ai_connection(|conn| {
-            Ok(
-                sessions::load_turn(conn, &job.turn_id)?
-                    .status,
-            )
-        })
+        .with_ai_connection(|conn| Ok(sessions::load_turn(conn, &job.turn_id)?.status))
         .unwrap();
     assert_eq!(results, sessions::TurnStatus::Completed);
     let assistant = view
@@ -273,7 +268,10 @@ fn write_tool_requires_approval_then_executes_exactly_once() {
         .find(|message| message.role == "assistant")
         .expect("助手消息");
     assert!(
-        assistant.parts.iter().any(|part| part.kind == "tool_result_ref"),
+        assistant
+            .parts
+            .iter()
+            .any(|part| part.kind == "tool_result_ref"),
         "写操作必须有结果卡"
     );
 
@@ -314,7 +312,8 @@ fn write_tool_is_denied_when_connection_policy_forbids_write() {
         plugin_digest: None,
     };
     assert!(!permission.policy.write_allowed);
-    let catalog = standard_sql_catalog(Arc::new(MapSqlResolver::new([config])), true).expect("目录");
+    let catalog =
+        standard_sql_catalog(Arc::new(MapSqlResolver::new([config])), true).expect("目录");
     let provider = ScriptedGenerationProvider::new(
         capabilities(),
         vec![write_step("conn:1/db:main"), text_step("写被拒绝")],
@@ -349,7 +348,10 @@ fn write_tool_is_denied_when_connection_policy_forbids_write() {
         .find(|message| message.role == "assistant")
         .expect("助手消息");
     assert!(
-        assistant.parts.iter().any(|part| part.kind == "tool_result_ref"),
+        assistant
+            .parts
+            .iter()
+            .any(|part| part.kind == "tool_result_ref"),
         "被拒绝也必须在 UI 有可见结果卡"
     );
 }

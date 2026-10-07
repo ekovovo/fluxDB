@@ -4,7 +4,9 @@
 //!  FLUXDB_AI_LIVE_MYSQL_CONNECTION=2 cargo run -p fluxdb-app --example ai_live_mysql_e2e`
 //! 只写专用库 `fluxdb_ai_smoke`，结束 DROP DATABASE；凭据只走宿主解密路径，不打印。
 use fluxdb_app::*;
-use fluxdb_core::{CancelFlag, ConnectionId, DatabaseKind, QueryExecutionOptions, QueryMode, QueryRequest};
+use fluxdb_core::{
+    CancelFlag, ConnectionId, DatabaseKind, QueryExecutionOptions, QueryMode, QueryRequest,
+};
 use fluxdb_storage::Storage as _;
 
 const DB: &str = "fluxdb_ai_smoke";
@@ -154,28 +156,64 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     let cancel = CancelFlag::new();
     let (tx, rx) = std::sync::mpsc::sync_channel(16);
-    run_ai_conversation_turn(&storage, &job, &cancel, &tx, &provider, &catalog, &KernelAuditHook, permission.clone());
+    run_ai_conversation_turn(
+        &storage,
+        &job,
+        &cancel,
+        &tx,
+        &provider,
+        &catalog,
+        &KernelAuditHook,
+        permission.clone(),
+    );
     let view = drain(&rx);
     for call in calls(&storage, &job.turn_id) {
-        println!("   call tool={} status={} receipt={}", call.tool_id, call.status,
-            call.receipt_json.clone().unwrap_or_default().chars().take(120).collect::<String>());
+        println!(
+            "   call tool={} status={} receipt={}",
+            call.tool_id,
+            call.status,
+            call.receipt_json
+                .clone()
+                .unwrap_or_default()
+                .chars()
+                .take(120)
+                .collect::<String>()
+        );
     }
     println!("   模型回答: {:?}", assistant_text(&view));
 
     println!("③ 真实模型写回合（db.execute + parameters → 审批）");
     let job2 = controller.prepare_ai_conversation_context(
-        &format!("请用 db.execute 把 {DB}.orders 里 id=1 的 status 改成 'paid'。\
-                  请使用 parameters 做绑定（? 占位符），不要写在 SQL 字符串里。"),
+        &format!(
+            "请用 db.execute 把 {DB}.orders 里 id=1 的 status 改成 'paid'。\
+                  请使用 parameters 做绑定（? 占位符），不要写在 SQL 字符串里。"
+        ),
         &target,
         "",
     )?;
     let (tx, rx) = std::sync::mpsc::sync_channel(16);
-    run_ai_conversation_turn(&storage, &job2, &cancel, &tx, &provider, &catalog, &KernelAuditHook, permission.clone());
+    run_ai_conversation_turn(
+        &storage,
+        &job2,
+        &cancel,
+        &tx,
+        &provider,
+        &catalog,
+        &KernelAuditHook,
+        permission.clone(),
+    );
     let _ = drain(&rx);
     let pending = calls(&storage, &job2.turn_id);
-    let write_call = pending.iter().find(|call| call.tool_id == "db.execute").ok_or("模型没有请求写工具")?.clone();
+    let write_call = pending
+        .iter()
+        .find(|call| call.tool_id == "db.execute")
+        .ok_or("模型没有请求写工具")?
+        .clone();
     let mid = rows("SELECT id, status FROM orders ORDER BY id")?;
-    println!("   审批前数据（必须未变）: {mid:?} status={}", write_call.status);
+    println!(
+        "   审批前数据（必须未变）: {mid:?} status={}",
+        write_call.status
+    );
     if mid != before {
         return Err("审批前数据被改动".into());
     }
@@ -185,22 +223,42 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         fluxdb_storage::ai_platform::audits::list_approvals_for_call(conn, &write_call.id)
     })?;
     let approval = approvals.first().ok_or("没有生成审批项")?.clone();
-    match controller.dispatch(AppCommand::AiConversation(AiConversationCommand::DecideApproval {
-        approval_id: approval.id.clone(),
-        approved: true,
-        expected_revision: approval.revision,
-    })) {
+    match controller.dispatch(AppCommand::AiConversation(
+        AiConversationCommand::DecideApproval {
+            approval_id: approval.id.clone(),
+            approved: true,
+            expected_revision: approval.revision,
+        },
+    )) {
         AppEvent::AiConversationLoaded(_) => {}
         other => return Err(format!("批准失败: {other:?}").into()),
     }
     let resume_job = controller.prepare_ai_resume_job(&approval.id)?;
     let (tx, rx) = std::sync::mpsc::sync_channel(16);
-    run_ai_conversation_resume_approval(&storage, &resume_job, &cancel, &tx, &provider, &catalog,
-        &KernelAuditHook, permission, &approval.id);
+    run_ai_conversation_resume_approval(
+        &storage,
+        &resume_job,
+        &cancel,
+        &tx,
+        &provider,
+        &catalog,
+        &KernelAuditHook,
+        permission,
+        &approval.id,
+    );
     let view2 = drain(&rx);
     for call in calls(&storage, &job2.turn_id) {
-        println!("   call tool={} status={} receipt={}", call.tool_id, call.status,
-            call.receipt_json.clone().unwrap_or_default().chars().take(140).collect::<String>());
+        println!(
+            "   call tool={} status={} receipt={}",
+            call.tool_id,
+            call.status,
+            call.receipt_json
+                .clone()
+                .unwrap_or_default()
+                .chars()
+                .take(140)
+                .collect::<String>()
+        );
     }
     let after = rows("SELECT id, status FROM orders ORDER BY id")?;
     println!("   审批后数据: {after:?}");
@@ -232,9 +290,14 @@ fn drain(rx: &std::sync::mpsc::Receiver<AiConversationUpdate>) -> AiConversation
     last.unwrap_or_default()
 }
 
-fn calls(storage: &fluxdb_storage::FileStorage, turn_id: &str) -> Vec<fluxdb_storage::ai_platform::sessions::ToolCallView> {
+fn calls(
+    storage: &fluxdb_storage::FileStorage,
+    turn_id: &str,
+) -> Vec<fluxdb_storage::ai_platform::sessions::ToolCallView> {
     storage
-        .with_ai_connection(|conn| fluxdb_storage::ai_platform::sessions::list_tool_calls_for_turn(conn, turn_id))
+        .with_ai_connection(|conn| {
+            fluxdb_storage::ai_platform::sessions::list_tool_calls_for_turn(conn, turn_id)
+        })
         .unwrap_or_default()
 }
 
@@ -245,7 +308,12 @@ fn assistant_text(view: &AiConversationView) -> String {
         .flat_map(|message| message.parts.iter())
         .filter(|part| part.kind == "text")
         .filter_map(|part| serde_json::from_str::<serde_json::Value>(&part.payload_json).ok())
-        .filter_map(|value| value.get("text").and_then(|text| text.as_str()).map(str::to_owned))
+        .filter_map(|value| {
+            value
+                .get("text")
+                .and_then(|text| text.as_str())
+                .map(str::to_owned)
+        })
         .last()
         .unwrap_or_default()
 }

@@ -1,11 +1,17 @@
 #[derive(Clone, Debug, PartialEq)]
 pub enum AppCommand {
     AiConversation(AiConversationCommand),
-    PrepareBackup { request: BackupRequest, method: BackupMethod },
+    PrepareBackup {
+        request: BackupRequest,
+        method: BackupMethod,
+    },
     RunBackup(BackupRequest),
     PrepareRestore(RestoreRequest),
     ProbeRestore(RestoreRequest),
-    RunRestore { request: RestoreRequest, plan: RestorePlan },
+    RunRestore {
+        request: RestoreRequest,
+        plan: RestorePlan,
+    },
     LoadConnections,
     ReplaceConnections(Vec<ConnectionConfig>),
     ReplaceSidebarLayout(SidebarLayout),
@@ -83,14 +89,40 @@ pub enum AppCommand {
     /// 打开某数据库的 ER 关系图 tab（画布原型；Path 定位到库/表所在连接与 schema）。
     OpenErDiagram(ObjectPath),
     /// ER 逻辑关系目录操作；实际文件读写由桌面端后台任务调用 dispatch。
-    LoadErRelationships { scope_key: String },
-    CreateErRelationship { scope_key: String, relationship: ErRelationship },
-    UpdateErRelationship { scope_key: String, relationship: ErRelationship, expected_revision: u64 },
+    LoadErRelationships {
+        scope_key: String,
+    },
+    CreateErRelationship {
+        scope_key: String,
+        relationship: ErRelationship,
+    },
+    UpdateErRelationship {
+        scope_key: String,
+        relationship: ErRelationship,
+        expected_revision: u64,
+    },
     /// 仅结构身份机械重绑，服务层原子保留原确认；普通编辑仍走 Update 并失效确认。
-    RebindErRelationship { scope_key: String, relationship: ErRelationship, expected_revision: u64 },
-    ConfirmErRelationship { scope_key: String, id: String, expected_revision: u64, by: String },
-    RejectErRelationship { scope_key: String, id: String, expected_revision: u64 },
-    DeleteErRelationship { scope_key: String, id: String, expected_revision: u64 },
+    RebindErRelationship {
+        scope_key: String,
+        relationship: ErRelationship,
+        expected_revision: u64,
+    },
+    ConfirmErRelationship {
+        scope_key: String,
+        id: String,
+        expected_revision: u64,
+        by: String,
+    },
+    RejectErRelationship {
+        scope_key: String,
+        id: String,
+        expected_revision: u64,
+    },
+    DeleteErRelationship {
+        scope_key: String,
+        id: String,
+        expected_revision: u64,
+    },
     CopyTable {
         object: ObjectPath,
         new_name: String,
@@ -769,7 +801,10 @@ pub enum AppCommand {
     },
     ClearRedisWorkbenchResults(TabId),
     /// 切换结果区某条执行记录的折叠/展开（仅 UI 展示态，会话内有效）。
-    ToggleRedisWorkbenchRecordCollapse { tab_id: TabId, execution_id: u64 },
+    ToggleRedisWorkbenchRecordCollapse {
+        tab_id: TabId,
+        execution_id: u64,
+    },
     /// 切换结果区某条子命令的 `Text / JSON` 展示（仅 JSON 命令结果显示切换；按执行项维度记忆）。
     ToggleRedisWorkbenchJsonView {
         tab_id: TabId,
@@ -782,7 +817,9 @@ pub enum AppCommand {
         id: u64,
     },
     /// 清空 Redis Workbench「历史」抽屉中指定 scope 的全部历史。
-    ClearRedisWorkbenchHistory { scope: WorkbenchHistoryScope },
+    ClearRedisWorkbenchHistory {
+        scope: WorkbenchHistoryScope,
+    },
     FinishQueryResultPageRefresh {
         tab_id: TabId,
         result_index: usize,
@@ -1141,11 +1178,26 @@ pub enum AppCommand {
     /// 新建或保存模型档案（含 Key 的 Keep/Set/Clear）。
     SaveAiModel(AiModelSaveInput),
     /// 删除无引用的模型（对象级 CAS，UI 在后台执行）。
-    DeleteAiModel { id: String, expected_revision: i64 },
+    DeleteAiModel {
+        id: String,
+        expected_revision: i64,
+    },
     /// 将后台删除结果合并到主窗口状态，不覆盖其他页面的并发变化。
-    CompleteAiModelDelete { id: String, result: std::result::Result<(), String> },
+    CompleteAiModelDelete {
+        id: String,
+        result: std::result::Result<(), String>,
+    },
     /// 新建或保存 Agent 配置（提示词直接随 Agent 保存）。
     SaveAiAgent(AiAgentSaveInput),
+    DeleteAiAgent {
+        id: String,
+        expected_revision: i64,
+    },
+    CompleteAiAgentDelete {
+        id: String,
+        runtime_revision: i64,
+        result: std::result::Result<(), String>,
+    },
     /// 切换模型启用状态（对象级 CAS）。
     SetAiModelEnabled {
         id: String,
@@ -1177,7 +1229,9 @@ pub enum AppCommand {
         endpoint_is_full_url: bool,
         api_key: String,
     },
-    SetTabDirty { tab_id: TabId, dirty: bool },
+    SetTabDirty {
+        tab_id: TabId,
+        dirty: bool,
+    },
     ClearCompletionIndexCache,
 }
-

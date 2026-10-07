@@ -23,6 +23,7 @@ fn setup_memory() -> Connection {
         &conn,
         1_000,
         &agents::AgentEdit {
+            compression_trigger_percent: 80,
             id: "agent-verify".into(),
             display_name: "复测 Agent".into(),
             description: String::new(),
@@ -241,6 +242,7 @@ fn verify_two_file_connections_allocate_contiguous_unique_message_seq() {
         &first_conn,
         1_000,
         &agents::AgentEdit {
+            compression_trigger_percent: 80,
             id: "agent-verify".into(),
             display_name: "复测 Agent".into(),
             description: String::new(),

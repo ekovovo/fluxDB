@@ -49,9 +49,8 @@ impl AppController {
             .map_err(|e| {
                 fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, e.to_string())
             })?;
-        fluxdb_storage::ai_platform::model_secret::open(&cipher, id, &sealed).map_err(|e| {
-            fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, e.to_string())
-        })
+        fluxdb_storage::ai_platform::model_secret::open(&cipher, id, &sealed)
+            .map_err(|e| fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, e.to_string()))
     }
 }
 
@@ -119,6 +118,7 @@ pub fn refresh_ai_settings(
     state.ai_agents = agents_list
         .into_iter()
         .map(|a| AiAgentItem {
+            compression_trigger_percent: a.compression_trigger_percent,
             id: a.id,
             display_name: a.display_name,
             description: a.description,
@@ -192,11 +192,7 @@ pub fn set_ai_plugin_enabled(
     with_ai_storage(storage, |conn| {
         plugins::set_plugin_instance_enabled(conn, now_ms, id, enabled, expected_revision)
     })?;
-    if let Some(p) = state
-        .ai_plugin_instances
-        .iter_mut()
-        .find(|p| p.id == id)
-    {
+    if let Some(p) = state.ai_plugin_instances.iter_mut().find(|p| p.id == id) {
         p.enabled = enabled;
         p.revision = expected_revision + 1;
     }
@@ -291,17 +287,14 @@ impl ModelProvider {
 /// 按 Provider 推导模型类型与协议。
 pub fn resolve_provider(
     provider: &str,
-) -> (
-    fluxdb_storage::ai_platform::models::ModelKind,
-    &'static str,
-) {
+) -> (fluxdb_storage::ai_platform::models::ModelKind, &'static str) {
     let p = ModelProvider::from_stored(provider);
     let kind = match p {
         // Jev 决策模型：只做 Choice/Score 分类，不做工具调用。
         ModelProvider::Decisions => fluxdb_storage::ai_platform::models::ModelKind::Decision,
-        ModelProvider::OpenAiChat
-        | ModelProvider::OpenAiResponses
-        | ModelProvider::Anthropic => fluxdb_storage::ai_platform::models::ModelKind::Generation,
+        ModelProvider::OpenAiChat | ModelProvider::OpenAiResponses | ModelProvider::Anthropic => {
+            fluxdb_storage::ai_platform::models::ModelKind::Generation
+        }
     };
     (kind, p.api_protocol())
 }
@@ -344,7 +337,9 @@ pub fn save_ai_model(
     };
     let change = if let Some(key) = &input.api_key {
         let secret = fluxdb_storage::ai_platform::model_secret::SecretInput::new(key.clone())
-            .map_err(|e| fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, e.to_string()))?;
+            .map_err(|e| {
+                fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, e.to_string())
+            })?;
         fluxdb_storage::ai_platform::models::ApiKeyChange::Set(secret)
     } else if input.clear_key {
         fluxdb_storage::ai_platform::models::ApiKeyChange::Clear
@@ -355,7 +350,10 @@ pub fn save_ai_model(
     if let Some(endpoint) = &input.endpoint {
         ai_endpoint_url(endpoint)?;
     } else if input.endpoint_is_full_url {
-        return Err(fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, "完整 URL 模式必须填写请求地址"));
+        return Err(fluxdb_core::Error::new(
+            fluxdb_core::ErrorKind::Internal,
+            "完整 URL 模式必须填写请求地址",
+        ));
     }
     let provider = ModelProvider::from_stored(&input.provider);
     let (kind, api_protocol) = resolve_provider(input.provider.as_str());
@@ -399,11 +397,12 @@ pub fn save_ai_model(
             existing.endpoint = saved.endpoint;
             existing.endpoint_is_full_url = saved.endpoint_is_full_url;
             // Provider 变化会同时改变模型类型（decisions=决策模型），就地列表必须同步。
-            existing.kind = if saved.kind == fluxdb_storage::ai_platform::models::ModelKind::Decision {
-                "决策".into()
-            } else {
-                "生成".into()
-            };
+            existing.kind =
+                if saved.kind == fluxdb_storage::ai_platform::models::ModelKind::Decision {
+                    "决策".into()
+                } else {
+                    "生成".into()
+                };
             existing.context_window_tokens = saved.context_window_tokens;
             existing.max_output_tokens = saved.max_output_tokens;
             existing.input_price_micros = saved.input_price_micros_per_million;
@@ -478,6 +477,7 @@ pub fn save_ai_agent(
             None => None,
         };
         let edit = agents::AgentEdit {
+            compression_trigger_percent: input.compression_trigger_percent,
             id: input.id.clone().unwrap_or_else(|| new_entity_id("agent")),
             display_name: display_name.clone(),
             description: input.description.clone(),
@@ -495,6 +495,7 @@ pub fn save_ai_agent(
 
     let id = saved.id.clone();
     let item = AiAgentItem {
+        compression_trigger_percent: saved.compression_trigger_percent,
         id: saved.id,
         display_name: saved.display_name,
         description: saved.description,

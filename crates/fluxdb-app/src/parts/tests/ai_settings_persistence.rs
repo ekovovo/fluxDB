@@ -525,6 +525,7 @@ fn ai_settings_agent_save_edit_and_failed_cas_are_row_scoped_and_persistent() {
     let before_target = pa_agent_row(&dir, &target);
     let before_other = pa_agent_row(&dir, &other);
     let event = controller.dispatch(AppCommand::SaveAiAgent(AiAgentSaveInput {
+        compression_trigger_percent: 80,
         id: Some(target.clone()),
         display_name: "目标 Agent 改名".into(),
         description: before_target.description.clone(),
@@ -561,6 +562,7 @@ fn ai_settings_agent_save_edit_and_failed_cas_are_row_scoped_and_persistent() {
 
     let before_blank = pa_agent_row(&dir, &target);
     match controller.dispatch(AppCommand::SaveAiAgent(AiAgentSaveInput {
+        compression_trigger_percent: 80,
         id: Some(target.clone()),
         display_name: "   ".into(),
         description: "不应写入".into(),
@@ -578,6 +580,7 @@ fn ai_settings_agent_save_edit_and_failed_cas_are_row_scoped_and_persistent() {
     assert_eq!(pa_agent_row(&dir, &target), before_blank, "空名称不得落库");
 
     match controller.dispatch(AppCommand::SaveAiAgent(AiAgentSaveInput {
+        compression_trigger_percent: 80,
         id: Some(target.clone()),
         display_name: "过期覆盖".into(),
         description: "不应写入".into(),
@@ -685,6 +688,7 @@ fn ai_settings_missing_entities_are_rejected_without_phantom_rows() {
     }
 
     match controller.dispatch(AppCommand::SaveAiAgent(AiAgentSaveInput {
+        compression_trigger_percent: 80,
         id: Some("agent-does-not-exist".into()),
         display_name: "不存在".into(),
         description: "不应写入".into(),
@@ -713,6 +717,7 @@ fn ai_settings_agent_allowed_tools_round_trip_and_narrowing() {
     let (mut controller, dir) = controller_with_ai_storage("agent-tools");
     // 白名单收窄：只允许 db.query。
     let event = controller.dispatch(AppCommand::SaveAiAgent(AiAgentSaveInput {
+        compression_trigger_percent: 80,
         id: None,
         display_name: "收窄工具 Agent".into(),
         description: String::new(),
@@ -736,6 +741,7 @@ fn ai_settings_agent_allowed_tools_round_trip_and_narrowing() {
 
     // 保存为空 = 不限制：回读为空列表。
     let event = controller.dispatch(AppCommand::SaveAiAgent(AiAgentSaveInput {
+        compression_trigger_percent: 80,
         id: Some(id.clone()),
         display_name: "收窄工具 Agent".into(),
         description: String::new(),

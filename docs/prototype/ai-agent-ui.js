@@ -44,7 +44,7 @@
     return {
       version:1,mode:'drawer',widths:{drawer:460,embedded:420},theme:'light',connectionId:'mysql',defaultModelId:'model-main',decisionModelId:'auto',selectedAgentId:'agent-general',lastSessionId:'session-approval',pendingDraft:'',contexts:[],toolGroup:'all',auditFilter:'all',agentTab:0,agentDraft:null,agentDirty:false,agentPageId:null,filters:{models:'',tools:''},
       models:[{id:'model-main',name:'主模型 · 高能力',kind:'generation',provider:'兼容 API',modelId:'main-model',tier:'strong',endpoint:'https://model.example.invalid/v1',contextWindow:400000,maxOutput:32000,priceInput:2.5,priceOutput:10,priceCached:0.25,keyConfigured:true,enabled:true},{id:'model-economy',name:'经济模型 · 摘要',kind:'generation',provider:'兼容 API',modelId:'economy-model',tier:'economy',endpoint:'https://model.example.invalid/v1',contextWindow:400000,maxOutput:16000,priceInput:0.15,priceOutput:0.6,priceCached:0.075,keyConfigured:true,enabled:true},{id:'model-jev',name:'Jev · 决策模型',kind:'decision',provider:'TypeSafe System One',modelId:'jev-demo',tier:'decision',endpoint:'https://decision.example.invalid/v1',contextWindow:32768,maxOutput:4096,priceInput:0,priceOutput:0,priceCached:0,keyConfigured:true,enabled:true}],
-      agents:[{id:'agent-general',name:'通用数据库 Agent',description:'跨 SQL、Redis 与文件自主探索、验证，并交付可追溯结果。',icon:'bot',modelId:'model-main',systemPrompt:promptText,policy:'approval',report:true,enabled:true},{id:'agent-bi',name:'BI 分析与报表',description:'结合已确认指标口径，生成图表与报告，明确数据限制。',icon:'activity',modelId:'model-main',systemPrompt:promptText,policy:'read',report:true,enabled:true},{id:'agent-redis',name:'Redis 排障助手',description:'渐进扫描、类型检查、TTL 分析，不默认开放危险管理命令。',icon:'database',modelId:'model-economy',systemPrompt:promptText,policy:'approval',report:false,enabled:true}],
+      agents:[{id:'agent-general',builtin:true,compressionPercent:80,name:'通用数据库 Agent',description:'跨 SQL、Redis 与文件自主探索、验证，并交付可追溯结果。',icon:'bot',modelId:'model-main',systemPrompt:promptText,policy:'approval',report:true,enabled:true},{id:'agent-bi',name:'BI 分析与报表',description:'结合已确认指标口径，生成图表与报告，明确数据限制。',icon:'activity',modelId:'model-main',systemPrompt:promptText,policy:'read',report:true,enabled:true},{id:'agent-redis',name:'Redis 排障助手',description:'渐进扫描、类型检查、TTL 分析，不默认开放危险管理命令。',icon:'database',modelId:'model-economy',systemPrompt:promptText,policy:'approval',report:false,enabled:true}],
       pluginEnabled:Object.fromEntries(plugins.map(p=>[p.id,true])),toolEnabled:Object.fromEntries(toolDefs.map(t=>[t.id,true])),
       mcp:{enabled:true,writeMode:'disabled',resources:['mysql','postgres','redis'],testing:false,lastTest:false},budget:{session:3,day:12,iterations:40,concurrency:2,costLimitEnabled:false},
       sessions:[{id:'session-approval',title:'清理7天前未支付订单',agentId:'agent-general',targetId:'mysql',draft:'',status:'approval',kind:'write',cost:0.012,messages:['把超过7天仍是 pending 的订单标记为过期。'],stage:3,folds:{},contexts:['开发环境 / 连接','orders 表']},{id:'session-sales',title:'月度销售趋势分析',agentId:'agent-general',targetId:'mysql',draft:'',status:'done',kind:'analysis',cost:0.018,messages:['分析3–8月净销售额趋势，按支付月份汇总并生成可追溯报告。'],stage:3,folds:{},contexts:['开发环境 / 连接','orders 表','月度销售分析 / 查询']},{id:'session-redis',title:'缓存 TTL 排查',agentId:'agent-redis',targetId:'redis',draft:'',status:'done',kind:'redis',cost:0.006,messages:['检查 demo:order:* 的类型和 TTL，找出没有过期时间的缓存。'],stage:3,folds:{},contexts:[]}]
@@ -60,9 +60,11 @@
   for (const mode of ['drawer','embedded']) if (!Number.isFinite(state.widths[mode]) || state.widths[mode]<=0) state.widths[mode]=mode==='drawer'?460:420;
   if (!Array.isArray(state.sessions) || !Array.isArray(state.models)) Object.assign(state,seed());
   delete state.promptVersions;delete state.selectedPrompt;
-  state.agents.forEach(a=>{a.systemPrompt??=promptText;delete a.promptVersion;a.temperature??=.2;a.maxOutputTokens??=4096;a.toolIds??=toolDefs.map(t=>t.id);a.pluginIds??=plugins.filter(p=>p.id!=='jev').map(p=>p.id);a.allowExport??=true;a.privacy??='redacted';a.fileRoots??='';a.limits??={iterations:40,wallSeconds:600,concurrency:2,outputBytes:131072,rows:200,fileBytes:262144};a.revision??=1;});
+  if(!state.agents.some(a=>a.id==='agent-general'))state.agents.unshift(initial.agents[0]);
+  state.agents.sort((a,b)=>Number(b.id==='agent-general')-Number(a.id==='agent-general'));
+  state.agents.forEach(a=>{a.builtin=a.id==='agent-general';a.compressionPercent??=80;a.systemPrompt??=promptText;delete a.promptVersion;a.temperature??=.2;a.maxOutputTokens??=4096;a.toolIds??=toolDefs.map(t=>t.id);a.pluginIds??=plugins.filter(p=>p.id!=='jev').map(p=>p.id);a.allowExport??=true;a.privacy??='redacted';a.fileRoots??='';a.limits??={iterations:40,wallSeconds:600,concurrency:2,outputBytes:131072,rows:200,fileBytes:262144};a.revision??=1;});
   state.sessions.forEach(s => { if(s.status==='running') s.status='interrupted'; });
-  state.models.forEach(m=>{delete m.testing;if(!m.contextWindow)m.contextWindow=128000;if(!m.maxOutput)m.maxOutput=8192;if(m.priceInput==null)m.priceInput=0;if(m.priceOutput==null)m.priceOutput=0;if(m.priceCached==null)m.priceCached=0;});state.mcp.testing=false;
+  state.models.forEach(m=>{delete m.testing;if(m.priceInput==null)m.priceInput=0;if(m.priceOutput==null)m.priceOutput=0;if(m.priceCached==null)m.priceCached=0;});state.mcp.testing=false;
   let page = location.hash.replace(/^#/,'') || 'workbench';
   const initialModal=['report','budget'].includes(page)?page:null;if(initialModal)page='workbench';
   if (!(page in window.FluxPrototypePages)) page='workbench';
@@ -75,7 +77,7 @@
   const connectionById = id => connections.find(c=>c.id===id);
   const session = () => state.sessions.find(s=>s.id===state.lastSessionId) || null;
   const currentDraft = () => session()?.draft ?? state.pendingDraft;
-  function newAgentDraft(){return {id:'agent-new-'+Date.now(),name:'',description:'',icon:'bot',modelId:state.defaultModelId,systemPrompt:promptText,policy:'approval',report:true,enabled:true,temperature:.2,maxOutputTokens:4096,toolIds:toolDefs.map(t=>t.id),pluginIds:plugins.filter(p=>p.id!=='jev').map(p=>p.id),allowExport:true,privacy:'redacted',fileRoots:'',limits:{iterations:40,wallSeconds:600,concurrency:2,outputBytes:131072,rows:200,fileBytes:262144},revision:0,isNew:true};}
+  function newAgentDraft(){return {id:'agent-new-'+Date.now(),name:'',description:'',builtin:false,compressionPercent:80,icon:'bot',modelId:state.defaultModelId,systemPrompt:promptText,policy:'approval',report:true,enabled:true,temperature:.2,maxOutputTokens:4096,toolIds:toolDefs.map(t=>t.id),pluginIds:plugins.filter(p=>p.id!=='jev').map(p=>p.id),allowExport:true,privacy:'redacted',fileRoots:'',limits:{iterations:40,wallSeconds:600,concurrency:2,outputBytes:131072,rows:200,fileBytes:262144},revision:0,isNew:true};}
   function agentDraft(){return state.agentDraft;}
   function draftContexts() {const c=session();return c ? (c.draftContexts ?? c.contexts ?? []) : state.contexts;}
   function updateDraftContexts(values) {const list=[...new Set(values)].slice(0,12);const c=session();if(c)c.draftContexts=list;else state.contexts=list;save();}
@@ -213,17 +215,26 @@ WHERE status = 'pending'
   }
   function closeDialog() {modal=null;$('modal-root').innerHTML='';if(aiOpen){icons();drawChart();}}
   function editModel(id) {
-    const m=modelById(id)||{id:'new',name:'',kind:'generation',provider:'兼容 API',modelId:'',tier:'strong',endpoint:'https://model.example.invalid/v1',contextWindow:128000,maxOutput:8192,priceInput:0,priceOutput:0,priceCached:0,keyConfigured:false,enabled:true};
-    showDialog(id==='new'?'新建模型':'编辑模型',`<div class="form-grid"><div class="field"><label for="edit-model-name">显示名称</label><input id="edit-model-name" value="${esc(m.name)}" placeholder="例如 主模型 · 高能力"></div><div class="field"><label for="edit-model-kind">模型用途</label><select id="edit-model-kind"><option value="generation" ${m.kind==='generation'?'selected':''}>生成 / 工具调用</option><option value="decision" ${m.kind==='decision'?'selected':''}>决策 / Jev</option></select></div><div class="field"><label for="edit-model-provider">Provider</label><select id="edit-model-provider">${['兼容 API','TypeSafe System One','本地服务'].map(p=>`<option ${p===m.provider?'selected':''}>${p}</option>`).join('')}</select></div><div class="field"><label for="edit-model-id">模型 ID</label><input id="edit-model-id" value="${esc(m.modelId)}" placeholder="Provider 模型标识"></div><div class="field wide"><label for="edit-model-endpoint">Endpoint</label><input id="edit-model-endpoint" value="${esc(m.endpoint)}"></div><div class="field wide"><label>API Key</label><div class="secret-field"><input id="edit-api-key" type="password" autocomplete="off" placeholder="${m.keyConfigured?'•••••••• 已配置':'输入 API Key'}" ${m.keyConfigured?'value="••••••••••••••••••••••••"':''}><button type="button" class="secret-eye" data-action="toggle-key" aria-label="显示或隐藏 API Key">${icon('eye')}</button></div></div><div class="field"><label for="edit-ctx">上下文窗口（Token）</label><input id="edit-ctx" type="number" min="1024" step="1024" value="${m.contextWindow}"><small>输入 + 输出上限；上下文按此重算。</small></div><div class="field"><label for="edit-maxout">最大输出（Token）</label><input id="edit-maxout" type="number" min="256" step="256" value="${m.maxOutput}"></div><div class="field"><label for="edit-price-in">计价 · 输入（$/1M Token）</label><input id="edit-price-in" type="number" min="0" step="0.01" value="${m.priceInput}"></div><div class="field"><label for="edit-price-out">计价 · 输出（$/1M Token）</label><input id="edit-price-out" type="number" min="0" step="0.01" value="${m.priceOutput}"></div><div class="field"><label for="edit-price-cache">计价 · 缓存读取（$/1M Token）</label><input id="edit-price-cache" type="number" min="0" step="0.01" value="${m.priceCached}"></div></div>`,button('取消','close-modal')+button('保存模型','save-model',`data-id="${id}"`,'primary'));
+    const m=modelById(id)||{id:'new',name:'',provider:'openai',modelId:'',endpoint:'',contextWindow:null,maxOutput:null,priceInput:0,priceOutput:0,priceCached:0};
+    const capacity=(field,label,value)=>`<div class="field"><label for="${field}">${label}（tokens）</label><div class="token-capacity-input"><input id="${field}" type="text" inputmode="decimal" value="${value==null?'':value/1000}" placeholder="未提供，可手动填写"><select data-capacity-unit="${field}" aria-label="${label}单位"><option>K</option><option>M</option></select></div></div>`;
+    showDialog(id==='new'?'新建模型':'编辑模型',`<div class="form-grid">
+      <div class="field"><label for="edit-model-name">显示名称</label><input id="edit-model-name" value="${esc(m.name)}"></div>
+      <div class="field"><label for="edit-model-provider">Provider</label><select id="edit-model-provider">${['openai','openai-responses','anthropic','decisions'].map(p=>`<option ${m.provider===p?'selected':''}>${p}</option>`).join('')}</select></div>
+      <div class="field wide"><label for="edit-model-endpoint">Endpoint</label><input id="edit-model-endpoint" value="${esc(m.endpoint)}" placeholder="https://…/v1"></div>
+      <div class="field wide"><label for="edit-api-key">API Key</label><div class="token-capacity-input"><input id="edit-api-key" type="password" value="${m.keyConfigured?'prototype-key-not-real':''}"><button class="button ghost" data-action="reveal-prototype-key" aria-label="显示或隐藏密钥">${icon('eye')}</button></div></div>
+      <div class="field wide"><label for="edit-model-id">模型 ID</label><div class="token-capacity-input"><input id="edit-model-id" value="${esc(m.modelId)}"><button class="button ghost" data-action="fetch-prototype-capacity">获取模型列表</button></div></div>
+      ${capacity('edit-ctx','上下文窗口',m.contextWindow)}${capacity('edit-maxout','最大输出',m.maxOutput)}
+      <div class="model-price-row wide">${[['edit-price-in','输入',m.priceInput],['edit-price-out','输出',m.priceOutput],['edit-price-cache','缓存读取',m.priceCached]].map(([field,label,value])=>`<div class="field"><label for="${field}">计价 · ${label} $/1M</label><input id="${field}" type="number" min="0" step="0.01" value="${value??0}"></div>`).join('')}</div></div>`,button('取消','close-modal')+button('保存模型','save-model',`data-id="${id}"`,'primary'));
+    document.querySelectorAll('[data-capacity-unit]').forEach(select=>{select.dataset.previous='K';select.addEventListener('change',()=>{const input=$(select.dataset.capacityUnit),value=Number(input.value)*(select.dataset.previous==='M'?1000000:1000);if(input.value)input.value=String(value/(select.value==='M'?1000000:1000));select.dataset.previous=select.value;});});
   }
   function saveModel(id) {
     const name=$('edit-model-name').value.trim(),modelId=$('edit-model-id').value.trim(),endpoint=$('edit-model-endpoint').value.trim();
     if(!name||!modelId)return $('dialog-error').textContent='请填写显示名称和模型 ID。';
     let url;try{url=new URL(endpoint);if(!['http:','https:'].includes(url.protocol)||url.username||url.password||/api_?key|token|password/i.test(url.search))throw Error();}catch(_){return $('dialog-error').textContent='Endpoint 必须是无嵌入凭据的 HTTP(S) URL。';}
     const keyInput=$('edit-api-key').value.trim();const typed=keyInput&&!keyInput.includes('•');
-    const ctx=Number($('edit-ctx').value),maxout=Number($('edit-maxout').value),pIn=Number($('edit-price-in').value),pOut=Number($('edit-price-out').value),pCache=Number($('edit-price-cache').value);
-    if(![ctx,maxout,pIn,pOut,pCache].every(v=>Number.isFinite(v)&&v>=0)||ctx<1024||maxout<256)return $('dialog-error').textContent='请填写有效的上下文/输出/计价（上下文≥1024，输出≥256）。';
-    const previous=modelById(id);const kind=$('edit-model-kind').value;
+    const ctx=$('edit-ctx').value.trim()?Number($('edit-ctx').value)*(document.querySelector('[data-capacity-unit="edit-ctx"]').value==='M'?1000000:1000):null,maxout=$('edit-maxout').value.trim()?Number($('edit-maxout').value)*(document.querySelector('[data-capacity-unit="edit-maxout"]').value==='M'?1000000:1000):null,pIn=Number($('edit-price-in').value),pOut=Number($('edit-price-out').value),pCache=Number($('edit-price-cache').value);
+    if(![pIn,pOut,pCache].every(v=>Number.isFinite(v)&&v>=0)||[ctx,maxout].some(v=>v!=null&&(!Number.isInteger(v)||v<1||v>1e9))||(ctx!=null&&maxout!=null&&maxout>ctx))return $('dialog-error').textContent='容量需为正整数tokens，输出不能超过窗口。';
+    const previous=modelById(id);const kind=$('edit-model-provider').value==='decisions'?'decision':'generation';
     const m={id:previous?.id||'model-'+Date.now(),name,modelId,endpoint,kind,provider:$('edit-model-provider').value,tier:kind==='decision'?'decision':'strong',contextWindow:ctx,maxOutput:maxout,priceInput:pIn,priceOutput:pOut,priceCached:pCache,enabled:previous?.enabled??true,keyConfigured:typed?true:!!previous?.keyConfigured};
     // 不读取/存入密钥内容，仅由模式决定模拟凭据状态。
 if(previous)state.models.splice(state.models.indexOf(previous),1,m);else state.models.push(m);
@@ -233,7 +244,7 @@ if(previous)state.models.splice(state.models.indexOf(previous),1,m);else state.m
     const d=state.agentDraft;if(!d)return null;
     d.name=$('agent-name').value;d.description=$('agent-description').value;
     d.modelId=$('agent-model').value;d.systemPrompt=$('agent-system-prompt').value;
-    d.temperature=Number($('agent-temperature').value);d.maxOutputTokens=Number($('agent-max-tokens').value);
+    d.compressionPercent=Number($('agent-compression').value);
     d.toolIds=[...$('view').querySelectorAll('[data-agent-tool]:checked')].map(e=>e.dataset.agentTool);
     d.pluginIds=[...$('view').querySelectorAll('[data-agent-plugin]:checked')].map(e=>e.dataset.agentPlugin);
     d.report=$('agent-report').checked;
@@ -243,7 +254,8 @@ if(previous)state.models.splice(state.models.indexOf(previous),1,m);else state.m
   function validateAgentDraft(d){
     if(!d.name.trim())return '请填写名称。';
     if(new TextEncoder().encode(d.systemPrompt).length>65536)return '提示词不能超过64KiB UTF-8。';
-    if(!Number.isFinite(d.temperature)||d.temperature<0||d.temperature>2||!Number.isFinite(d.maxOutputTokens)||d.maxOutputTokens<128||d.maxOutputTokens>32768)return '请检查生成参数。';
+    if(!Number.isInteger(d.compressionPercent)||d.compressionPercent<10||d.compressionPercent>95)return '压缩触发比例必须在10–95%之间。';
+    if(d.builtin&&!d.enabled)return '内置助手不能停用。';
     return '';
   }
   function saveAgent(id) {
@@ -310,11 +322,14 @@ if(previous)state.models.splice(state.models.indexOf(previous),1,m);else state.m
     if(action==='close-modal'){closeDialog();return;}
     if(action==='edit-model'){editModel(id);return;}
     if(action==='toggle-key'){const inp=$('edit-api-key');if(!inp)return;const show=inp.type==='password';inp.type=show?'text':'password';const btn=$('modal-root').querySelector('.secret-eye');btn.innerHTML=icon(show?'eye-off':'eye');btn.setAttribute('aria-label',show?'隐藏 API Key':'显示 API Key');return;}
+    if(action==='reveal-prototype-key'){const input=$('edit-api-key');input.type=input.type==='password'?'text':'password';return;}
+    if(action==='fetch-prototype-capacity'){if(!$('edit-api-key').value.trim())return toast('请先填写API Key');$('edit-model-id').value='prototype-model';if(!$('edit-ctx').value)$('edit-ctx').value=document.querySelector('[data-capacity-unit="edit-ctx"]').value==='M'?'0.128':'128';if(!$('edit-maxout').value)$('edit-maxout').value=document.querySelector('[data-capacity-unit="edit-maxout"]').value==='M'?'0.008':'8';toast('模拟返回模型容量；此原型不发真实请求');return;}
     if(action==='save-model'){saveModel(id);return;}
+    if(action==='delete-agent'){const a=agentById(id);if(!a||a.builtin)return;if(!confirm('删除助手配置？历史会话和审计保留。'))return;state.agents=state.agents.filter(a=>a.id!==id);state.agentDraft=null;state.agentPageId=null;state.selectedAgentId='agent-general';save();goto('agents');toast('助手配置已删除（模拟）');return;}
     if(action==='save-agent'){saveAgent(id);return;}
     if(action==='select-agent'){selectAgent(id);return;}
     if(action==='new-agent'){newAgent();return;}
-    if(action==='copy-agent'){collectAgentDraft();const src=agentById(id);if(!src)return;state.agentDraft={...structuredClone(src),id:'agent-new-'+Date.now(),name:src.name+' 副本',revision:0,isNew:true};state.agentPageId=state.agentDraft.id;state.agentDirty=true;goto('agents');toast('已复制为新草稿，保存后生效。');return;}
+    if(action==='copy-agent'){collectAgentDraft();const src=agentById(id);if(!src)return;state.agentDraft={...structuredClone(src),id:'agent-new-'+Date.now(),name:src.name+' 副本',builtin:false,revision:0,isNew:true};state.agentPageId=state.agentDraft.id;state.agentDirty=true;goto('agents');toast('已复制为新草稿，保存后生效。');return;}
     if(action==='agent-editor-tab'){collectAgentDraft();const tab=el.dataset.tab;state.agentTab=tab;$('view').querySelectorAll('[data-agent-panel]').forEach(p=>p.hidden=p.dataset.agentPanel!==tab);$('view').querySelectorAll('.agent-tabs [role=tab]').forEach(b=>{const yes=b.dataset.tab===tab;b.classList.toggle('active',yes);b.setAttribute('aria-selected',String(yes));});return;}
     if(action==='test-model'){const m=modelById(id);m.testing=true;render();setTimeout(()=>{m.testing=false;render();toast(m.enabled&&m.keyConfigured?'示例连接测试通过（没有发起网络请求）。':'模型停用或凭据缺失，示例测试未通过。');},700);return;}
     if(action==='tool-detail'){const t=toolDefs.find(t=>t.id===id);showDialog(t.name,`<div class="inline">${tag(t.group)}${tag(t.write?'修改需授权':'读取 / 有界',t.write?'amber':'green')}</div><p class="page-subtitle">${esc(t.description)}</p><div class="code-box" style="margin-top:16px"><pre>${esc(JSON.stringify({tool_id:t.id,version:1,target:'授权资源句柄',input:'严格schema + 业务校验',limits:{timeout_ms:5000,output_bytes:65536},before_execute:'强制安全审计',outcome:'succeeded / denied / unknown'},null,2))}</pre></div>`,button('关闭','close-modal'),'small');return;}

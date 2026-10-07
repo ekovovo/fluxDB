@@ -34,7 +34,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if config.kind != DatabaseKind::MySql {
         return Err("该连接不是 MySQL".into());
     }
-    if let fluxdb_core::Endpoint::Tcp { port: ref mut p, .. } = config.endpoint {
+    if let fluxdb_core::Endpoint::Tcp {
+        port: ref mut p, ..
+    } = config.endpoint
+    {
         *p = port;
     }
     let connector = fluxdb_connectors::connector_for(&config)?;

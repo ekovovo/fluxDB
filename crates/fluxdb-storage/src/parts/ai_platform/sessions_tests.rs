@@ -884,3 +884,76 @@ fn sessions_file_db_reopen_recovers_public_snapshot_and_ui_state() {
     drop(reopened);
     let _ = fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn session_overview_counts_and_rename_archive_restore_keep_facts() {
+    let conn = setup();
+    let session = create_session(&conn, "session-overview");
+    let turn = start_turn(&conn, "session-overview", "turn-overview", 2_000);
+    let _ = append_message(
+        &conn,
+        "msg-overview",
+        "session-overview",
+        Some("turn-overview"),
+        2_100,
+    );
+    let _ = append_part(
+        &conn,
+        "part-overview",
+        "msg-overview",
+        PartKind::Text,
+        2_200,
+    );
+
+    // 概览行带出会话身份 + 派生统计（消息/轮次/最后状态/最后目标）。
+    let overviews = sessions::list_session_overviews(&conn, 10).expect("会话概览");
+    assert_eq!(overviews.len(), 1);
+    let overview = &overviews[0];
+    assert_eq!(overview.id, session.id);
+    assert_eq!(overview.message_count, 1);
+    assert_eq!(overview.turn_count, 1);
+    assert_eq!(overview.last_turn_status, Some(TurnStatus::Queued));
+    assert_eq!(
+        overview.last_target_json.as_deref(),
+        Some(r#"{"kind":"sql"}"#)
+    );
+    assert_eq!(overview.revision, 1);
+
+    // 无 Turn 的新会话：状态与目标为空，而不是伪装成已完成。
+    let empty = create_session(&conn, "session-empty");
+    let overviews = sessions::list_session_overviews(&conn, 10).expect("会话概览");
+    let empty_overview = overviews
+        .iter()
+        .find(|row| row.id == empty.id)
+        .expect("新会话出现在概览里");
+    assert_eq!(empty_overview.turn_count, 0);
+    assert_eq!(empty_overview.last_turn_status, None);
+    assert_eq!(empty_overview.last_target_json, None);
+
+    // 重命名只改标题 + revision，不动消息与 Turn。
+    let renamed = sessions::rename_session(&conn, 3_000, "session-overview", "新标题", 1)
+        .expect("重命名会话");
+    assert_eq!(renamed, 2);
+    let snapshot = sessions::session_snapshot(&conn, "session-overview").expect("会话快照");
+    assert_eq!(snapshot.session.title, "新标题");
+    assert_eq!(snapshot.session.revision, 2);
+    assert_eq!(snapshot.turns.len(), 1);
+    assert_eq!(snapshot.messages.len(), 1);
+    assert_eq!(snapshot.turns[0].id, turn.id);
+
+    // 归档后仍是同一份事实，只是状态变化；恢复回到活跃。
+    let archived =
+        sessions::archive_session(&conn, 3_100, "session-overview", renamed).expect("归档会话");
+    let snapshot = sessions::session_snapshot(&conn, "session-overview").expect("归档后快照");
+    assert_eq!(snapshot.session.status, sessions::SessionStatus::Archived);
+    assert_eq!(snapshot.messages.len(), 1, "归档不删除消息事实");
+    let restored =
+        sessions::restore_session(&conn, 3_200, "session-overview", archived).expect("恢复会话");
+    let snapshot = sessions::session_snapshot(&conn, "session-overview").expect("恢复后快照");
+    assert_eq!(snapshot.session.status, sessions::SessionStatus::Active);
+    assert_eq!(snapshot.session.revision, restored);
+
+    // 归档 / 恢复对象的 CAS 必须拒绝过期 revision 与错误前置状态。
+    assert!(sessions::archive_session(&conn, 3_300, "session-overview", 1).is_err());
+    assert!(sessions::restore_session(&conn, 3_400, "session-overview", restored).is_err());
+}

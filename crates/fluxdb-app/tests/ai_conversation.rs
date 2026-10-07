@@ -497,14 +497,14 @@ fn cancellation_source_persists_partial_reply_and_load_does_not_replay_or_accept
             .recv_timeout(Duration::from_secs(2))
             .expect("生产 service 回桥有截止时间");
         if update.terminal {
-            break update;
+            assert_eq!(update.job.turn_id, job.turn_id);
+            break update.view.expect("终态回包必须携带视图");
         }
     };
     assert_eq!(calls.get(), 1);
-    assert_eq!(final_update.job.turn_id, job.turn_id);
-    assert!(final_update.view.active_turn_id.is_none());
+    assert!(final_update.active_turn_id.is_none());
     assert_text(
-        &final_update.view,
+        &final_update,
         &job.assistant_message_id,
         "assistant",
         "T028 停止前的输出",
@@ -512,7 +512,7 @@ fn cancellation_source_persists_partial_reply_and_load_does_not_replay_or_accept
     let applied = dispatch(
         &mut controller,
         AiConversationCommand::Apply {
-            view: final_update.view,
+            view: final_update.clone(),
         },
     );
     let db = backend(&f.storage);
@@ -585,19 +585,21 @@ fn source_finished_reply_flows_through_apply_to_normal_load_and_reopen() {
     let update = loop {
         let update = receiver.recv_timeout(Duration::from_secs(2)).unwrap();
         if update.terminal {
-            break update;
+            break update.view.expect("终态回包必须携带视图");
         }
     };
-    assert!(update.view.error.is_none());
+    assert!(update.error.is_none());
     assert_text(
-        &update.view,
+        &update,
         &job.assistant_message_id,
         "assistant",
         "T028 source 最终正文",
     );
     let view = dispatch(
         &mut controller,
-        AiConversationCommand::Apply { view: update.view },
+        AiConversationCommand::Apply {
+            view: update.clone(),
+        },
     );
     assert_eq!(load(&mut controller), view);
     drop(controller);

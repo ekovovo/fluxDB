@@ -31,6 +31,7 @@ mod tests {
     include!("tests/pg_client_tools.rs");
     include!("tests/ai_settings.rs");
     include!("tests/ai_settings_persistence.rs");
+    include!("tests/ai_sessions_manage.rs");
     include!("tests/ai_scripted.rs");
     include!("tests/ai_contracts.rs");
     include!("tests/ai_transport.rs");

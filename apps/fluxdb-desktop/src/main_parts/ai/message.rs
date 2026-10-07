@@ -129,11 +129,9 @@ fn ai_reference_chip(
         )
         .into_any_element()
 }
-fn ai_chat_text_only(
-    part: &fluxdb_app::AiConversationPart,
-    colors: UiColors,
-) -> gpui::AnyElement {
-    let text = serde_json::from_str::<serde_json::Value>(&part.payload_json)
+/// 校验并提取文本片段里的 `text` 字段；非文本/损坏载荷返回空串而不是 panic。
+fn ai_chat_part_text(part: &fluxdb_app::AiConversationPart) -> String {
+    serde_json::from_str::<serde_json::Value>(&part.payload_json)
         .ok()
         .and_then(|payload| {
             payload
@@ -141,18 +139,65 @@ fn ai_chat_text_only(
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_owned)
         })
-        .unwrap_or_default();
-    div()
-        .text_size(px(11.))
-        .line_height(px(17.))
+        .unwrap_or_default()
+}
+
+/// 统一的 Markdown 正文样式：跟随组件主题配色，正文 12px、行高 18px。
+///
+/// 代码块/表格/链接的配色与边框由 gpui-component 主题（已由宿主
+/// `apply_component_theme_colors` 对齐 UiColors）提供，这里只调正文尺寸与前景色。
+fn ai_chat_markdown_style(view: TextView, colors: UiColors) -> TextView {
+    view.selectable(true)
+        .text_size(px(12.))
+        .line_height(px(18.))
         .text_color(colors.text)
-        .child(text)
+}
+
+/// 用稳定 id 渲染一段 Markdown 源文本（用户消息/已完成的助手正文）。
+///
+/// 用外层 `div` 承载 debug selector：`TextView` 的 `debug_selector` 只影响它自己
+/// 的命中测试，把选择器挂在容器上更贴近"这条消息以 Markdown 渲染"的语义。
+fn ai_chat_markdown_source(
+    id: SharedString,
+    source: impl Into<SharedString>,
+    colors: UiColors,
+) -> gpui::AnyElement {
+    let selector = SharedString::from(format!("{id}:markdown"));
+    div()
+        .debug_selector({
+            let selector = selector.clone();
+            move || selector.to_string()
+        })
+        .child(ai_chat_markdown_style(TextView::markdown(id, source), colors))
         .into_any_element()
+}
+
+/// 渲染由平滑揭示实体驱动的流式助手正文。
+///
+/// 同一时刻最多只有一条活跃流，用固定选择器即可被 UI 回归稳定断言。
+fn ai_chat_markdown_stream(
+    view: &Entity<gpui_component::text::TextViewState>,
+    colors: UiColors,
+) -> gpui::AnyElement {
+    div()
+        .debug_selector(|| "ai-chat-stream-text".into())
+        .child(ai_chat_markdown_style(TextView::new(view), colors))
+        .into_any_element()
+}
+
+fn ai_chat_text_only(
+    part: &fluxdb_app::AiConversationPart,
+    colors: UiColors,
+) -> gpui::AnyElement {
+    let text = ai_chat_part_text(part);
+    ai_chat_markdown_source(SharedString::from(part.id.clone()), text, colors)
 }
 fn ai_chat_part(
     part: &fluxdb_app::AiConversationPart,
     expanded: bool,
     target_json: Option<&str>,
+    // 非空表示该正文片段正由平滑揭示实体驱动（流式进行中）。
+    stream_view: Option<&Entity<gpui_component::text::TextViewState>>,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> gpui::AnyElement {
@@ -173,12 +218,11 @@ fn ai_chat_part(
             .into_any_element();
     }
     if part.kind == "text" {
-        return div()
-            .text_size(px(11.))
-            .line_height(px(17.))
-            .text_color(colors.text)
-            .child(text)
-            .into_any_element();
+        // 流式进行中由平滑揭示实体渲染；其余（含已结束片段）按 Markdown 渲染。
+        return match stream_view {
+            Some(view) => ai_chat_markdown_stream(view, colors),
+            None => ai_chat_markdown_source(SharedString::from(part.id.clone()), text, colors),
+        };
     }
     // 审批卡：必须在这里决定（批准/拒绝），决定后由宿主按 plan_hash 复核再执行。
     if part.kind == "notice" {
@@ -460,6 +504,8 @@ fn ai_execution_needs_attention(part: &fluxdb_app::AiConversationPart) -> bool {
 fn ai_chat_message_parts(
     message: &fluxdb_app::AiConversationMessage,
     chat: &fluxdb_app::AiConversationView,
+    // 该消息若正是活跃流式正文，用揭示实体渲染；否则 None。
+    stream_view: Option<&Entity<gpui_component::text::TextViewState>>,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Vec<gpui::AnyElement> {
@@ -492,10 +538,11 @@ fn ai_chat_message_parts(
                         cx.notify();
                     })))
                 .when(open, |column| column.child(div().pl_2().border_l_1().border_color(colors.border_soft)
-                    .flex().flex_col().gap_1().children(tools.iter().map(|p| ai_chat_part(p, chat.expanded_parts.contains(&p.id), chat.target_json.as_deref(), colors, cx)))))
+                    .flex().flex_col().gap_1().children(tools.iter().map(|p| ai_chat_part(p, chat.expanded_parts.contains(&p.id), chat.target_json.as_deref(), None, colors, cx)))))
                 .into_any_element());
         } else {
-            output.push(ai_chat_part(part, chat.expanded_parts.contains(&part.id), chat.target_json.as_deref(), colors, cx));
+            let part_stream = (part.kind == "text").then_some(stream_view).flatten();
+            output.push(ai_chat_part(part, chat.expanded_parts.contains(&part.id), chat.target_json.as_deref(), part_stream, colors, cx));
         }
     }
     output

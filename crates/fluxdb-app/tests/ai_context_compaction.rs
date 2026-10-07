@@ -201,7 +201,10 @@ fn run_turn(
     let mut session_id = job.session_id.clone();
     while let Ok(update) = receiver.recv() {
         session_id = update.job.session_id.clone();
-        for message in &update.view.messages {
+        let Some(view) = update.view.as_ref() else {
+            continue; // 纯增量回包不携带视图（正文由 checkpoint 重现）。
+        };
+        for message in &view.messages {
             for part in &message.parts {
                 if part.kind == "text" {
                     if let Ok(value) = serde_json::from_str::<serde_json::Value>(&part.payload_json)

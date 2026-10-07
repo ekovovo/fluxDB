@@ -16,11 +16,23 @@ pub struct AiConversationView {
     pub context_references: Vec<AiContextReference>,
     pub usage: fluxdb_storage::ai_platform::usage_ledger::UsageTotals,
 }
+/// 面板历史列表行（公开身份 + 派生统计；不含正文与凭据）。
 #[derive(Clone, Debug, PartialEq)]
 pub struct AiConversationSummary {
     pub id: String,
     pub title: String,
     pub agent_id: String,
+    /// 会话状态（`active` / `archived`）。
+    pub status: String,
+    /// 最后一个 Turn 的状态；无 Turn 时为 `None`。
+    pub last_turn_status: Option<String>,
+    /// 最后一个 Turn 的执行目标 JSON；无 Turn 时为 `None`。
+    pub last_target_json: Option<String>,
+    pub message_count: i64,
+    pub turn_count: i64,
+    pub updated_at_ms: i64,
+    /// 对象级 CAS 期望 revision。
+    pub revision: i64,
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct AiConversationMessage {

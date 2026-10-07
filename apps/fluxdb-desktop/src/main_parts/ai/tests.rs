@@ -5,6 +5,7 @@ mod ai_panel_tests {
     include!("tests_layout.rs");
     include!("tests_send_references.rs");
     include!("tests_workspace_layout.rs");
+    include!("tests_markdown.rs");
     use fluxdb_app::{AiAgentSaveInput, AiConversationCommand, AiModelSaveInput};
     use fluxdb_storage::ai_platform::{conversation, sessions, settings};
     use gpui::{Modifiers, TestAppContext, VisualTestContext, point, size};

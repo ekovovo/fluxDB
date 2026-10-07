@@ -28,6 +28,7 @@ fn ai_chat_project(
             .as_ref()
             .map(|s| s.title.clone())
             .unwrap_or_else(|| "新会话".into()),
+        // 面板历史只列活跃会话：已归档会话在设置页管理，避免把归档指针写成 last_session_id。
         sessions: data
             .sessions
             .into_iter()
@@ -36,6 +37,13 @@ fn ai_chat_project(
                 id: s.id,
                 title: s.title,
                 agent_id: s.agent_id,
+                status: s.status.as_str().to_string(),
+                last_turn_status: s.last_turn_status.map(|status| status.as_str().to_string()),
+                last_target_json: s.last_target_json,
+                message_count: s.message_count,
+                turn_count: s.turn_count,
+                updated_at_ms: s.updated_at_ms,
+                revision: s.revision,
             })
             .collect(),
         messages: data
@@ -460,12 +468,65 @@ pub fn persist_ai_conversation_event(
     })
 }
 
+/// 流式正文/公开摘要的内存增量；不落盘、不建行，只把未 checkpoint 的尾部即时送 UI。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AiConversationDeltaKind {
+    /// 助手正文，对应 checkpoint 的 `-text` 片段。
+    Text,
+    /// 公开思考摘要，对应 checkpoint 的 `-summary` 片段。
+    Summary,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AiConversationStreamDelta {
+    pub message_id: String,
+    pub kind: AiConversationDeltaKind,
+    pub delta: String,
+}
+
 /// 仅主线程消费的回桥包；身份用于拒绝切会话后的迟到回调。
+///
+/// 一个回包要么携带**重投影视图**（checkpoint/终态，画面来源仍是数据库），
+/// 要么携带**内存增量**（未落盘的流式尾部），不会两者同时改写同一条数据。
 #[derive(Clone, Debug)]
 pub struct AiConversationUpdate {
     pub job: AiConversationJob,
-    pub view: AiConversationView,
+    /// 重投影/终态视图；纯增量回包为 `None`。
+    pub view: Option<AiConversationView>,
+    /// 未落盘的内存增量；视图回包为 `None`。
+    pub delta: Option<AiConversationStreamDelta>,
     pub terminal: bool,
+}
+
+impl AiConversationUpdate {
+    /// 重投影视图回包（checkpoint 非终态或终态）。
+    pub fn view(job: AiConversationJob, view: AiConversationView, terminal: bool) -> Self {
+        Self {
+            job,
+            view: Some(view),
+            delta: None,
+            terminal,
+        }
+    }
+
+    /// 未落盘的内存增量回包。
+    pub fn stream_delta(
+        job: AiConversationJob,
+        message_id: &str,
+        kind: AiConversationDeltaKind,
+        delta: &str,
+    ) -> Self {
+        Self {
+            job,
+            view: None,
+            delta: Some(AiConversationStreamDelta {
+                message_id: message_id.to_string(),
+                kind,
+                delta: delta.to_string(),
+            }),
+            terminal: false,
+        }
+    }
 }
 
 /// 本次先提供有时间/输出限额保护的单轮解释/问答；数据库工具执行需 T020/T023 接线后启用。
@@ -529,19 +590,32 @@ pub fn run_ai_conversation_source(
     let mut persist_error = None;
     let mut emit = |event: &fluxdb_core::ModelEvent| {
         match event {
-            fluxdb_core::ModelEvent::TextDelta(delta) => text.push_str(delta),
-            fluxdb_core::ModelEvent::ReasoningSummaryDelta(delta) => summary.push_str(delta),
+            fluxdb_core::ModelEvent::TextDelta(delta) => {
+                text.push_str(delta);
+                // 未落盘的尾部即时送 UI；checkpoint 失败也不影响已经画出的文字。
+                let _ = sender.try_send(AiConversationUpdate::stream_delta(
+                    job.clone(),
+                    &job.assistant_message_id,
+                    AiConversationDeltaKind::Text,
+                    delta,
+                ));
+            }
+            fluxdb_core::ModelEvent::ReasoningSummaryDelta(delta) => {
+                summary.push_str(delta);
+                let _ = sender.try_send(AiConversationUpdate::stream_delta(
+                    job.clone(),
+                    &job.assistant_message_id,
+                    AiConversationDeltaKind::Summary,
+                    delta,
+                ));
+            }
             fluxdb_core::ModelEvent::Finished(reason) => finish = Some(*reason),
             _ => {}
         }
         if saved.elapsed() >= std::time::Duration::from_millis(300) && persist_error.is_none() {
             match persist_ai_conversation_event(storage, job, &text, &summary, None, None) {
                 Ok(view) => {
-                    let _ = sender.try_send(AiConversationUpdate {
-                        job: job.clone(),
-                        view,
-                        terminal: false,
-                    });
+                    let _ = sender.try_send(AiConversationUpdate::view(job.clone(), view, false));
                 }
                 Err(e) => persist_error = Some(e.message),
             };
@@ -588,11 +662,7 @@ pub fn run_ai_conversation_source(
         error.as_deref(),
     ) {
         Ok(view) => {
-            let _ = sender.send(AiConversationUpdate {
-                job: job.clone(),
-                view,
-                terminal: true,
-            });
+            let _ = sender.send(AiConversationUpdate::view(job.clone(), view, true));
         }
         Err(e) => {
             tracing::warn!(turn_id=%job.turn_id,"AI 回复保存失败");
@@ -603,11 +673,7 @@ pub fn run_ai_conversation_source(
             .unwrap_or_default();
             view.error = Some(format!("回复保存失败：{}", e.message));
             view.session_id = Some(job.session_id.clone());
-            let _ = sender.send(AiConversationUpdate {
-                job: job.clone(),
-                view,
-                terminal: true,
-            });
+            let _ = sender.send(AiConversationUpdate::view(job.clone(), view, true));
         }
     }
 }
@@ -693,11 +759,7 @@ fn ai_conversation_run_turn(
             .unwrap_or_default();
             view.error = Some(error.message);
             view.session_id = Some(job.session_id.clone());
-            let _ = sender.send(AiConversationUpdate {
-                job: job.clone(),
-                view,
-                terminal: true,
-            });
+            let _ = sender.send(AiConversationUpdate::view(job.clone(), view, true));
             return;
         }
     };
@@ -777,8 +839,24 @@ fn ai_conversation_run_turn(
     let mut steering: Vec<String> = Vec::new();
     let outcome = runner.run(state, &mut steering, cancel, &mut |event| {
         match event {
-            LoopEvent::TextDelta(delta) => text.push_str(&delta),
-            LoopEvent::ReasoningSummaryDelta(delta) => summary.push_str(&delta),
+            LoopEvent::TextDelta(delta) => {
+                text.push_str(&delta);
+                let _ = sender.try_send(AiConversationUpdate::stream_delta(
+                    job.clone(),
+                    &job.assistant_message_id,
+                    AiConversationDeltaKind::Text,
+                    &delta,
+                ));
+            }
+            LoopEvent::ReasoningSummaryDelta(delta) => {
+                summary.push_str(&delta);
+                let _ = sender.try_send(AiConversationUpdate::stream_delta(
+                    job.clone(),
+                    &job.assistant_message_id,
+                    AiConversationDeltaKind::Summary,
+                    &delta,
+                ));
+            }
             // 仅表示"模型打算调用"：还没校验/审计/授权，不写任何持久化事实。
             LoopEvent::ToolCallRequested(_call) => {}
             // 工具开始执行：此时已通过 schema 校验、审计与授权，才写下事实行与工具卡。
@@ -865,11 +943,7 @@ fn ai_conversation_run_turn(
         if saved.elapsed() >= std::time::Duration::from_millis(300) && persist_error.is_none() {
             match persist_ai_conversation_event(storage, job, &text, &summary, None, None) {
                 Ok(view) => {
-                    let _ = sender.try_send(AiConversationUpdate {
-                        job: job.clone(),
-                        view,
-                        terminal: false,
-                    });
+                    let _ = sender.try_send(AiConversationUpdate::view(job.clone(), view, false));
                 }
                 Err(error) => persist_error = Some(error.message),
             }
@@ -946,11 +1020,7 @@ fn ai_conversation_run_turn(
         error.as_deref(),
     ) {
         Ok(view) => {
-            let _ = sender.send(AiConversationUpdate {
-                job: job.clone(),
-                view,
-                terminal: true,
-            });
+            let _ = sender.send(AiConversationUpdate::view(job.clone(), view, true));
         }
         Err(save_error) => {
             tracing::warn!(turn_id=%job.turn_id,"AI 回复保存失败");
@@ -961,11 +1031,7 @@ fn ai_conversation_run_turn(
             .unwrap_or_default();
             view.error = Some(format!("回复保存失败：{}", save_error.message));
             view.session_id = Some(job.session_id.clone());
-            let _ = sender.send(AiConversationUpdate {
-                job: job.clone(),
-                view,
-                terminal: true,
-            });
+            let _ = sender.send(AiConversationUpdate::view(job.clone(), view, true));
         }
     }
 }
@@ -987,11 +1053,7 @@ pub fn run_ai_conversation_failure(
         Some(&message),
     ) {
         Ok(view) => {
-            let _ = sender.send(AiConversationUpdate {
-                job: job.clone(),
-                view,
-                terminal: true,
-            });
+            let _ = sender.send(AiConversationUpdate::view(job.clone(), view, true));
         }
         Err(error) => {
             let mut view = with_ai_storage(storage, |conn| {
@@ -1001,11 +1063,7 @@ pub fn run_ai_conversation_failure(
             .unwrap_or_default();
             view.error = Some(format!("{message}（保存也失败：{}）", error.message));
             view.session_id = Some(job.session_id.clone());
-            let _ = sender.send(AiConversationUpdate {
-                job: job.clone(),
-                view,
-                terminal: true,
-            });
+            let _ = sender.send(AiConversationUpdate::view(job.clone(), view, true));
         }
     }
 }

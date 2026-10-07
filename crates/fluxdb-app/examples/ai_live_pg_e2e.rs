@@ -326,7 +326,7 @@ fn drain_terminal(
     let mut last = None;
     while let Ok(update) = rx.try_recv() {
         if update.terminal {
-            last = Some(update.view);
+            last = update.view;
         }
     }
     last.unwrap_or_default()

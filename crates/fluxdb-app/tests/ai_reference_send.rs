@@ -185,6 +185,8 @@ fn connection_reference_pins_target_supplies_handle_and_executes_read_tool() {
     assert!(
         terminal
             .view
+            .as_ref()
+            .expect("终态回包必须携带视图")
             .messages
             .iter()
             .flat_map(|m| &m.parts)
@@ -205,7 +207,7 @@ fn connection_reference_pins_target_supplies_handle_and_executes_read_tool() {
         })
         .unwrap();
     controller.dispatch(AppCommand::AiConversation(AiConversationCommand::Apply {
-        view: terminal.view,
+        view: terminal.view.expect("终态回包必须携带视图"),
     }));
     let followup = controller
         .prepare_ai_conversation("继续分析同一连接", &empty_pin())

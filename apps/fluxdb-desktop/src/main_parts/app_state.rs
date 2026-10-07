@@ -667,6 +667,16 @@ struct NavicatMain {
     ai_agent_editor: Option<AiAgentEditorState>,
     /// 调试用：首帧后自动打开 Agent 新建草稿（仅 debug 构建读取）。
     ai_agent_editor_debug_pending: bool,
+    /// 「会话历史」页的搜索框与过滤文本（按标题过滤）。
+    ai_session_filter_input: Entity<InputState>,
+    _ai_session_filter_subscription: Subscription,
+    ai_session_filter: String,
+    /// 正在归档的会话 id（行内 disabled + loading）。
+    ai_session_archiving_id: Option<String>,
+    /// 会话重命名弹框的输入与待保存对象。
+    ai_session_rename_input: Entity<InputState>,
+    _ai_session_rename_subscription: Subscription,
+    pending_ai_session_rename: Option<AiSessionRename>,
     /// 调试用：首帧后自动对第一个模型发起测试连接（仅 debug 构建读取）。
     ai_model_test_debug_pending: bool,
     new_connection_password_visible: bool,

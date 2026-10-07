@@ -1173,8 +1173,38 @@ pub enum AppCommand {
     PinTab(TabId),
     ReplaceQueryHistory(Vec<QueryHistoryEntry>),
     SaveSettings(Settings),
-    /// 刷新设置页「大模型 / 工具与MCP」列表（模型、Agent、插件实例、MCP Client）。
+    /// 刷新设置页「大模型 / 工具与MCP / 会话历史」列表（模型、Agent、插件实例、MCP Client、会话）。
     RefreshAiSettings,
+    /// 重命名会话（对象级 CAS；只改标题，不动消息与审计事实）。
+    RenameAiSession {
+        id: String,
+        title: String,
+        expected_revision: i64,
+    },
+    /// 归档会话（对象级 CAS）：从活跃历史移出，不删除消息与审计事实。
+    ArchiveAiSession {
+        id: String,
+        expected_revision: i64,
+    },
+    /// 恢复已归档会话到活跃历史（对象级 CAS）。
+    RestoreAiSession {
+        id: String,
+        expected_revision: i64,
+    },
+    /// 后台重命名结果回桥（在主窗口控制器上合并列表，不覆盖并发变化）。
+    CompleteAiSessionRename {
+        id: String,
+        title: String,
+        revision: i64,
+        result: std::result::Result<(), String>,
+    },
+    /// 后台归档/恢复结果回桥。
+    CompleteAiSessionStatus {
+        id: String,
+        archived: bool,
+        revision: i64,
+        result: std::result::Result<(), String>,
+    },
     /// 新建或保存模型档案（含 Key 的 Keep/Set/Clear）。
     SaveAiModel(AiModelSaveInput),
     /// 删除无引用的模型（对象级 CAS，UI 在后台执行）。

@@ -1,0 +1,180 @@
+// 「会话历史」管理命令端到端：真实 AppCommand → 真实 SQLite。
+// 覆盖 RefreshAiSettings 装载列表、重命名/归档/恢复的 CAS 与错误语义。
+
+fn session_manage_storage(label: &str) -> (AppController, fluxdb_storage::FileStorage, std::path::PathBuf) {
+    let dir = std::env::temp_dir().join(format!(
+        "fluxdb-ai-sessions-{label}-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let storage = fluxdb_storage::FileStorage::new(dir.clone());
+    let mut controller = AppController::new();
+    controller.set_ai_storage(storage.clone());
+    (controller, storage, dir)
+}
+
+fn seed_session(
+    storage: &fluxdb_storage::FileStorage,
+    session_id: &str,
+    user_message: &str,
+) -> String {
+    let agent = storage
+        .with_ai_connection(|conn| {
+            Ok(fluxdb_storage::ai_platform::agents::list_agents(conn)?
+                .into_iter()
+                .next()
+                .map(|agent| agent.id))
+        })
+        .unwrap()
+        .expect("内置 Agent 必须存在");
+    storage
+        .with_ai_connection(|conn| {
+            fluxdb_storage::ai_platform::conversation::send(
+                conn,
+                1_000,
+                true,
+                session_id,
+                &agent,
+                &format!("{session_id}-turn"),
+                &format!("{session_id}-user"),
+                user_message,
+                "{}",
+                "{}",
+            )
+        })
+        .unwrap();
+    agent
+}
+
+#[test]
+fn refresh_lists_sessions_and_rename_archive_restore_round_trip() {
+    let (mut controller, storage, dir) = session_manage_storage("list");
+    let _ = controller.dispatch(AppCommand::RefreshAiSettings);
+    assert!(controller.state().ai_sessions.is_empty(), "新库无会话");
+
+    let agent = seed_session(&storage, "session-a", "解释这个表");
+    let event = controller.dispatch(AppCommand::RefreshAiSettings);
+    assert!(matches!(event, AppEvent::AiSettingsLoaded));
+    assert_eq!(controller.state().ai_sessions.len(), 1);
+    let row = &controller.state().ai_sessions[0];
+    assert_eq!(row.id, "session-a");
+    assert_eq!(row.title, "解释这个表");
+    assert_eq!(row.agent_id, agent);
+    assert_eq!(row.status, "active");
+    assert_eq!(row.message_count, 1);
+    assert_eq!(row.turn_count, 1);
+    assert_eq!(row.last_turn_status.as_deref(), Some("queued"));
+    let revision = row.revision;
+
+    // 重命名：对象级 CAS，回写列表；空标题被拒且不改库。
+    let event = controller.dispatch(AppCommand::RenameAiSession {
+        id: "session-a".into(),
+        title: "  会话 A  ".into(),
+        expected_revision: revision,
+    });
+    let AppEvent::AiSessionRenamed {
+        title, revision: new_rev, ..
+    } = event
+    else {
+        panic!("重命名应返回 AiSessionRenamed，实际: {event:?}");
+    };
+    assert_eq!(title, "会话 A");
+    assert_eq!(new_rev, revision + 1);
+    assert_eq!(controller.state().ai_sessions[0].title, "会话 A");
+
+    let event = controller.dispatch(AppCommand::RenameAiSession {
+        id: "session-a".into(),
+        title: "   ".into(),
+        expected_revision: new_rev,
+    });
+    assert!(
+        matches!(event, AppEvent::AiSettingsError(_)),
+        "空白标题必须被拒绝，实际: {event:?}"
+    );
+
+    // 过期 revision 被拒，列表不被静默改写。
+    let event = controller.dispatch(AppCommand::RenameAiSession {
+        id: "session-a".into(),
+        title: "过期写入".into(),
+        expected_revision: revision,
+    });
+    assert!(matches!(event, AppEvent::AiSettingsError(_)));
+    assert_eq!(controller.state().ai_sessions[0].title, "会话 A");
+
+    // 归档 → 恢复：状态切换但消息事实保留。
+    let event = controller.dispatch(AppCommand::ArchiveAiSession {
+        id: "session-a".into(),
+        expected_revision: new_rev,
+    });
+    let AppEvent::AiSessionArchived {
+        revision: archived_rev,
+        ..
+    } = event
+    else {
+        panic!("归档应返回 AiSessionArchived，实际: {event:?}");
+    };
+    assert_eq!(controller.state().ai_sessions[0].status, "archived");
+
+    // 重复归档（已归档）必须失败，不能把 CAS 当成幂等写。
+    let event = controller.dispatch(AppCommand::ArchiveAiSession {
+        id: "session-a".into(),
+        expected_revision: archived_rev,
+    });
+    assert!(matches!(event, AppEvent::AiSettingsError(_)));
+
+    let event = controller.dispatch(AppCommand::RestoreAiSession {
+        id: "session-a".into(),
+        expected_revision: archived_rev,
+    });
+    let AppEvent::AiSessionRestored {
+        revision: restored_rev,
+        ..
+    } = event
+    else {
+        panic!("恢复应返回 AiSessionRestored，实际: {event:?}");
+    };
+    assert_eq!(controller.state().ai_sessions[0].status, "active");
+    assert!(restored_rev > archived_rev);
+
+    let (messages, turns, status): (i64, i64, String) = storage
+        .with_ai_connection(|conn| {
+            let count = |table: &str| {
+                conn.query_row(
+                    &format!("SELECT COUNT(*) FROM {table} WHERE session_id='session-a'"),
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map_err(|error| {
+                    fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, error.to_string())
+                })
+            };
+            let status = conn
+                .query_row(
+                    "SELECT status FROM ai_sessions WHERE id='session-a'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .map_err(|error| {
+                    fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, error.to_string())
+                })?;
+            Ok((count("ai_messages")?, count("ai_turns")?, status))
+        })
+        .unwrap();
+    assert_eq!((messages, turns), (1, 1), "重命名/归档/恢复不得丢消息或轮次");
+    assert_eq!(status, "active");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn session_commands_without_ai_storage_report_error_instead_of_silent_noop() {
+    let mut controller = AppController::new();
+    let event = controller.dispatch(AppCommand::ArchiveAiSession {
+        id: "missing".into(),
+        expected_revision: 1,
+    });
+    assert!(matches!(event, AppEvent::AiSettingsError(_)));
+}

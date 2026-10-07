@@ -198,10 +198,10 @@ fn read_tool_turn_persists_real_receipt_and_survives_storage_round_trip() {
     let mut last = None;
     while let Ok(update) = rx.try_recv() {
         if update.terminal {
-            last = Some(update.view);
+            last = update.view;
         }
     }
-    let view = last.expect("必须有终态回包");
+    let view = last.expect("终态回包必须携带视图");
 
     let parts = part_kinds(&view);
     let tool_call = parts
@@ -304,10 +304,10 @@ fn write_tool_is_absent_from_read_only_catalog_and_never_executes() {
     let mut last = None;
     while let Ok(update) = rx.try_recv() {
         if update.terminal {
-            last = Some(update.view);
+            last = update.view;
         }
     }
-    let view = last.expect("必须有终态回包");
+    let view = last.expect("终态回包必须携带视图");
 
     let parts = part_kinds(&view);
     assert!(

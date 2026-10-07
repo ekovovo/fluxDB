@@ -29,6 +29,13 @@ struct AiChatUi {
     reference_no_match: bool,
     _input_subscription: Subscription,
     scroll: gpui::ScrollHandle,
+    /// 流式助手正文的 Markdown 实体：只持有"已揭示"文本，末条助手消息流式期由它渲染。
+    /// 惰性创建——只有真正开始流式时才建，避免每个窗口都挂一个后台解析任务。
+    stream_view: Option<Entity<gpui_component::text::TextViewState>>,
+    /// 未揭示增量与揭示进度（内存态，不落盘）。
+    stream: AiChatStream,
+    /// 16ms 平滑揭示任务句柄；仅在有待揭示文本时存活。
+    stream_reveal: Option<Task<()>>,
     pending: std::collections::VecDeque<fluxdb_app::AiConversationCommand>,
     _io: Option<Task<()>>,
     _pump: Option<Task<()>>,
@@ -103,6 +110,9 @@ impl AiChatUi {
             reference_no_match: false,
             _input_subscription: sub,
             scroll: gpui::ScrollHandle::new(),
+            stream_view: None,
+            stream: AiChatStream::default(),
+            stream_reveal: None,
             pending: std::collections::VecDeque::new(),
             _io: None,
             _pump: None,

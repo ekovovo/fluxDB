@@ -67,13 +67,14 @@ pub fn refresh_ai_settings(
     state: &mut AppState,
     storage: &fluxdb_storage::FileStorage,
 ) -> fluxdb_core::Result<()> {
-    let (models, agents_list, plugins_list, mcp_list, runtime) =
+    let (models, agents_list, plugins_list, mcp_list, sessions_list, runtime) =
         with_ai_storage(&storage, |conn| {
             Ok((
                 models::list_models_page(conn, 200, 0)?,
                 agents::list_agents(conn)?,
                 plugins::list_plugin_instances(conn)?,
                 mcp::list_mcp_settings(conn)?,
+                fluxdb_storage::ai_platform::sessions::list_session_overviews(conn, 200)?,
                 ai_settings::load_runtime_settings(conn)?,
             ))
         })?;
@@ -151,6 +152,21 @@ pub fn refresh_ai_settings(
             transport: m.transport,
             enabled: m.enabled,
             revision: m.revision,
+        })
+        .collect();
+    state.ai_sessions = sessions_list
+        .into_iter()
+        .map(|s| AiSessionItem {
+            id: s.id,
+            title: s.title,
+            agent_id: s.agent_id,
+            status: s.status.as_str().to_string(),
+            last_turn_status: s.last_turn_status.map(|status| status.as_str().to_string()),
+            last_target_json: s.last_target_json,
+            message_count: s.message_count,
+            turn_count: s.turn_count,
+            updated_at_ms: s.updated_at_ms,
+            revision: s.revision,
         })
         .collect();
     // 默认模型选择与运行设置 revision 一起回填，供「默认主/决策模型」选择器使用。

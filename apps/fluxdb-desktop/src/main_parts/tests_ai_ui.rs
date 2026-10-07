@@ -78,6 +78,48 @@ mod ai_ui_tests {
         }
     }
 
+    /// 预置真实会话（走 conversation::send，与运行时同一条写入路径）。
+    fn seed_session(storage: &FileStorage, session_id: &str, prompt: &str) {
+        let agent = storage
+            .with_ai_connection(|conn| {
+                Ok(fluxdb_storage::ai_platform::agents::list_agents(conn)?
+                    .into_iter()
+                    .next()
+                    .map(|agent| agent.id))
+            })
+            .unwrap()
+            .expect("内置 Agent 必须存在");
+        storage
+            .with_ai_connection(|conn| {
+                let turn_id = format!("{session_id}-turn");
+                fluxdb_storage::ai_platform::conversation::send(
+                    conn,
+                    1_000,
+                    true,
+                    session_id,
+                    &agent,
+                    &turn_id,
+                    &format!("{session_id}-user"),
+                    prompt,
+                    "{}",
+                    "{}",
+                )?;
+                // 收尾成终态：否则启动恢复扫描会把 queued Turn 当作「中断」并追加恢复公告。
+                fluxdb_storage::ai_platform::conversation::checkpoint(
+                    conn,
+                    1_100,
+                    session_id,
+                    &turn_id,
+                    &format!("{session_id}-assistant"),
+                    "已解释。",
+                    "公开摘要",
+                    Some(fluxdb_storage::ai_platform::sessions::TurnStatus::Completed),
+                    None,
+                )
+            })
+            .unwrap();
+    }
+
     fn save_agent(controller: &mut AppController, name: &str, prompt: &str) -> String {
         let input = fluxdb_app::AiAgentSaveInput {
             compression_trigger_percent: 80,
@@ -869,6 +911,126 @@ mod ai_ui_tests {
         }
         let _ = std::fs::remove_dir_all(root);
     }
+
+    /// 设置页「会话历史」：真实会话从 SQLite → AppState → 渲染快照 → 控件，
+    /// 并能通过行内按钮重命名/归档（真实命令 + 后台回包，走生产 Root/Dialog）。
+    #[gpui::test]
+    async fn ai_ui_sessions_panel_lists_and_manages_real_sessions(cx: &mut TestAppContext) {
+        let _dialog_guard = dialog_test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        cx.executor().allow_parking();
+        let root = isolated_root("sessions");
+        let storage = FileStorage::new(root.clone());
+        let mut controller = AppController::new();
+        controller.set_ai_storage(storage.clone());
+        seed_session(&storage, "session-alpha", "解释这个表");
+        seed_session(&storage, "session-beta", "再看看索引");
+        let _ = controller.dispatch(AppCommand::RefreshAiSettings);
+        assert_eq!(controller.state().ai_sessions.len(), 2);
+        let _ = controller.dispatch(AppCommand::OpenSettings);
+        let (view, cx) = open_main(cx, controller, storage.clone(), SettingsPanelSection::AiSessions);
+        cx.update(|window, cx| {
+            window.replace_root(cx, |window, cx| Root::new(view.clone(), window, cx));
+        });
+
+        // 列表行与数据库一一对应；渲染快照不得丢会话。
+        let (state, snapshot) = view.read_with(cx, |main, _| {
+            (
+                main.controller.state().ai_sessions.clone(),
+                render_state_snapshot(main.controller.state()).ai_sessions,
+            )
+        });
+        assert_eq!(state, snapshot, "AppState → render_state_snapshot 不得丢失会话数据");
+        assert_eq!(state.len(), 2);
+        cx.update(|window, cx| {
+            let _ = window.draw(cx).clear(cx);
+        });
+        assert!(cx.debug_bounds("ai-session-row:session-alpha").is_some());
+        assert!(cx.debug_bounds("ai-session-rename:session-alpha").is_some());
+
+        // 归档按钮走真实生成命令：状态写库、列表内联更新、不删除消息。
+        click_selector(cx, "ai-session-archive:session-alpha");
+        wait_ui_condition(&view, cx, "归档完成", |main| {
+            main.controller
+                .state()
+                .ai_sessions
+                .iter()
+                .any(|s| s.id == "session-alpha" && s.status == "archived")
+        })
+        .await;
+        let (status, messages): (String, i64) = storage
+            .with_ai_connection(|conn| {
+                let status: String = conn
+                    .query_row("SELECT status FROM ai_sessions WHERE id='session-alpha'", [], |r| {
+                        r.get(0)
+                    })
+                    .map_err(|e| fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, e.to_string()))?;
+                let messages: i64 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM ai_messages WHERE session_id='session-alpha'",
+                        [],
+                        |r| r.get(0),
+                    )
+                    .map_err(|e| fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, e.to_string()))?;
+                Ok((status, messages))
+            })
+            .unwrap();
+        assert_eq!(status, "archived");
+        assert_eq!(messages, 2, "归档不得删除消息事实（用户 + 助手各一条）");
+        cx.update(|window, cx| {
+            let _ = window.draw(cx).clear(cx);
+        });
+        assert!(
+            cx.debug_bounds("ai-session-restore:session-alpha").is_some(),
+            "归档后同一行必须提供「恢复」入口"
+        );
+
+        // 恢复：回到活跃。
+        click_selector(cx, "ai-session-restore:session-alpha");
+        wait_ui_condition(&view, cx, "恢复完成", |main| {
+            main.controller
+                .state()
+                .ai_sessions
+                .iter()
+                .any(|s| s.id == "session-alpha" && s.status == "active")
+        })
+        .await;
+
+        // 重命名：弹框默认回填原标题，确认后真实 CAS 写库并回填列表。
+        click_selector(cx, "ai-session-rename:session-beta");
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("ai-session-rename-confirm").is_some());
+        let pending_title = view.read_with(cx, |main, _| {
+            main.pending_ai_session_rename
+                .as_ref()
+                .map(|pending| pending.title.clone())
+        });
+        assert_eq!(pending_title.as_deref(), Some("再看看索引"));
+        view.update(cx, |main, cx| {
+            main.pending_ai_session_rename
+                .as_mut()
+                .expect("弹框等待提交")
+                .title = "重命名后的会话".into();
+            main.confirm_ai_session_rename(cx);
+        });
+        wait_ui_condition(&view, cx, "重命名完成", |main| {
+            main.controller
+                .state()
+                .ai_sessions
+                .iter()
+                .any(|s| s.id == "session-beta" && s.title == "重命名后的会话")
+        })
+        .await;
+        let title: String = storage
+            .with_ai_connection(|conn| {
+                conn.query_row("SELECT title FROM ai_sessions WHERE id='session-beta'", [], |r| r.get(0))
+                    .map_err(|e| fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, e.to_string()))
+            })
+            .unwrap();
+        assert_eq!(title, "重命名后的会话");
+        cx.executor().forbid_parking();
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     #[gpui::test]
     async fn ai_ui_model_delete_cancel_escape_and_confirm(cx: &mut TestAppContext) {
         let _dialog_guard = dialog_test_lock().lock().unwrap_or_else(|e| e.into_inner());
@@ -965,5 +1127,26 @@ mod ai_ui_tests {
         );
         assert!(view.read_with(cx, |main, _| main.ai_model_deleting_id.is_none()));
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// 设置页「会话历史」：真实会话从 SQLite → AppState → 渲染快照 → 控件，
+    /// 并能通过行内按钮重命名/归档（真实命令 + 后台回包）。
+    /// 后台命令（背景线程 + 回桥）需要真实 await 事件循环；与既有 AI 面板测试一致，
+    /// 打开 executor 的 parking 后按真实时间轮询，不 sleep、不跳过生产链路。
+    async fn wait_ui_condition(
+        view: &Entity<NavicatMain>,
+        cx: &mut VisualTestContext,
+        phase: &str,
+        ready: impl Fn(&NavicatMain) -> bool,
+    ) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+        loop {
+            cx.run_until_parked();
+            if view.read_with(cx, |main, _| ready(main)) {
+                return;
+            }
+            assert!(std::time::Instant::now() < deadline, "等待超时: {phase}");
+            smol::Timer::after(std::time::Duration::from_millis(20)).await;
+        }
     }
 }

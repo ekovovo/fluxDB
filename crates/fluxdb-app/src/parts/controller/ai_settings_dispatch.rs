@@ -106,6 +106,145 @@ impl AppController {
                     Err(e) => return AppEvent::AiSettingsError(e.message),
                 }
             }
+            AppCommand::RenameAiSession {
+                id,
+                title,
+                expected_revision,
+            } => {
+                let title = title.trim().to_string();
+                if title.is_empty() {
+                    return AppEvent::AiSettingsError("会话名称不能为空".into());
+                }
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or(0);
+                let result = self.ai_storage().and_then(|storage| {
+                    with_ai_storage(&storage, |conn| {
+                        fluxdb_storage::ai_platform::sessions::rename_session(
+                            conn,
+                            now,
+                            &id,
+                            &title,
+                            expected_revision,
+                        )
+                    })
+                });
+                match result {
+                    Ok(revision) => {
+                        if let Some(item) = self.state.ai_sessions.iter_mut().find(|s| s.id == id) {
+                            item.title = title.clone();
+                            item.revision = revision;
+                        }
+                        return AppEvent::AiSessionRenamed {
+                            id,
+                            title,
+                            revision,
+                        };
+                    }
+                    Err(error) => return AppEvent::AiSettingsError(error.message),
+                }
+            }
+            AppCommand::ArchiveAiSession {
+                id,
+                expected_revision,
+            } => {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or(0);
+                let result = self.ai_storage().and_then(|storage| {
+                    with_ai_storage(&storage, |conn| {
+                        fluxdb_storage::ai_platform::sessions::archive_session(
+                            conn,
+                            now,
+                            &id,
+                            expected_revision,
+                        )
+                    })
+                });
+                match result {
+                    Ok(revision) => {
+                        if let Some(item) = self.state.ai_sessions.iter_mut().find(|s| s.id == id) {
+                            item.status = "archived".into();
+                            item.revision = revision;
+                        }
+                        return AppEvent::AiSessionArchived { id, revision };
+                    }
+                    Err(error) => return AppEvent::AiSettingsError(error.message),
+                }
+            }
+            AppCommand::RestoreAiSession {
+                id,
+                expected_revision,
+            } => {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or(0);
+                let result = self.ai_storage().and_then(|storage| {
+                    with_ai_storage(&storage, |conn| {
+                        fluxdb_storage::ai_platform::sessions::restore_session(
+                            conn,
+                            now,
+                            &id,
+                            expected_revision,
+                        )
+                    })
+                });
+                match result {
+                    Ok(revision) => {
+                        if let Some(item) = self.state.ai_sessions.iter_mut().find(|s| s.id == id) {
+                            item.status = "active".into();
+                            item.revision = revision;
+                        }
+                        return AppEvent::AiSessionRestored { id, revision };
+                    }
+                    Err(error) => return AppEvent::AiSettingsError(error.message),
+                }
+            }
+            AppCommand::CompleteAiSessionRename {
+                id,
+                title,
+                revision,
+                result,
+            } => {
+                return match result {
+                    Ok(()) => {
+                        if let Some(item) = self.state.ai_sessions.iter_mut().find(|s| s.id == id) {
+                            item.title = title.clone();
+                            item.revision = revision;
+                        }
+                        AppEvent::AiSessionRenamed {
+                            id,
+                            title,
+                            revision,
+                        }
+                    }
+                    Err(message) => AppEvent::AiSettingsError(message),
+                };
+            }
+            AppCommand::CompleteAiSessionStatus {
+                id,
+                archived,
+                revision,
+                result,
+            } => {
+                return match result {
+                    Ok(()) => {
+                        if let Some(item) = self.state.ai_sessions.iter_mut().find(|s| s.id == id) {
+                            item.status = if archived { "archived" } else { "active" }.into();
+                            item.revision = revision;
+                        }
+                        if archived {
+                            AppEvent::AiSessionArchived { id, revision }
+                        } else {
+                            AppEvent::AiSessionRestored { id, revision }
+                        }
+                    }
+                    Err(message) => AppEvent::AiSettingsError(message),
+                };
+            }
             AppCommand::SetAiModelEnabled {
                 id,
                 enabled,

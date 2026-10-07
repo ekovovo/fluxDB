@@ -28,6 +28,11 @@ struct AiSettingsPanelState {
     default_decision_menu_open: bool,
     settings_loading: bool,
     settings_error: Option<String>,
+    /// 「会话历史」页搜索框实体与过滤文本。
+    session_filter_input: Entity<InputState>,
+    session_filter: String,
+    /// 正在归档的会话 id（行内 loading/disabled）。
+    session_archiving_id: Option<String>,
     tools_tab: AiToolsTab,
     disabled_tools: std::collections::HashSet<String>,
     agent_editor: Option<AiAgentEditorState>,

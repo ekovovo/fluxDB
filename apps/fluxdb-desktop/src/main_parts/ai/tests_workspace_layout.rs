@@ -9,6 +9,10 @@ fn drawer_preserves_pages_and_embedded_keeps_sidebar_visible_dark(cx: &mut TestA
 }
 
 fn check_workspace_modes(cx: &mut TestAppContext, theme: ThemeMode) {
+    // 编辑器组件用真实 smol Timer 做防抖；异步 io 反应堆线程的唤醒会被测试
+    // 调度器判定为"不确定性"（Markdown 正文渲染拉长本用例时长后更易命中）。
+    // 允许 parking 后，调度器不再把后台唤醒当失败（与本文件其他流式用例同一处理）。
+    cx.executor().allow_parking();
     let database = ObjectPath {
         connection_id: ConnectionId(1),
         database: Some("main".into()),

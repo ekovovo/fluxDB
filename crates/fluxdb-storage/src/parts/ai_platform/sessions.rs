@@ -226,6 +226,26 @@ pub struct SessionView {
     pub updated_at_ms: i64,
 }
 
+/// 会话历史列表行：会话身份 + 派生统计，供设置页「会话历史」渲染。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionOverview {
+    pub id: String,
+    pub agent_id: String,
+    pub title: String,
+    pub status: SessionStatus,
+    pub revision: i64,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+    /// 已持久化的消息条数（用户 + 助手）。
+    pub message_count: i64,
+    /// Turn（任务轮次）总数。
+    pub turn_count: i64,
+    /// 该会话最后一个 Turn 的状态；没有 Turn 时为 `None`。
+    pub last_turn_status: Option<TurnStatus>,
+    /// 该会话最后一个 Turn 的执行目标 JSON；没有 Turn 时为 `None`。
+    pub last_target_json: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TurnView {
     pub id: String,
@@ -429,6 +449,82 @@ pub fn list_sessions(conn: &Connection, limit: i64) -> Result<Vec<SessionView>> 
     ids.into_iter().map(|id| load_session(conn, &id)).collect()
 }
 
+/// 会话历史概览（设置页「会话历史」用）：一次查询取会话 + 派生统计。
+///
+/// `last_turn_status` 取该会话最后一个 Turn 的状态，用于列表状态列；
+/// 没有 Turn 的会话为 `None`。排序与 [`list_sessions`] 一致（活跃优先、最近更新）。
+pub fn list_session_overviews(conn: &Connection, limit: i64) -> Result<Vec<SessionOverview>> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT s.id, s.agent_id, s.title, s.status, s.revision,
+                    s.created_at_ms, s.updated_at_ms,
+                    (SELECT COUNT(*) FROM ai_messages m WHERE m.session_id=s.id),
+                    (SELECT COUNT(*) FROM ai_turns t WHERE t.session_id=s.id),
+                    (SELECT t.status FROM ai_turns t WHERE t.session_id=s.id
+                      ORDER BY t.ordinal DESC LIMIT 1),
+                    (SELECT t.target_json FROM ai_turns t WHERE t.session_id=s.id
+                      ORDER BY t.ordinal DESC LIMIT 1)
+               FROM ai_sessions s
+              ORDER BY CASE s.status WHEN 'active' THEN 0 ELSE 1 END,
+                       s.updated_at_ms DESC, s.id
+              LIMIT ?1",
+        )
+        .map_err(sqlite_error)?;
+    let rows = stmt
+        .query_map([limit], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, i64>(5)?,
+                row.get::<_, i64>(6)?,
+                row.get::<_, i64>(7)?,
+                row.get::<_, i64>(8)?,
+                row.get::<_, Option<String>>(9)?,
+                row.get::<_, Option<String>>(10)?,
+            ))
+        })
+        .map_err(sqlite_error)?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(sqlite_error)?;
+    rows.into_iter()
+        .map(
+            |(
+                id,
+                agent_id,
+                title,
+                status,
+                revision,
+                created_at_ms,
+                updated_at_ms,
+                message_count,
+                turn_count,
+                last_turn_status,
+                last_target_json,
+            )| {
+                Ok(SessionOverview {
+                    id,
+                    agent_id,
+                    title,
+                    status: SessionStatus::parse(&status)?,
+                    revision,
+                    created_at_ms,
+                    updated_at_ms,
+                    message_count,
+                    turn_count,
+                    last_turn_status: last_turn_status
+                        .as_deref()
+                        .map(TurnStatus::parse)
+                        .transpose()?,
+                    last_target_json,
+                })
+            },
+        )
+        .collect()
+}
+
 /// 重命名会话（对象级 CAS）。
 pub fn rename_session(
     conn: &Connection,
@@ -453,6 +549,29 @@ pub fn rename_session(
     Ok(expected_revision + 1)
 }
 
+/// 恢复已归档会话（对象级 CAS）：回到活跃历史，消息与审计事实不变。
+pub fn restore_session(
+    conn: &Connection,
+    now_ms: i64,
+    id: &str,
+    expected_revision: i64,
+) -> Result<i64> {
+    let changed = conn
+        .execute(
+            "UPDATE ai_sessions SET status='active', revision=revision+1, updated_at_ms=?2
+              WHERE id=?1 AND revision=?3 AND status='archived'",
+            params![id, now_ms, expected_revision],
+        )
+        .map_err(sqlite_error)?;
+    if changed == 0 {
+        return Err(Error::new(
+            ErrorKind::Internal,
+            "会话不存在、状态已变化或未归档，请重新加载",
+        ));
+    }
+    Ok(expected_revision + 1)
+}
+
 /// 归档会话（对象级 CAS）。
 pub fn archive_session(
     conn: &Connection,
@@ -463,14 +582,14 @@ pub fn archive_session(
     let changed = conn
         .execute(
             "UPDATE ai_sessions SET status='archived', revision=revision+1, updated_at_ms=?2
-              WHERE id=?1 AND revision=?3",
+              WHERE id=?1 AND revision=?3 AND status='active'",
             params![id, now_ms, expected_revision],
         )
         .map_err(sqlite_error)?;
     if changed == 0 {
         return Err(Error::new(
             ErrorKind::Internal,
-            "会话已被其他窗口修改，请重新加载",
+            "会话不存在、状态已变化或已归档，请重新加载",
         ));
     }
     Ok(expected_revision + 1)

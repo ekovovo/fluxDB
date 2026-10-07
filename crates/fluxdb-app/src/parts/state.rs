@@ -164,6 +164,29 @@ pub struct AiPluginItem {
     pub revision: i64,
 }
 
+/// 设置页「会话历史」列表行：公开的会话身份与派生统计，不含任何凭据或正文。
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AiSessionItem {
+    pub id: String,
+    pub title: String,
+    /// 该会话使用的 Agent id（UI 按 `state.ai_agents` 显示名称）。
+    pub agent_id: String,
+    /// 会话状态（`active` / `archived`）。
+    pub status: String,
+    /// 最后一个 Turn 的状态（`ai_session_turn_status` 口径）；无 Turn 时为 `None`。
+    pub last_turn_status: Option<String>,
+    /// 最后一个 Turn 的执行目标 JSON（脱敏后的公开目标）；无 Turn 时为 `None`。
+    pub last_target_json: Option<String>,
+    /// 已持久化的消息条数。
+    pub message_count: i64,
+    /// Turn 总数。
+    pub turn_count: i64,
+    /// 最近更新时间（毫秒时间戳）。
+    pub updated_at_ms: i64,
+    /// 对象级 CAS 期望 revision。
+    pub revision: i64,
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct AiMcpItem {
     pub id: String,
@@ -187,6 +210,8 @@ pub struct AppState {
     pub ai_agents: Vec<AiAgentItem>,
     pub ai_plugin_instances: Vec<AiPluginItem>,
     pub ai_mcp_settings: Vec<AiMcpItem>,
+    /// 设置页「会话历史」列表（活跃 + 已归档，最近更新优先）。
+    pub ai_sessions: Vec<AiSessionItem>,
     /// 默认主模型档案 id（`ai_runtime_settings.default_model_profile_id`）。
     pub ai_default_model_id: Option<String>,
     /// 默认决策（Jev）模型档案 id。
@@ -224,6 +249,7 @@ impl Default for AppState {
             ai_agents: Vec::new(),
             ai_plugin_instances: Vec::new(),
             ai_mcp_settings: Vec::new(),
+            ai_sessions: Vec::new(),
             ai_default_model_id: None,
             ai_default_decision_model_id: None,
             ai_runtime_revision: 0,

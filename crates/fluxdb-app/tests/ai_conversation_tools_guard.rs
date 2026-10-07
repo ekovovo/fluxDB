@@ -707,6 +707,7 @@ fn failure_is_visible_and_marks_turn_failed() {
     assert!(
         update
             .view
+            .expect("终态回包必须携带视图")
             .error
             .as_deref()
             .is_some_and(|message| { message.contains("Provider 初始化失败") }),

@@ -7,7 +7,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 /// 面板打开状态：只取最近 100 条消息，较老历史由后续分页入口读取。
 #[derive(Clone, Debug)]
 pub struct ConversationData {
-    pub sessions: Vec<sessions::SessionView>,
+    pub sessions: Vec<sessions::SessionOverview>,
     pub preferences: settings::PanelPreferences,
     pub session: Option<sessions::SessionView>,
     pub messages: Vec<sessions::MessageView>,
@@ -26,7 +26,7 @@ pub fn load(conn: &Connection, selected: Option<&str>) -> Result<ConversationDat
         .map(str::to_owned)
         .or_else(|| preferences.last_session_id.clone());
     let mut data = ConversationData {
-        sessions: sessions::list_sessions(conn, 100)?,
+        sessions: sessions::list_session_overviews(conn, 100)?,
         preferences,
         session: None,
         messages: Vec::new(),

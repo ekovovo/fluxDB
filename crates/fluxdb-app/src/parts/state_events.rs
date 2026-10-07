@@ -33,6 +33,20 @@ pub enum AppEvent {
     AiAgentDeleted {
         id: String,
     },
+    /// 会话已重命名（id、新标题、新 revision）。
+    AiSessionRenamed {
+        id: String,
+        title: String,
+        revision: i64,
+    },
+    AiSessionArchived {
+        id: String,
+        revision: i64,
+    },
+    AiSessionRestored {
+        id: String,
+        revision: i64,
+    },
     /// 默认模型选择已保存（运行设置新 revision）。
     AiDefaultModelsSaved {
         revision: i64,

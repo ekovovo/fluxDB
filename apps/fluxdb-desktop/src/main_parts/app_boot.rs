@@ -198,6 +198,30 @@ fn navicat_main_new(
 ) -> NavicatMain {
                         let rename_group_input =
                             cx.new(|cx| InputState::new(window, cx).placeholder("分组名称"));
+                        let ai_session_filter_input =
+                            cx.new(|cx| InputState::new(window, cx).placeholder("搜索会话"));
+                        let ai_session_filter_subscription = cx.subscribe(
+                            &ai_session_filter_input,
+                            |this: &mut NavicatMain, input, event: &InputEvent, cx| {
+                                if matches!(event, InputEvent::Change) {
+                                    this.ai_session_filter = input.read(cx).value().to_string();
+                                    cx.notify();
+                                }
+                            },
+                        );
+                        let ai_session_rename_input =
+                            cx.new(|cx| InputState::new(window, cx).placeholder("会话名称"));
+                        let ai_session_rename_subscription = cx.subscribe(
+                            &ai_session_rename_input,
+                            |this: &mut NavicatMain, input, event: &InputEvent, cx| {
+                                if let InputEvent::Change = event {
+                                    let value = input.read(cx).value().to_string();
+                                    if let Some(pending) = &mut this.pending_ai_session_rename {
+                                        pending.title = value;
+                                    }
+                                }
+                            },
+                        );
                         let rename_group_subscription = cx.subscribe(
                             &rename_group_input,
                             |this: &mut NavicatMain, input, event: &InputEvent, cx| {
@@ -3082,6 +3106,13 @@ fn navicat_main_new(
                             ai_disabled_tools: std::collections::HashSet::new(),
                             ai_agent_editor: None,
                             ai_agent_editor_debug_pending: debug_ai_agent_draft_requested(),
+                            ai_session_filter_input,
+                            _ai_session_filter_subscription: ai_session_filter_subscription,
+                            ai_session_filter: String::new(),
+                            ai_session_archiving_id: None,
+                            ai_session_rename_input,
+                            _ai_session_rename_subscription: ai_session_rename_subscription,
+                            pending_ai_session_rename: None,
                             ai_model_test_debug_pending: debug_ai_model_test_requested(),
                             settings_editor_draft,
                             settings_dangerous_actions_collapsed: false,

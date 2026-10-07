@@ -84,7 +84,7 @@ use gpui_component::{
     progress::Progress,
     scroll::{ScrollableElement, Scrollbar},
     select::{SearchableVec, Select, SelectEvent, SelectItem, SelectState},
-    sidebar::{Sidebar, SidebarMenu, SidebarMenuItem},
+    sidebar::{Sidebar, SidebarGroup, SidebarMenuItem},
     slider::{Slider, SliderEvent, SliderState},
     switch::Switch,
     tab::{Tab, TabBar},
@@ -193,6 +193,7 @@ include!("main_parts/single_instance.rs");
 // Linux 首版不启用系统托盘（tray-icon 在 Linux 会无条件链接 GTK），托盘实现仅限 macOS/Windows。
 #[cfg(not(target_os = "linux"))]
 include!("main_parts/tray_icon.rs");
+include!("main_parts/ai/stream.rs");
 include!("main_parts/ai/state.rs");
 include!("main_parts/ai/model_selection.rs");
 include!("main_parts/ai/references.rs");

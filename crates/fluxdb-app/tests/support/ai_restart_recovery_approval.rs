@@ -327,10 +327,13 @@ fn unknown_write_same_target_cannot_be_replayed_even_after_pending_is_reapproved
     );
     assert_eq!(tool.call_count(), 0, "再次批准也不能执行同目标未知写");
     assert_eq!(provider.call_count(), 0, "拒绝发生在模型/工具调用前");
-    assert!(
-        rx.try_iter()
-            .any(|update| update.terminal && update.view.error.is_some())
-    );
+    assert!(rx.try_iter().any(|update| {
+        update.terminal
+            && update
+                .view
+                .as_ref()
+                .is_some_and(|view| view.error.is_some())
+    }));
     assert_eq!(
         f.snapshot(),
         before,

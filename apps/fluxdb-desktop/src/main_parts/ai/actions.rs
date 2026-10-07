@@ -111,6 +111,12 @@ impl NavicatMain {
                                     fluxdb_app::AiConversationCommand::Apply { view },
                                 ));
                             }
+                            // 切会话/新建：清掉旧会话的流式正文与揭示任务。
+                            this.ai_chat.stream.reset();
+                            this.ai_chat.stream_reveal = None;
+                            if let Some(view) = this.ai_chat.stream_view.clone() {
+                                view.update(cx, |state, cx| state.set_text("", cx));
+                            }
                         }
                         AppEvent::AiSettingsError(message) => {
                             if recovering {
@@ -191,6 +197,149 @@ impl NavicatMain {
             });
         }));
     }
+    /// 消费一个后台回包：视图回包走 Apply（画面来源仍是数据库），
+    /// 增量回包只更新内存流缓冲。切会话后的迟到回包按 turn/session 身份拒绝。
+    fn ai_chat_consume_update(
+        &mut self,
+        update: fluxdb_app::AiConversationUpdate,
+        cx: &mut Context<Self>,
+    ) {
+        if !self
+            .ai_chat
+            .running
+            .as_ref()
+            .is_some_and(|j| j.turn_id == update.job.turn_id)
+        {
+            return;
+        }
+        if self
+            .controller
+            .state()
+            .ai_conversation
+            .session_id
+            .as_deref()
+            != Some(update.job.session_id.as_str())
+        {
+            return;
+        }
+        let terminal = update.terminal;
+        if let Some(delta) = update.delta.clone() {
+            self.ai_chat_apply_delta(delta, cx);
+        }
+        if let Some(view) = update.view.clone() {
+            // 草稿由独立输入 Entity 持有，stream checkpoint 不覆盖当前未发送内容。
+            self.controller.dispatch(AppCommand::AiConversation(
+                fluxdb_app::AiConversationCommand::Apply { view },
+            ));
+            if let Some(message_id) = self.ai_chat.stream.message_id().map(str::to_owned) {
+                self.ai_chat_sync_stream_from_view(&message_id);
+            }
+        }
+        if self.ai_chat.follow_reply {
+            self.ai_chat.scroll.scroll_to_bottom();
+        } else if update.delta.is_some() || update.view.is_some() {
+            self.ai_chat.new_reply = true;
+        }
+        if terminal {
+            // 终态：立即揭示剩余文本，并清掉流缓冲；下帧起画面由 checkpoint 正文渲染。
+            let tail = self.ai_chat.stream.reveal_all();
+            if let (Some(chunk), Some(view)) = (tail, self.ai_chat.stream_view.clone()) {
+                view.update(cx, |state, cx| state.push_str(&chunk, cx));
+            }
+            self.ai_chat.stream.reset();
+            self.ai_chat.stream_reveal = None;
+            self.ai_chat.running = None;
+            self.ai_chat.cancel = None;
+        }
+    }
+    /// 把一段未落盘增量并入流缓冲，必要时绑定正文实体并启动揭示任务。
+    fn ai_chat_apply_delta(
+        &mut self,
+        delta: fluxdb_app::AiConversationStreamDelta,
+        cx: &mut Context<Self>,
+    ) {
+        // 只有助手正文流式渲染；公开摘要仍走折叠卡，不进入正文实体。
+        if !matches!(delta.kind, fluxdb_app::AiConversationDeltaKind::Text) {
+            return;
+        }
+        if !self.ai_chat.stream.target_matches(&delta.message_id) {
+            let baseline = self.ai_chat_stream_baseline(&delta.message_id);
+            self.ai_chat.stream.begin(&delta.message_id, &baseline);
+            // 首个真实 delta 到达时才创建解析实体，避免空窗期挂后台任务。
+            let view = match self.ai_chat.stream_view.clone() {
+                Some(view) => view,
+                None => {
+                    let view =
+                        cx.new(|cx| gpui_component::text::TextViewState::markdown(&baseline, cx));
+                    self.ai_chat.stream_view = Some(view.clone());
+                    view
+                }
+            };
+            view.update(cx, |state, cx| state.set_text(&baseline, cx));
+        }
+        self.ai_chat.stream.push(&delta.delta);
+        self.ai_chat_ensure_reveal_task(cx);
+    }
+    /// 末端助手正文已 checkpoint 的正文，作为流式渲染基线（避免重打历史内容）。
+    fn ai_chat_stream_baseline(&self, message_id: &str) -> String {
+        let part_id = format!("{message_id}-text");
+        self.controller
+            .state()
+            .ai_conversation
+            .messages
+            .iter()
+            .find(|message| message.id == message_id)
+            .and_then(|message| message.parts.iter().find(|part| part.id == part_id))
+            .and_then(|part| serde_json::from_str::<serde_json::Value>(&part.payload_json).ok())
+            .and_then(|payload| payload.get("text").and_then(|v| v.as_str()).map(str::to_owned))
+            .unwrap_or_default()
+    }
+    /// checkpoint 视图回来后，用权威正文校正流缓冲（只补不回退）。
+    fn ai_chat_sync_stream_from_view(&mut self, message_id: &str) {
+        let payload = self.ai_chat_stream_baseline(message_id);
+        self.ai_chat.stream.reconcile(&payload);
+    }
+    /// 启动/保持 16ms 平滑揭示任务；只揭示已进入 buffer 的文本。
+    ///
+    /// 任务只在*有待揭示文本*时存活；一旦排空且没有新 delta 就自然结束，
+    /// 不留下空转定时器（下一个 delta 会重新拉起）。已结束的句柄由
+    /// `is_ready` 识别并重建。
+    fn ai_chat_ensure_reveal_task(&mut self, cx: &mut Context<Self>) {
+        if self
+            .ai_chat
+            .stream_reveal
+            .as_ref()
+            .is_some_and(|task| !task.is_ready())
+            || !self.ai_chat.stream.has_pending()
+        {
+            return;
+        }
+        self.ai_chat.stream_reveal = Some(cx.spawn(async move |view, cx| loop {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(16))
+                .await;
+            let keep = view
+                .update(cx, |this, cx| {
+                    if !this.ai_chat.stream.is_active() {
+                        return false;
+                    }
+                    if let Some(chunk) = this.ai_chat.stream.reveal_next() {
+                        if let Some(view) = this.ai_chat.stream_view.clone() {
+                            view.update(cx, |state, cx| state.push_str(&chunk, cx));
+                        }
+                        if this.ai_chat.follow_reply {
+                            this.ai_chat.scroll.scroll_to_bottom();
+                        }
+                        cx.notify();
+                    }
+                    this.ai_chat.stream.has_pending()
+                })
+                .unwrap_or(false);
+            if !keep {
+                break;
+            }
+        }));
+    }
     fn start_ai_chat_job(&mut self, job: fluxdb_app::AiConversationJob, cx: &mut Context<Self>) {
         self.start_ai_chat_job_with(job, None, cx);
     }
@@ -207,6 +356,9 @@ impl NavicatMain {
         let cancel = fluxdb_core::CancelFlag::new();
         self.ai_chat.cancel = Some(cancel.clone());
         self.ai_chat.running = Some(job.clone());
+        // 新一轮开始：丢弃上一轮遗留的流缓冲与揭示任务，避免串行内容。
+        self.ai_chat.stream.reset();
+        self.ai_chat.stream_reveal = None;
         let (tx, rx) = std::sync::mpsc::sync_channel(4);
         let debug_scripted = cfg!(debug_assertions) && self.ai_chat.scripted_fixture;
         // 工具执行只读借用当前已配置连接；连接配置不含凭据（凭据在 connector 层解密）。
@@ -337,35 +489,7 @@ impl NavicatMain {
                 while let Ok(update) = rx.try_recv() {
                     let terminal = update.terminal;
                     let _ = view.update(cx, |this, cx| {
-                        if this
-                            .ai_chat
-                            .running
-                            .as_ref()
-                            .is_some_and(|j| j.turn_id == update.job.turn_id)
-                        {
-                            if this
-                                .controller
-                                .state()
-                                .ai_conversation
-                                .session_id
-                                .as_deref()
-                                == Some(update.job.session_id.as_str())
-                            {
-                                // 草稿由独立输入 Entity 持有，stream checkpoint 不覆盖当前未发送内容。
-                                this.controller.dispatch(AppCommand::AiConversation(
-                                    fluxdb_app::AiConversationCommand::Apply { view: update.view },
-                                ));
-                                if this.ai_chat.follow_reply {
-                                    this.ai_chat.scroll.scroll_to_bottom();
-                                } else {
-                                    this.ai_chat.new_reply = true;
-                                }
-                            }
-                            if terminal {
-                                this.ai_chat.running = None;
-                                this.ai_chat.cancel = None;
-                            }
-                        }
+                        this.ai_chat_consume_update(update, cx);
                         cx.notify();
                     });
                     done |= terminal;

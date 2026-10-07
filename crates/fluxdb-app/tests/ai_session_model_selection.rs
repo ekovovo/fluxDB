@@ -259,6 +259,7 @@ fn run(
         .last()
         .expect("terminal update")
         .view
+        .expect("终态回包必须携带视图")
 }
 
 fn finish(fixture: &Fixture, controller: &mut AppController, job: &AiConversationJob, model: &str) {
@@ -746,7 +747,13 @@ fn approval_resume_preserves_selected_turn_model_when_agent_default_changes() {
         &approval.id,
     );
     drop(tx);
-    let view = rx.try_iter().filter(|u| u.terminal).last().unwrap().view;
+    let view = rx
+        .try_iter()
+        .filter(|u| u.terminal)
+        .last()
+        .unwrap()
+        .view
+        .expect("终态回包必须携带视图");
     assert!(view.error.is_none(), "{:?}", view.error);
     assert_eq!(tool.call_count(), 1);
     assert_eq!(provider.call_count(), 1);

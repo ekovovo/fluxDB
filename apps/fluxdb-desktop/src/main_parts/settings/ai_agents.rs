@@ -521,24 +521,653 @@ fn settings_ai_agents_panel(
         )
 }
 
-/// 「会话历史」分区：M1 只提供入口与说明（真实会话在运行时阶段写入）。
-fn settings_ai_sessions_panel(colors: UiColors) -> Div {
-    div().flex().flex_col().gap_3().child(
-        settings_panel_group("会话历史", colors)
-            .child(
-                div()
-                    .border_t_1()
-                    .border_color(colors.border_soft)
-                    .px_4()
-                    .py_3()
-                    .flex()
-                    .items_center()
-                    .gap_3()
-                    .child(ai_table_head("会话", 300., colors))
-                    .child(ai_table_head("Agent / 目标", 240., colors))
-                    .child(ai_table_head("状态", 120., colors))
-                    .child(div().flex_1()),
-            )
-            .child(ai_empty_state("暂无会话记录。", colors)),
-    )
+/// 会话状态/最近 Turn 状态的中文标签与颜色（状态同时有文字，不只靠颜色区分）。
+fn ai_session_status_label(status: &str, colors: UiColors) -> (&'static str, gpui::Rgba) {
+    match status {
+        "queued" | "preparing" | "generating" | "executing_tools" | "cancel_requested" => {
+            ("执行中", colors.info)
+        }
+        "waiting_approval" => ("等待批准", colors.warning),
+        "waiting_user" => ("等待输入", colors.warning),
+        "cancelled" => ("已取消", colors.muted),
+        "failed" => ("失败", colors.danger),
+        "interrupted" => ("已中断", colors.warning),
+        "outcome_unknown" => ("结果未知", colors.danger),
+        "completed" => ("已完成", colors.success),
+        _ => ("未开始", colors.muted),
+    }
 }
+
+/// 会话时间戳（毫秒）格式化为本地时间 `MM-DD HH:MM`；无效值回落为 `—`。
+fn ai_session_timestamp(ms: i64) -> String {
+    chrono::DateTime::from_timestamp_millis(ms)
+        .map(|dt| dt.with_timezone(&chrono::Local).format("%m-%d %H:%M").to_string())
+        .unwrap_or_else(|| "—".to_string())
+}
+
+/// 目标摘要：从 Turn 的公开 target JSON 取连接/库/对象名；无目标显示占位。
+fn ai_session_target_summary(target_json: Option<&str>) -> String {
+    let Some(target_json) = target_json else {
+        return "无执行目标".to_string();
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(target_json) else {
+        return "无执行目标".to_string();
+    };
+    // target_json 结构由 T021 目标快照决定：优先库/对象，其次 Redis db。
+    let parts = [
+        value.get("database").and_then(|v| v.as_str()),
+        value.get("schema").and_then(|v| v.as_str()),
+        value.get("object").and_then(|v| v.as_str()),
+        value.get("redis_db").and_then(|v| v.as_str()),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>();
+    if parts.is_empty() {
+        "无执行目标".to_string()
+    } else {
+        parts.join(" / ")
+    }
+}
+
+/// 「会话历史」分区：真实会话列表（标题、Agent/目标、状态、打开/重命名/归档）。
+fn settings_ai_sessions_panel(
+    state: &AppState,
+    panel: &AiSettingsPanelState,
+    colors: UiColors,
+    window: &mut Window,
+    cx: &mut Context<NavicatMain>,
+) -> Div {
+    let filter = panel.session_filter.trim().to_lowercase();
+    let filtered: Vec<&fluxdb_app::AiSessionItem> = state
+        .ai_sessions
+        .iter()
+        .filter(|s| filter.is_empty() || s.title.to_lowercase().contains(&filter))
+        .collect();
+
+    let rows: Vec<gpui::AnyElement> = if panel.settings_loading {
+        vec![ai_empty_state("正在加载会话列表…", colors)]
+    } else if let Some(message) = panel.settings_error.as_ref() {
+        vec![ai_settings_error_block(message, colors, cx)]
+    } else if state.ai_sessions.is_empty() {
+        vec![ai_empty_state(
+            "暂无会话记录。在询问 AI 面板发送第一条消息后，会话会出现在这里。",
+            colors,
+        )]
+    } else if filtered.is_empty() {
+        vec![ai_empty_state("没有匹配的会话。", colors)]
+    } else {
+        filtered
+            .iter()
+            .map(|session| {
+                ai_session_row(
+                    session,
+                    state,
+                    panel.session_archiving_id.as_deref() == Some(session.id.as_str()),
+                    colors,
+                    window,
+                    cx,
+                )
+                .into_any_element()
+            })
+            .collect()
+    };
+
+    div()
+        .flex()
+        .flex_col()
+        .gap_3()
+        .child(
+            settings_panel_group("会话历史", colors)
+                .child(
+                    div()
+                        .border_t_1()
+                        .border_color(colors.border_soft)
+                        .px_4()
+                        .py_3()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap_3()
+                        .child(
+                            div()
+                                .text_size(px(12.))
+                                .text_color(colors.muted)
+                                .child(format!(
+                                    "共 {} 个会话 · 归档保留消息与审计事实",
+                                    state.ai_sessions.len()
+                                )),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .child(ai_session_search_field(
+                                    &panel.session_filter_input,
+                                    colors,
+                                    cx,
+                                ))
+                                .child(
+                                    Button::new("ai-sessions-refresh")
+                                        .small()
+                                        .ghost()
+                                        .cursor_pointer()
+                                        .debug_selector(|| "ai-sessions-refresh".into())
+                                        .disabled(panel.settings_loading)
+                                        .child(if panel.settings_loading {
+                                            "刷新中…"
+                                        } else {
+                                            "刷新"
+                                        })
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.reload_ai_settings(cx);
+                                        })),
+                                ),
+                        ),
+                )
+                .child(
+                    div()
+                        .border_t_1()
+                        .border_color(colors.border_soft)
+                        .px_4()
+                        .py_2()
+                        .flex()
+                        .items_center()
+                        .gap_3()
+                        .child(ai_table_head("会话", 300., colors))
+                        .child(ai_table_head("Agent / 目标", 240., colors))
+                        .child(ai_table_head("状态", 120., colors))
+                        .child(div().flex_1()),
+                )
+                // 窄窗口：四列保持最小宽度并横向滚动，避免列被压扁/裁切。
+                .child(
+                    div().w_full().overflow_x_scrollbar().child(
+                        div()
+                            .min_w(px(760.))
+                            .flex()
+                            .flex_col()
+                            .child(div().children(rows)),
+                    ),
+                ),
+        )
+}
+
+/// 会话搜索框（复用「大模型」页同款圆角搜索条）。
+fn ai_session_search_field(
+    input: &Entity<InputState>,
+    colors: UiColors,
+    cx: &mut Context<NavicatMain>,
+) -> Div {
+    let input = input.clone();
+    let value = input.read(cx).value().to_string();
+    div()
+        .w(px(200.))
+        .h(px(28.))
+        .rounded(colors.radius)
+        .border_1()
+        .border_color(colors.border)
+        .bg(colors.input_bg)
+        .flex()
+        .items_center()
+        .gap_1()
+        .px_2()
+        .child(app_icon(AppIcon::Search, 12., colors.muted))
+        .child(
+            div().flex_1().min_w(px(0.)).child(
+                Input::new(&input)
+                    .appearance(false)
+                    .bordered(false)
+                    .focus_bordered(false)
+                    .w_full()
+                    .h_full()
+                    .text_size(px(12.)),
+            ),
+        )
+        .when(!value.is_empty(), |this| {
+            this.child(
+                div()
+                    .id("ai-session-search-clear")
+                    .debug_selector(|| "ai-session-search-clear".into())
+                    .cursor_pointer()
+                    .child(app_icon(AppIcon::Close, 12., colors.muted))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.ai_session_filter_input
+                            .update(cx, |state, cx| state.set_value("", window, cx));
+                        this.ai_session_filter.clear();
+                        cx.notify();
+                    })),
+            )
+        })
+}
+
+/// 单个会话行：会话标题/消息数、Agent 与目标、最近状态、行内动作。
+fn ai_session_row(
+    session: &fluxdb_app::AiSessionItem,
+    state: &AppState,
+    archiving: bool,
+    colors: UiColors,
+    _window: &mut Window,
+    cx: &mut Context<NavicatMain>,
+) -> Stateful<Div> {
+    let session_id = session.id.clone();
+    let agent_name = state
+        .ai_agents
+        .iter()
+        .find(|agent| agent.id == session.agent_id)
+        .map(|agent| agent.display_name.clone())
+        .unwrap_or_else(|| session.agent_id.clone());
+    let (status_label, status_color) = ai_session_status_label(
+        session.last_turn_status.as_deref().unwrap_or_default(),
+        colors,
+    );
+    let target = ai_session_target_summary(session.last_target_json.as_deref());
+    let open_id = session_id.clone();
+    let rename_id = session_id.clone();
+    let rename_title = session.title.clone();
+    let rename_revision = session.revision;
+    let archive_id = session_id.clone();
+    let archive_revision = session.revision;
+    ai_row_container(&format!("ai-session-row:{session_id}"), colors)
+        .debug_selector({
+            let session_id = session_id.clone();
+            move || format!("ai-session-row:{session_id}")
+        })
+        .min_h(px(56.))
+        .py_2()
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .w(px(300.))
+                .min_w(px(0.))
+                .child(
+                    div()
+                        .text_size(px(13.))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(colors.text)
+                        .truncate()
+                        .child(session.title.clone()),
+                )
+                .child(
+                    div()
+                        .text_size(px(11.))
+                        .text_color(colors.muted)
+                        .child(format!(
+                            "{} 条消息 · {} · 更新于 {}",
+                            session.message_count,
+                            if session.turn_count == 0 {
+                                "尚未发送".to_string()
+                            } else {
+                                format!("{} 轮任务", session.turn_count)
+                            },
+                            ai_session_timestamp(session.updated_at_ms),
+                        )),
+                ),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .w(px(240.))
+                .min_w(px(0.))
+                .child(
+                    div()
+                        .text_size(px(12.))
+                        .text_color(colors.text)
+                        .truncate()
+                        .child(agent_name),
+                )
+                .child(
+                    div()
+                        .text_size(px(11.))
+                        .text_color(colors.muted)
+                        .truncate()
+                        .child(target),
+                ),
+        )
+        .child(
+            div()
+                .w(px(120.))
+                .flex()
+                .items_center()
+                .child(ai_pill(status_label, status_color, colors))
+                .when(session.status == "archived", |this| {
+                    this.child(div().ml_1().child(ai_pill("已归档", colors.muted, colors)))
+                }),
+        )
+        .child(
+            div()
+                .flex_1()
+                .flex()
+                .items_center()
+                .justify_end()
+                .gap_2()
+                .child(
+                    Button::new(SharedString::from(format!("ai-session-open:{open_id}")))
+                        .small()
+                        .outline()
+                        .cursor_pointer()
+                        .debug_selector({
+                            let open_id = open_id.clone();
+                            move || format!("ai-session-open:{open_id}")
+                        })
+                        .child("在面板打开")
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.open_ai_session_from_settings(open_id.clone(), window, cx);
+                        })),
+                )
+                .child(
+                    Button::new(SharedString::from(format!("ai-session-rename:{rename_id}")))
+                        .small()
+                        .ghost()
+                        .cursor_pointer()
+                        .tooltip("重命名")
+                        .debug_selector({
+                            let rename_id = rename_id.clone();
+                            move || format!("ai-session-rename:{rename_id}")
+                        })
+                        .disabled(archiving)
+                        .child(app_icon(AppIcon::Edit, 13., colors.muted))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.open_ai_session_rename(
+                                rename_id.clone(),
+                                rename_title.clone(),
+                                rename_revision,
+                                window,
+                                cx,
+                            );
+                        })),
+                )
+                .child({
+                    // 归档与恢复共用同一个后台 CAS 入口，按钮文案随当前状态切换。
+                    let archived = session.status == "archived";
+                    let action = if archived { "restore" } else { "archive" };
+                    Button::new(SharedString::from(format!(
+                        "ai-session-{action}:{session_id}"
+                    )))
+                    .small()
+                    .ghost()
+                    .cursor_pointer()
+                    .tooltip(if archived { "恢复到历史" } else { "归档" })
+                    .debug_selector({
+                        let archive_id = archive_id.clone();
+                        move || {
+                            format!(
+                                "ai-session-{}:{archive_id}",
+                                if archived { "restore" } else { "archive" }
+                            )
+                        }
+                    })
+                    .disabled(archiving)
+                    .child(
+                        div()
+                            .text_size(px(11.))
+                            .text_color(colors.muted)
+                            .child(if archiving {
+                                "处理中…"
+                            } else if archived {
+                                "恢复"
+                            } else {
+                                "归档"
+                            }),
+                    )
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.start_ai_session_status_change(
+                            archive_id.clone(),
+                            archive_revision,
+                            archived,
+                            window,
+                            cx,
+                        );
+                    }))
+                }),
+        )
+}
+
+// 「会话历史」页的行内动作：在面板打开、重命名（弹框）、归档（后台 CAS）。
+impl NavicatMain {
+    /// 从设置页「会话历史」把某个会话装进询问 AI 面板并显示。
+    ///
+    /// 走与面板历史列表相同的生产链路：先保存当前草稿，再发 `Load` 命令，
+    /// 由后台读取后回桥；不直接改 `controller.state`。
+    fn open_ai_session_from_settings(
+        &mut self,
+        session_id: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // 设置页已经存在时不再重复开标签，只切回该标签。
+        let _ = self.controller.dispatch(AppCommand::OpenSettings);
+        if self.ai_chat.open {
+            self.save_ai_chat_ui(window, cx);
+        }
+        self.ai_chat.open = true;
+        self.ai_chat.history = false;
+        self.ai_chat.error = None;
+        self.ai_chat.epoch += 1;
+        self.ai_chat_request(
+            fluxdb_app::AiConversationCommand::Load {
+                session_id: Some(session_id),
+            },
+            window,
+            cx,
+        );
+    }
+
+    /// 打开会话重命名弹框（Esc/遮罩/关闭按钮均取消，不写入）。
+    fn open_ai_session_rename(
+        &mut self,
+        id: String,
+        title: String,
+        expected_revision: i64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.pending_ai_session_rename = Some(AiSessionRename {
+            id: id.clone(),
+            title: title.clone(),
+            expected_revision,
+        });
+        self.ai_session_rename_input
+            .update(cx, |input, cx| input.set_value(title, window, cx));
+        self.focus_handle.focus(window, cx);
+        let view = cx.entity().downgrade();
+        window.open_dialog(cx, move |dialog, _, _| {
+            let view = view.clone();
+            dialog
+                .title("重命名会话")
+                .close_button(true)
+                .overlay_closable(true)
+                .keyboard(true)
+                .child("仅修改会话标题；消息与审计事实不变。")
+                .footer(
+                    div()
+                        .flex()
+                        .justify_end()
+                        .gap_2()
+                        .child(
+                            Button::new("ai-session-rename-cancel")
+                                .debug_selector(|| "ai-session-rename-cancel".into())
+                                .cursor_pointer()
+                                .child("取消")
+                                .on_click(|_, window, cx| window.close_dialog(cx)),
+                        )
+                        .child(
+                            Button::new("ai-session-rename-confirm")
+                                .debug_selector(|| "ai-session-rename-confirm".into())
+                                .primary()
+                                .cursor_pointer()
+                                .child("保存")
+                                .on_click(|_, window, cx| {
+                                    window.dispatch_action(
+                                        Box::new(gpui_component::dialog::Confirm {
+                                            secondary: false,
+                                        }),
+                                        cx,
+                                    )
+                                }),
+                        ),
+                )
+                .on_ok(move |_, _, cx| {
+                    let _ = view.update(cx, |this, cx| this.confirm_ai_session_rename(cx));
+                    true
+                })
+        });
+    }
+
+    fn confirm_ai_session_rename(&mut self, cx: &mut Context<Self>) {
+        let Some(pending) = self.pending_ai_session_rename.take() else {
+            return;
+        };
+        let title = pending.title.trim().to_string();
+        if title.is_empty() {
+            self.show_message("会话名称不能为空", AppMessageKind::Warning, cx);
+            return;
+        }
+        let mut controller = self.controller.clone();
+        let id = pending.id;
+        let expected_revision = pending.expected_revision;
+        cx.spawn(async move |view, cx| {
+            // 后台在控制器副本上写库；结果经主窗口控制器的 Complete 命令合并，
+            // 否则副本里的 state 变更不会回到 UI（与删除 Agent 同一模式）。
+            let (revision, result) = cx
+                .background_spawn({
+                    let id = id.clone();
+                    let title = title.clone();
+                    async move {
+                        let event = controller.dispatch(AppCommand::RenameAiSession {
+                            id: id.clone(),
+                            title,
+                            expected_revision,
+                        });
+                        let revision = controller
+                            .state()
+                            .ai_sessions
+                            .iter()
+                            .find(|s| s.id == id)
+                            .map(|s| s.revision)
+                            .unwrap_or(expected_revision + 1);
+                        let result = match event {
+                            AppEvent::AiSessionRenamed { .. } => Ok(()),
+                            AppEvent::AiSettingsError(message) => Err(message),
+                            _ => Err("重命名会话失败".into()),
+                        };
+                        (revision, result)
+                    }
+                })
+                .await;
+            let _ = cx.update(|cx| {
+                let Some(view) = view.upgrade() else {
+                    return;
+                };
+                view.update(cx, |this, cx| {
+                    let event = this
+                        .controller
+                        .dispatch(AppCommand::CompleteAiSessionRename {
+                            id: id.clone(),
+                            title: title.clone(),
+                            revision,
+                            result,
+                        });
+                    match event {
+                        AppEvent::AiSessionRenamed { .. } => {
+                            this.show_message("会话已重命名", AppMessageKind::Success, cx)
+                        }
+                        AppEvent::AiSettingsError(message) => {
+                            this.show_message(message, AppMessageKind::Error, cx)
+                        }
+                        _ => {}
+                    }
+                    cx.notify();
+                });
+            });
+        })
+        .detach();
+    }
+
+    /// 归档 / 恢复会话：对象级 CAS 后台执行，行内 loading/disabled，失败保留原状态。
+    fn start_ai_session_status_change(
+        &mut self,
+        id: String,
+        expected_revision: i64,
+        restore: bool,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.ai_session_archiving_id.is_some() {
+            return;
+        }
+        self.ai_session_archiving_id = Some(id.clone());
+        cx.notify();
+        let mut controller = self.controller.clone();
+        cx.spawn(async move |view, cx| {
+            // 后台写库走控制器副本，结果经 Complete 命令回桥到主窗口控制器。
+            let (id, revision, result) = cx
+                .background_spawn({
+                    let id = id.clone();
+                    async move {
+                        let event = if restore {
+                            controller.dispatch(AppCommand::RestoreAiSession {
+                                id: id.clone(),
+                                expected_revision,
+                            })
+                        } else {
+                            controller.dispatch(AppCommand::ArchiveAiSession {
+                                id: id.clone(),
+                                expected_revision,
+                            })
+                        };
+                        let revision = controller
+                            .state()
+                            .ai_sessions
+                            .iter()
+                            .find(|s| s.id == id)
+                            .map(|s| s.revision)
+                            .unwrap_or(expected_revision + 1);
+                        let result = match event {
+                            AppEvent::AiSessionArchived { .. }
+                            | AppEvent::AiSessionRestored { .. } => Ok(()),
+                            AppEvent::AiSettingsError(message) => Err(message),
+                            _ => Err("归档会话失败".into()),
+                        };
+                        (id, revision, result)
+                    }
+                })
+                .await;
+            let _ = cx.update(|cx| {
+                let Some(view) = view.upgrade() else {
+                    return;
+                };
+                view.update(cx, |this, cx| {
+                    this.ai_session_archiving_id = None;
+                    let event = this
+                        .controller
+                        .dispatch(AppCommand::CompleteAiSessionStatus {
+                            id: id.clone(),
+                            archived: !restore,
+                            revision,
+                            result,
+                        });
+                    match event {
+                        AppEvent::AiSessionArchived { .. } => {
+                            this.show_message("会话已归档", AppMessageKind::Success, cx)
+                        }
+                        AppEvent::AiSessionRestored { .. } => {
+                            this.show_message("会话已恢复", AppMessageKind::Success, cx)
+                        }
+                        AppEvent::AiSettingsError(message) => {
+                            this.show_message(message, AppMessageKind::Error, cx)
+                        }
+                        _ => {}
+                    }
+                    cx.notify();
+                });
+            });
+        })
+        .detach();
+    }
+}
+

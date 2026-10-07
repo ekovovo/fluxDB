@@ -191,10 +191,10 @@ fn last_terminal(
     let mut last = None;
     while let Ok(update) = rx.try_recv() {
         if update.terminal {
-            last = Some(update.view);
+            last = update.view;
         }
     }
-    last.expect("必须有终态回包")
+    last.expect("终态回包必须携带视图")
 }
 
 // ---------------------------------------------------------------------------

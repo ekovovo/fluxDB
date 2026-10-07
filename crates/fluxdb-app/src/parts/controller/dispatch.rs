@@ -3679,6 +3679,11 @@ impl AppController {
             | AppCommand::CompleteAiAgentDelete { .. }
             | AppCommand::SaveAiAgent(_)
             | AppCommand::RefreshAiSettings
+            | AppCommand::RenameAiSession { .. }
+            | AppCommand::ArchiveAiSession { .. }
+            | AppCommand::RestoreAiSession { .. }
+            | AppCommand::CompleteAiSessionRename { .. }
+            | AppCommand::CompleteAiSessionStatus { .. }
             | AppCommand::SetAiModelEnabled { .. }
             | AppCommand::SetAiPluginInstanceEnabled { .. }
             | AppCommand::SaveAiDefaultModels { .. }

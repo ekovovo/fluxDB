@@ -196,6 +196,9 @@ fn ai_chat_panel(
         .rev()
         .find(|message| message.role == "user")
         .map(|message| message.id.clone());
+    // 活跃流式助手消息：其正文由平滑揭示实体渲染，其余消息按 checkpoint 正文渲染。
+    let stream_message_id = this.ai_chat.stream.message_id().map(str::to_owned);
+    let stream_view = this.ai_chat.stream_view.clone();
     if loading {
         timeline = timeline.child(
             div()
@@ -204,9 +207,40 @@ fn ai_chat_panel(
                 .child("正在加载会话…"),
         );
     } else if history {
+        let agent_name = |agent_id: &str| -> String {
+            this.controller
+                .state()
+                .ai_agents
+                .iter()
+                .find(|agent| agent.id == agent_id)
+                .map(|agent| agent.display_name.clone())
+                .unwrap_or_else(|| agent_id.to_string())
+        };
+        // 列表标题：数量 + 交互说明，替代原先只有一串纯文字标题的空白列表。
+        timeline = timeline.child(
+            div()
+                .flex_none()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(
+                    div()
+                        .text_size(px(12.))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(colors.text)
+                        .child(format!("{} 个会话", chat.sessions.len())),
+                )
+                .child(
+                    div()
+                        .text_size(px(10.))
+                        .text_color(colors.muted)
+                        .child("按最近更新排序 · 点击恢复该会话"),
+                ),
+        );
         if chat.sessions.is_empty() {
             timeline = timeline.child(
                 div()
+                    .py_4()
                     .text_color(colors.muted)
                     .text_size(px(12.))
                     .child("暂无会话历史"),
@@ -214,19 +248,74 @@ fn ai_chat_panel(
         }
         for session in &chat.sessions {
             let id = session.id.clone();
+            let current = chat.session_id.as_deref() == Some(session.id.as_str());
+            let (status_label, status_color) =
+                ai_session_status_label(session.last_turn_status.as_deref().unwrap_or_default(), colors);
+            let meta = format!(
+                "{} · {} 条消息 · {}",
+                agent_name(&session.agent_id),
+                session.message_count,
+                ai_session_timestamp(session.updated_at_ms),
+            );
+            // 会话卡片：整卡就是一个 Button，视觉是卡片、交互语义是按钮，避免叠一个透明浮层。
+            let id_for_debug = id.clone();
             timeline = timeline.child(
                 Button::new(SharedString::from(format!("ai-session:{id}")))
-                    .debug_selector({
-                        let id = id.clone();
-                        move || format!("ai-session:{id}")
-                    })
+                    .debug_selector(move || format!("ai-session:{id_for_debug}"))
                     .ghost()
                     .cursor_pointer()
+                    .w_full()
+                    .h(px(56.))
+                    .px_2()
+                    .justify_start()
+                    .rounded(colors.radius)
+                    .border_1()
+                    .border_color(if current { colors.info } else { colors.border_soft })
+                    .when(current, |this| this.bg(colors.hover))
                     .child(
                         div()
                             .w_full()
-                            .text_size(px(12.))
-                            .child(session.title.clone()),
+                            .min_w(px(0.))
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .w_full()
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .gap_2()
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w(px(0.))
+                                            .text_size(px(12.))
+                                            .font_weight(gpui::FontWeight::MEDIUM)
+                                            .text_color(colors.text)
+                                            .truncate()
+                                            .child(session.title.clone()),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_none()
+                                            .flex()
+                                            .items_center()
+                                            .gap_1()
+                                            .when(current, |this| {
+                                                this.child(ai_pill("当前", colors.info, colors))
+                                            })
+                                            .child(ai_pill(status_label, status_color, colors)),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .w_full()
+                                    .text_size(px(10.))
+                                    .text_color(colors.muted)
+                                    .truncate()
+                                    .child(meta),
+                            ),
                     )
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.save_ai_chat_ui(window, cx);
@@ -380,7 +469,15 @@ fn ai_chat_panel(
                                 }));
                                 children
                             } else {
-                                ai_chat_message_parts(message, &chat, colors, cx)
+                                let active_stream =
+                                    stream_message_id.as_deref() == Some(message.id.as_str());
+                                ai_chat_message_parts(
+                                    message,
+                                    &chat,
+                                    stream_view.as_ref().filter(|_| active_stream),
+                                    colors,
+                                    cx,
+                                )
                             }),
                     ),
             );

@@ -148,6 +148,14 @@ struct AiAgentEditorState {
     inputs: AiAgentEditorInputs,
 }
 
+/// 会话重命名弹框的待提交对象。
+#[derive(Clone)]
+struct AiSessionRename {
+    id: String,
+    title: String,
+    expected_revision: i64,
+}
+
 /// 模型弹框的非输入状态。
 #[derive(Clone)]
 struct AiModelDialog {

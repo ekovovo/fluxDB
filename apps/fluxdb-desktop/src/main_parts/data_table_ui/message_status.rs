@@ -197,7 +197,9 @@ fn statusbar(
     cx: &mut Context<NavicatMain>,
 ) -> impl IntoElement {
     div()
+        .debug_selector(|| "fluxdb-statusbar".into())
         .h(px(24.))
+        .flex_none()
         .bg(colors.status_bg)
         .border_t_1()
         .border_color(colors.border)

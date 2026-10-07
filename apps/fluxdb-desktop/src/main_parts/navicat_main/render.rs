@@ -129,6 +129,7 @@ impl Render for NavicatMain {
         };
 
         div()
+            .debug_selector(|| "fluxdb-main".into())
             .size_full()
             .relative()
             .bg(colors.app_bg)
@@ -203,10 +204,21 @@ impl Render for NavicatMain {
                 }),
             )
             .child(topbar(&state, self.show_connection_browser, window, colors, cx))
-            .child(ai_chat_workspace(
+            // 工作区只分配工具栏与状态栏之间的剩余高度，内容不得反向撑大窗口布局。
+            .child(div()
+                .id("main-workspace")
+                .debug_selector(|| "main-workspace".into())
+                .flex_1()
+                .min_h(px(0.))
+                .flex()
+                .flex_col()
+                .overflow_hidden()
+                .child(ai_chat_workspace(
                 div()
+                    .debug_selector(|| "database-workspace".into())
                     .flex()
                     .flex_1()
+                    .min_h(px(0.))
                     .overflow_hidden()
                     .when(self.show_connection_browser, |this| {
                         this.child(sidebar(
@@ -235,7 +247,7 @@ impl Render for NavicatMain {
                             .flex()
                             .flex_col()
                             .child(tabs(compact, &state, self, window, colors, cx))
-                            .child(content(&state, self, window, colors, cx))
+                            .child(content(&state, self, window, colors, cx).debug_selector(|| "workspace-page".into()))
                             .when_some(self.tab_switcher, |this, kind| {
                                 this.child(tab_switcher_popup(
                                     kind,
@@ -252,7 +264,7 @@ impl Render for NavicatMain {
                                 ))
                             }),
                     )
-                .into_any_element(), self, window, colors, cx))
+                .into_any_element(), self, window, colors, cx)))
             .when(show_status_bar, |this| {
                 this.child(statusbar(
                     &state,

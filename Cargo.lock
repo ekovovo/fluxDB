@@ -2135,6 +2135,7 @@ dependencies = [
  "fluxdb-connectors",
  "fluxdb-core",
  "fluxdb-storage",
+ "libc",
  "rusqlite",
  "serde_json",
  "sqlformat",

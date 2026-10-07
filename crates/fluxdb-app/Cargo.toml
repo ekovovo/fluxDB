@@ -21,3 +21,6 @@ zip = { version = "8", default-features = false, features = ["deflate"] }
 [dev-dependencies]
 sqlx = { version = "0.8.6", default-features = false, features = ["sqlite", "runtime-tokio-rustls"] }
 tokio = { version = "1.47.1", features = ["rt-multi-thread"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

@@ -1021,3 +1021,42 @@ T020按主设计§31.9实现询问AI内联批准卡片：参考Goose三态按钮
 ### T070 一层子会话委派（原生循环复用）
 - [ ] 父/子独立会话与任务身份、默认25迭代、禁止递归、共享安全内核、父取消联动、结果有界。
 - [ ] 父面板子任务与写审批归属，恢复不重复委派/未知写不重放、真实模型与真实库/GPUI/窗口验收。
+
+## 2026-10-07 用户修订：T033 会话模型选择 + T032/T030 Hook 与计量 + T022/T026 引用与文件
+
+### T033 基础模型路由与配置 UI（会话级模型选择）
+- [x] `ai_session_model_selections` 真表（`scope_id='draft'` 或 `session_id`、`model_profile_id` FK、`revision` CAS），首次发送把草稿选择原子转移到会话；`New` 清空草稿选择但保留已有会话选择。storage/app 定向用例通过。
+- [x] 选择优先级：会话显式选择 → Agent 绑定模型 → 全局默认；停用/删除/decision 类模型被拒，**不静默回退**到其它模型。`crates/fluxdb-app/tests/ai_session_model_selection.rs` 23/23（含审批恢复时把原模型改成 decision 必须拒绝、活动/unknown turn 禁改、stale revision CAS、draft→session 转移、重开恢复）。
+- [x] GPUI：`apps/fluxdb-desktop/src/main_parts/tests/ai_chat_model_selection.rs` 7/7，走生产加载→AppState→快照→真实 `Select`：候选绑定、鼠标/键盘确认、Esc 不提交、草稿重开、停用错误保留选中与输入、重建 Main 恢复。
+- [x] **真实窗口验收**（隔离 fixture，不读生产凭据、不联网）：点开模型下拉列出两个已启用生成模型 → 点「E2E 备用模型」→ DB 写 `fixture-session/model-e2e-secondary@r1` → 标题即时变为该模型 → 重启实例后仍显示该模型。证据：`/private/tmp/fluxdb-t067-c-evidence/task3-dd.jpg`、`task3-model-selected-full.jpg`、`t3j.jpg`。
+- 修复的真实缺陷：① `AiModelItem.kind` 是本地化串「生成」而非 `"generation"`，原过滤条件让候选恒为空；② 候选重排后 `Select` 游标停留在旧索引，标题会显示成别的模型（按 `selected_value` 判等无法发现）；③ 新增下拉后，面板级 Esc 会在下拉打开时误关整个面板，违反设计 §31.4。
+- 未完成：原型对照的明暗主题/窄窗逐项截图；T033 的模型角色绑定 FK/CAS 完整矩阵（本项只覆盖会话级选择，未做按用途/隐私/价格的候选过滤与模型路由事件）。
+
+### T032 注册插件能力与确定性 Hook pipeline
+- [x] `HookPipeline`（`crates/fluxdb-app/src/parts/ai_hooks.rs`）：priority 升序再按 binding ID 稳定排序；显式冲突（同字段不同 patch）fail closed；`Deny > RequireApproval > Allow`；after-tool 只允许 `Observe`，**不能改写真实回执**；禁用绑定零调用；取消时不调用；递归检测与 64 绑定上限。`crates/fluxdb-app/tests/ai_hook_pipeline.rs` 通过。
+- [x] before-tool 顺序：完整参数解析 → schema 初校验 → Hook 补丁 → **再次 schema 校验** → 强制安全审计 → 内核授权/审批。补丁**不得改变执行目标**（改变即失败），最终参数回写 assistant tool_call 以保证无状态协议重放一致。
+- [x] 内置 `fluxdb.lifecycle.telemetry` 只读 Hook 由插件实例/绑定表装配（`ai_builtin_hooks`）；安全审计仍由内核强制，不能被禁用。
+- 未完成：12 类内置能力完整注册表、ContextProcessor/ModelRouter/ArtifactProducer 契约与第三方加载（本期仅留口子）；原型 `#plugins` 对照截图。
+
+### T030 主循环预算预留与计量
+- [x] `usage_ledger.rs`（storage）：`reserve`（短事务内取写锁、幂等、可见行并发限额、session/daily 限额、严格模式缺价格拒绝）与 `settle`（仅 held 可结算、重复幂等、usage 缺失→unknown 且保留预留、价格快照决定结算、缓存价缺失时 cost 记 null）。`crates/fluxdb-storage/tests/ai_usage_ledger.rs` 35/35。
+- [x] `MeteredProvider`（`crates/fluxdb-app/src/parts/ai_usage.rs`）包裹主模型与摘要调用：请求前预留、拿到 `Usage` 后结算，取消/未发送不产生供应商请求；四个 purpose（main/decision/compaction/artifact）共用同一 session ledger。
+- [x] 面板底部显示「N 次请求 · 输入/输出 tokens · 费用」；缺 usage/价格时显示「部分用量/费用未知」。**未加用户费用上限 UI**（设计 §30.1：本期只有用量透明 + 内部执行保护）。
+- 修复的真实缺陷：`reserve` 未拒绝空白 `request_id`、未把 `CancelRequested` 当作应拒绝的状态。
+- 未完成：真实模型费用数值核对、日报表聚合、执行保护（迭代/超时/输出字节）与预算策略 UI。
+
+### T022 `@` 引用 / T026 文件读取（部分）
+- [x] `ai_context_references` 真表（draft 或 session 作用域 + opaque reference_id），上限 16 项/8 KiB；首次发送原子转移草稿引用，`New` 清空草稿引用。
+- [x] 运行快照分离：模型初始上下文只含 `{id,label,kind,summary}`（**不含文件路径或正文**）；宿主另存 `file_grants` 供文件工具校验。
+- [x] `file.read` / `file.search` 工具：仅对已授权附件生效，按 opaque `file_ref` 读取、有界（默认 16 KiB、最大 64 KiB）、支持 offset 续读；未知/未授权 ref 拒绝；文件被修改后拒绝；UTF-8 切分错误可见；取消可生效。
+- [x] 附件授权：用户文件选择器 + 文本扩展名白名单（sql/txt/csv/tsv/json/md/log/yaml/yml）、≤16 MiB；拒绝配置/凭据/密钥目录与根目录内的库；Unix 用逐级 `openat(O_NOFOLLOW)` 防目录/末端链接替换，Windows 明确「暂不可用」而不是静默降级。`crates/fluxdb-app/tests/ai_session_model_selection.rs` 追加的 11 个文件用例（共 23/23）覆盖上述路径，含链接替换、修改检测、移除/重开。
+- 修复的真实缺陷：授权探测原先用 `File::open`，存在链接替换 TOCTOU；改为逐级 `openat(O_NOFOLLOW)` 并显式拒绝符号链接。
+- 未完成：`@` 候选内含库/schema/表/结果集/Redis Key/知识条目的完整检索 UI 与原型对照；附件 UI 的明暗/窄窗截图；Windows 安全读取实现。
+
+### 验收基线(2026-10-07)
+- `cargo test -p fluxdb-app --offline`(沙箱外,含集成)→ **716 lib passed / 0 failed / 1 ignored**;集成 24+4+10+2+6+2+6+4+11+23 / 0 failed。
+- `cargo test -p fluxdb-storage --offline` → **121 + 11 + 5 + 16 + 35 passed / 0 failed**。
+- `cargo test -p fluxdb-desktop --offline -- --test-threads=1` → **531 passed / 0 failed / 4 ignored**。
+- `cargo fmt --all -- --check`、`git diff --check`、`cargo check --workspace --offline` 通过。
+- 平台：macOS arm64 实测；Windows/Linux 未验证（附件安全读取在非 Unix 明确不可用）。
+- 未验证：真实模型（公司自建/决策模型）费用数值、T033 模型路由/候选过滤、T032 其余能力契约、T022 其余 @ 候选类型。

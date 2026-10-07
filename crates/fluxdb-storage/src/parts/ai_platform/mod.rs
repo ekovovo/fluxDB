@@ -6,9 +6,12 @@
 pub mod agents;
 pub mod audits;
 pub mod context_checkpoints;
+pub mod context_references;
 pub mod conversation;
+pub mod knowledge;
 pub mod mcp;
 pub mod model_secret;
+pub mod model_selection;
 pub mod models;
 pub mod plugins;
 pub mod recovery;
@@ -20,6 +23,7 @@ mod sessions_tests;
 mod sessions_verify_tests;
 pub mod settings;
 pub mod tool_calls;
+pub mod usage_ledger;
 
 use rusqlite::Connection;
 

@@ -155,13 +155,13 @@ pub fn validate_summary(summary: &str) -> Result<(), String> {
     if trimmed.contains("[truncated]") || trimmed.ends_with('…') {
         return Err("摘要疑似被截断".into());
     }
-    let missing: Vec<&str> = REQUIRED_PROTECTED_ITEMS
-        .iter()
-        .copied()
-        .filter(|item| !trimmed.contains(item))
-        .collect();
-    if !missing.is_empty() {
-        return Err(format!("摘要缺少保护项：{}", missing.join(", ")));
+    let value:serde_json::Value=serde_json::from_str(trimmed).map_err(|_|"摘要不是合法 JSON")?;
+    let object=value.as_object().ok_or("摘要必须是 JSON 对象")?;
+    for key in REQUIRED_PROTECTED_ITEMS {
+        let item=object.get(*key).ok_or_else(||format!("摘要缺少保护项：{key}"))?;
+        if item.is_null() || item.as_str().is_some_and(|s|s.trim().is_empty()) {
+            return Err(format!("摘要保护项为空：{key}"));
+        }
     }
     Ok(())
 }

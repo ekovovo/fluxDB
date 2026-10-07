@@ -1,3 +1,5 @@
+use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
+
 // T028 原生面板，唯一内容树共享 Input 实体，切换形式不创建运行时或重复订阅。
 // 已核对 0.6.0：Sheet.resizable 未消费该属性；复用 ResizablePanelGroup 实现硬比例范围和 resize 回调。
 fn ai_chat_workspace(
@@ -51,9 +53,10 @@ fn ai_chat_workspace(
     });
     if mode == fluxdb_storage::ai_platform::settings::PanelMode::Embedded {
         group
-            .child(gpui_component::resizable_panel().child(workspace))
+            .child(gpui_component::resizable_panel().min_h(px(0.)).child(workspace))
             .child(
                 gpui_component::resizable_panel()
+                    .min_h(px(0.))
                     .size(px(width))
                     .size_range(px(min)..px(max))
                     .child(pane),
@@ -73,13 +76,18 @@ fn ai_chat_workspace(
         div()
             .relative()
             .size_full()
+            // 与正常工作区保持相同的纵向 flex 约束；抽屉只覆盖，不参与底层布局分配。
+            .min_h(px(0.))
+            .flex()
+            .flex_col()
             .child(workspace)
             .child(
                 div().absolute().inset_0().child(
                     group
-                        .child(gpui_component::resizable_panel().child(overlay))
+                        .child(gpui_component::resizable_panel().min_h(px(0.)).child(overlay))
                         .child(
                             gpui_component::resizable_panel()
+                                .min_h(px(0.))
                                 .size(px(width))
                                 .size_range(px(min)..px(max))
                                 .child(pane),
@@ -102,261 +110,69 @@ fn ai_chat_small_button(
         .tooltip(title)
         .child(app_icon(icon, 14., colors.muted))
 }
-fn ai_chat_part(
-    part: &fluxdb_app::AiConversationPart,
-    expanded: bool,
-    colors: UiColors,
-    cx: &mut Context<NavicatMain>,
-) -> gpui::AnyElement {
-    let payload: serde_json::Value =
-        serde_json::from_str(&part.payload_json).unwrap_or(serde_json::Value::Null);
-    let text = payload
-        .get("text")
-        .or_else(|| payload.get("summary"))
-        .and_then(|s| s.as_str())
-        .unwrap_or("")
-        .to_string();
-    if part.kind == "notice" && payload.get("recovery_status").is_some() {
-        let unknown =
-            payload.get("recovery_status").and_then(|v| v.as_str()) == Some("outcome_unknown");
-        let id = SharedString::from(format!("ai-recovery:{}", part.id));
-        return div()
-            .debug_selector({
-                let id = id.to_string();
-                move || id.clone()
-            })
-            .child(if unknown {
-                gpui_component::alert::Alert::error(id, text)
-                    .small()
-                    .into_any_element()
-            } else {
-                gpui_component::alert::Alert::warning(id, text)
-                    .small()
-                    .into_any_element()
-            })
-            .into_any_element();
-    }
-    if part.kind == "text" {
-        return div()
-            .text_size(px(12.))
-            .line_height(px(18.))
-            .text_color(colors.text)
-            .child(text)
-            .into_any_element();
-    }
-    // 审批卡：必须在这里决定（批准/拒绝），决定后由宿主按 plan_hash 复核再执行。
-    if part.kind == "notice" {
-        if let Some(approval_id) = payload.get("approval_id").and_then(|value| value.as_str()) {
-            let revision = payload
-                .get("approval_revision")
-                .and_then(serde_json::Value::as_i64)
-                .unwrap_or(1);
-            let decided = payload
-                .get("decision")
-                .and_then(|value| value.as_str())
-                .is_some();
-            if !decided && part.status == "pending" {
-                let approve_id = approval_id.to_string();
-                let deny_id = approval_id.to_string();
-                return div()
-                    .border_1()
-                    .border_color(colors.danger)
-                    .rounded(colors.radius)
-                    .p_2()
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .child(
-                        div()
-                            .text_size(px(11.))
-                            .line_height(px(16.))
-                            .text_color(colors.text)
-                            .child(text),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .child(
-                                Button::new(SharedString::from(format!(
-                                    "ai-approve:{approval_id}"
-                                )))
-                                .debug_selector({
-                                    let id = approval_id.to_string();
-                                    move || format!("ai-approve:{id}")
-                                })
-                                .small()
-                                .primary()
-                                .cursor_pointer()
-                                .child("批准执行")
-                                .on_click(cx.listener(
-                                    move |this, _, window, cx| {
-                                        this.decide_ai_chat_approval(
-                                            approve_id.clone(),
-                                            true,
-                                            revision,
-                                            window,
-                                            cx,
-                                        )
-                                    },
-                                )),
-                            )
-                            .child(
-                                Button::new(SharedString::from(format!("ai-deny:{approval_id}")))
-                                    .debug_selector({
-                                        let id = approval_id.to_string();
-                                        move || format!("ai-deny:{id}")
-                                    })
-                                    .small()
-                                    .ghost()
-                                    .cursor_pointer()
-                                    .child("拒绝")
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.decide_ai_chat_approval(
-                                            deny_id.clone(),
-                                            false,
-                                            revision,
-                                            window,
-                                            cx,
-                                        )
-                                    })),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(10.))
-                                    .text_color(colors.muted)
-                                    .child("批准后仍会复核 plan_hash，参数/目标变了就失效"),
-                            ),
-                    )
-                    .into_any_element();
-            }
-        }
-    }
-    let (icon, label) = match part.kind.as_str() {
-        "reasoning_summary" => (AppIcon::Workflow, "公开思考摘要"),
-        "plan" => (AppIcon::List, "计划"),
-        "tool_call_ref" => (AppIcon::Database, "工具调用"),
-        "tool_result_ref" => (AppIcon::Table, "结果引用"),
-        "artifact_ref" => (AppIcon::Activity, "任务产物"),
-        "context_ref" => (AppIcon::FileSearch, "上下文"),
-        _ => (AppIcon::CircleSlash, "任务说明"),
-    };
-    let id = part.id.clone();
-    let execution_unknown =
-        payload.get("execution_status").and_then(|v| v.as_str()) == Some("unknown");
-    let status = if execution_unknown {
-        "结果未知"
-    } else {
-        match part.status.as_str() {
-            "streaming" => "进行中",
-            "interrupted" => "已停止",
-            "error" => "失败",
-            "pending" => "准备中",
-            _ => "已保存",
-        }
-    };
-    div()
-        .border_1()
-        .border_color(colors.border_soft)
-        .rounded(colors.radius)
-        .p_2()
-        .flex()
-        .flex_col()
-        .gap_2()
-        .child(
-            Button::new(SharedString::from(format!("ai-part:{}", part.id)))
-                .debug_selector(move || format!("ai-part:{id}"))
-                .small()
-                .ghost()
-                .cursor_pointer()
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .child(app_icon(icon, 13., colors.muted))
-                        .child(label)
-                        .child(
-                            div()
-                                .text_color(if execution_unknown {
-                                    colors.danger
-                                } else {
-                                    colors.muted
-                                })
-                                .text_size(px(10.))
-                                .child(status),
-                        ),
-                )
-                .on_click(cx.listener({
-                    let id = part.id.clone();
-                    move |this, _, window, cx| {
-                        let mut chat = this.controller.state().ai_conversation.clone();
-                        if let Some(index) = chat.expanded_parts.iter().position(|p| p == &id) {
-                            chat.expanded_parts.remove(index);
-                        } else {
-                            chat.expanded_parts.push(id.clone());
-                        }
-                        this.controller.dispatch(AppCommand::AiConversation(
-                            fluxdb_app::AiConversationCommand::Apply { view: chat },
-                        ));
-                        this.save_ai_chat_ui(window, cx);
-                        cx.notify();
-                    }
-                })),
-        )
-        .when(expanded, |this| {
-            this.child(
-                div()
-                    .max_h(px(160.))
-                    .overflow_y_scrollbar()
-                    .text_size(px(11.))
-                    .line_height(px(16.))
-                    .child(if text.is_empty() {
-                        part.payload_json.clone()
-                    } else {
-                        text
-                    }),
-            )
-        })
-        .into_any_element()
-}
 fn ai_chat_panel(
     this: &mut NavicatMain,
     _window: &mut Window,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Stateful<Div> {
+    this.sync_ai_chat_models(_window, cx);
+    this.sync_ai_chat_agents(_window, cx);
     let chat = this.controller.state().ai_conversation.clone();
-    let scope_label = chat
+    let target = chat
         .target_json
         .as_deref()
-        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
-        .map(|v| {
-            if let Some(db) = v.get("database").and_then(|d| d.as_str()) {
-                format!("{db} · 本轮目标已固定")
-            } else if let Some(id) = v.get("connection_id").and_then(|d| d.as_i64()) {
-                format!("连接 {id} · 本轮目标已固定")
-            } else {
-                "无执行目标 · 可解释与规划".into()
-            }
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok());
+    let target_connection_id = target
+        .as_ref()
+        .and_then(|value| value.get("connection_id"))
+        .and_then(serde_json::Value::as_i64);
+    let target_connection = target_connection_id.and_then(|connection_id| {
+        this.controller
+            .state()
+            .connections
+            .iter()
+            .find(|connection| connection.config.id.0 as i64 == connection_id)
+    });
+    let scope_primary = target_connection
+        .map(|connection| connection.config.name.clone())
+        .or_else(|| {
+            target_connection_id
+                .map(|connection_id| format!("连接 {connection_id}"))
         })
-        .unwrap_or_else(|| "发送时自动捕获当前页面".into());
+        .or_else(|| {
+            target
+                .as_ref()
+                .and_then(|value| value.get("database"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        });
+    let scope_permission = if target.is_some() {
+        let read_only = target_connection
+            .map(|connection| fluxdb_app::connection_is_read_only(&connection.config))
+            .unwrap_or(true);
+        if read_only {
+            "只读"
+        } else {
+            "修改需审批"
+        }
+    } else {
+        "可解释与规划"
+    };
+    let scope_permission_color = if scope_permission == "修改需审批" {
+        colors.warning
+    } else {
+        colors.success
+    };
     let loading = this.ai_chat.loading;
     let history = this.ai_chat.history;
     let running = this.ai_chat.running.is_some();
     let mode = this.ai_chat.mode;
     let error = this.ai_chat.error.clone().or(chat.error.clone());
-    let cancel_requested = this
-        .ai_chat
-        .cancel
-        .as_ref()
-        .is_some_and(|flag| flag.is_cancelled());
     let ready = !loading
         && !this.ai_chat.recovery_pending
         && !this.ai_chat.recovery_failed
         && this.ai_chat._io.is_none();
-    let input = this.ai_chat.input.clone();
     let scroll = this.ai_chat.scroll.clone();
     let mut timeline = div()
         .id("ai-chat-timeline")
@@ -374,6 +190,12 @@ fn ai_chat_panel(
         .flex()
         .flex_col()
         .gap_3();
+    let last_user_message_id = chat
+        .messages
+        .iter()
+        .rev()
+        .find(|message| message.role == "user")
+        .map(|message| message.id.clone());
     if loading {
         timeline = timeline.child(
             div()
@@ -442,41 +264,126 @@ fn ai_chat_panel(
                             .text_size(px(11.))
                             .text_color(colors.muted)
                             .child("解释 SQL · 数据分析 · Redis 排障"),
+                    )
+                    .child(
+                        div()
+                            .mt_2()
+                            .flex()
+                            .flex_wrap()
+                            .items_center()
+                            .justify_center()
+                            .gap_2()
+                            .child(
+                                Button::new("ai-suggestion-schema")
+                                    .debug_selector(|| "ai-suggestion-schema".into())
+                                    .small()
+                                    .outline()
+                                    .cursor_pointer()
+                                    .child("解释当前表结构")
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.ai_chat.input.update(cx, |input, cx| {
+                                            input.set_value("解释当前表结构和关键字段。", window, cx);
+                                        });
+                                        this.ai_chat.dirty = true;
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                Button::new("ai-suggestion-analysis")
+                                    .debug_selector(|| "ai-suggestion-analysis".into())
+                                    .small()
+                                    .outline()
+                                    .cursor_pointer()
+                                    .child("分析这组数据")
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.ai_chat.input.update(cx, |input, cx| {
+                                            input.set_value("分析当前数据并总结关键结论。", window, cx);
+                                        });
+                                        this.ai_chat.dirty = true;
+                                        cx.notify();
+                                    })),
+                            ),
                     ),
             )
             .child(div().flex_1());
     } else {
         for message in &chat.messages {
             let user = message.role == "user";
-            timeline =
-                timeline.child(
-                    div()
-                        .id(SharedString::from(format!("ai-message:{}", message.id)))
-                        .debug_selector({
-                            let id = message.id.clone();
-                            move || format!("ai-message:{id}")
-                        })
-                        .flex()
-                        .flex_col()
-                        .gap_2()
-                        .p_3()
-                        .rounded(colors.radius_lg)
-                        .bg(if user {
-                            colors.panel_alt
-                        } else {
-                            colors.panel_bg
-                        })
-                        .child(
+            timeline = timeline.child(
+                div()
+                    .id(SharedString::from(format!("ai-message:{}", message.id)))
+                    .debug_selector({
+                        let id = message.id.clone();
+                        move || format!("ai-message:{id}")
+                    })
+                    .flex()
+                    .flex_col()
+                    .gap_1p5()
+                    .when(user, |row| {
+                        row.child(
                             div()
-                                .text_size(px(10.))
+                                .flex()
+                                .items_center()
+                                .gap_1p5()
+                                .text_size(px(11.))
                                 .font_weight(gpui::FontWeight::MEDIUM)
                                 .text_color(colors.muted)
-                                .child(if user { "你" } else { "AI" }),
+                                .child(app_icon(AppIcon::Users, 13., colors.muted))
+                                .child(if last_user_message_id.as_deref() == Some(message.id.as_str()) {
+                                    "你 · 当前任务"
+                                } else {
+                                    "你"
+                                }),
                         )
-                        .children(message.parts.iter().map(|p| {
-                            ai_chat_part(p, chat.expanded_parts.contains(&p.id), colors, cx)
-                        })),
-                );
+                    })
+                    .child(
+                        div()
+                            .when(user, |row| {
+                                row.self_end()
+                                    .max_w_full()
+                                    .w_full()
+                                    .p_2()
+                                    .rounded_lg()
+                                    .bg(colors.panel_alt)
+                                    .flex()
+                                    .flex_col()
+                                    .gap_2()
+                            })
+                            .when(!user, |row| {
+                                row.w_full()
+                                    .flex()
+                                    .flex_col()
+                                    .gap_2()
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .gap_1p5()
+                                            .text_size(px(11.))
+                                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                                            .text_color(colors.text)
+                                            .child(app_icon(AppIcon::Bot, 13., colors.success))
+                                            .child("fluxDB Agent"),
+                                    )
+                                    .child(div().flex_1())
+                                    .child(div().pl_4().flex().flex_col().gap_2())
+                            })
+                            .children(if user {
+                                let mut children = message.parts.iter().filter(|p| p.kind == "text").map(|p| {
+                                    ai_chat_text_only(p, colors).into_any_element()
+                                }).collect::<Vec<_>>();
+                                children.extend(message.parts.iter().filter(|part| part.kind == "context_ref").filter_map(|part| {
+                                    let payload: serde_json::Value = serde_json::from_str(&part.payload_json).ok()?;
+                                    let tag = ai_reference_tag(payload.get("label")?.as_str()?, payload.get("kind")?.as_str()?, colors);
+                                    let id = part.id.clone();
+                                    Some(div().debug_selector(move || format!("ai-message-reference:{id}")).child(tag).into_any_element())
+                                }));
+                                children
+                            } else {
+                                ai_chat_message_parts(message, &chat, colors, cx)
+                            }),
+                    ),
+            );
         }
         if running {
             timeline = timeline.child(
@@ -487,11 +394,21 @@ fn ai_chat_panel(
             );
         }
     }
-    if !running && chat.active_turn_id.is_some() {
-        timeline = timeline.child(gpui_component::alert::Alert::warning(
-            "ai-chat-unfinished",
-            "任务已暂停。请先核对恢复提示与待审批项；打开面板不会自动重放工具。",
-        ));
+    // 恢复记录已解释暂停原因时，不再叠加重复的全宽警告。
+    let has_recovery_notice = chat.messages.iter().flat_map(|message| &message.parts).any(|part| {
+        part.kind == "notice"
+            && chat.active_turn_id.as_ref().is_some_and(|turn| part.id == format!("{turn}-restart-notice"))
+            && serde_json::from_str::<serde_json::Value>(&part.payload_json).ok()
+            .and_then(|payload| payload.get("recovery_status").and_then(|value| value.as_str()).map(str::to_owned))
+            .is_some_and(|status| status != "resolved")
+    });
+    if !running && chat.active_turn_id.is_some() && !has_recovery_notice {
+        timeline = timeline.child(
+            div().id("ai-chat-unfinished").py_1().flex().items_center().gap_1p5()
+                .text_size(px(10.)).text_color(colors.muted)
+                .child(app_icon(AppIcon::CircleSlash, 12., colors.warning))
+                .child("任务已暂停 · 请核对待审批项；不会自动重放工具"),
+        );
     }
     if let Some(error) = error {
         timeline = timeline
@@ -510,21 +427,63 @@ fn ai_chat_panel(
         .debug_selector(|| "ai-chat-panel".into())
         .size_full()
         .min_w(px(0.))
+        .min_h(px(0.))
+        .overflow_hidden()
         .bg(colors.panel_bg)
         .border_l_1()
         .border_color(colors.border)
         .occlude()
         .flex()
         .flex_col()
+        .on_prepaint({
+            let owner = cx.entity().downgrade();
+            move |bounds, _, cx| { let _ = owner.update(cx, |this, cx| {
+                if this.ai_chat.panel_height != bounds.size.height { this.ai_chat.panel_height = bounds.size.height; cx.notify(); }
+            }); }
+        })
+        .capture_action(cx.listener(|this, action: &gpui_component::input::Enter, window, cx| {
+            if action.shift || action.secondary || !this.handle_ai_reference_key("enter", window, cx) { cx.propagate(); }
+        }))
+        .capture_action(cx.listener(|this, _: &gpui_component::input::MoveUp, window, cx| {
+            if !this.handle_ai_reference_key("up", window, cx) { cx.propagate(); }
+        }))
+        .capture_action(cx.listener(|this, _: &gpui_component::input::MoveDown, window, cx| {
+            if !this.handle_ai_reference_key("down", window, cx) { cx.propagate(); }
+        }))
+        .capture_action(cx.listener(|this, _: &gpui_component::input::Escape, window, cx| {
+            if !this.handle_ai_reference_key("escape", window, cx) { cx.propagate(); }
+        }))
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
             if event.keystroke.key == "escape" {
+                // `@` 引用下拉打开时，Esc 先关它，不关整个面板。
+                if this.ai_chat.reference_open {
+                    this.ai_chat.reference_open = false;
+                    this.ai_chat.reference_query = None;
+                    this.ai_chat.reference_options.clear();
+                    cx.notify();
+                    cx.stop_propagation();
+                    return;
+                }
+                // 有弹出层（模型/引用下拉）打开时，Esc 只关下拉，不关整个面板（设计 §31.4）。
+                // 下拉打开时焦点在下拉列表上，据此判定，让 Select 自己消费这次 Esc。
+                let popup_open = this
+                    .ai_chat
+                    .model_select
+                    .read(cx)
+                    .focus_handle(cx)
+                    .is_focused(window)
+;
+                if popup_open {
+                    return;
+                }
                 this.close_ai_chat(window, cx);
                 cx.stop_propagation();
             }
         }))
         .child(
             div()
+                .debug_selector(|| "ai-chat-header".into())
                 .h(px(48.))
                 .flex_none()
                 .border_b_1()
@@ -544,6 +503,15 @@ fn ai_chat_panel(
                             "会话历史".into()
                         } else {
                             chat.title.clone()
+                        }),
+                )
+                .child(
+                    div().debug_selector(|| "ai-chat-cost".into()).flex_none()
+                        .text_size(px(10.)).text_color(colors.muted)
+                        .child(if chat.usage.unknown_requests > 0 {
+                            "费用未知".to_string()
+                        } else {
+                            format!("${:.3}", chat.usage.cost_micros as f64 / 1_000_000.)
                         }),
                 )
                 .child(
@@ -607,14 +575,38 @@ fn ai_chat_panel(
                 .border_color(colors.border_soft)
                 .flex()
                 .items_center()
-                .gap_2()
+                .flex_wrap()
+                .gap_1p5()
                 .child(app_icon(AppIcon::Database, 12., colors.muted))
                 .child(
                     div()
+                        .flex_none()
                         .text_size(px(10.))
                         .text_color(colors.muted)
-                        .child(scope_label),
-                ),
+                        .child(if scope_primary.is_some() {
+                            "本轮目标"
+                        } else {
+                            "无执行目标"
+                        }),
+                )
+                .when_some(scope_primary, |row, scope_primary| {
+                    row.child(ai_scope_tag(
+                        AppIcon::Database,
+                        &scope_primary,
+                        colors.info,
+                        colors,
+                    ))
+                })
+                .child(ai_scope_tag(
+                    if scope_permission == "修改需审批" {
+                        AppIcon::Edit
+                    } else {
+                        AppIcon::Check
+                    },
+                    scope_permission,
+                    scope_permission_color,
+                    colors,
+                ))
         )
         .child(timeline)
         .when(this.ai_chat.new_reply, |panel| {
@@ -631,93 +623,5 @@ fn ai_chat_panel(
                     })),
             )
         })
-        .child(
-            div()
-                .p_3()
-                .border_t_1()
-                .border_color(colors.border_soft)
-                .flex_none()
-                .flex()
-                .flex_col()
-                .gap_2()
-                .child(
-                    div()
-                        .border_1()
-                        .rounded(colors.radius_lg)
-                        .border_color(colors.border)
-                        .bg(colors.input_bg)
-                        .p_2()
-                        .debug_selector(|| "ai-chat-input".into())
-                        .child(Input::new(&input).appearance(false).text_size(px(12.)))
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .justify_between()
-                                .gap_2()
-                                .child(
-                                    div()
-                                        .text_size(px(10.))
-                                        .text_color(colors.muted)
-                                        .child("当前页面上下文"),
-                                )
-                                .child(if running {
-                                    Button::new("ai-chat-stop")
-                                        .debug_selector(|| "ai-chat-stop".into())
-                                        .small()
-                                        .ghost()
-                                        .cursor_pointer()
-                                        .disabled(cancel_requested)
-                                        .child(
-                                            div()
-                                                .flex()
-                                                .items_center()
-                                                .gap_1()
-                                                .child(app_icon(
-                                                    AppIcon::Square,
-                                                    12.,
-                                                    colors.danger,
-                                                ))
-                                                .child(if cancel_requested {
-                                                    "停止中…"
-                                                } else {
-                                                    "停止"
-                                                }),
-                                        )
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            if let Some(flag) = &this.ai_chat.cancel {
-                                                flag.request();
-                                            }
-                                            cx.notify();
-                                        }))
-                                        .into_any_element()
-                                } else {
-                                    Button::new("ai-chat-send")
-                                        .debug_selector(|| "ai-chat-send".into())
-                                        .small()
-                                        .primary()
-                                        .cursor_pointer()
-                                        .disabled(!ready)
-                                        .child(
-                                            div()
-                                                .flex()
-                                                .items_center()
-                                                .gap_1()
-                                                .child(app_icon(AppIcon::ArrowUp, 12., colors.text))
-                                                .child("发送"),
-                                        )
-                                        .on_click(cx.listener(|this, _, window, cx| {
-                                            this.send_ai_chat(window, cx)
-                                        }))
-                                        .into_any_element()
-                                }),
-                        ),
-                )
-                .child(
-                    div()
-                        .text_size(px(10.))
-                        .text_color(colors.muted)
-                        .child("模型跟随 Agent · Jev 未配置不影响对话"),
-                ),
-        )
+        .child(ai_chat_composer(this, _window, colors, cx))
 }

@@ -1,6 +1,10 @@
 #[cfg(test)]
 mod ai_panel_tests {
     use super::*;
+    include!("tests_execution.rs");
+    include!("tests_layout.rs");
+    include!("tests_send_references.rs");
+    include!("tests_workspace_layout.rs");
     use fluxdb_app::{AiAgentSaveInput, AiConversationCommand, AiModelSaveInput};
     use fluxdb_storage::ai_platform::{conversation, sessions, settings};
     use gpui::{Modifiers, TestAppContext, VisualTestContext, point, size};
@@ -323,6 +327,130 @@ mod ai_panel_tests {
         );
         assert!(state.messages.iter().flat_map(|message| &message.parts).filter(|part| part.kind == "text")
             .all(|part| serde_json::from_str::<serde_json::Value>(&part.payload_json).unwrap()["text"].as_str().is_some()));
+    }
+
+    #[gpui::test]
+    async fn ai_panel_empty_state_suggestions_fill_input(cx: &mut TestAppContext) {
+        let fixture = Fixture::new();
+        let (view, cx) = open_main(cx, &fixture, fixture.controller(), ThemeMode::Light);
+        open_panel(&view, cx);
+        assert!(cx.debug_bounds("ai-suggestion-schema").is_some());
+        click_selector(cx, "ai-suggestion-schema");
+        assert_eq!(
+            input_value(&view, cx),
+            "解释当前表结构和关键字段。",
+            "建议按钮必须写入真实输入草稿"
+        );
+    }
+
+    #[gpui::test]
+    async fn ai_panel_reference_button_opens_at_menu(cx: &mut TestAppContext) {
+        let fixture = Fixture::new();
+        let (view, cx) = open_main(cx, &fixture, fixture.controller(), ThemeMode::Light);
+        open_panel(&view, cx);
+        click_selector(cx, "ai-chat-add");
+        cx.simulate_keystrokes("down down enter");
+        draw(cx);
+        let (value, reference_open) = view.read_with(cx, |main, cx| {
+            (
+                main.ai_chat.input.read(cx).value().to_string(),
+                main.ai_chat.reference_open,
+            )
+        });
+        assert_eq!(value, "@", "@ 按钮必须复用键盘触发的引用流程");
+        assert!(reference_open);
+        assert!(cx.debug_bounds("ai-chat-reference-select").is_some());
+    }
+
+    #[gpui::test]
+    async fn ai_panel_reference_overflow_scrolls_within_half_panel(cx: &mut TestAppContext) {
+        let fixture = Fixture::new();
+        let (view, cx) = open_main(cx, &fixture, fixture.controller(), ThemeMode::Light);
+        open_panel(&view, cx);
+        for index in 0..16 {
+            view.update(cx, |main, _| {
+                main.controller.dispatch(
+                    AppCommand::AiConversation(AiConversationCommand::AddReference {
+                        reference: fluxdb_app::AiContextReference {
+                            id: format!("overflow-ref-{index}"),
+                            label: format!("很长引用名称用来强制换行 {index}"),
+                            kind: "table".into(),
+                            source: "test".into(),
+                            summary: "test".into(),
+                        },
+                    }),
+                );
+            });
+        }
+        cx.run_until_parked();
+        draw(cx);
+        let panel_bounds = cx
+            .debug_bounds("ai-chat-panel")
+            .expect("面板必须渲染，才能约束引用区高度");
+        let scroll_bounds = cx
+            .debug_bounds("ai-chat-references-scroll")
+            .expect("引用溢出时必须出现可滚动引用区");
+        let input_bounds = cx
+            .debug_bounds("ai-chat-input")
+            .expect("引用溢出时输入框必须保持可见");
+        assert!(
+            scroll_bounds.size.height <= panel_bounds.size.height * 0.5 + px(2.),
+            "引用区不得超过面板一半: scroll={scroll_bounds:?}, panel={panel_bounds:?}"
+        );
+        assert!(
+            input_bounds.bottom() <= panel_bounds.bottom(),
+            "引用不得把输入区挤出面板: input={input_bounds:?}, panel={panel_bounds:?}"
+        );
+        assert!(scroll_bounds.size.height >= px(32.));
+        assert!(scroll_bounds.bottom() <= input_bounds.top());
+        let first_y = cx.debug_bounds("ai-reference:overflow-ref-0").unwrap().top();
+        cx.simulate_event(gpui::ScrollWheelEvent {
+            position: scroll_bounds.center(),
+            delta: gpui::ScrollDelta::Pixels(point(px(0.), px(-100.))),
+            ..Default::default()
+        });
+        draw(cx);
+        assert!(cx.debug_bounds("ai-reference:overflow-ref-0").unwrap().top() < first_y,
+            "多项已选引用应能在独立引用区滚动");
+    }
+
+    #[gpui::test]
+    async fn ai_panel_at_button_then_reference_keeps_chip_and_footer_visible(
+        cx: &mut TestAppContext,
+    ) {
+        let fixture = Fixture::new();
+        let (view, cx) = open_main(cx, &fixture, fixture.controller(), ThemeMode::Light);
+        open_panel(&view, cx);
+        // 完整复刻用户路径：真实点击 `@` 按钮 → 运行时写入一条引用（等价于选中候选）。
+        click_selector(cx, "ai-chat-add");
+        cx.simulate_keystrokes("down down enter");
+        draw(cx);
+        view.update(cx, |main, _| {
+            main.controller.dispatch(
+                AppCommand::AiConversation(AiConversationCommand::AddReference {
+                    reference: fluxdb_app::AiContextReference {
+                        id: "at-runtime-ref".into(),
+                        label: "运行时添加的引用".into(),
+                        kind: "table".into(),
+                        source: "test".into(),
+                        summary: "test".into(),
+                    },
+                }),
+            );
+        });
+        wait_idle(&view, cx);
+        let panel_bounds = cx.debug_bounds("ai-chat-panel").expect("面板必须渲染");
+        let chip_bounds = cx
+            .debug_bounds("ai-reference:at-runtime-ref")
+            .expect("@ 之后引用 chip 必须立即可见");
+        let footer_bounds = cx
+            .debug_bounds("ai-chat-model-select")
+            .expect("@ 之后底部信息条必须保持可见");
+        assert!(chip_bounds.bottom() <= panel_bounds.bottom());
+        assert!(chip_bounds.size.height >= px(24.));
+        let input_bounds = cx.debug_bounds("ai-chat-input").unwrap();
+        assert!(chip_bounds.bottom() <= input_bounds.top());
+        assert!(footer_bounds.bottom() <= panel_bounds.bottom());
     }
 
     // GPUI timer 是虚拟时钟，scripted source 在真实线程上每 340ms 才 emit。

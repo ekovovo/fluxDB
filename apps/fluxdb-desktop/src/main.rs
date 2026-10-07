@@ -72,14 +72,14 @@ use gpui_component::{
     WindowExt,
     alert::{Alert, AlertVariant},
     box_shadow,
-    button::{Button, ButtonVariants as _},
+    button::{Button, ButtonCustomVariant, ButtonVariants as _},
     checkbox::Checkbox,
     dialog::Dialog,
     form::{Field, field, h_form},
     group_box::{GroupBox, GroupBoxVariant, GroupBoxVariants as _},
     h_flex,
     highlighter::{LanguageConfig, LanguageRegistry},
-    input::{Input, InputEvent, InputState},
+    input::{Input, InputEvent, InputState, Textarea, TextareaState},
     popover::{Popover, PopoverState},
     progress::Progress,
     scroll::{ScrollableElement, Scrollbar},
@@ -194,7 +194,11 @@ include!("main_parts/single_instance.rs");
 #[cfg(not(target_os = "linux"))]
 include!("main_parts/tray_icon.rs");
 include!("main_parts/ai/state.rs");
+include!("main_parts/ai/model_selection.rs");
+include!("main_parts/ai/references.rs");
+include!("main_parts/ai/message.rs");
 include!("main_parts/ai/actions.rs");
+include!("main_parts/ai/composer.rs");
 include!("main_parts/ai/panel.rs");
 #[cfg(test)]
 include!("main_parts/ai/tests.rs");
@@ -208,3 +212,5 @@ include!("main_parts/tests_ai_ui.rs");
 include!("main_parts/tests/ai_agent_defaults.rs");
 #[cfg(test)]
 include!("main_parts/tests/ai_model_capacity.rs");
+#[cfg(test)]
+include!("main_parts/tests/ai_chat_model_selection.rs");

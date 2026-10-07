@@ -179,8 +179,10 @@ impl<'a> TurnRunner<'a> {
     ) -> TurnOutcome {
         let mut signature_counts: HashMap<String, usize> = HashMap::new();
         let mut last_text = String::new();
+        let started=std::time::Instant::now();
 
         for iteration in 1..=self.limits.max_iterations {
+            if started.elapsed()>std::time::Duration::from_secs(300) {return TurnOutcome::Paused{reason:"任务达到内部总时限，已暂停".into()};}
             if cancel.is_cancelled() {
                 return TurnOutcome::Cancelled;
             }
@@ -325,11 +327,57 @@ impl<'a> TurnRunner<'a> {
                     ));
                     continue;
                 };
+                if let Err(error) = self.tools.prepare(&call.tool_id, &call.arguments_json) {
+                        let notice = format!(
+                            "工具 {} 未执行：参数未通过校验（{}）。",
+                            call.tool_id, error.code
+                        );
+                        emit(LoopEvent::Notice(notice));
+                        state.messages.push(fluxdb_core::ModelMessage::tool_result(
+                            call.provider_call_id.clone(),
+                            call.tool_id.clone(),
+                            format!(
+                                "{{\"tool\":\"{}\",\"status\":\"failed\",\"error\":\"{}\",\"message\":{}}}",
+                                call.tool_id,
+                                error.code,
+                                serde_json::Value::String(error.message).to_string()
+                            ),
+                        ));
+                        continue;
+                }
+                // 1b) before-tool Hook：只在初始 schema 校验通过后才允许补丁；
+                // 补丁不能改变执行目标，且必须重新 schema/风险/审批校验（下方 shadow）。
+                let original_target = serde_json::from_str::<serde_json::Value>(&call.arguments_json)
+                    .ok()
+                    .and_then(|value| value.get("target").cloned());
+                let original_call_id = call.provider_call_id.clone();
+                let (call, hook_deny, hook_approval) = match self.tools.hooks.before(&call, cancel) {
+                    Ok(value) => value,
+                    Err(error) => return TurnOutcome::Failed { message: error.message },
+                };
+                let final_target = serde_json::from_str::<serde_json::Value>(&call.arguments_json)
+                    .ok()
+                    .and_then(|value| value.get("target").cloned());
+                if original_target != final_target {
+                    return TurnOutcome::Failed {
+                        message: "Hook 不得改变执行目标".into(),
+                    };
+                }
+                // 无状态协议重放必须使用最终参数，否则 assistant 请求与工具事实不一致。
+                for message in state.messages.iter_mut().rev().take(1) {
+                    if let Some(original) = message
+                        .tool_calls
+                        .iter_mut()
+                        .find(|c| c.provider_call_id == original_call_id)
+                    {
+                        original.arguments_json = call.arguments_json.clone();
+                    }
+                }
                 let prepared = match self.tools.prepare(&call.tool_id, &call.arguments_json) {
                     Ok(prepared) => prepared,
                     Err(error) => {
                         let notice = format!(
-                            "工具 {} 未执行：参数未通过校验（{}）。",
+                            "工具 {} 未执行：Hook 补丁未通过校验（{}）。",
                             call.tool_id, error.code
                         );
                         emit(LoopEvent::Notice(notice));
@@ -368,7 +416,7 @@ impl<'a> TurnRunner<'a> {
                     &prepared.to_json_string(),
                     self.permission.plugin_digest.as_deref(),
                 );
-                let audit = audit_or_fail_closed(
+                let mut audit = audit_or_fail_closed(
                     self.audit,
                     &AuditInput {
                         tool_id: spec.id.clone(),
@@ -379,6 +427,10 @@ impl<'a> TurnRunner<'a> {
                         ruleset_version: "kernel-v1".to_string(),
                     },
                 );
+                if let Some(reason)=hook_deny {emit(LoopEvent::Notice(reason));audit=AuditOutcome::Deny;}
+                else if let Some(reason)=hook_approval {
+                    if audit!=AuditOutcome::Deny {emit(LoopEvent::Notice(reason));audit=AuditOutcome::RequireApproval;}
+                }
                 let decision = authorize(&AuthorizeInput {
                     tool_id: spec.id.clone(),
                     tool_version: spec.version,
@@ -463,6 +515,9 @@ impl<'a> TurnRunner<'a> {
                 emit(LoopEvent::ToolFinished {
                     receipt: receipt.clone(),
                 });
+                if let Err(error)=self.tools.hooks.after(&receipt,cancel) {
+                    return TurnOutcome::Failed{message:error.message};
+                }
                 // 5) 回给模型的是**该工具有界投影**，原始回执保持不变。
                 let projection = match self.tools.project(&receipt.tool_id, &receipt, None) {
                     Ok(projection) => projection,
@@ -502,4 +557,3 @@ impl<'a> TurnRunner<'a> {
         TurnOutcome::Paused { reason }
     }
 }
-

@@ -113,7 +113,7 @@ fn cut_returns_none_when_nothing_safe_to_compact() {
 
 #[test]
 fn validate_summary_requires_protected_items() {
-    assert!(validate_summary("goal: x\nconstraints: none\nverified_facts: f\ndecisions: d\nnext_steps: n").is_ok());
+    assert!(validate_summary(r#"{"goal":"x","constraints":"none","verified_facts":"f","decisions":"d","next_steps":"n"}"#).is_ok());
     assert!(validate_summary("goal: x").is_err());
     assert!(validate_summary("").is_err());
     assert!(validate_summary("goal constraints verified_facts decisions next_steps [truncated]").is_err());

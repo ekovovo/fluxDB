@@ -404,11 +404,15 @@ Agent 配置 `compression_trigger_percent` 默认 80，范围 10–95，存在 `
 
 参考：[Pi 切点/摘要失败检查](/Users/shining3d/fusuwei/code/pi/packages/coding-agent/src/core/compaction/compaction.ts)、[Goose 比例阈值/可见性投影](/Users/shining3d/fusuwei/code/goose/crates/goose/src/context_mgmt/mod.rs)。配置与完整运行压缩分别验收，不把保存百分比等同 T035 已完成。
 
+**实现补记（2026-10-07）**：摘要调用接入统一 `MeteredProvider`（预留/结算，purpose=`compaction`）；摘要只在 `Finished(Stop)` 且 JSON 含全部保护项（goal/constraints/verified_facts/decisions/next_steps 且非空）时才提交；checkpoint 提交在写锁事务内重新校验 turn 活动状态、generation 连续性与 `last_message_seq` 前进，拒绝迟到/回退；已有 checkpoint 作为请求基础上下文（旧摘要 + 其覆盖 seq 之后的历史），不是只在下次压缩时才复用。
+
 ## 17. 模型配置与路由
 
 模型分 `generation / decision` 能力，不把 Jev当作 tool-calling 主模型。Profile 包含 Provider、协议、模型 ID、endpoint、**上下文窗口Token**、**最大输出Token**、能力声明/探测、启用状态、**计价（输入/输出/缓存读取，每百万Token）**、非敏感 options、凭据状态，以及**连接状态**（`unknown`/`ok`/`failed` + 最近检测时间，属运行时元数据，不参与配置 `revision` CAS）。测试连接发送真实最小对话请求（提示词固定「你好」），按 Provider 协议走 `/v1/chat/completions` 或 `/v1/messages`。
 
 路由 precedence：用户明确选择→内核授权/隐私/能力/预算过滤→插件候选建议→默认模型/规则。插件不得越过用户固定模型；默认固定模型完整可用，不要求先做复杂度分类。
+
+**实现补记（2026-10-07）**：会话级「用户明确选择」落在独立真表 `ai_session_model_selections`，优先级为「会话/草稿显式选择 → Agent 绑定模型 → 全局默认模型」，草稿选择在首次发送事务内转移到会话；`New` 清空草稿选择但保留已有会话选择。停用/删除/`decision` 类模型被拒时给出可见错误并**保留选中项**，不静默替换成其它模型；活动 Turn（含 `outcome_unknown`）期间禁止切换。查询AI底部提供选择器并通过 `管理模型` 跳转设置页；设置页仍保留全局默认，二者是「默认值 + 会话级覆盖」的关系。
 
 经济/高能力是用户可配置标签和真实价格/能力信息，不按模型名硬编码；上下文窗口与最大输出按模型真实能力配置，用于§15上下文预算计算，不允许配置超过Provider实际限制。失败升级只用于可重新生成的推理；不重放已经执行的工具。插件冲突采用明确优先级与 stable binding ID 顺序，只有一个最终路由结果；所有候选都不合格则可见失败。
 
@@ -1080,6 +1084,8 @@ Observer 只读；Interceptor 返回类型化建议/补丁/拒绝/要求审批�
 
 错误策略按能力：审计/格式化等 best_effort 可以跳过；用户明确依赖的业务产物插件失败则该产物失败；安全性从内核保证，强制注册内置SecurityAuditHook；可选插件不能卸载/跳过该Hook。最终参数、授权变更需重新审计；审计无法执行/保存fail closed。Jev 优化强制 best_effort。Hook 有 deadline、payload/调用次数上限；递归调用 hook 禁止，宿主模型调用经过预算/隐私检查。
 
+**实现补记（2026-10-07）**：第一批落 `BeforeToolCall`/`AfterToolCall` 两个事件，落点 `crates/fluxdb-app/src/parts/ai_hooks.rs` 的 `HookPipeline`/`AgentHook`。绑定按 `priority` 升序、再按 binding ID 稳定排序；同字段不同 patch 视为冲突并 fail closed；`Deny` 优先于 `RequireApproval`；after-tool 只接受 `Observe`，任何改写真实回执的返回都报错。补丁必须重新过 schema/风险/审批校验，且**不得改变执行目标**（改了直接失败）；最终参数回写 assistant 的 tool_call 以保证无状态协议重放配对。禁用绑定、取消、递归与超过 64 个绑定都有限制。第一批内置 Hook 是只读的 `fluxdb.lifecycle.telemetry`，由插件实例/绑定表装配；安全审计仍由内核强制、插件不可禁用。
+
 AfterToolCall 不可将失败改成成功，不改写 execution facts；显示内容、模型投影的派生版本必须标记，真实 receipt 保留。
 
 <a id="security-audit-hook"></a>
@@ -1397,6 +1403,8 @@ Claude Code 自身的工具 permission、`--allowedTools`、prompt“我批准�
 
 - **用量透明**：主模型/Jev/摘要/报告生成的 input/output token、估算/实际费用记入 `ai_usage_ledger`，会话底部显示本次累计（示例稿显示估算值）。价格缺失不当成免费，只影响展示准确性。
 - **内部执行保护**：最大迭代、任务总时限、活动并发、工具输出字节、结果行数、文件读取字节。有效值取系统默认与 Agent 配置的更严者；这是防失控的运行时护栏，不是“预算策略”产品。
+
+**实现补记（2026-10-07）**：账本落在 `crates/fluxdb-storage/src/parts/ai_platform/usage_ledger.rs`。`reserve` 在短事务内先取写锁（避免并发消费同一余额），对 `(request_id, attempt)` 幂等，校验 turn/session 归属与终态（含 `cancel_requested`），按模型价格快照估算并写入 held 预留 + unknown 账本行；只有策略显式配置金额上限时才要求价格已知。`settle` 只允许 held→settled/unknown，重复回调幂等，缺 usage 保留预留并标记 unknown，价格快照决定结算值（缓存价缺失且 cache>0 → cost 记 null）。应用侧 `MeteredProvider` 统一包裹主模型与摘要调用（purpose=`main`/`compaction`），请求前预留、拿到 `Usage` 后结算。面板底部只显示用量与费用，**不提供用户费用上限开关**。
 
 预留：将来若做企业级配额/团队限额，可在 `ai_budget_policies` 上新增可空的全局/组织级硬限额与超限行为，首版不暴露 UI、不阻塞使用。
 
@@ -1770,6 +1778,8 @@ AI 管理 DDL 见 §42.10，运行/辅助 DDL 见 §42.11。实现时唯一源�
 | ai_tool_calls / MCP requests | 参数hash、prepared/running/failed/unknown、receipt | UI卡片执行状态来自这里，不复制到part正文 |
 | ai_tool_audits | 最终plan的审计判断与规则版本 | append-only，不改历史审计 |
 | ai_context_checkpoints | 摘要+保护条目+source范围/hash | 原始消息不因压缩被删除 |
+| ai_session_model_selections | 草稿/会话级模型覆盖（`scope_id='draft'` 或 `session_id`、`model_profile_id`、`revision`） | 显式选择优先于 Agent/全局默认；首次发送原子转移 |
+| ai_context_references | 草稿/会话的显式 `@`/附件引用（opaque id、标签、来源、摘要） | 只传摘要，不把路径/正文/写权限交给模型 |
 
 message/part组装到普通SessionView；模型边界另做投影，默认不把UI状态或审计卡片当用户指令。插件不能写任意消息role或真实receipt。
 

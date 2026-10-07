@@ -305,11 +305,11 @@
             "普通助手消息必须仍渲染"
         );
         assert!(
-            cx.debug_bounds("ai-part:regular-assistant-tool-call").is_some(),
-            "tool_call_ref 卡片必须仍渲染"
+            cx.debug_bounds("execution:regular-assistant").is_some(),
+            "工具执行摘要必须渲染"
         );
         assert!(
-            cx.debug_bounds("ai-part:regular-assistant-tool-result").is_some(),
-            "tool_result_ref 卡片必须仍渲染"
+            cx.debug_bounds("ai-part:regular-assistant-tool-result").is_none(),
+            "结果记录应并入调用而非重复渲染"
         );
     }

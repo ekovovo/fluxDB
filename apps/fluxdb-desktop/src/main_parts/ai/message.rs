@@ -1,0 +1,502 @@
+fn ai_target_summary(target_json: &str) -> Option<String> {
+    let value = serde_json::from_str::<serde_json::Value>(target_json).ok()?;
+    let mut parts = Vec::new();
+    if let Some(object) = value.get("object").and_then(serde_json::Value::as_str) {
+        parts.push(object.to_string());
+    }
+    if let Some(schema) = value.get("schema").and_then(serde_json::Value::as_str) {
+        parts.push(schema.to_string());
+    }
+    if let Some(database) = value.get("database").and_then(serde_json::Value::as_str) {
+        parts.push(database.to_string());
+    }
+    if parts.is_empty() {
+        if let Some(redis_db) = value.get("redis_db").and_then(serde_json::Value::as_u64) {
+            parts.push(format!("db{redis_db}"));
+        }
+    }
+    if parts.is_empty() {
+        value
+            .get("connection_id")
+            .and_then(serde_json::Value::as_i64)
+            .map(|connection_id| format!("连接 {connection_id}"))
+    } else {
+        Some(parts.join(" / "))
+    }
+}
+fn ai_reference_tag(label: &str, kind: &str, colors: UiColors) -> gpui::AnyElement {
+    let icon = match kind {
+        "connection" | "database" | "redis_db" => AppIcon::Database,
+        "table" | "view" | "schema" => AppIcon::Table,
+        "file" => AppIcon::Folder,
+        _ => AppIcon::FileSearch,
+    };
+    div()
+        .flex_none()
+        .max_w(px(180.))
+        .flex()
+        .items_center()
+        .gap_1()
+        .px_2()
+        .py(px(3.))
+        .rounded(colors.radius)
+        .bg(colors.success.alpha(0.09))
+        .text_color(colors.success)
+        .child(app_icon(icon, 11., colors.success))
+        .child(
+            div()
+                .min_w(px(0.))
+                .text_size(px(10.))
+                .truncate()
+                .child(label.to_string()),
+        )
+        .into_any_element()
+}
+fn ai_scope_tag(icon: AppIcon, label: &str, tone: gpui::Rgba, colors: UiColors) -> gpui::AnyElement {
+    div()
+        .flex_none()
+        .flex()
+        .items_center()
+        .gap_1()
+        .px_1p5()
+        .py(px(2.))
+        .rounded(px(999.))
+        .border_1()
+        .border_color(colors.border_soft)
+        .bg(colors.panel_bg)
+        .text_color(colors.muted)
+        .child(app_icon(icon, 10., tone))
+        .child(div().text_size(px(10.)).child(label.to_string()))
+        .into_any_element()
+}
+fn ai_reference_chip(
+    label: &str,
+    kind: &str,
+    id: String,
+    colors: UiColors,
+    cx: &mut Context<NavicatMain>,
+) -> gpui::AnyElement {
+    let icon = match kind {
+        "connection" | "database" | "redis_db" => AppIcon::Database,
+        "table" | "view" | "schema" => AppIcon::Table,
+        "file" => AppIcon::Folder,
+        _ => AppIcon::FileSearch,
+    };
+    div()
+        .debug_selector({
+            let id = id.clone();
+            move || format!("ai-reference:{id}")
+        })
+        .flex_none()
+        .max_w_full()
+        .flex()
+        .items_center()
+        .gap_1()
+        .px_2()
+        .py(px(3.))
+        .rounded(colors.radius)
+        .border_1()
+        .border_color(colors.border_soft)
+        .bg(colors.panel_alt)
+        .child(app_icon(icon, 12., colors.muted))
+        .child(
+            div()
+                .min_w(px(0.))
+                .max_w(px(180.))
+                .text_size(px(10.))
+                .truncate()
+                .child(label.to_string()),
+        )
+        .child(
+            Button::new(SharedString::from(format!("ai-reference-remove:{id}")))
+                .debug_selector({
+                    let id = id.clone();
+                    move || format!("ai-reference-remove:{id}")
+                })
+                .xsmall()
+                .ghost()
+                .cursor_pointer()
+                .child(app_icon(AppIcon::Close, 10., colors.muted))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.ai_chat_request(
+                        fluxdb_app::AiConversationCommand::RemoveReference {
+                            reference_id: id.clone(),
+                        },
+                        window,
+                        cx,
+                    )
+                })),
+        )
+        .into_any_element()
+}
+fn ai_chat_text_only(
+    part: &fluxdb_app::AiConversationPart,
+    colors: UiColors,
+) -> gpui::AnyElement {
+    let text = serde_json::from_str::<serde_json::Value>(&part.payload_json)
+        .ok()
+        .and_then(|payload| {
+            payload
+                .get("text")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        })
+        .unwrap_or_default();
+    div()
+        .text_size(px(11.))
+        .line_height(px(17.))
+        .text_color(colors.text)
+        .child(text)
+        .into_any_element()
+}
+fn ai_chat_part(
+    part: &fluxdb_app::AiConversationPart,
+    expanded: bool,
+    target_json: Option<&str>,
+    colors: UiColors,
+    cx: &mut Context<NavicatMain>,
+) -> gpui::AnyElement {
+    let payload: serde_json::Value =
+        serde_json::from_str(&part.payload_json).unwrap_or(serde_json::Value::Null);
+    let text = payload
+        .get("text")
+        .or_else(|| payload.get("summary"))
+        .and_then(|s| s.as_str())
+        .unwrap_or("")
+        .to_string();
+    let recovery_status = payload.get("recovery_status").and_then(|value| value.as_str());
+    if part.kind == "notice" && recovery_status == Some("outcome_unknown") {
+        let id = SharedString::from(format!("ai-recovery:{}", part.id));
+        return div()
+            .debug_selector({ let id = id.to_string(); move || id.clone() })
+            .child(gpui_component::alert::Alert::error(id, text).small())
+            .into_any_element();
+    }
+    if part.kind == "text" {
+        return div()
+            .text_size(px(11.))
+            .line_height(px(17.))
+            .text_color(colors.text)
+            .child(text)
+            .into_any_element();
+    }
+    // 审批卡：必须在这里决定（批准/拒绝），决定后由宿主按 plan_hash 复核再执行。
+    if part.kind == "notice" {
+        if let Some(approval_id) = payload.get("approval_id").and_then(|value| value.as_str()) {
+            let revision = payload
+                .get("approval_revision")
+                .and_then(serde_json::Value::as_i64)
+                .unwrap_or(1);
+            let decided = payload
+                .get("decision")
+                .and_then(|value| value.as_str())
+                .is_some();
+            if !decided && part.status == "pending" {
+                let approve_id = approval_id.to_string();
+                let deny_id = approval_id.to_string();
+                return div()
+                    .border_1()
+                    .border_color(colors.danger)
+                    .rounded(colors.radius)
+                    .p_2()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_size(px(11.))
+                            .line_height(px(16.))
+                            .text_color(colors.text)
+                            .child(text),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                Button::new(SharedString::from(format!(
+                                    "ai-approve:{approval_id}"
+                                )))
+                                .debug_selector({
+                                    let id = approval_id.to_string();
+                                    move || format!("ai-approve:{id}")
+                                })
+                                .small()
+                                .primary()
+                                .cursor_pointer()
+                                .child("批准执行")
+                                .on_click(cx.listener(
+                                    move |this, _, window, cx| {
+                                        this.decide_ai_chat_approval(
+                                            approve_id.clone(),
+                                            true,
+                                            revision,
+                                            window,
+                                            cx,
+                                        )
+                                    },
+                                )),
+                            )
+                            .child(
+                                Button::new(SharedString::from(format!("ai-deny:{approval_id}")))
+                                    .debug_selector({
+                                        let id = approval_id.to_string();
+                                        move || format!("ai-deny:{id}")
+                                    })
+                                    .small()
+                                    .ghost()
+                                    .cursor_pointer()
+                                    .child("拒绝")
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.decide_ai_chat_approval(
+                                            deny_id.clone(),
+                                            false,
+                                            revision,
+                                            window,
+                                            cx,
+                                        )
+                                    })),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(10.))
+                                    .text_color(colors.muted)
+                                    .child("批准后仍会复核 plan_hash，参数/目标变了就失效"),
+                            ),
+                    )
+                    .into_any_element();
+            }
+        }
+    }
+    let (icon, label) = match part.kind.as_str() {
+        "reasoning_summary" => (AppIcon::Workflow, "公开思考摘要"),
+        "plan" => (AppIcon::List, "计划"),
+        "tool_call_ref" => (AppIcon::Database, "工具调用"),
+        "tool_result_ref" => (AppIcon::Table, "结果引用"),
+        "artifact_ref" => (AppIcon::Activity, "任务产物"),
+        "context_ref" => (AppIcon::FileSearch, "上下文"),
+        _ => (AppIcon::CircleSlash, "任务说明"),
+    };
+    // 工具卡直接展示真实 tool_id；目标/参数仍在展开区，不凭空拼标签。
+    let label = if let Some(recovery_status) = recovery_status {
+        if recovery_status == "resolved" { "恢复状态已更新" } else { "任务已暂停 · 未自动重放工具" }.to_string()
+    } else if part.kind == "tool_call_ref" {
+        payload
+            .get("tool")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or(label)
+            .to_string()
+    } else {
+        label.to_string()
+    };
+    let target = if part.kind == "tool_call_ref" {
+        target_json.and_then(ai_target_summary)
+    } else {
+        None
+    };
+    let duration_ms = payload
+        .get("duration_ms")
+        .and_then(serde_json::Value::as_i64)
+        .filter(|duration_ms| *duration_ms >= 0);
+    let id = part.id.clone();
+    let execution_unknown =
+        payload.get("execution_status").and_then(|v| v.as_str()) == Some("unknown");
+    let (status, status_color) = if execution_unknown {
+        ("结果未知", colors.danger)
+    } else {
+        match part.status.as_str() {
+            "streaming" => ("进行中", colors.info),
+            "interrupted" => ("已停止", colors.warning),
+            "error" => ("失败", colors.danger),
+            "pending" => ("准备中", colors.muted),
+            _ if part.kind == "tool_call_ref" || part.kind == "tool_result_ref" => {
+                ("完成", colors.success)
+            }
+            _ => ("已完成", colors.success),
+        }
+    };
+    div()
+        .when(recovery_status.is_some(), |row| row.debug_selector({
+            let id = part.id.clone(); move || format!("ai-recovery:{id}")
+        }))
+        .min_w(px(0.))
+        .flex()
+        .flex_col()
+        .gap_1()
+        .child(
+            Button::new(SharedString::from(format!("ai-part:{}", part.id)))
+                .debug_selector(move || format!("ai-part:{id}"))
+                .xsmall()
+                .w_full()
+                .ghost()
+                .cursor_pointer()
+                .child(
+                    div()
+                        .w_full()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap_2()
+                        .child(
+                            div()
+                                .min_w(px(0.))
+                                .flex()
+                                .items_center()
+                                .gap_1p5()
+                                .child(app_icon(icon, 12., colors.muted))
+                                .child(
+                                    div()
+                                        .min_w(px(0.))
+                                        .max_w(px(220.))
+                                        .text_size(px(if recovery_status.is_some() { 10. } else { 11. }))
+                                        .text_color(if recovery_status.is_some() { colors.muted } else { colors.text })
+                                        .font_weight(gpui::FontWeight::NORMAL)
+                                        .truncate()
+                                        .child(label),
+                                )
+                                .when_some(target, |row, target| {
+                                    row.child(
+                                        div()
+                                            .min_w(px(0.))
+                                            .max_w(px(130.))
+                                            .text_size(px(10.))
+                                            .text_color(colors.muted)
+                                            .truncate()
+                                            .child(target),
+                                    )
+                                }),
+                        )
+                        .when_some(duration_ms, |row, duration_ms| {
+                            row.child(
+                                div()
+                                    .flex_none()
+                                    .text_size(px(10.))
+                                    .text_color(colors.muted)
+                                    .child(format!("{duration_ms}ms")),
+                            )
+                        })
+                        .when(recovery_status.is_none(), |row| row.child(div().flex_none().text_size(px(10.)).text_color(status_color).child(status)))
+                        .child(app_icon(if expanded { AppIcon::ChevronDown } else { AppIcon::ChevronRight }, 10., colors.muted)),
+                )
+                .on_click(cx.listener({
+                    let id = part.id.clone();
+                    move |this, _, window, cx| {
+                        let mut chat = this.controller.state().ai_conversation.clone();
+                        if let Some(index) = chat.expanded_parts.iter().position(|p| p == &id) {
+                            chat.expanded_parts.remove(index);
+                        } else {
+                            chat.expanded_parts.push(id.clone());
+                        }
+                        this.controller.dispatch(AppCommand::AiConversation(
+                            fluxdb_app::AiConversationCommand::Apply { view: chat },
+                        ));
+                        this.save_ai_chat_ui(window, cx);
+                        cx.notify();
+                    }
+                })),
+        )
+        .when(expanded, |this| {
+            this.child(
+                div()
+                    .debug_selector({
+                        let id = part.id.clone();
+                        move || format!("ai-part-detail:{id}")
+                    })
+                    .max_h(px(160.))
+                    .overflow_y_scrollbar()
+                    .text_size(px(11.))
+                    .line_height(px(16.))
+                    .child(if text.is_empty() {
+                        part.payload_json.clone()
+                    } else {
+                        text
+                    }),
+            )
+        })
+        .into_any_element()
+}
+
+// 按真实调用外键合并，不能按工具名匹配：同一个工具可能被并发调用多次。
+fn ai_compact_parts(parts: &[fluxdb_app::AiConversationPart]) -> Vec<fluxdb_app::AiConversationPart> {
+    let call_key = |part: &fluxdb_app::AiConversationPart| {
+        serde_json::from_str::<serde_json::Value>(&part.payload_json).ok()
+            .and_then(|p| p.get("tool_call_id").and_then(|v| v.as_str()).map(str::to_owned))
+    };
+    let mut output = Vec::new();
+    for part in parts {
+        if part.kind == "tool_call_ref" {
+            if let Some(key) = call_key(part) {
+                if let Some(result) = parts.iter().find(|p| p.kind == "tool_result_ref" && call_key(p).as_ref() == Some(&key)) {
+                    let mut merged = part.clone();
+                    merged.status = result.status.clone();
+                    let mut payload: serde_json::Value = serde_json::from_str(&result.payload_json).unwrap_or_default();
+                    if let Some(object) = payload.as_object_mut() {
+                        object.insert("call".into(), serde_json::from_str::<serde_json::Value>(&part.payload_json).unwrap_or_default());
+                    }
+                    merged.payload_json = payload.to_string();
+                    output.push(merged);
+                    continue;
+                }
+            }
+        } else if part.kind == "tool_result_ref" {
+            if let Some(key) = call_key(part) {
+                if parts.iter().any(|p| p.kind == "tool_call_ref" && call_key(p).as_ref() == Some(&key)) {
+                    continue;
+                }
+            }
+        }
+        output.push(part.clone());
+    }
+    output
+}
+
+fn ai_execution_needs_attention(part: &fluxdb_app::AiConversationPart) -> bool {
+    matches!(part.status.as_str(), "error" | "pending" | "streaming" | "interrupted")
+        || serde_json::from_str::<serde_json::Value>(&part.payload_json).ok()
+            .is_some_and(|p| p.get("execution_status").and_then(|v| v.as_str()) == Some("unknown"))
+}
+
+fn ai_chat_message_parts(
+    message: &fluxdb_app::AiConversationMessage,
+    chat: &fluxdb_app::AiConversationView,
+    colors: UiColors,
+    cx: &mut Context<NavicatMain>,
+) -> Vec<gpui::AnyElement> {
+    let parts = ai_compact_parts(&message.parts);
+    let tools = parts.iter().filter(|p| matches!(p.kind.as_str(), "tool_call_ref" | "tool_result_ref") && !ai_execution_needs_attention(p)).collect::<Vec<_>>();
+    let group_id = format!("execution:{}", message.id);
+    let open = chat.expanded_parts.contains(&group_id);
+    let mut output = Vec::new();
+    let mut group_added = false;
+    for part in &parts {
+        if tools.iter().any(|p| p.id == part.id) {
+            if group_added { continue; }
+            group_added = true;
+            let toggle_id = group_id.clone();
+            output.push(div().flex().flex_col().gap_1().min_w(px(0.))
+                .child(Button::new(SharedString::from(group_id.clone()))
+                    .debug_selector({ let id = group_id.clone(); move || id.clone() })
+                    .xsmall().ghost().cursor_pointer()
+                    .child(div().flex().items_center().gap_1p5().text_size(px(10.)).text_color(colors.muted)
+                        .child(app_icon(AppIcon::Check, 11., colors.muted))
+                        .child(format!("已完成 {} 项操作", tools.len()))
+                        .child(app_icon(if open { AppIcon::ChevronDown } else { AppIcon::ChevronRight }, 10., colors.muted)))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        let mut view = this.controller.state().ai_conversation.clone();
+                        if let Some(index) = view.expanded_parts.iter().position(|id| id == &toggle_id) {
+                            view.expanded_parts.remove(index);
+                        } else { view.expanded_parts.push(toggle_id.clone()); }
+                        this.controller.dispatch(AppCommand::AiConversation(fluxdb_app::AiConversationCommand::Apply { view }));
+                        this.save_ai_chat_ui(window, cx);
+                        cx.notify();
+                    })))
+                .when(open, |column| column.child(div().pl_2().border_l_1().border_color(colors.border_soft)
+                    .flex().flex_col().gap_1().children(tools.iter().map(|p| ai_chat_part(p, chat.expanded_parts.contains(&p.id), chat.target_json.as_deref(), colors, cx)))))
+                .into_any_element());
+        } else {
+            output.push(ai_chat_part(part, chat.expanded_parts.contains(&part.id), chat.target_json.as_deref(), colors, cx));
+        }
+    }
+    output
+}

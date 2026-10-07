@@ -86,7 +86,28 @@ pub fn insert(conn: &Connection, now_ms: i64, edit: &ContextCheckpointEdit) -> R
             "上下文 checkpoint 切点不合法",
         ));
     }
-    conn.execute(
+    let tx = conn.unchecked_transaction().map_err(sqlite_error)?;
+    tx.execute(
+        "UPDATE ai_sessions SET updated_at_ms=updated_at_ms WHERE id=?1",
+        [&edit.session_id],
+    )
+    .map_err(sqlite_error)?;
+    let turn = super::sessions::load_turn(&tx, &edit.turn_id)?;
+    if turn.session_id != edit.session_id || turn.status.is_terminal() {
+        return Err(Error::new(ErrorKind::Internal, "拒绝迟到上下文摘要"));
+    }
+    let previous = load_latest(&tx, &edit.session_id)?;
+    if edit.generation != previous.as_ref().map(|p| p.generation + 1).unwrap_or(1)
+        || previous
+            .as_ref()
+            .is_some_and(|p| edit.last_message_seq <= p.last_message_seq)
+    {
+        return Err(Error::new(
+            ErrorKind::Internal,
+            "上下文摘要 generation 已改变或无进展",
+        ));
+    }
+    tx.execute(
         "INSERT INTO ai_context_checkpoints
             (id, session_id, turn_id, generation, first_message_seq, last_message_seq,
              summary_text, protected_items_json, source_hash, model_profile_id, created_at_ms)
@@ -106,5 +127,5 @@ pub fn insert(conn: &Connection, now_ms: i64, edit: &ContextCheckpointEdit) -> R
         ],
     )
     .map_err(sqlite_error)?;
-    Ok(())
+    tx.commit().map_err(sqlite_error)
 }

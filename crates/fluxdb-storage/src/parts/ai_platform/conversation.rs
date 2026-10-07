@@ -14,6 +14,10 @@ pub struct ConversationData {
     pub parts: Vec<sessions::MessagePartView>,
     pub turns: Vec<sessions::TurnView>,
     pub ui_state: Option<sessions::SessionUiStateView>,
+    pub selected_model_id: Option<String>,
+    pub model_selection_revision: i64,
+    pub context_references: Vec<String>,
+    pub usage: super::usage_ledger::UsageTotals,
 }
 
 pub fn load(conn: &Connection, selected: Option<&str>) -> Result<ConversationData> {
@@ -29,6 +33,10 @@ pub fn load(conn: &Connection, selected: Option<&str>) -> Result<ConversationDat
         parts: Vec::new(),
         turns: Vec::new(),
         ui_state: None,
+        selected_model_id: None,
+        model_selection_revision: 0,
+        context_references: Vec::new(),
+        usage: super::usage_ledger::UsageTotals::default(),
     };
     if let Some(id) = selected {
         // 损坏/失效指针不能随机改选其它会话；保留明确失败供 UI 重试。
@@ -50,6 +58,13 @@ pub fn load(conn: &Connection, selected: Option<&str>) -> Result<ConversationDat
         data.turns = sessions::list_turns(conn, &id)?;
         data.ui_state = Some(sessions::load_ui_state(conn, &id)?);
         data.session = Some(session);
+    }
+    (data.selected_model_id, data.model_selection_revision) =
+        super::model_selection::load(conn, data.session.as_ref().map(|s| s.id.as_str()))?;
+    let session_id = data.session.as_ref().map(|s| s.id.as_str());
+    data.context_references = super::context_references::list(conn, session_id)?;
+    if let Some(id) = session_id {
+        data.usage = super::usage_ledger::totals(conn, id)?;
     }
     Ok(data)
 }
@@ -79,6 +94,8 @@ pub fn send(
     if new_session {
         let title: String = text.trim().chars().take(40).collect();
         sessions::create_session(&tx, now, session_id, agent_id, &title)?;
+        super::model_selection::transfer_draft(&tx, session_id)?;
+        super::context_references::transfer(&tx, session_id)?;
     }
     let active:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM ai_turns WHERE session_id=?1 AND status IN ('queued','preparing','generating','executing_tools','waiting_approval','waiting_user','cancel_requested'))",[session_id],|r| r.get(0)).map_err(sqlite_error)?;
     if active {
@@ -99,6 +116,55 @@ pub fn send(
         None,
         None,
     )?;
+    let snapshot: serde_json::Value = serde_json::from_str(snapshot_json)
+        .map_err(|_| Error::new(ErrorKind::Internal, "任务快照不是合法 JSON"))?;
+    if let Some(references) = snapshot
+        .get("context_references")
+        .and_then(|value| value.as_array())
+    {
+        if references.len() > 16 {
+            return Err(Error::new(
+                ErrorKind::Internal,
+                "本轮上下文引用不能超过 16 项",
+            ));
+        }
+        for (index, reference) in references.iter().enumerate() {
+            let id = reference
+                .get("id")
+                .and_then(|value| value.as_str())
+                .filter(|id| !id.is_empty())
+                .ok_or_else(|| Error::new(ErrorKind::Internal, "引用缺少稳定 ID"))?;
+            let label = reference
+                .get("label")
+                .and_then(|value| value.as_str())
+                .ok_or_else(|| Error::new(ErrorKind::Internal, "引用缺少名称"))?;
+            let kind = reference
+                .get("kind")
+                .and_then(|value| value.as_str())
+                .ok_or_else(|| Error::new(ErrorKind::Internal, "引用缺少类型"))?;
+            let summary = match reference.get("summary") {
+                Some(serde_json::Value::String(summary)) => summary.as_str(),
+                None | Some(serde_json::Value::Null) => "",
+                _ => return Err(Error::new(ErrorKind::Internal, "引用摘要必须是文本")),
+            };
+            // 历史仅保存公开标签；附件路径/授权载荷仍只在固定 Turn 快照中。
+            sessions::append_part(
+                &tx,
+                now,
+                &format!("{message_id}-context-{index}"),
+                message_id,
+                sessions::PartKind::ContextRef,
+                sessions::PartStatus::Complete,
+                &serde_json::json!({"id":id,"label":label,"kind":kind,"summary":summary})
+                    .to_string(),
+                None,
+                None,
+                None,
+            )?;
+            // 只消费本次提交的引用，避免把发送期间新增的下一轮引用一起清掉。
+            super::context_references::remove(&tx, Some(session_id), id)?;
+        }
+    }
     let mut prefs = settings::load_panel_preferences(&tx)?;
     let rev = prefs.revision;
     prefs.last_session_id = Some(session_id.into());

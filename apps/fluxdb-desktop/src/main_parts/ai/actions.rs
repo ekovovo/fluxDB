@@ -271,7 +271,15 @@ impl NavicatMain {
                             fluxdb_app::standard_sql_catalog(resolver, include_write)
                         };
                         match catalog {
-                            Ok(catalog) => {
+                            Ok(mut catalog) => {
+                                match fluxdb_app::ai_builtin_hooks(&storage,&job) {
+                                    Ok(hooks)=>catalog=catalog.with_hooks(hooks),
+                                    Err(error)=> {fluxdb_app::run_ai_conversation_failure(&storage,&job,&tx,error.message);return;}
+                                }
+                                if let Err(error)=fluxdb_app::add_ai_file_tools(&mut catalog,&storage,&job) {
+                                    fluxdb_app::run_ai_conversation_failure(&storage,&job,&tx,error.message);
+                                    return;
+                                }
                                 // 写权限来自目标连接（只读连接连写工具都不注册），且 authorize 对 Write 强制逐次审批。
                                 let permission = fluxdb_app::TurnPermissionContext {
                                     agent_allowed_tools,

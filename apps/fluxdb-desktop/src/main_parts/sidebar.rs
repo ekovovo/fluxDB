@@ -651,6 +651,7 @@ fn sidebar(
     .track_scroll(&sidebar_scroll);
 
     let tree_rows = div()
+        .debug_selector(|| "connection-tree-viewport".into())
         .flex_1()
         .min_h(px(0.))
         .overflow_hidden()
@@ -664,6 +665,7 @@ fn sidebar(
         .vertical_scrollbar(&sidebar_scroll);
 
     div()
+        .debug_selector(|| "connection-browser".into())
         .relative()
         .w(px(if compact {
             connection_browser_width.min(260.)

@@ -41,10 +41,8 @@ fn ai_chat_project(
         messages: data
             .messages
             .into_iter()
-            .map(|m| AiConversationMessage {
-                id: m.id.clone(),
-                role: m.role,
-                parts: data
+            .map(|m| {
+                let mut parts: Vec<AiConversationPart> = data
                     .parts
                     .iter()
                     .filter(|p| p.message_id == m.id)
@@ -52,9 +50,35 @@ fn ai_chat_project(
                         id: p.id.clone(),
                         kind: p.kind.as_str().into(),
                         status: p.status.as_str().into(),
-                        payload_json: p.payload_json.clone(),
+                        payload_json: if let Some(call_id) = p.tool_call_id.as_ref().filter(|_| {
+                            matches!(p.kind, fluxdb_storage::ai_platform::sessions::PartKind::ToolCallRef | fluxdb_storage::ai_platform::sessions::PartKind::ToolResultRef)
+                        }) {
+                            let mut payload = serde_json::from_str::<serde_json::Value>(&p.payload_json)
+                                .unwrap_or_default();
+                            if let Some(object) = payload.as_object_mut() {
+                                object.insert("tool_call_id".into(), call_id.clone().into());
+                            }
+                            payload.to_string()
+                        } else {
+                            p.payload_json.clone()
+                        },
                     })
-                    .collect(),
+                    .collect();
+                // 旧会话没有 context_ref 片段时，从该消息所属 Turn 的固定快照恢复公开标签。
+                if m.role == "user" && !parts.iter().any(|part| part.kind == "context_ref") {
+                    if let Some(snapshot) = data.turns.iter().find(|turn| Some(&turn.id) == m.turn_id.as_ref())
+                        .and_then(|turn| serde_json::from_str::<serde_json::Value>(&turn.runtime_snapshot_json).ok()) {
+                        if let Some(references) = snapshot.get("context_references").and_then(|value| value.as_array()) {
+                            parts.extend(references.iter().enumerate().filter_map(|(index, reference)| {
+                                Some(AiConversationPart {
+                                    id: format!("{}-context-legacy-{index}", m.id), kind: "context_ref".into(), status: "complete".into(),
+                                    payload_json: serde_json::json!({"id":reference.get("id")?.as_str()?,"label":reference.get("label")?.as_str()?,"kind":reference.get("kind")?.as_str()?,"summary":reference.get("summary").and_then(|value| value.as_str()).unwrap_or_default()}).to_string(),
+                                })
+                            }));
+                        }
+                    }
+                }
+                AiConversationMessage { id: m.id, role: m.role, parts }
             })
             .collect(),
         target_json: data.turns.last().map(|t| t.target_json.clone()),
@@ -67,6 +91,10 @@ fn ai_chat_project(
             .find(|t| !t.status.is_terminal())
             .map(|t| t.id.clone()),
         error: None,
+        selected_model_id: data.selected_model_id,
+        model_selection_revision: data.model_selection_revision,
+        context_references: data.context_references.iter().filter_map(|raw|serde_json::from_str(raw).ok()).filter_map(|v|AiContextReference::parse(&v)).collect(),
+        usage: data.usage,
     }
 }
 impl AppController {
@@ -105,6 +133,8 @@ impl AppController {
                         }
                     }
                     AiConversationCommand::New => {
+                        fluxdb_storage::ai_platform::model_selection::clear_draft(conn)?;
+                        fluxdb_storage::ai_platform::context_references::clear_draft(conn)?;
                         let mut prefs =
                             fluxdb_storage::ai_platform::settings::load_panel_preferences(conn)?;
                         let rev = prefs.revision;
@@ -170,6 +200,19 @@ impl AppController {
                             fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, e.to_string())
                         })?;
                     }
+                    AiConversationCommand::SelectModel { ref model_id, expected_revision } => {
+                        fluxdb_storage::ai_platform::model_selection::save(conn,self.state.ai_conversation.session_id.as_deref(),model_id.as_deref(),expected_revision)?;
+                    }
+                    AiConversationCommand::AddReference {ref reference} => {
+                        let reference=if reference.kind=="file" {
+                            let raw:serde_json::Value=serde_json::from_str(&reference.source).map_err(|_|fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal,"附件授权损坏"))?;
+                            let path=raw["path"].as_str().ok_or_else(||fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal,"附件路径缺失"))?;
+                            let mut validated=authorize_ai_file(std::path::Path::new(path),storage.root_dir())?;
+                            validated.id=reference.id.clone();validated
+                        } else { reference.clone() };
+                        fluxdb_storage::ai_platform::context_references::add(conn,self.state.ai_conversation.session_id.as_deref(),&reference.id,&reference.json().to_string())?;
+                    }
+                    AiConversationCommand::RemoveReference {ref reference_id} => fluxdb_storage::ai_platform::context_references::remove(conn,self.state.ai_conversation.session_id.as_deref(),reference_id)?,
                     AiConversationCommand::DecideApproval { .. } => unreachable!(),
                     AiConversationCommand::Apply { .. }
                     | AiConversationCommand::RecoverOnStartup => unreachable!(),
@@ -223,7 +266,7 @@ impl AppController {
                 })?
                 .to_string();
             let model = fluxdb_storage::ai_platform::models::load_model(conn, &model_id)?;
-            if !model.enabled {
+            if !model.enabled || model.kind != fluxdb_storage::ai_platform::models::ModelKind::Generation {
                 return Err(fluxdb_core::Error::new(
                     fluxdb_core::ErrorKind::Internal,
                     "原任务模型已停用，无法恢复任务",
@@ -323,14 +366,14 @@ impl AppController {
                     "当前 Agent 已停用",
                 ));
             }
-            let model_id = agent
-                .default_model_profile_id
-                .as_deref()
+            let (selected_model_id, _) = fluxdb_storage::ai_platform::model_selection::load(conn, current.as_ref().map(|s|s.id.as_str()))?;
+            let model_id = selected_model_id.as_deref()
+                .or(agent.default_model_profile_id.as_deref())
                 .or(runtime.default_model_profile_id.as_deref())
                 .ok_or_else(|| {
                     fluxdb_core::Error::new(
                         fluxdb_core::ErrorKind::Internal,
-                        "请先在大模型设置中配置默认主模型",
+                        "请在输入框下方选择模型，或在大模型设置中配置默认主模型",
                     )
                 })?;
             let model = fluxdb_storage::ai_platform::models::load_model(conn, model_id)?;
@@ -347,7 +390,29 @@ impl AppController {
                 .map(|s| s.id.clone())
                 .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
             let turn_id = uuid::Uuid::new_v4().to_string();
-            fluxdb_storage::ai_platform::conversation::send(conn,ai_chat_now(),current.is_none(),&session_id,&agent.id,&turn_id,&uuid::Uuid::new_v4().to_string(),prompt,&target.target_json,&serde_json::json!({"model_profile_id":model_id,"agent_id":agent.id,"agent_revision":agent.revision,"compression_trigger_percent":agent.compression_trigger_percent,"system_prompt":agent.system_prompt,"ui_context":context}).to_string())?;
+            let references=fluxdb_storage::ai_platform::context_references::list(conn,current.as_ref().map(|s|s.id.as_str()))?
+                .iter().filter_map(|raw|serde_json::from_str(raw).ok()).filter_map(|v|AiContextReference::parse(&v)).collect::<Vec<_>>();
+            let mut target_json = self.referenced_execution_target(&references)?
+                .map(|target| target.to_json()).unwrap_or_else(|| target.target_json.clone());
+            // 清空的是下一轮输入引用，不是会话绑定；主页追问沿用原目标，显式引用/当前页面优先。
+            if ai_tool_target_handle(&target_json).is_none() && target.target.is_empty() {
+                if let Some(session) = current.as_ref() {
+                    if let Some(previous) = fluxdb_storage::ai_platform::sessions::list_turns(conn, &session.id)?.last()
+                        .filter(|turn| ai_tool_target_handle(&turn.target_json).is_some()) {
+                        let value: serde_json::Value = serde_json::from_str(&previous.target_json)
+                            .map_err(|_| fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, "会话目标损坏"))?;
+                        if !self.state.connections.iter().any(|connection| i64::try_from(connection.config.id.0).ok() == value["connection_id"].as_i64()) {
+                            return Err(fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, "会话目标连接已不存在，请重新选择引用或连接"));
+                        }
+                        target_json = previous.target_json.clone();
+                    }
+                }
+            }
+            let public_refs=references.iter().map(|r|serde_json::json!({"id":r.id,"label":r.label,"kind":r.kind,"summary":r.summary})).collect::<Vec<_>>();
+            let file_grants=references.iter().filter(|r|r.kind=="file").map(AiContextReference::json).collect::<Vec<_>>();
+            let snapshot=serde_json::json!({"model_profile_id":model_id,"agent_id":agent.id,"agent_revision":agent.revision,"compression_trigger_percent":agent.compression_trigger_percent,"system_prompt":agent.system_prompt,"ui_context":context,"context_references":public_refs,"file_grants":file_grants});
+            fluxdb_storage::ai_platform::conversation::send(conn,ai_chat_now(),current.is_none(),&session_id,&agent.id,&turn_id,&uuid::Uuid::new_v4().to_string(),prompt,&target_json,&snapshot.to_string())?;
+
             let job = AiConversationJob {
                 session_id: session_id.clone(),
                 turn_id,
@@ -547,314 +612,7 @@ pub fn run_ai_conversation_source(
     }
 }
 
-/// 组装本轮公开消息：系统提示 + 界面摘录 + 历史文本片段（不含工具输出，避免把上次执行结果当新上下文）。
-/// 一轮 Turn 的上下文装配结果：系统消息与历史分离，便于压缩时只处理历史部分。
-struct AiTurnContext {
-    target_json: String,
-    /// 永远保留的系统约束 + 当前目标 + 界面摘录。
-    system_messages: Vec<fluxdb_core::ModelMessage>,
-    /// 历史消息及其 `ai_messages.seq`（压缩切点/来源 hash 用）。
-    history: Vec<(i64, fluxdb_core::ModelMessage)>,
-    /// 已有 checkpoint 的摘要与其覆盖的最后 seq；没有则为 None。
-    previous_summary: Option<(String, i64, i64)>,
-    /// 下一个可用的 generation。
-    next_generation: i64,
-    context_window_tokens: Option<i64>,
-    max_output_tokens: Option<i64>,
-    trigger_percent: u8,
-}
-
-fn ai_conversation_turn_messages(
-    storage: &fluxdb_storage::FileStorage,
-    job: &AiConversationJob,
-) -> fluxdb_core::Result<AiTurnContext> {
-    with_ai_storage(storage, |conn| {
-        let data = fluxdb_storage::ai_platform::conversation::load(conn, Some(&job.session_id))?;
-        let turn = fluxdb_storage::ai_platform::sessions::load_turn(conn, &job.turn_id)?;
-        let snapshot: serde_json::Value = serde_json::from_str(&turn.runtime_snapshot_json)
-            .map_err(|_| {
-                fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, "运行快照损坏")
-            })?;
-        let system_prompt = snapshot
-            .get("system_prompt")
-            .and_then(|value| value.as_str())
-            .unwrap_or("");
-        let mut system_messages = vec![fluxdb_core::ModelMessage::new(
-            fluxdb_core::ModelRole::System,
-            format!(
-                "{system_prompt}\n当前执行目标：{}。工具的 target 参数必须使用句柄：{}。你可以调用被授权的工具；只能依据工具真实回执陈述执行结果，不得臆造。",
-                turn.target_json,
-                ai_tool_target_handle(&turn.target_json)
-                    .unwrap_or_else(|| "（无可用句柄）".to_string())
-            ),
-        )];
-        if let Some(context) = snapshot
-            .get("ui_context")
-            .and_then(|value| value.as_str())
-            .filter(|text| !text.is_empty())
-        {
-            system_messages.push(fluxdb_core::ModelMessage::new(
-                fluxdb_core::ModelRole::User,
-                format!("当前页面的有界摘录：\n{context}"),
-            ));
-        }
-
-        // 历史消息按 seq 排序；只取文本片段（工具回执走另一条链路）。
-        let seq_by_message: std::collections::HashMap<String, i64> = data
-            .messages
-            .iter()
-            .map(|m| (m.id.clone(), m.seq))
-            .collect();
-        let mut history: Vec<(i64, fluxdb_core::ModelMessage)> = Vec::new();
-        for message in ai_chat_project(data).messages {
-            let text = message
-                .parts
-                .iter()
-                .filter(|part| part.kind == "text")
-                .filter_map(|part| {
-                    serde_json::from_str::<serde_json::Value>(&part.payload_json).ok()
-                })
-                .filter_map(|value| {
-                    value
-                        .get("text")
-                        .and_then(|text| text.as_str())
-                        .map(str::to_owned)
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
-            if text.is_empty() {
-                continue;
-            }
-            let seq = seq_by_message.get(&message.id).copied().unwrap_or(0);
-            history.push((
-                seq,
-                fluxdb_core::ModelMessage::new(
-                    if message.role == "user" {
-                        fluxdb_core::ModelRole::User
-                    } else {
-                        fluxdb_core::ModelRole::Assistant
-                    },
-                    text,
-                ),
-            ));
-        }
-        if history
-            .iter()
-            .map(|(_, m)| m.text.len())
-            .sum::<usize>()
-            > 64 * 1024
-        {
-            return Err(fluxdb_core::Error::new(
-                fluxdb_core::ErrorKind::Internal,
-                "上下文超过本轮 64 KiB 保护上限；请新建会话",
-            ));
-        }
-
-        let previous = fluxdb_storage::ai_platform::context_checkpoints::load_latest(
-            conn,
-            &job.session_id,
-        )?;
-        let (previous_summary, next_generation) = match previous {
-            Some(checkpoint) => (
-                Some((
-                    checkpoint.summary_text.clone(),
-                    checkpoint.last_message_seq,
-                    checkpoint.generation,
-                )),
-                checkpoint.generation + 1,
-            ),
-            None => (None, 1),
-        };
-        let model = fluxdb_storage::ai_platform::models::load_model(
-            conn,
-            job.model_profile_id.as_str(),
-        )?;
-        let trigger_percent = snapshot
-            .get("compression_trigger_percent")
-            .and_then(serde_json::Value::as_u64)
-            .map(|value| value as u8)
-            .unwrap_or(80);
-        Ok(AiTurnContext {
-            target_json: turn.target_json.clone(),
-            system_messages,
-            history,
-            previous_summary,
-            next_generation,
-            context_window_tokens: model.context_window_tokens,
-            max_output_tokens: Some(
-                model
-                    .max_output_tokens
-                    .unwrap_or(1024)
-                    .min(1024)
-                    .max(0),
-            ),
-            trigger_percent,
-        })
-    })
-}
-
-/// T069：按窗口百分比/输出预留判断是否压缩；需要时调用模型生成增量摘要并原子提交 checkpoint。
-///
-/// 返回压缩后仍可见的历史（未被摘要覆盖的近期消息）与可选的 UI 提示。任何一步失败都退回
-/// 原始历史并给出提示，绝不返回"部分压缩"的半成品，也不覆盖既有 checkpoint。
-#[allow(clippy::too_many_arguments)]
-fn ai_conversation_maybe_compact(
-    storage: &fluxdb_storage::FileStorage,
-    job: &AiConversationJob,
-    provider: &dyn fluxdb_core::GenerationProvider,
-    cancel: &fluxdb_core::CancelFlag,
-    history: Vec<(i64, fluxdb_core::ModelMessage)>,
-    system_tokens: i64,
-    previous_summary: Option<(String, i64, i64)>,
-    next_generation: i64,
-    context_window_tokens: Option<i64>,
-    max_output_tokens: Option<i64>,
-    trigger_percent: u8,
-) -> (Vec<(i64, fluxdb_core::ModelMessage)>, Option<String>) {
-    let estimated = system_tokens + estimate_messages_tokens(
-        &history.iter().map(|(_, m)| m.clone()).collect::<Vec<_>>(),
-    );
-    let Some(reason) = should_compact(
-        estimated,
-        CompactionTrigger {
-            context_window_tokens,
-            max_output_tokens,
-            trigger_percent,
-        },
-    ) else {
-        return (history, None);
-    };
-    if cancel.is_cancelled() {
-        return (history, None);
-    }
-
-    let messages: Vec<fluxdb_core::ModelMessage> =
-        history.iter().map(|(_, m)| m.clone()).collect();
-    // 保留最近 1/3 的历史消息（至少 4 条，至多 24 条），对齐 Pi "保留近期完整交互"。
-    let keep_recent = (messages.len() / 3).clamp(4, 24);
-    let Some(cut) = compute_cut(&messages, keep_recent, |index| {
-        history.get(index).map(|(seq, _)| *seq).unwrap_or(0)
-    }) else {
-        return (history, Some("上下文接近上限，但暂无可安全压缩的完整历史".into()));
-    };
-
-    // 若有旧摘要，它已覆盖 [..previous_last_seq]，这次只把其后、切点之前的消息作为增量。
-    let previous_last_seq = previous_summary.as_ref().map(|(_, seq, _)| *seq).unwrap_or(0);
-    let previous_text = previous_summary.as_ref().map(|(text, _, _)| text.clone());
-    let digest = history[..cut.cut]
-        .iter()
-        .filter(|(seq, _)| *seq > previous_last_seq)
-        .map(|(_, message)| {
-            let role = match message.role {
-                fluxdb_core::ModelRole::User => "用户",
-                fluxdb_core::ModelRole::Assistant => "助手",
-                fluxdb_core::ModelRole::System => "系统",
-                fluxdb_core::ModelRole::Tool => "工具",
-            };
-            format!("[{role}] {}", message.text)
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    if digest.trim().is_empty() {
-        // 没有新增可摘要内容：不重复提交，也不阻塞正常请求。
-        return (history, None);
-    }
-
-    let prompt = build_summary_prompt(previous_text.as_deref(), &digest);
-    let request = fluxdb_core::ModelRequest {
-        model: job.model_profile_id.clone(),
-        messages: vec![fluxdb_core::ModelMessage::new(
-            fluxdb_core::ModelRole::User,
-            prompt,
-        )],
-        tools: Vec::new(),
-        max_output_tokens: Some(1024),
-    };
-    let mut summary_text = String::new();
-    let summary_result = match block_on_ready(provider.stream(request, cancel.clone())) {
-        Ok(Ok(events)) => {
-            for event in events {
-                if let fluxdb_core::ModelEvent::TextDelta(delta) = event {
-                    summary_text.push_str(&delta);
-                }
-            }
-            Ok(())
-        }
-        Ok(Err(error)) => Err(error.message),
-        Err(error) => Err(error.message),
-    };
-    if cancel.is_cancelled() {
-        return (history, None);
-    }
-
-    if let Err(reason) = summary_result {
-        return (
-            history,
-            Some(format!("上下文压缩未完成（摘要失败：{reason}），本轮暂用原始历史")),
-        );
-    }
-    if let Err(reason) = validate_summary(&summary_text) {
-        return (
-            history,
-            Some(format!("上下文压缩未完成（{reason}），本轮暂用原始历史")),
-        );
-    }
-
-    let first_message_seq = history.first().map(|(seq, _)| *seq).unwrap_or(1).max(1);
-    let hash = source_hash(&[
-        &job.session_id,
-        &cut.last_message_seq.to_string(),
-        &summary_text,
-        previous_text.as_deref().unwrap_or(""),
-    ]);
-    let edit = fluxdb_storage::ai_platform::context_checkpoints::ContextCheckpointEdit {
-        id: uuid::Uuid::new_v4().to_string(),
-        session_id: job.session_id.clone(),
-        turn_id: job.turn_id.clone(),
-        generation: next_generation,
-        first_message_seq,
-        last_message_seq: cut.last_message_seq,
-        summary_text: summary_text.clone(),
-        protected_items_json: serde_json::json!({
-            "items": REQUIRED_PROTECTED_ITEMS,
-            "previous_last_message_seq": previous_last_seq,
-        })
-        .to_string(),
-        source_hash: hash,
-        model_profile_id: Some(job.model_profile_id.clone()),
-    };
-    let commit = with_ai_storage(storage, |conn| {
-        fluxdb_storage::ai_platform::context_checkpoints::insert(conn, ai_chat_now(), &edit)
-    });
-    if let Err(error) = commit {
-        return (
-            history,
-            Some(format!("上下文压缩未提交（{}），本轮暂用原始历史", error.message)),
-        );
-    }
-
-    // 压缩成功后，请求里用"旧摘要 + 新摘要"这一条合成消息替换被压掉的历史。
-    let remaining = history[cut.cut..].to_vec();
-    let mut compacted = Vec::with_capacity(remaining.len() + 1);
-    compacted.push((
-        cut.last_message_seq,
-        fluxdb_core::ModelMessage::new(
-            fluxdb_core::ModelRole::User,
-            format!("[历史上下文摘要]\n{summary_text}"),
-        ),
-    ));
-    compacted.extend(remaining);
-    let reason_label = match reason {
-        CompactionReason::Percent => format!("达到上下文 {}%", trigger_percent),
-        CompactionReason::OutputReserve => "输出预留空间不足".to_string(),
-    };
-    (
-        compacted,
-        Some(format!(
-            "已自动压缩上下文（{reason_label}）；原始历史与审计保持不变"
-        )),
-    )
-}
+include!("ai_conversation_context.rs");
 
 /// 保存一条事件片段（工具卡/结果/通知）；失败只记错误，不让持久化问题吞掉真实回执。
 fn ai_conversation_save_part(
@@ -961,7 +719,7 @@ fn ai_conversation_run_turn(
     let (history, compaction_notice) = ai_conversation_maybe_compact(
         storage,
         job,
-        provider,
+        &MeteredProvider { provider, storage, job, purpose:"compaction" },
         cancel,
         history,
         system_tokens,
@@ -1001,8 +759,9 @@ fn ai_conversation_run_turn(
         notice_count += 1;
     }
 
+    let metered_provider = MeteredProvider { provider, storage, job, purpose:"main" };
     let runner = TurnRunner {
-        provider,
+        provider: &metered_provider,
         tools,
         limits: LoopLimits::default(),
         permission,

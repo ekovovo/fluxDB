@@ -125,6 +125,7 @@ pub struct ToolCatalog {
     /// 可执行实现（没有实现的条目只能 describe，不能 prepare 执行）。
     executable: HashMap<String, Box<dyn fluxdb_core::AiTool>>,
     max_argument_bytes: usize,
+    hooks: HookPipeline,
 }
 
 impl ToolCatalog {
@@ -133,12 +134,19 @@ impl ToolCatalog {
             specs,
             executable: HashMap::new(),
             max_argument_bytes: DEFAULT_MAX_ARGUMENT_BYTES,
+            hooks: HookPipeline::default(),
         }
     }
 
     pub fn with_argument_limit(mut self, max_argument_bytes: usize) -> Self {
         self.max_argument_bytes = max_argument_bytes;
         self
+    }
+    pub fn with_hooks(mut self, hooks: HookPipeline) -> Self { self.hooks=hooks; self }
+    pub fn add_tool(&mut self, tool:Box<dyn fluxdb_core::AiTool>)->fluxdb_core::Result<()> {
+        if self.describe(&tool.descriptor().id).is_some(){return Err(fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal,"工具 ID 重复"));}
+        self.specs.push(ToolSpec::from_descriptor(tool.descriptor())?);
+        self.register(tool)
     }
 
     /// 注册可执行实现（按宿主 ID）。

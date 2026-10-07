@@ -117,6 +117,7 @@ fn ai_conversation_record_tool_result(
         "status":call_status,
         "error_code":receipt.error_code,
         "affected_rows":receipt.affected_rows,
+        "duration_ms":(receipt.finished_at_ms - receipt.started_at_ms).max(0),
         "truncated":false,
     })
     .to_string();

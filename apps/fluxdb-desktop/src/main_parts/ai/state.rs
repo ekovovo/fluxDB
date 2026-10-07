@@ -8,7 +8,25 @@ struct AiChatUi {
     mode: fluxdb_storage::ai_platform::settings::PanelMode,
     drawer: f64,
     embedded: f64,
-    input: Entity<InputState>,
+    input: Entity<TextareaState>,
+    agent_select: Entity<SelectState<SearchableVec<AiChatModelOption>>>,
+    agent_options: Vec<AiChatModelOption>,
+    model_select: Entity<SelectState<SearchableVec<AiChatModelOption>>>,
+    _model_subscription: Subscription,
+    model_options: Vec<AiChatModelOption>,
+    reference_open: bool,
+    reference_index: usize,
+    reference_scroll: gpui::ScrollHandle,
+    reference_chips_scroll: gpui::ScrollHandle,
+    composer_bounds: gpui::Bounds<gpui::Pixels>,
+    panel_height: gpui::Pixels,
+    reference_height: gpui::Pixels,
+    input_max_rows: usize,
+    reference_query: Option<String>,
+    reference_options: Vec<fluxdb_app::AiContextReference>,
+    reference_error: Option<String>,
+    /// 本次 `@query` 没有匹配到任何候选（与"检索失败"区分）。
+    reference_no_match: bool,
     _input_subscription: Subscription,
     scroll: gpui::ScrollHandle,
     pending: std::collections::VecDeque<fluxdb_app::AiConversationCommand>,
@@ -27,20 +45,35 @@ struct AiChatUi {
 impl AiChatUi {
     fn new(window: &mut Window, cx: &mut Context<NavicatMain>) -> Self {
         let input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .multi_line(true)
-                .rows(3)
-                .placeholder("描述你的目标…")
+            TextareaState::new(window, cx)
+                .auto_grow(2, 16)
+                .placeholder("随心输入")
         });
-        let sub = cx.subscribe(
+        let sub = cx.subscribe_in(
             &input,
-            |this: &mut NavicatMain, _, event: &InputEvent, cx| {
+            window,
+            |this: &mut NavicatMain, _, event: &InputEvent, window, cx| {
                 if matches!(event, InputEvent::Change) {
                     this.ai_chat.dirty = true;
+                    // 输入变化即时重算 `@` 候选：只有存在未闭合的 `@query` 才打开下拉。
+                    this.refresh_ai_reference_menu(window, cx);
+                    if this.ai_chat.input.read(cx).value().rfind('@').is_none() {
+                        this.ai_chat.reference_open = false;
+                    }
                     cx.notify();
                 }
             },
         );
+        let model_select = cx.new(|cx| SelectState::new(SearchableVec::new(Vec::<AiChatModelOption>::new()), None, window, cx));
+        let model_subscription = cx.subscribe_in(&model_select, window, |this: &mut NavicatMain, _, event: &SelectEvent<SearchableVec<AiChatModelOption>>, window, cx| {
+            if let SelectEvent::Confirm(Some(value)) = event {
+                let chat = &this.controller.state().ai_conversation;
+                this.ai_chat_request(fluxdb_app::AiConversationCommand::SelectModel {
+                    model_id: (!value.is_empty()).then(|| value.clone()),
+                    expected_revision: chat.model_selection_revision,
+                }, window, cx);
+            }
+        });
         Self {
             open: false,
             loading: false,
@@ -51,6 +84,23 @@ impl AiChatUi {
             drawer: 460.,
             embedded: 420.,
             input,
+            agent_select: cx.new(|cx| SelectState::new(SearchableVec::new(Vec::<AiChatModelOption>::new()), None, window, cx)),
+            agent_options: Vec::new(),
+            model_select,
+            _model_subscription: model_subscription,
+            model_options: Vec::new(),
+            reference_open: false,
+            reference_index: 0,
+            reference_scroll: gpui::ScrollHandle::new(),
+            reference_chips_scroll: gpui::ScrollHandle::new(),
+            composer_bounds: gpui::Bounds::default(),
+            panel_height: px(0.),
+            reference_height: px(0.),
+            input_max_rows: 16,
+            reference_query: None,
+            reference_options: Vec::new(),
+            reference_error: None,
+            reference_no_match: false,
             _input_subscription: sub,
             scroll: gpui::ScrollHandle::new(),
             pending: std::collections::VecDeque::new(),

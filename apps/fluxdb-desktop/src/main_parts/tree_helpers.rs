@@ -873,6 +873,7 @@ fn connection_tree(
 
     div()
         .id(("connection-tree", connection_id.0))
+        .debug_selector(move || format!("connection-row:{}", connection_id.0))
         .w_full()
         .h(px(30.))
         .mx_1()

@@ -11,6 +11,10 @@ pub struct AiConversationView {
     pub expanded_parts: Vec<String>,
     pub active_turn_id: Option<String>,
     pub error: Option<String>,
+    pub selected_model_id: Option<String>,
+    pub model_selection_revision: i64,
+    pub context_references: Vec<AiContextReference>,
+    pub usage: fluxdb_storage::ai_platform::usage_ledger::UsageTotals,
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct AiConversationSummary {
@@ -40,6 +44,9 @@ pub enum AiConversationCommand {
     /// 宿主启动专用；不能在活跃任务期间或每次打开面板时扫描。
     RecoverOnStartup,
     New,
+    SelectModel { model_id: Option<String>, expected_revision: i64 },
+    AddReference { reference: AiContextReference },
+    RemoveReference { reference_id: String },
     SaveUi {
         draft: String,
         expanded_parts: Vec<String>,

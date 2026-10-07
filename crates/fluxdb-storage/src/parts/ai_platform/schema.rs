@@ -320,6 +320,21 @@ CREATE TABLE IF NOT EXISTS ai_sessions (
     updated_at_ms INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ai_sessions_recent ON ai_sessions(status, updated_at_ms DESC);
+CREATE TABLE IF NOT EXISTS ai_context_references (
+    scope_id TEXT NOT NULL,
+    session_id TEXT REFERENCES ai_sessions(id) ON DELETE CASCADE,
+    reference_id TEXT NOT NULL,
+    payload_json TEXT NOT NULL CHECK(json_valid(payload_json)),
+    PRIMARY KEY(scope_id,reference_id),
+    CHECK ((session_id IS NULL AND scope_id='draft') OR scope_id=session_id)
+);
+CREATE TABLE IF NOT EXISTS ai_session_model_selections (
+    scope_id TEXT PRIMARY KEY,
+    session_id TEXT REFERENCES ai_sessions(id) ON DELETE CASCADE,
+    model_profile_id TEXT REFERENCES ai_model_profiles(id) ON DELETE RESTRICT,
+    revision INTEGER NOT NULL CHECK (revision >= 1),
+    CHECK ((session_id IS NULL AND scope_id='draft') OR scope_id=session_id)
+);
 CREATE TABLE IF NOT EXISTS ai_turns (
     id TEXT PRIMARY KEY,
     session_id TEXT NOT NULL REFERENCES ai_sessions(id) ON DELETE RESTRICT,

@@ -418,6 +418,61 @@ mod ai_panel_tests {
     }
 
     #[gpui::test]
+    async fn ai_panel_reference_menu_renders_twenty_and_scrolls(cx: &mut TestAppContext) {
+        let fixture = Fixture::new();
+        let (view, cx) = open_main(cx, &fixture, fixture.controller(), ThemeMode::Light);
+        open_panel(&view, cx);
+        view.update(cx, |main, _| {
+            main.ai_chat.reference_open = true;
+            main.ai_chat.reference_query = Some(String::new());
+            main.ai_chat.reference_options = (0..30)
+                .map(|index| fluxdb_app::AiContextReference {
+                    id: format!("menu-ref-{index}"),
+                    label: format!("候选 {index}"),
+                    kind: "table".into(),
+                    source: "test".into(),
+                    summary: format!("测试路径 / 候选 {index}"),
+                })
+                .collect();
+        });
+        cx.run_until_parked();
+        draw(cx);
+        let select_bounds = cx
+            .debug_bounds("ai-chat-reference-select")
+            .expect("@ 候选浮层必须渲染");
+        let scroll_bounds = cx
+            .debug_bounds("ai-chat-reference-list-scroll")
+            .expect("@ 候选列表必须有独立滚动区");
+        assert!(cx.debug_bounds("ai-reference-candidate:menu-ref-0").is_some());
+        assert!(cx.debug_bounds("ai-reference-candidate:menu-ref-19").is_some());
+        assert!(
+            cx.debug_bounds("ai-reference-candidate:menu-ref-20").is_none(),
+            "@ 候选最多渲染 20 条"
+        );
+        assert!(
+            scroll_bounds.size.height < select_bounds.size.height,
+            "候选超过可视高度时必须出现滚动区: scroll={scroll_bounds:?}, select={select_bounds:?}"
+        );
+        let first_y = cx
+            .debug_bounds("ai-reference-candidate:menu-ref-0")
+            .unwrap()
+            .top();
+        cx.simulate_event(gpui::ScrollWheelEvent {
+            position: scroll_bounds.center(),
+            delta: gpui::ScrollDelta::Pixels(point(px(0.), px(-100.))),
+            ..Default::default()
+        });
+        draw(cx);
+        assert!(
+            cx.debug_bounds("ai-reference-candidate:menu-ref-0")
+                .unwrap()
+                .top()
+                < first_y,
+            "@ 候选列表应支持滚轮滚动"
+        );
+    }
+
+    #[gpui::test]
     async fn ai_panel_at_button_then_reference_keeps_chip_and_footer_visible(
         cx: &mut TestAppContext,
     ) {

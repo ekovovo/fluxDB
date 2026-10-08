@@ -206,16 +206,22 @@ impl NavicatMain {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let bounds = self.ai_chat.composer_bounds;
-        let max_height = (f32::from(self.ai_chat.panel_height) * 0.4).clamp(48., 240.);
+        let max_height = (f32::from(self.ai_chat.panel_height) * 0.42).clamp(48., 272.);
+        let candidate_count = self
+            .ai_chat
+            .reference_options
+            .len()
+            .min(fluxdb_app::AI_REFERENCE_CANDIDATE_LIMIT);
         let mut list = div()
             .id("ai-chat-reference-list")
             .debug_selector(|| "ai-chat-reference-select".into())
             .w(px((f32::from(bounds.size.width) - 24.).max(0.)))
-            .p_1()
+            .overflow_hidden()
             .border_1()
             .border_color(colors.border_soft)
             .rounded(colors.radius_lg)
             .bg(colors.panel_bg)
+            .shadow_lg()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_mouse_down_out(cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
                 if !this
@@ -231,45 +237,110 @@ impl NavicatMain {
             }))
             .child(
                 div()
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .px_2()
+                    .pt_2()
+                    .pb_1()
+                    .text_size(px(10.))
+                    .text_color(colors.muted)
+                    .child("上下文引用")
+                    .child(format!(
+                        "{candidate_count} / {}",
+                        fluxdb_app::AI_REFERENCE_CANDIDATE_LIMIT
+                    )),
+            )
+            .child(
+                div()
                     .id("ai-chat-reference-list-scroll")
+                    .debug_selector(|| "ai-chat-reference-list-scroll".into())
+                    .flex_none()
                     .max_h(px(max_height))
                     .track_scroll(&self.ai_chat.reference_scroll)
-                    .overflow_y_scrollbar()
-                    .children(self.ai_chat.reference_options.iter().enumerate().map(
-                        |(index, reference)| {
-                            let id = reference.id.clone();
-                            let kind = match reference.kind.as_str() {
-                                "connection" | "database" | "redis_db" => AppIcon::Database,
-                                "table" | "view" | "schema" => AppIcon::Table,
-                                "file" => AppIcon::FileSearch,
-                                _ => AppIcon::FileSearch,
-                            };
-                            gpui_component::list::ListItem::new(SharedString::from(format!(
-                                "ai-reference-candidate:{id}"
-                            )))
-                            .debug_selector({
-                                let id = id.clone();
-                                move || format!("ai-reference-candidate:{id}")
-                            })
-                            .selected(index == self.ai_chat.reference_index)
-                            .disabled(!ready)
-                            .cursor_pointer()
-                            .text_size(px(11.))
-                            .text_color(colors.text)
-                            .child(app_icon(kind, 12., colors.muted))
-                            .child(
-                                div()
-                                    .min_w(px(0.))
-                                    .truncate()
-                                    .child(reference.label.clone()),
-                            )
-                            .on_click(cx.listener(
-                                move |this, _, window, cx| {
-                                    this.accept_ai_reference(&id, window, cx);
-                                },
-                            ))
-                        },
-                    )),
+                    .overflow_y_scroll()
+                    .vertical_scrollbar(&self.ai_chat.reference_scroll)
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.))
+                    .px_1()
+                    .pb_1()
+                    .children(
+                        self.ai_chat
+                            .reference_options
+                            .iter()
+                            .take(fluxdb_app::AI_REFERENCE_CANDIDATE_LIMIT)
+                            .enumerate()
+                            .map(|(index, reference)| {
+                                let id = reference.id.clone();
+                                let (icon, tone) =
+                                    ai_reference_visual(&reference.kind, colors);
+                                gpui_component::list::ListItem::new(SharedString::from(format!(
+                                    "ai-reference-candidate:{id}"
+                                )))
+                                .debug_selector({
+                                    let id = id.clone();
+                                    move || format!("ai-reference-candidate:{id}")
+                                })
+                                .selected(index == self.ai_chat.reference_index)
+                                .disabled(!ready)
+                                .cursor_pointer()
+                                .rounded(colors.radius)
+                                .px_1p5()
+                                .py(px(4.))
+                                .text_size(px(11.))
+                                .text_color(colors.text)
+                                .child(
+                                    div()
+                                        .w_full()
+                                        .min_w(px(0.))
+                                        .flex()
+                                        .items_center()
+                                        .gap_2()
+                                        .child(
+                                            div()
+                                                .flex_none()
+                                                .size(px(24.))
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .rounded(colors.radius)
+                                                .bg(colors.hover)
+                                                .child(app_icon(icon, 13., tone)),
+                                        )
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .min_w(px(0.))
+                                                .flex()
+                                                .flex_col()
+                                                .gap(px(1.))
+                                                .child(
+                                                    div()
+                                                        .min_w(px(0.))
+                                                        .truncate()
+                                                        .text_color(colors.text)
+                                                        .child(reference.label.clone()),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .min_w(px(0.))
+                                                        .truncate()
+                                                        .text_size(px(10.))
+                                                        .text_color(colors.muted)
+                                                        .child(reference.summary.clone()),
+                                                ),
+                                        )
+                                        .child(ai_reference_badge(&reference.kind, colors)),
+                                )
+                                .on_click(cx.listener(
+                                    move |this, _, window, cx| {
+                                        this.accept_ai_reference(&id, window, cx);
+                                    },
+                                ))
+                            }),
+                    ),
             );
         if self.ai_chat.reference_options.is_empty() {
             list = list.child(
@@ -293,4 +364,40 @@ impl NavicatMain {
         )
         .into_any_element()
     }
+}
+
+fn ai_reference_visual(kind: &str, colors: UiColors) -> (AppIcon, gpui::Rgba) {
+    match kind {
+        "connection" | "database" | "redis_db" => (AppIcon::Database, colors.info),
+        "table" | "view" | "schema" => (AppIcon::Table, colors.success),
+        "knowledge" => (AppIcon::Text, colors.warning),
+        _ => (AppIcon::FileSearch, colors.info),
+    }
+}
+
+fn ai_reference_badge(kind: &str, colors: UiColors) -> gpui::AnyElement {
+    let label = match kind {
+        "connection" => "连接",
+        "database" => "数据库",
+        "schema" => "Schema",
+        "table" => "表",
+        "view" => "视图",
+        "collection" => "集合",
+        "redis_db" => "Redis DB",
+        "redis_key" => "Redis Key",
+        "knowledge" => "知识",
+        "file" => "文件",
+        _ => "引用",
+    };
+    let (_, tone) = ai_reference_visual(kind, colors);
+    div()
+        .flex_none()
+        .px_1p5()
+        .py(px(2.))
+        .rounded(px(999.))
+        .bg(rgba_with_alpha(tone, 0.11))
+        .text_size(px(10.))
+        .text_color(tone)
+        .child(label)
+        .into_any_element()
 }

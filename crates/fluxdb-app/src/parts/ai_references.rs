@@ -98,6 +98,37 @@ impl AppController {
         }))
     }
 
+}
+
+/// `@` 候选上限：浮层只渲染有限列表，关键字越具体结果越准确。
+pub const AI_REFERENCE_CANDIDATE_LIMIT: usize = 20;
+
+fn ai_database_kind_label(kind: fluxdb_core::DatabaseKind) -> &'static str {
+    match kind {
+        fluxdb_core::DatabaseKind::MySql => "MySQL",
+        fluxdb_core::DatabaseKind::TiDb => "TiDB",
+        fluxdb_core::DatabaseKind::Sqlite => "SQLite",
+        fluxdb_core::DatabaseKind::MongoDb => "MongoDB",
+        fluxdb_core::DatabaseKind::Redis => "Redis",
+        fluxdb_core::DatabaseKind::Postgres => "PostgreSQL",
+    }
+}
+
+fn ai_object_kind_label(kind: fluxdb_core::ObjectKind) -> &'static str {
+    match kind {
+        fluxdb_core::ObjectKind::Database => "数据库",
+        fluxdb_core::ObjectKind::Schema => "Schema",
+        fluxdb_core::ObjectKind::Table => "表",
+        fluxdb_core::ObjectKind::View => "视图",
+        fluxdb_core::ObjectKind::Column => "列",
+        fluxdb_core::ObjectKind::Index => "索引",
+        fluxdb_core::ObjectKind::Collection => "集合",
+        fluxdb_core::ObjectKind::RedisDb => "Redis DB",
+        fluxdb_core::ObjectKind::RedisKey => "Redis Key",
+    }
+}
+
+impl AppController {
     /// `@` 候选检索：连接、库/schema、表/视图、知识条目。
     ///
     /// 只返回**摘要元数据**（稳定 ID、标签、来源、简述）；对象正文/文件内容/知识正文
@@ -108,10 +139,13 @@ impl AppController {
         for connection in &self.state.connections {
             candidates.push(AiContextReference {
                 id: format!("connection:{}", connection.config.id.0),
-                label: format!("{} · {:?}", connection.config.name, connection.config.kind),
+                label: connection.config.name.clone(),
                 kind: "connection".into(),
                 source: connection.config.id.0.to_string(),
-                summary: format!("引用连接 {}，不授予写权限", connection.config.name),
+                summary: format!(
+                    "{} 连接 · 只读上下文，不授予写权限",
+                    ai_database_kind_label(connection.config.kind)
+                ),
             });
             for object in &connection.objects {
                 let kind = match object.path.kind {
@@ -129,46 +163,67 @@ impl AppController {
                 // 同名对象靠 连接 + 库 + schema + 名称 全路径区分，不靠裸名。
                 candidates.push(AiContextReference {
                     id: format!("object:{}", source_hash(&[&source])),
-                    label: format!(
-                        "{} / {} / {} / {}",
-                        connection.config.name,
-                        object.path.database.as_deref().unwrap_or(""),
-                        object.path.schema.as_deref().unwrap_or(""),
-                        object.path.name
-                    ),
+                    label: object.path.name.clone(),
                     kind: kind.into(),
                     source,
-                    summary: format!("{:?} {}，详情用数据库工具按需读取", object.path.kind, object.path.name),
+                    summary: {
+                        let mut location = connection.config.name.clone();
+                        if let Some(database) = object.path.database.as_deref() {
+                            location.push_str(" / ");
+                            location.push_str(database);
+                        }
+                        if let Some(schema) = object.path.schema.as_deref() {
+                            location.push_str(" / ");
+                            location.push_str(schema);
+                        }
+                        let mut summary = format!(
+                            "{} · {} / {}",
+                            ai_object_kind_label(object.path.kind),
+                            location,
+                            object.path.name
+                        );
+                        if let Some(rows) = object.rows {
+                            summary.push_str(&format!(" · {rows} 行"));
+                        }
+                        if let Some(comment) = object.comment.as_deref().filter(|v| !v.is_empty()) {
+                            summary.push_str(&format!(" · {comment}"));
+                        }
+                        summary
+                    },
                 });
             }
         }
         // 知识条目：只取 confirmed，只暴露标题/类型/作用域元数据，不展开正文。
         if let Ok(storage) = self.ai_storage()
             && let Ok(entries) = with_ai_storage(&storage, |conn| {
-                fluxdb_storage::ai_platform::knowledge::list_confirmed(conn, &query, 50)
+                fluxdb_storage::ai_platform::knowledge::list_confirmed(conn, &query, AI_REFERENCE_CANDIDATE_LIMIT)
             })
         {
             candidates.extend(entries.into_iter().map(|entry| AiContextReference {
                 id: format!("knowledge:{}", entry.id),
-                label: format!(
-                    "知识 · {} · {}{}",
+                label: entry.title.clone(),
+                kind: "knowledge".into(),
+                source: entry.id.clone(),
+                summary: format!(
+                    "知识 · {} · {}（revision {}）",
                     entry.kind,
-                    entry.title,
                     entry
                         .database_name
                         .as_deref()
-                        .map(|db| format!(" @ {db}"))
-                        .unwrap_or_default()
+                        .map(|db| format!("作用域 {db}"))
+                        .unwrap_or_else(|| "全局作用域".into()),
+                    entry.revision
                 ),
-                kind: "knowledge".into(),
-                source: entry.id.clone(),
-                summary: format!("已确认业务知识「{}」（revision {}），正文按需读取", entry.title, entry.revision),
             }));
         }
         candidates
             .into_iter()
-            .filter(|reference| reference.label.to_lowercase().contains(&query))
-            .take(50)
+            .filter(|reference| {
+                format!("{} {} {}", reference.label, reference.kind, reference.summary)
+                    .to_lowercase()
+                    .contains(&query)
+            })
+            .take(AI_REFERENCE_CANDIDATE_LIMIT)
             .collect()
     }
 }

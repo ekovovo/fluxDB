@@ -982,8 +982,8 @@ struct NavicatMain {
     redis_hash_field_hovered: Option<RedisHashFieldEditingState>,
     redis_hash_field_editing: Option<RedisHashFieldEditingState>,
     // 完整值弹框（查看/编辑 >1MB 截断 hash 字段）；懒加载 task id 用 redis_hash_field_mutation_task_id。
-    // 用 Rc<RefCell> 而非裸字段：gpui-component 的 dialog builder 在 NavicatMain::render 期间被
-    // `Root::render_dialog_layer` 同步执行，此时 NavicatMain 处于 lease 状态，builder 里 `view.read(cx)`
+    // 用 Rc<RefCell> 而非裸字段：gpui-component 的 dialog builder 在 `Root` 插件层渲染 dialog layer
+    // 时被同步执行，此时 NavicatMain 处于 lease 状态，builder 里 `view.read(cx)`
     // 会触发 double-lease panic，因此 builder 必须改读共享状态而不是 re-enter 视图本身。
     redis_hash_full_value_viewer: Rc<std::cell::RefCell<Option<RedisHashFullValueViewer>>>,
     pending_redis_hash_field_drawer: Option<RedisHashFieldDrawerForm>,

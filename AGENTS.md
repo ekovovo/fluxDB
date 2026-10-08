@@ -36,18 +36,33 @@
 - 验证时说明实际检查的平台与未验证范围；单平台通过不能视为三端通过。
 
 ## UI 约定
-- 修改 UI 前检查 `gpui-component 0.6.0` 和项目已有封装；通用控件必须复用组件，不得用 `div()` 替代或新增重复本地控件。仅在组件缺失或经验证无法满足语义时自行组合，并记录原因；普通布局容器可用 `div()`。
+- 修改 UI 前检查 `Cargo.lock` 中实际锁定的 `gpui-component` / GPUI Kit 版本和项目已有封装（当前锁定 `gpui-component 0.7.1`、`gpui-kit 0.7.1`、`gpui-pre 0.3.8`）；通用控件必须复用组件，不得用 `div()` 替代或新增重复本地控件。仅在组件缺失或经验证无法满足语义时自行组合，并记录原因；普通布局容器可用 `div()`。
+- 依赖 GPUI 生态的宏（`actions!`、`#[derive(Action)]` 等）由 `gpui-component` / `gpui-base` 的过程宏经 `proc_macro_crate` 解析：优先 `gpui-kit`，其次回退 `gpui-pre`。因此 `gpui-kit` 必须是**生产依赖**；只放在 `dev-dependencies` 会让宏在普通构建中展开成无法解析的 `::gpui_kit::…`。
+- macOS 构建需在 `gpui-platform` 上显式开启 `runtime_shaders`：`gpui-base 0.6.x` 曾无条件开启，0.7.x 改为使用方自选，不开启则 build.rs 调用 `xcrun metal`，把构建机强制绑定到完整 Xcode。
 - 颜色统一走 `UiColors`，兼容明暗主题；功能图标使用 `AppIcon` / `app_icon(...)` / `app_icon_box(...)` 与 lucide 风格 SVG，不用文字字符代替。
 - 弹框接入关闭按钮、`Esc` 和遮罩关闭；弹框、浮层、下拉菜单均支持外部点击关闭，内部点击阻止穿透。
 - 按钮及按钮式控件提供 `cursor_pointer()`、hover，组件支持时提供 active；按钮圆角、输入框和菜单样式遵循 [UI 样式规范](docs/ui-style.md)。
 - 请求数据、数据库和文件操作等耗时任务必须显示 loading/disabled，不阻塞 UI；数据区域刷新也需明确 loading。
 - 轻量反馈统一使用主窗口 `show_message(...)`，单槽替换并重新计时，不散落 `push_notification` 或自绘提示。
 
+## 自动化测试约定
+- 测试分为纯逻辑单测、App/Connector/Storage 集成测试、GPUI Headless UI 集成测试、离屏视觉验证、真实桌面 E2E；按变更的实际风险选择，完整执行方式见 [测试指南](docs/testing.md)。
+- UI 交互回归使用 `gpui_kit::test`（`#[gpui_kit::test]`、`TestWindowExt`、必要时 `TestAppContextExt`），测试生产 View 和真实事件链；不以直接调用回调或 AppCommand 处理函数代替点击测试。生产 UI 只由 `main.rs` 的 `include!` 组织、私有 View 无法被集成测试导入时，测试写在 `src/main_parts/` 的 `#[cfg(test)]` 模块内，不为测试拆分入口或扩大公开 API。
+- Headless 断言前先 `render_frame`；交互后重新查询快照，旧快照不随交互更新。`input()` 不自动聚焦，必须先真实点击输入框；表单预填了默认值时先全选（跨平台写法 `secondary-a`，macOS 为 cmd、其他平台为 ctrl）再输入，否则文本会插到光标处而非替换。
+- 输入框的 `Change` 订阅是事件驱动的：业务状态在输入事件处理链走完后才更新，因此「输入 → 断言业务状态」要分成两段窗口更新，不要在同一帧内断言。
+- 交互控件使用稳定 `ElementId`，重复 ID 用已有父级 `within` 作用域定位；列表节点优先使用稳定业务 ID，不依赖易变下标、随机 ID 或绝对坐标。普通 `div()` 需 `.test_support()` 才可被观察；该调用在未启用 `test-support` 时是恒等变换。已有稳定 ID 时不新增测试专用元素或容器。
+- 异步操作在窗口更新之外用 `wait_for` 做有界条件等待，等待最终 UI 或业务状态而非执行器空闲；不依赖任意固定 `sleep`。
+- 基座 Button 不上报 `aria-disabled`，`disabled()` 返回 `None` 属正常，不代表按钮可用或不可用；禁用态改用行为结果验证（点击后任务是否启动、是否重复提交）。
+- UI 自动化同时断言用户可见状态和 AppCommand / AppState / AppEvent 等业务结果；按风险覆盖成功、错误、loading/disabled、空态、焦点、快捷键及弹框开关。
+- 连接器使用既有接口和受控 Mock，存储使用隔离临时目录或测试库；不得触达生产数据库、覆盖真实用户配置或把密码、API Key、密文及加密元数据输出到日志、截图、快照或报告。需要确定失败分支时用 RFC 5737 文档保留网段等不可路由目标，而不是本机可能存在的服务。
+- Headless 事件测试不等于像素检查或真实桌面 E2E；系统输入法、原生窗口、文件对话框、无障碍平台映射和最终界面观感仍需按平台验证。跨平台结果分别报告，不以单平台结果推断三端通过。
+
 ## 验证
-- Rust 代码修改后运行 `cargo fmt` 和 `cargo check`。
-- 修改 core/app/storage/connectors 逻辑后运行相关测试；影响范围不明确时运行 `cargo test`。
-- UI 交互回归优先使用 GPUI 官方测试能力（`#[gpui::test]`、`TestAppContext` / `VisualTestContext`），按当前锁定版本核对接口并启用 `test-support`；模拟按钮点击、输入、快捷键与弹框开关，断言状态和业务结果，不以直接调用处理函数代替交互测试。
-- UI 修改必须运行 `cargo run -p fluxdb-desktop`，在真实窗口执行受影响流程的端到端测试（实际点击、输入、提交并检查结果），覆盖相关 loading/disabled、空态、错误态；进程内测试、编译通过或仅启动成功不能替代此项。
+- Rust 代码修改后运行 `cargo fmt --all` 和 `cargo check --locked`；验收报告注明具体命令，检查是否完成。
+- 修改 core/app/storage/connectors 逻辑后运行相关测试；影响范围不明确时运行 `cargo test --workspace --locked`。
+- GPUI 依赖升级必须额外验证：`cargo tree -d` 确认无重复 GPUI 来源，且 macOS / Windows / Linux 三端至少各完成一次 `cargo check`。
+- UI 行为或数据流修改优先运行受影响的 GPUI Headless UI 自动化测试，必要时加入回归用例；使用真实 View 模拟点击、输入、快捷键、滚动或拖拽，并检查用户可见反馈与业务结果；接口以当前锁定版本为准。
+- UI 修改需运行 `cargo run -p fluxdb-desktop` 检查真实界面；关键用户流程和系统相关功能必须在可见窗口实际点击、输入、提交并检查结果，覆盖相关 loading/disabled、空态、错误态。纯视觉修改按需重点核验截图与主题；只编译、进程内测试或只启动成功均不能冒充真实 E2E 通过。
 - 结合实际界面截图，对照设计稿（如有）、需求和 `docs/ui-style.md` 检查 UI 还原度、布局间距、文字、颜色及控件状态，验证明暗主题。
 - 按模块测试、修复并复测；截图少截、裁准，首次读取前缩放并压缩，避免重复加载大图。允许委派 UI 测试子 agent，共享 GUI 操作须串行，返回简短结论与必要截图路径，完成后关闭。
-- 验收仅汇总场景、结果、问题与必要截图路径；无法启动、截图或执行测试时明确阻碍及未验证项，不得宣称通过。
+- 验收仅汇总场景、结果、实际执行的命令、平台、问题与必要截图路径；无法启动、截图或执行测试时明确阻碍及未验证项，不得宣称通过。

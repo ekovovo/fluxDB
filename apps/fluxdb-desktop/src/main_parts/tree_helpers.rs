@@ -1515,27 +1515,23 @@ fn cell_with_icon(text: impl Into<String>, width: f32, colors: UiColors) -> impl
 
 #[cfg(target_os = "macos")]
 fn set_dock_icon() {
-    use std::ffi::c_void;
-
-    use cocoa::{
-        appkit::{NSApp, NSApplication, NSImage},
-        base::{id, nil},
-        foundation::{NSData, NSUInteger},
-    };
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::{NSApp, NSImage};
+    use objc2_foundation::NSData;
 
     const APP_ICON: &[u8] = include_bytes!("../../assets/app-icon.icns");
 
-    unsafe {
-        let data = NSData::dataWithBytes_length_(
-            nil,
-            APP_ICON.as_ptr() as *const c_void,
-            APP_ICON.len() as NSUInteger,
-        );
-        let image: id = NSImage::initWithData_(NSImage::alloc(nil), data);
+    // Dock 图标只能在主线程设置；其他线程（如启动前被调度的场景）跳过即可。
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    let data = NSData::with_bytes(APP_ICON);
+    let Some(image) = NSImage::initWithData(mtm.alloc(), &data) else {
+        return;
+    };
 
-        if image != nil {
-            NSApp().setApplicationIconImage_(image);
-        }
+    unsafe {
+        NSApp(mtm).setApplicationIconImage(Some(&image));
     }
 }
 

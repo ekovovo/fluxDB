@@ -444,7 +444,7 @@ impl Render for NavicatMain {
                 },
             )
             // 「执行 SQL 文件」弹框已迁移到 gpui-component Dialog（window.open_dialog），
-            // 由下方 Root::render_dialog_layer 统一渲染，不再在此条件挂载自绘弹层
+            // 由 `Root` 插件层统一渲染，不再在此条件挂载自绘弹层
             .when_some(self.pending_backup_modal.clone(), |this, form| {
                 this.child(database_backup_modal(
                     form,
@@ -721,14 +721,10 @@ impl Render for NavicatMain {
             .when(self.query_history_quick_open, |this| {
                 this.child(query_history_quick_search_modal(&state, self, colors, cx))
             })
-            // gpui-component 的 Dialog 层：应用自身渲染 dialog layer，
-            // 否则 `window.open_dialog` 推入的弹框（除 Redis hash 完整值外）永远不会显示。
-            // 注意：dialog builder 会在 NavicatMain::render 期间被同步执行，builder 内禁止
-            // re-enter `view.read(cx)`，必须读取与视图共享的状态。
+            // gpui-component 的 Dialog 层不再由应用自绘：`gpui_component::init` 会把
+            // `WindowState` 注册为 `Root` 插件，sheet / dialog / notification 层由 `Root`
+            // 在应用内容之上统一挂载，重复手动渲染会导致弹框叠加两份。
             // Redis hash 大字段完整值已改为 Hash Data 表格区域内嵌面板，不再走弹框。
-            .when_some(Root::render_dialog_layer(window, cx), |this, layer| {
-                this.child(layer)
-            })
             // 性能诊断 HUD：设置开启时在窗口右上角悬浮显示 FPS / 帧耗时 / CPU / GPU / 内存。
             // 挂在根容器（`relative`）最上层，fps_monitor 首次调用会懒建每窗口单例并复用。
             .when(state.settings.performance_diagnostics, |this| {

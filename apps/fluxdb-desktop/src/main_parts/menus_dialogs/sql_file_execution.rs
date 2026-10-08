@@ -67,7 +67,7 @@ impl NavicatMain {
 
     /// 打开（或刷新）「执行 SQL 文件」gpui-component Dialog。
     ///
-    /// 已打开时只 `cx.notify()`：`Root::render_dialog_layer` 每帧重跑 builder，内容自然更新。
+    /// 已打开时只 `cx.notify()`：`Root` 插件层的 dialog layer 每帧重跑 builder，内容自然更新。
     /// 主题色在打开时捕获；打开期间切换主题的弹框内颜色不会即时刷新（下一次打开生效）。
     fn open_sql_file_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         {
@@ -795,7 +795,7 @@ impl NavicatMain {
 const SQL_FILE_DIALOG_WIDTH: Pixels = px(600.);
 const SQL_FILE_DIALOG_HEIGHT: Pixels = px(480.);
 
-/// 构建「执行 SQL 文件」Dialog。builder 每帧被 `Root::render_dialog_layer` 重放，
+/// 构建「执行 SQL 文件」Dialog。builder 每帧被 `Root` 插件层的 dialog layer 重放，
 /// 内容快照（form/task）从 Rc 克隆，保证与 NavicatMain 渲染 lease 隔离。
 fn sql_file_build_dialog(
     dialog: Dialog,

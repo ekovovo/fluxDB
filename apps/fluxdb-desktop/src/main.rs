@@ -60,11 +60,11 @@ use gpui::{
     Anchor, Animation, AnimationExt as _, AnyElement, App, AssetSource, Bounds, ClipboardItem,
     Context, Div, DragMoveEvent, Empty, Entity, FocusHandle, Focusable, Hsla, IntoElement,
     KeyBinding, KeyDownEvent, Keystroke, Menu, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, NoAction, PathPromptOptions, Pixels, Point, Render, ScrollHandle, ScrollStrategy,
-    SharedString, Size, Stateful, StatefulInteractiveElement, Subscription, Task, TitlebarOptions,
-    Transformation, UniformListScrollHandle, WeakEntity, Window, WindowBounds, WindowOptions,
-    actions, anchored, canvas, deferred, div, ease_in_out, hsla, img, opaque_grey, percentage,
-    point, px, rgb, size, svg, uniform_list,
+    MouseUpEvent, NoAction, PathPromptOptions, Pixels, Point, Render, Role, ScrollHandle,
+    ScrollStrategy, SharedString, Size, Stateful, StatefulInteractiveElement, Subscription, Task,
+    TitlebarOptions, Transformation, UniformListScrollHandle, WeakEntity, Window, WindowBounds,
+    WindowOptions, actions, anchored, canvas, deferred, div, ease_in_out, hsla, img, opaque_grey,
+    percentage, point, px, rgb, size, svg, uniform_list,
 };
 use gpui_component::{
     ActiveTheme as _, Colorize as _, Disableable as _, IconName, IndexPath, Root, Sizable as _,
@@ -94,6 +94,10 @@ use gpui_component::{
     v_virtual_list,
 };
 use gpui_fps::fps_monitor;
+// `test_support()` 让 GPUI Headless UI 测试能观察普通 `div()` 的原生无障碍属性；
+// `ObservedElement` 是其条件别名类型（未启用 `test-support` 时即原元素类型）。
+use gpui_kit::TestSupportExt;
+use gpui_kit::base::ObservedElement;
 use lsp_types::Position;
 use serde::{Deserialize, Serialize};
 
@@ -211,6 +215,8 @@ include!("main_parts/app_boot_helpers.rs");
 include!("main_parts/tests.rs");
 #[cfg(test)]
 include!("main_parts/tests_ai_ui.rs");
+#[cfg(test)]
+include!("main_parts/tests_connection_ui.rs");
 
 #[cfg(test)]
 include!("main_parts/tests/ai_agent_defaults.rs");

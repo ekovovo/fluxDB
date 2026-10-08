@@ -73,7 +73,7 @@ fn save_confirmed_entry_then_list_and_survive_reopen() {
 
 #[test]
 fn list_only_returns_confirmed_and_filters_by_query() {
-    let mut fixture = Fixture::new();
+    let fixture = Fixture::new();
     for (id, title, status) in [
         ("k1", "订单金额口径", "confirmed"),
         ("k2", "退款规则", "proposed"),
@@ -103,7 +103,7 @@ fn list_only_returns_confirmed_and_filters_by_query() {
 
 #[test]
 fn save_validates_title_status_body_and_cas() {
-    let mut fixture = Fixture::new();
+    let fixture = Fixture::new();
     assert!(
         knowledge::save(
             fixture.db(),

@@ -418,6 +418,8 @@ fn new_connection_modal(
         .flex()
         .items_center()
         .justify_center()
+        // 遮罩作为模态作用域根：UI 自动化用 within 限定到弹框内，避开页面同名控件。
+        .id("new-connection-modal")
         .on_mouse_down(MouseButton::Left, |_, _, cx| {
             cx.stop_propagation();
         })
@@ -650,11 +652,18 @@ fn kind_tile(
     locked: bool,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
-) -> impl IntoElement {
+) -> ObservedElement<Stateful<Div>> {
     let selected = kind == selected;
     let disabled = locked && !selected;
 
+    // ID 按数据库类型命名而非文案，便于 UI 自动化稳定定位「切换到哪种数据库」。
+    // 磁贴可点击切换，纳入 headless 观察。
     div()
+        .id(format!("new-connection-kind-{}", database_kind_element_suffix(kind)))
+        .test_support()
+        .aria_label(label)
+        .role(Role::RadioButton)
+        .aria_selected(selected)
         .w(px(168.))
         .h(px(112.))
         .rounded(colors.radius_lg)
@@ -759,6 +768,18 @@ fn kind_tile(
                 }),
             )
         })
+}
+
+/// 数据库类型在稳定 `ElementId` 中的后缀（如 `new-connection-kind-postgres`）。
+fn database_kind_element_suffix(kind: DatabaseKind) -> &'static str {
+    match kind {
+        DatabaseKind::MySql => "mysql",
+        DatabaseKind::TiDb => "tidb",
+        DatabaseKind::Sqlite => "sqlite",
+        DatabaseKind::MongoDb => "mongodb",
+        DatabaseKind::Redis => "redis",
+        DatabaseKind::Postgres => "postgres",
+    }
 }
 
 fn database_kind_icon(kind: DatabaseKind) -> impl IntoElement {

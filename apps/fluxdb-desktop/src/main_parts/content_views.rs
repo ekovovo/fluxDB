@@ -413,14 +413,14 @@ fn common_actions_panel(
             .flex_col()
             .p_2()
             .gap_1()
-            .child(home_action_row("新建连接", "＋", colors).on_mouse_down(
+            .child(home_action_row("home-new-connection", "新建连接", "＋", colors).on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _, window, cx| {
                     this.show_new_connection(window, cx);
                     cx.stop_propagation();
                 }),
             ))
-            .child(home_action_row("新建查询", "SQL", colors).on_mouse_down(
+            .child(home_action_row("home-new-query", "新建查询", "SQL", colors).on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, _, cx| {
                     if has_connection {
@@ -429,7 +429,7 @@ fn common_actions_panel(
                     cx.stop_propagation();
                 }),
             ))
-            .child(home_action_row("刷新连接树", "⟳", colors).on_mouse_down(
+            .child(home_action_row("home-refresh-connections", "刷新连接树", "⟳", colors).on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, _, cx| {
                     this.refresh_connection_tree(cx);
@@ -501,8 +501,21 @@ fn home_icon_action_row(label: &'static str, icon: AppIcon, colors: UiColors) ->
         .child(app_icon_box(icon, 28., 15., colors.muted))
 }
 
-fn home_action_row(label: &'static str, glyph: &'static str, colors: UiColors) -> Div {
+/// 首页快捷操作行。
+///
+/// `id` 是稳定业务标识（如 `home-new-connection`），供 UI 自动化与无障碍树定位；
+/// 该行由调用方挂 `on_mouse_down`，是可交互元素，因此纳入 headless 观察。
+fn home_action_row(
+    id: &'static str,
+    label: &'static str,
+    glyph: &'static str,
+    colors: UiColors,
+) -> ObservedElement<Stateful<Div>> {
     div()
+        .id(id)
+        .test_support()
+        .aria_label(label)
+        .cursor_pointer()
         .h(px(44.))
         .rounded(colors.radius_lg)
         .px_3()

@@ -18,9 +18,23 @@ fluxdb-core = { path = "../../crates/fluxdb-core" }
 fluxdb-editor-core = { path = "../../crates/fluxdb-editor-core" }
 fluxdb-editor-language = { path = "../../crates/fluxdb-editor-language" }
 fluxdb-storage = { path = "../../crates/fluxdb-storage" }
-gpui = { package = "gpui-pre", version = "0.3.3" }
-gpui-platform = { package = "gpui-pre-platform", version = "0.3.3" }
-gpui-component = { version = "0.6.0", features = ["tree-sitter"] }
+gpui = { package = "gpui-pre", version = "=0.3.8" }
+# gpui-component / gpui-base 0.7.1 的过程宏（`actions!`、`#[derive(Action)]` 等）用
+# proc_macro_crate 解析调用方 crate：优先 `gpui-kit`，其次回退 `gpui-pre`。把
+# gpui-kit 只放在 dev-dependencies 时，普通构建里宏展开成 `::gpui_kit::…` 无法解析，
+# 而 gpui-kit 在 0.7.x 中是应用应当直接依赖的 facade（`gpui_kit::*` 即 GPUI），
+# 它重导出的正是同一份 gpui-pre 0.3.8 / gpui-component 0.7.1，类型完全一致。
+# 因此生产依赖在此声明 gpui-kit；`test-support` 仍只在 dev-dependencies 启用。
+gpui-kit = "=0.7.1"
+# gpui-base 0.6.0 曾在其非 wasm 依赖中固定开启 gpui-platform 的 runtime_shaders；
+# 0.7.1 改为由使用方显式选择。不开启时 gpui-pre-apple 的 build.rs 会调用
+# `xcrun metal` 编译 shaders.metal，构建机因此被强制要求安装完整 Xcode
+# （仅 Command Line Tools 缺少 metal），与升级前的可构建环境不一致。
+# 这里显式开启以保持既有行为：着色器在运行时编译，构建只需 Rust 工具链。
+gpui-platform = { package = "gpui-pre-platform", version = "=0.3.8", features = [
+    "runtime_shaders",
+] }
+gpui-component = { version = "=0.7.1", features = ["tree-sitter"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 lsp-types = "0.97"
 portable-pty = "0.9"
@@ -35,7 +49,7 @@ tree-sitter = "=0.26.13"
 tree-sitter-json = "=0.24.8"
 tree-sitter-sequel = "=0.3.11"
 streaming-iterator = "0.1"
-gpui-fps = "0.6.0"
+gpui-fps = "=0.7.1"
 
 # Linux 首版不启用系统托盘（见 docs/2026-09-14-windows-linux-support-plan.md §3.2/§4.3）。
 # tray-icon 在 Linux 目标上会无条件链接 GTK（libappindicator → gtk），即使 default-features=false 且不调用托盘函数也一样，
@@ -61,7 +75,20 @@ windows = { version = "0.57", features = [
 ] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-cocoa = "0.26"
+# Dock 图标与原生文件面板改用 objc2 系列：cocoa 0.26 的全部类型/方法已标记 deprecated，
+# 且 gpui-pre-apple 0.3.8 自身也已迁移到 objc2 0.6 / objc2-foundation 0.3.2，
+# 这里对齐到同一套类型，避免跨 crate 的 Objective-C 对象互操作。
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3.2", features = [
+    "NSApplication",
+    "NSImage",
+    "NSOpenPanel",
+] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = [
+    "NSData",
+    "NSString",
+    "NSURL",
+] }
 
 [package.metadata.bundle]
 name = "FluxDB"
@@ -75,7 +102,8 @@ short_description = "Desktop database client"
 # §39.3 第 2 步：UI 交互回归需要 gpui 的测试接口（simulate_click / simulate_input /
 # simulate_keystrokes / VisualTestContext）。仅在测试依赖中启用，发布构建不受影响。
 # proptest 等传递依赖已在本地 registry 缓存，使用 --offline 可避免新增下载。
-gpui = { package = "gpui-pre", version = "0.3.3", features = ["test-support"] }
+gpui = { package = "gpui-pre", version = "=0.3.8", features = ["test-support"] }
+gpui-kit = { version = "=0.7.1", features = ["test-support"] }
 # ER 画布布局回归测试：复用 gpui 已锁定并编译的同一 taffy 0.13 引擎，模拟真实 div 树
 # 计算画布非零剩余高度（见 tests.rs::er_canvas_layout_fills_below_toolbar）。无需新增下载。
 taffy = "0.13"

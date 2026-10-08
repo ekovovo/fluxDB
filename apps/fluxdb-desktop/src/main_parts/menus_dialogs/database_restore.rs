@@ -1432,34 +1432,25 @@ fn restore_selected_connection_id(
 /// 原生打开文件选择框（NSOpenPanel），起始目录设为指定目录，返回所选文件路径。
 /// gpui 的 prompt_for_paths 无法指定起始目录，这里直接走 AppKit 以满足「打开到设置备份目录」。
 fn native_open_backup_panel(start_dir: &str) -> Option<std::path::PathBuf> {
-    use std::ffi::CStr;
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::{NSModalResponseOK, NSOpenPanel};
+    use objc2_foundation::{NSString, NSURL};
 
-    use cocoa::{
-        appkit::{NSModalResponse, NSOpenPanel, NSSavePanel},
-        base::{id, nil, NO, YES},
-        foundation::{NSURL, NSString},
-    };
-
-    unsafe {
-        let panel: id = NSOpenPanel::openPanel(nil);
-        panel.setCanChooseFiles_(YES);
-        panel.setCanChooseDirectories_(NO);
-        panel.setAllowsMultipleSelection_(NO);
-        panel.setResolvesAliases_(NO);
-        if !start_dir.is_empty() {
-            let dir = NSString::alloc(nil).init_str(start_dir);
-            let url: id = NSURL::fileURLWithPath_(NSURL::alloc(nil), dir);
-            panel.setDirectoryURL(url);
-        }
-        if panel.runModal() != NSModalResponse::NSModalResponseOk {
-            return None;
-        }
-        let url: id = panel.URL();
-        if url == nil {
-            return None;
-        }
-        let path: id = url.path(); // NSString
-        let cstr = CStr::from_ptr(path.UTF8String() as *const std::ffi::c_char);
-        Some(std::path::PathBuf::from(cstr.to_string_lossy().into_owned()))
+    // 原生面板必须跑在主线程；非主线程调用（例如后台触发的恢复流程）直接放弃。
+    let mtm = MainThreadMarker::new()?;
+    let panel = NSOpenPanel::openPanel(mtm);
+    panel.setCanChooseFiles(true);
+    panel.setCanChooseDirectories(false);
+    panel.setAllowsMultipleSelection(false);
+    panel.setResolvesAliases(false);
+    if !start_dir.is_empty() {
+        let dir = NSString::from_str(start_dir);
+        panel.setDirectoryURL(Some(&NSURL::fileURLWithPath(&dir)));
     }
+    if panel.runModal() != NSModalResponseOK {
+        return None;
+    }
+    let url = panel.URL()?;
+    let path = url.path()?;
+    Some(std::path::PathBuf::from(path.to_string()))
 }

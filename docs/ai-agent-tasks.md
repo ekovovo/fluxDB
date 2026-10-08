@@ -191,6 +191,7 @@ UI原型：`docs/prototype/ai-agent-ui.html`（本机 `/Users/shining3d/fusuwei/
 - 改动：内部 runtime 创建和生命周期；控制/事件 bounded channel，steering/cancel；不持 UI/SQLite 锁跨 await。
 - 验收：主窗口可响应；取消事件不被大文本挤掉；关闭窗口任务安全结束；错误可见。
 - 测试方式：将上述每项验收分别落实为相关crate的测试断言；用隔离fixture/受控Provider验证正常与异常路径，涉及工具时核对真实回执及副作用调用数，不用伪造成功结果跳过执行链。
+- 2026-10-08：在 `codex/ai-runtime-unify` worktree 收敛 T016/T028 生产链路，桌面发送/停止/审批恢复统一接入 actor，保留会话事实持久化与投影；新增运行中 steering、排队取消、终态背压与真实 SQLite 审批恢复验证。真实窗口因已有实例的单实例锁及 GUI 自动化服务不可用而受阻，保持未勾选；实现、验证及退出时限边界见 [本轮记录](testing/ai-agent/t016-runtime-unification-2026-10-08.md)。
 
 
 ### T017 主模型适配与秘密 transport 边界
@@ -830,6 +831,7 @@ T020按主设计§31.9实现询问AI内联批准卡片：参考Goose三态按钮
 
 ### 已在本轮推进（2026-10-05 第十轮：T016 运行时 actor）
 
+- 历史实现说明：下述 `spawn_ai_runtime`、`AiEventSink` 等旧原型入口已于 2026-10-08 从当前代码删除；请以 [统一执行链记录](testing/ai-agent/t016-runtime-unification-2026-10-08.md) 和现行代码为准。
 - **新增 `crates/fluxdb-app/src/parts/ai_runtime.rs`**（设计 §12、T016）：
   - `spawn_ai_runtime(provider, sink, control_capacity)` 起一个名为 `fluxdb-ai-runtime` 的后台线程独占 Provider；UI 线程只持有 `AiRuntimeHandle`。
   - 控制命令 `AiControl::{StartTurn, Steering, Cancel, Shutdown}` 走**有界** `sync_channel`，UI 侧一律 `try_send`，满时返回 `RuntimeError::ControlQueueFull`（**绝不阻塞 UI**）。

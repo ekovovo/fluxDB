@@ -187,11 +187,12 @@ UI原型：`docs/prototype/ai-agent-ui.html`（本机 `/Users/shining3d/fusuwei/
 
 
 ### T016 后台 actor、控制队列与 UI 事件桥
-- [ ] 依赖：T003、T015；设计 §12。
+- [x] 依赖：T003、T015；设计 §12。
 - 改动：内部 runtime 创建和生命周期；控制/事件 bounded channel，steering/cancel；不持 UI/SQLite 锁跨 await。
 - 验收：主窗口可响应；取消事件不被大文本挤掉；关闭窗口任务安全结束；错误可见。
 - 测试方式：将上述每项验收分别落实为相关crate的测试断言；用隔离fixture/受控Provider验证正常与异常路径，涉及工具时核对真实回执及副作用调用数，不用伪造成功结果跳过执行链。
 - 2026-10-08：在 `codex/ai-runtime-unify` worktree 收敛 T016/T028 生产链路，桌面发送/停止/审批恢复统一接入 actor，保留会话事实持久化与投影；新增运行中 steering、排队取消、终态背压与真实 SQLite 审批恢复验证。真实窗口因已有实例的单实例锁及 GUI 自动化服务不可用而受阻，保持未勾选；实现、验证及退出时限边界见 [本轮记录](testing/ai-agent/t016-runtime-unification-2026-10-08.md)。
+- 2026-10-08（下午）：补上真实窗口验收。使用 `FLUXDB_PROFILE=t016accept` + 隔离 `FLUXDB_AI_TEST_ROOT` 绕开默认实例单实例锁，配合 RFC 5737 不可路由端点 fixture 与离线 `burst`/`error` scripted 模型，在真实 macOS 窗口验证：主窗口可响应、`SIGTERM` 优雅关闭后 SQLite `integrity_check=ok` 且 10 条 Turn 全部 `completed`、error 夹具在 UI 显示红色错误卡片并在 SQLite 记录 `failed`+`error_code`。burst 真实窗口单次 Turn 仅 ~140ms，手动点击停止无法落在窗口内，取消语义由既有自动化（运行时控制 7 项 + GPUI 面板 63 项中的 stop 用例）等价覆盖。自动化基线 `cargo fmt --check`、`cargo check -p fluxdb-desktop --locked --all-targets`、`cargo test -p fluxdb-app --locked --lib ai_runtime`、`cargo test -p fluxdb-app --locked --test ai_runtime_conversation`、`cargo test -p fluxdb-desktop --locked ai_panel` 全部通过。证据与差异说明见 [真实窗口验收补充记录](testing/ai-agent/t016-real-window-2026-10-08.md)。
 
 
 ### T017 主模型适配与秘密 transport 边界

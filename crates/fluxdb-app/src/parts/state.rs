@@ -390,6 +390,7 @@ impl TabState {
                 database: er.database.clone(),
             }),
             TabKind::Settings(settings) => settings.workspace.clone(),
+            TabKind::AiChat { workspace } => workspace.clone(),
         }
     }
 }
@@ -407,6 +408,8 @@ pub struct SettingsTabState {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum TabKind {
+    /// 单例 AI 会话的显示宿主；会话本身仍由 ai_conversation 管理。
+    AiChat { workspace: Option<TabWorkspace> },
     ObjectList(ObjectListState),
     DataEditor(DataEditorState),
     QueryEditor(QueryEditorState),

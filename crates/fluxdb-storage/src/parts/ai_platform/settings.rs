@@ -10,6 +10,7 @@ use fluxdb_core::{Error, ErrorKind, Result};
 pub enum PanelMode {
     Drawer,
     Embedded,
+    Tab,
 }
 
 impl PanelMode {
@@ -17,12 +18,14 @@ impl PanelMode {
         match self {
             PanelMode::Drawer => "drawer",
             PanelMode::Embedded => "embedded",
+            PanelMode::Tab => "tab",
         }
     }
     fn parse(value: &str) -> Result<Self> {
         match value {
             "drawer" => Ok(PanelMode::Drawer),
             "embedded" => Ok(PanelMode::Embedded),
+            "tab" => Ok(PanelMode::Tab),
             other => Err(Error::new(
                 ErrorKind::Internal,
                 format!("未知面板展现形式: {other}"),
@@ -34,14 +37,18 @@ impl PanelMode {
         match self {
             PanelMode::Drawer => 0.60,
             PanelMode::Embedded => 0.40,
+            PanelMode::Tab => 1.0,
         }
     }
 }
 
 /// 计算实际展示宽度：比例硬上限与最小宽度同时生效。
 ///
-/// 窗口过窄时有效最小值退让到比例上限，绝不突破比例或第三种形式。
+/// 窗口过窄时有效最小值退让到比例上限；独立页签使用整个内容区。
 pub fn resolve_panel_width(mode: PanelMode, desired_dp: f64, viewport_dp: f64) -> f64 {
+    if mode == PanelMode::Tab {
+        return viewport_dp.max(0.0);
+    }
     let max_dp = (viewport_dp.max(0.0) * mode.max_ratio()).floor();
     let min_dp = 320.0_f64.min(max_dp);
     desired_dp.clamp(min_dp, max_dp)

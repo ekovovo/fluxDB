@@ -10,6 +10,7 @@ mod tests {
     include!("tests/system_ast.rs");
     include!("tests/fixture.rs");
     include!("tests/tabs_and_connections.rs");
+    include!("tests/ai_chat_tab.rs");
     include!("tests/connection_tree_refresh.rs");
     include!("tests/create_table_postgres.rs");
     include!("tests/create_table_postgres_live.rs");

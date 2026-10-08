@@ -1,8 +1,8 @@
 //! AI 管理与运行实体的建表语句（设计文档 §42 的唯一代码来源）。
 //!
-//! 首次打开数据库时由 [`crate::sqlite::create_schema`] 幂等创建；本期无旧 AI 数据，
-//! 不做版本迁移。若同名表结构不符，`CREATE TABLE IF NOT EXISTS` 不会重建，
-//! 由 [`verify_ai_schema`] 检出并报错，不自动转换未知结构。
+//! 首次打开数据库时由 [`crate::sqlite::create_schema`] 幂等创建；已知旧列与面板
+//! 偏好约束由 `ensure_schema` 增量升级。`CREATE TABLE IF NOT EXISTS` 不会重建
+//! 未知结构，由 [`verify_ai_schema`] 检出并报错。
 
 /// 管理实体 DDL（模型 / Agent / 提示词 / 插件 / 绑定 / MCP / 预算 / 运行设置）。
 pub const MANAGEMENT_SQL: &str = r##"CREATE TABLE IF NOT EXISTS ai_model_profiles (
@@ -215,17 +215,6 @@ CREATE TABLE IF NOT EXISTS ai_runtime_settings (
     context_policy_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(context_policy_json)),
     privacy_policy_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(privacy_policy_json)),
     retention_policy_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(retention_policy_json)),
-    revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
-    updated_at_ms INTEGER NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS ai_panel_preferences (
-    id INTEGER PRIMARY KEY CHECK (id=1),
-    preferred_mode TEXT NOT NULL DEFAULT 'drawer' CHECK (preferred_mode IN ('drawer','embedded')),
-    drawer_width_dp REAL NOT NULL DEFAULT 460.0 CHECK (drawer_width_dp > 0 AND drawer_width_dp <= 100000),
-    embedded_width_dp REAL NOT NULL DEFAULT 420.0 CHECK (embedded_width_dp > 0 AND embedded_width_dp <= 100000),
-    last_session_id TEXT REFERENCES ai_sessions(id) ON DELETE RESTRICT,
-    pending_draft_json TEXT CHECK (pending_draft_json IS NULL OR json_valid(pending_draft_json)),
     revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
     updated_at_ms INTEGER NOT NULL
 );
@@ -578,3 +567,15 @@ CREATE TABLE IF NOT EXISTS ai_budget_reservations (
 );
 CREATE INDEX IF NOT EXISTS ai_reservations_budget_status
     ON ai_budget_reservations(budget_policy_id, status, created_at_ms);"##;
+
+/// 面板偏好独立声明，首次建表和约束升级复用同一结构。
+pub const PANEL_PREFERENCES_SQL: &str = r##"CREATE TABLE IF NOT EXISTS ai_panel_preferences (
+    id INTEGER PRIMARY KEY CHECK (id=1),
+    preferred_mode TEXT NOT NULL DEFAULT 'drawer' CHECK (preferred_mode IN ('drawer','embedded','tab')),
+    drawer_width_dp REAL NOT NULL DEFAULT 460.0 CHECK (drawer_width_dp > 0 AND drawer_width_dp <= 100000),
+    embedded_width_dp REAL NOT NULL DEFAULT 420.0 CHECK (embedded_width_dp > 0 AND embedded_width_dp <= 100000),
+    last_session_id TEXT REFERENCES ai_sessions(id) ON DELETE RESTRICT,
+    pending_draft_json TEXT CHECK (pending_draft_json IS NULL OR json_valid(pending_draft_json)),
+    revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+    updated_at_ms INTEGER NOT NULL
+);"##;

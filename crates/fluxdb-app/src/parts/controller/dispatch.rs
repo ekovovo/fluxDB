@@ -1653,6 +1653,7 @@ impl AppController {
             }
             AppCommand::OpenUserAdmin(connection_id) => self.open_user_admin(connection_id),
             AppCommand::OpenSettings => self.open_settings(),
+            AppCommand::OpenAiChatTab => self.open_ai_chat_tab(),
             AppCommand::OpenQueryEditorInDatabase {
                 connection_id,
                 database,

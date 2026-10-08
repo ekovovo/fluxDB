@@ -75,12 +75,15 @@ pub fn load_ai_cipher(
 /// 幂等创建全部 AI 表（首次打开数据库时调用）。
 ///
 /// `CREATE TABLE IF NOT EXISTS` 不会重建已存在的同名表；结构不符由
-/// [`verify_ai_schema`] 报错，不在这里自动转换未知结构（本期无旧 AI 数据）。
+/// [`verify_ai_schema`] 报错；这里只升级明确识别的旧列与面板偏好约束。
 pub fn ensure_schema(conn: &Connection) -> Result<()> {
     conn.execute_batch(schema::MANAGEMENT_SQL)
         .map_err(crate::sqlite::sqlite_error)?;
     conn.execute_batch(schema::RUNTIME_SQL)
         .map_err(crate::sqlite::sqlite_error)?;
+    conn.execute_batch(schema::PANEL_PREFERENCES_SQL)
+        .map_err(crate::sqlite::sqlite_error)?;
+    panel_preferences_migration::ensure_tab_mode(conn)?;
     ensure_runtime_columns(conn)?;
     ensure_model_columns(conn)?;
     // 内置插件包/实例随应用注册（幂等）；缺失时设置页会显示为空而不是内置能力清单。
@@ -92,6 +95,8 @@ pub fn ensure_schema(conn: &Connection) -> Result<()> {
     agents::seed_builtin_agent(conn, now_ms)?;
     Ok(())
 }
+
+mod panel_preferences_migration;
 
 /// 幂等补列：老库的 `ai_runtime_settings` 可能缺少后加的列。
 ///

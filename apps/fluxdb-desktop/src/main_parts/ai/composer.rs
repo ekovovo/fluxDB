@@ -1,5 +1,13 @@
 use gpui_component::ElementExt as _;
 
+gpui::actions!(ai_composer, [SendAiMessage]);
+
+const AI_MESSAGE_SEND_SHORTCUT: &str = if cfg!(target_os = "macos") {
+    "cmd-enter"
+} else {
+    "ctrl-enter"
+};
+
 // 输入区独立组织，消息时间线不承担候选列表与多行编辑布局。
 fn ai_chat_composer(
     this: &mut NavicatMain,
@@ -20,6 +28,8 @@ fn ai_chat_composer(
         && !this.ai_chat.recovery_failed
         && this.ai_chat._io.is_none();
     let input = this.ai_chat.input.clone();
+    let send_shortcut = shortcut_display(AI_MESSAGE_SEND_SHORTCUT);
+    let input_hint = format!("Enter 换行，{send_shortcut} 发送");
     let panel_height = if this.ai_chat.panel_height > px(0.) {
         this.ai_chat.panel_height
     } else {
@@ -30,8 +40,8 @@ fn ai_chat_composer(
     } else {
         this.ai_chat.reference_height
     };
-    // 12px 正文使用组件 1.5 倍行高；为外边距、工具栏和引用区预留真实布局空间。
-    let max_rows = ((f32::from(panel_height) * 0.5 - f32::from(reference_height) - 86.) / 18.)
+    // 12px 正文使用组件 1.5 倍行高；为圆形操作按钮、快捷键提示和引用区预留布局空间。
+    let max_rows = ((f32::from(panel_height) * 0.5 - f32::from(reference_height) - 118.) / 18.)
         .floor()
         .max(2.) as usize;
     if max_rows != this.ai_chat.input_max_rows {
@@ -73,7 +83,7 @@ fn ai_chat_composer(
                             // 已选引用至少保留一行，不参与输入框的高度压缩。
                             .flex_none()
                             .min_h(px(32.))
-                            .max_h(px((f32::from(panel_height) * 0.5 - 122.).clamp(32., 80.)))
+                            .max_h(px((f32::from(panel_height) * 0.5 - 154.).clamp(32., 80.)))
                             .on_prepaint({
                                 let owner = cx.entity().downgrade();
                                 move |bounds, _, cx| { let _ = owner.update(cx, |this, cx| {
@@ -105,7 +115,28 @@ fn ai_chat_composer(
                         .bg(colors.input_bg)
                         .p_2()
                         .debug_selector(|| "ai-chat-input".into())
-                        .child(Textarea::new(&input).appearance(false).text_size(px(12.)).min_h(px(0.)).aria_label("AI 消息，回车换行"))
+                        .key_context("AiChatComposer")
+                        .capture_action(cx.listener(|this, _: &SendAiMessage, window, cx| {
+                            if !this.ai_chat.input.read(cx).focus_handle(cx).is_focused(window) {
+                                cx.propagate();
+                                return;
+                            }
+                            let composing = this.ai_chat.input.update(cx, |input, cx| {
+                                gpui::EntityInputHandler::marked_text_range(input, window, cx).is_some()
+                            });
+                            if !composing {
+                                this.send_ai_chat(window, cx);
+                            }
+                            // 无论发送、禁用或输入法组词，都消费快捷键，避免回退为换行或执行 SQL。
+                            cx.stop_propagation();
+                        }))
+                        .child(
+                            Textarea::new(&input)
+                                .appearance(false)
+                                .text_size(px(12.))
+                                .min_h(px(0.))
+                                .aria_label(format!("AI 消息，{input_hint}")),
+                        )
                         .child(
                             div()
                                 .flex_none()
@@ -202,23 +233,38 @@ fn ai_chat_composer(
                                 } else {
                                     Button::new("ai-chat-send")
                                         .debug_selector(|| "ai-chat-send".into())
-                                        .with_size(px(34.))
+                                        .with_size(px(22.))
+                                        .w(px(22.))
+                                        .h(px(22.))
+                                        .p_0()
+                                        .flex_none()
                                         .custom(
                                             ButtonCustomVariant::new(cx)
-                                                .color(colors.success.into())
-                                                .foreground(rgb(0xffffff).into())
-                                                .hover(Hsla::from(colors.success).opacity(0.9))
-                                                .active(Hsla::from(colors.success).opacity(0.82)),
+                                                .color(colors.text.into())
+                                                .foreground(colors.panel_bg.into())
+                                                .hover(Hsla::from(colors.text).opacity(0.9))
+                                                .active(Hsla::from(colors.text).opacity(0.82)),
                                         )
-                                        .rounded(px(10.))
+                                        .rounded(px(12.))
                                         .cursor_pointer()
-                                        .disabled(!ready)
-                                        .child(app_icon(AppIcon::ArrowUp, 14., colors.text))
+                                        .tooltip(format!("发送（{send_shortcut}）"))
+                                        .disabled(
+                                            !ready || input.read(cx).value().trim().is_empty(),
+                                        )
+                                        .child(app_icon(AppIcon::ArrowUp, 14., colors.panel_bg))
                                         .on_click(cx.listener(|this, _, window, cx| {
                                             this.send_ai_chat(window, cx)
                                         }))
                                         .into_any_element()
                                 }),
+                        )
+                        .child(
+                            div()
+                                .debug_selector(|| "ai-chat-input-hint".into())
+                                .pt_1()
+                                .text_size(px(10.))
+                                .text_color(colors.muted)
+                                .child(input_hint),
                         ),
                 )
                 )

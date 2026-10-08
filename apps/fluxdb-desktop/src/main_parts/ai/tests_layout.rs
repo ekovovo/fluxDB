@@ -57,7 +57,7 @@ fn check_long_conversation_statusbar(cx: &mut TestAppContext, theme: ThemeMode) 
     }), "历史会话加载后应直接定位底部");
     for mode in [settings::PanelMode::Drawer, settings::PanelMode::Embedded] {
         if view.read_with(cx, |main, _| main.ai_chat.mode) != mode {
-            click_selector(cx, "ai-chat-mode");
+            choose_ai_mode(cx, mode);
             wait_idle(&view, cx);
         }
         for height in [700., 500.] {

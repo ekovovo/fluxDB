@@ -9,7 +9,7 @@ fn ai_chat_workspace(
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> gpui::AnyElement {
-    if !this.ai_chat.open {
+    if !this.ai_chat.open || this.ai_chat.mode == fluxdb_storage::ai_platform::settings::PanelMode::Tab {
         return workspace;
     }
     let viewport = f32::from(window.viewport_size().width) as f64;
@@ -184,7 +184,6 @@ fn ai_chat_panel(
     let loading = this.ai_chat.loading;
     let history = this.ai_chat.history;
     let running = this.ai_chat.running.is_some();
-    let mode = this.ai_chat.mode;
     let error = this.ai_chat.error.clone().or(chat.error.clone());
     let ready = !loading
         && !this.ai_chat.recovery_pending
@@ -538,7 +537,10 @@ fn ai_chat_panel(
                     .small()
                     .ghost()
                     .child("重新加载会话")
-                    .on_click(cx.listener(|this, _, window, cx| this.open_ai_chat(window, cx))),
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.ai_chat.loaded = false;
+                        this.open_ai_chat(window, cx);
+                    })),
             );
     }
     div()
@@ -593,7 +595,11 @@ fn ai_chat_panel(
                     .focus_handle(cx)
                     .is_focused(window)
 ;
-                if popup_open {
+                if popup_open || this.ai_chat.mode_menu_open {
+                    return;
+                }
+                if this.ai_chat.mode == fluxdb_storage::ai_platform::settings::PanelMode::Tab {
+                    cx.propagate();
                     return;
                 }
                 this.close_ai_chat(window, cx);
@@ -640,29 +646,7 @@ fn ai_chat_panel(
                         .on_click(cx.listener(|this, _, window, cx| this.new_ai_chat(window, cx))),
                 )
                 .child(
-                    ai_chat_small_button(
-                        "ai-chat-mode",
-                        AppIcon::PanelRight,
-                        if mode == fluxdb_storage::ai_platform::settings::PanelMode::Drawer {
-                            "切换为内嵌"
-                        } else {
-                            "切换为抽屉"
-                        },
-                        colors,
-                    )
-                    .debug_selector(|| "ai-chat-mode".into())
-                    .disabled(!ready)
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.ai_chat.mode = if this.ai_chat.mode
-                            == fluxdb_storage::ai_platform::settings::PanelMode::Drawer
-                        {
-                            fluxdb_storage::ai_platform::settings::PanelMode::Embedded
-                        } else {
-                            fluxdb_storage::ai_platform::settings::PanelMode::Drawer
-                        };
-                        this.save_ai_chat_ui(window, cx);
-                        cx.notify();
-                    })),
+                    this.ai_chat_mode_button(!ready, colors, cx),
                 )
                 .child(
                     ai_chat_small_button(

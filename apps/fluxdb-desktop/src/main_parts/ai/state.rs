@@ -2,6 +2,10 @@
 struct AiChatUi {
     open: bool,
     loading: bool,
+    loaded: bool,
+    tab_id: Option<TabId>,
+    context_tab: Option<TabId>,
+    mode_menu_open: bool,
     history: bool,
     dirty: bool,
     error: Option<String>,
@@ -87,6 +91,10 @@ impl AiChatUi {
         Self {
             open: false,
             loading: false,
+            loaded: false,
+            tab_id: None,
+            context_tab: None,
+            mode_menu_open: false,
             history: false,
             dirty: false,
             error: None,

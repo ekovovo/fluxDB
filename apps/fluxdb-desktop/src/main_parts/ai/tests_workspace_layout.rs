@@ -91,7 +91,7 @@ fn check_workspace_modes(cx: &mut TestAppContext, theme: ThemeMode) {
             main.controller.state().connections[0].objects.len()
         });
         assert!(count > 0);
-        click_selector(cx, "ai-chat-mode");
+        choose_ai_mode(cx, settings::PanelMode::Embedded);
         wait_idle(&view, cx);
         let embedded = cx.debug_bounds("database-workspace").unwrap();
         let pane = cx.debug_bounds("ai-chat-panel").unwrap();
@@ -110,7 +110,7 @@ fn check_workspace_modes(cx: &mut TestAppContext, theme: ThemeMode) {
                 .len()),
             count
         );
-        click_selector(cx, "ai-chat-mode");
+        choose_ai_mode(cx, settings::PanelMode::Drawer);
         wait_idle(&view, cx);
         assert_eq!(
             cx.debug_bounds("database-workspace").unwrap(),

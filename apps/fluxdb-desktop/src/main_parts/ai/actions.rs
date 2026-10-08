@@ -7,34 +7,37 @@ impl NavicatMain {
         if !self.ai_chat.recovery_failed {
             self.ai_chat.error = None;
         }
-        self.ai_chat_request(
-            fluxdb_app::AiConversationCommand::Load { session_id: None },
-            window,
-            cx,
-        );
+        if self.ai_chat.loaded {
+            self.mount_ai_chat_tab(cx);
+            self.ai_chat.input.update(cx, |input, cx| input.focus(window, cx));
+            cx.notify();
+        } else {
+            self.ai_chat_request(
+                fluxdb_app::AiConversationCommand::Load { session_id: None },
+                window,
+                cx,
+            );
+        }
+    }
+    fn ai_chat_ui_command(&self, cx: &App) -> fluxdb_app::AiConversationCommand {
+        fluxdb_app::AiConversationCommand::SaveUi {
+            draft: self.ai_chat.input.read(cx).value().to_string(),
+            expanded_parts: self.controller.state().ai_conversation.expanded_parts.clone(),
+            mode: self.ai_chat.mode,
+            drawer_width: self.ai_chat.drawer,
+            embedded_width: self.ai_chat.embedded,
+        }
     }
     fn save_ai_chat_ui(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.ai_chat_request(
-            fluxdb_app::AiConversationCommand::SaveUi {
-                draft: self.ai_chat.input.read(cx).value().to_string(),
-                expanded_parts: self
-                    .controller
-                    .state()
-                    .ai_conversation
-                    .expanded_parts
-                    .clone(),
-                mode: self.ai_chat.mode,
-                drawer_width: self.ai_chat.drawer,
-                embedded_width: self.ai_chat.embedded,
-            },
-            window,
-            cx,
-        );
+        self.ai_chat_request(self.ai_chat_ui_command(cx), window, cx);
     }
     fn close_ai_chat(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.save_ai_chat_ui(window, cx);
         self.ai_chat.open = false;
         self.ai_chat.history = false;
+        if let Some(tab_id) = self.ai_chat.tab_id.take() {
+            self.dispatch(AppCommand::CloseTab(tab_id), cx);
+        }
         // 关闭只隐藏面板，不取消任务、不清消息。返回输入焦点给宿主工作区。
         self.focus_handle.focus(window, cx);
         cx.notify();
@@ -100,6 +103,7 @@ impl NavicatMain {
                                 this.ai_chat.error = None;
                             }
                             if update_input {
+                                this.ai_chat.loaded = true;
                                 this.ai_chat.follow_reply = true;
                                 this.ai_chat.new_reply = false;
                                 this.ai_chat.mode = view.preferences.preferred_mode;
@@ -109,6 +113,9 @@ impl NavicatMain {
                                     input.set_value(view.draft.clone(), window, cx)
                                 });
                                 this.ai_chat.dirty = false;
+                                if this.ai_chat.open {
+                                    this.mount_ai_chat_tab(cx);
+                                }
                             }
                             if !recovering {
                                 this.controller.dispatch(AppCommand::AiConversation(
@@ -116,10 +123,12 @@ impl NavicatMain {
                                 ));
                             }
                             // 切会话/新建：清掉旧会话的流式正文与揭示任务。
-                            this.ai_chat.stream.reset();
-                            this.ai_chat.stream_reveal = None;
-                            if let Some(view) = this.ai_chat.stream_view.clone() {
-                                view.update(cx, |state, cx| state.set_text("", cx));
+                            if update_input || recovering {
+                                this.ai_chat.stream.reset();
+                                this.ai_chat.stream_reveal = None;
+                                if let Some(view) = this.ai_chat.stream_view.clone() {
+                                    view.update(cx, |state, cx| state.set_text("", cx));
+                                }
                             }
                             if update_input {
                                 // ScrollHandle 在下次布局时使用新会话内容的高度定位。
@@ -429,7 +438,15 @@ impl NavicatMain {
 
     fn capture_ai_active_context(&self, cx: &App) -> fluxdb_app::UiContextSnapshot {
         let state = self.controller.state();
-        let tab = state.active_tab();
+        let tab = state.active_tab().and_then(|tab| {
+            if matches!(tab.kind, TabKind::AiChat { .. }) {
+                // AI 页签本身不是执行目标，沿用进入该页签前的业务页上下文。
+                self.ai_chat.context_tab
+                    .and_then(|id| state.tabs.iter().find(|tab| tab.id == id))
+            } else {
+                Some(tab)
+            }
+        });
         let snapshot = match tab.map(|t| &t.kind) {
             Some(TabKind::QueryEditor(q)) => fluxdb_app::CapturedTab::SqlEditor {
                 tab_id: tab.unwrap().id.0,

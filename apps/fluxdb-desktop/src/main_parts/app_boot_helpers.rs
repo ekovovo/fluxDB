@@ -206,7 +206,13 @@ fn register_shortcuts(cx: &mut App, settings: &Settings) {
             definition.context,
         );
     }
+    // 输入框专用绑定晚于通用快捷键注册，避免同一键位被 SQL 执行抢占。
     cx.bind_keys([
+        KeyBinding::new(
+            AI_MESSAGE_SEND_SHORTCUT,
+            SendAiMessage,
+            Some("AiChatComposer > Input"),
+        ),
         KeyBinding::new(
             "up",
             QueryHistoryQuickSearchPrevious,

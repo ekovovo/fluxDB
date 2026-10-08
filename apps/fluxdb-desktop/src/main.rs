@@ -200,6 +200,7 @@ include!("main_parts/ai/references.rs");
 include!("main_parts/ai/message.rs");
 include!("main_parts/ai/timeline.rs");
 include!("main_parts/ai/actions.rs");
+include!("main_parts/ai/display.rs");
 include!("main_parts/ai/stream_actions.rs");
 include!("main_parts/ai/composer.rs");
 include!("main_parts/ai/panel.rs");

@@ -41,6 +41,7 @@ impl Render for NavicatMain {
             self.ai_chat_request(fluxdb_app::AiConversationCommand::RecoverOnStartup,window,cx);
         }
         if self.ai_chat.debug_open_pending {self.ai_chat.debug_open_pending=false;self.open_ai_chat(window,cx);}
+        self.ai_chat_process(window, cx);
         let width = window.viewport_size().width;
         let compact = width < px(760.);
         let app_state = self.controller.state();
@@ -780,6 +781,7 @@ fn render_tab_snapshot(tab: &TabState, keep_content: bool) -> TabState {
 
 fn render_tab_kind_snapshot(kind: &TabKind) -> TabKind {
     match kind {
+        TabKind::AiChat { workspace } => TabKind::AiChat { workspace: workspace.clone() },
         TabKind::ObjectList(editor) => TabKind::ObjectList(ObjectListState {
             parent: editor.parent.clone(),
             objects: Vec::new(),

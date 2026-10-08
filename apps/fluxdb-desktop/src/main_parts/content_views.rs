@@ -87,6 +87,10 @@ fn content(
     cx: &mut Context<NavicatMain>,
 ) -> Div {
     match state.active_tab() {
+        Some(tab) if matches!(tab.kind, TabKind::AiChat { .. }) => {
+            div().size_full().min_h(px(0.)).flex().flex_col()
+                .child(ai_chat_panel(this, window, colors, cx))
+        }
         Some(tab) if matches!(tab.kind, TabKind::DataEditor(_)) => {
             let TabKind::DataEditor(editor) = &tab.kind else {
                 unreachable!();

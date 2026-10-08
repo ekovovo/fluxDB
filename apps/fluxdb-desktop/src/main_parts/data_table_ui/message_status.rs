@@ -329,6 +329,7 @@ fn statusbar_active_connection_id(state: &AppState) -> Option<ConnectionId> {
         TabKind::BackupList(list) => Some(list.connection_id),
         TabKind::ErDiagram(er) => Some(er.connection_id),
         TabKind::Settings(_) => None,
+        TabKind::AiChat { .. } => None,
     }
 }
 
@@ -409,6 +410,7 @@ fn statusbar_context(state: &AppState) -> Option<String> {
             Some("ER 关系图"),
         ),
         TabKind::Settings(_) => None,
+        TabKind::AiChat { .. } => None,
     }
 }
 

@@ -5,6 +5,8 @@ mod ai_panel_tests {
     include!("tests_layout.rs");
     include!("tests_send_references.rs");
     include!("tests_workspace_layout.rs");
+    include!("tests_display.rs");
+    include!("tests_composer_shortcuts.rs");
     include!("tests_markdown.rs");
     use fluxdb_app::{AiAgentSaveInput, AiConversationCommand, AiModelSaveInput};
     use fluxdb_storage::ai_platform::{conversation, sessions, settings};
@@ -992,7 +994,7 @@ mod ai_panel_tests {
         open_panel(&view, cx);
         replace_input(&view, cx, "mode retained draft");
         let revision = fixture.preferences().revision;
-        click_selector(cx, "ai-chat-mode");
+        choose_ai_mode(cx, settings::PanelMode::Embedded);
         wait_idle(&view, cx);
         let preferences = fixture.preferences();
         assert_eq!(preferences.preferred_mode, settings::PanelMode::Embedded);
@@ -1020,7 +1022,7 @@ mod ai_panel_tests {
             settings::PanelMode::Embedded
         );
         assert_eq!(input_value(&reopened, cx), "mode retained draft");
-        click_selector(cx, "ai-chat-mode");
+        choose_ai_mode(cx, settings::PanelMode::Drawer);
         wait_idle(&reopened, cx);
         assert_eq!(
             fixture.preferences().preferred_mode,
@@ -1265,7 +1267,7 @@ mod ai_panel_tests {
             wait_idle(&view, cx);
             for mode in [settings::PanelMode::Drawer, settings::PanelMode::Embedded] {
                 if view.read_with(cx, |main, _| main.ai_chat.mode) != mode {
-                    click_selector(cx, "ai-chat-mode");
+                    choose_ai_mode(cx, mode);
                     wait_idle(&view, cx);
                 }
                 let bounds = cx.debug_bounds("ai-chat-panel").unwrap();

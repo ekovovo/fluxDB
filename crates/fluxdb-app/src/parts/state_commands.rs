@@ -456,6 +456,7 @@ pub enum AppCommand {
     OpenQueryEditor(ConnectionId),
     OpenUserAdmin(ConnectionId),
     OpenSettings,
+    OpenAiChatTab,
     OpenQueryEditorInDatabase {
         connection_id: ConnectionId,
         database: Option<String>,

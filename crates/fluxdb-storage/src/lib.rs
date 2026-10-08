@@ -24,9 +24,14 @@ mod connection_store;
 #[path = "parts/history_store.rs"]
 mod history_store;
 
+/// 进程实例标识（`FLUXDB_PROFILE`）：并行多开时隔离数据目录与单实例锁。
+#[path = "parts/instance_profile.rs"]
+mod instance_profile;
+
 pub use history_store::{
     QueryHistoryRecord, RedisKeySearchHistoryRecord, RedisWorkbenchHistoryRecord,
 };
+pub use instance_profile::{PROFILE_ENV, instance_profile};
 
 use fluxdb_core::{
     ColumnRef, CompletionIndexMeta, CompletionIndexSnapshot, ConnectionConfig, ConnectionId,
@@ -111,6 +116,9 @@ impl FileStorage {
     ///   注意 dirs::data_dir() 在 Windows 是 Roaming，必须用 data_local_dir()。
     /// - Linux：`$XDG_DATA_HOME/fluxdb`，缺省 `~/.local/share/fluxdb`
     ///
+    /// 设置了实例标识（`FLUXDB_PROFILE`）时目录追加 `-标识` 后缀，使同一台机器上的
+    /// 多个实例各自持有独立配置、连接、历史与凭据，可并行运行；未设置时布局不变。
+    ///
     /// 解析失败（系统目录不存在等极端环境）返回 Err，由调用方给出可见错误；
     /// 不再静默回退到当前目录/安装目录。
     pub fn default_root() -> Result<PathBuf> {
@@ -124,12 +132,12 @@ impl FileStorage {
         let base =
             base.ok_or_else(|| Error::new(ErrorKind::Internal, "无法解析系统应用数据目录"))?;
         // Windows 产品目录名用大写 FluxDB（计划 §4.1）；macOS/Linux 保持小写以兼容旧目录。
-        let app_dir = if cfg!(target_os = "windows") {
+        let default_name = if cfg!(target_os = "windows") {
             "FluxDB"
         } else {
             "fluxdb"
         };
-        Ok(base.join(app_dir))
+        Ok(base.join(instance_profile::app_dir_name(default_name)?))
     }
 
     /// `default_root` 的显式失败版本，供启动路径使用：
@@ -142,6 +150,8 @@ impl FileStorage {
     /// - Linux：`$XDG_STATE_HOME/fluxdb/logs`，缺省 `~/.local/state/fluxdb/logs`
     /// - macOS/Windows：持久化根目录下 `logs/`（与历史布局一致）
     ///
+    /// 与 `default_root` 同样受实例标识影响，保证并行实例的日志互不混淆。
+    ///
     /// 日志目录解析失败不阻断启动，回退系统临时目录（调用方应记录该降级）。
     pub fn default_log_dir() -> PathBuf {
         let fallback = || std::env::temp_dir().join("fluxdb").join("logs");
@@ -151,8 +161,12 @@ impl FileStorage {
                 .map(PathBuf::from)
                 .filter(|p| p.is_absolute())
                 .or_else(|| dirs::home_dir().map(|h| h.join(".local/state")));
+            // 标识非法时不阻断启动：退回默认目录名，真正的报错由 `default_root`
+            // （启动路径必经）给出，避免日志系统未初始化时无处输出诊断。
+            let app_dir =
+                instance_profile::app_dir_name("fluxdb").unwrap_or_else(|_| "fluxdb".to_string());
             return state
-                .map(|s| s.join("fluxdb").join("logs"))
+                .map(|s| s.join(app_dir).join("logs"))
                 .unwrap_or_else(fallback);
         }
         #[cfg(not(target_os = "linux"))]
@@ -825,6 +839,10 @@ fn storage_error(error: impl ToString) -> Error {
 /// 单实例锁文件路径（方案 §12.1，方案 A）：
 /// - Linux：优先 `$XDG_RUNTIME_DIR/fluxdb.lock`（tmpfs 运行时目录）
 /// - macOS/Windows：持久化根目录下 `fluxdb.lock`
+///
+/// 设置实例标识（`FLUXDB_PROFILE`）时锁文件带 `-标识` 后缀，与数据目录一致：
+/// 不同标识的实例互不阻塞，同一标识仍保持单实例保护。
+///
 /// 锁本体由 flock（Unix）/ 命名互斥量（Windows）持有，文件只是锚点；
 /// 进程退出（含强杀）时锁自动释放，不存在"崩溃后无法启动"的陈旧锁问题。
 pub fn runtime_lock_file() -> PathBuf {
@@ -834,7 +852,13 @@ pub fn runtime_lock_file() -> PathBuf {
             .map(PathBuf::from)
             .filter(|p| p.is_absolute())
         {
-            return runtime_dir.join("fluxdb.lock");
+            // 标识非法时退回默认锁名：至少保住单实例保护，非法标识本身由
+            // `default_root`（启动路径必经）在解析数据目录时报错退出。
+            let name = match instance_profile() {
+                Ok(Some(profile)) => format!("fluxdb-{profile}.lock"),
+                Ok(None) | Err(_) => "fluxdb.lock".to_string(),
+            };
+            return runtime_dir.join(name);
         }
     }
     FileStorage::default_root()

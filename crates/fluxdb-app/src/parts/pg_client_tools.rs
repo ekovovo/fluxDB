@@ -135,6 +135,8 @@ pub struct PgClientToolPath {
 }
 
 /// 应用托管的客户端安装根目录：`<应用数据目录>/clients/postgresql`。
+/// 应用数据目录受实例标识影响，因此并行实例默认各自下载客户端，互不争抢版本目录。
+/// 设置里显式配置了客户端目录时以配置为准，不受此默认值影响。
 pub fn pg_client_managed_root() -> PathBuf {
     fluxdb_storage::FileStorage::default_root()
         .unwrap_or_else(|_| PathBuf::from(".fluxdb"))

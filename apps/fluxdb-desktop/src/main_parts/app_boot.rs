@@ -1,4 +1,11 @@
 fn main() {
+    // 实例标识最先校验：单实例守卫与数据目录解析都依赖它，非法取值必须在此明确
+    // 报错退出，否则用户只会看到后续步骤的"无法解析应用数据目录"而不知根因。
+    if let Err(err) = fluxdb_storage::instance_profile() {
+        eprintln!("FluxDB 启动终止: {err}");
+        std::process::exit(1);
+    }
+
     // 单实例守卫最先执行（方案 §12.1 方案 A）：避免第二实例与首实例并发写同一
     // SQLite/配置。第二实例明确提示并退出；锁基础设施失败时降级放行（见 single_instance.rs）。
     if !acquire_single_instance() {

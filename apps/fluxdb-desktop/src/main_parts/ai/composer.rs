@@ -187,8 +187,14 @@ fn ai_chat_composer(
                                                 }),
                                         )
                                         .on_click(cx.listener(|this, _, _, cx| {
-                                            if let Some(flag) = &this.ai_chat.cancel {
-                                                flag.request();
+                                            if let (Some(runtime), Some(job)) = (&this.ai_chat.runtime, &this.ai_chat.running) {
+                                                match runtime.cancel(&job.turn_id) {
+                                                    Ok(()) => {
+                                                        // 执行可能已收尾但正文仍在揭示；停止也应立即结束这段展示。
+                                                        if let Some(flag) = &this.ai_chat.cancel { flag.request(); }
+                                                    }
+                                                    Err(error) => this.show_message(error.to_string(), AppMessageKind::Warning, cx),
+                                                }
                                             }
                                             cx.notify();
                                         }))

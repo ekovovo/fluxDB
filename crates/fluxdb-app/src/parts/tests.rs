@@ -35,8 +35,7 @@ mod tests {
     include!("tests/ai_scripted.rs");
     include!("tests/ai_contracts.rs");
     include!("tests/ai_transport.rs");
-    include!("tests/ai_runtime.rs");
-    include!("tests/ai_runtime_tools.rs");
+    include!("tests/ai_runtime_controls.rs");
     include!("tests/ai_provider.rs");
     include!("tests/ai_loop.rs");
     include!("tests/ai_loop_authz.rs");

@@ -224,10 +224,18 @@ impl NavicatMain {
         // 新一轮开始：丢弃上一轮遗留的流缓冲与揭示任务，避免串行内容。
         self.ai_chat.stream.reset();
         self.ai_chat.stream_reveal = None;
-        let (tx, rx) = std::sync::mpsc::sync_channel(4);
+        if self.ai_chat.runtime.is_none() {
+            match fluxdb_app::AiRuntimeHandle::new(4) {
+                Ok(runtime) => self.ai_chat.runtime = Some(runtime),
+                Err(error) => {
+                    self.ai_chat_record_start_failure(storage, job, error.to_string(), cx);
+                    return;
+                }
+            }
+        }
         let debug_scripted = cfg!(debug_assertions) && self.ai_chat.scripted_fixture;
         let stream_fixture = self.ai_chat.scripted_stream_fixture;
-        // 工具执行只读借用当前已配置连接；连接配置不含凭据（凭据在 connector 层解密）。
+        // 仅传递非敏感连接配置；目标授权、目录装配和凭据读取由应用层完成。
         let connection_configs: Vec<fluxdb_core::ConnectionConfig> = self
             .controller
             .state()
@@ -235,9 +243,9 @@ impl NavicatMain {
             .iter()
             .map(|c| c.config.clone())
             .collect();
-        std::thread::spawn(move || {
-            if debug_scripted {
-                fluxdb_app::run_ai_conversation_source(&storage, &job, &cancel, &tx, |emit| {
+        let runtime = self.ai_chat.runtime.as_ref().expect("runtime 已创建");
+        let submitted = if debug_scripted {
+                runtime.submit_conversation_source(storage.clone(), job.clone(), cancel.clone(), move |cancel, emit| {
                     if !matches!(stream_fixture, AiChatStreamFixture::Default) {
                         let text = "## 流式验证\n\n**内容必须连续显示。**\n\n```sql\nSELECT 1;\n```\n";
                         emit(&fluxdb_core::ModelEvent::TextDelta(text.into()));
@@ -276,103 +284,35 @@ impl NavicatMain {
                     let e = fluxdb_core::ModelEvent::Finished(fluxdb_core::FinishReason::Stop);
                     emit(&e);
                     Ok(vec![e])
-                });
-            } else {
-                match fluxdb_app::AiConversationProvider::from_storage(
-                    &storage,
-                    &job.model_profile_id,
-                ) {
-                    Ok(provider) => {
-                        // 工具只暴露**本轮固定目标连接**：模型不能借 conn:<其它 id> 越权访问别的连接。
-                        let (connection_id, agent_allowed_tools) =
-                            fluxdb_app::ai_turn_security_context(&storage, &job.turn_id)
-                                .unwrap_or((None, Vec::new()));
-                        let pinned = connection_id.and_then(|id| {
-                            connection_configs
-                                .iter()
-                                .find(|config| config.id.0 as i64 == id)
-                                .cloned()
-                        });
-                        let include_write = pinned
-                            .as_ref()
-                            .is_some_and(|config| !fluxdb_app::connection_is_read_only(config));
-                        let resolver = std::sync::Arc::new(fluxdb_app::MapSqlResolver::new(
-                            pinned.iter().cloned().collect::<Vec<_>>(),
-                        ));
-                        // 按**本轮固定目标连接**类型装配工具目录：Redis 目标装 Redis 工具集，其余装 SQL 工具集。
-                        let target_is_redis = pinned.as_ref().is_some_and(|config| {
-                            config.kind == fluxdb_core::DatabaseKind::Redis
-                        });
-                        let catalog = if target_is_redis {
-                            fluxdb_app::standard_redis_catalog(resolver, include_write)
-                        } else {
-                            fluxdb_app::standard_sql_catalog(resolver, include_write)
-                        };
-                        match catalog {
-                            Ok(mut catalog) => {
-                                match fluxdb_app::ai_builtin_hooks(&storage,&job) {
-                                    Ok(hooks)=>catalog=catalog.with_hooks(hooks),
-                                    Err(error)=> {fluxdb_app::run_ai_conversation_failure(&storage,&job,&tx,error.message);return;}
-                                }
-                                if let Err(error)=fluxdb_app::add_ai_file_tools(&mut catalog,&storage,&job) {
-                                    fluxdb_app::run_ai_conversation_failure(&storage,&job,&tx,error.message);
-                                    return;
-                                }
-                                // 写权限来自目标连接（只读连接连写工具都不注册），且 authorize 对 Write 强制逐次审批。
-                                let permission = fluxdb_app::TurnPermissionContext {
-                                    agent_allowed_tools,
-                                    policy: fluxdb_app::kernel_policy_for_connection(pinned.as_ref()),
-                                    plugin_digest: None,
-                                };
-                                match resume_approval.as_deref() {
-                                    Some(approval_id) => {
-                                        fluxdb_app::run_ai_conversation_resume_approval(
-                                            &storage,
-                                            &job,
-                                            &cancel,
-                                            &tx,
-                                            &provider,
-                                            &catalog,
-                                            &fluxdb_app::KernelAuditHook,
-                                            permission,
-                                            approval_id,
-                                        )
-                                    }
-                                    None => fluxdb_app::run_ai_conversation_turn(
-                                        &storage,
-                                        &job,
-                                        &cancel,
-                                        &tx,
-                                        &provider,
-                                        &catalog,
-                                        &fluxdb_app::KernelAuditHook,
-                                        permission,
-                                    ),
-                                }
-                            }
-                            Err(error) => {
-                                fluxdb_app::run_ai_conversation_failure(
-                                    &storage,
-                                    &job,
-                                    &tx,
-                                    format!("工具目录不可用：{}", error.message),
-                                );
-                            }
-                        }
-                    }
-                    Err(error) => {
-                        fluxdb_app::run_ai_conversation_failure(&storage, &job, &tx, error.message);
-                    }
-                }
+                })
+        } else {
+            runtime.submit_conversation(storage.clone(), job.clone(), connection_configs, resume_approval, cancel)
+        };
+        let rx = match submitted {
+            Ok(receiver) => receiver,
+            Err(error) => {
+                self.ai_chat_record_start_failure(storage, job, error.to_string(), cx);
+                return;
             }
-        });
+        };
         self.ai_chat._pump = Some(cx.spawn(async move |view, cx| {
             loop {
                 cx.background_executor()
                     .timer(std::time::Duration::from_millis(16))
                     .await;
                 let mut done = false;
-                let updates = (0..8).filter_map(|_| rx.try_recv().ok()).collect::<Vec<_>>();
+                let mut updates = Vec::new();
+                let mut disconnected = false;
+                for _ in 0..8 {
+                    match rx.try_recv() {
+                        Ok(update) => updates.push(update),
+                        Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                            disconnected = true;
+                            break;
+                        }
+                    }
+                }
                 if !updates.is_empty() {
                     let result = view.update(cx, |this, cx| {
                         for update in updates {
@@ -386,11 +326,43 @@ impl NavicatMain {
                 if done {
                     break;
                 }
+                if disconnected {
+                    let _ = view.update(cx, |this, cx| {
+                        this.ai_chat.error = Some("AI 事件通道已关闭，请重新加载会话核对任务状态".into());
+                        this.ai_chat_finish_stream();
+                        this.show_message("AI 事件通道已关闭，请核对任务状态", AppMessageKind::Warning, cx);
+                        cx.notify();
+                    });
+                    break;
+                }
                 if view.upgrade().is_none() {
                     break;
                 }
             }
         }));
+    }
+    fn ai_chat_record_start_failure(
+        &mut self,
+        storage: FileStorage,
+        job: fluxdb_app::AiConversationJob,
+        message: String,
+        cx: &mut Context<Self>,
+    ) {
+        self.ai_chat.error = Some(message.clone());
+        self.ai_chat._pump = Some(cx.spawn(async move |view, cx| {
+            let update = cx.background_spawn(async move {
+                let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+                fluxdb_app::run_ai_conversation_failure(&storage, &job, &sender, message);
+                receiver.try_recv().ok()
+            }).await;
+            if let Some(update) = update {
+                let _ = view.update(cx, |this, cx| {
+                    this.ai_chat_consume_update(update, cx);
+                    cx.notify();
+                });
+            }
+        }));
+        cx.notify();
     }
     /// 审批决定：先做对象级 CAS 决定，批准后再恢复执行该工具调用。
     fn decide_ai_chat_approval(

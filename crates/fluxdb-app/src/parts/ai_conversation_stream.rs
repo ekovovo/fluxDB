@@ -76,7 +76,7 @@ impl AiConversationStreamPublisher {
 
     fn publish(
         &mut self,
-        sender: &std::sync::mpsc::SyncSender<AiConversationUpdate>,
+        sender: &dyn ConversationEventSink,
         job: &AiConversationJob,
         text: &str,
         summary: &str,
@@ -94,7 +94,7 @@ impl AiConversationStreamPublisher {
                 continue;
             }
             // 队列满时不推进游标；下次合并发送整个未发送尾部，不阻塞模型读取。
-            match sender.try_send(AiConversationUpdate::stream_delta(
+            match sender.try_publish(AiConversationUpdate::stream_delta(
                 job.clone(), &job.assistant_message_id, kind, *sent, &content[*sent..],
             )) {
                 Ok(()) => *sent = content.len(),

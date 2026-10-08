@@ -55,7 +55,7 @@ pub struct TurnPermissionContext {
     pub plugin_digest: Option<String>,
 }
 
-/// 循环对外发出的事件（actor 转成 `AiEvent` / 持久化片段）。
+/// 主循环的领域事件；执行方将事实持久化，再投影成会话更新。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LoopEvent {
     IterationStarted { iteration: usize },
@@ -172,9 +172,20 @@ fn loop_tool_status_label(status: fluxdb_core::ToolReceiptStatus) -> &'static st
 impl<'a> TurnRunner<'a> {
     pub fn run(
         &self,
-        mut state: TurnState,
+        state: TurnState,
         steering: &mut Vec<String>,
         cancel: &fluxdb_core::CancelFlag,
+        emit: &mut dyn FnMut(LoopEvent),
+    ) -> TurnOutcome {
+        self.run_with_steering(state, cancel, &mut || std::mem::take(steering), emit)
+    }
+
+    /// 补充在每次模型请求前消费；不改变目标或绕过工具授权。
+    fn run_with_steering(
+        &self,
+        mut state: TurnState,
+        cancel: &fluxdb_core::CancelFlag,
+        steering: &mut dyn FnMut() -> Vec<String>,
         emit: &mut dyn FnMut(LoopEvent),
     ) -> TurnOutcome {
         let mut signature_counts: HashMap<String, usize> = HashMap::new();
@@ -187,7 +198,7 @@ impl<'a> TurnRunner<'a> {
                 return TurnOutcome::Cancelled;
             }
             // 安全边界：把用户补充吸收进消息历史（不改执行目标）。
-            for text in steering.drain(..) {
+            for text in steering() {
                 state.messages.push(fluxdb_core::ModelMessage::new(fluxdb_core::ModelRole::User, text));
             }
             emit(LoopEvent::IterationStarted { iteration });

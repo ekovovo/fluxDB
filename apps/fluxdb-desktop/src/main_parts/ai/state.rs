@@ -41,6 +41,8 @@ struct AiChatUi {
     _pump: Option<Task<()>>,
     running: Option<fluxdb_app::AiConversationJob>,
     cancel: Option<fluxdb_core::CancelFlag>,
+    runtime: Option<fluxdb_app::AiRuntimeHandle>,
+    _runtime_quit: Subscription,
     recovery_pending: bool,
     recovery_failed: bool,
     epoch: u64,
@@ -119,6 +121,18 @@ impl AiChatUi {
             _pump: None,
             running: None,
             cancel: None,
+            runtime: None,
+            _runtime_quit: cx.on_app_quit(|this, cx| {
+                let runtime = this.ai_chat.runtime.take();
+                if let Some(runtime) = &runtime { runtime.request_shutdown(); }
+                cx.background_spawn(async move {
+                    if let Some(mut runtime) = runtime {
+                        if !runtime.shutdown(std::time::Duration::from_secs(2)) {
+                            tracing::warn!("AI 任务未在退出期限内结束；重启时需恢复中断状态");
+                        }
+                    }
+                })
+            }),
             recovery_pending: true,
             recovery_failed: false,
             epoch: 0,

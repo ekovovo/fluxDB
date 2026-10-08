@@ -49,9 +49,10 @@ fn ai_conversation_record_tool_start(
     plan_hash: &str,
     tool_version: u32,
     target_json: &str,
+    text_offset: usize,
 ) -> fluxdb_core::Result<()> {
     let call_row = format!("{}-toolcall-{}", job.turn_id, call.provider_call_id);
-    let payload=serde_json::json!({"tool":call.tool_id,"call_id":call.provider_call_id,"plan_hash":plan_hash}).to_string();
+    let payload=serde_json::json!({"tool":call.tool_id,"call_id":call.provider_call_id,"plan_hash":plan_hash,"text_offset":text_offset}).to_string();
     with_ai_storage(storage, |conn| {
         fluxdb_storage::ai_platform::sessions::start_tool_call(
             conn,
@@ -93,6 +94,7 @@ fn ai_conversation_record_tool_result(
     storage: &fluxdb_storage::FileStorage,
     job: &AiConversationJob,
     receipt: &fluxdb_core::ToolReceipt,
+    text_offset: usize,
 ) -> fluxdb_core::Result<()> {
     let call_row = format!("{}-toolcall-{}", job.turn_id, receipt.call_id);
     let result_row = format!("{}-result-{}", job.turn_id, receipt.call_id);
@@ -119,6 +121,7 @@ fn ai_conversation_record_tool_result(
         "affected_rows":receipt.affected_rows,
         "duration_ms":(receipt.finished_at_ms - receipt.started_at_ms).max(0),
         "truncated":false,
+        "text_offset":text_offset,
     })
     .to_string();
     let byte_count = receipt.result_json.len() as i64;
@@ -236,6 +239,7 @@ fn ai_conversation_record_approval(
     plan_hash: &str,
     scope_json: &str,
     target_json: &str,
+    text_offset: usize,
 ) -> fluxdb_core::Result<String> {
     let call_row = format!("{}-toolcall-{}", job.turn_id, call.provider_call_id);
     let approval_id = format!("{}-approval-{}", job.turn_id, call.provider_call_id);
@@ -271,6 +275,7 @@ fn ai_conversation_record_approval(
             "approval_id":approval_id,
             "plan_hash":plan_hash,
             "approval_revision":approval.revision,
+            "text_offset":text_offset,
             "scope":serde_json::from_str::<serde_json::Value>(scope_json).unwrap_or(serde_json::Value::Null),
         }).to_string();
         fluxdb_storage::ai_platform::conversation::upsert_event_part(

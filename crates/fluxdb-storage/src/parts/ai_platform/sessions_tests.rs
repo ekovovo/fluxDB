@@ -957,3 +957,216 @@ fn session_overview_counts_and_rename_archive_restore_keep_facts() {
     assert!(sessions::archive_session(&conn, 3_300, "session-overview", 1).is_err());
     assert!(sessions::restore_session(&conn, 3_400, "session-overview", restored).is_err());
 }
+
+// ---------------------------------------------------------------------------
+// 进程级 SIGKILL 恢复（T015「关闭重开/强杀恢复」）：父进程拉起一个真实的
+// 子进程写入会话数据后被强杀（无优雅 drop），父进程重开同一 SQLite 文件断言
+// 公开摘要/审计/展开/滚动锚点全部恢复，无部分写入/数据丢失。
+// ---------------------------------------------------------------------------
+
+/// 子进程模式的标志环境变量；父进程把它注入 child，普通 `cargo test` 运行时不存在。
+const SIGKILL_CHILD_ENV: &str = "FLUXDB_SIGKILL_CHILD";
+/// 子进程写入的 SQLite 文件路径。
+const SIGKILL_DB_PATH_ENV: &str = "FLUXDB_SIGKILL_DB_PATH";
+/// 子进程测试名（父进程用 `--exact` 精确拉起）。
+const SIGKILL_CHILD_TEST: &str = "sessions_sigkill_child_writer";
+
+/// 子进程写入端：仅在 `SIGKILL_CHILD_ENV` 存在时执行，否则是普通测试里的空跑。
+/// 写入完成后 sleep 等待父进程 SIGKILL，确保没有任何关闭路径有机会 flush 收尾。
+#[test]
+fn sessions_sigkill_child_writer() {
+    if std::env::var_os(SIGKILL_CHILD_ENV).is_none() {
+        return;
+    }
+    let db_path = std::env::var(SIGKILL_DB_PATH_ENV).expect("子进程缺少数据库路径");
+    let conn = Connection::open(&db_path).expect("子进程打开文件库");
+    conn.pragma_update(None, "foreign_keys", "ON")
+        .expect("外键");
+    ensure_schema(&conn).expect("建表");
+    agents::create_agent(
+        &conn,
+        1_000,
+        &agents::AgentEdit {
+            compression_trigger_percent: 80,
+            id: "agent-sigkill".into(),
+            display_name: "SIGKILL Agent".into(),
+            description: String::new(),
+            enabled: true,
+            default_model_profile_id: None,
+            system_prompt: "SIGKILL 测试".into(),
+            budget_policy_id: None,
+            allowed_tools: Vec::new(),
+        },
+    )
+    .expect("建 Agent");
+    sessions::create_session(
+        &conn,
+        1_000,
+        "session-sigkill",
+        "agent-sigkill",
+        "强杀恢复会话",
+    )
+    .expect("建会话");
+    let turn = sessions::start_turn(
+        &conn,
+        1_001,
+        "session-sigkill",
+        "turn-sigkill",
+        r#"{"kind":"sql"}"#,
+        r#"{"model":"test"}"#,
+    )
+    .expect("建 Turn");
+    let message = sessions::append_message(
+        &conn,
+        1_002,
+        "message-sigkill",
+        "session-sigkill",
+        Some(&turn.id),
+        "assistant",
+        "{}",
+        PersistenceKind::Checkpoint,
+    )
+    .expect("追加消息");
+    sessions::append_part(
+        &conn,
+        1_003,
+        "part-text",
+        &message.id,
+        PartKind::Text,
+        PartStatus::Complete,
+        r#"{"text":"强杀前的正文"}"#,
+        None,
+        None,
+        None,
+    )
+    .expect("追加正文片段");
+    sessions::append_part(
+        &conn,
+        1_004,
+        "part-summary",
+        &message.id,
+        PartKind::ReasoningSummary,
+        PartStatus::Complete,
+        r#"{"summary":"强杀前公开摘要"}"#,
+        None,
+        None,
+        None,
+    )
+    .expect("追加公开摘要片段");
+    sessions::append_run_event(
+        &conn,
+        1_005,
+        "turn-sigkill",
+        "iteration_started",
+        r#"{"iteration":1}"#,
+    )
+    .expect("追加审计事件");
+    let edit = sessions::SessionUiStateEdit {
+        session_id: "session-sigkill".into(),
+        selected_turn_id: Some("turn-sigkill".into()),
+        expanded_part_ids_json: r#"["part-summary"]"#.into(),
+        scroll_anchor_message_id: Some("message-sigkill".into()),
+        ui_options_json: r#"{"dense":true}"#.into(),
+        draft_json: None,
+    };
+    sessions::save_ui_state(&conn, 1_006, &edit, 0).expect("保存 UI 状态");
+
+    // 写入已提交到文件库。此后不调用任何析构/收尾，直接 sleep 等父进程强杀。
+    let _ = conn;
+    loop {
+        std::thread::sleep(std::time::Duration::from_secs(3600));
+    }
+}
+
+/// 父进程：拉起子进程写入数据，SIGKILL 后重开文件库断言恢复。
+#[test]
+fn sessions_sigkill_recovery_after_process_kill() {
+    let dir = unique_temp_dir("sigkill");
+    let db_path = dir.join("fluxdb.sqlite");
+    let db_str = db_path.to_string_lossy().into_owned();
+
+    let mut child = std::process::Command::new(std::env::current_exe().expect("当前测试二进制"))
+        .arg(SIGKILL_CHILD_TEST)
+        .arg("--nocapture")
+        .env(SIGKILL_CHILD_ENV, "1")
+        .env(SIGKILL_DB_PATH_ENV, &db_str)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("拉起子进程");
+
+    // 等子进程完成建库与写入（轮询到数据库文件出现且已有会话行再强杀）。
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let mut wrote = false;
+    while std::time::Instant::now() < deadline {
+        if db_path.exists() {
+            if let Ok(conn) = Connection::open(&db_path) {
+                let n: i64 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM ai_sessions WHERE id='session-sigkill'",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap_or(0);
+                if n == 1 {
+                    wrote = true;
+                    break;
+                }
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(wrote, "子进程未在超时内写入会话");
+
+    // 直接强杀，不等待任何优雅收尾。
+    child.kill().expect("SIGKILL 子进程");
+    let status = child.wait().expect("等待子进程结束");
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        assert!(
+            status.signal() == Some(9),
+            "子进程应由 SIGKILL(9) 结束，实际: {status:?}"
+        );
+    }
+
+    // 重开同一文件库，断言强杀前提交的公开事实完整恢复。
+    let reopened = Connection::open(&db_path).expect("重开文件库");
+    reopened
+        .pragma_update(None, "foreign_keys", "ON")
+        .expect("外键");
+    let snapshot =
+        sessions::session_snapshot(&reopened, "session-sigkill").expect("强杀后恢复快照");
+    assert_eq!(snapshot.session.id, "session-sigkill");
+    assert_eq!(snapshot.session.next_message_seq, 2);
+    assert_eq!(snapshot.turns.len(), 1);
+    assert_eq!(snapshot.turns[0].id, "turn-sigkill");
+    assert_eq!(snapshot.turns[0].status, TurnStatus::Queued);
+    assert_eq!(snapshot.messages.len(), 1);
+    assert_eq!(snapshot.messages[0].seq, 1);
+    assert_eq!(snapshot.parts.len(), 2);
+    let text = snapshot
+        .parts
+        .iter()
+        .find(|part| part.kind == PartKind::Text)
+        .expect("正文片段");
+    assert_eq!(text.payload_json, r#"{"text":"强杀前的正文"}"#);
+    let summary = snapshot
+        .parts
+        .iter()
+        .find(|part| part.kind == PartKind::ReasoningSummary)
+        .expect("公开摘要片段");
+    assert_eq!(summary.payload_json, r#"{"summary":"强杀前公开摘要"}"#);
+    assert_eq!(snapshot.run_events.len(), 1, "审计事件必须随强杀恢复");
+    assert_eq!(snapshot.run_events[0].kind, "iteration_started");
+    let ui_state = snapshot.ui_state.expect("恢复 UI 状态");
+    assert_eq!(ui_state.expanded_part_ids_json, r#"["part-summary"]"#);
+    assert_eq!(
+        ui_state.scroll_anchor_message_id.as_deref(),
+        Some("message-sigkill")
+    );
+    assert_eq!(ui_state.selected_turn_id.as_deref(), Some("turn-sigkill"));
+
+    drop(reopened);
+    let _ = fs::remove_dir_all(&dir);
+}

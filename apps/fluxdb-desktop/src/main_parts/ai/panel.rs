@@ -118,7 +118,24 @@ fn ai_chat_panel(
 ) -> Stateful<Div> {
     this.sync_ai_chat_models(_window, cx);
     this.sync_ai_chat_agents(_window, cx);
-    let chat = this.controller.state().ai_conversation.clone();
+    let mut chat = this.controller.state().ai_conversation.clone();
+    if let Some(message_id) = this.ai_chat.stream.message_id() {
+        // 首个分片即可挂载显示实体；临时消息仅用于渲染，不写 AppState 或数据库。
+        let index = chat.messages.iter().position(|message| message.id == message_id)
+            .unwrap_or_else(|| {
+                chat.messages.push(fluxdb_app::AiConversationMessage {
+                    id: message_id.to_owned(), role: "assistant".into(), parts: Vec::new(),
+                });
+                chat.messages.len() - 1
+            });
+        let message = &mut chat.messages[index];
+        if !message.parts.iter().any(|part| part.kind == "text") {
+            message.parts.push(fluxdb_app::AiConversationPart {
+                id: format!("{message_id}-text"), kind: "text".into(),
+                status: "streaming".into(), payload_json: r#"{"text":""}"#.into(),
+            });
+        }
+    }
     let target = chat
         .target_json
         .as_deref()
@@ -174,6 +191,10 @@ fn ai_chat_panel(
         && !this.ai_chat.recovery_failed
         && this.ai_chat._io.is_none();
     let scroll = this.ai_chat.scroll.clone();
+    if this.ai_chat.follow_reply && !history && !loading {
+        // Markdown 异步排版会改变内容高度；跟随模式在布局后持续锚定底部。
+        scroll.scroll_to_bottom();
+    }
     let mut timeline = div()
         .id("ai-chat-timeline")
         .debug_selector(|| "ai-chat-timeline".into())
@@ -475,6 +496,7 @@ fn ai_chat_panel(
                                     message,
                                     &chat,
                                     stream_view.as_ref().filter(|_| active_stream),
+                                    active_stream.then(|| this.ai_chat.stream.revealed_text()),
                                     colors,
                                     cx,
                                 )
@@ -487,7 +509,7 @@ fn ai_chat_panel(
                 div()
                     .text_size(px(11.))
                     .text_color(colors.muted)
-                    .child("正在生成…"),
+                    .child(if this.ai_chat.stream.is_finished() { "正在显示回复…" } else { "正在生成…" }),
             );
         }
     }

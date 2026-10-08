@@ -51,6 +51,10 @@ fn check_long_conversation_statusbar(cx: &mut TestAppContext, theme: ThemeMode) 
     click_selector(cx, "ai-chat-history");
     click_selector(cx, "ai-session:long");
     wait_idle(&view, cx);
+    assert!(view.read_with(cx, |main, _| {
+        let scroll = &main.ai_chat.scroll;
+        scroll.max_offset().y > px(0.) && scroll.offset().y == -scroll.max_offset().y
+    }), "历史会话加载后应直接定位底部");
     for mode in [settings::PanelMode::Drawer, settings::PanelMode::Embedded] {
         if view.read_with(cx, |main, _| main.ai_chat.mode) != mode {
             click_selector(cx, "ai-chat-mode");
@@ -58,6 +62,8 @@ fn check_long_conversation_statusbar(cx: &mut TestAppContext, theme: ThemeMode) 
         }
         for height in [700., 500.] {
             cx.simulate_resize(size(px(1000.), px(height)));
+            cx.run_until_parked();
+            draw(cx);
             cx.run_until_parked();
             draw(cx);
             let root = cx.debug_bounds("fluxdb-main").unwrap();
@@ -92,7 +98,7 @@ fn check_long_conversation_statusbar(cx: &mut TestAppContext, theme: ThemeMode) 
                 position: timeline.center(),
                 delta: gpui::ScrollDelta::Pixels(point(
                     px(0.),
-                    px(if before.y < px(0.) { 100. } else { -100. }),
+                    px(if before.y < px(-1.) { 100. } else { -100. }),
                 )),
                 ..Default::default()
             });
@@ -105,4 +111,17 @@ fn check_long_conversation_statusbar(cx: &mut TestAppContext, theme: ThemeMode) 
             assert_eq!(cx.debug_bounds("fluxdb-statusbar").unwrap(), status);
         }
     }
+    assert!(view.read_with(cx, |main, _| !main.ai_chat.follow_reply));
+    click_selector(cx, "ai-chat-close");
+    wait_idle(&view, cx);
+    open_panel(&view, cx);
+    // 重开会重建 Markdown 实体，驱动首次渲染启动的异步解析，再验证最终布局。
+    cx.run_until_parked();
+    draw(cx);
+    assert!(view.read_with(cx, |main, _| {
+        let scroll = &main.ai_chat.scroll;
+        main.ai_chat.follow_reply && !main.ai_chat.new_reply
+            && scroll.max_offset().y > px(0.)
+            && scroll.offset().y == -scroll.max_offset().y
+    }), "向上浏览后重新打开询问 AI 也应定位底部");
 }

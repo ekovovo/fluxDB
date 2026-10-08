@@ -5,10 +5,17 @@
 // 得到连续、可读的输出（做法参考 Zed agent 的 StreamingTextBuffer）。
 //
 // 不变式：TextViewState 的正文 == `buffer[..revealed]`，即 entity 只持有已揭示文本。
-// 自愈：若某段 delta 因通道拥塞丢失，下一次 checkpoint 的投影（更长）会把 buffer
-// 校正回权威文本；终态正文永远由后端 checkpoint 决定，不依赖本缓冲。
+// 增量按绝对字节偏移与 checkpoint 去重；终态只标记结束，继续排空显示缓冲。
 const STREAM_REVEAL_TARGET_MS: f32 = 200.;
 const STREAM_REVEAL_TICK_MS: f32 = 16.;
+
+#[derive(Clone, Copy)]
+enum AiChatStreamFixture {
+    Default,
+    Fast,
+    Burst,
+    Error,
+}
 
 #[derive(Default)]
 pub(crate) struct AiChatStream {
@@ -19,6 +26,8 @@ pub(crate) struct AiChatStream {
     buffer: String,
     /// 已揭示到 `buffer` 的字节数，始终落在 UTF-8 char 边界且等于 entity 正文长度。
     revealed: usize,
+    bytes_per_tick: usize,
+    finished: bool,
 }
 
 impl AiChatStream {
@@ -26,10 +35,16 @@ impl AiChatStream {
         self.message_id = None;
         self.buffer.clear();
         self.revealed = 0;
+        self.bytes_per_tick = 0;
+        self.finished = false;
     }
 
     pub(crate) fn message_id(&self) -> Option<&str> {
         self.message_id.as_deref()
+    }
+
+    pub(crate) fn revealed_text(&self) -> &str {
+        &self.buffer[..self.revealed]
     }
 
     pub(crate) fn is_active(&self) -> bool {
@@ -50,12 +65,19 @@ impl AiChatStream {
         self.buffer.clear();
         self.buffer.push_str(baseline);
         self.revealed = self.buffer.len();
+        self.finished = false;
     }
 
     /// 追加一段增量到 buffer（不直接显示）；`begin` 必须已按消息对齐。
-    pub(crate) fn push(&mut self, delta: &str) {
-        if !delta.is_empty() {
-            self.buffer.push_str(delta);
+    pub(crate) fn push(&mut self, start_offset: usize, delta: &str) {
+        if start_offset > self.buffer.len() {
+            tracing::warn!(start_offset, buffered = self.buffer.len(), "AI 流式正文偏移不连续，等待快照校正");
+            return;
+        }
+        let overlap = self.buffer.len() - start_offset;
+        if overlap < delta.len() && delta.is_char_boundary(overlap) {
+            self.buffer.push_str(&delta[overlap..]);
+            self.update_reveal_rate();
         }
     }
 
@@ -66,7 +88,22 @@ impl AiChatStream {
             self.buffer.clear();
             self.buffer.push_str(payload);
             self.revealed = self.revealed.min(self.buffer.len());
+            self.update_reveal_rate();
         }
+    }
+
+    fn update_reveal_rate(&mut self) {
+        // 速率只在新内容入队时计算，避免每帧按剩余量递减导致长尾。
+        self.bytes_per_tick = ((self.buffer.len().saturating_sub(self.revealed) as f32
+            * STREAM_REVEAL_TICK_MS / STREAM_REVEAL_TARGET_MS).ceil() as usize).max(1);
+    }
+
+    pub(crate) fn finish(&mut self) {
+        self.finished = true;
+    }
+
+    pub(crate) fn is_finished(&self) -> bool {
+        self.finished
     }
 
     pub(crate) fn has_pending(&self) -> bool {
@@ -85,9 +122,7 @@ impl AiChatStream {
         if pending == 0 {
             return None;
         }
-        let per_tick = ((pending as f32 / STREAM_REVEAL_TARGET_MS) * STREAM_REVEAL_TICK_MS)
-            .ceil()
-            .max(1.) as usize;
+        let per_tick = self.bytes_per_tick.max(1);
         let mut next = (self.revealed + per_tick).min(self.buffer.len());
         while next > self.revealed && !self.buffer.is_char_boundary(next) {
             next -= 1;
@@ -108,13 +143,4 @@ impl AiChatStream {
         Some(chunk)
     }
 
-    /// 立即揭示剩余全部（终态兜底，防止尾部滞留）。
-    pub(crate) fn reveal_all(&mut self) -> Option<String> {
-        if self.revealed >= self.buffer.len() {
-            return None;
-        }
-        let chunk = self.buffer[self.revealed..].to_string();
-        self.revealed = self.buffer.len();
-        Some(chunk)
-    }
 }

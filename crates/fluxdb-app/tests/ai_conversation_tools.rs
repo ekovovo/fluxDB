@@ -163,26 +163,33 @@ fn read_tool_turn_persists_real_receipt_and_survives_storage_round_trip() {
         .prepare_ai_conversation("统计一下产品", &target())
         .expect("准备任务");
 
+    let first_text = "先查询产品。\n";
+    let middle_text = "再核对数量。\n";
+    let mut first_step = tool_call_stop(
+        "db.query",
+        "call-read",
+        r#"{"target":"conn:1/db:main","sql":"SELECT * FROM product","max_rows":5}"#,
+    );
+    first_step.insert(0, ModelEvent::TextDelta(first_text.into()));
+    let mut second_step = tool_call_stop(
+        "db.query",
+        "call-count",
+        r#"{"target":"conn:1/db:main","sql":"SELECT COUNT(*) FROM product","max_rows":5}"#,
+    );
+    second_step.insert(0, ModelEvent::TextDelta(middle_text.into()));
     let provider = ScriptedGenerationProvider::new(
         ModelCapabilities {
             streaming: true,
             tool_calling: true,
             reasoning_summary: false,
         },
-        vec![
-            tool_call_stop(
-                "db.query",
-                "call-read",
-                r#"{"target":"conn:1/db:main","sql":"SELECT * FROM product","max_rows":5}"#,
-            ),
-            text_stop("已按真实回执总结"),
-        ],
+        vec![first_step, second_step, text_stop("已按真实回执总结")],
     );
     let catalog = standard_sql_catalog(Arc::new(MapSqlResolver::new([demo_config()])), false)
         .expect("标准只读目录");
     let audit = AllowAudit(std::sync::atomic::AtomicUsize::new(0));
     let cancel = CancelFlag::new();
-    let (tx, rx) = std::sync::mpsc::sync_channel(16);
+    let (tx, rx) = std::sync::mpsc::sync_channel(64);
 
     run_ai_conversation_turn(
         &fixture.storage,
@@ -196,12 +203,25 @@ fn read_tool_turn_persists_real_receipt_and_survives_storage_round_trip() {
     );
 
     let mut last = None;
+    let mut saw_running_tool = false;
     while let Ok(update) = rx.try_recv() {
+        if !update.terminal {
+            saw_running_tool |= update.view.as_ref().is_some_and(|view| {
+                view.messages
+                    .iter()
+                    .flat_map(|message| &message.parts)
+                    .any(|part| part.kind == "tool_call_ref" && part.status == "streaming")
+            });
+        }
         if update.terminal {
             last = update.view;
         }
     }
     let view = last.expect("终态回包必须携带视图");
+    assert!(
+        saw_running_tool,
+        "工具开始时应立即发布操作快照，不等待正文 checkpoint"
+    );
 
     let parts = part_kinds(&view);
     let tool_call = parts
@@ -233,7 +253,27 @@ fn read_tool_turn_persists_real_receipt_and_survives_storage_round_trip() {
         .find(|part| part.kind == "text")
         .expect("助手正文必须入库");
     let payload: serde_json::Value = serde_json::from_str(&text.payload_json).expect("正文载荷");
-    assert_eq!(payload["text"].as_str(), Some("已按真实回执总结"));
+    assert_eq!(
+        payload["text"].as_str(),
+        Some(format!("{first_text}{middle_text}已按真实回执总结").as_str())
+    );
+    let offsets = assistant
+        .parts
+        .iter()
+        .filter(|part| part.kind == "tool_call_ref")
+        .map(|part| {
+            serde_json::from_str::<serde_json::Value>(&part.payload_json).unwrap()["text_offset"]
+                .as_u64()
+                .unwrap()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        offsets,
+        [
+            first_text.len() as u64,
+            (first_text.len() + middle_text.len()) as u64
+        ]
+    );
 
     // 真实存储round-trip：重开存储后片段仍然存在（不是只在内存 view 里）。
     let reopened = FileStorage::new(&fixture.dir);
@@ -247,6 +287,17 @@ fn read_tool_turn_persists_real_receipt_and_survives_storage_round_trip() {
         .collect();
     assert!(kinds.contains(&"tool_call_ref".to_string()));
     assert!(kinds.contains(&"tool_result_ref".to_string()));
+    let persisted_offsets = snapshot
+        .parts
+        .iter()
+        .filter(|part| part.kind == sessions::PartKind::ToolCallRef)
+        .map(|part| {
+            serde_json::from_str::<serde_json::Value>(&part.payload_json).unwrap()["text_offset"]
+                .as_u64()
+                .unwrap()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(persisted_offsets, offsets, "重开后事件时点必须保持");
     assert_eq!(
         snapshot
             .turns

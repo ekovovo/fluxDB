@@ -167,10 +167,20 @@ impl AppController {
             let decided=fluxdb_storage::ai_platform::audits::decide_approval(&tx,ai_chat_now(),id,approved,None,revision)?;
             let (decision,text)=if approved {("approved","已批准；宿主会按 plan_hash 复核后执行一次。")}
                 else {("denied","你已拒绝该工具调用，未执行任何操作。")};
+            let part_id = format!("{message}-approval-{}",call.provider_call_id);
+            let mut payload = serde_json::json!({"text":text,"approval_id":id,"decision":decision,"plan_hash":decided.plan_hash});
+            // 决定只更新卡片状态，保留原审批在正文中的位置。
+            if let Some(part) = fluxdb_storage::ai_platform::sessions::list_parts(&tx,&message)?
+                .into_iter().find(|part| part.id == part_id) {
+                if let Some(offset) = serde_json::from_str::<serde_json::Value>(&part.payload_json)
+                    .ok().and_then(|value| value["text_offset"].as_u64()) {
+                    payload["text_offset"] = offset.into();
+                }
+            }
             fluxdb_storage::ai_platform::conversation::upsert_event_part_in_transaction(&tx,ai_chat_now(),&call.session_id,&call.turn_id,
-                &message,&format!("{message}-approval-{}",call.provider_call_id),
+                &message,&part_id,
                 fluxdb_storage::ai_platform::sessions::PartKind::Notice,fluxdb_storage::ai_platform::sessions::PartStatus::Complete,
-                &serde_json::json!({"text":text,"approval_id":id,"decision":decision,"plan_hash":decided.plan_hash}).to_string(),Some(call_id),None)?;
+                &payload.to_string(),Some(call_id),None)?;
             if !approved {
                 fluxdb_storage::ai_platform::sessions::finish_tool_call(&tx,call_id,"denied",None,None,None)?;
                 fluxdb_storage::ai_platform::sessions::update_turn_status(&tx,ai_chat_now(),&call.turn_id,

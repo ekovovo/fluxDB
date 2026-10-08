@@ -33,41 +33,47 @@ pub fn authorize_ai_file(path:&std::path::Path,storage_root:&std::path::Path)->f
     reference.source=serde_json::json!({"path":reference.source,"size":meta.len(),"modified":meta.modified().ok().and_then(|v|v.duration_since(std::time::UNIX_EPOCH).ok()).map(|v|v.as_nanos().to_string())}).to_string();
     Ok(reference)
 }
+/// 引用定位解析与身份校验共用同一路径，避免公开上下文和实际执行目标不一致。
+fn ai_reference_target(reference: &AiContextReference) -> fluxdb_core::Result<Option<TargetRef>> {
+    let invalid = || fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, "数据库引用已失效，请移除后重新选择");
+    let target = if reference.kind == "connection" {
+        let id = reference.source.parse::<u64>().map_err(|_| invalid())?;
+        if reference.id != format!("connection:{id}") { return Err(invalid()); }
+        TargetRef { connection_id: Some(i64::try_from(id).map_err(|_| invalid())?), ..Default::default() }
+    } else if matches!(reference.kind.as_str(), "database" | "schema" | "table" | "view" | "column" | "index" | "collection" | "redis_db" | "redis_key") {
+        let path: fluxdb_core::ObjectPath = serde_json::from_str(&reference.source).map_err(|_| invalid())?;
+        let expected_kind = match path.kind {
+            fluxdb_core::ObjectKind::Database => "database",
+            fluxdb_core::ObjectKind::Schema => "schema",
+            fluxdb_core::ObjectKind::Table => "table",
+            fluxdb_core::ObjectKind::View => "view",
+            fluxdb_core::ObjectKind::Column => "column",
+            fluxdb_core::ObjectKind::Index => "index",
+            fluxdb_core::ObjectKind::Collection => "collection",
+            fluxdb_core::ObjectKind::RedisDb => "redis_db",
+            fluxdb_core::ObjectKind::RedisKey => "redis_key",
+        };
+        if reference.kind != expected_kind || reference.id != format!("object:{}", source_hash(&[&reference.source])) { return Err(invalid()); }
+        let database = path.database.clone().or_else(|| (path.kind == fluxdb_core::ObjectKind::Database).then(|| path.name.clone()));
+        let schema = path.schema.clone().or_else(|| (path.kind == fluxdb_core::ObjectKind::Schema).then(|| path.name.clone()));
+        let redis_db = if matches!(path.kind, fluxdb_core::ObjectKind::RedisDb | fluxdb_core::ObjectKind::RedisKey) {
+            Some(database.as_deref().unwrap_or(&path.name).parse::<u32>().map_err(|_| invalid())?)
+        } else { None };
+        TargetRef {
+            connection_id: Some(i64::try_from(path.connection_id.0).map_err(|_| invalid())?),
+            database, schema, redis_db,
+            object: (!matches!(path.kind, fluxdb_core::ObjectKind::Database | fluxdb_core::ObjectKind::Schema | fluxdb_core::ObjectKind::RedisDb)).then_some(path.name),
+        }
+    } else { return Ok(None) };
+    Ok(Some(target))
+}
 impl AppController {
     /// 显式数据库引用决定本轮目标；文件/知识引用不改变目标，也不授予写权限。
     fn referenced_execution_target(&self, references: &[AiContextReference]) -> fluxdb_core::Result<Option<TargetRef>> {
         let invalid = || fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, "数据库引用已失效，请移除后重新选择");
         let mut targets = Vec::new();
         for reference in references {
-            let target = if reference.kind == "connection" {
-                let id = reference.source.parse::<u64>().map_err(|_| invalid())?;
-                if reference.id != format!("connection:{id}") { return Err(invalid()); }
-                TargetRef { connection_id: Some(i64::try_from(id).map_err(|_| invalid())?), ..Default::default() }
-            } else if matches!(reference.kind.as_str(), "database" | "schema" | "table" | "view" | "column" | "index" | "collection" | "redis_db" | "redis_key") {
-                let path: fluxdb_core::ObjectPath = serde_json::from_str(&reference.source).map_err(|_| invalid())?;
-                let expected_kind = match path.kind {
-                    fluxdb_core::ObjectKind::Database => "database",
-                    fluxdb_core::ObjectKind::Schema => "schema",
-                    fluxdb_core::ObjectKind::Table => "table",
-                    fluxdb_core::ObjectKind::View => "view",
-                    fluxdb_core::ObjectKind::Column => "column",
-                    fluxdb_core::ObjectKind::Index => "index",
-                    fluxdb_core::ObjectKind::Collection => "collection",
-                    fluxdb_core::ObjectKind::RedisDb => "redis_db",
-                    fluxdb_core::ObjectKind::RedisKey => "redis_key",
-                };
-                if reference.kind != expected_kind || reference.id != format!("object:{}", source_hash(&[&reference.source])) { return Err(invalid()); }
-                let database = path.database.clone().or_else(|| (path.kind == fluxdb_core::ObjectKind::Database).then(|| path.name.clone()));
-                let schema = path.schema.clone().or_else(|| (path.kind == fluxdb_core::ObjectKind::Schema).then(|| path.name.clone()));
-                let redis_db = if matches!(path.kind, fluxdb_core::ObjectKind::RedisDb | fluxdb_core::ObjectKind::RedisKey) {
-                    Some(database.as_deref().unwrap_or(&path.name).parse::<u32>().map_err(|_| invalid())?)
-                } else { None };
-                TargetRef {
-                    connection_id: Some(i64::try_from(path.connection_id.0).map_err(|_| invalid())?),
-                    database, schema, redis_db,
-                    object: (!matches!(path.kind, fluxdb_core::ObjectKind::Database | fluxdb_core::ObjectKind::Schema | fluxdb_core::ObjectKind::RedisDb)).then_some(path.name),
-                }
-            } else { continue };
+            let Some(target) = ai_reference_target(reference)? else { continue };
             if !self.state.connections.iter().any(|connection| Some(connection.config.id.0) == target.connection_id.and_then(|id| u64::try_from(id).ok())) {
                 return Err(invalid());
             }

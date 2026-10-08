@@ -48,6 +48,7 @@ struct AiChatUi {
     follow_reply: bool,
     new_reply: bool,
     scripted_fixture: bool,
+    scripted_stream_fixture: AiChatStreamFixture,
 }
 impl AiChatUi {
     fn new(window: &mut Window, cx: &mut Context<NavicatMain>) -> Self {
@@ -125,6 +126,14 @@ impl AiChatUi {
             new_reply: false,
             scripted_fixture: cfg!(debug_assertions)
                 && std::env::var("FLUXDB_AI_E2E_SCRIPTED").is_ok_and(|v| v == "1"),
+            scripted_stream_fixture: if cfg!(debug_assertions) {
+                match std::env::var("FLUXDB_AI_E2E_STREAM").as_deref() {
+                    Ok("fast") => AiChatStreamFixture::Fast,
+                    Ok("burst") => AiChatStreamFixture::Burst,
+                    Ok("error") => AiChatStreamFixture::Error,
+                    _ => AiChatStreamFixture::Default,
+                }
+            } else { AiChatStreamFixture::Default },
             debug_open_pending: cfg!(debug_assertions)
                 && std::env::var("FLUXDB_DEBUG_AI_CHAT").is_ok_and(|v| v == "1"),
         }

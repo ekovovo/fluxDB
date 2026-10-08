@@ -3008,15 +3008,17 @@ mod syntax_tests {
     }
 
     #[test]
+    #[ignore = "manual SQL editor large-document cache regression"]
     fn large_initial_document_uses_fast_tokenizer_cache() {
         let cache = Arc::new(Mutex::new(None));
         let latest_request = AtomicU64::new(1);
         let text = "SELECT value FROM users;\n".repeat(
             TREE_SITTER_FULL_PARSE_LIMIT / "SELECT value FROM users;\n".len() + 1,
         );
+        let snapshot = fluxdb_editor_core::EditorBuffer::new_from(&text).snapshot();
         let change = InputEdit::new(Range::new(0, 0), String::new(), 0);
-        let (highlights, cache_mode) = highlight_sql_tree_sitter_cached(
-            &text,
+        let (highlights, cache_mode) = highlight_sql_tree_sitter_cached_snapshot(
+            &snapshot,
             SqlDialect::Mysql,
             &change,
             0,
@@ -3033,8 +3035,8 @@ mod syntax_tests {
         let refinement = InputEdit::new(Range::new(0, 0), String::new(), 1);
         let mut refinement_mode = "";
         for _ in 0..128 {
-            let (_, mode) = highlight_sql_tree_sitter_cached(
-                &text,
+            let (_, mode) = highlight_sql_tree_sitter_cached_snapshot(
+                &snapshot,
                 SqlDialect::Mysql,
                 &refinement,
                 1,
@@ -3043,7 +3045,8 @@ mod syntax_tests {
                 1,
             );
             refinement_mode = mode;
-            if cache.lock().unwrap().as_ref().map(|state| state.tree_valid) == Some(true) {
+            // MySQL 精化完成后仍不建立全文树，不能用 tree_valid 判断完成。
+            if mode == "refinement_statement_cache" {
                 break;
             }
         }

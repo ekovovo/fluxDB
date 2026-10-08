@@ -38,6 +38,88 @@ fn compact_execution_matches_call_identity_and_preserves_errors() {
     assert_eq!(ai_compact_parts(&[unlinked.clone()]), vec![unlinked]);
 }
 
+#[test]
+fn execution_timeline_interleaves_text_and_keeps_call_start_position() {
+    let mut first = execution_part("first", "tool_call_ref", "streaming", "a");
+    first.payload_json = serde_json::json!({"tool_call_id":"a","text_offset":"先查询。\n".len()}).to_string();
+    let mut second = execution_part("second", "tool_call_ref", "complete", "b");
+    second.payload_json = serde_json::json!({"text_offset":"先查询。\n再检查。\n".len()}).to_string();
+    let mut result = execution_part("result", "tool_result_ref", "complete", "a");
+    result.payload_json = serde_json::json!({"tool_call_id":"a","text_offset":"先查询。\n再检查。\n".len()}).to_string();
+    let body = fluxdb_app::AiConversationPart {
+        id: "body".into(), kind: "text".into(), status: "complete".into(),
+        payload_json: serde_json::json!({"text":"先查询。\n再检查。\n最终结论。"}).to_string(),
+    };
+    let compact = ai_compact_parts(&[first, result, second, body.clone()]);
+    let ordered = ai_timeline_parts(&compact, None);
+    assert_eq!(ordered.iter().map(|part| part.kind.as_str()).collect::<Vec<_>>(),
+        ["text", "tool_call_ref", "text", "tool_call_ref", "text"]);
+    assert_eq!(ai_chat_part_text(&ordered[0]), "先查询。\n");
+    assert_eq!(ai_chat_part_text(&ordered[2]), "再检查。\n");
+    assert_eq!(ai_chat_part_text(&ordered[4]), "最终结论。");
+    assert_eq!(ai_part_text_offset(&compact[0]), Some("先查询。\n".len()));
+    let partial = ai_timeline_parts(&compact, Some("先查"));
+    assert_eq!(partial.iter().filter(|part| part.kind == "text").map(ai_chat_part_text).collect::<String>(), "先查");
+    let revealed = ai_timeline_parts(&compact, Some("先查询。\n再检查。\n最"));
+    assert_eq!(revealed[2].id, ordered[2].id, "流式拆段身份必须稳定");
+    let legacy = vec![body, execution_part("legacy", "tool_call_ref", "complete", "old")];
+    assert_eq!(ai_timeline_parts(&legacy, None), legacy, "旧记录不猜测事件时点");
+    for offset in [1, usize::MAX] {
+        let mut corrupt = legacy.clone();
+        corrupt[1].payload_json = serde_json::json!({"text_offset":offset}).to_string();
+        assert_eq!(ai_timeline_parts(&corrupt, None), corrupt, "越界/非 UTF-8 边界不应拆段或丢正文");
+    }
+}
+
+#[gpui::test]
+fn execution_timeline_groups_only_adjacent_operations_light(cx: &mut TestAppContext) {
+    check_execution_timeline(cx, ThemeMode::Light);
+}
+
+#[gpui::test]
+fn execution_timeline_groups_only_adjacent_operations_dark(cx: &mut TestAppContext) {
+    check_execution_timeline(cx, ThemeMode::Dark);
+}
+
+fn check_execution_timeline(cx: &mut TestAppContext, theme: ThemeMode) {
+    let fixture = Fixture::new();
+    seed_regular_parts(&fixture, "regular");
+    fixture.storage.with_ai_connection(|conn| {
+        let part = sessions::load_part(conn, "regular-assistant-tool-call")?;
+        sessions::update_part(conn, 110, &part.id, sessions::PartStatus::Complete,
+            &serde_json::json!({"tool":"db.query","text_offset":"操作前的说明。\n".len()}).to_string(), part.revision)?;
+        sessions::create_tool_call(conn, 120, "regular-second-call", "regular", "regular-turn",
+            2, 1, "second", "db.query", 1, None, "{}", "{}", "second-plan", "succeeded")?;
+        conversation::upsert_event_part(conn, 120, "regular", "regular-turn", "regular-assistant",
+            "regular-assistant-second", sessions::PartKind::ToolCallRef, sessions::PartStatus::Complete,
+            &serde_json::json!({"tool":"db.query","text_offset":"操作前的说明。\n操作后的说明。\n".len()}).to_string(), Some("regular-second-call"), None)?;
+        conversation::upsert_event_part(conn, 120, "regular", "regular-turn", "regular-assistant",
+            "regular-assistant-error", sessions::PartKind::Notice, sessions::PartStatus::Error,
+            &serde_json::json!({"text":"检查失败","text_offset":"操作前的说明。\n操作后的说明。\n".len()}).to_string(), None, None)?;
+        conversation::checkpoint(conn, 130, "regular", "regular-turn", "regular-assistant",
+            "操作前的说明。\n操作后的说明。\n最终回复。", "", Some(sessions::TurnStatus::Completed), None)
+    }).unwrap();
+    let (view, cx) = open_main(cx, &fixture, fixture.controller(), theme);
+    open_panel(&view, cx);
+    let before = cx.debug_bounds("regular-assistant-text:markdown").unwrap();
+    let operation = cx.debug_bounds("execution:regular-assistant").unwrap();
+    let after = cx.debug_bounds("regular-assistant-text:segment:22:markdown").unwrap();
+    let second = cx.debug_bounds("execution:regular-assistant:regular-assistant-second").unwrap();
+    let error = cx.debug_bounds("ai-part:regular-assistant-error").unwrap();
+    assert!(before.bottom() <= operation.top() && operation.bottom() <= after.top());
+    assert!(after.bottom() <= second.top() && second.bottom() <= error.top(), "不能跨正文合并操作，错误卡也应保留在真实时点");
+    click_selector(cx, "execution:regular-assistant");
+    wait_idle(&view, cx);
+    assert!(cx.debug_bounds("ai-part:regular-assistant-tool-call").is_some());
+    assert!(cx.debug_bounds("ai-part:regular-assistant-second").is_none(), "展开第一组不能展开第二组");
+    click_selector(cx, "execution:regular-assistant:regular-assistant-second");
+    wait_idle(&view, cx);
+    assert!(cx.debug_bounds("ai-part:regular-assistant-second").is_some());
+    click_selector(cx, "ai-part:regular-assistant-error");
+    wait_idle(&view, cx);
+    assert!(cx.debug_bounds("ai-part-detail:regular-assistant-error").is_some());
+}
+
 #[gpui::test]
 fn execution_summary_click_expands_and_collapses(cx: &mut TestAppContext) {
     check_execution_summary_clicks(cx, ThemeMode::Light);

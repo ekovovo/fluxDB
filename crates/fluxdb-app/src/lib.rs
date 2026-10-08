@@ -108,6 +108,7 @@ include!("parts/ai_hooks.rs");
 include!("parts/ai_permission.rs");
 include!("parts/ai_context.rs");
 include!("parts/ai_references.rs");
+include!("parts/ai_database_context.rs");
 include!("parts/ai_sql_policy.rs");
 include!("parts/ai_sql_exec.rs");
 include!("parts/ai_redis_policy.rs");

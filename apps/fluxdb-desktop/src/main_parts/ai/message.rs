@@ -477,6 +477,10 @@ fn ai_compact_parts(parts: &[fluxdb_app::AiConversationPart]) -> Vec<fluxdb_app:
                     let mut payload: serde_json::Value = serde_json::from_str(&result.payload_json).unwrap_or_default();
                     if let Some(object) = payload.as_object_mut() {
                         object.insert("call".into(), serde_json::from_str::<serde_json::Value>(&part.payload_json).unwrap_or_default());
+                        // 合并回执后仍以调用开始位置展示，不把工具挪到结果返回的位置。
+                        if let Some(offset) = ai_part_text_offset(part) {
+                            object.insert("text_offset".into(), offset.into());
+                        }
                     }
                     merged.payload_json = payload.to_string();
                     output.push(merged);
@@ -506,19 +510,29 @@ fn ai_chat_message_parts(
     chat: &fluxdb_app::AiConversationView,
     // 该消息若正是活跃流式正文，用揭示实体渲染；否则 None。
     stream_view: Option<&Entity<gpui_component::text::TextViewState>>,
+    revealed: Option<&str>,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Vec<gpui::AnyElement> {
-    let parts = ai_compact_parts(&message.parts);
-    let tools = parts.iter().filter(|p| matches!(p.kind.as_str(), "tool_call_ref" | "tool_result_ref") && !ai_execution_needs_attention(p)).collect::<Vec<_>>();
-    let group_id = format!("execution:{}", message.id);
-    let open = chat.expanded_parts.contains(&group_id);
+    let compact = ai_compact_parts(&message.parts);
+    let segmented = compact.iter().any(|part| ai_part_text_offset(part).is_some());
+    let parts = ai_timeline_parts(&compact, revealed);
     let mut output = Vec::new();
-    let mut group_added = false;
-    for part in &parts {
-        if tools.iter().any(|p| p.id == part.id) {
-            if group_added { continue; }
-            group_added = true;
+    let mut index = 0;
+    let mut group_count = 0;
+    while index < parts.len() {
+        let part = &parts[index];
+        if ai_completed_execution(part) {
+            let end = index + parts[index..].iter().take_while(|part| ai_completed_execution(part)).count();
+            let tools = &parts[index..end];
+            let group_id = if group_count == 0 {
+                format!("execution:{}", message.id)
+            } else {
+                format!("execution:{}:{}", message.id, part.id)
+            };
+            let open = chat.expanded_parts.contains(&group_id);
+            group_count += 1;
+            index = end;
             let toggle_id = group_id.clone();
             output.push(div().flex().flex_col().gap_1().min_w(px(0.))
                 .child(Button::new(SharedString::from(group_id.clone()))
@@ -541,8 +555,9 @@ fn ai_chat_message_parts(
                     .flex().flex_col().gap_1().children(tools.iter().map(|p| ai_chat_part(p, chat.expanded_parts.contains(&p.id), chat.target_json.as_deref(), None, colors, cx)))))
                 .into_any_element());
         } else {
-            let part_stream = (part.kind == "text").then_some(stream_view).flatten();
+            let part_stream = (part.kind == "text" && !segmented).then_some(stream_view).flatten();
             output.push(ai_chat_part(part, chat.expanded_parts.contains(&part.id), chat.target_json.as_deref(), part_stream, colors, cx));
+            index += 1;
         }
     }
     output

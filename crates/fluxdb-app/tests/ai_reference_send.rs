@@ -95,6 +95,35 @@ fn empty_pin() -> TurnTargetPin {
     }
 }
 
+fn turn_snapshot(fixture: &Fixture, turn_id: &str) -> serde_json::Value {
+    fixture
+        .storage
+        .with_ai_connection(|conn| {
+            let turn = sessions::load_turn(conn, turn_id)?;
+            Ok(serde_json::from_str(&turn.runtime_snapshot_json).unwrap())
+        })
+        .unwrap()
+}
+
+fn text_model_request(
+    fixture: &Fixture,
+    job: &fluxdb_app::AiConversationJob,
+) -> fluxdb_core::ModelRequest {
+    let provider = ScriptedGenerationProvider::text_only("按本轮上下文解释");
+    let (tx, _rx) = std::sync::mpsc::sync_channel(64);
+    run_ai_conversation_turn(
+        &fixture.storage,
+        job,
+        &fluxdb_core::CancelFlag::new(),
+        &tx,
+        &provider,
+        &fluxdb_app::ToolCatalog::new(Vec::new()),
+        &KernelAuditHook,
+        TurnPermissionContext::default(),
+    );
+    provider.request_at(0).expect("必须经过实际模型请求装配")
+}
+
 #[test]
 fn connection_reference_pins_target_supplies_handle_and_executes_read_tool() {
     let fixture = Fixture::new();
@@ -125,6 +154,14 @@ fn connection_reference_pins_target_supplies_handle_and_executes_read_tool() {
     let payload: serde_json::Value = serde_json::from_str(&saved_ref.payload_json).unwrap();
     assert_eq!(payload["id"], reference.id);
     assert!(payload.get("source").is_none());
+    let snapshot = turn_snapshot(&fixture, &job.turn_id);
+    assert_eq!(snapshot["database_context"]["database_kind"], "sqlite");
+    assert_eq!(snapshot["database_context"]["sql_dialect"], "sqlite");
+    assert_eq!(snapshot["database_context"]["connection_read_only"], true);
+    assert_eq!(
+        snapshot["context_references"][0]["target"]["connection_id"],
+        17
+    );
     let provider = ScriptedGenerationProvider::new(
         ModelCapabilities {
             streaming: true,
@@ -165,6 +202,17 @@ fn connection_reference_pins_target_supplies_handle_and_executes_read_tool() {
         },
     );
     let request = provider.request_at(0).unwrap();
+    assert!(
+        request.messages[0]
+            .text
+            .contains(r#""database_kind":"sqlite""#)
+    );
+    assert!(
+        provider.request_at(1).unwrap().messages[0]
+            .text
+            .contains(r#""sql_dialect":"sqlite""#),
+        "工具回合继续时仍保留数据库方言"
+    );
     assert!(
         request
             .messages
@@ -216,6 +264,11 @@ fn connection_reference_pins_target_supplies_handle_and_executes_read_tool() {
         ai_turn_connection_id(&fixture.storage, &followup.turn_id).unwrap(),
         Some(17)
     );
+    assert_eq!(
+        turn_snapshot(&fixture, &followup.turn_id)["database_context"],
+        snapshot["database_context"],
+        "无 @ 追问也应从继承目标重新提取数据库上下文"
+    );
     assert!(
         controller
             .state()
@@ -242,7 +295,10 @@ fn connection_reference_pins_target_supplies_handle_and_executes_read_tool() {
 fn table_reference_overrides_unrelated_ui_target_without_exposing_other_connections() {
     let fixture = Fixture::new();
     let mut controller = fixture.controller();
-    controller.dispatch(AppCommand::ReplaceConnections(vec![config(1), config(18)]));
+    let mut unrelated = config(18);
+    unrelated.kind = DatabaseKind::Postgres;
+    unrelated.name = "unrelated-postgres".into();
+    controller.dispatch(AppCommand::ReplaceConnections(vec![config(1), unrelated]));
     // 通过生产连接命令加载 demo 的对象元数据，引用来源使用真实候选。
     controller.dispatch(AppCommand::OpenConnection(ConnectionId(1)));
     let database = controller
@@ -282,9 +338,210 @@ fn table_reference_overrides_unrelated_ui_target_without_exposing_other_connecti
             );
             let target: serde_json::Value = serde_json::from_str(&turn.target_json).unwrap();
             assert!(target["object"].as_str().is_some());
+            let snapshot: serde_json::Value =
+                serde_json::from_str(&turn.runtime_snapshot_json).unwrap();
+            assert_eq!(
+                snapshot["database_context"]["database_kind"], "sqlite",
+                "以引用覆盖后的目标为准，不能用当前页面的 PostgreSQL 类型"
+            );
+            assert_eq!(
+                snapshot["context_references"][0]["target"], target,
+                "引用必须携带结构化对象定位"
+            );
             Ok(())
         })
         .unwrap();
+    // 发送后切换连接配置不会改写该轮已经固定的类型；也不能暴露另一连接的信息。
+    let mut changed = config(1);
+    changed.kind = DatabaseKind::Postgres;
+    controller.dispatch(AppCommand::ReplaceConnections(vec![changed, config(18)]));
+    let request = text_model_request(&fixture, &job);
+    assert!(
+        request.messages[0]
+            .text
+            .contains(r#""database_kind":"sqlite""#)
+    );
+    assert!(
+        !request
+            .messages
+            .iter()
+            .any(|message| message.text.contains("unrelated-postgres"))
+    );
+}
+
+#[test]
+fn every_database_kind_supplies_actual_dialect_without_credentials_or_endpoints() {
+    for (kind, engine, dialect) in [
+        (DatabaseKind::MySql, "mysql", Some("mysql")),
+        (DatabaseKind::TiDb, "tidb", Some("mysql")),
+        (DatabaseKind::Postgres, "postgres", Some("postgres")),
+        (DatabaseKind::Sqlite, "sqlite", Some("sqlite")),
+        (DatabaseKind::Redis, "redis", None),
+        (DatabaseKind::MongoDb, "mongodb", None),
+    ] {
+        let fixture = Fixture::new();
+        let mut controller = fixture.controller();
+        let mut config = config(17);
+        config.kind = kind;
+        config.endpoint = if kind == DatabaseKind::Sqlite {
+            Endpoint::SqliteFile {
+                path: "PRIVATE-DATABASE-PATH".into(),
+                read_only: false,
+            }
+        } else {
+            Endpoint::Tcp {
+                host: "PRIVATE-HOST".into(),
+                port: 1234,
+                database: Some("PRIVATE-ENDPOINT-DATABASE".into()),
+            }
+        };
+        config
+            .options
+            .insert("password".into(), "PRIVATE-PASSWORD".into());
+        config
+            .options
+            .insert("credential_ref".into(), "PRIVATE-CREDENTIAL-REF".into());
+        config.options.insert("read_only".into(), "true".into());
+        controller.dispatch(AppCommand::ReplaceConnections(vec![config]));
+        let mut reference = controller
+            .ai_reference_candidates("")
+            .into_iter()
+            .find(|r| r.id == "connection:17")
+            .unwrap();
+        reference.label = "do not infer the type from this label".into();
+        controller.dispatch(AppCommand::AiConversation(
+            AiConversationCommand::AddReference { reference },
+        ));
+        let job = controller
+            .prepare_ai_conversation("解释当前数据库", &empty_pin())
+            .unwrap();
+        let snapshot = turn_snapshot(&fixture, &job.turn_id);
+        let context = &snapshot["database_context"];
+        assert_eq!(context["database_kind"], engine);
+        assert_eq!(context["sql_dialect"].as_str(), dialect);
+        assert_eq!(context["connection_read_only"], true);
+        assert_eq!(context["write_requires_approval"], true);
+        let request = text_model_request(&fixture, &job);
+        assert!(
+            request.messages[0]
+                .text
+                .contains(&format!(r#""database_kind":"{engine}""#))
+        );
+        for secret in [
+            "PRIVATE-DATABASE-PATH",
+            "PRIVATE-HOST",
+            "PRIVATE-ENDPOINT-DATABASE",
+            "PRIVATE-PASSWORD",
+            "PRIVATE-CREDENTIAL-REF",
+            "endpoint",
+            "options",
+            "credential_ref",
+        ] {
+            assert!(
+                !snapshot.to_string().contains(secret),
+                "配置/凭据不能进入快照: {secret}"
+            );
+            assert!(
+                !request
+                    .messages
+                    .iter()
+                    .any(|message| message.text.contains(secret)),
+                "配置/凭据不能进入模型请求: {secret}"
+            );
+        }
+    }
+}
+
+#[test]
+fn multiple_table_references_preserve_each_object_location() {
+    let fixture = Fixture::new();
+    let mut controller = fixture.controller();
+    controller.dispatch(AppCommand::ReplaceConnections(vec![config(1)]));
+    controller.dispatch(AppCommand::OpenConnection(ConnectionId(1)));
+    let database = controller.state().connections[0]
+        .objects
+        .iter()
+        .find(|object| object.path.kind == fluxdb_core::ObjectKind::Database)
+        .unwrap()
+        .path
+        .clone();
+    controller.dispatch(AppCommand::LoadObjectChildren(database));
+    let references = controller
+        .ai_reference_candidates("")
+        .into_iter()
+        .filter(|reference| reference.kind == "table")
+        .take(2)
+        .collect::<Vec<_>>();
+    assert_eq!(references.len(), 2);
+    for reference in &references {
+        controller.dispatch(AppCommand::AiConversation(
+            AiConversationCommand::AddReference {
+                reference: reference.clone(),
+            },
+        ));
+    }
+    let job = controller
+        .prepare_ai_conversation("比较两张表", &empty_pin())
+        .unwrap();
+    let snapshot = turn_snapshot(&fixture, &job.turn_id);
+    let targets = snapshot["context_references"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|reference| reference["target"]["object"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_ne!(targets[0], targets[1]);
+    for reference in snapshot["context_references"].as_array().unwrap() {
+        assert_eq!(reference["target"]["connection_id"], 1);
+        assert_eq!(reference["target"]["database"], "main");
+        assert!(reference.get("source").is_none());
+    }
+    let request = text_model_request(&fixture, &job);
+    for target in targets {
+        assert!(
+            request
+                .messages
+                .iter()
+                .any(|message| message.text.contains(&format!(r#""object":"{target}""#)))
+        );
+    }
+}
+
+#[test]
+fn legacy_or_unavailable_database_context_is_explicitly_unknown() {
+    for legacy in [false, true] {
+        let fixture = Fixture::new();
+        let mut controller = fixture.controller();
+        let mut pin = empty_pin();
+        pin.target.connection_id = Some(if legacy { 17 } else { 999 });
+        pin.target_json = pin.target.to_json();
+        let job = controller
+            .prepare_ai_conversation("解释目标", &pin)
+            .unwrap();
+        if legacy {
+            fixture.storage.with_ai_connection(|conn| {
+                conn.execute("UPDATE ai_turns SET runtime_snapshot_json=json_remove(runtime_snapshot_json,'$.database_context') WHERE id=?1", [&job.turn_id]).unwrap();
+                Ok(())
+            }).unwrap();
+        } else {
+            assert_eq!(
+                turn_snapshot(&fixture, &job.turn_id)["database_context"]["status"],
+                "unavailable"
+            );
+        }
+        let request = text_model_request(&fixture, &job);
+        assert!(
+            request.messages[0]
+                .text
+                .contains(r#""status":"unavailable""#)
+        );
+        assert!(request.messages[0].text.contains("数据库类型未知"));
+        assert!(
+            !request.messages[0]
+                .text
+                .contains(r#""database_kind":"sqlite""#)
+        );
+    }
 }
 
 #[test]

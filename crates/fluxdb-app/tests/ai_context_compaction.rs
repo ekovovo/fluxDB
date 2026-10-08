@@ -57,6 +57,21 @@ impl Fixture {
             AppEvent::AiAgentSaved { .. } => {}
             other => panic!("配置 Agent 失败: {other:?}"),
         }
+        controller.dispatch(AppCommand::ReplaceConnections(vec![
+            fluxdb_core::ConnectionConfig {
+                id: fluxdb_core::ConnectionId(1),
+                name: "compaction-sqlite".into(),
+                kind: fluxdb_core::DatabaseKind::Sqlite,
+                endpoint: fluxdb_core::Endpoint::SqliteFile {
+                    path: "demo.db".into(),
+                    read_only: true,
+                },
+                options: Default::default(),
+                redis_profile: None,
+                mysql_profile: None,
+                postgres_profile: None,
+            },
+        ]));
         controller
     }
 }
@@ -254,6 +269,26 @@ fn percent_trigger_creates_checkpoint_and_keeps_original_messages() {
         checkpoint.summary_text
     );
     assert!(checkpoint.last_message_seq >= 1);
+    let requests = provider.requests.lock().unwrap();
+    for request in requests.iter().filter(|request| {
+        request
+            .messages
+            .iter()
+            .any(|message| message.text.contains("当前执行目标"))
+    }) {
+        assert!(
+            request.messages[0]
+                .text
+                .contains(r#""database_kind":"sqlite""#),
+            "历史压缩前后都必须保留真实引擎"
+        );
+        assert!(
+            request.messages[0]
+                .text
+                .contains(r#""sql_dialect":"sqlite""#)
+        );
+    }
+    drop(requests);
 
     // 原始消息绝不删除：checkpoint 只记录切点。
     let messages = fixture

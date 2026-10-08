@@ -170,8 +170,11 @@ fn approval_pauses_without_executing_then_approve_executes_once_and_continues() 
         .expect("准备任务");
 
     // 1) 第一轮：审计要求审批 → 暂停，工具**不执行**。
+    let prefix = "先读取产品，再总结。\n";
+    let mut step = read_step();
+    step.insert(0, ModelEvent::TextDelta(prefix.into()));
     let provider =
-        ScriptedGenerationProvider::new(capabilities(), vec![read_step(), text_step("不应发生")]);
+        ScriptedGenerationProvider::new(capabilities(), vec![step, text_step("不应发生")]);
     let cancel = CancelFlag::new();
     let (tx, rx) = std::sync::mpsc::sync_channel(16);
     run_ai_conversation_turn(
@@ -250,6 +253,11 @@ fn approval_pauses_without_executing_then_approve_executes_once_and_continues() 
     assert_eq!(decided.0, sessions::PartStatus::Complete);
     let payload: serde_json::Value = serde_json::from_str(&decided.1).unwrap();
     assert_eq!(payload["decision"].as_str(), Some("approved"));
+    assert_eq!(
+        payload["text_offset"].as_u64(),
+        Some(prefix.len() as u64),
+        "批准后审批卡不能移动到回复结尾"
+    );
 
     // 3) 恢复：按 plan_hash 复核后执行一次，并把回执交给模型继续。
     let provider = ScriptedGenerationProvider::new(capabilities(), vec![text_step("已按回执完成")]);
@@ -311,6 +319,7 @@ fn approval_pauses_without_executing_then_approve_executes_once_and_continues() 
         text.contains("已按回执完成"),
         "恢复后正文要续写而不是清空: {text}"
     );
+    assert!(text.starts_with(prefix), "审批前正文必须保留");
 }
 
 #[test]

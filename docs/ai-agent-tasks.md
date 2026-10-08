@@ -172,16 +172,18 @@ UI原型：`docs/prototype/ai-agent-ui.html`（本机 `/Users/shining3d/fusuwei/
   - 未宣称项：真实远端模型调用成功响应本轮未验证（需真实 Key 与 M2 运行时），不作为本任务勾选依据。
 - 测试方式：本任务上述流程分别编写GPUI模拟输入断言并执行真实窗口E2E；截图按指定原型入口逐项对比，业务写入独立核对存储/后端，不只检查提示文字。
 - 数据展示闭环（设计§39.5）：
-  - [ ] 预置两个不同Agent及插件绑定，从正常入口看见列表、选中详情与绑定；切换Agent字段不串，迟到加载不覆盖当前选中项。
-  - [ ] 通过界面新建/修改提示词与绑定、切换允许修改的插件开关，保存后列表与详情即时一致，返回/重启仍一致；失败保留草稿和原记录，不退化为空页。
+  - [x] 预置两个不同Agent及插件绑定，从正常入口看见列表、选中详情与绑定；切换Agent字段不串，迟到加载不覆盖当前选中项。
+  - [x] 通过界面新建/修改提示词与绑定、切换允许修改的插件开关，保存后列表与详情即时一致，返回/重启仍一致；失败保留草稿和原记录，不退化为空页。
+- 本轮勾选（2026-10-07）：用户已在真实主窗口完成 Agent 编辑器逐项操作、与原型 `#agents`/`#tools`/`#plugins` 的视觉还原度核对及重启确认，补上此前缺口后勾选本任务。
 
 ## M2：主 Agent 和原生工具闭环（P0）
 
 ### T015 会话/轮次/消息/event 持久化
-- [ ] 依赖：T006、T012；设计 §9–12、§42.11。
+- [x] 依赖：T006、T012；设计 §9–12、§42.11。
 - 改动：message header+parts、公开reasoning/plan/ref、UI state及panel preferences（mode/两宽/last session/新草稿）、稳定ID/序号/局部checkpoint、配置快照/活动Turn约束；正文单一真相不重复content_json。
 - 验收：并发seq/part ordinal唯一、FK归属、250–500ms合并partial、迟到事件不污染新Turn；关闭重开/强杀恢复公开摘要/工具/审计/展开/滚动锚点；不持久化私有CoT，不每token写一行。
 - 测试方式：在隔离SQLite/文件fixture中逐条执行上述验收，核对操作前后行值、revision、引用及错误；适用的失败注入后重开存储确认无部分写入/数据丢失，测试输出不得含秘密。
+- 本轮勾选（2026-10-08）：补上此前缺口后闭环。进程级 SIGKILL 恢复测试（`sessions_sigkill_recovery_after_process_kill`，父进程拉起子进程写入后 kill，重开文件库断言公开摘要/审计/展开/滚动锚点完整恢复）通过；250–500ms merge partial 由运行时 300ms checkpoint（`conversation::checkpoint` 合并回同一 `-text`/`-summary` 行，终态强制保存）实现并验证，存储层 `repeated_checkpoints_update_one_message_and_parts_not_token_rows` 与 app `persisted_checkpoints_and_empty_terminal_apply_then_load_use_real_reply` 等通过。`fluxdb-storage --lib` 124 passed / 0 failed。
 
 
 ### T016 后台 actor、控制队列与 UI 事件桥
@@ -801,7 +803,7 @@ T020按主设计§31.9实现询问AI内联批准卡片：参考Goose三态按钮
 ### T013/T014 剩余未闭环项
 
 - **T013 已闭环并勾选**（2026-10-05 第九轮）：键盘可达性与"关进程→再启动"两项原缺口，已由用户在真实主窗口的实际操作核对通过（见 T013 验收记录）；自动化断言与真实窗口两层证据齐备。
-- **T014 仍不勾选**：Agent 编辑器（基本/模型与提示词/工具与内置能力三分区 + 底部保存栏）的真实窗口逐项操作、视觉还原度与重启核对尚未执行；GPUI 侧只覆盖校验/CAS 冲突保留草稿等 3 条。
+- **T014 已闭环并勾选**（2026-10-07）：Agent 编辑器（基本/模型与提示词/工具与内置能力三分区 + 底部保存栏）的真实窗口逐项操作、视觉还原度与重启核对，已由用户在真实主窗口实际操作核对通过（见 T014 验收记录与勾选记录）；GPUI 侧覆盖校验/CAS 冲突保留草稿。
 
 ### 已在本轮推进（2026-10-05 第八轮：T002 核心契约 + T004 scripted Provider）
 

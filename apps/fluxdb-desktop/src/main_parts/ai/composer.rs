@@ -24,6 +24,7 @@ fn ai_chat_composer(
         .as_ref()
         .is_some_and(|flag| flag.is_cancelled());
     let ready = !loading
+        && !this.ai_chat.attachment_loading
         && !this.ai_chat.recovery_pending
         && !this.ai_chat.recovery_failed
         && this.ai_chat._io.is_none();
@@ -100,7 +101,10 @@ fn ai_chat_composer(
                             .gap_2()
                             .children(chat.context_references.iter().map(|reference| {
                                 let id = reference.id.clone();
-                                ai_reference_chip(&reference.label, &reference.kind, id, colors, cx)
+                                let invalid = this.ai_chat.reference_errors.contains_key(&reference.id) || !this.controller.ai_reference_is_valid(reference);
+                                let note = this.ai_chat.reference_errors.get(&reference.id).cloned()
+                                    .unwrap_or_else(|| format!("{} · {} · {}", reference.label, reference.summary, reference.id));
+                                ai_reference_chip(&reference.label, &reference.kind, id, invalid, note, colors, cx)
                             })),
                     )
                 })
@@ -154,7 +158,8 @@ fn ai_chat_composer(
                                             .small()
                                             .ghost()
                                             .cursor_pointer()
-                                            .tooltip("添加附件或上下文")
+                                            .tooltip(if this.ai_chat.attachment_loading { "附件授权中…" } else { "添加附件或上下文" })
+                                            .loading(this.ai_chat.attachment_loading)
                                             .disabled(!ready)
                                             .child(app_icon(AppIcon::Plus, 16., colors.muted))
                                             .dropdown_menu_with_anchor(gpui::Anchor::BottomLeft, {
@@ -162,13 +167,15 @@ fn ai_chat_composer(
                                                 move |menu, _, _| {
                                                     let upload_owner = owner.clone();
                                                     let context_owner = owner.clone();
-                                                    menu.item(PopupMenuItem::new("从电脑上传")
+                                                    menu.item(PopupMenuItem::element(|_, _| div()
+                                                        .id("ai-chat-upload").test_support().child("从电脑上传"))
                                                         .on_click(move |_, window, cx| {
                                                             let _ = upload_owner.update(cx, |this, cx| {
                                                                 this.choose_ai_attachment(window, cx);
                                                             });
                                                         }))
-                                                        .item(PopupMenuItem::new("添加上下文")
+                                                        .item(PopupMenuItem::element(|_, _| div()
+                                                            .id("ai-chat-add-context").test_support().child("添加上下文"))
                                                             .on_click(move |_, window, cx| {
                                                                 let _ = context_owner.update(cx, |this, cx| {
                                                                     this.open_ai_reference_menu(window, cx);

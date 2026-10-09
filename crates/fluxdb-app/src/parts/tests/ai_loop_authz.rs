@@ -45,6 +45,8 @@ fn authz_run(
         audit,
     };
     let state = crate::TurnState {
+        session_id: "loop-session".into(),
+        turn_id: "loop-turn".into(),
         model: "m".to_string(),
         messages: vec![ai_loop_test_support::user_message("授权测试")],
         max_output_tokens: Some(64),

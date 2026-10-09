@@ -4,6 +4,7 @@ mod ai_panel_tests {
     include!("tests_execution.rs");
     include!("tests_layout.rs");
     include!("tests_send_references.rs");
+    include!("tests_reference_interactions.rs");
     include!("tests_workspace_layout.rs");
     include!("tests_display.rs");
     include!("tests_composer_shortcuts.rs");
@@ -234,7 +235,7 @@ mod ai_panel_tests {
         cx.run_until_parked();
         assert!(
             view.read_with(cx, |main, _| {
-                main.ai_chat._io.is_none()
+                main.ai_chat._io.is_none() && !main.ai_chat.reference_loading
                     && main.ai_chat.pending.is_empty()
                     && !main.ai_chat.loading
             }),

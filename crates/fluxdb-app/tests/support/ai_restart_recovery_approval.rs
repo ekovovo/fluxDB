@@ -195,7 +195,8 @@ fn approved_startup_requires_new_revision_and_explicit_reapproval_before_one_exe
         &approval.id,
     );
     assert_eq!(tool.call_count(), 1);
-    assert_eq!(provider.call_count(), 1);
+    // 恢复成功后首轮完成会再发一次独立的标题请求；主请求之外多出一次属预期。
+    assert_eq!(provider.call_count(), 2);
     assert!(rx.try_iter().any(|update| update.terminal));
     f.with(|conn| {
         let call = sessions::load_tool_call(conn, approval.tool_call_id.as_deref().unwrap())?;
@@ -228,7 +229,8 @@ fn approved_startup_requires_new_revision_and_explicit_reapproval_before_one_exe
         &approval.id,
     );
     assert_eq!(tool.call_count(), 1, "第二次 resume 不重复副作用");
-    assert_eq!(provider.call_count(), 1);
+    // 已消费的批准使得第二次 resume 不再发模型请求，计数保持第一次恢复后的值。
+    assert_eq!(provider.call_count(), 2);
     assert_eq!(f.snapshot(), completed);
 }
 

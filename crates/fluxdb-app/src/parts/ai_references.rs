@@ -8,9 +8,17 @@ pub struct AiContextReference {
     pub summary: String,
 }
 impl AiContextReference {
-    pub(crate) fn json(&self)->serde_json::Value {serde_json::json!({"id":self.id,"label":self.label,"kind":self.kind,"source":self.source,"summary":self.summary})}
-    pub(crate) fn parse(value:&serde_json::Value)->Option<Self> {
-        Some(Self{id:value["id"].as_str()?.into(),label:value["label"].as_str()?.into(),kind:value["kind"].as_str()?.into(),source:value["source"].as_str()?.into(),summary:value["summary"].as_str()?.into()})
+    pub(crate) fn json(&self) -> serde_json::Value {
+        serde_json::json!({"id":self.id,"label":self.label,"kind":self.kind,"source":self.source,"summary":self.summary})
+    }
+    pub(crate) fn parse(value: &serde_json::Value) -> Option<Self> {
+        Some(Self {
+            id: value["id"].as_str()?.into(),
+            label: value["label"].as_str()?.into(),
+            kind: value["kind"].as_str()?.into(),
+            source: value["source"].as_str()?.into(),
+            summary: value["summary"].as_str()?.into(),
+        })
     }
 }
 /// 路径来自用户文件选择器；敏感目录、非文本文件与 symlink 不授权。
@@ -35,13 +43,35 @@ pub fn authorize_ai_file(path:&std::path::Path,storage_root:&std::path::Path)->f
 }
 /// 引用定位解析与身份校验共用同一路径，避免公开上下文和实际执行目标不一致。
 fn ai_reference_target(reference: &AiContextReference) -> fluxdb_core::Result<Option<TargetRef>> {
-    let invalid = || fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, "数据库引用已失效，请移除后重新选择");
+    let invalid = || {
+        fluxdb_core::Error::new(
+            fluxdb_core::ErrorKind::Internal,
+            "数据库引用已失效，请移除后重新选择",
+        )
+    };
     let target = if reference.kind == "connection" {
         let id = reference.source.parse::<u64>().map_err(|_| invalid())?;
-        if reference.id != format!("connection:{id}") { return Err(invalid()); }
-        TargetRef { connection_id: Some(i64::try_from(id).map_err(|_| invalid())?), ..Default::default() }
-    } else if matches!(reference.kind.as_str(), "database" | "schema" | "table" | "view" | "column" | "index" | "collection" | "redis_db" | "redis_key") {
-        let path: fluxdb_core::ObjectPath = serde_json::from_str(&reference.source).map_err(|_| invalid())?;
+        if reference.id != format!("connection:{id}") {
+            return Err(invalid());
+        }
+        TargetRef {
+            connection_id: Some(i64::try_from(id).map_err(|_| invalid())?),
+            ..Default::default()
+        }
+    } else if matches!(
+        reference.kind.as_str(),
+        "database"
+            | "schema"
+            | "table"
+            | "view"
+            | "column"
+            | "index"
+            | "collection"
+            | "redis_db"
+            | "redis_key"
+    ) {
+        let path: fluxdb_core::ObjectPath =
+            serde_json::from_str(&reference.source).map_err(|_| invalid())?;
         let expected_kind = match path.kind {
             fluxdb_core::ObjectKind::Database => "database",
             fluxdb_core::ObjectKind::Schema => "schema",
@@ -53,51 +83,166 @@ fn ai_reference_target(reference: &AiContextReference) -> fluxdb_core::Result<Op
             fluxdb_core::ObjectKind::RedisDb => "redis_db",
             fluxdb_core::ObjectKind::RedisKey => "redis_key",
         };
-        if reference.kind != expected_kind || reference.id != format!("object:{}", source_hash(&[&reference.source])) { return Err(invalid()); }
-        let database = path.database.clone().or_else(|| (path.kind == fluxdb_core::ObjectKind::Database).then(|| path.name.clone()));
-        let schema = path.schema.clone().or_else(|| (path.kind == fluxdb_core::ObjectKind::Schema).then(|| path.name.clone()));
-        let redis_db = if matches!(path.kind, fluxdb_core::ObjectKind::RedisDb | fluxdb_core::ObjectKind::RedisKey) {
-            Some(database.as_deref().unwrap_or(&path.name).parse::<u32>().map_err(|_| invalid())?)
-        } else { None };
+        if reference.kind != expected_kind
+            || reference.id != format!("object:{}", source_hash(&[&reference.source]))
+        {
+            return Err(invalid());
+        }
+        let database = path.database.clone().or_else(|| {
+            (path.kind == fluxdb_core::ObjectKind::Database).then(|| path.name.clone())
+        });
+        let schema = path
+            .schema
+            .clone()
+            .or_else(|| (path.kind == fluxdb_core::ObjectKind::Schema).then(|| path.name.clone()));
+        let redis_db = if matches!(
+            path.kind,
+            fluxdb_core::ObjectKind::RedisDb | fluxdb_core::ObjectKind::RedisKey
+        ) {
+            Some(
+                database
+                    .as_deref()
+                    .unwrap_or(&path.name)
+                    .parse::<u32>()
+                    .map_err(|_| invalid())?,
+            )
+        } else {
+            None
+        };
         TargetRef {
             connection_id: Some(i64::try_from(path.connection_id.0).map_err(|_| invalid())?),
-            database, schema, redis_db,
-            object: (!matches!(path.kind, fluxdb_core::ObjectKind::Database | fluxdb_core::ObjectKind::Schema | fluxdb_core::ObjectKind::RedisDb)).then_some(path.name),
+            database,
+            schema,
+            redis_db,
+            object: (!matches!(
+                path.kind,
+                fluxdb_core::ObjectKind::Database
+                    | fluxdb_core::ObjectKind::Schema
+                    | fluxdb_core::ObjectKind::RedisDb
+            ))
+            .then_some(path.name),
         }
-    } else { return Ok(None) };
-    Ok(Some(target))
+    } else if reference.kind == "saved_query" {
+        let value: serde_json::Value =
+            serde_json::from_str(&reference.source).map_err(|_| invalid())?;
+        if reference.id != format!("saved_query:{}", source_hash(&[&reference.source])) {
+            return Err(invalid());
+        }
+        let connection_id = value["connection_id"].as_u64().ok_or_else(invalid)?;
+        TargetRef {
+            connection_id: Some(i64::try_from(connection_id).map_err(|_| invalid())?),
+            database: value["database"].as_str().map(str::to_owned),
+            schema: value["schema"].as_str().map(str::to_owned),
+            ..Default::default()
+        }
+    } else if matches!(reference.kind.as_str(), "selection" | "result_set") {
+        let value: serde_json::Value =
+            serde_json::from_str(&reference.source).map_err(|_| invalid())?;
+        if reference.id != format!("{}:{}", reference.kind, source_hash(&[&reference.source])) {
+            return Err(invalid());
+        }
+        let target = &value["target"];
+        if !target.is_object()
+            || (!target["connection_id"].is_null() && target["connection_id"].as_i64().is_none())
+            || ["database", "schema", "object"]
+                .iter()
+                .any(|key| !target[*key].is_null() && !target[*key].is_string())
+            || (!target["redis_db"].is_null()
+                && target["redis_db"]
+                    .as_u64()
+                    .and_then(|db| u32::try_from(db).ok())
+                    .is_none())
+        {
+            return Err(invalid());
+        }
+        TargetRef {
+            connection_id: target["connection_id"].as_i64(),
+            database: target["database"].as_str().map(str::to_owned),
+            schema: target["schema"].as_str().map(str::to_owned),
+            object: target["object"].as_str().map(str::to_owned),
+            redis_db: target["redis_db"]
+                .as_u64()
+                .and_then(|value| u32::try_from(value).ok()),
+        }
+    } else {
+        return Ok(None);
+    };
+    Ok((!target.is_empty()).then_some(target))
 }
 impl AppController {
     /// 显式数据库引用决定本轮目标；文件/知识引用不改变目标，也不授予写权限。
-    fn referenced_execution_target(&self, references: &[AiContextReference]) -> fluxdb_core::Result<Option<TargetRef>> {
-        let invalid = || fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, "数据库引用已失效，请移除后重新选择");
+    fn referenced_execution_target(
+        &self,
+        references: &[AiContextReference],
+    ) -> fluxdb_core::Result<Option<TargetRef>> {
+        let invalid = || {
+            fluxdb_core::Error::new(
+                fluxdb_core::ErrorKind::Internal,
+                "数据库引用已失效，请移除后重新选择",
+            )
+        };
         let mut targets = Vec::new();
         for reference in references {
-            let Some(target) = ai_reference_target(reference)? else { continue };
-            if !self.state.connections.iter().any(|connection| Some(connection.config.id.0) == target.connection_id.and_then(|id| u64::try_from(id).ok())) {
+            let Some(target) = ai_reference_target(reference)? else {
+                continue;
+            };
+            if !self.state.connections.iter().any(|connection| {
+                Some(connection.config.id.0)
+                    == target.connection_id.and_then(|id| u64::try_from(id).ok())
+            }) {
                 return Err(invalid());
             }
             targets.push(target);
         }
-        if targets.is_empty() { return Ok(None); }
+        if targets.is_empty() {
+            return Ok(None);
+        }
         // 不同非空定位值不能合并，否则会悄悄选错连接或扩大数据库范围。
         let merge = |values: Vec<String>| -> fluxdb_core::Result<Option<String>> {
-            let values = values.into_iter().collect::<std::collections::BTreeSet<_>>();
-            if values.len() > 1 { return Err(fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, "本轮引用跨多个连接、数据库或 schema；请保留同一执行目标的引用后发送")); }
+            let values = values
+                .into_iter()
+                .collect::<std::collections::BTreeSet<_>>();
+            if values.len() > 1 {
+                return Err(fluxdb_core::Error::new(
+                    fluxdb_core::ErrorKind::Internal,
+                    "本轮引用跨多个连接、数据库或 schema；请保留同一执行目标的引用后发送",
+                ));
+            }
             Ok(values.into_iter().next())
         };
-        let connection_id = merge(targets.iter().filter_map(|target| target.connection_id.map(|id| id.to_string())).collect())?
-            .and_then(|id| id.parse().ok());
-        let database = merge(targets.iter().filter_map(|target| target.database.clone()).collect())?;
-        let schema = merge(targets.iter().filter_map(|target| target.schema.clone()).collect())?;
-        let objects = targets.iter().filter_map(|target| target.object.clone()).collect::<std::collections::BTreeSet<_>>();
+        let connection_id = merge(
+            targets
+                .iter()
+                .filter_map(|target| target.connection_id.map(|id| id.to_string()))
+                .collect(),
+        )?
+        .and_then(|id| id.parse().ok());
+        let database = merge(
+            targets
+                .iter()
+                .filter_map(|target| target.database.clone())
+                .collect(),
+        )?;
+        let schema = merge(
+            targets
+                .iter()
+                .filter_map(|target| target.schema.clone())
+                .collect(),
+        )?;
+        let objects = targets
+            .iter()
+            .filter_map(|target| target.object.clone())
+            .collect::<std::collections::BTreeSet<_>>();
         Ok(Some(TargetRef {
-            connection_id, database, schema,
+            connection_id,
+            database,
+            schema,
             redis_db: targets.iter().find_map(|target| target.redis_db),
-            object: (objects.len() == 1).then(|| objects.into_iter().next()).flatten(),
+            object: (objects.len() == 1)
+                .then(|| objects.into_iter().next())
+                .flatten(),
         }))
     }
-
 }
 
 /// `@` 候选上限：浮层只渲染有限列表，关键字越具体结果越准确。
@@ -129,11 +274,15 @@ fn ai_object_kind_label(kind: fluxdb_core::ObjectKind) -> &'static str {
 }
 
 impl AppController {
-    /// `@` 候选检索：连接、库/schema、表/视图、知识条目。
+    /// `@` 候选检索：连接、库/schema、表/视图、保存查询、选区、结果集、已授权附件与知识条目。
     ///
     /// 只返回**摘要元数据**（稳定 ID、标签、来源、简述）；对象正文/文件内容/知识正文
     /// 一律不在这里展开，详情走受控工具按需读取。查询为空时返回各类前若干条。
-    pub fn ai_reference_candidates(&self, query: &str) -> Vec<AiContextReference> {
+    pub fn ai_reference_candidates(
+        &self,
+        query: &str,
+        ui_context: Option<&UiContextSnapshot>,
+    ) -> fluxdb_core::Result<Vec<AiContextReference>> {
         let query = query.trim_start_matches('@').to_lowercase();
         let mut candidates = Vec::new();
         for connection in &self.state.connections {
@@ -193,38 +342,160 @@ impl AppController {
                 });
             }
         }
-        // 知识条目：只取 confirmed，只暴露标题/类型/作用域元数据，不展开正文。
-        if let Ok(storage) = self.ai_storage()
-            && let Ok(entries) = with_ai_storage(&storage, |conn| {
-                fluxdb_storage::ai_platform::knowledge::list_confirmed(conn, &query, AI_REFERENCE_CANDIDATE_LIMIT)
+
+        let storage = self.ai_storage()?;
+        for saved in storage.load_saved_queries()? {
+            let source = serde_json::json!({
+                "query_id": saved.id, "connection_id": saved.connection_id.0,
+                "database": saved.database, "schema": saved.schema,
+                "fingerprint": source_hash(&[&saved.text]),
             })
-        {
-            candidates.extend(entries.into_iter().map(|entry| AiContextReference {
-                id: format!("knowledge:{}", entry.id),
-                label: entry.title.clone(),
-                kind: "knowledge".into(),
-                source: entry.id.clone(),
+            .to_string();
+            let connection = self
+                .state
+                .connections
+                .iter()
+                .find(|c| c.config.id == saved.connection_id)
+                .map(|c| c.config.name.as_str())
+                .unwrap_or("连接已移除");
+            candidates.push(AiContextReference {
+                id: format!("saved_query:{}", source_hash(&[&source])),
+                label: saved.name,
+                kind: "saved_query".into(),
+                source,
                 summary: format!(
-                    "知识 · {} · {}（revision {}）",
+                    "保存查询 · {} / {} / {} · {} 字符",
+                    connection,
+                    saved.database.as_deref().unwrap_or("默认库"),
+                    saved.schema.as_deref().unwrap_or("默认 Schema"),
+                    saved.text.chars().count()
+                ),
+            });
+        }
+        if let Some(context) = ui_context {
+            if let Some(selection) = context
+                .selected_text
+                .as_deref()
+                .filter(|text| !text.trim().is_empty())
+            {
+                let excerpt = reference_excerpt(selection);
+                let source = serde_json::json!({"target": serde_json::from_str::<serde_json::Value>(&context.target.to_json()).map_err(reference_json_error)?,
+                    "tab_id": context.tab_id, "text": excerpt.text, "truncated": excerpt.truncated,
+                    "fingerprint": source_hash(&[selection])}).to_string();
+                candidates.push(AiContextReference {
+                    id: format!("selection:{}", source_hash(&[&source])),
+                    label: "当前选区".into(),
+                    kind: "selection".into(),
+                    source,
+                    summary: format!(
+                        "编辑器选区 · {} 字符 · 详情按需读取",
+                        selection.chars().count()
+                    ),
+                });
+            }
+            if let Some(tab) = context
+                .tab_id
+                .and_then(|id| self.state.tabs.iter().find(|tab| tab.id.0 == id))
+            {
+                let pages: Vec<(&fluxdb_core::DataPage, usize)> = match &tab.kind {
+                    TabKind::DataEditor(editor) if !editor.loading => {
+                        editor.page.iter().map(|page| (page, 0)).collect()
+                    }
+                    TabKind::QueryEditor(editor) if !editor.running => editor
+                        .results
+                        .iter()
+                        .enumerate()
+                        .map(|(index, page)| (page, index))
+                        .collect(),
+                    _ => Vec::new(),
+                };
+                for (page, index) in pages {
+                    let (page_text, page_truncated) = reference_page_excerpt(page);
+                    let excerpt = reference_excerpt(&page_text);
+                    let source = serde_json::json!({"target": serde_json::from_str::<serde_json::Value>(&context.target.to_json()).map_err(reference_json_error)?,
+                        "tab_id": tab.id.0, "index": index, "text": excerpt.text, "truncated": excerpt.truncated || page_truncated,
+                        "fingerprint": source_hash(&[&page_text])}).to_string();
+                    candidates.push(AiContextReference {
+                        id: format!("result_set:{}", source_hash(&[&source])),
+                        label: format!("当前结果集 {}", index + 1),
+                        kind: "result_set".into(),
+                        source,
+                        summary: format!(
+                            "已加载页快照 · {} 列 / {} 行 · offset {} · {}",
+                            page.columns.len(),
+                            page.rows.len(),
+                            page.offset,
+                            if excerpt.truncated || page.has_more {
+                                "有截断/后续页"
+                            } else {
+                                "完整当前页"
+                            }
+                        ),
+                    });
+                }
+            }
+        }
+
+        candidates.extend(
+            self.state
+                .ai_conversation
+                .context_references
+                .iter()
+                .filter(|reference| reference.kind == "file")
+                .cloned(),
+        );
+
+        // 知识条目：只取 confirmed，只暴露标题/类型/作用域元数据，不展开正文。
+        let entries = with_ai_storage(&storage, |conn| {
+            fluxdb_storage::ai_platform::knowledge::list_confirmed(
+                conn,
+                &query,
+                AI_REFERENCE_CANDIDATE_LIMIT,
+            )
+        })?;
+        candidates.extend(entries.into_iter().map(|entry| AiContextReference {
+            id: format!("knowledge:{}", entry.id),
+            label: entry.title.clone(),
+            kind: "knowledge".into(),
+            source: entry.id.clone(),
+            summary: format!(
+                    "知识 · {} · {}（revision {}）· {}",
                     entry.kind,
                     entry
                         .database_name
                         .as_deref()
                         .map(|db| format!("作用域 {db}"))
                         .unwrap_or_else(|| "全局作用域".into()),
-                    entry.revision
+                    entry.revision, entry.id
                 ),
-            }));
-        }
-        candidates
+        }));
+        let candidates = candidates
             .into_iter()
             .filter(|reference| {
-                format!("{} {} {}", reference.label, reference.kind, reference.summary)
-                    .to_lowercase()
-                    .contains(&query)
+                format!(
+                    "{} {} {}",
+                    reference.label, reference.kind, reference.summary
+                )
+                .to_lowercase()
+                .contains(&query)
             })
             .take(AI_REFERENCE_CANDIDATE_LIMIT)
-            .collect()
+            .collect();
+        Ok(candidates)
+    }
+
+    /// 只做内存身份/连接检查。未加载元数据不等于对象不存在，不在每帧触发 I/O。
+    pub fn ai_reference_is_valid(&self, reference: &AiContextReference) -> bool {
+        match ai_reference_target(reference) {
+            Err(_) => false,
+            Ok(None) => true,
+            Ok(Some(target)) => target.connection_id.is_none_or(|id| {
+                self.state
+                    .connections
+                    .iter()
+                    .any(|connection| i64::try_from(connection.config.id.0).ok() == Some(id))
+            }),
+        }
     }
 }
 

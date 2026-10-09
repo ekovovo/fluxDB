@@ -17,6 +17,13 @@ impl NavicatMain {
     }
 
     fn choose_ai_attachment(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.ai_chat.attachment_loading {
+            return;
+        }
+        self.ai_chat.attachment_loading = true;
+        let epoch = self.ai_chat.epoch;
+        let session_id = self.controller.state().ai_conversation.session_id.clone();
+        cx.notify();
         let picker = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: false,
@@ -46,6 +53,17 @@ impl NavicatMain {
                 ))),
             };
             let _ = view.update_in(cx, |this, window, cx| {
+                this.ai_chat.attachment_loading = false;
+                if epoch != this.ai_chat.epoch
+                    || session_id != this.controller.state().ai_conversation.session_id
+                {
+                    this.show_message(
+                        "会话已切换，附件未添加；请重新选择",
+                        AppMessageKind::Warning,
+                        cx,
+                    );
+                    return;
+                }
                 match result {
                     Some(Ok(reference)) => this.ai_chat_request(
                         fluxdb_app::AiConversationCommand::AddReference { reference },
@@ -62,10 +80,13 @@ impl NavicatMain {
 
     /// 从输入框文本里取出正在输入的 `@` 查询片段。
     ///
-    /// 规则：取最后一个 `@`，且它到文本末尾之间没有空白与前导 `@` 本身；
+    /// 规则：取词边界后的最后一个 `@`，且它到文本末尾之间没有空白与前导 `@` 本身；
     /// 这样普通的邮箱/单词里的 `@` 不会误触发候选，`@` 后的内容即检索词。
     fn ai_reference_query(text: &str) -> Option<String> {
         let at = text.rfind('@')?;
+        if at > 0 && !text[..at].chars().last()?.is_whitespace() {
+            return None;
+        }
         let tail = &text[at + 1..];
         if tail.chars().any(char::is_whitespace) {
             return None;
@@ -73,28 +94,58 @@ impl NavicatMain {
         Some(tail.to_string())
     }
 
-    /// 按当前 `@` 查询重建候选；打开下拉并记录"无匹配/检索失败"状态。
-    fn refresh_ai_reference_menu(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+    /// SQLite 检索与附件校验在后台执行；查询/会话变更后丢弃迟到结果。
+    fn refresh_ai_reference_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.ai_chat.reference_epoch += 1;
+        let epoch = self.ai_chat.reference_epoch;
         let Some(query) = Self::ai_reference_query(&self.ai_chat.input.read(cx).value()) else {
             self.ai_chat.reference_query = None;
             self.ai_chat.reference_error = None;
+            self.ai_chat.reference_loading = false;
             self.ai_chat.reference_open = false;
             self.ai_chat.reference_options.clear();
             self.ai_chat.reference_index = 0;
             return;
         };
-        let candidates = self.controller.ai_reference_candidates(&query);
-        // 空候选在列表中呈现空态，不伪造一条可选引用。
-        self.ai_chat.reference_no_match = candidates.is_empty();
-        if self.ai_chat.reference_query.as_deref() != Some(query.as_str()) {
-            self.ai_chat.reference_index = 0;
-            self.ai_chat.reference_scroll.scroll_to_item(0);
-        }
-        self.ai_chat.reference_query = Some(query);
-        self.ai_chat.reference_options = candidates.clone();
-        if !self.ai_chat.reference_open {
-            self.ai_chat.reference_open = true;
-        }
+        let controller = self.controller.clone();
+        let context = self.capture_ai_active_context(cx);
+        let session_epoch = self.ai_chat.epoch;
+        self.ai_chat.reference_query = Some(query.clone());
+        self.ai_chat.reference_index = 0;
+        self.ai_chat.reference_scroll.scroll_to_item(0);
+        self.ai_chat.reference_options.clear();
+        self.ai_chat.reference_no_match = false;
+        self.ai_chat.reference_error = None;
+        self.ai_chat.reference_loading = true;
+        self.ai_chat.reference_open = true;
+        self.ai_chat.reference_task = Some(cx.spawn_in(window, async move |view, cx| {
+            let (candidates, errors) = cx
+                .background_spawn(async move {
+                    (
+                        controller.ai_reference_candidates(&query, Some(&context)),
+                        controller.ai_reference_errors(),
+                    )
+                })
+                .await;
+            let _ = view.update_in(cx, |this, _, cx| {
+                if this.ai_chat.reference_epoch != epoch || this.ai_chat.epoch != session_epoch {
+                    return;
+                }
+                this.ai_chat.reference_loading = false;
+                this.ai_chat.reference_errors = errors;
+                match candidates {
+                    Ok(candidates) => {
+                        this.ai_chat.reference_no_match = candidates.is_empty();
+                        this.ai_chat.reference_options = candidates;
+                    }
+                    Err(error) => {
+                        tracing::warn!("AI 引用候选检索失败");
+                        this.ai_chat.reference_error = Some(error.message);
+                    }
+                }
+                cx.notify();
+            });
+        }));
         cx.notify();
     }
 
@@ -142,6 +193,7 @@ impl NavicatMain {
         cx: &mut Context<Self>,
     ) -> bool {
         if !self.ai_chat.reference_open
+            || (self.ai_chat.reference_loading && key != "escape")
             || self.ai_chat.loading
             || self.ai_chat.recovery_pending
             || self.ai_chat.recovery_failed
@@ -188,6 +240,8 @@ impl NavicatMain {
                 }
             }
             "escape" => {
+                self.ai_chat.reference_epoch += 1;
+                self.ai_chat.reference_loading = false;
                 self.ai_chat.reference_open = false;
                 self.ai_chat.reference_query = None;
                 self.ai_chat.reference_options.clear();
@@ -205,6 +259,7 @@ impl NavicatMain {
         colors: UiColors,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
+        let ready = ready && !self.ai_chat.reference_loading;
         let bounds = self.ai_chat.composer_bounds;
         let max_height = (f32::from(self.ai_chat.panel_height) * 0.42).clamp(48., 272.);
         let candidate_count = self
@@ -222,6 +277,14 @@ impl NavicatMain {
             .rounded(colors.radius_lg)
             .bg(colors.panel_bg)
             .shadow_lg()
+            .child(
+                div()
+                    .px_2()
+                    .pt_2()
+                    .text_size(px(9.))
+                    .text_color(colors.muted)
+                    .child("数据库候选来自已加载元数据；未找到时请先展开库或刷新"),
+            )
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_mouse_down_out(cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
                 if !this
@@ -232,6 +295,9 @@ impl NavicatMain {
                     .contains(&event.position)
                 {
                     this.ai_chat.reference_open = false;
+                    this.ai_chat.reference_epoch += 1;
+                    this.ai_chat.reference_loading = false;
+                    cx.stop_propagation();
                     cx.notify();
                 }
             }))
@@ -274,8 +340,7 @@ impl NavicatMain {
                             .enumerate()
                             .map(|(index, reference)| {
                                 let id = reference.id.clone();
-                                let (icon, tone) =
-                                    ai_reference_visual(&reference.kind, colors);
+                                let (icon, tone) = ai_reference_visual(&reference.kind, colors);
                                 gpui_component::list::ListItem::new(SharedString::from(format!(
                                     "ai-reference-candidate:{id}"
                                 )))
@@ -342,7 +407,28 @@ impl NavicatMain {
                             }),
                     ),
             );
-        if self.ai_chat.reference_options.is_empty() {
+        if self.ai_chat.reference_loading {
+            list = list.child(
+                div()
+                    .id("ai-reference-search-loading")
+                    .test_support()
+                    .px_2()
+                    .py_2()
+                    .text_size(px(11.))
+                    .text_color(colors.muted)
+                    .child("正在检索引用…"),
+            );
+        } else if let Some(error) = self.ai_chat.reference_error.as_deref() {
+            list = list.child(
+                div()
+                    .debug_selector(|| "ai-reference-search-error".into())
+                    .px_2()
+                    .py_2()
+                    .text_size(px(11.))
+                    .text_color(colors.danger)
+                    .child(format!("检索失败：{error}")),
+            );
+        } else if self.ai_chat.reference_options.is_empty() {
             list = list.child(
                 div()
                     .px_2()
@@ -371,6 +457,9 @@ fn ai_reference_visual(kind: &str, colors: UiColors) -> (AppIcon, gpui::Rgba) {
         "connection" | "database" | "redis_db" => (AppIcon::Database, colors.info),
         "table" | "view" | "schema" => (AppIcon::Table, colors.success),
         "knowledge" => (AppIcon::Text, colors.warning),
+        "saved_query" => (AppIcon::Query, colors.info),
+        "selection" => (AppIcon::Select, colors.warning),
+        "result_set" => (AppIcon::List, colors.success),
         _ => (AppIcon::FileSearch, colors.info),
     }
 }
@@ -387,6 +476,9 @@ fn ai_reference_badge(kind: &str, colors: UiColors) -> gpui::AnyElement {
         "redis_key" => "Redis Key",
         "knowledge" => "知识",
         "file" => "文件",
+        "saved_query" => "保存查询",
+        "selection" => "选区",
+        "result_set" => "结果集",
         _ => "引用",
     };
     let (_, tone) = ai_reference_visual(kind, colors);

@@ -294,6 +294,8 @@ fn ai_conversation_run_turn(
     };
     let target_json_for_parts = target_json.clone();
     let state = TurnState {
+        session_id: job.session_id.clone(),
+        turn_id: job.turn_id.clone(),
         model: job.model_profile_id.clone(),
         messages,
         max_output_tokens: Some(1024),

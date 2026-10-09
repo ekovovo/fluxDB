@@ -29,6 +29,9 @@ fn ai_reference_tag(label: &str, kind: &str, colors: UiColors) -> gpui::AnyEleme
         "connection" | "database" | "redis_db" => AppIcon::Database,
         "table" | "view" | "schema" => AppIcon::Table,
         "file" => AppIcon::Folder,
+        "saved_query" => AppIcon::Query,
+        "selection" => AppIcon::Select,
+        "result_set" => AppIcon::List,
         _ => AppIcon::FileSearch,
     };
     div()
@@ -73,6 +76,8 @@ fn ai_reference_chip(
     label: &str,
     kind: &str,
     id: String,
+    invalid: bool,
+    note: String,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> gpui::AnyElement {
@@ -80,9 +85,15 @@ fn ai_reference_chip(
         "connection" | "database" | "redis_db" => AppIcon::Database,
         "table" | "view" | "schema" => AppIcon::Table,
         "file" => AppIcon::Folder,
+        "saved_query" => AppIcon::Query,
+        "selection" => AppIcon::Select,
+        "result_set" => AppIcon::List,
         _ => AppIcon::FileSearch,
     };
     div()
+        .id(SharedString::from(format!("ai-reference-chip:{id}")))
+        .test_support()
+        .tooltip(move |window, cx| Tooltip::new(note.clone()).build(window, cx))
         .debug_selector({
             let id = id.clone();
             move || format!("ai-reference:{id}")
@@ -96,7 +107,7 @@ fn ai_reference_chip(
         .py(px(3.))
         .rounded(colors.radius)
         .border_1()
-        .border_color(colors.border_soft)
+        .border_color(if invalid { colors.danger } else { colors.border_soft })
         .bg(colors.panel_alt)
         .child(app_icon(icon, 12., colors.muted))
         .child(
@@ -107,6 +118,25 @@ fn ai_reference_chip(
                 .truncate()
                 .child(label.to_string()),
         )
+        .when(invalid, |chip| {
+            chip.child(
+                div()
+                    .debug_selector({
+                        let id = id.clone();
+                        move || format!("ai-reference-invalid:{id}")
+                    })
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .child(app_icon(AppIcon::TriangleAlert, 10., colors.danger))
+                    .child(
+                        div()
+                            .text_size(px(9.))
+                            .text_color(colors.danger)
+                            .child("失效"),
+                    ),
+            )
+        })
         .child(
             Button::new(SharedString::from(format!("ai-reference-remove:{id}")))
                 .debug_selector({

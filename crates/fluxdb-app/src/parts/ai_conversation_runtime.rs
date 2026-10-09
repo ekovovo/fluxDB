@@ -42,6 +42,7 @@ impl AiRuntimeHandle {
                     };
                     tools = tools.with_hooks(ai_builtin_hooks(storage, job)?);
                     add_ai_file_tools(&mut tools, storage, job)?;
+                    add_ai_reference_tools(&mut tools, storage, job)?;
                     let permission = TurnPermissionContext {
                         agent_allowed_tools,
                         policy: kernel_policy_for_connection(pinned.as_ref()),

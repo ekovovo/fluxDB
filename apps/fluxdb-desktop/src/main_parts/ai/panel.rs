@@ -587,6 +587,8 @@ fn ai_chat_panel(
             if event.keystroke.key == "escape" {
                 // `@` 引用下拉打开时，Esc 先关它，不关整个面板。
                 if this.ai_chat.reference_open {
+                    this.ai_chat.reference_epoch += 1;
+                    this.ai_chat.reference_loading = false;
                     this.ai_chat.reference_open = false;
                     this.ai_chat.reference_query = None;
                     this.ai_chat.reference_options.clear();

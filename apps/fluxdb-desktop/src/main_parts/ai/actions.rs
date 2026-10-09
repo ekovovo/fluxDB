@@ -93,14 +93,15 @@ impl NavicatMain {
         cx.notify();
         self.ai_chat._io = Some(cx.spawn_in(window, async move |view, cx| {
             let background_approval = approval.clone();
-            let (event, resume) = cx
+            let (event, resume, reference_errors) = cx
                 .background_spawn(async move {
                     let event = controller.dispatch(AppCommand::AiConversation(command));
                     // 决定与恢复准备都读写 SQLite，在后台完成；只有决定成功才准备恢复。
                     let resume = background_approval
                         .filter(|(_, approved)| *approved && matches!(event, AppEvent::AiConversationLoaded(_)))
                         .map(|(id, _)| controller.prepare_ai_resume_job(&id));
-                    (event, resume)
+                    let reference_errors = controller.ai_reference_errors();
+                    (event, resume, reference_errors)
                 })
                 .await;
             let _ = view.update_in(cx, |this, window, cx| {
@@ -110,6 +111,7 @@ impl NavicatMain {
                 if epoch == this.ai_chat.epoch {
                     match event {
                         AppEvent::AiConversationLoaded(view) => {
+                            this.ai_chat.reference_errors = reference_errors;
                             if recovering {
                                 this.ai_chat.recovery_failed = false;
                             }
@@ -180,7 +182,8 @@ impl NavicatMain {
         }));
     }
     fn send_ai_chat(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.ai_chat.recovery_pending
+        if self.ai_chat.attachment_loading
+            || self.ai_chat.recovery_pending
             || self.ai_chat.recovery_failed
             || self.ai_chat.running.is_some()
             || self.ai_chat.loading

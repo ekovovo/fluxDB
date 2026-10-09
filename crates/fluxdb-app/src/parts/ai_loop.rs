@@ -35,6 +35,8 @@ impl Default for LoopLimits {
 /// Turn 的输入状态（消息历史 + 目标模型）。
 #[derive(Clone, Debug)]
 pub struct TurnState {
+    pub session_id: String,
+    pub turn_id: String,
     pub model: String,
     pub messages: Vec<fluxdb_core::ModelMessage>,
     pub max_output_tokens: Option<i64>,
@@ -518,8 +520,8 @@ impl<'a> TurnRunner<'a> {
                     tool_version: spec.version,
                 });
                 let ctx = fluxdb_core::ToolExecutionContext {
-                    session_id: String::new(),
-                    turn_id: String::new(),
+                    session_id: state.session_id.clone(),
+                    turn_id: state.turn_id.clone(),
                     iteration: iteration as i64,
                     call_id: call.provider_call_id.clone(),
                     cancel: cancel.clone(),

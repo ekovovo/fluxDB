@@ -273,8 +273,12 @@ fn finish(fixture: &Fixture, controller: &mut AppController, job: &AiConversatio
         false,
     );
     assert!(view.error.is_none(), "{:?}", view.error);
-    assert_eq!(provider.call_count(), 1);
+    // 首轮成功后会用同一 Provider 发独立的 title 请求；第 0 次才是会话生成请求。
+    assert_eq!(provider.call_count(), 2);
     assert_eq!(provider.request_at(0).unwrap().model, model);
+    let title_request = provider.request_at(1).unwrap();
+    assert_eq!(title_request.model, model);
+    assert!(title_request.messages[0].text.contains("生成一个不超过"));
     assert_eq!(fixture.snapshot_model(job), model);
     assert_eq!(
         fixture
@@ -757,8 +761,9 @@ fn approval_resume_preserves_selected_turn_model_when_agent_default_changes() {
         .expect("终态回包必须携带视图");
     assert!(view.error.is_none(), "{:?}", view.error);
     assert_eq!(tool.call_count(), 1);
-    assert_eq!(provider.call_count(), 1);
+    assert_eq!(provider.call_count(), 2);
     assert_eq!(provider.request_at(0).unwrap().model, selected);
+    assert_eq!(provider.request_at(1).unwrap().model, selected);
     assert_eq!(fixture.snapshot_model(&job), selected);
 }
 
@@ -1135,7 +1140,8 @@ mod file_references {
         );
         let view = run(&files.0, &job, &provider, &files.catalog(&job), false);
         assert!(view.error.is_none(), "{:?}", view.error);
-        assert_eq!(provider.call_count(), 2);
+        // 两次是主任务（工具调用 + 回执后继续），第三次才是标题生成。
+        assert_eq!(provider.call_count(), 3);
         let first = provider.request_at(0).unwrap();
         assert!(
             first

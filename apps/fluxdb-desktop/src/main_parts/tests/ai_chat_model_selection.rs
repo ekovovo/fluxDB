@@ -15,6 +15,7 @@ mod ai_chat_model_selection_tests {
     struct Fixture {
         root: PathBuf,
         storage: FileStorage,
+        ai_storage: bool,
         first: String,
         second: String,
     }
@@ -34,6 +35,7 @@ mod ai_chat_model_selection_tests {
             let mut fixture = Self {
                 storage: FileStorage::new(root.clone()),
                 root,
+                ai_storage: true,
                 first: String::new(),
                 second: String::new(),
             };
@@ -121,12 +123,21 @@ mod ai_chat_model_selection_tests {
 
         fn controller(&self) -> AppController {
             let mut controller = AppController::new();
-            controller.set_ai_storage(self.storage.clone());
-            assert!(matches!(
-                controller.dispatch(AppCommand::RefreshAiSettings),
-                AppEvent::AiSettingsLoaded
-            ));
+            if self.ai_storage {
+                controller.set_ai_storage(self.storage.clone());
+            }
+            if self.ai_storage {
+                assert!(matches!(
+                    controller.dispatch(AppCommand::RefreshAiSettings),
+                    AppEvent::AiSettingsLoaded
+                ));
+            }
             controller
+        }
+
+        fn without_ai_storage(mut self) -> Self {
+            self.ai_storage = false;
+            self
         }
 
         fn selection(&self, session: Option<&str>) -> (Option<String>, i64) {
@@ -166,7 +177,6 @@ mod ai_chat_model_selection_tests {
         }
     }
 
-
     fn type_input(view: &Entity<NavicatMain>, cx: &mut VisualTestContext, text: &str) {
         draw(cx);
         let bounds = cx.debug_bounds("ai-chat-input").expect("实际输入区域");
@@ -175,7 +185,11 @@ mod ai_chat_model_selection_tests {
             Modifiers::default(),
         );
         assert!(cx.update(|window, cx| {
-            view.read(cx).ai_chat.input.focus_handle(cx).is_focused(window)
+            view.read(cx)
+                .ai_chat
+                .input
+                .focus_handle(cx)
+                .is_focused(window)
         }));
         cx.simulate_keystrokes(if cfg!(target_os = "macos") {
             "cmd-a backspace"
@@ -196,9 +210,16 @@ mod ai_chat_model_selection_tests {
         })
     }
 
-    fn chips(view: &Entity<NavicatMain>, cx: &VisualTestContext) -> Vec<fluxdb_app::AiContextReference> {
+    fn chips(
+        view: &Entity<NavicatMain>,
+        cx: &VisualTestContext,
+    ) -> Vec<fluxdb_app::AiContextReference> {
         view.read_with(cx, |main, _| {
-            main.controller.state().ai_conversation.context_references.clone()
+            main.controller
+                .state()
+                .ai_conversation
+                .context_references
+                .clone()
         })
     }
 
@@ -317,6 +338,7 @@ mod ai_chat_model_selection_tests {
             cx.run_until_parked();
             if view.read_with(cx, |main, _| {
                 main.ai_chat._io.is_none()
+                    && !main.ai_chat.reference_loading
                     && main.ai_chat.pending.is_empty()
                     && !main.ai_chat.loading
                     && !main.ai_chat.recovery_pending
@@ -499,10 +521,10 @@ mod ai_chat_model_selection_tests {
         let (view, visual) = open(cx, &fixture, ThemeMode::Light);
         let target = view.read_with(visual, |main, _| {
             let options = &main.ai_chat.model_options;
-                options
-                    .iter()
-                    .position(|option| option.id == fixture.second)
-                    .unwrap()
+            options
+                .iter()
+                .position(|option| option.id == fixture.second)
+                .unwrap()
         });
         click(visual, "ai-chat-model-select");
         draw(visual);
@@ -772,6 +794,17 @@ mod ai_chat_model_selection_tests {
                 Ok(())
             })
             .unwrap();
+        fixture
+            .storage
+            .save_saved_queries(&[fluxdb_core::SavedQuery {
+                id: 91,
+                connection_id: fluxdb_core::ConnectionId(17),
+                database: Some("shop".into()),
+                schema: None,
+                name: "订单金额口径".into(),
+                text: "SELECT 1".into(),
+            }])
+            .unwrap();
         let (view, visual) = open(cx, &fixture, ThemeMode::Light);
 
         // 输入 `@订单` → 打开候选下拉，至少包含知识条目。
@@ -784,6 +817,10 @@ mod ai_chat_model_selection_tests {
         assert!(
             kinds.iter().any(|kind| kind == "knowledge"),
             "知识条目应作为 @ 候选：{kinds:?}"
+        );
+        assert!(
+            kinds.iter().any(|kind| kind == "saved_query"),
+            "保存查询应作为 @ 候选：{kinds:?}"
         );
 
         // 不存在的检索词 → 明确"无匹配"，且与"检索失败"区分。
@@ -804,9 +841,7 @@ mod ai_chat_model_selection_tests {
                 .map(|reference| reference.id.clone())
                 .expect("应有知识候选")
         });
-        view.update_in(visual, |main, window, cx| {
-            main.accept_ai_reference(&id, window, cx);
-        });
+        click(visual, &format!("ai-reference-candidate:{id}"));
         wait_idle(&view, visual);
         let selected = chips(&view, visual);
         assert_eq!(selected.len(), 1, "选择后应写入一个引用 chip");
@@ -814,15 +849,7 @@ mod ai_chat_model_selection_tests {
 
         // 移除 chip → 引用清空，下一次提交不再包含。
         let chip_id = selected[0].id.clone();
-        view.update_in(visual, |main, window, cx| {
-            main.ai_chat_request(
-                fluxdb_app::AiConversationCommand::RemoveReference {
-                    reference_id: chip_id.clone(),
-                },
-                window,
-                cx,
-            );
-        });
+        click(visual, &format!("ai-reference-remove:{chip_id}"));
         wait_idle(&view, visual);
         assert!(chips(&view, visual).is_empty(), "移除后不应保留引用");
 
@@ -854,8 +881,17 @@ mod ai_chat_model_selection_tests {
             .with_ai_connection(|conn| {
                 for (id, title) in [("k1", "订单金额口径"), ("k2", "订单金额口径")] {
                     fluxdb_storage::ai_platform::knowledge::save(
-                        conn, 10, id, title, "metric", None, Some("shop"), None, "{}",
-                        "confirmed", None,
+                        conn,
+                        10,
+                        id,
+                        title,
+                        "metric",
+                        None,
+                        Some("shop"),
+                        None,
+                        "{}",
+                        "confirmed",
+                        None,
                     )?;
                 }
                 Ok(())
@@ -864,12 +900,63 @@ mod ai_chat_model_selection_tests {
         let (view, visual) = open(cx, &fixture, ThemeMode::Light);
         type_input(&view, visual, "@订单金额口径");
         let candidates = view.read_with(visual, |main, _| main.ai_chat.reference_options.clone());
-        assert!(candidates.len() >= 2, "两条同名知识都应成为候选：{candidates:?}");
+        assert!(
+            candidates.len() >= 2,
+            "两条同名知识都应成为候选：{candidates:?}"
+        );
         let mut ids: Vec<&str> = candidates.iter().map(|c| c.id.as_str()).collect();
         let total = ids.len();
         ids.sort_unstable();
         ids.dedup();
         assert_eq!(ids.len(), total, "候选 ID 必须唯一");
+        click(visual, "ai-chat-close");
+        wait_idle(&view, visual);
+        finish(view, visual);
+    }
+
+    #[gpui_kit::test]
+    fn reference_search_error_is_visible_without_no_match(cx: &mut TestAppContext) {
+        let fixture = Fixture::new(false).without_ai_storage();
+        cx.update(gpui_component::init);
+        let storage = fixture.storage.clone();
+        let controller = fixture.controller();
+        let (view, visual) = cx.add_window_view(move |window, cx| {
+            navicat_main_new(window, cx, controller, storage, ThemeMode::Light)
+        });
+        visual.update(|window, cx| {
+            window.replace_root(cx, |window, cx| Root::new(view.clone(), window, cx));
+        });
+        click(visual, "ask-ai");
+        wait_idle(&view, visual);
+        assert!(bounds(visual, "ai-chat-panel").is_some());
+        type_input(&view, visual, "@anything");
+        assert!(bounds(visual, "ai-reference-search-error").is_some());
+        assert!(
+            view.read_with(visual, |main, _| main.ai_chat.reference_error.is_some()
+                && !main.ai_chat.reference_no_match)
+        );
+        click(visual, "ai-chat-close");
+        wait_idle(&view, visual);
+        finish(view, visual);
+    }
+
+    #[gpui_kit::test]
+    fn invalid_database_reference_chip_is_visible(cx: &mut TestAppContext) {
+        let fixture = Fixture::new(false);
+        fixture
+        .storage
+        .with_ai_connection(|conn| {
+            fluxdb_storage::ai_platform::context_references::add(
+                conn,
+                None,
+                "connection:missing",
+                r#"{"id":"connection:missing","label":"removed connection","kind":"connection","source":"17","summary":"连接 · 只读上下文"}"#,
+            )
+        })
+        .unwrap();
+        let (view, visual) = open(cx, &fixture, ThemeMode::Light);
+        assert!(chips(&view, visual).len() == 1);
+        assert!(bounds(visual, "ai-reference-invalid:connection:missing").is_some());
         click(visual, "ai-chat-close");
         wait_idle(&view, visual);
         finish(view, visual);

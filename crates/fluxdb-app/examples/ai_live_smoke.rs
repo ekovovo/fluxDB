@@ -139,6 +139,8 @@ fn live_tools_smoke(provider: &AiConversationProvider) -> Result<(), Box<dyn std
         audit: &fluxdb_app::KernelAuditHook,
     };
     let state = fluxdb_app::TurnState {
+        session_id: "live-smoke-session".into(),
+        turn_id: "live-smoke-turn".into(),
         model: "live-smoke".into(),
         messages: vec![fluxdb_core::ModelMessage::new(
             fluxdb_core::ModelRole::User,

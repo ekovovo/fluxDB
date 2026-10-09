@@ -46,6 +46,8 @@ mod ai_loop_test_support {
             audit: &audit,
         };
         let state = TurnState {
+        session_id: "loop-session".into(),
+        turn_id: "loop-turn".into(),
             model: model.to_string(),
             messages,
             max_output_tokens: Some(64),

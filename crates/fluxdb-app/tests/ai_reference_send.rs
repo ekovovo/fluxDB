@@ -6,7 +6,7 @@ use fluxdb_app::{
 };
 use fluxdb_core::{
     ConnectionConfig, ConnectionId, DatabaseKind, Endpoint, FinishReason, ModelCapabilities,
-    ModelEvent, ToolCallRequest,
+    ModelEvent, SavedQuery, ToolCallRequest,
 };
 use fluxdb_storage::{
     FileStorage,
@@ -50,7 +50,8 @@ impl Fixture {
     }
     fn attach(&self, controller: &mut AppController, id: u64) -> AiContextReference {
         let reference = controller
-            .ai_reference_candidates("")
+            .ai_reference_candidates("", None)
+            .unwrap()
             .into_iter()
             .find(|r| r.id == format!("connection:{id}"))
             .unwrap();
@@ -315,7 +316,8 @@ fn table_reference_overrides_unrelated_ui_target_without_exposing_other_connecti
         .clone();
     controller.dispatch(AppCommand::LoadObjectChildren(database));
     let reference = controller
-        .ai_reference_candidates("")
+        .ai_reference_candidates("", None)
+        .unwrap()
         .into_iter()
         .find(|r| r.kind == "table")
         .unwrap();
@@ -404,7 +406,8 @@ fn every_database_kind_supplies_actual_dialect_without_credentials_or_endpoints(
         config.options.insert("read_only".into(), "true".into());
         controller.dispatch(AppCommand::ReplaceConnections(vec![config]));
         let mut reference = controller
-            .ai_reference_candidates("")
+            .ai_reference_candidates("", None)
+            .unwrap()
             .into_iter()
             .find(|r| r.id == "connection:17")
             .unwrap();
@@ -467,7 +470,8 @@ fn multiple_table_references_preserve_each_object_location() {
         .clone();
     controller.dispatch(AppCommand::LoadObjectChildren(database));
     let references = controller
-        .ai_reference_candidates("")
+        .ai_reference_candidates("", None)
+        .unwrap()
         .into_iter()
         .filter(|reference| reference.kind == "table")
         .take(2)
@@ -683,8 +687,416 @@ fn reference_candidates_return_at_most_twenty_items() {
     let mut controller = fixture.controller();
     let connections = (1..=25).map(config).collect();
     controller.dispatch(AppCommand::ReplaceConnections(connections));
-    let candidates = controller.ai_reference_candidates("");
+    let candidates = controller.ai_reference_candidates("", None).unwrap();
     assert_eq!(candidates.len(), 20);
     assert_eq!(candidates[0].id, "connection:1");
     assert_eq!(candidates[19].id, "connection:20");
+}
+
+#[test]
+fn saved_query_and_captured_reference_details_are_bounded_and_scoped() {
+    let fixture = Fixture::new();
+    let mut controller = fixture.controller();
+    let same_name = "订单口径";
+    fixture
+        .storage
+        .save_saved_queries(&[
+            SavedQuery {
+                id: 1,
+                connection_id: ConnectionId(17),
+                database: Some("shop".into()),
+                schema: None,
+                name: same_name.into(),
+                text: "SELECT 1".into(),
+            },
+            SavedQuery {
+                id: 2,
+                connection_id: ConnectionId(18),
+                database: None,
+                schema: Some("audit".into()),
+                name: same_name.into(),
+                text: "SELECT 2".into(),
+            },
+        ])
+        .unwrap();
+    let saved = controller
+        .ai_reference_candidates("@订单口径", None)
+        .unwrap()
+        .into_iter()
+        .filter(|reference| reference.kind == "saved_query")
+        .collect::<Vec<_>>();
+    assert_eq!(saved.len(), 2);
+    let mut ids = saved
+        .iter()
+        .map(|reference| reference.id.as_str())
+        .collect::<Vec<_>>();
+    ids.sort_unstable();
+    ids.dedup();
+    assert_eq!(ids.len(), 2);
+    assert!(
+        saved
+            .iter()
+            .any(|reference| reference.summary.contains("shop"))
+    );
+    assert!(
+        saved
+            .iter()
+            .any(|reference| reference.summary.contains("audit"))
+    );
+
+    controller.dispatch(AppCommand::OpenQueryEditor(ConnectionId(17)));
+    let tab_id = controller.state().active_tab().unwrap().id;
+    controller.dispatch(AppCommand::FinishQueryExecution {
+        tab_id,
+        result: Ok(fluxdb_core::QueryExecutionResult {
+            summaries: Vec::new(),
+            rollback_snapshots: Vec::new(),
+            results: vec![fluxdb_core::DataPage {
+                columns: Vec::new(),
+                rows: vec![fluxdb_core::Row {
+                    values: vec![fluxdb_core::CellValue::Text("actual-result-marker".into())],
+                }],
+                offset: 0,
+                limit: 100,
+                has_more: false,
+            }],
+        }),
+    });
+    let target = TargetRef {
+        connection_id: Some(17),
+        ..Default::default()
+    };
+    let selected_text = "SELECT count(*) FROM orders";
+    let context = fluxdb_app::UiContextSnapshot {
+        tab_id: Some(tab_id.0),
+        tab_revision: 1,
+        target,
+        selected_text: Some(selected_text.into()),
+        excerpt: None,
+        statement_at_cursor: None,
+        summary: None,
+        last_error: None,
+        result_ref: None,
+        notes: Vec::new(),
+    };
+    let candidates = controller
+        .ai_reference_candidates("@当前", Some(&context))
+        .unwrap();
+    let selection = candidates
+        .iter()
+        .find(|reference| reference.kind == "selection")
+        .unwrap();
+    assert!(
+        selection
+            .summary
+            .contains(&format!("{} 字符", selected_text.chars().count()))
+    );
+    let result = candidates
+        .iter()
+        .find(|reference| reference.kind == "result_set")
+        .unwrap();
+    assert!(result.source.contains("actual-result-marker"));
+    assert!(
+        !result.summary.contains("actual-result-marker"),
+        "候选摘要不泄露结果正文"
+    );
+    for reference in [selection, result] {
+        assert!(controller.ai_reference_is_valid(reference));
+        controller.dispatch(AppCommand::AiConversation(
+            AiConversationCommand::AddReference {
+                reference: reference.clone(),
+            },
+        ));
+    }
+    let job = controller
+        .prepare_ai_conversation("解释引用", &empty_pin())
+        .unwrap();
+    let snapshot = turn_snapshot(&fixture, &job.turn_id);
+    assert!(
+        !snapshot["context_references"]
+            .to_string()
+            .contains(selected_text)
+    );
+    assert!(
+        !snapshot["context_references"]
+            .to_string()
+            .contains("actual-result-marker")
+    );
+    assert!(
+        snapshot["reference_grants"]
+            .to_string()
+            .contains("actual-result-marker")
+    );
+    let mut tools = fluxdb_app::ToolCatalog::new(Vec::new());
+    fluxdb_app::add_ai_reference_tools(&mut tools, &fixture.storage, &job).unwrap();
+    let tool = tools.executable("context.read").unwrap();
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    for reference in [selection, result] {
+        let args = serde_json::json!({"reference_id": reference.id, "max_bytes": 4096}).to_string();
+        tools.prepare("context.read", &args).unwrap();
+        let receipt = runtime
+            .block_on(tool.execute(
+                fluxdb_core::ToolExecutionContext {
+                    session_id: job.session_id.clone(),
+                    turn_id: job.turn_id.clone(),
+                    iteration: 1,
+                    call_id: "context-read".into(),
+                    cancel: fluxdb_core::CancelFlag::new(),
+                },
+                args,
+            ))
+            .unwrap();
+        assert_eq!(receipt.status, fluxdb_core::ToolReceiptStatus::Succeeded);
+        assert!(
+            receipt
+                .result_json
+                .contains(if reference.kind == "selection" {
+                    selected_text
+                } else {
+                    "actual-result-marker"
+                })
+        );
+    }
+    let receipt = runtime
+        .block_on(tool.execute(
+            fluxdb_core::ToolExecutionContext {
+                session_id: job.session_id.clone(),
+                turn_id: job.turn_id.clone(),
+                iteration: 1,
+                call_id: "unauthorized".into(),
+                cancel: fluxdb_core::CancelFlag::new(),
+            },
+            r#"{"reference_id":"not-selected"}"#.into(),
+        ))
+        .unwrap();
+    assert_eq!(receipt.status, fluxdb_core::ToolReceiptStatus::Failed);
+
+    let calls = [selection, result]
+        .iter()
+        .enumerate()
+        .map(|(index, reference)| {
+            ModelEvent::ToolCallRequested(ToolCallRequest {
+                provider_call_id: format!("read-{index}"),
+                tool_id: "context.read".into(),
+                arguments_json: serde_json::json!({"reference_id": reference.id}).to_string(),
+            })
+        })
+        .chain([ModelEvent::Finished(FinishReason::ToolCalls)])
+        .collect();
+    let provider = ScriptedGenerationProvider::new(
+        ModelCapabilities {
+            streaming: true,
+            tool_calling: true,
+            reasoning_summary: false,
+        },
+        vec![
+            calls,
+            vec![
+                ModelEvent::TextDelta("读取完成".into()),
+                ModelEvent::Finished(FinishReason::Stop),
+            ],
+        ],
+    );
+    let (tx, _rx) = std::sync::mpsc::sync_channel(64);
+    run_ai_conversation_turn(
+        &fixture.storage,
+        &job,
+        &fluxdb_core::CancelFlag::new(),
+        &tx,
+        &provider,
+        &tools,
+        &KernelAuditHook,
+        TurnPermissionContext::default(),
+    );
+    let next = provider.request_at(1).unwrap();
+    for marker in [selected_text, "actual-result-marker"] {
+        assert!(
+            next.messages
+                .iter()
+                .any(|message| message.role == fluxdb_core::ModelRole::Tool
+                    && message.text.contains(marker)),
+            "后续模型请求必须收到真实读取回执"
+        );
+    }
+    fixture
+        .storage
+        .with_ai_connection(|conn| {
+            let calls = sessions::list_tool_calls_for_turn(conn, &job.turn_id)?;
+            assert_eq!(calls.len(), 2);
+            assert!(calls.iter().all(|call| call.status == "succeeded"));
+            Ok(())
+        })
+        .unwrap();
+}
+
+#[test]
+fn missing_ai_storage_is_retrieval_failure_not_no_match() {
+    let controller = AppController::new();
+    let error = controller
+        .ai_reference_candidates("@anything", None)
+        .unwrap_err();
+    assert_eq!(error.message, "AI 存储尚未初始化，请重启应用");
+}
+
+#[test]
+fn saved_query_change_is_visible_and_failed_send_preserves_draft() {
+    let fixture = Fixture::new();
+    let mut controller = fixture.controller();
+    let mut saved = SavedQuery {
+        id: 3,
+        connection_id: ConnectionId(17),
+        database: None,
+        schema: None,
+        name: "saved-reference".into(),
+        text: "SELECT 'original-body'".into(),
+    };
+    fixture
+        .storage
+        .save_saved_queries(&[saved.clone()])
+        .unwrap();
+    let reference = controller
+        .ai_reference_candidates("saved-reference", None)
+        .unwrap()
+        .remove(0);
+    controller.dispatch(AppCommand::AiConversation(
+        AiConversationCommand::AddReference {
+            reference: reference.clone(),
+        },
+    ));
+    let job = controller
+        .prepare_ai_conversation("read saved query", &empty_pin())
+        .unwrap();
+    let snapshot = turn_snapshot(&fixture, &job.turn_id);
+    assert!(
+        !snapshot["context_references"]
+            .to_string()
+            .contains("original-body")
+    );
+    assert!(
+        snapshot["reference_grants"]
+            .to_string()
+            .contains("original-body")
+    );
+    text_model_request(&fixture, &job);
+    controller.dispatch(AppCommand::AiConversation(AiConversationCommand::New));
+    controller.dispatch(AppCommand::AiConversation(
+        AiConversationCommand::AddReference {
+            reference: reference.clone(),
+        },
+    ));
+    saved.text = "SELECT 'new-body'".into();
+    fixture.storage.save_saved_queries(&[saved]).unwrap();
+    assert!(controller.ai_reference_errors()[&reference.id].contains("修改"));
+    assert!(
+        controller
+            .prepare_ai_conversation("stale query", &empty_pin())
+            .is_err()
+    );
+    assert_eq!(
+        controller.state().ai_conversation.context_references.len(),
+        1
+    );
+}
+
+#[test]
+fn explicit_reference_never_grants_write_or_bypasses_approval() {
+    struct CountedTool(Arc<fluxdb_app::RecordingTool>);
+    impl fluxdb_core::AiTool for CountedTool {
+        fn descriptor(&self) -> &fluxdb_core::ToolDescriptor {
+            fluxdb_core::AiTool::descriptor(self.0.as_ref())
+        }
+        fn execute(
+            &self,
+            ctx: fluxdb_core::ToolExecutionContext,
+            args: String,
+        ) -> fluxdb_core::AiFuture<'_, fluxdb_core::ToolReceipt> {
+            fluxdb_core::AiTool::execute(self.0.as_ref(), ctx, args)
+        }
+    }
+    for writable in [false, true] {
+        let fixture = Fixture::new();
+        let mut controller = fixture.controller();
+        let mut config = config(17);
+        config.endpoint = Endpoint::SqliteFile {
+            path: "demo.db".into(),
+            read_only: !writable,
+        };
+        controller.dispatch(AppCommand::ReplaceConnections(vec![config.clone()]));
+        fixture.attach(&mut controller, 17);
+        let job = controller
+            .prepare_ai_conversation("尝试写入被引用的连接", &empty_pin())
+            .unwrap();
+        let tool = Arc::new(fluxdb_app::RecordingTool::new(
+            "db.execute",
+            fluxdb_core::ToolRisk::Write,
+        ));
+        let mut catalog = fluxdb_app::ToolCatalog::new(Vec::new());
+        catalog
+            .add_tool(Box::new(CountedTool(tool.clone())))
+            .unwrap();
+        let provider = ScriptedGenerationProvider::new(
+            ModelCapabilities {
+                streaming: true,
+                tool_calling: true,
+                reasoning_summary: false,
+            },
+            vec![
+                vec![
+                    ModelEvent::ToolCallRequested(ToolCallRequest {
+                        provider_call_id: "try-write".into(),
+                        tool_id: "db.execute".into(),
+                        arguments_json:
+                            r#"{"target":"conn:17/db:main","sql":"DELETE FROM product WHERE id=1"}"#
+                                .into(),
+                    }),
+                    ModelEvent::Finished(FinishReason::ToolCalls),
+                ],
+                vec![
+                    ModelEvent::TextDelta("权限结果以工具回执为准".into()),
+                    ModelEvent::Finished(FinishReason::Stop),
+                ],
+            ],
+        );
+        let (tx, _rx) = std::sync::mpsc::sync_channel(64);
+        run_ai_conversation_turn(
+            &fixture.storage,
+            &job,
+            &fluxdb_core::CancelFlag::new(),
+            &tx,
+            &provider,
+            &catalog,
+            &KernelAuditHook,
+            TurnPermissionContext {
+                agent_allowed_tools: vec!["db.execute".into()],
+                policy: kernel_policy_for_connection(Some(&config)),
+                target_dialect: Some(fluxdb_app::SqlDialectKind::Sqlite),
+                plugin_digest: None,
+            },
+        );
+        assert_eq!(tool.call_count(), 0, "无批准时不能有任何真实工具调用");
+        assert!(
+            provider
+                .request_at(0)
+                .unwrap()
+                .messages
+                .iter()
+                .any(|message| message.text.contains("不授予写权限"))
+        );
+        fixture
+            .storage
+            .with_ai_connection(|conn| {
+                let calls = sessions::list_tool_calls_for_turn(conn, &job.turn_id)?;
+                assert_eq!(calls.len(), 1);
+                assert_eq!(
+                    calls[0].status.to_string(),
+                    if writable {
+                        "waiting_approval"
+                    } else {
+                        "denied"
+                    }
+                );
+                Ok(())
+            })
+            .unwrap();
+    }
 }

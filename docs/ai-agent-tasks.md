@@ -160,7 +160,7 @@ UI原型：`docs/prototype/ai-agent-ui.html`（本机 `/Users/shining3d/fusuwei/
   - [x] 自动化断言穿过生产加载与AppState→渲染快照→视图路径，捕获非空状态被硬编码空集合覆盖；附新增后有数据的实机证据。
 
 ### T014 Agent直接配置/内置能力/预算 UI
-- [ ] 依赖：T011–T013；设计 §31–32。
+- [x] 依赖：T011–T013；设计 §31–32。
 - 改动：设置“工具与MCP”菜单含工具/本地Server/内置插件/审计tabs；Agent主页面=左侧列表+右侧三分区（基本/模型与提示词/工具与内置能力）+底部保存栏（非弹框）；无权限/运行限制/目标/路由/费用字段；提示词直接输入，无Jev专用配置/版本下拉；失败保留草稿。
 - 验收：界面修改实际对应独立表；CAS 冲突可见；无整体配置覆盖；加载损坏实体不自动重写空值。
 - 本任务功能/UI验收：原型 `#agents` / `#tools` / `#plugins`；从侧栏进入Agent列表→新建→编辑三分区/提示词→绑定模型与工具→保存→切换Agent→重启核对；制造CAS冲突确认草稿保留。工具与MCP入口、四页签容器、工具列表、内置插件状态齐全，必经能力不可关闭；Server/审计内容分别由T060/T065实现，不做假可用按钮。
@@ -265,14 +265,27 @@ cargo test -p fluxdb-app --locked ai_permission   # 15 passed
 
 
 ### T022 `@` 引用、候选检索与附件 UI
-- [ ] 依赖：T014、T021；设计 §14、§31。
+- [x] 依赖：T014、T021；设计 §14、§31。
 - 改动：ContextRef/chip、多对象候选、失效/同名处理、文件选择与授权。
 - 验收：E09；只传显式引用/摘要，详情按需；@ 不给写权限；键盘选择、Esc、外部点击正确。
 - 本任务功能/UI验收：原型 询问AI的`@`与附件；输入@→筛选同名候选→键盘/鼠标选择→显示chip→移除；无匹配、失效对象、非法文件可见反馈，Esc/外部点击关闭且不穿透。
 - UI证据：按设计§39.3–39.4实际操作并对照原型截图，明暗主题、正常/窄窗口及相关loading/空/错状态分别通过，修复后复测。
 - 测试方式：本任务上述流程分别编写GPUI模拟输入断言并执行真实窗口E2E；截图按指定原型入口逐项对比，业务写入独立核对存储/后端，不只检查提示文字。
 - 数据展示闭环（设计§39.5）：
-  - [ ] 预置同名但不同ID/目标的候选，检索实际显示正确结果；选择后chip对应正确引用，移除后提交内容不再包含该引用；区分无匹配与检索失败。
+  - [x] 预置同名但不同ID/目标的候选，检索实际显示正确结果；选择后chip对应正确引用，移除后提交内容不再包含该引用；区分无匹配与检索失败。
+- 验收记录（2026-10-09 补齐后勾选，平台 macOS arm64）：
+  - 改动文件：`crates/fluxdb-app/src/parts/ai_references.rs`、新增 `crates/fluxdb-app/src/parts/ai_reference_details.rs`（`context.read` 详情、引用校验/授权）、`crates/fluxdb-app/src/parts/ai_conversation.rs`（运行快照 `reference_grants`）、`ai_conversation_context.rs`（引用不授予写权限提示）、`ai_conversation_runtime.rs`、`ai_loop.rs`/`ai_conversation_execution.rs`（`TurnState` 透传 `session_id/turn_id`）、`apps/fluxdb-desktop/src/main_parts/ai/{references,composer,message,state,actions,panel}.rs`；夹具 `crates/fluxdb-app/examples/ai_reference_fixture.rs`、mock 模型 `docs/testing/ai-agent/t022_mock_model.py`。
+  - 候选类型补齐：连接、库/schema、表/视图、列/索引/集合、Redis DB/Key、知识条目 + 保存查询、编辑器选区、结果页快照、已授权附件；上限 20；同名按连接+库+schema 全路径与 ID 区分。
+  - 无匹配与检索失败分离：候选检索返回 `Result`，`ai_reference_errors` 汇总逐项失败，UI 显示「检索失败：…」与「无匹配引用：@…」互斥。
+  - 失效对象：chip 前跑内存/存储校验，失效项红框 + 「失效」标记 + tooltip；跨连接/库/schema 合并冲突提前标记。
+  - 详情按需：`context.read` 工具按 opaque ref 读取保存查询/选区/结果页有界快照，限定本轮 `session_id/turn_id`；结果页列 32/行 10/单元格 128 字符，二进制只记字节数。
+  - 只传摘要：第 1 次模型请求的 `context_references` 仅含 `{id,label,kind,summary,target}`，不含正文/路径；正文经 `context.read` 在第 2 次请求到达。
+  - `@` 不给写权限：system 提示明确只读定位、写仍需审批；只读连接 Deny、可写连接 `waiting_approval`，未批准真实工具调用数为 0。
+  - 交互收口：键盘上下键/回车选择、Esc 只关浮层不关面板、外部点击关闭且不穿透、`@` 按词边界识别。
+  - GPUI 交互回归：`cargo test -p fluxdb-desktop reference` → 20 passed / 0 failed；App 集成 `ai_reference_send` 14、`ai_session_model_selection` 23、`ai_restart_recovery` 5、`ai_conversation_write_tool` 11 全通过；`cargo fmt --all -- --check`、`git diff --check`、`cargo check --locked --offline --workspace` 通过。
+  - 真实窗口 E2E（引用→模型→工具→回执→结果）：本地 mock OpenAI Chat Completions（不联网）+ 隔离夹具，900x700 可见窗口点击输入框→`@订单`→选中「保存查询：订单口径」→发送；mock 收到 3 次请求（主生成/带工具回执/标题），`ai_turns.status=completed`，`ai_tool_calls=context.read/succeeded`，助手正文含真实回执。证据：`/private/tmp/fluxdb-t022-shots/{e2e-chip,e2e-prompt,e2e-result}.png`、`e2e-mock-model.log`。
+  - 视觉：明暗主题/窄窗（900x700）与正常宽（1440x900）截图已产出（`dark900-dropdown.png`、`light900-nomatch.png`、`wide-dropdown.png` 等）；原型还原度由用户对照 `docs/prototype/ai-agent-ui.html` 完成。
+  - 未验证：Windows/Linux（按 B 节平台分工由用户自行验收；附件安全读取在非 Unix 明确不可用）；原生系统文件选择对话框点选、IME/无障碍映射；真实第三方模型与真实 PG/MySQL 数据库。完整记录见 `docs/testing/ai-agent/t022-references-2026-10-09.md`。
 
 ### T023 元数据探索和显式 SQL 执行服务
 - [ ] 依赖：T019–T021；设计 §4、§20–21。
@@ -1089,7 +1102,7 @@ T020按主设计§31.9实现询问AI内联批准卡片：参考Goose三态按钮
 - [x] `file.read` / `file.search` 工具：仅对已授权附件生效，按 opaque `file_ref` 读取、有界（默认 16 KiB、最大 64 KiB）、支持 offset 续读；未知/未授权 ref 拒绝；文件被修改后拒绝；UTF-8 切分错误可见；取消可生效。
 - [x] 附件授权：用户文件选择器 + 文本扩展名白名单（sql/txt/csv/tsv/json/md/log/yaml/yml）、≤16 MiB；拒绝配置/凭据/密钥目录与根目录内的库；Unix 用逐级 `openat(O_NOFOLLOW)` 防目录/末端链接替换，Windows 明确「暂不可用」而不是静默降级。`crates/fluxdb-app/tests/ai_session_model_selection.rs` 追加的 11 个文件用例（共 23/23）覆盖上述路径，含链接替换、修改检测、移除/重开。
 - 修复的真实缺陷：授权探测原先用 `File::open`，存在链接替换 TOCTOU；改为逐级 `openat(O_NOFOLLOW)` 并显式拒绝符号链接。
-- 未完成：`@` 候选内含库/schema/表/结果集/Redis Key/知识条目的完整检索 UI 与原型对照；附件 UI 的明暗/窄窗截图；Windows 安全读取实现。
+- 已于 2026-10-09 完成并勾选（见 T022 验收记录）：`@` 候选补齐库/schema/表/视图/结果集/Redis Key/知识/保存查询/选区/结果页/附件，明暗与窄窗截图、真实窗口 E2E（含 `context.read` 回执闭环）、`@` 不授予写权限均已验证。仍留：Windows 安全读取实现（非 Unix 明确不可用，平台验收按 B 节由用户执行）、原生文件对话框/IME/无障碍映射、真实第三方模型与真实库。
 
 ### 验收基线(2026-10-07)
 - `cargo test -p fluxdb-app --offline`(沙箱外,含集成)→ **716 lib passed / 0 failed / 1 ignored**;集成 24+4+10+2+6+2+6+4+11+23 / 0 failed。

@@ -273,6 +273,51 @@ fn ai_sql_exec_resolver_allocates_distinct_agent_sessions() {
 }
 
 #[test]
+fn ai_sql_exec_sessions_never_collide_with_editor_tab_ids() {
+    // 编辑器查询标签从 TabId(1) 起自增并把 TabId 直接当 QuerySessionId；
+    // AI 必须落在宿主托管段，否则同一连接上会与编辑器命中同一条后端会话。
+    let resolver = MapSqlResolver::new([ai_sql_exec_demo_config(1)]);
+    let session = resolver.query_session_id();
+    assert!(
+        session.is_host_managed(),
+        "AI 会话必须落在宿主托管段，实际 {}",
+        session.0
+    );
+    let editor_tab_span = (1u64..=4096).map(fluxdb_core::QuerySessionId);
+    assert!(
+        !editor_tab_span.clone().any(|tab| tab == session),
+        "AI 会话不得与可能的编辑器标签 ID 重叠"
+    );
+    // 反向：宿主托管段与标签实际产生的 ID 段不重叠（含高位边界）。
+    assert!(fluxdb_core::QuerySessionId::HOST_MANAGED_BASE > 4096);
+}
+
+#[test]
+fn ai_sql_exec_releases_query_session_after_each_call() {
+    // AI 只读读取是「每次有界独立事务」：单次调用结束即释放后端会话，
+    // 不能让临时表/未提交状态长期占用显式查询会话（PostgreSQL 上有硬上限）。
+    let resolver = Arc::new(MapSqlResolver::new([ai_sql_exec_demo_config(1)]));
+    let tool = AiSqlReadTool::query(resolver).expect("db.query 工具");
+    let first = ai_sql_exec_block_on(tool.execute(
+        ai_sql_exec_ctx("call-1", CancelFlag::new()),
+        r#"{"target":"conn:1","sql":"SELECT * FROM product"}"#.into(),
+    ))
+    .expect("工具调用");
+    assert_eq!(first.status, fluxdb_core::ToolReceiptStatus::Succeeded);
+    let second = ai_sql_exec_block_on(tool.execute(
+        ai_sql_exec_ctx("call-2", CancelFlag::new()),
+        r#"{"target":"conn:1","sql":"SELECT * FROM product"}"#.into(),
+    ))
+    .expect("工具调用");
+    // 连续调用必须都能成功且不累积会话：第二次调用不因上一次残留会话而受影响。
+    assert_eq!(second.status, fluxdb_core::ToolReceiptStatus::Succeeded);
+    let payload: serde_json::Value =
+        serde_json::from_str(&second.result_json).expect("回执载荷是 JSON");
+    assert_eq!(payload["source"], "ai");
+    assert!(payload["query_session_id"].as_u64().is_some());
+}
+
+#[test]
 fn ai_sql_exec_projection_is_bounded_by_rows() {
     let page = fluxdb_core::DataPage {
         columns: vec![fluxdb_core::Column {

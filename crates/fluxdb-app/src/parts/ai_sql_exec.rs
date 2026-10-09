@@ -23,10 +23,12 @@ pub trait SqlExecutionResolver: Send + Sync {
         id: fluxdb_core::ConnectionId,
     ) -> Option<fluxdb_core::ConnectionConfig>;
 
-    /// 返回当前 Agent 执行上下文专属的查询会话。
+    /// 返回当前 Agent 执行上下文专属的查询会话标识。
     ///
-    /// Resolver 按 Agent Turn 构造，因此同一 Turn 的工具共享该 ID，而不会借用
-    /// 编辑器 Tab 的会话。连接器仍可据此决定是否复用后端会话状态。
+    /// 该标识落在宿主托管段（`QuerySessionId::host_managed`），与编辑器查询标签
+    /// 从 1 起的 ID 段天然不重叠，因此后端不会把 AI 与编辑器当作同一条会话。
+    /// 默认只读读取是「每次有界独立事务」：单次调用结束即释放后端会话，
+    /// 不把临时表/未提交状态长期挂着（设计 §21）。
     fn query_session_id(&self) -> fluxdb_core::QuerySessionId;
 }
 
@@ -43,7 +45,7 @@ impl MapSqlResolver {
                 .into_iter()
                 .map(|config| (config.id, config))
                 .collect(),
-            query_session_id: fluxdb_core::QuerySessionId(
+            query_session_id: fluxdb_core::QuerySessionId::host_managed(
                 NEXT_AI_QUERY_SESSION_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             ),
         }
@@ -63,8 +65,9 @@ impl SqlExecutionResolver for MapSqlResolver {
     }
 }
 
+/// AI 会话自增段：与编辑器查询标签 ID 段隔离，避免同一连接上命中同一条后端会话。
 static NEXT_AI_QUERY_SESSION_ID: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(1);
+    std::sync::atomic::AtomicU64::new(0);
 
 /// 结果上限（工具层硬上限，模型不能放大）。
 pub const SQL_MAX_ROWS_HARD: u64 = 1000;
@@ -516,6 +519,22 @@ fn cell_to_json(cell: &fluxdb_core::CellValue) -> serde_json::Value {
     }
 }
 
+/// 单次 AI 查询结束即释放后端会话。
+///
+/// AI 读取按设计 §21 是「每次有界独立事务」，不应把连接与未提交状态长期挂在注册表里：
+/// 既避免 AI 的临时表/事务残留污染后续调用，也避免 PostgreSQL 显式查询会话撞上硬上限。
+/// 用 RAII 保证提前返回（取消、策略拒绝、执行错误）也会关闭。
+struct AiSqlSessionGuard {
+    connection_id: fluxdb_core::ConnectionId,
+    session_id: fluxdb_core::QuerySessionId,
+}
+
+impl Drop for AiSqlSessionGuard {
+    fn drop(&mut self) {
+        fluxdb_connectors::pg_close_query_session(self.connection_id, self.session_id);
+    }
+}
+
 /// 复用既有 scope 执行链：单条语句、隔离会话、有界页、可取消。
 ///
 /// `read_only` 为 true 时先过 §21 分类器；分类不是 `ReadOnly` 直接拒绝。
@@ -600,7 +619,10 @@ fn execute_sql_with_parameters_and_progress(
         SqlExecError::new("connector_error", format!("无法创建连接器: {error}"))
     })?;
 
-    let bounded = sql_text_for_execution(sql, max_rows, config.kind);
+    // 取 max_rows+1：多取一行才能区分「结果正好这么多」与「被上限截断」，
+    // 否则主动追加的 LIMIT 会让 truncated 永远为 false，模型无法知道还有更多行（设计 §21.3）。
+    let fetch_rows = max_rows.saturating_add(1);
+    let bounded = sql_text_for_execution(sql, fetch_rows, config.kind);
     let request = fluxdb_core::QueryRequest {
         connection_id: target.connection_id,
         database: target.database.clone(),
@@ -612,10 +634,15 @@ fn execute_sql_with_parameters_and_progress(
             continue_on_error: false,
             split_statements: false,
             page_offset: 0,
-            page_size: max_rows,
+            page_size: fetch_rows,
         },
         // 每个 resolver 对应一个 Agent Turn 的专属会话，不借用编辑器 Tab。
         session_id: Some(resolver.query_session_id()),
+    };
+    // 本次调用结束（含提前返回）即释放该会话，避免状态残留与会话数累积。
+    let _session_guard = AiSqlSessionGuard {
+        connection_id: request.connection_id,
+        session_id: resolver.query_session_id(),
     };
 
     let started = Instant::now();

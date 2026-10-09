@@ -288,10 +288,11 @@ cargo test -p fluxdb-app --locked ai_permission   # 15 passed
   - 未验证：Windows/Linux（按 B 节平台分工由用户自行验收；附件安全读取在非 Unix 明确不可用）；原生系统文件选择对话框点选、IME/无障碍映射；真实第三方模型与真实 PG/MySQL 数据库。完整记录见 `docs/testing/ai-agent/t022-references-2026-10-09.md`。
 
 ### T023 元数据探索和显式 SQL 执行服务
-- [ ] 依赖：T019–T021；设计 §4、§20–21。
+- [x] 依赖：T019–T021；设计 §4、§20–21。
 - 改动：复用 Connector；从既有 scope query 方法提取独立服务，明确 QuerySessionId、history 与 source；不构造 GUI tab 执行后台任务。
 - 验收：搜索/描述/查询真实测试库；取消/进度正确；Agent 与编辑器临时表/事务不串；既有查询回归通过。
 - 测试方式：将上述每项验收分别落实为相关crate的测试断言；用隔离fixture/受控Provider验证正常与异常路径，涉及工具时核对真实回执及副作用调用数，不用伪造成功结果跳过执行链。
+- 验收记录（2026-10-09，macOS arm64）：真实 PostgreSQL 17 + MySQL 8（podman 隔离容器）跑通 `t023_*` 真库用例（搜索/描述/查询/取消/进度/会话隔离）；修复 AI 会话与编辑器标签撞号、AI 会话不释放、`truncated` 不反映主动 LIMIT 三个缺陷；`cargo test --workspace --locked` 通过。完整证据见 `docs/testing/ai-agent/t023-2026-10-09.md`。未验证：Windows/Linux、真实桌面窗口、真实第三方模型 tool calling。
 
 
 ### T024 SQL 只读保证、风险分类和修改执行

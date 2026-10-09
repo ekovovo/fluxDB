@@ -224,6 +224,7 @@ fn query_tool_rejects_pragma_writes_and_preserves_real_sqlite_state() {
                 iteration: 1,
                 call_id: format!("pragma-{pragma}"),
                 cancel: CancelFlag::new(),
+                progress: None,
             },
             serde_json::json!({
                 "target": "conn:1",

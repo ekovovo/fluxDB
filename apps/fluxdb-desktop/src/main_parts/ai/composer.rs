@@ -30,7 +30,6 @@ fn ai_chat_composer(
         && this.ai_chat._io.is_none();
     let input = this.ai_chat.input.clone();
     let send_shortcut = shortcut_display(AI_MESSAGE_SEND_SHORTCUT);
-    let input_hint = format!("Enter 换行，{send_shortcut} 发送");
     let panel_height = if this.ai_chat.panel_height > px(0.) {
         this.ai_chat.panel_height
     } else {
@@ -41,8 +40,8 @@ fn ai_chat_composer(
     } else {
         this.ai_chat.reference_height
     };
-    // 12px 正文使用组件 1.5 倍行高；为圆形操作按钮、快捷键提示和引用区预留布局空间。
-    let max_rows = ((f32::from(panel_height) * 0.5 - f32::from(reference_height) - 118.) / 18.)
+    // 12px 正文使用组件 1.5 倍行高；为发送按钮行和引用区预留布局空间。
+    let max_rows = ((f32::from(panel_height) * 0.5 - f32::from(reference_height) - 100.) / 18.)
         .floor()
         .max(2.) as usize;
     if max_rows != this.ai_chat.input_max_rows {
@@ -141,7 +140,7 @@ fn ai_chat_composer(
                                 .appearance(false)
                                 .text_size(px(12.))
                                 .min_h(px(0.))
-                                .aria_label(format!("AI 消息，{input_hint}")),
+                                .aria_label(format!("AI 消息，Enter 换行，{send_shortcut} 发送")),
                         )
                         .child(
                             div()
@@ -266,14 +265,6 @@ fn ai_chat_composer(
                                         }))
                                         .into_any_element()
                                 }),
-                        )
-                        .child(
-                            div()
-                                .debug_selector(|| "ai-chat-input-hint".into())
-                                .pt_1()
-                                .text_size(px(10.))
-                                .text_color(colors.muted)
-                                .child(input_hint),
                         ),
                 )
                 )

@@ -56,9 +56,9 @@ async fn check_composer_shortcut(cx: &mut TestAppContext, theme: ThemeMode) {
         let send = cx.debug_bounds("ai-chat-send").unwrap();
         assert_eq!(send.size.width, px(22.));
         assert_eq!(send.size.height, px(22.));
-        let hint = cx.debug_bounds("ai-chat-input-hint").unwrap();
-        assert!(hint.top() >= send.bottom());
-        assert!(hint.bottom() <= cx.debug_bounds("ai-chat-input").unwrap().bottom());
+        // 底部快捷键提示文案已移除；发送按钮仍留在输入区内。
+        assert!(cx.debug_bounds("ai-chat-input-hint").is_none());
+        assert!(send.bottom() <= cx.debug_bounds("ai-chat-input").unwrap().bottom());
         view.update(cx, |main, _| main.ai_chat.scripted_fixture = true);
         cx.simulate_keystrokes(composer_send_key());
         wait_idle(&view, cx);

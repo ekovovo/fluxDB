@@ -432,12 +432,12 @@ pub fn load_session(conn: &Connection, id: &str) -> Result<SessionView> {
     })
 }
 
-/// 最近会话列表（活跃优先，更新时间倒序）。
+/// 最近会话列表（更新时间倒序）。
 pub fn list_sessions(conn: &Connection, limit: i64) -> Result<Vec<SessionView>> {
     let mut stmt = conn
         .prepare(
             "SELECT id FROM ai_sessions
-              ORDER BY CASE status WHEN 'active' THEN 0 ELSE 1 END, updated_at_ms DESC, id
+              ORDER BY updated_at_ms DESC, id
               LIMIT ?1",
         )
         .map_err(sqlite_error)?;
@@ -452,7 +452,7 @@ pub fn list_sessions(conn: &Connection, limit: i64) -> Result<Vec<SessionView>> 
 /// 会话历史概览（设置页「会话历史」用）：一次查询取会话 + 派生统计。
 ///
 /// `last_turn_status` 取该会话最后一个 Turn 的状态，用于列表状态列；
-/// 没有 Turn 的会话为 `None`。排序与 [`list_sessions`] 一致（活跃优先、最近更新）。
+/// 没有 Turn 的会话为 `None`。排序与 [`list_sessions`] 一致（按更新时间倒序）。
 pub fn list_session_overviews(conn: &Connection, limit: i64) -> Result<Vec<SessionOverview>> {
     let mut stmt = conn
         .prepare(
@@ -465,8 +465,7 @@ pub fn list_session_overviews(conn: &Connection, limit: i64) -> Result<Vec<Sessi
                     (SELECT t.target_json FROM ai_turns t WHERE t.session_id=s.id
                       ORDER BY t.ordinal DESC LIMIT 1)
                FROM ai_sessions s
-              ORDER BY CASE s.status WHEN 'active' THEN 0 ELSE 1 END,
-                       s.updated_at_ms DESC, s.id
+              ORDER BY s.updated_at_ms DESC, s.id
               LIMIT ?1",
         )
         .map_err(sqlite_error)?;
@@ -568,15 +567,17 @@ pub fn rename_session_if_default(
     Ok(changed > 0)
 }
 
-/// 读取会话第一条用户消息的文本拼接（标题生成用）；无消息返回 `None`。
+/// 读取最早一条用户消息的文本拼接（标题生成用），不含后续追问；无文本返回 `None`。
 pub fn first_user_message_text(conn: &Connection, session_id: &str) -> Result<Option<String>> {
     let mut texts: Vec<String> = Vec::new();
     let mut stmt = conn
         .prepare(
             "SELECT p.payload_json FROM ai_message_parts p
-              JOIN ai_messages m ON m.id=p.message_id
-              WHERE m.session_id=?1 AND m.role='user' AND p.kind='text'
-              ORDER BY m.seq, p.id",
+              WHERE p.message_id=(
+                  SELECT id FROM ai_messages
+                   WHERE session_id=?1 AND role='user' ORDER BY seq LIMIT 1)
+                AND p.kind='text'
+              ORDER BY p.ordinal",
         )
         .map_err(sqlite_error)?;
     let mut rows = stmt

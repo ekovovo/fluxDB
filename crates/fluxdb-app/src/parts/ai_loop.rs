@@ -55,9 +55,6 @@ pub struct TurnPermissionContext {
     pub policy: KernelPolicy,
     /// 工具/插件摘要，参与 plan hash。
     pub plugin_digest: Option<String>,
-    /// 本轮目标连接的 SQL 方言；只用于审批卡的计划风险分类，
-    /// 不参与授权判定。Redis 连接为 `None`。
-    pub target_dialect: Option<SqlDialectKind>,
 }
 
 /// 主循环的领域事件；执行方将事实持久化，再投影成会话更新。
@@ -78,6 +75,11 @@ pub enum LoopEvent {
     },
     /// 工具真实回执。
     ToolFinished { receipt: fluxdb_core::ToolReceipt },
+    /// 工具执行中的有界进度摘要。
+    ToolProgress {
+        call_id: String,
+        progress: fluxdb_core::ToolProgressEvent,
+    },
     /// 需要用户审批：**不执行**、不产生工具回执，等审批决定后继续（设计 §25.3）。
     ApprovalRequired {
         call: fluxdb_core::ToolCallRequest,
@@ -484,16 +486,23 @@ impl<'a> TurnRunner<'a> {
                     // 4b) 需要审批：不执行、不回执，暂停等用户决定（审批绑定 plan_hash）。
                     PermissionDecision::RequireApproval { plan_hash, scope } => {
                         let reason = format!("工具 {} 需要审批后才能执行。", spec.id);
+                        // 审批展示事实由工具自己按入参给出（各自的分类器），默认按高风险兜底。
+                        let details = self
+                            .tools
+                            .executable(&call.tool_id)
+                            .map(|tool| tool.approval_details(&prepared.to_json_string()))
+                            .unwrap_or_else(|| fluxdb_core::ApprovalDetails {
+                                risk: fluxdb_core::ApprovalRisk::High,
+                                guardrails: vec!["计划风险尚未核实".to_string()],
+                                impact_basis: "未核实".to_string(),
+                                ..Default::default()
+                            });
                         emit(LoopEvent::ApprovalRequired {
                             call: call.clone(),
                             tool_version: spec.version,
                             plan_hash,
                             scope,
-                            details: approval_details_for(
-                                &spec.id,
-                                &prepared.to_json_string(),
-                                self.permission.target_dialect,
-                            ),
+                            details,
                         });
                         return TurnOutcome::Paused { reason };
                     }
@@ -519,12 +528,14 @@ impl<'a> TurnRunner<'a> {
                     plan_hash: hash.clone(),
                     tool_version: spec.version,
                 });
+                let progress_events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
                 let ctx = fluxdb_core::ToolExecutionContext {
                     session_id: state.session_id.clone(),
                     turn_id: state.turn_id.clone(),
                     iteration: iteration as i64,
                     call_id: call.provider_call_id.clone(),
                     cancel: cancel.clone(),
+                    progress: Some(progress_events.clone()),
                 };
                 let receipt = match block_on_ready(tool.execute(ctx, prepared.to_json_string())) {
                     Ok(Ok(receipt)) => receipt,
@@ -535,6 +546,16 @@ impl<'a> TurnRunner<'a> {
                         };
                     }
                 };
+                let progress = progress_events
+                    .lock()
+                    .map(|events| events.clone())
+                    .unwrap_or_default();
+                for event in progress {
+                    emit(LoopEvent::ToolProgress {
+                        call_id: call.provider_call_id.clone(),
+                        progress: event,
+                    });
+                }
                 emit(LoopEvent::ToolFinished {
                     receipt: receipt.clone(),
                 });

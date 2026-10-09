@@ -22,6 +22,7 @@ fn call(
             turn_id: "e2e-turn".into(),
             iteration: 1,
             call_id: format!("call-{tool_id}"),
+            progress: None,
             cancel: fluxdb_core::CancelFlag::new(),
         },
         prepared.to_json_string(),

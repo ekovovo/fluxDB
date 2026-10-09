@@ -3188,6 +3188,30 @@ SELECT item_id, name FROM audit_log;"
     }
 
     #[test]
+    fn pg_session_keys_separate_editor_tabs_from_host_managed_sessions() {
+        let config = postgres_config();
+        // 编辑器标签会把 TabId 直接当会话 ID（从 1 起）；AI/MCP 用宿主托管段。
+        // 两者必须映射到不同的后端会话键，否则同一连接上会互相看到临时表/事务。
+        let editor = pg_session_key_for(
+            &pg_query_request(&config, Some(QuerySessionId(1))),
+            "postgres",
+        );
+        let host_managed = pg_session_key_for(
+            &pg_query_request(&config, Some(QuerySessionId::host_managed(0))),
+            "postgres",
+        );
+        assert_ne!(editor, host_managed);
+        assert_eq!(
+            host_managed,
+            pg_session_key_for(
+                &pg_query_request(&config, Some(QuerySessionId::host_managed(0))),
+                "postgres",
+            ),
+            "同一宿主托管会话标识应稳定映射到同一后端会话"
+        );
+    }
+
+    #[test]
     fn pg_execute_empty_query_is_guard_failure() {
         let connector = PostgresConnector::with_config(postgres_config());
         let mut request = pg_query_request(&postgres_config(), None);

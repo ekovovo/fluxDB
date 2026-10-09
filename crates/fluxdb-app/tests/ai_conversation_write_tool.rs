@@ -226,7 +226,6 @@ fn assert_write_approval_executes_once(fixture: &Fixture, config: ConnectionConf
         agent_allowed_tools: Vec::new(),
         policy: kernel_policy_for_connection(Some(&config)),
         plugin_digest: None,
-        target_dialect: Some(fluxdb_app::SqlDialectKind::Sqlite),
     };
     let catalog = standard_sql_catalog(Arc::new(MapSqlResolver::new([config.clone()])), true)
         .expect("含写工具目录");
@@ -378,7 +377,6 @@ fn write_tool_is_denied_when_connection_policy_forbids_write() {
         agent_allowed_tools: Vec::new(),
         policy: KernelPolicy::default(),
         plugin_digest: None,
-        target_dialect: None,
     };
     assert!(!permission.policy.write_allowed);
     let catalog =
@@ -455,7 +453,6 @@ fn tool_target_outside_pinned_connection_is_rejected() {
         agent_allowed_tools: Vec::new(),
         policy: kernel_policy_for_connection(Some(&config)),
         plugin_digest: None,
-        target_dialect: None,
     };
     let cancel = CancelFlag::new();
     let (tx, rx) = std::sync::mpsc::sync_channel(16);

@@ -220,7 +220,6 @@ fn permission() -> TurnPermissionContext {
         agent_allowed_tools: Vec::new(),
         policy: KernelPolicy::default(),
         plugin_digest: None,
-        target_dialect: None,
     }
 }
 
@@ -893,6 +892,7 @@ mod file_references {
                     turn_id: job.turn_id.clone(),
                     iteration: 1,
                     call_id: "file-fixture-call".into(),
+                    progress: None,
                     cancel,
                 },
                 prepared.to_json_string(),

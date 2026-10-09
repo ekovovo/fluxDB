@@ -6,6 +6,9 @@
 // - **fail closed**：强制安全审计无法执行/无法落盘时，一律拒绝执行。
 // - `denied` / `unknown` 不是可重试错误（不能诱导模型换工具绕过）。
 
+use fluxdb_core::ApprovalDetails;
+use fluxdb_core::ApprovalRisk;
+
 /// 审批范围（写进审批行，供 UI 与执行前复核）。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ApprovalScope {
@@ -32,107 +35,27 @@ impl ApprovalScope {
     }
 }
 
-/// 审批卡要展示给用户的计划事实（设计 §31.9 第 3–5 项）。
+/// 由 SQL 内核分类生成 SQL 工具的审批展示事实。
 ///
-/// 展示规范化计划与风险分类的可见投影，不参与授权判定，也不能改写放行结果；
-/// 拿不到就留空，UI 相应显示"未知"，不编造行数或护栏。
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct ApprovalDetails {
-    /// 风险等级（高/中/低），由工具风险与命中的护栏共同决定。
-    pub risk: ApprovalRisk,
-    /// 规范化计划原文（SQL 全文或完整 Redis argv）。展示用，不参与 hash。
-    pub statements: Vec<String>,
-    /// 内核风险分类已核实的事实，不是用户可改的开关。
-    pub guardrails: Vec<String>,
-    /// 影响预估的依据；未实际查询时明确写未核实。
-    pub impact_basis: String,
-    /// 已核实的预计影响行数；`None` = 未核实。
-    pub estimated_rows: Option<i64>,
-}
-
-/// 审批卡的风险等级。
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum ApprovalRisk {
-    #[default]
-    Medium,
-    High,
-    Low,
-}
-
-impl ApprovalRisk {
-    pub fn to_json(self) -> &'static str {
-        match self {
-            ApprovalRisk::High => "high",
-            ApprovalRisk::Medium => "medium",
-            ApprovalRisk::Low => "low",
-        }
-    }
-}
-
-impl ApprovalDetails {
-    pub fn to_json(&self) -> String {
-        serde_json::json!({
-            "risk": self.risk.to_json(),
-            "statements": self.statements,
-            "guardrails": self.guardrails,
-            "impact_basis": self.impact_basis,
-            "estimated_rows": self.estimated_rows,
-        })
-        .to_string()
-    }
-}
-
-/// 从规范化参数取计划预览；Redis 保留 argv 的参数边界，不拼成可执行命令文本。
-fn approval_statements(tool_id: &str, normalized_arguments_json: &str) -> Vec<String> {
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(normalized_arguments_json) else {
-        return Vec::new();
-    };
-    match tool_id {
-        "db.execute" | "db.query" | "db.explain" => value
-            .get("sql")
-            .and_then(serde_json::Value::as_str)
-            .map(|sql| vec![sql.to_string()])
-            .unwrap_or_default(),
-        "redis.execute" => value
-            .get("argv")
-            .and_then(serde_json::Value::as_array)
-            .filter(|argv| argv.iter().all(serde_json::Value::is_string))
-            .map(|argv| vec![serde_json::to_string_pretty(argv).unwrap_or_default()])
-            .unwrap_or_default(),
-        _ => Vec::new(),
-    }
-}
-
-/// 复用内核风险分类生成展示事实；未实现的 WHERE/行数上限不冒充已生效的护栏。
-pub fn approval_details_for(
-    tool_id: &str,
-    normalized_arguments_json: &str,
-    dialect: Option<SqlDialectKind>,
-) -> ApprovalDetails {
-    let statements = approval_statements(tool_id, normalized_arguments_json);
-    let (guardrails, risk) = match (tool_id, dialect) {
-        ("db.execute" | "db.query" | "db.explain", Some(dialect)) => {
-            let sql = statements.first().map(String::as_str).unwrap_or_default();
-            sql_approval_guardrails(&analyze_sql(sql, dialect))
-        }
-        ("redis.execute", _) => {
-            let argv = serde_json::from_str::<serde_json::Value>(normalized_arguments_json)
-                .ok()
-                .and_then(|value| value["argv"].as_array().cloned())
-                .unwrap_or_default()
-                .iter()
-                .filter_map(serde_json::Value::as_str)
-                .map(str::to_owned)
-                .collect::<Vec<_>>();
-            redis_approval_guardrails(&classify_redis_command(&argv))
-        }
-        _ => (vec!["计划风险尚未核实".to_string()], ApprovalRisk::High),
-    };
+/// 只作为展示投影，不参与授权判定；行数未实际查询前明确写"未核实"。
+pub fn sql_approval_details(sql: &str, dialect: SqlDialectKind) -> ApprovalDetails {
+    let (guardrails, risk) = sql_approval_guardrails(&analyze_sql(sql, dialect));
     ApprovalDetails {
         risk,
-        statements,
+        statements: vec![sql.to_string()],
         guardrails,
-        // 影响行数需要真实 SELECT COUNT 核实；未核实就明确写"未核实"，不编造行数。
+        impact_basis: "未核实".to_string(),
+        estimated_rows: None,
+    }
+}
+
+/// 由 Redis 内核分类生成 Redis 执行工具的审批展示事实。
+pub fn redis_approval_details(argv: &[String]) -> ApprovalDetails {
+    let (guardrails, risk) = redis_approval_guardrails(&classify_redis_command(argv));
+    ApprovalDetails {
+        risk,
+        statements: vec![serde_json::to_string_pretty(argv).unwrap_or_default()],
+        guardrails,
         impact_basis: "未核实".to_string(),
         estimated_rows: None,
     }

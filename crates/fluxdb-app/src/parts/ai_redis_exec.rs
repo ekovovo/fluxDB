@@ -172,6 +172,11 @@ impl<R: SqlExecutionResolver + 'static> fluxdb_core::AiTool for AiRedisScanTool<
                     row_count: 1,
                     truncated: false,
                     elapsed_ms: 0,
+                    query_session_id: resolver.query_session_id(),
+                    source: fluxdb_core::CommandExecutionSource::Ai,
+                    original_sql: String::new(),
+                    executed_sql: String::new(),
+                    progress: Vec::new(),
                     affected_rows: None,
                     statement_kind: "redis_scan",
                 })
@@ -248,6 +253,11 @@ impl<R: SqlExecutionResolver + 'static> fluxdb_core::AiTool for AiRedisInspectTo
                     row_count: 1,
                     truncated: false,
                     elapsed_ms: 0,
+                    query_session_id: resolver.query_session_id(),
+                    source: fluxdb_core::CommandExecutionSource::Ai,
+                    original_sql: String::new(),
+                    executed_sql: String::new(),
+                    progress: Vec::new(),
                     affected_rows: None,
                     statement_kind: "redis_inspect",
                 })
@@ -344,6 +354,11 @@ impl<R: SqlExecutionResolver + 'static> fluxdb_core::AiTool for AiRedisServerInf
                     row_count: 1,
                     truncated,
                     elapsed_ms: 0,
+                    query_session_id: resolver.query_session_id(),
+                    source: fluxdb_core::CommandExecutionSource::Ai,
+                    original_sql: String::new(),
+                    executed_sql: String::new(),
+                    progress: Vec::new(),
                     affected_rows: None,
                     statement_kind: "redis_server_info",
                 })
@@ -372,6 +387,17 @@ impl<R: SqlExecutionResolver> AiRedisExecuteTool<R> {
 impl<R: SqlExecutionResolver + 'static> fluxdb_core::AiTool for AiRedisExecuteTool<R> {
     fn descriptor(&self) -> &fluxdb_core::ToolDescriptor {
         &self.descriptor
+    }
+
+    fn approval_details(&self, arguments_json: &str) -> fluxdb_core::ApprovalDetails {
+        let argv = serde_json::from_str::<serde_json::Value>(arguments_json)
+            .ok()
+            .and_then(|value| value["argv"].as_array().cloned())
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|item| item.as_str().map(str::to_owned))
+            .collect::<Vec<_>>();
+        crate::redis_approval_details(&argv)
     }
 
     fn execute(
@@ -432,6 +458,11 @@ impl<R: SqlExecutionResolver + 'static> fluxdb_core::AiTool for AiRedisExecuteTo
                     row_count: 1,
                     truncated: false,
                     elapsed_ms: 0,
+                    query_session_id: resolver.query_session_id(),
+                    source: fluxdb_core::CommandExecutionSource::Ai,
+                    original_sql: String::new(),
+                    executed_sql: String::new(),
+                    progress: Vec::new(),
                     affected_rows: None,
                     statement_kind: "redis_execute",
                 })

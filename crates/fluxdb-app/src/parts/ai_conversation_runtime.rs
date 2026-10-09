@@ -47,7 +47,6 @@ impl AiRuntimeHandle {
                         agent_allowed_tools,
                         policy: kernel_policy_for_connection(pinned.as_ref()),
                         plugin_digest: None,
-                        target_dialect: pinned.as_ref().and_then(|config| dialect_for(config.kind)),
                     };
                     Ok::<_, fluxdb_core::Error>((provider, tools, permission))
                 })();

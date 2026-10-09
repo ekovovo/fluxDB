@@ -83,6 +83,8 @@ pub enum CommandExecutionSource {
     HistoryRerun,
     /// 从 Key 快捷操作预填后执行。
     KeyShortcut,
+    /// Agent 的受控数据库工具执行。
+    Ai,
 }
 
 /// 一次完整执行的产物，包含命令列表、summary 与耗时。

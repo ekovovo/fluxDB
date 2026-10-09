@@ -841,6 +841,7 @@ fn saved_query_and_captured_reference_details_are_bounded_and_scoped() {
                     turn_id: job.turn_id.clone(),
                     iteration: 1,
                     call_id: "context-read".into(),
+                    progress: None,
                     cancel: fluxdb_core::CancelFlag::new(),
                 },
                 args,
@@ -864,6 +865,7 @@ fn saved_query_and_captured_reference_details_are_bounded_and_scoped() {
                 turn_id: job.turn_id.clone(),
                 iteration: 1,
                 call_id: "unauthorized".into(),
+                progress: None,
                 cancel: fluxdb_core::CancelFlag::new(),
             },
             r#"{"reference_id":"not-selected"}"#.into(),
@@ -1069,7 +1071,6 @@ fn explicit_reference_never_grants_write_or_bypasses_approval() {
             TurnPermissionContext {
                 agent_allowed_tools: vec!["db.execute".into()],
                 policy: kernel_policy_for_connection(Some(&config)),
-                target_dialect: Some(fluxdb_app::SqlDialectKind::Sqlite),
                 plugin_digest: None,
             },
         );

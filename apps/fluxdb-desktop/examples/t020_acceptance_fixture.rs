@@ -199,13 +199,12 @@ fn seed_approval_session(
                 "approval_id": approval_id,
                 "plan_hash": plan_hash,
                 "approval_revision": approval.revision,
-                // 与生产 approval_details_for 输出一致，卡片各区块才有真实内容可验。
+                // 与生产 SQL 审批展示一致，卡片各区块才有真实内容可验。
                 "details": serde_json::from_str::<serde_json::Value>(
-                    &fluxdb_app::approval_details_for(
-                        "db.execute",
-                        r#"{"sql":"UPDATE orders SET status='paid' WHERE id=1"}"#,
-                        Some(fluxdb_app::SqlDialectKind::Sqlite),
-                    ).to_json()
+                    &serde_json::to_string(&fluxdb_app::sql_approval_details(
+                        "UPDATE orders SET status='paid' WHERE id=1",
+                        fluxdb_app::SqlDialectKind::Sqlite,
+                    )).unwrap()
                 ).unwrap(),
             });
             if let Some(decision) = decision {

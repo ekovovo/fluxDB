@@ -355,6 +355,7 @@ fn ai_conversation_run_turn(
                         part_error.get_or_insert_with(|| error.message.clone());
                     }
                 }
+                LoopEvent::ToolProgress { .. } => {}
                 LoopEvent::Notice(notice) => {
                     let payload =
                         serde_json::json!({"text":notice,"text_offset":text.len()}).to_string();
@@ -389,7 +390,7 @@ fn ai_conversation_run_turn(
                         tool_version,
                         &plan_hash,
                         &scope.to_json(),
-                        &details.to_json(),
+                        &serde_json::to_string(&details).unwrap_or_default(),
                         &target_json_for_parts,
                         text.len(),
                     );
@@ -669,6 +670,7 @@ fn resume_ai_approved_turn(
         turn_id: job.turn_id.clone(),
         iteration: 1,
         call_id: call.provider_call_id.clone(),
+        progress: None,
         cancel: cancel.clone(),
     };
     let receipt = match block_on_ready(tool.execute(ctx, prepared.to_json_string())) {

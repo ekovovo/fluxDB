@@ -41,7 +41,6 @@ mod ai_loop_test_support {
                 agent_allowed_tools: Vec::new(),
                 policy: KernelPolicy::default(),
                 plugin_digest: None,
-                target_dialect: None,
             },
             audit: &audit,
         };

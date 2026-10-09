@@ -115,7 +115,6 @@ fn permission() -> TurnPermissionContext {
         agent_allowed_tools: Vec::new(),
         policy: KernelPolicy::default(),
         plugin_digest: None,
-        target_dialect: None,
     }
 }
 

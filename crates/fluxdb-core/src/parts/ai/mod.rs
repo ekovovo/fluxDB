@@ -232,6 +232,15 @@ pub enum ToolReceiptStatus {
     Unknown,
 }
 
+/// 工具进度摘要（由 Connector/工具产生；不携带 SQL 参数或凭据）。
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ToolProgressEvent {
+    pub returned_rows: u64,
+    pub affected_rows: u64,
+    pub elapsed_ms: u64,
+    pub success: bool,
+}
+
 /// 工具执行上下文（由运行时提供；工具自身不接触 UI/SQLite 锁）。
 #[derive(Clone, Debug)]
 pub struct ToolExecutionContext {
@@ -242,6 +251,8 @@ pub struct ToolExecutionContext {
     pub call_id: String,
     /// 本轮 Turn 的取消标志；会阻塞/批量的工具必须在检查点轮询它并尽快收尾。
     pub cancel: CancelFlag,
+    /// 工具向运行时报告阶段性摘要。
+    pub progress: Option<Arc<std::sync::Mutex<Vec<ToolProgressEvent>>>>,
 }
 
 /// 决策（Jev）请求：只在需要做选择/排序/分类时调用，不参与主模型 tool calling。
@@ -282,6 +293,34 @@ pub trait DecisionProvider: Send + Sync {
     ) -> AiFuture<'_, DecisionResponse>;
 }
 
+/// 审批卡的风险等级。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalRisk {
+    #[default]
+    Medium,
+    High,
+    Low,
+}
+
+/// 审批卡要展示给用户的计划事实（设计 §31.9 第 3–5 项）。
+///
+/// 展示规范化计划与风险分类的可见投影，不参与授权判定，也不能改写放行结果；
+/// 拿不到就留空，UI 相应显示"未知"，不编造行数或护栏。
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ApprovalDetails {
+    /// 风险等级（高/中/低），由工具风险与命中的护栏共同决定。
+    pub risk: ApprovalRisk,
+    /// 规范化计划原文（SQL 全文或完整 Redis argv）。展示用，不参与 hash。
+    pub statements: Vec<String>,
+    /// 内核风险分类已核实的事实，不是用户可改的开关。
+    pub guardrails: Vec<String>,
+    /// 影响预估的依据；未实际查询时明确写未核实。
+    pub impact_basis: String,
+    /// 已核实的预计影响行数；`None` = 未核实。
+    pub estimated_rows: Option<i64>,
+}
+
 /// 工具能力。
 pub trait AiTool: Send + Sync {
     fn descriptor(&self) -> &ToolDescriptor;
@@ -291,6 +330,18 @@ pub trait AiTool: Send + Sync {
         ctx: ToolExecutionContext,
         arguments_json: String,
     ) -> AiFuture<'_, ToolReceipt>;
+
+    /// 给审批卡提供展示事实；默认按未核实高风险处理，需要细分的工具各自覆盖。
+    ///
+    /// 只作为展示投影，不参与授权判定：即使这里给低风险，也拦不住 `authorize`
+    /// 对写操作强制逐次审批。未覆盖或拿不到判定依据时保持默认高风险，不做安全预设。
+    fn approval_details(&self, _arguments_json: &str) -> ApprovalDetails {
+        ApprovalDetails {
+            risk: ApprovalRisk::High,
+            guardrails: vec!["计划风险尚未核实".to_string()],
+            ..Default::default()
+        }
+    }
 }
 
 impl std::fmt::Display for ToolRisk {

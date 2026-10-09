@@ -248,6 +248,18 @@ fn t023_postgres_metadata_query_cancel_and_session_isolation() {
         !outcome.progress.is_empty(),
         "真实 Connector 应产生进度摘要"
     );
+
+    // 4) 跨 schema 作用域：分类器允许只读形态，但显式越界必须在执行前 fail closed。
+    let cross_schema = execute_sql(
+        &resolver,
+        &target,
+        "SELECT table_name FROM information_schema.tables",
+        1,
+        true,
+        &|| false,
+    )
+    .expect_err("target schema 之外的显式引用不得执行");
+    assert_eq!(cross_schema.code, "scope_mismatch");
     assert_eq!(outcome.executed_sql.contains("LIMIT"), true);
 
     // 4) 进度事件通道：真实 Connector summary 进入 ToolExecutionContext.progress。
@@ -264,14 +276,21 @@ fn t023_postgres_metadata_query_cancel_and_session_isolation() {
             cancel: fluxdb_core::CancelFlag::new(),
         },
         serde_json::json!({
-            "target": format!("conn:{}/db:{}", config.id.0, database),
+            "target": format!(
+                "conn:{}/db:{}/schema:fluxdb_ai_smoke",
+                config.id.0, database
+            ),
             "sql": "SELECT id FROM fluxdb_ai_smoke.orders ORDER BY id",
             "max_rows": 10
         })
         .to_string(),
     ))
     .expect("工具调用");
-    assert_eq!(receipt.status, fluxdb_core::ToolReceiptStatus::Succeeded);
+    assert_eq!(
+        receipt.status,
+        fluxdb_core::ToolReceiptStatus::Succeeded,
+        "真实 PG 只读查询失败：{receipt:?}"
+    );
     let progress = events.lock().expect("进度锁");
     assert!(
         progress.iter().any(|event| event.success && event.returned_rows > 0),
@@ -292,7 +311,10 @@ fn t023_postgres_metadata_query_cancel_and_session_isolation() {
             cancel,
         },
         serde_json::json!({
-            "target": format!("conn:{}/db:{}", config.id.0, database),
+            "target": format!(
+                "conn:{}/db:{}/schema:fluxdb_ai_smoke",
+                config.id.0, database
+            ),
             "sql": "SELECT id FROM fluxdb_ai_smoke.orders"
         })
         .to_string(),
@@ -398,6 +420,18 @@ fn t023_mysql_metadata_query_cancel_and_session_isolation() {
     assert!(outcome.truncated);
     assert!(outcome.query_session_id.is_host_managed());
     assert!(!outcome.progress.is_empty(), "真实 Connector 应产生进度摘要");
+
+    // 跨 database 作用域：即使账号有权限，也不允许 SQL 显式限定越过固定 target。
+    let cross_database = execute_sql(
+        &resolver,
+        &target,
+        "SELECT table_name FROM information_schema.tables",
+        1,
+        true,
+        &|| false,
+    )
+    .expect_err("target database 之外的显式引用不得执行");
+    assert_eq!(cross_database.code, "scope_mismatch");
 
     let cancel = fluxdb_core::CancelFlag::new();
     cancel.request();

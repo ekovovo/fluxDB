@@ -614,6 +614,7 @@ fn execute_sql_with_parameters_and_progress(
             format!("只读入口拒绝该语句（{}）", risk.reasons().join(",")),
         ));
     }
+    validate_sql_scope(sql, dialect, target)?;
 
     let connector = fluxdb_connectors::connector_for(&config).map_err(|error| {
         SqlExecError::new("connector_error", format!("无法创建连接器: {error}"))
@@ -729,6 +730,87 @@ fn execute_sql_with_parameters_and_progress(
         &bounded,
         progress,
     ))
+}
+
+/// 校验 SQL 内显式 database/schema 限定名不越过 target 作用域。
+///
+/// 裸名由请求携带的默认 database/schema 解析；显式同名限定允许，显式越界 fail closed。
+fn validate_sql_scope(
+    sql: &str,
+    dialect: SqlDialectKind,
+    target: &AiSqlTarget,
+) -> Result<(), SqlExecError> {
+    use sqlparser::ast::{ObjectName, ObjectNamePart, visit_expressions, visit_relations};
+    use std::ops::ControlFlow;
+
+    let statements = sqlparser::parser::Parser::parse_sql(dialect.parser_dialect().as_ref(), sql)
+        .map_err(|_| SqlExecError::new("unknown_syntax", "SQL 无法解析，无法校验作用域"))?;
+    if statements.len() != 1 {
+        return Err(SqlExecError::new(
+            "rejected_sql",
+            format!("多语句无法校验作用域（{} 条）", statements.len()),
+        ));
+    }
+    let statement = &statements[0];
+    let allowed_namespace = match dialect {
+        SqlDialectKind::MySql => target.database.as_deref(),
+        SqlDialectKind::Sqlite => target.database.as_deref().or(Some("main")),
+        SqlDialectKind::Postgres => target.schema.as_deref(),
+    };
+    let namespace_kind = if dialect == SqlDialectKind::MySql {
+        "database"
+    } else {
+        if dialect == SqlDialectKind::Sqlite {
+            "attached database"
+        } else {
+            "schema"
+        }
+    };
+    let out_of_scope = |name: &ObjectName, kind: &str| -> ControlFlow<()> {
+        // 裸名按请求默认 namespace 解析；从两段限定名开始检查倒数第二段。
+        if name.0.len() < 2 {
+            return ControlFlow::Continue(());
+        }
+        let qualifier = name.0.get(name.0.len() - 2);
+        let Some(Some(qualifier)) = qualifier.map(|part| match part {
+            ObjectNamePart::Identifier(ident) => Some(ident.value.as_str()),
+            ObjectNamePart::Function(_) => None,
+        }) else {
+            return ControlFlow::Break(());
+        };
+        if allowed_namespace.is_some_and(|allowed| qualifier.eq_ignore_ascii_case(allowed)) {
+            ControlFlow::Continue(())
+        } else {
+            tracing::warn!(
+                target: "fluxdb_app",
+                kind,
+                namespace_kind,
+                "AI SQL 显式对象限定名超出 target 作用域"
+            );
+            ControlFlow::Break(())
+        }
+    };
+    if visit_relations(statement, |name| out_of_scope(name, "relation")).is_break() {
+        return Err(SqlExecError::new(
+            "scope_mismatch",
+            "SQL 引用的 database/schema 超出当前 target 作用域",
+        ));
+    }
+    if visit_expressions(statement, |expr| {
+        if let sqlparser::ast::Expr::Function(function) = expr {
+            out_of_scope(&function.name, "function")
+        } else {
+            ControlFlow::Continue(())
+        }
+    })
+    .is_break()
+    {
+        return Err(SqlExecError::new(
+            "scope_mismatch",
+            "SQL 调用的函数所在 database/schema 超出当前 target 作用域",
+        ));
+    }
+    Ok(())
 }
 
 /// 把连接器结果投影成有界 JSON：行数/字节双上限，超限只标记 truncated。

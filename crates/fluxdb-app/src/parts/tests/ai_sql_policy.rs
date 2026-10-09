@@ -237,6 +237,27 @@ fn ai_sql_policy_cross_schema_reference_remains_read_only_in_classifier() {
 }
 
 #[test]
+fn ai_sql_policy_unknown_functions_require_authorization() {
+    for sql in [
+        "SELECT process_data()",
+        "SELECT custom_calc(total) FROM orders",
+        "SELECT * FROM orders WHERE unknown_guard(id)",
+    ] {
+        let reasons = ai_sql_policy_assert_requires(sql, SqlDialectKind::Postgres);
+        ai_sql_policy_assert_reason_contains(&reasons, "unknown_function");
+    }
+
+    // 常见纯函数仍可用，避免白名单把普通只读报表全部推入审批。
+    assert_eq!(
+        analyze_sql(
+            "SELECT count(*), upper(name) FROM orders WHERE coalesce(note, '') <> ''",
+            SqlDialectKind::Postgres
+        ),
+        SqlRisk::ReadOnly
+    );
+}
+
+#[test]
 fn ai_sql_policy_route_matches_analysis() {
     for (sql, dialect, expected_tool) in [
         ("SELECT * FROM orders", SqlDialectKind::Postgres, "db.query"),

@@ -113,6 +113,19 @@ const TRANSACTION_MARKERS: &[&str] = &[
     "set ",
 ];
 
+/// 可在只读入口自动执行的已知纯函数（不承诺覆盖所有方言函数）。
+///
+/// 不在集合内的函数统一需授权：宿主不能证明用户定义/扩展函数没有副作用、
+/// 文件访问、锁、通知或消耗型序列读取，宁可拒绝自动执行。
+const PURE_FUNCTION_NAMES: &[&str] = &[
+    "abs", "sign", "ceil", "ceiling", "floor", "round", "trunc", "mod", "power", "pow", "sqrt",
+    "exp", "ln", "log", "greatest", "least", "coalesce", "nullif", "length", "char_length",
+    "character_length", "lower", "upper", "trim", "btrim", "ltrim", "rtrim", "substring",
+    "substr", "concat", "replace", "left", "right", "lpad", "rpad", "position", "strpos",
+    "ascii", "chr", "hex", "md5", "count", "sum", "min", "max", "avg", "bool_and", "bool_or",
+    "now", "current_date", "current_timestamp", "date_trunc", "date_part", "to_regclass",
+];
+
 /// 分析一条 SQL。
 pub fn analyze_sql(sql: &str, dialect: SqlDialectKind) -> SqlRisk {
     let trimmed = sql.trim();
@@ -208,6 +221,22 @@ pub fn analyze_sql(sql: &str, dialect: SqlDialectKind) -> SqlRisk {
     };
     if let Some(marker) = marker {
         reasons.push(format!("side_effect_marker:{marker}"));
+    }
+    // 未知函数不能凭名字猜安全：不在纯函数集合内就降级为需授权。
+    if sqlparser::ast::visit_expressions(statement, |expr| {
+        if let sqlparser::ast::Expr::Function(function) = expr
+            && let Some(name) = function.name.0.last().and_then(|part| part.as_ident())
+            && !PURE_FUNCTION_NAMES
+                .iter()
+                .any(|pure| name.value.eq_ignore_ascii_case(pure))
+        {
+            return std::ops::ControlFlow::Break(name.value.to_ascii_lowercase());
+        }
+        std::ops::ControlFlow::Continue(())
+    })
+    .is_break()
+    {
+        reasons.push("unknown_function".into());
     }
 
     if reasons.is_empty() {

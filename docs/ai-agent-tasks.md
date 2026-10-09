@@ -296,12 +296,13 @@ cargo test -p fluxdb-app --locked ai_permission   # 15 passed
 
 
 ### T024 SQL 只读保证、风险分类和修改执行
-- 2026-10-06（B）：参数绑定实现 MySQL 真 bind + tagged 参数校验（PG/SQLite 仍明确拒绝）；真实 MySQL 验收见 `docs/testing/ai-agent/t024-param-binding-2026-10-06.md`。PG/SQLite 绑定与占位符方言转换未完成，T024 保持未勾选。
+- 2026-10-06（B）：参数绑定实现 MySQL 真 bind + tagged 参数校验（PG/SQLite 仍明确拒绝）；真实 MySQL 验收见 `docs/testing/ai-agent/t024-param-binding-2026-10-06.md`。当时 PG/SQLite 绑定与占位符方言转换未完成，因此保持未勾选。
 - 2026-10-06：② 注册写工具 `db.execute`（写权限取固定目标连接只读标记 + 逐次审批；计划哈希改为规范化 JSON；拒绝补事实行）已完成并有 app 集成与真实窗口验收记录：`docs/testing/ai-agent/t024-write-tool-2026-10-06.md`；真实 MySQL/PostgreSQL 写入属 ③，未做，保持未勾选。
-- [ ] 依赖：T023；设计 §21。
+- [x] 依赖：T023；设计 §21。
 - 改动：对应 dialect AST、服务端读取策略、db.query/db.execute/db.explain、批量计划/审批。
 - 验收：WITH 修改、SELECT INTO、副作用函数、EXPLAIN ANALYZE、锁语句、未知语法、跨 schema；E05；不能保证的数据库明确降为需授权风险，不宣称安全读取。
 - 测试方式：将上述每项验收分别落实为相关crate的测试断言；用隔离fixture/受控Provider验证正常与异常路径，涉及工具时核对真实回执及副作用调用数，不用伪造成功结果跳过执行链。
+- 验收记录（2026-10-10，macOS arm64）：WITH 修改、SELECT INTO、副作用函数、未知函数、EXPLAIN ANALYZE、锁语句、未知语法逐项分类并拒绝自动只读；新增 PG/MySQL/SQLite 作用域校验，跨 schema/database/attached database 和越界函数执行前 `scope_mismatch`。E05 通过生产链路验证拒绝不变、载荷漂移失效、批准只执行一次；真实 PG/MySQL 写入回执、回读和副作用计数一致。PG/SQLite 参数仍明确 `parameters_unsupported`，不插值、不宣称安全自动读取。`cargo test --workspace --locked --offline` 通过；完整记录见 `docs/testing/ai-agent/t024-close-2026-10-10.md`。未验证：Windows/Linux、真实桌面窗口本轮回归（既有真实窗口写审批证据见 2026-10-06 记录）。
 
 
 - 2026-10-06（A）：真实模型 + 真实 MySQL 端到端（含 parameters 绑定）通过，见 `docs/testing/ai-agent/t024-live-mysql-e2e-2026-10-06.md`。

@@ -134,6 +134,91 @@ fn ai_sql_exec_unknown_connection_is_a_controlled_error() {
 }
 
 #[test]
+fn ai_sql_exec_sql_scope_rejects_cross_schema_tables_and_functions() {
+    // 作用域解析必须跟随目标连接方言：PG 看 schema，MySQL/SQLite 看 database。
+    let mut pg_config = ai_sql_exec_demo_config(1);
+    pg_config.kind = DatabaseKind::Postgres;
+    let mut mysql_config = ai_sql_exec_demo_config(1);
+    mysql_config.kind = DatabaseKind::MySql;
+    let pg_resolver = MapSqlResolver::new([pg_config]);
+    let mysql_resolver = MapSqlResolver::new([mysql_config]);
+    let sqlite_resolver = MapSqlResolver::new([ai_sql_exec_demo_config(1)]);
+
+    // PostgreSQL：target schema 是硬边界；裸名走默认 schema，同名限定可用。
+    let pg_target = AiSqlTarget::parse("conn:1/schema:sales").expect("PG target");
+    execute_sql(
+        &pg_resolver,
+        &pg_target,
+        "SELECT count(*) FROM sales.orders",
+        10,
+        true,
+        &|| false,
+    )
+    .expect("同名 schema 限定应保留在作用域内");
+    for sql in [
+        "SELECT * FROM audit.orders",
+    ] {
+        let error = execute_sql(&pg_resolver, &pg_target, sql, 10, true, &|| false)
+            .expect_err("越界 schema 必须 fail closed");
+        assert_eq!(error.code, "scope_mismatch", "sql={sql}");
+    }
+    // 未知函数先被风险分类降级；写路径单独验证作用域仍会拦截。
+    let cross_function = "SELECT audit.risk_function()";
+    let error = execute_sql(&pg_resolver, &pg_target, cross_function, 10, false, &|| false)
+        .expect_err("越界函数必须 fail closed");
+    assert_eq!(error.code, "scope_mismatch");
+    // 写路径也一样；这里绕过只读分类器，单独证明作用域校验仍会拦截 CTE 修改。
+    let modifying_cte = "WITH d AS (DELETE FROM audit.orders RETURNING id) SELECT * FROM d";
+    let error = execute_sql(&pg_resolver, &pg_target, modifying_cte, 10, false, &|| false)
+        .expect_err("越界 schema 的写路径也必须 fail closed");
+    assert_eq!(error.code, "scope_mismatch");
+
+    // MySQL：database 就是 namespace，同样不允许借 SQL 显式限定越过 target。
+    let mysql_target = AiSqlTarget::parse("conn:1/db:sales").expect("MySQL target");
+    execute_sql(
+        &mysql_resolver,
+        &mysql_target,
+        "SELECT * FROM sales.orders",
+        10,
+        true,
+        &|| false,
+    )
+    .expect("同名 database 限定应保留在作用域内");
+    let error = execute_sql(
+        &mysql_resolver,
+        &mysql_target,
+        "SELECT * FROM audit.orders",
+        10,
+        true,
+        &|| false,
+    )
+    .expect_err("越界 database 必须 fail closed");
+    assert_eq!(error.code, "scope_mismatch");
+
+    // SQLite：attached database 是显式 namespace；target 未指定时默认仅 main。
+    let sqlite_target = AiSqlTarget::parse("conn:1/db:main").expect("SQLite target");
+    execute_sql(
+        &sqlite_resolver,
+        &sqlite_target,
+        "SELECT * FROM main.orders",
+        10,
+        true,
+        &|| false,
+    )
+    .expect("默认 attached database 的同名限定应放行");
+    let error = execute_sql(
+        &sqlite_resolver,
+        &sqlite_target,
+        "SELECT * FROM other.orders",
+        10,
+        true,
+        &|| false,
+    )
+    .expect_err("越界 attached database 必须 fail closed");
+    assert_eq!(error.code, "scope_mismatch");
+}
+
+#[test]
 fn ai_sql_exec_query_tool_rejects_parameters_until_connector_bind_exists() {
     let resolver = Arc::new(MapSqlResolver::new([ai_sql_exec_demo_config(1)]));
     let tool = AiSqlReadTool::query(resolver).expect("db.query 工具");

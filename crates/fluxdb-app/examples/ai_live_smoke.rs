@@ -9,7 +9,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("需要显式设置 FLUXDB_AI_LIVE=1（真实请求，会计费）".into());
     }
     let want = std::env::var("FLUXDB_AI_LIVE_MODEL").unwrap_or_else(|_| "公司自建".to_string());
-    let storage = fluxdb_storage::FileStorage::try_default()?;
+    let storage = match std::env::var_os("FLUXDB_AI_LIVE_ROOT") {
+        Some(root) => fluxdb_storage::FileStorage::new(std::path::PathBuf::from(root)),
+        None => fluxdb_storage::FileStorage::try_default()?,
+    };
     let model_id = storage.with_ai_connection(|conn| {
         let models = fluxdb_storage::ai_platform::models::list_models_page(conn, 200, 0)?;
         models

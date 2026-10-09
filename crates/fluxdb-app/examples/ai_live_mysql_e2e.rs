@@ -88,6 +88,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     run(&format!(
         "INSERT INTO {DB}.orders (id, status, amount) VALUES (1,'pending',100.50),(2,'paid',250.00)"
     ))?;
+    run(&format!(
+        "CREATE TABLE IF NOT EXISTS {DB}.write_audit(id BIGINT)"
+    ))?;
+    run(&format!("TRUNCATE TABLE {DB}.write_audit"))?;
+    run(&format!("DROP TRIGGER IF EXISTS {DB}.track_write"))?;
+    run(&format!(
+        "CREATE TRIGGER {DB}.track_write AFTER UPDATE ON {DB}.orders FOR EACH ROW INSERT INTO {DB}.write_audit VALUES(NEW.id)"
+    ))?;
     let before = rows("SELECT id, status FROM orders ORDER BY id")?;
     println!("   写入前: {before:?}");
 
@@ -168,6 +176,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         permission.clone(),
     );
     let view = drain(&rx);
+    if !calls(&storage, &job.turn_id).iter().any(|call| {
+        call.tool_id == "db.query" && call.status == "succeeded" && call.receipt_json.is_some()
+    }) {
+        return Err("模型没有成功执行真实读取工具".into());
+    }
     for call in calls(&storage, &job.turn_id) {
         println!(
             "   call tool={} status={} receipt={}",
@@ -184,14 +197,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("   模型回答: {:?}", assistant_text(&view));
 
     println!("③ 真实模型写回合（db.execute + parameters → 审批）");
-    let job2 = controller.prepare_ai_conversation_context(
-        &format!(
-            "请用 db.execute 把 {DB}.orders 里 id=1 的 status 改成 'paid'。\
-                  请使用 parameters 做绑定（? 占位符），不要写在 SQL 字符串里。"
-        ),
-        &target,
-        "",
-    )?;
+    let write_prompt = format!(
+        "只请求一次 db.execute，不先查询。target=conn:{connection_id}/db:{DB}，\
+         sql=UPDATE orders SET status=? WHERE id=?，\
+         parameters=[{{\"type\":\"text\",\"value\":\"paid\"}},{{\"type\":\"i64\",\"value\":\"1\"}}]。\
+         这会把 id=1 改为 paid。等待用户审批，不要绕过审批或改为内联值。"
+    );
+    let job2 = controller.prepare_ai_conversation_context(&write_prompt, &target, "")?;
     let (tx, rx) = std::sync::mpsc::sync_channel(16);
     run_ai_conversation_turn(
         &storage,
@@ -217,6 +229,61 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     if mid != before {
         return Err("审批前数据被改动".into());
+    }
+    if write_call.status != "waiting_approval" || write_call.receipt_json.is_some() {
+        return Err("写调用没有停在审批前".into());
+    }
+    let denied_approval = storage
+        .with_ai_connection(|conn| {
+            fluxdb_storage::ai_platform::audits::list_approvals_for_call(conn, &write_call.id)
+        })?
+        .into_iter()
+        .next()
+        .ok_or("缺少待拒绝审批")?;
+    let denied = controller.dispatch(AppCommand::AiConversation(
+        AiConversationCommand::DecideApproval {
+            approval_id: denied_approval.id,
+            approved: false,
+            expected_revision: denied_approval.revision,
+        },
+    ));
+    if !matches!(denied, AppEvent::AiConversationLoaded(_))
+        || rows("SELECT id, status FROM orders ORDER BY id")? != before
+        || rows("SELECT COUNT(*) FROM write_audit")? != ["0"]
+    {
+        return Err("拒绝审批后数据或实际副作用次数异常".into());
+    }
+    println!("   拒绝审批：数据不变，数据库触发器计数=0");
+    let job2 = controller.prepare_ai_conversation_context(
+        &format!("刚才的审批已拒绝。重新请求同样操作，生成新的审批，不复用旧审批。{write_prompt}"),
+        &target,
+        "",
+    )?;
+    let (tx, rx) = std::sync::mpsc::sync_channel(16);
+    run_ai_conversation_turn(
+        &storage,
+        &job2,
+        &cancel,
+        &tx,
+        &provider,
+        &catalog,
+        &KernelAuditHook,
+        permission.clone(),
+    );
+    let _ = drain(&rx);
+    let write_call = calls(&storage, &job2.turn_id)
+        .into_iter()
+        .find(|call| call.tool_id == "db.execute")
+        .ok_or("缺少重新生成的写调用")?;
+    let arguments: serde_json::Value = serde_json::from_str(&write_call.arguments_redacted_json)?;
+    if write_call.status != "waiting_approval"
+        || write_call.receipt_json.is_some()
+        || arguments["parameters"]
+            .as_array()
+            .is_none_or(|values| values.is_empty())
+        || rows("SELECT COUNT(*) FROM write_audit")? != ["0"]
+    {
+        return Err("重新生成的参数化写没有在审批前停住".into());
     }
 
     println!("④ 批准并恢复执行");
@@ -244,7 +311,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         &provider,
         &catalog,
         &KernelAuditHook,
-        permission,
+        permission.clone(),
         &approval.id,
     );
     let view2 = drain(&rx);
@@ -271,10 +338,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if executed.status != "succeeded" || executed.receipt_json.is_none() {
         return Err(format!("写调用未成功执行: status={}", executed.status).into());
     }
-    if after == before {
-        return Err("写操作没有真正生效（数据未变）".into());
+    let receipt: serde_json::Value = serde_json::from_str(executed.receipt_json.as_ref().unwrap())?;
+    if after != ["1|paid", "2|paid"]
+        || receipt["affected_rows"] != 1
+        || rows("SELECT COUNT(*) FROM write_audit")? != ["1"]
+    {
+        return Err("写入后行值、affected_rows 或数据库副作用次数不正确".into());
     }
-    println!("✅ 真实模型 + 真实 MySQL：读取 → 审批 → 写入一次 全部通过");
+    let (tx, rx) = std::sync::mpsc::sync_channel(16);
+    run_ai_conversation_resume_approval(
+        &storage,
+        &resume_job,
+        &cancel,
+        &tx,
+        &provider,
+        &catalog,
+        &KernelAuditHook,
+        permission,
+        &approval.id,
+    );
+    let _ = drain(&rx);
+    if rows("SELECT COUNT(*) FROM write_audit")? != ["1"] {
+        return Err("重复恢复导致数据库重复写入".into());
+    }
+    println!(
+        "✅ 真实模型 + MySQL：读取、拒绝不写、重新批准参数化写入、affected_rows=1、重复恢复后实际写入次数=1"
+    );
 
     println!("⑤ 清理 fixture");
     run(&format!("DROP DATABASE IF EXISTS {DB}"))?;

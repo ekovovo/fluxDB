@@ -529,6 +529,76 @@ fn approval_plan_hash_drift_blocks_resume() {
     assert_eq!(result_rows(&fixture.storage, &paused.job.turn_id), 0);
 }
 
+#[test]
+fn approved_call_payload_changes_block_resume_without_hash_tampering() {
+    for changed_field in ["sql", "parameters", "target"] {
+        let fixture = Fixture::new();
+        let mut controller = fixture.configured();
+        let tool = read_tool("db.query");
+        let paused = pause_round(&fixture, &mut controller, &tool);
+        approve(&mut controller, &paused.approval_id, 1);
+
+        // 保持已批准 hash 不变，只改执行载荷，验证执行前真正重算计划而非只比较旧 hash。
+        fixture
+            .storage
+            .with_ai_connection(|conn| {
+                let call = sessions::load_tool_call(conn, &paused.call_id)?;
+                if changed_field == "target" {
+                    let mut target: serde_json::Value =
+                        serde_json::from_str(&call.target_json).unwrap();
+                    target["schema"] = "another_schema".into();
+                    conn.execute(
+                        "UPDATE ai_tool_calls SET target_json=?2 WHERE id=?1",
+                        params![call.id, target.to_string()],
+                    )
+                    .map_err(sql_error)?;
+                } else {
+                    let mut arguments: serde_json::Value =
+                        serde_json::from_str(&call.arguments_redacted_json).unwrap();
+                    arguments[changed_field] = if changed_field == "sql" {
+                        "SELECT 2".into()
+                    } else {
+                        serde_json::json!([{"type": "i64", "value": "42"}])
+                    };
+                    conn.execute(
+                        "UPDATE ai_tool_calls SET arguments_redacted_json=?2 WHERE id=?1",
+                        params![call.id, arguments.to_string()],
+                    )
+                    .map_err(sql_error)?;
+                }
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(
+            call_fact(&fixture.storage, &paused.call_id).plan_hash,
+            paused.plan_hash
+        );
+        assert_eq!(
+            approval_view(&fixture.storage, &paused.approval_id).plan_hash,
+            paused.plan_hash
+        );
+
+        let job = controller
+            .prepare_ai_resume_job(&paused.approval_id)
+            .expect("重建恢复 job");
+        resume(&fixture, &tool, &job, &paused.approval_id);
+
+        assert_eq!(tool.call_count(), 0, "{changed_field} 改变后不能执行");
+        assert!(
+            call_fact(&fixture.storage, &paused.call_id)
+                .receipt_json
+                .is_none(),
+            "{changed_field} 改变后不能产生回执"
+        );
+        assert_eq!(result_rows(&fixture.storage, &paused.job.turn_id), 0);
+        assert_eq!(result_ref_parts(&fixture.storage, &paused.job.turn_id), 0);
+        assert_ne!(
+            turn_status(&fixture.storage, &paused.job.turn_id),
+            sessions::TurnStatus::Completed
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 4) 撤销后不得执行
 // ---------------------------------------------------------------------------

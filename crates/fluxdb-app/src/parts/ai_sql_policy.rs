@@ -50,19 +50,26 @@ impl SqlRisk {
 
 /// 已知有副作用/越权能力的函数或语法片段（命中即降级为需授权）。
 ///
-/// 采用"文本包含"而不是精确函数解析：宁可误判为需授权，也不放过真实副作用。
+/// 函数按 AST 标识符匹配，语法片段保留保守文本检查；这不是纯函数白名单，
+/// 未知函数的只读保障仍须由数据库权限/只读事务承担。
 const SIDE_EFFECT_MARKERS: &[&str] = &[
     "sleep(",
     "benchmark(",
     "get_lock(",
     "release_lock(",
+    "release_all_locks(",
     "load_file(",
     "into outfile",
     "into dumpfile",
     "load data",
     "pg_sleep(",
     "pg_advisory_lock(",
+    "pg_advisory_lock_shared(",
     "pg_try_advisory_lock(",
+    "pg_try_advisory_lock_shared(",
+    "pg_advisory_unlock(",
+    "pg_advisory_unlock_shared(",
+    "pg_advisory_unlock_all(",
     "pg_read_file(",
     "pg_ls_dir(",
     "dblink(",
@@ -81,6 +88,9 @@ const SIDE_EFFECT_MARKERS: &[&str] = &[
     "pg_terminate_backend(",
     "pg_cancel_backend(",
     "pg_advisory_xact_lock(",
+    "pg_advisory_xact_lock_shared(",
+    "pg_try_advisory_xact_lock(",
+    "pg_try_advisory_xact_lock_shared(",
     "set_config(",
     "load_extension(",
     "pg_reload_conf(",
@@ -176,7 +186,27 @@ pub fn analyze_sql(sql: &str, dialect: SqlDialectKind) -> SqlRisk {
         }
     }
 
-    if let Some(marker) = SIDE_EFFECT_MARKERS.iter().find(|m| text.contains(**m)) {
+    // 使用标识符实际值识别 schema 限定/双引号函数名，不能靠格式化 SQL 中的 `name(`。
+    let function_marker = sqlparser::ast::visit_expressions(statement, |expr| {
+        if let sqlparser::ast::Expr::Function(function) = expr
+            && let Some(name) = function.name.0.last().and_then(|part| part.as_ident())
+            && let Some(marker) = SIDE_EFFECT_MARKERS.iter().find(|marker| {
+                marker
+                    .strip_suffix('(')
+                    .is_some_and(|function_name| name.value.eq_ignore_ascii_case(function_name))
+            })
+        {
+            return std::ops::ControlFlow::Break(*marker);
+        }
+        std::ops::ControlFlow::Continue(())
+    });
+    let marker = match function_marker {
+        std::ops::ControlFlow::Break(marker) => Some(marker),
+        std::ops::ControlFlow::Continue(()) => {
+            SIDE_EFFECT_MARKERS.iter().copied().find(|marker| text.contains(marker))
+        }
+    };
+    if let Some(marker) = marker {
         reasons.push(format!("side_effect_marker:{marker}"));
     }
 
@@ -212,8 +242,7 @@ const POSTGRES_READ_ONLY_SHOW_NAMES: &[&str] = &[
     "INTEGER_DATETIMES",
 ];
 
-/// SQLite `PRAGMA <名称>` 的只读子集。带 `=` 或值的 PRAGMA 会改设置/落盘，
-/// 不在白名单内（调用 `is_eq` / `value` 判定），其余按名称精确匹配。
+/// SQLite `PRAGMA <名称>` 的只读子集；对象查询可带对象参数，其余只能无值读取。
 const SQLITE_READ_ONLY_PRAGMAS: &[&str] = &[
     "table_info",
     "table_xinfo",
@@ -308,9 +337,8 @@ fn classify_metadata_read(
             }
             true
         }
-        sqlparser::ast::Statement::Pragma { name, is_eq, .. } => {
-            // `PRAGMA x = y` 会改设置或写文件，不在只读范围；`PRAGMA table_info('t')`
-            // 的值只是被查对象，属于读取，不能与赋值形式混为一谈。
+        sqlparser::ast::Statement::Pragma { name, value, is_eq } => {
+            // 赋值既支持 `x = y` 也支持 `x(y)`；仅对象查询允许括号内的对象参数。
             if dialect == SqlDialectKind::Sqlite && !*is_eq {
                 let pragma = name
                     .0
@@ -319,7 +347,12 @@ fn classify_metadata_read(
                     .map(|ident| ident.value.to_ascii_lowercase())
                     .unwrap_or_default();
                 if SQLITE_READ_ONLY_PRAGMAS.contains(&pragma.as_str()) {
-                    return true;
+                    return value.is_none()
+                        || matches!(
+                            pragma.as_str(),
+                            "table_info" | "table_xinfo" | "table_list" | "index_list"
+                                | "index_info" | "index_xinfo" | "foreign_key_list"
+                        );
                 }
                 reasons.push(format!("metadata_disclosure:pragma_{pragma}"));
                 return true;

@@ -8,7 +8,22 @@ pub fn connector_for(config: &ConnectionConfig) -> fluxdb_core::Result<Box<dyn C
         .get("demo")
         .is_some_and(|value| value == "true")
     {
-        return Ok(Box::new(MockConnector::new(config.kind)));
+        // `demo.apply_delay_ms` 让 headless UI 测试能稳定复现「数据库响应慢」：
+        // 只作用于内存 demo 连接，生产连接配置不会带这个键。
+        let delay = config
+            .options
+            .get("demo.apply_delay_ms")
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(0);
+        let fail_submit = config
+            .options
+            .get("demo.fail_submit")
+            .is_some_and(|value| value == "true");
+        return Ok(Box::new(MockConnector::with_apply_delay(
+            config.kind,
+            std::time::Duration::from_millis(delay),
+        )
+        .with_fail_submit(fail_submit)));
     }
 
     let connector: Box<dyn Connector> = match config.kind {

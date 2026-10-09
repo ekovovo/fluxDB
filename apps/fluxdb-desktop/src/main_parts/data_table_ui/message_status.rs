@@ -56,7 +56,7 @@ fn alert_tint(accent: gpui::Hsla, colors: UiColors) -> gpui::Hsla {
 
 /// 底部提示浮层：挂在窗口最上层、贴底居中；3s 后由 `NavicatMain::show_message` 的计时任务清掉。
 /// 视觉承载统一交给 gpui-component 的 `Alert`（图标与配色随变体走）。
-fn app_message_overlay(message: &AppMessage, window: &Window, cx: &App, colors: UiColors) -> Div {
+fn app_message_overlay(message: &AppMessage, window: &Window, cx: &App, colors: UiColors) -> ObservedElement<Stateful<Div>> {
     let layout = app_message_layout(window);
     let (variant, icon_name, accent) = app_message_style(message.kind, cx);
     // 同一条提示只存在一个实例；id 随消息自增，避免复用上一条的交互态。
@@ -68,6 +68,11 @@ fn app_message_overlay(message: &AppMessage, window: &Window, cx: &App, colors: 
         .line_height(px(APP_MESSAGE_LINE_HEIGHT));
 
     div()
+        .id("app-message-overlay")
+        .debug_selector(|| "app-message-overlay".into())
+        .role(gpui::Role::Status)
+        .aria_label(message.text.clone())
+        .test_support()
         .absolute()
         .bottom(px(layout.bottom))
         .left_0()

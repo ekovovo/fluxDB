@@ -157,6 +157,7 @@ impl Fixture {
             purpose: "main".into(),
             estimated_input_tokens: 10,
             max_output_tokens: 20,
+            title: None,
         }
     }
 

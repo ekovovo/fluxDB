@@ -555,3 +555,73 @@ fn plan_hash_is_order_independent_and_canonical() {
     // 非 JSON 输入退化为原样哈希，不 panic。
     assert!(!plan_hash("t", 1, "not-json", "not-json", None).is_empty());
 }
+
+#[test]
+fn ai_permission_approval_details_preserve_plan_and_do_not_invent_guardrails() {
+    for sql in [
+        "UPDATE orders SET status='paid' WHERE id=1",
+        "DELETE FROM orders",
+        "CREATE TABLE orders(id INTEGER)",
+    ] {
+        let arguments = serde_json::json!({"sql":sql,"target":"conn:1/db:main"}).to_string();
+        let details = approval_details_for("db.execute", &arguments, Some(SqlDialectKind::Sqlite));
+        assert_eq!(details.statements, vec![sql.to_string()]);
+        assert_eq!(details.estimated_rows, None);
+        assert_eq!(details.impact_basis, "未核实");
+        assert!(
+            details
+                .guardrails
+                .iter()
+                .any(|item| item.contains("单语句"))
+        );
+        assert!(
+            !details
+                .guardrails
+                .iter()
+                .any(|item| item.contains("WHERE") || item.contains("500")),
+            "未实施的 WHERE/行数上限不能冒充护栏事实"
+        );
+    }
+    let unknown = approval_details_for(
+        "db.execute",
+        r#"{"sql":"not valid SQL"}"#,
+        Some(SqlDialectKind::Sqlite),
+    );
+    assert_eq!(unknown.risk, ApprovalRisk::High);
+    assert!(
+        !unknown
+            .guardrails
+            .iter()
+            .any(|item| item.contains("单语句"))
+    );
+    let unsupported = approval_details_for("http.request", "{}", None);
+    assert!(unsupported.statements.is_empty());
+    assert_eq!(unsupported.risk, ApprovalRisk::High);
+    assert!(
+        !unsupported
+            .guardrails
+            .iter()
+            .any(|item| item.contains("单语句"))
+    );
+}
+
+#[test]
+fn ai_permission_approval_details_keep_redis_argument_boundaries() {
+    let argv = vec!["SET", "order status", "paid\nonce"];
+    let details = approval_details_for(
+        "redis.execute",
+        &serde_json::json!({"argv":argv}).to_string(),
+        None,
+    );
+    assert_eq!(
+        serde_json::from_str::<Vec<String>>(&details.statements[0]).unwrap(),
+        argv
+    );
+    assert!(
+        details
+            .guardrails
+            .iter()
+            .any(|item| item.contains("只读白名单"))
+    );
+    assert_ne!(details.risk, ApprovalRisk::Low);
+}

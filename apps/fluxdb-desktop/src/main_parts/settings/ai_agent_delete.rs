@@ -108,6 +108,7 @@ impl NavicatMain {
                                 .is_some_and(|e| e.agent_id.as_deref() == Some(id.as_str()))
                             {
                                 this.ai_agent_editor = None;
+                                this.ai_agent_delete_just_removed = id;
                             }
                             this.show_message("Agent 已删除", AppMessageKind::Success, cx);
                         }

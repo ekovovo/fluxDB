@@ -585,7 +585,7 @@
             value: CellValue::Text("Will Fail".to_string()),
         });
 
-        let event = controller.dispatch(AppCommand::ApplyDataChanges(TabId(1)));
+        let event = commit_editor_changes(&mut controller, TabId(1));
 
         let AppEvent::Failed(error) = event else {
             panic!("expected apply changes to fail");
@@ -611,7 +611,7 @@
             row: 1,
         });
 
-        let event = controller.dispatch(AppCommand::ApplyDataChanges(TabId(1)));
+        let event = commit_editor_changes(&mut controller, TabId(1));
 
         assert!(matches!(event, AppEvent::DataLoaded(TabId(1), _)));
         assert_eq!(controller.state().query_history.len(), 2);

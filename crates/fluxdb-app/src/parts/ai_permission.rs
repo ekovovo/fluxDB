@@ -32,6 +32,181 @@ impl ApprovalScope {
     }
 }
 
+/// 审批卡要展示给用户的计划事实（设计 §31.9 第 3–5 项）。
+///
+/// 展示规范化计划与风险分类的可见投影，不参与授权判定，也不能改写放行结果；
+/// 拿不到就留空，UI 相应显示"未知"，不编造行数或护栏。
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ApprovalDetails {
+    /// 风险等级（高/中/低），由工具风险与命中的护栏共同决定。
+    pub risk: ApprovalRisk,
+    /// 规范化计划原文（SQL 全文或完整 Redis argv）。展示用，不参与 hash。
+    pub statements: Vec<String>,
+    /// 内核风险分类已核实的事实，不是用户可改的开关。
+    pub guardrails: Vec<String>,
+    /// 影响预估的依据；未实际查询时明确写未核实。
+    pub impact_basis: String,
+    /// 已核实的预计影响行数；`None` = 未核实。
+    pub estimated_rows: Option<i64>,
+}
+
+/// 审批卡的风险等级。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ApprovalRisk {
+    #[default]
+    Medium,
+    High,
+    Low,
+}
+
+impl ApprovalRisk {
+    pub fn to_json(self) -> &'static str {
+        match self {
+            ApprovalRisk::High => "high",
+            ApprovalRisk::Medium => "medium",
+            ApprovalRisk::Low => "low",
+        }
+    }
+}
+
+impl ApprovalDetails {
+    pub fn to_json(&self) -> String {
+        serde_json::json!({
+            "risk": self.risk.to_json(),
+            "statements": self.statements,
+            "guardrails": self.guardrails,
+            "impact_basis": self.impact_basis,
+            "estimated_rows": self.estimated_rows,
+        })
+        .to_string()
+    }
+}
+
+/// 从规范化参数取计划预览；Redis 保留 argv 的参数边界，不拼成可执行命令文本。
+fn approval_statements(tool_id: &str, normalized_arguments_json: &str) -> Vec<String> {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(normalized_arguments_json) else {
+        return Vec::new();
+    };
+    match tool_id {
+        "db.execute" | "db.query" | "db.explain" => value
+            .get("sql")
+            .and_then(serde_json::Value::as_str)
+            .map(|sql| vec![sql.to_string()])
+            .unwrap_or_default(),
+        "redis.execute" => value
+            .get("argv")
+            .and_then(serde_json::Value::as_array)
+            .filter(|argv| argv.iter().all(serde_json::Value::is_string))
+            .map(|argv| vec![serde_json::to_string_pretty(argv).unwrap_or_default()])
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    }
+}
+
+/// 复用内核风险分类生成展示事实；未实现的 WHERE/行数上限不冒充已生效的护栏。
+pub fn approval_details_for(
+    tool_id: &str,
+    normalized_arguments_json: &str,
+    dialect: Option<SqlDialectKind>,
+) -> ApprovalDetails {
+    let statements = approval_statements(tool_id, normalized_arguments_json);
+    let (guardrails, risk) = match (tool_id, dialect) {
+        ("db.execute" | "db.query" | "db.explain", Some(dialect)) => {
+            let sql = statements.first().map(String::as_str).unwrap_or_default();
+            sql_approval_guardrails(&analyze_sql(sql, dialect))
+        }
+        ("redis.execute", _) => {
+            let argv = serde_json::from_str::<serde_json::Value>(normalized_arguments_json)
+                .ok()
+                .and_then(|value| value["argv"].as_array().cloned())
+                .unwrap_or_default()
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .collect::<Vec<_>>();
+            redis_approval_guardrails(&classify_redis_command(&argv))
+        }
+        _ => (vec!["计划风险尚未核实".to_string()], ApprovalRisk::High),
+    };
+    ApprovalDetails {
+        risk,
+        statements,
+        guardrails,
+        // 影响行数需要真实 SELECT COUNT 核实；未核实就明确写"未核实"，不编造行数。
+        impact_basis: "未核实".to_string(),
+        estimated_rows: None,
+    }
+}
+
+fn sql_approval_guardrails(risk: &SqlRisk) -> (Vec<String>, ApprovalRisk) {
+    let mut guardrails = Vec::new();
+    let level = match risk {
+        SqlRisk::ReadOnly => {
+            guardrails.push("单语句，不含事务或会话控制".to_string());
+            guardrails.push("语句已判定为只读，不修改数据".to_string());
+            ApprovalRisk::Low
+        }
+        SqlRisk::Rejected { reasons } => {
+            guardrails.push(format!("内核策略已拒绝该语句（{}）", reasons.join("、")));
+            ApprovalRisk::High
+        }
+        SqlRisk::RequiresAuthorization { reasons } => {
+            if !reasons.iter().any(|reason| reason == "unknown_syntax") {
+                guardrails.push("单语句，不含事务或会话控制".to_string());
+            }
+            guardrails.push("未通过只读分类，必须逐次批准".to_string());
+            if reasons
+                .iter()
+                .any(|reason| reason.starts_with("side_effect_marker:"))
+            {
+                guardrails.push("语句含已知副作用语法，影响面无法从文本确定".to_string());
+            }
+            // 副作用语法或无法解析的语句无法判断影响面，一律按高风险提示。
+            if reasons.iter().any(|reason| {
+                reason.starts_with("side_effect_marker:") || reason == "unknown_syntax"
+            }) {
+                ApprovalRisk::High
+            } else {
+                ApprovalRisk::Medium
+            }
+        }
+    };
+    (guardrails, level)
+}
+
+fn redis_approval_guardrails(risk: &RedisRisk) -> (Vec<String>, ApprovalRisk) {
+    let mut guardrails = vec!["按 argv 原样传参，不拼接命令文本".to_string()];
+    let level = match risk {
+        RedisRisk::ReadOnly => {
+            guardrails.push("命令在只读白名单内".to_string());
+            ApprovalRisk::Low
+        }
+        RedisRisk::Rejected { reasons } => {
+            guardrails.push(format!("内核策略已拒绝该命令（{}）", reasons.join("、")));
+            ApprovalRisk::High
+        }
+        RedisRisk::RequiresAuthorization { reasons } => {
+            if reasons
+                .iter()
+                .any(|reason| reason.starts_with("mutating_or_script:"))
+            {
+                guardrails.push("写命令或脚本执行，不在只读白名单内".to_string());
+            }
+            // 未识别命令可能是新命令或改名命令，影响面未知，按高风险提示。
+            if reasons
+                .iter()
+                .any(|reason| reason.starts_with("unknown_command:"))
+            {
+                guardrails.push("命令未在内核白名单内，影响面未核实".to_string());
+                ApprovalRisk::High
+            } else {
+                ApprovalRisk::Medium
+            }
+        }
+    };
+    (guardrails, level)
+}
+
 /// 计算最终 plan hash：工具 + 版本 + 目标 + **规范化参数** + 插件摘要。
 ///
 /// 任何一项变化都会改变 hash，从而让旧审计/审批失效（设计 §25.1）。

@@ -1,11 +1,32 @@
 #[derive(Clone, Debug)]
 pub struct MockConnector {
     kind: DatabaseKind,
+    /// `apply_changes` 的模拟耗时；用于验证慢响应不会阻塞调用方（UI）线程。
+    apply_delay: std::time::Duration,
+    /// 提交一律失败；用于验证 UI 的失败提示路径。
+    fail_submit: bool,
 }
 
 impl MockConnector {
     pub fn new(kind: DatabaseKind) -> Self {
-        Self { kind }
+        Self {
+            kind,
+            apply_delay: std::time::Duration::ZERO,
+            fail_submit: false,
+        }
+    }
+
+    pub fn with_apply_delay(kind: DatabaseKind, apply_delay: std::time::Duration) -> Self {
+        Self {
+            kind,
+            apply_delay,
+            fail_submit: false,
+        }
+    }
+
+    pub fn with_fail_submit(mut self, fail_submit: bool) -> Self {
+        self.fail_submit = fail_submit;
+        self
     }
 
     pub fn sqlite() -> Self {
@@ -81,7 +102,12 @@ impl Connector for MockConnector {
         &self,
         changes: &DataChangeSet,
     ) -> fluxdb_core::Result<AppliedChangeOutcome> {
-        if changes.object.name == "FailSubmit" {
+        if !self.apply_delay.is_zero() {
+            std::thread::sleep(self.apply_delay);
+        }
+        // `FailSubmit` 表名与连接选项 `demo.fail_submit` 都能触发模拟失败，
+        // 后者让 UI 测试可以在真实表上走到失败分支。
+        if changes.object.name == "FailSubmit" || self.fail_submit {
             return Err(Error::new(ErrorKind::Query, "模拟提交失败"));
         }
 

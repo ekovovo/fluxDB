@@ -972,6 +972,7 @@ fn data_editor_content(
             change_count,
             change_sql_preview_open,
             selected_source_row,
+            editor.submitting,
             colors,
             window,
             cx,
@@ -979,8 +980,13 @@ fn data_editor_content(
     });
     let table_area = data_table_area(
         &table_state,
-        filter_applying,
-        "正在应用筛选...",
+        // 提交与筛选都会离开 UI 线程，共用同一层遮罩提示，避免用户以为界面失去响应。
+        filter_applying || editor.submitting,
+        if editor.submitting {
+            "正在提交更改..."
+        } else {
+            "正在应用筛选..."
+        },
         search_open.then(|| {
             data_search_bar(
                 tab_id,
@@ -3903,7 +3909,14 @@ fn query_result_view(
         })
         .when_some(change_count, |this, count| {
             this.child(
-                query_result_change_footer(tab_id, count, change_sql_preview_open, colors, cx)
+                query_result_change_footer(
+                    tab_id,
+                    count,
+                    change_sql_preview_open,
+                    editor.running,
+                    colors,
+                    cx,
+                )
                     .absolute()
                     .right_0()
                     .bottom(px(detail_height))
@@ -4203,6 +4216,7 @@ fn query_result_change_footer(
     tab_id: TabId,
     change_count: usize,
     change_sql_preview_open: bool,
+    submitting: bool,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
@@ -4219,7 +4233,7 @@ fn query_result_change_footer(
         .items_center()
         .gap_1()
         .child(
-            data_editor_footer_icon_button(AppIcon::Check, "提交更改", true, colors)
+            data_editor_footer_icon_button(AppIcon::Check, "提交更改", !submitting, colors)
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, _, _, cx| {
@@ -4229,7 +4243,7 @@ fn query_result_change_footer(
                 ),
         )
         .child(
-            data_editor_footer_icon_button(AppIcon::Close, "取消更改", true, colors)
+            data_editor_footer_icon_button(AppIcon::Close, "取消更改", !submitting, colors)
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, _, _, cx| {
@@ -4244,6 +4258,7 @@ fn query_result_change_footer(
             tab_id,
             change_count,
             change_sql_preview_open,
+            submitting,
             colors,
             cx,
         ))

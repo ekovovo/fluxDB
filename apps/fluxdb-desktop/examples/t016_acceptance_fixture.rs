@@ -66,5 +66,8 @@ fn main() {
         other => panic!("Agent 保存失败: {other:?}"),
     };
 
-    println!("FIXTURE_OK root={} model={model_id} agent={agent_id}", root.display());
+    println!(
+        "FIXTURE_OK root={} model={model_id} agent={agent_id}",
+        root.display()
+    );
 }

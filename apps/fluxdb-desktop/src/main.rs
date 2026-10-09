@@ -202,6 +202,7 @@ include!("main_parts/ai/state.rs");
 include!("main_parts/ai/model_selection.rs");
 include!("main_parts/ai/references.rs");
 include!("main_parts/ai/message.rs");
+include!("main_parts/ai/approval.rs");
 include!("main_parts/ai/timeline.rs");
 include!("main_parts/ai/actions.rs");
 include!("main_parts/ai/display.rs");
@@ -224,6 +225,7 @@ include!("main_parts/tests/ai_agent_defaults.rs");
 include!("main_parts/tests/ai_model_capacity.rs");
 #[cfg(test)]
 include!("main_parts/tests/ai_chat_model_selection.rs");
-
 #[cfg(test)]
 include!("main_parts/tests_table_ui.rs");
+#[cfg(test)]
+include!("main_parts/tests/data_change_commit.rs");

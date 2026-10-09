@@ -1177,6 +1177,9 @@ pub struct DataEditorState {
     pub cell_detail_panel: CellDetailPanelState,
     pub table_info: TableInfoState,
     pub loading: bool,
+    /// 改动正在提交到数据库：表格保持可见（与 `loading` 的整页替换不同），
+    /// 但提交类操作 disabled，避免用户在写入期间继续改动同一批数据。
+    pub submitting: bool,
     pub error: Option<UserFacingError>,
 }
 
@@ -1192,6 +1195,19 @@ pub struct TableInfoState {
     pub foreign_keys: LoadState<Vec<ForeignKeyInfo>>,
     pub triggers: LoadState<Vec<TriggerInfo>>,
     pub ddl: LoadState<String>,
+}
+
+/// 后台提交数据改动的产物：`ApplyDataChanges*` 的数据库 I/O 结果 + 提交后重载的数据页。
+///
+/// 拆成独立类型是因为写入与重载都在后台线程完成，状态写回必须由 UI 线程的回桥命令负责。
+#[derive(Debug, Clone, PartialEq)]
+pub struct DataApplyResult {
+    /// 来自「查询结果」页签（与数据编辑器标签的落状态方式不同：结果区按页索引回写）。
+    pub query_result: bool,
+    /// 提交后按当前筛选/排序重新加载的数据页。
+    pub page: DataPage,
+    /// 写入回执，用于历史记录与补偿显示。
+    pub outcome: AppliedChangeOutcome,
 }
 
 impl Default for TableInfoState {

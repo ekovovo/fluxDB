@@ -217,12 +217,44 @@ UI原型：`docs/prototype/ai-agent-ui.html`（本机 `/Users/shining3d/fusuwei/
 
 
 ### T020 目标授权、风险策略与审批表+询问AI内联批准卡片
-- [ ] 依赖：T019；设计 §25、§29、§42.11。
+- [x] 依赖：T019；设计 §25、§29、§42.11。
 - 改动：内核权限交集、最终plan hash、强制SecurityAuditHook与append-only审计表、scope/version、审批暂停/决定；denied 与 unknown 不误作可重试。
 - 验收：参数/目标/plugin digest 改动审批失效；撤销即时生效；deny优先；批准不绕过数据库权限；卡片状态回显与刷新后仍可处理；无全局永久允许开关。
 - 本任务功能/UI验收：原型 询问AI审批卡；实际点击拒绝确认数据不变，再发起独立请求批准并核对后端变化；修改参数/目标后旧卡不可批准，重复点击不重复执行。
 - UI证据：按设计§39.3–39.4实际操作并对照原型截图，明暗主题、正常/窄窗口及相关loading/空/错状态分别通过，修复后复测。
 - 测试方式：本任务上述流程分别编写GPUI模拟输入断言并执行真实窗口E2E；截图按指定原型入口逐项对比，业务写入独立核对存储/后端，不只检查提示文字。
+
+#### T020 验收记录（2026-10-09）
+
+变更：审批卡补齐头部/风险徽标、连接上下文、可复制等宽计划、影响预估与依据、约束清单、Esc/遮罩提示（`main_parts/ai/approval.rs`）；批准改为后台提交 + 提交中禁用 + 重复点击防护（`ai/actions.rs`、`ai/state.rs`）；Esc 与关闭面板走真实拒绝链路；`show_message` 承载决定失败与恢复失败（`data_table_ui/message_status.rs`）；`ApprovalDetails` 只展示内核已核实事实，未核实行数显示"未知"（`ai_permission.rs`）。
+
+平台：macOS arm64（真实窗口 E2E + Headless UI）。Windows/Linux 未验证。
+
+已运行：
+
+```sh
+cargo fmt --all -- --check
+cargo check --locked
+cargo test --workspace --locked            # 2170 passed / 23 ignored
+cargo test -p fluxdb-desktop --locked ai_panel_   # 69 passed
+cargo test -p fluxdb-app --locked ai_permission   # 15 passed
+```
+
+真实窗口 E2E（隔离 `FLUXDB_PROFILE=t020verify` + `FLUXDB_AI_TEST_ROOT`，Swift/CGEvent 无法编译，改用 clang + Accessibility API 驱动）：
+
+| 场景 | 操作 | 后端核对 | 截图 |
+|---|---|---|---|
+| 待审批卡 | 打开面板 | `ai_approvals.status=pending, rev=1`；工具调用 `waiting_approval` 且无回执 | `shots/01-card-light.jpg`、`04-card-dark.jpg`、`05-card-narrow.jpg` |
+| 遮罩 = 拒绝 | 点击面板外遮罩 | `status=denied, rev=2`；重新打开面板后卡片消失 | — |
+| 批准一次 | 点击"批准一次" | `status=approved, rev=2`；卡片原地变为"审批决定，已批准一次"；工具调用仍 `waiting_approval`（未重复执行） | `shots/03-approved-and-error.jpg` |
+| 恢复失败提示 | 同上 | 窗口底部居中显示"无法恢复任务：任务快照缺少原模型，拒绝改用当前模型" | 同上 |
+| 重复点击 | 连点两次"批准一次" | `rev` 只递增一次，`status=approved`，无第二次决定 | — |
+
+视觉：明暗主题卡片各区块完整；窄窗（820×700）下 SQL 换行、影响预估两列并排、按钮不溢出。
+
+证据：`/private/tmp/fluxdb-t020-e2e/shots/`（压缩 JPEG 小图）。
+
+未验证：Windows/Linux 真实窗口；真实模型与真实数据库写入（fixture 模型端点为 RFC 5737 不可路由地址，恢复必然失败，故批准路径的后端证据止于"决定已提交且未重复执行"，真实写入由 `ai_conversation_write_tool` 的真实 SQLite 集成测试覆盖）。
 
 
 ### T021 自动捕获当前界面并固定执行 scope（无用户确认）

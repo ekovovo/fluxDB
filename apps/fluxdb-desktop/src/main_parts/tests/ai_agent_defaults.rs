@@ -641,8 +641,14 @@ mod ai_agent_defaults_tests {
         assert_eq!(snapshot.ai_agents.len(), 1);
         assert_eq!(snapshot.ai_agents[0].id, BUILTIN_AGENT_ID);
         assert!(
-            view.read_with(cx, |main, _| main.ai_agent_editor.is_none()),
-            "成功删除后被删对象编辑器应清空"
+            view.read_with(cx, |main, _| {
+                main.ai_agent_editor
+                    .as_ref()
+                    .and_then(|e| e.agent_id.clone())
+                    .as_deref()
+                    == Some(BUILTIN_AGENT_ID)
+            }),
+            "删除后应自动选中剩余列表的第一项（内置 Agent）"
         );
         let visible = fixture
             .storage

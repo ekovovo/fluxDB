@@ -200,6 +200,14 @@ pub struct ErColumnBatch {
 }
 
 impl AppController {
+    /// 当前进程内的连接修订（未登记为 0），与目录缓存失效使用同一修订源。
+    pub fn connection_revision(&self, connection_id: ConnectionId) -> u64 {
+        self.er_catalog
+            .lock()
+            .map(|cache| cache.revision(connection_id))
+            .unwrap_or(0)
+    }
+
     /// 集中路由到的连接修订。connection 变更（connect/UpdateConnection/删除）时调用，
     /// 使旧连接缓存失效。返回新修订。
     pub fn er_bump_connection_revision(&self, connection_id: ConnectionId) -> u64 {

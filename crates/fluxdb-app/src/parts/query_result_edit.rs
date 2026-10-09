@@ -22,6 +22,7 @@ fn query_result_editor(
         cell_detail_panel: CellDetailPanelState::default(),
         table_info: TableInfoState::default(),
         loading: false,
+        submitting: false,
         error: None,
     })
 }

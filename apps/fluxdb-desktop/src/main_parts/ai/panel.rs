@@ -209,13 +209,7 @@ fn ai_chat_panel(
         .py_3()
         .flex()
         .flex_col()
-        .gap_3();
-    let last_user_message_id = chat
-        .messages
-        .iter()
-        .rev()
-        .find(|message| message.role == "user")
-        .map(|message| message.id.clone());
+        .gap_5();
     // 活跃流式助手消息：其正文由平滑揭示实体渲染，其余消息按 checkpoint 正文渲染。
     let stream_message_id = this.ai_chat.stream.message_id().map(str::to_owned);
     let stream_view = this.ai_chat.stream_view.clone();
@@ -427,10 +421,13 @@ fn ai_chat_panel(
                     })
                     .flex()
                     .flex_col()
+                    .flex_none()
+                    .w_full()
                     .gap_1p5()
                     .when(user, |row| {
                         row.child(
                             div()
+                                .self_end()
                                 .flex()
                                 .items_center()
                                 .gap_1p5()
@@ -438,25 +435,30 @@ fn ai_chat_panel(
                                 .font_weight(gpui::FontWeight::MEDIUM)
                                 .text_color(colors.muted)
                                 .child(app_icon(AppIcon::Users, 13., colors.muted))
-                                .child(if last_user_message_id.as_deref() == Some(message.id.as_str()) {
-                                    "你 · 当前任务"
-                                } else {
-                                    "你"
-                                }),
+                                .child("你"),
                         )
                     })
                     .child(
                         div()
+                            .id(SharedString::from(format!("ai-message-content:{}", message.id)))
+                            .debug_selector({
+                                let id = message.id.clone();
+                                move || format!("ai-message-content:{id}")
+                            })
+                            .test_support()
                             .when(user, |row| {
                                 row.self_end()
-                                    .max_w_full()
-                                    .w_full()
-                                    .p_2()
+                                    .min_w(px(0.))
+                                    .max_w(gpui::relative(0.82))
+                                    .px_3()
+                                    .py_2()
                                     .rounded_lg()
+                                    .border_1()
+                                    .border_color(colors.border_soft)
                                     .bg(colors.panel_alt)
                                     .flex()
                                     .flex_col()
-                                    .gap_2()
+                                    .gap_1p5()
                             })
                             .when(!user, |row| {
                                 row.w_full()
@@ -474,8 +476,6 @@ fn ai_chat_panel(
                                             .child(app_icon(AppIcon::Bot, 13., colors.success))
                                             .child("fluxDB Agent"),
                                     )
-                                    .child(div().flex_1())
-                                    .child(div().pl_4().flex().flex_col().gap_2())
                             })
                             .children(if user {
                                 let mut children = message.parts.iter().filter(|p| p.kind == "text").map(|p| {
@@ -494,6 +494,11 @@ fn ai_chat_panel(
                                 ai_chat_message_parts(
                                     message,
                                     &chat,
+                                    &ai_approval_context(
+                                        chat.target_json.as_deref(),
+                                        &this.controller.state().connections,
+                                        this.ai_chat.deciding_approval,
+                                    ),
                                     stream_view.as_ref().filter(|_| active_stream),
                                     active_stream.then(|| this.ai_chat.stream.revealed_text()),
                                     colors,
@@ -572,7 +577,10 @@ fn ai_chat_panel(
             if !this.handle_ai_reference_key("down", window, cx) { cx.propagate(); }
         }))
         .capture_action(cx.listener(|this, _: &gpui_component::input::Escape, window, cx| {
-            if !this.handle_ai_reference_key("escape", window, cx) { cx.propagate(); }
+            if !this.handle_ai_reference_key("escape", window, cx)
+                && !this.reject_pending_ai_chat_approval(window, cx) {
+                cx.propagate();
+            }
         }))
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
@@ -596,6 +604,10 @@ fn ai_chat_panel(
                     .is_focused(window)
 ;
                 if popup_open || this.ai_chat.mode_menu_open {
+                    return;
+                }
+                if this.reject_pending_ai_chat_approval(window, cx) {
+                    cx.stop_propagation();
                     return;
                 }
                 if this.ai_chat.mode == fluxdb_storage::ai_platform::settings::PanelMode::Tab {

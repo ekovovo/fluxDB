@@ -114,6 +114,8 @@ fn ai_chat_composer(
                         .border_color(colors.border)
                         .bg(colors.input_bg)
                         .p_2()
+                        .id("ai-chat-input")
+                        .test_support()
                         .debug_selector(|| "ai-chat-input".into())
                         .key_context("AiChatComposer")
                         .capture_action(cx.listener(|this, _: &SendAiMessage, window, cx| {

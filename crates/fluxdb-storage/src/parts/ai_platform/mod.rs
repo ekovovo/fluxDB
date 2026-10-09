@@ -86,6 +86,7 @@ pub fn ensure_schema(conn: &Connection) -> Result<()> {
     panel_preferences_migration::ensure_tab_mode(conn)?;
     ensure_runtime_columns(conn)?;
     ensure_model_columns(conn)?;
+    ensure_usage_columns(conn)?;
     // 内置插件包/实例随应用注册（幂等）；缺失时设置页会显示为空而不是内置能力清单。
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -131,6 +132,15 @@ fn ensure_model_columns(conn: &Connection) -> Result<()> {
             "ALTER TABLE ai_model_profiles ADD COLUMN connection_checked_at_ms INTEGER;",
         )
         .map_err(crate::sqlite::sqlite_error)?;
+    }
+    Ok(())
+}
+
+/// 幂等补列：老库的 `ai_usage_ledger` 可能缺少后加的标题列。
+fn ensure_usage_columns(conn: &Connection) -> Result<()> {
+    if !table_has_column(conn, "ai_usage_ledger", "title")? {
+        conn.execute_batch("ALTER TABLE ai_usage_ledger ADD COLUMN title TEXT;")
+            .map_err(crate::sqlite::sqlite_error)?;
     }
     Ok(())
 }

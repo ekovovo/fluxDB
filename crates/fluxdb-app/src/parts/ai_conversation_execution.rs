@@ -377,6 +377,7 @@ fn ai_conversation_run_turn(
                     tool_version,
                     plan_hash,
                     scope,
+                    details,
                 } => {
                     let saved = ai_conversation_record_approval(
                         storage,
@@ -386,6 +387,7 @@ fn ai_conversation_run_turn(
                         tool_version,
                         &plan_hash,
                         &scope.to_json(),
+                        &details.to_json(),
                         &target_json_for_parts,
                         text.len(),
                     );
@@ -456,7 +458,8 @@ fn ai_conversation_run_turn(
             }
         }
     }
-    if let Some(reason) = &paused_reason {
+    // 审批卡已表达暂停原因，不再追加一条重复的 pending 提示。
+    if let Some(reason) = paused_reason.as_ref().filter(|_| approval_id.is_none()) {
         let _ = ai_conversation_save_part(
             storage,
             job,
@@ -478,6 +481,10 @@ fn ai_conversation_run_turn(
             }
             _ => "模型未返回正文。".into(),
         });
+    }
+    // 首轮成功后生成标题；放在最终保存前，标题结果在终端事件前落库。
+    if status == fluxdb_storage::ai_platform::sessions::TurnStatus::Completed && !cancel.is_cancelled() {
+        generate_session_title(storage, job, provider, &text);
     }
     match persist_ai_conversation_event(
         storage,

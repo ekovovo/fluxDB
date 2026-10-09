@@ -1943,6 +1943,7 @@ where id = 42 and name = 'Bob''s Bike' and flag = 'ignored'"
                         cell_detail_panel: CellDetailPanelState::default(),
                         table_info: TableInfoState::default(),
                         loading: false,
+                        submitting: false,
                         error: None,
                     }),
                     dirty: true,
@@ -5395,6 +5396,7 @@ where id = 42 and name = 'Bob''s Bike' and flag = 'ignored'"
                     cell_detail_panel: CellDetailPanelState::default(),
                     table_info: TableInfoState::default(),
                     loading: false,
+                    submitting: false,
                     error: None,
                 }),
                 dirty: false,
@@ -6030,4 +6032,3 @@ fn postgres_form_validation_uses_profile_rules() {
         assert_eq!(ErExportKind::Mermaid.extension(), "mmd");
         assert_eq!(ErExportKind::Svg.extension(), "svg");
     }
-

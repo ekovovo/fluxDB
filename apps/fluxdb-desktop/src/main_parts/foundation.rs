@@ -352,6 +352,7 @@ enum AppIcon {
     FolderUp,
     Github,
     Home,
+    Info,
     Key,
     Link,
     List,
@@ -384,6 +385,7 @@ enum AppIcon {
     Wand,
     Workflow,
     Text,
+    TriangleAlert,
     WrapText,
 }
 
@@ -419,6 +421,7 @@ fn app_icon_path(icon: AppIcon) -> &'static str {
         AppIcon::FolderUp => "icons/folder-up.svg",
         AppIcon::Github => "icons/github.svg",
         AppIcon::Home => "icons/home.svg",
+        AppIcon::Info => "icons/info.svg",
         AppIcon::Key => "icons/key.svg",
         AppIcon::Link => "icons/link.svg",
         AppIcon::List => "icons/list.svg",
@@ -451,6 +454,7 @@ fn app_icon_path(icon: AppIcon) -> &'static str {
         AppIcon::Wand => "icons/wand-sparkles.svg",
         AppIcon::Workflow => "icons/workflow.svg",
         AppIcon::Text => "icons/text.svg",
+        AppIcon::TriangleAlert => "icons/triangle-alert.svg",
         AppIcon::WrapText => "icons/wrap-text.svg",
     }
 }

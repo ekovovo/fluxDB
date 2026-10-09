@@ -1,0 +1,141 @@
+/// 会话标题生成：首轮完成后由同一生成模型产出短语标题。
+///
+/// 设计约束：
+/// - 只覆盖"第一轮尚未被用户重命名"的默认标题（`revision=1`）；用户改名/归档/恢复后不再覆盖。
+/// - 标题请求计量走 `purpose='title'`，`title` 列存结果；总量查询不按标题列过滤，会话汇总不受影响。
+/// - 失败保持原截断标题，不影响会话或回复。
+use fluxdb_core::ModelRequest;
+
+const MAX_TITLE_CHARS: usize = 40;
+
+pub fn build_title_prompt(prompt: &str, reply: &str) -> String {
+    format!(
+        "请为以下数据库助手对话生成一个不超过 {MAX_TITLE_CHARS} 字的简洁标题。\
+         直接输出标题正文，不要引号、编号或多余说明。\n\n\
+         用户消息：\n{prompt}\n\n助手回复摘要：\n{}",
+        &reply.chars().take(2048).collect::<String>()
+    )
+}
+
+/// 校验并归一化模型输出为可入库标题；空串或超长截断后仍可作为默认标题。
+pub fn normalize_session_title(raw: &str) -> Option<String> {
+    let title: String = raw
+        .trim()
+        .trim_start_matches(['"', '\'', '「', '《'])
+        .trim_end_matches(['"', '\'', '」', '》', '。', '，', ','])
+        .chars()
+        .take(MAX_TITLE_CHARS)
+        .collect();
+    let title = title.trim().to_string();
+    (!title.is_empty()).then_some(title)
+}
+
+/// 首轮完成后生成标题；尽力而为，任何失败静默保留原截断标题。
+pub fn generate_session_title(
+    storage: &fluxdb_storage::FileStorage,
+    job: &AiConversationJob,
+    provider: &dyn fluxdb_core::GenerationProvider,
+    reply: &str,
+) {
+    let prompt = match with_ai_storage(storage, |conn| {
+        fluxdb_storage::ai_platform::sessions::first_user_message_text(conn, &job.session_id)
+    }) {
+        Ok(Some(text)) => text,
+        _ => return,
+    };
+    let request = ModelRequest {
+        model: job.model_profile_id.clone(),
+        messages: vec![fluxdb_core::ModelMessage::new(
+            fluxdb_core::ModelRole::User,
+            build_title_prompt(&prompt, reply),
+        )],
+        tools: Vec::new(),
+        max_output_tokens: Some(64),
+    };
+    let cancel = fluxdb_core::CancelFlag::new();
+    let estimated_input = estimate_messages_tokens(&request.messages);
+    let events = match block_on_ready(provider.stream(request, cancel)) {
+        Ok(Ok(events)) => events,
+        Ok(Err(_)) | Err(_) => return,
+    };
+    let mut raw = String::new();
+    let mut finished = false;
+    for event in events {
+        match event {
+            fluxdb_core::ModelEvent::TextDelta(delta) => raw.push_str(&delta),
+            fluxdb_core::ModelEvent::Finished(fluxdb_core::FinishReason::Stop) => {
+                finished = true;
+            }
+            _ => {}
+        }
+    }
+    if !finished {
+        return;
+    }
+    let Some(title) = normalize_session_title(&raw) else {
+        return;
+    };
+    let request_id = uuid::Uuid::new_v4().to_string();
+    let descriptor = fluxdb_storage::ai_platform::usage_ledger::UsageRequest {
+        request_id: request_id.clone(),
+        session_id: job.session_id.clone(),
+        turn_id: job.turn_id.clone(),
+        model_profile_id: job.model_profile_id.clone(),
+        purpose: "title".into(),
+        estimated_input_tokens: estimated_input,
+        max_output_tokens: 64,
+        title: Some(title.clone()),
+    };
+    let result = with_ai_storage(storage, |conn| {
+        fluxdb_storage::ai_platform::usage_ledger::reserve(
+            conn,
+            ai_chat_now(),
+            &descriptor,
+        )?;
+        fluxdb_storage::ai_platform::usage_ledger::settle(
+            conn,
+            ai_chat_now(),
+            &request_id,
+            None,
+        )?;
+        fluxdb_storage::ai_platform::sessions::rename_session_if_default(
+            conn,
+            ai_chat_now(),
+            &job.session_id,
+            &title,
+        )
+    });
+    if let Err(error) = result {
+        tracing::debug!(session_id=%job.session_id, error=%error.message, "会话标题生成失败");
+    }
+}
+
+#[cfg(test)]
+mod ai_session_title_tests {
+    use super::*;
+
+    #[test]
+    fn title_prompt_includes_user_and_reply_excerpt() {
+        let prompt = build_title_prompt("查询订单表", "已生成 SELECT 语句。");
+        assert!(prompt.contains("查询订单表"));
+        assert!(prompt.contains("已生成 SELECT 语句"));
+        assert!(prompt.contains("40"));
+    }
+
+    #[test]
+    fn title_normalization_strips_quotes_and_truncates() {
+        assert_eq!(
+            normalize_session_title("「订单数据分析」").as_deref(),
+            Some("订单数据分析")
+        );
+        let long = "长".repeat(60);
+        let normalized = normalize_session_title(&long).unwrap();
+        assert_eq!(normalized.chars().count(), 40);
+    }
+
+    #[test]
+    fn title_normalization_rejects_empty() {
+        assert_eq!(normalize_session_title("  "), None);
+        assert_eq!(normalize_session_title("\"\""), None);
+    }
+}

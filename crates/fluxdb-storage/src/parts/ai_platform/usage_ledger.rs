@@ -12,6 +12,8 @@ pub struct UsageRequest {
     pub purpose: String,
     pub estimated_input_tokens: i64,
     pub max_output_tokens: i64,
+    /// 请求产物标题；标题生成等轻量请求必须提供，主对话保持 `None`。
+    pub title: Option<String>,
 }
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct UsageTotals {
@@ -45,7 +47,8 @@ fn cost(usage: Usage, prices: [Option<i64>; 3]) -> Option<i64> {
 /// 返回 false 表示同一 request 已预留；调用方不得再次请求供应商。
 pub fn reserve(conn: &Connection, now: i64, request: &UsageRequest) -> Result<bool> {
     if request.request_id.trim().is_empty()
-        || !["main", "decision", "compaction", "artifact"].contains(&request.purpose.as_str())
+        || !["main", "decision", "compaction", "artifact", "title"]
+            .contains(&request.purpose.as_str())
         || request.estimated_input_tokens < 0
         || request.max_output_tokens < 0
     {
@@ -134,7 +137,7 @@ pub fn reserve(conn: &Connection, now: i64, request: &UsageRequest) -> Result<bo
     }
     let pricing=serde_json::json!({"input":prices[0],"output":prices[1],"cache":prices[2],"model_revision":model.revision}).to_string();
     tx.execute("INSERT INTO ai_budget_reservations(id,request_id,attempt,session_id,turn_id,budget_policy_id,amount_micros,status,created_at_ms,updated_at_ms) VALUES(?1,?1,1,?2,?3,?4,?5,'held',?6,?6)",params![request.request_id,request.session_id,request.turn_id,policy_id,amount.unwrap_or(0),now]).map_err(sqlite_error)?;
-    tx.execute("INSERT INTO ai_usage_ledger(id,session_id,turn_id,request_id,attempt,model_profile_id,budget_policy_id,purpose,measurement,pricing_snapshot_json,created_at_ms) VALUES(?1,?2,?3,?1,1,?4,?5,?6,'unknown',?7,?8)",params![request.request_id,request.session_id,request.turn_id,request.model_profile_id,policy_id,request.purpose,pricing,now]).map_err(sqlite_error)?;
+    tx.execute("INSERT INTO ai_usage_ledger(id,session_id,turn_id,request_id,attempt,model_profile_id,budget_policy_id,purpose,measurement,pricing_snapshot_json,title,created_at_ms) VALUES(?1,?2,?3,?1,1,?4,?5,?6,'unknown',?7,?8,?9)",params![request.request_id,request.session_id,request.turn_id,request.model_profile_id,policy_id,request.purpose,pricing,request.title,now]).map_err(sqlite_error)?;
     tx.commit().map_err(sqlite_error)?;
     Ok(true)
 }

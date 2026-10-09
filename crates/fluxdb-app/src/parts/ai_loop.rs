@@ -53,6 +53,9 @@ pub struct TurnPermissionContext {
     pub policy: KernelPolicy,
     /// 工具/插件摘要，参与 plan hash。
     pub plugin_digest: Option<String>,
+    /// 本轮目标连接的 SQL 方言；只用于审批卡的计划风险分类，
+    /// 不参与授权判定。Redis 连接为 `None`。
+    pub target_dialect: Option<SqlDialectKind>,
 }
 
 /// 主循环的领域事件；执行方将事实持久化，再投影成会话更新。
@@ -79,6 +82,9 @@ pub enum LoopEvent {
         tool_version: u32,
         plan_hash: String,
         scope: ApprovalScope,
+        /// 审批卡要展示给用户的计划事实（SQL 原文、护栏命中、影响预估依据）。
+        /// 只是内核已经算出的结论的投影，不参与授权判定，也不能改写放行结果。
+        details: ApprovalDetails,
     },
     /// 给用户/模型的可见说明（未知工具、截断未执行、无进展暂停等）。
     Notice(String),
@@ -476,12 +482,16 @@ impl<'a> TurnRunner<'a> {
                     // 4b) 需要审批：不执行、不回执，暂停等用户决定（审批绑定 plan_hash）。
                     PermissionDecision::RequireApproval { plan_hash, scope } => {
                         let reason = format!("工具 {} 需要审批后才能执行。", spec.id);
-                        emit(LoopEvent::Notice(reason.clone()));
                         emit(LoopEvent::ApprovalRequired {
                             call: call.clone(),
                             tool_version: spec.version,
                             plan_hash,
                             scope,
+                            details: approval_details_for(
+                                &spec.id,
+                                &prepared.to_json_string(),
+                                self.permission.target_dialect,
+                            ),
                         });
                         return TurnOutcome::Paused { reason };
                     }

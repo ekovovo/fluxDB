@@ -32,13 +32,14 @@ impl NavicatMain {
         self.ai_chat_request(self.ai_chat_ui_command(cx), window, cx);
     }
     fn close_ai_chat(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.reject_pending_ai_chat_approval(window, cx);
         self.save_ai_chat_ui(window, cx);
         self.ai_chat.open = false;
         self.ai_chat.history = false;
         if let Some(tab_id) = self.ai_chat.tab_id.take() {
             self.dispatch(AppCommand::CloseTab(tab_id), cx);
         }
-        // 关闭只隐藏面板，不取消任务、不清消息。返回输入焦点给宿主工作区。
+        // 关闭不取消正在执行的任务、不清消息；待审批调用则明确拒绝本次。
         self.focus_handle.focus(window, cx);
         cx.notify();
     }
@@ -78,6 +79,12 @@ impl NavicatMain {
             command,
             fluxdb_app::AiConversationCommand::Load { .. } | fluxdb_app::AiConversationCommand::New
         );
+        let approval = match &command {
+            fluxdb_app::AiConversationCommand::DecideApproval { approval_id, approved, .. } =>
+                Some((approval_id.clone(), *approved)),
+            _ => None,
+        };
+        self.ai_chat.deciding_approval = approval.is_some();
         if update_input || recovering {
             self.ai_chat.loading = true;
         }
@@ -85,13 +92,20 @@ impl NavicatMain {
         let mut controller = self.controller.clone();
         cx.notify();
         self.ai_chat._io = Some(cx.spawn_in(window, async move |view, cx| {
-            let event = cx
+            let background_approval = approval.clone();
+            let (event, resume) = cx
                 .background_spawn(async move {
-                    controller.dispatch(AppCommand::AiConversation(command))
+                    let event = controller.dispatch(AppCommand::AiConversation(command));
+                    // 决定与恢复准备都读写 SQLite，在后台完成；只有决定成功才准备恢复。
+                    let resume = background_approval
+                        .filter(|(_, approved)| *approved && matches!(event, AppEvent::AiConversationLoaded(_)))
+                        .map(|(id, _)| controller.prepare_ai_resume_job(&id));
+                    (event, resume)
                 })
                 .await;
             let _ = view.update_in(cx, |this, window, cx| {
                 this.ai_chat._io = None;
+                this.ai_chat.deciding_approval = false;
                 this.ai_chat.loading = false;
                 if epoch == this.ai_chat.epoch {
                     match event {
@@ -136,12 +150,28 @@ impl NavicatMain {
                             }
                         }
                         AppEvent::AiSettingsError(message) => {
-                            if recovering {
-                                this.ai_chat.recovery_failed = true;
+                            if approval.is_some() {
+                                this.show_message(
+                                    "审批状态已变化（可能已处理或失效），请刷新后重试",
+                                    AppMessageKind::Warning, cx,
+                                );
+                            } else {
+                                if recovering {
+                                    this.ai_chat.recovery_failed = true;
+                                }
+                                this.ai_chat.error = Some(message);
                             }
-                            this.ai_chat.error = Some(message);
                         }
                         _ => {}
+                    }
+                    if let (Some((id, _)), Some(resume)) = (approval, resume) {
+                        match resume {
+                            Ok(job) => this.start_ai_chat_job_with(job, Some(id), cx),
+                            Err(error) => this.show_message(
+                                format!("无法恢复任务：{}", error.message),
+                                AppMessageKind::Warning, cx,
+                            ),
+                        }
                     }
                 }
                 this.ai_chat_process(window, cx);
@@ -382,36 +412,38 @@ impl NavicatMain {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let event = self.controller.dispatch(AppCommand::AiConversation(
-            fluxdb_app::AiConversationCommand::DecideApproval {
-                approval_id: approval_id.clone(),
-                approved,
-                expected_revision,
-            },
-        ));
-        if matches!(event, AppEvent::AiSettingsError(_)) {
-            self.show_message(
-                "审批状态已变化（可能已处理或失效），请刷新后重试",
-                AppMessageKind::Warning,
-                cx,
-            );
-            cx.notify();
+        if self.ai_chat.deciding_approval || self.ai_chat.loading || self.ai_chat.running.is_some() {
             return;
         }
-        if !approved {
-            cx.notify();
-            return;
-        }
-        let _ = window;
-        match self.controller.prepare_ai_resume_job(&approval_id) {
-            Ok(job) => self.start_ai_chat_job_with(job, Some(approval_id), cx),
-            Err(error) => self.show_message(
-                &format!("无法恢复任务：{}", error.message),
-                AppMessageKind::Warning,
-                cx,
-            ),
-        }
-        cx.notify();
+        self.ai_chat.deciding_approval = true;
+        self.ai_chat_request(
+            fluxdb_app::AiConversationCommand::DecideApproval { approval_id, approved, expected_revision },
+            window, cx,
+        );
+    }
+
+    /// 关闭/退出审批通过同一 CAS 决定链路拒绝；不把运行中或已决定的记录当作待审批。
+    fn reject_pending_ai_chat_approval(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let pending = self.controller.state().ai_conversation.messages.iter()
+            .flat_map(|message| &message.parts)
+            .filter(|part| part.kind == "notice" && part.status == "pending")
+            .find_map(|part| {
+                let payload = serde_json::from_str::<serde_json::Value>(&part.payload_json).ok()?;
+                if payload.get("decision").and_then(serde_json::Value::as_str).is_some() {
+                    return None;
+                }
+                Some((
+                    payload.get("approval_id")?.as_str()?.to_owned(),
+                    payload.get("approval_revision").and_then(serde_json::Value::as_i64).unwrap_or(1),
+                ))
+            });
+        let Some((id, revision)) = pending else { return false };
+        self.decide_ai_chat_approval(id, false, revision, window, cx);
+        true
     }
     /// 调试用目标覆盖（仅 debug 构建）：GUI E2E 需要确定性 target，避免依赖"当前标签页"状态。
     /// 生产构建不读取该环境变量，永远使用真实界面捕获。

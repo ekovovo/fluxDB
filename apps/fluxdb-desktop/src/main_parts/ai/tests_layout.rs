@@ -1,3 +1,45 @@
+#[gpui_kit::test]
+fn chat_message_roles_are_distinct_light(cx: &mut TestAppContext) {
+    check_chat_message_roles(cx, ThemeMode::Light);
+}
+
+#[gpui_kit::test]
+fn chat_message_roles_are_distinct_dark(cx: &mut TestAppContext) {
+    check_chat_message_roles(cx, ThemeMode::Dark);
+}
+
+fn check_chat_message_roles(cx: &mut TestAppContext, theme: ThemeMode) {
+    let fixture = Fixture::new();
+    seed_regular_parts(&fixture, "regular");
+    let (view, cx) = open_main(cx, &fixture, fixture.controller(), theme);
+    open_panel(&view, cx);
+    for width in [1000., 640.] {
+        cx.simulate_resize(size(px(width), px(700.)));
+        draw(cx);
+        let user = cx.debug_bounds("ai-message:regular-user").unwrap();
+        let bubble = cx.debug_bounds("ai-message-content:regular-user").unwrap();
+        let assistant = cx.debug_bounds("ai-message:regular-assistant").unwrap();
+        let reply = cx.debug_bounds("ai-message-content:regular-assistant").unwrap();
+        let summary = cx.debug_bounds("execution:regular-assistant").unwrap();
+        assert!(bubble.size.width > px(0.));
+        assert!(bubble.size.width <= user.size.width * 0.82 + px(1.), "用户气泡应保留左侧留白");
+        assert!((bubble.right() - user.right()).abs() <= px(1.), "用户气泡应靠右");
+        assert!((reply.left() - assistant.left()).abs() <= px(1.), "AI 回复应靠左");
+        assert!(assistant.top() - user.bottom() >= px(16.), "轮次间距应明显大于段落间距");
+        assert!(summary.left() >= reply.left() + px(10.), "工具摘要应缩进");
+        assert!(summary.center().x < reply.center().x, "工具摘要不应居中");
+        assert!(summary.top() - reply.top() <= px(36.), "Agent 标题后不能有空布局撑高");
+    }
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.click("execution:regular-assistant", cx);
+    });
+    wait_idle(&view, cx);
+    assert!(view.read_with(cx, |main, _| main.controller.state().ai_conversation.expanded_parts
+        .contains(&"execution:regular-assistant".into())));
+    assert!(cx.debug_bounds("ai-part:regular-assistant-tool-call").is_some());
+}
+
 #[gpui::test]
 fn long_conversation_keeps_statusbar_fixed_light(cx: &mut TestAppContext) {
     check_long_conversation_statusbar(cx, ThemeMode::Light);

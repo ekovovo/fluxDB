@@ -482,7 +482,6 @@ impl<'a> TurnRunner<'a> {
                     // 4b) 需要审批：不执行、不回执，暂停等用户决定（审批绑定 plan_hash）。
                     PermissionDecision::RequireApproval { plan_hash, scope } => {
                         let reason = format!("工具 {} 需要审批后才能执行。", spec.id);
-                        emit(LoopEvent::Notice(reason.clone()));
                         emit(LoopEvent::ApprovalRequired {
                             call: call.clone(),
                             tool_version: spec.version,

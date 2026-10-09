@@ -168,15 +168,17 @@ impl AppController {
             let (decision,text)=if approved {("approved","已批准；宿主会按 plan_hash 复核后执行一次。")}
                 else {("denied","你已拒绝该工具调用，未执行任何操作。")};
             let part_id = format!("{message}-approval-{}",call.provider_call_id);
-            let mut payload = serde_json::json!({"text":text,"approval_id":id,"decision":decision,"plan_hash":decided.plan_hash});
-            // 决定只更新卡片状态，保留原审批在正文中的位置。
+            let mut payload = serde_json::json!({});
+            // 保留原计划与正文位置，决定后仍可核对当时批准或拒绝的内容。
             if let Some(part) = fluxdb_storage::ai_platform::sessions::list_parts(&tx,&message)?
                 .into_iter().find(|part| part.id == part_id) {
-                if let Some(offset) = serde_json::from_str::<serde_json::Value>(&part.payload_json)
-                    .ok().and_then(|value| value["text_offset"].as_u64()) {
-                    payload["text_offset"] = offset.into();
-                }
+                payload = serde_json::from_str::<serde_json::Value>(&part.payload_json)
+                    .ok().filter(serde_json::Value::is_object).unwrap_or_else(||serde_json::json!({}));
             }
+            payload["text"] = text.into();
+            payload["approval_id"] = id.into();
+            payload["decision"] = decision.into();
+            payload["plan_hash"] = decided.plan_hash.into();
             fluxdb_storage::ai_platform::conversation::upsert_event_part_in_transaction(&tx,ai_chat_now(),&call.session_id,&call.turn_id,
                 &message,&part_id,
                 fluxdb_storage::ai_platform::sessions::PartKind::Notice,fluxdb_storage::ai_platform::sessions::PartStatus::Complete,
@@ -185,6 +187,16 @@ impl AppController {
                 fluxdb_storage::ai_platform::sessions::finish_tool_call(&tx,call_id,"denied",None,None,None)?;
                 fluxdb_storage::ai_platform::sessions::update_turn_status(&tx,ai_chat_now(),&call.turn_id,
                     fluxdb_storage::ai_platform::sessions::TurnStatus::Interrupted,Some("approval_denied"),turn.revision)?;
+                // 旧等待提示可能已被启动恢复标为 interrupted，仍由本次决定替代。
+                let paused_id = format!("{message}-notice-paused");
+                if let Some(part) = fluxdb_storage::ai_platform::sessions::list_parts(&tx,&message)?
+                    .into_iter().find(|part|part.id==paused_id && matches!(part.status,
+                        fluxdb_storage::ai_platform::sessions::PartStatus::Pending | fluxdb_storage::ai_platform::sessions::PartStatus::Interrupted)) {
+                    fluxdb_storage::ai_platform::sessions::update_part(&tx,ai_chat_now(),&paused_id,
+                        fluxdb_storage::ai_platform::sessions::PartStatus::Interrupted,
+                        &serde_json::json!({"text":"本次操作已拒绝，未执行；本轮已停止。","approval_id":id,"decision":"denied","superseded_by":part_id}).to_string(),
+                        part.revision)?;
+                }
                 let notice=format!("{}-restart-notice",call.turn_id);
                 let exists:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM ai_message_parts WHERE id=?1)",[&notice],|r|r.get(0)).map_err(|e|reject(&e.to_string()))?;
                 if exists {

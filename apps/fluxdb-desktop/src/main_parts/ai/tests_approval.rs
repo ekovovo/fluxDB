@@ -257,10 +257,9 @@
             "批准按钮必须紧凑：{approve:?}");
     }
 
-    /// 设计 §31.9 第 1–6 项：头部、上下文行、计划内容、影响预估、护栏清单、提示
-    /// 都必须来自持久化事实真实渲染，不能只剩一句内联文字。
+    /// 通用卡片保留目标与计划原文，常规校验和未核实行数不占固定空间。
     #[gpui_kit::test]
-    fn ai_panel_approval_card_renders_all_designed_sections(cx: &mut TestAppContext) {
+    fn ai_panel_approval_card_renders_compact_plan(cx: &mut TestAppContext) {
         let fixture = Fixture::new();
         seed_approval_with_details(
             &fixture,
@@ -298,15 +297,14 @@
         cx.update(|window, cx| {
             window.render_frame(cx);
             let card = window.within("ai-approval:approval-sections-assistant-approval-1");
-            assert_eq!(card.find("heading").label(), Some("需要你批准这次写入"));
+            assert_eq!(card.find("heading").label(), Some("批准本次操作？"));
             assert_eq!(card.find("risk").label(), Some("风险：中"));
-            assert!(card.find("连接环境").label().unwrap().contains("隔离验收库"));
-            assert!(card.find("目标连接配置").label().unwrap().contains("rev 0"));
-            assert!(card.find("目标连接配置").label().unwrap().contains("配置变更后请重新核对"));
-            assert_eq!(card.find("数据库").label(), Some("数据库：shop / public / orders"));
+            assert!(card.find("连接").label().unwrap().contains("隔离验收库"));
+            assert_eq!(card.find("目标").label(), Some("目标：shop / public / orders"));
             assert_eq!(card.find(("statement", 0_usize)).label(), Some("DELETE FROM orders WHERE id=1"));
-            assert!(card.find("guardrails").label().unwrap().contains("未通过只读分类"));
-            assert!(card.find("hint").label().unwrap().contains("拒绝本次"));
+            assert!(window.try_find("目标连接配置").is_none());
+            assert!(window.try_find("guardrails").is_none());
+            assert!(window.try_find("hint").is_none());
             window.click("ai-approval-copy:approval-sections-assistant-approval-1:0", cx);
         });
         cx.update(|_, cx| {
@@ -314,7 +312,7 @@
         });
     }
 
-    /// 影响预估未核实时必须显示"未知"，不能拿估算行数冒充已核实。
+    /// 未核实的影响预估不渲染占位区域，也不能从 SQL 文本编造行数。
     #[gpui_kit::test]
     fn ai_panel_approval_card_does_not_fabricate_impact_rows(cx: &mut TestAppContext) {
         let fixture = Fixture::new();
@@ -332,9 +330,62 @@
         open_panel(&view, cx);
         cx.update(|window, cx| {
             window.render_frame(cx);
-            let card = window.within("ai-approval:approval-impact-assistant-approval-1");
-            assert!(card.find("预计影响行数").label().unwrap().starts_with("预计影响行数：未知"));
-            assert!(card.find("依据").label().unwrap().starts_with("依据：未核实"));
+            assert!(window.try_find("预计影响行数").is_none());
+            assert!(window.try_find("依据").is_none());
+        });
+    }
+
+    /// Redis 参数边界与高风险依据不能因通用布局被隐藏。
+    #[gpui_kit::test]
+    fn ai_panel_approval_card_preserves_redis_risk(cx: &mut TestAppContext) {
+        let fixture = Fixture::new();
+        seed_approval_with_details(
+            &fixture,
+            "approval-redis",
+            "appr-redis",
+            sessions::PartStatus::Pending,
+            None,
+            r#"{"argv":["CUSTOM","key with spaces"]}"#,
+            r#"{"connection_id":1,"redis_db":2,"object":"key with spaces"}"#,
+            r#"{"risk":"high","statements":["[\"CUSTOM\", \"key with spaces\"]"],"guardrails":["命令未在内核白名单内，影响面未核实"],"estimated_rows":null}"#,
+        );
+        let (view, cx) = open_main(cx, &fixture, fixture.controller(), ThemeMode::Dark);
+        open_panel(&view, cx);
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            let card = window.within("ai-approval:approval-redis-assistant-approval-1");
+            assert_eq!(card.find("heading").label(), Some("批准本次操作？"));
+            assert_eq!(card.find("risk").label(), Some("风险：高"));
+            assert_eq!(card.find("目标").label(), Some("目标：DB 2 / key with spaces"));
+            assert!(card.find("guardrails").label().unwrap().contains("影响面未核实"));
+            window.click("ai-approval-copy:approval-redis-assistant-approval-1:0", cx);
+        });
+        cx.update(|_, cx| {
+            assert_eq!(
+                cx.read_from_clipboard().unwrap().text().as_deref(),
+                Some("[\"CUSTOM\", \"key with spaces\"]")
+            );
+        });
+    }
+
+    #[gpui_kit::test]
+    fn ai_panel_approval_card_keeps_recorded_impact(cx: &mut TestAppContext) {
+        let fixture = Fixture::new();
+        seed_approval_with_details(
+            &fixture,
+            "approval-known-impact",
+            "appr-known-impact",
+            sessions::PartStatus::Pending,
+            None,
+            r#"{"sql":"DELETE FROM orders WHERE id=1"}"#,
+            r#"{"connection_id":1,"database":"shop"}"#,
+            r#"{"risk":"medium","statements":["DELETE FROM orders WHERE id=1"],"estimated_rows":1}"#,
+        );
+        let (view, cx) = open_main(cx, &fixture, fixture.controller(), ThemeMode::Light);
+        open_panel(&view, cx);
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            assert_eq!(window.find("预计影响行数").label(), Some("预计影响行数：1 行"));
         });
     }
 
@@ -356,7 +407,7 @@
         open_panel(&view, cx);
         assert!(
             cx.debug_bounds("ai-approval-copy:approval-decided-card-assistant-approval-1:0").is_none(),
-            "已决定的审批不应再渲染计划内容与批准控件"
+            "已决定的审批默认折叠执行内容，不再显示决定按钮"
         );
         assert!(cx.debug_bounds("ai-approve:appr-decided-card").is_none());
         assert!(cx.debug_bounds("ai-deny:appr-decided-card").is_none());
@@ -414,6 +465,83 @@
         cx.update(|window, _| window.remove_window());
         drop(view);
         cx.run_until_parked();
+    }
+
+    #[gpui_kit::test]
+    async fn ai_panel_deny_keeps_plan_and_stops_waiting(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        for mode in [ThemeMode::Light, ThemeMode::Dark] {
+            let fixture = Fixture::new();
+            seed_approval(&fixture, "approval-deny", "appr-deny", sessions::PartStatus::Pending, None);
+            // 兼容旧版落盘的额外等待提示，拒绝必须同步结束其 pending 状态。
+            fixture.storage.with_ai_connection(|conn| {
+                conversation::upsert_event_part(
+                    conn, 1_700_000_000_001, "approval-deny", "approval-deny-turn",
+                    "approval-deny-assistant", "approval-deny-assistant-notice-paused",
+                    sessions::PartKind::Notice, sessions::PartStatus::Pending,
+                    r#"{"text":"工具 db.execute 需要审批后才能执行。"}"#, None, None,
+                )?;
+                Ok(())
+            }).unwrap();
+            let (view, cx) = open_main(cx, &fixture, fixture.controller(), mode);
+            open_panel(&view, cx);
+            cx.update(|window, cx| {
+                window.render_frame(cx);
+                window.click("ai-deny:appr-deny", cx);
+            });
+            let handle = cx.window_handle();
+            cx.cx.wait_for(handle, Duration::from_secs(3), |window, app| {
+                !view.read(app).ai_chat.deciding_approval
+                    && window.try_find("ai-deny:appr-deny").is_none()
+            }).await;
+            assert_eq!(approval_state(&fixture, "appr-deny").0.as_str(), "denied");
+            fixture.storage.with_ai_connection(|conn| {
+                let turn = sessions::load_turn(conn, "approval-deny-turn")?;
+                assert_eq!(turn.status, sessions::TurnStatus::Interrupted);
+                let call = sessions::load_tool_call(conn, "approval-deny-turn-toolcall-1")?;
+                assert_eq!(call.status, "denied");
+                assert!(call.receipt_json.is_none(), "拒绝不能伪造执行回执");
+                let parts = sessions::list_parts(conn, "approval-deny-assistant")?;
+                let paused = parts.iter().find(|part| part.id.ends_with("-notice-paused")).unwrap();
+                assert_eq!(paused.status, sessions::PartStatus::Interrupted);
+                let paused_payload: serde_json::Value = serde_json::from_str(&paused.payload_json).unwrap();
+                assert_eq!(paused_payload["superseded_by"], "approval-deny-assistant-approval-1");
+                let approval = parts.iter().find(|part| part.id.ends_with("-approval-1")).unwrap();
+                let payload: serde_json::Value = serde_json::from_str(&approval.payload_json).unwrap();
+                assert_eq!(payload["details"]["statements"][0], "DELETE FROM orders WHERE id=1");
+                Ok(())
+            }).unwrap();
+            cx.update(|window, cx| {
+                window.render_frame(cx);
+                let messages = &view.read(cx).controller.state().ai_conversation.messages;
+                for message in messages {
+                    assert!(!ai_compact_parts(&message.parts).iter().any(|part| part.id == "approval-deny-assistant-notice-paused"));
+                }
+                let result = window.find("ai-part:approval-deny-assistant-approval-1");
+                assert!(result.label().unwrap().starts_with("已拒绝 · 未执行"));
+                assert!(window.try_find("ai-part:approval-deny-assistant-notice-paused").is_none());
+                assert!(window.try_find("ai-approve:appr-deny").is_none());
+                assert!(window.try_find("ai-part-detail:approval-deny-assistant-approval-1").is_none());
+                window.click("ai-part:approval-deny-assistant-approval-1", cx);
+            });
+            cx.update(|window, cx| {
+                window.render_frame(cx);
+                assert!(window.try_find("ai-part-detail:approval-deny-assistant-approval-1").is_some());
+                window.click("ai-approval-copy:approval-deny-assistant-approval-1:0", cx);
+            });
+            cx.update(|window, cx| {
+                assert_eq!(cx.read_from_clipboard().unwrap().text().as_deref(), Some("DELETE FROM orders WHERE id=1"));
+                window.click("ai-part:approval-deny-assistant-approval-1", cx);
+            });
+            cx.update(|window, cx| {
+                window.render_frame(cx);
+                assert!(window.try_find("ai-part-detail:approval-deny-assistant-approval-1").is_none());
+                assert!(view.read(cx).ai_chat.running.is_none());
+                window.remove_window();
+            });
+            drop(view);
+            cx.run_until_parked();
+        }
     }
 
     #[gpui_kit::test]

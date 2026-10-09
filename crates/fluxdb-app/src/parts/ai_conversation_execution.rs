@@ -458,7 +458,8 @@ fn ai_conversation_run_turn(
             }
         }
     }
-    if let Some(reason) = &paused_reason {
+    // 审批卡已表达暂停原因，不再追加一条重复的 pending 提示。
+    if let Some(reason) = paused_reason.as_ref().filter(|_| approval_id.is_none()) {
         let _ = ai_conversation_save_part(
             storage,
             job,

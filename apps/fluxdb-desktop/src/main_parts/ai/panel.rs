@@ -497,7 +497,6 @@ fn ai_chat_panel(
                                     &ai_approval_context(
                                         chat.target_json.as_deref(),
                                         &this.controller.state().connections,
-                                        |id| this.controller.connection_revision(id),
                                         this.ai_chat.deciding_approval,
                                     ),
                                     stream_view.as_ref().filter(|_| active_stream),

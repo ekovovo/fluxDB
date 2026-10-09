@@ -243,6 +243,9 @@ fn ai_chat_part(
             if !decided && part.status == "pending" {
                 return ai_chat_approval_card(&part.id, &payload, approval, revision, colors, cx);
             }
+            if let Some(decision) = approval_decision {
+                return ai_chat_approval_result(part, &payload, decision, expanded, approval, colors, cx);
+            }
         }
     }
     let (icon, label) = match part.kind.as_str() {
@@ -411,6 +414,22 @@ fn ai_compact_parts(parts: &[fluxdb_app::AiConversationPart]) -> Vec<fluxdb_app:
     };
     let mut output = Vec::new();
     for part in parts {
+        // 已被原审批结果替代的等待提示只保留审计，不重复显示。
+        let superseded = part.kind == "notice" && serde_json::from_str::<serde_json::Value>(&part.payload_json).ok()
+            .is_some_and(|payload| {
+                payload["superseded_by"].as_str().is_some_and(|id| {
+                    parts.iter().any(|other| other.id == id && other.kind == "notice"
+                        && serde_json::from_str::<serde_json::Value>(&other.payload_json).ok()
+                            .is_some_and(|approval| {
+                                approval["approval_id"].as_str().is_some()
+                                    && approval["approval_id"] == payload["approval_id"]
+                                    && approval["decision"].as_str().is_some()
+                            }))
+                })
+            });
+        if superseded {
+            continue;
+        }
         if part.kind == "tool_call_ref" {
             if let Some(key) = call_key(part) {
                 if let Some(result) = parts.iter().find(|p| p.kind == "tool_result_ref" && call_key(p).as_ref() == Some(&key)) {

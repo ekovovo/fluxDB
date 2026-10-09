@@ -39,6 +39,23 @@ fn compact_execution_matches_call_identity_and_preserves_errors() {
 }
 
 #[test]
+fn compact_approval_hides_only_linked_superseded_notice() {
+    let approval = fluxdb_app::AiConversationPart {
+        id: "approval".into(), kind: "notice".into(), status: "complete".into(),
+        payload_json: r#"{"approval_id":"a","decision":"denied"}"#.into(),
+    };
+    let paused = fluxdb_app::AiConversationPart {
+        id: "paused".into(), kind: "notice".into(), status: "interrupted".into(),
+        payload_json: r#"{"approval_id":"a","superseded_by":"approval"}"#.into(),
+    };
+    assert_eq!(ai_compact_parts(&[approval.clone(), paused.clone()]), vec![approval.clone()]);
+    assert_eq!(ai_compact_parts(&[paused.clone()]), vec![paused.clone()]);
+    let mut unrelated = paused;
+    unrelated.payload_json = r#"{"approval_id":"b","superseded_by":"approval"}"#.into();
+    assert_eq!(ai_compact_parts(&[approval.clone(), unrelated.clone()]), vec![approval, unrelated]);
+}
+
+#[test]
 fn execution_timeline_interleaves_text_and_keeps_call_start_position() {
     let mut first = execution_part("first", "tool_call_ref", "streaming", "a");
     first.payload_json = serde_json::json!({"tool_call_id":"a","text_offset":"先查询。\n".len()}).to_string();

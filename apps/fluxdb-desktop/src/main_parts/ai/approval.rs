@@ -1,5 +1,5 @@
-// 询问AI 内联批准卡片（设计 §31.9）：头部、上下文行、计划内容、影响预估、
-// 护栏清单、提示与按钮。数据只来自已持久化的审批片段与本轮固定目标。
+// 通用操作审批：目标、计划原文、必要风险提示与单次授权按钮。
+// 数据只来自已持久化的审批片段与本轮固定目标，不改变内核授权校验。
 
 /// 审批卡需要的连接事实（UI 从 AppState 解析，不从 payload 里取，避免卡片自说自话）。
 struct AiApprovalContext<'a> {
@@ -10,8 +10,6 @@ struct AiApprovalContext<'a> {
     schema: Option<String>,
     redis_db: Option<u64>,
     object: Option<String>,
-    /// 当前进程内的连接修订；用于展示，不作为授权凭证。
-    connection_revision: u64,
     busy: bool,
 }
 
@@ -35,13 +33,12 @@ impl AiApprovalContext<'_> {
     }
 }
 
-/// 从本轮目标解析审批卡的连接事实：连接名、库/schema、连接修订。
+/// 从本轮目标解析审批卡的连接事实：连接名、库/schema。
 ///
 /// 连接缺失或已删除时明确提示不可用，不换成当前界面上的其它连接。
 fn ai_approval_context<'a>(
     target_json: Option<&str>,
     connections: &'a [fluxdb_app::ConnectionState],
-    connection_revision: impl Fn(fluxdb_core::ConnectionId) -> u64,
     busy: bool,
 ) -> AiApprovalContext<'a> {
     let target: serde_json::Value = target_json
@@ -71,9 +68,6 @@ fn ai_approval_context<'a>(
             .get("object")
             .and_then(serde_json::Value::as_str)
             .map(str::to_owned),
-        connection_revision: connection
-            .map(|config| connection_revision(config.id))
-            .unwrap_or(0),
         busy,
     }
 }
@@ -117,8 +111,10 @@ fn ai_approval_code_block(
     copy_id: String,
     index: usize,
     colors: UiColors,
+    cx: &mut Context<NavicatMain>,
 ) -> gpui::AnyElement {
     let text = text.to_string();
+    let copy_text = text.clone();
     div()
         .id(("statement", index))
         .aria_label(text.clone())
@@ -132,6 +128,29 @@ fn ai_approval_code_block(
         .px_2p5()
         .py_2()
         .child(
+            div().flex().justify_end().mb_1().child(
+                Button::new(SharedString::from(format!(
+                    "ai-approval-copy:{copy_id}:{index}"
+                )))
+                .debug_selector({
+                    let id = format!("ai-approval-copy:{copy_id}:{index}");
+                    move || id.clone()
+                })
+                .xsmall()
+                .ghost()
+                .rounded_md()
+                .accessibility_id(format!("ai-approval-copy:{copy_id}:{index}"))
+                .accessibility_label("复制内容")
+                .cursor_pointer()
+                .child(app_icon(AppIcon::Copy, 10., colors.muted))
+                .child(div().text_size(px(10.)).child("复制内容"))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(copy_text.clone()));
+                    this.show_message("内容已复制", AppMessageKind::Success, cx);
+                })),
+            ),
+        )
+        .child(
             div()
                 .max_h(px(132.))
                 .overflow_y_scrollbar()
@@ -140,27 +159,6 @@ fn ai_approval_code_block(
                 .font_family(PLATFORM_MONOSPACE_FONT)
                 .text_color(colors.text)
                 .child(text.clone()),
-        )
-        .child(
-            Button::new(SharedString::from(format!(
-                "ai-approval-copy:{copy_id}:{index}"
-            )))
-            .debug_selector({
-                let id = format!("ai-approval-copy:{copy_id}:{index}");
-                move || id.clone()
-            })
-            .xsmall()
-            .ghost()
-            .rounded_md()
-            .accessibility_id(format!("ai-approval-copy:{copy_id}:{index}"))
-            .accessibility_label("复制计划内容")
-            .cursor_pointer()
-            .mt_1()
-            .child(app_icon(AppIcon::Copy, 10., colors.muted))
-            .child(div().text_size(px(10.)).child("复制语句"))
-            .on_click(move |_, _, cx| {
-                cx.write_to_clipboard(gpui::ClipboardItem::new_string(text.to_string()));
-            }),
         )
         .into_any_element()
 }
@@ -227,62 +225,11 @@ fn ai_approval_context_row(
         .into_any_element()
 }
 
-/// 影响预估一格（设计 §31.9 第 4 项）。行数未核实就写"未知"，不拿估算冒充已核实。
-fn ai_approval_impact_cell(
-    label: String,
-    value: String,
-    note: Option<String>,
-    colors: UiColors,
-) -> gpui::AnyElement {
-    let accessible_label = format!(
-        "{label}：{value}{}",
-        note.as_ref()
-            .map(|note| format!("；{note}"))
-            .unwrap_or_default()
-    );
-    div()
-        .id(SharedString::from(label.clone()))
-        .aria_label(accessible_label)
-        .test_support()
-        .flex_1()
-        .min_w(px(0.))
-        .rounded(colors.radius)
-        .border_1()
-        .border_color(colors.border_soft)
-        .bg(colors.canvas_bg)
-        .px_2p5()
-        .py_2()
-        .child(
-            div()
-                .text_size(px(10.))
-                .text_color(colors.muted)
-                .child(label),
-        )
-        .child(
-            div()
-                .mt_1()
-                .text_size(px(12.))
-                .font_weight(gpui::FontWeight::SEMIBOLD)
-                .text_color(colors.text)
-                .child(value),
-        )
-        .when_some(note, |cell, note| {
-            cell.child(
-                div()
-                    .mt(px(2.))
-                    .text_size(px(10.))
-                    .text_color(colors.muted)
-                    .child(note),
-            )
-        })
-        .into_any_element()
-}
-
-/// 护栏清单：命中项是内核已判定的事实，不是可勾选的开关（设计 §31.9 第 5 项）。
+/// 高风险操作保留内核判定依据，避免精简布局掩盖未知影响面。
 fn ai_approval_guardrails(guardrails: &[String], colors: UiColors) -> gpui::AnyElement {
     div()
         .id("guardrails")
-        .aria_label(format!("约束清单：{}", guardrails.join("；")))
+        .aria_label(format!("风险提示：{}", guardrails.join("；")))
         .test_support()
         .mx_3()
         .mb_2()
@@ -293,7 +240,7 @@ fn ai_approval_guardrails(guardrails: &[String], colors: UiColors) -> gpui::AnyE
             div()
                 .text_size(px(10.))
                 .text_color(colors.muted)
-                .child("约束清单"),
+                .child("风险提示"),
         )
         .children(guardrails.iter().map(|guardrail| {
             let (icon, tone) = if guardrail.contains("已拒绝") {
@@ -321,7 +268,155 @@ fn ai_approval_guardrails(guardrails: &[String], colors: UiColors) -> gpui::AnyE
         .into_any_element()
 }
 
-/// 内联批准卡片（设计 §31.9）：头部、上下文、计划内容、影响预估、护栏清单、提示、按钮。
+/// 原审批在决定后收成结果行；批准不代表执行成功，拒绝也不是执行失败。
+fn ai_chat_approval_result(
+    part: &fluxdb_app::AiConversationPart,
+    payload: &serde_json::Value,
+    decision: &str,
+    expanded: bool,
+    context: &AiApprovalContext<'_>,
+    colors: UiColors,
+    cx: &mut Context<NavicatMain>,
+) -> gpui::AnyElement {
+    let (label, icon, tone) = match decision {
+        "denied" => ("已拒绝 · 未执行", AppIcon::CircleSlash, colors.muted),
+        "approved" => ("已批准一次", AppIcon::Check, colors.success),
+        _ => ("审批已失效", AppIcon::Info, colors.warning),
+    };
+    let mut target = context
+        .connection
+        .map(|config| format!("{} · {}", config.name, database_kind_name(config.kind)))
+        .unwrap_or_else(|| "目标连接不可用或未绑定".into());
+    if let Some(scope) = context.scope_value() {
+        target.push_str(&format!(" · {scope}"));
+    }
+    let id = part.id.clone();
+    div()
+        .id(SharedString::from(format!(
+            "ai-approval-result:{}",
+            part.id
+        )))
+        .flex()
+        .flex_col()
+        .min_w(px(0.))
+        .child(
+            Button::new(SharedString::from(format!("ai-part:{}", part.id)))
+                .debug_selector(move || format!("ai-part:{id}"))
+                .accessibility_label(format!("{label}，{target}"))
+                .small()
+                .ghost()
+                .rounded_md()
+                .w_full()
+                .h(px(40.))
+                .cursor_pointer()
+                .child(
+                    div()
+                        .w_full()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(app_icon(icon, 12., tone))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .flex()
+                                .flex_col()
+                                .items_start()
+                                .child(
+                                    div()
+                                        .text_size(px(11.))
+                                        .line_height(px(16.))
+                                        .text_color(tone)
+                                        .child(label),
+                                )
+                                .child(
+                                    div()
+                                        .max_w_full()
+                                        .truncate()
+                                        .text_size(px(10.))
+                                        .line_height(px(14.))
+                                        .text_color(colors.muted)
+                                        .child(target),
+                                ),
+                        )
+                        .child(app_icon(
+                            if expanded {
+                                AppIcon::ChevronDown
+                            } else {
+                                AppIcon::ChevronRight
+                            },
+                            10.,
+                            colors.muted,
+                        )),
+                )
+                .on_click(cx.listener({
+                    let id = part.id.clone();
+                    move |this, _, window, cx| {
+                        let mut view = this.controller.state().ai_conversation.clone();
+                        if let Some(index) = view.expanded_parts.iter().position(|part| part == &id)
+                        {
+                            view.expanded_parts.remove(index);
+                        } else {
+                            view.expanded_parts.push(id.clone());
+                        }
+                        this.controller.dispatch(AppCommand::AiConversation(
+                            fluxdb_app::AiConversationCommand::Apply { view },
+                        ));
+                        this.save_ai_chat_ui(window, cx);
+                        cx.notify();
+                    }
+                })),
+        )
+        .when(expanded, |column| {
+            let statements = payload["details"]["statements"].as_array();
+            let mut detail = div()
+                .id(SharedString::from(format!("ai-part-detail:{}", part.id)))
+                .aria_label("原执行内容")
+                .test_support()
+                .debug_selector({
+                    let id = part.id.clone();
+                    move || format!("ai-part-detail:{id}")
+                })
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(
+                    div()
+                        .mx_3()
+                        .text_size(px(10.))
+                        .text_color(colors.muted)
+                        .child("原执行内容"),
+                );
+            let mut count = 0;
+            if let Some(statements) = statements {
+                for statement in statements.iter().filter_map(serde_json::Value::as_str) {
+                    detail = detail.child(ai_approval_code_block(
+                        statement,
+                        part.id.clone(),
+                        count,
+                        colors,
+                        cx,
+                    ));
+                    count += 1;
+                }
+            }
+            if count == 0 {
+                detail = detail.child(
+                    div()
+                        .mx_3()
+                        .mb_2()
+                        .text_size(px(11.))
+                        .text_color(colors.muted)
+                        .child("该历史审批未保存执行内容。"),
+                );
+            }
+            column.child(detail)
+        })
+        .into_any_element()
+}
+
+/// SQL、Redis argv 等计划共用审批布局；只显示有决策价值的事实。
 ///
 /// 计划与分类来自审批片段，连接信息来自 AppState；不编造环境、影响行数或护栏。
 fn ai_chat_approval_card(
@@ -352,7 +447,7 @@ fn ai_chat_approval_card(
                 .collect()
         })
         .unwrap_or_default();
-    let guardrails: Vec<String> = details
+    let mut guardrails: Vec<String> = details
         .get("guardrails")
         .and_then(serde_json::Value::as_array)
         .map(|items| {
@@ -363,16 +458,13 @@ fn ai_chat_approval_card(
                 .collect()
         })
         .unwrap_or_default();
+    if guardrails.is_empty() {
+        guardrails.push("操作影响尚未核实".into());
+    }
     let estimated_rows = details
         .get("estimated_rows")
         .and_then(serde_json::Value::as_i64)
         .filter(|rows| *rows >= 0);
-    let impact_basis = details
-        .get("impact_basis")
-        .and_then(serde_json::Value::as_str)
-        .filter(|value| !value.is_empty())
-        .unwrap_or("未核实")
-        .to_string();
     let risk = details
         .get("risk")
         .and_then(serde_json::Value::as_str)
@@ -386,18 +478,10 @@ fn ai_chat_approval_card(
     let read_only = context
         .connection
         .is_some_and(|config| fluxdb_app::connection_is_read_only(config));
-    let revision_note = match context.connection {
-        Some(_) => format!(
-            "配置变更后请重新核对（当前 rev {}）；执行前复核目标与权限",
-            context.connection_revision
-        ),
-        None => "目标连接已不可用，批准后会失败并要求重新选择目标".to_string(),
-    };
-
     // 紧凑信息头与风险徽标分开承载，窄面板下允许换行。
     let header = div()
         .id("heading")
-        .aria_label("需要你批准这次写入")
+        .aria_label("批准本次操作？")
         .test_support()
         .flex()
         .flex_wrap()
@@ -416,7 +500,7 @@ fn ai_chat_approval_card(
                 .text_size(px(12.))
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .text_color(colors.text)
-                .child("需要你批准这次写入"),
+                .child("批准本次操作？"),
         )
         .child(ai_approval_risk_badge(&risk, colors));
 
@@ -428,84 +512,34 @@ fn ai_chat_approval_card(
         .flex_col()
         .gap_1()
         .child(ai_approval_context_row(
-            "连接环境".into(),
+            "连接".into(),
             Some(connection_label),
-            Some(
-                match context.connection {
-                    None => "无法核实可写状态",
-                    Some(_) if read_only => "只读连接",
-                    Some(_) => "可写连接",
-                }
-                .into(),
-            ),
+            match context.connection {
+                None => Some("无法核实可写状态".into()),
+                Some(_) if read_only => Some("只读连接".into()),
+                Some(_) => None,
+            },
             false,
             colors,
         ))
         .child(ai_approval_context_row(
-            "数据库".into(),
+            "目标".into(),
             Some(context.scope_value().unwrap_or_else(|| "未记录".into())),
             None,
             false,
             colors,
-        ))
-        .child(ai_approval_context_row(
-            "目标连接配置".into(),
-            Some(
-                context
-                    .connection
-                    .map(|_| format!("rev {}", context.connection_revision))
-                    .unwrap_or_else(|| "未知".into()),
-            ),
-            Some(revision_note.clone()),
-            true,
-            colors,
         ));
 
-    let impact = div()
-        .mx_3()
-        .mb_2()
-        .flex()
-        .gap_2()
-        .child(ai_approval_impact_cell(
+    // 未核实的行数不生成固定占位卡；高风险仍明确显示内核依据。
+    let impact = estimated_rows.map(|rows| {
+        ai_approval_context_row(
             "预计影响行数".into(),
-            estimated_rows
-                .map(|rows| format!("{rows} 行"))
-                .unwrap_or_else(|| "未知".into()),
-            Some("执行后回显实际受影响行数".into()),
+            Some(format!("{rows} 行")),
+            None,
+            false,
             colors,
-        ))
-        .child(ai_approval_impact_cell(
-            "依据".into(),
-            impact_basis,
-            Some("不按 SQL 文本推算影响行数".into()),
-            colors,
-        ));
-
-    let hint = div()
-        .id("hint")
-        .aria_label("Esc / 点击抽屉遮罩 = 拒绝本次；写操作失败不自动重放")
-        .test_support()
-        .mx_3()
-        .mb_2()
-        .flex()
-        .items_start()
-        .gap_1p5()
-        .rounded(colors.radius)
-        .bg(colors.warning.alpha(0.08))
-        .border_l_2()
-        .border_color(colors.warning.alpha(0.55))
-        .px_2()
-        .py_1p5()
-        .child(app_icon(AppIcon::Info, 11., colors.warning))
-        .child(
-            div()
-                .min_w(px(0.))
-                .flex_1()
-                .text_size(px(10.5))
-                .line_height(px(15.))
-                .text_color(colors.muted)
-                .child("Esc / 点击抽屉遮罩 = 拒绝本次；写操作失败不自动重放。"),
-        );
+        )
+    });
 
     let approve_id = approval_id.clone();
     let deny_id = approval_id.clone();
@@ -587,11 +621,11 @@ fn ai_chat_approval_card(
                 .mb_1()
                 .text_size(px(10.))
                 .text_color(colors.muted)
-                .child("执行计划"),
+                .child("执行内容"),
         )
         .when(!statements.is_empty(), |card| {
             card.children(statements.iter().enumerate().map(|(index, statement)| {
-                ai_approval_code_block(statement, part_id.to_string(), index, colors)
+                ai_approval_code_block(statement, part_id.to_string(), index, colors, cx)
             }))
         })
         .when(statements.is_empty(), |card| {
@@ -604,25 +638,12 @@ fn ai_chat_approval_card(
                     .child("该历史审批未保存计划预览，请核对工具记录后再决定。"),
             )
         })
-        .child(impact)
-        .when(!guardrails.is_empty(), |card| {
+        .when_some(impact, |card, impact| {
+            card.child(div().mx_3().mb_2().child(impact))
+        })
+        .when(risk == "high" || risk == "unknown", |card| {
             card.child(ai_approval_guardrails(&guardrails, colors))
         })
-        .when(guardrails.is_empty(), |card| {
-            card.child(ai_approval_guardrails(
-                &["护栏命中情况未记录".into()],
-                colors,
-            ))
-        })
-        .child(hint)
-        .child(
-            div()
-                .mx_3()
-                .mb_2()
-                .text_size(px(10.))
-                .text_color(colors.muted)
-                .child("批准后仍会复核 plan_hash，参数/目标变更即失效"),
-        )
         .child(actions)
         .into_any_element()
 }

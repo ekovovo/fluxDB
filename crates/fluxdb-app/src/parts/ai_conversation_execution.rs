@@ -377,6 +377,7 @@ fn ai_conversation_run_turn(
                     tool_version,
                     plan_hash,
                     scope,
+                    details,
                 } => {
                     let saved = ai_conversation_record_approval(
                         storage,
@@ -386,6 +387,7 @@ fn ai_conversation_run_turn(
                         tool_version,
                         &plan_hash,
                         &scope.to_json(),
+                        &details.to_json(),
                         &target_json_for_parts,
                         text.len(),
                     );

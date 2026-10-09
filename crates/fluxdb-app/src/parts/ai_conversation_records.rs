@@ -238,6 +238,7 @@ fn ai_conversation_record_approval(
     tool_version: u32,
     plan_hash: &str,
     scope_json: &str,
+    details_json: &str,
     target_json: &str,
     text_offset: usize,
 ) -> fluxdb_core::Result<String> {
@@ -277,6 +278,7 @@ fn ai_conversation_record_approval(
             "approval_revision":approval.revision,
             "text_offset":text_offset,
             "scope":serde_json::from_str::<serde_json::Value>(scope_json).unwrap_or(serde_json::Value::Null),
+            "details":serde_json::from_str::<serde_json::Value>(details_json).unwrap_or(serde_json::Value::Null),
         }).to_string();
         fluxdb_storage::ai_platform::conversation::upsert_event_part(
             conn,

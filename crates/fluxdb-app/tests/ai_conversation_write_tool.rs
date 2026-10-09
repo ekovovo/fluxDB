@@ -180,8 +180,44 @@ fn read_only_flag_survives_connection_round_trip_and_drives_policy() {
 #[test]
 fn write_tool_requires_approval_then_executes_exactly_once() {
     let fixture = Fixture::new();
-    let mut controller = fixture.configured();
     let config = fixture.config(1);
+    assert_write_approval_executes_once(&fixture, config);
+}
+
+#[test]
+fn sqlite_write_approval_updates_real_database_exactly_once() {
+    let fixture = Fixture::new();
+    let path = fixture.dir.join("approval.sqlite");
+    let database = rusqlite::Connection::open(&path).unwrap();
+    database
+        .execute_batch(
+            "CREATE TABLE product(id INTEGER PRIMARY KEY, name TEXT);
+         INSERT INTO product VALUES(1, 'before');
+         CREATE TABLE changes(id INTEGER);
+         CREATE TRIGGER track_write AFTER UPDATE ON product
+         BEGIN INSERT INTO changes VALUES(new.id); END;",
+        )
+        .unwrap();
+    let mut config = fixture.config(1);
+    config.options.remove("demo");
+    config.endpoint = fluxdb_core::Endpoint::SqliteFile {
+        path,
+        read_only: false,
+    };
+    fixture.storage.save_connections(&[config.clone()]).unwrap();
+    assert_write_approval_executes_once(&fixture, config);
+    let name: String = database
+        .query_row("SELECT name FROM product WHERE id=1", [], |row| row.get(0))
+        .unwrap();
+    let writes: i64 = database
+        .query_row("SELECT COUNT(*) FROM changes", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(name, "x");
+    assert_eq!(writes, 1, "重复恢复不得重复写入真实 SQLite");
+}
+
+fn assert_write_approval_executes_once(fixture: &Fixture, config: ConnectionConfig) {
+    let mut controller = fixture.configured();
     let job = controller
         .prepare_ai_conversation("把这一行改掉", &target(1))
         .expect("准备任务");
@@ -190,6 +226,7 @@ fn write_tool_requires_approval_then_executes_exactly_once() {
         agent_allowed_tools: Vec::new(),
         policy: kernel_policy_for_connection(Some(&config)),
         plugin_digest: None,
+        target_dialect: Some(fluxdb_app::SqlDialectKind::Sqlite),
     };
     let catalog = standard_sql_catalog(Arc::new(MapSqlResolver::new([config.clone()])), true)
         .expect("含写工具目录");
@@ -211,7 +248,38 @@ fn write_tool_requires_approval_then_executes_exactly_once() {
         &KernelAuditHook,
         permission.clone(),
     );
-    let _ = last_terminal(&rx);
+    let waiting = last_terminal(&rx);
+    let card = waiting
+        .messages
+        .iter()
+        .flat_map(|message| &message.parts)
+        .find(|part| part.kind == "notice" && part.status == "pending")
+        .unwrap();
+    let payload: serde_json::Value = serde_json::from_str(&card.payload_json).unwrap();
+    assert_eq!(
+        payload["details"]["statements"][0],
+        "UPDATE product SET name='x' WHERE id=1"
+    );
+    assert_eq!(
+        payload["details"]["estimated_rows"],
+        serde_json::Value::Null
+    );
+    assert_eq!(payload["details"]["impact_basis"], "未核实");
+    assert!(
+        !payload["details"]["guardrails"]
+            .to_string()
+            .contains("WHERE")
+    );
+    if !config.options.contains_key("demo") {
+        let fluxdb_core::Endpoint::SqliteFile { path, .. } = &config.endpoint else {
+            panic!("SQLite fixture")
+        };
+        let database = rusqlite::Connection::open(path).unwrap();
+        let name: String = database
+            .query_row("SELECT name FROM product WHERE id=1", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(name, "before", "审批前不得写入数据库");
+    }
 
     let pending = calls(&fixture.storage, &job.turn_id);
     assert_eq!(pending.len(), 1, "写工具应先落一条待审批调用");
@@ -310,6 +378,7 @@ fn write_tool_is_denied_when_connection_policy_forbids_write() {
         agent_allowed_tools: Vec::new(),
         policy: KernelPolicy::default(),
         plugin_digest: None,
+        target_dialect: None,
     };
     assert!(!permission.policy.write_allowed);
     let catalog =
@@ -386,6 +455,7 @@ fn tool_target_outside_pinned_connection_is_rejected() {
         agent_allowed_tools: Vec::new(),
         policy: kernel_policy_for_connection(Some(&config)),
         plugin_digest: None,
+        target_dialect: None,
     };
     let cancel = CancelFlag::new();
     let (tx, rx) = std::sync::mpsc::sync_channel(16);

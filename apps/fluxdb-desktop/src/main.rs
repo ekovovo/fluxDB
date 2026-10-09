@@ -202,6 +202,7 @@ include!("main_parts/ai/state.rs");
 include!("main_parts/ai/model_selection.rs");
 include!("main_parts/ai/references.rs");
 include!("main_parts/ai/message.rs");
+include!("main_parts/ai/approval.rs");
 include!("main_parts/ai/timeline.rs");
 include!("main_parts/ai/actions.rs");
 include!("main_parts/ai/display.rs");

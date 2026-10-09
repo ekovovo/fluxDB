@@ -494,6 +494,12 @@ fn ai_chat_panel(
                                 ai_chat_message_parts(
                                     message,
                                     &chat,
+                                    &ai_approval_context(
+                                        chat.target_json.as_deref(),
+                                        &this.controller.state().connections,
+                                        |id| this.controller.connection_revision(id),
+                                        this.ai_chat.deciding_approval,
+                                    ),
                                     stream_view.as_ref().filter(|_| active_stream),
                                     active_stream.then(|| this.ai_chat.stream.revealed_text()),
                                     colors,
@@ -572,7 +578,10 @@ fn ai_chat_panel(
             if !this.handle_ai_reference_key("down", window, cx) { cx.propagate(); }
         }))
         .capture_action(cx.listener(|this, _: &gpui_component::input::Escape, window, cx| {
-            if !this.handle_ai_reference_key("escape", window, cx) { cx.propagate(); }
+            if !this.handle_ai_reference_key("escape", window, cx)
+                && !this.reject_pending_ai_chat_approval(window, cx) {
+                cx.propagate();
+            }
         }))
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
@@ -596,6 +605,10 @@ fn ai_chat_panel(
                     .is_focused(window)
 ;
                 if popup_open || this.ai_chat.mode_menu_open {
+                    return;
+                }
+                if this.reject_pending_ai_chat_approval(window, cx) {
+                    cx.stop_propagation();
                     return;
                 }
                 if this.ai_chat.mode == fluxdb_storage::ai_platform::settings::PanelMode::Tab {

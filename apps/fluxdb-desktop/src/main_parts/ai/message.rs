@@ -195,6 +195,8 @@ fn ai_chat_text_only(
 fn ai_chat_part(
     part: &fluxdb_app::AiConversationPart,
     expanded: bool,
+    // 审批卡要用的连接事实；其它片段用不到（target_json 只给工具卡摘要用）。
+    approval: &AiApprovalContext<'_>,
     target_json: Option<&str>,
     // 非空表示该正文片段正由平滑揭示实体驱动（流式进行中）。
     stream_view: Option<&Entity<gpui_component::text::TextViewState>>,
@@ -210,6 +212,9 @@ fn ai_chat_part(
         .unwrap_or("")
         .to_string();
     let recovery_status = payload.get("recovery_status").and_then(|value| value.as_str());
+    let approval_decision = (part.kind == "notice" && payload.get("approval_id").is_some())
+        .then(|| payload.get("decision").and_then(serde_json::Value::as_str))
+        .flatten();
     if part.kind == "notice" && recovery_status == Some("outcome_unknown") {
         let id = SharedString::from(format!("ai-recovery:{}", part.id));
         return div()
@@ -226,7 +231,7 @@ fn ai_chat_part(
     }
     // 审批卡：必须在这里决定（批准/拒绝），决定后由宿主按 plan_hash 复核再执行。
     if part.kind == "notice" {
-        if let Some(approval_id) = payload.get("approval_id").and_then(|value| value.as_str()) {
+        if payload.get("approval_id").and_then(|value| value.as_str()).is_some() {
             let revision = payload
                 .get("approval_revision")
                 .and_then(serde_json::Value::as_i64)
@@ -236,80 +241,7 @@ fn ai_chat_part(
                 .and_then(|value| value.as_str())
                 .is_some();
             if !decided && part.status == "pending" {
-                let approve_id = approval_id.to_string();
-                let deny_id = approval_id.to_string();
-                return div()
-                    .border_1()
-                    .border_color(colors.danger)
-                    .rounded(colors.radius)
-                    .p_2()
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .child(
-                        div()
-                            .text_size(px(11.))
-                            .line_height(px(16.))
-                            .text_color(colors.text)
-                            .child(text),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .child(
-                                Button::new(SharedString::from(format!(
-                                    "ai-approve:{approval_id}"
-                                )))
-                                .debug_selector({
-                                    let id = approval_id.to_string();
-                                    move || format!("ai-approve:{id}")
-                                })
-                                .small()
-                                .primary()
-                                .cursor_pointer()
-                                .child("批准执行")
-                                .on_click(cx.listener(
-                                    move |this, _, window, cx| {
-                                        this.decide_ai_chat_approval(
-                                            approve_id.clone(),
-                                            true,
-                                            revision,
-                                            window,
-                                            cx,
-                                        )
-                                    },
-                                )),
-                            )
-                            .child(
-                                Button::new(SharedString::from(format!("ai-deny:{approval_id}")))
-                                    .debug_selector({
-                                        let id = approval_id.to_string();
-                                        move || format!("ai-deny:{id}")
-                                    })
-                                    .small()
-                                    .ghost()
-                                    .cursor_pointer()
-                                    .child("拒绝")
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.decide_ai_chat_approval(
-                                            deny_id.clone(),
-                                            false,
-                                            revision,
-                                            window,
-                                            cx,
-                                        )
-                                    })),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(10.))
-                                    .text_color(colors.muted)
-                                    .child("批准后仍会复核 plan_hash，参数/目标变了就失效"),
-                            ),
-                    )
-                    .into_any_element();
+                return ai_chat_approval_card(&part.id, &payload, approval, revision, colors, cx);
             }
         }
     }
@@ -323,7 +255,9 @@ fn ai_chat_part(
         _ => (AppIcon::CircleSlash, "任务说明"),
     };
     // 工具卡直接展示真实 tool_id；目标/参数仍在展开区，不凭空拼标签。
-    let label = if let Some(recovery_status) = recovery_status {
+    let label = if approval_decision.is_some() {
+        "审批决定".to_string()
+    } else if let Some(recovery_status) = recovery_status {
         if recovery_status == "resolved" { "恢复状态已更新" } else { "任务已暂停 · 未自动重放工具" }.to_string()
     } else if part.kind == "tool_call_ref" {
         payload
@@ -346,7 +280,14 @@ fn ai_chat_part(
     let id = part.id.clone();
     let execution_unknown =
         payload.get("execution_status").and_then(|v| v.as_str()) == Some("unknown");
-    let (status, status_color) = if execution_unknown {
+    let (status, status_color) = if let Some(decision) = approval_decision {
+        // 批准只是提交决定，不能把仍待复核或恢复失败的工具称为“已完成”。
+        match decision {
+            "approved" => ("已批准一次", colors.success),
+            "denied" => ("已拒绝 · 未执行", colors.muted),
+            _ => ("审批已失效", colors.warning),
+        }
+    } else if execution_unknown {
         ("结果未知", colors.danger)
     } else {
         match part.status.as_str() {
@@ -370,6 +311,7 @@ fn ai_chat_part(
         .gap_1()
         .child(
             Button::new(SharedString::from(format!("ai-part:{}", part.id)))
+                .accessibility_label(format!("{label}，{status}"))
                 .debug_selector(move || format!("ai-part:{id}"))
                 .xsmall()
                 .w_full()
@@ -508,6 +450,7 @@ fn ai_execution_needs_attention(part: &fluxdb_app::AiConversationPart) -> bool {
 fn ai_chat_message_parts(
     message: &fluxdb_app::AiConversationMessage,
     chat: &fluxdb_app::AiConversationView,
+    approval: &AiApprovalContext<'_>,
     // 该消息若正是活跃流式正文，用揭示实体渲染；否则 None。
     stream_view: Option<&Entity<gpui_component::text::TextViewState>>,
     revealed: Option<&str>,
@@ -552,11 +495,11 @@ fn ai_chat_message_parts(
                         cx.notify();
                     })))
                 .when(open, |column| column.child(div().pl_2().border_l_1().border_color(colors.border_soft)
-                    .flex().flex_col().gap_1().children(tools.iter().map(|p| ai_chat_part(p, chat.expanded_parts.contains(&p.id), chat.target_json.as_deref(), None, colors, cx)))))
+                    .flex().flex_col().gap_1().children(tools.iter().map(|p| ai_chat_part(p, chat.expanded_parts.contains(&p.id), approval, chat.target_json.as_deref(), None, colors, cx)))))
                 .into_any_element());
         } else {
             let part_stream = (part.kind == "text" && !segmented).then_some(stream_view).flatten();
-            output.push(ai_chat_part(part, chat.expanded_parts.contains(&part.id), chat.target_json.as_deref(), part_stream, colors, cx));
+            output.push(ai_chat_part(part, chat.expanded_parts.contains(&part.id), approval, chat.target_json.as_deref(), part_stream, colors, cx));
             index += 1;
         }
     }

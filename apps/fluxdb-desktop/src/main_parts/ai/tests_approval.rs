@@ -1,4 +1,5 @@
-    // ---- 审批卡交互（GPUI test-support，子 Agent B）----
+    use gpui_kit::test::{TestAppContextExt as _, TestWindowExt as _};
+    // ---- 审批卡交互（生产 View + 隔离存储）----
     //
     // 这里不再新建孤立组件：先用生产存储入口造出与 `ai_conversation_record_approval`
     // 等价的"等待审批"片段（conversation::send 建会话/Turn/用户消息 → create_tool_call
@@ -13,6 +14,35 @@
         approval_id: &str,
         part_status: sessions::PartStatus,
         decision: Option<&str>,
+    ) {
+        seed_approval_with_details(
+            fixture,
+            session,
+            approval_id,
+            part_status,
+            decision,
+            r#"{"sql":"DELETE FROM orders WHERE id=1"}"#,
+            "{}",
+            approval_details_json(),
+        );
+    }
+
+    fn approval_details_json() -> &'static str {
+        r#"{"risk":"medium","statements":["DELETE FROM orders WHERE id=1"],"guardrails":["单语句，不含事务或会话控制","未通过只读分类，必须逐次批准"],"impact_basis":"未核实","estimated_rows":null}"#
+    }
+
+    /// 带真实目标/参数/details 的审批片段：用于断言卡片各区块真实渲染，
+    /// 而不是只断言按钮存在。
+    #[allow(clippy::too_many_arguments)]
+    fn seed_approval_with_details(
+        fixture: &Fixture,
+        session: &str,
+        approval_id: &str,
+        part_status: sessions::PartStatus,
+        decision: Option<&str>,
+        arguments_json: &str,
+        target_json: &str,
+        details_json: &str,
     ) {
         let agent = fixture.agent(None);
         let now = 1_700_000_000_000_i64;
@@ -34,7 +64,7 @@
                     &turn_id,
                     &user_id,
                     "请帮我删除一行数据",
-                    "{}",
+                    target_json,
                     "{}",
                 )?;
                 sessions::create_tool_call(
@@ -45,12 +75,12 @@
                     &turn_id,
                     1,
                     0,
-                    "provider-call-1",
+                    "1",
                     "db.execute",
                     1,
                     None,
-                    r#"{"sql":"DELETE FROM orders WHERE id=1"}"#,
-                    "{}",
+                    arguments_json,
+                    target_json,
                     plan_hash,
                     "waiting_approval",
                 )?;
@@ -68,6 +98,7 @@
                     "approval_id": approval_id,
                     "plan_hash": plan_hash,
                     "approval_revision": approval.revision,
+                    "details": serde_json::from_str::<serde_json::Value>(details_json).unwrap(),
                 });
                 if let Some(decision) = decision {
                     payload["decision"] = serde_json::Value::from(decision);
@@ -178,7 +209,7 @@
             .unwrap()
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn ai_panel_pending_approval_renders_approve_and_deny_controls(cx: &mut TestAppContext) {
         let fixture = Fixture::new();
         seed_approval(
@@ -208,16 +239,132 @@
         );
         let approve = cx
             .debug_bounds("ai-approve:appr-pending")
-            .expect("pending 审批必须渲染'批准执行'控件");
+            .expect("pending 审批必须渲染'批准一次'控件");
         let deny = cx
             .debug_bounds("ai-deny:appr-pending")
             .expect("pending 审批必须渲染'拒绝'控件");
         assert!(approve.size.width > px(0.) && approve.size.height > px(0.));
         assert!(deny.size.width > px(0.) && deny.size.height > px(0.));
+        // 设计 §31.9：批准是这次决定里唯一的主动作，宽度明显大于"拒绝"，
+        // 但仍是一枚紧凑按钮，不能喧宾夺主占满整行。
+        assert!(
+            approve.size.width > deny.size.width,
+            "批准一次应比拒绝更宽，实际 {:?} vs {:?}",
+            approve.size.width,
+            deny.size.width
+        );
+        assert!(approve.size.height <= px(28.) && approve.size.width < px(100.),
+            "批准按钮必须紧凑：{approve:?}");
     }
 
-    #[gpui::test]
-    fn ai_panel_approve_click_dispatches_real_decision(cx: &mut TestAppContext) {
+    /// 设计 §31.9 第 1–6 项：头部、上下文行、计划内容、影响预估、护栏清单、提示
+    /// 都必须来自持久化事实真实渲染，不能只剩一句内联文字。
+    #[gpui_kit::test]
+    fn ai_panel_approval_card_renders_all_designed_sections(cx: &mut TestAppContext) {
+        let fixture = Fixture::new();
+        seed_approval_with_details(
+            &fixture,
+            "approval-sections",
+            "appr-sections",
+            sessions::PartStatus::Pending,
+            None,
+            r#"{"target":"conn:1/db:shop","sql":"DELETE FROM orders WHERE id=1"}"#,
+            r#"{"connection_id":1,"database":"shop","schema":"public","object":"orders"}"#,
+            approval_details_json(),
+        );
+        let mut controller = fixture.controller();
+        controller.dispatch(AppCommand::ReplaceConnections(vec![ConnectionConfig {
+            id: ConnectionId(1),
+            name: "隔离验收库".into(),
+            kind: DatabaseKind::Sqlite,
+            endpoint: fluxdb_core::Endpoint::SqliteFile { path: fixture.root.join("orders.sqlite"), read_only: false },
+            options: Default::default(),
+            redis_profile: None,
+            mysql_profile: None,
+            postgres_profile: None,
+        }]));
+        let (view, cx) = open_main(cx, &fixture, controller, ThemeMode::Light);
+        open_panel(&view, cx);
+        // 卡片外层：设计要求头部 + 内容 + 按钮的完整卡片，而不是一行红框文字。
+        assert!(
+            cx.debug_bounds("ai-approval:approval-sections-assistant-approval-1").is_some(),
+            "审批卡必须以完整卡片渲染"
+        );
+        // 计划内容：可复制的等宽代码块 + 复制入口。
+        assert!(
+            cx.debug_bounds("ai-approval-copy:approval-sections-assistant-approval-1:0").is_some(),
+            "SQL 原文必须渲染为可复制代码块"
+        );
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            let card = window.within("ai-approval:approval-sections-assistant-approval-1");
+            assert_eq!(card.find("heading").label(), Some("需要你批准这次写入"));
+            assert_eq!(card.find("risk").label(), Some("风险：中"));
+            assert!(card.find("连接环境").label().unwrap().contains("隔离验收库"));
+            assert!(card.find("目标连接配置").label().unwrap().contains("rev 0"));
+            assert!(card.find("目标连接配置").label().unwrap().contains("配置变更后请重新核对"));
+            assert_eq!(card.find("数据库").label(), Some("数据库：shop / public / orders"));
+            assert_eq!(card.find(("statement", 0_usize)).label(), Some("DELETE FROM orders WHERE id=1"));
+            assert!(card.find("guardrails").label().unwrap().contains("未通过只读分类"));
+            assert!(card.find("hint").label().unwrap().contains("拒绝本次"));
+            window.click("ai-approval-copy:approval-sections-assistant-approval-1:0", cx);
+        });
+        cx.update(|_, cx| {
+            assert_eq!(cx.read_from_clipboard().unwrap().text().as_deref(), Some("DELETE FROM orders WHERE id=1"));
+        });
+    }
+
+    /// 影响预估未核实时必须显示"未知"，不能拿估算行数冒充已核实。
+    #[gpui_kit::test]
+    fn ai_panel_approval_card_does_not_fabricate_impact_rows(cx: &mut TestAppContext) {
+        let fixture = Fixture::new();
+        seed_approval_with_details(
+            &fixture,
+            "approval-impact",
+            "appr-impact",
+            sessions::PartStatus::Pending,
+            None,
+            r#"{"target":"conn:1/db:shop","sql":"DELETE FROM orders WHERE id=1"}"#,
+            r#"{"connection_id":1,"database":"shop"}"#,
+            approval_details_json(),
+        );
+        let (view, cx) = open_main(cx, &fixture, fixture.controller(), ThemeMode::Dark);
+        open_panel(&view, cx);
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            let card = window.within("ai-approval:approval-impact-assistant-approval-1");
+            assert!(card.find("预计影响行数").label().unwrap().starts_with("预计影响行数：未知"));
+            assert!(card.find("依据").label().unwrap().starts_with("依据：未核实"));
+        });
+    }
+
+    /// 已决定 / 非 pending 的审批片段不能出现卡片按钮，也不能重复执行。
+    #[gpui_kit::test]
+    fn ai_panel_approval_card_hidden_after_decision(cx: &mut TestAppContext) {
+        let fixture = Fixture::new();
+        seed_approval_with_details(
+            &fixture,
+            "approval-decided-card",
+            "appr-decided-card",
+            sessions::PartStatus::Pending,
+            Some("approved"),
+            r#"{"target":"conn:1/db:shop","sql":"DELETE FROM orders WHERE id=1"}"#,
+            r#"{"connection_id":1,"database":"shop"}"#,
+            approval_details_json(),
+        );
+        let (view, cx) = open_main(cx, &fixture, fixture.controller(), ThemeMode::Light);
+        open_panel(&view, cx);
+        assert!(
+            cx.debug_bounds("ai-approval-copy:approval-decided-card-assistant-approval-1:0").is_none(),
+            "已决定的审批不应再渲染计划内容与批准控件"
+        );
+        assert!(cx.debug_bounds("ai-approve:appr-decided-card").is_none());
+        assert!(cx.debug_bounds("ai-deny:appr-decided-card").is_none());
+    }
+
+    #[gpui_kit::test]
+    async fn ai_panel_approve_click_dispatches_real_decision(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
         let fixture = Fixture::new();
         seed_approval(
             &fixture,
@@ -230,18 +377,118 @@
         open_panel(&view, cx);
         let before = approval_state(&fixture, "appr-approve");
         assert_eq!(before.0.as_str(), "pending", "初始审批必须是待处理");
-        click_selector(cx, "ai-approve:appr-approve");
-        wait_idle(&view, cx);
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.click("ai-approve:appr-approve", cx);
+            window.render_frame(cx);
+            window.click("ai-approve:appr-approve", cx);
+            assert!(view.read(cx).ai_chat.deciding_approval);
+        });
+        let handle = cx.window_handle();
+        cx.cx.wait_for(handle, Duration::from_secs(3), |window, _| {
+            window.try_find("app-message-overlay").is_some()
+                && window.try_find("ai-approve:appr-approve").is_none()
+        }).await;
         let after = approval_state(&fixture, "appr-approve");
         assert_eq!(
             after.0.as_str(),
             "approved",
-            "点击'批准执行'必须把审批决定写进数据库"
+            "点击'批准一次'必须把审批决定写进数据库"
         );
         assert!(
             after.1 > before.1,
             "决定提交后审批 revision 必须递增，证明是真实 CAS 决定而非 UI 假象"
         );
+        assert_eq!(after.1, before.1 + 1, "提交中重复点击不能重复决定");
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            let message = window.find("app-message-overlay");
+            assert_eq!(message.role(), Some(gpui::Role::Status));
+            assert!(message.label().unwrap().contains("无法恢复任务"));
+            assert!(message.label().unwrap().contains("缺少原模型"));
+            assert!(window.try_find("ai-approve:appr-approve").is_none());
+            assert!(window.find("ai-part:approval-assistant-approval-1").label().unwrap().contains("已批准一次"));
+        });
+        assert!(view.read_with(cx, |main, _| main.ai_chat.running.is_none()));
+        // 释放真实 show_message 计时任务，避免测试结束后回调失效窗口。
+        cx.update(|window, _| window.remove_window());
+        drop(view);
+        cx.run_until_parked();
+    }
+
+    #[gpui_kit::test]
+    async fn ai_panel_stale_approval_decision_shows_message(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let fixture = Fixture::new();
+        seed_approval(&fixture, "approval", "appr-stale", sessions::PartStatus::Pending, None);
+        let (view, cx) = open_main(cx, &fixture, fixture.controller(), ThemeMode::Light);
+        open_panel(&view, cx);
+        // 模拟另一窗口先处理审批；保留当前窗口的旧 revision，验证真实 CAS 错误反馈。
+        fixture.storage.with_ai_connection(|conn| {
+            fluxdb_storage::ai_platform::audits::decide_approval(conn, 1_700_000_000_001, "appr-stale", false, None, 1)?;
+            Ok(())
+        }).unwrap();
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.click("ai-approve:appr-stale", cx);
+        });
+        let handle = cx.window_handle();
+        cx.cx.wait_for(handle, Duration::from_secs(3), |window, _| {
+            window.try_find("app-message-overlay").is_some()
+        }).await;
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            assert!(window.find("app-message-overlay").label().unwrap().contains("审批状态已变化"));
+        });
+        assert_eq!(approval_state(&fixture, "appr-stale").0.as_str(), "denied");
+        assert!(view.read_with(cx, |main, _| main.ai_chat.running.is_none()));
+        cx.update(|window, _| window.remove_window());
+        drop(view);
+        cx.run_until_parked();
+    }
+
+    #[gpui_kit::test]
+    async fn ai_panel_escape_rejects_pending_approval(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let fixture = Fixture::new();
+        seed_approval(&fixture, "approval", "appr-escape", sessions::PartStatus::Pending, None);
+        let (view, cx) = open_main(cx, &fixture, fixture.controller(), ThemeMode::Light);
+        open_panel(&view, cx);
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.click("ai-chat-input", cx);
+            window.press("escape", cx);
+        });
+        let handle = cx.window_handle();
+        cx.cx.wait_for(handle, Duration::from_secs(3), |window, _| {
+            window.try_find("ai-approve:appr-escape").is_none()
+        }).await;
+        assert_eq!(approval_state(&fixture, "appr-escape").0.as_str(), "denied");
+        assert!(cx.debug_bounds("ai-approve:appr-escape").is_none());
+        assert!(view.read_with(cx, |main, _| main.ai_chat.running.is_none()));
+    }
+
+    #[gpui_kit::test]
+    async fn ai_panel_close_rejects_pending_approval(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let fixture = Fixture::new();
+        seed_approval(&fixture, "approval", "appr-close", sessions::PartStatus::Pending, None);
+        let (view, cx) = open_main(cx, &fixture, fixture.controller(), ThemeMode::Light);
+        open_panel(&view, cx);
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.click("ai-chat-close", cx);
+        });
+        let handle = cx.window_handle();
+        cx.cx.wait_for(handle, Duration::from_secs(3), |window, app| {
+            let main = view.read(app);
+            !main.ai_chat.open && !main.ai_chat.deciding_approval
+                && window.try_find("ai-chat-close").is_none()
+        }).await;
+        assert_eq!(approval_state(&fixture, "appr-close").0.as_str(), "denied");
+        assert!(!view.read_with(cx, |main, _| main.ai_chat.open));
+        open_panel(&view, cx);
+        assert!(cx.debug_bounds("ai-approve:appr-close").is_none());
     }
 
     #[gpui::test]

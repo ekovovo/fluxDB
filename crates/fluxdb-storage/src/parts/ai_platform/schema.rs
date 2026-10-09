@@ -545,6 +545,7 @@ CREATE TABLE IF NOT EXISTS ai_usage_ledger (
     cost_micros INTEGER CHECK (cost_micros >= 0),
     measurement TEXT NOT NULL CHECK (measurement IN ('actual','estimated','unknown')),
     pricing_snapshot_json TEXT NOT NULL CHECK (json_valid(pricing_snapshot_json)),
+    title TEXT,
     created_at_ms INTEGER NOT NULL,
     FOREIGN KEY(session_id, turn_id) REFERENCES ai_turns(session_id, id) ON DELETE RESTRICT,
     UNIQUE(request_id, attempt)

@@ -763,6 +763,7 @@ impl AppController {
                         cell_detail_panel: CellDetailPanelState::default(),
                         table_info: TableInfoState::default(),
                         loading: true,
+                        submitting: false,
                         error: None,
                     }),
                     dirty: false,
@@ -1640,14 +1641,20 @@ impl AppController {
                     self.fail(Error::new(ErrorKind::Internal, "数据结果不存在"))
                 }
             }
-            AppCommand::ApplyDataChanges(tab_id) => {
-                self.apply_data_changes_command(tab_id, Vec::new(), Vec::new())
+            AppCommand::StartApplyDataChanges(tab_id) => {
+                self.start_apply_data_changes_command(tab_id)
             }
-            AppCommand::ApplyDataChangesWithView {
+            AppCommand::RunApplyDataChanges {
                 tab_id,
                 sort,
                 filters,
-            } => self.apply_data_changes_command(tab_id, sort, filters),
+            } => {
+                let result = self.run_apply_data_changes_command(tab_id, sort, filters);
+                self.finish_apply_data_changes_command(tab_id, result)
+            }
+            AppCommand::FinishApplyDataChanges { tab_id, result } => {
+                self.finish_apply_data_changes_command(tab_id, result)
+            }
             AppCommand::OpenQueryEditor(connection_id) => {
                 self.open_query_editor(connection_id, None, None)
             }

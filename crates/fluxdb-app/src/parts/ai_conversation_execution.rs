@@ -482,6 +482,10 @@ fn ai_conversation_run_turn(
             _ => "模型未返回正文。".into(),
         });
     }
+    // 首轮成功后生成标题；放在最终保存前，标题结果在终端事件前落库。
+    if status == fluxdb_storage::ai_platform::sessions::TurnStatus::Completed && !cancel.is_cancelled() {
+        generate_session_title(storage, job, provider, &text);
+    }
     match persist_ai_conversation_event(
         storage,
         job,

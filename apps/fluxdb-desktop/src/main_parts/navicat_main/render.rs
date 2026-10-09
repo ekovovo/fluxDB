@@ -35,6 +35,17 @@ impl Render for NavicatMain {
             self.ai_agent_editor_debug_pending = false;
             self.open_ai_agent_editor(None, window, cx);
         }
+        // Agent 删除后自动选中剩余列表的第一项，避免右侧空白。
+        if self.ai_agent_editor.is_none()
+            && self.settings_panel_section == SettingsPanelSection::AiAgents
+            && !self.ai_agent_delete_just_removed.is_empty()
+        {
+            let first = self.controller.state().ai_agents.first().map(|a| a.id.clone());
+            self.ai_agent_delete_just_removed.clear();
+            if let Some(id) = first {
+                self.open_ai_agent_editor(Some(id), window, cx);
+            }
+        }
         // 首帧异步启动恢复；命令与后续 Load/Save 共用串行队列，不在 UI 线程扫描 SQLite。
         if self.ai_chat.recovery_pending {
             self.ai_chat.recovery_pending=false;
@@ -106,6 +117,9 @@ impl Render for NavicatMain {
                     )
                 })
         });
+        let pending_apply_submitting = self
+            .pending_apply_data_changes
+            .is_some_and(|tab_id| self.data_change_apply_in_flight(tab_id));
         // 提示浮层在这里先构造好：它的配色要读主题（`cx`），放进 `.when_some` 闭包里会和
         // 同一表达式链上其它对 `cx` 的借用打架。
         let app_message_element = self
@@ -414,7 +428,12 @@ impl Render for NavicatMain {
                 this.child(dirty_tab_close_modal(tab_id, &state, colors, cx))
             })
             .when_some(pending_apply_preview, |this, preview| {
-                this.child(apply_data_changes_modal(preview, colors, cx))
+                this.child(apply_data_changes_modal(
+                    preview,
+                    pending_apply_submitting,
+                    colors,
+                    cx,
+                ))
             })
             .when_some(self.pending_query_parameters.clone(), |this, pending| {
                 this.child(query_parameter_prompt_modal(
@@ -794,6 +813,7 @@ fn render_tab_kind_snapshot(kind: &TabKind) -> TabKind {
             cell_detail_panel: CellDetailPanelState::default(),
             table_info: TableInfoState::default(),
             loading: editor.loading,
+            submitting: false,
             error: editor.error.clone(),
         }),
         TabKind::QueryEditor(editor) => TabKind::QueryEditor(QueryEditorState {

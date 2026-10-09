@@ -99,8 +99,15 @@ fn settings_sidebar_groups(
     let item = |section: SettingsPanelSection| {
         SidebarMenuItem::new(settings_section_label(section))
             .active(section == active_section)
-            .on_click(cx.listener(move |this, _, _, cx| {
+            .on_click(cx.listener(move |this, _, window, cx| {
                 this.settings_panel_section = section;
+                if section == SettingsPanelSection::AiAgents
+                    && this.ai_agent_editor.is_none()
+                    && !this.controller.state().ai_agents.is_empty()
+                {
+                    let first = this.controller.state().ai_agents[0].id.clone();
+                    this.open_ai_agent_editor(Some(first), window, cx);
+                }
                 cx.stop_propagation();
                 cx.notify();
             }))

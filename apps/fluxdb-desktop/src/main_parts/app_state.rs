@@ -667,6 +667,8 @@ struct NavicatMain {
     ai_agent_editor: Option<AiAgentEditorState>,
     /// 调试用：首帧后自动打开 Agent 新建草稿（仅 debug 构建读取）。
     ai_agent_editor_debug_pending: bool,
+    /// Agent 刚被删除时置位；下一帧自动选中剩余列表的第一项。
+    ai_agent_delete_just_removed: String,
     /// 「会话历史」页的搜索框与过滤文本（按标题过滤）。
     ai_session_filter_input: Entity<InputState>,
     _ai_session_filter_subscription: Subscription,
@@ -1306,6 +1308,9 @@ struct NavicatMain {
     data_row_viewer: Option<DataRowViewer>,
     pending_dirty_data_action: Option<PendingDirtyDataAction>,
     pending_apply_data_changes: Option<TabId>,
+    /// 正在后台提交改动的标签（`TabId.0` → 任务）；键存在即表示该标签提交中，
+    /// 用于提交按钮 loading/disabled 与重复提交拦截。
+    data_change_apply_tasks: BTreeMap<u64, Task<()>>,
     pending_query_parameters: Option<PendingQueryParameterPrompt>,
     pending_dangerous_query: Option<PendingDangerousQuery>,
     pending_dangerous_redis_command: Option<PendingDangerousRedisCommand>,

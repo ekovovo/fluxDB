@@ -225,3 +225,5 @@ include!("main_parts/tests/ai_agent_defaults.rs");
 include!("main_parts/tests/ai_model_capacity.rs");
 #[cfg(test)]
 include!("main_parts/tests/ai_chat_model_selection.rs");
+#[cfg(test)]
+include!("main_parts/tests/data_change_commit.rs");

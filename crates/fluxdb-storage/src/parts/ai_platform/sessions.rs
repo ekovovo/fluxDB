@@ -549,6 +549,53 @@ pub fn rename_session(
     Ok(expected_revision + 1)
 }
 
+/// 首轮完成后替换默认截断标题；只覆盖 revision=1（未经用户改名/归档）的会话。
+/// revision 递增与手工重命名一致：后续 CAS 编辑以最新 revision 为准。
+/// 返回是否实际更新；已改名/已归档返回 `Ok(false)`（标题生成是尽力而为，不阻塞回复）。
+pub fn rename_session_if_default(
+    conn: &Connection,
+    now_ms: i64,
+    id: &str,
+    title: &str,
+) -> Result<bool> {
+    let changed = conn
+        .execute(
+            "UPDATE ai_sessions SET title=?2, revision=revision+1, updated_at_ms=?3
+              WHERE id=?1 AND revision=1",
+            params![id, title, now_ms],
+        )
+        .map_err(sqlite_error)?;
+    Ok(changed > 0)
+}
+
+/// 读取会话第一条用户消息的文本拼接（标题生成用）；无消息返回 `None`。
+pub fn first_user_message_text(conn: &Connection, session_id: &str) -> Result<Option<String>> {
+    let mut texts: Vec<String> = Vec::new();
+    let mut stmt = conn
+        .prepare(
+            "SELECT p.payload_json FROM ai_message_parts p
+              JOIN ai_messages m ON m.id=p.message_id
+              WHERE m.session_id=?1 AND m.role='user' AND p.kind='text'
+              ORDER BY m.seq, p.id",
+        )
+        .map_err(sqlite_error)?;
+    let mut rows = stmt
+        .query_map(params![session_id], |row| row.get::<_, String>(0))
+        .map_err(sqlite_error)?;
+    while let Some(Ok(row)) = rows.next() {
+        if let Ok(serde_json::Value::Object(payload)) = serde_json::from_str(&row) {
+            if let Some(serde_json::Value::String(text)) = payload.get("text") {
+                texts.push(text.clone());
+            }
+        }
+    }
+    Ok(if texts.is_empty() {
+        None
+    } else {
+        Some(texts.join("\n"))
+    })
+}
+
 /// 恢复已归档会话（对象级 CAS）：回到活跃历史，消息与审计事实不变。
 pub fn restore_session(
     conn: &Connection,

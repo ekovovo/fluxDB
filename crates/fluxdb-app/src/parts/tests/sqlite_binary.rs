@@ -54,7 +54,7 @@
             value: CellValue::Text("Touring Bike".to_string()),
         });
 
-        let event = controller.dispatch(AppCommand::ApplyDataChanges(TabId(1)));
+        let event = commit_editor_changes(&mut controller, TabId(1));
 
         assert!(matches!(event, AppEvent::DataLoaded(TabId(1), _)));
         assert!(!controller.state().active_tab().unwrap().dirty);
@@ -134,7 +134,7 @@
             after_row: None,
         });
 
-        let event = controller.dispatch(AppCommand::ApplyDataChanges(TabId(1)));
+        let event = commit_editor_changes(&mut controller, TabId(1));
 
         let AppEvent::DataLoaded(_, page) = event else {
             panic!("expected refreshed data page");
@@ -211,19 +211,20 @@
             value: CellValue::Text("Touring Bike".to_string()),
         });
 
-        let event = controller.dispatch(AppCommand::ApplyDataChangesWithView {
-            tab_id: TabId(1),
-            sort: vec![SortSpec {
+        let event = commit_data_changes(
+            &mut controller,
+            TabId(1),
+            vec![SortSpec {
                 field: "name".to_string(),
                 direction: SortDirection::Asc,
             }],
-            filters: vec![fluxdb_core::FilterSpec {
+            vec![fluxdb_core::FilterSpec {
                 field: "name".to_string(),
                 op: fluxdb_core::FilterOp::Contains,
                 values: vec![CellValue::Text("Hel".to_string())],
                 enabled: true,
             }],
-        });
+        );
 
         let AppEvent::DataLoaded(_, page) = event else {
             panic!("expected refreshed data page");
@@ -298,7 +299,7 @@
         });
         controller.dispatch(AppCommand::SaveCellDetailEdit(TabId(1)));
 
-        let event = controller.dispatch(AppCommand::ApplyDataChanges(TabId(1)));
+        let event = commit_editor_changes(&mut controller, TabId(1));
 
         assert!(matches!(event, AppEvent::DataLoaded(TabId(1), _)));
         let payload: Vec<u8> = runtime.block_on(async {

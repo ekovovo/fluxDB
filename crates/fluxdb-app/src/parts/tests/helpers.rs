@@ -18,6 +18,27 @@
         editor
     }
 
+    /// 同步跑完「后台 I/O + 回桥」两段提交。
+    ///
+    /// 生产路径由 UI 在后台线程派发 `RunApplyDataChanges`、再在主线程派发
+    /// `FinishApplyDataChanges`；应用层测试没有线程边界，用同一对命令串起来即可，
+    /// 这样测试覆盖的就是生产真正使用的那条路径。
+    fn commit_data_changes(
+        controller: &mut AppController,
+        tab_id: TabId,
+        sort: Vec<fluxdb_core::SortSpec>,
+        filters: Vec<fluxdb_core::FilterSpec>,
+    ) -> AppEvent {
+        controller.dispatch(AppCommand::StartApplyDataChanges(tab_id));
+        let result = controller.run_apply_data_changes_command(tab_id, sort, filters);
+        controller.dispatch(AppCommand::FinishApplyDataChanges { tab_id, result })
+    }
+
+    /// 数据编辑器页签的提交（无筛选/排序）。
+    fn commit_editor_changes(controller: &mut AppController, tab_id: TabId) -> AppEvent {
+        commit_data_changes(controller, tab_id, Vec::new(), Vec::new())
+    }
+
     fn temp_sqlite_path(label: &str) -> std::path::PathBuf {
         let suffix = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -151,4 +172,3 @@
         let parts = parse_dev_dsn_parts(&dsn)?;
         Some(dev_mysql_config_from_parts(parts))
     }
-

@@ -15,6 +15,7 @@ impl fluxdb_core::GenerationProvider for MeteredProvider<'_> {
                 request_id:id.clone(),session_id:self.job.session_id.clone(),turn_id:self.job.turn_id.clone(),model_profile_id:self.job.model_profile_id.clone(),purpose:self.purpose.into(),
                 estimated_input_tokens:estimate_messages_tokens(&request.messages)+estimate_tokens(&serde_json::to_string(&request.tools).unwrap_or_default()),
                 max_output_tokens:request.max_output_tokens.unwrap_or(1024),
+                title:None,
             };
             with_ai_storage(self.storage,|conn|fluxdb_storage::ai_platform::usage_ledger::reserve(conn,ai_chat_now(),&descriptor))?;
             let result=self.provider.stream(request,cancel).await;

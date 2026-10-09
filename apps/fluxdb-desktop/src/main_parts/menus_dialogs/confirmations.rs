@@ -924,6 +924,7 @@ fn dirty_tab_close_modal(
 
 fn apply_data_changes_modal(
     preview: (TabId, usize, usize, String),
+    submitting: bool,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> impl IntoElement {
@@ -1077,8 +1078,10 @@ fn apply_data_changes_modal(
                                 .gap_2()
                                 .child(
                                     Button::new("apply-data-changes-cancel")
+                                        .debug_selector(|| "apply-data-changes-cancel".into())
                                         .label("取消")
                                         .w(px(78.))
+                                        .disabled(submitting)
                                         .on_click(cx.listener(|this, _, _, cx| {
                                             this.cancel_apply_data_changes(cx);
                                             cx.stop_propagation();
@@ -1086,12 +1089,17 @@ fn apply_data_changes_modal(
                                 )
                                 .child(
                                     Button::new("apply-data-changes-confirm")
-                                        .label("提交")
+                                        .debug_selector(|| "apply-data-changes-confirm".into())
+                                        .label(if submitting { "提交中…" } else { "提交" })
+                                        .loading(submitting)
                                         .primary()
                                         .w(px(78.))
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            if this.pending_apply_data_changes == Some(tab_id) {
-                                                this.confirm_apply_data_changes(cx);
+                                        .disabled(submitting)
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            if this.pending_apply_data_changes == Some(tab_id)
+                                                && !this.data_change_apply_in_flight(tab_id)
+                                            {
+                                                this.confirm_apply_data_changes(window, cx);
                                             }
                                             cx.stop_propagation();
                                         })),

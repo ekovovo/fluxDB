@@ -2280,7 +2280,7 @@
             value: CellValue::Text("Changed Bike".to_string()),
         });
 
-        let event = controller.dispatch(AppCommand::ApplyDataChanges(TabId(1)));
+        let event = commit_editor_changes(&mut controller, TabId(1));
 
         assert!(matches!(event, AppEvent::TabActivated(TabId(1))));
         let editor = active_query_result_editor(active_query_editor(&controller)).unwrap();

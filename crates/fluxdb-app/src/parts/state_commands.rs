@@ -447,11 +447,20 @@ pub enum AppCommand {
         row: usize,
     },
     DiscardDataChanges(TabId),
-    ApplyDataChanges(TabId),
-    ApplyDataChangesWithView {
+    /// 提交数据改动的准备步：只置运行态，让 UI 立刻显示提交中并拦截重复提交。
+    /// 不做数据库 I/O：真正的写入与提交后重载在后台线程执行。
+    StartApplyDataChanges(TabId),
+    /// 后台线程执行提交：只做数据库 I/O，不改 `AppState`
+    /// （`AppController` 的 state 是按克隆隔离的，必须由回桥命令落状态）。
+    RunApplyDataChanges {
         tab_id: TabId,
         sort: Vec<SortSpec>,
         filters: Vec<FilterSpec>,
+    },
+    /// 后台提交结果回桥：写回编辑器状态、清理改动集、复位 dirty。
+    FinishApplyDataChanges {
+        tab_id: TabId,
+        result: std::result::Result<DataApplyResult, UserFacingError>,
     },
     OpenQueryEditor(ConnectionId),
     OpenUserAdmin(ConnectionId),

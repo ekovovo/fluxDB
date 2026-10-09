@@ -133,7 +133,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         agent_allowed_tools: Vec::new(),
         policy: kernel_policy_for_connection(Some(&config)),
         plugin_digest: None,
-        target_dialect: None,
     };
     let target_ref = TargetRef {
         connection_id: Some(connection_id as i64),

@@ -557,14 +557,13 @@ fn plan_hash_is_order_independent_and_canonical() {
 }
 
 #[test]
-fn ai_permission_approval_details_preserve_plan_and_do_not_invent_guardrails() {
+fn ai_permission_sql_approval_details_preserve_plan_and_do_not_invent_guardrails() {
     for sql in [
         "UPDATE orders SET status='paid' WHERE id=1",
         "DELETE FROM orders",
         "CREATE TABLE orders(id INTEGER)",
     ] {
-        let arguments = serde_json::json!({"sql":sql,"target":"conn:1/db:main"}).to_string();
-        let details = approval_details_for("db.execute", &arguments, Some(SqlDialectKind::Sqlite));
+        let details = crate::sql_approval_details(sql, SqlDialectKind::Sqlite);
         assert_eq!(details.statements, vec![sql.to_string()]);
         assert_eq!(details.estimated_rows, None);
         assert_eq!(details.impact_basis, "未核实");
@@ -582,11 +581,7 @@ fn ai_permission_approval_details_preserve_plan_and_do_not_invent_guardrails() {
             "未实施的 WHERE/行数上限不能冒充护栏事实"
         );
     }
-    let unknown = approval_details_for(
-        "db.execute",
-        r#"{"sql":"not valid SQL"}"#,
-        Some(SqlDialectKind::Sqlite),
-    );
+    let unknown = crate::sql_approval_details("not valid SQL", SqlDialectKind::Sqlite);
     assert_eq!(unknown.risk, ApprovalRisk::High);
     assert!(
         !unknown
@@ -594,25 +589,16 @@ fn ai_permission_approval_details_preserve_plan_and_do_not_invent_guardrails() {
             .iter()
             .any(|item| item.contains("单语句"))
     );
-    let unsupported = approval_details_for("http.request", "{}", None);
-    assert!(unsupported.statements.is_empty());
-    assert_eq!(unsupported.risk, ApprovalRisk::High);
-    assert!(
-        !unsupported
-            .guardrails
-            .iter()
-            .any(|item| item.contains("单语句"))
-    );
 }
 
 #[test]
-fn ai_permission_approval_details_keep_redis_argument_boundaries() {
-    let argv = vec!["SET", "order status", "paid\nonce"];
-    let details = approval_details_for(
-        "redis.execute",
-        &serde_json::json!({"argv":argv}).to_string(),
-        None,
-    );
+fn ai_permission_redis_approval_details_keep_argument_boundaries() {
+    let argv = vec![
+        "SET".to_string(),
+        "order status".to_string(),
+        "paid\nonce".to_string(),
+    ];
+    let details = crate::redis_approval_details(&argv);
     assert_eq!(
         serde_json::from_str::<Vec<String>>(&details.statements[0]).unwrap(),
         argv
@@ -624,4 +610,15 @@ fn ai_permission_approval_details_keep_redis_argument_boundaries() {
             .any(|item| item.contains("只读白名单"))
     );
     assert_ne!(details.risk, ApprovalRisk::Low);
+}
+
+#[test]
+fn ai_permission_unspecified_tool_defaults_to_unverified_high_risk() {
+    // 未覆盖 approval_details 的工具（如未来的新工具）必须保持默认高风险兜底，
+    // 不能因为没写分类器就给出"安全"结论。
+    let tool = crate::RecordingTool::new("http.request", fluxdb_core::ToolRisk::Write);
+    let details = tool.approval_details("{}");
+    assert_eq!(details.risk, ApprovalRisk::High);
+    assert_eq!(details.guardrails, vec!["计划风险尚未核实".to_string()]);
+    assert!(details.statements.is_empty());
 }

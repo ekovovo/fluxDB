@@ -55,7 +55,7 @@ pub fn recover_on_startup(conn: &mut Connection, now: i64) -> Result<RecoverySum
                 // 不依据 SQL 前缀断言只读；只有已实现的专用只读工具可确认为读取中断。
                 if matches!(
                     tool.as_str(),
-                    "db.query" | "db.search_objects" | "db.explain"
+                    "db.query" | "db.search_objects" | "db.describe_object" | "db.explain"
                 ) {
                     "cancelled"
                 } else {

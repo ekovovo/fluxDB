@@ -35,6 +35,7 @@ fn ai_sql_exec_ctx(call_id: &str, cancel: CancelFlag) -> ToolExecutionContext {
         turn_id: "t-sql".into(),
         iteration: 1,
         call_id: call_id.to_string(),
+        progress: None,
         cancel,
     }
 }
@@ -169,6 +170,9 @@ fn ai_sql_exec_query_tool_returns_bounded_rows_for_read_only_select() {
         serde_json::from_str(&receipt.result_json).expect("回执载荷是 JSON");
     assert!(payload["columns"].as_array().is_some_and(|c| !c.is_empty()));
     assert!(payload["row_count"].as_u64().unwrap_or(0) <= 1);
+    assert_eq!(payload["source"], "ai");
+    assert!(payload["query_session_id"].as_u64().is_some());
+    assert!(payload["progress"].as_array().is_some_and(|items| !items.is_empty()));
 }
 
 #[test]
@@ -189,6 +193,31 @@ fn ai_sql_exec_cancel_flag_yields_cancelled_receipt() {
 }
 
 #[test]
+fn ai_sql_exec_reports_progress_to_runtime_context() {
+    let resolver = Arc::new(MapSqlResolver::new([ai_sql_exec_demo_config(1)]));
+    let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let ctx = ToolExecutionContext {
+        session_id: "s-sql".into(),
+        turn_id: "t-sql".into(),
+        iteration: 1,
+        call_id: "call-progress".into(),
+        progress: Some(events.clone()),
+        cancel: CancelFlag::new(),
+    };
+    let tool = AiSqlReadTool::query(resolver).expect("db.query 工具");
+    let receipt = ai_sql_exec_block_on(tool.execute(
+        ctx,
+        r#"{"target":"conn:1","sql":"SELECT * FROM product"}"#.into(),
+    ))
+    .expect("工具调用");
+    assert_eq!(receipt.status, fluxdb_core::ToolReceiptStatus::Succeeded);
+    let events = events.lock().expect("进度锁");
+    assert_eq!(events.len(), 1);
+    assert!(events[0].success);
+    assert_eq!(events[0].returned_rows, 2);
+}
+
+#[test]
 fn ai_sql_exec_search_tool_returns_bounded_object_list() {
     let resolver = Arc::new(MapSqlResolver::new([ai_sql_exec_demo_config(1)]));
     let tool = AiSqlSearchTool::new(resolver).expect("db.search_objects 工具");
@@ -205,6 +234,42 @@ fn ai_sql_exec_search_tool_returns_bounded_object_list() {
         serde_json::from_str(&receipt.result_json).expect("回执载荷是 JSON");
     // limit=2 必须真正生效（有界），不是全量返回。
     assert_eq!(payload["count"].as_u64(), Some(2));
+}
+
+#[test]
+fn ai_sql_exec_describe_tool_returns_structured_metadata() {
+    let resolver = Arc::new(MapSqlResolver::new([ai_sql_exec_demo_config(1)]));
+    let tool = AiSqlDescribeTool::new(Arc::clone(&resolver)).expect("db.describe_object 工具");
+    let receipt = ai_sql_exec_block_on(tool.execute(
+        ai_sql_exec_ctx("call-describe", CancelFlag::new()),
+        serde_json::json!({
+            "target": "conn:1",
+            "object_ref": {"name": "product", "kind": "table"},
+            "include": ["columns", "indexes", "foreign_keys", "ddl"]
+        })
+        .to_string(),
+    ))
+    .expect("工具调用");
+
+    assert_eq!(receipt.status, fluxdb_core::ToolReceiptStatus::Succeeded);
+    let payload: serde_json::Value =
+        serde_json::from_str(&receipt.result_json).expect("回执载荷是 JSON");
+    assert_eq!(payload["object"]["name"], "product");
+    assert!(payload["columns"].as_array().is_some_and(|items| !items.is_empty()));
+    assert!(payload["indexes"].as_array().is_some_and(|items| !items.is_empty()));
+    assert!(payload["foreign_keys"].is_array());
+    assert!(payload["ddl"].as_str().is_some_and(|ddl| ddl.contains("CREATE TABLE")));
+}
+
+#[test]
+fn ai_sql_exec_resolver_allocates_distinct_agent_sessions() {
+    let first = MapSqlResolver::new([ai_sql_exec_demo_config(1)]);
+    let second = MapSqlResolver::new([ai_sql_exec_demo_config(1)]);
+    assert_ne!(
+        first.query_session_id(),
+        second.query_session_id(),
+        "不同 Agent 执行上下文不得共享查询会话"
+    );
 }
 
 #[test]
@@ -232,7 +297,15 @@ fn ai_sql_exec_projection_is_bounded_by_rows() {
         rollback_snapshots: Vec::new(),
     };
 
-    let outcome = project_execution(&execution, 10, 3);
+    let outcome = project_execution(
+        &execution,
+        10,
+        3,
+        fluxdb_core::QuerySessionId(1),
+        "SELECT * FROM product",
+        "SELECT * FROM product LIMIT 10",
+        Vec::new(),
+    );
     assert_eq!(outcome.row_count, 10, "行数必须按 max_rows 截断");
     assert_eq!(outcome.rows.len(), 10);
     assert!(outcome.truncated, "被截断必须标记");
@@ -265,7 +338,15 @@ fn ai_sql_exec_projection_is_bounded_by_bytes() {
         rollback_snapshots: Vec::new(),
     };
 
-    let outcome = project_execution(&execution, 1000, 1);
+    let outcome = project_execution(
+        &execution,
+        1000,
+        1,
+        fluxdb_core::QuerySessionId(1),
+        "SELECT blob FROM product",
+        "SELECT blob FROM product LIMIT 1000",
+        Vec::new(),
+    );
     assert!(
         outcome.rows.len() < 50,
         "字节上限必须先于行数上限生效，实际保留 {} 行",

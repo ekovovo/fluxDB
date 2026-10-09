@@ -134,7 +134,6 @@ fn live_tools_smoke(provider: &AiConversationProvider) -> Result<(), Box<dyn std
             agent_allowed_tools: Vec::new(),
             policy: fluxdb_app::kernel_policy_for_connection(Some(&config)),
             plugin_digest: None,
-            target_dialect: None,
         },
         audit: &fluxdb_app::KernelAuditHook,
     };

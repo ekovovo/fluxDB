@@ -476,6 +476,38 @@ pub const DB_SEARCH_OBJECTS_INPUT_SCHEMA: &str = r#"{
   }
 }"#;
 
+/// `db.describe_object` 的输入 schema。
+///
+/// object_ref 使用结构化对象定位，不接受 SQL 片段或连接字符串，避免把标识符
+/// 拼接责任泄漏到 App 层。未指定 include 时只返回列、索引和外键摘要。
+pub const DB_DESCRIBE_OBJECT_INPUT_SCHEMA: &str = r#"{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["target", "object_ref"],
+  "properties": {
+    "target": { "type": "string", "minLength": 1 },
+    "object_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "kind"],
+      "properties": {
+        "database": { "type": "string", "maxLength": 256 },
+        "schema": { "type": "string", "maxLength": 256 },
+        "name": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "kind": { "type": "string", "enum": ["table", "view"] }
+      }
+    },
+    "include": {
+      "type": "array",
+      "maxItems": 6,
+      "items": {
+        "type": "string",
+        "enum": ["columns", "indexes", "foreign_keys", "comment", "ddl"]
+      }
+    }
+  }
+}"#;
+
 /// 按分类决定工具入口：只读走 `db.query`，其余必须走 `db.execute`（审批）。
 pub fn route_for_sql(sql: &str, dialect: SqlDialectKind) -> (&'static str, SqlRisk) {
     let risk = analyze_sql(sql, dialect);
@@ -486,11 +518,12 @@ pub fn route_for_sql(sql: &str, dialect: SqlDialectKind) -> (&'static str, SqlRi
     (tool, risk)
 }
 
-/// 构造 `db.query` / `db.execute` / `db.explain` 三个标准 SQL 工具的定义。
+/// 构造标准 SQL 工具的定义。
 ///
 /// - `db.query`：只读入口（Read）；
 /// - `db.execute`：修改专用入口（Write，必须走审批）；
-/// - `db.explain`：默认不执行（Read），`mode=execute` 时由策略层降级为需审批。
+/// - `db.explain`：默认不执行（Read），`mode=execute` 时由策略层降级为需审批；
+/// - `db.search_objects`/`db.describe_object`：只读元数据探索。
 pub fn standard_sql_tool_specs() -> fluxdb_core::Result<Vec<ToolSpec>> {
     let descriptors = [
         fluxdb_core::ToolDescriptor {
@@ -513,6 +546,13 @@ pub fn standard_sql_tool_specs() -> fluxdb_core::Result<Vec<ToolSpec>> {
             description: "按名字模糊搜索表/视图（渐进元数据，只读）".into(),
             risk: fluxdb_core::ToolRisk::Read,
             input_schema_json: DB_SEARCH_OBJECTS_INPUT_SCHEMA.into(),
+        },
+        fluxdb_core::ToolDescriptor {
+            id: "db.describe_object".into(),
+            version: 1,
+            description: "读取表或视图的列、索引、外键、注释和可选 DDL（只读）".into(),
+            risk: fluxdb_core::ToolRisk::Read,
+            input_schema_json: DB_DESCRIBE_OBJECT_INPUT_SCHEMA.into(),
         },
         fluxdb_core::ToolDescriptor {
             id: "db.explain".into(),

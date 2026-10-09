@@ -144,7 +144,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         agent_allowed_tools: Vec::new(),
         policy: kernel_policy_for_connection(Some(&config)),
         plugin_digest: None,
-        target_dialect: None,
     };
     let target = TurnTargetPin {
         target_json: TargetRef {

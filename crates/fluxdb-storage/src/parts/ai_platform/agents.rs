@@ -267,7 +267,11 @@ mod tests {
             default_model_profile_id: None,
             system_prompt: "先确认真实结构再行动。".into(),
             budget_policy_id: None,
-            allowed_tools: vec!["db.query".into(), "db.search_objects".into()],
+            allowed_tools: vec![
+                "db.query".into(),
+                "db.search_objects".into(),
+                "db.describe_object".into(),
+            ],
         }
     }
 
@@ -277,7 +281,10 @@ mod tests {
         let view = create_agent(&conn, 1_000, &edit("a1")).expect("新建");
         assert_eq!(view.revision, 1);
         assert_eq!(view.system_prompt, "先确认真实结构再行动。");
-        assert_eq!(view.allowed_tools, vec!["db.query", "db.search_objects"]);
+        assert_eq!(
+            view.allowed_tools,
+            vec!["db.query", "db.search_objects", "db.describe_object"]
+        );
     }
 
     #[test]

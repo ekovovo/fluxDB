@@ -255,7 +255,7 @@ fn ai_chat_part(
         "tool_result_ref" => (AppIcon::Table, "结果引用"),
         "artifact_ref" => (AppIcon::Activity, "任务产物"),
         "context_ref" => (AppIcon::FileSearch, "上下文"),
-        _ => (AppIcon::CircleSlash, "任务说明"),
+        _ => (AppIcon::Info, "任务说明"),
     };
     // 工具卡直接展示真实 tool_id；目标/参数仍在展开区，不凭空拼标签。
     let label = if approval_decision.is_some() {
@@ -268,6 +268,8 @@ fn ai_chat_part(
             .and_then(serde_json::Value::as_str)
             .unwrap_or(label)
             .to_string()
+    } else if part.kind == "notice" && !text.is_empty() {
+        text.clone()
     } else {
         label.to_string()
     };
@@ -365,7 +367,7 @@ fn ai_chat_part(
                                     .child(format!("{duration_ms}ms")),
                             )
                         })
-                        .when(recovery_status.is_none(), |row| row.child(div().flex_none().text_size(px(10.)).text_color(status_color).child(status)))
+                        .when(recovery_status.is_none() && !(part.kind == "notice" && part.status == "complete"), |row| row.child(div().flex_none().text_size(px(10.)).text_color(status_color).child(status)))
                         .child(app_icon(if expanded { AppIcon::ChevronDown } else { AppIcon::ChevronRight }, 10., colors.muted)),
                 )
                 .on_click(cx.listener({
@@ -496,10 +498,10 @@ fn ai_chat_message_parts(
             group_count += 1;
             index = end;
             let toggle_id = group_id.clone();
-            output.push(div().flex().flex_col().gap_1().min_w(px(0.))
+            output.push(div().w_full().pl_3().flex().flex_col().items_start().gap_1().min_w(px(0.))
                 .child(Button::new(SharedString::from(group_id.clone()))
                     .debug_selector({ let id = group_id.clone(); move || id.clone() })
-                    .xsmall().ghost().cursor_pointer()
+                    .xsmall().ghost().rounded_md().self_start().cursor_pointer()
                     .child(div().flex().items_center().gap_1p5().text_size(px(10.)).text_color(colors.muted)
                         .child(app_icon(AppIcon::Check, 11., colors.muted))
                         .child(format!("已完成 {} 项操作", tools.len()))
@@ -513,7 +515,7 @@ fn ai_chat_message_parts(
                         this.save_ai_chat_ui(window, cx);
                         cx.notify();
                     })))
-                .when(open, |column| column.child(div().pl_2().border_l_1().border_color(colors.border_soft)
+                .when(open, |column| column.child(div().w_full().min_w(px(0.)).pl_2().border_l_1().border_color(colors.border_soft)
                     .flex().flex_col().gap_1().children(tools.iter().map(|p| ai_chat_part(p, chat.expanded_parts.contains(&p.id), approval, chat.target_json.as_deref(), None, colors, cx)))))
                 .into_any_element());
         } else {

@@ -914,9 +914,12 @@ mod ai_ui_tests {
 
     /// 设置页「会话历史」：真实会话从 SQLite → AppState → 渲染快照 → 控件，
     /// 并能通过行内按钮重命名/归档（真实命令 + 后台回包，走生产 Root/Dialog）。
-    #[gpui::test]
+    #[gpui_kit::test]
     async fn ai_ui_sessions_panel_lists_and_manages_real_sessions(cx: &mut TestAppContext) {
+        use gpui_kit::test::TestWindowExt as _;
         let _dialog_guard = dialog_test_lock().lock().unwrap_or_else(|e| e.into_inner());
+        // 与组件库弹框测试一致，避免入场动画移动控件导致鼠标命中遮罩。
+        cx.update(|cx| cx.set_reduce_motion(true));
         cx.executor().allow_parking();
         let root = isolated_root("sessions");
         let storage = FileStorage::new(root.clone());
@@ -1005,12 +1008,28 @@ mod ai_ui_tests {
                 .map(|pending| pending.title.clone())
         });
         assert_eq!(pending_title.as_deref(), Some("再看看索引"));
-        view.update(cx, |main, cx| {
-            main.pending_ai_session_rename
-                .as_mut()
-                .expect("弹框等待提交")
-                .title = "重命名后的会话".into();
-            main.confirm_ai_session_rename(cx);
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            assert_eq!(window.find("ai-session-rename-input").value(), Some("再看看索引"));
+            window.click("ai-session-rename-input", cx);
+            window.press("secondary-a", cx);
+            window.press("delete", cx);
+        });
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.click("ai-session-rename-confirm", cx);
+            window.render_frame(cx);
+            assert!(window.try_find("ai-session-rename-input").is_some(), "空标题不能关闭弹框");
+        });
+        assert_eq!(view.read_with(cx, |main, _| main.controller.state().ai_sessions.iter().find(|s| s.id == "session-beta").unwrap().title.clone()), "再看看索引");
+        cx.update(|window, cx| {
+            window.click("ai-session-rename-input", cx);
+            window.input("重命名后的会话", cx);
+        });
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            assert_eq!(window.find("ai-session-rename-input").value(), Some("重命名后的会话"));
+            window.click("ai-session-rename-confirm", cx);
         });
         wait_ui_condition(&view, cx, "重命名完成", |main| {
             main.controller
@@ -1027,6 +1046,37 @@ mod ai_ui_tests {
             })
             .unwrap();
         assert_eq!(title, "重命名后的会话");
+        for cancel_key in [None, Some("escape")] {
+            cx.update(|window, cx| {
+                window.render_frame(cx);
+                window.click("ai-session-rename:session-beta", cx);
+                window.render_frame(cx);
+                window.click("ai-session-rename-input", cx);
+                window.press("secondary-a", cx);
+                window.input("不应保存的标题", cx);
+            });
+            cx.update(|window, cx| {
+                if let Some(key) = cancel_key {
+                    window.press(key, cx);
+                } else {
+                    window.click("ai-session-rename-cancel", cx);
+                }
+                window.render_frame(cx);
+                assert!(window.try_find("ai-session-rename-input").is_none(), "取消应关闭弹框");
+            });
+        }
+        let (saved_title, message_count): (String, i64) = storage
+            .with_ai_connection(|conn| {
+                conn.query_row(
+                    "SELECT title,(SELECT COUNT(*) FROM ai_messages WHERE session_id='session-beta') FROM ai_sessions WHERE id='session-beta'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .map_err(|error| fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, error.to_string()))
+            })
+            .unwrap();
+        assert_eq!(saved_title, "重命名后的会话", "取消和 Esc 不得写库");
+        assert_eq!(message_count, 2, "改名不得删除问答记录");
         cx.executor().forbid_parking();
         let _ = std::fs::remove_dir_all(root);
     }

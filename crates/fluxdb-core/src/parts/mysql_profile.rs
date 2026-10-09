@@ -225,13 +225,6 @@ pub const MYSQL_LEGACY_OPTION_KEYS: &[&str] = &[
     "tcp_keepalive",
 ];
 
-/// 判断 `value` 是否是合法的布尔开关文本（true/y/yes/1/on）。
-fn mysql_option_is_true(value: Option<&String>) -> bool {
-    value
-        .map(|v| v.trim().to_ascii_lowercase())
-        .is_some_and(|v| matches!(v.as_str(), "true" | "y" | "yes" | "1" | "on"))
-}
-
 impl MysqlConnectionProfile {
     /// —— 解析职责 ——
 
@@ -251,7 +244,7 @@ impl MysqlConnectionProfile {
             password: SecretRef::inline(get("password").unwrap_or_default()),
         };
         let tls = MysqlTlsOptions {
-            enabled: mysql_option_is_true(get("tls").as_ref()),
+            enabled: connection_option_is_true(get("tls").as_ref()),
             ssl_mode: match get("ssl_mode").as_deref() {
                 Some("disabled") => MysqlSslMode::Disabled,
                 Some("required") => MysqlSslMode::Required,
@@ -261,7 +254,7 @@ impl MysqlConnectionProfile {
             client_cert: SecretRef::ref_key(get("tls_client_cert_ref").unwrap_or_default()),
             client_key: SecretRef::ref_key(get("tls_client_key_ref").unwrap_or_default()),
             sni: get("tls_server_name").unwrap_or_default(),
-            verify: !mysql_option_is_true(get("tls_insecure").as_ref()),
+            verify: !connection_option_is_true(get("tls_insecure").as_ref()),
             charset: get("charset")
                 .filter(|c| !c.is_empty())
                 .unwrap_or_else(|| "utf8mb4".into()),
@@ -269,7 +262,7 @@ impl MysqlConnectionProfile {
         };
         let mut transport = Vec::new();
         let ssh = MysqlSshOptions {
-            enabled: mysql_option_is_true(get("ssh_enabled").as_ref()),
+            enabled: connection_option_is_true(get("ssh_enabled").as_ref()),
             host: get("ssh_host").unwrap_or_default(),
             port: get("ssh_port").and_then(|p| p.parse().ok()).unwrap_or(22),
             username: get("ssh_username").unwrap_or_default(),
@@ -291,7 +284,7 @@ impl MysqlConnectionProfile {
             transport.push(MysqlTransportLayer::Ssh(ssh));
         }
         let proxy = MysqlProxy {
-            enabled: mysql_option_is_true(get("proxy_enabled").as_ref()),
+            enabled: connection_option_is_true(get("proxy_enabled").as_ref()),
             proxy_type: match get("proxy_type").as_deref() {
                 Some("http_connect") => MysqlProxyType::HttpConnect,
                 _ => MysqlProxyType::Socks5,
@@ -320,7 +313,7 @@ impl MysqlConnectionProfile {
                 idle_ttl_secs: get("idle_ttl_secs").and_then(|p| p.parse().ok()).unwrap_or(0),
                 // 缺省视为启用（默认 true）。
                 tcp_keepalive: match get("tcp_keepalive") {
-                    Some(v) => mysql_option_is_true(Some(&v)),
+                    Some(v) => connection_option_is_true(Some(&v)),
                     None => true,
                 },
             },

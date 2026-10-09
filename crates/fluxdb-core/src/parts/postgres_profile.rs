@@ -252,13 +252,6 @@ fn postgres_first_layer(profile: &PostgresConnectionProfile) -> Option<&Postgres
     profile.transport.first()
 }
 
-/// 判断 `value` 是否是合法的布尔开关文本（true/y/yes/1/on）。
-fn postgres_option_is_true(value: Option<&String>) -> bool {
-    value
-        .map(|v| v.trim().to_ascii_lowercase())
-        .is_some_and(|v| matches!(v.as_str(), "true" | "y" | "yes" | "1" | "on"))
-}
-
 /// 历史 `options` 扁平参数里 PostgreSQL 认识的全部键（白名单）。
 pub const POSTGRES_LEGACY_OPTION_KEYS: &[&str] = &[
     "host",
@@ -320,11 +313,11 @@ impl PostgresConnectionProfile {
         };
         let scope = PostgresScopeOptions {
             default_schema: get("default_schema").unwrap_or_default(),
-            show_other_databases: postgres_option_is_true(get("show_other_databases").as_ref()),
-            show_system_schemas: postgres_option_is_true(get("show_system_schemas").as_ref()),
+            show_other_databases: connection_option_is_true(get("show_other_databases").as_ref()),
+            show_system_schemas: connection_option_is_true(get("show_system_schemas").as_ref()),
         };
         let tls = PostgresTlsOptions {
-            enabled: postgres_option_is_true(get("tls").as_ref()),
+            enabled: connection_option_is_true(get("tls").as_ref()),
             ssl_mode: match get("ssl_mode").as_deref() {
                 Some("disable") | Some("disabled") => PostgresSslMode::Disabled,
                 Some("require") => PostgresSslMode::Require,
@@ -339,7 +332,7 @@ impl PostgresConnectionProfile {
         };
         let mut transport: Vec<PostgresTransportLayer> = Vec::new();
         let ssh = PostgresSshOptions {
-            enabled: postgres_option_is_true(get("ssh_enabled").as_ref()),
+            enabled: connection_option_is_true(get("ssh_enabled").as_ref()),
             host: get("ssh_host").unwrap_or_default(),
             port: get("ssh_port").and_then(|p| p.parse().ok()).unwrap_or(22),
             username: get("ssh_username").unwrap_or_default(),
@@ -361,7 +354,7 @@ impl PostgresConnectionProfile {
             transport.push(PostgresTransportLayer::Ssh(ssh));
         }
         let proxy = PostgresProxy {
-            enabled: postgres_option_is_true(get("proxy_enabled").as_ref()),
+            enabled: connection_option_is_true(get("proxy_enabled").as_ref()),
             proxy_type: match get("proxy_type").as_deref() {
                 Some("http_connect") => PostgresProxyType::HttpConnect,
                 _ => PostgresProxyType::Socks5,
@@ -388,7 +381,7 @@ impl PostgresConnectionProfile {
                 .unwrap_or(0),
             idle_ttl_secs: get("idle_ttl_secs").and_then(|p| p.parse().ok()).unwrap_or(0),
             tcp_keepalive: match get("tcp_keepalive") {
-                Some(v) => postgres_option_is_true(Some(&v)),
+                Some(v) => connection_option_is_true(Some(&v)),
                 None => true,
             },
             application_name: get("application_name")

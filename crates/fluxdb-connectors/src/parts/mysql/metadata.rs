@@ -1,8 +1,8 @@
 fn mysql_qualified_table(database: &str, table: &str) -> String {
     format!(
         "{}.{}",
-        mysql_quote_identifier(database),
-        mysql_quote_identifier(table)
+        fluxdb_core::MySqlDialect.quote_identifier(database),
+        fluxdb_core::MySqlDialect.quote_identifier(table)
     )
 }
 
@@ -281,8 +281,8 @@ fn mysql_table_ddl(config: &ConnectionConfig, path: &ObjectPath) -> fluxdb_core:
     let database = mysql_database_for_path(config, path)?;
     let sql = format!(
         "SHOW CREATE TABLE {}.{}",
-        mysql_quote_identifier(&database),
-        mysql_quote_identifier(&path.name)
+        fluxdb_core::MySqlDialect.quote_identifier(&database),
+        fluxdb_core::MySqlDialect.quote_identifier(&path.name)
     );
     let options = mysql_connection_url(config)?
         .parse::<MySqlConnectOptions>()

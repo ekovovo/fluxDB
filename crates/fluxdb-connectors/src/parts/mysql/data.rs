@@ -45,15 +45,15 @@ fn mysql_load_data(
             .join(", ");
         let mut builder = QueryBuilder::<MySql>::new(format!(
             "SELECT {select_list} FROM {}.{} AS {}",
-            mysql_quote_identifier(database),
-            mysql_quote_identifier(&path.name),
-            mysql_quote_identifier(MYSQL_DATA_SOURCE_ALIAS)
+            fluxdb_core::MySqlDialect.quote_identifier(database),
+            fluxdb_core::MySqlDialect.quote_identifier(&path.name),
+            fluxdb_core::MySqlDialect.quote_identifier(MYSQL_DATA_SOURCE_ALIAS)
         ));
         push_data_where_clause(
             &mut builder,
             filters,
             &columns,
-            mysql_quote_identifier,
+            |value| fluxdb_core::MySqlDialect.quote_identifier(value),
             push_mysql_bind,
         );
         builder.push(mysql_order_by_clause(sort, &columns));
@@ -97,8 +97,8 @@ fn mysql_order_by_clause(sort: &[SortSpec], columns: &[Column]) -> String {
 fn mysql_data_source_column(column: &str) -> String {
     format!(
         "{}.{}",
-        mysql_quote_identifier(MYSQL_DATA_SOURCE_ALIAS),
-        mysql_quote_identifier(column)
+        fluxdb_core::MySqlDialect.quote_identifier(MYSQL_DATA_SOURCE_ALIAS),
+        fluxdb_core::MySqlDialect.quote_identifier(column)
     )
 }
 
@@ -137,8 +137,8 @@ fn mysql_preview_data_export(
         let columns = mysql_columns(&mut connection, database, &path.name).await?;
         let table_name = format!(
             "{}.{}",
-            mysql_quote_identifier(database),
-            mysql_quote_identifier(&path.name)
+            fluxdb_core::MySqlDialect.quote_identifier(database),
+            fluxdb_core::MySqlDialect.quote_identifier(&path.name)
         );
         let mut builder =
             QueryBuilder::<MySql>::new(format!("SELECT COUNT(*) AS row_count FROM {table_name}"));
@@ -146,7 +146,7 @@ fn mysql_preview_data_export(
             &mut builder,
             filters,
             &columns,
-            mysql_quote_identifier,
+            |value| fluxdb_core::MySqlDialect.quote_identifier(value),
             push_mysql_bind,
         );
         let row = builder
@@ -164,7 +164,7 @@ fn mysql_preview_data_export(
                 sort,
                 filters,
                 &columns,
-                mysql_quote_identifier,
+                |value| fluxdb_core::MySqlDialect.quote_identifier(value),
             ),
             row_count: count.max(0) as u64,
         })
@@ -209,12 +209,12 @@ fn mysql_load_cell_binary(
         ensure_column_exists(column, &columns)?;
         let table_name = format!(
             "{}.{}",
-            mysql_quote_identifier(database),
-            mysql_quote_identifier(&path.name)
+            fluxdb_core::MySqlDialect.quote_identifier(database),
+            fluxdb_core::MySqlDialect.quote_identifier(&path.name)
         );
         let mut builder = QueryBuilder::<MySql>::new(format!(
             "SELECT {} FROM {table_name}",
-            mysql_quote_identifier(column)
+            fluxdb_core::MySqlDialect.quote_identifier(column)
         ));
         push_mysql_identity_where(&mut builder, identity, &columns)?;
         builder.push(" LIMIT 1");

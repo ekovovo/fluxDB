@@ -127,7 +127,7 @@ fn push_mysql_identity_where(
         builder,
         identity,
         columns,
-        mysql_quote_identifier,
+        |value| fluxdb_core::MySqlDialect.quote_identifier(value),
         push_mysql_bind,
     )
 }
@@ -141,7 +141,7 @@ fn push_sqlite_identity_where(
         builder,
         identity,
         columns,
-        sqlite_quote_identifier,
+        |value| fluxdb_core::SqliteDialect.quote_identifier(value),
         push_sqlite_bind,
     )
 }
@@ -175,10 +175,6 @@ where
     Ok(())
 }
 
-fn mysql_quote_identifier(value: &str) -> String {
-    format!("`{}`", value.replace('`', "``"))
-}
-
 fn mysql_create_database_sql(request: &CreateDatabaseRequest) -> fluxdb_core::Result<String> {
     let database = request.name.trim();
     if database.is_empty() {
@@ -203,7 +199,7 @@ fn mysql_create_database_sql(request: &CreateDatabaseRequest) -> fluxdb_core::Re
 
     Ok(format!(
         "CREATE DATABASE {} DEFAULT CHARACTER SET {} COLLATE {}",
-        mysql_quote_identifier(database),
+        fluxdb_core::MySqlDialect.quote_identifier(database),
         charset,
         collation
     ))
@@ -215,7 +211,7 @@ fn mysql_delete_database_sql(database: &str) -> fluxdb_core::Result<String> {
         return Err(Error::new(ErrorKind::Query, "数据库名称不能为空"));
     }
 
-    Ok(format!("DROP DATABASE {}", mysql_quote_identifier(database)))
+    Ok(format!("DROP DATABASE {}", fluxdb_core::MySqlDialect.quote_identifier(database)))
 }
 
 fn is_mysql_option_name(value: &str) -> bool {
@@ -305,10 +301,6 @@ fn mysql_delete_database(
             .map_err(mysql_error)?;
         connection.close().await.map_err(mysql_error)
     })
-}
-
-fn sqlite_quote_identifier(value: &str) -> String {
-    format!("\"{}\"", value.replace('"', "\"\""))
 }
 
 fn sqlite_quote_string(value: &str) -> String {

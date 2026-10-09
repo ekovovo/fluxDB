@@ -35,7 +35,7 @@ fn pg_create_database_sql(request: &CreateDatabaseRequest) -> fluxdb_core::Resul
     if database.is_empty() {
         return Err(Error::new(ErrorKind::Query, "数据库名称不能为空"));
     }
-    let mut statement = format!("CREATE DATABASE {}", pg_quote_identifier(database));
+    let mut statement = format!("CREATE DATABASE {}", fluxdb_core::PostgresDialect.quote_identifier(database));
 
     let charset = request.charset.trim();
     if !charset.is_empty() {
@@ -60,7 +60,7 @@ fn pg_create_database_sql(request: &CreateDatabaseRequest) -> fluxdb_core::Resul
         if !is_pg_identifier_name(owner) {
             return Err(Error::new(ErrorKind::Query, "数据库 owner 名称不合法"));
         }
-        statement.push_str(&format!(" OWNER {}", pg_quote_identifier(owner)));
+        statement.push_str(&format!(" OWNER {}", fluxdb_core::PostgresDialect.quote_identifier(owner)));
     }
 
     // TEMPLATE：模板库名按标识符引用（空不指定）。
@@ -69,7 +69,7 @@ fn pg_create_database_sql(request: &CreateDatabaseRequest) -> fluxdb_core::Resul
         if !is_pg_identifier_name(template) {
             return Err(Error::new(ErrorKind::Query, "数据库模板名称不合法"));
         }
-        statement.push_str(&format!(" TEMPLATE {}", pg_quote_identifier(template)));
+        statement.push_str(&format!(" TEMPLATE {}", fluxdb_core::PostgresDialect.quote_identifier(template)));
     } else if !collation.is_empty() {
         // 显式指定 locale（LC_COLLATE/LC_CTYPE）时，若沿用默认模板 template1，
         // 其 locale 与目标不一致会报「new collation is incompatible with the
@@ -89,7 +89,7 @@ fn is_pg_identifier_name(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'$'))
 }
 
-/// 「可加引号的对象名」校验：用于会被 `pg_quote_identifier` 双引号引用后下发的名字
+/// 「可加引号的对象名」校验：用于会被 `SqlDialect::quote_identifier` 双引号引用后下发的名字
 /// （schema 等）。引用后引号内不存在注入面，故允许中文/空格/大写等真实合法名字；
 /// 只拒绝 PG 标识符本身不接受的内容：空、NUL/控制字符、超过 63 字节（PG 会静默截断）。
 fn is_pg_quotable_object_name(value: &str) -> bool {
@@ -136,7 +136,7 @@ fn pg_create_schema(
     let database = pg_request_database(config, Some(database));
     pg_runtime().block_on(async {
         let session = pg_connect(config, &database).await?;
-        let sql = format!("CREATE SCHEMA {}", pg_quote_identifier(schema));
+        let sql = format!("CREATE SCHEMA {}", fluxdb_core::PostgresDialect.quote_identifier(schema));
         tracing::debug!(
             target: "fluxdb_connectors",
             database = %database,
@@ -173,7 +173,7 @@ fn pg_delete_database(
             format!("不能删除当前维护库 {database}"),
         ));
     }
-    let sql = format!("DROP DATABASE {}", pg_quote_identifier(database));
+    let sql = format!("DROP DATABASE {}", fluxdb_core::PostgresDialect.quote_identifier(database));
     pg_runtime().block_on(async {
         let session = pg_connect(config, &maintenance).await?;
         // simple query protocol + autocommit：DROP DATABASE 合法。
@@ -184,11 +184,6 @@ fn pg_delete_database(
             .map_err(pg_error)?;
         Ok(())
     })
-}
-
-/// PostgreSQL 标识符引用：双引号包裹，内部 `"` 转义为 `""`。
-fn pg_quote_identifier(value: &str) -> String {
-    format!("\"{}\"", value.replace('"', "\"\""))
 }
 
 #[cfg(test)]

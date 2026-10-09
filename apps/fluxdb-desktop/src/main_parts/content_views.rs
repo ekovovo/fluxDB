@@ -686,7 +686,13 @@ fn data_editor_content(
         .when(filter_open, |builder| builder);
 
     if editor.loading {
-        return content.child(center_loading_message("正在加载数据...", colors));
+        return content.child(
+            center_loading_message("正在加载数据...", colors)
+                .id(("data-page-loading", tab_id.0))
+                .role(Role::Status)
+                .aria_label("正在加载数据...")
+                .test_support(),
+        );
     }
 
     let Some(page) = &editor.page else {
@@ -936,7 +942,7 @@ fn data_editor_content(
         .map(clamp_cell_detail_drawer_height)
         .unwrap_or(CELL_DETAIL_DRAWER_DEFAULT_HEIGHT);
     let cell_detail_drawer = editor.cell_detail_panel.open.then(|| {
-        this.sync_cell_detail_input(
+        sync_input_value(
             &cell_detail_input,
             &editor.cell_detail_panel.edit_value,
             window,
@@ -1266,7 +1272,7 @@ fn redis_workbench_content(
         window,
         cx,
     );
-    let split_handle = redis_workbench_split_handle(editor_size, placement, colors, cx);
+    let split_handle = redis_workbench_split_handle(editor_size, placement, colors, cx).test_support();
     let results = redis_workbench_results(tab_id, workbench, this, colors, cx);
 
     // 编辑器区与结果区的排布方向由布局决定；结果区始终 flex_1 吃掉剩余空间。
@@ -1913,6 +1919,7 @@ fn redis_workbench_toolbar(
                 rgb(0x20c76a),
                 colors,
             )
+            .test_support()
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, _, cx| {
@@ -2098,14 +2105,14 @@ fn redis_workbench_split_handle(
         // 落盘只在松手时做。`on_mouse_up` 仅在指针仍悬停手柄上时触发，
         // 而正常拖拽手势是在结果区松手，所以必须补一个 `on_mouse_up_out`
         // （非悬停时触发）才真的落盘 —— 否则分栏大小拖完一重启就丢。
-        // 两处都用 `take().is_some()` 守卫，天然幂等，重复触发无副作用。
+        // 仅消费已开始的拖拽；外部松手回调在捕获阶段运行，无拖拽时不得拦截其他控件的点击。
         .on_mouse_up(
             MouseButton::Left,
             cx.listener(move |this, _: &MouseUpEvent, _, cx| {
                 if this.redis_workbench_panel_resize_start.take().is_some() {
                     let _ = this.storage.save_settings(&this.controller.state().settings);
+                    cx.stop_propagation();
                 }
-                cx.stop_propagation();
             }),
         )
         .on_mouse_up_out(
@@ -2113,8 +2120,8 @@ fn redis_workbench_split_handle(
             cx.listener(move |this, _: &MouseUpEvent, _, cx| {
                 if this.redis_workbench_panel_resize_start.take().is_some() {
                     let _ = this.storage.save_settings(&this.controller.state().settings);
+                    cx.stop_propagation();
                 }
-                cx.stop_propagation();
             }),
         )
 }
@@ -3798,7 +3805,7 @@ fn query_result_view(
         .filter(|editor| editor.cell_detail_panel.open)
         .map(|editor| {
             let input = this.cell_detail_input.clone();
-            this.sync_cell_detail_input(&input, &editor.cell_detail_panel.edit_value, window, cx);
+            sync_input_value(&input, &editor.cell_detail_panel.edit_value, window, cx);
             cell_detail_panel(
                 tab_id,
                 editor,
@@ -4659,6 +4666,7 @@ fn query_toolbar(
                 rgb(0x20c76a),
                 colors,
             )
+                .test_support()
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener({
@@ -5587,7 +5595,10 @@ fn data_editor_toolbar(
                 ))
                 .when(show_table_tools, |this| this.when_some(table_info_open, |this, active| {
                     this.child(
-                        data_editor_action_state("表属性", active, colors).on_mouse_down(
+                        data_editor_action_state("表属性", active, colors)
+                            .id(("table-info-toggle", tab_id.0))
+                            .test_support()
+                            .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(move |this, _, _, cx| {
                                 this.dispatch(

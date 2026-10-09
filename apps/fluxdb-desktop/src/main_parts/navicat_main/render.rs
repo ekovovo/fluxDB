@@ -425,8 +425,9 @@ impl Render for NavicatMain {
                 ))
             })
             .when_some(self.pending_dangerous_query.clone(), |this, pending| {
-                this.child(dangerous_query_modal(
-                    pending,
+                this.child(dangerous_command_modal(
+                    DangerousCommandKind::Sql,
+                    pending.text,
                     self.focus_handle.clone(),
                     colors,
                     cx,
@@ -435,8 +436,9 @@ impl Render for NavicatMain {
             .when_some(
                 self.pending_dangerous_redis_command.clone(),
                 |this, pending| {
-                    this.child(dangerous_redis_command_modal(
-                        pending,
+                    this.child(dangerous_command_modal(
+                        DangerousCommandKind::Redis,
+                        pending.text,
                         self.focus_handle.clone(),
                         colors,
                         cx,
@@ -552,8 +554,8 @@ impl Render for NavicatMain {
                 ))
             })
             .when_some(self.pending_rename_table.clone(), |this, form| {
-                this.child(rename_table_modal(
-                    form.clone(),
+                this.child(table_name_form_modal(
+                    TableNameForm::Rename(form.clone()),
                     self.rename_table_sql_for_form(&form),
                     self.rename_table_input.clone(),
                     self._rename_table_task.is_some(),
@@ -564,8 +566,8 @@ impl Render for NavicatMain {
                 ))
             })
             .when_some(self.pending_copy_table.clone(), |this, form| {
-                this.child(copy_table_modal(
-                    form.clone(),
+                this.child(table_name_form_modal(
+                    TableNameForm::Copy(form.clone()),
                     self.copy_table_sql_for_form(&form),
                     self.copy_table_input.clone(),
                     self._copy_table_task.is_some(),

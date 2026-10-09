@@ -1613,7 +1613,7 @@ fn run_pg_native_psql(
     for (key, value) in &invocation.env {
         cmd.env(key, value);
     }
-    prepare_tree_kill_command(&mut cmd);
+    fluxdb_core::prepare_tree_kill_command(&mut cmd);
     // Windows 下隐藏子进程控制台窗口（SQL 文件执行调用 psql 时避免弹黑框）。
     let mut child = fluxdb_core::no_console(cmd)
         .stdout(Stdio::piped())
@@ -1635,7 +1635,7 @@ fn run_pg_native_psql(
     // 等待期间定期检测取消并 kill；kill 后仍要 wait 回收避免僵尸进程。
     let status = loop {
         if cancel_flag.load(std::sync::atomic::Ordering::Relaxed) {
-            kill_child_tree(&mut child);
+            fluxdb_core::kill_child_tree(&mut child);
             anyhow::bail!("已取消");
         }
         match child.try_wait()? {

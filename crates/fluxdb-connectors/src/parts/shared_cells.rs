@@ -69,43 +69,12 @@ fn completion_like_filter(filter: &str) -> String {
     format!("{}%", filter.trim().to_ascii_lowercase())
 }
 
-fn completion_fuzzy_like_filter(filter: &str) -> String {
-    let filter = filter.trim().to_ascii_lowercase();
-    if filter.is_empty() {
-        return "%".to_string();
-    }
-
-    let mut pattern = String::from("%");
-    for ch in filter.chars() {
-        if matches!(ch, '%' | '_' | '\\') {
-            pattern.push('\\');
-        }
-        pattern.push(ch);
-        pattern.push('%');
-    }
-    pattern
-}
-
 fn matches_completion_filter(value: &str, filter: &str) -> bool {
     let filter = filter.trim();
     filter.is_empty()
         || value
             .to_ascii_lowercase()
             .starts_with(&filter.to_ascii_lowercase())
-}
-
-fn matches_completion_fuzzy_filter(value: &str, filter: &str) -> bool {
-    let filter = filter.trim();
-    if filter.is_empty() {
-        return true;
-    }
-
-    let value = value.to_ascii_lowercase();
-    let mut value_chars = value.chars();
-    filter
-        .to_ascii_lowercase()
-        .chars()
-        .all(|filter_char| value_chars.any(|value_char| value_char == filter_char))
 }
 
 fn columns_to_completion(
@@ -133,11 +102,11 @@ fn columns_to_completion(
 }
 
 fn mysql_select_expr(column: &Column) -> String {
-    let name = mysql_quote_identifier(&column.name);
+    let name = fluxdb_core::MySqlDialect.quote_identifier(&column.name);
     if is_binary_column(column) {
-        let is_null = mysql_quote_identifier(&binary_alias(&column.name, "is_null"));
-        let byte_length = mysql_quote_identifier(&binary_alias(&column.name, "byte_length"));
-        let preview_hex = mysql_quote_identifier(&binary_alias(&column.name, "preview_hex"));
+        let is_null = fluxdb_core::MySqlDialect.quote_identifier(&binary_alias(&column.name, "is_null"));
+        let byte_length = fluxdb_core::MySqlDialect.quote_identifier(&binary_alias(&column.name, "byte_length"));
+        let preview_hex = fluxdb_core::MySqlDialect.quote_identifier(&binary_alias(&column.name, "preview_hex"));
         return format!(
             "CAST({name} IS NULL AS UNSIGNED) AS {is_null}, COALESCE(OCTET_LENGTH({name}), 0) AS {byte_length}, UPPER(HEX(SUBSTRING({name}, 1, 64))) AS {preview_hex}"
         );
@@ -147,11 +116,11 @@ fn mysql_select_expr(column: &Column) -> String {
 }
 
 fn sqlite_select_expr(column: &Column) -> String {
-    let name = sqlite_quote_identifier(&column.name);
+    let name = fluxdb_core::SqliteDialect.quote_identifier(&column.name);
     if is_binary_column(column) {
-        let is_null = sqlite_quote_identifier(&binary_alias(&column.name, "is_null"));
-        let byte_length = sqlite_quote_identifier(&binary_alias(&column.name, "byte_length"));
-        let preview_hex = sqlite_quote_identifier(&binary_alias(&column.name, "preview_hex"));
+        let is_null = fluxdb_core::SqliteDialect.quote_identifier(&binary_alias(&column.name, "is_null"));
+        let byte_length = fluxdb_core::SqliteDialect.quote_identifier(&binary_alias(&column.name, "byte_length"));
+        let preview_hex = fluxdb_core::SqliteDialect.quote_identifier(&binary_alias(&column.name, "preview_hex"));
         return format!(
             "{name} IS NULL AS {is_null}, COALESCE(length({name}), 0) AS {byte_length}, upper(hex(substr({name}, 1, 64))) AS {preview_hex}"
         );

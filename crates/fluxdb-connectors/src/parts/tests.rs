@@ -2929,10 +2929,10 @@ SELECT item_id, name FROM audit_log;"
 
     #[test]
     fn completion_table_filter_matches_fuzzy_input() {
-        assert!(matches_completion_fuzzy_filter("Product", "pdt"));
-        assert!(matches_completion_fuzzy_filter("Product", "duct"));
-        assert!(!matches_completion_fuzzy_filter("Product", "zz"));
-        assert_eq!(completion_fuzzy_like_filter("p_t"), "%p%\\_%t%");
+        assert!(matches_completion_fuzzy("Product", "pdt"));
+        assert!(matches_completion_fuzzy("Product", "duct"));
+        assert!(!matches_completion_fuzzy("Product", "zz"));
+        assert_eq!(completion_fuzzy_like_pattern("p_t"), "%p%\\_%t%");
     }
 
     #[test]
@@ -3956,14 +3956,14 @@ SELECT item_id, name FROM audit_log;"
 
     #[test]
     fn pg_quote_identifier_escapes_double_quotes() {
-        assert_eq!(pg_quote_identifier("plain"), "\"plain\"");
-        assert_eq!(pg_quote_identifier("a\"b"), "\"a\"\"b\"");
+        assert_eq!(fluxdb_core::PostgresDialect.quote_identifier("plain"), "\"plain\"");
+        assert_eq!(fluxdb_core::PostgresDialect.quote_identifier("a\"b"), "\"a\"\"b\"");
     }
 
     /// 真实建/删库（T07 验收）：建库（charset/collation）→ 对象树可见 → 删库；维护库保护。
     /// T20 建 schema：空名/控制字符/超长名在连接前即拒绝。
     ///
-    /// 带空格、分号、引号、中文的名字**不拒绝**——它们会被 `pg_quote_identifier` 引号包裹后下发，
+    /// 带空格、分号、引号、中文的名字**不拒绝**——它们会被 `SqlDialect::quote_identifier` 引号包裹后下发，
     /// 引号内不存在注入面；早期白名单把这类真实合法名一起挡掉了（与设计 §13.1 的
     /// 「带双引号/点/空格/Unicode 名称」验收要求冲突）。
     #[test]

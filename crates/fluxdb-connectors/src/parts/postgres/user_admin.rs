@@ -2,7 +2,7 @@
 //
 // 角色是集群级主体（LOGIN=NOLOGIN），DDL 不依赖具体数据库，沿用建库的独立 autocommit
 // 连接（`pg_connect` + `batch_execute`）。角色密码语句禁止进入 SQL 历史/日志（本文件只生成
-// 语句不写日志，凭密码内容不加日志字段）。角色名/权限关键字一律 `pg_quote_identifier` 引用，
+// 语句不写日志，凭密码内容不加日志字段）。角色名/权限关键字一律 `SqlDialect::quote_identifier` 引用，
 // 密码走专属转义（`quote_pg_string_literal`），不做字符串拼接进参数（PG role DDL 不支持
 // 全参数绑定，需明确的字符串引用逻辑，设计 §12）。
 
@@ -95,7 +95,7 @@ fn pg_create_role(
     if !is_pg_identifier_name(name) {
         return Err(Error::new(ErrorKind::Query, "角色名不合法"));
     }
-    let mut sql = format!("CREATE ROLE {}", pg_quote_identifier(name));
+    let mut sql = format!("CREATE ROLE {}", fluxdb_core::PostgresDialect.quote_identifier(name));
     sql.push_str(if can_login { " LOGIN" } else { " NOLOGIN" });
     sql.push_str(" INHERIT");
     if let Some(password) = password.filter(|p| !p.is_empty()) {
@@ -116,7 +116,7 @@ fn pg_alter_role_password(
     }
     let sql = format!(
         "ALTER ROLE {} PASSWORD {};",
-        pg_quote_identifier(name),
+        fluxdb_core::PostgresDialect.quote_identifier(name),
         quote_pg_string_literal(password)
     );
     pg_exec_role_sql(config, &sql)
@@ -136,8 +136,8 @@ fn pg_rename_role(
     }
     let sql = format!(
         "ALTER ROLE {} RENAME TO {};",
-        pg_quote_identifier(old_name),
-        pg_quote_identifier(new_name)
+        fluxdb_core::PostgresDialect.quote_identifier(old_name),
+        fluxdb_core::PostgresDialect.quote_identifier(new_name)
     );
     pg_exec_role_sql(config, &sql)
 }
@@ -147,7 +147,7 @@ fn pg_drop_role(config: &ConnectionConfig, name: &str) -> fluxdb_core::Result<()
     if name.is_empty() {
         return Err(Error::new(ErrorKind::Query, "角色名不能为空"));
     }
-    let sql = format!("DROP ROLE {};", pg_quote_identifier(name));
+    let sql = format!("DROP ROLE {};", fluxdb_core::PostgresDialect.quote_identifier(name));
     pg_exec_role_sql(config, &sql)
 }
 
@@ -200,7 +200,7 @@ fn pg_alter_role_options(
     if parts.is_empty() {
         return Ok(());
     }
-    let sql = format!("ALTER ROLE {} {};", pg_quote_identifier(name), parts.join(" "));
+    let sql = format!("ALTER ROLE {} {};", fluxdb_core::PostgresDialect.quote_identifier(name), parts.join(" "));
     pg_exec_role_sql(config, &sql)
 }
 
@@ -229,8 +229,8 @@ fn pg_grant_role_membership(
     if role.is_empty() || member.is_empty() {
         return Err(Error::new(ErrorKind::Query, "角色与成员名不能为空"));
     }
-    let role_q = pg_quote_identifier(role);
-    let member_q = pg_quote_identifier(member);
+    let role_q = fluxdb_core::PostgresDialect.quote_identifier(role);
+    let member_q = fluxdb_core::PostgresDialect.quote_identifier(member);
     // 每次 GRANT 只能带一个 WITH 子句；先确立成员关系（幂等），再按版本下发选项。
     let mut stmts = vec![format!("GRANT {role_q} TO {member_q};")];
     let supports_options = pg_supports_member_options(config)?;
@@ -261,15 +261,15 @@ fn pg_revoke_role_membership(
     }
     let sql = format!(
         "REVOKE {} FROM {};",
-        pg_quote_identifier(role),
-        pg_quote_identifier(member)
+        fluxdb_core::PostgresDialect.quote_identifier(role),
+        fluxdb_core::PostgresDialect.quote_identifier(member)
     );
     pg_exec_role_sql(config, &sql)
 }
 
 /// 把结构化授权目标渲染成 `GRANT/REVOKE ... ON <object>` 片段（PG 双引号引用）。
 ///
-/// 安全边界在此：库/schema/对象名经 `pg_quote_identifier` 引用（引号内无注入面），
+/// 安全边界在此：库/schema/对象名经 `SqlDialect::quote_identifier` 引用（引号内无注入面），
 /// **函数签名是唯一不能引用的部分**（它是类型列表而非标识符），因此单独按白名单字符集
 /// 校验；不合法直接拒绝，绝不把用户自由文本拼进以管理员身份执行的 DDL（设计 §12）。
 pub fn pg_object_scope_sql(
@@ -280,7 +280,7 @@ pub fn pg_object_scope_sql(
         if !is_pg_quotable_object_name(name) {
             return Err(Error::new(ErrorKind::Query, "授权对象名不合法"));
         }
-        Ok(pg_quote_identifier(name))
+        Ok(fluxdb_core::PostgresDialect.quote_identifier(name))
     }
     Ok(match scope {
         PgObjectGrantScope::Database { database } => format!("DATABASE {}", ident(database)?),
@@ -811,7 +811,7 @@ fn pg_render_role_change(
             if !is_pg_identifier_name(name) {
                 return Err(Error::new(ErrorKind::Query, "角色名不合法"));
             }
-            let mut parts = vec![format!("CREATE ROLE {}", pg_quote_identifier(name))];
+            let mut parts = vec![format!("CREATE ROLE {}", fluxdb_core::PostgresDialect.quote_identifier(name))];
             parts.push(if *can_login { "LOGIN".to_string() } else { "NOLOGIN".to_string() });
             // LOGIN/NOLOGIN 已显式下发，属性里跳过 can_login，避免重复子句。
             let mut attrs = attributes.clone();
@@ -833,8 +833,8 @@ fn pg_render_role_change(
             }
             vec![format!(
                 "ALTER ROLE {} RENAME TO {};",
-                pg_quote_identifier(from),
-                pg_quote_identifier(to)
+                fluxdb_core::PostgresDialect.quote_identifier(from),
+                fluxdb_core::PostgresDialect.quote_identifier(to)
             )]
         }
         PgRoleChange::AlterAttributes { name, attributes } => {
@@ -847,7 +847,7 @@ fn pg_render_role_change(
             } else {
                 vec![format!(
                     "ALTER ROLE {} {};",
-                    pg_quote_identifier(name),
+                    fluxdb_core::PostgresDialect.quote_identifier(name),
                     clauses.join(" ")
                 )]
             }
@@ -858,7 +858,7 @@ fn pg_render_role_change(
             }
             vec![format!(
                 "ALTER ROLE {} {};",
-                pg_quote_identifier(name),
+                fluxdb_core::PostgresDialect.quote_identifier(name),
                 pg_render_password_clause(password.as_deref(), mask)
             )]
         }
@@ -869,7 +869,7 @@ fn pg_render_role_change(
             if !is_pg_identifier_name(role) || !is_pg_identifier_name(member) {
                 return Err(Error::new(ErrorKind::Query, "角色/成员名不合法"));
             }
-            let (role_q, member_q) = (pg_quote_identifier(role), pg_quote_identifier(member));
+            let (role_q, member_q) = (fluxdb_core::PostgresDialect.quote_identifier(role), fluxdb_core::PostgresDialect.quote_identifier(member));
             let mut stmts = vec![format!("GRANT {role_q} TO {member_q};")];
             if *admin {
                 stmts.push(format!("GRANT {role_q} TO {member_q} WITH ADMIN OPTION;"));
@@ -897,8 +897,8 @@ fn pg_render_role_change(
             }
             vec![format!(
                 "REVOKE {} FROM {};",
-                pg_quote_identifier(role),
-                pg_quote_identifier(member)
+                fluxdb_core::PostgresDialect.quote_identifier(role),
+                fluxdb_core::PostgresDialect.quote_identifier(member)
             )]
         }
         PgRoleChange::GrantObject { privilege, scope, grantee, grant_option } => {
@@ -911,7 +911,7 @@ fn pg_render_role_change(
                 "GRANT {} ON {} TO {}{};",
                 privilege,
                 object_sql,
-                pg_quote_identifier(grantee),
+                fluxdb_core::PostgresDialect.quote_identifier(grantee),
                 suffix
             )]
         }
@@ -924,7 +924,7 @@ fn pg_render_role_change(
                 "REVOKE {} ON {} FROM {};",
                 privilege,
                 object_sql,
-                pg_quote_identifier(grantee)
+                fluxdb_core::PostgresDialect.quote_identifier(grantee)
             )]
         }
         PgRoleChange::RevokeGrantOption { privilege, scope, grantee } => {
@@ -936,7 +936,7 @@ fn pg_render_role_change(
                 "REVOKE GRANT OPTION FOR {} ON {} FROM {};",
                 privilege,
                 object_sql,
-                pg_quote_identifier(grantee)
+                fluxdb_core::PostgresDialect.quote_identifier(grantee)
             )]
         }
     };

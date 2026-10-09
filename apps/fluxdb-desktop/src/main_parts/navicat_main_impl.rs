@@ -4,6 +4,8 @@ include!("navicat_main/render.rs");
 include!("navicat_main/dispatch_and_messages.rs");
 include!("navicat_main/query_parameters.rs");
 include!("navicat_main/loading.rs");
+include!("navicat_main/command_tasks.rs");
+include!("navicat_main/data_editor_loading.rs");
 include!("navicat_main/data_sorting.rs");
 include!("navicat_main/local_filter.rs");
 include!("navicat_main/field_visibility_search.rs");

@@ -584,7 +584,7 @@ fn create_table_foreign_key_fields_table(
         .overflow_hidden()
         .flex()
         .flex_col()
-        .child(create_table_foreign_key_fields_header(colors));
+        .child(field_selection_header(colors));
 
     let mut list = div()
         .flex_1()
@@ -599,7 +599,7 @@ fn create_table_foreign_key_fields_table(
             colors,
         ));
     } else {
-        for field in create_table_ordered_foreign_key_field_options(&draft.columns, available_fields)
+        for field in ordered_unique_field_options(&draft.columns, available_fields)
         {
             list = list.child(create_table_foreign_key_field_option(
                 view.clone(),
@@ -616,7 +616,7 @@ fn create_table_foreign_key_fields_table(
     table
 }
 
-fn create_table_foreign_key_fields_header(colors: UiColors) -> Div {
+fn field_selection_header(colors: UiColors) -> Div {
     div()
         .h(px(30.))
         .flex_none()
@@ -764,7 +764,7 @@ fn create_table_foreign_key_fields_draft(
         })
 }
 
-fn create_table_ordered_foreign_key_field_options(
+fn ordered_unique_field_options(
     selected_columns: &[String],
     options: Vec<String>,
 ) -> Vec<String> {
@@ -937,4 +937,20 @@ fn create_table_foreign_key_operation_button(
         });
         cx.stop_propagation();
     })
+}
+
+#[cfg(test)]
+mod field_option_tests {
+    use super::*;
+
+    #[test]
+    fn selected_fields_stay_first_even_when_missing_from_available_options() {
+        let selected = vec!["b".into(), "missing".into(), "b".into()];
+        let available = vec!["a".into(), "b".into(), "a".into(), "c".into()];
+        assert_eq!(
+            ordered_unique_field_options(&selected, available),
+            vec!["b", "missing", "a", "c"],
+        );
+        assert!(ordered_unique_field_options(&[], vec![]).is_empty());
+    }
 }

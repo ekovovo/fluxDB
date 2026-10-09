@@ -45,8 +45,8 @@ use fluxdb_core::{
     PgRoleMembership, PgValidUntilOp, PostgresSslMode, QueryExecutionOptions,
     QueryExecutionSummary, RedisHashFieldTtl, RedisServerVersion, ResultsPlacement, Row,
     RowIdentity, SavedQuery, ScrollbarMode, Settings, SidebarOrderEntry, SortDirection, SortSpec,
-    Theme as AppTheme, TriggerInfo, UiDensity, UserResourceLimits, WorkbenchHistoryItem,
-    WorkbenchHistoryScope, WorkbenchHistoryStore, data_table_page_size_max,
+    SqlDialect as _, Theme as AppTheme, TriggerInfo, UiDensity, UserResourceLimits,
+    WorkbenchHistoryItem, WorkbenchHistoryScope, WorkbenchHistoryStore, data_table_page_size_max,
     database_user_admin_provider, role_memberships_from_grants, sql_dialect,
     sqlite_attached_database_path, supports_database_user_admin,
 };
@@ -224,3 +224,6 @@ include!("main_parts/tests/ai_agent_defaults.rs");
 include!("main_parts/tests/ai_model_capacity.rs");
 #[cfg(test)]
 include!("main_parts/tests/ai_chat_model_selection.rs");
+
+#[cfg(test)]
+include!("main_parts/tests_table_ui.rs");

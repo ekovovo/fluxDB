@@ -595,10 +595,6 @@ pub fn quote_mysql_string(value: &str) -> String {
     format!("'{}'", value.replace('\\', "\\\\").replace('\'', "''"))
 }
 
-pub fn quote_mysql_identifier(value: &str) -> String {
-    format!("`{}`", value.replace('`', "``"))
-}
-
 pub fn mysql_user_account(user: &DatabaseUserIdentity) -> String {
     format!(
         "{}@{}",

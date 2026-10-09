@@ -383,9 +383,9 @@ fn create_table_foreign_key_lines(
                 return Err(format!("Foreign key {name} has duplicate field: {column}."));
             }
             columns.push(match dialect {
-                CreateTableSqlDialect::MySql => quote_mysql_identifier(column),
-                CreateTableSqlDialect::Sqlite => quote_sqlite_identifier(column),
-                CreateTableSqlDialect::Postgres => quote_postgres_identifier(column),
+                CreateTableSqlDialect::MySql => fluxdb_core::MySqlDialect.quote_identifier(column),
+                CreateTableSqlDialect::Sqlite => fluxdb_core::SqliteDialect.quote_identifier(column),
+                CreateTableSqlDialect::Postgres => fluxdb_core::PostgresDialect.quote_identifier(column),
             });
         }
         if columns.is_empty() {
@@ -408,20 +408,20 @@ fn create_table_foreign_key_lines(
         let mut line = match dialect {
             CreateTableSqlDialect::MySql => format!(
                 "CONSTRAINT {} FOREIGN KEY ({}) REFERENCES {}",
-                quote_mysql_identifier(name),
+                fluxdb_core::MySqlDialect.quote_identifier(name),
                 columns.join(", "),
                 create_table_mysql_referenced_table(create, foreign_key)
             ),
             CreateTableSqlDialect::Sqlite => format!(
                 "CONSTRAINT {} FOREIGN KEY ({}) REFERENCES {}",
-                quote_sqlite_identifier(name),
+                fluxdb_core::SqliteDialect.quote_identifier(name),
                 columns.join(", "),
-                quote_sqlite_identifier(referenced_table)
+                fluxdb_core::SqliteDialect.quote_identifier(referenced_table)
             ),
             // PG 的限定层级是 schema.table：referenced_database 字段承载 schema（§9.2）。
             CreateTableSqlDialect::Postgres => format!(
                 "CONSTRAINT {} FOREIGN KEY ({}) REFERENCES {}",
-                quote_postgres_identifier(name),
+                fluxdb_core::PostgresDialect.quote_identifier(name),
                 columns.join(", "),
                 create_table_postgres_referenced_table(create, foreign_key)
             ),
@@ -429,9 +429,9 @@ fn create_table_foreign_key_lines(
         let quoted = referenced_columns
             .iter()
             .map(|column| match dialect {
-                CreateTableSqlDialect::MySql => quote_mysql_identifier(column),
-                CreateTableSqlDialect::Sqlite => quote_sqlite_identifier(column),
-                CreateTableSqlDialect::Postgres => quote_postgres_identifier(column),
+                CreateTableSqlDialect::MySql => fluxdb_core::MySqlDialect.quote_identifier(column),
+                CreateTableSqlDialect::Sqlite => fluxdb_core::SqliteDialect.quote_identifier(column),
+                CreateTableSqlDialect::Postgres => fluxdb_core::PostgresDialect.quote_identifier(column),
             })
             .collect::<Vec<_>>();
         line.push_str(" (");
@@ -459,11 +459,11 @@ fn create_table_mysql_referenced_table(
     if !referenced_database.is_empty() && referenced_database != current_database {
         format!(
             "{}.{}",
-            quote_mysql_identifier(referenced_database),
-            quote_mysql_identifier(foreign_key.referenced_table.trim())
+            fluxdb_core::MySqlDialect.quote_identifier(referenced_database),
+            fluxdb_core::MySqlDialect.quote_identifier(foreign_key.referenced_table.trim())
         )
     } else {
-        quote_mysql_identifier(foreign_key.referenced_table.trim())
+        fluxdb_core::MySqlDialect.quote_identifier(foreign_key.referenced_table.trim())
     }
 }
 
@@ -482,11 +482,11 @@ fn create_table_postgres_referenced_table(
     } else {
         referenced_schema
     };
-    let table = quote_postgres_identifier(foreign_key.referenced_table.trim());
+    let table = fluxdb_core::PostgresDialect.quote_identifier(foreign_key.referenced_table.trim());
     if schema.is_empty() {
         table
     } else {
-        format!("{}.{table}", quote_postgres_identifier(schema))
+        format!("{}.{table}", fluxdb_core::PostgresDialect.quote_identifier(schema))
     }
 }
 

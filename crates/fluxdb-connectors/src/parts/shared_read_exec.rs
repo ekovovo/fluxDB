@@ -170,7 +170,7 @@ pub(crate) fn mysql_execute_parameterized(
             Err(_) => return Err(Error::new(ErrorKind::Connection, "连接超时")),
         };
         if let Some(database) = request.database.as_deref().filter(|database| !database.is_empty()) {
-            sqlx::raw_sql(&format!("USE {}", mysql_quote_identifier(database)))
+            sqlx::raw_sql(&format!("USE {}", fluxdb_core::MySqlDialect.quote_identifier(database)))
                 .execute(&mut connection)
                 .await
                 .map_err(mysql_error)?;
@@ -280,7 +280,7 @@ fn mysql_execute_query_with_progress(
 
         if let Some(database) = request.database.as_deref().filter(|database| !database.is_empty())
         {
-            sqlx::raw_sql(&format!("USE {}", mysql_quote_identifier(database)))
+            sqlx::raw_sql(&format!("USE {}", fluxdb_core::MySqlDialect.quote_identifier(database)))
                 .execute(&mut connection)
                 .await
                 .map_err(mysql_error)?;

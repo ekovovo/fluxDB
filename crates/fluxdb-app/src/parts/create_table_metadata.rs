@@ -398,7 +398,7 @@ impl CreateTableColumn {
         }
         let mut sql = format!(
             "{} {}",
-            quote_mysql_identifier(name),
+            fluxdb_core::MySqlDialect.quote_identifier(name),
             create_table_column_type(&self.data_type, &self.length, &self.scale)
         );
         if self.unsigned {

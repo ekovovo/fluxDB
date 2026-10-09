@@ -198,12 +198,6 @@ pub const REDIS_LEGACY_OPTION_KEYS: &[&str] = &[
     "cloud_resource",
 ];
 
-fn option_is_true(value: Option<&String>) -> bool {
-    value
-        .map(|v| v.trim().to_ascii_lowercase())
-        .is_some_and(|v| matches!(v.as_str(), "true" | "y" | "yes" | "1" | "on"))
-}
-
 impl RedisConnectionProfile {
     /// —— 解析职责 ——
 
@@ -214,15 +208,15 @@ impl RedisConnectionProfile {
     pub fn from_options(opts: &std::collections::BTreeMap<String, String>) -> Self {
         let get = |key: &str| opts.get(key).cloned();
         let tls = RedisTlsOptions {
-            enabled: option_is_true(get("tls").as_ref()),
+            enabled: connection_option_is_true(get("tls").as_ref()),
             ca: SecretRef::ref_key(get("tls_ca_ref").unwrap_or_default()),
             client_cert: SecretRef::ref_key(get("tls_client_cert_ref").unwrap_or_default()),
             client_key: SecretRef::ref_key(get("tls_client_key_ref").unwrap_or_default()),
             sni: get("tls_server_name").unwrap_or_default(),
-            verify: !option_is_true(get("tls_insecure").as_ref()),
+            verify: !connection_option_is_true(get("tls_insecure").as_ref()),
         };
         let ssh = RedisSshOptions {
-            enabled: option_is_true(get("ssh_enabled").as_ref()),
+            enabled: connection_option_is_true(get("ssh_enabled").as_ref()),
             host: get("ssh_host").unwrap_or_default(),
             port: get("ssh_port")
                 .and_then(|p| p.parse().ok())
@@ -239,7 +233,7 @@ impl RedisConnectionProfile {
         let topology = RedisTopology {
             kind: if get("sentinel_master").is_some() {
                 RedisTopologyKind::Sentinel
-            } else if option_is_true(get("cluster_enabled").as_ref())
+            } else if connection_option_is_true(get("cluster_enabled").as_ref())
                 || get("cluster_start_nodes").is_some()
             {
                 RedisTopologyKind::Cluster
@@ -255,7 +249,7 @@ impl RedisConnectionProfile {
             },
             cluster: RedisClusterOptions {
                 start_nodes: split_host_port_list(get("cluster_start_nodes").as_deref()),
-                allow_readonly: option_is_true(get("cluster_readonly").as_ref()),
+                allow_readonly: connection_option_is_true(get("cluster_readonly").as_ref()),
             },
         };
         Self {
@@ -571,19 +565,19 @@ fn parse_redis_uri(uri: &str) -> std::result::Result<RedisConnectionProfile, Str
         client_cert: SecretRef::ref_key(query_map.remove("tls_client_cert_ref").unwrap_or_default()),
         client_key: SecretRef::ref_key(query_map.remove("tls_client_key_ref").unwrap_or_default()),
         sni: query_map.remove("tls_server_name").unwrap_or_default(),
-        verify: !option_is_true(query_map.get("tls_insecure")),
+        verify: !connection_option_is_true(query_map.get("tls_insecure")),
     };
     if let Some(v) = query_map.remove("tls") {
-        tls_opts.enabled = option_is_true(Some(&v));
+        tls_opts.enabled = connection_option_is_true(Some(&v));
     }
     if let Some(v) = query_map.remove("tls_insecure") {
-        tls_opts.verify = !option_is_true(Some(&v));
+        tls_opts.verify = !connection_option_is_true(Some(&v));
     }
 
     let master_name = query_map.remove("sentinel_master");
     let mut endpoints = split_host_port_list(query_map.remove("sentinel_endpoints").as_deref());
     let mut start_nodes = split_host_port_list(query_map.remove("cluster_start_nodes").as_deref());
-    let allow_readonly = option_is_true(query_map.get("cluster_readonly"));
+    let allow_readonly = connection_option_is_true(query_map.get("cluster_readonly"));
 
     let mut topology_kind = if sentinel {
         RedisTopologyKind::Sentinel

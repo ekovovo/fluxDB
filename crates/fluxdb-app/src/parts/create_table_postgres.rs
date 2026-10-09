@@ -35,10 +35,6 @@ pub(crate) const POSTGRES_CREATE_TABLE_TYPE_OPTIONS: &[&str] = &[
     "money",
 ];
 
-pub(crate) fn quote_postgres_identifier(value: &str) -> String {
-    format!("\"{}\"", value.replace('"', "\"\""))
-}
-
 /// 单引号字符串字面量（注释体等值位），转义内部单引号。
 pub(crate) fn quote_postgres_string(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
@@ -131,7 +127,7 @@ fn create_table_postgres_statements(create: &CreateTableState) -> Result<Vec<Str
         }
         statements.push(format!(
             "COMMENT ON COLUMN {qualified}.{} IS {};",
-            quote_postgres_identifier(name),
+            fluxdb_core::PostgresDialect.quote_identifier(name),
             quote_postgres_string(column_comment)
         ));
     }
@@ -145,12 +141,12 @@ fn create_table_postgres_statements(create: &CreateTableState) -> Result<Vec<Str
 fn postgres_qualified_table(create: &CreateTableState, table_name: &str) -> String {
     let schema = create.schema.trim();
     if schema.is_empty() {
-        quote_postgres_identifier(table_name)
+        fluxdb_core::PostgresDialect.quote_identifier(table_name)
     } else {
         format!(
             "{}.{}",
-            quote_postgres_identifier(schema),
-            quote_postgres_identifier(table_name)
+            fluxdb_core::PostgresDialect.quote_identifier(schema),
+            fluxdb_core::PostgresDialect.quote_identifier(table_name)
         )
     }
 }
@@ -166,7 +162,7 @@ fn create_table_postgres_column_line(column: &CreateTableColumn) -> Option<Strin
     }
     let mut sql = format!(
         "{} {}",
-        quote_postgres_identifier(name),
+        fluxdb_core::PostgresDialect.quote_identifier(name),
         create_table_postgres_column_type(column)
     );
     if column.auto_increment {
@@ -212,7 +208,7 @@ fn create_table_postgres_primary_key_line(columns: &[CreateTableColumn]) -> Opti
     let parts = columns
         .iter()
         .filter(|column| column.primary_key && !column.name.trim().is_empty())
-        .map(|column| quote_postgres_identifier(column.name.trim()))
+        .map(|column| fluxdb_core::PostgresDialect.quote_identifier(column.name.trim()))
         .collect::<Vec<_>>();
     (!parts.is_empty()).then(|| format!("PRIMARY KEY ({})", parts.join(", ")))
 }
@@ -268,7 +264,7 @@ fn create_table_postgres_index_statements(create: &CreateTableState) -> Result<V
             if !column.sub_part.trim().is_empty() {
                 return Err("PostgreSQL 索引不支持前缀长度".to_string());
             }
-            let mut part = quote_postgres_identifier(column_name);
+            let mut part = fluxdb_core::PostgresDialect.quote_identifier(column_name);
             let sort_order = create_table_normalized_sort_order(&column.sort_order);
             if !sort_order.is_empty() {
                 part.push(' ');
@@ -287,7 +283,7 @@ fn create_table_postgres_index_statements(create: &CreateTableState) -> Result<V
         };
         statements.push(format!(
             "CREATE {unique}INDEX {} ON {qualified}{using} ({});",
-            quote_postgres_identifier(name),
+            fluxdb_core::PostgresDialect.quote_identifier(name),
             parts.join(", ")
         ));
     }
@@ -313,14 +309,14 @@ fn create_table_postgres_trigger_statements(create: &CreateTableState) -> Result
         // 函数名允许带 schema 限定；逐段转义，不接受任意表达式。
         let function = body
             .split('.')
-            .map(|part| quote_postgres_identifier(part.trim()))
+            .map(|part| fluxdb_core::PostgresDialect.quote_identifier(part.trim()))
             .collect::<Vec<_>>()
             .join(".");
         let timing = create_table_normalized_trigger_timing(&trigger.timing);
         let event = create_table_normalized_trigger_event(&trigger.event);
         statements.push(format!(
             "CREATE TRIGGER {} {timing} {event} ON {qualified} FOR EACH ROW EXECUTE FUNCTION {function}();",
-            quote_postgres_identifier(name)
+            fluxdb_core::PostgresDialect.quote_identifier(name)
         ));
     }
     Ok(statements)

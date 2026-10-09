@@ -19,7 +19,7 @@ impl TableActionSqlProvider for PostgresTableActionSqlProvider {
         Ok(format!(
             "ALTER TABLE {} RENAME TO {};",
             postgres_action_qualified(schema, old_name),
-            quote_postgres_identifier(new_name)
+            fluxdb_core::PostgresDialect.quote_identifier(new_name)
         ))
     }
 
@@ -98,10 +98,10 @@ fn postgres_action_qualified(schema: Option<&str>, name: &str) -> String {
     match schema.map(str::trim).filter(|schema| !schema.is_empty()) {
         Some(schema) => format!(
             "{}.{}",
-            quote_postgres_identifier(schema),
-            quote_postgres_identifier(name.trim())
+            fluxdb_core::PostgresDialect.quote_identifier(schema),
+            fluxdb_core::PostgresDialect.quote_identifier(name.trim())
         ),
-        None => quote_postgres_identifier(name.trim()),
+        None => fluxdb_core::PostgresDialect.quote_identifier(name.trim()),
     }
 }
 

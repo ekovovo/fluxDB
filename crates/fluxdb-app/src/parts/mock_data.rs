@@ -36,66 +36,8 @@ fn demo_connection_options() -> BTreeMap<String, String> {
     options
 }
 
-fn mock_objects(connection_id: ConnectionId) -> Vec<ObjectSummary> {
-    // demo 元数据集（T081）：4 张关联表，与 fluxdb-connectors/shared.rs 的 mock_objects 保持一致。
-    vec![
-        ObjectSummary {
-            path: ObjectPath {
-                connection_id,
-                database: Some("main".to_string()),
-                schema: None,
-                name: "Product".to_string(),
-                kind: ObjectKind::Table,
-            },
-            rows: Some(504),
-            modified_at: None,
-            comment: Some("Products sold or used in manufacturing.".to_string()),
-            stable: None,
-        },
-        ObjectSummary {
-            path: ObjectPath {
-                connection_id,
-                database: Some("main".to_string()),
-                schema: None,
-                name: "ProductCategory".to_string(),
-                kind: ObjectKind::Table,
-            },
-            rows: Some(4),
-            modified_at: None,
-            comment: Some("High-level product categories.".to_string()),
-            stable: None,
-        },
-        ObjectSummary {
-            path: ObjectPath {
-                connection_id,
-                database: Some("main".to_string()),
-                schema: None,
-                name: "Order".to_string(),
-                kind: ObjectKind::Table,
-            },
-            rows: Some(1200),
-            modified_at: None,
-            comment: Some("Sales orders referencing products and customers.".to_string()),
-            stable: None,
-        },
-        ObjectSummary {
-            path: ObjectPath {
-                connection_id,
-                database: Some("main".to_string()),
-                schema: None,
-                name: "Customer".to_string(),
-                kind: ObjectKind::Table,
-            },
-            rows: Some(88),
-            modified_at: None,
-            comment: Some("Customers who placed orders.".to_string()),
-            stable: None,
-        },
-    ]
-}
-
 fn mock_child_objects(parent: Option<&ObjectPath>) -> Vec<ObjectSummary> {
-    mock_objects(
+    fluxdb_connectors::demo_objects(
         parent
             .map(|path| path.connection_id)
             .unwrap_or(ConnectionId(1)),
@@ -519,5 +461,48 @@ fn load_table_info_from_connector(
             .list_triggers(object)
             .map(TableInfoResult::Triggers),
         TableInfoTab::Ddl => connector.table_ddl(object).map(TableInfoResult::Ddl),
+    }
+}
+
+#[cfg(test)]
+mod demo_catalog_tests {
+    use super::*;
+
+    #[test]
+    fn app_and_mock_connector_share_catalog_and_preserve_connection_ids() {
+        let parent = ObjectPath {
+            connection_id: ConnectionId(42),
+            database: Some("main".into()),
+            schema: None,
+            name: "main".into(),
+            kind: ObjectKind::Database,
+        };
+        let app_objects = mock_child_objects(Some(&parent));
+        let connector_objects = fluxdb_connectors::MockConnector::sqlite()
+            .list_objects(Some(&parent))
+            .unwrap();
+        assert_eq!(app_objects, connector_objects);
+        assert!(
+            app_objects
+                .iter()
+                .all(|object| object.path.connection_id == parent.connection_id)
+        );
+        assert_eq!(
+            app_objects
+                .iter()
+                .map(|object| (object.path.name.as_str(), object.rows))
+                .collect::<Vec<_>>(),
+            vec![
+                ("Product", Some(504)),
+                ("ProductCategory", Some(4)),
+                ("Order", Some(1200)),
+                ("Customer", Some(88))
+            ],
+        );
+        assert!(
+            mock_child_objects(None)
+                .iter()
+                .all(|object| object.path.connection_id == ConnectionId(1))
+        );
     }
 }

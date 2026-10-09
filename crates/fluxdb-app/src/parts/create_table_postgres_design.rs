@@ -27,7 +27,7 @@ pub(crate) fn create_table_postgres_design_statements(
     if !object.name.trim().eq_ignore_ascii_case(new_table_name) {
         statements.push(format!(
             "ALTER TABLE {old_table} RENAME TO {};",
-            quote_postgres_identifier(new_table_name)
+            fluxdb_core::PostgresDialect.quote_identifier(new_table_name)
         ));
     }
 
@@ -39,7 +39,7 @@ pub(crate) fn create_table_postgres_design_statements(
         let name = postgres_primary_key_constraint_name(original_ddl.as_deref(), object.name.trim());
         statements.push(format!(
             "ALTER TABLE {table} DROP CONSTRAINT {};",
-            quote_postgres_identifier(&name)
+            fluxdb_core::PostgresDialect.quote_identifier(&name)
         ));
     }
 
@@ -48,7 +48,7 @@ pub(crate) fn create_table_postgres_design_statements(
         if !create.columns.iter().any(|current| current.id == column.id) {
             statements.push(format!(
                 "ALTER TABLE {table} DROP COLUMN {};",
-                quote_postgres_identifier(column.name.trim())
+                fluxdb_core::PostgresDialect.quote_identifier(column.name.trim())
             ));
         }
     }
@@ -92,7 +92,7 @@ pub(crate) fn create_table_postgres_design_statements(
         if !unchanged && !foreign_key.name.trim().is_empty() {
             statements.push(format!(
                 "ALTER TABLE {table} DROP CONSTRAINT {};",
-                quote_postgres_identifier(foreign_key.name.trim())
+                fluxdb_core::PostgresDialect.quote_identifier(foreign_key.name.trim())
             ));
         }
     }
@@ -117,7 +117,7 @@ pub(crate) fn create_table_postgres_design_statements(
         if !unchanged && !check.name.trim().is_empty() {
             statements.push(format!(
                 "ALTER TABLE {table} DROP CONSTRAINT {};",
-                quote_postgres_identifier(check.name.trim())
+                fluxdb_core::PostgresDialect.quote_identifier(check.name.trim())
             ));
         }
     }
@@ -142,7 +142,7 @@ pub(crate) fn create_table_postgres_design_statements(
         if !unchanged && !trigger.name.trim().is_empty() {
             statements.push(format!(
                 "DROP TRIGGER {} ON {table};",
-                quote_postgres_identifier(trigger.name.trim())
+                fluxdb_core::PostgresDialect.quote_identifier(trigger.name.trim())
             ));
         }
     }
@@ -182,10 +182,10 @@ fn postgres_qualified_name(schema: Option<&str>, table: &str) -> String {
     match schema {
         Some(schema) => format!(
             "{}.{}",
-            quote_postgres_identifier(schema),
-            quote_postgres_identifier(table)
+            fluxdb_core::PostgresDialect.quote_identifier(schema),
+            fluxdb_core::PostgresDialect.quote_identifier(table)
         ),
-        None => quote_postgres_identifier(table),
+        None => fluxdb_core::PostgresDialect.quote_identifier(table),
     }
 }
 
@@ -228,13 +228,13 @@ fn postgres_column_change_statements(
 ) -> Result<Vec<String>, String> {
     let mut statements = Vec::new();
     let previous_name = previous.name.trim();
-    let column = quote_postgres_identifier(current.name.trim());
+    let column = fluxdb_core::PostgresDialect.quote_identifier(current.name.trim());
 
     // 改名先做：后续语句都按新名引用该列。
     if !previous_name.eq_ignore_ascii_case(current.name.trim()) {
         statements.push(format!(
             "ALTER TABLE {table} RENAME COLUMN {} TO {column};",
-            quote_postgres_identifier(previous_name)
+            fluxdb_core::PostgresDialect.quote_identifier(previous_name)
         ));
     }
 

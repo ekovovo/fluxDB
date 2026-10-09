@@ -12,7 +12,8 @@ fn sqlite_error(error: sqlx::Error) -> Error {
     Error::new(ErrorKind::Connection, error.to_string())
 }
 
-fn mock_objects(connection_id: ConnectionId) -> Vec<ObjectSummary> {
+/// Demo 目录的四张关联表；对象树与补全使用同一份元数据。
+pub fn demo_objects(connection_id: ConnectionId) -> Vec<ObjectSummary> {
     // demo 元数据集（T081）：4 张关联表，供补全 fixture 覆盖表/列/FK/排序等场景。
     vec![
         ObjectSummary {

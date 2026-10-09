@@ -2,7 +2,7 @@
 //
 // 单一综合加载器 `pg_table_metadata` 一次建连读出 列/主键/索引/FK/CHECK/触发器/注释，
 // 供 DDL 重建与各 table-info tab 复用；视图 DDL 另走 `pg_get_viewdef`。
-// 名字是值时用 `$n` 参数绑定，是标识符时逐段 `pg_quote_identifier`；同名对象由
+// 名字是值时用 `$n` 参数绑定，是标识符时逐段 `SqlDialect::quote_identifier`；同名对象由
 // database+schema 限定，FK 的多列配对按 conkey/confkey 同序位投影，不做笛卡尔积。
 
 /// 表/视图结构元数据总入口：解析 `path` 定位 database.schema.relation 后读全量结构。
@@ -518,7 +518,7 @@ fn pg_triggers_from_structure(structure: &TableStructure) -> Vec<TriggerInfo> {
 fn pg_quote_csv(columns: &[String]) -> String {
     columns
         .iter()
-        .map(|c| pg_quote_identifier(c))
+        .map(|c| fluxdb_core::PostgresDialect.quote_identifier(c))
         .collect::<Vec<_>>()
         .join(", ")
 }
@@ -527,8 +527,8 @@ fn pg_quote_csv(columns: &[String]) -> String {
 fn pg_qualified_relation(schema: &str, relation: &str) -> String {
     format!(
         "{}.{}",
-        pg_quote_identifier(schema),
-        pg_quote_identifier(relation)
+        fluxdb_core::PostgresDialect.quote_identifier(schema),
+        fluxdb_core::PostgresDialect.quote_identifier(relation)
     )
 }
 

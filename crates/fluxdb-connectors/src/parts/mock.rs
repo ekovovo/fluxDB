@@ -34,7 +34,7 @@ impl Connector for MockConnector {
             return Ok(vec![database_object(connection_id, "main")]);
         }
 
-        Ok(mock_objects(connection_id))
+        Ok(demo_objects(connection_id))
     }
 
     fn load_data(
@@ -158,10 +158,10 @@ impl Connector for MockConnector {
         filter: &str,
         limit: u64,
     ) -> fluxdb_core::Result<Vec<CompletionTable>> {
-        Ok(mock_objects(ConnectionId(1))
+        Ok(demo_objects(ConnectionId(1))
             .into_iter()
             .filter(|object| matches!(object.path.kind, ObjectKind::Table | ObjectKind::View))
-            .filter(|object| matches_completion_fuzzy_filter(&object.path.name, filter))
+            .filter(|object| matches_completion_fuzzy(&object.path.name, filter))
             .take(limit as usize)
             .map(|object| CompletionTable {
                 database: database.map(str::to_string).or(object.path.database),
@@ -280,7 +280,7 @@ impl Connector for MockConnector {
     fn table_ddl(&self, path: &ObjectPath) -> fluxdb_core::Result<String> {
         Ok(format!(
             "CREATE TABLE {} (\n  id INTEGER PRIMARY KEY,\n  name TEXT NOT NULL\n);",
-            sqlite_quote_identifier(&path.name)
+            fluxdb_core::SqliteDialect.quote_identifier(&path.name)
         ))
     }
 }

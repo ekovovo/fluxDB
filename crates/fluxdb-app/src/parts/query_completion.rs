@@ -2847,17 +2847,10 @@ pub fn quote_identifier(
     if !identifier_needs_quote(name, kind, &reserved) {
         return name.to_string();
     }
-    let (open, close) = match kind {
-        DatabaseKind::MySql | DatabaseKind::TiDb => ('`', '`'),
-        _ => ('"', '"'),
-    };
-    // 方言内转义引号：MySQL 双反引号，标准 SQL 双引号。
-    let escaped = if open == '`' {
-        name.replace('`', "``")
-    } else {
-        name.replace('"', "\"\"")
-    };
-    format!("{open}{escaped}{close}")
+    match kind {
+        DatabaseKind::MySql | DatabaseKind::TiDb => fluxdb_core::MySqlDialect.quote_identifier(name),
+        _ => fluxdb_core::PostgresDialect.quote_identifier(name),
+    }
 }
 
 /// 生成 schema（库/模式）候选，apply 文本为 `schema.`，便于继续输入表名（P1.5）。
@@ -3143,20 +3136,6 @@ fn matches_completion_prefix(value: &str, prefix: &str) -> bool {
         || value
             .to_ascii_lowercase()
             .starts_with(&prefix.to_ascii_lowercase())
-}
-
-fn matches_completion_fuzzy(value: &str, filter: &str) -> bool {
-    let filter = filter.trim();
-    if filter.is_empty() {
-        return true;
-    }
-
-    let value = value.to_ascii_lowercase();
-    let mut value_chars = value.chars();
-    filter
-        .to_ascii_lowercase()
-        .chars()
-        .all(|filter_char| value_chars.any(|value_char| value_char == filter_char))
 }
 
 fn completion_match_rank(value: &str, filter: &str) -> (u8, usize, usize, usize) {

@@ -36,11 +36,11 @@ use fluxdb_core::{
     QueryInsertRollbackSnapshot, QueryRequest, QueryRollbackRowSnapshot, QueryRollbackSnapshot,
     QueryStatementKind, QueryUpdateRollbackSnapshot, RedisConnectionProfile, RedisHashFieldTtl,
     RedisServerVersion, RoutineRef, Row, RowIdentity, RowUpdate, Settings, SidebarLayout, SortSpec,
-    TableFingerprint, TableRef, TriggerInfo, TriggerRef, UserFacingError, UserRoleMember,
-    UserRoleMembership, WorkbenchHistoryItem, WorkbenchHistoryScope, WorkbenchHistoryStore,
-    database_user_admin_provider, grants_from_query_result, infer_cloud_from_host,
-    redact_uri_password, role_memberships_from_grants, set_sqlite_attached_database,
-    sqlite_attached_database_path,
+    SqlDialect as _, TableFingerprint, TableRef, TriggerInfo, TriggerRef, UserFacingError,
+    UserRoleMember, UserRoleMembership, WorkbenchHistoryItem, WorkbenchHistoryScope,
+    WorkbenchHistoryStore, database_user_admin_provider, grants_from_query_result,
+    infer_cloud_from_host, matches_completion_fuzzy, redact_uri_password,
+    role_memberships_from_grants, set_sqlite_attached_database, sqlite_attached_database_path,
 };
 use sqlformat::{Dialect, FormatOptions, Indent, QueryParams};
 use sqlparser::{

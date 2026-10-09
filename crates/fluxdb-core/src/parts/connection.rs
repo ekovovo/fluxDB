@@ -472,3 +472,26 @@ pub struct ConnectionOverview {
     /// 最近一次 CPU 采样（`INFO cpu` + `INFO server`），用于 app 层推导使用率。
     pub cpu: Option<CpuStats>,
 }
+
+/// 解析连接选项中的布尔开关；缺失值与未识别文本均视为关闭。
+fn connection_option_is_true(value: Option<&String>) -> bool {
+    value
+        .map(|v| v.trim().to_ascii_lowercase())
+        .is_some_and(|v| matches!(v.as_str(), "true" | "y" | "yes" | "1" | "on"))
+}
+
+#[cfg(test)]
+mod connection_option_tests {
+    use super::*;
+
+    #[test]
+    fn boolean_options_share_the_same_accepted_values() {
+        assert!(!connection_option_is_true(None));
+        for value in ["true", "TRUE", " y ", "yes", "1", "On"] {
+            assert!(connection_option_is_true(Some(&value.to_string())));
+        }
+        for value in ["", " ", "false", "no", "0", "off", "enabled", "2"] {
+            assert!(!connection_option_is_true(Some(&value.to_string())));
+        }
+    }
+}

@@ -15,6 +15,7 @@ include!("parts/postgres_identity.rs");
 include!("parts/postgres_user_admin.rs");
 include!("parts/object_query.rs");
 include!("parts/sql_context.rs");
+include!("parts/completion_filter.rs");
 include!("parts/settings_filter.rs");
 include!("parts/data_page.rs");
 include!("parts/table_metadata.rs");

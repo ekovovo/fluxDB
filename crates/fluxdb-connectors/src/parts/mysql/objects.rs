@@ -161,7 +161,7 @@ async fn mysql_show_table_objects(
 }
 
 fn mysql_show_table_objects_query(database: &str) -> String {
-    format!("SHOW FULL TABLES FROM {}", mysql_quote_identifier(database))
+    format!("SHOW FULL TABLES FROM {}", fluxdb_core::MySqlDialect.quote_identifier(database))
 }
 
 fn mysql_table_objects_query() -> &'static str {

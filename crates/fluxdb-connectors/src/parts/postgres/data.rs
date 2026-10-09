@@ -8,7 +8,7 @@
 //   这样表浏览能看到 I64/Bool/F64/Text/Json 类型化 CellValue，而非一律字符串。
 // - 过滤器参数化用 `$n` 占位 + `Vec<&dyn ToSql>` 绑定，杜绝拼接注入。
 //
-// PG 连接不经过 sqlx QueryBuilder；本文件自行拼 SQL，标识符一律 `pg_quote_identifier`。
+// PG 连接不经过 sqlx QueryBuilder；本文件自行拼 SQL，标识符一律 `SqlDialect::quote_identifier`。
 
 use tokio_postgres::types::ToSql;
 
@@ -42,7 +42,7 @@ fn pg_load_data(
 
         let mut sql = format!(
             "SELECT {select_list}\nFROM {table} AS {}",
-            pg_quote_identifier(PG_DATA_SOURCE_ALIAS)
+            fluxdb_core::PostgresDialect.quote_identifier(PG_DATA_SOURCE_ALIAS)
         );
         let (where_sql, params) = pg_where_params(filters, &columns)?;
         sql.push_str(&where_sql);
@@ -88,10 +88,10 @@ fn pg_select_list_and_positions(columns: &[Column]) -> (String, Vec<(Vec<usize>,
     let mut positions = Vec::with_capacity(columns.len());
     for (col_idx, column) in columns.iter().enumerate() {
         let expr = if is_binary_column(column) {
-            let name = pg_quote_identifier(&column.name);
-            let is_null = pg_quote_identifier(&binary_alias(&column.name, "is_null"));
-            let byte_length = pg_quote_identifier(&binary_alias(&column.name, "byte_length"));
-            let preview_hex = pg_quote_identifier(&binary_alias(&column.name, "preview_hex"));
+            let name = fluxdb_core::PostgresDialect.quote_identifier(&column.name);
+            let is_null = fluxdb_core::PostgresDialect.quote_identifier(&binary_alias(&column.name, "is_null"));
+            let byte_length = fluxdb_core::PostgresDialect.quote_identifier(&binary_alias(&column.name, "byte_length"));
+            let preview_hex = fluxdb_core::PostgresDialect.quote_identifier(&binary_alias(&column.name, "preview_hex"));
             let expr = format!(
                 "({name} IS NULL) AS {is_null}, octet_length({name}) AS {byte_length}, \
                  encode(substr({name}, 1, 64), 'hex') AS {preview_hex}"
@@ -103,15 +103,15 @@ fn pg_select_list_and_positions(columns: &[Column]) -> (String, Vec<(Vec<usize>,
             // 无法原生解码的类型（money/interval/xml 等）：服务端 `::text` 投影，保真文本。
             let expr = format!(
                 "{}::text AS {}",
-                pg_quote_identifier(&column.name),
-                pg_quote_identifier(&column.name)
+                fluxdb_core::PostgresDialect.quote_identifier(&column.name),
+                fluxdb_core::PostgresDialect.quote_identifier(&column.name)
             );
             positions.push((vec![position], col_idx));
             position += 1;
             expr
         } else {
             // 保持原生类型，交由类型矩阵解码。
-            let expr = format!("{} AS {}", pg_quote_identifier(&column.name), pg_quote_identifier(&column.name));
+            let expr = format!("{} AS {}", fluxdb_core::PostgresDialect.quote_identifier(&column.name), fluxdb_core::PostgresDialect.quote_identifier(&column.name));
             positions.push((vec![position], col_idx));
             position += 1;
             expr
@@ -228,7 +228,7 @@ fn pg_preview_data_export(
         let count: i64 = row.get(0);
 
         Ok(DataExportPreview {
-            sql: data_export_preview_sql(&table, fields, sort, filters, &columns, pg_quote_identifier),
+            sql: data_export_preview_sql(&table, fields, sort, filters, &columns, |value| fluxdb_core::PostgresDialect.quote_identifier(value)),
             row_count: count.max(0) as u64,
         })
     })
@@ -255,7 +255,7 @@ fn pg_load_cell_binary(
         let columns = pg_columns(&session.client, database, path.schema.as_deref(), &path.name).await?;
         ensure_column_exists(column, &columns)?;
 
-        let mut sql = format!("SELECT {} FROM {table}", pg_quote_identifier(column));
+        let mut sql = format!("SELECT {} FROM {table}", fluxdb_core::PostgresDialect.quote_identifier(column));
         let (where_sql, params) = pg_identity_params(identity, &columns)?;
         sql.push_str(&where_sql);
         sql.push_str(" LIMIT 1");
@@ -324,8 +324,8 @@ fn pg_qualified_table(database: &str, schema: Option<&str>, table: &str) -> Stri
     let schema = schema.unwrap_or("public");
     format!(
         "{}.{}",
-        pg_quote_identifier(schema),
-        pg_quote_identifier(table)
+        fluxdb_core::PostgresDialect.quote_identifier(schema),
+        fluxdb_core::PostgresDialect.quote_identifier(table)
     )
 }
 
@@ -354,8 +354,8 @@ fn pg_order_by_clause(sort: &[SortSpec], columns: &[Column]) -> String {
 fn pg_data_source_column(column: &str) -> String {
     format!(
         "{}.{}",
-        pg_quote_identifier(PG_DATA_SOURCE_ALIAS),
-        pg_quote_identifier(column)
+        fluxdb_core::PostgresDialect.quote_identifier(PG_DATA_SOURCE_ALIAS),
+        fluxdb_core::PostgresDialect.quote_identifier(column)
     )
 }
 
@@ -404,7 +404,7 @@ fn pg_filter_clause(
     params: &mut Vec<Box<dyn ToSql + Sync>>,
 ) -> fluxdb_core::Result<String> {
     let col = column;
-    let column = pg_quote_identifier(&column.name);
+    let column = fluxdb_core::PostgresDialect.quote_identifier(&column.name);
     Ok(match filter.op {
         FilterOp::IsNull | FilterOp::NotExists => format!("{column} IS NULL"),
         FilterOp::IsNotNull | FilterOp::Exists => format!("{column} IS NOT NULL"),
@@ -555,7 +555,7 @@ fn pg_identity_params(
             .iter()
             .find(|col| &col.name == column)
             .ok_or_else(|| Error::new(ErrorKind::Query, "行身份引用了不存在的列"))?;
-        let quoted = pg_quote_identifier(column);
+        let quoted = fluxdb_core::PostgresDialect.quote_identifier(column);
         if matches!(value, CellValue::Null) {
             clauses.push(format!("{quoted} IS NULL"));
         } else {
@@ -621,7 +621,7 @@ pub fn pg_export_pages(
                 // 用 offset 游标；每页取多一行探测 has_more。
                 let sql = format!(
                     "SELECT {select_list}\nFROM {table} AS {}{where_sql}{order} LIMIT {} OFFSET {}",
-                    pg_quote_identifier(PG_DATA_SOURCE_ALIAS),
+                    fluxdb_core::PostgresDialect.quote_identifier(PG_DATA_SOURCE_ALIAS),
                     batch + 1,
                     offset
                 );

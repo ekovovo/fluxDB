@@ -8,8 +8,9 @@ use fluxdb_core::{
     ForeignKeyInfo, ForeignKeyMeta, IndexColumnItem, IndexInfo, IndexMeta, ObjectKind, ObjectPath,
     ObjectSummary, Pagination, QueryExecutionResult, QueryExecutionSummary, QueryRequest,
     QuerySessionId, QueryStatementKind, RedisHashFieldTtl, RedisServerVersion, Row, RowIdentity,
-    RowUpdate, SortDirection, SortSpec, TableStructure, TriggerInfo, TriggerMeta, UniqueKeyMeta,
-    WriteValue, is_binary_type_name, sqlite_attached_databases,
+    RowUpdate, SortDirection, SortSpec, SqlDialect as _, TableStructure, TriggerInfo, TriggerMeta,
+    UniqueKeyMeta, WriteValue, completion_fuzzy_like_pattern, is_binary_type_name,
+    matches_completion_fuzzy, sqlite_attached_databases,
 };
 use sqlx::{
     Column as SqlxColumn, ColumnIndex, ConnectOptions as _, Connection as _, MySql, QueryBuilder,

@@ -322,3 +322,100 @@ fn ai_sql_policy_nested_ctes_and_extended_side_effect_markers_require_authorizat
         ai_sql_policy_assert_reason_prefix(&reasons, "side_effect_marker:");
     }
 }
+
+#[test]
+fn ai_sql_policy_object_metadata_shows_are_read_only() {
+    let mysql_cases = [
+        "SHOW CREATE TABLE orders",
+        "SHOW CREATE VIEW v_orders",
+        "SHOW COLUMNS FROM orders",
+        "SHOW FULL COLUMNS FROM orders",
+        "SHOW INDEX FROM orders",
+        "SHOW INDEXES FROM orders",
+        "SHOW KEYS FROM orders",
+        "DESC orders",
+        "DESCRIBE orders",
+        "EXPLAIN orders",
+        "SHOW FULL TABLES FROM app",
+        "SHOW TABLES",
+    ];
+    let postgres_cases = [
+        "SHOW search_path",
+        "SHOW server_version",
+        "SHOW TIME ZONE",
+        "SHOW transaction isolation level",
+        "SHOW default_transaction_read_only",
+    ];
+    let sqlite_cases = [
+        "PRAGMA table_info('orders')",
+        "PRAGMA table_list",
+        "PRAGMA index_list('orders')",
+        "PRAGMA foreign_key_list('orders')",
+        "PRAGMA database_list",
+    ];
+
+    for sql in mysql_cases {
+        assert_eq!(
+            analyze_sql(sql, SqlDialectKind::MySql),
+            SqlRisk::ReadOnly,
+            "MySQL 元数据读取应放行：{sql}"
+        );
+    }
+    for sql in postgres_cases {
+        assert_eq!(
+            analyze_sql(sql, SqlDialectKind::Postgres),
+            SqlRisk::ReadOnly,
+            "PostgreSQL 元数据读取应放行：{sql}"
+        );
+    }
+    for sql in sqlite_cases {
+        assert_eq!(
+            analyze_sql(sql, SqlDialectKind::Sqlite),
+            SqlRisk::ReadOnly,
+            "SQLite 元数据读取应放行：{sql}"
+        );
+    }
+}
+
+#[test]
+fn ai_sql_policy_metadata_disclosure_requires_authorization() {
+    let cases = [
+        ("SHOW DATABASES", SqlDialectKind::MySql, "metadata_disclosure:show_databases"),
+        ("SHOW SCHEMAS", SqlDialectKind::MySql, "metadata_disclosure:show_schemas"),
+        ("SHOW VARIABLES LIKE 'datadir'", SqlDialectKind::MySql, "metadata_disclosure:show_variables"),
+        ("SHOW STATUS", SqlDialectKind::MySql, "metadata_disclosure:show_status"),
+        ("SHOW PROCESSLIST", SqlDialectKind::MySql, "metadata_disclosure:show_processlist"),
+        ("SHOW GRANTS FOR 'u'@'h'", SqlDialectKind::MySql, "metadata_disclosure:show_grants"),
+        ("SHOW CREATE FUNCTION f", SqlDialectKind::MySql, "metadata_disclosure:show_create_object"),
+        ("SHOW ALL", SqlDialectKind::Postgres, "metadata_disclosure:show_all"),
+        ("PRAGMA journal_mode", SqlDialectKind::Sqlite, "metadata_disclosure:pragma_journal_mode"),
+    ];
+
+    for (sql, dialect, expected) in cases {
+        let reasons = ai_sql_policy_assert_requires(sql, dialect);
+        ai_sql_policy_assert_reason_contains(&reasons, expected);
+    }
+}
+
+#[test]
+fn ai_sql_policy_metadata_never_accepts_session_or_table_writes() {
+    // 元数据白名单不能顺带放行锁读、事务控制、带值的 PRAGMA 等写入路径。
+    let write_cases = [
+        ("SELECT * FROM orders FOR UPDATE", SqlDialectKind::MySql),
+        ("SHOW TABLES FOR UPDATE", SqlDialectKind::MySql),
+        ("PRAGMA journal_mode = 'wal'", SqlDialectKind::Sqlite),
+        ("LOCK TABLES orders READ", SqlDialectKind::MySql),
+    ];
+
+    for (sql, dialect) in write_cases {
+        assert!(
+            !analyze_sql(sql, dialect).is_read_only(),
+            "白名单不得放宽写入语句：{sql}"
+        );
+    }
+    let reasons = ai_sql_policy_assert_requires(
+        "PRAGMA journal_mode = 'wal'",
+        SqlDialectKind::Sqlite,
+    );
+    ai_sql_policy_assert_reason_prefix(&reasons, "non_read_statement:pragma");
+}

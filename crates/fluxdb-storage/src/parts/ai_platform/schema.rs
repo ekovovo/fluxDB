@@ -538,7 +538,7 @@ CREATE TABLE IF NOT EXISTS ai_usage_ledger (
     attempt INTEGER NOT NULL CHECK (attempt >= 1),
     model_profile_id TEXT NOT NULL REFERENCES ai_model_profiles(id) ON DELETE RESTRICT,
     budget_policy_id TEXT REFERENCES ai_budget_policies(id) ON DELETE RESTRICT,
-    purpose TEXT NOT NULL CHECK (purpose IN ('main','decision','compaction','artifact')),
+    purpose TEXT NOT NULL CHECK (purpose IN ('main','decision','compaction','artifact','title')),
     input_tokens INTEGER CHECK (input_tokens >= 0),
     output_tokens INTEGER CHECK (output_tokens >= 0),
     cached_input_tokens INTEGER CHECK (cached_input_tokens >= 0),

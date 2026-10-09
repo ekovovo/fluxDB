@@ -165,6 +165,11 @@ pub fn analyze_sql(sql: &str, dialect: SqlDialectKind) -> SqlRisk {
             }
         }
         sqlparser::ast::Statement::Query(query) => classify_query(query, &mut reasons),
+        // 元数据读取（SHOW / DESCRIBE / EXPLAIN <table> / SQLite PRAGMA 只读子集）：
+        // 这些语句不改数据也不改结构，与 Superset 的 `is_mutating()` 一致不算「写」；
+        // 但泄露面大的子集（库/模式清单、状态变量、进程列表）不给只读结论，
+        // 留一个理由降级为需授权，由用户逐次审批。
+        other if classify_metadata_read(other, dialect, &mut reasons) => {}
         // 其余语句（INSERT/UPDATE/DELETE/DDL/GRANT/COPY/SET/…）都不是只读。
         other => {
             reasons.push(format!("non_read_statement:{}", variant_name(other)));
@@ -179,6 +184,149 @@ pub fn analyze_sql(sql: &str, dialect: SqlDialectKind) -> SqlRisk {
         SqlRisk::ReadOnly
     } else {
         SqlRisk::RequiresAuthorization { reasons }
+    }
+}
+
+/// MySQL `SHOW <对象>` 的只读子集。MySQL 的这类语句解析成 `ShowVariable`，
+/// 首关键字是动作名、其后是对象名，因此只匹配首关键字（对象名不做文本匹配）。
+const MYSQL_READ_ONLY_SHOW_HEADS: &[&str] = &[
+    "INDEX", "INDEXES", "KEYS", "COLUMNS", "FIELDS", "TRIGGERS",
+];
+
+/// PostgreSQL `SHOW <名称>` 的只读子集。PG 的这类语句后面不带对象参数，
+/// 整体就是一个固定短语，因此按整段名称精确匹配。
+const POSTGRES_READ_ONLY_SHOW_NAMES: &[&str] = &[
+    "SEARCH_PATH",
+    "SERVER_VERSION",
+    "SERVER_VERSION_NUM",
+    "TIME ZONE",
+    "TRANSACTION ISOLATION LEVEL",
+    "TRANSACTION READ ONLY",
+    "DEFAULT TRANSACTION ISOLATION LEVEL",
+    "DEFAULT TRANSACTION READ ONLY",
+    "DEFAULT_TRANSACTION_ISOLATION_LEVEL",
+    "DEFAULT_TRANSACTION_READ_ONLY",
+    "TRANSACTION_ISOLATION_LEVEL",
+    "CLIENT_ENCODING",
+    "STANDARD_CONFORMING_STRINGS",
+    "INTEGER_DATETIMES",
+];
+
+/// SQLite `PRAGMA <名称>` 的只读子集。带 `=` 或值的 PRAGMA 会改设置/落盘，
+/// 不在白名单内（调用 `is_eq` / `value` 判定），其余按名称精确匹配。
+const SQLITE_READ_ONLY_PRAGMAS: &[&str] = &[
+    "table_info",
+    "table_xinfo",
+    "table_list",
+    "index_list",
+    "index_info",
+    "index_xinfo",
+    "foreign_key_list",
+    "database_list",
+    "schema_version",
+    "user_version",
+    "data_version",
+    "application_id",
+    "freelist_count",
+    "page_count",
+    "encoding",
+];
+
+/// 判断一条非查询语句是否属于「元数据读取」。
+///
+/// 返回 `true` 表示已归类：`reasons` 为空即为只读，有理由则按需授权处理。
+/// 返回 `false` 表示不是元数据语句，由调用方按普通非只读语句处理。
+fn classify_metadata_read(
+    statement: &sqlparser::ast::Statement,
+    dialect: SqlDialectKind,
+    reasons: &mut Vec<String>,
+) -> bool {
+    match statement {
+        // `SHOW CREATE TABLE/VIEW/TRIGGER` 读 DDL 文本；不命中就按普通 SHOW 拒绝。
+        sqlparser::ast::Statement::ShowCreate { obj_type, .. } => {
+            use sqlparser::ast::ShowCreateObject;
+            return if matches!(
+                obj_type,
+                ShowCreateObject::Table | ShowCreateObject::View | ShowCreateObject::Trigger
+            ) {
+                true
+            } else {
+                reasons.push("metadata_disclosure:show_create_object".into());
+                true
+            };
+        }
+        // `DESCRIBE t` / `DESC t` / `EXPLAIN t`：读表结构，不执行被解释语句。
+        sqlparser::ast::Statement::ExplainTable { .. } => true,
+        sqlparser::ast::Statement::ShowColumns { .. }
+        | sqlparser::ast::Statement::ShowTables { .. }
+        | sqlparser::ast::Statement::ShowViews { .. }
+        | sqlparser::ast::Statement::ShowCharset(_)
+        | sqlparser::ast::Statement::ShowCollation { .. } => true,
+        // 库/模式清单会越过本轮目标作用域，状态变量与进程列表会泄露其他会话信息。
+        sqlparser::ast::Statement::ShowDatabases { .. } => {
+            reasons.push("metadata_disclosure:show_databases".into());
+            true
+        }
+        sqlparser::ast::Statement::ShowSchemas { .. } => {
+            reasons.push("metadata_disclosure:show_schemas".into());
+            true
+        }
+        sqlparser::ast::Statement::ShowCatalogs { .. } => {
+            reasons.push("metadata_disclosure:show_catalogs".into());
+            true
+        }
+        sqlparser::ast::Statement::ShowStatus { .. } => {
+            reasons.push("metadata_disclosure:show_status".into());
+            true
+        }
+        sqlparser::ast::Statement::ShowVariables { .. } => {
+            reasons.push("metadata_disclosure:show_variables".into());
+            true
+        }
+        sqlparser::ast::Statement::ShowProcessList { .. } => {
+            reasons.push("metadata_disclosure:show_processlist".into());
+            true
+        }
+        sqlparser::ast::Statement::ShowVariable { variable } => {
+            let head = variable
+                .first()
+                .map(|ident| ident.value.to_ascii_uppercase())
+                .unwrap_or_default();
+            let name = variable
+                .iter()
+                .map(|ident| ident.value.to_ascii_uppercase())
+                .collect::<Vec<_>>()
+                .join(" ");
+            let read_only = match dialect {
+                SqlDialectKind::MySql => MYSQL_READ_ONLY_SHOW_HEADS.contains(&head.as_str()),
+                SqlDialectKind::Postgres => POSTGRES_READ_ONLY_SHOW_NAMES.contains(&name.as_str()),
+                // SQLite 没有 SHOW；出现即语法不成立，不给只读结论。
+                SqlDialectKind::Sqlite => false,
+            };
+            if !read_only {
+                reasons.push(format!("metadata_disclosure:show_{}", head.to_lowercase()));
+            }
+            true
+        }
+        sqlparser::ast::Statement::Pragma { name, is_eq, .. } => {
+            // `PRAGMA x = y` 会改设置或写文件，不在只读范围；`PRAGMA table_info('t')`
+            // 的值只是被查对象，属于读取，不能与赋值形式混为一谈。
+            if dialect == SqlDialectKind::Sqlite && !*is_eq {
+                let pragma = name
+                    .0
+                    .last()
+                    .and_then(|part| part.as_ident())
+                    .map(|ident| ident.value.to_ascii_lowercase())
+                    .unwrap_or_default();
+                if SQLITE_READ_ONLY_PRAGMAS.contains(&pragma.as_str()) {
+                    return true;
+                }
+                reasons.push(format!("metadata_disclosure:pragma_{pragma}"));
+                return true;
+            }
+            false
+        }
+        _ => false,
     }
 }
 

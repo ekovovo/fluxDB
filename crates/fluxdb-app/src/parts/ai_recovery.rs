@@ -7,11 +7,27 @@ impl AppController {
                 &mut conn,
                 ai_chat_now(),
             )?;
+            // 过期保留结果的 spill 文件已无归属，按受控根内相对路径删除；
+            // 删不掉只记日志：恢复扫描不能因为清理失败而整体失败。
+            let spill_root = storage.root_dir().join("ai-results");
+            for relative_path in &summary.retained_paths_to_purge {
+                let path = spill_root.join(relative_path);
+                if let Err(error) = std::fs::remove_file(&path) {
+                    if error.kind() != std::io::ErrorKind::NotFound {
+                        tracing::warn!(
+                            path=%path.display(),
+                            %error,
+                            "删除过期保留结果文件失败，留待下次清理"
+                        );
+                    }
+                }
+            }
             tracing::info!(
                 interrupted = summary.interrupted_turns,
                 unknown = summary.unknown_turns,
                 waiting_approval = summary.waiting_approval_turns,
                 expired_results = summary.expired_results,
+                purged = summary.retained_paths_to_purge.len(),
                 "AI 启动恢复扫描完成（未重放工具）"
             );
             Ok(self.state.ai_conversation.clone())

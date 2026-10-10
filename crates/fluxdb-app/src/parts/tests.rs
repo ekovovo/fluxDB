@@ -49,4 +49,5 @@ mod tests {
     include!("tests/ai_redis_policy.rs");
     include!("tests/ai_redis_keys.rs");
     include!("tests/ai_tool_registry.rs");
+    include!("tests/ai_result_pages.rs");
 }

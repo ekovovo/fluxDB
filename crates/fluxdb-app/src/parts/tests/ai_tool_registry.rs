@@ -219,11 +219,11 @@ fn ai_tool_registry_argument_limit_rejects_before_execution() {
 #[test]
 fn ai_tool_registry_result_pages_are_bounded_and_cursor_checked() {
     let mut store = ResultStore::new(1024 * 1024);
-    let items = (0..10)
+    let items: Vec<serde_json::Value> = (0..10)
         .map(|n| serde_json::json!({"n": n, "text": "x"}))
         .collect();
-    let (result, truncated) = store.put("db.query", 123, items);
-    assert!(!truncated, "大字节上限应完整保存 10 条结果");
+    let (result, spill) = store.put("db.query", 123, items).expect("保存结果");
+    assert!(!spill.spilled(), "大字节上限应完整留在内存，不触发 spill");
 
     let first = store
         .read_page(&result.id, None, 3, 10 * 1024 * 1024)
@@ -267,7 +267,9 @@ fn ai_tool_registry_result_pages_are_bounded_and_cursor_checked() {
 #[test]
 fn ai_tool_registry_released_and_expired_results_are_visible_errors() {
     let mut released_store = ResultStore::new(1024);
-    let (released, _) = released_store.put("db.query", 1, vec![serde_json::json!({"n": 1})]);
+    let (released, _) = released_store
+        .put("db.query", 1, vec![serde_json::json!({"n": 1})])
+        .expect("保存结果");
     assert!(released_store.release(&released.id));
     let released_error = released_store
         .read_page(&released.id, None, 10, 1024)
@@ -275,7 +277,9 @@ fn ai_tool_registry_released_and_expired_results_are_visible_errors() {
     assert_eq!(released_error.code, "result_expired");
 
     let mut expired_store = ResultStore::new(1024);
-    let (expired, _) = expired_store.put("db.query", 2, vec![serde_json::json!({"n": 2})]);
+    let (expired, _) = expired_store
+        .put("db.query", 2, vec![serde_json::json!({"n": 2})])
+        .expect("保存结果");
     assert!(expired_store.expire(&expired.id));
     let expired_error = expired_store
         .read_page(&expired.id, None, 10, 1024)
@@ -300,6 +304,8 @@ fn ai_tool_registry_receipt_projection_is_bounded_and_immutable() {
         id: "result-1".into(),
         tool_id: "db.query".into(),
         created_at_ms: 20,
+        session_id: "s-1".into(),
+        turn_id: "t-1".into(),
     };
     let before = receipt.result_json.clone();
 
@@ -363,4 +369,76 @@ fn ai_tool_registry_projection_honors_spec_output_limit() {
     // 未知工具的投影同样是受控错误。
     let error = catalog.project("nope.tool", &receipt, None).unwrap_err();
     assert_eq!(error.code, "unknown_tool");
+}
+
+#[test]
+fn ai_tool_registry_spilled_results_are_readable_page_by_page() {
+    // 大结果 spill 到受控文件后，分页必须能读回**全部**行，而不是只报"还有更多"。
+    let root = std::env::temp_dir().join(format!("fluxdb-t027-{}", uuid::Uuid::new_v4()));
+    let mut store = ResultStore::for_turn(
+        64,
+        "s-1",
+        "t-1",
+        Some(root.clone()),
+    );
+    let rows: Vec<serde_json::Value> = (0..40)
+        .map(|n| serde_json::json!({"n": n, "text": "x".repeat(16)}))
+        .collect();
+    let (result, spill) = store.put("db.query", 42, rows).expect("保存结果");
+    assert!(spill.spilled(), "超出内存预算应写受控 spill 文件");
+    assert!(spill.byte_count > 0 && !spill.content_hash.is_empty());
+
+    let mut seen = Vec::new();
+    let mut cursor = None;
+    loop {
+        let page = store
+            .read_page(&result.id, cursor.as_deref(), 7, 64 * 1024)
+            .expect("分页读取");
+        seen.extend(page.items);
+        match page.next_cursor {
+            Some(next) => cursor = Some(next),
+            None => break,
+        }
+    }
+    assert_eq!(seen.len(), 40, "spill 后仍应能读回全部行");
+    assert_eq!(seen[0], serde_json::json!({"n": 0, "text": "x".repeat(16)}));
+    assert_eq!(seen[39]["n"], 39);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn ai_tool_registry_spill_file_damage_is_reported_not_silently_empty() {
+    let root = std::env::temp_dir().join(format!("fluxdb-t027-{}", uuid::Uuid::new_v4()));
+    let mut store = ResultStore::for_turn(64, "s-1", "t-1", Some(root.clone()));
+    let rows: Vec<serde_json::Value> = (0..20)
+        .map(|n| serde_json::json!({"n": n, "text": "x".repeat(16)}))
+        .collect();
+    let (result, spill) = store.put("db.query", 42, rows).expect("保存结果");
+    assert!(spill.spilled());
+
+    // 人为破坏 spill 文件：读取必须显式报错，不能伪装成空页。
+    std::fs::write(root.join(&spill.relative_path.unwrap()), b"not-json").expect("破坏文件");
+    let error = store
+        .read_page(&result.id, None, 50, 64 * 1024)
+        .expect_err("损坏的 spill 文件必须报错");
+    assert_eq!(error.code, "result_damaged");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn ai_tool_registry_result_refs_are_scoped_to_the_owning_session() {
+    // 另一个会话创建的 ResultStore 不能读到本会话的结果，反向亦然。
+    let root = std::env::temp_dir().join(format!("fluxdb-t027-{}", uuid::Uuid::new_v4()));
+    let mut mine = ResultStore::for_turn(64 * 1024, "s-1", "t-1", Some(root.clone()));
+    let (result, _) = mine
+        .put("db.query", 1, vec![serde_json::json!({"n": 1})])
+        .expect("保存结果");
+    assert!(mine.read_page(&result.id, None, 10, 4096).is_ok());
+
+    let other = ResultStore::for_turn(64 * 1024, "s-2", "t-2", Some(root.clone()));
+    let foreign = other
+        .read_page(&result.id, None, 10, 4096)
+        .expect_err("跨会话不得读取");
+    assert_eq!(foreign.code, "unknown_result");
+    let _ = std::fs::remove_dir_all(&root);
 }

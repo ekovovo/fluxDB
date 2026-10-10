@@ -142,6 +142,9 @@ pub fn finish_tool_call(
 }
 
 /// 登记一个有界结果句柄（T027 结果分页/保留；内存结果也要有稳定 ID 才能被引用）。
+///
+/// `retention` 描述结果是否溢写到受控 spill 文件：`Retained` 必须带相对路径，
+/// 由表 CHECK 约束兜住“保留结果却没有落点”这种无法读取的状态。
 #[allow(clippy::too_many_arguments)]
 pub fn insert_result(
     conn: &Connection,
@@ -153,15 +156,62 @@ pub fn insert_result(
     metadata_json: &str,
     status: &str,
     byte_count: i64,
+    retention: &ResultRetention,
 ) -> Result<()> {
     serde_json::from_str::<serde_json::Value>(metadata_json)
         .map_err(|_| Error::new(ErrorKind::Internal, "结果元数据不是合法 JSON"))?;
     if !["available", "expired", "deleted", "failed"].contains(&status) {
         return Err(Error::new(ErrorKind::Internal, "非法结果状态"));
     }
-    conn.execute("INSERT INTO ai_results(id,session_id,turn_id,source_call_id,metadata_json,retention_kind,status,byte_count,created_at_ms) VALUES(?1,?2,?3,?4,?5,'memory',?6,?7,?8)",
-        params![id,session_id,turn_id,source_call_id,metadata_json,status,byte_count,now]).map_err(sqlite_error)?;
+    let retention_kind = match retention {
+        ResultRetention::Memory => "memory",
+        ResultRetention::Retained { .. } => "retained",
+    };
+    let relative_path = match retention {
+        ResultRetention::Memory => None,
+        ResultRetention::Retained { relative_path, .. } => {
+            // 受控根之外的路径不得入库：绝对路径或 `..` 上跳会让后续读取变成任意文件访问。
+            let path = std::path::Path::new(relative_path);
+            if path.is_absolute()
+                || relative_path.is_empty()
+                || path
+                    .components()
+                    .any(|part| matches!(part, std::path::Component::ParentDir))
+            {
+                return Err(Error::new(
+                    ErrorKind::Internal,
+                    "保留结果的路径必须是受控根内的相对路径",
+                ));
+            }
+            Some(relative_path.as_str())
+        }
+    };
+    // retained 行描述的是受控文件：字节数必须取文件本身的大小，
+    // 否则清理与配额会按回执长度算，和真实磁盘占用对不上。
+    let (content_hash, byte_count) = match retention {
+        ResultRetention::Memory => (None, byte_count),
+        ResultRetention::Retained {
+            content_hash,
+            byte_count: stored_bytes,
+            ..
+        } => (Some(content_hash.as_str()), *stored_bytes),
+    };
+    conn.execute("INSERT INTO ai_results(id,session_id,turn_id,source_call_id,metadata_json,retention_kind,status,relative_path,byte_count,content_hash,created_at_ms) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+        params![id,session_id,turn_id,source_call_id,metadata_json,retention_kind,status,relative_path,byte_count,content_hash,now]).map_err(sqlite_error)?;
     Ok(())
+}
+
+/// 结果保留方式：内存结果重启后必然过期，溢写结果在受控根下保留到策略清理。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ResultRetention {
+    Memory,
+    Retained {
+        /// 相对受控根的路径；不得是绝对路径或含 `..` 的越界路径。
+        relative_path: String,
+        /// spill 文件的实际字节数（不是回执长度）。
+        byte_count: i64,
+        content_hash: String,
+    },
 }
 
 /// 找该 Turn 的助手消息（审批决定等迟到事件要挂到同一条消息上）。

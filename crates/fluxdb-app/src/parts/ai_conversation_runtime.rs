@@ -32,13 +32,21 @@ impl AiRuntimeHandle {
                         .as_ref()
                         .is_some_and(|config| !connection_is_read_only(config));
                     let resolver = Arc::new(MapSqlResolver::new(pinned.iter().cloned()));
+                    // 结果仓库按 Turn 绑定归属：ResultRef 只能被本 session/turn 读取；
+                    // spill 写在存储根的受控子目录，重启后由恢复流程按保留策略处理。
+                    let results = Arc::new(Mutex::new(ResultStore::for_turn(
+                        RESULT_STORE_MEMORY_BYTES,
+                        &job.session_id,
+                        &job.turn_id,
+                        Some(storage.root_dir().join("ai-results")),
+                    )));
                     let mut tools = if pinned
                         .as_ref()
                         .is_some_and(|config| config.kind == fluxdb_core::DatabaseKind::Redis)
                     {
                         standard_redis_catalog(resolver, include_write)?
                     } else {
-                        standard_sql_catalog(resolver, include_write)?
+                        standard_sql_catalog_with_results(resolver, results, include_write)?
                     };
                     tools = tools.with_hooks(ai_builtin_hooks(storage, job)?);
                     add_ai_file_tools(&mut tools, storage, job)?;

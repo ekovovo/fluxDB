@@ -347,7 +347,13 @@ fn ai_conversation_run_turn(
                         ));
                     }
                     let saved =
-                        ai_conversation_record_tool_result(storage, job, &receipt, text.len());
+                        ai_conversation_record_tool_result(
+                            storage,
+                            job,
+                            &receipt,
+                            text.len(),
+                            tools.results(),
+                        );
                     if let Err(error) = &saved {
                         part_error.get_or_insert_with(|| error.message.clone());
                     }
@@ -681,7 +687,8 @@ fn resume_ai_approved_turn(
         }
     };
     let existing = ai_conversation_existing_text(storage, &job);
-    if let Err(error) = ai_conversation_record_tool_result(storage, &job, &receipt, existing.len())
+    if let Err(error) =
+        ai_conversation_record_tool_result(storage, &job, &receipt, existing.len(), tools.results())
     {
         // 工具已经真实执行，但回执没能落盘：绝不能让调用停在 running 假装"还在跑"。
         // 先尽力标记 unknown（T029 按未知副作用处理），再把错误显式交给用户。

@@ -95,12 +95,44 @@ fn ai_conversation_record_tool_start(
     })
 }
 
+/// 从回执里的 `result_ref` 找该句柄的 spill 事实，转成 `ai_results` 的保留登记。
+///
+/// 回执不含路径（路径只对模型隐藏），所以这里以回执给出的句柄 ID 回查仓库；
+/// 查不到（Redis 等自带分页、未走结果仓库的工具）按纯内存登记。
+///
+/// `tool_id` 是本次调用的工具：只有句柄的产出工具与它一致，这条 spill 事实才属于本次调用。
+/// 否则 `result.read_page` 这类「回显来源句柄」的工具会把来源的 spill 文件登记成自己的落点。
+fn spill_retention(
+    results: Option<&Arc<Mutex<ResultStore>>>,
+    tool_id: &str,
+    receipt_json: &str,
+) -> Option<fluxdb_storage::ai_platform::sessions::ResultRetention> {
+    let id = serde_json::from_str::<serde_json::Value>(receipt_json)
+        .ok()?
+        .get("result_ref")?
+        .get("id")?
+        .as_str()?
+        .to_string();
+    let fact = results?.lock().ok()?.spill_fact(&id)?;
+    if fact.tool_id != tool_id {
+        return None;
+    }
+    // 仓库锁已被 poison 或句柄已不可查时不能伪造路径：退化成内存登记，
+    // 结果仍留在受控文件里，只是重启后按内存语义过期。
+    Some(fluxdb_storage::ai_platform::sessions::ResultRetention::Retained {
+        relative_path: fact.relative_path,
+        byte_count: fact.byte_count,
+        content_hash: fact.content_hash,
+    })
+}
+
 /// 记录工具真实回执：写 `ai_results` 句柄 + 结果卡；回执原文只进 receipt 列，不被投影改写。
 fn ai_conversation_record_tool_result(
     storage: &fluxdb_storage::FileStorage,
     job: &AiConversationJob,
     receipt: &fluxdb_core::ToolReceipt,
     text_offset: usize,
+    results: Option<&Arc<Mutex<ResultStore>>>,
 ) -> fluxdb_core::Result<()> {
     let call_row = format!("{}-toolcall-{}", job.turn_id, receipt.call_id);
     let result_row = format!("{}-result-{}", job.turn_id, receipt.call_id);
@@ -184,6 +216,14 @@ fn ai_conversation_record_tool_result(
         let result_ref = if receipt.status == fluxdb_core::ToolReceiptStatus::Denied {
             None
         } else {
+            // 大结果的 spill 事实只有在结果仓库里才知道：溢写过的句柄按 retained 登记
+            // 相对路径与内容哈希，重启后仍可校验/清理；未溢写的仍是纯内存句柄。
+            let retention = spill_retention(
+                results.as_deref(),
+                &receipt.tool_id,
+                &receipt.result_json,
+            )
+            .unwrap_or(fluxdb_storage::ai_platform::sessions::ResultRetention::Memory);
             fluxdb_storage::ai_platform::sessions::insert_result(
                 conn,
                 ai_chat_now(),
@@ -194,6 +234,7 @@ fn ai_conversation_record_tool_result(
                 &serde_json::json!({"tool":receipt.tool_id,"call_id":receipt.call_id}).to_string(),
                 "available",
                 byte_count,
+                &retention,
             )?;
             Some(result_row.clone())
         };

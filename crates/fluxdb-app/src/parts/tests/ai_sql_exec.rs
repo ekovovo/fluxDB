@@ -636,3 +636,52 @@ fn ai_sql_exec_rejects_malformed_tagged_parameters() {
         "invalid_parameters"
     );
 }
+
+#[test]
+fn ai_sql_exec_receipt_keeps_large_results_out_of_context_and_stays_readable() {
+    // 验收「大结果不全进上下文」：回执只带少量样本 + ResultRef，
+    // 完整行仍可经 result_ref 分页读回。
+    let mut outcome = SqlExecutionOutcome {
+        columns: vec!["id".into(), "name".into()],
+        rows: (0..50).map(|n| vec![serde_json::json!(n), serde_json::json!("x".repeat(8))]).collect(),
+        row_count: 50,
+        truncated: false,
+        elapsed_ms: 3,
+        query_session_id: fluxdb_core::QuerySessionId::host_managed(1),
+        source: fluxdb_core::CommandExecutionSource::Ai,
+        original_sql: "SELECT id, name FROM t".into(),
+        executed_sql: "SELECT id, name FROM t LIMIT 51".into(),
+        progress: Vec::new(),
+        affected_rows: None,
+        statement_kind: "result_set",
+    };
+    let root = std::env::temp_dir().join(format!("fluxdb-t027-{}", uuid::Uuid::new_v4()));
+    let mut store = ResultStore::for_turn(1024, "s-1", "t-1", Some(root.clone()));
+    let (result, _) = store
+        .put("db.query", 1, outcome.rows.clone().into_iter().map(serde_json::Value::from))
+        .expect("保存结果");
+
+    let payload = outcome.to_model_json(Some(&result));
+    let rows = payload["rows"].as_array().expect("样本行数组");
+    assert_eq!(rows.len(), 5, "回执只带样本行，不带全量");
+    assert_eq!(payload["row_count"], 50);
+    assert_eq!(payload["rows_omitted"], 45);
+    assert_eq!(payload["result_ref"]["id"], result.id.as_str());
+
+    // 完整 50 行仍可经结果句柄分页读回。
+    let mut total = 0usize;
+    let mut cursor = None;
+    loop {
+        let page = store
+            .read_page(&result.id, cursor.as_deref(), 20, 1024 * 1024)
+            .expect("分页读取");
+        total += page.items.len();
+        match page.next_cursor {
+            Some(next) => cursor = Some(next),
+            None => break,
+        }
+    }
+    assert_eq!(total, 50);
+    outcome.rows.clear();
+    let _ = std::fs::remove_dir_all(&root);
+}

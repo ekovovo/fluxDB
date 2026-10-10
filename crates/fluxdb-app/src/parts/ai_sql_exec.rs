@@ -124,6 +124,11 @@ static NEXT_AI_QUERY_SESSION_ID: std::sync::atomic::AtomicU64 =
 pub const SQL_MAX_ROWS_HARD: u64 = 1000;
 pub const SQL_MAX_ROWS_DEFAULT: u64 = 200;
 pub const SQL_RESULT_MAX_BYTES: usize = 128 * 1024;
+/// 结果仓库的内存预算（与工具层投影上限无关）。
+///
+/// 必须小于 `SQL_RESULT_MAX_BYTES`：否则工具投影已被截断到 128 KiB，
+/// 仓库永远装得下、溢写分支不可达，spill / retained 在生产里就成了死代码。
+pub const RESULT_STORE_MEMORY_BYTES: usize = 32 * 1024;
 
 /// 受控执行错误（作为 ToolReceipt 的 `error_code`，不是 panic/Err）。
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -527,6 +532,9 @@ pub struct SqlExecutionOutcome {
     pub statement_kind: &'static str,
 }
 
+/// 回执里随行返回的样本条数上限（设计 §15：只带结构、行数/截断标记、少量样本与 ResultRef）。
+const RECEIPT_SAMPLE_ROWS: usize = 5;
+
 impl SqlExecutionOutcome {
     pub fn to_json(&self) -> serde_json::Value {
         serde_json::json!({
@@ -548,6 +556,30 @@ impl SqlExecutionOutcome {
             "affected_rows": self.affected_rows,
             "statement_kind": self.statement_kind,
         })
+    }
+
+    /// 面向模型的有界投影：完整行交给结果仓库，回执只留样本与截断标记。
+    ///
+    /// 这是「大结果不全进上下文」的生效点：模型需要更多行时用 ResultRef 分页读取。
+    pub fn to_model_json(&self, result_ref: Option<&crate::ResultRef>) -> serde_json::Value {
+        let mut value = self.to_json();
+        let sample_rows = self.rows.iter().take(RECEIPT_SAMPLE_ROWS).cloned().collect::<Vec<_>>();
+        if let Some(object) = value.as_object_mut() {
+            object.insert("rows".into(), serde_json::json!(sample_rows));
+            object.insert("row_count".into(), serde_json::json!(self.row_count));
+            object.insert("rows_omitted".into(), serde_json::json!(self.rows.len().saturating_sub(RECEIPT_SAMPLE_ROWS)));
+            if let Some(result_ref) = result_ref {
+                object.insert(
+                    "result_ref".into(),
+                    serde_json::json!({
+                        "id": result_ref.id,
+                        "tool_id": result_ref.tool_id,
+                        "created_at_ms": result_ref.created_at_ms,
+                    }),
+                );
+            }
+        }
+        value
     }
 }
 
@@ -990,6 +1022,31 @@ fn receipt_from(
     }
 }
 
+/// 带 ResultRef 的回执：成功时把句柄装进载荷（T027 分页接线点）。
+fn receipt_from_with_ref(
+    descriptor: &fluxdb_core::ToolDescriptor,
+    call_id: &str,
+    started_at_ms: i64,
+    outcome: Result<SqlExecutionOutcome, SqlExecError>,
+    result_ref: Option<&crate::ResultRef>,
+) -> fluxdb_core::ToolReceipt {
+    let finished_at_ms = now_ms();
+    match outcome {
+        Ok(outcome) => fluxdb_core::ToolReceipt {
+            call_id: call_id.to_string(),
+            tool_id: descriptor.id.clone(),
+            status: fluxdb_core::ToolReceiptStatus::Succeeded,
+            // 成功回执只带样本行 + ResultRef；完整行留在结果仓库里按需分页读。
+            result_json: outcome.to_model_json(result_ref).to_string(),
+            error_code: None,
+            affected_rows: outcome.affected_rows,
+            started_at_ms,
+            finished_at_ms,
+        },
+        Err(error) => receipt_from(descriptor, call_id, started_at_ms, Err(error)),
+    }
+}
+
 /// 元数据探索：按名字模糊搜索表/视图（只读、有界、可取消）。
 ///
 /// 复用连接器补全索引（各方言自己实现），不 dump 全库 DDL。
@@ -1205,19 +1262,40 @@ pub struct AiSqlReadTool<R: SqlExecutionResolver> {
     resolver: Arc<R>,
     /// `db.explain` 需要把入参 SQL 包成 plan（不执行）；`db.query` 原样执行。
     wrap_explain: bool,
+    /// 结果句柄仓库：`db.query` / `db.explain` 输出可分页读取（T027）。
+    results: Arc<Mutex<ResultStore>>,
 }
 
 impl<R: SqlExecutionResolver> AiSqlReadTool<R> {
     pub fn query(resolver: Arc<R>) -> fluxdb_core::Result<Self> {
-        Self::from_spec(resolver, "db.query", DB_QUERY_INPUT_SCHEMA, false)
+        let results = Arc::new(Mutex::new(ResultStore::new(SQL_RESULT_MAX_BYTES)));
+        Self::from_spec(resolver, results, "db.query", DB_QUERY_INPUT_SCHEMA, false)
     }
 
     pub fn explain(resolver: Arc<R>) -> fluxdb_core::Result<Self> {
-        Self::from_spec(resolver, "db.explain", DB_EXPLAIN_INPUT_SCHEMA, true)
+        let results = Arc::new(Mutex::new(ResultStore::new(SQL_RESULT_MAX_BYTES)));
+        Self::from_spec(resolver, results, "db.explain", DB_EXPLAIN_INPUT_SCHEMA, true)
+    }
+
+    /// 生产装配入口：注入本次会话的结果仓库，使 `db.query` 回执带可续读的 ResultRef。
+    pub fn query_with_results(
+        resolver: Arc<R>,
+        results: Arc<Mutex<ResultStore>>,
+    ) -> fluxdb_core::Result<Self> {
+        Self::from_spec(resolver, results, "db.query", DB_QUERY_INPUT_SCHEMA, false)
+    }
+
+    /// 见 [`AiSqlReadTool::query_with_results`]：`db.explain` 共用同一结果仓库。
+    pub fn explain_with_results(
+        resolver: Arc<R>,
+        results: Arc<Mutex<ResultStore>>,
+    ) -> fluxdb_core::Result<Self> {
+        Self::from_spec(resolver, results, "db.explain", DB_EXPLAIN_INPUT_SCHEMA, true)
     }
 
     fn from_spec(
         resolver: Arc<R>,
+        results: Arc<Mutex<ResultStore>>,
         tool_id: &str,
         schema: &str,
         wrap_explain: bool,
@@ -1241,6 +1319,7 @@ impl<R: SqlExecutionResolver> AiSqlReadTool<R> {
                 input_schema_json: schema.to_string(),
             },
             resolver,
+            results,
             wrap_explain,
         })
     }
@@ -1278,6 +1357,7 @@ impl<R: SqlExecutionResolver + 'static> fluxdb_core::AiTool for AiSqlReadTool<R>
         let cancel = ctx.cancel.clone();
         let progress_events = ctx.progress.clone();
         let wrap_explain = self.wrap_explain;
+        let results = Arc::clone(&self.results);
         Box::pin(async move {
             let mut report_progress = |event: fluxdb_core::ToolProgressEvent| {
                 if let Some(events) = &progress_events {
@@ -1309,12 +1389,43 @@ impl<R: SqlExecutionResolver + 'static> fluxdb_core::AiTool for AiSqlReadTool<R>
                 }
                 Err(error) => Err(error),
             };
-            Ok(receipt_from(
-                &descriptor,
-                &ctx.call_id,
-                started_at_ms,
-                outcome,
-            ))
+            match outcome {
+                Ok(outcome) => {
+                    let result_ref = {
+                        let mut store = results
+                            .lock()
+                            .map_err(|_| fluxdb_core::Error::new(
+                                fluxdb_core::ErrorKind::Internal,
+                                "结果仓库锁已损坏",
+                            ))?;
+                        let (result, _) = store
+                            .put(
+                                &descriptor.id,
+                                started_at_ms,
+                                outcome.rows.clone().into_iter().map(serde_json::Value::from),
+                            )
+                            .map_err(|error| fluxdb_core::Error::new(
+                                fluxdb_core::ErrorKind::Internal,
+                                format!("结果保存失败: {}", error.message),
+                            ))?;
+                        result
+                    };
+                    Ok(receipt_from_with_ref(
+                        &descriptor,
+                        &ctx.call_id,
+                        started_at_ms,
+                        Ok(outcome),
+                        Some(&result_ref),
+                    ))
+                }
+                Err(error) => Ok(receipt_from_with_ref(
+                    &descriptor,
+                    &ctx.call_id,
+                    started_at_ms,
+                    Err(error),
+                    None,
+                )),
+            }
         })
     }
 }
@@ -1642,17 +1753,40 @@ pub fn standard_sql_catalog<R: SqlExecutionResolver + 'static>(
     resolver: Arc<R>,
     include_write: bool,
 ) -> fluxdb_core::Result<ToolCatalog> {
+    // 默认装配使用无归属的内存仓库：调用方未提供会话上下文，结果不可跨会话读取。
+    let results = Arc::new(Mutex::new(ResultStore::new(SQL_RESULT_MAX_BYTES)));
+    standard_sql_catalog_with_results(resolver, results, include_write)
+}
+
+/// 生产装配入口：显式注入本次会话的结果仓库，使只读工具回执带可续读的 ResultRef。
+pub fn standard_sql_catalog_with_results<R: SqlExecutionResolver + 'static>(
+    resolver: Arc<R>,
+    results: Arc<Mutex<ResultStore>>,
+    include_write: bool,
+) -> fluxdb_core::Result<ToolCatalog> {
     let mut specs = standard_sql_tool_specs()?;
     if !include_write {
         specs.retain(|spec| spec.risk != fluxdb_core::ToolRisk::Write);
     }
+    // 结果分页必须与实现同时进入目录：只注册实现会让模型看得到 spec 却调不动，
+    // 反之只给 spec 则 describe 得到、execute 失败。
+    specs.push(result_read_page_spec()?);
     let mut catalog = ToolCatalog::new(specs);
-    catalog.register(Box::new(AiSqlReadTool::query(Arc::clone(&resolver))?))?;
-    catalog.register(Box::new(AiSqlReadTool::explain(Arc::clone(&resolver))?))?;
+    catalog.register(Box::new(AiSqlReadTool::query_with_results(
+        Arc::clone(&resolver),
+        Arc::clone(&results),
+    )?))?;
+    catalog.register(Box::new(AiSqlReadTool::explain_with_results(
+        resolver.clone(),
+        Arc::clone(&results),
+    )?))?;
     catalog.register(Box::new(AiSqlSearchTool::new(Arc::clone(&resolver))?))?;
     catalog.register(Box::new(AiSqlDescribeTool::new(Arc::clone(&resolver))?))?;
+    // 结果分页与数据库类型无关，但必须共用同一仓库，句柄才读得到。
+    catalog.register(Box::new(AiResultReadPageTool::new(Arc::clone(&results))?))?;
     if include_write {
         catalog.register(Box::new(AiSqlExecuteTool::new(resolver)?))?;
     }
-    Ok(catalog)
+    // 仓库随目录一起交出：回执登记溢写事实按目录查，不再由调用方另传一遍。
+    Ok(catalog.with_results(results))
 }

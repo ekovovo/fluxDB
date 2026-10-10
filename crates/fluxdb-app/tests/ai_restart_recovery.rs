@@ -721,17 +721,62 @@ fn restart_expires_only_available_memory_results_and_keeps_retained_handles() {
     f.with(|conn| {
         checkpoint(conn, &job, "result body", "", None)?;
         call(conn, &job, "result-call", 0, "db.query", "succeeded")?;
-        sessions::finish_tool_call(conn, "result-call", "succeeded", Some(RECEIPT), None, Some(NOW - 1))?;
-        for (id, status) in [("memory", "available"), ("retained", "available"),
-            ("expired", "expired"), ("deleted", "deleted"), ("failed", "failed")] {
-            sessions::insert_result(conn, NOW - 50, id, &job.session_id, &job.turn_id,
-                "result-call", r#"{"columns":["n"],"rows":1}"#, status, 16)?;
+        sessions::finish_tool_call(
+            conn,
+            "result-call",
+            "succeeded",
+            Some(RECEIPT),
+            None,
+            Some(NOW - 1),
+        )?;
+        for (id, status) in [
+            ("memory", "available"),
+            ("expired", "expired"),
+            ("deleted", "deleted"),
+            ("failed", "failed"),
+        ] {
+            sessions::insert_result(
+                conn,
+                NOW - 50,
+                id,
+                &job.session_id,
+                &job.turn_id,
+                "result-call",
+                r#"{"columns":["n"],"rows":1}"#,
+                status,
+                16,
+                &sessions::ResultRetention::Memory,
+            )?;
         }
-        // 尚无 retained 写入 API；在生产 insert_result 后仅 UPDATE 该字段模拟已保留句柄。
-        conn.execute("UPDATE ai_results SET retention_kind='retained',relative_path='results/t029-retained.json' WHERE id='retained'", []).map_err(sql_error)?;
-        conversation::upsert_event_part(conn, NOW - 25, &job.session_id, &job.turn_id,
-            &job.assistant_message_id, "result-card", PartKind::ToolResultRef, PartStatus::Complete,
-            r#"{"result_id":"memory"}"#, Some("result-call"), Some("memory"))?;
+        sessions::insert_result(
+            conn,
+            NOW - 50,
+            "retained",
+            &job.session_id,
+            &job.turn_id,
+            "result-call",
+            r#"{"columns":["n"],"rows":1}"#,
+            "available",
+            16,
+            &sessions::ResultRetention::Retained {
+                relative_path: "results/t027-retained.json".into(),
+                byte_count: 16,
+                content_hash: "sha256:t027-retained".into(),
+            },
+        )?;
+        conversation::upsert_event_part(
+            conn,
+            NOW - 25,
+            &job.session_id,
+            &job.turn_id,
+            &job.assistant_message_id,
+            "result-card",
+            PartKind::ToolResultRef,
+            PartStatus::Complete,
+            r#"{"result_id":"memory"}"#,
+            Some("result-call"),
+            Some("memory"),
+        )?;
         checkpoint(conn, &job, "result body", "", Some(TurnStatus::Completed))
     });
     let before = f.snapshot();
@@ -792,6 +837,166 @@ fn restart_expires_only_available_memory_results_and_keeps_retained_handles() {
     }
     assert_eq!(f.recover(NOW + 1).expired_results, 0);
     assert_eq!(f.snapshot(), after);
+}
+
+/// 保留结果的落盘事实可核对：相对路径/字节数/哈希入库，越界路径被拒绝；
+/// 带 TTL 的保留结果到期才过期，未到期或无 TTL 的在重启后仍可用。
+#[test]
+fn retained_results_keep_verifiable_spill_facts_and_expire_only_by_ttl() {
+    let f = Fixture::new();
+    let (_, job) = f.prepared();
+    f.with(|conn| {
+        checkpoint(conn, &job, "retained body", "", None)?;
+        call(conn, &job, "result-call", 0, "db.query", "succeeded")?;
+        sessions::finish_tool_call(
+            conn,
+            "result-call",
+            "succeeded",
+            Some(RECEIPT),
+            None,
+            Some(NOW - 1),
+        )?;
+        sessions::insert_result(
+            conn,
+            NOW - 50,
+            "kept",
+            &job.session_id,
+            &job.turn_id,
+            "result-call",
+            r#"{"columns":["n"],"rows":1}"#,
+            "available",
+            16,
+            &sessions::ResultRetention::Retained {
+                relative_path: "results/kept.json".into(),
+                byte_count: 16,
+                content_hash: "sha256:kept".into(),
+            },
+        )?;
+        sessions::insert_result(
+            conn,
+            NOW - 50,
+            "ttl",
+            &job.session_id,
+            &job.turn_id,
+            "result-call",
+            r#"{"columns":["n"],"rows":1}"#,
+            "available",
+            16,
+            &sessions::ResultRetention::Retained {
+                relative_path: "results/ttl.json".into(),
+                byte_count: 16,
+                content_hash: "sha256:ttl".into(),
+            },
+        )?;
+        conn.execute(
+            "UPDATE ai_results SET expires_at_ms=?1 WHERE id='ttl'",
+            rusqlite::params![NOW + 1_000],
+        )
+        .map_err(sql_error)?;
+        // 受控根之外的路径必须被拒绝：否则后续按 relative_path 回读会变成任意文件访问。
+        for bad in ["/etc/passwd", "../escape.json", "results/../../escape.json"] {
+            assert!(
+                sessions::insert_result(
+                    conn,
+                    NOW - 50,
+                    "bad",
+                    &job.session_id,
+                    &job.turn_id,
+                    "result-call",
+                    r#"{"columns":["n"],"rows":1}"#,
+                    "available",
+                    16,
+                    &sessions::ResultRetention::Retained {
+                        relative_path: bad.into(),
+                        byte_count: 16,
+                        content_hash: "sha256:bad".into(),
+                    },
+                )
+                .is_err(),
+                "越界路径必须拒绝: {bad}"
+            );
+        }
+        checkpoint(conn, &job, "retained body", "", Some(TurnStatus::Completed))
+    });
+    assert_eq!(
+        f.recover(NOW).expired_results,
+        0,
+        "未到期的保留结果不该过期"
+    );
+    f.with(|conn| {
+        let rows: Vec<(String, String, String, i64, String)> = {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id,status,relative_path,byte_count,content_hash FROM ai_results ORDER BY id",
+                )
+                .map_err(sql_error)?;
+            stmt.query_map([], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+            })
+            .map_err(sql_error)?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(sql_error)?
+        };
+        assert_eq!(
+            rows,
+            vec![
+                (
+                    "kept".into(),
+                    "available".into(),
+                    "results/kept.json".into(),
+                    16,
+                    "sha256:kept".into()
+                ),
+                (
+                    "ttl".into(),
+                    "available".into(),
+                    "results/ttl.json".into(),
+                    16,
+                    "sha256:ttl".into()
+                ),
+            ]
+        );
+        Ok(())
+    });
+    // 到期的保留结果：状态转 expired，且受控根内的 spill 文件要被删掉（不留孤儿文件）。
+    let spill_dir = f.dir.join("ai-results").join("results");
+    fs::create_dir_all(&spill_dir).unwrap();
+    let kept_file = spill_dir.join("kept.json");
+    let ttl_file = spill_dir.join("ttl.json");
+    fs::write(&kept_file, b"[{}]").unwrap();
+    fs::write(&ttl_file, b"[{}]").unwrap();
+    // 走生产启动恢复命令：SQLite 事务改状态，文件删除在其后。
+    let (mut app, _) = (f.prepared().0, ());
+    dispatch_view(&mut app, AiConversationCommand::RecoverOnStartup);
+    assert!(!ttl_file.exists(), "过期保留结果的文件必须被删除");
+    assert!(kept_file.exists(), "未过期的保留结果文件不得删除");
+    let summary = f.recover(NOW + 1_000);
+    assert_eq!(
+        summary.retained_paths_to_purge,
+        Vec::<String>::new(),
+        "过期已完成，不应再次回收同一落点"
+    );
+    assert_eq!(summary.expired_results, 0);
+    assert_eq!(
+        f.recover(NOW).expired_results,
+        0,
+        "上一轮已过期，不重复计数"
+    );
+    f.with(|conn| {
+        let status: String = conn
+            .query_row("SELECT status FROM ai_results WHERE id='ttl'", [], |r| {
+                r.get(0)
+            })
+            .map_err(sql_error)?;
+        assert_eq!(status, "expired");
+        let kept: String = conn
+            .query_row("SELECT status FROM ai_results WHERE id='kept'", [], |r| {
+                r.get(0)
+            })
+            .map_err(sql_error)?;
+        assert_eq!(kept, "available", "无 TTL 的保留结果不因重启失效");
+        Ok(())
+    });
 }
 
 #[test]

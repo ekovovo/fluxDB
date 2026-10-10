@@ -333,7 +333,12 @@ cargo test -p fluxdb-app --locked ai_permission   # 15 passed
 
 
 ### T027 结果句柄、分页与保留管理
-- [ ] 依赖：T023–T026；设计 §15、§42.7。
+- [x] 2026-10-10（macOS arm64）：**已实现**。`ResultStore` 按 session/turn 绑定归属，内存预算外写受控根 `ai-results/results/<uuid>.json`；`SqlExecutionOutcome::to_model_json` 回执只带 5 行样本 + `row_count`/`rows_omitted` + `result_ref`，完整行走仓库；新增 `result.read_page`（`ai_result_pages.rs`，只读快照不重跑来源工具）；`insert_result` 接 `ResultRetention` 支持 retained 落盘（相对路径/字节数/内容哈希入库，越界路径拒绝）；重启恢复过期 memory 与到期的 retained，并删除过期 spill 文件。
+- 修复的真实缺陷：① `read_page` 原只返回内存部分却给出「还有更多」游标，spill 条目永远读不到；改为按需回读文件，缺失/损坏/条目数不符报 `result_damaged`；② `standard_sql_catalog_with_results` 注册了 `result.read_page` 实现却没加 spec，`ToolCatalog` 拒绝注册；③ `ai_results.retention_kind` 固定 `'memory'`，溢写文件重启后无归属；④ 回执登记靠调用方另传一份结果仓库，而工具目录已持有同一个仓库，两处各传一次迟早漏传（直接调 `run_ai_conversation_turn` 的路径就会把溢写结果登记成 `memory`），改为 `ToolCatalog::with_results` 由目录持有。
+- 端到端：新增 `crates/fluxdb-app/tests/ai_result_paging_e2e.rs`，真实 SQLite 文件 + 真实驱动（demo MockConnector 只返回 2 行、触发不了 spill）+ 生产装配链，覆盖「大结果不进上下文 → retained 落点可核对 → `result.read_page` 分页读回不重不漏 → 跨会话读不到 → 重启后 retained 仍在」。
+- 本轮命令（macOS arm64）：`cargo fmt --all -- --check`、`cargo check --workspace --locked --offline --all-targets` 通过；`cargo test --workspace --locked --offline` 全部通过（fluxdb-app lib 761 passed / 0 failed / 1 ignored，集成 24/4/10/2/9/2/6/5/4/14/12/1/6/28/7 passed）。验收记录见 [docs/testing/ai-agent/t027-2026-10-10.md](testing/ai-agent/t027-2026-10-10.md)。
+- 未验证：Windows / Linux 未编译与原生验收（相关代码无平台专属分支，仍待三端各跑一次）；不含 UI，未做真实窗口 E2E（结果卡与 `result.read_page` 的面板交互属 T028）；设计 §42.7 的「用户可配置保留策略与空间上限」未实现，当前只落地 TTL 过期 + 路径/hash 可核对 + 过期文件清理。
+- 依赖：T023–T026；设计 §15、§42.7。
 - 改动：ResultRef、memory/retained/expired、spill 配额、source 归属，result.read_page。
 - 验收：大结果不全进上下文；过期/重启内存结果有明确错误；retained 的路径/hash/清理可验证。
 - 测试方式：在隔离SQLite/文件fixture中逐条执行上述验收，核对操作前后行值、revision、引用及错误；适用的失败注入后重开存储确认无部分写入/数据丢失，测试输出不得含秘密。

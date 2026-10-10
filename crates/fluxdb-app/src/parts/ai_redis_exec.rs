@@ -723,6 +723,8 @@ pub fn standard_redis_catalog<R: SqlExecutionResolver + 'static>(
     catalog.register(Box::new(AiRedisInspectTool::new(Arc::clone(&resolver))?))?;
     catalog.register(Box::new(AiRedisServerInfoTool::new(Arc::clone(&resolver))?))?;
     catalog.register(Box::new(AiRedisSubscribeTool::new(Arc::clone(&resolver))?))?;
+    // 不注册 result.read_page：Redis 工具结果已由各自游标（SCAN cursor / 集合游标）
+    // 直接分页，不产生 ResultRef；注册没有生产者的工具会让模型看到不可用入口。
     if include_write {
         catalog.register(Box::new(AiRedisExecuteTool::new(resolver)?))?;
     }

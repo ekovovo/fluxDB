@@ -126,6 +126,11 @@ pub struct ToolCatalog {
     executable: HashMap<String, Box<dyn fluxdb_core::AiTool>>,
     max_argument_bytes: usize,
     hooks: HookPipeline,
+    /// 本轮结果仓库（`standard_sql_catalog_with_results` 注入）。
+    ///
+    /// 目录是工具实现与结果仓库的同一次装配，回执登记溢写事实时按此查句柄，
+    /// 不再要求调用方把同一个仓库另传一遍——两处各传一次迟早会漏。
+    results: Option<Arc<Mutex<ResultStore>>>,
 }
 
 impl ToolCatalog {
@@ -135,7 +140,19 @@ impl ToolCatalog {
             executable: HashMap::new(),
             max_argument_bytes: DEFAULT_MAX_ARGUMENT_BYTES,
             hooks: HookPipeline::default(),
+            results: None,
         }
+    }
+
+    /// 关联本轮结果仓库：工具产出的大结果句柄可被查到溢写事实。
+    pub fn with_results(mut self, results: Arc<Mutex<ResultStore>>) -> Self {
+        self.results = Some(results);
+        self
+    }
+
+    /// 本轮结果仓库；未装配（无结果句柄的工具目录）返回 `None`。
+    pub fn results(&self) -> Option<&Arc<Mutex<ResultStore>>> {
+        self.results.as_ref()
     }
 
     pub fn with_argument_limit(mut self, max_argument_bytes: usize) -> Self {
@@ -368,6 +385,9 @@ pub struct ResultRef {
     pub id: String,
     pub tool_id: String,
     pub created_at_ms: i64,
+    /// 句柄归属：只有同 session/turn 才能读取，防止跨会话取数据。
+    pub session_id: String,
+    pub turn_id: String,
 }
 
 /// 结果页：有界 + 截断标记 + 游标（不能用截断结果宣称全集）。
@@ -410,49 +430,171 @@ impl ResultError {
             message: format!("结果游标非法: {cursor}"),
         }
     }
+
+    /// spill 文件缺失或损坏：读取必须显式失败，不能返回一个假的空页或游标。
+    fn damaged(message: impl Into<String>) -> Self {
+        Self {
+            code: "result_damaged",
+            message: message.into(),
+        }
+    }
 }
 
-/// 结果仓库（本切片用内存实现；后续可换成分页持久化）。
+/// 结果仓库（T027）：内存保存首段，超出内存预算的条目写受控 spill 文件。
+///
+/// 仓库实例本身绑定一次会话（`for_turn`），因此跨 session/turn 的 ResultRef
+/// 无法在此仓库读到数据；`read_page` 只读已取得的快照切片，不重新执行来源工具。
 pub struct ResultStore {
     entries: HashMap<String, StoredResult>,
     next_id: u64,
-    /// 单个结果的字节上限。
+    /// 单个结果的内存字节上限。
     pub byte_limit: usize,
+    /// 句柄归属会话。
+    owner_session_id: String,
+    owner_turn_id: String,
+    /// 受控落盘根；`None` 表示不 spill（超限条目回落内存，仍不丢数据）。
+    spill_root: Option<std::path::PathBuf>,
 }
 
 struct StoredResult {
     result: ResultRef,
     items: Vec<serde_json::Value>,
-    released: bool,
+    /// 超出内存预算、已写入受控 spill 文件的条目数；分页时按需回读。
+    spilled_len: usize,
+    /// spill 文件相对受控根的路径（无 spill 时为空）。
+    spill_path: Option<std::path::PathBuf>,
+    /// spill 文件相对受控根的路径字符串与内容指纹；溢写事实需与 `ai_results` 对账。
+    spill_fact: Option<SpillFact>,
+    status: ResultStatus,
+}
+
+/// 已落盘结果的可核验事实：产出工具、受控根内相对路径、字节数、内容哈希。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SpillFact {
+    /// 产出该落盘结果的工具 ID。回执里的 `result_ref` 只是一次引用，
+    /// 可能是别的工具（如 `result.read_page`）回显的来源句柄；
+    /// 只有产出工具与本次调用的工具一致，这条事实才属于本次调用。
+    pub tool_id: String,
+    pub relative_path: String,
+    pub byte_count: i64,
+    pub content_hash: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ResultStatus {
+    Available,
+    Released,
+    Expired,
+}
+
+/// spill 落盘事实：相对路径 / 字节数 / 内容指纹，供 `ai_results` 登记与校验。
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SpillResult {
+    /// spill 文件相对受控根的路径；未发生 spill 时为空。
+    pub relative_path: Option<String>,
+    pub byte_count: i64,
+    pub content_hash: String,
+}
+
+impl SpillResult {
+    /// 是否真的写了 spill 文件。
+    pub fn spilled(&self) -> bool {
+        self.relative_path.is_some()
+    }
+}
+
+fn result_io_error(message: &str) -> impl Fn(std::io::Error) -> fluxdb_core::Error + '_ {
+    move |error| {
+        fluxdb_core::Error::new(
+            fluxdb_core::ErrorKind::Internal,
+            format!("{message}: {error}"),
+        )
+    }
 }
 
 impl ResultStore {
+    /// 内存仓库（测试与无落盘场景）：超限条目回落内存，不写文件。
     pub fn new(byte_limit: usize) -> Self {
         Self {
             entries: HashMap::new(),
             next_id: 1,
             byte_limit,
+            owner_session_id: String::new(),
+            owner_turn_id: String::new(),
+            spill_root: None,
         }
     }
 
-    /// 保存一次工具结果，返回句柄；超过字节上限的部分**不保存**（避免无界内存）。
+    /// 生产仓库：绑定会话归属；`spill_root` 为受控结果根目录。
+    pub fn for_turn(
+        byte_limit: usize,
+        session_id: &str,
+        turn_id: &str,
+        spill_root: Option<std::path::PathBuf>,
+    ) -> Self {
+        Self {
+            entries: HashMap::new(),
+            next_id: 1,
+            byte_limit,
+            owner_session_id: session_id.to_string(),
+            owner_turn_id: turn_id.to_string(),
+            spill_root,
+        }
+    }
+
+    /// 保存一次工具结果，返回句柄与 spill 事实。
+    ///
+    /// 内存预算内的条目留在内存；超出部分在有受控根时写入 `results/<uuid>.json`，
+    /// 否则回落内存，保证模型可读到的条目不会因为没有目录而缺失。
     pub fn put(
         &mut self,
         tool_id: &str,
         now_ms: i64,
-        items: Vec<serde_json::Value>,
-    ) -> (ResultRef, bool) {
-        let mut kept = Vec::new();
-        let mut used = 0usize;
-        let mut truncated = false;
+        items: impl IntoIterator<Item = serde_json::Value>,
+    ) -> fluxdb_core::Result<(ResultRef, SpillResult)> {
+        let mut memory = Vec::new();
+        let mut overflow = Vec::new();
+        let mut memory_bytes = 0usize;
         for item in items {
-            let size = item.to_string().len();
-            if used + size > self.byte_limit {
-                truncated = true;
-                break;
+            let size = serde_json::to_string(&item).map(|text| text.len()).unwrap_or(0);
+            if memory_bytes + size <= self.byte_limit {
+                memory_bytes += size;
+                memory.push(item);
+            } else {
+                overflow.push(item);
             }
-            used += size;
-            kept.push(item);
+        }
+        let mut spill = SpillResult::default();
+        let mut spilled_len = 0usize;
+        if !overflow.is_empty() {
+            let payload = serde_json::to_vec(&overflow).map_err(|error| {
+                fluxdb_core::Error::new(
+                    fluxdb_core::ErrorKind::Internal,
+                    format!("结果序列化失败: {error}"),
+                )
+            })?;
+            let content = String::from_utf8_lossy(&payload).into_owned();
+            let hash = crate::source_hash(&[&content]);
+            match self.spill_root.clone() {
+                Some(root) => {
+                    let dir = root.join("results");
+                    std::fs::create_dir_all(&dir).map_err(result_io_error("创建结果目录失败"))?;
+                    let path = dir.join(format!("{}.json", uuid::Uuid::new_v4()));
+                    std::fs::write(&path, &payload).map_err(result_io_error("写结果 spill 文件失败"))?;
+                    spill.relative_path = path
+                        .strip_prefix(&root)
+                        .ok()
+                        .map(|rest| rest.to_string_lossy().into_owned());
+                    spill.byte_count = payload.len() as i64;
+                    spill.content_hash = hash;
+                    spilled_len = overflow.len();
+                }
+                None => {
+                    // 没有受控目录时不能丢数据：回填内存，避免模型读到不完整结果。
+                    spilled_len = 0;
+                    memory.append(&mut overflow);
+                }
+            }
         }
         let id = format!("result-{}", self.next_id);
         self.next_id += 1;
@@ -460,23 +602,46 @@ impl ResultStore {
             id: id.clone(),
             tool_id: tool_id.to_string(),
             created_at_ms: now_ms,
+            session_id: self.owner_session_id.clone(),
+            turn_id: self.owner_turn_id.clone(),
         };
+        let spill_path = self
+            .spill_root
+            .as_ref()
+            .zip(spill.relative_path.as_ref())
+            .map(|(root, relative)| root.join(relative));
         self.entries.insert(
             id,
             StoredResult {
                 result: result.clone(),
-                items: kept,
-                released: false,
+                items: memory,
+                spilled_len,
+                spill_path,
+                spill_fact: spill
+                    .relative_path
+                    .as_ref()
+                    .map(|relative_path| SpillFact {
+                        tool_id: result.tool_id.clone(),
+                        relative_path: relative_path.clone(),
+                        byte_count: spill.byte_count,
+                        content_hash: spill.content_hash.clone(),
+                    }),
+                status: ResultStatus::Available,
             },
         );
-        (result, truncated)
+        Ok((result, spill))
+    }
+
+    /// 取句柄的 spill 事实；未溢写或句柄不存在返回 `None`。
+    pub fn spill_fact(&self, id: &str) -> Option<SpillFact> {
+        self.entries.get(id)?.spill_fact.clone()
     }
 
     /// 释放句柄（释放后读取必须报错，而不是返回空页）。
     pub fn release(&mut self, id: &str) -> bool {
         match self.entries.get_mut(id) {
             Some(entry) => {
-                entry.released = true;
+                entry.status = ResultStatus::Released;
                 true
             }
             None => false,
@@ -485,10 +650,23 @@ impl ResultStore {
 
     /// 标记过期（TTL 由调用方判定；过期后读取必须报错）。
     pub fn expire(&mut self, id: &str) -> bool {
-        self.entries.remove(id).is_some()
+        match self.entries.get_mut(id) {
+            Some(entry) => {
+                entry.status = ResultStatus::Expired;
+                true
+            }
+            None => false,
+        }
     }
 
-    /// 读取一页：有界（行数 + 字节），返回截断标记与下一页游标。
+    /// 会话结束时释放该会话的全部句柄（memory 结果过期语义）。
+    pub fn expire_session(&mut self) {
+        for entry in self.entries.values_mut() {
+            entry.status = ResultStatus::Expired;
+        }
+    }
+
+    /// 读取一页：行数与字节双上限，返回截断标记与下一页游标。
     pub fn read_page(
         &self,
         id: &str,
@@ -499,8 +677,16 @@ impl ResultStore {
         let Some(entry) = self.entries.get(id) else {
             return Err(ResultError::unknown(id));
         };
-        if entry.released {
-            return Err(ResultError::expired(id));
+        match entry.status {
+            ResultStatus::Available => {}
+            ResultStatus::Released => return Err(ResultError::expired(id)),
+            ResultStatus::Expired => return Err(ResultError::unknown(id)),
+        }
+        if entry.result.session_id != self.owner_session_id
+            || entry.result.turn_id != self.owner_turn_id
+        {
+            // 句柄不属于本仓库归属的会话：按未知处理，不泄露其它会话的数据。
+            return Err(ResultError::unknown(id));
         }
         let start = match cursor {
             None => 0usize,
@@ -514,16 +700,42 @@ impl ResultStore {
                     .map_err(|_| ResultError::bad_cursor(raw))?
             }
         };
-        if start > entry.items.len() {
+        let total_items = entry.items.len() + entry.spilled_len;
+        if start > total_items {
             return Err(ResultError::bad_cursor(&format!("{id}:{start}")));
         }
+        // spill 条目按需从受控文件回读；文件缺失或损坏必须显式报错，
+        // 不能只报一个"还有更多"的游标让模型以为能读到数据。
+        let spilled_items = match (entry.spill_path.as_ref(), entry.spilled_len) {
+            (Some(_), 0) | (None, 0) => Vec::new(),
+            (Some(path), expected) => {
+                let raw = std::fs::read(path).map_err(|error| {
+                    ResultError::damaged(format!("结果 spill 文件不可读: {error}"))
+                })?;
+                let decoded: Vec<serde_json::Value> = serde_json::from_slice(&raw).map_err(|error| {
+                    ResultError::damaged(format!("结果 spill 文件已损坏: {error}"))
+                })?;
+                if decoded.len() != expected {
+                    return Err(ResultError::damaged("结果 spill 文件条目数与登记不一致"));
+                }
+                decoded
+            }
+            (None, expected) => {
+                return Err(ResultError::damaged(format!(
+                    "结果缺少 spill 文件，无法读取剩余 {expected} 条"
+                )));
+            }
+        };
         let limit = limit.max(1);
         let mut items = Vec::new();
         let mut used = 0usize;
         let mut index = start;
-        while index < entry.items.len() && items.len() < limit {
-            let item = &entry.items[index];
-            let size = item.to_string().len();
+        while index < total_items && items.len() < limit {
+            let item = match index < entry.items.len() {
+                true => &entry.items[index],
+                false => &spilled_items[index - entry.items.len()],
+            };
+            let size = serde_json::to_string(item).map(|text| text.len()).unwrap_or(0);
             if !items.is_empty() && used + size > max_bytes {
                 break;
             }
@@ -531,13 +743,13 @@ impl ResultStore {
             items.push(item.clone());
             index += 1;
         }
-        let truncated = index < entry.items.len();
+        let truncated = index < total_items;
         Ok(ResultPage {
             result: entry.result.clone(),
             items,
             truncated,
             next_cursor: truncated.then(|| format!("{id}:{index}")),
-            total_items: entry.items.len(),
+            total_items,
         })
     }
 }

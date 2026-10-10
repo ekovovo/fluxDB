@@ -10,6 +10,8 @@ pub struct RecoverySummary {
     pub unknown_turns: usize,
     pub waiting_approval_turns: usize,
     pub expired_results: usize,
+    /// 本次过期、需要调用方在受控根下删除的保留结果落点。
+    pub retained_paths_to_purge: Vec<String>,
 }
 
 /// 无执行回执的 running 不代表失败或取消；读取中断，写/未知工具保守标 unknown。
@@ -215,6 +217,33 @@ pub fn recover_on_startup(conn: &mut Connection, now: i64) -> Result<RecoverySum
         };
     }
     result.expired_results=tx.execute("UPDATE ai_results SET status='expired' WHERE retention_kind='memory' AND status='available'",[]).map_err(sqlite_error)?;
+    // 保留结果按自身 TTL 过期；未设 TTL 的长期保留不因重启失效。
+    // 过期前先取回落点：文件删除属于文件系统操作，SQLite 事务里做不得，
+    // 由调用方拿这些相对路径在受控根下清理。
+    result.retained_paths_to_purge = expired_retained_paths(&tx, now)?;
+    result.expired_results+=tx.execute("UPDATE ai_results SET status='expired' WHERE retention_kind='retained' AND status='available' AND expires_at_ms IS NOT NULL AND expires_at_ms<=?1",params![now]).map_err(sqlite_error)?;
     tx.commit().map_err(sqlite_error)?;
     Ok(result)
+}
+
+/// 本次要过期的保留结果落点（受控根内相对路径）；删除前先核对路径不越界。
+fn expired_retained_paths(tx: &rusqlite::Transaction<'_>, now: i64) -> Result<Vec<String>> {
+    let mut stmt = tx
+        .prepare("SELECT relative_path FROM ai_results WHERE retention_kind='retained' AND status='available' AND expires_at_ms IS NOT NULL AND expires_at_ms<=?1")
+        .map_err(sqlite_error)?;
+    let paths = stmt
+        .query_map(params![now], |row| row.get::<_, String>(0))
+        .map_err(sqlite_error)?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(sqlite_error)?;
+    Ok(paths
+        .into_iter()
+        .filter(|path| {
+            let path = std::path::Path::new(path);
+            !path.is_absolute()
+                && !path
+                    .components()
+                    .any(|part| matches!(part, std::path::Component::ParentDir))
+        })
+        .collect())
 }

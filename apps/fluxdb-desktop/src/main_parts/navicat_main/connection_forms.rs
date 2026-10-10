@@ -796,7 +796,14 @@ impl NavicatMain {
 /// 从 `key=value&key2=value2` 里挑出 Redis 认识的连接选项。
 /// 只放行白名单里的键，避免把任意参数灌进连接配置。
 fn redis_option_pairs(raw: &str) -> Vec<(String, String)> {
-    const ALLOWED: [&str; 4] = ["tls", "tls_insecure", "tls_server_name", "sentinel_master"];
+    // ai_key_prefixes：AI Redis 工具的 Key 授权前缀（逗号分隔），供参数授权校验使用。
+    const ALLOWED: [&str; 5] = [
+        "tls",
+        "tls_insecure",
+        "tls_server_name",
+        "sentinel_master",
+        "ai_key_prefixes",
+    ];
     raw.split('&')
         .filter_map(|pair| pair.split_once('='))
         .map(|(name, value)| (name.trim().to_ascii_lowercase(), value.trim().to_string()))

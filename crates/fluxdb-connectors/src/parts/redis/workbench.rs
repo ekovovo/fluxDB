@@ -390,6 +390,25 @@ impl RedisConnector {
         connection.command_with_budget(&args, Some(budget)).map(redis_value_to_reply)
     }
 
+    /// 有界订阅收集：限时 / 限条数 / 限字节，命中任一上限或取消即退订断开。
+    ///
+    /// 与交互式 `RedisPubSubSession` 的区别是本方法**不允许把连接挂成长会话**——它
+    /// 在返回前一定收工，供 AI 工具等一次性调用场景使用。
+    pub fn collect_subscription(
+        &self,
+        database: u32,
+        requests: &[RedisSubscriptionRequest],
+        limits: RedisSubscriptionLimits,
+        should_stop: &dyn Fn() -> bool,
+    ) -> fluxdb_core::Result<RedisSubscriptionCollect> {
+        let config = self.config.as_ref().ok_or_else(|| Error::new(ErrorKind::Connection, "Redis 订阅缺少连接配置"))?;
+        let profile = config.redis_profile.clone().unwrap_or_else(|| fluxdb_core::RedisConnectionProfile::from_options(&config.options));
+        if profile.topology.kind == fluxdb_core::RedisTopologyKind::Cluster && database != 0 {
+            return Err(Error::new(ErrorKind::Query, "Redis Cluster 只支持 DB 0"));
+        }
+        redis_collect_subscription(config, database, requests, limits, should_stop)
+    }
+
     /// 在指定 DB 上执行单条命令并映射回包。
     fn execute_single_command(
         &self,

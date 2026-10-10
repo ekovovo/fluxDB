@@ -308,10 +308,13 @@ cargo test -p fluxdb-app --locked ai_permission   # 15 passed
 - 2026-10-06（A）：真实模型 + 真实 MySQL 端到端（含 parameters 绑定）通过，见 `docs/testing/ai-agent/t024-live-mysql-e2e-2026-10-06.md`。
 
 ### T025 Redis 探索与命令执行工具
-- [ ] 依赖：T019–T021；设计 §22。
+- [x] 依赖：T019–T021；设计 §22。
 - 改动：SCAN/inspect 范围工具、命令/子命令/参数风险、Cluster/DB scope、长订阅停止。
 - 验收：E08；大集合不无限加载；COUNT 非硬上限测试；Lua/FLUSH/ACL/CONFIG 风险；Cluster 作用域和取消反馈真实。
 - 测试方式：将上述每项验收分别落实为相关crate的测试断言；用隔离fixture/受控Provider验证正常与异常路径，涉及工具时核对真实回执及副作用调用数，不用伪造成功结果跳过执行链。
+- 2026-10-10：长订阅停止已实现——新增 `redis.subscribe` 有界工具（限时/限条数/限字节/可取消），`redis.execute` 仍拒绝订阅命令并指向专用工具；真实 Redis 7.2.7 自动化 7 个用例通过，真实桌面窗口手动验收通过（自然语言触发，条数上限按预期收工）。
+- 2026-10-10：命令参数授权已实现——按命令 key spec 解析 argv 全部 key（单/多/成对/无 key），脚本、跨节点/跨库搬移与未知命令 fail closed；`RedisKeyScope` 空 prefix 不等于全 Key；`redis.execute`/`inspect` 发送前校验，`redis.scan` 按授权 prefix 过滤（pattern 不是授权）；授权数据来源（profile `all_keys`/`key_prefixes`）属 T057。真实 Redis 越权写入被拒且服务端无写入，11 个 live 用例 + 10 个 key spec 单测通过。
+- Cluster 作用域随集群连接能力整体延后（Redis Cluster 的产品级连接当前未投入使用，SCAN 也无法在无真实集群的前提下验证节点级 opaque cursor；相关字段已如实标注 `cluster_complete: false` / 单节点范围）；用户于 2026-10-10 手动验收全部通过后勾选本条。详见 `docs/testing/ai-agent/t025-2026-10-10.md`。
 
 
 ### T026 文件搜索/读取与隐私边界

@@ -478,7 +478,7 @@ fn connection_field_label(field: ConnectionField) -> &'static str {
         ConnectionField::Username => "用户名",
         ConnectionField::Password => "密码",
         ConnectionField::Database => "数据库名",
-        ConnectionField::UrlParams => "URL 参数",
+        ConnectionField::UrlParams => "连接参数",
         ConnectionField::SqlitePath => "SQLite 文件路径",
         ConnectionField::MongoDefaultDb => "默认数据库",
         ConnectionField::MongoAuthDb => "认证数据库",
@@ -525,7 +525,9 @@ fn connection_field_placeholder(field: ConnectionField) -> &'static str {
         ConnectionField::Password => "可选",
         ConnectionField::Database => "数据库名",
         ConnectionField::MongoDefaultDb => "可选",
-        ConnectionField::UrlParams => "key=value&key2=value2（Redis: tls=true&sentinel_master=mymaster）",
+        ConnectionField::UrlParams => {
+            "key=value&key2=value2（Redis: tls=true&ai_key_prefixes=app:,cache:）"
+        }
         ConnectionField::SqlitePath => "/path/to/database.db or :memory:",
         ConnectionField::MongoAuthDb => "可选，通常为 admin",
         ConnectionField::TlsCa => "CA 证书文件路径",

@@ -23,6 +23,19 @@ pub trait SqlExecutionResolver: Send + Sync {
         id: fluxdb_core::ConnectionId,
     ) -> Option<fluxdb_core::ConnectionConfig>;
 
+    /// 该连接下 AI 工具被授权的 Redis Key 范围。
+    ///
+    /// 默认按用户显式选中的连接放行该 DB 全部 Key——这是引入 prefix 概念之前的既有
+    /// 行为，写命令仍逐次审批。Server Profile 的 `all_keys` / `key_prefixes` 授权资源
+    /// （设计 §28.6.1，T057）落地后由实现方返回 `Prefixes` 收紧，不得由模型声明范围。
+    fn redis_key_scope(
+        &self,
+        _id: fluxdb_core::ConnectionId,
+        database: u32,
+    ) -> RedisKeyScope {
+        RedisKeyScope::AllKeys { database }
+    }
+
     /// 返回当前 Agent 执行上下文专属的查询会话标识。
     ///
     /// 该标识落在宿主托管段（`QuerySessionId::host_managed`），与编辑器查询标签
@@ -36,6 +49,8 @@ pub trait SqlExecutionResolver: Send + Sync {
 pub struct MapSqlResolver {
     configs: HashMap<fluxdb_core::ConnectionId, fluxdb_core::ConnectionConfig>,
     query_session_id: fluxdb_core::QuerySessionId,
+    /// 按连接给定的 Redis Key 授权范围；缺项表示未配置（按全 Key 处理）。
+    redis_key_scopes: HashMap<fluxdb_core::ConnectionId, RedisKeyScope>,
 }
 
 impl MapSqlResolver {
@@ -48,7 +63,18 @@ impl MapSqlResolver {
             query_session_id: fluxdb_core::QuerySessionId::host_managed(
                 NEXT_AI_QUERY_SESSION_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             ),
+            redis_key_scopes: HashMap::new(),
         }
+    }
+
+    /// 收紧指定连接的 Redis Key 授权范围（prefix 授权的接入点）。
+    pub fn with_redis_key_scope(
+        mut self,
+        connection_id: fluxdb_core::ConnectionId,
+        scope: RedisKeyScope,
+    ) -> Self {
+        self.redis_key_scopes.insert(connection_id, scope);
+        self
     }
 }
 
@@ -58,6 +84,31 @@ impl SqlExecutionResolver for MapSqlResolver {
         id: fluxdb_core::ConnectionId,
     ) -> Option<fluxdb_core::ConnectionConfig> {
         self.configs.get(&id).cloned()
+    }
+
+    fn redis_key_scope(&self, id: fluxdb_core::ConnectionId, database: u32) -> RedisKeyScope {
+        // prompt / 工具参数不能声明范围；授权只来自连接配置与显式 API。
+        self.redis_key_scopes
+            .get(&id)
+            .cloned()
+            .or_else(|| {
+                self.configs.get(&id).and_then(|config| {
+                    let raw = config.options.get("ai_key_prefixes")?;
+                    let prefixes = raw
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_string)
+                        .collect::<Vec<_>>();
+                    // 配了空串 / 全逗号视同未配置：仍走既有默认行为而非「一个 key 都不许」。
+                    if prefixes.is_empty() {
+                        None
+                    } else {
+                        Some(RedisKeyScope::Prefixes { database, prefixes })
+                    }
+                })
+            })
+            .unwrap_or(RedisKeyScope::AllKeys { database })
     }
 
     fn query_session_id(&self) -> fluxdb_core::QuerySessionId {

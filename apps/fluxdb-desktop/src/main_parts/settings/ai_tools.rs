@@ -9,7 +9,7 @@ enum AiToolsTab {
     Audit,
 }
 
-/// 13 个标准工具目录（设计 §20.5 / 交互稿）。
+/// 标准工具目录（设计 §20.5 / 交互稿 + 设计 §22 的 Redis 有界订阅）。
 const AI_TOOL_CATALOG: &[(&str, &str, &str, bool)] = &[
     ("connections.list", "公共", "列出已授权连接资源", false),
     ("db.search_objects", "SQL", "渐进搜索表、视图与字段", false),
@@ -24,6 +24,12 @@ const AI_TOOL_CATALOG: &[(&str, &str, &str, bool)] = &[
         "Redis",
         "受控命令，检查所有 Key 与风险",
         true,
+    ),
+    (
+        "redis.subscribe",
+        "Redis",
+        "有界订阅，限时/限条数/限字节可停",
+        false,
     ),
     ("redis.server_info", "Redis", "受限版本与诊断摘要", false),
     ("result.read_page", "公共", "读取已取得的结果快照", false),
@@ -138,7 +144,7 @@ fn ai_table_head(label: &str, w: f32, colors: UiColors) -> Div {
         .child(label.to_string())
 }
 
-/// 「工具」页签：13 个标准工具表。
+/// 「工具」页签：标准工具表。
 fn ai_tools_catalog_panel(
     panel: &AiSettingsPanelState,
     colors: UiColors,
@@ -531,3 +537,35 @@ fn settings_ai_tools_mcp_panel(
 }
 
 // ---- 模型新建/编辑弹框 ----
+
+#[cfg(test)]
+mod ai_tools_catalog_tests {
+    use super::AI_TOOL_CATALOG;
+
+    /// 设置页目录必须与实际下发给模型的工具定义一致：漏一个会让用户看到的工具清单
+    /// 与真实能力不符（新增工具时本用例失败即提醒同步）。
+    #[test]
+    fn catalog_lists_every_registered_redis_tool() {
+        let registered = fluxdb_app::standard_redis_tool_specs()
+            .expect("Redis 工具定义")
+            .into_iter()
+            .map(|spec| spec.id)
+            .collect::<std::collections::BTreeSet<_>>();
+        let listed = AI_TOOL_CATALOG
+            .iter()
+            .map(|(id, ..)| (*id).to_string())
+            .collect::<std::collections::BTreeSet<_>>();
+        for id in &registered {
+            assert!(listed.contains(id), "设置页工具目录缺少已注册的 {id}");
+        }
+    }
+
+    /// 目录内不得重复列出同一个工具 ID。
+    #[test]
+    fn catalog_has_no_duplicate_ids() {
+        let mut seen = std::collections::BTreeSet::new();
+        for (id, ..) in AI_TOOL_CATALOG {
+            assert!(seen.insert((*id).to_string()), "工具目录重复: {id}");
+        }
+    }
+}

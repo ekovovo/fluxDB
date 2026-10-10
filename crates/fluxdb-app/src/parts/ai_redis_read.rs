@@ -170,3 +170,28 @@ mod redis_read_tool_tests {
         assert!(redis_inspect_value(&call, "key", "json", "0", 10, 4096).unwrap()["unsupported_detail"].is_string());
     }
 }
+
+/// 把一条 Pub/Sub 消息投影为有界 JSON（二进制载荷给 hex 预览而非原始字节）。
+fn redis_pubsub_message_to_json(message: &fluxdb_connectors::PubSubMessage) -> serde_json::Value {
+    let payload_len = message.payload.len();
+    match String::from_utf8(message.payload.clone()) {
+        Ok(text) => serde_json::json!({
+            "pattern": message.pattern,
+            "channel": message.channel,
+            "payload": text,
+            "payload_bytes": payload_len,
+            "binary": false,
+        }),
+        Err(_) => {
+            let preview = message.payload.iter().take(64).map(|byte| format!("{byte:02x}")).collect::<String>();
+            serde_json::json!({
+                "pattern": message.pattern,
+                "channel": message.channel,
+                "payload": serde_json::Value::Null,
+                "payload_bytes": payload_len,
+                "binary": true,
+                "bytes_preview_hex": preview,
+            })
+        }
+    }
+}

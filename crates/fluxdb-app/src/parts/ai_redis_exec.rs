@@ -144,6 +144,7 @@ impl<R: SqlExecutionResolver + 'static> fluxdb_core::AiTool for AiRedisScanTool<
                 let target = AiRedisTarget::parse(handle)?;
                 cursor.parse::<u64>().map_err(|_| SqlExecError::new("invalid_arguments", "SCAN 游标必须是非负整数"))?;
                 let (config, connector) = redis_connector(resolver.as_ref(), &target)?;
+                let scope = resolver.redis_key_scope(target.connection_id, target.database);
                 // SCAN COUNT 不保证精确返回条数；宿主按 max_keys 追加上限，
                 // 游标回到 "0" 表示单节点全库扫描完成，否则 truncated 并返回 next_cursor。
                 let mut current_cursor = cursor;
@@ -184,7 +185,8 @@ impl<R: SqlExecutionResolver + 'static> fluxdb_core::AiTool for AiRedisScanTool<
                             return Err(SqlExecError::new("redis_invalid_reply", "SCAN Key 回包结构异常"));
                         };
                         let key = key.text.ok_or_else(|| SqlExecError::new("redis_binary_key_unsupported", "扫描遇到二进制 Key，不能静默跳过；需二进制引用支持"))?;
-                        if !keys.contains(&key) {
+                        // pattern 是检索条件，不是授权：范围外的 Key 不能出现在结果里。
+                        if !keys.contains(&key) && scope.allows(&key) {
                             if keys.len() == max_keys {
                                 return Err(SqlExecError::new("redis_page_too_large", "COUNT 非硬上限，本批超过 max_keys；本批未返回续页游标，请降低 count 或增加 max_keys"));
                             }
@@ -290,6 +292,13 @@ impl<R: SqlExecutionResolver + 'static> fluxdb_core::AiTool for AiRedisInspectTo
                 let max_bytes = value.get("max_bytes").and_then(|value| value.as_u64()).unwrap_or(4096).clamp(1, 64 * 1024) as usize;
                 let target = AiRedisTarget::parse(handle)?;
                 let (_config, connector) = redis_connector(resolver.as_ref(), &target)?;
+                // 查看单个 Key 同样受授权范围约束：拿到 Key 名不等于有权读它。
+                let scope = resolver.redis_key_scope(target.connection_id, target.database);
+                check_redis_command_scope(
+                    &redis_argv(&["TYPE", key]),
+                    target.database,
+                    &scope,
+                )?;
                 let call = |argv: &[&str]| -> Result<fluxdb_core::CommandReply, SqlExecError> {
                     if ctx.cancel.is_cancelled() {
                         return Err(SqlExecError::new("cancelled", "已停止后续读取；不宣称服务端撤销"));
@@ -430,6 +439,138 @@ impl<R: SqlExecutionResolver + 'static> fluxdb_core::AiTool for AiRedisServerInf
 
 // ---- redis.execute ----
 
+// ---- redis.subscribe ----
+
+/// 有界订阅的宿主任一上限。
+///
+/// 工具 schema 的 maximum 只是给模型的提示；真正的边界在这里再收窄一次，避免模型
+/// 给出超范围参数后放开内存/时长。缺省值与 `RedisSubscriptionLimits::default()` 对齐。
+const REDIS_SUBSCRIBE_MAX_MESSAGES: usize = 500;
+const REDIS_SUBSCRIBE_MAX_BYTES: usize = 256 * 1024;
+const REDIS_SUBSCRIBE_MAX_DURATION_MS: u64 = 60_000;
+
+pub struct AiRedisSubscribeTool<R: SqlExecutionResolver> {
+    descriptor: fluxdb_core::ToolDescriptor,
+    resolver: Arc<R>,
+}
+
+impl<R: SqlExecutionResolver> AiRedisSubscribeTool<R> {
+    pub fn new(resolver: Arc<R>) -> fluxdb_core::Result<Self> {
+        Ok(Self {
+            descriptor: redis_descriptor("redis.subscribe")?,
+            resolver,
+        })
+    }
+}
+
+impl<R: SqlExecutionResolver + 'static> fluxdb_core::AiTool for AiRedisSubscribeTool<R> {
+    fn descriptor(&self) -> &fluxdb_core::ToolDescriptor {
+        &self.descriptor
+    }
+
+    fn execute(
+        &self,
+        ctx: fluxdb_core::ToolExecutionContext,
+        arguments_json: String,
+    ) -> fluxdb_core::AiFuture<'_, fluxdb_core::ToolReceipt> {
+        let started_at_ms = now_ms();
+        let descriptor = self.descriptor.clone();
+        let resolver = Arc::clone(&self.resolver);
+        Box::pin(async move {
+            let outcome = (|| -> Result<SqlExecutionOutcome, SqlExecError> {
+                let value: serde_json::Value = serde_json::from_str(&arguments_json)
+                    .map_err(|_| SqlExecError::new("invalid_arguments", "工具入参不是合法 JSON"))?;
+                let handle = value.get("target").and_then(|v| v.as_str()).ok_or_else(|| {
+                    SqlExecError::new("invalid_arguments", "缺少 target")
+                })?;
+                let pattern = value.get("pattern").and_then(|v| v.as_bool()).unwrap_or(false);
+                let channels: Vec<String> = value
+                    .get("channels")
+                    .and_then(|v| v.as_array())
+                    .map(|items| items.iter().filter_map(|item| item.as_str().map(str::to_owned)).collect())
+                    .unwrap_or_default();
+                if channels.is_empty() || channels.len() > 16 {
+                    return Err(SqlExecError::new("invalid_arguments", "channels 必须是 1-16 个通道名"));
+                }
+                if channels.iter().any(|channel| channel.is_empty() || channel.len() > 256) {
+                    return Err(SqlExecError::new("invalid_arguments", "通道名过长或为空"));
+                }
+                // schema 的 maximum 只是提示，这里按宿主硬上限再收窄一次。
+                let max_messages = value.get("max_messages").and_then(|v| v.as_u64()).unwrap_or(100)
+                    .clamp(1, REDIS_SUBSCRIBE_MAX_MESSAGES as u64) as usize;
+                let max_bytes = value.get("max_bytes").and_then(|v| v.as_u64()).unwrap_or(64 * 1024)
+                    .clamp(1, REDIS_SUBSCRIBE_MAX_BYTES as u64) as usize;
+                let timeout_ms = value.get("timeout_ms").and_then(|v| v.as_u64()).unwrap_or(10_000)
+                    .clamp(100, REDIS_SUBSCRIBE_MAX_DURATION_MS);
+                if ctx.cancel.is_cancelled() {
+                    return Err(SqlExecError::new("cancelled", "已取消，未发送 SUBSCRIBE"));
+                }
+                let target = AiRedisTarget::parse(handle)?;
+                let (_config, connector) = redis_connector(resolver.as_ref(), &target)?;
+                let requests: Vec<fluxdb_connectors::RedisSubscriptionRequest> = channels
+                    .iter()
+                    .map(|channel| {
+                        if pattern {
+                            fluxdb_connectors::RedisSubscriptionRequest::pattern(channel.clone())
+                        } else {
+                            fluxdb_connectors::RedisSubscriptionRequest::new(channel.clone())
+                        }
+                    })
+                    .collect();
+                let cancel = ctx.cancel.clone();
+                let collected = connector
+                    .collect_subscription(
+                        target.database,
+                        &requests,
+                        fluxdb_connectors::RedisSubscriptionLimits {
+                            max_duration: std::time::Duration::from_millis(timeout_ms),
+                            max_messages,
+                            max_payload_bytes: max_bytes,
+                            ..Default::default()
+                        },
+                        &move || cancel.is_cancelled(),
+                    )
+                    .map_err(|error| SqlExecError::new("redis_error", format!("订阅失败: {}", error.message)))?;
+                // 客户端停止与已投递消息的竞态：只声明本地收工，不宣称服务端撤销。
+                if collected.stop == Some(fluxdb_connectors::RedisSubscriptionStop::Canceled) {
+                    return Err(SqlExecError::new("cancel_race_unknown", "客户端已停止接收；已投递消息无法撤回，请核对频道实际状态"));
+                }
+                let stop_reason = collected.stop.map(|stop| stop.as_str()).unwrap_or("unsubscribed");
+                let messages: Vec<serde_json::Value> = collected.messages.iter().map(redis_pubsub_message_to_json).collect();
+                let truncated = collected.stop.is_some();
+                Ok(SqlExecutionOutcome {
+                    columns: vec!["channels".into(), "messages".into(), "subscribe_info".into()],
+                    rows: vec![vec![
+                        serde_json::json!(collected.channels),
+                        serde_json::json!(messages),
+                        serde_json::json!({
+                            "received": collected.messages.len(),
+                            "truncated": truncated,
+                            "stop_reason": stop_reason,
+                            "timeout_ms": timeout_ms,
+                            "max_messages": max_messages,
+                            "max_bytes": max_bytes,
+                            "elapsed_ms": collected.elapsed.as_millis() as u64,
+                            "errors": collected.errors,
+                        }),
+                    ]],
+                    row_count: 1,
+                    truncated,
+                    elapsed_ms: collected.elapsed.as_millis() as u64,
+                    query_session_id: resolver.query_session_id(),
+                    source: fluxdb_core::CommandExecutionSource::Ai,
+                    original_sql: String::new(),
+                    executed_sql: String::new(),
+                    progress: Vec::new(),
+                    affected_rows: None,
+                    statement_kind: "redis_subscribe",
+                })
+            })();
+            Ok(receipt_from(&descriptor, &ctx.call_id, started_at_ms, outcome))
+        })
+    }
+}
+
 pub struct AiRedisExecuteTool<R: SqlExecutionResolver> {
     descriptor: fluxdb_core::ToolDescriptor,
     resolver: Arc<R>,
@@ -506,6 +647,9 @@ impl<R: SqlExecutionResolver + 'static> fluxdb_core::AiTool for AiRedisExecuteTo
                 }
                 let target = AiRedisTarget::parse(handle)?;
                 let (_config, connector) = redis_connector(resolver.as_ref(), &target)?;
+                // 范围校验必须在发送前：key 位置按命令 spec 解析，越权/无法解析都不发出。
+                let scope = resolver.redis_key_scope(target.connection_id, target.database);
+                let touched_keys = check_redis_command_scope(&argv, target.database, &scope)?;
                 let argv_refs: Vec<&str> = argv.iter().map(String::as_str).collect();
                 let reply = connector
                     .execute_argv_with_budget(target.database, &redis_argv(&argv_refs), fluxdb_connectors::RedisReadBudget::default())
@@ -516,10 +660,15 @@ impl<R: SqlExecutionResolver + 'static> fluxdb_core::AiTool for AiRedisExecuteTo
                     return Err(SqlExecError::new("cancel_race_unknown", "客户端停止与已发送命令竞态；请核对实际 Key 状态，不能宣称撤销写入"));
                 }
                 Ok(SqlExecutionOutcome {
-                    columns: vec!["command".into(), "reply".into()],
+                    columns: vec!["command".into(), "reply".into(), "scope_info".into()],
                     rows: vec![vec![
                         serde_json::json!(argv),
                         redis_reply_to_json(&reply),
+                        serde_json::json!({
+                            "database": target.database,
+                            "keys": touched_keys,
+                            "key_count": touched_keys.len(),
+                        }),
                     ]],
                     row_count: 1,
                     truncated: false,
@@ -573,6 +722,7 @@ pub fn standard_redis_catalog<R: SqlExecutionResolver + 'static>(
     catalog.register(Box::new(AiRedisScanTool::new(Arc::clone(&resolver))?))?;
     catalog.register(Box::new(AiRedisInspectTool::new(Arc::clone(&resolver))?))?;
     catalog.register(Box::new(AiRedisServerInfoTool::new(Arc::clone(&resolver))?))?;
+    catalog.register(Box::new(AiRedisSubscribeTool::new(Arc::clone(&resolver))?))?;
     if include_write {
         catalog.register(Box::new(AiRedisExecuteTool::new(resolver)?))?;
     }

@@ -80,6 +80,23 @@ fn ai_redis_policy_blocks_admin_and_long_lived_commands() {
 }
 
 #[test]
+fn ai_redis_policy_subscribe_uses_dedicated_bounded_tool() {
+    // 订阅命令在 execute 路径必须被拒绝并指向专用工具：
+    // 一次性 argv 执行会把连接挂成长会话。
+    for argv in [
+        vec!["SUBSCRIBE", "ch"],
+        vec!["PSUBSCRIBE", "ch*"],
+        vec!["SSUBSCRIBE", "ch"],
+    ] {
+        let risk = classify_redis_command(&redis_argv(&argv));
+        assert!(
+            matches!(&risk, RedisRisk::Rejected { reasons } if reasons.iter().any(|reason| reason.starts_with("use_redis_subscribe_tool:"))),
+            "订阅命令必须指向 redis.subscribe 工具: {argv:?} -> {risk:?}"
+        );
+    }
+}
+
+#[test]
 fn ai_redis_policy_unknown_commands_fail_closed_to_authorization() {
     // 未识别的命令绝不能当只读放过。
     for argv in [vec!["BF.ADD", "k", "v"], vec!["JSON.SET", "k", ".", "1"]] {
@@ -101,7 +118,8 @@ fn ai_redis_policy_tool_specs_have_expected_risk_and_valid_schemas() {
             "redis.scan",
             "redis.inspect",
             "redis.execute",
-            "redis.server_info"
+            "redis.server_info",
+            "redis.subscribe"
         ]
     );
     for spec in &specs {
@@ -147,4 +165,14 @@ fn ai_redis_policy_tool_specs_have_expected_risk_and_valid_schemas() {
     assert!(catalog
         .prepare("redis.execute", r#"{"target":"cache-1"}"#)
         .is_err());
+    // 订阅工具必须要求至少一个通道。
+    assert!(catalog
+        .prepare("redis.subscribe", r#"{"target":"cache-1"}"#)
+        .is_err());
+    assert!(catalog
+        .prepare(
+            "redis.subscribe",
+            r#"{"target":"cache-1","channels":["order:events"],"timeout_ms":2000}"#
+        )
+        .is_ok());
 }

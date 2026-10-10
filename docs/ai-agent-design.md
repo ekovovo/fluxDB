@@ -749,9 +749,9 @@ MySQL/PostgreSQL/SQLite 共用 db.* 契约，具体 dialect/capability 在 Conne
 采用一个 `fluxdb-mcp` stdio Server 暴露已授权资源，服务内按能力拆工具：
 
 - **关系型数据库 5 个工具**：搜索对象、描述对象、查询、查询计划、修改执行。MySQL/PostgreSQL/SQLite 共用契约，适配器决定 dialect/能力，不复制 mysql_query/pg_query/sqlite_query 三组工具。
-- **Redis 4 个工具**：扫描 Key、查看 Key、受控命令、服务诊断。不为 GET/HGET/LRANGE 等每个命令暴露一个工具，也不把整个 Redis API 塞进万能工具。
+- **Redis 5 个工具**：扫描 Key、查看 Key、受控命令、有界订阅、服务诊断。不为 GET/HGET/LRANGE 等每个命令暴露一个工具，也不把整个 Redis API 塞进万能工具；有界订阅因需要独立时限/条数/字节上限与停止语义，独立于受控命令入口。
 - **公共 4 个工具**：列已授权连接资源、读结果页、查操作状态、取消操作。
-- 共 13 个可能公开的工具；实际 `tools/list` 按 Server Profile、授权资源类型和风险过滤。只读 Profile 不暴露两种修改工具，MySQL-only Profile 不暴露 Redis 工具。
+- 共 14 个可能公开的工具；实际 `tools/list` 按 Server Profile、授权资源类型和风险过滤。只读 Profile 不暴露两种修改工具，MySQL-only Profile 不暴露 Redis 工具。
 
 “一个 Server”不等于“一个工具”；部署简单与权限/语义清晰可以同时成立。以后可为某 Profile 只挂 MySQL 或 Redis，但不另外复制执行实现。
 
@@ -770,6 +770,7 @@ MySQL/PostgreSQL/SQLite 共用 db.* 契约，具体 dialect/capability 在 Conne
 | `fluxdb_redis_scan` | `redis.scan` | 有界、可继续的 Key 探索 | read |
 | `fluxdb_redis_inspect` | `redis.inspect` | TYPE/TTL 与按类型分段值预览 | read |
 | `fluxdb_redis_execute` | `redis.execute` | 受控 Redis 命令，禁止认证/危险管理旁路 | write policy |
+| `fluxdb_redis_subscribe` | `redis.subscribe` | 限时/限条数/限字节的有界订阅收集，可随时停止 | read |
 | `fluxdb_redis_server_info` | `redis.server_info` | 授权范围的版本/当前 DB/受控诊断 | read |
 | `fluxdb_result_page` | `result.read_page` | 读已有结果快照，不重新执行 SQL | read |
 | `fluxdb_operation_status` | `operation.status` | 查当前 caller 有权看的 request 状态/未知结果 | read |

@@ -3,7 +3,8 @@
 // 原则（与 SQL 侧一致）：
 // - **不按 argv[1] 拍脑袋判断安全**：读白名单之外的命令一律按"需要授权"处理；
 // - 管理/危险命令直接拒绝（CONFIG/ACL/DEBUG/MONITOR/SHUTDOWN/FLUSH*…），不给审批机会绕过；
-// - 长连接类命令（SUBSCRIBE/PSUBSCRIBE/MONITOR）拒绝：Agent 调用不能挂成长订阅；
+// - 订阅命令不在 execute 路径放行：它会把连接挂成流式会话，由专门的 `redis.subscribe`
+//   工具施加时限 / 消息数 / 字节上限后收集，不能用一条 argv 命令挂住普通执行连接；
 // - Lua/function 默认拒绝，不能凭普通写审批开启任意脚本。
 
 /// Redis 命令风险。
@@ -54,16 +55,21 @@ const REDIS_REQUIRES_AUTHORIZATION: &[&str] = &[
     "publish", "spublish", "setrange",
 ];
 
-/// 直接拒绝：管理/危险/长连接/阻塞命令。
+/// 直接拒绝：管理/危险/长连接/阻塞命令（含订阅；订阅走 `redis.subscribe` 工具）。
 const REDIS_REJECTED: &[&str] = &[
     "config", "acl", "debug", "monitor", "shutdown", "slaveof", "replicaof", "failover",
     "cluster", "bgsave", "bgrewriteaof", "save", "lastsave", "flushall", "flushdb", "swapdb",
-    "client", "module", "migrate", "restore-asking", "subscribe", "psubscribe", "ssubscribe",
-    "unsubscribe", "punsubscribe", "sunsubscribe", "psync", "sync", "replconf", "wait",
+    "client", "module", "migrate", "restore-asking", "unsubscribe", "punsubscribe",
+    "sunsubscribe", "psync", "sync", "replconf", "wait",
     "blpop", "brpop", "blmove", "brpoplpush", "blmpop", "bzpopmin", "bzpopmax", "bzmpop",
     "xread", "xreadgroup", "auth", "hello", "reset", "select",
     "eval", "evalsha", "eval_ro", "evalsha_ro", "fcall", "fcall_ro", "function", "script", "keys",
 ];
+
+/// 订阅命令：不列入只读白名单，也不在 `redis.execute` 放行——它把连接挂成流式会话，
+/// 必须走 `redis.subscribe` 工具施加时限 / 消息数 / 字节上限后收集。
+pub const REDIS_SUBSCRIBE_COMMANDS: &[&str] = &["subscribe", "psubscribe", "ssubscribe"];
+
 
 /// 按 argv 分类一条 Redis 命令。
 ///
@@ -75,6 +81,12 @@ pub fn classify_redis_command(argv: &[String]) -> RedisRisk {
             reasons: vec!["empty_command".into()],
         };
     };
+    // 订阅类命令有专门的 `redis.subscribe` 工具（有界收集），不能用一次性 argv 执行。
+    if REDIS_SUBSCRIBE_COMMANDS.contains(&command.as_str()) {
+        return RedisRisk::Rejected {
+            reasons: vec![format!("use_redis_subscribe_tool:{command}")],
+        };
+    }
     if REDIS_REJECTED.contains(&command.as_str()) {
         return RedisRisk::Rejected {
             reasons: vec![format!("blocked_command:{command}")],
@@ -159,7 +171,27 @@ pub const REDIS_SERVER_INFO_INPUT_SCHEMA: &str = r##"{
   }
 }"##;
 
-/// 四个 Redis 工具的定义：scan/inspect/server_info 为 Read，execute 为 Write（逐次审批）。
+/// `redis.subscribe` 输入 schema：订阅是有界的一次性收集，不是长会话。
+pub const REDIS_SUBSCRIBE_INPUT_SCHEMA: &str = r##"{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["target", "channels"],
+  "properties": {
+    "target": { "type": "string", "minLength": 1 },
+    "channels": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 16,
+      "items": { "type": "string", "minLength": 1, "maxLength": 256 }
+    },
+    "pattern": { "type": "boolean", "default": false },
+    "max_messages": { "type": "integer", "minimum": 1, "maximum": 500, "default": 100 },
+    "max_bytes": { "type": "integer", "minimum": 1, "maximum": 262144, "default": 65536 },
+    "timeout_ms": { "type": "integer", "minimum": 100, "maximum": 60000, "default": 10000 }
+  }
+}"##;
+
+/// 五个 Redis 工具的定义：scan/inspect/server_info/subscribe 为 Read，execute 为 Write（逐次审批）。
 pub fn standard_redis_tool_specs() -> fluxdb_core::Result<Vec<ToolSpec>> {
     let descriptors = [
         fluxdb_core::ToolDescriptor {
@@ -189,6 +221,13 @@ pub fn standard_redis_tool_specs() -> fluxdb_core::Result<Vec<ToolSpec>> {
             description: "读取限定 section 的服务诊断信息".into(),
             risk: fluxdb_core::ToolRisk::Read,
             input_schema_json: REDIS_SERVER_INFO_INPUT_SCHEMA.into(),
+        },
+        fluxdb_core::ToolDescriptor {
+            id: "redis.subscribe".into(),
+            version: 1,
+            description: "有界订阅频道并收集消息（限时/限条数/限字节，可随时停止）".into(),
+            risk: fluxdb_core::ToolRisk::Read,
+            input_schema_json: REDIS_SUBSCRIBE_INPUT_SCHEMA.into(),
         },
     ];
     descriptors

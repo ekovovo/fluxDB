@@ -1355,7 +1355,7 @@ mod file_references {
         let files = Files::new();
         let mut controller = files.configured();
         let path = files.write("binary.sql", [0, 255, 254, 1]);
-        // 即便扩展名通过授权，内容仍必须 fail closed，不能 UTF-8 有损解码。
+        // 即便扩展名通过授权，内容也不得按文本硬解：只返回类型、大小与预览。
         if let Ok(reference) = authorize_ai_file(&path, files.0.storage.root_dir()) {
             command(
                 &mut controller,
@@ -1373,9 +1373,180 @@ mod file_references {
                 json!({"file_ref":reference.id}),
                 CancelFlag::new(),
             );
-            assert_eq!(receipt.status, ToolReceiptStatus::Failed);
+            assert_eq!(receipt.status, ToolReceiptStatus::Succeeded);
             assert!(payload(&receipt).get("text").is_none());
+            assert_eq!(payload(&receipt)["content_type"], "binary");
+            assert_eq!(payload(&receipt)["size"], 4);
+            assert!(payload(&receipt)["preview"].as_str().is_some());
         }
+    }
+
+    #[test]
+    fn csv_attachment_is_segmented_by_record_not_by_raw_byte_offset() {
+        let files = Files::new();
+        let mut controller = files.configured();
+        // 第二条记录含引号转义与嵌入换行：按字节续读会切坏结构，按记录读必须完整。
+        let path = files.write(
+            "records.csv",
+            "id,name\n1,alice\n2,\"bob,\nline2\"\n3,carol\n",
+        );
+        let reference = files.attach(&mut controller, &path);
+        let job = controller
+            .prepare_ai_conversation("csv records", &target())
+            .unwrap();
+        let tools = files.catalog(&job);
+        let first = execute(
+            &tools,
+            &job,
+            "file.read",
+            json!({"file_ref":reference.id,"max_records":3}),
+            CancelFlag::new(),
+        );
+        assert_eq!(first.status, ToolReceiptStatus::Succeeded, "{first:?}");
+        let value = payload(&first);
+        assert_eq!(value["content_type"], "csv");
+        // 表头也作为一条记录返回，模型据此知道列含义。
+        assert_eq!(value["record_count"], 3);
+        assert_eq!(value["records"][0][1], "name");
+        assert_eq!(value["records"][1][1], "alice");
+        assert_eq!(value["records"][2][1], "bob,\nline2");
+        assert_eq!(value["truncated"], true);
+        // 续读位置必须来自解析器实际停下的字节，能接着读到未返回的第三条数据记录。
+        let second = execute(
+            &tools,
+            &job,
+            "file.read",
+            json!({"file_ref":reference.id,"offset":value["next_offset"],"max_records":8}),
+            CancelFlag::new(),
+        );
+        assert_eq!(second.status, ToolReceiptStatus::Succeeded, "{second:?}");
+        let tail = payload(&second);
+        assert_eq!(tail["record_count"], 1);
+        assert_eq!(tail["records"][0][1], "carol");
+        assert_eq!(tail["truncated"], false);
+    }
+
+    #[test]
+    fn csv_unterminated_quote_is_reported_as_data_not_hard_decoded() {
+        let files = Files::new();
+        let mut controller = files.configured();
+        // 奇数引号在 EOF 处被 csv crate 容忍为数据：仍必须走 CSV 记录通道，不退回文本硬解。
+        let path = files.write("broken.csv", "id,name\n1,\"unterminated\n");
+        let reference = files.attach(&mut controller, &path);
+        let job = controller
+            .prepare_ai_conversation("csv broken", &target())
+            .unwrap();
+        let receipt = execute(
+            &files.catalog(&job),
+            &job,
+            "file.read",
+            json!({"file_ref":reference.id}),
+            CancelFlag::new(),
+        );
+        assert_eq!(receipt.status, ToolReceiptStatus::Succeeded, "{receipt:?}");
+        let value = payload(&receipt);
+        assert_eq!(value["content_type"], "csv");
+        assert_eq!(value["record_count"], 2);
+        assert_eq!(value["records"][1][1], "unterminated\n");
+    }
+
+    #[test]
+    fn csv_record_count_limit_is_bounded() {
+        let files = Files::new();
+        let mut controller = files.configured();
+        let mut body = String::from("id\n");
+        for index in 0..500 {
+            body.push_str(&format!("{index}\n"));
+        }
+        let reference = files.attach(&mut controller, &files.write("many.csv", &body));
+        let job = controller
+            .prepare_ai_conversation("csv bounded", &target())
+            .unwrap();
+        let tools = files.catalog(&job);
+        for requested in [1u64, 5, 256] {
+            let receipt = execute(
+                &tools,
+                &job,
+                "file.read",
+                json!({"file_ref":reference.id,"max_records":requested}),
+                CancelFlag::new(),
+            );
+            assert_eq!(receipt.status, ToolReceiptStatus::Succeeded, "{receipt:?}");
+            let count = payload(&receipt)["record_count"].as_u64().unwrap();
+            assert!(count <= requested, "requested={requested} count={count}");
+            assert!(count >= 1);
+        }
+        // 超过 schema 上限的参数在准备阶段就被拒绝，不会静默放大读取量。
+        assert!(
+            tools
+                .prepare(
+                    "file.read",
+                    &json!({"file_ref":reference.id,"max_records":100_000}).to_string()
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn text_segment_never_splits_a_multibyte_character() {
+        let files = Files::new();
+        let mut controller = files.configured();
+        let text = "订单查询备注".repeat(64);
+        let reference = files.attach(&mut controller, &files.write("utf8.md", &text));
+        let job = controller
+            .prepare_ai_conversation("utf8 boundary", &target())
+            .unwrap();
+        let tools = files.catalog(&job);
+        // 17 不是 3 的倍数：切在汉字中间时必须回退到字符边界，而不是返回非法 UTF-8。
+        let receipt = execute(
+            &tools,
+            &job,
+            "file.read",
+            json!({"file_ref":reference.id,"max_bytes":17}),
+            CancelFlag::new(),
+        );
+        assert_eq!(receipt.status, ToolReceiptStatus::Succeeded, "{receipt:?}");
+        let value = payload(&receipt);
+        let returned = value["text"].as_str().unwrap();
+        assert!(returned.len() <= 17);
+        assert!(text.starts_with(returned));
+        // 17 字节落在第 6 个汉字中间，回退后应恰好是 5 个完整汉字（15 字节）。
+        assert_eq!(returned, "订单查询备");
+        assert_eq!(returned.len(), 15);
+        assert_eq!(value["next_offset"], returned.len());
+    }
+
+    #[test]
+    fn authorization_summary_reports_content_type_and_binary_flag_without_exposing_path() {
+        let files = Files::new();
+        let text = files.write("summary.sql", "SELECT 1;");
+        let text_reference = authorize_ai_file(&text, files.0.storage.root_dir()).unwrap();
+        assert!(
+            text_reference.summary.contains("UTF-8 文本"),
+            "{}",
+            text_reference.summary
+        );
+        assert!(text_reference.summary.contains("按需分段读取"));
+        let grant: serde_json::Value = serde_json::from_str(&text_reference.source).unwrap();
+        assert_eq!(grant["binary"], false);
+        let csv = files.write("summary.csv", "a,b\n1,2\n");
+        let csv_reference = authorize_ai_file(&csv, files.0.storage.root_dir()).unwrap();
+        assert!(
+            csv_reference.summary.contains("CSV/TSV"),
+            "{}",
+            csv_reference.summary
+        );
+        let binary = files.write("summary.sql", [0u8, 159, 146, 150]);
+        let binary_reference = authorize_ai_file(&binary, files.0.storage.root_dir()).unwrap();
+        assert!(
+            binary_reference.summary.contains("二进制"),
+            "{}",
+            binary_reference.summary
+        );
+        assert!(binary_reference.summary.contains("仅返回类型与预览"));
+        let binary_grant: serde_json::Value =
+            serde_json::from_str(&binary_reference.source).unwrap();
+        assert_eq!(binary_grant["binary"], true);
     }
 
     #[test]
@@ -1503,15 +1674,13 @@ mod file_references {
 
     #[cfg(windows)]
     #[test]
-    fn windows_file_read_reports_explicitly_unavailable_without_returning_contents() {
+    fn windows_file_read_returns_actual_bytes_for_authorized_files() {
         let files = Files::new();
         let mut controller = files.configured();
-        let reference = files.attach(
-            &mut controller,
-            &files.write("windows.sql", "SELECT 'windows';"),
-        );
+        let path = files.write("windows.sql", "SELECT 'windows';");
+        let reference = files.attach(&mut controller, &path);
         let job = controller
-            .prepare_ai_conversation("unsupported secure open", &target())
+            .prepare_ai_conversation("windows secure open", &target())
             .unwrap();
         let receipt = execute(
             &files.catalog(&job),
@@ -1520,13 +1689,73 @@ mod file_references {
             json!({"file_ref":reference.id}),
             CancelFlag::new(),
         );
-        assert_eq!(receipt.status, ToolReceiptStatus::Failed);
-        assert!(
-            payload(&receipt)["error"]
-                .as_str()
-                .unwrap()
-                .contains("附件读取不可用")
+        assert_eq!(receipt.status, ToolReceiptStatus::Succeeded);
+        assert_eq!(payload(&receipt)["text"], "SELECT 'windows';");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_file_read_rejects_leaf_and_intermediate_reparse_point_replacement() {
+        let files = Files::new();
+        let mut controller = files.configured();
+        let parent = files.0.dir.join("attachments");
+        fs::create_dir(&parent).unwrap();
+        let path = parent.join("link-test.sql");
+        fs::write(&path, "SELECT 'original';").unwrap();
+        let reference = files.attach(&mut controller, &path);
+        let job = controller
+            .prepare_ai_conversation("windows reparse point", &target())
+            .unwrap();
+        let tools = files.catalog(&job);
+        let before = execute(
+            &tools,
+            &job,
+            "file.read",
+            json!({"file_ref":reference.id}),
+            CancelFlag::new(),
         );
-        assert!(payload(&receipt).get("text").is_none());
+        assert_eq!(before.status, ToolReceiptStatus::Succeeded);
+        for intermediate in [false, true] {
+            // 链接指向原 inode，大小/mtime 相同，确保拒绝来自 reparse point 检查而非指纹不符。
+            let restore = if intermediate {
+                let moved = files.0.dir.join("moved-attachments");
+                fs::rename(&parent, &moved).unwrap();
+                std::os::windows::fs::symlink_dir(&moved, &parent).unwrap();
+                parent.clone()
+            } else {
+                let moved = parent.join("moved.sql");
+                fs::rename(&path, &moved).unwrap();
+                std::os::windows::fs::symlink_file(&moved, &path).unwrap();
+                moved
+            };
+            let receipt = execute(
+                &tools,
+                &job,
+                "file.read",
+                json!({"file_ref":reference.id}),
+                CancelFlag::new(),
+            );
+            assert_eq!(
+                receipt.status,
+                ToolReceiptStatus::Failed,
+                "intermediate={intermediate}"
+            );
+            assert!(
+                payload(&receipt)["error"]
+                    .as_str()
+                    .unwrap()
+                    .contains("安全打开失败")
+            );
+            assert!(payload(&receipt).get("text").is_none());
+            // 还原后再验证另一种替换，避免上一轮状态影响下一轮。
+            if intermediate {
+                let moved = files.0.dir.join("moved-attachments");
+                fs::remove_dir(&parent).unwrap();
+                fs::rename(&moved, &parent).unwrap();
+            } else {
+                fs::remove_file(&path).unwrap();
+                fs::rename(&restore, &path).unwrap();
+            }
+        }
     }
 }

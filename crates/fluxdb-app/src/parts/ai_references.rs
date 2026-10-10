@@ -36,9 +36,12 @@ pub fn authorize_ai_file(path:&std::path::Path,storage_root:&std::path::Path)->f
     let file=open_ai_authorized_file(&path)?;
     let meta=file.metadata().map_err(|_|fail("无法读取附件信息"))?;
     if !meta.is_file() || meta.len()>16*1024*1024 {return Err(fail("附件必须是文件且不超过 16 MiB"));}
-    let mut reference=AiContextReference{id:uuid::Uuid::new_v4().to_string(),label:path.file_name().unwrap_or_default().to_string_lossy().into_owned(),kind:"file".into(),source:path.to_string_lossy().into_owned(),summary:format!("文本文件 · {} 字节；按需分段读取",meta.len())};
-    // source 只供宿主，运行快照只写 opaque id、标签和摘要。
-    reference.source=serde_json::json!({"path":reference.source,"size":meta.len(),"modified":meta.modified().ok().and_then(|v|v.duration_since(std::time::UNIX_EPOCH).ok()).map(|v|v.as_nanos().to_string())}).to_string();
+    let label=path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+    // 头部取样判定内容类型：二进制附件也要授权并给出类型/大小，读取时才按类型反馈而不是一律当文本硬解。
+    let (content_summary,binary)=ai_file_content_summary(open_ai_authorized_file(&path)?,&label)?;
+    let mut reference=AiContextReference{id:uuid::Uuid::new_v4().to_string(),label,kind:"file".into(),source:path.to_string_lossy().into_owned(),summary:format!("{} · {} 字节；{}",content_summary,meta.len(),if binary{"仅返回类型与预览"}else{"按需分段读取"})};
+    // source 只供宿主：路径、指纹与是否为二进制都只留在宿主侧，运行快照不外泄路径。
+    reference.source=serde_json::json!({"path":reference.source,"size":meta.len(),"modified":meta.modified().ok().and_then(|v|v.duration_since(std::time::UNIX_EPOCH).ok()).map(|v|v.as_nanos().to_string()),"binary":binary}).to_string();
     Ok(reference)
 }
 /// 引用定位解析与身份校验共用同一路径，避免公开上下文和实际执行目标不一致。
@@ -499,7 +502,7 @@ impl AppController {
     }
 }
 
-/// Unix 从根目录逐级 openat(NO_FOLLOW)，不允许中间目录/末端被换为链接；Windows 明确不可用。
+/// 从根目录逐级安全打开：任一中间目录或末端文件被换成链接即拒绝，避免授权后路径被改指到凭据文件。
 fn open_ai_authorized_file(path:&std::path::Path)->fluxdb_core::Result<std::fs::File> {
     let fail=|e:std::io::Error|fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal,format!("附件安全打开失败：{e}"));
     #[cfg(unix)] {
@@ -518,7 +521,108 @@ fn open_ai_authorized_file(path:&std::path::Path)->fluxdb_core::Result<std::fs::
         }
         Ok(dir)
     }
-    #[cfg(not(unix))] {
+    #[cfg(windows)] {
+        use std::os::windows::{ffi::OsStrExt,io::FromRawHandle};
+        use windows::core::PCWSTR;
+        use windows::Win32::Foundation::{GENERIC_READ,HANDLE};
+        use windows::Win32::Storage::FileSystem::{
+            CreateFileW,GetFileInformationByHandle,GetFinalPathNameByHandleW,BY_HANDLE_FILE_INFORMATION,
+            FILE_ATTRIBUTE_DIRECTORY,FILE_ATTRIBUTE_REPARSE_POINT,FILE_FLAG_BACKUP_SEMANTICS,
+            FILE_FLAG_OPEN_REPARSE_POINT,FILE_SHARE_DELETE,FILE_SHARE_READ,FILE_SHARE_WRITE,OPEN_EXISTING,VOLUME_NAME_DOS,
+        };
+        let fail_msg=|reason:&str|fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal,format!("附件安全打开失败：{reason}"));
+        // HANDLE 无 Drop：所有放弃句柄的路径都必须经此转成 File 才会关闭。
+        let into_file=|handle:HANDLE|unsafe{std::fs::File::from_raw_handle(handle.0 as *mut std::ffi::c_void)};
+        let part=|part:&std::ffi::OsStr|->fluxdb_core::Result<Vec<u16>> {
+            let wide=part.encode_wide().collect::<Vec<_>>();
+            // 路径含内嵌空字符会被 CreateFileW 截断成授权点之前的部分，必须拒绝。
+            if wide.contains(&0) {return Err(fail(std::io::Error::other("路径含空字符")));}
+            Ok(wide)
+        };
+        // OPEN_REPARSE_POINT 只禁止跟随、不禁止打开：必须再按句柄属性显式拒绝 reparse point。
+        // 与 Unix 逐级 O_NOFOLLOW 同构——每一级都是「打开后确认不是链接」，而非依赖跟随语义。
+        let open=|path:&[u16],directory:bool,readable:bool|->fluxdb_core::Result<HANDLE> {
+            let mut flags=FILE_FLAG_OPEN_REPARSE_POINT;
+            if directory {flags|=FILE_FLAG_BACKUP_SEMANTICS|FILE_ATTRIBUTE_DIRECTORY;}
+            let mut name=path.to_vec();
+            name.push(0);
+            let handle=unsafe {
+                CreateFileW(
+                    PCWSTR(name.as_ptr()),
+                    // 只有末端需要读内容；中间目录要 GENERIC_READ 会因目录 ACL 被拒。
+                    if readable {GENERIC_READ.0} else {0},
+                    FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,
+                    None,
+                    OPEN_EXISTING,
+                    flags,
+                    None,
+                )
+            }
+            .map_err(|error| fail(std::io::Error::other(error.to_string())))?;
+            let mut info=BY_HANDLE_FILE_INFORMATION::default();
+            let queried=unsafe{GetFileInformationByHandle(handle,&mut info)}.is_ok();
+            let is_reparse=info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0;
+            let is_directory=info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY.0 != 0;
+            let verdict=(!queried)
+                .then_some("无法读取句柄信息")
+                .or(is_reparse.then_some("不允许链接附件"))
+                // 目录位校验：任何一级都不是预期类型即拒绝（如把文件当中间目录）。
+                .or((is_directory!=directory).then_some("附件路径层级不正确"));
+            if let Some(reason)=verdict {
+                // 校验失败不能泄漏句柄：HANDLE 无 Drop，必须显式关闭。
+                drop(into_file(handle));
+                return Err(fail_msg(reason));
+            }
+            Ok(handle)
+        };
+        let parts=path.components().filter_map(|component|if let std::path::Component::Normal(value)=component{Some(value)}else{None}).collect::<Vec<_>>();
+        if !path.is_absolute() || parts.is_empty() {return Err(fail(std::io::Error::other("需要绝对文件路径")));}
+        // 逐级下钻并逐级校验祖先不是 reparse point：授权后目录被换成 junction 时后续解析不会落到别处。
+        let mut accumulated=part(path.components().next().expect("已确认是绝对路径").as_os_str())?;
+        let mut current=open(&accumulated,true,false)?;
+        let mut error=None;
+        let total=parts.len();
+        for (index,name) in parts.iter().enumerate() {
+            let name=match part(name) {
+                Ok(name)=>name,
+                Err(err)=>{error=Some(err);break;}
+            };
+            accumulated.push(u16::from(b'\\'));
+            accumulated.extend_from_slice(&name);
+            // 中间目录需要 BACKUP_SEMANTICS，且只申请 0 访问权：目录 ACL 通常不含 GENERIC_READ。
+            let directory=index+1<total;
+            let next=open(&accumulated,directory,!directory);
+            drop(into_file(current));
+            match next {
+                Ok(handle)=>current=handle,
+                Err(err)=>{error=Some(err);break;}
+            }
+        }
+        if let Some(err)=error {return Err(err);}
+        // Win32 没有 openat，下一级 CreateFileW 只接受路径字符串、无法接收父句柄，
+        // 因此除逐级校验外再核对末端句柄真实落点，覆盖下钻途中目录被换成 junction 的竞态。
+        let mut buffer=vec![0u16;1024];
+        // 用与 std `canonicalize` 相同的 VOLUME_NAME_DOS 形式，保证与授权路径同形可比。
+        let length=unsafe{GetFinalPathNameByHandleW(current,&mut buffer,VOLUME_NAME_DOS)};
+        if length==0 || length as usize>=buffer.len() {
+            drop(into_file(current));
+            return Err(fail_msg("无法解析附件真实路径"));
+        }
+        // 授权路径来自 `canonicalize`，Windows 上本身就是 `\\?\C:\…` 形式，与本返回值同形，可直接比对；
+        // 大小写按不敏感处理（盘符与短名可能被系统规范化成不同大小写）。
+        let resolved=&buffer[..length as usize];
+        let requested=path.as_os_str().encode_wide().collect::<Vec<_>>();
+        // 只有 ASCII 区间有大小写变体；其余（含中文文件名）按原值比对。
+        let fold=|value:u16|if (0x41..=0x5A).contains(&value){value+0x20}else{value};
+        let same=resolved.len()==requested.len() && resolved.iter().zip(&requested).all(|(left,right)|fold(*left)==fold(*right));
+        if !same {
+            drop(into_file(current));
+            return Err(fail_msg("附件路径已指向其它位置"));
+        }
+        // 末端已确认是普通文件且以 GENERIC_READ 打开：交给上层按 offset/limit 读取。
+        Ok(into_file(current))
+    }
+    #[cfg(not(any(unix, windows)))] {
         let _=path;
         Err(fail(std::io::Error::other("此平台暂未实现防目录链接替换的安全文件句柄，附件读取不可用")))
     }
@@ -544,14 +648,40 @@ impl fluxdb_core::AiTool for AiFileTool {
                 let meta=file.metadata().map_err(|_|fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal,"附件状态不可读"))?;
                 let modified=meta.modified().ok().and_then(|t|t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d|d.as_nanos().to_string());
                 if !meta.is_file()||grant["size"].as_u64()!=Some(meta.len())||modified.as_deref()!=grant["modified"].as_str() {return Err(fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal,"附件已变更，请移除后重新授权"));}
-                use std::io::{Read,Seek};
                 let offset=args["offset"].as_u64().unwrap_or(0);
                 let limit=args["max_bytes"].as_u64().unwrap_or(16384).min(65536);
+                // 二进制判定读当前段窗口即可；CSV 则整段交给记录解析，不按字节切。
+                use std::io::{Read,Seek};
                 file.seek(std::io::SeekFrom::Start(offset)).map_err(|_|fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal,"附件偏移无效"))?;
                 let mut bytes=Vec::new();file.take(limit).read_to_end(&mut bytes).map_err(|_|fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal,"附件读取失败"))?;
                 if ctx.cancel.is_cancelled(){return Err(fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal,"文件读取已取消"));}
-                let text=std::str::from_utf8(&bytes).map_err(|_|fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal,"附件不是 UTF-8 文本或偏移切分字符，请调整范围"))?;
-                Ok(serde_json::json!({"file_ref":id,"text":text,"offset":offset,"next_offset":offset+bytes.len() as u64,"truncated":offset+(bytes.len() as u64)<meta.len()}))
+                // 是否二进制以授权时的头部取样为准（grant.binary），不能用当前段判定：
+                // offset 落在一个多字节字符中间时，本段必然不是合法 UTF-8，会被误判成二进制。
+                // 旧快照没有该字段时才回退到头部取样，同样不看当前段。
+                let binary=match grant["binary"].as_bool() {
+                    Some(value)=>value,
+                    None=>{
+                        let head_file=open_ai_authorized_file(path)?;
+                        let mut head=Vec::new();
+                        head_file.take(8192).read_to_end(&mut head).ok();
+                        ai_bytes_are_binary(&head)
+                    }
+                };
+                // 二进制不回传原始字节：只给类型、大小与可打印预览，避免把任意载荷塞进模型上下文。
+                if binary {
+                    return Ok(serde_json::json!({"file_ref":id,"content_type":"binary","size":meta.len(),"offset":offset,"preview":ai_binary_preview(&bytes),"note":"二进制附件不返回正文；如需内容请由用户提供文本版本"}));
+                }
+                // CSV/TSV 走记录分段，避免按字节续读切坏引号与嵌入换行结构。
+                if ai_file_delimited_format(path).is_some() {
+                    let max_records=args["max_records"].as_u64().unwrap_or(64).clamp(1,256);
+                    let segment=ai_read_csv_segment(path,open_ai_authorized_file(path)?,offset,max_records as usize,meta.len())?;
+                    if ctx.cancel.is_cancelled(){return Err(fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal,"文件读取已取消"));}
+                    return Ok(serde_json::json!({"file_ref":id,"content_type":"csv","offset":offset,"records":segment.value["records"],"record_count":segment.value["record_count"],"next_offset":segment.next_offset,"truncated":segment.value["truncated"]}));
+                }
+                let segment=ai_read_text_segment(open_ai_authorized_file(path)?,offset,limit,meta.len())?;
+                let mut value=segment.value;
+                value["file_ref"]=serde_json::json!(id);
+                Ok(value)
             })();
             let (status,value,error)=match result {Ok(v)=>(fluxdb_core::ToolReceiptStatus::Succeeded,v,None),Err(e)=>(if ctx.cancel.is_cancelled(){fluxdb_core::ToolReceiptStatus::Cancelled}else{fluxdb_core::ToolReceiptStatus::Failed},serde_json::json!({"error":e.message}),Some("file_unavailable".into()))};
             Ok(fluxdb_core::ToolReceipt{call_id:ctx.call_id,tool_id:self.descriptor.id.clone(),status,result_json:value.to_string(),error_code:error,affected_rows:None,started_at_ms:now,finished_at_ms:ai_chat_now()})
@@ -564,7 +694,7 @@ pub fn add_ai_file_tools(catalog:&mut ToolCatalog,storage:&fluxdb_storage::FileS
     let references=snapshot["file_grants"].as_array().into_iter().flatten().filter_map(AiContextReference::parse).collect::<Vec<_>>();
     if references.is_empty(){return Ok(());}
     for (id,desc,schema) in [
-        ("file.read","按 opaque FileRef 分段读取已授权文本附件",serde_json::json!({"type":"object","properties":{"file_ref":{"type":"string"},"offset":{"type":"integer","minimum":0},"max_bytes":{"type":"integer","minimum":1,"maximum":65536}},"required":["file_ref"],"additionalProperties":false})),
+        ("file.read","按 opaque FileRef 分段读取已授权附件：文本按字节、CSV/TSV 按记录、二进制只返回类型与预览",serde_json::json!({"type":"object","properties":{"file_ref":{"type":"string"},"offset":{"type":"integer","minimum":0},"max_bytes":{"type":"integer","minimum":1,"maximum":65536},"max_records":{"type":"integer","minimum":1,"maximum":256,"description":"CSV/TSV 每次返回的记录数上限"}},"required":["file_ref"],"additionalProperties":false})),
         ("file.search","搜索本会话已授权附件，不扫描未授权目录",serde_json::json!({"type":"object","properties":{"query":{"type":"string"}},"additionalProperties":false})),
     ] {
         let descriptor=fluxdb_core::ToolDescriptor{id:id.into(),description:desc.into(),version:1,risk:fluxdb_core::ToolRisk::Read,input_schema_json:schema.to_string()};

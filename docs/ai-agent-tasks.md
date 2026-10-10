@@ -315,10 +315,18 @@ cargo test -p fluxdb-app --locked ai_permission   # 15 passed
 
 
 ### T026 文件搜索/读取与隐私边界
+- [x] 2026-10-10（macOS arm64 收口）：Path-based grant、canonical/symlink 安全打开、CSV/TSV 流式记录分段、文本按字节边界截断、二进制类型/大小/预览反馈、凭据与越权 symlink 拒绝、E09 headless 与真实窗口验收全部完成。**真实窗口验收**：用户在隔离 profile（`FLUXDB_PROFILE=t026-e09`）下人工完成 6 场景轮（合法 CSV chip/摘要、大文件拒绝、凭据名拒绝、symlink 拒绝、plain.sql 对照授权、chip 移除），全部通过。**headless**：fluxdb-desktop 601/601；fluxdb-app 740/740 + 集成全绿。**仍未验证**：Windows/Linux 真机编译与桌面行为（代码 cfg 隔离，待用户自行按平台跑）。完整记录：`docs/testing/ai-agent/t026-e09-2026-10-10.md`。
 - [ ] 依赖：T019–T022；设计 §14、§29。
 - 改动：Path-based grant、canonical/symlink 安全打开、文本/CSV 分段、二进制反馈；禁止凭据文件读取。
 - 验收：E09；路径授权、symlink/编码等在当前开发平台测试，并保持各平台路径语义兼容；不能绕过目录授权读取 config.toml/sqlite 凭据。
 - 测试方式：将上述每项验收分别落实为相关crate的测试断言；用隔离fixture/受控Provider验证正常与异常路径，涉及工具时核对真实回执及副作用调用数，不用伪造成功结果跳过执行链。
+- [x] 2026-10-10（macOS arm64）：**CSV 分段与二进制反馈已实现**。新增 `crates/fluxdb-app/src/parts/ai_file_content.rs`：CSV/TSV 走 `csv` crate 流式记录分段（引号转义与嵌入换行不按字节切），返回 `records/record_count/next_offset/truncated`；文本按字节分段但在 UTF-8 字符边界安全截断（切到半个字符回退并如实上报）；授权阶段取文件头 8 KiB 判定内容类型，`binary` 标记写入宿主 source（不进模型上下文），`file.read` 对二进制只返回 `content_type/size/preview` 不回传正文。`file.read` schema 新增 `max_records`（1–256，超限在 prepare 阶段拒绝）。
+- 修复的真实缺陷：① 二进制判定原先用「当前读取段」判定，offset 落在多字节字符中间时会把合法文本误判为二进制——改为以授权时头部取样结果 `grant.binary` 为准；② CSV `truncated` 原按字节比较 `consumed < total_len`，末条记录后解析器位置可能仍小于总长而误报「已读完」漏数据——改为预读一条判断是否真有剩余记录；③ CSV `next_offset` 曾因多读一条记录被推过头而跳过数据记录，已回退为 `reader.position()` 语义。
+- 本轮命令（macOS arm64）：`cargo fmt --all -- --check` 通过；`cargo check --workspace --locked --offline` 通过；`cargo test -p fluxdb-app --locked --offline` → lib 740 passed / 0 failed / 1 ignored，集成 24/4/10/2/9/2/6/5/4/14/11/6/28/7 全通过。`file_references` 用例 11 → 16，新增 CSV 记录分段/分页续读、CSV 未闭合引号按数据处理、记录数上限、文本多字节边界、二进制内容类型反馈与授权摘要不含路径。
+- 2026-10-10：Windows 安全读取已实现（原为「暂不可用」）。`open_ai_authorized_file` 逐级 `CreateFileW` + `FILE_FLAG_OPEN_REPARSE_POINT`，逐级按句柄属性拒绝 reparse point（junction/symlink），末端以 `GENERIC_READ` 打开并用 `GetFinalPathNameByHandleW(VOLUME_NAME_DOS)` 核对真实落点与授权路径一致。Win32 无 `openat`、无法把父句柄传给下一级，故用「逐级校验 + 末端真实路径核对」覆盖下钻途中被换链的竞态。`crates/fluxdb-app/tests/ai_session_model_selection.rs` 的 Windows 用例从「断言不可用」改为「读回真实内容」+「末端/中间 reparse point 替换均拒绝」。
+- 未验证：Windows 上仅完成 `cargo check --target x86_64-pc-windows-msvc` 的类型检查（用独立 crate 对 `windows 0.57` 实际 API 编译验证），**未在真实 Windows 机器上编译、运行或做窗口验收**；junction 与 symlink 拒绝行为、真实句柄读取均为待平台验证。Linux 走 `#[cfg(unix)]` 既有实现，本轮未改，仍待平台验收。Windows 上 `CreateFileW` 需 `Win32_Security` feature（windows 0.57 源码确认门控关系），`fluxdb-app` 已按 target 条件依赖，不影响 macOS/Linux 构建。E09 端到端脚本与真实窗口验收尚未执行。
+- 2026-10-10：Windows 安全读取已实现（原为「暂不可用」）。`open_ai_authorized_file` 逐级 `CreateFileW` + `FILE_FLAG_OPEN_REPARSE_POINT`，逐级按句柄属性拒绝 reparse point（junction/symlink），末端以 `GENERIC_READ` 打开并用 `GetFinalPathNameByHandleW(VOLUME_NAME_DOS)` 核对真实落点与授权路径一致。Win32 无 `openat`、无法把父句柄传给下一级，故用「逐级校验 + 末端真实路径核对」覆盖下钻途中被换链的竞态。`crates/fluxdb-app/tests/ai_session_model_selection.rs` 的 Windows 用例从「断言不可用」改为「读回真实内容」+「末端/中间 reparse point 替换均拒绝」。
+- 未验证：Windows 上仅完成 `cargo check --target x86_64-pc-windows-msvc` 的类型检查（用独立 crate 对 `windows 0.57` 实际 API 编译验证），**未在真实 Windows 机器上编译、运行或做窗口验收**；junction 与 symlink 拒绝行为、真实句柄读取均为待平台验证。Linux 走 `#[cfg(unix)]` 既有实现，本轮未改，仍待平台验收。Windows 上 `CreateFileW` 需 `Win32_Security` feature（windows 0.57 源码确认门控关系），`fluxdb-app` 已按 target 条件依赖，不影响 macOS/Linux 构建。
 
 
 ### T027 结果句柄、分页与保留管理

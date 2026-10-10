@@ -259,7 +259,6 @@ fn ai_conversation_run_turn(
     let mut persist_error: Option<String> = None;
     let mut paused_reason: Option<String> = None;
     let mut notice_count: usize = 0;
-    let mut tool_index: usize = 0;
     let mut approval_id: Option<String> = None;
     let mut part_error: Option<String> = None;
     let mut tool_error: Option<String> = None;
@@ -325,7 +324,6 @@ fn ai_conversation_run_turn(
                     let saved_part = ai_conversation_record_tool_start(
                         storage,
                         job,
-                        tool_index,
                         &call,
                         &plan_hash,
                         tool_version,
@@ -335,7 +333,6 @@ fn ai_conversation_run_turn(
                     if let Err(error) = &saved_part {
                         part_error.get_or_insert_with(|| error.message.clone());
                     }
-                    tool_index += 1;
                 }
                 // 工具真实回执：写 ai_tool_calls/ai_results 事实行 + 结果卡。
                 LoopEvent::ToolFinished { receipt } => {
@@ -385,7 +382,6 @@ fn ai_conversation_run_turn(
                     let saved = ai_conversation_record_approval(
                         storage,
                         job,
-                        tool_index,
                         &call,
                         tool_version,
                         &plan_hash,
@@ -400,7 +396,6 @@ fn ai_conversation_run_turn(
                             part_error.get_or_insert_with(|| error.message.clone());
                         }
                     }
-                    tool_index += 1;
                 }
                 LoopEvent::IterationStarted { .. } => {}
             }

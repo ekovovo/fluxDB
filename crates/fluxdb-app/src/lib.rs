@@ -114,6 +114,7 @@ include!("parts/ai_database_context.rs");
 include!("parts/ai_sql_policy.rs");
 include!("parts/ai_sql_exec.rs");
 include!("parts/ai_redis_policy.rs");
+include!("parts/ai_redis_read.rs");
 include!("parts/ai_redis_exec.rs");
 include!("parts/ai_scripted.rs");
 include!("parts/backup_restore.rs");

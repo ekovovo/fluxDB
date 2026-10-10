@@ -369,6 +369,27 @@ impl RedisConnector {
         self.execute_single_command(&mut connection, database, argv)
     }
 
+    /// 单条命令使用独立的小回包预算；超限会将未消费帧的连接标记损坏，不归还池。
+    pub fn execute_argv_with_budget(
+        &self, database: u32, argv: &[String], budget: RedisReadBudget,
+    ) -> fluxdb_core::Result<CommandReply> {
+        let config = self.config.as_ref().ok_or_else(|| Error::new(ErrorKind::Connection, "Redis 执行缺少连接配置"))?;
+        if argv.is_empty() || is_unsupported_command(argv) {
+            return Err(Error::new(ErrorKind::Unsupported, "Redis 命令为空或不支持受控执行"));
+        }
+        let profile = config.redis_profile.clone().unwrap_or_else(|| fluxdb_core::RedisConnectionProfile::from_options(&config.options));
+        let cluster = profile.topology.kind == fluxdb_core::RedisTopologyKind::Cluster;
+        if cluster && database != 0 {
+            return Err(Error::new(ErrorKind::Query, "Redis Cluster 只支持 DB 0"));
+        }
+        let mut connection = redis_connect(config)?;
+        if !cluster {
+            redis_select(&mut connection, database)?;
+        }
+        let args = argv.iter().map(String::as_str).collect::<Vec<_>>();
+        connection.command_with_budget(&args, Some(budget)).map(redis_value_to_reply)
+    }
+
     /// 在指定 DB 上执行单条命令并映射回包。
     fn execute_single_command(
         &self,

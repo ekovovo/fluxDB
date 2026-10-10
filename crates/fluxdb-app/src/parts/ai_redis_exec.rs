@@ -45,6 +45,10 @@ fn redis_connector(
     if config.kind != fluxdb_core::DatabaseKind::Redis {
         return Err(SqlExecError::new("invalid_target", "该目标不是 Redis 连接"));
     }
+    let profile = config.redis_profile.clone().unwrap_or_else(|| fluxdb_core::RedisConnectionProfile::from_options(&config.options));
+    if profile.topology.kind == fluxdb_core::RedisTopologyKind::Cluster && target.database != 0 {
+        return Err(SqlExecError::new("invalid_target", "Redis Cluster 只支持 DB 0"));
+    }
     let connector = fluxdb_connectors::RedisConnector::with_config(config.clone());
     Ok((config, connector))
 }
@@ -64,6 +68,7 @@ fn redis_reply_to_json(reply: &fluxdb_core::CommandReply) -> serde_json::Value {
             "text": bulk.text,
             "byte_len": bulk.byte_len,
             "binary": bulk.binary,
+            "bytes_preview_hex": bulk.bytes_preview_hex,
         }),
         CommandReply::Array(items) => {
             serde_json::Value::Array(items.iter().map(redis_reply_to_json).collect())
@@ -131,46 +136,92 @@ impl<R: SqlExecutionResolver + 'static> fluxdb_core::AiTool for AiRedisScanTool<
                     .unwrap_or("0")
                     .to_string();
                 let count = value.get("count").and_then(|v| v.as_u64()).unwrap_or(100).clamp(1, 1000);
+                let max_keys = value
+                    .get("max_keys")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(100)
+                    .clamp(1, 1000) as usize;
                 let target = AiRedisTarget::parse(handle)?;
-                let (_config, connector) = redis_connector(resolver.as_ref(), &target)?;
-                let reply = connector
-                    .execute_argv(
-                        target.database,
-                        &redis_argv(&["SCAN", &cursor, "MATCH", pattern, "COUNT", &count.to_string()]),
-                    )
-                    .map_err(|error| {
-                        SqlExecError::new("redis_error", format!("SCAN 失败: {}", error.message))
-                    })?;
-                let (next_cursor, keys) = match &reply {
-                    fluxdb_core::CommandReply::Array(items) if items.len() == 2 => {
-                        let next = match &items[0] {
-                            fluxdb_core::CommandReply::Bulk(bulk) => {
-                                bulk.text.clone().unwrap_or_else(|| "0".into())
-                            }
-                            _ => "0".into(),
-                        };
-                        let keys = match &items[1] {
-                            fluxdb_core::CommandReply::Array(keys) => keys
-                                .iter()
-                                .filter_map(|key| match key {
-                                    fluxdb_core::CommandReply::Bulk(bulk) => bulk.text.clone(),
-                                    _ => None,
-                                })
-                                .collect::<Vec<_>>(),
-                            _ => Vec::new(),
-                        };
-                        (next, keys)
+                cursor.parse::<u64>().map_err(|_| SqlExecError::new("invalid_arguments", "SCAN 游标必须是非负整数"))?;
+                let (config, connector) = redis_connector(resolver.as_ref(), &target)?;
+                // SCAN COUNT 不保证精确返回条数；宿主按 max_keys 追加上限，
+                // 游标回到 "0" 表示单节点全库扫描完成，否则 truncated 并返回 next_cursor。
+                let mut current_cursor = cursor;
+                let mut keys: Vec<String> = Vec::new();
+                let mut complete = false;
+                let mut truncated = false;
+                let mut rounds = 0usize;
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                const MAX_SCAN_ROUNDS: usize = 200;
+                loop {
+                    if ctx.cancel.is_cancelled() {
+                        return Err(SqlExecError::new("cancelled", "已停止客户端扫描；不宣称撤销已发送命令"));
                     }
-                    _ => ("0".to_string(), Vec::new()),
-                };
+                    if rounds >= MAX_SCAN_ROUNDS || std::time::Instant::now() >= deadline {
+                        truncated = true;
+                        break;
+                    }
+                    rounds += 1;
+                    let reply = connector
+                        .execute_argv_with_budget(
+                            target.database,
+                            &redis_argv(&[
+                                "SCAN",
+                                &current_cursor,
+                                "MATCH",
+                                pattern,
+                                "COUNT",
+                                &count.to_string(),
+                            ]),
+                            fluxdb_connectors::RedisReadBudget::default(),
+                        )
+                        .map_err(|error| {
+                            SqlExecError::new("redis_error", format!("SCAN 失败: {}", error.message))
+                        })?;
+                    let (next_cursor, batch) = redis_scan_page(reply)?;
+                    for key in batch {
+                        let fluxdb_core::CommandReply::Bulk(key) = key else {
+                            return Err(SqlExecError::new("redis_invalid_reply", "SCAN Key 回包结构异常"));
+                        };
+                        let key = key.text.ok_or_else(|| SqlExecError::new("redis_binary_key_unsupported", "扫描遇到二进制 Key，不能静默跳过；需二进制引用支持"))?;
+                        if !keys.contains(&key) {
+                            if keys.len() == max_keys {
+                                return Err(SqlExecError::new("redis_page_too_large", "COUNT 非硬上限，本批超过 max_keys；本批未返回续页游标，请降低 count 或增加 max_keys"));
+                            }
+                            keys.push(key);
+                        }
+                    }
+                    if next_cursor == "0" {
+                        complete = true;
+                        current_cursor = next_cursor;
+                        break;
+                    }
+                    current_cursor = next_cursor;
+                    if keys.len() >= max_keys {
+                        truncated = true;
+                        break;
+                    }
+                }
+                let profile = config.redis_profile.clone().unwrap_or_else(|| fluxdb_core::RedisConnectionProfile::from_options(&config.options));
+                let cluster = profile.topology.kind == fluxdb_core::RedisTopologyKind::Cluster;
+                let scope = format!("{}/conn:{}/db:{}", if cluster { "cluster-seed-node" } else { "single-node" }, target.connection_id.0, target.database);
                 Ok(SqlExecutionOutcome {
-                    columns: vec!["cursor".into(), "keys".into()],
+                    columns: vec!["cursor".into(), "keys".into(), "scan_info".into()],
                     rows: vec![vec![
-                        serde_json::Value::String(next_cursor),
+                        serde_json::Value::String(current_cursor.clone()),
                         serde_json::json!(keys),
+                        serde_json::json!({
+                            "complete": complete,
+                            "truncated": truncated,
+                            "scope": scope,
+                            "count_hint": count,
+                            "cluster_complete": false,
+                            "consistent_snapshot": false,
+                            "max_keys": max_keys,
+                        }),
                     ]],
                     row_count: 1,
-                    truncated: false,
+                    truncated,
                     elapsed_ms: 0,
                     query_session_id: resolver.query_session_id(),
                     source: fluxdb_core::CommandExecutionSource::Ai,
@@ -226,10 +277,24 @@ impl<R: SqlExecutionResolver + 'static> fluxdb_core::AiTool for AiRedisInspectTo
                     SqlExecError::new("invalid_arguments", "缺少 key")
                 })?;
                 let view = value.get("view").and_then(|v| v.as_str()).unwrap_or("metadata");
+                let cursor = value
+                    .get("cursor")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("0")
+                    .to_string();
+                let limit = value
+                    .get("limit")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(20)
+                    .clamp(1, 200) as usize;
+                let max_bytes = value.get("max_bytes").and_then(|value| value.as_u64()).unwrap_or(4096).clamp(1, 64 * 1024) as usize;
                 let target = AiRedisTarget::parse(handle)?;
                 let (_config, connector) = redis_connector(resolver.as_ref(), &target)?;
                 let call = |argv: &[&str]| -> Result<fluxdb_core::CommandReply, SqlExecError> {
-                    connector.execute_argv(target.database, &redis_argv(argv)).map_err(|error| {
+                    if ctx.cancel.is_cancelled() {
+                        return Err(SqlExecError::new("cancelled", "已停止后续读取；不宣称服务端撤销"));
+                    }
+                    connector.execute_argv_with_budget(target.database, &redis_argv(argv), fluxdb_connectors::RedisReadBudget::default()).map_err(|error| {
                         SqlExecError::new("redis_error", format!("命令失败: {}", error.message))
                     })
                 };
@@ -237,21 +302,16 @@ impl<R: SqlExecutionResolver + 'static> fluxdb_core::AiTool for AiRedisInspectTo
                 let ttl = redis_reply_to_json(&call(&["TTL", key])?);
                 let mut payload = serde_json::json!({ "key": key, "type": kind, "ttl": ttl });
                 if view == "value" {
-                    // 只对有界类型取样：字符串直接 GET；其它类型给出类型说明，避免把大集合拉全。
                     let type_name = payload["type"].as_str().unwrap_or("").to_string();
-                    if type_name == "string" {
-                        payload["value"] = redis_reply_to_json(&call(&["GET", key])?);
-                    } else if !type_name.is_empty() && type_name != "none" {
-                        payload["value_note"] = serde_json::Value::String(format!(
-                            "类型 {type_name} 的取值请用 redis.execute 按需读取（避免一次拉全）"
-                        ));
-                    }
+                    payload["value"] = redis_inspect_value(&call, key, &type_name, &cursor, limit, max_bytes)?;
+                    payload["consistent_snapshot"] = serde_json::json!(false);
                 }
+                let truncated = payload["value"]["truncated"].as_bool().unwrap_or(false);
                 Ok(SqlExecutionOutcome {
                     columns: vec!["key".into(), "info".into()],
                     rows: vec![vec![serde_json::Value::String(key.to_string()), payload]],
                     row_count: 1,
-                    truncated: false,
+                    truncated,
                     elapsed_ms: 0,
                     query_session_id: resolver.query_session_id(),
                     source: fluxdb_core::CommandExecutionSource::Ai,
@@ -327,7 +387,7 @@ impl<R: SqlExecutionResolver + 'static> fluxdb_core::AiTool for AiRedisServerInf
                 };
                 request.extend(requested.iter().cloned());
                 let argv: Vec<&str> = request.iter().map(String::as_str).collect();
-                let reply = connector.execute_argv(target.database, &redis_argv(&argv)).map_err(
+                let reply = connector.execute_argv_with_budget(target.database, &redis_argv(&argv), fluxdb_connectors::RedisReadBudget::default()).map_err(
                     |error| SqlExecError::new("redis_error", format!("INFO 失败: {}", error.message)),
                 )?;
                 let text = match &reply {
@@ -441,14 +501,20 @@ impl<R: SqlExecutionResolver + 'static> fluxdb_core::AiTool for AiRedisExecuteTo
                     }
                     _ => {}
                 }
+                if ctx.cancel.is_cancelled() {
+                    return Err(SqlExecError::new("cancelled", "已取消，未发送 Redis 命令"));
+                }
                 let target = AiRedisTarget::parse(handle)?;
                 let (_config, connector) = redis_connector(resolver.as_ref(), &target)?;
                 let argv_refs: Vec<&str> = argv.iter().map(String::as_str).collect();
                 let reply = connector
-                    .execute_argv(target.database, &redis_argv(&argv_refs))
+                    .execute_argv_with_budget(target.database, &redis_argv(&argv_refs), fluxdb_connectors::RedisReadBudget::default())
                     .map_err(|error| {
                         SqlExecError::new("redis_error", format!("命令失败: {}", error.message))
                     })?;
+                if ctx.cancel.is_cancelled() {
+                    return Err(SqlExecError::new("cancel_race_unknown", "客户端停止与已发送命令竞态；请核对实际 Key 状态，不能宣称撤销写入"));
+                }
                 Ok(SqlExecutionOutcome {
                     columns: vec!["command".into(), "reply".into()],
                     rows: vec![vec![

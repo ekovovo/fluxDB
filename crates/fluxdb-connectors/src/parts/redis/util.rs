@@ -190,102 +190,15 @@ const REDIS_MAX_LINE_LEN: usize = 1024 * 1024;
 /// 数组嵌套深度上限：RESP2 只在 MULTI/EXEC 下嵌套，真实深度个位数。
 const REDIS_MAX_DEPTH: usize = 64;
 
-fn redis_read_value(
-    reader: &mut std::io::BufReader<RedisStream>,
-) -> fluxdb_core::Result<RedisValue> {
-    redis_read_value_at(reader, 0)
+fn redis_read_value(reader: &mut std::io::BufReader<RedisStream>) -> fluxdb_core::Result<RedisValue> {
+    redis_read_value_with_budget(reader, RedisReadBudget {
+        max_bulk_bytes: REDIS_MAX_BULK_LEN as usize,
+        max_total_bytes: usize::MAX,
+        max_elements: usize::MAX,
+        max_depth: REDIS_MAX_DEPTH,
+    })
 }
 
-fn redis_read_value_at(
-    reader: &mut std::io::BufReader<RedisStream>,
-    depth: usize,
-) -> fluxdb_core::Result<RedisValue> {
-    if depth >= REDIS_MAX_DEPTH {
-        return Err(protocol_error("Redis 回包嵌套层级异常"));
-    }
-    let mut prefix = [0_u8; 1];
-    use std::io::Read;
-    reader.read_exact(&mut prefix).map_err(redis_io_error)?;
-    match prefix[0] {
-        b'+' => Ok(RedisValue::Simple(redis_read_line(reader)?)),
-        b'-' => Err(Error::new(ErrorKind::Query, redis_read_line(reader)?)),
-        b':' => redis_read_line(reader)?
-            .parse::<i64>()
-            .map(RedisValue::Int)
-            .map_err(|_| Error::new(ErrorKind::Query, "Redis 整数返回格式异常")),
-        b'$' => {
-            let len = redis_read_line(reader)?
-                .parse::<isize>()
-                .map_err(|_| Error::new(ErrorKind::Query, "Redis Bulk 返回格式异常"))?;
-            if len < 0 {
-                return Ok(RedisValue::Bulk(None));
-            }
-            let len = u64::try_from(len).map_err(|_| protocol_error("Redis Bulk 返回长度异常"))?;
-            if len > REDIS_MAX_BULK_LEN {
-                return Err(protocol_error(&format!(
-                    "Redis Bulk 返回长度 {len} 超出上限 {REDIS_MAX_BULK_LEN}"
-                )));
-            }
-            // 只按实际到达的字节增长缓冲，不信任对端声明的长度：上限内的荒谬值最多多读到超时。
-            let mut bytes = Vec::new();
-            reader
-                .by_ref()
-                .take(len)
-                .read_to_end(&mut bytes)
-                .map_err(redis_io_error)?;
-            if bytes.len() as u64 != len {
-                return Err(protocol_error("Redis Bulk 返回长度与声明不一致"));
-            }
-            let mut crlf = [0_u8; 2];
-            reader.read_exact(&mut crlf).map_err(redis_io_error)?;
-            Ok(RedisValue::Bulk(Some(bytes)))
-        }
-        b'*' => {
-            let len = redis_read_line(reader)?
-                .parse::<isize>()
-                .map_err(|_| Error::new(ErrorKind::Query, "Redis Array 返回格式异常"))?;
-            if len < 0 {
-                return Ok(RedisValue::Array(Vec::new()));
-            }
-            // 不 with_capacity(对端声明值)：元素随实际读到的数量增长，谎报大数只会在读到下一个
-            // 元素时报错。真实大集合（数百万 member）仍按需要自然增长。
-            let mut values = Vec::with_capacity(std::cmp::min(len as usize, 64));
-            for _ in 0..len {
-                values.push(redis_read_value_at(reader, depth + 1)?);
-            }
-            Ok(RedisValue::Array(values))
-        }
-        // 首字节不是任何 RESP 前缀：真实场景几乎都是端口填错（连到了 MySQL/HTTP 等），
-        // 也可能是流已错位；两种都不能再复用这条连接。
-        other => Err(Error::new(
-            ErrorKind::Connection,
-            format!(
-                "未收到 Redis 协议响应（首字节 0x{other:02x}），请确认填写的是 Redis 服务端口（默认 6379）"
-            ),
-        )),
-    }
-}
-
-fn redis_read_line(reader: &mut std::io::BufReader<RedisStream>) -> fluxdb_core::Result<String> {
-    let mut bytes = Vec::new();
-    use std::io::{BufRead, Read};
-    // 对端不发 \n 时 read_until 会一直累积，必须带上限，否则内存随字节流无界增长。
-    reader
-        .by_ref()
-        .take(REDIS_MAX_LINE_LEN as u64 + 1)
-        .read_until(b'\n', &mut bytes)
-        .map_err(redis_io_error)?;
-    if bytes.len() > REDIS_MAX_LINE_LEN {
-        return Err(protocol_error("Redis 回包单行超出上限"));
-    }
-    if bytes.ends_with(b"\r\n") {
-        bytes.truncate(bytes.len() - 2);
-    }
-    Ok(String::from_utf8_lossy(&bytes).to_string())
-}
-
-/// 协议层异常统一按连接错误返回：调用方据此作废整条连接，不能当普通查询错误继续复用，
-/// 否则半条响应还留在缓冲里，后续每条命令都会读到错位数据。
 fn protocol_error(message: &str) -> Error {
     Error::new(ErrorKind::Connection, message.to_string())
 }

@@ -137,6 +137,7 @@ fn ai_chat_composer(
                         }))
                         .child(
                             Textarea::new(&input)
+                                .accessibility_id("ai-chat-prompt")
                                 .appearance(false)
                                 .text_size(px(12.))
                                 .min_h(px(0.))
@@ -240,6 +241,8 @@ fn ai_chat_composer(
                                         .into_any_element()
                                 } else {
                                     Button::new("ai-chat-send")
+                                        .accessibility_id("ai-chat-send")
+                                        .accessibility_label("发送 AI 消息")
                                         .debug_selector(|| "ai-chat-send".into())
                                         .with_size(px(22.))
                                         .w(px(22.))

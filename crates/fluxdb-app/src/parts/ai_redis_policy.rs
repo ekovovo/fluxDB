@@ -4,7 +4,7 @@
 // - **不按 argv[1] 拍脑袋判断安全**：读白名单之外的命令一律按"需要授权"处理；
 // - 管理/危险命令直接拒绝（CONFIG/ACL/DEBUG/MONITOR/SHUTDOWN/FLUSH*…），不给审批机会绕过；
 // - 长连接类命令（SUBSCRIBE/PSUBSCRIBE/MONITOR）拒绝：Agent 调用不能挂成长订阅；
-// - EVAL/EVALSHA/FUNCTION 视为脚本执行 → 需授权（不做脚本内容分析，无法保证只读）。
+// - Lua/function 默认拒绝，不能凭普通写审批开启任意脚本。
 
 /// Redis 命令风险。
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -62,6 +62,7 @@ const REDIS_REJECTED: &[&str] = &[
     "unsubscribe", "punsubscribe", "sunsubscribe", "psync", "sync", "replconf", "wait",
     "blpop", "brpop", "blmove", "brpoplpush", "blmpop", "bzpopmin", "bzpopmax", "bzmpop",
     "xread", "xreadgroup", "auth", "hello", "reset", "select",
+    "eval", "evalsha", "eval_ro", "evalsha_ro", "fcall", "fcall_ro", "function", "script", "keys",
 ];
 
 /// 按 argv 分类一条 Redis 命令。
@@ -78,6 +79,9 @@ pub fn classify_redis_command(argv: &[String]) -> RedisRisk {
         return RedisRisk::Rejected {
             reasons: vec![format!("blocked_command:{command}")],
         };
+    }
+    if command == "memory" && !argv.get(1).is_some_and(|value| matches!(value.to_ascii_lowercase().as_str(), "usage" | "stats" | "doctor" | "malloc-stats" | "help")) {
+        return RedisRisk::Rejected { reasons: vec!["blocked_subcommand:memory".into()] };
     }
     if REDIS_READ_ONLY.contains(&command.as_str()) {
         // KEYS/SCAN 之类全库遍历仍要限流边界，但不属于写风险。
@@ -103,7 +107,8 @@ pub const REDIS_SCAN_INPUT_SCHEMA: &str = r##"{
     "target": { "type": "string", "minLength": 1 },
     "pattern": { "type": "string", "minLength": 1, "maxLength": 512 },
     "cursor": { "type": "string", "maxLength": 32 },
-    "count": { "type": "integer", "minimum": 1, "maximum": 1000 }
+    "count": { "type": "integer", "minimum": 1, "maximum": 1000 },
+    "max_keys": { "type": "integer", "minimum": 1, "maximum": 1000 }
   }
 }"##;
 
@@ -116,7 +121,9 @@ pub const REDIS_INSPECT_INPUT_SCHEMA: &str = r##"{
     "target": { "type": "string", "minLength": 1 },
     "key": { "type": "string", "minLength": 1, "maxLength": 1024 },
     "view": { "type": "string", "enum": ["metadata", "value"], "default": "metadata" },
-    "limit": { "type": "integer", "minimum": 1, "maximum": 200 }
+    "cursor": { "type": "string", "maxLength": 32 },
+    "limit": { "type": "integer", "minimum": 1, "maximum": 200 },
+    "max_bytes": { "type": "integer", "minimum": 1, "maximum": 65536 }
   }
 }"##;
 

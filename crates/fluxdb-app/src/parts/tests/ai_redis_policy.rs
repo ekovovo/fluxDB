@@ -26,7 +26,7 @@ fn ai_redis_policy_read_only_allowlist_is_read_only() {
 }
 
 #[test]
-fn ai_redis_policy_mutations_and_scripts_require_authorization() {
+fn ai_redis_policy_mutations_require_authorization() {
     for argv in [
         vec!["SET", "k", "v"],
         vec!["DEL", "k"],
@@ -35,8 +35,6 @@ fn ai_redis_policy_mutations_and_scripts_require_authorization() {
         vec!["ZADD", "z", "1", "m"],
         vec!["INCR", "counter"],
         vec!["EXPIRE", "k", "60"],
-        vec!["EVAL", "return 1", "0"],
-        vec!["FUNCTION", "LIST"],
     ] {
         let risk = classify_redis_command(&redis_argv(&argv));
         assert!(
@@ -51,6 +49,11 @@ fn ai_redis_policy_blocks_admin_and_long_lived_commands() {
     // 管理与危险命令：直接拒绝，不给审批绕过的机会。
     for argv in [
         vec!["CONFIG", "SET", "maxmemory", "1gb"],
+        vec!["EVAL", "return 1", "0"],
+        vec!["FCALL", "function", "0"],
+        vec!["FUNCTION", "LIST"],
+        vec!["MEMORY", "PURGE"],
+        vec!["KEYS", "*"],
         vec!["ACL", "LIST"],
         vec!["DEBUG", "SLEEP", "1"],
         vec!["MONITOR"],

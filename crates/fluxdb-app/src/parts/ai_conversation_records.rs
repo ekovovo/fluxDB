@@ -44,7 +44,6 @@ fn ai_conversation_is_secret_key(key: &str) -> bool {
 fn ai_conversation_record_tool_start(
     storage: &fluxdb_storage::FileStorage,
     job: &AiConversationJob,
-    ordinal: usize,
     call: &fluxdb_core::ToolCallRequest,
     plan_hash: &str,
     tool_version: u32,
@@ -54,14 +53,20 @@ fn ai_conversation_record_tool_start(
     let call_row = format!("{}-toolcall-{}", job.turn_id, call.provider_call_id);
     let payload=serde_json::json!({"tool":call.tool_id,"call_id":call.provider_call_id,"plan_hash":plan_hash,"text_offset":text_offset}).to_string();
     with_ai_storage(storage, |conn| {
+        // 审批恢复和拒绝回执都会新增事实行，序号必须从落盘状态分配而非内存计数。
+        let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)
+            .map_err(|error| fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, error.to_string()))?;
+        let conn = &tx;
+        let (iteration, ordinal) =
+            fluxdb_storage::ai_platform::sessions::next_tool_call_ordinal(conn, &job.turn_id)?;
         fluxdb_storage::ai_platform::sessions::start_tool_call(
             conn,
             ai_chat_now(),
             &call_row,
             &job.session_id,
             &job.turn_id,
-            ordinal as i64 + 1,
-            ordinal as i64,
+            iteration,
+            ordinal,
             &call.provider_call_id,
             &call.tool_id,
             tool_version,
@@ -70,8 +75,8 @@ fn ai_conversation_record_tool_start(
             target_json,
             plan_hash,
         )?;
-        fluxdb_storage::ai_platform::conversation::upsert_event_part(
-            conn,
+        fluxdb_storage::ai_platform::conversation::upsert_event_part_in_transaction(
+            &tx,
             ai_chat_now(),
             &job.session_id,
             &job.turn_id,
@@ -85,7 +90,8 @@ fn ai_conversation_record_tool_start(
             &payload,
             Some(&call_row),
             None,
-        )
+        )?;
+        tx.commit().map_err(|error| fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, error.to_string()))
     })
 }
 
@@ -233,7 +239,6 @@ fn ai_conversation_record_tool_result(
 fn ai_conversation_record_approval(
     storage: &fluxdb_storage::FileStorage,
     job: &AiConversationJob,
-    ordinal: usize,
     call: &fluxdb_core::ToolCallRequest,
     tool_version: u32,
     plan_hash: &str,
@@ -245,14 +250,20 @@ fn ai_conversation_record_approval(
     let call_row = format!("{}-toolcall-{}", job.turn_id, call.provider_call_id);
     let approval_id = format!("{}-approval-{}", job.turn_id, call.provider_call_id);
     with_ai_storage(storage, |conn| {
+        // 审批恢复和拒绝回执都会新增事实行，序号必须从落盘状态分配而非内存计数。
+        let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)
+            .map_err(|error| fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, error.to_string()))?;
+        let conn = &tx;
+        let (iteration, ordinal) =
+            fluxdb_storage::ai_platform::sessions::next_tool_call_ordinal(conn, &job.turn_id)?;
         fluxdb_storage::ai_platform::sessions::create_tool_call(
             conn,
             ai_chat_now(),
             &call_row,
             &job.session_id,
             &job.turn_id,
-            ordinal as i64 + 1,
-            ordinal as i64,
+            iteration,
+            ordinal,
             &call.provider_call_id,
             &call.tool_id,
             tool_version,
@@ -280,8 +291,8 @@ fn ai_conversation_record_approval(
             "scope":serde_json::from_str::<serde_json::Value>(scope_json).unwrap_or(serde_json::Value::Null),
             "details":serde_json::from_str::<serde_json::Value>(details_json).unwrap_or(serde_json::Value::Null),
         }).to_string();
-        fluxdb_storage::ai_platform::conversation::upsert_event_part(
-            conn,
+        fluxdb_storage::ai_platform::conversation::upsert_event_part_in_transaction(
+            &tx,
             ai_chat_now(),
             &job.session_id,
             &job.turn_id,
@@ -295,7 +306,8 @@ fn ai_conversation_record_approval(
             &payload,
             Some(&call_row),
             None,
-        )
+        )?;
+        tx.commit().map_err(|error| fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, error.to_string()))
     })?;
     Ok(approval_id)
 }

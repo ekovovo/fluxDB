@@ -763,3 +763,133 @@ fn approved_resume_executes_exactly_once_even_when_resumed_again() {
     );
     assert_eq!(tool.call_count(), 1, "重复 resume 不得再次执行工具");
 }
+
+struct AllowAudit;
+impl SecurityAuditHook for AllowAudit {
+    fn audit(&self, _: &AuditInput) -> fluxdb_core::Result<AuditOutcome> {
+        Ok(AuditOutcome::Allow)
+    }
+}
+
+#[test]
+fn approval_resume_records_follow_up_calls_without_ordinal_collisions() {
+    let fixture = Fixture::new();
+    let mut controller = fixture.configured();
+    let tool = read_tool("db.query");
+    let paused = pause_round(&fixture, &mut controller, &tool);
+    approve(&mut controller, &paused.approval_id, 1);
+    let step = |id: &str| {
+        vec![
+            ModelEvent::ToolCallRequested(ToolCallRequest {
+                provider_call_id: id.into(),
+                tool_id: "db.query".into(),
+                arguments_json: r#"{"sql":"SELECT 1"}"#.into(),
+            }),
+            ModelEvent::Finished(FinishReason::Stop),
+        ]
+    };
+    let provider = ScriptedGenerationProvider::new(
+        caps(),
+        vec![
+            step("follow-up-1"),
+            step("follow-up-2"),
+            text_step("verified"),
+        ],
+    );
+    let (tx, rx) = std::sync::mpsc::sync_channel(64);
+    run_ai_conversation_resume_approval(
+        &fixture.storage,
+        &paused.job,
+        &CancelFlag::new(),
+        &tx,
+        &provider,
+        &catalog_for(&tool),
+        &AllowAudit,
+        permission(),
+        &paused.approval_id,
+    );
+    let view = last_terminal(&rx);
+    assert!(
+        view.error.is_none(),
+        "resume persistence error: {:?}",
+        view.error
+    );
+    assert_eq!(
+        turn_status(&fixture.storage, &paused.job.turn_id),
+        sessions::TurnStatus::Completed
+    );
+    assert_eq!(
+        tool.call_count(),
+        3,
+        "approved call and two follow-up calls execute once each"
+    );
+    assert_eq!(result_rows(&fixture.storage, &paused.job.turn_id), 3);
+    let calls = fixture
+        .storage
+        .with_ai_connection(|conn| sessions::list_tool_calls_for_turn(conn, &paused.job.turn_id))
+        .unwrap();
+    assert_eq!(calls.len(), 3);
+    assert!(
+        calls
+            .iter()
+            .all(|call| call.status == "succeeded" && call.receipt_json.is_some())
+    );
+}
+
+#[test]
+fn approval_resume_can_pause_for_a_second_approval_then_complete() {
+    let fixture = Fixture::new();
+    let mut controller = fixture.configured();
+    let tool = read_tool("db.query");
+    let paused = pause_round(&fixture, &mut controller, &tool);
+    approve(&mut controller, &paused.approval_id, 1);
+    let mut step = tool_step("db.query");
+    if let ModelEvent::ToolCallRequested(call) = &mut step[0] {
+        call.provider_call_id = "second-approval".into();
+    }
+    let provider = ScriptedGenerationProvider::new(caps(), vec![step]);
+    let (tx, rx) = std::sync::mpsc::sync_channel(64);
+    run_ai_conversation_resume_approval(
+        &fixture.storage,
+        &paused.job,
+        &CancelFlag::new(),
+        &tx,
+        &provider,
+        &catalog_for(&tool),
+        &RequireApprovalAudit,
+        permission(),
+        &paused.approval_id,
+    );
+    let view = last_terminal(&rx);
+    assert!(
+        view.error.is_none(),
+        "second approval persistence error: {:?}",
+        view.error
+    );
+    assert_eq!(
+        turn_status(&fixture.storage, &paused.job.turn_id),
+        sessions::TurnStatus::WaitingApproval
+    );
+    assert_eq!(tool.call_count(), 1);
+    let approval = fixture
+        .storage
+        .with_ai_connection(|conn| {
+            let calls = sessions::list_tool_calls_for_turn(conn, &paused.job.turn_id)?;
+            assert_eq!(calls.len(), 2);
+            let call = calls
+                .iter()
+                .find(|call| call.provider_call_id == "second-approval")
+                .unwrap();
+            assert_eq!(call.status, "waiting_approval");
+            Ok(audits::list_approvals_for_call(conn, &call.id)?.remove(0))
+        })
+        .unwrap();
+    approve(&mut controller, &approval.id, approval.revision);
+    resume(&fixture, &tool, &paused.job, &approval.id);
+    assert_eq!(tool.call_count(), 2);
+    assert_eq!(result_rows(&fixture.storage, &paused.job.turn_id), 2);
+    assert_eq!(
+        turn_status(&fixture.storage, &paused.job.turn_id),
+        sessions::TurnStatus::Completed
+    );
+}

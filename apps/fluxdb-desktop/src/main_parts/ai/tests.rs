@@ -5,6 +5,7 @@ mod ai_panel_tests {
     include!("tests_layout.rs");
     include!("tests_send_references.rs");
     include!("tests_reference_interactions.rs");
+    include!("tests_file_attachments_e09.rs");
     include!("tests_workspace_layout.rs");
     include!("tests_display.rs");
     include!("tests_composer_shortcuts.rs");

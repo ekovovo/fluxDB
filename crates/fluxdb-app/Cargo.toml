@@ -17,6 +17,8 @@ serde_json = "1"
 base64 = "0.22"
 url = "2"
 zip = { version = "8", default-features = false, features = ["deflate"] }
+# 附件 CSV 流式分段解析（引号转义/嵌入换行交给 crate，不手写状态机）。
+csv = "1.4"
 
 [dev-dependencies]
 sqlx = { version = "0.8.6", default-features = false, features = ["sqlite", "runtime-tokio-rustls"] }
@@ -24,3 +26,12 @@ tokio = { version = "1.47.1", features = ["rt-multi-thread"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+# 附件安全打开：CreateFileW/GetFinalPathNameByHandleW 逐级拒绝 reparse point，
+# 与 apps/fluxdb-desktop 已有 windows 0.57 同版本，不新增升级。
+windows = { version = "0.57", features = [
+    "Win32_Storage_FileSystem",
+    # Win32_Security 门控 FileSystem 模块内的 CreateFileW（windows 0.57 源码确认）。
+    "Win32_Security",
+] }

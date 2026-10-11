@@ -685,3 +685,60 @@ fn ai_sql_exec_receipt_keeps_large_results_out_of_context_and_stays_readable() {
     outcome.rows.clear();
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn ai_sql_exec_tool_declares_sample_output_shape_so_projection_never_cuts_it() {
+    // 设计 §15 与参考实现（Pi/Goose）共同做法：截断发生在**产出**工具结果时，
+    // 传输层只做兜底。db.query 产出时已只放样本行 + rows_omitted + result_ref，
+    // 因此它的目录项必须声明这一形状，投影层才不会把已经裁好的载荷再切一次。
+    let specs = standard_sql_tool_specs().expect("标准 SQL 工具目录");
+    let query = specs
+        .iter()
+        .find(|spec| spec.id == "db.query")
+        .expect("db.query 应在目录中");
+    assert_eq!(
+        query.output_shape,
+        ToolOutputShape::Sample {
+            keep_rows: RECEIPT_SAMPLE_ROWS,
+            omit_field: "rows".into(),
+            rows_omitted_field: Some("rows_omitted".into()),
+        },
+        "db.query 必须声明样本行输出形状，让通用投影层不要重复裁剪"
+    );
+
+    // 投影层对已声明形状的载荷只做"超限才兜底"，不会主动改变内容。
+    let outcome = SqlExecutionOutcome {
+        columns: vec!["id".into()],
+        rows: (0..RECEIPT_SAMPLE_ROWS)
+            .map(|n| vec![serde_json::json!(n)])
+            .collect(),
+        row_count: 50,
+        truncated: true,
+        elapsed_ms: 1,
+        query_session_id: fluxdb_core::QuerySessionId::host_managed(1),
+        source: fluxdb_core::CommandExecutionSource::Ai,
+        original_sql: "SELECT id FROM t".into(),
+        executed_sql: "SELECT id FROM t LIMIT 51".into(),
+        progress: Vec::new(),
+        affected_rows: None,
+        statement_kind: "result_set",
+    };
+    let payload = outcome.to_model_json(None).to_string();
+    let catalog = ToolCatalog::new(standard_sql_tool_specs().unwrap());
+    let receipt = fluxdb_core::ToolReceipt {
+        call_id: "c1".into(),
+        tool_id: "db.query".into(),
+        status: fluxdb_core::ToolReceiptStatus::Succeeded,
+        result_json: payload.clone(),
+        error_code: None,
+        affected_rows: None,
+        started_at_ms: 0,
+        finished_at_ms: 1,
+    };
+    let projection = catalog.project("db.query", &receipt, None).expect("投影");
+    assert_eq!(
+        projection.text, payload,
+        "未超上限时投影必须原样透传，不改变工具已裁好的载荷"
+    );
+    assert!(!projection.truncated);
+}

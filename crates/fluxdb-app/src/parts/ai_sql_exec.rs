@@ -533,7 +533,7 @@ pub struct SqlExecutionOutcome {
 }
 
 /// 回执里随行返回的样本条数上限（设计 §15：只带结构、行数/截断标记、少量样本与 ResultRef）。
-const RECEIPT_SAMPLE_ROWS: usize = 5;
+pub const RECEIPT_SAMPLE_ROWS: usize = 5;
 
 impl SqlExecutionOutcome {
     pub fn to_json(&self) -> serde_json::Value {

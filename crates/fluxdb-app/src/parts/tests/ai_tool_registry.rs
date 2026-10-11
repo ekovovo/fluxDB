@@ -15,6 +15,7 @@ fn tool_spec(id: &str, input_schema: serde_json::Value) -> ToolSpec {
         effect: EffectClass::PureRead,
         timeout_ms: 30_000,
         output_limit_bytes: 4096,
+        output_shape: ToolOutputShape::Opaque,
     }
 }
 
@@ -476,4 +477,183 @@ fn ai_tool_registry_globally_disabled_tool_is_neither_discoverable_nor_executabl
     );
     // 未停用的工具不受影响。
     assert!(catalog.describe("db.describe_object").is_some());
+}
+
+#[test]
+fn ai_tool_registry_truncated_projection_is_still_valid_json() {
+    // 回执超过工具 output 上限时，投影会按字节截断。截断后的片段必须仍是
+    // 合法 JSON：ai_loop 会把它原样嵌进 {"tool":..,"result":<投影>} 信封发给模型，
+    // 半截 JSON 会让模型收到不可解析的内容，而不是"结果被截断"这个事实。
+    let rows: Vec<serde_json::Value> = (0..20000)
+        .map(|i| serde_json::json!(format!("value-{i}")))
+        .collect();
+    let receipt = fluxdb_core::ToolReceipt {
+        call_id: "c1".into(),
+        tool_id: "db.query".into(),
+        status: fluxdb_core::ToolReceiptStatus::Succeeded,
+        result_json: serde_json::json!({ "columns": ["a"], "rows": rows }).to_string(),
+        error_code: None,
+        affected_rows: None,
+        started_at_ms: 0,
+        finished_at_ms: 1,
+    };
+    let limit = 2048usize;
+    let projection = project_receipt(&receipt, None, limit);
+    assert!(projection.truncated, "fixture 必须真的超限");
+
+    // 与 ai_loop 构造信封的方式保持一致。
+    let envelope = format!(
+        "{{\"tool\":\"{}\",\"status\":\"succeeded\",\"truncated\":{},\"result\":{}}}",
+        receipt.tool_id, projection.truncated, projection.text
+    );
+    serde_json::from_str::<serde_json::Value>(&envelope)
+        .unwrap_or_else(|error| panic!("截断后信封必须是合法 JSON: {error}; tail={}", &envelope[envelope.len().saturating_sub(80)..]));
+}
+
+#[test]
+fn ai_tool_registry_truncation_keeps_structure_and_marks_omitted_fields() {
+    // 设计 §15：大结果只带列结构、行数/截断标记与少量样本。截断应优先丢弃
+    // 体积最大的 rows，保留 columns/row_count/truncated 这些小事实，并明确
+    // 标注被省略的字段，而不是只留一段无法解释的残缺 JSON。
+    let rows: Vec<serde_json::Value> = (0..5000)
+        .map(|i| serde_json::json!(format!("row-value-{i}")))
+        .collect();
+    let receipt = fluxdb_core::ToolReceipt {
+        call_id: "c1".into(),
+        tool_id: "db.query".into(),
+        status: fluxdb_core::ToolReceiptStatus::Succeeded,
+        result_json: serde_json::json!({
+            "columns": ["id", "name"],
+            "rows": rows,
+            "row_count": 5000,
+            "truncated": true,
+        })
+        .to_string(),
+        error_code: None,
+        affected_rows: None,
+        started_at_ms: 0,
+        finished_at_ms: 1,
+    };
+    let limit = 512usize;
+    let projection = project_receipt(&receipt, None, limit);
+    assert!(projection.truncated);
+    assert!(
+        projection.text.len() <= limit,
+        "投影必须遵守工具声明上限，实际 {}",
+        projection.text.len()
+    );
+    let value: serde_json::Value = serde_json::from_str(&projection.text).expect("截断后仍是合法 JSON");
+    assert_eq!(value["columns"], serde_json::json!(["id", "name"]));
+    assert_eq!(value["row_count"], 5000);
+    assert!(
+        value.get("rows").is_none(),
+        "大体量 rows 应被优先省略，实际 {}",
+        projection.text
+    );
+    // 被省略的字段必须显式列出，模型才知道内容是"被省略"而不是"本来就没有"。
+    let omitted = value["omitted_fields"]
+        .as_array()
+        .expect("必须有 omitted_fields");
+    assert!(
+        omitted.iter().any(|name| name == "rows"),
+        "rows 必须出现在 omitted_fields，实际 {omitted:?}"
+    );
+    assert!(
+        omitted.iter().all(|name| name == "rows" || name == "truncated"),
+        "不应丢弃结构/行数这类小事实，实际 {omitted:?}"
+    );
+}
+
+#[test]
+fn ai_tool_registry_non_json_receipt_truncation_stays_valid_and_bounded() {
+    // 受控夹具可能返回非 JSON 文本；截断后必须是合法 JSON 字符串且不超上限。
+    let source = "数据库查询成功，返回了中文内容。".repeat(64);
+    let receipt = fluxdb_core::ToolReceipt {
+        call_id: "c1".into(),
+        tool_id: "db.query".into(),
+        status: fluxdb_core::ToolReceiptStatus::Succeeded,
+        result_json: source,
+        error_code: None,
+        affected_rows: None,
+        started_at_ms: 0,
+        finished_at_ms: 1,
+    };
+    // 0/1 字节预算装不下任何合法 JSON（`""` 本身 2 字节），从 2 开始。
+    for limit in [2usize, 8, 32, 128] {
+        let projection = project_receipt(&receipt, None, limit);
+        assert!(projection.truncated);
+        assert!(
+            projection.text.len() <= limit,
+            "limit={limit} 时投影 {} 超出上限",
+            projection.text.len()
+        );
+        serde_json::from_str::<serde_json::Value>(&projection.text)
+            .unwrap_or_else(|error| panic!("limit={limit} 截断后必须是合法 JSON: {error}"));
+    }
+}
+
+#[test]
+fn ai_tool_registry_sample_shape_sheds_declared_field_first() {
+    // 声明了 Sample 形状的工具，兜底裁剪必须优先丢声明字段（rows），
+    // 即使它在 JSON 里不是最后一个键；否则 rows 会留在上下文里把结构字段挤掉。
+    let rows: Vec<serde_json::Value> = (0..4000)
+        .map(|i| serde_json::json!(format!("row-{i}")))
+        .collect();
+    let raw = serde_json::json!({
+        "rows": rows,
+        "columns": ["id", "name"],
+        "row_count": 4000,
+        "truncated": true,
+        "rows_omitted": 3995,
+    })
+    .to_string();
+    // serde_json 默认按键排序，rows 不会是最后一个键——正是需要验证声明顺序的原因。
+    assert!(
+        raw.find("\"columns\"").unwrap() < raw.find("\"rows\"").unwrap(),
+        "fixture 必须让 rows 不在最后，才能验证声明顺序生效"
+    );
+
+    let shape = ToolOutputShape::Sample {
+        keep_rows: 5,
+        omit_field: "rows".into(),
+        rows_omitted_field: Some("rows_omitted".into()),
+    };
+    let value: serde_json::Value = serde_json::from_str(
+        &shrink_to_budget(&raw, 512, &shape).expect("应能裁到预算内"),
+    )
+    .expect("裁剪结果必须是合法 JSON");
+
+    assert!(
+        value.get("rows").is_none(),
+        "声明的 rows 必须被优先丢弃，实际 {}",
+        value
+    );
+    // 结构与行数事实必须留下，模型才知道查询返回了多少行。
+    assert_eq!(value["columns"], serde_json::json!(["id", "name"]));
+    assert_eq!(value["row_count"], 4000);
+    assert_eq!(value["rows_omitted"], 3995);
+    assert_eq!(value["omitted_fields"], serde_json::json!(["rows"]));
+}
+
+#[test]
+fn ai_tool_registry_opaque_shape_does_not_invent_structure() {
+    // 未声明形状的工具按 Opaque 处理：超限时给受控错误，而不是猜字段删内容。
+    let raw = serde_json::json!({"payload": "x".repeat(4096)}).to_string();
+    let text = project_receipt_with_shape(
+        &fluxdb_core::ToolReceipt {
+            call_id: "c1".into(),
+            tool_id: "file.read".into(),
+            status: fluxdb_core::ToolReceiptStatus::Succeeded,
+            result_json: raw,
+            error_code: None,
+            affected_rows: None,
+            started_at_ms: 0,
+            finished_at_ms: 1,
+        },
+        None,
+        128,
+        &ToolOutputShape::Opaque,
+    )
+    .text;
+    serde_json::from_str::<serde_json::Value>(&text).expect("受控错误必须是合法 JSON");
 }

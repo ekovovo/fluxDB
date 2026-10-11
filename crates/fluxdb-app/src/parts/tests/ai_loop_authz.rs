@@ -118,6 +118,7 @@ fn authz_strict_catalog(
         effect: crate::EffectClass::PureRead,
         timeout_ms: 30_000,
         output_limit_bytes: 128 * 1024,
+        output_shape: crate::ToolOutputShape::Opaque,
     };
     let mut catalog = crate::ToolCatalog::new(vec![spec]);
     catalog

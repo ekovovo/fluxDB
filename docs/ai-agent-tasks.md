@@ -425,6 +425,18 @@ cargo test -p fluxdb-app --locked ai_permission   # 15 passed
 - [x] **验收范围说明（用户确认接受）**：① 图片 decoded 像素/活动数量限制——代码无任何图片进模型通道（`ModelMessage` 纯文本，`PartKind` 无图片类型），该约束无作用对象，按"不适用"记录，不实现图片通道也不宣称已有；② 界面摘录 16 KiB/400 行为有意默认（设计 §13.2 该值是默认值，"可按模型上下文调大"属可选增强；按模型窗口重算的上下文总预算已由 `should_compact` 实现）；③ `Sample.keep_rows` 降采样不做（`db.query` 已只带 5 行样本 + `rows_omitted` + `result_ref`，通用层仅兜底）。
 - **T034 已勾选**（2026-10-11 用户手动验收确认）。
 
+### T034 补充：当前页面引用协议与打开本地 SQL 文件（2026-10-11）
+- [x] **把「当前页面」从一次性快照改成带类型的自动 `@` 引用**：新增 `crates/fluxdb-app/src/parts/ai_page_context.rs`，页面上下文按 `page_kind`/`delivery`/`scope`/`capabilities`/`details`/`truncated` 描述，按内容类型选择全文、摘录或结构化摘要，并在总预算内收敛（内容约 24 KiB，含字段裁剪共约 48 KiB）；摘录同时给出总量与续读能力说明，模型能区分「没有」和「被截断」。
+- [x] **去掉编辑器 256 KiB 发送门槛**（`ai_editor_read.rs`）：`editor.search`/`editor.read_range` 共享同一个不可变 `BufferSnapshot`，UI 线程不再为发送复制全文，首条消息只带 16 KiB/400 行摘录加总字节/行数，全文由工具按需读取；新增 `ai_content_search.rs`（memchr/SIMD）作为内容检索内核。
+- [x] **业务数据默认不自动进模型**：表数据只发列名/类型/主键、筛选排序、分页与状态；表数据值、Redis Key 值需在该页签显式开启「数据共享」，才以发送时已加载的快照提供 `page.read_rows`（工具只读快照，不重新查询数据库）。
+- [x] **配置库隔离**：页面数据源指向应用自身 SQLite 配置库的连接被拒绝，复用 `ai_database_context.rs` 的统一校验，与显式引用同一条边界。
+- [x] **查询工具栏新增「打开本地 SQL 文件」纯图标按钮**（`navicat_main/query_files.rs`、`query_toolbar.rs`）：默认新页签打开，不覆盖未保存内容、不自动执行，只接受 UTF-8 `.sql`；取消或选择非 `.sql` 文件时原内容不变并给出提示。
+- [x] **`AGENTS.md` 增加约定**：新增页面或页面功能必须检查「当前页面 AI 上下文」是否已接入并向用户说明可见范围；未接入时询问用户是否接入，确认前不得静默扩大读取或上传范围。
+- [x] 测试：app 新增 `ai_page_context` 用例并回归 `ai_context`/`editor` 相关断言；desktop 新增 `current_page` 5 项（大 SQL 摘录不再写全文、表数据默认不含值、开关与数据共享按页签作用域、打开 SQL 文件不覆盖脏页签/取消与非法文件不改内容）与 `sql_open_file` 2 项。
+- 验证（合并到 `agent` 后复跑，macOS arm64）：`cargo fmt --all -- --check`、`cargo check --workspace --locked --offline` 通过；`cargo test -p fluxdb-app --locked --offline` → **947 passed / 0 failed / 12 ignored**；`cargo test -p fluxdb-desktop --locked --offline -- --test-threads=1` → **615 passed / 1 failed / 5 ignored**，唯一失败 `ai_chat_model_selection_disabled_model_error_preserves_selection_and_input` 在改动前基线已复现同样失败（断言期望「不可用」，实际文案「已停用」），属既有失败。
+- 真实窗口（合并前，macOS arm64，隔离 fixture）：AI 面板底部「当前页面 · …」控件（含可见范围说明、开关、数据共享开关）已渲染可见，截图 `/private/tmp/fluxdb-composer-zoom2.png`。明细见 [T034 当前页面引用与打开本地 SQL 文件](testing/ai-agent/t034-current-page-reference-and-sql-file-2026-10-11.md)。
+- 未完成：Redis CLI、Pub/Sub、表设计、ER、用户管理、设置页的正文尚未接入页面上下文（当前只给目标定位）；保存查询/选区/结果集显式引用仍是既有有界快照；打开 SQL 文件不做编码识别；仅 macOS 验证，Windows/Linux 未验证；查询工具栏按钮尚未在真实窗口点击验证（隔离夹具无可用连接）。
+
 ### T021 缺陷修复：界面上下文跟随当前活动页签（2026-10-11）
 - [x] **修复真实缺陷**（真实窗口测试暴露，非 `editor.read_range` 引入）：`context_tab` 只在打开 AI 面板那一刻由 `capture_ai_chat_tab_source`（`apps/fluxdb-desktop/src/main_parts/ai/display.rs:2`）记录一次，却同时被 `capture_ai_active_context` 当作"本轮上下文来源"。面板开着时切换到另一个查询页签再发送，`ui_context` 要么为空、要么来自**旧页签**（静默贴错上下文），且 `editor.read_range` 因 `Some` 判定失败而不装配。
 - [x] 隔离库实证：同一 fixture 中 `conn` 恒为 1（目标来自 debug override 旁路），但 `ui_context` 长度在 0 / 88 / 8442 之间跳变——证明目标与上下文走了两条不同的路，暴露的正是上下文这条。

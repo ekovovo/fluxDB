@@ -336,3 +336,55 @@ fn ai_result_pages_recorded_rows_match_the_store_spill_facts() {
         .expect("读取登记事实");
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn ai_result_pages_declares_sample_shape_and_keeps_cursor_when_shedding_items() {
+    // 这一页 items 就是模型主动要的数据；超限时兜底裁剪必须丢 items 而保留
+    // result_ref/next_cursor，否则模型拿到一个没有游标的半截页，无法继续翻页。
+    let spec = result_read_page_spec().expect("工具定义");
+    assert_eq!(
+        spec.output_shape,
+        ToolOutputShape::Sample {
+            keep_rows: 0,
+            omit_field: "items".into(),
+            rows_omitted_field: None,
+        }
+    );
+
+    let items: Vec<serde_json::Value> = (0..3000)
+        .map(|i| serde_json::json!(format!("row-{i}")))
+        .collect();
+    let receipt = fluxdb_core::ToolReceipt {
+        call_id: "c1".into(),
+        tool_id: "result.read_page".into(),
+        status: fluxdb_core::ToolReceiptStatus::Succeeded,
+        result_json: serde_json::json!({
+            "ok": true,
+            "result_ref": {"id": "result-1", "tool_id": "db.query", "created_at_ms": 1},
+            "items": items,
+            "returned_items": 3000,
+            "total_items": 10000,
+            "truncated": true,
+            "next_cursor": "cursor-2",
+        })
+        .to_string(),
+        error_code: None,
+        affected_rows: None,
+        started_at_ms: 0,
+        finished_at_ms: 1,
+    };
+    let projection = project_receipt_with_shape(
+        &receipt,
+        None,
+        512,
+        &spec.output_shape,
+    );
+    assert!(projection.truncated);
+    assert!(projection.text.len() <= 512);
+    let value: serde_json::Value = serde_json::from_str(&projection.text).expect("裁剪后合法 JSON");
+    assert!(value.get("items").is_none(), "items 应被优先丢弃");
+    assert_eq!(value["result_ref"]["id"], "result-1");
+    assert_eq!(value["next_cursor"], "cursor-2", "翻页游标必须保留");
+    assert_eq!(value["total_items"], 10000);
+    assert_eq!(value["omitted_fields"], serde_json::json!(["items"]));
+}

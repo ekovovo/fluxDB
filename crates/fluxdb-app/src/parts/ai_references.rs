@@ -698,7 +698,9 @@ pub fn add_ai_file_tools(catalog:&mut ToolCatalog,storage:&fluxdb_storage::FileS
         ("file.search","搜索本会话已授权附件，不扫描未授权目录",serde_json::json!({"type":"object","properties":{"query":{"type":"string"}},"additionalProperties":false})),
     ] {
         let descriptor=fluxdb_core::ToolDescriptor{id:id.into(),description:desc.into(),version:1,risk:fluxdb_core::ToolRisk::Read,input_schema_json:schema.to_string()};
-        catalog.add_tool(Box::new(AiFileTool{descriptor,references:references.clone()}))?;
+        // 附件正文/记录本身就是产物（文本段、CSV 记录、二进制预览），不是可裁剪的
+        // 结构化样本：声明 Opaque，兜底裁剪提示"缩小读取范围"而不是丢弃字段。
+        catalog.add_tool_with_shape(Box::new(AiFileTool{descriptor,references:references.clone()}),ToolOutputShape::Opaque)?;
     }
     Ok(())
 }

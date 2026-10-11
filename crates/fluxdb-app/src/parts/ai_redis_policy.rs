@@ -230,8 +230,15 @@ pub fn standard_redis_tool_specs() -> fluxdb_core::Result<Vec<ToolSpec>> {
             input_schema_json: REDIS_SUBSCRIBE_INPUT_SCHEMA.into(),
         },
     ];
-    descriptors
+    // Redis 工具各自在产出侧已做有界读取（scan 游标分页、inspect 限值预览、
+    // subscribe 限时/限条数/限字节、execute 逐次审批），这里显式声明 Opaque：
+    // 结果内容本身就是产物，兜底裁剪不猜结构。
+    let mut specs = descriptors
         .iter()
         .map(ToolSpec::from_descriptor)
-        .collect::<fluxdb_core::Result<Vec<_>>>()
+        .collect::<fluxdb_core::Result<Vec<_>>>()?;
+    for spec in &mut specs {
+        spec.output_shape = crate::ToolOutputShape::Opaque;
+    }
+    Ok(specs)
 }

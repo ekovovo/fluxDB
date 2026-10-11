@@ -30,13 +30,22 @@ pub const RESULT_READ_PAGE_INPUT_SCHEMA: &str = r#"{
 
 /// `result.read_page` 工具定义（公共只读工具，与数据库类型无关）。
 pub fn result_read_page_spec() -> fluxdb_core::Result<ToolSpec> {
-    Ok(ToolSpec::from_descriptor(&fluxdb_core::ToolDescriptor {
+    let mut spec = ToolSpec::from_descriptor(&fluxdb_core::ToolDescriptor {
         id: "result.read_page".into(),
         version: 1,
         description: "按 ResultRef 游标分页读取已取得的结果快照；不重新执行来源工具".into(),
         risk: fluxdb_core::ToolRisk::Read,
         input_schema_json: RESULT_READ_PAGE_INPUT_SCHEMA.into(),
-    })?)
+    })?;
+    // items 就是模型这一页主动要的数据，但仍有 max_bytes 上限；声明 Sample 让兜底
+    // 裁剪优先丢 items，保留 result_ref/next_cursor，模型才能继续翻页而不是
+    // 拿到一个没有游标的半截结果。
+    spec.output_shape = crate::ToolOutputShape::Sample {
+        keep_rows: 0,
+        omit_field: "items".into(),
+        rows_omitted_field: None,
+    };
+    Ok(spec)
 }
 
 /// 解析 `result.read_page` 入参（已过 schema 校验，这里只做取值与默认）。

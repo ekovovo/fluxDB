@@ -404,7 +404,10 @@ cargo test -p fluxdb-app --locked ai_permission   # 15 passed
 - [x] 同时修正一处根因：`SQL_RESULT_MAX_BYTES`（128 KiB）此前与工具投影上限相等，导致 `db.query` 结果先被自身上限截断、再被投影层截第二次——正是坏 JSON 的来源。现投影对未超限载荷原样透传（新增断言），不再二次裁剪。
 - [x] 测试：`ai_tool_registry` 19/19（新增 `Sample` 形状按声明顺序优先丢 rows、保留 columns/row_count/rows_omitted；`Opaque` 不发明结构），`ai_sql_exec` 22/22（含新增 `db.query` 声明 `Sample` 且未超限时原样透传的用例）。既有投影断言全部无需改动。
 - 验证：`cargo fmt --all -- --check`、`cargo check --workspace --locked --offline` 通过；`cargo test -p fluxdb-app --locked --offline` → **767 passed / 11 failed**（较上一轮 764 增加 3 项），11 项仍为沙箱禁止本地监听的既有 mock server 用例。
-- 未完成：其余工具（`file.read`、`redis.inspect`、`context.read`）尚未逐一声明 `Opaque`（当前靠 `from_descriptor` 默认值，语义正确但未显式表达）；`Sample` 的 `keep_rows` 目前只用于兜底顺序，未做"样本行数超预算时进一步降采样"；跨层递归裁剪未做。
+- [x] 其余工具显式声明形状（契约真正被使用，不再只靠默认值）：新增 `add_tool_with_shape`，形状由注册处给出而非通用层从 id/描述反推。`file.read`/`file.search` 与 `context.read` 在注册处声明 `Opaque`（附件正文、CSV 记录、保存查询/选区快照内容本身就是产物）；`standard_redis_tool_specs` 五个工具显式声明 `Opaque`（scan 游标分页、inspect 限值预览、subscribe 限时限条数字节，均已在产出侧有界）；`result.read_page` 声明 `Sample{omit_field:"items"}`——这一项顺带修掉一个真实问题：它此前没有可丢弃的大字段，超限时只能整体退化为 `result_too_large`，模型拿不到 `next_cursor` 就无法继续翻页；现在丢 `items` 而保留 `result_ref`/`next_cursor`/`total_items`。
+- [x] 测试：`ai_result_pages` 6/6，新增用例锁定 `read_page` 裁剪后仍保留翻页游标。
+- 验证：`cargo fmt --all -- --check` 通过；`cargo test -p fluxdb-app --locked --offline` → **768 passed / 11 failed**（较上一轮 767 增加 1 项），11 项仍为沙箱禁止本地监听的既有 mock server 用例。
+- 未完成：`Sample` 的 `keep_rows` 目前只参与兜底丢弃顺序，未做"样本行数本身超预算时进一步降采样"；跨层递归裁剪未做（按契约工具应自行声明结构，通用层不做猜测，与 Pi/Goose 一致）。
 
 ### T032 注册插件能力与确定性 Hook pipeline
 - [ ] 依赖：T012、T019、T020；设计 §23–25。

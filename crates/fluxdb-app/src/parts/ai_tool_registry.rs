@@ -209,10 +209,26 @@ impl ToolCatalog {
     }
 
     pub fn with_hooks(mut self, hooks: HookPipeline) -> Self { self.hooks=hooks; self }
-    pub fn add_tool(&mut self, tool:Box<dyn fluxdb_core::AiTool>)->fluxdb_core::Result<()> {
-        if self.describe(&tool.descriptor().id).is_some(){return Err(fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal,"工具 ID 重复"));}
-        self.specs.push(ToolSpec::from_descriptor(tool.descriptor())?);
+
+    /// 注册工具并显式声明其输出形状。
+    ///
+    /// 形状是**工具自己的语义**（"我产出的是样本"还是"内容本身就是产物"），
+    /// 不能由通用层从 id 或描述反推，所以由注册处显式给出。
+    pub fn add_tool_with_shape(
+        &mut self,
+        tool: Box<dyn fluxdb_core::AiTool>,
+        shape: ToolOutputShape,
+    ) -> fluxdb_core::Result<()> {
+        let mut spec = ToolSpec::from_descriptor(tool.descriptor())?;
+        spec.output_shape = shape;
+        if self.describe(&spec.id).is_some(){return Err(fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal,"工具 ID 重复"));}
+        self.specs.push(spec);
         self.register(tool)
+    }
+
+    /// 注册工具；未声明形状时按 [`ToolOutputShape::Opaque`] 处理。
+    pub fn add_tool(&mut self, tool:Box<dyn fluxdb_core::AiTool>)->fluxdb_core::Result<()> {
+        self.add_tool_with_shape(tool, ToolOutputShape::Opaque)
     }
 
     /// 注册可执行实现（按宿主 ID）。

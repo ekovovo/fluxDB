@@ -337,7 +337,9 @@ pub fn add_ai_reference_tools(
     if grants.is_empty() {
         return Ok(());
     }
-    catalog.add_tool(Box::new(AiReferenceReadTool {
+    // 读取的是用户选中的原文片段，内容本身就是产物：声明 Opaque 让兜底裁剪
+    // 不去猜结构、按"缩小读取范围"提示续读，而不是丢字段。
+    catalog.add_tool_with_shape(Box::new(AiReferenceReadTool {
         descriptor: fluxdb_core::ToolDescriptor {
             id: "context.read".into(),
             version: 1,
@@ -353,5 +355,5 @@ pub fn add_ai_reference_tools(
         grants,
         session_id: job.session_id.clone(),
         turn_id: job.turn_id.clone(),
-    }))
+    }), ToolOutputShape::Opaque)
 }

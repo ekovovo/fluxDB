@@ -64,6 +64,77 @@ pub struct RuntimeSettings {
     pub revision: i64,
 }
 
+/// 隐私策略（`ai_runtime_settings.privacy_policy_json` 的受校验投影，设计 §29）。
+///
+/// 只放路由真正会用到的字段；模型自己的出站许可在 `ai_model_profiles.provider_options_json`
+/// 的 `privacy_egress`（见 `models::EgressPermission`），两者是"全局应急闸门 + 单模型许可"的关系。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PrivacyPolicy {
+    /// 全局出站闸门：false 时任何模型都不再接收会话数据（怀疑外泄时的应急开关）。
+    /// 缺失或无法识别的历史值按 `true` 处理，避免升级后静默停用全部模型。
+    pub model_egress_enabled: bool,
+}
+
+impl Default for PrivacyPolicy {
+    fn default() -> Self {
+        Self {
+            model_egress_enabled: true,
+        }
+    }
+}
+
+/// 读取隐私策略；行缺失或 `privacy_policy_json` 为空时返回默认（允许出站）。
+pub fn load_privacy_policy(conn: &Connection) -> Result<PrivacyPolicy> {
+    let raw: Option<String> = conn
+        .query_row(
+            "SELECT privacy_policy_json FROM ai_runtime_settings WHERE id=1",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(sqlite_error)?;
+    let Some(raw) = raw else {
+        return Ok(PrivacyPolicy::default());
+    };
+    let value: serde_json::Value = serde_json::from_str(&raw)
+        .map_err(|_| Error::new(ErrorKind::Internal, "隐私策略不是合法 JSON"))?;
+    Ok(PrivacyPolicy {
+        model_egress_enabled: value
+            .get("model_egress_enabled")
+            .and_then(|flag| flag.as_bool())
+            .unwrap_or(true),
+    })
+}
+
+/// 保存隐私策略（对象级 CAS 复用 `ai_runtime_settings.revision`）。
+pub fn save_privacy_policy(
+    conn: &Connection,
+    now_ms: i64,
+    policy: PrivacyPolicy,
+    expected_revision: i64,
+) -> Result<PrivacyPolicy> {
+    let json =
+        serde_json::json!({ "model_egress_enabled": policy.model_egress_enabled }).to_string();
+    let changed = conn
+        .execute(
+            "INSERT INTO ai_runtime_settings (id, max_active_turns, privacy_policy_json, revision, updated_at_ms)
+             VALUES (1, 2, ?1, 1, ?2)
+             ON CONFLICT(id) DO UPDATE SET
+                privacy_policy_json=excluded.privacy_policy_json,
+                revision=ai_runtime_settings.revision+1, updated_at_ms=excluded.updated_at_ms
+              WHERE ai_runtime_settings.revision=?3",
+            params![json, now_ms, expected_revision],
+        )
+        .map_err(sqlite_error)?;
+    if changed == 0 {
+        return Err(Error::new(
+            ErrorKind::Internal,
+            "运行设置已被其他窗口修改，请重新加载",
+        ));
+    }
+    load_privacy_policy(conn)
+}
+
 /// 读取运行设置；不存在时返回默认值（revision=0 表示尚未落库）。
 pub fn load_runtime_settings(conn: &Connection) -> Result<RuntimeSettings> {
     let row = conn
@@ -326,5 +397,58 @@ mod tests {
         assert_eq!(saved.max_active_turns, 3);
         assert_eq!(saved.revision, 1);
         assert!(save_runtime_settings(&conn, 2_000, &settings, 0).is_err());
+    }
+
+    #[test]
+    fn privacy_policy_defaults_to_allowing_egress_and_uses_cas() {
+        let conn = setup();
+        assert!(
+            load_privacy_policy(&conn).unwrap().model_egress_enabled,
+            "未配置或缺失时默认允许出站，升级不改变现有行为"
+        );
+        let saved = save_privacy_policy(
+            &conn,
+            1_000,
+            PrivacyPolicy {
+                model_egress_enabled: false,
+            },
+            0,
+        )
+        .expect("首次保存");
+        assert!(!saved.model_egress_enabled);
+        assert_eq!(
+            load_runtime_settings(&conn).unwrap().revision,
+            1,
+            "与运行设置共享行 revision"
+        );
+        assert!(
+            save_privacy_policy(&conn, 2_000, PrivacyPolicy::default(), 0).is_err(),
+            "过期 revision 必须拒绝"
+        );
+        // 保存隐私策略不得清掉同行的默认模型字段。
+        let mut settings = load_runtime_settings(&conn).unwrap();
+        settings.default_model_profile_id = None;
+        save_runtime_settings(&conn, 3_000, &settings, settings.revision).expect("保存运行设置");
+        assert!(!load_privacy_policy(&conn).unwrap().model_egress_enabled);
+    }
+
+    #[test]
+    fn unparsable_privacy_value_falls_back_to_allowed() {
+        let conn = setup();
+        save_privacy_policy(
+            &conn,
+            1_000,
+            PrivacyPolicy {
+                model_egress_enabled: false,
+            },
+            0,
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE ai_runtime_settings SET privacy_policy_json='{\"model_egress_enabled\":\"nope\"}' WHERE id=1",
+            [],
+        )
+        .unwrap();
+        assert!(load_privacy_policy(&conn).unwrap().model_egress_enabled);
     }
 }

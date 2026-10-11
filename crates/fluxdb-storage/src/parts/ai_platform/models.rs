@@ -80,11 +80,41 @@ pub struct ModelEdit {
     pub endpoint_is_full_url: bool,
     pub enabled: bool,
     pub auth_mode: AuthMode,
+    /// 每模型数据出站许可（设计 §29/§31.1）。
+    pub egress: EgressPermission,
     pub context_window_tokens: Option<i64>,
     pub max_output_tokens: Option<i64>,
     pub input_price_micros_per_million: Option<i64>,
     pub output_price_micros_per_million: Option<i64>,
     pub cached_input_price_micros_per_million: Option<i64>,
+}
+
+/// 模型数据出站许可：把本轮会话数据发给该模型的 endpoint 是否被允许。
+///
+/// 默认 `Allow`：配置一个模型本身就意味着用户要把数据发给它，所以许可默认开，
+/// 由用户对具体模型显式收紧（设计 §29 的"单独授权"由此开关承担）。缺失或无法
+/// 识别的存储值一律按 `Allow` 处理，避免历史行升级后被静默停用。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EgressPermission {
+    Allow,
+    Deny,
+}
+
+impl EgressPermission {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            EgressPermission::Allow => "allow",
+            EgressPermission::Deny => "deny",
+        }
+    }
+
+    /// 只认 `deny`：其它取值（含缺失）都按允许处理。
+    pub fn parse(value: Option<&str>) -> Self {
+        match value {
+            Some("deny") => EgressPermission::Deny,
+            _ => EgressPermission::Allow,
+        }
+    }
 }
 
 /// 公开视图：不含密文列，也不含任何可还原的凭据材料。
@@ -99,6 +129,8 @@ pub struct ModelProfileView {
     pub endpoint: Option<String>,
     pub endpoint_is_full_url: bool,
     pub enabled: bool,
+    /// 数据出站许可（非敏感配置；UI 展示与路由过滤共用）。
+    pub egress: EgressPermission,
     pub auth_mode: AuthMode,
     pub context_window_tokens: Option<i64>,
     pub max_output_tokens: Option<i64>,
@@ -284,7 +316,11 @@ fn insert_model(
             sealed.as_ref().map(|s| s.nonce.clone()),
             sealed.as_ref().map(|s| s.cipher_version),
             sealed.as_ref().map(|s| s.key_id.clone()),
-            serde_json::json!({"endpoint_is_full_url": edit.endpoint_is_full_url}).to_string(),
+            serde_json::json!({
+                "endpoint_is_full_url": edit.endpoint_is_full_url,
+                "privacy_egress": edit.egress.as_str(),
+            })
+            .to_string(),
         ],
     )
     .map_err(sqlite_error)?;
@@ -316,6 +352,8 @@ fn update_model(
         edit.auth_mode,
         change,
     )?;
+    // `json_set` 的值参数按 JSON 文本解析：字符串必须带引号，否则 SQLite 报 malformed JSON。
+    let egress_json = serde_json::Value::String(edit.egress.as_str().to_string()).to_string();
 
     // Keep 路径完全不出现秘密列，确保改名不会重加密。
     let changed = match &sealed {
@@ -327,7 +365,7 @@ fn update_model(
                 cached_input_price_micros_per_million=?14, secret_revision=?15,
                 credential_ciphertext=?16, credential_nonce=?17, cipher_version=?18, key_id=?19,
                 revision=revision+1, updated_at_ms=?20,
-                provider_options_json=json_set(provider_options_json, '$.endpoint_is_full_url', json(?22))
+                provider_options_json=json_set(json_set(provider_options_json, '$.endpoint_is_full_url', json(?22)), '$.privacy_egress', json(?23))
               WHERE id=?1 AND revision=?21",
             params![
                 edit.id,
@@ -352,6 +390,7 @@ fn update_model(
                 now_ms,
                 expected,
                 if edit.endpoint_is_full_url { "true" } else { "false" },
+                egress_json,
             ],
         ),
         None if row.secret_revision != secret_revision => conn.execute(
@@ -362,7 +401,7 @@ fn update_model(
                 cached_input_price_micros_per_million=?14, secret_revision=?15,
                 credential_ciphertext=NULL, credential_nonce=NULL, cipher_version=NULL, key_id=NULL,
                 revision=revision+1, updated_at_ms=?16,
-                provider_options_json=json_set(provider_options_json, '$.endpoint_is_full_url', json(?18))
+                provider_options_json=json_set(json_set(provider_options_json, '$.endpoint_is_full_url', json(?18)), '$.privacy_egress', json(?19))
               WHERE id=?1 AND revision=?17",
             params![
                 edit.id,
@@ -383,6 +422,7 @@ fn update_model(
                 now_ms,
                 expected,
                 if edit.endpoint_is_full_url { "true" } else { "false" },
+                egress_json,
             ],
         ),
         None => conn.execute(
@@ -392,7 +432,7 @@ fn update_model(
                 input_price_micros_per_million=?12, output_price_micros_per_million=?13,
                 cached_input_price_micros_per_million=?14,
                 revision=revision+1, updated_at_ms=?15,
-                provider_options_json=json_set(provider_options_json, '$.endpoint_is_full_url', json(?17))
+                provider_options_json=json_set(json_set(provider_options_json, '$.endpoint_is_full_url', json(?17)), '$.privacy_egress', json(?18))
               WHERE id=?1 AND revision=?16",
             params![
                 edit.id,
@@ -412,6 +452,7 @@ fn update_model(
                 now_ms,
                 expected,
                 if edit.endpoint_is_full_url { "true" } else { "false" },
+                egress_json,
             ],
         ),
     }
@@ -501,6 +542,7 @@ pub fn load_model(conn: &Connection, id: &str) -> Result<ModelProfileView> {
         String,
         Option<i64>,
         bool,
+        Option<String>,
     );
     let row = conn
         .query_row(
@@ -510,6 +552,7 @@ pub fn load_model(conn: &Connection, id: &str) -> Result<ModelProfileView> {
                     cached_input_price_micros_per_million, secret_revision, revision,
                     credential_ciphertext IS NOT NULL, connection_status, connection_checked_at_ms,
                     COALESCE(json_extract(provider_options_json, '$.endpoint_is_full_url'), 0)
+                    , json_extract(provider_options_json, '$.privacy_egress')
                FROM ai_model_profiles WHERE id=?1",
             [id],
             |row| -> rusqlite::Result<Row> {
@@ -534,6 +577,7 @@ pub fn load_model(conn: &Connection, id: &str) -> Result<ModelProfileView> {
                     row.get(17)?,
                     row.get(18)?,
                     row.get(19)?,
+                    row.get(20)?,
                 ))
             },
         )
@@ -561,6 +605,7 @@ pub fn load_model(conn: &Connection, id: &str) -> Result<ModelProfileView> {
         connection_status,
         connection_checked_at_ms,
         endpoint_is_full_url,
+        egress,
     ) = row;
     let auth = AuthMode::parse(&auth_mode)?;
     Ok(ModelProfileView {
@@ -573,6 +618,7 @@ pub fn load_model(conn: &Connection, id: &str) -> Result<ModelProfileView> {
         endpoint,
         endpoint_is_full_url,
         enabled: enabled != 0,
+        egress: EgressPermission::parse(egress.as_deref()),
         auth_mode: auth,
         context_window_tokens,
         max_output_tokens,
@@ -728,6 +774,7 @@ mod tests {
             endpoint_is_full_url: false,
             enabled: true,
             auth_mode: AuthMode::ApiKey,
+            egress: EgressPermission::Allow,
             context_window_tokens: Some(400_000),
             max_output_tokens: Some(32_000),
             input_price_micros_per_million: Some(2_500),
@@ -754,6 +801,11 @@ mod tests {
     #[test]
     fn create_then_view_hides_cipher() {
         let (_conn, _cipher, view) = created();
+        assert_eq!(
+            view.egress,
+            EgressPermission::Allow,
+            "未收紧的模型默认允许出站"
+        );
         assert_eq!(view.revision, 1);
         assert_eq!(
             view.credential_status,
@@ -762,6 +814,65 @@ mod tests {
         );
         assert_eq!(view.secret_revision, 1);
         assert_eq!(view.context_window_tokens, Some(400_000));
+    }
+
+    #[test]
+    fn egress_permission_round_trips_without_touching_other_options() {
+        let (conn, cipher, view) = created();
+        let mut denied = edit();
+        denied.display_name = "禁止出站".into();
+        denied.egress = EgressPermission::Deny;
+        let saved = save_model(
+            &conn,
+            &cipher,
+            "k1",
+            2_000,
+            &denied,
+            Some(view.revision),
+            ApiKeyChange::Keep,
+        )
+        .expect("保存许可");
+        assert_eq!(saved.egress, EgressPermission::Deny);
+        // 许可与 endpoint_is_full_url 共存于 provider_options_json，不得互相覆盖。
+        let options: String = conn
+            .query_row(
+                "SELECT provider_options_json FROM ai_model_profiles WHERE id='m1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let options: serde_json::Value = serde_json::from_str(&options).unwrap();
+        assert_eq!(options["privacy_egress"], "deny");
+        assert_eq!(options["endpoint_is_full_url"], false);
+        // 重新打开为允许：显式 `allow` 覆盖旧值，且仍不动其它字段。
+        let mut allowed = edit();
+        allowed.egress = EgressPermission::Allow;
+        let saved = save_model(
+            &conn,
+            &cipher,
+            "k1",
+            3_000,
+            &allowed,
+            Some(saved.revision),
+            ApiKeyChange::Keep,
+        )
+        .expect("恢复许可");
+        assert_eq!(saved.egress, EgressPermission::Allow);
+    }
+
+    #[test]
+    fn unknown_egress_value_is_treated_as_allowed() {
+        let (conn, _cipher, _view) = created();
+        conn.execute(
+            "UPDATE ai_model_profiles SET provider_options_json=json_set(provider_options_json, '$.privacy_egress', 'maybe') WHERE id='m1'",
+            [],
+        )
+        .unwrap();
+        assert_eq!(
+            load_model(&conn, "m1").unwrap().egress,
+            EgressPermission::Allow,
+            "无法识别的历史值按允许处理，不静默停用"
+        );
     }
 
     #[test]

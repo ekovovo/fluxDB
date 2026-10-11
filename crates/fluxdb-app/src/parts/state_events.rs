@@ -15,6 +15,11 @@ pub enum AppEvent {
         enabled: bool,
         revision: i64,
     },
+    /// 全局模型数据出站闸门已变化。
+    AiModelEgressEnabledChanged {
+        enabled: bool,
+        revision: i64,
+    },
     /// 标准工具的全局启停状态已变化。
     AiToolEnabled {
         tool_id: String,

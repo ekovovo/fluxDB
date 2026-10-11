@@ -29,6 +29,7 @@ fn main() {
         endpoint: Some("http://192.0.2.1:9/v1".into()),
         endpoint_is_full_url: false,
         enabled: true,
+        egress: true,
         context_window_tokens: Some(8192),
         max_output_tokens: Some(1024),
         input_price_micros: None,

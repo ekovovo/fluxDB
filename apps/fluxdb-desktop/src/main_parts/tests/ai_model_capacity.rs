@@ -16,6 +16,7 @@ mod ai_model_capacity_tests {
             endpoint: Some("https://capacity.example.invalid/v1".into()),
             endpoint_is_full_url: false,
             enabled: true,
+            egress: true,
             context_window_tokens: Some(context),
             max_output_tokens: Some(output),
             input_price_micros: None,

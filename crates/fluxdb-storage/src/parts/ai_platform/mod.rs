@@ -16,6 +16,7 @@ pub mod model_selection;
 pub mod models;
 pub mod plugins;
 pub mod recovery;
+pub mod run_events;
 pub mod schema;
 pub mod sessions;
 #[cfg(test)]

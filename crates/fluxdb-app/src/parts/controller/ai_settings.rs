@@ -69,7 +69,7 @@ pub fn refresh_ai_settings(
     state: &mut AppState,
     storage: &fluxdb_storage::FileStorage,
 ) -> fluxdb_core::Result<()> {
-    let (models, agents_list, plugins_list, mcp_list, sessions_list, runtime, tools_list) =
+    let (models, agents_list, plugins_list, mcp_list, sessions_list, runtime, tools_list, privacy) =
         with_ai_storage(&storage, |conn| {
             Ok((
                 models::list_models_page(conn, 200, 0)?,
@@ -79,6 +79,7 @@ pub fn refresh_ai_settings(
                 fluxdb_storage::ai_platform::sessions::list_session_overviews(conn, 200)?,
                 ai_settings::load_runtime_settings(conn)?,
                 tool_settings::list_tool_settings(conn)?,
+                ai_settings::load_privacy_policy(conn)?,
             ))
         })?;
     state.ai_models = models
@@ -95,6 +96,7 @@ pub fn refresh_ai_settings(
                 fluxdb_storage::ai_platform::models::ModelKind::Decision => "决策".into(),
             },
             enabled: m.enabled,
+            egress: m.egress == fluxdb_storage::ai_platform::models::EgressPermission::Allow,
             context_window_tokens: m.context_window_tokens,
             max_output_tokens: m.max_output_tokens,
             input_price_micros: m.input_price_micros_per_million,
@@ -160,6 +162,7 @@ pub fn refresh_ai_settings(
             }
         })
         .collect();
+    state.ai_model_egress_enabled = privacy.model_egress_enabled;
     state.ai_mcp_settings = mcp_list
         .into_iter()
         .map(|m| AiMcpItem {
@@ -228,6 +231,32 @@ pub fn set_ai_plugin_enabled(
         p.enabled = enabled;
         p.revision = expected_revision + 1;
     }
+    Ok(())
+}
+
+/// 切换全局模型数据出站闸门（`privacy_policy_json`，复用运行设置行 CAS）。
+///
+/// 这是"怀疑数据外泄先全停"的应急开关：关闭后任何模型都不再发送会话数据，
+/// 打开后各自模型的单模型许可恢复生效。
+pub fn set_ai_model_egress_enabled(
+    state: &mut AppState,
+    storage: &fluxdb_storage::FileStorage,
+    enabled: bool,
+    expected_revision: i64,
+    now_ms: i64,
+) -> fluxdb_core::Result<()> {
+    let saved = with_ai_storage(storage, |conn| {
+        ai_settings::save_privacy_policy(
+            conn,
+            now_ms,
+            ai_settings::PrivacyPolicy {
+                model_egress_enabled: enabled,
+            },
+            expected_revision,
+        )
+    })?;
+    state.ai_model_egress_enabled = saved.model_egress_enabled;
+    state.ai_runtime_revision = expected_revision + 1;
     Ok(())
 }
 
@@ -480,6 +509,11 @@ pub fn save_ai_model(
         endpoint_is_full_url: input.endpoint_is_full_url,
         enabled: input.enabled,
         auth_mode,
+        egress: if input.egress {
+            fluxdb_storage::ai_platform::models::EgressPermission::Allow
+        } else {
+            fluxdb_storage::ai_platform::models::EgressPermission::Deny
+        },
         context_window_tokens: input.context_window_tokens,
         max_output_tokens: input.max_output_tokens,
         input_price_micros_per_million: input.input_price_micros,
@@ -504,6 +538,8 @@ pub fn save_ai_model(
         Some(existing) => {
             existing.display_name = saved.display_name;
             existing.enabled = saved.enabled;
+            existing.egress = saved.egress
+                == fluxdb_storage::ai_platform::models::EgressPermission::Allow;
             existing.provider = saved.provider;
             existing.model = saved.model;
             existing.endpoint = saved.endpoint;
@@ -538,6 +574,8 @@ pub fn save_ai_model(
                 "生成".into()
             },
             enabled: saved.enabled,
+            egress: saved.egress
+                == fluxdb_storage::ai_platform::models::EgressPermission::Allow,
             context_window_tokens: saved.context_window_tokens,
             max_output_tokens: saved.max_output_tokens,
             input_price_micros: saved.input_price_micros_per_million,

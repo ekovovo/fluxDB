@@ -71,6 +71,7 @@ fn ai_model_row(
             tokens(model.max_output_tokens)
         )
     };
+    let egress = model.egress;
     let price_line = format!(
         "{} / {}",
         money(model.input_price_micros),
@@ -147,7 +148,8 @@ fn ai_model_row(
                         .text_size(px(11.))
                         .text_color(colors.muted)
                         .child(capability_note),
-                ),
+                )
+                .child(ai_egress_pill(egress, colors)),
         )
         .child(
             // 列 3：计价
@@ -271,6 +273,15 @@ fn ai_model_row(
                         })),
                 ),
         )
+}
+
+/// 单模型数据出站许可的展示标签：关闭表示该模型不会接收会话数据（§29/§31.1）。
+fn ai_egress_pill(enabled: bool, colors: UiColors) -> impl IntoElement {
+    if enabled {
+        ai_pill("允许出站", colors.success, colors)
+    } else {
+        ai_pill("禁止出站", colors.danger, colors)
+    }
 }
 
 /// 默认模型 / 默认决策模型下拉触发条。
@@ -630,7 +641,65 @@ fn ai_default_model_section(
         col
     };
 
-    div().px_4().py_3().flex().gap_4().child(left).child(right)
+    let this = cx.entity().downgrade();
+    let gate_enabled = state.ai_model_egress_enabled;
+    let gate_revision = state.ai_runtime_revision;
+    div()
+        .px_4()
+        .py_3()
+        .flex()
+        .flex_col()
+        .gap_4()
+        .child(
+            // 全局模型数据出站闸门：应急全停；关闭后任何模型都不再发送会话数据。
+            div()
+                .debug_selector(|| "ai-egress-gate".into())
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap_3()
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .child(
+                            div()
+                                .text_size(px(12.))
+                                .font_weight(gpui::FontWeight::MEDIUM)
+                                .text_color(colors.text)
+                                .child("允许模型数据出站"),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(11.))
+                                .text_color(colors.muted)
+                                .child(
+                                    "关闭后所有模型都停止接收会话数据；单模型可在其弹框中单独收紧。",
+                                ),
+                        ),
+                )
+                .child(
+                    div()
+                        .debug_selector(|| "ai-egress-gate-switch".into())
+                        .child(
+                            Switch::new("ai-egress-gate-toggle")
+                                .checked(gate_enabled)
+                                .on_click(move |checked, _, cx| {
+                                    let _ = this.update(cx, |this, cx| {
+                                        let _ = this.controller.dispatch(
+                                            AppCommand::SetAiModelEgressEnabled {
+                                                enabled: *checked,
+                                                expected_revision: gate_revision,
+                                            },
+                                        );
+                                        cx.notify();
+                                    });
+                                }),
+                        ),
+                ),
+        )
+        .child(div().flex().gap_4().child(left).child(right))
 }
 
 /// 默认模型下拉里的一个候选行；选中后派发保存命令。

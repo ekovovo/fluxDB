@@ -29,6 +29,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         endpoint: Some("http://127.0.0.1:1/v1".into()),
         endpoint_is_full_url: false,
         enabled: true,
+        egress: true,
         context_window_tokens: Some(32768),
         max_output_tokens: Some(1024),
         input_price_micros: None,

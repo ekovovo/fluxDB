@@ -300,6 +300,34 @@ impl AppController {
                     Err(e) => return AppEvent::AiSettingsError(e.message),
                 }
             }
+            AppCommand::SetAiModelEgressEnabled {
+                enabled,
+                expected_revision,
+            } => {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or(0);
+                let storage = self.ai_storage();
+                let result = storage.and_then(|st| {
+                    set_ai_model_egress_enabled(
+                        &mut self.state,
+                        &st,
+                        enabled,
+                        expected_revision,
+                        now,
+                    )
+                });
+                match result {
+                    Ok(()) => {
+                        return AppEvent::AiModelEgressEnabledChanged {
+                            enabled,
+                            revision: expected_revision + 1,
+                        };
+                    }
+                    Err(e) => return AppEvent::AiSettingsError(e.message),
+                }
+            }
             AppCommand::SetAiToolEnabled {
                 tool_id,
                 enabled,

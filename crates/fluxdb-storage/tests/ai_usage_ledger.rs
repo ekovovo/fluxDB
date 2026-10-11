@@ -123,6 +123,7 @@ impl Fixture {
                 endpoint: Some("http://127.0.0.1:9/v1".into()),
                 endpoint_is_full_url: false,
                 enabled: true,
+                egress: models::EgressPermission::Allow,
                 auth_mode: models::AuthMode::None,
                 context_window_tokens: Some(8_192),
                 max_output_tokens: Some(1_024),

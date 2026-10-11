@@ -1212,6 +1212,25 @@ T020按主设计§31.9实现询问AI内联批准卡片：参考Goose三态按钮
 - 验证：`cargo fmt --all -- --check` 通过；`cargo test -p fluxdb-storage --locked --offline` → 141 + 11 + 5 + 16 + 3 + 22 全通过；`cargo test -p fluxdb-app --locked --offline` → 761 passed / 11 failed，11 项失败全部在本次未改动的 `ai_model_network`/`ai_provider`/`ai_transport`/`pg_client_tools` 用例内，均 panic 于 `TcpListener::bind("127.0.0.1:0")`（沙箱禁止本地监听），非本次改动引入；沙箱外复跑需用户授权。
 - 未完成：模型角色绑定的 UI 编辑入口（设置页 Agent「模型与提示词」分区）；`compaction`/`artifact` 角色的模型选择（当前压缩仍用主模型，见 T035）；按用途/隐私的实际过滤策略接入 `privacy_policy_json`；模型路由事件落库与原型对照截图。
 
+#### T033 补充：模型路由事件落库（2026-10-11）
+- [x] 新增 storage `ai_platform/run_events.rs`：`append`（按 Turn 单调分配 `seq`、摘要必须是 JSON 对象且 ≤8 KiB、未知 Turn 受外键拒绝）与 `list_for_turn`；`KIND_MODEL_ROUTE = "model_route"`。2 项单测通过。
+- [x] app 新增 `RouteSource`（`session_selection` / `agent_binding` / `agent_default` / `global_default`）；发送路径把 precedence 的实际生效级别与最终模型写成 `model_route` 事件：`role` / `source` / `agent_id` / `model_profile_id` / `provider` / `model`。**只写公开字段**：不含 prompt、endpoint 或凭据材料。
+- [x] 事件是诊断证据而非控制点：写失败 `tracing::warn` 留痕但不阻断发送（路由结果本身已能在运行快照与选择器中看到）。
+- [x] 测试：`crates/fluxdb-app/tests/ai_model_routing.rs` **8/8**，新增 3 项——Agent 绑定来源事件与 Provider 实际模型一致且不含 endpoint/api_key；会话显式选择覆盖 Agent 默认且事件 `source=session_selection`；全局默认场景事件 `source=global_default`。
+- [x] 验证（macOS arm64）：`cargo fmt --all -- --check`、`git diff --check` 通过；`ai_model_routing` 8/8；`ai_session_model_selection` 29/29；`cargo test -p fluxdb-app --lib --locked --offline` → 790 passed / 11 failed（11 项仍为沙箱禁止本地监听的既有失败）。
+- 未完成：`privacy_policy_json` 的过滤语义待确认（"默认是否允许远程模型出站"会改变所有已配置模型的可用性，属产品决策）；模型角色绑定 UI 入口、`#models` 原型对照截图与明暗/窄窗证据。
+
+#### T033 补充：模型数据出站许可（隐私过滤，2026-10-11）
+- [x] 采用方案 1：默认允许、可显式收紧。用户确认「未点过就保持可用，想收紧了单独关」——不改动现有已配置模型的可用性与仓库既有测试基线。
+- [x] 存储：每模型许可存 `ai_model_profiles.provider_options_json.privacy_egress`（`EgressPermission`，默认 `allow`，缺失/无法识别按 `allow` 处理避免静默停用）；全局应急闸门存 `ai_runtime_settings.privacy_policy_json.model_egress_enabled`（`PrivacyPolicy`，默认 `true`，DSL fail-open）。`insert`/`update` 用 `json_set` 与 `endpoint_is_full_url` 共存，`ModelProfileView.egress` 汇出。新增 6 项存储单测。
+- [x] 路由：`candidate_check` 增加全局闸门（优先）与单模型许可两档拒绝，顺序为 全局闸门 → 停用 → 用途 → 单模型许可 → 凭据；新增 `EgressPolicy`；`prepare_ai_conversation`、`resolve_compaction_model` 传策略。拒绝时给出可见原因且**不静默回退**。
+- [x] app/state：`AiModelSaveInput.egress`（`Default` 显式 `true`，避免 `bool` 派省默认 `false` 变成禁止出站）、`AiModelItem.egress`、`AppState.ai_model_egress_enabled`；新增命令 `SetAiModelEgressEnabled` 与事件 `AiModelEgressEnabledChanged`（复用运行设置行 CAS）。
+- [x] UI：`#models` 每行在「能力与上下文」下显示「允许出站/禁止出站」胶囊；「默认模型与决策」组顶部新增「允许模型数据出站」全局开关（对 `ai-egress-gate` 可测）；模型编辑弹框保存/回填 `egress`，新建默认开。
+- [x] UI（弹框）：模型编辑弹框新增「允许数据出站」开关（`ai-model-egress(-switch)` 可测），保存/回填经 `AiModelDialog.egress`。
+- [x] 测试：`ai_routing` 单测 14 项（新增 `candidate_check_rejects_denied_egress_and_global_disabled_in_order`）；`ai_model_routing` 集成 **10/10**（新增「禁止出站模型发送可见失败不静默回退」「全局闸门关闭阻断所有模型、重新打开恢复」）；storage `ai_platform` 90 项；GPUI `egress` **2/2**（弹框关闭单模型出站真实落库 + 全局闸门开关真实落库）。
+- [x] 验证（macOS arm64）：`cargo check --workspace --locked --offline --all-targets` 通过；`cargo test -p fluxdb-app --lib` → 791 passed / 11 failed（11 项仍为沙箱禁止本地监听的既有失败）；`ai_chat_model_selection` 10/11（唯一失败为既有「不可用 vs 已停用」文案断言，与本次无关）。
+- 未完成：模型角色绑定的 Agent 编辑 UI 入口；`#models` 原型对照截图与明暗/窄窗 UI 证据；压缩/产物角色的单模型许可联动（当前 `resolve_compaction_model` 已传策略，但压缩主模型不可用路径仍走主模型判断）。
+
 ### T032 注册插件能力与确定性 Hook pipeline
 - [x] `HookPipeline`（`crates/fluxdb-app/src/parts/ai_hooks.rs`）：priority 升序再按 binding ID 稳定排序；显式冲突（同字段不同 patch）fail closed；`Deny > RequireApproval > Allow`；after-tool 只允许 `Observe`，**不能改写真实回执**；禁用绑定零调用；取消时不调用；递归检测与 64 绑定上限。`crates/fluxdb-app/tests/ai_hook_pipeline.rs` 通过。
 - [x] before-tool 顺序：完整参数解析 → schema 初校验 → Hook 补丁 → **再次 schema 校验** → 强制安全审计 → 内核授权/审批。补丁**不得改变执行目标**（改变即失败），最终参数回写 assistant tool_call 以保证无状态协议重放一致。

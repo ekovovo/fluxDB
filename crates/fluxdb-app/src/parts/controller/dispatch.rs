@@ -3693,6 +3693,7 @@ impl AppController {
             | AppCommand::CompleteAiSessionRename { .. }
             | AppCommand::CompleteAiSessionStatus { .. }
             | AppCommand::SetAiModelEnabled { .. }
+            | AppCommand::SetAiModelEgressEnabled { .. }
             | AppCommand::SetAiPluginInstanceEnabled { .. }
             | AppCommand::SetAiToolEnabled { .. }
             | AppCommand::SaveAiDefaultModels { .. }

@@ -237,6 +237,7 @@ mod ai_chat_model_selection_tests {
             endpoint: Some("https://b-selection.example.invalid/v1".into()),
             endpoint_is_full_url: false,
             enabled,
+            egress: true,
             context_window_tokens: Some(8192),
             max_output_tokens: Some(1024),
             input_price_micros: None,

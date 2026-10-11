@@ -37,6 +37,23 @@ mod ai_ui_tests {
         ))
     }
 
+    /// 直接从隔离库读取某模型的出站许可（真值来源，不依赖 AppState 路径）。
+    fn main_db_egress(root: &std::path::Path, model_id: &str) -> bool {
+        let storage = FileStorage::new(root.to_path_buf());
+        storage
+            .with_ai_connection(|conn| {
+                conn.query_row::<i64, _, _>(
+                    "SELECT COALESCE(json_extract(provider_options_json, '$.privacy_egress'), 'allow') != 'deny'
+                       FROM ai_model_profiles WHERE id=?1",
+                    [model_id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map(|v: i64| v == 1)
+                .map_err(|e| fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, e.to_string()))
+            })
+            .expect("读取出站许可")
+    }
+
     fn sample_model_input(name: &str, model: &str) -> fluxdb_app::AiModelSaveInput {
         fluxdb_app::AiModelSaveInput {
             id: None,
@@ -46,6 +63,7 @@ mod ai_ui_tests {
             endpoint: Some("https://model.example.invalid/v1".into()),
             endpoint_is_full_url: false,
             enabled: true,
+            egress: true,
             context_window_tokens: Some(128_000),
             max_output_tokens: Some(8_192),
             input_price_micros: Some(1_000_000),
@@ -934,6 +952,64 @@ mod ai_ui_tests {
             ],
             "目录内的按 §23.2 排序，未知实例排末尾"
         );
+    }
+
+    /// 模型数据出站许可：编辑弹框可关闭单模型出站并真实落库，AppState 同步为禁止。
+    #[gpui::test]
+    fn ai_ui_model_egress_can_be_turned_off_in_dialog(cx: &mut TestAppContext) {
+        let (view, cx, root, id) = harness(cx, "model-egress");
+        click_selector(cx, "ai-model-edit");
+        let initially_allowed = view.read_with(cx, |main, _| {
+            main.ai_model_dialog
+                .as_ref()
+                .expect("编辑弹框应打开")
+                .egress
+        });
+        assert!(initially_allowed, "新建模型默认允许出站");
+
+        // 关闭出站并保存：真实点击弹框开关 → 落库 → AppState 与 SQLite 一致。
+        click_selector(cx, "ai-model-egress-switch");
+        click_selector(cx, "ai-model-save");
+
+        let (dialog_open, egress) = view.read_with(cx, |main, _| {
+            let egress = main
+                .controller
+                .state()
+                .ai_models
+                .iter()
+                .find(|m| m.id == id)
+                .map(|m| m.egress);
+            (main.ai_model_dialog.is_some(), egress)
+        });
+        assert!(!dialog_open, "保存成功后弹框应关闭");
+        assert_eq!(egress, Some(false), "AppState 应同步为禁止出站");
+        let stored: bool = main_db_egress(&root, &id);
+        assert!(!stored, "SQLite 应持久化禁止出站");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// 全局模型数据出站闸门：开关真实落库，且关闭后发送会被拒绝。
+    #[gpui::test]
+    fn ai_ui_global_egress_gate_persists_and_blocks(cx: &mut TestAppContext) {
+        let (view, cx, root, _id) = harness(cx, "global-egress");
+        click_selector(cx, "ai-egress-gate-switch");
+        let state = view.read_with(cx, |main, _| main.controller.state().ai_model_egress_enabled);
+        assert!(!state, "关闭全局闸门后 AppState 应同步为 false");
+
+        let sqlite_enabled: bool = FileStorage::new(root.join("."))
+            .with_ai_connection(|conn| {
+                conn.query_row::<i64, _, _>(
+                    "SELECT CASE WHEN json_extract(privacy_policy_json, '$.model_egress_enabled') THEN 1 ELSE 0 END
+                       FROM ai_runtime_settings WHERE id=1",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map(|v: i64| v != 0)
+                .map_err(|e| fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, e.to_string()))
+            })
+            .expect("读取全局闸门");
+        assert!(!sqlite_enabled, "SQLite 应持久化全局闸门关闭");
+        let _ = std::fs::remove_dir_all(root);
     }
 
     /// Agent 空名称校验失败：编辑器保持打开、显示内联错误且不清空草稿。

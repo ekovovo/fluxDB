@@ -416,8 +416,8 @@ impl AppController {
             let (selected_model_id, _) = fluxdb_storage::ai_platform::model_selection::load(conn, current.as_ref().map(|s|s.id.as_str()))?;
             // 路由 precedence（设计 §17）：会话/草稿显式选择 → Agent 的 main_candidate 角色绑定
             // → Agent 默认模型 → 全局默认。显式选择不合格时绝不静默回退，避免固定模型被换掉。
-            let (model_id, explicit) = match selected_model_id {
-                Some(id) => (id, true),
+            let (model_id, route_source) = match selected_model_id {
+                Some(id) => (id, crate::RouteSource::SessionSelection),
                 None => {
                     let bound = fluxdb_storage::ai_platform::model_bindings::list_role_bindings(
                         conn,
@@ -427,21 +427,30 @@ impl AppController {
                     .into_iter()
                     .next()
                     .map(|binding| binding.model_profile_id);
-                    let id = bound
-                        .or_else(|| agent.default_model_profile_id.clone())
-                        .or_else(|| runtime.default_model_profile_id.clone())
-                        .ok_or_else(|| {
-                            fluxdb_core::Error::new(
-                                fluxdb_core::ErrorKind::Internal,
-                                "请在输入框下方选择模型，或在大模型设置中配置默认主模型",
-                            )
-                        })?;
-                    (id, false)
+                    if let Some(id) = bound {
+                        (id, crate::RouteSource::AgentBinding)
+                    } else if let Some(id) = agent.default_model_profile_id.clone() {
+                        (id, crate::RouteSource::AgentDefault)
+                    } else if let Some(id) = runtime.default_model_profile_id.clone() {
+                        (id, crate::RouteSource::GlobalDefault)
+                    } else {
+                        return Err(fluxdb_core::Error::new(
+                            fluxdb_core::ErrorKind::Internal,
+                            "请在输入框下方选择模型，或在大模型设置中配置默认主模型",
+                        ));
+                    }
                 }
             };
+            let explicit = route_source == crate::RouteSource::SessionSelection;
             let model = fluxdb_storage::ai_platform::models::load_model(conn, &model_id)?;
+            // 出站策略：全局应急闸门（`privacy_policy_json`）+ 该模型的显式许可。
+            // 被拒绝时给出可见原因，绝不静默换成别的模型。
+            let egress_policy = crate::EgressPolicy {
+                enabled: fluxdb_storage::ai_platform::settings::load_privacy_policy(conn)?
+                    .model_egress_enabled,
+            };
             if let Err(rejection) =
-                candidate_check(&model, CandidateRole::Main)
+                candidate_check(&model, CandidateRole::Main, egress_policy)
             {
                 let suffix = if explicit {
                     "，请重新选择"
@@ -495,6 +504,26 @@ impl AppController {
                 clear_editor_grant(&turn_id);
                 take_page_data_grant(&turn_id);
                 return Err(error.into());
+            }
+            // 路由决策落成运行事件：验收与 UI 都能核对"Provider 实际用哪个模型"。
+            // 事件是诊断证据而非控制点，写失败不阻断本次发送，但必须留痕。
+            let route_summary = serde_json::json!({
+                "role": "main",
+                "source": route_source.as_str(),
+                "agent_id": agent.id,
+                "model_profile_id": model.id,
+                "provider": model.provider,
+                "model": model.model,
+            })
+            .to_string();
+            if let Err(error) = fluxdb_storage::ai_platform::run_events::append(
+                conn,
+                &turn_id,
+                fluxdb_storage::ai_platform::run_events::KIND_MODEL_ROUTE,
+                &route_summary,
+                ai_chat_now(),
+            ) {
+                tracing::warn!(target: "fluxdb_app", turn_id = %turn_id, "模型路由事件写入失败：{}", error.message);
             }
 
             let job = AiConversationJob {

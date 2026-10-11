@@ -300,6 +300,7 @@ fn ai_model_dialog(
     let dialog = dialog.as_ref()?;
     let inputs = &dialog.inputs;
     let is_new = dialog.model_id.is_none();
+    let egress = dialog.egress;
     let this = cx.entity().downgrade();
 
     let mask = div()
@@ -455,6 +456,48 @@ fn ai_model_dialog(
                     colors,
                     cx,
                 ))
+                // 数据出站许可（设计 §29/§31.1）：默认允许；关闭后该模型不再接收会话数据。
+                .child(
+                    div()
+                        .debug_selector(|| "ai-model-egress".into())
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap_3()
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap_1()
+                                .child(
+                                    div()
+                                        .text_size(px(12.))
+                                        .text_color(colors.text)
+                                        .child("允许数据出站"),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(11.))
+                                        .text_color(colors.muted)
+                                        .child(
+                                            "关闭后本模型的会话数据不再发送到该地址；询问AI 会阻止使用它。",
+                                        ),
+                                ),
+                        )
+                        .child(
+                            div().debug_selector(|| "ai-model-egress-switch".into()).child(
+                                Switch::new("ai-model-egress-permission")
+                                    .small()
+                                    .checked(egress)
+                                    .on_click(cx.listener(|this, checked, _, cx| {
+                                        if let Some(dialog) = this.ai_model_dialog.as_mut() {
+                                            dialog.egress = *checked;
+                                        }
+                                        cx.notify();
+                                    })),
+                            ),
+                        ),
+                )
                 .child(
                     div()
                         .flex()

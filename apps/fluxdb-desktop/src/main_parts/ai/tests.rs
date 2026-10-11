@@ -86,6 +86,7 @@ mod ai_panel_tests {
                         endpoint: Some("https://panel.example.invalid/v1".into()),
                         endpoint_is_full_url: false,
                         enabled: true,
+                        egress: true,
                         context_window_tokens: Some(8192),
                         max_output_tokens: Some(1024),
                         input_price_micros: None,

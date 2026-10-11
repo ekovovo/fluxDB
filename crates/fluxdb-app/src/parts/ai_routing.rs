@@ -8,7 +8,7 @@
 // 本模块仍提供基础基线（Agent 绑定 → 全局默认）。
 
 use fluxdb_storage::ai_platform::model_secret::CredentialStatus;
-use fluxdb_storage::ai_platform::models::{ModelKind, ModelProfileView};
+use fluxdb_storage::ai_platform::models::{EgressPermission, ModelKind, ModelProfileView};
 
 /// 路由拒绝原因（面向用户的可读原因，不含凭据材料）。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -16,6 +16,10 @@ pub enum RouteRejection {
     Disabled,
     WrongKind { expected: ModelKind },
     MissingCredential,
+    /// 该模型被用户显式禁止接收会话数据（设计 §29/§31.1）。
+    EgressDenied,
+    /// 全局出站闸门关闭：任何模型都不再发送会话数据。
+    EgressGloballyDisabled,
 }
 
 impl RouteRejection {
@@ -31,7 +35,31 @@ impl RouteRejection {
                 }
             ),
             RouteRejection::MissingCredential => "所选模型缺少可用凭据".to_string(),
+            RouteRejection::EgressDenied => {
+                "所选模型已禁止数据出站（可在模型设置中重新允许）".to_string()
+            }
+            RouteRejection::EgressGloballyDisabled => {
+                "已全局禁止模型数据出站（可在模型设置中开启）".to_string()
+            }
         }
+    }
+}
+
+/// 路由使用的出站策略快照：全局闸门（`privacy_policy_json`）+ 单模型许可。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EgressPolicy {
+    pub enabled: bool,
+}
+
+impl Default for EgressPolicy {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
+impl EgressPolicy {
+    pub fn disabled() -> Self {
+        Self { enabled: false }
     }
 }
 
@@ -42,6 +70,29 @@ pub enum CandidateRole {
     Compaction,
     Artifact,
     Decision,
+}
+
+/// 本轮实际选中模型的来源（precedence 的哪一级生效）。
+///
+/// 只用于说明与运行事件，不参与授权判断：写进 `ai_run_events` 后，
+/// UI 与验收都能看到"Provider 真正用的是哪个模型、为什么是它"。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RouteSource {
+    SessionSelection,
+    AgentBinding,
+    AgentDefault,
+    GlobalDefault,
+}
+
+impl RouteSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RouteSource::SessionSelection => "session_selection",
+            RouteSource::AgentBinding => "agent_binding",
+            RouteSource::AgentDefault => "agent_default",
+            RouteSource::GlobalDefault => "global_default",
+        }
+    }
 }
 
 impl CandidateRole {
@@ -63,7 +114,17 @@ impl CandidateRole {
 }
 
 /// 判定单个模型是否可作为该角色候选。
-pub fn candidate_check(model: &ModelProfileView, role: CandidateRole) -> Result<(), RouteRejection> {
+///
+/// 顺序：全局出站闸门 → 停用 → 用途 → 单模型出站许可 → 凭据。出站类拒绝排在凭据前，
+/// 便于用户先看到"是我禁止发数据"，而不是被凭据状态掩盖。
+pub fn candidate_check(
+    model: &ModelProfileView,
+    role: CandidateRole,
+    policy: EgressPolicy,
+) -> Result<(), RouteRejection> {
+    if !policy.enabled {
+        return Err(RouteRejection::EgressGloballyDisabled);
+    }
     if !model.enabled {
         return Err(RouteRejection::Disabled);
     }
@@ -71,6 +132,9 @@ pub fn candidate_check(model: &ModelProfileView, role: CandidateRole) -> Result<
         return Err(RouteRejection::WrongKind {
             expected: role.required_kind(),
         });
+    }
+    if model.egress == EgressPermission::Deny {
+        return Err(RouteRejection::EgressDenied);
     }
     // 需要 Key 但缺密文时不可路由；已配置但密文不可解（Unavailable）也应拒绝出站。
     if matches!(
@@ -88,10 +152,11 @@ pub fn candidate_check(model: &ModelProfileView, role: CandidateRole) -> Result<
 pub fn first_usable<'a>(
     models: impl IntoIterator<Item = &'a ModelProfileView>,
     role: CandidateRole,
+    policy: EgressPolicy,
 ) -> (Option<&'a ModelProfileView>, Vec<RouteRejection>) {
     let mut rejections = Vec::new();
     for model in models {
-        match candidate_check(model, role) {
+        match candidate_check(model, role, policy) {
             Ok(()) => return (Some(model), rejections),
             Err(reason) => rejections.push(reason),
         }
@@ -130,6 +195,10 @@ pub fn resolve_compaction_model(
     agent_id: &str,
     main_model_id: &str,
 ) -> fluxdb_core::Result<crate::CompactionModelChoice> {
+    let policy = EgressPolicy {
+        enabled: fluxdb_storage::ai_platform::settings::load_privacy_policy(conn)?
+            .model_egress_enabled,
+    };
     let bindings = fluxdb_storage::ai_platform::model_bindings::list_role_bindings(
         conn,
         agent_id,
@@ -141,7 +210,7 @@ pub fn resolve_compaction_model(
     let mut first_rejection: Option<(String, String)> = None;
     for binding in &bindings {
         let model = fluxdb_storage::ai_platform::models::load_model(conn, &binding.model_profile_id)?;
-        match candidate_check(&model, CandidateRole::Compaction) {
+        match candidate_check(&model, CandidateRole::Compaction, policy) {
             Ok(()) => {
                 return Ok(if model.id == main_model_id {
                     // 显式绑定到主模型：仍按主模型走，不需要第二个 Provider。

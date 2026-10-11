@@ -343,6 +343,7 @@ impl NavicatMain {
             dialog.model_id = Some(model.id.clone());
             dialog.expected_revision = model.revision;
             dialog.enabled = model.enabled;
+            dialog.egress = model.egress;
             dialog.endpoint_is_full_url = model.endpoint_is_full_url;
             fill_ai_model_inputs(&dialog.inputs, model, window, cx);
             // 编辑态把已存 Key 预填进掩码输入框（显示黑点，点眼睛看真实值）。
@@ -498,6 +499,7 @@ impl NavicatMain {
             endpoint: (!endpoint.is_empty()).then_some(endpoint),
             endpoint_is_full_url: dialog.endpoint_is_full_url,
             enabled: dialog.enabled,
+            egress: dialog.egress,
             context_window_tokens: context_window,
             max_output_tokens: max_output,
             input_price_micros: price_in,

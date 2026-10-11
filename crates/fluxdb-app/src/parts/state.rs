@@ -23,6 +23,8 @@ pub struct AiModelItem {
     pub endpoint_is_full_url: bool,
     pub kind: String,
     pub enabled: bool,
+    /// 数据出站许可：false 表示该模型不再接收会话数据（设计 §29/§31.1）。
+    pub egress: bool,
     pub context_window_tokens: Option<i64>,
     pub max_output_tokens: Option<i64>,
     /// 计价：micro-USD / 百万 Token。
@@ -42,7 +44,7 @@ pub struct AiModelItem {
 /// 明文 Key 只在 `api_key` 里短暂存在，经专用命令进入存储；不进 AppState、日志或事件。
 ///
 /// 刻意不派生 PartialEq/Debug 之外的比较能力：命令枚举的比较不应牵扯明文凭据。
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct AiModelSaveInput {
     /// `None` 表示新建。
     pub id: Option<String>,
@@ -53,6 +55,8 @@ pub struct AiModelSaveInput {
     /// 完整请求地址，不追加协议路由。
     pub endpoint_is_full_url: bool,
     pub enabled: bool,
+    /// 数据出站许可：新建默认允许；关闭后该模型不作为路由候选。
+    pub egress: bool,
     pub context_window_tokens: Option<i64>,
     pub max_output_tokens: Option<i64>,
     /// 计价单位：micro-USD / 百万 Token。
@@ -64,6 +68,31 @@ pub struct AiModelSaveInput {
     pub clear_key: bool,
     /// 新建为 `None`；编辑必须带上打开弹框时的 revision 做 CAS。
     pub expected_revision: Option<i64>,
+}
+
+impl Default for AiModelSaveInput {
+    /// 显式实现而不是派生：`egress` 是"是否允许数据出站"，`bool` 的派省默认值是 `false`，
+    /// 会让"没填这个字段"变成"禁止出站"，与设计默认（配置模型即授权）相反。
+    fn default() -> Self {
+        Self {
+            id: None,
+            display_name: String::new(),
+            provider: String::new(),
+            model: String::new(),
+            endpoint: None,
+            endpoint_is_full_url: false,
+            enabled: false,
+            egress: true,
+            context_window_tokens: None,
+            max_output_tokens: None,
+            input_price_micros: None,
+            output_price_micros: None,
+            cached_input_price_micros: None,
+            api_key: None,
+            clear_key: false,
+            expected_revision: None,
+        }
+    }
 }
 
 impl std::fmt::Debug for AiModelSaveInput {
@@ -228,6 +257,8 @@ pub struct AppState {
     pub ai_default_model_id: Option<String>,
     /// 默认决策（Jev）模型档案 id。
     pub ai_default_decision_model_id: Option<String>,
+    /// 全局模型数据出站闸门（`privacy_policy_json`）；false 时任何模型都不再发送会话数据。
+    pub ai_model_egress_enabled: bool,
     /// 运行设置行 revision（默认模型选择的 CAS 期望值）。
     pub ai_runtime_revision: i64,
     pub tasks: Vec<TaskState>,
@@ -265,6 +296,7 @@ impl Default for AppState {
             ai_sessions: Vec::new(),
             ai_default_model_id: None,
             ai_default_decision_model_id: None,
+            ai_model_egress_enabled: true,
             ai_runtime_revision: 0,
             tasks: Vec::new(),
             query_history: Vec::new(),

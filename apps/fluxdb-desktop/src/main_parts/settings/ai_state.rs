@@ -79,6 +79,7 @@ impl AiModelDialog {
             expected_revision: 0,
             inputs: AiModelDialogInputs::new(window, cx),
             enabled: true,
+            egress: true,
             endpoint_is_full_url: false,
             fetching_models: false,
             fetch_generation: 0,
@@ -164,6 +165,8 @@ struct AiModelDialog {
     expected_revision: i64,
     inputs: AiModelDialogInputs,
     enabled: bool,
+    /// 数据出站许可（设计 §29/§31.1）：关闭后该模型不再接收会话数据。
+    egress: bool,
     endpoint_is_full_url: bool,
     /// 正在拉取 Provider 模型列表（「获取模型列表」按钮的 loading/disabled）。
     fetching_models: bool,

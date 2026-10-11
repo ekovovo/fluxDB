@@ -3,7 +3,7 @@
 // 只使用内存模型视图，不读取凭据、不访问网络。
 
 use fluxdb_storage::ai_platform::model_secret::CredentialStatus;
-use fluxdb_storage::ai_platform::models::{ModelKind, ModelProfileView};
+use fluxdb_storage::ai_platform::models::{EgressPermission, ModelKind, ModelProfileView};
 
 fn model(
     id: &str,
@@ -21,6 +21,7 @@ fn model(
         endpoint: Some("https://model.example.invalid/v1".into()),
         endpoint_is_full_url: false,
         enabled,
+        egress: EgressPermission::Allow,
         auth_mode: fluxdb_storage::ai_platform::models::AuthMode::ApiKey,
         context_window_tokens: Some(32_768),
         max_output_tokens: Some(1_024),
@@ -38,33 +39,55 @@ fn model(
 #[test]
 fn candidate_check_enforces_kind_enabled_and_credential() {
     let generation = model("g", ModelKind::Generation, true, CredentialStatus::Configured);
-    assert!(candidate_check(&generation, CandidateRole::Main).is_ok());
+    assert!(candidate_check(&generation, CandidateRole::Main, EgressPolicy::default()).is_ok());
 
     let disabled = model("g2", ModelKind::Generation, false, CredentialStatus::Configured);
     assert_eq!(
-        candidate_check(&disabled, CandidateRole::Main),
+        candidate_check(&disabled, CandidateRole::Main, EgressPolicy::default()),
         Err(RouteRejection::Disabled)
     );
 
     let decision = model("d", ModelKind::Decision, true, CredentialStatus::Configured);
     assert_eq!(
-        candidate_check(&decision, CandidateRole::Main),
+        candidate_check(&decision, CandidateRole::Main, EgressPolicy::default()),
         Err(RouteRejection::WrongKind {
             expected: ModelKind::Generation
         })
     );
-    assert!(candidate_check(&decision, CandidateRole::Decision).is_ok());
+    assert!(candidate_check(&decision, CandidateRole::Decision, EgressPolicy::default()).is_ok());
 
     let missing = model("m", ModelKind::Generation, true, CredentialStatus::Missing);
     assert_eq!(
-        candidate_check(&missing, CandidateRole::Main),
+        candidate_check(&missing, CandidateRole::Main, EgressPolicy::default()),
         Err(RouteRejection::MissingCredential)
     );
 
     // 无需凭据的模型即使没有密文仍可路由。
     let mut no_key = model("n", ModelKind::Generation, true, CredentialStatus::NotRequired);
     no_key.auth_mode = fluxdb_storage::ai_platform::models::AuthMode::None;
-    assert!(candidate_check(&no_key, CandidateRole::Main).is_ok());
+    assert!(candidate_check(&no_key, CandidateRole::Main, EgressPolicy::default()).is_ok());
+}
+
+#[test]
+fn candidate_check_rejects_denied_egress_and_global_disabled_in_order() {
+    // 单模型拒绝出站：即使其它合格，也因用户显式收紧而不能路由。
+    let mut denied = model("d1", ModelKind::Generation, true, CredentialStatus::Configured);
+    denied.egress = EgressPermission::Deny;
+    assert_eq!(
+        candidate_check(&denied, CandidateRole::Main, EgressPolicy::default()),
+        Err(RouteRejection::EgressDenied)
+    );
+    // 全局闸门关闭优先于单模型许可与凭据。
+    let global_off = EgressPolicy::disabled();
+    assert_eq!(
+        candidate_check(&denied, CandidateRole::Main, global_off),
+        Err(RouteRejection::EgressGloballyDisabled)
+    );
+    let allowed = model("a1", ModelKind::Generation, true, CredentialStatus::Configured);
+    assert_eq!(
+        candidate_check(&allowed, CandidateRole::Main, global_off),
+        Err(RouteRejection::EgressGloballyDisabled)
+    );
 }
 
 #[test]
@@ -73,7 +96,8 @@ fn first_usable_picks_first_valid_and_reports_rejections() {
     let wrong = model("b", ModelKind::Decision, true, CredentialStatus::Configured);
     let ok = model("c", ModelKind::Generation, true, CredentialStatus::Configured);
     let candidates = vec![disabled, wrong, ok];
-    let (chosen, rejections) = first_usable(candidates.iter(), CandidateRole::Main);
+    let (chosen, rejections) =
+        first_usable(candidates.iter(), CandidateRole::Main, EgressPolicy::default());
     assert_eq!(chosen.map(|m| m.id.as_str()), Some("c"));
     assert_eq!(
         rejections,
@@ -88,7 +112,8 @@ fn first_usable_with_no_valid_candidate_returns_all_reasons() {
     let disabled = model("a", ModelKind::Generation, false, CredentialStatus::Configured);
     let missing = model("b", ModelKind::Generation, true, CredentialStatus::Missing);
     let candidates = vec![disabled, missing];
-    let (chosen, rejections) = first_usable(candidates.iter(), CandidateRole::Main);
+    let (chosen, rejections) =
+        first_usable(candidates.iter(), CandidateRole::Main, EgressPolicy::default());
     assert!(chosen.is_none());
     assert_eq!(rejections.len(), 2, "应保留每条不合格原因，不能显示成无模型");
 }

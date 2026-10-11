@@ -488,6 +488,7 @@ mod tests {
                 endpoint_is_full_url: false,
                 enabled: true,
                 auth_mode: crate::ai_platform::models::AuthMode::None,
+                egress: crate::ai_platform::models::EgressPermission::Allow,
                 context_window_tokens: None,
                 max_output_tokens: None,
                 input_price_micros_per_million: None,

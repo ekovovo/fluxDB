@@ -420,7 +420,8 @@ cargo test -p fluxdb-app --locked ai_permission   # 15 passed
 - 验证：`cargo fmt --all -- --check`、`cargo check --workspace --locked --offline` 通过；`cargo test -p fluxdb-app --locked --offline` → **773 passed / 11 failed**（较上一轮 768 增加 5 项），11 项仍为沙箱禁止本地监听的既有 mock server 用例。
 - [x] **真实窗口验证已执行**（macOS arm64，隔离 fixture + 本地 mock 模型，不联网、不用真实凭据）：编辑器 506 行 → 摘录超 400 行触发截断 → 模型发起 `editor.read_range{offset:300,limit:5}` → `ai_tool_calls` 状态 `succeeded`、回执含 294–298 共 5 行、`total_lines:506`、`next_offset:305` → 助手复述出正确内容。证据见 [T034 `editor.read_range` 真实窗口验证记录](testing/ai-agent/t034-editor-read-range-2026-10-11.md)；截图 `testing/ai-agent/evidence/t034-editor-read-range-success.png`、`t034-editor-e2e-window.jpg`。
 - 真实窗口测试同时暴露并已修复 **T021 界面上下文来源页签缺陷**（见本文件 T021 条目，提交 `4f51400`）：面板开着时切换页签会拿到旧页签或空上下文。
-- 未完成：`Sample` 的 `keep_rows` 降采样仍未做；界面摘录 16 KiB/400 行仍是固定常量，未随最终模型窗口调整；图片 decoded 像素/活动数量限制无实际路径；明暗主题与窄窗原型对照截图未做。
+- [x] **用户手动验收确认（2026-10-11，macOS arm64）**：用户在本机真实主窗口完成本轮验收并通过，范围＝`editor.read_range` 续读链路 + 面板切换页签后的上下文跟随 + 「外观」页崩溃修复。记录见 [T034 `editor.read_range` 真实窗口验证记录](testing/ai-agent/t034-editor-read-range-2026-10-11.md)。
+- 未完成（**T034 仍未勾选**）：`Sample` 的 `keep_rows` 降采样仍未做；界面摘录 16 KiB/400 行仍是固定常量，未随最终模型窗口调整；图片 decoded 像素/活动数量限制无实际路径；明暗主题与窄窗原型对照截图未做。这些不在本次用户验收范围内。
 
 ### T021 缺陷修复：界面上下文跟随当前活动页签（2026-10-11）
 - [x] **修复真实缺陷**（真实窗口测试暴露，非 `editor.read_range` 引入）：`context_tab` 只在打开 AI 面板那一刻由 `capture_ai_chat_tab_source`（`apps/fluxdb-desktop/src/main_parts/ai/display.rs:2`）记录一次，却同时被 `capture_ai_active_context` 当作"本轮上下文来源"。面板开着时切换到另一个查询页签再发送，`ui_context` 要么为空、要么来自**旧页签**（静默贴错上下文），且 `editor.read_range` 因 `Some` 判定失败而不装配。
@@ -429,6 +430,7 @@ cargo test -p fluxdb-app --locked ai_permission   # 15 passed
 - [x] 修复：新增 `ai_context_source_tab()`（`actions.rs`），语义 = 当前活动页签不是 AI 页签就用它；是 AI 页签则退回 `context_tab` 并**校验页签仍存在**（对应 Zed 的 `exists()`）；取不到返回 `None`。`capture_ai_active_context` 与 `ai_editor_grant` 统一走该函数。
 - [x] TDD：新增 `editor_context_follows_current_tab_not_stale_panel_snapshot`（`tests_send_references.rs`）：建两个内容不同的查询页签 → 开面板 → 面板开着切换页签 → 走生产捕获路径写入运行快照，断言快照含 `TAB-TWO` 且不含 `TAB-ONE`。已确认该用例在旧实现下**确实失败**（摘录为空），修复后通过。
 - 验证：`cargo fmt --all -- --check`、`cargo check --workspace --locked --offline` 通过；`cargo test -p fluxdb-desktop --locked --offline -- --test-threads=1` → **603 passed / 6 failed / 5 ignored**；6 项失败中 5 项为沙箱禁止本地监听的 `ai_ui_model_capacity_http_*`（`PermissionDenied`）、1 项 `ai_chat_model_selection_disabled_model_error_*` 已用 HEAD 版本 `actions.rs` 复跑确认**同样失败**，属既有失败，均与本次改动无关。
+- [x] **用户手动验收确认（2026-10-11，macOS arm64）**：用户在真实主窗口验收通过（本轮验收覆盖项之一）。
 - 未完成：`context_tab` 仍只在进入 AI 页签时更新，作为"切回原页签"的记忆职责未变；若 AI 面板为 Tab 模式且用户始终停在 AI 页签，上下文仍取进入前那个业务页签（符合该模式语义，但若用户期望"AI 页签内也能刷新来源"需另行产品决策）。
 
 ### UI 缺陷修复：设置「外观」页 debug 构建必崩（2026-10-11）
@@ -440,7 +442,8 @@ cargo test -p fluxdb-app --locked ai_permission   # 15 passed
 - [x] 顺带补一个调试入口：`FLUXDB_DEBUG_AI_SETTINGS=appearance` 可直接打开外观页（仅 debug 构建），用于主题/窄窗截图核对与设置页渲染回归定位；与既有 `models`/`tools`/`agents`/`sessions` 同一机制。
 - [x] **真实窗口验证**（macOS arm64，隔离 fixture）：`FLUXDB_DEBUG_AI_SETTINGS=appearance FLUXDB_DEBUG_THEME=light` 启动后外观页完整渲染（主题模式、5 个主题色块 Default Light / GitHub Light / Nord Light / One Light / Rose Pine Dawn、形状与层次、布局、无障碍、全局字体），进程存活，日志零 `panic`/`hover style already set`。证据：`/private/tmp/fluxdb-editor-e2e/appearance.jpg`。
 - 验证：`cargo fmt --all -- --check`、`cargo check --workspace --locked --offline` 通过；`cargo test -p fluxdb-desktop --locked --offline -- --test-threads=1` → **604 passed / 6 failed / 5 ignored**（较上轮 603 增加 1 项新增用例）；6 项失败与上轮完全一致：5 项为沙箱禁止本地监听的 `ai_ui_model_capacity_http_*`，1 项 `ai_chat_model_selection_disabled_model_error_*` 已用 HEAD 版本复跑确认同样失败，均为既有失败。
-- 未完成：明暗主题与窄窗口的原型对照截图仍未做（现已有 `appearance` 调试入口，可直接开展）。
+- [x] **用户手动验收确认（2026-10-11，macOS arm64）**：用户确认修复后不再崩溃（本轮验收覆盖项之一）。
+- 未完成：明暗主题与窄窗口的原型对照截图仍未做（现已有 `appearance` 调试入口，可直接开展；该截图属 T034 范围，不在本次验收内）。
 
 ### T032 注册插件能力与确定性 Hook pipeline
 - [ ] 依赖：T012、T019、T020；设计 §23–25。

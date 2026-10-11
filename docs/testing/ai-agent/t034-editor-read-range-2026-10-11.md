@@ -93,6 +93,34 @@ turn      ctx_len  tool_id            status     off  lim
 > 本轮最初几次发送失败（`ui_context` 长度为 0）正是该缺陷所致；用户按"先切查询页签、
 > 再打开面板"的顺序绕过后才走通链路。
 
+## 视觉验收（明暗主题 + 窄窗，2026-10-11 用户手动执行）
+
+用户按 §39.3–39.4 在本机真实窗口逐项截图核对，三张证据：
+
+| 画面 | 启动方式 | 证据 |
+|---|---|---|
+| 深色 · 设置「外观」页 | `FLUXDB_DEBUG_AI_SETTINGS=appearance FLUXDB_DEBUG_THEME=dark` | `evidence/t034-dark-appearance.png` |
+| 浅色 · 询问AI 面板（含 `editor.read_range` 工具卡） | `FLUXDB_DEBUG_AI_CHAT=1 FLUXDB_DEBUG_THEME=light` | `evidence/t034-light-ai-panel.png` |
+| 深色 · 窄窗 900×700 · 询问AI 面板 | 追加 `FLUXDB_DEBUG_WINDOW=900x700` | `evidence/t034-narrow-dark-ai-panel.png` |
+
+核对结果：三种状态均正常渲染、无 panic、无溢出/重叠/文字截断；深色外观页 5 个深色主题色块
+（Default Dark / GitHub Dark / Nord Dark / One Dark / Rose Pine）与选中态边框正确；面板时间线、
+工具卡、目标徽标（本轮目标 · 验收 A · 只读）、输入框在浅色与窄窗深色下均可用。原型
+`docs/prototype/ai-agent-ui.html` 不覆盖外观页，该页对照 `docs/ui-style.md` 核对。
+
+## 验收范围说明（用户确认接受）
+
+- **图片 decoded 像素/活动数量限制：当前不适用。** 代码里没有任何图片进入模型的通道
+  （`ModelMessage` 仅 `role`/`text`/`tool_call_id`/`tool_name`/`tool_calls`，
+  `crates/fluxdb-core/src/parts/ai/mod.rs:66`；`PartKind` 亦无图片类型），
+  该约束没有可作用对象。设计 §13.2/§15 本身未要求图片上下文。经用户确认，本条按
+  "无图片路径 → 不适用"记录，不实现图片通道、也不宣称已有该约束。
+- **界面摘录 16 KiB / 400 行为有意默认。** 设计 §13.2 原文是"默认单段上限 16 KiB / 400 行
+  （**可**按模型上下文调大）"，属可选增强；按最终模型窗口重算的**上下文总预算**已由
+  `should_compact`/`ai_conversation_turn_messages` 实现（T069），此处保持默认值不额外改动。
+- **`Sample.keep_rows` 降采样不做。** `db.query` 产出时已只带 `RECEIPT_SAMPLE_ROWS = 5` 行
+  样本 + `rows_omitted` + `result_ref`，通用投影层仅兜底，收益不足以引入额外复杂度。
+
 ## 未产出 / 未完成
 
 - **T034 未勾选**：`editor.read_range` 只是 T034 的一项。其余验收项未完成：

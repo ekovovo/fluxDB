@@ -395,7 +395,7 @@ cargo test -p fluxdb-app --locked ai_permission   # 15 passed
 - [x] 修复后投影恒为合法 JSON：JSON 对象回执改为在字节预算内**逐步丢弃顶层字段**（从末尾向前，`rows` 这类大字段优先省略），并写入 `omitted_fields` 让模型知道内容是被省略而非不存在；非 JSON 文本回执按 UTF-8 边界截断后作为合法 JSON 字符串返回；预算小到装不下完整说明时退到 `{error:result_too_large}`，0–1 字节预算返回空串——工具声明的 output 上限是硬约束。
 - [x] 测试：`crates/fluxdb-app/src/parts/tests/ai_tool_registry.rs` 新增 3 项（截断后信封合法 JSON；截断保留 `columns`/`row_count` 并标注 `omitted_fields` 且不超上限；非 JSON 回执在多个小预算下均合法且有界），`ai_tool_registry` 共 17/17 通过。既有 `receipt_projection_is_bounded_and_immutable` 与 `projection_honors_spec_output_limit` 两条断言旧截断行为的用例无需改动即通过（新契约是旧断言的超集：仍有界、仍标记 truncated、仍不改原始回执）。
 - 验证：`cargo fmt --all -- --check` 通过；`cargo test -p fluxdb-app --locked --offline` → **764 passed / 11 failed**（较上一轮 761 增加 3 项新测试），11 项失败仍全部为沙箱禁止 `TcpListener::bind("127.0.0.1:0")` 的既有用例，与本次改动无关；`ai_loop` 18/18、`ai_conversation_tools`/`ai_conversation_write_tool`/`ai_result_paging_e2e` 全部通过。
-- 未完成（仍不足以勾选 T034）：`editor.read_range` 工具尚不存在，`ai_context.rs` 的截断标记已宣称"可用 editor.read_range 读取"但该工具未实现——模型被告知可以续读却无法调用，是当前真实缺口；界面摘录 `16 KiB / 400 行` 限额仍是固定常量，未按最终模型窗口调整；图片 decoded 像素/活动数量限制当前无任何图片进模型路径，尚未产生实际约束；ResultRef 媒体引用、路由事件落库、原型对照截图仍未做。
+- 后续处理：[`editor.read_range` 续读工具](见下方 T034 补充条目，提交 `9489e62`) 已补上，本条列出的"工具不存在"缺口已消除；界面摘录限额与图片限制两项的处置见下方 T034 补充条目的"验收范围说明"。
 
 ### T034 补充：工具输出形状契约（2026-10-11，对齐 Pi/Goose 做法）
 - [x] 核对本地参考实现后调整设计：Pi（`packages/durable/src/truncate.ts`、`harness/output.ts`）按工具声明的 `outputLimits.retain` 保留 head/tail 且**从不返回半行**；Goose（`crates/goose/src/agents/large_response_handler.rs`）超 200k 字符直接落盘、回给模型文件路径而非截断内容。共同点是**截断发生在产出侧**，传输层只兜底。
@@ -421,7 +421,9 @@ cargo test -p fluxdb-app --locked ai_permission   # 15 passed
 - [x] **真实窗口验证已执行**（macOS arm64，隔离 fixture + 本地 mock 模型，不联网、不用真实凭据）：编辑器 506 行 → 摘录超 400 行触发截断 → 模型发起 `editor.read_range{offset:300,limit:5}` → `ai_tool_calls` 状态 `succeeded`、回执含 294–298 共 5 行、`total_lines:506`、`next_offset:305` → 助手复述出正确内容。证据见 [T034 `editor.read_range` 真实窗口验证记录](testing/ai-agent/t034-editor-read-range-2026-10-11.md)；截图 `testing/ai-agent/evidence/t034-editor-read-range-success.png`、`t034-editor-e2e-window.jpg`。
 - 真实窗口测试同时暴露并已修复 **T021 界面上下文来源页签缺陷**（见本文件 T021 条目，提交 `4f51400`）：面板开着时切换页签会拿到旧页签或空上下文。
 - [x] **用户手动验收确认（2026-10-11，macOS arm64）**：用户在本机真实主窗口完成本轮验收并通过，范围＝`editor.read_range` 续读链路 + 面板切换页签后的上下文跟随 + 「外观」页崩溃修复。记录见 [T034 `editor.read_range` 真实窗口验证记录](testing/ai-agent/t034-editor-read-range-2026-10-11.md)。
-- 未完成（**T034 仍未勾选**）：`Sample` 的 `keep_rows` 降采样仍未做；界面摘录 16 KiB/400 行仍是固定常量，未随最终模型窗口调整；图片 decoded 像素/活动数量限制无实际路径；明暗主题与窄窗原型对照截图未做。这些不在本次用户验收范围内。
+- [x] **明暗主题 + 窄窗视觉验收已由用户手动完成**（2026-10-11，macOS arm64）：深色外观页、浅色询问AI 面板（含 `editor.read_range` 工具卡）、深色窄窗 900×700 三张截图逐项核对通过。证据 `testing/ai-agent/evidence/t034-dark-appearance.png`、`t034-light-ai-panel.png`、`t034-narrow-dark-ai-panel.png`。
+- [x] **验收范围说明（用户确认接受）**：① 图片 decoded 像素/活动数量限制——代码无任何图片进模型通道（`ModelMessage` 纯文本，`PartKind` 无图片类型），该约束无作用对象，按"不适用"记录，不实现图片通道也不宣称已有；② 界面摘录 16 KiB/400 行为有意默认（设计 §13.2 该值是默认值，"可按模型上下文调大"属可选增强；按模型窗口重算的上下文总预算已由 `should_compact` 实现）；③ `Sample.keep_rows` 降采样不做（`db.query` 已只带 5 行样本 + `rows_omitted` + `result_ref`，通用层仅兜底）。
+- **T034 已勾选**（2026-10-11 用户手动验收确认）。
 
 ### T021 缺陷修复：界面上下文跟随当前活动页签（2026-10-11）
 - [x] **修复真实缺陷**（真实窗口测试暴露，非 `editor.read_range` 引入）：`context_tab` 只在打开 AI 面板那一刻由 `capture_ai_chat_tab_source`（`apps/fluxdb-desktop/src/main_parts/ai/display.rs:2`）记录一次，却同时被 `capture_ai_active_context` 当作"本轮上下文来源"。面板开着时切换到另一个查询页签再发送，`ui_context` 要么为空、要么来自**旧页签**（静默贴错上下文），且 `editor.read_range` 因 `Some` 判定失败而不装配。
@@ -463,7 +465,8 @@ cargo test -p fluxdb-app --locked ai_permission   # 15 passed
   - [ ] 预置不同用途和能力的模型，选择器实际选项与合法候选一致；修改选择后页面值和下一次Provider实际模型ID一致，加载失败不显示成无模型。
 
 ### T034 自动界面捕获、截断续读与上下文装配
-- [ ] 依赖：T021、T027、T032；设计 §13、§15–16。
+- [x] 依赖：T021、T027、T032；设计 §13、§15–16。
+- **2026-10-11 用户手动验收通过，已勾选**（macOS arm64）。验收记录：[T034 `editor.read_range` 真实窗口验证记录](testing/ai-agent/t034-editor-read-range-2026-10-11.md)。实际交付：① 大结果投影恒为合法 JSON（`8d90d89`）；② 工具输出形状契约 `ToolOutputShape` 并声明到各工具（`f085389`）；③ 补上设计 §13.2 一直宣称却缺失的 `editor.read_range`（`9489e62`）；④ 真实窗口暴露并修复 T021 上下文来源页签缺陷（`4f51400`）与设置「外观」页 debug 必崩（`208af16`）；⑤ 明暗主题 + 窄窗原型对照截图。验收范围差异（图片限制不适用、摘录限额有意默认、`keep_rows` 不做）已在记录中逐条列明并经用户确认。
 - 改动：按最终模型预算、保守 token estimate、完整工具配对、ResultRef/媒体引用和保护条目。
 - 验收：用户约束/目标/口径不丢；不无限加载全库/文件；切模型重新估算；图片限制 decoded 像素/活动数量。
 - 测试方式：将上述每项验收分别落实为相关crate的测试断言；用隔离fixture/受控Provider验证正常与异常路径，涉及工具时核对真实回执及副作用调用数，不用伪造成功结果跳过执行链。

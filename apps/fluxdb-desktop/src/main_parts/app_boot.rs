@@ -126,6 +126,7 @@ fn main() {
 ///
 /// 仅 debug 构建生效，用于 UI 截图/交互验证；发布构建始终返回编辑器分区。
 /// 例：`FLUXDB_DEBUG_AI_SETTINGS=models cargo run -p fluxdb-desktop`
+/// 可用值：models / tools / agents / sessions / appearance
 fn debug_ai_settings_section() -> SettingsPanelSection {
     if !cfg!(debug_assertions) {
         return SettingsPanelSection::Editor;
@@ -135,6 +136,8 @@ fn debug_ai_settings_section() -> SettingsPanelSection {
         Ok("tools") => SettingsPanelSection::AiToolsMcp,
         Ok("agents") => SettingsPanelSection::AiAgents,
         Ok("sessions") => SettingsPanelSection::AiSessions,
+        // 外观页用于明暗主题/窄窗截图核对，以及与设置相关的渲染回归定位。
+        Ok("appearance") => SettingsPanelSection::Appearance,
         _ => SettingsPanelSection::Editor,
     }
 }

@@ -149,12 +149,11 @@ async fn editor_context_follows_current_tab_not_stale_panel_snapshot(cx: &mut Te
     open_panel(&view, cx);
 
     // 面板已打开的情况下切到第二个页签——这正是缺陷场景。
-    let event = view.update(cx, |main, cx| {
-        main.controller.dispatch(AppCommand::ActivateTab(second_tab))
+    view.update(cx, |main, _| {
+        main.controller.dispatch(AppCommand::ActivateTab(second_tab));
     });
     cx.update(|window, cx| window.draw(cx).clear(cx));
     wait_idle(&view, cx);
-    let _ = event;
 
     // 走生产捕获路径：让宿主把本轮上下文写进运行快照，再核对快照内容。
     let job = view.update(cx, |main, cx| {

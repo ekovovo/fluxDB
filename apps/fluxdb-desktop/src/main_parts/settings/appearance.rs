@@ -306,7 +306,10 @@ fn settings_theme_palette(
                 .border_color(if is_selected { colors.text } else { colors.border })
                 .bg(background)
                 .text_color(foreground)
-                .hover(|style| style.opacity(0.88))
+                // 不要在这里再调 `Styled::hover`：`Button::render` 内部已对同一个 base
+                // 设置过 hover 样式，叠加会触发 gpui 的 `debug_assert!("hover style already
+                // set")`，在不能 unwind 的绘制帧里直接 abort。需要自定义 hover 观感时
+                // 用组件自己的 `Button::hover(color)` 设背景色。
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.set_theme_name(theme_mode, name.clone(), cx);
                 }))

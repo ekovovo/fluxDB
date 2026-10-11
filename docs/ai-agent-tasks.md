@@ -431,6 +431,17 @@ cargo test -p fluxdb-app --locked ai_permission   # 15 passed
 - 验证：`cargo fmt --all -- --check`、`cargo check --workspace --locked --offline` 通过；`cargo test -p fluxdb-desktop --locked --offline -- --test-threads=1` → **603 passed / 6 failed / 5 ignored**；6 项失败中 5 项为沙箱禁止本地监听的 `ai_ui_model_capacity_http_*`（`PermissionDenied`）、1 项 `ai_chat_model_selection_disabled_model_error_*` 已用 HEAD 版本 `actions.rs` 复跑确认**同样失败**，属既有失败，均与本次改动无关。
 - 未完成：`context_tab` 仍只在进入 AI 页签时更新，作为"切回原页签"的记忆职责未变；若 AI 面板为 Tab 模式且用户始终停在 AI 页签，上下文仍取进入前那个业务页签（符合该模式语义，但若用户期望"AI 页签内也能刷新来源"需另行产品决策）。
 
+### UI 缺陷修复：设置「外观」页 debug 构建必崩（2026-10-11）
+- [x] **修复必崩路径**（用户真实窗口点击「设置 → 外观」时报告）：`settings/appearance.rs` 的主题色块对 `Button` 又调了一次 `Styled::hover(...)`，而 `gpui-component 0.7.1` 的 `Button::render` 内部已对同一个 base 调用过 `.hover(...)`（`button/button.rs:713`），叠加触发 `gpui-pre 0.3.8` 的 `debug_assert!("hover style already set")`（`elements/div.rs:843`）。该断言位于不能 unwind 的绘制帧（`gpui_macos::window::step`），直接把整个进程 `abort`。
+- [x] 修复：删掉主题色块上多余的 `.hover(...)`，只保留组件自身的 hover 行为，并就地注释说明原因（需要自定义 hover 观感时应改用 `Button::hover(color)`）。
+- [x] 范围核对：全仓 285 处闭包版 `.hover(`，逐处回溯构造元素后确认**只有外观页这一处挂在 `Button` 上**；其余均挂在 `div()`（内部不设 hover），`redis_detail/hash_table.rs:912` 的 `Tooltip` 是闭包参数、非链上元素，属误报。
+- [x] 影响面：release 构建不触发 `debug_assert!`，不会崩，但 hover 样式为未定义行为；debug 构建（开发/测试/截图核对）必崩。该缺陷由 `52ccddf` 引入，属既存问题，与本轮 T034/T033 改动无关。
+- [x] TDD：新增 `apps/fluxdb-desktop/src/main_parts/tests/settings_appearance_render.rs` 的 `settings_appearance_page_renders_without_panic`。已确认修复前该用例**必然失败**（`hover style already set`），修复后通过——断言触发是进程级 abort，页面一旦真去构建主题色块就无法静默通过。
+- [x] 顺带补一个调试入口：`FLUXDB_DEBUG_AI_SETTINGS=appearance` 可直接打开外观页（仅 debug 构建），用于主题/窄窗截图核对与设置页渲染回归定位；与既有 `models`/`tools`/`agents`/`sessions` 同一机制。
+- [x] **真实窗口验证**（macOS arm64，隔离 fixture）：`FLUXDB_DEBUG_AI_SETTINGS=appearance FLUXDB_DEBUG_THEME=light` 启动后外观页完整渲染（主题模式、5 个主题色块 Default Light / GitHub Light / Nord Light / One Light / Rose Pine Dawn、形状与层次、布局、无障碍、全局字体），进程存活，日志零 `panic`/`hover style already set`。证据：`/private/tmp/fluxdb-editor-e2e/appearance.jpg`。
+- 验证：`cargo fmt --all -- --check`、`cargo check --workspace --locked --offline` 通过；`cargo test -p fluxdb-desktop --locked --offline -- --test-threads=1` → **604 passed / 6 failed / 5 ignored**（较上轮 603 增加 1 项新增用例）；6 项失败与上轮完全一致：5 项为沙箱禁止本地监听的 `ai_ui_model_capacity_http_*`，1 项 `ai_chat_model_selection_disabled_model_error_*` 已用 HEAD 版本复跑确认同样失败，均为既有失败。
+- 未完成：明暗主题与窄窗口的原型对照截图仍未做（现已有 `appearance` 调试入口，可直接开展）。
+
 ### T032 注册插件能力与确定性 Hook pipeline
 - [ ] 依赖：T012、T019、T020；设计 §23–25。
 - 改动：BuiltinRegistry、12类内置能力、observer/interceptor、priority/conflict、失败策略/deadline；真实receipt不可改，必经审计不能禁用。

@@ -222,6 +222,8 @@ include!("main_parts/tests_connection_ui.rs");
 #[cfg(test)]
 include!("main_parts/tests/ai_agent_defaults.rs");
 #[cfg(test)]
+include!("main_parts/tests/settings_appearance_render.rs");
+#[cfg(test)]
 include!("main_parts/tests/ai_model_capacity.rs");
 #[cfg(test)]
 include!("main_parts/tests/ai_chat_model_selection.rs");

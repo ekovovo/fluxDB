@@ -508,14 +508,15 @@ cargo test -p fluxdb-app --locked ai_permission   # 15 passed
 
 
 ### T035 摘要模型与原子 checkpoint
-- [ ] 依赖：T034、T030；设计 §16、§42.11。
+- [x] 依赖：T034、T030；设计 §16、§42.11。
+- **2026-10-11 用户手动验收通过，已勾选**（macOS arm64）。用户确认已在真实主窗口与实际使用中验证摘要模型、原子 checkpoint、失败/截断不覆盖旧记录与压缩状态可见性；沿用 T028/T030/T031 先例，以用户真实窗口确认为门槛，代理侧未自动化的部分如实记录于下（见"未产出"）。
 - 改动：独立摘要模型配置/默认主模型、生成/保护校验/提交、失败保留旧 checkpoint。
 - 验收：E07；截断/出错摘要不覆盖；失败后卸载或可见暂停；压缩 token 用量入 ledger；原始记录可查。
 - 本任务功能/UI验收：原型 询问AI压缩状态；触发超上下文阈值→展示压缩→继续任务；注入摘要截断/失败确认旧checkpoint保持、提示可见且可恢复。
 - UI证据：按设计§39.3–39.4实际操作并对照原型截图，明暗主题、正常/窄窗口及相关loading/空/错状态分别通过，修复后复测。
 - 测试方式：本任务上述流程分别编写GPUI模拟输入断言并执行真实窗口E2E；截图按指定原型入口逐项对比，业务写入独立核对存储/后端，不只检查提示文字。
 - 数据展示闭环（设计§39.5）：
-  - [ ] 触发压缩后进度/成功或失败反馈经真实事件链出现在当前会话，重进会话的checkpoint状态与持久化一致，其他会话不被覆盖。
+  - [x] 触发压缩后进度/成功或失败反馈经真实事件链出现在当前会话，重进会话的checkpoint状态与持久化一致，其他会话不被覆盖。（用户真实窗口确认；`ai_context_compaction` 端到端与 GPUI `ai_ui_compaction_status_is_visible_and_scoped_to_its_session` 覆盖会话作用域）
 
 #### T035 实现记录（2026-10-11）
 - [x] **独立摘要模型（未配置用主模型）**：`ai_agent_model_bindings` 的 `compaction` 角色接入运行时（`ai_routing::resolve_compaction_model`）：Agent 角色绑定优先，未配置回落主模型；已配置但停用/用途错配/缺凭据/无法建连时**不静默改用主模型**，给出可见说明。**用户决定不在 Agent 编辑页暴露该配置**（市面 agent 无此开关）：已撤销 `AppCommand::SetAiAgentCompactionModel`、Agent 编辑页下拉、`AiAgentItem` 对应字段与相关 UI/命令测试；能力保留在存储 + 路由层（`model_bindings::set_role_model`），设计 §16「摘要模型可单独配置」按"预留能力但不暴露 UI"理解，设计文档未改。
@@ -526,7 +527,8 @@ cargo test -p fluxdb-app --locked ai_permission   # 15 passed
 - [x] **验收中修掉 2 处本轮引入的观感问题**：① 信息性降级（历史不够切点 / 摘要模型不可用但仍在预算内）不再标红色"失败"；② 暂停原因不再存 3 份（notice + 助手正文两份）。各补一条回归用例（`ai_context_compaction.rs`：`informational_compaction_notice_is_not_marked_as_failure`、`paused_compaction_keeps_two_visible_copies_and_never_marks_success`）。
 - 测试：storage `set_role_model` 2 项；app `ai_context_compaction` **9/9**；app 纯逻辑 `exceeds_input_budget` 3 项；GPUI `ai_ui_compaction_status_is_visible_and_scoped_to_its_session`。
 - 验收夹具：`crates/fluxdb-app/examples/ai_t035_fixture.rs`（`<新目录> [--no-summary]`）+ `/private/tmp/fluxdb-t035-e2e/{mock.sh,evidence.sh,CHECKLIST.md}`。
-- 未完成：真实第三方模型（公司自建/决策模型）下的压缩表现与真实 token 计量；"正在压缩"pending 态截图；浅色主题逐项对照；Windows/Linux 三端。
+- **T035 已勾选**（2026-10-11 用户手动验收确认）。
+- 未产出（不因本次勾选冒充分已交付）：真实第三方模型（公司自建/决策模型）下的压缩表现与真实 token 计量的**可核对记录**（用户已实机验证，本仓库未收集副本）；"正在压缩"pending 态截图（本地 mock 响应太快抓不到该帧）；浅色主题逐项对照截图（暗色与窄窗已由用户截图，见 T035 验证记录）；Windows/Linux 三端（按 §B 分工由用户自行验收）。
 
 ### T036 System One/Jev decision Provider
 - [ ] 依赖：T017、T030、T032；设计 §18；参考本地 Pi System One 两个 adapter。

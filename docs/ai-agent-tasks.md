@@ -381,13 +381,30 @@ cargo test -p fluxdb-app --locked ai_permission   # 15 passed
 
 
 ### T031 无 Jev 核心 E2E 门槛
-- [ ] 依赖：T005、T028–T030、T065；设计§37–39。
-- 改动：串行 E01–E05/E08/E09/E11/E13 自动化脚本与后端断言。
+- [x] 依赖：T005、T028–T030；设计§37–39。必经审计不在本任务范围，由 T065/T066 单独验收（2026-10-11 用户确认，见文末修订）。
+- 2026-10-11（macOS arm64，用户手动验收确认通过）：用户确认已在真实主窗口与实际使用中逐项通过 E01–E05/E08/E09/E11/E13，门槛以用户确认为准（沿用 T028/T030 先例）。**未产出**串行 E2E 脚本、每步 checkpoint/小图与 decision 计数断言；T005 仍未勾选。记录：[T031 勾选记录](testing/ai-agent/t031-2026-10-11.md)。
+- 改动：串行 E01–E05/E08/E09/E11/E13 自动化脚本与后端断言（不含审计用例）。
 - 验收：数据库/文件实际结果、UI 小图、每步 checkpoint、decision 请求数=0；不能只检查聊天文案。
 - 测试方式：执行本任务列出的E/U用例，scripted与真实请求分开记录；真实主模型用“公司自建”，涉及Jev时用“决策模型”（设计§37.3），核对实际工具/后端结果和窗口截图，不以聊天结论代替断言。
 
 
 ## M3：可选决策、上下文、Hook 与 BI（P1，安全边界仍 P0）
+
+### T034 上下文装配与截断续读（2026-10-11，本轮修复大结果投影）
+- [x] **修复真实缺陷**：`project_receipt` 原来按字节硬切 `result_json`，而 `ai_loop` 把该片段原样嵌进 `{"tool":..,"truncated":..,"result":<投影>}` 信封发给模型。回执超过工具 `output_limit_bytes` 时会截在 JSON 字符串/数组中间，产出**模型无法解析的半截 JSON**，模型看到的是坏内容而不是"结果被截断"这一事实。已用失败测试先复现（`EOF while parsing a string`）。
+- [x] 修复后投影恒为合法 JSON：JSON 对象回执改为在字节预算内**逐步丢弃顶层字段**（从末尾向前，`rows` 这类大字段优先省略），并写入 `omitted_fields` 让模型知道内容是被省略而非不存在；非 JSON 文本回执按 UTF-8 边界截断后作为合法 JSON 字符串返回；预算小到装不下完整说明时退到 `{error:result_too_large}`，0–1 字节预算返回空串——工具声明的 output 上限是硬约束。
+- [x] 测试：`crates/fluxdb-app/src/parts/tests/ai_tool_registry.rs` 新增 3 项（截断后信封合法 JSON；截断保留 `columns`/`row_count` 并标注 `omitted_fields` 且不超上限；非 JSON 回执在多个小预算下均合法且有界），`ai_tool_registry` 共 17/17 通过。既有 `receipt_projection_is_bounded_and_immutable` 与 `projection_honors_spec_output_limit` 两条断言旧截断行为的用例无需改动即通过（新契约是旧断言的超集：仍有界、仍标记 truncated、仍不改原始回执）。
+- 验证：`cargo fmt --all -- --check` 通过；`cargo test -p fluxdb-app --locked --offline` → **764 passed / 11 failed**（较上一轮 761 增加 3 项新测试），11 项失败仍全部为沙箱禁止 `TcpListener::bind("127.0.0.1:0")` 的既有用例，与本次改动无关；`ai_loop` 18/18、`ai_conversation_tools`/`ai_conversation_write_tool`/`ai_result_paging_e2e` 全部通过。
+- 未完成（仍不足以勾选 T034）：`editor.read_range` 工具尚不存在，`ai_context.rs` 的截断标记已宣称"可用 editor.read_range 读取"但该工具未实现——模型被告知可以续读却无法调用，是当前真实缺口；界面摘录 `16 KiB / 400 行` 限额仍是固定常量，未按最终模型窗口调整；图片 decoded 像素/活动数量限制当前无任何图片进模型路径，尚未产生实际约束；ResultRef 媒体引用、路由事件落库、原型对照截图仍未做。
+
+### T034 补充：工具输出形状契约（2026-10-11，对齐 Pi/Goose 做法）
+- [x] 核对本地参考实现后调整设计：Pi（`packages/durable/src/truncate.ts`、`harness/output.ts`）按工具声明的 `outputLimits.retain` 保留 head/tail 且**从不返回半行**；Goose（`crates/goose/src/agents/large_response_handler.rs`）超 200k 字符直接落盘、回给模型文件路径而非截断内容。共同点是**截断发生在产出侧**，传输层只兜底。
+- [x] 新增 `ToolOutputShape` 契约（`crates/fluxdb-app/src/parts/ai_tool_registry.rs`）：`Sample { keep_rows, omit_field, rows_omitted_field }` 表示工具产出时已自行裁剪（样本行 + 省略行数 + ResultRef），`Opaque` 表示内容本身是产物（文件读取、Redis inspect），不做结构猜测。`ToolSpec` 增加该字段，`from_descriptor` 默认 `Opaque`。
+- [x] `ToolCatalog::project` 按声明形状投影：`shrink_to_budget` 的丢弃顺序以声明字段优先，其余仍从末尾向前；`too_large_marker` 对 `Sample` 形状提示"用 result.read_page 分页读取"，对 `Opaque` 提示缩小读取范围。`db.query`/`db.explain` 在 `standard_sql_tool_specs` 中声明 `Sample{keep_rows:5, omit_field:"rows"}`。
+- [x] 同时修正一处根因：`SQL_RESULT_MAX_BYTES`（128 KiB）此前与工具投影上限相等，导致 `db.query` 结果先被自身上限截断、再被投影层截第二次——正是坏 JSON 的来源。现投影对未超限载荷原样透传（新增断言），不再二次裁剪。
+- [x] 测试：`ai_tool_registry` 19/19（新增 `Sample` 形状按声明顺序优先丢 rows、保留 columns/row_count/rows_omitted；`Opaque` 不发明结构），`ai_sql_exec` 22/22（含新增 `db.query` 声明 `Sample` 且未超限时原样透传的用例）。既有投影断言全部无需改动。
+- 验证：`cargo fmt --all -- --check`、`cargo check --workspace --locked --offline` 通过；`cargo test -p fluxdb-app --locked --offline` → **767 passed / 11 failed**（较上一轮 764 增加 3 项），11 项仍为沙箱禁止本地监听的既有 mock server 用例。
+- 未完成：其余工具（`file.read`、`redis.inspect`、`context.read`）尚未逐一声明 `Opaque`（当前靠 `from_descriptor` 默认值，语义正确但未显式表达）；`Sample` 的 `keep_rows` 目前只用于兜底顺序，未做"样本行数超预算时进一步降采样"；跨层递归裁剪未做。
 
 ### T032 注册插件能力与确定性 Hook pipeline
 - [ ] 依赖：T012、T019、T020；设计 §23–25。
@@ -1108,6 +1125,13 @@ T020按主设计§31.9实现询问AI内联批准卡片：参考Goose三态按钮
 - 修复的真实缺陷：① `AiModelItem.kind` 是本地化串「生成」而非 `"generation"`，原过滤条件让候选恒为空；② 候选重排后 `Select` 游标停留在旧索引，标题会显示成别的模型（按 `selected_value` 判等无法发现）；③ 新增下拉后，面板级 Esc 会在下拉打开时误关整个面板，违反设计 §31.4。
 - 未完成：原型对照的明暗主题/窄窗逐项截图；T033 的模型角色绑定 FK/CAS 完整矩阵（本项只覆盖会话级选择，未做按用途/隐私/价格的候选过滤与模型路由事件）。
 
+### T033 补充：模型角色绑定、候选过滤与路由 precedence（2026-10-11）
+- [x] `ai_agent_model_bindings` repository（`crates/fluxdb-storage/src/parts/ai_platform/model_bindings.rs`）：`ModelRole`/`BindingSource` 枚举、对象级 `revision` CAS、角色与模型用途一致性校验（`decision` 角色必须 decision 模型，其余角色必须 generation）、Agent/模型存在性在事务内校验；`ensure_system_binding` 对 `(agent, role, model)` 幂等且**不覆盖 user 绑定**。7 项存储单测通过。
+- [x] 路由核心 `crates/fluxdb-app/src/parts/ai_routing.rs`：`candidate_check` 判定启停/用途/凭据（`Missing`/`Unavailable` 均拒绝出站，`NotRequired` 放行）；`first_usable` 保留每条不合格原因，避免"有候选但都不可用"被显示成"无模型"；`model_capability_labels` 由价格与上下文窗口推导经济/免费/高能力/长上下文标签，不按模型名硬编码。4 项单测通过。
+- [x] `prepare_ai_conversation` 接入 precedence：会话/草稿显式选择 → Agent `main_candidate` 角色绑定 → Agent 默认模型 → 全局默认；显式选择不合格时报错并保留选中项，绝不静默回退。`crates/fluxdb-app/tests/ai_model_routing.rs` 6/6：绑定优先于 Agent 默认与全局默认、无绑定回落顺序、停用绑定被跳过且 system reconcile 不覆盖 user 停用、Agent 默认用途错配时报"用途不匹配"且不产生会话、显式选择优先于绑定。
+- 验证：`cargo fmt --all -- --check` 通过；`cargo test -p fluxdb-storage --locked --offline` → 141 + 11 + 5 + 16 + 3 + 22 全通过；`cargo test -p fluxdb-app --locked --offline` → 761 passed / 11 failed，11 项失败全部在本次未改动的 `ai_model_network`/`ai_provider`/`ai_transport`/`pg_client_tools` 用例内，均 panic 于 `TcpListener::bind("127.0.0.1:0")`（沙箱禁止本地监听），非本次改动引入；沙箱外复跑需用户授权。
+- 未完成：模型角色绑定的 UI 编辑入口（设置页 Agent「模型与提示词」分区）；`compaction`/`artifact` 角色的模型选择（当前压缩仍用主模型，见 T035）；按用途/隐私的实际过滤策略接入 `privacy_policy_json`；模型路由事件落库与原型对照截图。
+
 ### T032 注册插件能力与确定性 Hook pipeline
 - [x] `HookPipeline`（`crates/fluxdb-app/src/parts/ai_hooks.rs`）：priority 升序再按 binding ID 稳定排序；显式冲突（同字段不同 patch）fail closed；`Deny > RequireApproval > Allow`；after-tool 只允许 `Observe`，**不能改写真实回执**；禁用绑定零调用；取消时不调用；递归检测与 64 绑定上限。`crates/fluxdb-app/tests/ai_hook_pipeline.rs` 通过。
 - [x] before-tool 顺序：完整参数解析 → schema 初校验 → Hook 补丁 → **再次 schema 校验** → 强制安全审计 → 内核授权/审批。补丁**不得改变执行目标**（改变即失败），最终参数回写 assistant tool_call 以保证无状态协议重放一致。
@@ -1138,3 +1162,12 @@ T020按主设计§31.9实现询问AI内联批准卡片：参考Goose三态按钮
 - `cargo fmt --all -- --check`、`git diff --check`、`cargo check --workspace --offline` 通过。
 - 平台：macOS arm64 实测；Windows/Linux 未验证（附件安全读取在非 Unix 明确不可用）。
 - 未验证：真实模型（公司自建/决策模型）token 用量、T033 模型路由/候选过滤、T032 其余能力契约、T022 其余 @ 候选类型。
+
+## 2026-10-11 用户修订：T031 依赖范围与勾选口径
+
+### T031 无 Jev 核心 E2E 门槛（范围调整）
+- **调整原因**：T031 原依赖含 T065（必经安全审计 Hook），但 T031 自身用例集 E01–E05/E08/E09/E11/E13 不含审计用例，依赖项与验收范围不一致；且 T065 及其前置 T054/T057（MCP 固定工具契约、Server Profile/资源授权表）尚未实施，会让 T031 在语义上永远无法满足。
+- **用户确认（2026-10-11）**：T031 依赖去掉 T065；必经审计链路由 T065（实现与单任务验收）和 T066（真实 Docker/审计端到端）单独承担责任，T031 只表达「无 Jev 核心链路」门槛。
+- **本调整只改任务清单口径，不改设计**：主设计 §25.1、§29、§40 的「必经审计」要求与 T065/T066 范围不变，发布门槛不因此降低。
+- **勾选口径**：T031 于 2026-10-11 以用户真实窗口与实际使用确认勾选；串行 E2E 脚本、每步 checkpoint/小图与 decision 计数断言仍未产出，详见 [T031 勾选记录](testing/ai-agent/t031-2026-10-11.md)。
+- **仍待办**：T005 截图预算工具；T054–T057 → T065 审计链路；`ai_recovery_close_reopen_history_does_not_rescan_live_task` 并发 flaky 修复。

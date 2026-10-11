@@ -195,19 +195,15 @@ impl NavicatMain {
         if prompt.is_empty() {
             return;
         }
-        let context = self.capture_ai_active_context(cx);
+        let page = self.ai_chat.page_context_enabled.then(|| self.capture_ai_page_context(cx, true));
+        let context = page.as_ref().map(|page| page.snapshot.clone())
+            .unwrap_or_else(|| fluxdb_app::capture(&fluxdb_app::CapturedTab::NoTab {
+                connection_id: None, database: None, schema: None, last_object: None,
+            }, fluxdb_app::ContextLimits::default()));
         // debug 覆盖优先：GUI E2E 需要固定目标；生产永远是真实界面捕获。
         let pin = self
             .ai_debug_target_override()
             .unwrap_or_else(|| fluxdb_app::pin_target(&context));
-        let context_text = context
-            .selected_text
-            .or_else(|| context.excerpt.map(|e| e.text))
-            .or(context.summary)
-            .unwrap_or_default();
-        // 编辑器全文只在发送这一刻由宿主持有：登记给本轮的 editor.read_range 用，
-        // 不进运行快照（设计 §13.2 不把整份内容持久化进会话）。
-        let editor_grant = self.ai_editor_grant(cx);
         let mut controller = self.controller.clone();
         let epoch = self.ai_chat.epoch;
         self.ai_chat.loading = true;
@@ -216,13 +212,11 @@ impl NavicatMain {
         self.ai_chat._io = Some(cx.spawn_in(window, async move |view, cx| {
             let (result, chat) = cx
                 .background_spawn(async move {
-                    let result =
-                        controller.prepare_ai_conversation_context(&prompt, &pin, &context_text);
-                    if let Ok(job) = &result
-                        && let Some(grant) = editor_grant
-                    {
-                        let _ = fluxdb_app::register_editor_grant(&job.turn_id, grant);
-                    }
+                    let result = controller.prepare_ai_conversation_page(
+                        &prompt,
+                        &pin,
+                        page,
+                    );
                     (result, controller.state().ai_conversation.clone())
                 })
                 .await;
@@ -232,6 +226,7 @@ impl NavicatMain {
                 match result {
                     Ok(job) => {
                         if epoch != this.ai_chat.epoch {
+                            fluxdb_app::clear_current_page_grants(&job.turn_id);
                             this.ai_chat.error =
                                 Some("会话已切换，发送准备已中断；请从历史查看任务".into());
                             cx.notify();
@@ -398,6 +393,7 @@ impl NavicatMain {
         message: String,
         cx: &mut Context<Self>,
     ) {
+        fluxdb_app::clear_current_page_grants(&job.turn_id);
         self.ai_chat.error = Some(message.clone());
         self.ai_chat._pump = Some(cx.spawn(async move |view, cx| {
             let update = cx.background_spawn(async move {
@@ -479,101 +475,4 @@ impl NavicatMain {
         })
     }
 
-    /// 本轮界面上下文的来源页签。
-    ///
-    /// 语义对齐 Zed `AgentContextSource::from_focused`/`from_active` 的回退链，但按本仓
-    /// 数据结构实现：
-    /// 1. 当前活动页签不是 AI 页签 → 直接用**它**，这才是用户此刻在看的内容；
-    /// 2. 活动页签是 AI 页签（Tab 模式） → 退回"进入面板前的业务页签"，并校验它仍存在
-    ///    （对应 Zed 用 `exists()` 拒绝已关闭的 `WeakEntity`）；
-    /// 3. 都取不到 → `None`，上下文为空，由调用方如实告知，不静默冒充"用户没给上下文"。
-    ///
-    /// 旧实现只在打开面板那一刻记录一次 `context_tab` 并长期沿用，面板开着时切换页签
-    /// 会拿到旧页签内容或空上下文（T021 缺陷）。
-    fn ai_context_source_tab(&self) -> Option<&TabState> {
-        let state = self.controller.state();
-        let active = state.active_tab()?;
-        if !matches!(active.kind, TabKind::AiChat { .. }) {
-            return Some(active);
-        }
-        // AI 页签本身不是业务上下文：沿用进入前的业务页签，已关闭则视为无上下文。
-        self.ai_chat
-            .context_tab
-            .and_then(|id| state.tabs.iter().find(|tab| tab.id == id))
-    }
-
-    /// 发送瞬间的编辑器全文（仅 SQL 编辑器有可续读的整段文本）。
-    ///
-    /// 只在"确实发生了截断"时登记：短文本界面摘录已全量携带，再登记全文只会
-    /// 让 turn 白持有大字符串。有选区时同样不登记——选区就是用户想给模型的内容，
-    /// 界面摘录已带上它。
-    fn ai_editor_grant(&self, cx: &App) -> Option<fluxdb_app::EditorGrant> {
-        let tab = self.ai_context_source_tab()?;
-        let TabKind::QueryEditor(_) = &tab.kind else {
-            return None;
-        };
-        let text = self
-            .query_editors
-            .get(&tab.id)
-            .map(|editor| editor.read(cx).text())?;
-        if text.trim().is_empty() {
-            return None;
-        }
-        Some(fluxdb_app::EditorGrant {
-            tab_ref: format!("tab-{}", tab.id.0),
-            full_text: text,
-        })
-    }
-
-    fn capture_ai_active_context(&self, cx: &App) -> fluxdb_app::UiContextSnapshot {
-        let tab = self.ai_context_source_tab();
-        let snapshot = match tab.map(|t| &t.kind) {
-            Some(TabKind::QueryEditor(q)) => fluxdb_app::CapturedTab::SqlEditor {
-                tab_id: tab.unwrap().id.0,
-                revision: 0,
-                connection_id: q.connection_id.0 as i64,
-                database: q.database.clone(),
-                schema: q.schema.clone(),
-                selection: self
-                    .query_editors
-                    .get(&tab.unwrap().id)
-                    .and_then(|e| e.read(cx).selected_text()),
-                full_text: q.text.clone(),
-                statement_at_cursor: None,
-            },
-            Some(TabKind::DataEditor(d)) => fluxdb_app::CapturedTab::TableData {
-                tab_id: tab.unwrap().id.0,
-                revision: 0,
-                connection_id: d.object.connection_id.0 as i64,
-                database: d.object.database.clone(),
-                schema: d.object.schema.clone(),
-                object_name: d.object.name.clone(),
-                columns: d
-                    .page
-                    .as_ref()
-                    .map(|p| p.columns.iter().map(|c| c.name.clone()).collect())
-                    .unwrap_or_default(),
-                filter: None,
-                sort: None,
-                sample_rows: Vec::new(),
-                result_ref: None,
-            },
-            Some(TabKind::RedisWorkbench(r)) => fluxdb_app::CapturedTab::Design {
-                tab_id: tab.unwrap().id.0,
-                revision: 0,
-                connection_id: r.connection_id.0 as i64,
-                database: Some(r.database.to_string()),
-                schema: None,
-                object_path: "Redis 命令工作台".into(),
-                summary: r.text.clone(),
-            },
-            _ => fluxdb_app::CapturedTab::NoTab {
-                connection_id: None,
-                database: None,
-                schema: None,
-                last_object: None,
-            },
-        };
-        fluxdb_app::capture(&snapshot, fluxdb_app::ContextLimits::default())
-    }
 }

@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 fluxdb-connectors = { path = "../fluxdb-connectors" }
 fluxdb-core = { path = "../fluxdb-core" }
+fluxdb-editor-core = { path = "../fluxdb-editor-core" }
 fluxdb-storage = { path = "../fluxdb-storage" }
 sqlformat = "0.5.0"
 sqlparser = { version = "0.62.0", features = ["visitor"] }
@@ -19,6 +20,8 @@ url = "2"
 zip = { version = "8", default-features = false, features = ["deflate"] }
 # 附件 CSV 流式分段解析（引号转义/嵌入换行交给 crate，不手写状态机）。
 csv = "1.4"
+# 已授权附件与编辑器快照的正文搜索：memchr 的 memmem 使用 SIMD 加速子串扫描。
+memchr = "2.8.3"
 
 [dev-dependencies]
 sqlx = { version = "0.8.6", default-features = false, features = ["sqlite", "runtime-tokio-rustls"] }

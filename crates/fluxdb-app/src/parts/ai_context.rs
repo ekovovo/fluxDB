@@ -196,9 +196,9 @@ pub fn bound_excerpt(text: &str, limits: ContextLimits) -> BoundedExcerpt {
     }
 
     let marker = if omitted > 0 {
-        format!("… [省略 {omitted} 行，可用 editor.read_range 读取] …")
+        format!("… [省略 {omitted} 行；后续读取能力见当前引用] …")
     } else {
-        "… [内容超限已截断，可用 editor.read_range 读取] …".to_string()
+        "… [内容超限已截断；后续读取能力见当前引用] …".to_string()
     };
     let text = if tail.is_empty() {
         format!("{head}\n{marker}")

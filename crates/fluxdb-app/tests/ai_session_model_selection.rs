@@ -955,6 +955,10 @@ mod file_references {
         let tools = files.catalog(&job);
         assert_eq!(tools.describe("file.read").unwrap().risk, ToolRisk::Read);
         assert_eq!(tools.describe("file.search").unwrap().risk, ToolRisk::Read);
+        assert_eq!(
+            tools.describe("file.search_content").unwrap().risk,
+            ToolRisk::Read
+        );
         drop(reopened);
         let reopened = files.controller();
         assert!(
@@ -967,6 +971,84 @@ mod file_references {
         assert!(reopened.state().ai_conversation.messages.iter().flat_map(|message| &message.parts)
             .any(|part| part.kind == "context_ref" && part.payload_json.contains(&reference.id)));
         assert_eq!(files.snapshot(&job), snapshot);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn file_search_content_finds_text_and_csv_hits_then_reads_them_back() {
+        let files = Files::new();
+        let mut controller = files.configured();
+        let text = "SELECT 1;\nALTER TABLE Users ADD COLUMN email TEXT;\nSELECT 2;";
+        let reference = files.attach(&mut controller, &files.write("body.sql", text));
+        let csv = files.write(
+            "rows.csv",
+            "id,name\n1,张三\n2,Users Team\n3,other\n4,users again\n",
+        );
+        let csv_reference = files.attach(&mut controller, &csv);
+        let job = controller
+            .prepare_ai_conversation("search attachment body", &target())
+            .unwrap();
+        let tools = files.catalog(&job);
+
+        let found = execute(
+            &tools,
+            &job,
+            "file.search_content",
+            json!({"file_ref":reference.id,"query":"users","context_lines":1}),
+            CancelFlag::new(),
+        );
+        assert_eq!(found.status, ToolReceiptStatus::Succeeded, "{found:?}");
+        let value = payload(&found);
+        assert_eq!(value["matches"].as_array().unwrap().len(), 1);
+        assert_eq!(value["matches"][0]["line_number"], 2);
+        assert_eq!(value["content_type"], "text");
+        let read_offset = value["matches"][0]["read_hint"]["offset"].as_u64().unwrap();
+        let read = execute(
+            &tools,
+            &job,
+            "file.read",
+            json!({"file_ref":reference.id,"offset":read_offset,"max_bytes":64}),
+            CancelFlag::new(),
+        );
+        assert!(
+            payload(&read)["text"]
+                .as_str()
+                .unwrap()
+                .contains("ALTER TABLE Users")
+        );
+
+        let csv_found = execute(
+            &tools,
+            &job,
+            "file.search_content",
+            json!({"file_ref":csv_reference.id,"query":"users"}),
+            CancelFlag::new(),
+        );
+        assert_eq!(csv_found.status, ToolReceiptStatus::Succeeded);
+        let csv_value = payload(&csv_found);
+        assert_eq!(csv_value["content_type"], "delimited");
+        let records = csv_value["matches"].as_array().unwrap();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0]["record_number"], 2);
+        let record = execute(
+            &tools,
+            &job,
+            "file.read",
+            json!({"file_ref":csv_reference.id,
+                "offset":records[0]["read_hint"]["offset"],"max_records":1}),
+            CancelFlag::new(),
+        );
+        assert_eq!(payload(&record)["records"][0][1], "Users Team");
+
+        let denied = execute(
+            &tools,
+            &job,
+            "file.search_content",
+            json!({"file_ref":"not-authorized","query":"users"}),
+            CancelFlag::new(),
+        );
+        assert_eq!(denied.status, ToolReceiptStatus::Failed);
+        assert!(payload(&denied).get("matches").is_none());
     }
 
     #[cfg(unix)]
@@ -1095,6 +1177,10 @@ mod file_references {
         for (tool, args) in [
             ("file.read", json!({"file_ref":reference.id})),
             ("file.search", json!({"query":"cancel"})),
+            (
+                "file.search_content",
+                json!({"file_ref":reference.id,"query":"cancel"}),
+            ),
         ] {
             let cancel = CancelFlag::new();
             cancel.request();
@@ -1104,6 +1190,7 @@ mod file_references {
             let value = payload(&receipt);
             assert!(value.get("text").is_none());
             assert!(value.get("files").is_none());
+            assert!(value.get("matches").is_none());
         }
     }
 

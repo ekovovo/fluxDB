@@ -44,6 +44,7 @@ mod tests {
     include!("tests/ai_routing.rs");
     include!("tests/ai_permission.rs");
     include!("tests/ai_context.rs");
+    include!("tests/ai_page_context.rs");
     include!("tests/ai_sql_policy.rs");
     include!("tests/ai_sql_exec.rs");
     include!("tests/ai_sql_exec_live.rs");

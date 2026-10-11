@@ -1,4 +1,28 @@
 impl AppController {
+    /// 页面快照与显式引用复用同一存储隔离边界，不允许读取应用自己的配置库。
+    fn validate_ai_database_resource(
+        &self,
+        config: &fluxdb_core::ConnectionConfig,
+    ) -> fluxdb_core::Result<()> {
+        if let fluxdb_core::Endpoint::SqliteFile { path, .. } = &config.endpoint {
+            let path = path
+                .canonicalize()
+                .map_err(|_| Error::new(ErrorKind::Internal, "数据库资源路径无法核验"))?;
+            let root = self
+                .ai_storage()?
+                .root_dir()
+                .canonicalize()
+                .map_err(|_| Error::new(ErrorKind::Internal, "配置目录无法核验"))?;
+            if path.starts_with(root) {
+                return Err(Error::new(
+                    ErrorKind::Internal,
+                    "配置数据库不能作为 AI 数据资源",
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// 从本轮最终目标对应的真实连接提取公开属性，不序列化 endpoint、options 或凭据。
     fn ai_database_context(&self, target_json: &str) -> fluxdb_core::Result<serde_json::Value> {
         let target: serde_json::Value = serde_json::from_str(target_json)

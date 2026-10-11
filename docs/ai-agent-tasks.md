@@ -418,7 +418,9 @@ cargo test -p fluxdb-app --locked ai_permission   # 15 passed
 - [x] **实现中发现并修掉的缺陷**：单行文本超过字节上限时按整行丢弃，`next_offset` 不前进、模型拿到空结果且无法续读。改为按字符边界切该行并返回 `partial_line.next_byte_offset`（对齐 Pi `read.ts` 对超长单行的处理：宁可给可续读片段，也不给空结果）。
 - [x] 测试：`ai_editor` 5/5（按行窗口取回中段；未知 `tab_ref` 与越界 `offset` 受控失败；超长单行可续读且不切半字符；登记项取走即释放、跨 turn 隔离、超大全文拒绝登记；真实 turn 快照不含全文）。`ai_context` 13/13 无回归。
 - 验证：`cargo fmt --all -- --check`、`cargo check --workspace --locked --offline` 通过；`cargo test -p fluxdb-app --locked --offline` → **773 passed / 11 failed**（较上一轮 768 增加 5 项），11 项仍为沙箱禁止本地监听的既有 mock server 用例。
-- 未完成：`Sample` 的 `keep_rows` 降采样仍未做；界面摘录 16 KiB/400 行仍是固定常量，未随最终模型窗口调整；真实窗口 E2E（模型实际看到截断标记并成功调用 `editor.read_range`）尚未执行。
+- [x] **真实窗口验证已执行**（macOS arm64，隔离 fixture + 本地 mock 模型，不联网、不用真实凭据）：编辑器 506 行 → 摘录超 400 行触发截断 → 模型发起 `editor.read_range{offset:300,limit:5}` → `ai_tool_calls` 状态 `succeeded`、回执含 294–298 共 5 行、`total_lines:506`、`next_offset:305` → 助手复述出正确内容。证据见 [T034 `editor.read_range` 真实窗口验证记录](testing/ai-agent/t034-editor-read-range-2026-10-11.md)；截图 `testing/ai-agent/evidence/t034-editor-read-range-success.png`、`t034-editor-e2e-window.jpg`。
+- 真实窗口测试同时暴露并已修复 **T021 界面上下文来源页签缺陷**（见本文件 T021 条目，提交 `4f51400`）：面板开着时切换页签会拿到旧页签或空上下文。
+- 未完成：`Sample` 的 `keep_rows` 降采样仍未做；界面摘录 16 KiB/400 行仍是固定常量，未随最终模型窗口调整；图片 decoded 像素/活动数量限制无实际路径；明暗主题与窄窗原型对照截图未做。
 
 ### T021 缺陷修复：界面上下文跟随当前活动页签（2026-10-11）
 - [x] **修复真实缺陷**（真实窗口测试暴露，非 `editor.read_range` 引入）：`context_tab` 只在打开 AI 面板那一刻由 `capture_ai_chat_tab_source`（`apps/fluxdb-desktop/src/main_parts/ai/display.rs:2`）记录一次，却同时被 `capture_ai_active_context` 当作"本轮上下文来源"。面板开着时切换到另一个查询页签再发送，`ui_context` 要么为空、要么来自**旧页签**（静默贴错上下文），且 `editor.read_range` 因 `Some` 判定失败而不装配。

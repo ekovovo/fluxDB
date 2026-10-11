@@ -558,3 +558,94 @@ fn conversation_level_selection_overrides_agent_binding() {
     ));
     assert_eq!(send_model(&mut controller, "explicit wins"), explicit);
 }
+
+#[test]
+fn capability_labels_reach_the_settings_list_so_the_ui_shows_economic_and_premium_tiers() {
+    let fixture = Fixture::new();
+    let mut controller = fixture.controller();
+    // 低成本模型：输出价 $1/1M → “经济”；小窗口不给“长上下文”。
+    let cheap = controller.dispatch(AppCommand::SaveAiModel(AiModelSaveInput {
+        display_name: "经济档".into(),
+        provider: "openai".into(),
+        model: "offline-cheap".into(),
+        endpoint: Some("https://model.example.invalid/v1".into()),
+        enabled: true,
+        egress: true,
+        context_window_tokens: Some(8_192),
+        max_output_tokens: Some(1_024),
+        input_price_micros: Some(300_000),
+        output_price_micros: Some(1_000),
+        ..Default::default()
+    }));
+    let cheap = match cheap {
+        AppEvent::AiModelSaved { id, .. } => id,
+        other => panic!("save cheap: {other:?}"),
+    };
+    // 高价 + 大窗口：应同时得到“高能力”和“长上下文”。
+    let premium = controller.dispatch(AppCommand::SaveAiModel(AiModelSaveInput {
+        display_name: "高价档".into(),
+        provider: "openai".into(),
+        model: "offline-premium".into(),
+        endpoint: Some("https://model.example.invalid/v1".into()),
+        enabled: true,
+        egress: true,
+        context_window_tokens: Some(400_000),
+        max_output_tokens: Some(32_000),
+        input_price_micros: Some(15_000_000),
+        output_price_micros: Some(80_000),
+        ..Default::default()
+    }));
+    let premium = match premium {
+        AppEvent::AiModelSaved { id, .. } => id,
+        other => panic!("save premium: {other:?}"),
+    };
+
+    // 列表项必须带标签，UI 才能渲染“经济 / 高能力”前缀；标签由价格与窗口推导，不看模型名。
+    fn labels_of(controller: &AppController, id: &str) -> Vec<String> {
+        controller
+            .state()
+            .ai_models
+            .iter()
+            .find(|m| m.id == id)
+            .map(|m| m.capability_labels.clone())
+            .unwrap_or_default()
+    }
+    assert_eq!(labels_of(&controller, &cheap), vec!["经济".to_string()]);
+    let premium_labels = labels_of(&controller, &premium);
+    assert!(
+        premium_labels.contains(&"高能力".to_string()),
+        "{premium_labels:?}"
+    );
+    assert!(
+        premium_labels.contains(&"长上下文".to_string()),
+        "{premium_labels:?}"
+    );
+
+    // 改价后标签必须跟着更新，而不是停留在旧值。
+    let revision = controller
+        .state()
+        .ai_models
+        .iter()
+        .find(|m| m.id == cheap)
+        .map(|m| m.revision)
+        .unwrap();
+    assert!(matches!(
+        controller.dispatch(AppCommand::SaveAiModel(AiModelSaveInput {
+            id: Some(cheap.clone()),
+            display_name: "经济档".into(),
+            provider: "openai".into(),
+            model: "offline-cheap".into(),
+            endpoint: Some("https://model.example.invalid/v1".into()),
+            enabled: true,
+            egress: true,
+            context_window_tokens: Some(8_192),
+            max_output_tokens: Some(1_024),
+            input_price_micros: Some(15_000_000),
+            output_price_micros: Some(80_000),
+            expected_revision: Some(revision),
+            ..Default::default()
+        })),
+        AppEvent::AiModelSaved { .. }
+    ));
+    assert_eq!(labels_of(&controller, &cheap), vec!["高能力".to_string()]);
+}

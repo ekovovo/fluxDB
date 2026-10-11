@@ -25,6 +25,8 @@ pub struct AiModelItem {
     pub enabled: bool,
     /// 数据出站许可：false 表示该模型不再接收会话数据（设计 §29/§31.1）。
     pub egress: bool,
+    /// 能力标签（经济/免费/高能力/长上下文）：由价格与窗口推导，不按模型名硬编码。
+    pub capability_labels: Vec<String>,
     pub context_window_tokens: Option<i64>,
     pub max_output_tokens: Option<i64>,
     /// 计价：micro-USD / 百万 Token。

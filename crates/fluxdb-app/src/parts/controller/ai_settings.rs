@@ -84,7 +84,12 @@ pub fn refresh_ai_settings(
         })?;
     state.ai_models = models
         .into_iter()
-        .map(|m| AiModelItem {
+        .map(|m| {
+            let capability_labels = crate::model_capability_labels(&m)
+                .into_iter()
+                .map(str::to_string)
+                .collect();
+            AiModelItem {
             id: m.id,
             display_name: m.display_name,
             provider: m.provider,
@@ -97,6 +102,7 @@ pub fn refresh_ai_settings(
             },
             enabled: m.enabled,
             egress: m.egress == fluxdb_storage::ai_platform::models::EgressPermission::Allow,
+            capability_labels,
             context_window_tokens: m.context_window_tokens,
             max_output_tokens: m.max_output_tokens,
             input_price_micros: m.input_price_micros_per_million,
@@ -119,6 +125,7 @@ pub fn refresh_ai_settings(
             connection_status: m.connection_status,
             connection_checked_at_ms: m.connection_checked_at_ms,
             revision: m.revision,
+            }
         })
         .collect();
     state.ai_tool_settings = tools_list
@@ -536,6 +543,10 @@ pub fn save_ai_model(
     // 就地更新列表，避免整页刷新闪烁。
     match state.ai_models.iter_mut().find(|m| m.id == id) {
         Some(existing) => {
+            let capability_labels = crate::model_capability_labels(&saved)
+                .into_iter()
+                .map(str::to_string)
+                .collect::<Vec<_>>();
             existing.display_name = saved.display_name;
             existing.enabled = saved.enabled;
             existing.egress = saved.egress
@@ -557,11 +568,17 @@ pub fn save_ai_model(
             existing.output_price_micros = saved.output_price_micros_per_million;
             existing.cached_input_price_micros = saved.cached_input_price_micros_per_million;
             existing.revision = revision;
+            existing.capability_labels = capability_labels;
             existing.credential_status = credential_label(saved.credential_status);
             existing.connection_status = saved.connection_status;
             existing.connection_checked_at_ms = saved.connection_checked_at_ms;
         }
-        None => state.ai_models.push(AiModelItem {
+        None => {
+            let capability_labels = crate::model_capability_labels(&saved)
+                .into_iter()
+                .map(str::to_string)
+                .collect();
+            state.ai_models.push(AiModelItem {
             id: id.clone(),
             display_name: saved.display_name,
             provider: saved.provider,
@@ -576,6 +593,7 @@ pub fn save_ai_model(
             enabled: saved.enabled,
             egress: saved.egress
                 == fluxdb_storage::ai_platform::models::EgressPermission::Allow,
+            capability_labels,
             context_window_tokens: saved.context_window_tokens,
             max_output_tokens: saved.max_output_tokens,
             input_price_micros: saved.input_price_micros_per_million,
@@ -585,7 +603,8 @@ pub fn save_ai_model(
             connection_status: saved.connection_status,
             connection_checked_at_ms: saved.connection_checked_at_ms,
             revision,
-        }),
+            });
+        }
     }
     Ok((id, revision))
 }

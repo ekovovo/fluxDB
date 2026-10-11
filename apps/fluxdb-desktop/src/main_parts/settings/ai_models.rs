@@ -65,10 +65,26 @@ fn ai_model_row(
     let capability_note = if decision {
         "Choice / Score · 内置 Jev".to_string()
     } else {
+        // 经济/高能力/免费/长上下文由价格与窗口推导（app 层 `model_capability_labels`），
+        // 不按模型名硬编码；原型要求等级前缀排在上下文之前，这里补齐最后一米。
+        let labels = &model.capability_labels;
+        let tier = match (
+            labels.iter().any(|l| l == "免费"),
+            labels.iter().any(|l| l == "经济"),
+            labels.iter().any(|l| l == "高能力"),
+        ) {
+            (true, _, _) => "免费 · ",
+            (_, true, _) => "经济 · ",
+            (_, _, true) => "高能力 · ",
+            _ => "",
+        };
+        let long_context = if labels.iter().any(|l| l == "长上下文") { " · 长上下文" } else { "" };
         format!(
-            "{} ctx / {} out",
+            "{}{} ctx / {} out{}",
+            tier,
             tokens(model.context_window_tokens),
-            tokens(model.max_output_tokens)
+            tokens(model.max_output_tokens),
+            long_context
         )
     };
     let egress = model.egress;

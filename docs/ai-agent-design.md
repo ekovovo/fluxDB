@@ -1,16 +1,19 @@
 # fluxDB 原生 AI Agent 与插件平台详细设计
 
 - 状态：设计草案；本文件不是“功能已经实现”的说明。
-- 日期：2026-10-03。
+- 日期：2026-10-03；Token 计量口径修订：2026-10-11。
 - 本文件为完整设计唯一入口；工具/MCP、内置插件、设置/UI、持久化细节均在对应章节，不需要另读专项文件。
 - 配套任务清单：[ai-agent-tasks.md](/Users/shining3d/fusuwei/code/fluxDB/docs/ai-agent-tasks.md)。
 - **UI 交互稿（实现时必须对照）**：[ai-agent-ui.html](/Users/shining3d/fusuwei/code/fluxDB/docs/prototype/ai-agent-ui.html)
   - 样式 `docs/prototype/ai-agent-ui.css`、页面 `ai-agent-ui-pages.js`、交互 `ai-agent-ui.js`；浏览器直接打开即可，无需构建与网络。
-  - 覆盖：数据库工作台、询问AI（抽屉/内嵌、公开思考摘要、执行时间线、**内联审批卡片**、报表产物卡片）、大模型（含Key掩码/眼睛、上下文窗口/最大输出/计价）、Agent主页面（列表+三分区）、内置插件、工具、本地MCP、安全审计（只读）、会话历史、报表弹框、高级费用/执行保护。
+  - 覆盖：数据库工作台、询问AI（抽屉/内嵌、公开思考摘要、执行时间线、**内联审批卡片**、报表产物卡片）、大模型（含Key掩码/眼睛、上下文窗口/最大输出/计价）、Agent主页面（列表+三分区）、内置插件、工具、本地MCP、安全审计（只读）、会话历史、报表弹框、执行保护与 Token 用量。
   - 交互稿为模拟数据：模型/数据库/MCP/附件执行均为假动作，不实现加密。原生GPUI实现以本文文字契约为准，视觉与交互以交互稿为基准；两者冲突时先改稿再改实现。
 - 范围：应用内部 Agent、模型与凭据管理、插件、工具、上下文、BI 产物、独立表持久化、界面与端到端验证。
 - 本地源码基线：fluxDB `d90ef97546cf342e5a6f3397798be3625373b38d`；Pi `a276dabe57911253350bffb93cb7d7aff6a73261`；Goose `591edd47cf2cfea4957d720c607cf2a4def8673d`。
 - 外部网页和主分支资料为本日参考，不代表可直接使用的发布版 API；引入依赖前必须锁版本并验证。全文“新增”“拟建”“建议”均指待实现内容。
+
+
+> **2026-10-11 用户确认**：会话只统计 Token，不统计钱、不设置金额或累计 Token 上限；模型价格配置保留供路由。§30、§42.8 及当前 T030 验收取代历史费用预留/结算描述。
 
 
 ## 阅读索引（主文内）
@@ -31,7 +34,7 @@
 3. 首批支持 SQL 编写/解释/执行、数据库探索、Redis 操作、文件读取、BI 分析和报表；预留 MongoDB、HTTP API、SSH 的能力扩展。
 4. 支持 `@` 对象引用、当前界面上下文、主动读取更多上下文；不能把整个库或界面内容无条件发送给模型。
 5. 插件可提供模型路由、上下文提供/筛选/压缩、生命周期 Hook、工具、报表及其他输出能力。
-6. 可以在执行不同阶段选用经济或高能力模型；用户指定、能力匹配、隐私范围、预算优先于插件建议。
+6. 可以在执行不同阶段选用经济或高能力模型；用户指定、能力匹配、隐私范围、执行保护优先于插件建议。
 7. Jev 是自动可用的内置可选插件，配置启用合格决策模型后自动建立系统绑定，无需安装/手工建实例。完全未配置、禁用、超时、报错、返回无效时，都不阻断正常 Agent 运行。
 8. AI 管理实体必须独立建表，不用 kv 保存整个 AI 配置；普通业务 kv 和连接/history 现状不被顺手改造。
 9. 模型 API Key 使用连接凭据同一把数据密钥、AES-256-GCM 加密；密文保存在模型行中。不保存到系统钥匙串，不建 `ai_credentials` 作为正常模型凭据存储。
@@ -169,8 +172,8 @@ HTTP 流式调用要可取消、有大小限制、有 connect/read deadline；�
 
 以下路径为**拟新增**，每个目录按职责拆小文件；原有 lib/main 只加声明。
 
-- 领域 DTO：[core/ai/mod.rs](/Users/shining3d/fusuwei/code/fluxDB/crates/fluxdb-core/src/parts/ai/mod.rs)，下分 model、agent、message、context、tool、plugin、artifact、budget、error；不依赖 GPUI/HTTP/数据库驱动。
-- 编排：[app/ai/mod.rs](/Users/shining3d/fusuwei/code/fluxDB/crates/fluxdb-app/src/parts/ai/mod.rs)，下分 runtime/{actor,loop,state,event}、provider/{mod,chat,system_one,scripted}、context/{assemble,compact,mentions}、tools/{registry,db,redis,file,artifact}、plugins/{registry,hook,route,builtin}、policy/{permission,budget,privacy}、management/{models,agents,plugins,mcp}。
+- 领域 DTO：[core/ai/mod.rs](/Users/shining3d/fusuwei/code/fluxDB/crates/fluxdb-core/src/parts/ai/mod.rs)，下分 model、agent、message、context、tool、plugin、artifact、usage、error；不依赖 GPUI/HTTP/数据库驱动。
+- 编排：[app/ai/mod.rs](/Users/shining3d/fusuwei/code/fluxDB/crates/fluxdb-app/src/parts/ai/mod.rs)，下分 runtime/{actor,loop,state,event}、provider/{mod,chat,system_one,scripted}、context/{assemble,compact,mentions}、tools/{registry,db,redis,file,artifact}、plugins/{registry,hook,route,builtin}、policy/{permission,execution,privacy}、management/{models,agents,plugins,mcp}。
 - 持久化：[storage/ai_platform/mod.rs](/Users/shining3d/fusuwei/code/fluxDB/crates/fluxdb-storage/src/parts/ai_platform/mod.rs)，下分 schema、init、models、agents、plugins、runtime、sessions、messages、parts、ui_state、audits、usage、credentials；密文行只在此层。
 - 共享加密：[secret_crypto.rs](/Users/shining3d/fusuwei/code/fluxDB/crates/fluxdb-storage/src/parts/secret_crypto.rs)，复用连接密钥，不在 app/UI 实现 AES。
 - UI：[main_parts/ai/mod.rs](/Users/shining3d/fusuwei/code/fluxDB/apps/fluxdb-desktop/src/main_parts/ai/mod.rs)，下分 panel、composer、mentions、timeline、reasoning、tool_card、session_list、approval、artifacts、settings、models、agents、plugins、mcp；普通控件复用 gpui-component 0.6.0。
@@ -222,7 +225,7 @@ pub enum ApiKeyChange { Keep, Set(SecretInput), Clear }
 - Turn：一次用户任务和其中的补充/审批，拥有固定目标与配置快照。
 - Iteration：一次主模型推理；一个 Turn 可有多次 iteration。
 - ToolCall：iteration 内一个工具调用，拥有稳定 call ID 和真实执行状态。
-- ModelRequest：主模型、决策、摘要、报表生成各自的调用，均计量费用。
+- ModelRequest：主模型、决策、摘要、报表生成各自的调用，均统计会话 token 用量。
 
 会话存储不能等同于模型 messages。应用消息保留 `@`、审批、产物、上下文版本等；只在 Provider 边界投影为其支持的消息格式。切换 Provider 时不搬运私有推理字段/隐藏状态；工具调用与结果必须配对且完整。
 
@@ -232,7 +235,7 @@ pub enum ApiKeyChange { Keep, Set(SecretInput), Clear }
 
 ```text
 接收用户目标→持久化 Turn/固定目标和配置→运行时校验
-→装配小上下文→按需压缩→模型路由→预算预留
+→装配小上下文→按需压缩→模型路由→登记 token 请求
 →调用主模型并流式显示→校验完整工具请求
 →工具 Hook→再校验参数/风险→审批（如需）→执行/持久化回执
 →观察结果/错误→吸收用户补充→下一 iteration
@@ -392,31 +395,31 @@ ContextProcessor 返回 `Keep / Summarize / Offload / OmitFromActiveContext` 计
 
 摘要检查：结束正常、未截断、必保条目完整、来源引用可解析；校验失败不覆盖旧 checkpoint。只提交成功的摘要和边界，再标记新 context generation。失败时先减少可卸载结果；仍超预算则暂停并说明，不能默默删用户限制。
 
-频繁压缩受 min interval、成本预算和进展检查约束，避免“压缩→超限→压缩”的无穷循环。压缩结果记录保护条目 hash、source message 范围、所用模型和 usage，不保存密钥。
+频繁压缩受 min interval、执行时限和进展检查约束，避免“压缩→超限→压缩”的无穷循环。压缩结果记录保护条目 hash、source message 范围、所用模型和 usage，不保存密钥。
 
 **就近参考：**[Pi摘要失败/保留边界](/Users/shining3d/fusuwei/code/pi/packages/coding-agent/src/core/compaction/compaction.ts)；[Goose工具配对压缩](/Users/shining3d/fusuwei/code/goose/crates/goose/src/context_mgmt/mod.rs)。实际落点按本章/§7，不照搬源项目私有状态。
 
 ### 16.1 百分比触发与增量摘要（2026-10-06 用户修订）
 
-Agent 配置 `compression_trigger_percent` 默认 80，范围 10–95，存在 `ai_agents.options_json` 并随 Agent revision/CAS 保存；不是 KV，也不新建提示词或策略版本表。按本轮实际生成模型的有效上下文窗口计算阈值，模型路由变化需重新计算，不以消息条数或累计账单 usage 触发。输入预算同时扣除实际最大输出与安全余量：达到百分比或输出预留空间不足时自动处理，不需审批；未配置 Jev 时完全可用。
+Agent 配置 `compression_trigger_percent` 默认 80，范围 10–95，存在 `ai_agents.options_json` 并随 Agent revision/CAS 保存；不是 KV，也不新建提示词或策略版本表。按本轮实际生成模型的有效上下文窗口计算阈值，模型路由变化需重新计算，不以消息条数或累计会话 usage 触发。输入预算同时扣除实际最大输出与安全余量：达到百分比或输出预留空间不足时自动处理，不需审批；未配置 Jev 时完全可用。
 
-采用 Pi 的合法切点与增量策略：旧有效摘要 + 新增旧消息生成新摘要，保留最近完整工具请求/回执、当前用户要求、目标、业务口径及待审批事实；不能拆未完成工具对。摘要结构为目标、限制、已验证事实/来源、已完成/进行中/阻碍、决策、下一步；兼容可验证 JSON/文本但不把解析失败原文当成通过安全校验的 checkpoint。保留原始消息/审计，只有完整、非截断且保护项及来源校验通过的摘要才原子提交 `ai_context_checkpoints`。取消、失败、迟到结果、无进展均不得覆盖旧 checkpoint。分离窗口上限、请求上下文用量、累计计费用量。
+采用 Pi 的合法切点与增量策略：旧有效摘要 + 新增旧消息生成新摘要，保留最近完整工具请求/回执、当前用户要求、目标、业务口径及待审批事实；不能拆未完成工具对。摘要结构为目标、限制、已验证事实/来源、已完成/进行中/阻碍、决策、下一步；兼容可验证 JSON/文本但不把解析失败原文当成通过安全校验的 checkpoint。保留原始消息/审计，只有完整、非截断且保护项及来源校验通过的摘要才原子提交 `ai_context_checkpoints`。取消、失败、迟到结果、无进展均不得覆盖旧 checkpoint。分离窗口上限、请求上下文用量、累计 token 用量。
 
 参考：[Pi 切点/摘要失败检查](/Users/shining3d/fusuwei/code/pi/packages/coding-agent/src/core/compaction/compaction.ts)、[Goose 比例阈值/可见性投影](/Users/shining3d/fusuwei/code/goose/crates/goose/src/context_mgmt/mod.rs)。配置与完整运行压缩分别验收，不把保存百分比等同 T035 已完成。
 
-**实现补记（2026-10-07）**：摘要调用接入统一 `MeteredProvider`（预留/结算，purpose=`compaction`）；摘要只在 `Finished(Stop)` 且 JSON 含全部保护项（goal/constraints/verified_facts/decisions/next_steps 且非空）时才提交；checkpoint 提交在写锁事务内重新校验 turn 活动状态、generation 连续性与 `last_message_seq` 前进，拒绝迟到/回退；已有 checkpoint 作为请求基础上下文（旧摘要 + 其覆盖 seq 之后的历史），不是只在下次压缩时才复用。
+**实现补记（2026-10-07）**：摘要调用接入统一 `MeteredProvider`（登记/完成 token 请求，purpose=`compaction`）；摘要只在 `Finished(Stop)` 且 JSON 含全部保护项（goal/constraints/verified_facts/decisions/next_steps 且非空）时才提交；checkpoint 提交在写锁事务内重新校验 turn 活动状态、generation 连续性与 `last_message_seq` 前进，拒绝迟到/回退；已有 checkpoint 作为请求基础上下文（旧摘要 + 其覆盖 seq 之后的历史），不是只在下次压缩时才复用。
 
 ## 17. 模型配置与路由
 
 模型分 `generation / decision` 能力，不把 Jev当作 tool-calling 主模型。Profile 包含 Provider、协议、模型 ID、endpoint、**上下文窗口Token**、**最大输出Token**、能力声明/探测、启用状态、**计价（输入/输出/缓存读取，每百万Token）**、非敏感 options、凭据状态，以及**连接状态**（`unknown`/`ok`/`failed` + 最近检测时间，属运行时元数据，不参与配置 `revision` CAS）。测试连接发送真实最小对话请求（提示词固定「你好」），按 Provider 协议走 `/v1/chat/completions` 或 `/v1/messages`。
 
-路由 precedence：用户明确选择→内核授权/隐私/能力/预算过滤→插件候选建议→默认模型/规则。插件不得越过用户固定模型；默认固定模型完整可用，不要求先做复杂度分类。
+路由 precedence：用户明确选择→内核授权/隐私/能力/执行保护过滤→插件候选建议→默认模型/规则。插件不得越过用户固定模型；默认固定模型完整可用，不要求先做复杂度分类。
 
 **实现补记（2026-10-07）**：会话级「用户明确选择」落在独立真表 `ai_session_model_selections`，优先级为「会话/草稿显式选择 → Agent 绑定模型 → 全局默认模型」，草稿选择在首次发送事务内转移到会话；`New` 清空草稿选择但保留已有会话选择。停用/删除/`decision` 类模型被拒时给出可见错误并**保留选中项**，不静默替换成其它模型；活动 Turn（含 `outcome_unknown`）期间禁止切换。查询AI底部提供选择器并通过 `管理模型` 跳转设置页；设置页仍保留全局默认，二者是「默认值 + 会话级覆盖」的关系。
 
 经济/高能力是用户可配置标签和真实价格/能力信息，不按模型名硬编码；上下文窗口与最大输出按模型真实能力配置，用于§15上下文预算计算，不允许配置超过Provider实际限制。失败升级只用于可重新生成的推理；不重放已经执行的工具。插件冲突采用明确优先级与 stable binding ID 顺序，只有一个最终路由结果；所有候选都不合格则可见失败。
 
-所有模型步骤，包括 Jev、压缩、报表生成，进入统一 usage/budget 路径。新模型不支持当前工具/上下文时重新选择或暂停，不清空历史凑合运行。
+所有模型步骤，包括 Jev、压缩、报表生成，进入统一 token 用量统计/执行保护路径。新模型不支持当前工具/上下文时重新选择或暂停，不清空历史凑合运行。
 
 **就近参考：**[Pi prepareNextTurn/prepareRequest](/Users/shining3d/fusuwei/code/pi/packages/agent/src/agent-loop.ts)。实际落点按本章/§7，不照搬源项目私有状态。
 
@@ -437,12 +440,12 @@ UI参考唯一入口 [ai-agent-ui.html](/Users/shining3d/fusuwei/code/fluxDB/doc
 | 状态 | 行为 |
 |---|---|
 | 未配置/关闭/无可用模型 | 不请求、不等待；基础路由/压缩照常 |
-| 合格模型已配置且插件启用 | 自动可用，建议通过内核能力/隐私/预算过滤 |
+| 合格模型已配置且插件启用 | 自动可用，建议通过内核能力/隐私/执行保护过滤 |
 | 多候选未设默认 | 状态“待选择”，不阻断 |
 | 低置信度/非法返回 | 放弃建议，使用基础策略 |
 | 超时/无凭据/网络错 | 一次脱敏诊断，熔断暂跳过，不每轮等待 |
 
-可调起始参数deadline800ms、无自动重试、连续3次失败熔断60s，不是Jev性能承诺。相关性/路由批量判断与数据最小化，费用仍记ledger。Jev不可required，不作为SQL/文件权限裁判。
+可调起始参数deadline800ms、无自动重试、连续3次失败熔断60s，不是Jev性能承诺。相关性/路由批量判断与数据最小化，token 用量仍记 ledger。Jev不可required，不作为SQL/文件权限裁判。
 
 完整内置能力清单/自动装配见§18.1、§23.2；[内置能力目录](/Users/shining3d/fusuwei/code/fluxDB/docs/ai-agent-design.md#builtin-plugin-catalog)。
 
@@ -464,7 +467,7 @@ UI参考唯一入口 [ai-agent-ui.html](/Users/shining3d/fusuwei/code/fluxDB/doc
 
 状态显示：未配置、已禁用、可用、待选择模型、暂不可用（附脱敏原因/熔断截止），不是一排永久错误 toast。插件可启停；不可设置 required。先前“未配置时必须手工创建插件实例”设计作废。
 
-自动启用不代表自动允许数据出站：DecisionRequest 仅包含任务/结构摘要，仍检查该 Provider 的隐私/预算许可。无 Jev 完整运行，主模型有无配置是另一个独立问题。
+自动启用不代表自动允许数据出站：DecisionRequest 仅包含任务/结构摘要，仍检查该 Provider 的隐私/执行保护约束。无 Jev 完整运行，主模型有无配置是另一个独立问题。
 
 **参考与落点：**[Pi System One adapter](/Users/shining3d/fusuwei/code/pi/packages/ai/src/api/typesafe-system-one.ts)、[shared validation](/Users/shining3d/fusuwei/code/pi/packages/ai/src/api/system-one-shared.ts)、[逐轮模型准备](/Users/shining3d/fusuwei/code/pi/packages/agent/src/agent-loop.ts)；[TypeSafe 文档](https://docs.typesafe.ai/)。落 app provider/system_one、plugins/builtin、management/models；本文§18、§42 的默认模型/绑定来源列。
 
@@ -474,7 +477,7 @@ UI参考唯一入口 [ai-agent-ui.html](/Users/shining3d/fusuwei/code/fluxDB/doc
 
 提示词直接在Agent的“模型与提示词”页用多行输入框编辑，保存在ai_agents.system_prompt，与该Agent一起做revision/CAS；不建Agent内提示词表，不提供发布、版本比较或独立提示词管理页面。revision用于对象并发控制，不是提示词多版本管理。
 
-Turn开始捕获Agent revision、system_prompt原文与其hash到受隐私策略约束的运行快照；编辑只影响下一Turn，不能热替换正在执行的提示词。内核权限、预算、工具校验不依赖用户提示词，可以为空时仍有安全系统约束。原文不写入普通诊断日志，长度限64KiB UTF-8；摘要/上下文计入模型预算。
+Turn开始捕获Agent revision、system_prompt原文与其hash到受隐私策略约束的运行快照；编辑只影响下一Turn，不能热替换正在执行的提示词。内核权限、执行保护、工具校验不依赖用户提示词，可以为空时仍有安全系统约束。原文不写入普通诊断日志，长度限64KiB UTF-8；摘要/上下文计入模型预算。
 
 Skills 是按需加载的专业说明、工具使用原则和输出要求，不是强制固定流程；插件提供 skills 与业务知识。指标定义、时间口径、退款/取消规则和表关系必须有作用域、来源、确认状态和 revision。
 
@@ -1010,7 +1013,7 @@ pub enum HookDecision {
 
 RouteContext 只含经内核初步筛选的候选和受限任务摘要；RouteAdvice 只引用候选 ID，不能提供新 endpoint/凭据。ContextPlan 包含条目 ID 和处理方式，不返回任意替代系统约束。AllowedHookPatch 按事件分别定义字段白名单；不能使用任意 serde_json merge 覆盖 runtime。
 
-ScopedArtifactHost 仅提供结果分页、来源校验、受控文件创建/提交和宿主模型请求；没有 raw filesystem、Connection 或 SecretCrypto。宿主函数对每次调用重新核对权限/取消/预算，不把注册时检查当成永久授权。
+ScopedArtifactHost 仅提供结果分页、来源校验、受控文件创建/提交和宿主模型请求；没有 raw filesystem、Connection 或 SecretCrypto。宿主函数对每次调用重新核对权限/取消/执行保护，不把注册时检查当成永久授权。
 
 加载顺序：验证 package→确认信任/授予能力→校验 instance config schema→解析 binding→注册 registry→开始新 Turn。运行中的 Turn 绑定版本/digest；更新或卸载需等活动调用结束或用户取消，不能用新代码恢复旧调用。
 
@@ -1027,13 +1030,13 @@ ScopedArtifactHost 仅提供结果分页、来源校验、受控文件创建/提
 | `fluxdb.decision.jev` | 可选分类、路由/相关性建议 | 自动可用，允许关闭，不阻断 |
 | `fluxdb.context.compaction` | 保护条目、卸载、摘要、checkpoint | 默认开；优化关闭不移除输入上限和保护约束 |
 | `fluxdb.security.audit` | 调用前确定性风险/授权检查和审计 | 强制注册，不能由配置删除/跳过 |
-| `fluxdb.usage.budget` | usage、预算预留、费用统计事件 | 限额执行属于内核；统计展示可调整 |
+| `fluxdb.usage.budget` | token 用量与执行保护事件（沿用插件 ID） | 执行保护属于内核；统计展示可调整，无金额限额 |
 | `fluxdb.knowledge.skills` | 已确认业务知识、按需专业说明 | 可开关/配置 scope，不把提议当事实 |
 | `fluxdb.output.bi` | 图表、表格、报告创建和渲染说明 | 可开关/绑定模板，控制输出 |
 | `fluxdb.progress.plan` | 公开计划、工具进展、检查点说明 | 默认开；只显示真实事件/模型公开内容 |
 | `fluxdb.lifecycle.telemetry` | 脱敏阶段耗时/错误/诊断汇总 | 可开关；关键执行/审计落盘不依赖它 |
 
-不把“插件化”解释成能卸掉全部保护：预算、权限、取消、真实回执和已确认副作用是内核不变量。内置安全审计使用相同 Hook 接口便于扩展，但 该Hook的执行必经，用户只能在允许范围内收窄/增强规则。
+不把“插件化”解释成能卸掉全部保护：执行保护、权限、取消、真实回执和已确认副作用是内核不变量。内置安全审计使用相同 Hook 接口便于扩展，但 该Hook的执行必经，用户只能在允许范围内收窄/增强规则。
 
 UI 显示系统实例，普通用户不需要先配置12个插件；高级页只编辑可选能力和参数。当前没有市场/安装/上传第三方代码操作。
 
@@ -1083,7 +1086,7 @@ Observer 只读；Interceptor 返回类型化建议/补丁/拒绝/要求审批�
 
 绑定以 priority 升序，再按 binding ID 稳定排序。Deny 优先于 RequireApproval，RequireApproval 优先于 Allow；插件 Allow 不覆盖内核拒绝。不同字段合法 patch 顺序应用，同字段 patch 显式冲突则暂停，不静默最后写入胜出。
 
-错误策略按能力：审计/格式化等 best_effort 可以跳过；用户明确依赖的业务产物插件失败则该产物失败；安全性从内核保证，强制注册内置SecurityAuditHook；可选插件不能卸载/跳过该Hook。最终参数、授权变更需重新审计；审计无法执行/保存fail closed。Jev 优化强制 best_effort。Hook 有 deadline、payload/调用次数上限；递归调用 hook 禁止，宿主模型调用经过预算/隐私检查。
+错误策略按能力：审计/格式化等 best_effort 可以跳过；用户明确依赖的业务产物插件失败则该产物失败；安全性从内核保证，强制注册内置SecurityAuditHook；可选插件不能卸载/跳过该Hook。最终参数、授权变更需重新审计；审计无法执行/保存fail closed。Jev 优化强制 best_effort。Hook 有 deadline、payload/调用次数上限；递归调用 hook 禁止，宿主模型调用经过执行保护/隐私检查。
 
 **实现补记（2026-10-07）**：第一批落 `BeforeToolCall`/`AfterToolCall` 两个事件，落点 `crates/fluxdb-app/src/parts/ai_hooks.rs` 的 `HookPipeline`/`AgentHook`。绑定按 `priority` 升序、再按 binding ID 稳定排序；同字段不同 patch 视为冲突并 fail closed；`Deny` 优先于 `RequireApproval`；after-tool 只接受 `Observe`，任何改写真实回执的返回都报错。补丁必须重新过 schema/风险/审批校验，且**不得改变执行目标**（改了直接失败）；最终参数回写 assistant 的 tool_call 以保证无状态协议重放配对。禁用绑定、取消、递归与超过 64 个绑定都有限制。第一批内置 Hook 是只读的 `fluxdb.lifecycle.telemetry`，由插件实例/绑定表装配；安全审计仍由内核强制、插件不可禁用。
 
@@ -1159,7 +1162,7 @@ AuditDecision：Allow / Deny / RequireApproval、risk、rule_ids、reason_codes�
 }
 ```
 
-示例句柄由宿主实际分配，不是可凭空创建的 ID；build 前校验字段存在/数值类型/来源作用域。内容/块数/标题/图表点数有上限，超限分页或聚合；产物中文字做编码/转义，不执行模型或插件生成的脚本。静态报告默认使用生成时快照；“刷新看板”需要显式重新执行权限和预算，不能在打开报告时偷偷查生产库。
+示例句柄由宿主实际分配，不是可凭空创建的 ID；build 前校验字段存在/数值类型/来源作用域。内容/块数/标题/图表点数有上限，超限分页或聚合；产物中文字做编码/转义，不执行模型或插件生成的脚本。静态报告默认使用生成时快照；“刷新看板”需要显式重新执行权限和执行保护，不能在打开报告时偷偷查生产库。
 
 ### 27.2 报表是会话产物，不是设置页
 
@@ -1167,7 +1170,7 @@ BI/报表不放“大模型/工具与MCP”的设置菜单，也不作为Agent�
 
 卡片提供SQL、导出、打开报告。**打开报告使用独立大弹框**，默认宽min(960dp,主窗口可用宽90%)、高不超过客户区85%，内部滚动；它是产物查看，不是“询问AI”的第三种展现形式，也不受询问AI的60%/40%宽度限制。
 
-报告弹框仅读取已生成快照，不重新查询/刷新/调用模型。关闭/Esc/遮罩返回原会话、原抽屉/内嵌模式与草稿/滚动；内部点击不穿透，键盘焦点先在弹框。SQL作为弹框内可折叠来源区域，不能因查看SQL丢失报告。真实刷新是单独的明确动作，重新执行权限/预算与来源版本，不偷偷替换旧图。
+报告弹框仅读取已生成快照，不重新查询/刷新/调用模型。关闭/Esc/遮罩返回原会话、原抽屉/内嵌模式与草稿/滚动；内部点击不穿透，键盘焦点先在弹框。SQL作为弹框内可折叠来源区域，不能因查看SQL丢失报告。真实刷新是单独的明确动作，重新执行权限/执行保护与来源版本，不偷偷替换旧图。
 
 会话产物或历史会话可以打开已有报告；本期不新增“BI设置”一级菜单。插件配置页只配置renderer/模板/格式等规则，不存放报告正文。
 
@@ -1355,7 +1358,7 @@ stdio 默认只读，主窗口不开也能查询；不开窗口时不能展示�
 
 Profile write_mode：
 - disabled：写工具不列出，直接调用也拒绝。
-- scoped：用户在管理页对测试/业务资源明确预授权受限操作；执行时依然检查匹配范围/真实数据库权限/预算，不是“所有写都允许”。
+- scoped：用户在管理页对测试/业务资源明确预授权受限操作；执行时依然检查匹配范围/真实数据库权限/执行保护，不是“所有写都允许”。
 - desktop_approval：只有实际实现经过身份校验的桌面审批桥时可用；否则配置/启动明确 Unsupported，不假装已有能力。
 
 Claude Code 自身的工具 permission、`--allowedTools`、prompt“我批准了”，都不等于 fluxDB 对 SQL/Redis 修改的授权。绝不公开 `approval.approve` 让模型批准自己。
@@ -1388,26 +1391,25 @@ Claude Code 自身的工具 permission、`--allowedTools`、prompt“我批准�
 
 **就近参考：**[Goose审批检查](/Users/shining3d/fusuwei/code/goose/crates/goose/src/permission/permission_inspector.rs)。实际落点按本章/§7，不照搬源项目私有状态。
 
-## 30. 预算、费用和并发
+## 30. 会话 Token 统计与执行保护
 
-金额用整数 micro-USD，价格带版本/时间和来源。模型未知价格不当成免费；严格费用预算下，必须配置价格或禁止选用。token 估计、缓存计价、工具费用分别处理。
+**2026-10-11 用户确认的唯一口径**：本项目自用，不统计会话花了多少钱，不设置会话/每日/单次金额上限，也不设置累计 token 上限。删除费用计算、价格快照、费用预留与结算；不为将来企业配额保留金额限制。模型设置页的输入/输出/缓存价格及模型表价格列继续保留，供后续经济模型路由参考；价格缺失不阻止模型调用，也不影响实际 token 统计。路由不能把未知价格当作免费。
 
-调用前 SQLite 短事务预留最大允许输入/输出估算费用；同一 request ID 不重复预留。所有 Agent、Jev、压缩和产物生成共用 ledger，按 policy/session/day 计算。不得持事务等待模型。
+`ai_usage_ledger` 每次请求/attempt 一行，记录 input/output/cached input/total tokens；`total_tokens = input_tokens + output_tokens`，缓存命中是输入的子集，不再次加入总量。Provider 需统一口径：Anthropic 的初始输入/缓存读取/缓存创建在 message_start 累积，最终输出以 message_delta 为准，再归一化成包含缓存的输入；任一必需 token 字段缺失不伪造零用量。按当前 session 汇总所有用途（main/decision/compaction/artifact/title）的请求，切换会话重新加载该会话累计量，新草稿显示 0 tokens。上下文窗口估算与累计实际用量是不同概念，不能用字符估算替代实际统计。
 
-结束后按 actual usage 结算，缺失 usage 记录 estimated/unknown，保守保留预留；超时不因“没拿到结果”就退回所有费用。实际费用可能超过估计，硬预算只能约束下一次调用和配置的最大生成量，不能承诺供应商计费绝不超支。
+请求前在 SQLite 短事务中登记 `pending`，检查 turn/session 归属、任务状态、请求幂等与模型并发；不得持事务等待供应商。完成时按 Provider usage 写入 `actual`；错误/超时/未返回 usage 写入 `unknown`，token 列保持 NULL，不伪造零用量。`start_request`/`finish_request` 幂等，不重复发送或累加；重启把遗留 pending 标为 unknown 并释放并发名额，不重放请求。
 
-限制：活动任务数、模型请求并发、连接读取并发、文件 IO 并发、max iterations、wall time、tool output bytes；起始默认值写在应用设置并可调整，测试用更小限额。资源相同的写操作串行；独立读取允许有限并行，结果按模型源顺序回填以维持工具配对。
+顶部原费用位置改为 `N tokens`；部分请求未知时显示 `N tokens（部分未知）`，全未知显示 `Token 用量未知`。不再出现美元、费用未知或金额余额提示。
 
-### 30.1 费用透明与内部执行保护（无用户费用上限）
+### 30.1 内部执行保护与价格配置边界
 
-本期不提供“费用上限/每日预算/严格费用预算”等用户配置开关，Agent 不需要用户先研究价格才能用。仍保留两类不可关闭的东西：
+保留防失控保护：最大迭代、任务总时限、模型请求并发、连接读取/文件 IO 并发、工具输出字节、结果行数、文件读取字节；同资源写操作串行，独立读取有限并行。它们不是金额或累计 token 限额，不能通过调整它们绕过权限、审批、取消和真实回执。
 
-- **用量透明**：主模型/Jev/摘要/报告生成的 input/output token、估算/实际费用记入 `ai_usage_ledger`，会话底部显示本次累计（示例稿显示估算值）。价格缺失不当成免费，只影响展示准确性。
-- **内部执行保护**：最大迭代、任务总时限、活动并发、工具输出字节、结果行数、文件读取字节。有效值取系统默认与 Agent 配置的更严者；这是防失控的运行时护栏，不是“预算策略”产品。
+`ai_budget_policies` 沿用既有表名与 Agent 引用，但含义仅为运行保护策略：保留 `max_iterations`、`max_wall_time_ms`、`max_model_concurrency`、revision/CAS 等配置；删除 `session_limit_micros`、`daily_limit_micros`、`request_limit_micros`。删除 `ai_budget_reservations`，并发占用改为 ledger 的 pending 行。当前实现仍由主循环默认 24 轮、轮次边界检查 300 秒总时限；策略表的迭代/时限列尚未接入主循环，不能宣称全部策略配置已生效。已绑定并启用策略的模型并发值按策略共享。
 
-**实现补记（2026-10-07）**：账本落在 `crates/fluxdb-storage/src/parts/ai_platform/usage_ledger.rs`。`reserve` 在短事务内先取写锁（避免并发消费同一余额），对 `(request_id, attempt)` 幂等，校验 turn/session 归属与终态（含 `cancel_requested`），按模型价格快照估算并写入 held 预留 + unknown 账本行；只有策略显式配置金额上限时才要求价格已知。`settle` 只允许 held→settled/unknown，重复回调幂等，缺 usage 保留预留并标记 unknown，价格快照决定结算值（缓存价缺失且 cache>0 → cost 记 null）。应用侧 `MeteredProvider` 统一包裹主模型与摘要调用（purpose=`main`/`compaction`），请求前预留、拿到 `Usage` 后结算。面板底部只显示用量与费用，**不提供用户费用上限开关**。
+实现落点：storage `usage_ledger.rs` 的登记/完成/汇总与启动恢复；app `MeteredProvider` 统一包裹主模型、摘要及标题请求；面板顶部渲染当前 session 的累计 token。模型价格配置仍在模型管理页，**只为选择模型参考，不参与会话计量或调用放行**。
 
-预留：将来若做企业级配额/团队限额，可在 `ai_budget_policies` 上新增可空的全局/组织级硬限额与超限行为，首版不暴露 UI、不阻塞使用。
+本轮结构调整不提供旧账本迁移、兼容金额列或历史费用转换；在确认实际配置数据库路径、停止相关实例后，一次性删除受影响的统计/策略表，使用新 DDL 重建。不删除模型配置、API Key、连接、查询历史或无关会话记录，也不添加每次启动自动删表的代码。
 
 **就近参考：**[Goose usage_ledger分表](/Users/shining3d/fusuwei/code/goose/crates/goose/src/session/session_manager.rs)。实际落点按本章/§7，不照搬源项目私有状态。
 
@@ -1439,7 +1441,7 @@ Claude Code 自身的工具 permission、`--allowedTools`、prompt“我批准�
     安全审计   规则/记录/批准状态（必经检查不能关闭）
 ```
 
-未来的 MCP Client 可在工具与MCP内增加单独tab，当前不冒充已实现；第三方插件栏不显示安装能力。Agent/会话的入口在主窗口AI面板；提示词在Agent编辑中直接输入，费用/执行保护收进Agent管理的高级弹框，避免把设置Sidebar扩成十几项。
+未来的 MCP Client 可在工具与MCP内增加单独tab，当前不冒充已实现；第三方插件栏不显示安装能力。Agent/会话的入口在主窗口AI面板；提示词在Agent编辑中直接输入，执行保护不再混入金额配置，避免把设置Sidebar扩成十几项。
 
 真实代码改动：`SettingsPanelSection` 新增 AiModels/AiToolsMcp；settings_panel_sections 从固定8项更新；render/header/title 一并穷尽匹配。AI 保存通过专用命令/repository，不调用普通 Settings TOML save-all。表单Input/Button/Select/Tab/Dialog使用gpui-component 0.6.0。
 
@@ -1558,7 +1560,7 @@ fn resolve_panel_width(mode: AiPanelMode, desired_dp: f32, viewport_dp: f32) -> 
 
 面板标题栏固定提供 **新建会话、切换形式、关闭**；历史入口可独立按钮/菜单。切换形式菜单只有“抽屉/内嵌”，标记当前选择。抽屉用Sheet原有关闭按钮（不要再重复画一个X），内嵌自己用Button/AppIcon关闭。
 
-关闭=隐藏UI，**不删除会话、不新建、不发送、不等同停止**。运行中的任务继续受原授权/预算/超时约束，主窗口入口显示运行/等待徽标；停止在输入区独立按钮。等待批准仍等待，关闭/遮罩/Esc不能算批准。重新打开只重接同一runtime事件订阅，不重新执行工具或自动Resume interrupted/unknown任务。
+关闭=隐藏UI，**不删除会话、不新建、不发送、不等同停止**。运行中的任务继续受原授权/执行保护/超时约束，主窗口入口显示运行/等待徽标；停止在输入区独立按钮。等待批准仍等待，关闭/遮罩/Esc不能算批准。重新打开只重接同一runtime事件订阅，不重新执行工具或自动Resume interrupted/unknown任务。
 
 切换形式同样保留SessionId、草稿、@引用、公开思考、工具卡、滚动位置和任务；只有布局变化。普通恢复显示原会话上次目标；当前数据库页面已变化时明确显示“会话目标A/当前页面B”，不静默切换SQL/Redis执行目标，retarget仍走§13的显式动作/重新授权。
 
@@ -1586,7 +1588,7 @@ API Key输入框默认掩码`***`，输入框内末尾提供眼睛按钮：点�
 
 **实现对照入口（本文顶部也列出）**：[ai-agent-ui.html](/Users/shining3d/fusuwei/code/fluxDB/docs/prototype/ai-agent-ui.html)，样式/脚本按职责拆文件，复用仓库Lucide SVG，离线不依赖CDN。
 
-覆盖整个AI Agent功能：数据库工作台、抽屉/内嵌会话、模式/宽度/会话记忆、新建/关闭、公开摘要与执行时间线、模型Keep/Set/Clear演示、Agent主页面编辑（列表+右侧五分区）、Agent内直接提示词、12个内置插件/Jev开关、13个工具、本地MCP授权/配置导出、安全审计、会话历史、报表弹框/来源/导出，以及高级费用/执行保护。
+覆盖整个AI Agent功能：数据库工作台、抽屉/内嵌会话、模式/宽度/会话记忆、新建/关闭、公开摘要与执行时间线、模型Keep/Set/Clear演示、Agent主页面编辑（列表+右侧五分区）、Agent内直接提示词、12个内置插件/Jev开关、13个工具、本地MCP授权/配置导出、安全审计、会话历史、报表弹框/来源/导出，以及执行保护与 Token 用量。
 
 这是浏览器交互稿：所有数据/模型/工具/MCP执行均模拟，不实现AES、不读取实际附件内容、不连接Docker、不调用Claude或模型。表单不能输入真实密钥，密钥字节不保存localStorage。截图测试只证明HTML交互，不替代§37的真实GPUI/连接/MCP E2E。
 
@@ -1602,11 +1604,11 @@ API Key输入框默认掩码`***`，输入框内末尾提供眼睛按钮：点�
 | 模型与提示词 | 默认生成模型、system_prompt直接输入、压缩触发比例（默认80%） | default_model_profile_id列、system_prompt列、options_json经能力校验 |
 | 工具与内置能力 | 可用工具、BI/文件/上下文/路由/压缩等内置能力 | allowed_tools_json及独立plugin binding；安全审计/内核护栏不能关闭 |
 
-不再作为 Agent 用户配置：权限（只读/写入、文件根、数据出站）由连接只读标记、内核安全审计与§29权限交集决定，用户在“工具与MCP/连接”层管理；运行限制是§30.1的内部护栏；目标自动捕获（§13）；路由属插件；费用无上限。
+不再作为 Agent 用户配置：权限（只读/写入、文件根、数据出站）由连接只读标记、内核安全审计与§29权限交集决定，用户在“工具与MCP/连接”层管理；运行限制是§30.1的内部护栏；目标自动捕获（§13）；路由属插件；会话只统计 token，不统计费用或设置金额/token 总量上限。
 
 正常默认值：40迭代、600秒、2活动任务、128KiB工具投影、200行、256KiB文件读取；均在真实实施时结合Connector能力验证。保存拒绝非finite/非正限额、行数>1000、不支持的生成参数和越权绑定；提示词长度按UTF-8 bytes检查，不能只看浏览器字符数。
 
-Agent直接编辑提示词与其他字段一起SaveAiAgent(expected_revision)；可关联独立预算策略/插件绑定时同事务逐对象CAS，不save-all整个AI配置。Agent没有APIKey字段，模型秘密只在模型行。复制Agent可以复制提示词正文和合法引用，不引入提示词发布或历史管理。
+Agent直接编辑提示词与其他字段一起SaveAiAgent(expected_revision)；可关联独立运行保护策略/插件绑定时同事务逐对象CAS，不save-all整个AI配置。Agent没有APIKey字段，模型秘密只在模型行。复制Agent可以复制提示词正文和合法引用，不引入提示词发布或历史管理。
 
 修改运行中Agent只影响下一Turn。当前Turn快照包含agent_id/revision/system_prompt/hash、实际模型、权限和限额；编辑不会篡改历史消息/工具/审计。数据出站或读写策略变化需下一执行边界重新校验。
 
@@ -1766,7 +1768,7 @@ AI 管理 DDL 见 §42.10，运行/辅助 DDL 见 §42.11。实现时唯一源�
 
 参考对比：
 - [Pi session-manager](/Users/shining3d/fusuwei/code/pi/packages/coding-agent/src/core/session-manager.ts)：稳定ID、append-only entry、model/usage/compaction等有类型事件和parentId。采用稳定ID/checkpoint思想，首版线性会话，不直接使用JSONL分支树。
-- [Goose session_manager](/Users/shining3d/fusuwei/code/goose/crates/goose/src/session/session_manager.rs)：独立sessions/messages/usage_ledger。采用分页、会话与消息/费用分离，不整体load-all/save-all。
+- [Goose session_manager](/Users/shining3d/fusuwei/code/goose/crates/goose/src/session/session_manager.rs)：独立sessions/messages/usage_ledger。采用分页、会话与消息/token 用量分离，不整体load-all/save-all。
 - [OpenCode session.sql.ts](https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/session/session.sql.ts)：SessionTable/MessageTable/PartTable分离。采用message/part身份与局部更新；fluxDB的tool/approval/usage仍用自己的事实表。
 
 本期基线 DDL 在本文§42.10/§42.11，新增：
@@ -1798,7 +1800,7 @@ message/part组装到普通SessionView；模型边界另做投影，默认不把
 6. UI state和面板preferred mode/width独立CAS/debounce，折叠/滚动用part/message稳定ID，不用易漂移的数组下标。恢复先核对引用是否存在；失效状态跳过，不改正文事实。
 7. 每轮snapshot绑定Agent revision/提示词快照、model/plugin/grant revision；新Jev绑定不改变旧历史显示。
 
-持久化验收：关闭重开后回答、公开摘要、SQL、工具结果引用、审计、批准/拒绝、产物、费用和展开状态正确；停止与强杀区分，未知写绝不重放。UI画面来源是重建的数据库状态，不是缓存里的对话截图。
+持久化验收：关闭重开后回答、公开摘要、SQL、工具结果引用、审计、批准/拒绝、产物、token 用量和展开状态正确；停止与强杀区分，未知写绝不重放。UI画面来源是重建的数据库状态，不是缓存里的对话截图。
 
 **参考与落点：**[Goose渐进消息加载](/Users/shining3d/fusuwei/code/goose/ui/desktop/src/components/ProgressiveMessageList.tsx)、[Pi append/checkpoint](/Users/shining3d/fusuwei/code/pi/packages/coding-agent/src/core/session-manager.ts)、[Goose会话存储](/Users/shining3d/fusuwei/code/goose/crates/goose/src/session/session_manager.rs)；落 parts repository、runtime coalescer、timeline list。
 
@@ -1820,13 +1822,13 @@ message/part组装到普通SessionView；模型边界另做投影，默认不把
 
 三层必须分开报告：
 
-1. 单元/存储/策略测试：稳定 fixture，验证 CAS、加密、schema、预算、工具风险、Hook、压缩边界。
+1. 单元/存储/策略测试：稳定 fixture，验证 CAS、加密、schema、用量统计/执行保护、工具风险、Hook、压缩边界。
 2. 界面 E2E：scripted Provider 通过正常 UI→AppCommand→runtime→真实测试数据库/文件→回执→UI；保证界面到执行完整链路可复现，不只录制一段对话文字。
-3. 真实模型任务评测：有明确授权、费用上限、固定模型/任务/工具；验证自主探索、错误修正、报告证据和复杂任务质量。不能把 scripted 的固定工具调用称为已证明智能。
+3. 真实模型任务评测：有明确授权、请求/迭代/时限保护、固定模型/任务/工具；验证自主探索、错误修正、报告证据和复杂任务质量。不能把 scripted 的固定工具调用称为已证明智能。
 
 策略/存储单测用隔离SQLite/mock；真实GUI/MCP测试复用用户已经配置并授权的Docker MySQL/PostgreSQL/Redis与AES连接凭据，创建本run数据库/schema/keyprefix。使用受控一致配置快照作为test root，不新增手填连接、不改用户AI设置；密钥配置不进证据/模型。后来新增的未确认连接不能推断为可破坏。测试主窗口的 storage root 注入必须是 debug/test-only、新增且明确标注，当前没有假定存在可用 AI debug 环境变量。
 
-预期检查至少覆盖：未知表探索、方言差异、错误修正、结果截断、Redis 扫描、文件编码/越权、@ 同名/失效、标签切换不改执行库、写审批、未知写结果、取消、重启恢复、无 Jev/故障 Jev、插件冲突、BI 来源、预算/并发、主题/键盘/弹框。
+预期检查至少覆盖：未知表探索、方言差异、错误修正、结果截断、Redis 扫描、文件编码/越权、@ 同名/失效、标签切换不改执行库、写审批、未知写结果、取消、重启恢复、无 Jev/故障 Jev、插件冲突、BI 来源、用量统计/并发、主题/键盘/弹框。
 
 <a id="docker-connections"></a>
 
@@ -1895,6 +1897,8 @@ claude -p \
 
 `--tools ""` 限制的是内置工具；`--strict-mcp-config` 限制加载哪些 MCP Server；allowedTools 精确批准本用例工具。禁止 `--dangerously-skip-permissions`。`--setting-sources ""` 的行为需用当前 CLI 在隔离测试确认，不将配置隔离误解为取消 Claude 身份认证。
 
+下列 `--max-budget-usd` 仅为外部 Claude CLI 测试执行器自身的付费防护，不是 fluxDB 的配置、费用统计或任务门槛。
+
 stdout 由 harness 流式解析/有界保存，不把完整 stream-json 一次塞进模型上下文。设置进程 deadline、总用例费用上限和最大工具调用数；认证/网络不可用标 blocked，不自动付费重试。`--max-budget-usd` 是单次运行限制，suite 还须累计限额。
 
 #### 37.2.3 PostgreSQL smoke（当前连接）
@@ -1937,7 +1941,7 @@ claude mcp list
 用户已授权验收时复用本机 SQLite `ai_model_profiles` 中的“公司自建”（文本生成主模型）和“决策模型”（Jev 决策模型），无需重新填写 API Key；这是测试数据选择规则，不是生产代码硬编码名称。执行前通过现有配置仓库读取非敏感模型信息，核对唯一模型 ID/revision、用途、启用状态、Provider/endpoint 与能力；重名、缺失或不兼容时明确受阻，不静默换模型。用户确认已配置不等于已验证连通或协议兼容。
 
 - **凭据链路**：复用现有 storage 凭据读取/AES-256-GCM 解密能力及连接凭据共用的数据密钥，由宿主在请求前取得短生命周期凭据并直接交给 Provider transport。不得重写解密算法、绕过 AAD/版本认证或让模型/插件自行读取 SQLite/config.toml。明文只在必要的进程内请求边界使用，不进入 CLI 参数、环境变量、提示词、普通 DTO、日志、截图或报告；不得输出 ciphertext/nonce/数据密钥。解密失败标记 Unavailable 并停止该模型调用，不清空、覆盖或重新生成用户密钥。
-- **隔离与限额**：按§37.1使用 SQLite 一致快照与受控本地密钥配置，沿用真实 endpoint/模型配置，不修改原模型、默认选择或插件开关；测试开关只作用于隔离配置。真实网络请求显式启用，普通 `cargo test` 不自动消费真实模型；T030保护就绪后执行，运行前记录请求/Token/迭代/时间上限与可用的费用上限，价格未知不记作免费，严格费用模式无法估算时受阻。只发送合成 fixture 和已授权测试数据，不发送业务库或秘密文件。
+- **隔离与限额**：按§37.1使用 SQLite 一致快照与受控本地密钥配置，沿用真实 endpoint/模型配置，不修改原模型、默认选择或插件开关；测试开关只作用于隔离配置。真实网络请求显式启用，普通 `cargo test` 不自动消费真实模型；T030保护就绪后执行，运行前记录请求/迭代/时间保护与上下文/单次输出范围，累计 token 仅统计不设限，不检查价格或金额额度。只发送合成 fixture 和已授权测试数据，不发送业务库或秘密文件。
 - **R01 主 Agent（公司自建）**：关闭 Jev，从真实窗口发起未知表探索→结构查询→汇总→结果解释，使用独立数据库查询核对数字、目标、SQL与来源；记录真实 Provider 请求、工具回执和用量，Jev 请求数必须为0。另测停止和受控错误后的修正；错误不一定由模型自然产生，可在测试服务中明确注入一次可恢复错误并标注，不伪造成功回执。不以回复流畅或固定工具调用次数判断通过。
 - **R02 Jev（决策模型）**：主模型仍用“公司自建”，在隔离配置启用合格“决策模型”，执行会触发设计中决策点的多候选任务；核对真实 decision 请求、Choice/Score解析、所选结果与实际路由/过滤效果、用量记账，不能仅凭UI显示“已启用”判通过。真实协议不匹配标记受阻，不按生成模型协议冒充；无必要决策点的零调用不能证明Jev已验证。
 - **R03 可选性与故障**：用同一fixture分别关闭/启用Jev比较目标和结果正确性，关闭时零decision请求；超时、非法返回、缺凭据及熔断用受控Provider注入，确认基础路径继续且无反复等待/弹错。真实成功链路与注入故障分开报告，不为故障测试破坏用户原始凭据。
@@ -2007,11 +2011,11 @@ JPEG quality 只是起始候选；必须实际目视验证。截图外字段只�
 | E09 文件/@ | 同名对象选区→文件→编码/大文件→越权 symlink→拒绝 | chip/错误，授权路径证据 |
 | E10 BI 插件 | 读取业务口径→真实数据→图表→报告→导出→卸载 renderer | 图表/来源；导出内容/hash/缺插件说明 |
 | E11 停止和重启 | 长读停止→等待审批重启→中断写 unknown→禁止重放 | stopped/unknown，实际调用计数 |
-| E12 Hook 与预算 | 参数 patch→重新审批；deny 优先；并发预留；未知价格 | timeline、额度提示，ledger 验证 |
+| E12 Hook、Token 计量与执行保护 | 参数 patch→重新审批；deny 优先；并发登记/完成幂等；未知 usage；价格不影响统计 | timeline、当前会话 token 提示，ledger 验证 |
 | E13 UI 完整性 | 明暗主题、键盘导航、Esc/遮罩、菜单点击、防穿透、loading | 每个主题按需一小图，不能整屏拼长图 |
 | E14 内置插件/预留接口 | auto启用Jev、手动禁用、必经审计、未知外部runtime拒绝 | 自动状态/审计/能力，不测试未实现安装器 |
 
-真实模型再运行 E02/E03/E10 和跨工具开放任务，允许不同路径但使用语义断言。报告成功率/无依据结论/人工介入/耗时/费用；不固定“必须调用 N 次工具”来限制智能。
+真实模型再运行 E02/E03/E10 和跨工具开放任务，允许不同路径但使用语义断言。报告成功率/无依据结论/人工介入/耗时/token 用量；不固定“必须调用 N 次工具”来限制智能。
 
 <a id="mcp-ui-e2e"></a>
 
@@ -2141,12 +2145,14 @@ T054–T063为MCP专项，T064–T066补设置/审计/当前Docker验收，见�
 
 ## 42. AI 独立表与对象级存储契约
 
+2026-10-11 修订以 §30 为准：只统计会话 token，保留模型价格供路由参考，彻底删除金额限制/费用计算/预留；本节 DDL 同步更新。历史实施记录不作为恢复费用功能的依据。
+
 本章与 AGENTS.md 的“设计文档 §42”对应。§42.10/§42.11 是完整基线 DDL；未来实现以 [schema.rs](/Users/shining3d/fusuwei/code/fluxDB/crates/fluxdb-storage/src/parts/ai_platform/schema.rs) 为源码唯一来源，本期仅首次幂等建表，无旧AI迁移；未来真正升级时再设计版本转换，不能只改IF NOT EXISTS蒙混结构差异。
 
 ### 42.1 统一约定
 
 - AI ID：应用分配 UUID 文本；ConnectionId 保持现有 INTEGER，不把数据库连接迁移成 UUID。
-- 时间：UTC epoch milliseconds INTEGER；UI 再按用户时区展示。金额：micro-USD INTEGER；token/字节/次数：非负 INTEGER。
+- 时间：UTC epoch milliseconds INTEGER；UI 再按用户时区展示。模型路由参考价格：micro-USD / 百万 token INTEGER；token/字节/次数：非负 INTEGER，不存会话金额。
 - 管理对象 revision 从 1 开始；成功修改递增，WHERE 包含 expected_revision。secret_revision 从 0 开始，每次 Set/Clear 递增。
 - JSON 列均 json_valid，并在应用层做 schema/version/大小校验；不能把其他可独立管理实体的正文藏到 JSON。
 - 每个连接 foreign_keys=ON；约束错误映射到可理解的应用错误，不吞掉。引用资源的启用/兼容/发布状态另在 app 校验。
@@ -2157,10 +2163,10 @@ T054–T063为MCP专项，T064–T066补设置/审计/当前Docker验收，见�
 | 表 | 行的含义 | CAS / 主要引用 |
 |---|---|---|
 | ai_model_profiles | 一个生成或决策模型配置及私有密文 | revision + secret_revision；被 Agent/路由引用 |
-| ai_agents | 一个 Agent 配置 | revision；模型、Agent内提示词、预算 |
+| ai_agents | 一个 Agent 配置 | revision；模型、Agent内提示词、运行保护策略 |
 | ai_plugin_instances | 一份插件实例配置 | revision；引用 package/version/digest |
 | ai_agent_plugin_bindings | 一个 Agent 与实例的能力绑定 | revision；顺序、范围、错误策略 |
-| ai_budget_policies | 一个预算策略 | revision；session/day/调用限制 |
+| ai_budget_policies | 一个运行保护策略（沿用表名） | revision；迭代/时限/模型并发，无金额或累计 token 限额 |
 | ai_mcp_settings | 一个 MCP server 设置 | revision；可选，不是整个全局 JSON |
 | ai_runtime_settings | 一份应用级 AI 运行设置 | singleton id=1 + revision；仍独立表 |
 
@@ -2189,7 +2195,7 @@ affected_rows=0 时查询 ID 是否存在，区分 NotFound/Conflict。更新 UI
 
 ### 42.5 运行快照与引用完整性
 
-Turn 保存脱敏且有 schema_version 的 runtime_snapshot：Agent/模型/package/binding/budget的ID+revision、直接提示词快照/hash、固定目标、能力和策略。模型 key 仅在实际请求时获得，凭据变化/禁用会阻止下一次使用，不用旧快照绕过撤销。
+Turn 保存脱敏且有 schema_version 的 runtime_snapshot：Agent/模型/package/binding/运行保护策略的ID+revision、直接提示词快照/hash、固定目标、能力和策略。模型 key 仅在实际请求时获得，凭据变化/禁用会阻止下一次使用，不用旧快照绕过撤销。
 
 模型/Agent/Agent配置被历史引用时 disable/archive，不默认级联删除。历史快照是执行事实，禁用配置不修改旧快照。安全策略收紧和授权撤销即时作用于下一工具边界。
 
@@ -2205,13 +2211,13 @@ ai_results 保存结果 metadata/受控 spill 文件位置/保留与过期状态
 
 ai_artifacts 保存 spec/状态/路径/hash；ai_artifact_sources 正规化记录来源，支持追溯和删除影响查询。文件位置是相对受控根，不能直接传给第三方插件做任意读写。
 
-### 42.8 预算记录
+### 42.8 Token 用量记录
 
-ai_usage_ledger 每次实际请求/attempt 一行，包含 main/decision/compaction/artifact 类型、token 与费用的 actual/estimated/unknown 标记。ai_budget_reservations 每次请求预留；并发预留和余额检查同事务，计算 settled 实际量+held/unknown，不重复扣同一 request attempt。
+`ai_usage_ledger` 每次请求/attempt 一行，包含 main/decision/compaction/artifact/title 类型与 input/output/cached input/total tokens。measurement 为 pending/actual/unknown；只有 actual 才有完整 token 值。登记与并发检查在同一短事务，完成幂等；当前会话总量只累加已知 usage，未返回部分必须明确提示。缓存不重复计入 total，未知模型价格不影响统计。无 cost_micros、pricing_snapshot_json、金额额度或费用预留表。
 
 ### 42.9 首次建表与内置能力种子
 
-先创建 schema，再创建基础预算/运行设置/内置插件 package manifest 与实例；没有APIKey/默认付费模型的种子配置；默认内置插件由代码注册/system绑定自动建立，安全审计不可关闭，Jev没模型时idle不报错。必须幂等建立可编辑但不可删除/停用的内置默认 Agent；用户配置主模型后即可运行。无 Jev 的种子数据完整工作。
+先创建 schema，再创建运行保护策略/运行设置/内置插件 package manifest 与实例；没有APIKey/默认付费模型的种子配置；默认内置插件由代码注册/system绑定自动建立，安全审计不可关闭，Jev没模型时idle不报错。必须幂等建立可编辑但不可删除/停用的内置默认 Agent；用户配置主模型后即可运行。无 Jev 的种子数据完整工作。
 
 下面 DDL 分两个代码块，按 §42.10→§42.11 顺序执行；SQLite 允许引用后续定义的表，但**所有表创建完成后**才插入种子。本期对同名不匹配表明确报错，不自动转换旧数据。
 
@@ -2262,9 +2268,6 @@ CREATE TABLE IF NOT EXISTS ai_budget_policies (
     id TEXT PRIMARY KEY,
     display_name TEXT NOT NULL,
     enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0,1)),
-    session_limit_micros INTEGER CHECK (session_limit_micros >= 0),
-    daily_limit_micros INTEGER CHECK (daily_limit_micros >= 0),
-    request_limit_micros INTEGER CHECK (request_limit_micros >= 0),
     max_iterations INTEGER NOT NULL DEFAULT 40 CHECK (max_iterations > 0),
     max_wall_time_ms INTEGER NOT NULL DEFAULT 600000 CHECK (max_wall_time_ms > 0),
     max_model_concurrency INTEGER NOT NULL DEFAULT 2 CHECK (max_model_concurrency > 0),
@@ -2749,35 +2752,24 @@ CREATE TABLE IF NOT EXISTS ai_usage_ledger (
     attempt INTEGER NOT NULL CHECK (attempt >= 1),
     model_profile_id TEXT NOT NULL REFERENCES ai_model_profiles(id) ON DELETE RESTRICT,
     budget_policy_id TEXT REFERENCES ai_budget_policies(id) ON DELETE RESTRICT,
-    purpose TEXT NOT NULL CHECK (purpose IN ('main','decision','compaction','artifact')),
+    purpose TEXT NOT NULL CHECK (purpose IN ('main','decision','compaction','artifact','title')),
     input_tokens INTEGER CHECK (input_tokens >= 0),
     output_tokens INTEGER CHECK (output_tokens >= 0),
     cached_input_tokens INTEGER CHECK (cached_input_tokens >= 0),
-    cost_micros INTEGER CHECK (cost_micros >= 0),
-    measurement TEXT NOT NULL CHECK (measurement IN ('actual','estimated','unknown')),
-    pricing_snapshot_json TEXT NOT NULL CHECK (json_valid(pricing_snapshot_json)),
-    created_at_ms INTEGER NOT NULL,
-    FOREIGN KEY(session_id, turn_id) REFERENCES ai_turns(session_id, id) ON DELETE RESTRICT,
-    UNIQUE(request_id, attempt)
-);
-CREATE INDEX IF NOT EXISTS ai_usage_budget_time ON ai_usage_ledger(budget_policy_id, created_at_ms);
-CREATE INDEX IF NOT EXISTS ai_usage_session ON ai_usage_ledger(session_id, created_at_ms);
-CREATE TABLE IF NOT EXISTS ai_budget_reservations (
-    id TEXT PRIMARY KEY,
-    request_id TEXT NOT NULL,
-    attempt INTEGER NOT NULL CHECK (attempt >= 1),
-    session_id TEXT NOT NULL,
-    turn_id TEXT NOT NULL,
-    budget_policy_id TEXT REFERENCES ai_budget_policies(id) ON DELETE RESTRICT,
-    amount_micros INTEGER NOT NULL CHECK (amount_micros >= 0),
-    status TEXT NOT NULL CHECK (status IN ('held','settled','released','unknown')),
-    created_at_ms INTEGER NOT NULL,
+    total_tokens INTEGER CHECK (total_tokens >= 0),
+    measurement TEXT NOT NULL CHECK (measurement IN ('pending','actual','unknown')),
     updated_at_ms INTEGER NOT NULL,
+    title TEXT,
+    created_at_ms INTEGER NOT NULL,
     FOREIGN KEY(session_id, turn_id) REFERENCES ai_turns(session_id, id) ON DELETE RESTRICT,
-    UNIQUE(request_id, attempt)
+    UNIQUE(request_id, attempt),
+    CHECK (measurement <> 'actual' OR
+      (input_tokens IS NOT NULL AND output_tokens IS NOT NULL AND cached_input_tokens IS NOT NULL
+       AND total_tokens IS NOT NULL AND cached_input_tokens <= input_tokens
+       AND total_tokens = input_tokens + output_tokens))
 );
-CREATE INDEX IF NOT EXISTS ai_reservations_budget_status
-    ON ai_budget_reservations(budget_policy_id, status, created_at_ms);
+CREATE INDEX IF NOT EXISTS ai_usage_policy_status ON ai_usage_ledger(budget_policy_id, measurement);
+CREATE INDEX IF NOT EXISTS ai_usage_session ON ai_usage_ledger(session_id, created_at_ms);
 ```
 
 ### 42.12 应用层补充校验与删除策略
@@ -2795,7 +2787,7 @@ CREATE INDEX IF NOT EXISTS ai_reservations_budget_status
 
 拟定 repository 方法：`list_models_page/get_model/save_model/delete_model`、`save_agent`、`save_agent_system_prompt`、`save_plugin_instance/save_binding`、`save_mcp_settings`、`save_budget_policy/save_runtime_settings`；每个可编辑对象带 expected_revision。
 
-append 路径：`create_session/start_turn/append_message_header/append_message_part/checkpoint_stream_part/save_session_ui_state/save_panel_preferences/prepare_tool_call/append_tool_audit/resolve_approval/finish_tool_call/append_event/commit_context_checkpoint/register_result/save_artifact/reserve_budget/settle_usage`；有多个表变化时用同一个事务。
+append 路径：`create_session/start_turn/append_message_header/append_message_part/checkpoint_stream_part/save_session_ui_state/save_panel_preferences/prepare_tool_call/append_tool_audit/resolve_approval/finish_tool_call/append_event/commit_context_checkpoint/register_result/save_artifact/start_request/finish_request`；有多个表变化时用同一个事务。
 
 测试放 [storage ai tests](/Users/shining3d/fusuwei/code/fluxDB/crates/fluxdb-storage/src/parts/ai_platform/tests)，按 schema/init/models/secrets/cas/messages/parts/ui_state/audits/runtime 拆分；app 测试用可替换 GenerationProvider、DecisionProvider、AiTool 和仓库能力，不直接触碰真实用户配置。
 
@@ -2840,11 +2832,11 @@ append 路径：`create_session/start_turn/append_message_header/append_message_
 
 ### 42.20 Agent直接提示词与配置字段修订（再简化）
 
-按用户最新需求删除独立提示词模板/多版本/发布及两张相关表；提示词直接保存在ai_agents.system_prompt；随后又删除default_target_mode/连接/库/namespace四列（目标改为§13自动捕获）与用户费用上限。Agent revision仅为并发控制，Turn快照保留当次正文/hash，不提供提示词历史管理。当前32表。§31.8是Agent编辑参数的实际设计依据，参考UI分区但不照搬Jev配置；询问AI字体缩小，其他管理表单不全局缩小。
+按用户最新需求删除独立提示词模板/多版本/发布及两张相关表；提示词直接保存在ai_agents.system_prompt；随后又删除default_target_mode/连接/库/namespace四列（目标改为§13自动捕获）与用户费用上限。Agent revision仅为并发控制，Turn快照保留当次正文/hash，不提供提示词历史管理。当前表清单以 schema.rs 为准（本轮删除费用预留表）。§31.8是Agent编辑参数的实际设计依据，参考UI分区但不照搬Jev配置；询问AI字体缩小，其他管理表单不全局缩小。
 
 ### 42.21 模型字段与Key显示修订
 
-按用户要求：大模型配置新增上下文窗口Token、最大输出Token、计价（输入/输出/缓存读取），三者在§42.10建为独立列；缺失价格只影响用量展示准确性，不当免费。API Key输入框默认掩码`***`，末尾眼睛按钮为用户主动显式解密查看的例外路径（短时内存、脱敏审计、关闭即掩码）；默认操作仍是Keep/Set/Clear，密文永远在ai_model_profiles行。
+按用户要求：大模型配置新增上下文窗口Token、最大输出Token、计价（输入/输出/缓存读取），三者在§42.10建为独立列；价格仅作为模型路由参考，缺失价格不当免费但不影响实际 token 展示，也不阻止调用。API Key输入框默认掩码`***`，末尾眼睛按钮为用户主动显式解密查看的例外路径（短时内存、脱敏审计、关闭即掩码）；默认操作仍是Keep/Set/Clear，密文永远在ai_model_profiles行。
 
 ### 42.21 已落地代码（进行中）
 
@@ -2872,9 +2864,11 @@ append 路径：`create_session/start_turn/append_message_header/append_message_
 实现顺序按 `docs/ai-agent-tasks.md`，每完成一个 UI 相关任务（T013/T014/T028/T040/T064等）必须打开 `docs/prototype/ai-agent-ui.html` 对照布局、字号、状态与空/错/loading态；原生控件仍遵守仓库 UI 约定（gpui-component 0.6.0、UiColors、AppIcon、docs/ui-style.md），交互稿只是视觉与交互基准，不引入其HTML/CSS/JS到生产代码。 具体执行按§39.3：GPUI模拟交互回归、真实窗口端到端操作、系统截图还原度验收三层分别记录结果；截图处理遵循§38，不以原型测试报告或编译成功代替原生UI验收。
 
 
-### T028 实现状态补记（2026-10-06）
+### T028 实现状态补记（2026-10-06 首轮；2026-10-10 更新）
 
-- 本轮原生面板入口启用，生产路径落点 `main_parts/ai`、app `ai_conversation`、storage `ai_platform/conversation`；单一Input Entity/内容树在抽屉与内嵌间迁移，复用0.6.0 `h_resizable/resizable_panel`及尺寸范围。§31.4的比例规则仍为唯一布局规则。
+- 本轮原生面板入口启用，生产路径落点 `main_parts/ai`、app `ai_conversation`、storage `ai_platform/conversation`；单一Input Entity/内容树在抽屉与内嵌间迁移，复用 `h_resizable/resizable_panel` 及尺寸范围。§31.4的比例规则仍为唯一布局规则。
 - 会话关闭不取消；实际发送通过事务生成Session/Turn/消息，普通打开/新建草稿不生成空会话；既有历史经数据库→AppState→生产render_state_snapshot加载。实时回复复用原SSE解析器的新callback入口，不等待整个Vec返回才显示；checkpoint每300ms、终态必保存。
-- 正式发送现阶段仅单轮解释/问答（30s、512KiB响应、1024输出Token、64KiB输入保护），不执行未审计工具；这不是完整主循环/审批/数据库工具闭环，金额预算还由T030完成。未配置Jev无需等待。
-- 工具/审批/@/附件/报告的依赖不能用模拟按钮冒充可用；T028尚未达完整验收、不勾选。实际场景/命令/证据/未验证项见任务清单引用的T028验收记录。
+- 首轮之后的依赖已陆续接线：发送/停止与审批恢复统一走 `AiRuntimeHandle` actor（T016），审批卡消费 T020 决定，`@`/附件走 T022，结果句柄与 `result.read_page` 由 T027 提供，工具执行经内核授权与审批。面板渲染 `text/reasoning_summary/plan/context_ref/tool_call_ref/tool_result_ref/artifact_ref/notice` 真实片段，不伪造未接通控件。
+- **T028 已勾选（2026-10-10，用户手动验收确认）**。本次勾选范围：面板骨架、抽屉/内嵌与宽度记忆、会话打开/新建/关闭/草稿、发送→流式→工具→结果、停止、折叠、上滚不抢位置、审批卡、`@`/附件入口与产物容器。
+- 本次勾选范围之外（新增为后续任务范围）：报告弹框/图表/安全导出属 T040；结果引用卡的分页读取入口仍可后补；历史列表的分组/重命名/归档分页未在面板交付（重命名/归档在设置页会话管理）。用户已确认接受该范围，不把上述缺口冒充分已交付。
+- 实际场景/命令/证据/未验证项见任务清单引用的 T028 验收记录与上游记录。

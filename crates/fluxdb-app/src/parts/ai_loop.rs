@@ -254,7 +254,7 @@ impl<'a> TurnRunner<'a> {
                         tool_calls.push(call);
                     }
                     fluxdb_core::ModelEvent::Usage(_) => {
-                        // usage 记账由预算任务（T030）接管；本切片不丢弃也不伪造。
+                        // usage 由统一计量宿主记入会话 token 账本，不丢弃也不伪造。
                     }
                     fluxdb_core::ModelEvent::Finished(reason) => finish = Some(reason),
                 }

@@ -211,14 +211,15 @@ fn recovery_notice_details_toggle_without_warning_card(cx: &mut TestAppContext) 
     );
 }
 
-#[gpui::test]
-fn composer_controls_are_compact_and_cost_is_in_header(cx: &mut TestAppContext) {
+#[gpui_kit::test]
+fn composer_controls_are_compact_and_tokens_are_in_header(cx: &mut TestAppContext) {
     let fixture = Fixture::new();
     let (view, cx) = open_main(cx, &fixture, fixture.controller(), ThemeMode::Light);
     open_panel(&view, cx);
+    cx.update(|window, cx| window.render_frame(cx));
     let header = cx.debug_bounds("ai-chat-header").unwrap();
-    let cost = cx.debug_bounds("ai-chat-cost").unwrap();
-    assert!(cost.top() >= header.top() && cost.bottom() <= header.bottom());
+    let tokens = cx.debug_bounds("ai-chat-tokens").unwrap();
+    assert!(tokens.top() >= header.top() && tokens.bottom() <= header.bottom());
     let model = cx.debug_bounds("ai-chat-model-select").unwrap();
     assert!(
         model.size.width < px(180.),

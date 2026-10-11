@@ -12,7 +12,7 @@ use fluxdb_core::ModelMessage;
 
 /// token 估算：无 tokenizer 依赖，按字符近似（CJK 约 1 token/字符，ASCII 约 4 字符/token）。
 ///
-/// 只用于"是否接近窗口上限"的保守估计，不用于计费（计费用 Provider 的真实 usage）。
+/// 只用于"是否接近窗口上限"的保守估计，不用于累计用量统计（统计使用 Provider 的真实 usage）。
 pub fn estimate_tokens(text: &str) -> i64 {
     let mut ascii = 0i64;
     let mut wide = 0i64;

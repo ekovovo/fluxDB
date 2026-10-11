@@ -2,6 +2,7 @@
 mod ai_panel_tests {
     use super::*;
     include!("tests_execution.rs");
+    include!("tests_usage.rs");
     include!("tests_layout.rs");
     include!("tests_send_references.rs");
     include!("tests_reference_interactions.rs");

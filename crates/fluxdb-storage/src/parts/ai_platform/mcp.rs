@@ -1,4 +1,4 @@
-//! 预算策略与 MCP Client 设置的读取/保存（T010/T012）。
+//! 运行保护策略与 MCP Client 设置的读取/保存（T010/T012）。
 //!
 //! 本期 MCP 仅作为 Client（接入外部工具）配置，默认禁用；对外 Server 另表。
 
@@ -7,24 +7,22 @@ use rusqlite::{Connection, OptionalExtension, params};
 use crate::sqlite::sqlite_error;
 use fluxdb_core::{Error, ErrorKind, Result};
 
-/// 预算策略视图。金额列为 `None` 表示未启用金额上限（§30.1）。
+/// 运行保护策略视图；沿用 `ai_budget_policies` 表名，但不包含金额或 token 总量上限。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BudgetPolicyView {
     pub id: String,
     pub display_name: String,
     pub enabled: bool,
-    pub session_limit_micros: Option<i64>,
-    pub daily_limit_micros: Option<i64>,
     pub max_iterations: i64,
     pub max_wall_time_ms: i64,
     pub max_model_concurrency: i64,
     pub revision: i64,
 }
 
-/// 读取预算策略。
+/// 读取运行保护策略。
 pub fn load_budget_policy(conn: &Connection, id: &str) -> Result<BudgetPolicyView> {
     conn.query_row(
-        "SELECT id, display_name, enabled, session_limit_micros, daily_limit_micros,
+        "SELECT id, display_name, enabled,
                 max_iterations, max_wall_time_ms, max_model_concurrency, revision
            FROM ai_budget_policies WHERE id=?1",
         [id],
@@ -33,21 +31,19 @@ pub fn load_budget_policy(conn: &Connection, id: &str) -> Result<BudgetPolicyVie
                 id: row.get(0)?,
                 display_name: row.get(1)?,
                 enabled: row.get::<_, i64>(2)? != 0,
-                session_limit_micros: row.get(3)?,
-                daily_limit_micros: row.get(4)?,
-                max_iterations: row.get(5)?,
-                max_wall_time_ms: row.get(6)?,
-                max_model_concurrency: row.get(7)?,
-                revision: row.get(8)?,
+                max_iterations: row.get(3)?,
+                max_wall_time_ms: row.get(4)?,
+                max_model_concurrency: row.get(5)?,
+                revision: row.get(6)?,
             })
         },
     )
     .optional()
     .map_err(sqlite_error)?
-    .ok_or_else(|| Error::new(ErrorKind::Internal, "预算策略不存在"))
+    .ok_or_else(|| Error::new(ErrorKind::Internal, "运行保护策略不存在"))
 }
 
-/// 保存预算策略（对象级 CAS）。
+/// 保存运行保护策略（对象级 CAS）。
 pub fn save_budget_policy(
     conn: &Connection,
     now_ms: i64,
@@ -63,31 +59,21 @@ pub fn save_budget_policy(
             return Err(Error::new(ErrorKind::Internal, "执行保护上限必须为正"));
         }
     }
-    for amount in [policy.session_limit_micros, policy.daily_limit_micros] {
-        if let Some(v) = amount
-            && v < 0
-        {
-            return Err(Error::new(ErrorKind::Internal, "金额上限不能为负"));
-        }
-    }
-    let sql = "INSERT INTO ai_budget_policies (id, display_name, enabled, session_limit_micros,
-            daily_limit_micros, request_limit_micros, max_iterations, max_wall_time_ms,
-            max_model_concurrency, options_json, revision, created_at_ms, updated_at_ms)
-        VALUES (?1,?2,?3,?4,?5,NULL,?6,?7,?8,'{}',1,?9,?9)
+    let sql = "INSERT INTO ai_budget_policies (id, display_name, enabled,
+            max_iterations, max_wall_time_ms, max_model_concurrency,
+            options_json, revision, created_at_ms, updated_at_ms)
+        VALUES (?1,?2,?3,?4,?5,?6,'{}',1,?7,?7)
         ON CONFLICT(id) DO UPDATE SET display_name=excluded.display_name, enabled=excluded.enabled,
-            session_limit_micros=excluded.session_limit_micros, daily_limit_micros=excluded.daily_limit_micros,
             max_iterations=excluded.max_iterations, max_wall_time_ms=excluded.max_wall_time_ms,
             max_model_concurrency=excluded.max_model_concurrency,
             revision=ai_budget_policies.revision+1, updated_at_ms=excluded.updated_at_ms
-        WHERE ai_budget_policies.revision=?10";
+        WHERE ai_budget_policies.revision=?8";
     conn.execute(
         sql,
         params![
             policy.id,
             policy.display_name,
             policy.enabled as i64,
-            policy.session_limit_micros,
-            policy.daily_limit_micros,
             policy.max_iterations,
             policy.max_wall_time_ms,
             policy.max_model_concurrency,
@@ -212,8 +198,6 @@ mod tests {
             id: "b1".into(),
             display_name: "默认".into(),
             enabled: true,
-            session_limit_micros: None,
-            daily_limit_micros: None,
             max_iterations: 40,
             max_wall_time_ms: 600_000,
             max_model_concurrency: 2,
@@ -222,10 +206,10 @@ mod tests {
     }
 
     #[test]
-    fn budget_policy_allows_unset_amount() {
+    fn budget_policy_stores_execution_limits() {
         let conn = setup();
         let saved = save_budget_policy(&conn, 1_000, &policy(), None).expect("保存");
-        assert_eq!(saved.session_limit_micros, None, "金额上限可选");
+        assert_eq!(saved.max_model_concurrency, 2);
         assert_eq!(saved.revision, 1);
     }
 

@@ -87,7 +87,7 @@ pub fn seed_builtin_instance(
 
 /// 内置插件注册表：(instance_id, package_id, package_key, 显示名)。
 ///
-/// 与设计 §23 的 12 项内置能力一一对应；安全审计与预算的 instance_id 必须与
+/// 与设计 §23 的 12 项内置能力一一对应；安全审计与执行保护的 instance_id 必须与
 /// [`MANDATORY_INSTANCE_IDS`] 保持一致，否则强制项会被误当作可关闭。
 pub const BUILTIN_PLUGINS: &[(&str, &str, &str, &str)] = &[
     (
@@ -136,7 +136,7 @@ pub const BUILTIN_PLUGINS: &[(&str, &str, &str, &str)] = &[
         "builtin.budget",
         "pkg.fluxdb.usage.budget",
         "fluxdb.usage.budget",
-        "预算与费用边界",
+        "Token 用量与执行保护",
     ),
     (
         "builtin.knowledge",

@@ -517,6 +517,13 @@ fn ai_chat_panel(
             );
         }
     }
+    let token_label = if chat.usage.requests > 0 && chat.usage.unknown_requests == chat.usage.requests {
+        "Token 用量未知".to_string()
+    } else if chat.usage.unknown_requests > 0 {
+        format!("{} tokens（部分未知）", chat.usage.total_tokens)
+    } else {
+        format!("{} tokens", chat.usage.total_tokens)
+    };
     // 恢复记录已解释暂停原因时，不再叠加重复的全宽警告。
     let has_recovery_notice = chat.messages.iter().flat_map(|message| &message.parts).any(|part| {
         part.kind == "notice"
@@ -645,13 +652,10 @@ fn ai_chat_panel(
                         }),
                 )
                 .child(
-                    div().debug_selector(|| "ai-chat-cost".into()).flex_none()
+                    div().id("ai-chat-tokens").debug_selector(|| "ai-chat-tokens".into())
+                        .aria_label(token_label.clone()).test_support().flex_none()
                         .text_size(px(10.)).text_color(colors.muted)
-                        .child(if chat.usage.unknown_requests > 0 {
-                            "费用未知".to_string()
-                        } else {
-                            format!("${:.3}", chat.usage.cost_micros as f64 / 1_000_000.)
-                        }),
+                        .child(token_label),
                 )
                 .child(
                     ai_chat_small_button("ai-chat-new", AppIcon::Plus, "新建会话", colors)

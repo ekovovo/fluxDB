@@ -2,7 +2,7 @@
 ///
 /// 设计约束：
 /// - 只覆盖"第一轮尚未被用户重命名"的默认标题（`revision=1`）；用户改名/归档/恢复后不再覆盖。
-/// - 标题请求计量走 `purpose='title'`，`title` 列存结果；总量查询不按标题列过滤，会话汇总不受影响。
+/// - 标题请求计量走 `purpose='title'`，与主模型、摘要共用计量宿主，失败或缺 usage 也会记录。
 /// - 失败保持原截断标题，不影响会话或回复。
 use fluxdb_core::ModelRequest;
 
@@ -53,8 +53,15 @@ pub fn generate_session_title(
         max_output_tokens: Some(64),
     };
     let cancel = fluxdb_core::CancelFlag::new();
-    let estimated_input = estimate_messages_tokens(&request.messages);
-    let events = match block_on_ready(provider.stream(request, cancel)) {
+    let metered = MeteredProvider {
+        provider,
+        storage,
+        job,
+        purpose: "title",
+    };
+    let events = match block_on_ready(fluxdb_core::GenerationProvider::stream(
+        &metered, request, cancel,
+    )) {
         Ok(Ok(events)) => events,
         Ok(Err(_)) | Err(_) => return,
     };
@@ -75,29 +82,7 @@ pub fn generate_session_title(
     let Some(title) = normalize_session_title(&raw) else {
         return;
     };
-    let request_id = uuid::Uuid::new_v4().to_string();
-    let descriptor = fluxdb_storage::ai_platform::usage_ledger::UsageRequest {
-        request_id: request_id.clone(),
-        session_id: job.session_id.clone(),
-        turn_id: job.turn_id.clone(),
-        model_profile_id: job.model_profile_id.clone(),
-        purpose: "title".into(),
-        estimated_input_tokens: estimated_input,
-        max_output_tokens: 64,
-        title: Some(title.clone()),
-    };
     let result = with_ai_storage(storage, |conn| {
-        fluxdb_storage::ai_platform::usage_ledger::reserve(
-            conn,
-            ai_chat_now(),
-            &descriptor,
-        )?;
-        fluxdb_storage::ai_platform::usage_ledger::settle(
-            conn,
-            ai_chat_now(),
-            &request_id,
-            None,
-        )?;
         fluxdb_storage::ai_platform::sessions::rename_session_if_default(
             conn,
             ai_chat_now(),

@@ -20,6 +20,9 @@ pub fn recover_on_startup(conn: &mut Connection, now: i64) -> Result<RecoverySum
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(sqlite_error)?;
+    // 启动时没有活跃供应商请求；遗留 pending 用量不可知，但不再占并发名额。
+    tx.execute("UPDATE ai_usage_ledger SET measurement='unknown',updated_at_ms=?1 WHERE measurement='pending'", [now])
+        .map_err(sqlite_error)?;
     let mut result = RecoverySummary::default();
     let mut stmt = tx.prepare("SELECT id,session_id,status FROM ai_turns WHERE status IN ('queued','preparing','generating','executing_tools','cancel_requested','waiting_approval','waiting_user','interrupted','outcome_unknown') ORDER BY started_at_ms,id").map_err(sqlite_error)?;
     let turns = stmt

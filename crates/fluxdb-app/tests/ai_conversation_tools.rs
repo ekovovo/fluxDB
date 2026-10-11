@@ -397,3 +397,90 @@ fn write_tool_is_absent_from_read_only_catalog_and_never_executes() {
         "写工具被拒绝时不应产生工具结果片段"
     );
 }
+
+#[test]
+fn conversation_counts_main_and_title_tokens_without_model_prices() {
+    for known_usage in [true, false] {
+        let fixture = Fixture::new();
+        let mut controller = fixture.configured();
+        let job = controller
+            .prepare_ai_conversation("解释当前查询", &target())
+            .unwrap();
+        let events = |text: &str, input, output, cache| {
+            let mut events = text_stop(text);
+            if known_usage {
+                events.insert(
+                    0,
+                    ModelEvent::Usage(fluxdb_core::Usage {
+                        input_tokens: input,
+                        output_tokens: output,
+                        cached_input_tokens: cache,
+                    }),
+                );
+            }
+            events
+        };
+        let provider = ScriptedGenerationProvider::new(
+            ModelCapabilities {
+                streaming: true,
+                tool_calling: true,
+                reasoning_summary: false,
+            },
+            vec![
+                events("这是查询解释。", 8, 4, 2),
+                events("查询解释标题", 5, 1, 1),
+            ],
+        );
+        let catalog =
+            standard_sql_catalog(Arc::new(MapSqlResolver::new([demo_config()])), false).unwrap();
+        let audit = AllowAudit(std::sync::atomic::AtomicUsize::new(0));
+        let (sender, receiver) = std::sync::mpsc::sync_channel(64);
+        run_ai_conversation_turn(
+            &fixture.storage,
+            &job,
+            &CancelFlag::new(),
+            &sender,
+            &provider,
+            &catalog,
+            &audit,
+            permission(),
+        );
+        let view = receiver
+            .try_iter()
+            .find(|update| update.terminal)
+            .unwrap()
+            .view
+            .unwrap();
+        assert_eq!(view.usage.requests, 2, "标题请求也应计入当前会话");
+        assert_eq!(view.usage.total_tokens, if known_usage { 18 } else { 0 });
+        assert_eq!(
+            view.usage.cached_input_tokens,
+            if known_usage { 3 } else { 0 }
+        );
+        assert_eq!(view.usage.unknown_requests, if known_usage { 0 } else { 2 });
+        fixture
+            .storage
+            .with_ai_connection(|conn| {
+                assert_eq!(
+                    sessions::load_session(conn, &job.session_id)?.title,
+                    "查询解释标题"
+                );
+                assert_eq!(
+                    fluxdb_storage::ai_platform::usage_ledger::totals(conn, &job.session_id)?,
+                    view.usage
+                );
+                let purposes = conn
+                    .prepare(
+                        "SELECT purpose FROM ai_usage_ledger WHERE session_id=?1 ORDER BY purpose",
+                    )
+                    .unwrap()
+                    .query_map([&job.session_id], |r| r.get::<_, String>(0))
+                    .unwrap()
+                    .collect::<Result<Vec<_>, _>>()
+                    .unwrap();
+                assert_eq!(purposes, vec!["main", "title"]);
+                Ok(())
+            })
+            .unwrap();
+    }
+}

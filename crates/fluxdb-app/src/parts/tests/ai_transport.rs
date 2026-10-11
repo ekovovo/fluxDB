@@ -208,7 +208,7 @@ fn transport_anthropic_fragmented_events_accumulate_tool_arguments() {
             }),
             TransportModelEvent::TextDelta("ok".into()),
             TransportModelEvent::Usage(fluxdb_core::Usage {
-                input_tokens: 10,
+                input_tokens: 11,
                 output_tokens: 4,
                 cached_input_tokens: 1,
             }),
@@ -540,5 +540,56 @@ fn ai_transport_responses_maps_incomplete_and_failed_without_leaking_reasoning()
             vec![fluxdb_core::ModelEvent::Finished(expected)],
             "payload={payload}"
         );
+    }
+}
+
+#[test]
+fn transport_anthropic_combines_start_input_cache_and_final_output_once() {
+    let mut state = StreamState::default();
+    let mut events = Vec::new();
+    for payload in [
+        r#"{"type":"message_start","message":{"usage":{"input_tokens":10,"output_tokens":0,"cache_read_input_tokens":2,"cache_creation_input_tokens":3}}}"#,
+        r#"{"type":"message_delta","usage":{"output_tokens":2}}"#,
+        r#"{"type":"message_delta","usage":{"output_tokens":4}}"#,
+        r#"{"type":"message_stop"}"#,
+        r#"{"type":"message_stop"}"#,
+    ] {
+        events.extend(parse_sse_payload(ChatProtocol::AnthropicMessages, payload, &mut state).unwrap());
+    }
+    let usage: Vec<_> = events.into_iter().filter_map(|event| {
+        if let TransportModelEvent::Usage(usage) = event {Some(usage)} else {None}
+    }).collect();
+    assert_eq!(usage, vec![fluxdb_core::Usage { input_tokens:15,output_tokens:4,cached_input_tokens:2 }]);
+}
+
+#[test]
+fn transport_missing_token_fields_never_emit_fake_zero_usage() {
+    for (protocol, payloads) in [
+        (ChatProtocol::OpenAiCompatible, vec![r#"{"usage":{"prompt_tokens":10},"choices":[]}"#]),
+        (ChatProtocol::OpenAiResponses, vec![r#"{"type":"response.completed","response":{"usage":{"input_tokens":10}}}"#]),
+        (ChatProtocol::AnthropicMessages, vec![r#"{"type":"message_delta","usage":{"output_tokens":4}}"#,r#"{"type":"message_stop"}"#]),
+        (ChatProtocol::AnthropicMessages, vec![r#"{"type":"message_start","message":{"usage":{"input_tokens":10,"output_tokens":0}}}"#,r#"{"type":"message_stop"}"#]),
+    ] {
+        let mut state = StreamState::default();
+        for payload in payloads {
+            let events = parse_sse_payload(protocol, payload, &mut state).unwrap();
+            assert!(!events.iter().any(|event| matches!(event, TransportModelEvent::Usage(_))));
+        }
+    }
+}
+
+#[test]
+fn transport_invalid_or_overflowing_token_counts_are_rejected() {
+    for (protocol, payloads) in [
+        (ChatProtocol::OpenAiCompatible, vec![r#"{"usage":{"prompt_tokens":-1,"completion_tokens":4},"choices":[]}"#]),
+        (ChatProtocol::OpenAiResponses, vec![r#"{"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1,"input_tokens_details":{"cached_tokens":2}}}}"#]),
+        (ChatProtocol::AnthropicMessages, vec![r#"{"type":"message_start","message":{"usage":{"input_tokens":9223372036854775807,"cache_creation_input_tokens":1}}}"#,r#"{"type":"message_delta","usage":{"output_tokens":4}}"#,r#"{"type":"message_stop"}"#]),
+    ] {
+        let mut state = StreamState::default();
+        let mut failed = false;
+        for payload in payloads {
+            if parse_sse_payload(protocol, payload, &mut state).is_err() {failed=true;break;}
+        }
+        assert!(failed);
     }
 }

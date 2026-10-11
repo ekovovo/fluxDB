@@ -166,7 +166,7 @@ pub struct ModelRequest {
     pub max_output_tokens: Option<i64>,
 }
 
-/// token 用量（费用与预算的事实来源）。
+/// token 用量（会话统计的事实来源，缓存命中包含在输入中）。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Usage {
     pub input_tokens: i64,

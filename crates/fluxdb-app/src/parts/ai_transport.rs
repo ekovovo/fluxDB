@@ -238,6 +238,11 @@ pub struct StreamState {
     openai_tools: Vec<OpenAiToolAccumulator>,
     /// Anthropic 工具调用：按 content block index 累积。
     anthropic_tools: Vec<AnthropicToolAccumulator>,
+    /// Anthropic 输入在 message_start，最终输出在 message_delta；缓存输入另列。
+    anthropic_input_tokens: Option<i64>,
+    anthropic_output_tokens: Option<i64>,
+    anthropic_cache_read_tokens: i64,
+    anthropic_cache_creation_tokens: i64,
     /// Responses 工具调用：按 output item id 累积（`response.output_item.added` → delta → done）。
     responses_tools: Vec<(String, OpenAiToolAccumulator)>,
     /// 是否已经报过 usage（避免重复）。
@@ -273,6 +278,24 @@ pub fn parse_sse_payload(
     }
 }
 
+/// 只有输入/输出均已知才上报实际用量；不把缺字段伪装为零 token。
+fn token_usage(
+    input: Option<i64>,
+    output: Option<i64>,
+    cached: Option<i64>,
+) -> Result<Option<fluxdb_core::Usage>, TransportError> {
+    let (Some(input_tokens), Some(output_tokens)) = (input, output) else {
+        return Ok(None);
+    };
+    let cached_input_tokens = cached.unwrap_or(0);
+    if input_tokens < 0 || output_tokens < 0 || cached_input_tokens < 0
+        || cached_input_tokens > input_tokens || input_tokens.checked_add(output_tokens).is_none()
+    {
+        return Err(TransportError::Malformed("模型 token 用量无效".into()));
+    }
+    Ok(Some(fluxdb_core::Usage { input_tokens, output_tokens, cached_input_tokens }))
+}
+
 fn parse_openai_chunk(
     value: &serde_json::Value,
     state: &mut StreamState,
@@ -280,19 +303,19 @@ fn parse_openai_chunk(
     let mut events = Vec::new();
     if let Some(usage) = value.get("usage").filter(|u| !u.is_null()) {
         if !state.usage_seen {
-            state.usage_seen = true;
-            events.push(fluxdb_core::ModelEvent::Usage(fluxdb_core::Usage {
-                input_tokens: usage.get("prompt_tokens").and_then(|v| v.as_i64()).unwrap_or(0),
-                output_tokens: usage
+            if let Some(usage) = token_usage(
+                usage.get("prompt_tokens").and_then(|v| v.as_i64()),
+                usage
                     .get("completion_tokens")
-                    .and_then(|v| v.as_i64())
-                    .unwrap_or(0),
-                cached_input_tokens: usage
+                    .and_then(|v| v.as_i64()),
+                usage
                     .get("prompt_tokens_details")
                     .and_then(|d| d.get("cached_tokens"))
-                    .and_then(|v| v.as_i64())
-                    .unwrap_or(0),
-            }));
+                    .and_then(|v| v.as_i64()),
+            )? {
+                state.usage_seen = true;
+                events.push(fluxdb_core::ModelEvent::Usage(usage));
+            }
         }
     }
     let choices = match value.get("choices") {
@@ -368,6 +391,30 @@ fn parse_anthropic_chunk(
 ) -> Result<Vec<fluxdb_core::ModelEvent>, TransportError> {
     let mut events = Vec::new();
     let kind = value.get("type").and_then(|t| t.as_str()).unwrap_or("");
+    let usage = if kind == "message_start" {
+        value.get("message").and_then(|message| message.get("usage"))
+    } else if kind == "message_delta" {
+        value.get("usage")
+    } else {
+        None
+    };
+    if let Some(usage) = usage {
+        if let Some(input) = usage.get("input_tokens").and_then(|v| v.as_i64()) {
+            state.anthropic_input_tokens = Some(input);
+        }
+        if kind == "message_delta" {
+            if let Some(output) = usage.get("output_tokens").and_then(|v| v.as_i64()) {
+                state.anthropic_output_tokens = Some(output);
+            }
+        }
+        if let Some(cache) = usage.get("cache_read_input_tokens").and_then(|v| v.as_i64()) {
+            state.anthropic_cache_read_tokens = cache;
+        }
+        if let Some(cache) = usage.get("cache_creation_input_tokens").and_then(|v| v.as_i64()) {
+            state.anthropic_cache_creation_tokens = cache;
+        }
+    }
+    let kind = value.get("type").and_then(|t| t.as_str()).unwrap_or("");
     match kind {
         "content_block_start" => {
             let index = value.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
@@ -425,25 +472,25 @@ fn parse_anthropic_chunk(
                 }
             }
         }
-        "message_delta" => {
-            if let Some(usage) = value.get("usage") {
-                if !state.usage_seen {
+        "message_stop" => {
+            if !state.usage_seen {
+                // 统一 Usage 的输入包含缓存读取/创建；它们不能在汇总时再次相加。
+                let input = state.anthropic_input_tokens.map(|input| {
+                    if input < 0 || state.anthropic_cache_creation_tokens < 0 {
+                        return Err(TransportError::Malformed("模型 token 用量无效".into()));
+                    }
+                    input.checked_add(state.anthropic_cache_read_tokens)
+                        .and_then(|total| total.checked_add(state.anthropic_cache_creation_tokens))
+                        .ok_or_else(|| TransportError::Malformed("模型 token 用量溢出".into()))
+                }).transpose()?;
+                if let Some(usage) = token_usage(input, state.anthropic_output_tokens,
+                    Some(state.anthropic_cache_read_tokens))? {
                     state.usage_seen = true;
-                    events.push(fluxdb_core::ModelEvent::Usage(fluxdb_core::Usage {
-                        input_tokens: usage.get("input_tokens").and_then(|v| v.as_i64()).unwrap_or(0),
-                        output_tokens: usage
-                            .get("output_tokens")
-                            .and_then(|v| v.as_i64())
-                            .unwrap_or(0),
-                        cached_input_tokens: usage
-                            .get("cache_read_input_tokens")
-                            .and_then(|v| v.as_i64())
-                            .unwrap_or(0),
-                    }));
+                    events.push(fluxdb_core::ModelEvent::Usage(usage));
                 }
             }
+            events.push(fluxdb_core::ModelEvent::Finished(fluxdb_core::FinishReason::Stop));
         }
-        "message_stop" => events.push(fluxdb_core::ModelEvent::Finished(fluxdb_core::FinishReason::Stop)),
         _ => {}
     }
     Ok(events)
@@ -640,16 +687,17 @@ fn parse_responses_chunk(
         "response.completed" => {
             if !state.usage_seen {
                 if let Some(usage) = value.get("response").and_then(|r| r.get("usage")) {
-                    state.usage_seen = true;
-                    events.push(fluxdb_core::ModelEvent::Usage(fluxdb_core::Usage {
-                        input_tokens: usage.get("input_tokens").and_then(|v| v.as_i64()).unwrap_or(0),
-                        output_tokens: usage.get("output_tokens").and_then(|v| v.as_i64()).unwrap_or(0),
-                        cached_input_tokens: usage
+                    if let Some(usage) = token_usage(
+                        usage.get("input_tokens").and_then(|v| v.as_i64()),
+                        usage.get("output_tokens").and_then(|v| v.as_i64()),
+                        usage
                             .get("input_tokens_details")
                             .and_then(|d| d.get("cached_tokens"))
-                            .and_then(|v| v.as_i64())
-                            .unwrap_or(0),
-                    }));
+                            .and_then(|v| v.as_i64()),
+                    )? {
+                        state.usage_seen = true;
+                        events.push(fluxdb_core::ModelEvent::Usage(usage));
+                    }
                 }
             }
             events.push(fluxdb_core::ModelEvent::Finished(fluxdb_core::FinishReason::Stop));

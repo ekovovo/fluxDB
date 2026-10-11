@@ -1,5 +1,7 @@
 # fluxDB 原生 AI Agent：实施任务清单与验收
 
+> **2026-10-11 用户确认**：只统计会话 Token，无金额或累计 Token 上限；模型价格保留供路由。历史费用记录已由主设计 §30 与当前 T030 口径取代。
+
 - 日期：2026-10-03；状态：实施前清单。
 - 对应完整设计（唯一设计入口）：[ai-agent-design.md](/Users/shining3d/fusuwei/code/fluxDB/docs/ai-agent-design.md)。
 - 本轮只输出文档，不代表已有 AI runtime、管理表、插件或 E2E 功能。
@@ -13,7 +15,7 @@
 4. AI 管理实体与运行数据独立表；模型密文在 ai_model_profiles 行；模型/MCP 通用引用使用角色绑定表而非 plugin JSON。
 5. 复用连接 AES-256-GCM 和同一数据密钥；不读取/写系统钥匙串，不引入 ai_credentials。
 6. 配置/事件/日志/导出/快照无明文 Key、nonce/ciphertext；显式 Keep/Set/Clear，CAS 和失败回滚。
-7. 所有插件只能在内核权限/预算内运行；不能伪造工具成功、跳过审批。
+7. 所有插件只能在内核权限/执行保护内运行；不能伪造工具成功、跳过审批。
 8. 每个 UI E2E 步骤只看当前小图；先压缩本地图片，再输入视觉上下文，每步保存文本 checkpoint。
 9. Rust 变更 cargo fmt/check；业务变更相关测试；UI 变更启动主窗口和实际交互；记录当前开发平台的实际结果。
 10. 所有框架引入先锁版本/查许可证/验证，不能根据main文档猜发布版功能。
@@ -40,7 +42,7 @@ UI原型：`docs/prototype/ai-agent-ui.html`（本机 `/Users/shining3d/fusuwei/
 
 数据驱动页面另执行设计§39.5：预置已知记录→正常入口实际可见，UI保存→不手动刷新即更新，返回/重启→仍可见；区分loading/空/有数据/失败并检查迟到响应。测试经过生产加载、AppState、渲染快照及实际控件，不只查SQLite或给孤立组件塞数据。证据需包含目标记录的非敏感ID/标记、预期与实际字段、后端断言及有数据截图；只截空态不得勾选。
 
-真实模型按设计§37.3：主Agent用SQLite已配置“公司自建”，Jev用“决策模型”；通过现有宿主凭据接口在进程内AES认证解密后直接供Provider请求使用，不打印或导出Key/加密载荷，不要求用户重填，不修改原配置。真实调用显式启用且有预算/时间保护，普通单测默认scripted；真实成功与故障注入分开报告。
+真实模型按设计§37.3：主Agent用SQLite已配置“公司自建”，Jev用“决策模型”；通过现有宿主凭据接口在进程内AES认证解密后直接供Provider请求使用，不打印或导出Key/加密载荷，不要求用户重填，不修改原配置。真实调用显式启用且有调用/迭代/时间保护，普通单测默认scripted；真实成功与故障注入分开报告。
 
 ## C. 文档阶段产物
 
@@ -120,7 +122,7 @@ UI原型：`docs/prototype/ai-agent-ui.html`（本机 `/Users/shining3d/fusuwei/
 - 测试方式：在隔离SQLite/文件fixture中逐条执行上述验收，核对操作前后行值、revision、引用及错误；适用的失败注入后重开存储确认无部分写入/数据丢失，测试输出不得含秘密。
 
 
-### T010 模型/预算/运行设置独立 repository
+### T010 模型/运行保护策略/运行设置独立 repository
 - [x] 依赖：T006、T009；设计 §17、§30、§42.10。
 - 改动：分页读取、逐对象 CRUD/CAS、能力/价格/endpoint/非敏感 JSON 校验；不新增 save_all_ai_config。
 - 验收：未知价格不是免费；删除引用模型被阻止；禁用在下次调用生效；export 列白名单不含加密列；导入需补 Key。
@@ -159,7 +161,7 @@ UI原型：`docs/prototype/ai-agent-ui.html`（本机 `/Users/shining3d/fusuwei/
   - [x] 切换页面再返回及重启后记录仍可见；分别验证loading、真实空库、有数据和加载错误，错误不能被空列表掩盖，重试成功后恢复展示。
   - [x] 自动化断言穿过生产加载与AppState→渲染快照→视图路径，捕获非空状态被硬编码空集合覆盖；附新增后有数据的实机证据。
 
-### T014 Agent直接配置/内置能力/预算 UI
+### T014 Agent直接配置/内置能力 UI
 - [x] 依赖：T011–T013；设计 §31–32。
 - 改动：设置“工具与MCP”菜单含工具/本地Server/内置插件/审计tabs；Agent主页面=左侧列表+右侧三分区（基本/模型与提示词/工具与内置能力）+底部保存栏（非弹框）；无权限/运行限制/目标/路由/费用字段；提示词直接输入，无Jev专用配置/版本下拉；失败保留草稿。
 - 验收：界面修改实际对应独立表；CAS 冲突可见；无整体配置覆盖；加载损坏实体不自动重写空值。
@@ -198,7 +200,7 @@ UI原型：`docs/prototype/ai-agent-ui.html`（本机 `/Users/shining3d/fusuwei/
 ### T017 主模型适配与秘密 transport 边界
 - [x] 依赖：T003、T008、T016；设计 §8、§17。
 - 改动：generation Provider 流、模型能力和工具名称映射、请求前 credential lease、usage。
-- 验收：调试默认 scripted，真实模型调用要等 T030 预算就绪；模型请求/日志/快照无 Key；HTTP 默认跨域 redirect 不带认证；分片/断流/429/截断测试；版本与 capabilities 匹配。
+- 验收：调试默认 scripted，真实模型调用要等 T030 计量与执行保护就绪；模型请求/日志/快照无 Key；HTTP 默认跨域 redirect 不带认证；分片/断流/429/截断测试；版本与 capabilities 匹配。
 - 测试方式：将上述每项验收分别落实为相关crate的测试断言；用隔离fixture/受控Provider验证正常与异常路径，涉及工具时核对真实回执及副作用调用数，不用伪造成功结果跳过执行链。
 
 
@@ -337,7 +339,7 @@ cargo test -p fluxdb-app --locked ai_permission   # 15 passed
 - 修复的真实缺陷：① `read_page` 原只返回内存部分却给出「还有更多」游标，spill 条目永远读不到；改为按需回读文件，缺失/损坏/条目数不符报 `result_damaged`；② `standard_sql_catalog_with_results` 注册了 `result.read_page` 实现却没加 spec，`ToolCatalog` 拒绝注册；③ `ai_results.retention_kind` 固定 `'memory'`，溢写文件重启后无归属；④ 回执登记靠调用方另传一份结果仓库，而工具目录已持有同一个仓库，两处各传一次迟早漏传（直接调 `run_ai_conversation_turn` 的路径就会把溢写结果登记成 `memory`），改为 `ToolCatalog::with_results` 由目录持有。
 - 端到端：新增 `crates/fluxdb-app/tests/ai_result_paging_e2e.rs`，真实 SQLite 文件 + 真实驱动（demo MockConnector 只返回 2 行、触发不了 spill）+ 生产装配链，覆盖「大结果不进上下文 → retained 落点可核对 → `result.read_page` 分页读回不重不漏 → 跨会话读不到 → 重启后 retained 仍在」。
 - 本轮命令（macOS arm64）：`cargo fmt --all -- --check`、`cargo check --workspace --locked --offline --all-targets` 通过；`cargo test --workspace --locked --offline` 全部通过（fluxdb-app lib 761 passed / 0 failed / 1 ignored，集成 24/4/10/2/9/2/6/5/4/14/12/1/6/28/7 passed）。验收记录见 [docs/testing/ai-agent/t027-2026-10-10.md](testing/ai-agent/t027-2026-10-10.md)。
-- 未验证：Windows / Linux 未编译与原生验收（相关代码无平台专属分支，仍待三端各跑一次）；不含 UI，未做真实窗口 E2E（结果卡与 `result.read_page` 的面板交互属 T028）；设计 §42.7 的「用户可配置保留策略与空间上限」未实现，当前只落地 TTL 过期 + 路径/hash 可核对 + 过期文件清理。
+- 未验证：Windows / Linux 未编译与原生验收（相关代码无平台专属分支，仍待三端各跑一次）；不含 UI，未做真实窗口 E2E（结果卡在 T028 范围渲染，`result.read_page` 的面板分页入口仍未交付，见 T028 验收边界）；设计 §42.7 的「用户可配置保留策略与空间上限」未实现，当前只落地 TTL 过期 + 路径/hash 可核对 + 过期文件清理。
 - 依赖：T023–T026；设计 §15、§42.7。
 - 改动：ResultRef、memory/retained/expired、spill 配额、source 归属，result.read_page。
 - 验收：大结果不全进上下文；过期/重启内存结果有明确错误；retained 的路径/hash/清理可验证。
@@ -345,15 +347,18 @@ cargo test -p fluxdb-app --locked ai_permission   # 15 passed
 
 
 ### T028 AI 对话面板/时间线/审批/产物容器
-- [ ] 依赖：T018、T020、T022、T027；设计 §31。
+- [x] 依赖：T018、T020、T022、T027；设计 §31。
+- 2026-10-10（macOS，用户手动验收确认通过）：按 §39.4 六项门槛（功能完整性、数据展示闭环、交互回归、真实窗口 E2E、视觉还原度、修复闭环）逐项人工验收通过。
+- 勾选记录：[T028验收记录（2026-10-10，用户手动验收）](testing/ai-agent/t028-2026-10-10.md)。既有自动化/真实窗口证据：`cargo test -p fluxdb-desktop --locked ai_panel_`（面板、审批、恢复、布局、发送/停止、明暗）；上游闭环见 `docs/testing/ai-agent/t020-t029-2026-10-06.md`、`t022-references-2026-10-09.md`、`t026-e09-2026-10-10.md`、`t027-2026-10-10.md`、`t028-2026-10-06.md`。
+- 验收边界（如实记录，经用户确认接受当前范围）：产物 `artifact_ref` 按持久化事实渲染为任务产物容器，报告弹框/图表/导出属 T040；结果引用卡展示真实句柄与状态，`result.read_page` 的面板分页入口仍可后补；历史入口当前为最近排序列表，分组/重命名/归档在设置页会话管理，历史分页续读未接。
 - 改动：原生 composer、流式文字/工具状态、发送/停止、等待审批、loading 和结果引用。
 - 验收：E02–E05、E09、E13；真实窗口启动；普通控件复用组件、颜色主题、图标、弹层防穿透；无需 Jev。
 - 本任务功能/UI验收：原型 `#workbench`询问AI / `#history`；交付抽屉/内嵌切换、默认模式、两宽记忆与60%/40%限制、新建/关闭、历史入口、公开摘要/计划/工具卡及产物容器。发送→流式→工具→结果；停止、折叠、上滚不抢位置；U07/U08验证窄窗口/高DPI/会话草稿/焦点，关闭面板不停止或重放任务；不每token建卡。
 - UI证据：按设计§39.3–39.4实际操作并对照原型截图，明暗主题、正常/窄窗口及相关loading/空/错状态分别通过，修复后复测。
 - 测试方式：本任务上述流程分别编写GPUI模拟输入断言并执行真实窗口E2E；截图按指定原型入口逐项对比，业务写入独立核对存储/后端，不只检查提示文字。
 - 数据展示闭环（设计§39.5）：
-  - [ ] 预置带消息/工具/产物的会话，从历史入口打开，实际卡片字段/顺序对应持久化事实；空会话与加载失败有不同显示。
-  - [ ] 真实发送后用户消息、流式内容、工具及最终结果经生产事件桥与快照即时可见，不靠刷新；切会话后旧事件不串入当前会话。
+  - [x] 预置带消息/工具/产物的会话，从历史入口打开，实际卡片字段/顺序对应持久化事实；空会话与加载失败有不同显示。
+  - [x] 真实发送后用户消息、流式内容、工具及最终结果经生产事件桥与快照即时可见，不靠刷新；切会话后旧事件不串入当前会话。
 
 ### T029 停止、重启和未知副作用恢复
 - 2026-10-06：① 启动扫描/重新审批/未知写防重放已实现，存储与 GPUI 回归、隔离真实窗口分步验收见 `docs/testing/ai-agent/t029-restart-2026-10-06.md`；② 写工具注册与③ 真实模型/Docker 验收本轮不实施。完整 T029 保持未勾选。
@@ -367,10 +372,11 @@ cargo test -p fluxdb-app --locked ai_permission   # 15 passed
 - 数据展示闭环（设计§39.5）：
   - [x] 正常退出及故障重启后，从历史列表进入已知会话，实际消息/工具/审批/unknown状态与存储事实一致；核对可见记录和后端调用数，不能只验证恢复查询返回数据。
 
-### T030 主循环预算预留与计量
+### T030 主循环 Token 计量与执行保护
+- 2026-10-11：Token 口径实现与本机统计表重建完成；串行工作区、存储/App/协议与明暗 Headless 通过。真实窗口点击/截图因桌面自动化服务不可用尚未验收，主任务不勾选。记录：[T030 Token 验收](testing/ai-agent/t030-tokens-2026-10-11.md)。
 - [ ] 依赖：T010、T017；设计 §30、§42.8。
-- 改动：SQLite短事务预留/结算/unknown、并发/时间/iteration限额、价格快照；金额上限可选默认NULL，严格费用模式才要求已知价格，执行保护用默认值。
-- 验收：E12；并发不能重复花同一余额；同请求结算幂等；unknown usage 不当免费；无足够价格的严格预算拒绝。
+- 改动：SQLite 短事务登记/完成请求；按 session 统计 input/output/cached/total tokens；缺 usage 明确 unknown，保留迭代/时间/并发等执行保护。删除金额限制、费用计算、价格快照和费用预留表；模型价格配置保留供后续路由，不影响计量或放行。
+- 验收：E12；登记/完成幂等且并发不超占名额；缓存不重复计入总量；未知 usage 不当零用量；价格缺失/变化不影响实际 token；切会话隔离、新草稿归零、重启恢复；不设置金额或累计 token 限额。
 - 测试方式：在隔离SQLite/文件fixture中逐条执行上述验收，核对操作前后行值、revision、引用及错误；适用的失败注入后重开存储确认无部分写入/数据丢失，测试输出不得含秘密。
 
 
@@ -410,7 +416,7 @@ cargo test -p fluxdb-app --locked ai_permission   # 15 passed
 ### T035 摘要模型与原子 checkpoint
 - [ ] 依赖：T034、T030；设计 §16、§42.11。
 - 改动：独立摘要模型配置/默认主模型、生成/保护校验/提交、失败保留旧 checkpoint。
-- 验收：E07；截断/出错摘要不覆盖；失败后卸载或可见暂停；压缩费用入 ledger；原始记录可查。
+- 验收：E07；截断/出错摘要不覆盖；失败后卸载或可见暂停；压缩 token 用量入 ledger；原始记录可查。
 - 本任务功能/UI验收：原型 询问AI压缩状态；触发超上下文阈值→展示压缩→继续任务；注入摘要截断/失败确认旧checkpoint保持、提示可见且可恢复。
 - UI证据：按设计§39.3–39.4实际操作并对照原型截图，明暗主题、正常/窄窗口及相关loading/空/错状态分别通过，修复后复测。
 - 测试方式：本任务上述流程分别编写GPUI模拟输入断言并执行真实窗口E2E；截图按指定原型入口逐项对比，业务写入独立核对存储/后端，不只检查提示文字。
@@ -461,7 +467,7 @@ cargo test -p fluxdb-app --locked ai_permission   # 15 passed
 ### T041 M3 串行界面和真实模型评测
 - [ ] 依赖：T031、T032–T040；设计 §37–39。
 - 改动：E06/E07/E10/E12 脚本；同模型同 fixture 的真实自主任务集。
-- 验收：无 Jev 全套仍通过；scripted 稳定性与真实智能分开报告；真实质量/费用/无依据结论有证据；每步小图/checkpoint。
+- 验收：无 Jev 全套仍通过；scripted 稳定性与真实智能分开报告；真实质量/token 用量/无依据结论有证据；每步小图/checkpoint。
 - 测试方式：执行本任务列出的E/U用例，scripted与真实请求分开记录；真实主模型用“公司自建”，涉及Jev时用“决策模型”（设计§37.3），核对实际工具/后端结果和窗口截图，不以聊天结论代替断言。
 
 
@@ -542,7 +548,7 @@ cargo test -p fluxdb-app --locked ai_permission   # 15 passed
 
 ### T052 性能、界面与真实任务总验收
 - [ ] 依赖：T041、T049–T050、T064–T066；未来功能不计本期验收。
-- 改动：当前开发平台启动与 E01–E14 按功能启用范围；长结果/会话/插件内存；真实模型预算受限评测。
+- 改动：当前开发平台启动与 E01–E14 按功能启用范围；长结果/会话/插件内存；真实模型调用/迭代/时限受控评测。
 - 验收：CPU/内存/任务取消/磁盘与截图预算记录；核心无 Jev 成功；可选系统失败不挂主窗口；当前开发平台截图/断言/检查点，未测范围不标通过。
 - 测试方式：执行本任务列出的E/U用例，scripted与真实请求分开记录；真实主模型用“公司自建”，涉及Jev时用“决策模型”（设计§37.3），核对实际工具/后端结果和窗口截图，不以聊天结论代替断言。
 
@@ -706,13 +712,13 @@ cargo run -p fluxdb-desktop
 
 ## G. HTML交互稿评审范围
 
-完整入口：[ai-agent-ui.html](/Users/shining3d/fusuwei/code/fluxDB/docs/prototype/ai-agent-ui.html)。包含所有当前AI Agent管理/运行页面，不只询问AI。用户参考图的分组时间线/报表卡片用于视觉方向；报告是产物弹框，费用/执行保护是高级配置。
+完整入口：[ai-agent-ui.html](/Users/shining3d/fusuwei/code/fluxDB/docs/prototype/ai-agent-ui.html)。包含所有当前AI Agent管理/运行页面，不只询问AI。用户参考图的分组时间线/报表卡片用于视觉方向；报告是产物弹框，会话只展示 token，模型价格仅供路由参考。
 
 浏览器测试使用模拟数据、步骤检查点和受限JPEG，不能据此勾选原生GPUI、Docker、模型或Claude MCP任务完成。真实Key不进入原型localStorage。
 
 ## H. Agent配置简化
 
-T011/T014以主设计§19、§31.8为准：提示词直接在Agent输入，没有独立模板、多版本/发布，没有Agent内Jev配置。其余模型/工具/内置能力/权限/预算/运行参数必须对照字段矩阵实现，不能只复制参考稿外观。HTML交互稿同步取消提示词菜单，缩小询问AI字体。
+T011/T014以主设计§19、§31.8为准：提示词直接在Agent输入，没有独立模板、多版本/发布，没有Agent内Jev配置。其余模型/工具/内置能力/权限/运行保护参数必须对照字段矩阵实现，不能只复制参考稿外观。HTML交互稿同步取消提示词菜单，缩小询问AI字体。
 
 ## I. 智能Agent简化
 
@@ -904,7 +910,7 @@ T020按主设计§31.9实现询问AI内联批准卡片：参考Goose三态按钮
   - 事件 `AiEvent::{TurnStarted, TextDelta, ReasoningSummaryDelta, ToolCallRequested, Finished, Error}` 自带 `session_id/turn_id/seq`（seq 单调递增），经 `AiEventSink` 回桥 UI 线程（桌面端后续用 gpui `update/notify` 实现）。
   - 生命周期：`shutdown(timeout)` 先取消在跑的 Turn 再等 actor 退出（超时返回 false 并把句柄放回，不掩盖泄漏）；`Drop` → `shutdown(2s)`，窗口关闭不挂死。
   - 生产不引入 tokio（app 的 tokio 是 dev-dependency）：`block_on_ready` 只支持"单次 poll 内完成"的 Provider（scripted / 内部同步 ureq 的 HTTP Provider），真正需要挂起等待的异步实现要等引入执行器后再替换（已在代码注释与设计里标注）。
-- **本切片范围边界（如实记录）**：steering 在**下一次 `StartTurn`** 被吸收（同一 Turn 内逐 iteration 吸收属 T018 主循环）；`Usage` 事件暂不转 UI 事件（记账随 T017/预算任务）。
+- **本切片范围边界（如实记录）**：steering 在**下一次 `StartTurn`** 被吸收（同一 Turn 内逐 iteration 吸收属 T018 主循环）；`Usage` 事件暂不转 UI 事件（记账随 T017/T030 计量任务）。
 - **子 agent A（运行时测试）完成**：新增 `crates/fluxdb-app/src/parts/tests/ai_runtime.rs`，`cargo test -p fluxdb-app --offline ai_runtime_` → **10 passed**（事件顺序与 seq 单调、Provider 错误可见、**取消不被 200×4KB 大文本挤掉**（收到首段后取消，实际文本事件 ≤6）、排队 Turn 取消后立即结束、steering 在下一 Turn 被吸收、控制队列满时 `start_turn` 立即返回 `ControlQueueFull`（<200ms，不阻塞 UI）、活跃 Turn 上 shutdown 安全结束、Drop 不挂死、事件确实由 `fluxdb-ai-runtime` 线程发出）。
 - **A 报出的 1 个生产缺陷（已修 + 回归用例）**：控制队列满时 `shutdown()` 的 `try_send(Shutdown)` 会静默失败（`Full`），actor 阻塞在 `recv()`，关闭要等到 2s 超时并返回 `false`。修复：新增**旁路关闭标志** + actor 改用 `recv_timeout(50ms)` 周期检查（队列满也能在下一轮询周期退出），`try_send(Shutdown)` 仅作快路径唤醒。回归用例 `ai_runtime_shutdown_works_when_control_queue_is_full`（容量 1 打满后 `shutdown(2s)` 必须成功且不等超时）已通过。
 - 本轮验收：`cargo check --workspace` / `cargo fmt --check` 通过；core **106**、storage **121**、app **586**（9 个需要本地端口的用例沙箱内被拒，沙箱外通过）、desktop **477**。
@@ -919,7 +925,7 @@ T020按主设计§31.9实现询问AI内联批准卡片：参考Goose三态按钮
   - **协议形态**：OpenAI（`messages` + `tools[].function`，工具 schema 作为对象）与 Anthropic（system 提到顶层 `system`、`tools[].input_schema`）两种请求体。
   - **可测试性**：`ChatTransport` 抽象出真实 HTTP，生产用 `UreqChatTransport`（`stream_chat`），测试注入假实现即可在无网络下断言"请求体/认证/事件映射"。
   - **重定向**：`stream_chat` 显式 `max_redirects(0)`（ureq 默认跟随 10 次；不跟随可避免跨域 302 把含认证头的请求引向非预期主机），3xx 直接按 HTTP 状态返回。
-- **真实模型调用边界**：本任务只交付适配层与秘密边界；**默认仍是 scripted**，真实「公司自建 / 决策模型」调用按设计 §37.3 要等 T030 预算与显式开关就绪后由主 agent 统一安排，不在单测里发起。
+- **真实模型调用边界**：本任务只交付适配层与秘密边界；**默认仍是 scripted**，真实「公司自建 / 决策模型」调用按设计 §37.3 要等 T030 计量/执行保护与显式开关就绪后由主 agent 统一安排，不在单测里发起。
 - **子 agent A（Provider 测试）完成**：新增 `crates/fluxdb-app/src/parts/tests/ai_provider.rs`，`cargo test -p fluxdb-app --offline ai_provider_` → **9 passed**（沙箱外；沙箱内仅本地 mock 一项因禁止绑定回环端口失败）。覆盖：工具名映射可逆 + sanitize 冲突拒绝、OpenAI/Anthropic 请求体不含凭据且工具名已映射（Anthropic system 在顶层）、`tool_calling=false` 不发 `tools` 且收到工具调用报错、回程 Provider 名→宿主 ID、未注册工具报错、每次 `stream` 恰好 lease 一次且 body/Debug 无明文、**预取消完全不触碰凭据与传输**、传输错误透传、本地真实 HTTP 429 + 截断 SSE 不 panic。未发现生产 bug。
 - 测试口径说明：`sanitize_tool_name` 保留 `-`，所以 `db.query` 与 `db-query` 不会冲突；A 改用 `db.query` 与 `db/query` 构造真实冲突（实现行为符合其规则）。
 - 本轮验收：`cargo check --workspace` / `cargo fmt --check` 通过；core **106**、storage **121**、app **594**（10 个需要本地回环端口的用例沙箱内被拒，沙箱外通过）、desktop **477**。
@@ -1053,7 +1059,7 @@ T020按主设计§31.9实现询问AI内联批准卡片：参考Goose三态按钮
 - 弹框内实际打字 → 保存的界面级点击（受第 2、3 步阻塞）。
 
 
-## T028 本轮实施与验收（2026-10-06，仍未完成）
+## T028 本轮实施与验收（2026-10-06；2026-10-10 用户手动验收通过，已勾选）
 
 - 范围：面板骨架、会话生产加载/保存、抽屉与内嵌/原生ResizablePanelGroup、关闭/新建/历史/折叠/草稿、live SSE到生产状态回桥；不冒充工具/审批/附件/报告已接通。
 - 先机械拆分 `state.rs` 内的 AppCommand/AppEvent 到 `state_commands.rs`/`state_events.rs`，保留include作用域；UI新增 `main_parts/ai/{state,actions,panel,tests}.rs`，app新增 `ai_conversation{,_state}.rs`，storage新增 `ai_platform/conversation.rs`，使用既有AI真表，不新增kv blob。
@@ -1061,7 +1067,7 @@ T020按主设计§31.9实现询问AI内联批准卡片：参考Goose三态按钮
 - A（存储）首轮发现终态空内容没有收尾旧parts，主修复并复测；storage16通过、app集成10通过。
 - B（GPUI）正常生产构造/加载→AppState→`render_state_snapshot`→实际控件，首轮11通过，补发送/停止后日志13通过；不把offscreen截图受阻视为截图通过。
 - 主/C真实窗口验收与各项证据见 [T028验收记录](testing/ai-agent/t028-2026-10-06.md)。本轮实际GUI使用隔离离线fixture，不访问生产凭据、不消耗模型费用。
-- **T028仍为[ ]**：T020审批→执行、T022 @/附件、T027结果分页、T040报告及完整真实模型门槛未接；不能以基础面板/编译/数据库成功降低门槛或勾选。
+- **T028 已勾选（2026-10-10 用户手动验收确认）**：面板已消费 T020 审批决定与恢复、T022 `@`/附件、T027 结果句柄；产物卡按持久化 `artifact_ref` 渲染。报告弹框/图表/导出（T040）与结果分页读取入口不在本次勾选范围，已由用户确认接受当前范围，不作为已交付能力宣称。
 
 ## 2026-10-06 用户修订：默认助手、压缩与容量
 
@@ -1086,7 +1092,7 @@ T020按主设计§31.9实现询问AI内联批准卡片：参考Goose三态按钮
 ### T069 增量压缩运行闭环（细化 T034/T035）
 - [x] 实际模型窗口百分比触发 + 输出余量:`should_compact` 同时判断 `context_window × trigger_percent` 与 `window − max_output − 安全余量`,哪个先到先压缩;窗口未知时不触发、不阻断。纯逻辑 12/12 通过(`crates/fluxdb-app/src/parts/tests/ai_compaction.rs`)。
 - [x] 合法切点、保护项、增量摘要、原始历史不删、原子 checkpoint:`ai_context_checkpoints` 真表读写 + `UNIQUE(turn_id,generation)` 冲突不覆盖;摘要缺保护项/为空/被截断一律不落盘。storage 5/5(`crates/fluxdb-storage/tests/ai_context_checkpoints.rs`)、app 端到端 4/4(`crates/fluxdb-app/tests/ai_context_compaction.rs`):真实触发产生 checkpoint、generation 单调递增、后续摘要携带旧摘要做增量、校验失败不落盘、窗口未知不阻断对话、原始消息完整保留。
-- [ ] 真实模型(公司自建/决策模型)下的压缩 UI 表现与费用计量、模型切换中途压缩、取消/CAS 竞争的高并发压测尚未执行;未配置真实模型前不勾选该项。
+- [ ] 真实模型(公司自建/决策模型)下的压缩 UI 表现与token 计量、模型切换中途压缩、取消/CAS 竞争的高并发压测尚未执行;未配置真实模型前不勾选该项。
 
 ### T070 一层子会话委派（原生循环复用）
 - [ ] 父/子独立会话与任务身份、默认25迭代、禁止递归、共享安全内核、父取消联动、结果有界。
@@ -1108,12 +1114,13 @@ T020按主设计§31.9实现询问AI内联批准卡片：参考Goose三态按钮
 - [x] 内置 `fluxdb.lifecycle.telemetry` 只读 Hook 由插件实例/绑定表装配（`ai_builtin_hooks`）；安全审计仍由内核强制，不能被禁用。
 - 未完成：12 类内置能力完整注册表、ContextProcessor/ModelRouter/ArtifactProducer 契约与第三方加载（本期仅留口子）；原型 `#plugins` 对照截图。
 
-### T030 主循环预算预留与计量
-- [x] `usage_ledger.rs`（storage）：`reserve`（短事务内取写锁、幂等、可见行并发限额、session/daily 限额、严格模式缺价格拒绝）与 `settle`（仅 held 可结算、重复幂等、usage 缺失→unknown 且保留预留、价格快照决定结算、缓存价缺失时 cost 记 null）。`crates/fluxdb-storage/tests/ai_usage_ledger.rs` 35/35。
-- [x] `MeteredProvider`（`crates/fluxdb-app/src/parts/ai_usage.rs`）包裹主模型与摘要调用：请求前预留、拿到 `Usage` 后结算，取消/未发送不产生供应商请求；四个 purpose（main/decision/compaction/artifact）共用同一 session ledger。
-- [x] 面板底部显示「N 次请求 · 输入/输出 tokens · 费用」；缺 usage/价格时显示「部分用量/费用未知」。**未加用户费用上限 UI**（设计 §30.1：本期只有用量透明 + 内部执行保护）。
-- 修复的真实缺陷：`reserve` 未拒绝空白 `request_id`、未把 `CancelRequested` 当作应拒绝的状态。
-- 未完成：真实模型费用数值核对、日报表聚合、执行保护（迭代/超时/输出字节）与预算策略 UI。
+### T030 主循环 Token 计量与执行保护
+- **2026-10-11 用户需求修订**：原金额预留/结算实现已取消，不保留未来企业费用限额；以下替代 2026-10-07 的费用验收口径。当前验收记录见 `docs/testing/ai-agent/t030-tokens-2026-10-11.md`。
+- storage `usage_ledger.rs`：`start_request`/`finish_request`/`totals`，pending/actual/unknown、归属/状态校验、并发/幂等、input+output 总量、cache 子集与缺 usage 标记；不计算金额、不读取价格快照。
+- `MeteredProvider` 包裹主模型、摘要和标题请求；账本支持 main/decision/compaction/artifact/title，并按当前 session 汇总。
+- 面板顶部原费用位置显示 token，部分或全未知明确提示，新草稿 0 tokens；保留模型管理价格配置，只供后续路由。
+- 删除金额上限列与费用预留表；直接在已确认本机数据库删除受影响表、按新 DDL 重建，不编写迁移/兼容脚本，不删除无关数据。
+- 主循环默认迭代/时限护栏保留；策略迭代/时限配置接入仍待后续，不提供预算策略 UI、金额日报或真实费用数值验收。
 
 ### T022 `@` 引用 / T026 文件读取（部分）
 - [x] `ai_context_references` 真表（draft 或 session 作用域 + opaque reference_id），上限 16 项/8 KiB；首次发送原子转移草稿引用，`New` 清空草稿引用。
@@ -1129,4 +1136,4 @@ T020按主设计§31.9实现询问AI内联批准卡片：参考Goose三态按钮
 - `cargo test -p fluxdb-desktop --offline -- --test-threads=1` → **531 passed / 0 failed / 4 ignored**。
 - `cargo fmt --all -- --check`、`git diff --check`、`cargo check --workspace --offline` 通过。
 - 平台：macOS arm64 实测；Windows/Linux 未验证（附件安全读取在非 Unix 明确不可用）。
-- 未验证：真实模型（公司自建/决策模型）费用数值、T033 模型路由/候选过滤、T032 其余能力契约、T022 其余 @ 候选类型。
+- 未验证：真实模型（公司自建/决策模型）token 用量、T033 模型路由/候选过滤、T032 其余能力契约、T022 其余 @ 候选类型。

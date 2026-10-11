@@ -51,9 +51,6 @@ CREATE TABLE IF NOT EXISTS ai_budget_policies (
     id TEXT PRIMARY KEY,
     display_name TEXT NOT NULL,
     enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0,1)),
-    session_limit_micros INTEGER CHECK (session_limit_micros >= 0),
-    daily_limit_micros INTEGER CHECK (daily_limit_micros >= 0),
-    request_limit_micros INTEGER CHECK (request_limit_micros >= 0),
     max_iterations INTEGER NOT NULL DEFAULT 40 CHECK (max_iterations > 0),
     max_wall_time_ms INTEGER NOT NULL DEFAULT 600000 CHECK (max_wall_time_ms > 0),
     max_model_concurrency INTEGER NOT NULL DEFAULT 2 CHECK (max_model_concurrency > 0),
@@ -542,32 +539,21 @@ CREATE TABLE IF NOT EXISTS ai_usage_ledger (
     input_tokens INTEGER CHECK (input_tokens >= 0),
     output_tokens INTEGER CHECK (output_tokens >= 0),
     cached_input_tokens INTEGER CHECK (cached_input_tokens >= 0),
-    cost_micros INTEGER CHECK (cost_micros >= 0),
-    measurement TEXT NOT NULL CHECK (measurement IN ('actual','estimated','unknown')),
-    pricing_snapshot_json TEXT NOT NULL CHECK (json_valid(pricing_snapshot_json)),
+    total_tokens INTEGER CHECK (total_tokens >= 0),
+    measurement TEXT NOT NULL CHECK (measurement IN ('pending','actual','unknown')),
+    updated_at_ms INTEGER NOT NULL,
     title TEXT,
     created_at_ms INTEGER NOT NULL,
     FOREIGN KEY(session_id, turn_id) REFERENCES ai_turns(session_id, id) ON DELETE RESTRICT,
-    UNIQUE(request_id, attempt)
+    UNIQUE(request_id, attempt),
+    CHECK (measurement <> 'actual' OR
+      (input_tokens IS NOT NULL AND output_tokens IS NOT NULL AND cached_input_tokens IS NOT NULL
+       AND total_tokens IS NOT NULL AND cached_input_tokens <= input_tokens
+       AND total_tokens = input_tokens + output_tokens))
 );
-CREATE INDEX IF NOT EXISTS ai_usage_budget_time ON ai_usage_ledger(budget_policy_id, created_at_ms);
+CREATE INDEX IF NOT EXISTS ai_usage_policy_status ON ai_usage_ledger(budget_policy_id, measurement);
 CREATE INDEX IF NOT EXISTS ai_usage_session ON ai_usage_ledger(session_id, created_at_ms);
-CREATE TABLE IF NOT EXISTS ai_budget_reservations (
-    id TEXT PRIMARY KEY,
-    request_id TEXT NOT NULL,
-    attempt INTEGER NOT NULL CHECK (attempt >= 1),
-    session_id TEXT NOT NULL,
-    turn_id TEXT NOT NULL,
-    budget_policy_id TEXT REFERENCES ai_budget_policies(id) ON DELETE RESTRICT,
-    amount_micros INTEGER NOT NULL CHECK (amount_micros >= 0),
-    status TEXT NOT NULL CHECK (status IN ('held','settled','released','unknown')),
-    created_at_ms INTEGER NOT NULL,
-    updated_at_ms INTEGER NOT NULL,
-    FOREIGN KEY(session_id, turn_id) REFERENCES ai_turns(session_id, id) ON DELETE RESTRICT,
-    UNIQUE(request_id, attempt)
-);
-CREATE INDEX IF NOT EXISTS ai_reservations_budget_status
-    ON ai_budget_reservations(budget_policy_id, status, created_at_ms);"##;
+"##;
 
 /// 面板偏好独立声明，首次建表和约束升级复用同一结构。
 pub const PANEL_PREFERENCES_SQL: &str = r##"CREATE TABLE IF NOT EXISTS ai_panel_preferences (

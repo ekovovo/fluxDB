@@ -166,8 +166,20 @@ fn ai_tools_catalog_panel(
         .child(div().flex_1());
     let mut rows = div().flex().flex_col();
     for (id, group, desc, write) in AI_TOOL_CATALOG {
-        let enabled = !panel.disabled_tools.contains(*id);
-        rows = rows.child(ai_tool_row(id, group, desc, *write, enabled, colors, cx));
+        // 没有行 = 从未被显式关闭，按默认启用显示。
+        let setting = panel.tool_settings.iter().find(|t| t.tool_id == *id);
+        let enabled = setting.map(|t| t.enabled).unwrap_or(true);
+        let revision = setting.map(|t| t.revision).unwrap_or(0);
+        rows = rows.child(ai_tool_row(
+            id,
+            group,
+            desc,
+            *write,
+            enabled,
+            revision,
+            colors,
+            cx,
+        ));
     }
     div()
         .flex()
@@ -217,10 +229,11 @@ fn ai_tool_row(
     desc: &str,
     write: bool,
     enabled: bool,
+    revision: i64,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
-    let id_for_switch = id.to_string();
+    let tool_id_for_switch = id.to_string();
     div()
         .border_t_1()
         .border_color(colors.border_soft)
@@ -256,18 +269,21 @@ fn ai_tool_row(
                 .child(group.to_string()),
         )
         .child(
-            div().w(px(60.)).child(
-                Switch::new(SharedString::from(format!("ai-tool:{id}")))
-                    .checked(enabled)
-                    .on_click(cx.listener(move |this, checked, _, cx| {
-                        if *checked {
-                            this.ai_disabled_tools.remove(&id_for_switch);
-                        } else {
-                            this.ai_disabled_tools.insert(id_for_switch.clone());
-                        }
-                        cx.notify();
-                    })),
-            ),
+            div()
+                .w(px(60.))
+                .child(div().debug_selector(|| format!("ai-tool:{id}")).child(
+                    Switch::new(SharedString::from(format!("ai-tool:{id}")))
+                        .checked(enabled)
+                        .on_click(cx.listener(move |this, checked, _, cx| {
+                            // 全局启停经命令落库；关闭会级联收窄各 Agent 白名单。
+                            this.set_ai_tool_enabled(
+                                tool_id_for_switch.clone(),
+                                *checked,
+                                revision,
+                                cx,
+                            );
+                        })),
+                )),
         )
         .child(div().flex_1())
 }

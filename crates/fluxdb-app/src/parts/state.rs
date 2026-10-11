@@ -164,6 +164,14 @@ pub struct AiPluginItem {
     pub revision: i64,
 }
 
+/// 设置页「工具与 MCP → 工具」的一行：标准工具的全局启停状态。
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AiToolSettingItem {
+    pub tool_id: String,
+    pub enabled: bool,
+    pub revision: i64,
+}
+
 /// 设置页「会话历史」列表行：公开的会话身份与派生统计，不含任何凭据或正文。
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct AiSessionItem {
@@ -209,6 +217,8 @@ pub struct AppState {
     pub ai_models: Vec<AiModelItem>,
     pub ai_agents: Vec<AiAgentItem>,
     pub ai_plugin_instances: Vec<AiPluginItem>,
+    /// 标准工具的全局启停；列表项缺失表示该工具从未被显式关闭（默认启用）。
+    pub ai_tool_settings: Vec<AiToolSettingItem>,
     pub ai_mcp_settings: Vec<AiMcpItem>,
     /// 设置页「会话历史」列表（活跃 + 已归档，最近更新优先）。
     pub ai_sessions: Vec<AiSessionItem>,
@@ -248,6 +258,7 @@ impl Default for AppState {
             ai_models: Vec::new(),
             ai_agents: Vec::new(),
             ai_plugin_instances: Vec::new(),
+            ai_tool_settings: Vec::new(),
             ai_mcp_settings: Vec::new(),
             ai_sessions: Vec::new(),
             ai_default_model_id: None,

@@ -51,6 +51,11 @@ pub struct TurnState {
 pub struct TurnPermissionContext {
     /// Agent 允许的工具（空 = 不限制）。
     pub agent_allowed_tools: Vec<String>,
+    /// 全局停用的工具：与 Agent 白名单求交集前先被拒。
+    ///
+    /// 工具目录已按同一集合过滤，这里再挡一次——恢复执行的旧 Turn 快照可能
+    /// 早于用户关闭工具，白名单里仍留着该 id 时不得因为"快照里有"就放行。
+    pub disabled_tools: std::collections::BTreeSet<String>,
     /// 当前目标的连接/内核权限（写/管理默认关闭）。
     pub policy: KernelPolicy,
     /// 工具/插件摘要，参与 plan hash。
@@ -459,6 +464,7 @@ impl<'a> TurnRunner<'a> {
                     target_json: state.target_json.clone(),
                     normalized_arguments_json: prepared.to_json_string(),
                     plugin_digest: self.permission.plugin_digest.clone(),
+                    globally_disabled_tools: self.permission.disabled_tools.clone(),
                     agent_allowed_tools: self.permission.agent_allowed_tools.clone(),
                     policy: self.permission.policy,
                     audit: Some(audit),

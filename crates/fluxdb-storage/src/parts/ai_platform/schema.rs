@@ -219,6 +219,14 @@ CREATE TABLE IF NOT EXISTS ai_runtime_settings (
     updated_at_ms INTEGER NOT NULL
 );
 
+-- 标准工具的全局启停；没有行表示默认启用（只记录被显式关掉的工具）。
+CREATE TABLE IF NOT EXISTS ai_tool_settings (
+    tool_id TEXT PRIMARY KEY,
+    enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0,1)),
+    revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+    updated_at_ms INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS ai_integration_secrets (
     id TEXT PRIMARY KEY,
     plugin_instance_id TEXT REFERENCES ai_plugin_instances(id) ON DELETE CASCADE,

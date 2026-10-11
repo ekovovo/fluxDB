@@ -34,7 +34,7 @@ struct AiSettingsPanelState {
     /// 正在归档的会话 id（行内 loading/disabled）。
     session_archiving_id: Option<String>,
     tools_tab: AiToolsTab,
-    disabled_tools: std::collections::HashSet<String>,
+    tool_settings: Vec<fluxdb_app::AiToolSettingItem>,
     agent_editor: Option<AiAgentEditorState>,
 }
 

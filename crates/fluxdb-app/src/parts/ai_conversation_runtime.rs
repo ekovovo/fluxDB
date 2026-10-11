@@ -20,8 +20,9 @@ impl AiRuntimeHandle {
                 let assembled = (|| {
                     let provider =
                         AiConversationProvider::from_storage(storage, &job.model_profile_id)?;
-                    let (connection_id, agent_allowed_tools) =
+                    let security =
                         ai_turn_security_context(storage, &job.turn_id)?;
+                    let connection_id = security.connection_id;
                     let pinned = connection_id.and_then(|id| {
                         connections
                             .iter()
@@ -48,11 +49,14 @@ impl AiRuntimeHandle {
                     } else {
                         standard_sql_catalog_with_results(resolver, results, include_write)?
                     };
+                    // 全局停用的工具不进目录：模型既发现不到，也无法绕过发现直接调用。
+                    tools.without_tools(&security.disabled_tools);
                     tools = tools.with_hooks(ai_builtin_hooks(storage, job)?);
                     add_ai_file_tools(&mut tools, storage, job)?;
                     add_ai_reference_tools(&mut tools, storage, job)?;
                     let permission = TurnPermissionContext {
-                        agent_allowed_tools,
+                        agent_allowed_tools: security.agent_allowed_tools,
+                        disabled_tools: security.disabled_tools,
                         policy: kernel_policy_for_connection(pinned.as_ref()),
                         plugin_digest: None,
                     };

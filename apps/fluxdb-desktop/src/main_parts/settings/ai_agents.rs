@@ -235,10 +235,18 @@ fn ai_agent_editor_form(
             .into_any_element()
         }
         AiAgentTab::Tools => {
+            // 全局关闭的工具在这里锁定：Agent 只能在全局允许的工具里再收窄。
+            let globally_disabled: std::collections::BTreeSet<String> = state
+                .ai_tool_settings
+                .iter()
+                .filter(|t| !t.enabled)
+                .map(|t| t.tool_id.clone())
+                .collect();
             let mut list = div().flex().flex_col().gap_1();
             for (id, group, desc, write) in AI_TOOL_CATALOG {
                 let id_owned = id.to_string();
-                let checked = editor.selected_tools.contains(*id);
+                let globally_off = globally_disabled.contains(*id);
+                let checked = editor.selected_tools.contains(*id) && !globally_off;
                 list = list.child(
                     div()
                         .px_2()
@@ -279,6 +287,7 @@ fn ai_agent_editor_form(
                         .child(
                             Switch::new(SharedString::from(format!("ai-agent-tool:{id}")))
                                 .checked(checked)
+                                .disabled(globally_off)
                                 .on_click(cx.listener(move |this, checked, _, cx| {
                                     if let Some(editor) = this.ai_agent_editor.as_mut() {
                                         if *checked {
@@ -303,6 +312,29 @@ fn ai_agent_editor_form(
                         .text_color(colors.text)
                         .child("此 Agent 可用的工具与内置能力"),
                 )
+                // 被全局关闭的工具在此说明原因，避免用户以为开关坏了。
+                .when(!globally_disabled.is_empty(), |this| {
+                    this.child(
+                        div()
+                            .rounded(colors.radius)
+                            .px_3()
+                            .py_2()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .bg(colors.warning.alpha(0.12))
+                            .child(app_icon(AppIcon::Info, 14., colors.warning))
+                            .child(
+                                div()
+                                    .text_size(px(11.))
+                                    .text_color(colors.warning)
+                                    .child(format!(
+                                        "已全局关闭 {} 个工具，需先在「工具与 MCP → 工具」中启用后才能勾选",
+                                        globally_disabled.len()
+                                    )),
+                            ),
+                    )
+                })
                 .child(list)
                 .into_any_element()
         }

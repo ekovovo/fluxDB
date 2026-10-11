@@ -155,6 +155,7 @@ fn ai_loop_authz_write_denied_by_default_policy_without_execution() {
         &tools,
         crate::TurnPermissionContext {
             agent_allowed_tools: Vec::new(),
+            disabled_tools: Default::default(),
             policy: crate::KernelPolicy::default(),
             plugin_digest: None,
         },
@@ -212,6 +213,7 @@ fn ai_loop_authz_write_requires_approval_without_execution() {
         &tools,
         crate::TurnPermissionContext {
             agent_allowed_tools: Vec::new(),
+            disabled_tools: Default::default(),
             policy: crate::KernelPolicy {
                 read_allowed: true,
                 write_allowed: true,
@@ -268,6 +270,7 @@ fn ai_loop_authz_agent_whitelist_deny_and_allow() {
         &tools_deny,
         crate::TurnPermissionContext {
             agent_allowed_tools: vec!["db.other".to_string()],
+            disabled_tools: Default::default(),
             policy: crate::KernelPolicy::default(),
             plugin_digest: None,
         },
@@ -301,6 +304,7 @@ fn ai_loop_authz_agent_whitelist_deny_and_allow() {
         &tools_allow,
         crate::TurnPermissionContext {
             agent_allowed_tools: vec!["db.query".to_string()],
+            disabled_tools: Default::default(),
             policy: crate::KernelPolicy::default(),
             plugin_digest: None,
         },
@@ -345,6 +349,7 @@ fn ai_loop_authz_schema_validation_blocks_execution() {
             &tools,
             crate::TurnPermissionContext {
                 agent_allowed_tools: Vec::new(),
+                disabled_tools: Default::default(),
                 policy: crate::KernelPolicy::default(),
                 plugin_digest: None,
             },
@@ -391,6 +396,7 @@ fn ai_loop_authz_audit_failure_and_deny_fail_closed() {
         &tools_err,
         crate::TurnPermissionContext {
             agent_allowed_tools: Vec::new(),
+            disabled_tools: Default::default(),
             policy: crate::KernelPolicy::default(),
             plugin_digest: None,
         },
@@ -424,6 +430,7 @@ fn ai_loop_authz_audit_failure_and_deny_fail_closed() {
         &tools_deny,
         crate::TurnPermissionContext {
             agent_allowed_tools: Vec::new(),
+            disabled_tools: Default::default(),
             policy: crate::KernelPolicy::default(),
             plugin_digest: None,
         },
@@ -462,6 +469,7 @@ fn ai_loop_authz_audit_require_approval_on_read() {
         &tools,
         crate::TurnPermissionContext {
             agent_allowed_tools: Vec::new(),
+            disabled_tools: Default::default(),
             policy: crate::KernelPolicy::default(),
             plugin_digest: None,
         },
@@ -630,6 +638,7 @@ fn ai_loop_authz_projection_is_bounded_and_receipt_intact() {
         &tools,
         crate::TurnPermissionContext {
             agent_allowed_tools: Vec::new(),
+            disabled_tools: Default::default(),
             policy: crate::KernelPolicy::default(),
             plugin_digest: None,
         },

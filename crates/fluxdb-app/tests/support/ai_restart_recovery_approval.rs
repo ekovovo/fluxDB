@@ -25,6 +25,7 @@ fn catalog(tool: &Arc<RecordingTool>) -> ToolCatalog {
 fn permission() -> TurnPermissionContext {
     TurnPermissionContext {
         agent_allowed_tools: Vec::new(),
+        disabled_tools: Default::default(),
         policy: KernelPolicy {
             write_allowed: true,
             ..KernelPolicy::default()

@@ -3111,7 +3111,6 @@ fn navicat_main_new(
         ai_settings_loading: false,
         ai_settings_error: None,
                             ai_tools_tab: debug_ai_tools_tab(),
-                            ai_disabled_tools: std::collections::HashSet::new(),
                             ai_agent_editor: None,
                             ai_agent_editor_debug_pending: debug_ai_agent_draft_requested(),
                             ai_agent_delete_just_removed: String::new(),

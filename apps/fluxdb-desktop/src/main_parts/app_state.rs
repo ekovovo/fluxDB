@@ -660,9 +660,8 @@ struct NavicatMain {
     /// AI 设置列表的加载态与错误态（设计 §39.5：错误不能被空列表掩盖）。
     ai_settings_loading: bool,
     ai_settings_error: Option<String>,
-    /// 「工具与 MCP」页签与本次会话内被关闭的工具集合。
+    /// 「工具与 MCP」页签当前停留的子页。
     ai_tools_tab: AiToolsTab,
-    ai_disabled_tools: std::collections::HashSet<String>,
     /// 「Agent 配置」编辑草稿；`None` 表示未选中任何 Agent。
     ai_agent_editor: Option<AiAgentEditorState>,
     /// 调试用：首帧后自动打开 Agent 新建草稿（仅 debug 构建读取）。

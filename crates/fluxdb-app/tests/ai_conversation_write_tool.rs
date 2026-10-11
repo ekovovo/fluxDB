@@ -224,6 +224,7 @@ fn assert_write_approval_executes_once(fixture: &Fixture, config: ConnectionConf
 
     let permission = TurnPermissionContext {
         agent_allowed_tools: Vec::new(),
+        disabled_tools: Default::default(),
         policy: kernel_policy_for_connection(Some(&config)),
         plugin_digest: None,
     };
@@ -375,6 +376,7 @@ fn write_tool_is_denied_when_connection_policy_forbids_write() {
     // 目录里有写工具，但内核权限不允许写 → 必须 Deny，而不是弹审批。
     let permission = TurnPermissionContext {
         agent_allowed_tools: Vec::new(),
+        disabled_tools: Default::default(),
         policy: KernelPolicy::default(),
         plugin_digest: None,
     };
@@ -451,6 +453,7 @@ fn tool_target_outside_pinned_connection_is_rejected() {
     );
     let permission = TurnPermissionContext {
         agent_allowed_tools: Vec::new(),
+        disabled_tools: Default::default(),
         policy: kernel_policy_for_connection(Some(&config)),
         plugin_digest: None,
     };

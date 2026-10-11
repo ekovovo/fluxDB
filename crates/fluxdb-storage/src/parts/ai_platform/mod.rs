@@ -23,6 +23,7 @@ mod sessions_tests;
 mod sessions_verify_tests;
 pub mod settings;
 pub mod tool_calls;
+pub mod tool_settings;
 pub mod usage_ledger;
 
 use rusqlite::Connection;
@@ -43,6 +44,7 @@ pub const REQUIRED_TABLES: &[&str] = &[
     "ai_agent_model_bindings",
     "ai_agent_mcp_bindings",
     "ai_runtime_settings",
+    "ai_tool_settings",
     "ai_panel_preferences",
     "ai_integration_secrets",
     "ai_knowledge_entries",

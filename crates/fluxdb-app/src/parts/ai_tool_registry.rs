@@ -159,6 +159,20 @@ impl ToolCatalog {
         self.max_argument_bytes = max_argument_bytes;
         self
     }
+
+    /// 移除已被全局停用的工具条目（设置页「工具与 MCP → 工具」）。
+    ///
+    /// 被停用的工具同时从 `specs` 与可执行实现中移除：模型既发现不到，也
+    /// 即使绕过发现直接发起调用也无法执行（`describe`/`executable` 都会落空）。
+    pub fn without_tools(&mut self, disabled_ids: &std::collections::BTreeSet<String>) {
+        if disabled_ids.is_empty() {
+            return;
+        }
+        self.specs.retain(|spec| !disabled_ids.contains(&spec.id));
+        self.executable
+            .retain(|id, _| !disabled_ids.contains(id));
+    }
+
     pub fn with_hooks(mut self, hooks: HookPipeline) -> Self { self.hooks=hooks; self }
     pub fn add_tool(&mut self, tool:Box<dyn fluxdb_core::AiTool>)->fluxdb_core::Result<()> {
         if self.describe(&tool.descriptor().id).is_some(){return Err(fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal,"工具 ID 重复"));}

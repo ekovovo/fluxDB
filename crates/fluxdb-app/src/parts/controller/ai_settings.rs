@@ -2,7 +2,9 @@
 // UI 只发 AppCommand；本文件在控制器副本上访问存储，UI 不接触 SQLite 或凭据。
 // 该文件以 include! 引入 crate 根作用域，Error/Result 等已在上方导入。
 
-use fluxdb_storage::ai_platform::{agents, mcp, models, plugins, settings as ai_settings};
+use fluxdb_storage::ai_platform::{
+    agents, mcp, models, plugins, settings as ai_settings, tool_settings,
+};
 use rusqlite::Connection as AiConn;
 
 impl AppController {
@@ -67,7 +69,7 @@ pub fn refresh_ai_settings(
     state: &mut AppState,
     storage: &fluxdb_storage::FileStorage,
 ) -> fluxdb_core::Result<()> {
-    let (models, agents_list, plugins_list, mcp_list, sessions_list, runtime) =
+    let (models, agents_list, plugins_list, mcp_list, sessions_list, runtime, tools_list) =
         with_ai_storage(&storage, |conn| {
             Ok((
                 models::list_models_page(conn, 200, 0)?,
@@ -76,6 +78,7 @@ pub fn refresh_ai_settings(
                 mcp::list_mcp_settings(conn)?,
                 fluxdb_storage::ai_platform::sessions::list_session_overviews(conn, 200)?,
                 ai_settings::load_runtime_settings(conn)?,
+                tool_settings::list_tool_settings(conn)?,
             ))
         })?;
     state.ai_models = models
@@ -114,6 +117,14 @@ pub fn refresh_ai_settings(
             connection_status: m.connection_status,
             connection_checked_at_ms: m.connection_checked_at_ms,
             revision: m.revision,
+        })
+        .collect();
+    state.ai_tool_settings = tools_list
+        .into_iter()
+        .map(|t| AiToolSettingItem {
+            tool_id: t.tool_id,
+            enabled: t.enabled,
+            revision: t.revision,
         })
         .collect();
     state.ai_agents = agents_list
@@ -213,6 +224,86 @@ pub fn set_ai_plugin_enabled(
         p.revision = expected_revision + 1;
     }
     Ok(())
+}
+
+/// 切换标准工具的全局启停。
+///
+/// 全局关闭时，同一事务里把所有 Agent 白名单中的该工具一并移除：Agent 只能
+/// 在全局允许的工具里再收窄，不能把已全局关闭的工具重新打开（§31.1 工具启停
+/// 是全局能力开关，Agent 白名单是其子集）。
+pub fn set_ai_tool_enabled(
+    state: &mut AppState,
+    storage: &fluxdb_storage::FileStorage,
+    tool_id: &str,
+    enabled: bool,
+    expected_revision: i64,
+    now_ms: i64,
+) -> fluxdb_core::Result<Vec<String>> {
+    let mut conn = storage.open_ai_connection()?;
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, e.to_string()))?;
+    let saved = tool_settings::save_tool_setting(
+        &tx,
+        now_ms,
+        tool_id,
+        enabled,
+        expected_revision,
+    )?;
+    // 返回被收窄的 Agent id；关闭失败时整笔回滚，不留"全局关了但白名单还开着"的中间态。
+    let mut affected = Vec::new();
+    if !enabled {
+        for agent in agents::list_agents(&tx)? {
+            if !agent.allowed_tools.iter().any(|id| id == tool_id) {
+                continue;
+            }
+            let remaining: Vec<String> = agent
+                .allowed_tools
+                .iter()
+                .filter(|id| *id != tool_id)
+                .cloned()
+                .collect();
+            let edit = agents::AgentEdit {
+                compression_trigger_percent: agent.compression_trigger_percent,
+                id: agent.id.clone(),
+                display_name: agent.display_name,
+                description: agent.description,
+                enabled: agent.enabled,
+                default_model_profile_id: agent.default_model_profile_id,
+                system_prompt: agent.system_prompt,
+                budget_policy_id: agent.budget_policy_id,
+                allowed_tools: remaining,
+            };
+            agents::save_agent(&tx, now_ms, &edit, agent.revision)?;
+            affected.push(agent.id);
+        }
+    }
+    tx.commit()
+        .map_err(|e| fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, e.to_string()))?;
+
+    // 就地回填，避免整页刷新闪烁。
+    match state
+        .ai_tool_settings
+        .iter_mut()
+        .find(|t| t.tool_id == tool_id)
+    {
+        Some(item) => {
+            item.enabled = enabled;
+            item.revision = saved.revision;
+        }
+        None => state.ai_tool_settings.push(AiToolSettingItem {
+            tool_id: tool_id.to_string(),
+            enabled,
+            revision: saved.revision,
+        }),
+    }
+    for agent in state.ai_agents.iter_mut() {
+        if affected.iter().any(|id| id == &agent.id) {
+            agent.allowed_tools.retain(|id| id != tool_id);
+            agent.revision += 1;
+        }
+    }
+    Ok(affected)
 }
 
 /// 读取「询问 AI」面板偏好（打开面板时用）。

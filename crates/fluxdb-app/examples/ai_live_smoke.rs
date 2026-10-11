@@ -135,6 +135,7 @@ fn live_tools_smoke(provider: &AiConversationProvider) -> Result<(), Box<dyn std
         limits: fluxdb_app::LoopLimits::default(),
         permission: fluxdb_app::TurnPermissionContext {
             agent_allowed_tools: Vec::new(),
+            disabled_tools: Default::default(),
             policy: fluxdb_app::kernel_policy_for_connection(Some(&config)),
             plugin_digest: None,
         },

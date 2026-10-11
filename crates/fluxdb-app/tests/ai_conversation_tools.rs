@@ -118,6 +118,7 @@ fn demo_config() -> ConnectionConfig {
 fn permission() -> TurnPermissionContext {
     TurnPermissionContext {
         agent_allowed_tools: Vec::new(),
+        disabled_tools: Default::default(),
         policy: KernelPolicy::default(),
         plugin_digest: None,
     }

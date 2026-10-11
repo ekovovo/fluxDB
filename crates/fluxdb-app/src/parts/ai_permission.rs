@@ -188,6 +188,8 @@ pub struct AuthorizeInput {
     pub target_json: String,
     pub normalized_arguments_json: String,
     pub plugin_digest: Option<String>,
+    /// 全局停用的工具；非空即命中即拒，Agent 与插件都不能重新打开。
+    pub globally_disabled_tools: std::collections::BTreeSet<String>,
     /// Agent 允许的工具白名单；空表示不限制。
     pub agent_allowed_tools: Vec<String>,
     pub policy: KernelPolicy,
@@ -278,7 +280,18 @@ pub fn authorize(input: &AuthorizeInput) -> PermissionDecision {
         retryable: false,
     };
 
-    // 1) Agent 白名单（空 = 不限制）。
+    // 1) 全局工具启停：用户关掉的工具最先拒绝，Agent 白名单与插件都不能覆盖。
+    if input
+        .globally_disabled_tools
+        .contains(&input.tool_id)
+    {
+        return deny(
+            "tool_globally_disabled",
+            format!("工具 {} 已在工具目录中全局关闭", input.tool_id),
+        );
+    }
+
+    // 2) Agent 白名单（空 = 不限制）。
     if !input.agent_allowed_tools.is_empty()
         && !input
             .agent_allowed_tools
@@ -291,7 +304,7 @@ pub fn authorize(input: &AuthorizeInput) -> PermissionDecision {
         );
     }
 
-    // 2) 连接/内核权限：与风险取交集。
+    // 3) 连接/内核权限：与风险取交集。
     match input.risk {
         fluxdb_core::ToolRisk::Read => {
             if !input.policy.read_allowed {
@@ -310,7 +323,7 @@ pub fn authorize(input: &AuthorizeInput) -> PermissionDecision {
         }
     }
 
-    // 3) 强制审计（未审计视为不可执行；fail closed）。
+    // 4) 强制审计（未审计视为不可执行；fail closed）。
     let audit = match input.audit {
         Some(AuditOutcome::Deny) => {
             return deny("audit_denied", "安全审计拒绝该调用".to_string());
@@ -321,7 +334,7 @@ pub fn authorize(input: &AuthorizeInput) -> PermissionDecision {
         None => AuditOutcome::RequireApproval,
     };
 
-    // 4) 写操作一律需要审批（内核规则），读操作按审计结论。
+    // 5) 写操作一律需要审批（内核规则），读操作按审计结论。
     let needs_approval =
         audit == AuditOutcome::RequireApproval || input.risk != fluxdb_core::ToolRisk::Read;
     if needs_approval {

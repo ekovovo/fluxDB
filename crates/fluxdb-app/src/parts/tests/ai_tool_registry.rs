@@ -442,3 +442,38 @@ fn ai_tool_registry_result_refs_are_scoped_to_the_owning_session() {
     assert_eq!(foreign.code, "unknown_result");
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn ai_tool_registry_globally_disabled_tool_is_neither_discoverable_nor_executable() {
+    // 全局关闭必须同时挡住"发现"和"直接调用"：只藏描述的话，模型仍可凭
+    // 记忆里的工具名发起调用，prepare 就会失败而不是被静默放行。
+    let resolver = Arc::new(MapSqlResolver::new(Vec::new()));
+    let mut catalog = standard_sql_catalog(resolver, true).expect("装配只读目录");
+    assert!(catalog.describe("db.query").is_some());
+    assert!(catalog.executable("db.query").is_some());
+
+    let disabled: std::collections::BTreeSet<String> = ["db.query".to_string()].into();
+    catalog.without_tools(&disabled);
+
+    assert!(
+        catalog.describe("db.query").is_none(),
+        "全局关闭后不应再有 spec"
+    );
+    assert!(
+        catalog.executable("db.query").is_none(),
+        "全局关闭后不应保留可执行实现"
+    );
+    assert!(
+        catalog.discover("db.query", 10).is_empty(),
+        "全局关闭的工具不应被工具发现返回"
+    );
+    assert!(
+        matches!(
+            catalog.prepare("db.query", r#"{"target":"c1","sql":"select 1"}"#),
+            Err(ToolError { code: "unknown_tool", .. })
+        ),
+        "绕过发现直接调用必须返回受控 unknown_tool"
+    );
+    // 未停用的工具不受影响。
+    assert!(catalog.describe("db.describe_object").is_some());
+}

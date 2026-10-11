@@ -132,6 +132,7 @@ fn claim_ai_approved_call(
             target_json: turn.target_json.clone(),
             normalized_arguments_json: prepared.to_json_string(),
             plugin_digest: permission.plugin_digest.clone(),
+            globally_disabled_tools: permission.disabled_tools.clone(),
             agent_allowed_tools: permission.agent_allowed_tools.clone(),
             policy: permission.policy,
             audit: Some(outcome),
@@ -237,13 +238,26 @@ impl AppController {
     }
 }
 
-/// 本轮安全上下文（全部非敏感）：固定目标连接 ID + Agent 允许工具。
+/// 本轮安全上下文（全部非敏感）：固定目标连接 ID + Agent 允许工具 + 全局停用工具。
 ///
-/// 两者都必须来自**本轮固定快照**而不是"当前界面"：否则切标签/换 Agent 会让旧任务悄悄扩大权限。
+/// 三者都来自存储而不是"当前界面"：全局停用集合直接决定工具目录下发给
+/// 模型的条目，Agent 白名单只能在其之上继续收窄。
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TurnSecurityContext {
+    pub connection_id: Option<i64>,
+    pub agent_allowed_tools: Vec<String>,
+    pub disabled_tools: std::collections::BTreeSet<String>,
+}
+
+/// 读取本轮安全上下文。
+///
+/// 连接与 Agent 白名单来自**本轮固定快照**而不是"当前界面"：否则切标签/换 Agent 会让
+/// 旧任务悄悄扩大权限。工具全局停用集合同样在每轮开始时读取，用户新关闭的工具
+/// 立即从后续轮次的工具目录中消失。
 pub fn ai_turn_security_context(
     storage: &fluxdb_storage::FileStorage,
     turn_id: &str,
-) -> fluxdb_core::Result<(Option<i64>, Vec<String>)> {
+) -> fluxdb_core::Result<TurnSecurityContext> {
     with_ai_storage(storage, |conn| {
         let turn = fluxdb_storage::ai_platform::sessions::load_turn(conn, turn_id)?;
         let target: serde_json::Value = serde_json::from_str(&turn.target_json).map_err(|_| {
@@ -257,7 +271,13 @@ pub fn ai_turn_security_context(
             fluxdb_storage::ai_platform::agents::load_agent(conn, &session.agent_id)
                 .map(|agent| agent.allowed_tools)
                 .unwrap_or_default();
-        Ok((connection_id, allowed_tools))
+        let disabled_tools =
+            fluxdb_storage::ai_platform::tool_settings::disabled_tool_ids(conn)?;
+        Ok(TurnSecurityContext {
+            connection_id,
+            agent_allowed_tools: allowed_tools,
+            disabled_tools,
+        })
     })
 }
 

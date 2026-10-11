@@ -275,6 +275,7 @@ fn ap_authorize_input() -> crate::AuthorizeInput {
         target_json: r#"{"connection":"c1","db":"app"}"#.into(),
         normalized_arguments_json: r#"{"sql":"select 1"}"#.into(),
         plugin_digest: None,
+        globally_disabled_tools: Default::default(),
         agent_allowed_tools: vec![],
         policy: crate::KernelPolicy {
             read_allowed: true,
@@ -283,6 +284,46 @@ fn ap_authorize_input() -> crate::AuthorizeInput {
         },
         audit: Some(crate::AuditOutcome::Allow),
     }
+}
+
+// 全局工具开关优先于 Agent 白名单：白名单里留着、但用户已全局关闭的工具必须拒绝。
+#[test]
+fn ai_permission_globally_disabled_tool_beats_agent_whitelist() {
+    use crate::PermissionDecision;
+    let input = crate::AuthorizeInput {
+        agent_allowed_tools: vec!["db.query".into()],
+        globally_disabled_tools: ["db.query".to_string()].into(),
+        audit: Some(crate::AuditOutcome::Allow),
+        policy: crate::KernelPolicy {
+            read_allowed: true,
+            write_allowed: true,
+            admin_allowed: true,
+        },
+        ..ap_authorize_input()
+    };
+    match crate::authorize(&input) {
+        PermissionDecision::Deny {
+            code, retryable, ..
+        } => {
+            assert_eq!(code, "tool_globally_disabled");
+            assert!(!retryable, "全局关闭不是可重试错误，不能诱导换工具绕过");
+        }
+        other => panic!("全局关闭的工具必须拒绝，实际: {other:?}"),
+    }
+}
+
+// 全局停用集合不含该工具时，授权结论与没有该字段时一致（不误伤）。
+#[test]
+fn ai_permission_unrelated_global_disable_does_not_block() {
+    use crate::PermissionDecision;
+    let input = crate::AuthorizeInput {
+        globally_disabled_tools: ["db.execute".to_string()].into(),
+        ..ap_authorize_input()
+    };
+    assert!(matches!(
+        crate::authorize(&input),
+        PermissionDecision::Allow { .. }
+    ));
 }
 
 // 7. deny 优先：审计 Deny 不能被“全允许 + 白名单包含”覆盖。

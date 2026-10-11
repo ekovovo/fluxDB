@@ -165,7 +165,7 @@ fn content(
                     session_filter: this.ai_session_filter.clone(),
                     session_archiving_id: this.ai_session_archiving_id.clone(),
                     tools_tab: this.ai_tools_tab,
-                    disabled_tools: this.ai_disabled_tools.clone(),
+                    tool_settings: this.controller.state().ai_tool_settings.clone(),
                     agent_editor: this.ai_agent_editor.clone(),
                 },
                 this.theme_mode,

@@ -1250,6 +1250,14 @@ pub enum AppCommand {
         enabled: bool,
         expected_revision: i64,
     },
+    /// 切换标准工具的全局启停（对象级 CAS）。
+    ///
+    /// 全局关闭的工具不下发给模型，且 Agent 白名单不能重新打开它。
+    SetAiToolEnabled {
+        tool_id: String,
+        enabled: bool,
+        expected_revision: i64,
+    },
     /// 保存默认主模型 / 默认决策模型选择（运行设置单例 CAS）。
     SaveAiDefaultModels {
         default_model_id: Option<String>,

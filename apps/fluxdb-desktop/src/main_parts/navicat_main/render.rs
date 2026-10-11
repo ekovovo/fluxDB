@@ -760,6 +760,7 @@ fn render_state_snapshot(state: &AppState) -> AppState {
         ai_models: state.ai_models.clone(),
         ai_agents: state.ai_agents.clone(),
         ai_plugin_instances: state.ai_plugin_instances.clone(),
+        ai_tool_settings: state.ai_tool_settings.clone(),
         ai_mcp_settings: state.ai_mcp_settings.clone(),
         ai_sessions: state.ai_sessions.clone(),
         ai_default_model_id: state.ai_default_model_id.clone(),

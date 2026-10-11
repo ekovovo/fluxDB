@@ -300,6 +300,42 @@ impl AppController {
                     Err(e) => return AppEvent::AiSettingsError(e.message),
                 }
             }
+            AppCommand::SetAiToolEnabled {
+                tool_id,
+                enabled,
+                expected_revision,
+            } => {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or(0);
+                let storage = self.ai_storage();
+                let result = storage.and_then(|st| {
+                    set_ai_tool_enabled(
+                        &mut self.state,
+                        &st,
+                        &tool_id,
+                        enabled,
+                        expected_revision,
+                        now,
+                    )
+                });
+                match result {
+                    Ok(_) => {
+                        tracing::info!(
+                            tool_id = %tool_id,
+                            enabled,
+                            "标准工具全局启停已更新"
+                        );
+                        return AppEvent::AiToolEnabled {
+                            tool_id,
+                            enabled,
+                            revision: expected_revision + 1,
+                        };
+                    }
+                    Err(e) => return AppEvent::AiSettingsError(e.message),
+                }
+            }
             AppCommand::SaveAiDefaultModels {
                 default_model_id,
                 default_decision_model_id,

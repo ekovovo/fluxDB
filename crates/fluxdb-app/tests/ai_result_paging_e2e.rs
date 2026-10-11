@@ -220,6 +220,7 @@ fn wide_query_spills_to_retained_row_and_is_readable_page_by_page() {
     .expect("标准只读目录 + 结果分页");
     let permission = TurnPermissionContext {
         agent_allowed_tools: Vec::new(),
+        disabled_tools: Default::default(),
         policy: KernelPolicy::default(),
         plugin_digest: None,
     };

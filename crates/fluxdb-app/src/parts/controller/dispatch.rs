@@ -3694,6 +3694,7 @@ impl AppController {
             | AppCommand::CompleteAiSessionStatus { .. }
             | AppCommand::SetAiModelEnabled { .. }
             | AppCommand::SetAiPluginInstanceEnabled { .. }
+            | AppCommand::SetAiToolEnabled { .. }
             | AppCommand::SaveAiDefaultModels { .. }
             | AppCommand::TestAiModel { .. }
             | AppCommand::FetchAiModels { .. }) => self.dispatch_ai_settings(command),

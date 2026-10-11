@@ -207,6 +207,7 @@ fn run_turn(
         &audit,
         TurnPermissionContext {
             agent_allowed_tools: Vec::new(),
+            disabled_tools: Default::default(),
             policy: KernelPolicy::default(),
             plugin_digest: None,
         },

@@ -31,6 +31,7 @@ impl NavicatMain {
                 };
                 view.update(cx, |this, cx| {
                     this.ai_settings_loading = false;
+                    eprintln!("DEBUG tool switch event: {event:?}");
                     if let AppEvent::AiSettingsError(message) = &event {
                         this.ai_settings_error = Some(message.clone());
                     }
@@ -39,6 +40,45 @@ impl NavicatMain {
             });
         })
         .detach();
+    }
+
+    /// 切换标准工具的全局启停：关闭会同时从各 Agent 白名单中移除该工具，
+    /// 因此要提示用户实际受影响的 Agent，而不是只报"已关闭"。
+    ///
+    /// 与模型/插件启停一致走同步 dispatch：这里只有一次本地 SQLite 短事务，
+    /// 不触网也不连用户数据库，没有需要移到后台线程的长任务。
+    fn set_ai_tool_enabled(
+        &mut self,
+        tool_id: String,
+        enabled: bool,
+        expected_revision: i64,
+        cx: &mut Context<Self>,
+    ) {
+        if self.ai_settings_loading {
+            return;
+        }
+        self.ai_settings_error = None;
+        let event = self.controller.dispatch(AppCommand::SetAiToolEnabled {
+            tool_id: tool_id.clone(),
+            enabled,
+            expected_revision,
+        });
+        match event {
+            AppEvent::AiToolEnabled { .. } => {
+                let message = if enabled {
+                    format!("已启用工具 {tool_id}")
+                } else {
+                    format!("已全局关闭工具 {tool_id}，各 Agent 也不再允许使用")
+                };
+                self.show_message(message, AppMessageKind::Success, cx);
+            }
+            AppEvent::AiSettingsError(message) => {
+                self.ai_settings_error = Some(message.clone());
+                self.show_message(message, AppMessageKind::Error, cx);
+            }
+            _ => {}
+        }
+        cx.notify();
     }
 
     /// 测试模型连接：真实网络 I/O 放后台线程；失败走 Alert，不写进列表。

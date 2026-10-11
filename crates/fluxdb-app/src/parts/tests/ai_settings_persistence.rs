@@ -765,3 +765,100 @@ fn ai_settings_agent_allowed_tools_round_trip_and_narrowing() {
     assert!(item.allowed_tools.is_empty(), "空白名单 = 不限制");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn ai_settings_global_tool_switch_persists_and_narrows_agent_whitelists() {
+    let (mut controller, dir) = controller_with_ai_storage("global-tool-switch");
+    // 两个 Agent：一个显式允许 db.query，一个空白名单（= 不限制）。
+    let narrow = match controller.dispatch(AppCommand::SaveAiAgent(AiAgentSaveInput {
+        compression_trigger_percent: 80,
+        id: None,
+        display_name: "收窄工具 Agent".into(),
+        description: String::new(),
+        system_prompt: "只读查询".into(),
+        model_profile_id: None,
+        allowed_tools: vec!["db.query".into()],
+        enabled: true,
+        expected_revision: 0,
+    })) {
+        AppEvent::AiAgentSaved { id, .. } => id,
+        other => panic!("应返回 AiAgentSaved，实际 {other:?}"),
+    };
+    let wide = match controller.dispatch(AppCommand::SaveAiAgent(AiAgentSaveInput {
+        compression_trigger_percent: 80,
+        id: None,
+        display_name: "不限制工具 Agent".into(),
+        description: String::new(),
+        system_prompt: String::new(),
+        model_profile_id: None,
+        allowed_tools: Vec::new(),
+        enabled: true,
+        expected_revision: 0,
+    })) {
+        AppEvent::AiAgentSaved { id, .. } => id,
+        other => panic!("应返回 AiAgentSaved，实际 {other:?}"),
+    };
+
+    // 全局关闭 db.query：级联从两个 Agent 的白名单里移除。
+    let event = controller.dispatch(AppCommand::SetAiToolEnabled {
+        tool_id: "db.query".into(),
+        enabled: false,
+        expected_revision: 0,
+    });
+    assert!(
+        matches!(event, AppEvent::AiToolEnabled { .. }),
+        "应返回 AiToolEnabled，实际 {event:?}"
+    );
+
+    // 落库后重启读取路径一致：设置行落库、两个 Agent 都不再允许 db.query。
+    let _ = controller.dispatch(AppCommand::RefreshAiSettings);
+    let state = controller.state();
+    let setting = state
+        .ai_tool_settings
+        .iter()
+        .find(|t| t.tool_id == "db.query")
+        .expect("工具开关应落库");
+    assert!(!setting.enabled, "重启读取后仍应为全局关闭");
+    for id in [&narrow, &wide] {
+        let agent = state.ai_agents.iter().find(|a| &a.id == id).expect("Agent");
+        assert!(
+            !agent.allowed_tools.iter().any(|t| t == "db.query"),
+            "全局关闭后 Agent 不得再允许该工具"
+        );
+    }
+
+    // 全局重新打开不会自动加回 Agent 白名单：Agent 侧仍需显式勾选。
+    let event = controller.dispatch(AppCommand::SetAiToolEnabled {
+        tool_id: "db.query".into(),
+        enabled: true,
+        expected_revision: setting.revision,
+    });
+    assert!(
+        matches!(event, AppEvent::AiToolEnabled { .. }),
+        "重新启用应成功，实际 {event:?}"
+    );
+    let _ = controller.dispatch(AppCommand::RefreshAiSettings);
+    assert!(
+        controller
+            .state()
+            .ai_agents
+            .iter()
+            .find(|a| a.id == narrow)
+            .expect("Agent")
+            .allowed_tools
+            .is_empty(),
+        "全局重开不应替用户把工具加回 Agent 白名单"
+    );
+
+    // 旧 revision 必须被 CAS 拒绝。
+    let stale = controller.dispatch(AppCommand::SetAiToolEnabled {
+        tool_id: "db.query".into(),
+        enabled: false,
+        expected_revision: 0,
+    });
+    assert!(
+        matches!(stale, AppEvent::AiSettingsError(_)),
+        "过期 revision 必须被拒，实际 {stale:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

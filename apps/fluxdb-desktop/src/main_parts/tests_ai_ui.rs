@@ -767,6 +767,87 @@ mod ai_ui_tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    /// 全局工具开关：真实点击落库，并级联收窄 Agent 白名单（UI → 命令 → 存储）。
+    #[gpui::test]
+    fn ai_ui_global_tool_switch_persists_and_narrows_agent_whitelist(
+        cx: &mut TestAppContext,
+    ) {
+        let root = isolated_root("global-tool-switch");
+        let storage = FileStorage::new(root.clone());
+        let mut controller = AppController::new();
+        controller.set_ai_storage(storage.clone());
+        // Agent 显式允许 db.query：全局关闭后必须被级联移除。
+        let agent_id = match controller.dispatch(AppCommand::SaveAiAgent(fluxdb_app::AiAgentSaveInput {
+            compression_trigger_percent: 80,
+            id: None,
+            display_name: "工具联动 Agent".into(),
+            description: "验证全局开关联动".into(),
+            system_prompt: "只依据真实回执回答。".into(),
+            model_profile_id: None,
+            allowed_tools: vec!["db.query".into()],
+            enabled: true,
+            expected_revision: 0,
+        })) {
+            AppEvent::AiAgentSaved { id, .. } => id,
+            other => panic!("保存 Agent 应返回 AiAgentSaved，实际: {other:?}"),
+        };
+        let _ = controller.dispatch(AppCommand::OpenSettings);
+        let (view, cx) = open_main(cx, controller, storage, SettingsPanelSection::AiToolsMcp);
+
+        // 「工具」是默认页签；点击 db.query 行的开关即真实关闭（同步落库）。
+        click_selector(cx, "ai-tool:db.query");
+
+        let (setting, agent_tools, error) = view.read_with(cx, |main, _| {
+            let state = main.controller.state();
+            let setting = state
+                .ai_tool_settings
+                .iter()
+                .find(|t| t.tool_id == "db.query")
+                .map(|t| (t.enabled, t.revision));
+            let agent_tools = state
+                .ai_agents
+                .iter()
+                .find(|a| a.id == agent_id)
+                .map(|a| a.allowed_tools.clone());
+            (setting, agent_tools, main.ai_settings_error.clone())
+        });
+        assert_eq!(
+            setting.map(|(enabled, _)| enabled),
+            Some(false),
+            "点击开关后工具必须落库为全局关闭；error={error:?}"
+        );
+        assert_eq!(
+            agent_tools,
+            Some(Vec::new()),
+            "全局关闭必须级联从 Agent 白名单移除该工具"
+        );
+
+        // 重新打开：全局启用不会替用户把工具加回 Agent 白名单。
+        click_selector(cx, "ai-tool:db.query");
+        let (setting, agent_tools) = view.read_with(cx, |main, _| {
+            let state = main.controller.state();
+            (
+                state
+                    .ai_tool_settings
+                    .iter()
+                    .find(|t| t.tool_id == "db.query")
+                    .map(|t| t.enabled),
+                state
+                    .ai_agents
+                    .iter()
+                    .find(|a| a.id == agent_id)
+                    .map(|a| a.allowed_tools.clone()),
+            )
+        });
+        assert_eq!(setting, Some(true), "再次点击应重新启用");
+        assert_eq!(
+            agent_tools,
+            Some(Vec::new()),
+            "全局重开不自动恢复 Agent 白名单，需用户显式勾选"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     /// Agent 空名称校验失败：编辑器保持打开、显示内联错误且不清空草稿。
     #[gpui::test]
     fn ai_ui_agent_editor_inline_validation_preserves_draft(cx: &mut TestAppContext) {

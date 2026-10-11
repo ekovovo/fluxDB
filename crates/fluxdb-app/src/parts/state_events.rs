@@ -15,6 +15,12 @@ pub enum AppEvent {
         enabled: bool,
         revision: i64,
     },
+    /// 标准工具的全局启停状态已变化。
+    AiToolEnabled {
+        tool_id: String,
+        enabled: bool,
+        revision: i64,
+    },
     /// AI 设置操作失败（CAS 冲突、存储未初始化等）；UI 用主窗口 show_message 展示。
     AiSettingsError(String),
     /// 模型已保存（id、新 revision）。

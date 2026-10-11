@@ -39,6 +39,7 @@ mod ai_loop_test_support {
             limits,
             permission: TurnPermissionContext {
                 agent_allowed_tools: Vec::new(),
+                disabled_tools: Default::default(),
                 policy: KernelPolicy::default(),
                 plugin_digest: None,
             },

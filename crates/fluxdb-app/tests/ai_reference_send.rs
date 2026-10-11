@@ -1070,6 +1070,7 @@ fn explicit_reference_never_grants_write_or_bypasses_approval() {
             &KernelAuditHook,
             TurnPermissionContext {
                 agent_allowed_tools: vec!["db.execute".into()],
+                disabled_tools: Default::default(),
                 policy: kernel_policy_for_connection(Some(&config)),
                 plugin_digest: None,
             },

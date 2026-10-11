@@ -848,6 +848,94 @@ mod ai_ui_tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    /// 内置插件页：12 项能力可见（含说明文本）；内核约束项不可停用；可选能力启停真实落库。
+    #[gpui::test]
+    fn ai_ui_builtin_plugins_page_lists_catalog_and_enforces_mandatory(
+        cx: &mut TestAppContext,
+    ) {
+        let root = isolated_root("builtin-plugins");
+        let storage = FileStorage::new(root.clone());
+        let mut controller = AppController::new();
+        controller.set_ai_storage(storage.clone());
+        let _ = controller.dispatch(AppCommand::RefreshAiSettings);
+        let _ = controller.dispatch(AppCommand::OpenSettings);
+        let (view, cx) = open_main(cx, controller, storage, SettingsPanelSection::AiToolsMcp);
+
+        click_selector(cx, "ai-tools-tab:内置插件");
+
+        let (count, jev, telemetry) = view.read_with(cx, |main, _| {
+            let instances = &main.controller.state().ai_plugin_instances;
+            let pick = |id: &str| instances.iter().find(|p| p.id == id).cloned();
+            (instances.len(), pick("builtin.jev"), pick("builtin.telemetry"))
+        });
+        assert_eq!(count, 12, "内置能力页应列出 12 项");
+        let jev = jev.expect("Jev 实例");
+        assert_eq!(jev.summary, "可选分类、路由与相关性建议");
+        assert!(jev.enabled && !jev.mandatory);
+        assert!(telemetry.expect("诊断实例").enabled);
+
+        // 内核约束项：真实点击开关后必须仍然启用（不改 UI 状态、不落库）。
+        click_selector(cx, "ai-plugin:builtin.security-audit");
+        let audit_enabled = view.read_with(cx, |main, _| {
+            main.controller
+                .state()
+                .ai_plugin_instances
+                .iter()
+                .find(|p| p.id == "builtin.security-audit")
+                .map(|p| p.enabled)
+        });
+        assert_eq!(audit_enabled, Some(true), "内核约束项不可被停用");
+
+        // 可选能力：点击即真实落库停用（用目录中靠前的行，避免测试窗口高度不足）。
+        click_selector(cx, "ai-plugin:builtin.jev");
+        let jev_enabled = view.read_with(cx, |main, _| {
+            main.controller
+                .state()
+                .ai_plugin_instances
+                .iter()
+                .find(|p| p.id == "builtin.jev")
+                .map(|p| p.enabled)
+        });
+        assert_eq!(jev_enabled, Some(false), "可选能力应可停用");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// 内置能力展示顺序 = 设计 §23.2 目录顺序，不受数据库按名称排序影响。
+    #[test]
+    fn builtin_plugins_render_in_catalog_order_not_name_order() {
+        let items: Vec<fluxdb_app::AiPluginItem> = [
+            ("builtin.telemetry", "fluxdb.lifecycle.telemetry"),
+            ("builtin.bi", "fluxdb.output.bi"),
+            ("builtin.context-ui", "fluxdb.context.ui"),
+            ("builtin.unknown", "fluxdb.unknown"),
+        ]
+        .into_iter()
+        .map(|(id, package_key)| fluxdb_app::AiPluginItem {
+            id: id.into(),
+            display_name: id.into(),
+            package_key: package_key.into(),
+            summary: String::new(),
+            enabled: true,
+            mandatory: false,
+            revision: 1,
+        })
+        .collect();
+        let order = ai_plugins_in_catalog_order(&items)
+            .into_iter()
+            .map(|p| p.id.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            order,
+            vec![
+                "builtin.context-ui".to_string(),
+                "builtin.bi".to_string(),
+                "builtin.telemetry".to_string(),
+                "builtin.unknown".to_string(),
+            ],
+            "目录内的按 §23.2 排序，未知实例排末尾"
+        );
+    }
+
     /// Agent 空名称校验失败：编辑器保持打开、显示内联错误且不清空草稿。
     #[gpui::test]
     fn ai_ui_agent_editor_inline_validation_preserves_draft(cx: &mut TestAppContext) {

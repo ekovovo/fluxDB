@@ -176,9 +176,249 @@ mod ai_loop_test_support {
             .expect("register tool");
         catalog
     }
+
+    /// 只在 before-tool 返回固定决策的测试 Hook：不读存储、不发网络。
+    ///
+    /// after-tool 一律 `Observe`——同一个 Hook 会被两个事件调用，
+    /// 在 after-tool 返回补丁属于"改写执行事实"，pipeline 会直接报错。
+    pub struct FixedDecisionHook(pub crate::AgentHookDecision);
+
+    impl crate::AgentHook for FixedDecisionHook {
+        fn invoke(
+            &self,
+            input: &crate::AgentHookInput,
+            _cancel: &CancelFlag,
+        ) -> fluxdb_core::Result<crate::AgentHookDecision> {
+            Ok(match input {
+                crate::AgentHookInput::BeforeTool(_) => self.0.clone(),
+                crate::AgentHookInput::AfterTool(_) => crate::AgentHookDecision::Observe,
+            })
+        }
+    }
+
+    pub fn hook_binding(id: &str, decision: crate::AgentHookDecision) -> crate::HookBinding {
+        crate::HookBinding {
+            id: id.to_string(),
+            priority: 0,
+            enabled: true,
+            best_effort: false,
+            hook: Box::new(FixedDecisionHook(decision)),
+        }
+    }
+
+    /// 记录工具 + 自定义 input schema 的适配器。
+    ///
+    /// schema 是"before-tool 补丁必须重新过 schema 校验"的观测点：
+    /// 默认的 `{"type":"object"}` 接受一切，无法证明补丁真的被重新校验过。
+    pub struct SchemaRecordingTool {
+        inner: std::sync::Arc<crate::RecordingTool>,
+        descriptor: fluxdb_core::ToolDescriptor,
+    }
+
+    impl AiTool for SchemaRecordingTool {
+        fn descriptor(&self) -> &fluxdb_core::ToolDescriptor {
+            &self.descriptor
+        }
+
+        fn execute(
+            &self,
+            ctx: fluxdb_core::ToolExecutionContext,
+            arguments_json: String,
+        ) -> AiFuture<'_, fluxdb_core::ToolReceipt> {
+            self.inner.execute(ctx, arguments_json)
+        }
+    }
+
+    pub fn catalog_with_schema_tool(
+        tool: std::sync::Arc<crate::RecordingTool>,
+        input_schema_json: &str,
+        hooks: crate::HookPipeline,
+    ) -> ToolCatalog {
+        let mut descriptor = tool.descriptor().clone();
+        descriptor.input_schema_json = input_schema_json.to_string();
+        let spec = ToolSpec::from_descriptor(&descriptor).expect("tool spec");
+        let mut catalog = ToolCatalog::new(vec![spec]);
+        catalog
+            .register(Box::new(SchemaRecordingTool {
+                inner: tool,
+                descriptor,
+            }))
+            .expect("register tool");
+        catalog.with_hooks(hooks)
+    }
 }
 
 use ai_loop_test_support::*;
+
+/// 严格 schema：`sql` 必填。用于证明 Hook 补丁会重新过 schema 校验。
+const STRICT_SQL_SCHEMA: &str =
+    r#"{"type":"object","required":["sql"],"properties":{"sql":{"type":"string"}}}"#;
+
+#[test]
+fn ai_loop_hook_patch_cannot_change_execution_target() {
+    let provider = crate::ScriptedGenerationProvider::new(
+        fluxdb_core::ModelCapabilities {
+            streaming: true,
+            tool_calling: true,
+            reasoning_summary: false,
+        },
+        vec![
+            tool_call_stop(
+                "db.query",
+                "call-1",
+                r#"{"target":"conn:1","sql":"select 1"}"#,
+            ),
+            text_stop("不应到达这里"),
+        ],
+    );
+    let tool = std::sync::Arc::new(crate::RecordingTool::new(
+        "db.query",
+        fluxdb_core::ToolRisk::Read,
+    ));
+    let hooks = crate::HookPipeline::new(vec![hook_binding(
+        "patch-target",
+        crate::AgentHookDecision::Arguments(
+            r#"{"target":"conn:2","sql":"select 1"}"#.to_string(),
+        ),
+    )]);
+    let tools = catalog_with_schema_tool(tool.clone(), STRICT_SQL_SCHEMA, hooks);
+    let cancel = fluxdb_core::CancelFlag::new();
+    let mut steering = Vec::new();
+
+    let (outcome, _events) = run(
+        &provider,
+        &tools,
+        crate::LoopLimits::default(),
+        "m",
+        vec![user_message("查询")],
+        &mut steering,
+        &cancel,
+    );
+
+    assert_eq!(
+        outcome,
+        crate::TurnOutcome::Failed {
+            message: "Hook 不得改变执行目标".into()
+        },
+        "改变执行目标必须直接失败"
+    );
+    assert_eq!(tool.call_count(), 0, "目标漂移时不得执行工具");
+}
+
+#[test]
+fn ai_loop_hook_patch_is_revalidated_before_execution() {
+    let provider = crate::ScriptedGenerationProvider::new(
+        fluxdb_core::ModelCapabilities {
+            streaming: true,
+            tool_calling: true,
+            reasoning_summary: false,
+        },
+        vec![
+            tool_call_stop("db.query", "call-1", r#"{"sql":"select 1"}"#),
+            text_stop("已按校验失败结果调整"),
+        ],
+    );
+    let tool = std::sync::Arc::new(crate::RecordingTool::new(
+        "db.query",
+        fluxdb_core::ToolRisk::Read,
+    ));
+    // 补丁删除必填字段：初始参数合法，补丁后必须被 schema 重新校验拦下。
+    let hooks = crate::HookPipeline::new(vec![hook_binding(
+        "strip-sql",
+        crate::AgentHookDecision::Arguments("{}".to_string()),
+    )]);
+    let tools = catalog_with_schema_tool(tool.clone(), STRICT_SQL_SCHEMA, hooks);
+    let cancel = fluxdb_core::CancelFlag::new();
+    let mut steering = Vec::new();
+
+    let (outcome, events) = run(
+        &provider,
+        &tools,
+        crate::LoopLimits::default(),
+        "m",
+        vec![user_message("查询")],
+        &mut steering,
+        &cancel,
+    );
+
+    assert_eq!(tool.call_count(), 0, "补丁未过校验时不得执行工具");
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, crate::LoopEvent::Notice(n) if n.contains("Hook 补丁未通过校验"))),
+        "应有补丁校验失败提示，实际 {events:?}"
+    );
+    let second = provider.request_at(1).expect("第 2 次请求");
+    let texts = tool_message_texts(&second);
+    assert!(
+        texts.iter().any(|t| t.contains("invalid_arguments")),
+        "应把结构化校验错误回给模型，实际 {texts:?}"
+    );
+    assert!(
+        matches!(outcome, crate::TurnOutcome::Completed { .. }),
+        "校验失败后模型调整应 Completed，实际 {outcome:?}"
+    );
+}
+
+#[test]
+fn ai_loop_hook_patch_is_applied_and_replayed_in_assistant_tool_call() {
+    let provider = crate::ScriptedGenerationProvider::new(
+        fluxdb_core::ModelCapabilities {
+            streaming: true,
+            tool_calling: true,
+            reasoning_summary: false,
+        },
+        vec![
+            tool_call_stop("db.query", "call-1", r#"{"sql":"select 1"}"#),
+            text_stop("完成"),
+        ],
+    );
+    let tool = std::sync::Arc::new(crate::RecordingTool::new(
+        "db.query",
+        fluxdb_core::ToolRisk::Read,
+    ));
+    let patched = r#"{"sql":"select 2"}"#;
+    let hooks = crate::HookPipeline::new(vec![hook_binding(
+        "rewrite-sql",
+        crate::AgentHookDecision::Arguments(patched.to_string()),
+    )]);
+    let tools = catalog_with_schema_tool(tool.clone(), STRICT_SQL_SCHEMA, hooks);
+    let cancel = fluxdb_core::CancelFlag::new();
+    let mut steering = Vec::new();
+
+    let (outcome, _events) = run(
+        &provider,
+        &tools,
+        crate::LoopLimits::default(),
+        "m",
+        vec![user_message("查询")],
+        &mut steering,
+        &cancel,
+    );
+
+    assert!(
+        matches!(outcome, crate::TurnOutcome::Completed { .. }),
+        "合法补丁应继续执行，实际 {outcome:?}"
+    );
+    assert_eq!(tool.call_count(), 1, "合法补丁后应真实执行一次");
+    let calls = tool.calls();
+    assert_eq!(
+        calls[0].1, patched,
+        "工具必须收到补丁后的最终参数"
+    );
+    // 无状态协议重放：assistant 的 tool_call 必须与真实执行参数一致。
+    let second = provider.request_at(1).expect("第 2 次请求");
+    let assistant = second
+        .messages
+        .iter()
+        .rev()
+        .find(|m| m.role == ModelRole::Assistant && !m.tool_calls.is_empty())
+        .expect("assistant 工具调用消息");
+    assert_eq!(
+        assistant.tool_calls[0].arguments_json, patched,
+        "assistant tool_call 必须回写最终参数"
+    );
+}
 
 #[test]
 fn ai_loop_failed_tool_receipt_is_fed_back_and_completes() {

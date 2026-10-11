@@ -58,6 +58,7 @@ fn ai_tools_tab_button(
     let is_active = value == active;
     div()
         .id(SharedString::from(format!("ai-tools-tab:{label}")))
+        .debug_selector(|| format!("ai-tools-tab:{label}"))
         .px_3()
         .pt_1()
         .pb_2()
@@ -288,7 +289,42 @@ fn ai_tool_row(
         .child(div().flex_1())
 }
 
-/// 「内置插件」页签：内置能力行 + 内核约束标签。
+/// 内置能力的图标：按 package_key 归类，未知实例用通用插件图标。
+fn ai_builtin_icon(package_key: &str) -> AppIcon {
+    match package_key {
+        "fluxdb.context.ui" => AppIcon::Text,
+        "fluxdb.tools.database" => AppIcon::Database,
+        "fluxdb.context.files" => AppIcon::FileSearch,
+        "fluxdb.model.router" => AppIcon::Workflow,
+        "fluxdb.decision.jev" => AppIcon::Activity,
+        "fluxdb.context.compaction" => AppIcon::Filter,
+        "fluxdb.security.audit" => AppIcon::Check,
+        "fluxdb.usage.budget" => AppIcon::CalendarClock,
+        "fluxdb.knowledge.skills" => AppIcon::Folder,
+        "fluxdb.output.bi" => AppIcon::Table,
+        "fluxdb.progress.plan" => AppIcon::List,
+        _ => AppIcon::Plug,
+    }
+}
+
+/// 按内置目录顺序（设计 §23.2）展示能力；未知实例排末尾，不隐藏。
+///
+/// 数据库按名称排序，中文名会把"BI 与报表输出"排到最前，与目录语义不符，
+/// 因此展示顺序由这里统一决定，不改存储层排序。
+fn ai_plugins_in_catalog_order(
+    items: &[fluxdb_app::AiPluginItem],
+) -> Vec<&fluxdb_app::AiPluginItem> {
+    let mut rows: Vec<&fluxdb_app::AiPluginItem> = items.iter().collect();
+    rows.sort_by_key(|p| {
+        (
+            fluxdb_app::builtin_catalog_order(&p.package_key).unwrap_or(usize::MAX),
+            p.id.clone(),
+        )
+    });
+    rows
+}
+
+/// 「内置插件」页签：内置能力行（说明 + 状态 + 启停）+ 内核约束标签。
 fn ai_plugins_panel(state: &AppState, colors: UiColors, cx: &mut Context<NavicatMain>) -> Div {
     let body: Vec<gpui::AnyElement> = if state.ai_plugin_instances.is_empty() {
         vec![ai_empty_state(
@@ -296,9 +332,8 @@ fn ai_plugins_panel(state: &AppState, colors: UiColors, cx: &mut Context<Navicat
             colors,
         )]
     } else {
-        state
-            .ai_plugin_instances
-            .iter()
+        ai_plugins_in_catalog_order(&state.ai_plugin_instances)
+            .into_iter()
             .map(|p| {
                 let this = cx.entity().downgrade();
                 let id = p.id.clone();
@@ -308,11 +343,18 @@ fn ai_plugins_panel(state: &AppState, colors: UiColors, cx: &mut Context<Navicat
                 ai_row_container(&p.id, colors)
                     .min_h(px(52.))
                     .py_2()
+                    .child(app_icon_box(
+                        ai_builtin_icon(&p.package_key),
+                        28.,
+                        15.,
+                        colors.muted,
+                    ))
                     .child(
                         div()
                             .flex()
                             .flex_col()
                             .gap_1()
+                            .flex_1()
                             .min_w(px(0.))
                             .child(
                                 div()
@@ -320,6 +362,12 @@ fn ai_plugins_panel(state: &AppState, colors: UiColors, cx: &mut Context<Navicat
                                     .font_weight(gpui::FontWeight::SEMIBOLD)
                                     .text_color(colors.text)
                                     .child(p.display_name.clone()),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(11.))
+                                    .text_color(colors.muted)
+                                    .child(p.summary.clone()),
                             )
                             .child(
                                 div()
@@ -334,10 +382,13 @@ fn ai_plugins_panel(state: &AppState, colors: UiColors, cx: &mut Context<Navicat
                                     )
                                     .when(mandatory, |this| {
                                         this.child(ai_pill("内核约束", colors.info, colors))
+                                    })
+                                    .when(!mandatory, |this| {
+                                        this.child(ai_status_pill(enabled, colors))
                                     }),
                             ),
                     )
-                    .child(
+                    .child(div().debug_selector(|| format!("ai-plugin:{id}")).child(
                         Switch::new(SharedString::from(format!("ai-plugin:{id}")))
                             .checked(enabled)
                             .disabled(mandatory)
@@ -353,14 +404,61 @@ fn ai_plugins_panel(state: &AppState, colors: UiColors, cx: &mut Context<Navicat
                                     cx.notify();
                                 });
                             }),
-                    )
+                    ))
                     .into_any_element()
             })
             .collect()
     };
-    div().flex().flex_col().gap_3().child(
-        settings_panel_group("内置能力", colors).child(div().children(body)),
-    )
+    div()
+        .flex()
+        .flex_col()
+        .gap_3()
+        .child(
+            settings_panel_group_el(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .child(
+                        div()
+                            .text_size(px(12.))
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .child("内置能力"),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(11.))
+                            .text_color(colors.muted)
+                            .child(format!(
+                                "{} 项 · 第三方仅预留接口",
+                                state.ai_plugin_instances.len()
+                            )),
+                    ),
+            )
+            .child(div().children(body)),
+        )
+        .child(
+            div()
+                .px_4()
+                .py_3()
+                .rounded(px(6.))
+                .bg(colors.border_soft)
+                .text_size(px(11.))
+                .text_color(colors.muted)
+                .child(
+                    "第三方插件安装、市场与沙箱当前不实现。未来通过相同的能力契约扩展，\
+                     不直接访问数据库、密钥或界面控件。",
+                ),
+        )
+}
+
+/// 启停状态标签：可选能力显示真实启停，不显示成"一排错误"。
+fn ai_status_pill(enabled: bool, colors: UiColors) -> impl IntoElement {
+    if enabled {
+        ai_pill("已启用", colors.success, colors)
+    } else {
+        ai_pill("已关闭", colors.muted, colors)
+    }
 }
 
 /// 「安全审计」页签：只读记录，不能在此执行任何操作。

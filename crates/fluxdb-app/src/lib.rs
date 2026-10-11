@@ -106,6 +106,7 @@ include!("parts/ai_compaction.rs");
 include!("parts/ai_routing.rs");
 include!("parts/ai_usage.rs");
 include!("parts/ai_tool_registry.rs");
+include!("parts/ai_plugins.rs");
 include!("parts/ai_result_pages.rs");
 include!("parts/ai_hooks.rs");
 include!("parts/ai_permission.rs");

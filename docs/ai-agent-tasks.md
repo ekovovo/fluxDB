@@ -460,10 +460,25 @@ cargo test -p fluxdb-app --locked ai_permission   # 15 passed
 - 未完成：明暗主题与窄窗口的原型对照截图仍未做（现已有 `appearance` 调试入口，可直接开展；该截图属 T034 范围，不在本次验收内）。
 
 ### T032 注册插件能力与确定性 Hook pipeline
-- [ ] 依赖：T012、T019、T020；设计 §23–25。
+- [x] 依赖：T012、T019、T020；设计 §23–25。
 - 改动：BuiltinRegistry、12类内置能力、observer/interceptor、priority/conflict、失败策略/deadline；真实receipt不可改，必经审计不能禁用。
 - 验收：E12；before-tool 修改后重新校验审批；after-tool 不伪造成功；递归/timeout 受限；禁用后无调用。
 - 测试方式：将上述每项验收分别落实为相关crate的测试断言；用隔离fixture/受控Provider验证正常与异常路径，涉及工具时核对真实回执及副作用调用数，不用伪造成功结果跳过执行链。
+
+#### T032 实现记录（2026-10-11）
+- [x] 新增 `crates/fluxdb-app/src/parts/ai_plugins.rs`：登记 12 个内置实例及其能力映射，提供 `BuiltinRegistry`，重复 ID、空能力项和目录数量漂移会 fail closed。
+- [x] 补齐 `ContextProvider`、`ContextProcessor`、`ModelRouter`、`ArtifactProducer` 的 app 层异步契约；路由只接收/返回候选 ID，产物只接收来源 ID，未引入 endpoint、凭据或任意文件访问。
+- [x] `BuiltinRegistry::enabled_capabilities` 只接受已知 `builtin` runtime 且已启用的实例；未知 package、禁用实例和未来外部 runtime 不进入能力集合。
+- [x] Hook 装配增加注册表能力校验；`fluxdb.lifecycle.telemetry` 只有在注册为 `AgentHook` 能力时才会进入现有确定性 pipeline。既有 priority/conflict、after-tool 真实回执不可改、取消/递归/超时/禁用边界保持不变。
+- [x] **补上此前没有测试断言的验收项**：递归派发拒绝、超过 100ms deadline 拒绝、`best_effort` 失败降级（`ai_hook_pipeline.rs` 3 项）；before-tool 补丁改目标直接失败且零执行、补丁未过 schema 时零执行并回结构化错误、合法补丁被真实执行且 assistant tool_call 回写最终参数（`src/parts/tests/ai_loop.rs` 3 项）。过程中确认了"同一 Hook 也会收到 after-tool 事件，返回补丁会被正确拒绝"，测试 Hook 已按事件区分。
+- [x] **`#plugins` 页对齐原型**（`apps/fluxdb-desktop/src/main_parts/settings/ai_tools.rs`）：每行补说明文本（`BuiltinDescriptor.summary`，设计 §23.2「负责内容」）、可选能力的「已启用/已关闭」状态标签、能力类型图标；页头显示真实条数与"第三方仅预留接口"，底部补第三方边界提示。`AiPluginItem` 增加非敏感 `summary` 字段。
+- [x] **展示顺序按内置目录**：新增 `builtin_catalog_order(package_key)`，页面用 `ai_plugins_in_catalog_order` 排序。此前落到数据库的"按 display_name 排序"会把「BI 与报表输出」排到最前、安全审计排到末尾，与设计目录语义不符；存储层排序未改，只有展示顺序收敛到 §23.2。
+- [x] 测试：`ai_builtin_registry` 3/3；`ai_hook_pipeline` 7/7；`ai_loop` 21/21（新增 3 项）；GPUI `builtin_plugins` 2/2（12 项可见 + 强制项点击后仍启用 + 可选能力点击后落库关闭；目录展示顺序不受名称排序影响）。
+- [x] 验证（macOS arm64）：`cargo fmt --all -- --check`、`cargo check --workspace --locked --offline`、`git diff --check` 通过；`cargo test -p fluxdb-app --lib --locked --offline` → **790 passed / 11 failed**，11 项全部为沙箱禁止本地监听的既有失败（`ai_transport`/`ai_provider`/`ai_model_network`/`pg_client_tools`），与本次改动无关。
+- [x] 验收步骤已落文档：[T032 验收步骤](testing/ai-agent/t032-2026-10-11.md)（自动化命令 + 隔离目录真机操作 + 数据库复核 + 截图要求 + 结果表）。
+- [x] **用户手动验收确认（2026-10-11，macOS arm64）**：A1–A5 由代理在本地复跑通过；B2–B4 由用户在真实窗口逐项核对通过，并当场目视对比原型确认还原度（用户明确不需要留截图副本，因此本仓库不收集 B4 截图）。用户填写的步骤结果表见 [T032 验收步骤](testing/ai-agent/t032-2026-10-11.md)。
+- 未完成：第三方插件加载/安装仍按设计 §26 保留接口，不在本期实现；Windows/Linux 未验证（按 §B 分工由用户自行验收）。
+- **T032 已勾选**（2026-10-11 用户手动验收确认）。
 
 
 ### T033 基础模型路由与配置 UI

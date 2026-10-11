@@ -88,11 +88,16 @@ impl AgentHook for BuiltinTelemetryHook {
 }
 pub fn ai_builtin_hooks(storage:&fluxdb_storage::FileStorage,job:&AiConversationJob)->fluxdb_core::Result<HookPipeline> {
     with_ai_storage(storage,|conn| {
+        let registry = BuiltinRegistry::default();
         let session=fluxdb_storage::ai_platform::sessions::load_session(conn,&job.session_id)?;
         let instances=fluxdb_storage::ai_platform::plugins::list_plugin_instances(conn)?;
         let bindings=fluxdb_storage::ai_platform::plugins::list_agent_plugin_bindings(conn,&session.agent_id)?;
         let hooks=bindings.iter().filter(|b|b.enabled).filter_map(|b| {
             let instance=instances.iter().find(|i|i.id==b.plugin_instance_id&&i.enabled&&i.package_key=="fluxdb.lifecycle.telemetry")?;
+            let descriptor = registry.find_by_package(&instance.package_key)?;
+            if !descriptor.capabilities.contains(&BuiltinCapability::AgentHook) {
+                return None;
+            }
             Some(HookBinding{id:b.id.clone(),priority:b.priority,enabled:instance.enabled,best_effort:true,hook:Box::new(BuiltinTelemetryHook) as Box<dyn AgentHook>})
         }).collect();
         Ok(HookPipeline::new(hooks))

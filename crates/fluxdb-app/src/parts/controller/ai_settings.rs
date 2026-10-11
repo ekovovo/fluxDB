@@ -145,10 +145,15 @@ pub fn refresh_ai_settings(
         .into_iter()
         .map(|p| {
             let mandatory = plugins::is_mandatory(&p.id);
+            let summary = BuiltinRegistry::default()
+                .find_by_package(&p.package_key)
+                .map(|descriptor| descriptor.summary.to_string())
+                .unwrap_or_default();
             AiPluginItem {
                 id: p.id,
                 display_name: p.display_name,
                 package_key: p.package_key,
+                summary,
                 enabled: p.enabled,
                 mandatory,
                 revision: p.revision,

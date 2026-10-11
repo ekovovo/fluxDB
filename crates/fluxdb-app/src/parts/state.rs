@@ -158,6 +158,8 @@ pub struct AiPluginItem {
     pub id: String,
     pub display_name: String,
     pub package_key: String,
+    /// 内置能力登记表里的「负责内容」；未知实例为空串，不猜语义。
+    pub summary: String,
     pub enabled: bool,
     /// 内核强制（安全审计/执行护栏），UI 需禁用开关并展示"内核约束"。
     pub mandatory: bool,

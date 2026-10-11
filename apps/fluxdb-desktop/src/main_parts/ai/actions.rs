@@ -479,22 +479,36 @@ impl NavicatMain {
         })
     }
 
+    /// 本轮界面上下文的来源页签。
+    ///
+    /// 语义对齐 Zed `AgentContextSource::from_focused`/`from_active` 的回退链，但按本仓
+    /// 数据结构实现：
+    /// 1. 当前活动页签不是 AI 页签 → 直接用**它**，这才是用户此刻在看的内容；
+    /// 2. 活动页签是 AI 页签（Tab 模式） → 退回"进入面板前的业务页签"，并校验它仍存在
+    ///    （对应 Zed 用 `exists()` 拒绝已关闭的 `WeakEntity`）；
+    /// 3. 都取不到 → `None`，上下文为空，由调用方如实告知，不静默冒充"用户没给上下文"。
+    ///
+    /// 旧实现只在打开面板那一刻记录一次 `context_tab` 并长期沿用，面板开着时切换页签
+    /// 会拿到旧页签内容或空上下文（T021 缺陷）。
+    fn ai_context_source_tab(&self) -> Option<&TabState> {
+        let state = self.controller.state();
+        let active = state.active_tab()?;
+        if !matches!(active.kind, TabKind::AiChat { .. }) {
+            return Some(active);
+        }
+        // AI 页签本身不是业务上下文：沿用进入前的业务页签，已关闭则视为无上下文。
+        self.ai_chat
+            .context_tab
+            .and_then(|id| state.tabs.iter().find(|tab| tab.id == id))
+    }
+
     /// 发送瞬间的编辑器全文（仅 SQL 编辑器有可续读的整段文本）。
     ///
     /// 只在"确实发生了截断"时登记：短文本界面摘录已全量携带，再登记全文只会
     /// 让 turn 白持有大字符串。有选区时同样不登记——选区就是用户想给模型的内容，
     /// 界面摘录已带上它。
     fn ai_editor_grant(&self, cx: &App) -> Option<fluxdb_app::EditorGrant> {
-        let state = self.controller.state();
-        let tab = state.active_tab().and_then(|tab| {
-            if matches!(tab.kind, TabKind::AiChat { .. }) {
-                self.ai_chat.context_tab.and_then(|id| {
-                    state.tabs.iter().find(|candidate| candidate.id == id)
-                })
-            } else {
-                Some(tab)
-            }
-        })?;
+        let tab = self.ai_context_source_tab()?;
         let TabKind::QueryEditor(_) = &tab.kind else {
             return None;
         };
@@ -512,16 +526,7 @@ impl NavicatMain {
     }
 
     fn capture_ai_active_context(&self, cx: &App) -> fluxdb_app::UiContextSnapshot {
-        let state = self.controller.state();
-        let tab = state.active_tab().and_then(|tab| {
-            if matches!(tab.kind, TabKind::AiChat { .. }) {
-                // AI 页签本身不是执行目标，沿用进入该页签前的业务页上下文。
-                self.ai_chat.context_tab
-                    .and_then(|id| state.tabs.iter().find(|tab| tab.id == id))
-            } else {
-                Some(tab)
-            }
-        });
+        let tab = self.ai_context_source_tab();
         let snapshot = match tab.map(|t| &t.kind) {
             Some(TabKind::QueryEditor(q)) => fluxdb_app::CapturedTab::SqlEditor {
                 tab_id: tab.unwrap().id.0,

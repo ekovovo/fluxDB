@@ -409,8 +409,6 @@ fn editor_read_range_tools(full_text: &str, tab_id: u64) -> ToolCatalog {
             tab_ref: format!("tab-{tab_id}"),
             full_text: full_text.to_string(),
         }),
-        "s-1",
-        "t-1",
     )
     .expect("装配 editor.read_range");
     catalog

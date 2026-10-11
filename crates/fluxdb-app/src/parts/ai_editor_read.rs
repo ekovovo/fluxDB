@@ -40,8 +40,6 @@ pub struct EditorGrant {
 struct AiEditorReadRangeTool {
     descriptor: fluxdb_core::ToolDescriptor,
     grant: EditorGrant,
-    session_id: String,
-    turn_id: String,
 }
 
 impl fluxdb_core::AiTool for AiEditorReadRangeTool {
@@ -189,8 +187,6 @@ fn read_window(
 pub fn add_ai_editor_read_tools(
     catalog: &mut ToolCatalog,
     grant: Option<EditorGrant>,
-    session_id: &str,
-    turn_id: &str,
 ) -> fluxdb_core::Result<()> {
     let Some(grant) = grant else {
         return Ok(());
@@ -208,8 +204,6 @@ pub fn add_ai_editor_read_tools(
                 input_schema_json: EDITOR_READ_RANGE_INPUT_SCHEMA.into(),
             },
             grant,
-            session_id: session_id.to_string(),
-            turn_id: turn_id.to_string(),
         }),
         ToolOutputShape::Opaque,
     )

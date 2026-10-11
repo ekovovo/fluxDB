@@ -420,6 +420,15 @@ cargo test -p fluxdb-app --locked ai_permission   # 15 passed
 - 验证：`cargo fmt --all -- --check`、`cargo check --workspace --locked --offline` 通过；`cargo test -p fluxdb-app --locked --offline` → **773 passed / 11 failed**（较上一轮 768 增加 5 项），11 项仍为沙箱禁止本地监听的既有 mock server 用例。
 - 未完成：`Sample` 的 `keep_rows` 降采样仍未做；界面摘录 16 KiB/400 行仍是固定常量，未随最终模型窗口调整；真实窗口 E2E（模型实际看到截断标记并成功调用 `editor.read_range`）尚未执行。
 
+### T021 缺陷修复：界面上下文跟随当前活动页签（2026-10-11）
+- [x] **修复真实缺陷**（真实窗口测试暴露，非 `editor.read_range` 引入）：`context_tab` 只在打开 AI 面板那一刻由 `capture_ai_chat_tab_source`（`apps/fluxdb-desktop/src/main_parts/ai/display.rs:2`）记录一次，却同时被 `capture_ai_active_context` 当作"本轮上下文来源"。面板开着时切换到另一个查询页签再发送，`ui_context` 要么为空、要么来自**旧页签**（静默贴错上下文），且 `editor.read_range` 因 `Some` 判定失败而不装配。
+- [x] 隔离库实证：同一 fixture 中 `conn` 恒为 1（目标来自 debug override 旁路），但 `ui_context` 长度在 0 / 88 / 8442 之间跳变——证明目标与上下文走了两条不同的路，暴露的正是上下文这条。
+- [x] 参考核对：**Zed**（`crates/agent_ui/src/context.rs`、`completion_provider.rs:74`）上下文来自用户显式 `@` 附加的 `MentionSet`，不自动抓"当前编辑器"；需要取当前上下文时用 `AgentContextSource::from_focused` → 缓存 `WeakEntity` 但每次 `exists()` 校验 → `from_active` 的**回退链**，且 `from_focused` 先排除 AI 面板自身。**Pi/Goose**（终端）读磁盘、与 UI 同源，无此问题。**Cline**（VS Code）同为显式 `@` 引用。
+- [x] 修复：新增 `ai_context_source_tab()`（`actions.rs`），语义 = 当前活动页签不是 AI 页签就用它；是 AI 页签则退回 `context_tab` 并**校验页签仍存在**（对应 Zed 的 `exists()`）；取不到返回 `None`。`capture_ai_active_context` 与 `ai_editor_grant` 统一走该函数。
+- [x] TDD：新增 `editor_context_follows_current_tab_not_stale_panel_snapshot`（`tests_send_references.rs`）：建两个内容不同的查询页签 → 开面板 → 面板开着切换页签 → 走生产捕获路径写入运行快照，断言快照含 `TAB-TWO` 且不含 `TAB-ONE`。已确认该用例在旧实现下**确实失败**（摘录为空），修复后通过。
+- 验证：`cargo fmt --all -- --check`、`cargo check --workspace --locked --offline` 通过；`cargo test -p fluxdb-desktop --locked --offline -- --test-threads=1` → **603 passed / 6 failed / 5 ignored**；6 项失败中 5 项为沙箱禁止本地监听的 `ai_ui_model_capacity_http_*`（`PermissionDenied`）、1 项 `ai_chat_model_selection_disabled_model_error_*` 已用 HEAD 版本 `actions.rs` 复跑确认**同样失败**，属既有失败，均与本次改动无关。
+- 未完成：`context_tab` 仍只在进入 AI 页签时更新，作为"切回原页签"的记忆职责未变；若 AI 面板为 Tab 模式且用户始终停在 AI 页签，上下文仍取进入前那个业务页签（符合该模式语义，但若用户期望"AI 页签内也能刷新来源"需另行产品决策）。
+
 ### T032 注册插件能力与确定性 Hook pipeline
 - [ ] 依赖：T012、T019、T020；设计 §23–25。
 - 改动：BuiltinRegistry、12类内置能力、observer/interceptor、priority/conflict、失败策略/deadline；真实receipt不可改，必经审计不能禁用。

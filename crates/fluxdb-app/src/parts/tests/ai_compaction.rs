@@ -3,7 +3,8 @@
 
 use crate::{
     CompactionCut, CompactionReason, CompactionTrigger, build_summary_prompt, compute_cut,
-    estimate_messages_tokens, estimate_tokens, should_compact, source_hash, validate_summary,
+    estimate_messages_tokens, estimate_tokens, exceeds_input_budget, should_compact, source_hash,
+    validate_summary,
 };
 
 fn trigger(percent: u8, window: i64, output: i64) -> CompactionTrigger {
@@ -133,4 +134,27 @@ fn build_summary_prompt_includes_previous_summary_incrementally() {
 fn source_hash_is_stable_and_sensitive_to_input() {
     assert_eq!(source_hash(&["a", "b"]), source_hash(&["a", "b"]));
     assert_ne!(source_hash(&["a", "b"]), source_hash(&["b", "a"]));
+}
+
+#[test]
+fn exceeds_input_budget_only_when_window_truly_cannot_hold_input() {
+    // 200k 窗口、输出 8k、余量 10k ⇒ 可用 182k：只有真正超过可用预算才算装不下。
+    assert!(!exceeds_input_budget(160_000, trigger(80, 200_000, 8_000)));
+    assert!(!exceeds_input_budget(182_000, trigger(80, 200_000, 8_000)));
+    assert!(exceeds_input_budget(182_001, trigger(80, 200_000, 8_000)));
+}
+
+#[test]
+fn exceeds_input_budget_is_false_when_window_unknown() {
+    // 窗口未知时既不能判定压缩，也不能据此暂停。
+    assert!(!exceeds_input_budget(999_999, CompactionTrigger {
+        context_window_tokens: None,
+        max_output_tokens: Some(1024),
+        trigger_percent: 80,
+    }));
+}
+
+#[test]
+fn exceeds_input_budget_treats_window_smaller_than_output_as_over_budget() {
+    assert!(exceeds_input_budget(1, trigger(80, 1_000, 5_000)));
 }

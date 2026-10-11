@@ -13,6 +13,8 @@ struct AiTurnContext {
     context_window_tokens: Option<i64>,
     max_output_tokens: Option<i64>,
     trigger_percent: u8,
+    /// 摘要模型选择（Agent `compaction` 绑定；未配置用主模型）。
+    compaction_model: crate::CompactionModelChoice,
 }
 
 fn ai_conversation_turn_messages(
@@ -117,6 +119,15 @@ fn ai_conversation_turn_messages(
             .and_then(serde_json::Value::as_u64)
             .map(|value| value as u8)
             .unwrap_or(80);
+        // 摘要模型随 Agent 绑定解析；解析失败不能让整轮对话失败，交由压缩阶段按预算决定。
+        let compaction_model = snapshot
+            .get("agent_id")
+            .and_then(serde_json::Value::as_str)
+            .map(|agent_id| {
+                resolve_compaction_model(conn, agent_id, job.model_profile_id.as_str())
+            })
+            .transpose()?
+            .unwrap_or(crate::CompactionModelChoice::Main);
         Ok(AiTurnContext {
             target_json: turn.target_json.clone(),
             system_messages,
@@ -132,19 +143,103 @@ fn ai_conversation_turn_messages(
                     .max(0),
             ),
             trigger_percent,
+            compaction_model,
         })
     })
 }
 
-/// T069：按窗口百分比/输出预留判断是否压缩；需要时调用模型生成增量摘要并原子提交 checkpoint。
+/// 压缩结果：可以继续请求，或必须暂停。
+enum CompactionOutcome {
+    /// 继续用该历史发请求；压缩状态已作为 notice 片段落库。
+    Ready(Vec<(i64, fluxdb_core::ModelMessage)>),
+    /// 摘要不可用/失败且仍超预算：本轮必须暂停并说明，不能发出注定超窗的请求。
+    Paused(String),
+}
+
+/// 本轮不压缩时的统一出口：写成可见 notice，并按预算决定"带提示继续"还是"暂停"。
 ///
-/// 返回压缩后仍可见的历史（未被摘要覆盖的近期消息）与可选的 UI 提示。任何一步失败都退回
-/// 原始历史并给出提示，绝不返回"部分压缩"的半成品，也不覆盖既有 checkpoint。
+/// `failure=true` 表示确实出错（摘要请求失败/校验不通过/提交失败）；纯粹的信息性降级
+/// （历史还不够切点、摘要模型不可用但仍在预算内）不算失败，避免把正常回合标成红色"失败"。
+fn compaction_failure(
+    storage: &fluxdb_storage::FileStorage,
+    job: &AiConversationJob,
+    sender: &dyn ConversationEventSink,
+    notice_part_id: &str,
+    history: Vec<(i64, fluxdb_core::ModelMessage)>,
+    notice: String,
+    estimated: i64,
+    trigger: CompactionTrigger,
+    failure: bool,
+) -> CompactionOutcome {
+    let over_budget = exceeds_input_budget(estimated, trigger);
+    let text = if over_budget {
+        format!(
+            "{notice}；上下文已超出模型窗口，本轮不会发出超限请求，请调整输入或改用更大窗口的模型后重试"
+        )
+    } else {
+        notice
+    };
+    let status = if over_budget || failure {
+        fluxdb_storage::ai_platform::sessions::PartStatus::Error
+    } else {
+        fluxdb_storage::ai_platform::sessions::PartStatus::Complete
+    };
+    ai_conversation_publish_compaction_notice(storage, job, sender, notice_part_id, status, &text);
+    if over_budget {
+        CompactionOutcome::Paused(text)
+    } else {
+        CompactionOutcome::Ready(history)
+    }
+}
+
+/// 把压缩状态写成会话里可见的 notice 片段并回桥给 UI。
+///
+/// 让"正在压缩/已压缩/压缩失败"经真实事件链出现在当前会话，而不是静默后台完成。
+fn ai_conversation_publish_compaction_notice(
+    storage: &fluxdb_storage::FileStorage,
+    job: &AiConversationJob,
+    sender: &dyn ConversationEventSink,
+    part_id: &str,
+    status: fluxdb_storage::ai_platform::sessions::PartStatus,
+    text: &str,
+) {
+    let payload = serde_json::json!({ "text": text }).to_string();
+    if ai_conversation_save_part(
+        storage,
+        job,
+        part_id,
+        fluxdb_storage::ai_platform::sessions::PartKind::Notice,
+        status,
+        &payload,
+        None,
+        None,
+    )
+    .is_err()
+    {
+        return;
+    }
+    if let Ok(data) = with_ai_storage(storage, |conn| {
+        fluxdb_storage::ai_platform::conversation::load(conn, Some(&job.session_id))
+    }) {
+        let _ = sender.try_publish(AiConversationUpdate::view(
+            job.clone(),
+            ai_chat_project(data),
+            false,
+        ));
+    }
+}
+
+/// 按窗口百分比/输出预留判断是否压缩；需要时调用摘要模型生成增量摘要并原子提交 checkpoint。
+///
+/// 摘要模型优先取 Agent 的 `compaction` 绑定，未配置用主模型；已配置但不可用时**不静默改用主模型**。
+/// 只有完整、非截断且保护项齐全的摘要才提交；取消/失败/迟到一律不覆盖旧 checkpoint。
 #[allow(clippy::too_many_arguments)]
 fn ai_conversation_maybe_compact(
     storage: &fluxdb_storage::FileStorage,
     job: &AiConversationJob,
-    provider: &dyn fluxdb_core::GenerationProvider,
+    sender: &dyn ConversationEventSink,
+    main_provider: &dyn fluxdb_core::GenerationProvider,
+    summary_provider: Option<&dyn fluxdb_core::GenerationProvider>,
     cancel: &fluxdb_core::CancelFlag,
     history: Vec<(i64, fluxdb_core::ModelMessage)>,
     system_tokens: i64,
@@ -153,7 +248,13 @@ fn ai_conversation_maybe_compact(
     context_window_tokens: Option<i64>,
     max_output_tokens: Option<i64>,
     trigger_percent: u8,
-) -> (Vec<(i64, fluxdb_core::ModelMessage)>, Option<String>) {
+    compaction_model: &crate::CompactionModelChoice,
+) -> CompactionOutcome {
+    let trigger = CompactionTrigger {
+        context_window_tokens,
+        max_output_tokens,
+        trigger_percent,
+    };
     let history = if let Some((summary,last_seq,_))=previous_summary.as_ref() {
         let mut active=vec![(*last_seq,fluxdb_core::ModelMessage::new(fluxdb_core::ModelRole::User,format!("[历史上下文摘要]\n{summary}")))];
         active.extend(history.into_iter().filter(|(seq,_)|seq>last_seq));
@@ -162,18 +263,32 @@ fn ai_conversation_maybe_compact(
     let estimated = system_tokens + estimate_messages_tokens(
         &history.iter().map(|(_, m)| m.clone()).collect::<Vec<_>>(),
     );
-    let Some(reason) = should_compact(
-        estimated,
-        CompactionTrigger {
-            context_window_tokens,
-            max_output_tokens,
-            trigger_percent,
-        },
-    ) else {
-        return (history, None);
+    let Some(reason) = should_compact(estimated, trigger) else {
+        return CompactionOutcome::Ready(history);
     };
     if cancel.is_cancelled() {
-        return (history, None);
+        return CompactionOutcome::Ready(history);
+    }
+    // 压缩状态片段 id 稳定：一次 Turn 最多压缩一次，pending 会被结果覆盖成同一张卡。
+    let notice_part_id = format!("{}-notice-compaction", job.assistant_message_id);
+
+    // 已显式配置摘要模型但不可用：不静默换成主模型，只给出可见说明。
+    if let crate::CompactionModelChoice::Unavailable {
+        model_profile_id,
+        reason: rejection,
+    } = compaction_model
+    {
+        return compaction_failure(
+            storage,
+            job,
+            sender,
+            &notice_part_id,
+            history,
+            format!("上下文压缩未执行（摘要模型 {model_profile_id} 不可用：{rejection}）"),
+            estimated,
+            trigger,
+            false,
+        );
     }
 
     let messages: Vec<fluxdb_core::ModelMessage> =
@@ -183,7 +298,17 @@ fn ai_conversation_maybe_compact(
     let Some(cut) = compute_cut(&messages, keep_recent, |index| {
         history.get(index).map(|(seq, _)| *seq).unwrap_or(0)
     }) else {
-        return (history, Some("上下文接近上限，但暂无可安全压缩的完整历史".into()));
+        return compaction_failure(
+            storage,
+            job,
+            sender,
+            &notice_part_id,
+            history,
+            "上下文接近上限，但暂无可安全压缩的完整历史".into(),
+            estimated,
+            trigger,
+            false,
+        );
     };
 
     // 若有旧摘要，它已覆盖 [..previous_last_seq]，这次只把其后、切点之前的消息作为增量。
@@ -204,13 +329,69 @@ fn ai_conversation_maybe_compact(
         .collect::<Vec<_>>()
         .join("\n");
     if digest.trim().is_empty() {
-        // 没有新增可摘要内容：不重复提交，也不阻塞正常请求。
-        return (history, None);
+        // 没有新增可摘要内容：不重复提交；已超预算则如实暂停，而不是硬发超窗请求。
+        return if exceeds_input_budget(estimated, trigger) {
+            CompactionOutcome::Paused(
+                "上下文已超出模型窗口，但没有可安全压缩的新增历史，本轮已暂停".into(),
+            )
+        } else {
+            CompactionOutcome::Ready(history)
+        };
     }
+
+    // 摘要 Provider：未单独配置时与主模型共用同一运行实例，避免重复解密凭据。
+    let summary_model_id = match compaction_model {
+        crate::CompactionModelChoice::Model(id) => id.clone(),
+        _ => job.model_profile_id.clone(),
+    };
+    let owned_provider: Option<AiConversationProvider> =
+        match (compaction_model, summary_provider) {
+            (crate::CompactionModelChoice::Model(id), None) => {
+                match AiConversationProvider::from_storage(storage, id) {
+                    Ok(provider) => Some(provider),
+                    Err(error) => {
+                        return compaction_failure(
+                            storage,
+                            job,
+                            sender,
+                            &notice_part_id,
+                            history,
+                            format!(
+                                "上下文压缩未执行（摘要模型 {id} 无法建立连接：{}）",
+                                error.message
+                            ),
+                            estimated,
+                            trigger,
+                            true,
+                        );
+                    }
+                }
+            }
+            _ => None,
+        };
+    let summary_provider: &dyn fluxdb_core::GenerationProvider = summary_provider
+        .or(owned_provider
+            .as_ref()
+            .map(|provider| provider as &dyn fluxdb_core::GenerationProvider))
+        .unwrap_or(main_provider);
+
+    let reason_label = match reason {
+        CompactionReason::Percent => format!("达到上下文 {}%", trigger_percent),
+        CompactionReason::OutputReserve => "输出预留空间不足".to_string(),
+    };
+    // 压缩进行中先落一条 pending 提示，UI 才能看到"正在压缩"而不是整轮静默。
+    ai_conversation_publish_compaction_notice(
+        storage,
+        job,
+        sender,
+        &notice_part_id,
+        fluxdb_storage::ai_platform::sessions::PartStatus::Pending,
+        &format!("正在压缩上下文（{reason_label}）…"),
+    );
 
     let prompt = build_summary_prompt(previous_text.as_deref(), &digest);
     let request = fluxdb_core::ModelRequest {
-        model: job.model_profile_id.clone(),
+        model: summary_model_id.clone(),
         messages: vec![fluxdb_core::ModelMessage::new(
             fluxdb_core::ModelRole::User,
             prompt,
@@ -220,7 +401,19 @@ fn ai_conversation_maybe_compact(
     };
     let mut summary_text = String::new();
     let mut finish=None;
-    let summary_result = match block_on_ready(provider.stream(request, cancel.clone())) {
+    // 摘要请求独立计量：记为实际使用的摘要模型，而不是主模型。
+    let metered = MeteredProvider {
+        provider: summary_provider,
+        storage,
+        job,
+        model_profile_id: &summary_model_id,
+        purpose: "compaction",
+    };
+    let summary_result = match block_on_ready(fluxdb_core::GenerationProvider::stream(
+        &metered,
+        request,
+        cancel.clone(),
+    )) {
         Ok(Ok(events)) => {
             for event in events {
                 match event {
@@ -229,25 +422,33 @@ fn ai_conversation_maybe_compact(
                     _=>{},
                 }
             }
-            if finish==Some(fluxdb_core::FinishReason::Stop) {Ok(())}else{Err("摘要未正常结束，拒绝提交".into())}
+            if finish==Some(fluxdb_core::FinishReason::Stop) {Ok(())}else{Err("摘要未正常结束，拒绝提交".to_string())}
         }
         Ok(Err(error)) => Err(error.message),
         Err(error) => Err(error.message),
     };
     if cancel.is_cancelled() {
-        return (history, None);
+        return CompactionOutcome::Ready(history);
     }
-
-    if let Err(reason) = summary_result {
-        return (
+    let invalid_summary = summary_result
+        .err()
+        .map(|failure| format!("上下文压缩未完成（摘要失败：{failure}）"))
+        .or_else(|| {
+            validate_summary(&summary_text)
+                .err()
+                .map(|invalid| format!("上下文压缩未完成（{invalid}）"))
+        });
+    if let Some(notice) = invalid_summary {
+        return compaction_failure(
+            storage,
+            job,
+            sender,
+            &notice_part_id,
             history,
-            Some(format!("上下文压缩未完成（摘要失败：{reason}），本轮暂用原始历史")),
-        );
-    }
-    if let Err(reason) = validate_summary(&summary_text) {
-        return (
-            history,
-            Some(format!("上下文压缩未完成（{reason}），本轮暂用原始历史")),
+            notice,
+            estimated,
+            trigger,
+            true,
         );
     }
 
@@ -272,15 +473,22 @@ fn ai_conversation_maybe_compact(
         })
         .to_string(),
         source_hash: hash,
-        model_profile_id: Some(job.model_profile_id.clone()),
+        model_profile_id: Some(summary_model_id.clone()),
     };
     let commit = with_ai_storage(storage, |conn| {
         fluxdb_storage::ai_platform::context_checkpoints::insert(conn, ai_chat_now(), &edit)
     });
     if let Err(error) = commit {
-        return (
+        return compaction_failure(
+            storage,
+            job,
+            sender,
+            &notice_part_id,
             history,
-            Some(format!("上下文压缩未提交（{}），本轮暂用原始历史", error.message)),
+            format!("上下文压缩未提交（{}）", error.message),
+            estimated,
+            trigger,
+            true,
         );
     }
 
@@ -295,14 +503,13 @@ fn ai_conversation_maybe_compact(
         ),
     ));
     compacted.extend(remaining);
-    let reason_label = match reason {
-        CompactionReason::Percent => format!("达到上下文 {}%", trigger_percent),
-        CompactionReason::OutputReserve => "输出预留空间不足".to_string(),
-    };
-    (
-        compacted,
-        Some(format!(
-            "已自动压缩上下文（{reason_label}）；原始历史与审计保持不变"
-        )),
-    )
+    ai_conversation_publish_compaction_notice(
+        storage,
+        job,
+        sender,
+        &notice_part_id,
+        fluxdb_storage::ai_platform::sessions::PartStatus::Complete,
+        &format!("已自动压缩上下文（{reason_label}）；原始历史与审计保持不变"),
+    );
+    CompactionOutcome::Ready(compacted)
 }

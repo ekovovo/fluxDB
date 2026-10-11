@@ -57,6 +57,7 @@ pub fn generate_session_title(
         provider,
         storage,
         job,
+        model_profile_id: &job.model_profile_id,
         purpose: "title",
     };
     let events = match block_on_ready(fluxdb_core::GenerationProvider::stream(

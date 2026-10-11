@@ -172,12 +172,31 @@ pub fn run_ai_conversation_turn(
     audit: &dyn SecurityAuditHook,
     permission: TurnPermissionContext,
 ) {
+    run_ai_conversation_turn_with_summary(
+        storage, job, cancel, sender, provider, None, tools, audit, permission,
+    );
+}
+
+/// 同上，但显式指定摘要 Provider（脚本化测试注入；生产用 `None` 由存储按档案装配）。
+#[allow(clippy::too_many_arguments)]
+pub fn run_ai_conversation_turn_with_summary(
+    storage: &fluxdb_storage::FileStorage,
+    job: &AiConversationJob,
+    cancel: &fluxdb_core::CancelFlag,
+    sender: &dyn ConversationEventSink,
+    provider: &dyn fluxdb_core::GenerationProvider,
+    summary_provider: Option<&dyn fluxdb_core::GenerationProvider>,
+    tools: &ToolCatalog,
+    audit: &dyn SecurityAuditHook,
+    permission: TurnPermissionContext,
+) {
     ai_conversation_run_turn(
         storage,
         job,
         cancel,
         sender,
         provider,
+        summary_provider,
         tools,
         audit,
         permission,
@@ -195,6 +214,7 @@ fn ai_conversation_run_turn(
     cancel: &fluxdb_core::CancelFlag,
     sender: &dyn ConversationEventSink,
     provider: &dyn fluxdb_core::GenerationProvider,
+    summary_provider: Option<&dyn fluxdb_core::GenerationProvider>,
     tools: &ToolCatalog,
     audit: &dyn SecurityAuditHook,
     permission: TurnPermissionContext,
@@ -226,20 +246,18 @@ fn ai_conversation_run_turn(
         context_window_tokens,
         max_output_tokens,
         trigger_percent,
+        compaction_model,
     } = context;
 
-    // —— T069：按模型窗口百分比/输出预留触发，自动压缩（无需用户确认）。 ——
-    // 压缩失败只记 notice，不影响本轮正常对话（设计 §16.1：不能悄悄删用户限制）。
+    // —— 按模型窗口百分比/输出预留触发，自动压缩（无需用户确认）。 ——
+    // 摘要不可用/失败时：仍在窗口内带提示继续；已超预算则可见暂停，不发出超窗请求。
     let system_tokens = estimate_messages_tokens(&system_messages);
-    let (history, compaction_notice) = ai_conversation_maybe_compact(
+    let history = match ai_conversation_maybe_compact(
         storage,
         job,
-        &MeteredProvider {
-            provider,
-            storage,
-            job,
-            purpose: "compaction",
-        },
+        sender,
+        provider,
+        summary_provider,
         cancel,
         history,
         system_tokens,
@@ -248,7 +266,14 @@ fn ai_conversation_run_turn(
         context_window_tokens,
         max_output_tokens,
         trigger_percent,
-    );
+        &compaction_model,
+    ) {
+        CompactionOutcome::Ready(history) => history,
+        CompactionOutcome::Paused(reason) => {
+            ai_conversation_pause_for_compaction(storage, job, sender, reason);
+            return;
+        }
+    };
 
     let mut messages = system_messages;
     messages.extend(history.into_iter().map(|(_, message)| message));
@@ -263,25 +288,11 @@ fn ai_conversation_run_turn(
     let mut part_error: Option<String> = None;
     let mut tool_error: Option<String> = None;
 
-    // 压缩提示作为一条 notice 片段落库，UI 才能显示"正在压缩/已压缩"及失败原因。
-    if let Some(notice) = compaction_notice {
-        let _ = ai_conversation_save_part(
-            storage,
-            job,
-            &format!("compaction-{notice_count}"),
-            fluxdb_storage::ai_platform::sessions::PartKind::Notice,
-            fluxdb_storage::ai_platform::sessions::PartStatus::Complete,
-            &serde_json::json!({ "text": notice }).to_string(),
-            None,
-            None,
-        );
-        notice_count += 1;
-    }
-
     let metered_provider = MeteredProvider {
         provider,
         storage,
         job,
+        model_profile_id: &job.model_profile_id,
         purpose: "main",
     };
     let runner = TurnRunner {
@@ -547,6 +558,41 @@ pub fn run_ai_conversation_failure(
     }
 }
 
+/// 压缩无法在预算内完成：本轮以可见说明结束，不发出超窗请求，也不删除任何历史。
+///
+/// 用终态失败（而不是 `waiting_user`）：当前会话对有进行中的 Turn 会拒绝新消息且没有恢复入口，
+/// 置为等待会把这个会话锁死；终态下用户可调整输入/模型后直接重发，旧 checkpoint 与原始历史仍在。
+fn ai_conversation_pause_for_compaction(
+    storage: &fluxdb_storage::FileStorage,
+    job: &AiConversationJob,
+    sender: &dyn ConversationEventSink,
+    reason: String,
+) {
+    // 暂停原因已经由压缩 notice 承载，这里只写可见的两份：notice + 助手正文。
+    let text = format!("本轮已暂停：{reason}");
+    match persist_ai_conversation_event(
+        storage,
+        job,
+        &text,
+        "",
+        Some(fluxdb_storage::ai_platform::sessions::TurnStatus::Failed),
+        Some(&reason),
+    ) {
+        Ok(view) => {
+            let _ = sender.publish_terminal(AiConversationUpdate::view(job.clone(), view, true));
+        }
+        Err(error) => {
+            tracing::warn!(turn_id=%job.turn_id, "压缩暂停状态保存失败");
+            run_ai_conversation_failure(
+                storage,
+                job,
+                sender,
+                format!("{reason}（暂停状态保存也失败：{}）", error.message),
+            );
+        }
+    }
+}
+
 /// 读取当前助手消息已保存的正文（恢复续写时不能覆盖已展示内容）。
 fn ai_conversation_existing_text(
     storage: &fluxdb_storage::FileStorage,
@@ -738,6 +784,7 @@ fn resume_ai_approved_turn(
         cancel,
         sender,
         provider,
+        None,
         tools,
         audit,
         permission,

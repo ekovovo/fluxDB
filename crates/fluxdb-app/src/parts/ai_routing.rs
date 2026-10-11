@@ -119,3 +119,51 @@ pub fn model_capability_labels(model: &ModelProfileView) -> Vec<&'static str> {
     }
     labels
 }
+
+/// 解析本轮摘要使用的模型（设计 §16「摘要模型可单独配置，无配置用主模型」）。
+///
+/// 顺序：Agent 的 `compaction` 角色绑定（按优先级取第一个合格者）→ 无绑定则用主模型。
+/// 绑定了但全部不合格时**不静默改用主模型**：固定模型被换掉属可见失败，调用方需据此
+/// 给出说明并按预算决定是否暂停。
+pub fn resolve_compaction_model(
+    conn: &rusqlite::Connection,
+    agent_id: &str,
+    main_model_id: &str,
+) -> fluxdb_core::Result<crate::CompactionModelChoice> {
+    let bindings = fluxdb_storage::ai_platform::model_bindings::list_role_bindings(
+        conn,
+        agent_id,
+        fluxdb_storage::ai_platform::model_bindings::ModelRole::Compaction,
+    )?;
+    if bindings.is_empty() {
+        return Ok(crate::CompactionModelChoice::Main);
+    }
+    let mut first_rejection: Option<(String, String)> = None;
+    for binding in &bindings {
+        let model = fluxdb_storage::ai_platform::models::load_model(conn, &binding.model_profile_id)?;
+        match candidate_check(&model, CandidateRole::Compaction) {
+            Ok(()) => {
+                return Ok(if model.id == main_model_id {
+                    // 显式绑定到主模型：仍按主模型走，不需要第二个 Provider。
+                    crate::CompactionModelChoice::Main
+                } else {
+                    crate::CompactionModelChoice::Model(model.id)
+                });
+            }
+            Err(rejection) => {
+                if first_rejection.is_none() {
+                    first_rejection = Some((
+                        binding.model_profile_id.clone(),
+                        rejection.message(CandidateRole::Compaction),
+                    ));
+                }
+            }
+        }
+    }
+    let (model_profile_id, reason) = first_rejection
+        .unwrap_or_else(|| (main_model_id.to_string(), "摘要模型不可用".to_string()));
+    Ok(crate::CompactionModelChoice::Unavailable {
+        model_profile_id,
+        reason,
+    })
+}

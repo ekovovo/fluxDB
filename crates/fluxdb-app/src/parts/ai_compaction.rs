@@ -60,6 +60,13 @@ fn safety_margin(window: i64) -> i64 {
     (window / 20).max(512)
 }
 
+/// 可用输入预算：窗口扣除输出预留与安全余量后，还能装多少输入 token。
+///
+/// 窗口未知（未配置模型容量）时返回 `None`；此时既不能判定压缩，也不能据此暂停。
+fn usable_input_budget(window: i64, output: i64) -> i64 {
+    window - output - safety_margin(window)
+}
+
 /// 是否应触发压缩；返回原因而非 bool，便于 UI/审计区分。
 pub fn should_compact(
     estimated_input_tokens: i64,
@@ -67,7 +74,7 @@ pub fn should_compact(
 ) -> Option<CompactionReason> {
     let window = trigger.context_window_tokens.filter(|w| *w > 0)?;
     let output = trigger.max_output_tokens.unwrap_or(0).max(0);
-    let usable = window - output - safety_margin(window);
+    let usable = usable_input_budget(window, output);
     if usable <= 0 {
         // 窗口连输出都装不下：必然要压缩。
         return Some(CompactionReason::OutputReserve);
@@ -81,6 +88,18 @@ pub fn should_compact(
         return Some(CompactionReason::OutputReserve);
     }
     None
+}
+
+/// 输入是否已超出可用预算（窗口都装不下，而不是仅仅到百分比阈值）。
+///
+/// 摘要不可用或失败时用它决定：仍在预算内可以带着提示继续；超出则必须暂停并说明，
+/// 不能把注定超窗的请求硬发出去。窗口未知时返回 false —— 不知道就不能据此暂停。
+pub fn exceeds_input_budget(estimated_input_tokens: i64, trigger: CompactionTrigger) -> bool {
+    let Some(window) = trigger.context_window_tokens.filter(|w| *w > 0) else {
+        return false;
+    };
+    let output = trigger.max_output_tokens.unwrap_or(0).max(0);
+    estimated_input_tokens > usable_input_budget(window, output)
 }
 
 /// 压缩切点：`[0, cut)` 进入摘要，`[cut, len)` 保留原始消息。
@@ -145,6 +164,17 @@ pub const REQUIRED_PROTECTED_ITEMS: &[&str] = &[
     "decisions",
     "next_steps",
 ];
+
+/// 摘要模型选择（设计 §16「摘要模型可单独配置，无配置用主模型」）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CompactionModelChoice {
+    /// 未单独配置摘要模型：摘要与主模型使用同一档案。
+    Main,
+    /// 使用独立摘要模型。
+    Model(String),
+    /// 已配置摘要模型但全部不可用：**不得静默改用主模型**，需要可见说明。
+    Unavailable { model_profile_id: String, reason: String },
+}
 
 /// 摘要校验：必须非空、未被截断标记、且涵盖全部保护项。
 pub fn validate_summary(summary: &str) -> Result<(), String> {

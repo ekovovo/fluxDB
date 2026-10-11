@@ -11,7 +11,7 @@ use fluxdb_app::{
 use fluxdb_core::{CancelFlag, FinishReason, ModelCapabilities, ModelEvent, ModelRequest};
 use fluxdb_storage::{
     FileStorage,
-    ai_platform::{context_checkpoints, sessions},
+    ai_platform::{context_checkpoints, model_bindings, sessions},
 };
 
 struct Fixture {
@@ -188,21 +188,34 @@ fn run_turn(
     controller: &mut AppController,
     provider: &Arc<CompactionScript>,
 ) -> String {
+    run_turn_with_summary(fixture, controller, provider, None)
+}
+
+/// 同上，但可显式注入摘要 Provider（用于验证独立摘要模型确实被使用）。
+fn run_turn_with_summary(
+    fixture: &Fixture,
+    controller: &mut AppController,
+    provider: &Arc<CompactionScript>,
+    summary: Option<&Arc<CompactionScript>>,
+) -> String {
     let job = controller
         .prepare_ai_conversation(LONG_PROMPT, &target())
         .expect("准备会话");
     let (sender, receiver) = std::sync::mpsc::sync_channel(16);
     let storage = FileStorage::new(&fixture.dir);
     let provider: Arc<dyn fluxdb_core::GenerationProvider> = provider.clone();
+    let summary_provider: Option<Arc<dyn fluxdb_core::GenerationProvider>> =
+        summary.map(|provider| provider.clone() as Arc<dyn fluxdb_core::GenerationProvider>);
     let audit = AllowAudit;
     let resolver = Arc::new(fluxdb_app::MapSqlResolver::new([]));
     let tools = standard_sql_catalog(resolver, false).expect("只读 SQL 工具目录");
-    fluxdb_app::run_ai_conversation_turn(
+    fluxdb_app::run_ai_conversation_turn_with_summary(
         &storage,
         &job,
         &CancelFlag::new(),
         &sender,
         provider.as_ref(),
+        summary_provider.as_deref(),
         &tools,
         &audit,
         TurnPermissionContext {
@@ -238,6 +251,121 @@ fn run_turn(
     }
     let _ = session_id;
     text
+}
+
+/// 再建一个已启用的生成模型（摘要模型候选）。
+fn add_generation_model(controller: &mut AppController, display_name: &str) -> String {
+    match controller.dispatch(AppCommand::SaveAiModel(AiModelSaveInput {
+        display_name: display_name.into(),
+        provider: "openai".into(),
+        model: format!("t035-{}", display_name),
+        endpoint: Some("http://127.0.0.1:9/v1".into()),
+        enabled: true,
+        context_window_tokens: Some(4096),
+        max_output_tokens: Some(512),
+        ..Default::default()
+    })) {
+        AppEvent::AiModelSaved { id, .. } => id,
+        other => panic!("配置摘要模型失败: {other:?}"),
+    }
+}
+
+/// 给 Agent 建立 `compaction` 角色绑定（用户来源）。
+fn bind_compaction_model(fixture: &Fixture, agent_id: &str, model_id: &str, enabled: bool) {
+    fixture
+        .storage
+        .with_ai_connection(|conn| {
+            model_bindings::create_binding(
+                conn,
+                1,
+                &model_bindings::ModelBindingEdit {
+                    id: format!("binding-{model_id}"),
+                    agent_id: agent_id.to_string(),
+                    model_profile_id: model_id.to_string(),
+                    role: model_bindings::ModelRole::Compaction,
+                    binding_source: model_bindings::BindingSource::User,
+                    enabled,
+                    priority: 100,
+                },
+            )?;
+            Ok(())
+        })
+        .expect("建立 compaction 绑定");
+}
+
+/// 读回该会话的计量行（用途，模型档案）。
+fn ledger_rows(fixture: &Fixture, session_id: &str) -> Vec<(String, String)> {
+    fixture
+        .storage
+        .with_ai_connection(|conn| {
+            let mut stmt = conn
+                .prepare("SELECT purpose, model_profile_id FROM ai_usage_ledger WHERE session_id=?1 ORDER BY created_at_ms, id")
+                .map_err(|e| fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, e.to_string()))?;
+            let rows = stmt
+                .query_map([session_id], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .map_err(|e| fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, e.to_string()))?
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(|e| fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, e.to_string()))?;
+            Ok(rows)
+        })
+        .expect("读取计量行")
+}
+
+/// 会话里可见的 notice 片段（id、状态、文本），用于断言"信息性降级不标失败"等观感契约。
+fn notice_rows(fixture: &Fixture, session_id: &str) -> Vec<(String, String, String)> {
+    fixture
+        .storage
+        .with_ai_connection(|conn| {
+            let mut stmt = conn
+                .prepare("SELECT p.id, p.status, p.payload_json FROM ai_message_parts p JOIN ai_messages m ON m.id=p.message_id WHERE m.session_id=?1 AND p.kind='notice' ORDER BY p.created_at_ms")
+                .map_err(|e| fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, e.to_string()))?;
+            let rows = stmt
+                .query_map([session_id], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })
+                .map_err(|e| fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, e.to_string()))?
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(|e| fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, e.to_string()))?;
+            Ok(rows)
+        })
+        .expect("读取 notice")
+        .into_iter()
+        .map(|(id, status, payload)| {
+            let text = serde_json::from_str::<serde_json::Value>(&payload)
+                .ok()
+                .and_then(|value| value.get("text").and_then(|t| t.as_str()).map(str::to_owned))
+                .unwrap_or_default();
+            (id, status, text)
+        })
+        .collect()
+}
+
+/// 会话里可见的压缩相关 notice 文本。
+fn compaction_notices(fixture: &Fixture, session_id: &str) -> Vec<String> {
+    fixture
+        .storage
+        .with_ai_connection(|conn| {
+            let mut stmt = conn
+                .prepare("SELECT payload_json FROM ai_message_parts p JOIN ai_messages m ON m.id=p.message_id WHERE m.session_id=?1 AND p.kind='notice' ORDER BY p.created_at_ms")
+                .map_err(|e| fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, e.to_string()))?;
+            let rows = stmt
+                .query_map([session_id], |row| row.get::<_, String>(0))
+                .map_err(|e| fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, e.to_string()))?
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(|e| fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, e.to_string()))?;
+            Ok(rows)
+        })
+        .expect("读取 notice")
+        .into_iter()
+        .filter_map(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .filter_map(|value| value.get("text").and_then(|text| text.as_str()).map(str::to_owned))
+        .collect()
 }
 
 #[test]
@@ -426,4 +554,282 @@ fn checkpoint_carries_previous_summary_incrementally() {
             "后续压缩必须携带旧摘要做增量"
         );
     }
+}
+
+#[test]
+fn bound_compaction_model_is_used_and_metered_under_its_own_profile() {
+    let fixture = Fixture::new();
+    let mut controller = fixture.configured(35, Some(4096));
+    let agent_id = controller.state().ai_agents[0].id.clone();
+    let summary_model = add_generation_model(&mut controller, "T035 摘要模型");
+    bind_compaction_model(&fixture, &agent_id, &summary_model, true);
+
+    // 主模型与摘要模型用两个脚本：只有摘要脚本会命中独立模型那条链路。
+    let main = CompactionScript::new("主模型");
+    let summary = CompactionScript::new("独立摘要模型事实");
+    for _ in 0..10 {
+        let _ = run_turn_with_summary(&fixture, &mut controller, &main, Some(&summary));
+    }
+
+    let session_id = controller
+        .state()
+        .ai_conversation
+        .session_id
+        .clone()
+        .expect("已有会话");
+    // 摘要请求必须落在摘要 Provider 上，主 Provider 不能收到摘要请求。
+    assert!(
+        summary
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|r| r.messages.iter().any(|m| m.text.contains("压缩历史上下文"))),
+        "摘要请求必须发给绑定的摘要模型"
+    );
+    assert!(
+        main.requests
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|r| !r.messages.iter().any(|m| m.text.contains("压缩历史上下文"))),
+        "配置了独立摘要模型后，主模型不应再收到摘要请求"
+    );
+    let request = summary
+        .requests
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|r| r.messages.iter().any(|m| m.text.contains("压缩历史上下文")))
+        .cloned()
+        .expect("摘要请求");
+    assert_eq!(request.model, summary_model, "请求必须声明摘要模型档案");
+
+    // 计量：compaction 行必须记在摘要模型上，而不是主模型。
+    let rows = ledger_rows(&fixture, &session_id);
+    let compaction_models: Vec<&String> = rows
+        .iter()
+        .filter(|(purpose, _)| purpose == "compaction")
+        .map(|(_, model)| model)
+        .collect();
+    assert!(!compaction_models.is_empty(), "摘要请求必须进入计量账本");
+    assert!(
+        compaction_models
+            .iter()
+            .all(|model| **model == summary_model),
+        "compaction 计量必须记为实际使用的摘要模型：{compaction_models:?}"
+    );
+
+    // checkpoint 记录所用模型，便于"原始记录可查"。
+    let checkpoint = fixture
+        .storage
+        .with_ai_connection(|conn| context_checkpoints::load_latest(conn, &session_id))
+        .unwrap()
+        .expect("应产生 checkpoint");
+    assert_eq!(
+        checkpoint.model_profile_id.as_deref(),
+        Some(summary_model.as_str()),
+        "checkpoint 必须记录实际摘要模型"
+    );
+}
+
+#[test]
+fn unavailable_compaction_model_is_visible_and_never_silently_replaced() {
+    let fixture = Fixture::new();
+    // 10% 阈值 + 小窗口：很快超出可用输入预算，能验证"仍超预算则可见暂停"。
+    let mut controller = fixture.configured(10, Some(2048));
+    let agent_id = controller.state().ai_agents[0].id.clone();
+    // 摘要绑定启用，但其模型被停用 → 候选不合格。
+    let summary_model = add_generation_model(&mut controller, "T035 停用摘要模型");
+    bind_compaction_model(&fixture, &agent_id, &summary_model, true);
+    controller.dispatch(AppCommand::SetAiModelEnabled {
+        id: summary_model.clone(),
+        enabled: false,
+        expected_revision: 1,
+    });
+
+    let provider = CompactionScript::new("主模型");
+    for _ in 0..4 {
+        let _ = run_turn(&fixture, &mut controller, &provider);
+    }
+
+    let session_id = controller
+        .state()
+        .ai_conversation
+        .session_id
+        .clone()
+        .expect("已有会话");
+    // 不静默改用主模型：主模型不应收到任何摘要请求。
+    assert!(
+        provider
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|r| !r.messages.iter().any(|m| m.text.contains("压缩历史上下文"))),
+        "摘要模型不可用时绝不能静默改用主模型"
+    );
+    assert!(
+        fixture
+            .storage
+            .with_ai_connection(|conn| context_checkpoints::load_latest(conn, &session_id))
+            .unwrap()
+            .is_none(),
+        "摘要失败不得提交 checkpoint"
+    );
+    let notices = compaction_notices(&fixture, &session_id);
+    assert!(
+        notices.iter().any(|text| text.contains("摘要模型")
+            && (text.contains("不可用") || text.contains("已停用"))),
+        "摘要模型不可用必须有可见说明：{notices:?}"
+    );
+    assert!(
+        notices
+            .iter()
+            .any(|text| text.contains("已暂停") || text.contains("超出模型窗口")),
+        "超预算时必须可见暂停：{notices:?}"
+    );
+}
+
+#[test]
+fn truncated_summary_keeps_previous_checkpoint_and_original_history() {
+    let fixture = Fixture::new();
+    let mut controller = fixture.configured(35, Some(4096));
+    let good = CompactionScript::new("第一次有效摘要");
+    for _ in 0..10 {
+        let _ = run_turn(&fixture, &mut controller, &good);
+    }
+    let session_id = controller
+        .state()
+        .ai_conversation
+        .session_id
+        .clone()
+        .expect("已有会话");
+    let first = fixture
+        .storage
+        .with_ai_connection(|conn| context_checkpoints::load_latest(conn, &session_id))
+        .unwrap()
+        .expect("首次压缩应提交 checkpoint");
+
+    // 之后摘要一律返回被截断的自由文本 → 校验失败，旧 checkpoint 必须原样保留。
+    let truncated = CompactionScript::raw("goal: 目标被截断…[truncated]");
+    for _ in 0..6 {
+        let _ = run_turn(&fixture, &mut controller, &truncated);
+    }
+
+    let after = fixture
+        .storage
+        .with_ai_connection(|conn| context_checkpoints::load_latest(conn, &session_id))
+        .unwrap()
+        .expect("旧 checkpoint 必须保留");
+    assert_eq!(after.id, first.id, "摘要校验失败不得覆盖旧 checkpoint");
+    assert_eq!(after.generation, first.generation);
+    assert_eq!(after.summary_text, first.summary_text);
+    assert!(
+        compaction_notices(&fixture, &session_id)
+            .iter()
+            .any(|text| text.contains("上下文压缩未完成")),
+        "截断摘要必须给出可见失败说明"
+    );
+    // 原始记录可查：消息没有因为压缩或失败被删除。
+    let messages = fixture
+        .storage
+        .with_ai_connection(|conn| sessions::list_messages(conn, &session_id))
+        .unwrap();
+    assert!(messages.len() > first.last_message_seq as usize);
+}
+
+#[test]
+fn informational_compaction_notice_is_not_marked_as_failure() {
+    let fixture = Fixture::new();
+    // 窗口 4096、阈值 10%（409）：本条提问已过阈值，但历史只有一条、切不出安全切点
+    // → 本轮不压缩、对话照常继续（与真实窗口里看到的现象一致），notice 不该标失败。
+    let mut controller = fixture.configured(10, Some(4_096));
+    let provider = CompactionScript::new("主模型");
+    let _ = run_turn(&fixture, &mut controller, &provider);
+    let session_id = controller
+        .state()
+        .ai_conversation
+        .session_id
+        .clone()
+        .expect("已有会话");
+
+    let rows = notice_rows(&fixture, &session_id);
+    assert_eq!(rows.len(), 1, "只应有一条压缩 notice：{rows:?}");
+    let (id, status, text) = &rows[0];
+    assert!(
+        text.contains("暂无可安全压缩的完整历史"),
+        "实际文案：{text}"
+    );
+    assert_ne!(
+        *status, "error",
+        "本轮只是不压缩、对话继续，不能把 notice 标成失败：{id} {status}"
+    );
+    assert!(
+        rows.iter()
+            .all(|(id, _, _)| !id.ends_with("-notice-compaction-paused")),
+        "没有暂停时不应出现暂停片段"
+    );
+}
+
+#[test]
+fn paused_compaction_keeps_two_visible_copies_and_never_marks_success() {
+    let fixture = Fixture::new();
+    // 窗口 1024 / 输出 512：可用输入预算为 0，第一条就会判定超预算 → 直接走可见暂停。
+    let mut controller = fixture.configured(10, Some(1_024));
+    let agent_id = controller.state().ai_agents[0].id.clone();
+    let summary_model = add_generation_model(&mut controller, "T035 停用摘要模型");
+    bind_compaction_model(&fixture, &agent_id, &summary_model, true);
+    controller.dispatch(AppCommand::SetAiModelEnabled {
+        id: summary_model,
+        enabled: false,
+        expected_revision: 1,
+    });
+    let provider = CompactionScript::new("主模型");
+    let _ = run_turn(&fixture, &mut controller, &provider);
+    let session_id = controller
+        .state()
+        .ai_conversation
+        .session_id
+        .clone()
+        .expect("已有会话");
+
+    let rows = notice_rows(&fixture, &session_id);
+    let compaction_rows: Vec<&(String, String, String)> = rows
+        .iter()
+        .filter(|(id, _, _)| id.ends_with("-notice-compaction"))
+        .collect();
+    assert_eq!(
+        compaction_rows.len(),
+        1,
+        "暂停轮只应有一条压缩 notice：{rows:?}"
+    );
+    assert_eq!(compaction_rows[0].1, "error", "暂停必须可见失败态");
+    assert!(compaction_rows[0].2.contains("超出模型窗口"));
+    assert!(
+        rows.iter()
+            .all(|(id, _, _)| !id.ends_with("-notice-compaction-paused")),
+        "暂停原因已由压缩 notice 承载，不应再存第三份副本：{rows:?}"
+    );
+    // 助手正文保留一句可见的暂停状态，方便折叠 notice 时也能看到。
+    let texts: Vec<String> = fixture
+        .storage
+        .with_ai_connection(|conn| {
+            let sql = "SELECT p.payload_json FROM ai_message_parts p JOIN ai_messages m ON m.id=p.message_id WHERE m.session_id=?1 AND p.kind='text' ORDER BY p.created_at_ms";
+            let mut stmt = conn.prepare(sql).map_err(|e| fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, e.to_string()))?;
+            let rows = stmt.query_map([session_id.as_str()], |row| row.get::<_, String>(0))
+                .map_err(|e| fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, e.to_string()))?
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(|e| fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, e.to_string()))?;
+            Ok(rows)
+        })
+        .unwrap()
+        .into_iter()
+        .filter_map(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .filter_map(|value| value.get("text").and_then(|t| t.as_str()).map(str::to_owned))
+        .collect();
+    assert!(
+        texts.iter().any(|text| text.starts_with("本轮已暂停")),
+        "暂停轮应有可见正文：{texts:?}"
+    );
 }

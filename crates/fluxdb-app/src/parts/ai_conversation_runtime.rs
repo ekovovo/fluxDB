@@ -85,6 +85,7 @@ impl AiRuntimeHandle {
                             &turn.cancel,
                             sender,
                             &provider,
+                            None,
                             &tools,
                             &KernelAuditHook,
                             permission,

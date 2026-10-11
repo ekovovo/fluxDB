@@ -300,6 +300,106 @@ pub fn delete_binding(conn: &Connection, id: &str, expected_revision: i64) -> Re
     Ok(())
 }
 
+/// 设置某 Agent 某角色的**用户**模型绑定。
+///
+/// `Some(model)` 选中该模型；`None` 表示"跟随该角色的默认"（清除用户绑定）。
+/// 只增删 `binding_source='user'` 行，不动 system reconcile 维护的绑定；换模型时按旧行的
+/// `expected_revision` 做对象级 CAS，避免另一个窗口的编辑被静默覆盖。
+pub fn set_role_model(
+    conn: &Connection,
+    now_ms: i64,
+    new_id: &str,
+    agent_id: &str,
+    role: ModelRole,
+    model_profile_id: Option<&str>,
+    expected_revision: Option<i64>,
+) -> Result<Option<ModelBindingView>> {
+    let tx = conn.unchecked_transaction().map_err(sqlite_error)?;
+    let existing: Option<ModelBindingView> = tx
+        .query_row(
+            "SELECT id, agent_id, model_profile_id, role, binding_source, enabled, priority, revision
+               FROM ai_agent_model_bindings
+              WHERE agent_id=?1 AND role=?2 AND binding_source='user'
+              ORDER BY priority, id
+              LIMIT 1",
+            params![agent_id, role.as_str()],
+            raw_binding_row,
+        )
+        .optional()
+        .map_err(sqlite_error)?
+        .map(parse_binding_row)
+        .transpose()?;
+
+    let Some(model_profile_id) = model_profile_id else {
+        if let Some(existing) = existing {
+            check_revision(&existing, expected_revision)?;
+            tx.execute(
+                "DELETE FROM ai_agent_model_bindings WHERE id=?1",
+                [&existing.id],
+            )
+            .map_err(sqlite_error)?;
+        }
+        tx.commit().map_err(sqlite_error)?;
+        return Ok(None);
+    };
+    let model = super::models::load_model(&tx, model_profile_id)?;
+    validate(&tx, agent_id, &model, role)?;
+    match existing {
+        Some(existing) if existing.model_profile_id == model_profile_id => {
+            tx.commit().map_err(sqlite_error)?;
+            return Ok(Some(existing));
+        }
+        Some(existing) => {
+            check_revision(&existing, expected_revision)?;
+            tx.execute(
+                "DELETE FROM ai_agent_model_bindings WHERE id=?1",
+                [&existing.id],
+            )
+            .map_err(sqlite_error)?;
+        }
+        None => {}
+    }
+    // 同 (agent, role, model) 已由 system reconcile 建立时保持原行，不制造重复绑定。
+    if let Some(existing) = tx
+        .query_row(
+            "SELECT id, agent_id, model_profile_id, role, binding_source, enabled, priority, revision
+               FROM ai_agent_model_bindings
+              WHERE agent_id=?1 AND role=?2 AND model_profile_id=?3",
+            params![agent_id, role.as_str(), model_profile_id],
+            raw_binding_row,
+        )
+        .optional()
+        .map_err(sqlite_error)?
+        .map(parse_binding_row)
+        .transpose()?
+    {
+        tx.commit().map_err(sqlite_error)?;
+        return Ok(Some(existing));
+    }
+    tx.execute(
+        "INSERT INTO ai_agent_model_bindings
+            (id, agent_id, model_profile_id, role, binding_source, enabled, priority,
+             options_json, revision, created_at_ms, updated_at_ms)
+         VALUES (?1,?2,?3,?4,'user',1,100,'{}',1,?5,?5)",
+        params![new_id, agent_id, model_profile_id, role.as_str(), now_ms],
+    )
+    .map_err(sqlite_error)?;
+    let binding = load_binding(&tx, new_id)?;
+    tx.commit().map_err(sqlite_error)?;
+    Ok(Some(binding))
+}
+
+/// 换模型时的对象级 CAS：旧行 revision 与调用方看到的不符即失败。
+fn check_revision(existing: &ModelBindingView, expected_revision: Option<i64>) -> Result<()> {
+    if expected_revision.is_some_and(|expected| expected != existing.revision) {
+        return Err(Error::new(
+            ErrorKind::Internal,
+            "模型绑定已变更，请重新加载",
+        ));
+    }
+    Ok(())
+}
+
 /// 原始列（字符串/整数），枚举解析放到闭包之外，避免把存储损坏伪装成 SQL 失败。
 type RawBindingRow = (String, String, String, String, String, i64, i64, i64);
 
@@ -434,6 +534,128 @@ mod tests {
         let role = list_role_bindings(&conn, "a1", ModelRole::MainCandidate).expect("角色");
         assert_eq!(role.len(), 2);
         assert_eq!(role[0].id, "b1");
+    }
+
+    #[test]
+    fn set_role_model_upserts_replaces_and_clears_with_cas() {
+        let (conn, cipher) = setup();
+        make_model(&conn, &cipher, "gen", ModelKind::Generation);
+        make_model(&conn, &cipher, "gen2", ModelKind::Generation);
+        // 首次选择：建立用户绑定。
+        let first = set_role_model(
+            &conn,
+            2_000,
+            "b1",
+            "a1",
+            ModelRole::Compaction,
+            Some("gen"),
+            None,
+        )
+        .expect("首次设置")
+        .expect("应有绑定");
+        assert_eq!(first.model_profile_id, "gen");
+        assert_eq!(first.binding_source, BindingSource::User);
+        // 重复设置同一模型：幂等，不新增行、不改 revision。
+        let again = set_role_model(
+            &conn,
+            2_100,
+            "b-other",
+            "a1",
+            ModelRole::Compaction,
+            Some("gen"),
+            None,
+        )
+        .expect("幂等设置")
+        .expect("应有绑定");
+        assert_eq!(again.id, "b1");
+        assert_eq!(again.revision, first.revision);
+        // 换模型：旧行被替换，旧 revision 不能作为期望值复用。
+        assert!(
+            set_role_model(
+                &conn,
+                2_200,
+                "b2",
+                "a1",
+                ModelRole::Compaction,
+                Some("gen2"),
+                Some(first.revision + 9)
+            )
+            .is_err(),
+            "过期 revision 必须拒绝"
+        );
+        let replaced = set_role_model(
+            &conn,
+            2_300,
+            "b2",
+            "a1",
+            ModelRole::Compaction,
+            Some("gen2"),
+            Some(first.revision),
+        )
+        .expect("换模型")
+        .expect("应有绑定");
+        assert_eq!(replaced.model_profile_id, "gen2");
+        let role = list_role_bindings(&conn, "a1", ModelRole::Compaction).expect("角色绑定");
+        assert_eq!(role.len(), 1, "同一角色只保留一条用户绑定");
+        // 清除：跟随默认，不能再有用户绑定。
+        assert!(
+            set_role_model(
+                &conn,
+                2_400,
+                "b9",
+                "a1",
+                ModelRole::Compaction,
+                None,
+                Some(replaced.revision),
+            )
+            .expect("清除")
+            .is_none()
+        );
+        assert!(
+            list_role_bindings(&conn, "a1", ModelRole::Compaction)
+                .expect("角色绑定")
+                .is_empty()
+        );
+        // 角色与模型用途不一致时拒绝，不留下半条绑定。
+        make_model(&conn, &cipher, "dec", ModelKind::Decision);
+        assert!(
+            set_role_model(
+                &conn,
+                2_500,
+                "b3",
+                "a1",
+                ModelRole::Compaction,
+                Some("dec"),
+                None
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn set_role_model_keeps_system_binding_instead_of_duplicating() {
+        let (conn, cipher) = setup();
+        make_model(&conn, &cipher, "gen", ModelKind::Generation);
+        ensure_system_binding(&conn, 2_000, "sys", "a1", "gen", ModelRole::Compaction, 100)
+            .expect("system 绑定");
+        let chosen = set_role_model(
+            &conn,
+            2_100,
+            "b1",
+            "a1",
+            ModelRole::Compaction,
+            Some("gen"),
+            None,
+        )
+        .expect("选择 system 已绑定的模型")
+        .expect("应有绑定");
+        assert_eq!(chosen.id, "sys", "不制造重复绑定");
+        assert_eq!(
+            list_role_bindings(&conn, "a1", ModelRole::Compaction)
+                .expect("角色绑定")
+                .len(),
+            1
+        );
     }
 
     #[test]

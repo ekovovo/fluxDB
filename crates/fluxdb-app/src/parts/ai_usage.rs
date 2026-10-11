@@ -3,6 +3,8 @@ struct MeteredProvider<'a> {
     provider: &'a dyn fluxdb_core::GenerationProvider,
     storage: &'a fluxdb_storage::FileStorage,
     job: &'a AiConversationJob,
+    /// 本次请求实际使用的模型档案：摘要可用独立模型，不能一律记成主模型。
+    model_profile_id: &'a str,
     purpose: &'static str,
 }
 impl fluxdb_core::GenerationProvider for MeteredProvider<'_> {
@@ -25,7 +27,7 @@ impl fluxdb_core::GenerationProvider for MeteredProvider<'_> {
                 request_id: id.clone(),
                 session_id: self.job.session_id.clone(),
                 turn_id: self.job.turn_id.clone(),
-                model_profile_id: self.job.model_profile_id.clone(),
+                model_profile_id: self.model_profile_id.to_string(),
                 purpose: self.purpose.into(),
                 title: None,
             };

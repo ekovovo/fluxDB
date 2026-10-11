@@ -482,6 +482,17 @@ cargo test -p fluxdb-app --locked ai_permission   # 15 passed
 - 数据展示闭环（设计§39.5）：
   - [ ] 触发压缩后进度/成功或失败反馈经真实事件链出现在当前会话，重进会话的checkpoint状态与持久化一致，其他会话不被覆盖。
 
+#### T035 实现记录（2026-10-11）
+- [x] **独立摘要模型（未配置用主模型）**：`ai_agent_model_bindings` 的 `compaction` 角色接入运行时（`ai_routing::resolve_compaction_model`）：Agent 角色绑定优先，未配置回落主模型；已配置但停用/用途错配/缺凭据/无法建连时**不静默改用主模型**，给出可见说明。**用户决定不在 Agent 编辑页暴露该配置**（市面 agent 无此开关）：已撤销 `AppCommand::SetAiAgentCompactionModel`、Agent 编辑页下拉、`AiAgentItem` 对应字段与相关 UI/命令测试；能力保留在存储 + 路由层（`model_bindings::set_role_model`），设计 §16「摘要模型可单独配置」按"预留能力但不暴露 UI"理解，设计文档未改。
+- [x] **计量记在实际摘要模型上**：`MeteredProvider` 显式携带 `model_profile_id`；摘要请求记为 `purpose='compaction'` + 摘要模型档案（此前一律记成主模型）。checkpoint 的 `model_profile_id` 同样记录实际摘要模型。
+- [x] **失败/不可用不静默替换、不硬发超窗请求**：摘要失败、校验失败或无可安全切点时，仍在窗口内带提示继续，已超可用输入预算则**本轮可见暂停**（终态失败 + 说明，不删除历史）。选择终态而非 `waiting_user`：当前会话对有进行中的 Turn 会拒绝新消息且没有恢复入口，置为等待会锁死会话。
+- [x] **压缩状态经真实事件链可见**：压缩前先落 pending notice「正在压缩上下文（原因）…」，结束后原地更新为成功/失败文案。
+- [x] **真实窗口 E2E 通过 4 组**（2026-10-11，macOS arm64，隔离夹具 + 本地 mock，不联网不读生产凭据）：① 独立摘要模型被真实使用（mock 日志 `model=mock-summary summary=True`，全程无 `mock-main summary=True`）且压缩计量记在摘要档案（`actual input 916/output 60`）；② checkpoint 记录实际摘要模型并增量衔接（gen2.first = gen1.last）；③ 摘要模型停用 → 可见说明 + 超预算可见暂停，checkpoint 0 行、账本无 compaction 行、无任何 `summary=True`；④ 截断摘要不覆盖旧 checkpoint（gen1–4 的 `id/source_hash/last_message_seq` 逐字不变、无新增 generation），另有一次传输失败同样未改动旧记录。验收记录：[T035 验证记录](testing/ai-agent/t035-summary-model-checkpoint-2026-10-11.md)。
+- [x] **验收中修掉 2 处本轮引入的观感问题**：① 信息性降级（历史不够切点 / 摘要模型不可用但仍在预算内）不再标红色"失败"；② 暂停原因不再存 3 份（notice + 助手正文两份）。各补一条回归用例（`ai_context_compaction.rs`：`informational_compaction_notice_is_not_marked_as_failure`、`paused_compaction_keeps_two_visible_copies_and_never_marks_success`）。
+- 测试：storage `set_role_model` 2 项；app `ai_context_compaction` **9/9**；app 纯逻辑 `exceeds_input_budget` 3 项；GPUI `ai_ui_compaction_status_is_visible_and_scoped_to_its_session`。
+- 验收夹具：`crates/fluxdb-app/examples/ai_t035_fixture.rs`（`<新目录> [--no-summary]`）+ `/private/tmp/fluxdb-t035-e2e/{mock.sh,evidence.sh,CHECKLIST.md}`。
+- 未完成：真实第三方模型（公司自建/决策模型）下的压缩表现与真实 token 计量；"正在压缩"pending 态截图；浅色主题逐项对照；Windows/Linux 三端。
+
 ### T036 System One/Jev decision Provider
 - [ ] 依赖：T017、T030、T032；设计 §18；参考本地 Pi System One 两个 adapter。
 - 改动：Choice/Score 协议和概率/数值校验、deadline、取消、隐私、usage；不走 generation.tool_call。

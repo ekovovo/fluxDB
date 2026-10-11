@@ -636,6 +636,33 @@ impl fluxdb_core::AiTool for AiFileTool {
             let result=(||->fluxdb_core::Result<serde_json::Value>{
                 let args:serde_json::Value=serde_json::from_str(&arguments_json).map_err(|_|fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal,"文件参数无效"))?;
                 if ctx.cancel.is_cancelled(){return Err(fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal,"文件读取已取消"));}
+                if self.descriptor.id=="file.search_content" {
+                    let id=args["file_ref"].as_str().unwrap_or("");
+                    let reference=self.references.iter().find(|r|r.id==id&&r.kind=="file").ok_or_else(||fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal,"附件未授权或已移除"))?;
+                    let grant:serde_json::Value=serde_json::from_str(&reference.source).map_err(|_|fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal,"附件授权损坏"))?;
+                    if grant["binary"].as_bool().unwrap_or(false){return Err(fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal,"二进制附件不提供正文搜索"));}
+                    let path=std::path::Path::new(grant["path"].as_str().unwrap_or(""));
+                    let mut file=open_ai_authorized_file(path)?;
+                    let meta=file.metadata().map_err(|_|fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal,"附件状态不可读"))?;
+                    let modified=meta.modified().ok().and_then(|t|t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d|d.as_nanos().to_string());
+                    if !meta.is_file()||grant["size"].as_u64()!=Some(meta.len())||modified.as_deref()!=grant["modified"].as_str(){return Err(fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal,"附件已变更，请移除后重新授权"));}
+                    let (query,options)=search_options_from_arguments(&arguments_json)?;
+                    let delimited=ai_file_delimited_format(path);
+                    let result=if let Some(delimiter)=delimited{
+                        search_delimited_content(file,&query,delimiter,options,&ctx.cancel)?
+                    }else{
+                        use std::io::Read;
+                        let mut bytes=Vec::new();
+                        file.read_to_end(&mut bytes).map_err(|_|fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal,"附件搜索读取失败"))?;
+                        let text=String::from_utf8(bytes).map_err(|_|fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal,"附件不是 UTF-8 文本，无法按行搜索"))?;
+                        search_text_content(&text,&query,options,&ctx.cancel)?
+                    };
+                    let mut payload=with_file_read_hints(search_match_json(&result),delimited.is_some());
+                    payload["file_ref"]=serde_json::json!(id);
+                    payload["content_type"]=serde_json::json!(if delimited.is_some(){"delimited"}else{"text"});
+                    payload["scope"]=serde_json::json!("仅本轮已授权附件");
+                    return Ok(payload);
+                }
                 if self.descriptor.id=="file.search" {
                     let query=args["query"].as_str().unwrap_or("").to_lowercase();
                     return Ok(serde_json::json!({"files":self.references.iter().filter(|r|r.kind=="file"&&r.label.to_lowercase().contains(&query)).take(16).map(|r|serde_json::json!({"file_ref":r.id,"label":r.label,"summary":r.summary})).collect::<Vec<_>>(),"scope":"仅已授权附件"}));
@@ -696,6 +723,7 @@ pub fn add_ai_file_tools(catalog:&mut ToolCatalog,storage:&fluxdb_storage::FileS
     for (id,desc,schema) in [
         ("file.read","按 opaque FileRef 分段读取已授权附件：文本按字节、CSV/TSV 按记录、二进制只返回类型与预览",serde_json::json!({"type":"object","properties":{"file_ref":{"type":"string"},"offset":{"type":"integer","minimum":0},"max_bytes":{"type":"integer","minimum":1,"maximum":65536},"max_records":{"type":"integer","minimum":1,"maximum":256,"description":"CSV/TSV 每次返回的记录数上限"}},"required":["file_ref"],"additionalProperties":false})),
         ("file.search","搜索本会话已授权附件，不扫描未授权目录",serde_json::json!({"type":"object","properties":{"query":{"type":"string"}},"additionalProperties":false})),
+        ("file.search_content","在本轮已授权附件正文中搜索字面量，返回字节偏移、行号、上下文片段与续读位置；不扫描未授权路径",ai_search_tool_schema(Some(("file_ref","已授权附件的 FileRef，来自 file.search 返回结果",true)))),
     ] {
         let descriptor=fluxdb_core::ToolDescriptor{id:id.into(),description:desc.into(),version:1,risk:fluxdb_core::ToolRisk::Read,input_schema_json:schema.to_string()};
         // 附件正文/记录本身就是产物（文本段、CSV 记录、二进制预览），不是可裁剪的

@@ -407,7 +407,7 @@ fn editor_read_range_tools(full_text: &str, tab_id: u64) -> ToolCatalog {
         &mut catalog,
         Some(EditorGrant {
             tab_ref: format!("tab-{tab_id}"),
-            full_text: full_text.to_string(),
+            snapshot: fluxdb_editor_core::EditorBuffer::new_from(full_text).snapshot(),
         }),
     )
     .expect("装配 editor.read_range");
@@ -415,10 +415,18 @@ fn editor_read_range_tools(full_text: &str, tab_id: u64) -> ToolCatalog {
 }
 
 fn run_editor_read(tools: &ToolCatalog, arguments_json: &str) -> fluxdb_core::ToolReceipt {
+    run_editor_tool(tools, "editor.read_range", arguments_json)
+}
+
+fn run_editor_tool(
+    tools: &ToolCatalog,
+    tool_id: &str,
+    arguments_json: &str,
+) -> fluxdb_core::ToolReceipt {
     let prepared = tools
-        .prepare("editor.read_range", arguments_json)
+        .prepare(tool_id, arguments_json)
         .expect("参数应通过 schema 校验");
-    let tool = tools.executable("editor.read_range").expect("应可执行");
+    let tool = tools.executable(tool_id).expect("应可执行");
     let ctx = fluxdb_core::ToolExecutionContext {
         session_id: "s-1".into(),
         turn_id: "t-1".into(),
@@ -433,17 +441,78 @@ fn run_editor_read(tools: &ToolCatalog, arguments_json: &str) -> fluxdb_core::To
 }
 
 #[test]
+fn ai_editor_search_returns_hits_and_read_hints_from_same_snapshot() {
+    let full = "SELECT 1;\nALTER TABLE users ADD COLUMN email TEXT;\nSELECT 2;";
+    let tools = editor_read_range_tools(full, 7);
+    assert!(tools.describe("editor.search").is_some());
+
+    let receipt = run_editor_tool(
+        &tools,
+        "editor.search",
+        r#"{"query":"users","context_lines":1}"#,
+    );
+    assert_eq!(receipt.status, fluxdb_core::ToolReceiptStatus::Succeeded);
+    let value: serde_json::Value = serde_json::from_str(&receipt.result_json).expect("合法 JSON");
+    assert_eq!(value["matches"].as_array().unwrap().len(), 1);
+    assert_eq!(value["matches"][0]["line_number"], 2);
+    assert_eq!(value["matches"][0]["read_hint"]["offset"], 1);
+    assert!(value["matches"][0]["snippet"].as_str().unwrap().contains("ALTER TABLE"));
+    assert!(value["search_complete"].as_bool().unwrap());
+    assert!(
+        value["scope"].as_str().unwrap().contains("快照"),
+        "搜索结果必须声明来自发送时快照"
+    );
+
+    let rejected = run_editor_tool(
+        &tools,
+        "editor.search",
+        r#"{"tab_ref":"other-tab","query":"users"}"#,
+    );
+    assert_eq!(rejected.status, fluxdb_core::ToolReceiptStatus::Failed);
+}
+
+#[test]
+fn ai_editor_read_range_continues_a_truncated_line_without_gap_or_overlap() {
+    let full = "a".repeat(EDITOR_READ_MAX_BYTES * 2 + 5);
+    let tools = editor_read_range_tools(&full, 3);
+    let mut byte_offset = 0u64;
+    let mut collected = String::new();
+    let mut finished = false;
+    for _ in 0..3 {
+        let receipt = run_editor_read(
+            &tools,
+            &format!(r#"{{"offset":0,"limit":1,"byte_offset":{byte_offset}}}"#),
+        );
+        let value: serde_json::Value = serde_json::from_str(&receipt.result_json).unwrap();
+        assert_eq!(value["byte_offset"], byte_offset);
+        collected.push_str(value["lines"][0].as_str().unwrap());
+        if value["has_more"] == false {
+            assert!(value["partial_line"].is_null());
+            finished = true;
+            break;
+        }
+        assert_eq!(value["next_offset"], 0, "同一超长行续读时行号不得前进");
+        byte_offset = value["partial_line"]["next_byte_offset"]
+            .as_u64()
+            .unwrap();
+        assert!(byte_offset > 0);
+    }
+    assert!(finished, "三段内应能读完这条超长行");
+    assert_eq!(collected, full);
+}
+
+#[test]
 fn ai_editor_grant_is_turn_scoped_taken_once_and_never_persisted() {
     // 全文只在本轮内存里：登记后能被目录装配取走，取走后不可再取，
     // 也不会出现在运行快照里（设计 §13.2 不把整份内容持久化进会话）。
     let grant = EditorGrant {
         tab_ref: "tab-1".into(),
-        full_text: "select 1;".into(),
+        snapshot: fluxdb_editor_core::EditorBuffer::new_from("select 1;").snapshot(),
     };
     register_editor_grant("turn-a", grant.clone()).expect("登记");
 
     let taken = take_editor_grant("turn-a").expect("装配时应取到");
-    assert_eq!(taken.full_text, grant.full_text);
+    assert_eq!(taken.snapshot, grant.snapshot);
     assert!(
         take_editor_grant("turn-a").is_none(),
         "取走即释放：同一轮不能重复取到原文"
@@ -499,7 +568,7 @@ fn ai_editor_grant_is_turn_scoped_taken_once_and_never_persisted() {
     let _ = agent;
     register_editor_grant(&job.turn_id, EditorGrant {
         tab_ref: "tab-1".into(),
-        full_text: secret_marker.into(),
+        snapshot: fluxdb_editor_core::EditorBuffer::new_from(secret_marker).snapshot(),
     })
     .expect("登记全文");
     storage
@@ -523,21 +592,11 @@ fn ai_editor_grant_is_turn_scoped_taken_once_and_never_persisted() {
 }
 
 #[test]
-fn ai_editor_grant_rejects_oversized_full_text() {
-    // 超大全文不登记：界面摘录已有 16 KiB 限额，让 turn 长期持有超大字符串
-    // 既无意义也会拖慢每个工具调用。
+fn ai_editor_grant_accepts_large_shared_snapshot() {
     let huge = EditorGrant {
         tab_ref: "tab-1".into(),
-        full_text: "x".repeat(EDITOR_FULL_TEXT_MAX_BYTES + 1),
+        snapshot: fluxdb_editor_core::EditorBuffer::new_from(&"x".repeat(2 * 1024 * 1024)).snapshot(),
     };
-    let error = register_editor_grant("turn-huge", huge).expect_err("应拒绝");
-    assert!(
-        error.message.contains("缩小范围"),
-        "实际: {}",
-        error.message
-    );
-    assert!(
-        take_editor_grant("turn-huge").is_none(),
-        "被拒绝的全文不得留在登记处"
-    );
+    register_editor_grant("turn-huge", huge).expect("大文档共享快照允许登记");
+    assert_eq!(take_editor_grant("turn-huge").unwrap().snapshot.len(), 2 * 1024 * 1024);
 }

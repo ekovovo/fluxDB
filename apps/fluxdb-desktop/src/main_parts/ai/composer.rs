@@ -71,6 +71,7 @@ fn ai_chat_composer(
                 .flex()
                 .flex_col()
                 .gap_2()
+                .child(ai_current_page_chip(this, ready && !running, colors, cx))
                 // 引用较多时整个输入区最多占面板一半：输入框向上挤但不吞掉消息区。
                 .max_h(px(f32::from(panel_height) * 0.5))
                 .min_h(px(0.))

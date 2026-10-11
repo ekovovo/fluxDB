@@ -100,20 +100,7 @@ impl AppController {
                     .ok_or_else(|| Error::new(ErrorKind::Internal, "引用连接已移除"))?
                     .config;
                 if dialect_for(config.kind).is_some() {
-                    if let fluxdb_core::Endpoint::SqliteFile { path, .. } = &config.endpoint {
-                        if let Ok(canonical) = path.canonicalize() {
-                            let root =
-                                self.ai_storage()?.root_dir().canonicalize().map_err(|_| {
-                                    Error::new(ErrorKind::Internal, "配置目录无法校验")
-                                })?;
-                            if canonical.starts_with(root) {
-                                return Err(Error::new(
-                                    ErrorKind::Internal,
-                                    "配置数据库不能作为 AI 引用资源",
-                                ));
-                            }
-                        }
-                    }
+                    self.validate_ai_database_resource(config)?;
                     let connector = fluxdb_connectors::connector_for(config)?;
                     let tables = connector
                         .list_completion_tables(

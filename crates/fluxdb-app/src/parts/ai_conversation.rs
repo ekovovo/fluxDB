@@ -314,6 +314,39 @@ impl AppController {
         target: &TurnTargetPin,
         context: &str,
     ) -> fluxdb_core::Result<AiConversationJob> {
+        self.prepare_ai_conversation_context_with_editor(prompt, target, context, None)
+    }
+    /// 发送时同时登记宿主持有的编辑器快照。登记先于任务创建：登记失败不会产生
+    /// 半成品任务，任务创建失败则清理本轮登记，不让其它轮次误领残留快照。
+    pub fn prepare_ai_conversation_context_with_editor(
+        &mut self,
+        prompt: &str,
+        target: &TurnTargetPin,
+        context: &str,
+        editor_grant: Option<EditorGrant>,
+    ) -> fluxdb_core::Result<AiConversationJob> {
+        self.prepare_ai_conversation_with_grants(prompt, target, context, editor_grant, None)
+    }
+
+    pub fn prepare_ai_conversation_page(
+        &mut self,
+        prompt: &str,
+        target: &TurnTargetPin,
+        page: Option<CurrentPageContext>,
+    ) -> fluxdb_core::Result<AiConversationJob> {
+        let context = page.as_ref().map(|p| p.public_json().to_string()).unwrap_or_default();
+        let (editor, data) = page.map(|p| (p.editor_grant, p.data_grant)).unwrap_or_default();
+        self.prepare_ai_conversation_with_grants(prompt, target, &context, editor, data)
+    }
+
+    fn prepare_ai_conversation_with_grants(
+        &mut self,
+        prompt: &str,
+        target: &TurnTargetPin,
+        context: &str,
+        editor_grant: Option<EditorGrant>,
+        page_grant: Option<PageDataGrant>,
+    ) -> fluxdb_core::Result<AiConversationJob> {
         if context.len() > 64 * 1024 {
             return Err(fluxdb_core::Error::new(
                 fluxdb_core::ErrorKind::Internal,
@@ -321,6 +354,12 @@ impl AppController {
             ));
         }
         let storage = self.ai_storage()?;
+        if let Some(grant) = page_grant.as_ref() {
+            let config = grant.target.connection_id.and_then(|id| self.state.connections.iter()
+                .find(|connection|connection.config.id.0 as i64 == id).map(|connection|&connection.config))
+                .ok_or_else(||editor_error("页面数据所属连接不可用"))?;
+            self.validate_ai_database_resource(config)?;
+        }
         let (job, view) = with_ai_storage(&storage, |conn| {
             let runtime = fluxdb_storage::ai_platform::settings::load_runtime_settings(conn)?;
             let current = self
@@ -442,7 +481,21 @@ impl AppController {
             let database_context=self.ai_database_context(&target_json)?;
             let file_grants=references.iter().filter(|r|r.kind=="file").map(AiContextReference::json).collect::<Vec<_>>();
             let snapshot=serde_json::json!({"model_profile_id":model_id,"agent_id":agent.id,"agent_revision":agent.revision,"compression_trigger_percent":agent.compression_trigger_percent,"system_prompt":agent.system_prompt,"ui_context":context,"context_references":public_refs,"database_context":database_context,"file_grants":file_grants,"reference_grants":reference_grants});
-            fluxdb_storage::ai_platform::conversation::send(conn,ai_chat_now(),current.is_none(),&session_id,&agent.id,&turn_id,&uuid::Uuid::new_v4().to_string(),prompt,&target_json,&snapshot.to_string())?;
+            if let Some(grant) = editor_grant {
+                register_editor_grant(&turn_id, grant)?;
+            }
+            if let Some(grant) = page_grant {
+                let mut registry = page_data_registry().lock().map_err(|_| {
+                    clear_editor_grant(&turn_id);
+                    editor_error("页面快照登记失败")
+                })?;
+                registry.insert(turn_id.clone(), grant);
+            }
+            if let Err(error) = fluxdb_storage::ai_platform::conversation::send(conn,ai_chat_now(),current.is_none(),&session_id,&agent.id,&turn_id,&uuid::Uuid::new_v4().to_string(),prompt,&target_json,&snapshot.to_string()) {
+                clear_editor_grant(&turn_id);
+                take_page_data_grant(&turn_id);
+                return Err(error.into());
+            }
 
             let job = AiConversationJob {
                 session_id: session_id.clone(),

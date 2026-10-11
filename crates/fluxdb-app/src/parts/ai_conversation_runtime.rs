@@ -50,13 +50,14 @@ impl AiRuntimeHandle {
                         standard_sql_catalog_with_results(resolver, results, include_write)?
                     };
                     // 全局停用的工具不进目录：模型既发现不到，也无法绕过发现直接调用。
-                    tools.without_tools(&security.disabled_tools);
                     tools = tools.with_hooks(ai_builtin_hooks(storage, job)?);
                     add_ai_file_tools(&mut tools, storage, job)?;
                     add_ai_reference_tools(&mut tools, storage, job)?;
                     // 编辑器全文由宿主在发送时登记，取走即释放：不写运行快照，
                     // 本轮结束后工具目录随之消失（设计 §13.2 不持久化整份内容）。
                     add_ai_editor_read_tools(&mut tools, take_editor_grant(&job.turn_id))?;
+                    add_ai_page_tools(&mut tools, take_page_data_grant(&job.turn_id), job)?;
+                    tools.without_tools(&security.disabled_tools);
                     let permission = TurnPermissionContext {
                         agent_allowed_tools: security.agent_allowed_tools,
                         disabled_tools: security.disabled_tools,
@@ -152,6 +153,7 @@ impl AiRuntimeHandle {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     execute(&storage, &job, turn, &sender)
                 }));
+                clear_current_page_grants(&job.turn_id);
                 if result.is_err() {
                     tracing::warn!(turn_id=%job.turn_id, "AI 任务异常，正在收尾");
                     run_ai_conversation_failure(

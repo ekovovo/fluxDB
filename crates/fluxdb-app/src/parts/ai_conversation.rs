@@ -375,22 +375,43 @@ impl AppController {
                 ));
             }
             let (selected_model_id, _) = fluxdb_storage::ai_platform::model_selection::load(conn, current.as_ref().map(|s|s.id.as_str()))?;
-            let model_id = selected_model_id.as_deref()
-                .or(agent.default_model_profile_id.as_deref())
-                .or(runtime.default_model_profile_id.as_deref())
-                .ok_or_else(|| {
-                    fluxdb_core::Error::new(
-                        fluxdb_core::ErrorKind::Internal,
-                        "请在输入框下方选择模型，或在大模型设置中配置默认主模型",
-                    )
-                })?;
-            let model = fluxdb_storage::ai_platform::models::load_model(conn, model_id)?;
-            if !model.enabled
-                || model.kind != fluxdb_storage::ai_platform::models::ModelKind::Generation
+            // 路由 precedence（设计 §17）：会话/草稿显式选择 → Agent 的 main_candidate 角色绑定
+            // → Agent 默认模型 → 全局默认。显式选择不合格时绝不静默回退，避免固定模型被换掉。
+            let (model_id, explicit) = match selected_model_id {
+                Some(id) => (id, true),
+                None => {
+                    let bound = fluxdb_storage::ai_platform::model_bindings::list_role_bindings(
+                        conn,
+                        &agent.id,
+                        fluxdb_storage::ai_platform::model_bindings::ModelRole::MainCandidate,
+                    )?
+                    .into_iter()
+                    .next()
+                    .map(|binding| binding.model_profile_id);
+                    let id = bound
+                        .or_else(|| agent.default_model_profile_id.clone())
+                        .or_else(|| runtime.default_model_profile_id.clone())
+                        .ok_or_else(|| {
+                            fluxdb_core::Error::new(
+                                fluxdb_core::ErrorKind::Internal,
+                                "请在输入框下方选择模型，或在大模型设置中配置默认主模型",
+                            )
+                        })?;
+                    (id, false)
+                }
+            };
+            let model = fluxdb_storage::ai_platform::models::load_model(conn, &model_id)?;
+            if let Err(rejection) =
+                candidate_check(&model, CandidateRole::Main)
             {
+                let suffix = if explicit {
+                    "，请重新选择"
+                } else {
+                    "，请在输入框下方选择模型或在大模型设置中修正绑定"
+                };
                 return Err(fluxdb_core::Error::new(
                     fluxdb_core::ErrorKind::Internal,
-                    "当前生成模型不可用",
+                    format!("{}{suffix}", rejection.message(CandidateRole::Main)),
                 ));
             }
             let session_id = current

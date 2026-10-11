@@ -103,6 +103,7 @@ include!("parts/ai_runtime.rs");
 include!("parts/ai_provider.rs");
 include!("parts/ai_loop.rs");
 include!("parts/ai_compaction.rs");
+include!("parts/ai_routing.rs");
 include!("parts/ai_usage.rs");
 include!("parts/ai_tool_registry.rs");
 include!("parts/ai_result_pages.rs");

@@ -110,6 +110,7 @@ include!("parts/ai_result_pages.rs");
 include!("parts/ai_hooks.rs");
 include!("parts/ai_permission.rs");
 include!("parts/ai_context.rs");
+include!("parts/ai_editor_read.rs");
 include!("parts/ai_references.rs");
 include!("parts/ai_file_content.rs");
 include!("parts/ai_reference_details.rs");

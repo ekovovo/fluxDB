@@ -205,6 +205,9 @@ impl NavicatMain {
             .or_else(|| context.excerpt.map(|e| e.text))
             .or(context.summary)
             .unwrap_or_default();
+        // 编辑器全文只在发送这一刻由宿主持有：登记给本轮的 editor.read_range 用，
+        // 不进运行快照（设计 §13.2 不把整份内容持久化进会话）。
+        let editor_grant = self.ai_editor_grant(cx);
         let mut controller = self.controller.clone();
         let epoch = self.ai_chat.epoch;
         self.ai_chat.loading = true;
@@ -215,6 +218,11 @@ impl NavicatMain {
                 .background_spawn(async move {
                     let result =
                         controller.prepare_ai_conversation_context(&prompt, &pin, &context_text);
+                    if let Ok(job) = &result
+                        && let Some(grant) = editor_grant
+                    {
+                        let _ = fluxdb_app::register_editor_grant(&job.turn_id, grant);
+                    }
                     (result, controller.state().ai_conversation.clone())
                 })
                 .await;
@@ -468,6 +476,38 @@ impl NavicatMain {
             target,
             captured_tab_id: None,
             captured_tab_revision: 0,
+        })
+    }
+
+    /// 发送瞬间的编辑器全文（仅 SQL 编辑器有可续读的整段文本）。
+    ///
+    /// 只在"确实发生了截断"时登记：短文本界面摘录已全量携带，再登记全文只会
+    /// 让 turn 白持有大字符串。有选区时同样不登记——选区就是用户想给模型的内容，
+    /// 界面摘录已带上它。
+    fn ai_editor_grant(&self, cx: &App) -> Option<fluxdb_app::EditorGrant> {
+        let state = self.controller.state();
+        let tab = state.active_tab().and_then(|tab| {
+            if matches!(tab.kind, TabKind::AiChat { .. }) {
+                self.ai_chat.context_tab.and_then(|id| {
+                    state.tabs.iter().find(|candidate| candidate.id == id)
+                })
+            } else {
+                Some(tab)
+            }
+        })?;
+        let TabKind::QueryEditor(_) = &tab.kind else {
+            return None;
+        };
+        let text = self
+            .query_editors
+            .get(&tab.id)
+            .map(|editor| editor.read(cx).text())?;
+        if text.trim().is_empty() {
+            return None;
+        }
+        Some(fluxdb_app::EditorGrant {
+            tab_ref: format!("tab-{}", tab.id.0),
+            full_text: text,
         })
     }
 

@@ -409,6 +409,17 @@ cargo test -p fluxdb-app --locked ai_permission   # 15 passed
 - 验证：`cargo fmt --all -- --check` 通过；`cargo test -p fluxdb-app --locked --offline` → **768 passed / 11 failed**（较上一轮 767 增加 1 项），11 项仍为沙箱禁止本地监听的既有 mock server 用例。
 - 未完成：`Sample` 的 `keep_rows` 目前只参与兜底丢弃顺序，未做"样本行数本身超预算时进一步降采样"；跨层递归裁剪未做（按契约工具应自行声明结构，通用层不做猜测，与 Pi/Goose 一致）。
 
+### T034 补充：`editor.read_range` 续读工具（2026-10-11）
+- [x] **补上真实缺口**：设计 §13.2 第 3 条的截断标记一直宣称"可用 editor.read_range 读取"，但该工具从未实现——模型被告知可以续读却调不到。`actions.rs` 发送时只把 `bound_excerpt` 的摘录传给 controller，完整编辑器文本在 UI 侧即丢弃。
+- [x] 参考核对后确定做法：**Pi（终端）根本没有这个问题**——工具集只有 read/write/edit/bash，`read` 直接 `env.readBinaryFile` 读磁盘，UI 与工具同源；**Zed（IDE，最可比）** 在 `crates/agent/src/tools/read_file_tool.rs:245` 让工具签名带 `&mut App`，用 `project.open_buffer` + `buffer.read_with` **直接读编辑器缓冲区**，既不存快照也不做跨线程往返。fluxDB 的 `AiTool::execute` 没有 GPUI 上下文且跑在后台 actor 线程，照搬 Zed 的直接读不可行。
+- [x] 采用**宿主预取**：`EditorGrant` 在发送那一刻由 UI 侧从编辑器 buffer 读取，经 `register_editor_grant(turn_id, ...)` 登记，目录装配时 `take_editor_grant` **取走即释放**（按 turn 隔离，别的 turn 读不到，同轮不可重复取）。对齐 `file.read`/`context.read` 拿 grant 的既有模式，不新增跨线程通道，也不改 `submit_conversation` 的 9 处调用点。
+- [x] **不进运行快照**：`ai_turns.runtime_snapshot_json` 是持久化的，写入全文违反设计 §13.2 第 5 条"不把整份内容永久复制进会话"。已加真实用例断言：发送一轮后快照含界面摘录但**不含**全文标记串。
+- [x] 工具行为：按 `offset`/`limit` 取行窗口，字节上限 16 KiB；`tab_ref` 只允许读本轮装配的那一个标签页（模型不得凭猜测读别的编辑器）；回执含 `total_lines`/`next_offset`/`has_more`/`truncated` 与 `scope`（明示是发送时快照、非实时内容）。
+- [x] **实现中发现并修掉的缺陷**：单行文本超过字节上限时按整行丢弃，`next_offset` 不前进、模型拿到空结果且无法续读。改为按字符边界切该行并返回 `partial_line.next_byte_offset`（对齐 Pi `read.ts` 对超长单行的处理：宁可给可续读片段，也不给空结果）。
+- [x] 测试：`ai_editor` 5/5（按行窗口取回中段；未知 `tab_ref` 与越界 `offset` 受控失败；超长单行可续读且不切半字符；登记项取走即释放、跨 turn 隔离、超大全文拒绝登记；真实 turn 快照不含全文）。`ai_context` 13/13 无回归。
+- 验证：`cargo fmt --all -- --check`、`cargo check --workspace --locked --offline` 通过；`cargo test -p fluxdb-app --locked --offline` → **773 passed / 11 failed**（较上一轮 768 增加 5 项），11 项仍为沙箱禁止本地监听的既有 mock server 用例。
+- 未完成：`Sample` 的 `keep_rows` 降采样仍未做；界面摘录 16 KiB/400 行仍是固定常量，未随最终模型窗口调整；真实窗口 E2E（模型实际看到截断标记并成功调用 `editor.read_range`）尚未执行。
+
 ### T032 注册插件能力与确定性 Hook pipeline
 - [ ] 依赖：T012、T019、T020；设计 §23–25。
 - 改动：BuiltinRegistry、12类内置能力、observer/interceptor、priority/conflict、失败策略/deadline；真实receipt不可改，必经审计不能禁用。

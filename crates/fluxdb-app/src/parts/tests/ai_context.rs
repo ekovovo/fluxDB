@@ -339,3 +339,207 @@ fn ai_context_default_limits_match_design() {
     assert_eq!(limits.max_excerpt_lines, 400);
     assert_eq!(limits.head_ratio, 0.6);
 }
+
+#[test]
+fn ai_editor_read_range_reads_turn_scoped_full_text_by_line_window() {
+    // 设计 §13.2：界面摘录超限时插入"可用 editor.read_range 读取"标记，
+    // 该工具必须真的能按行区间取回被省略的中段。
+    let full = (0..500)
+        .map(|i| format!("line-{i}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let tools = editor_read_range_tools(&full, 7);
+    let spec = tools.describe("editor.read_range").expect("工具应已注册");
+    assert_eq!(spec.risk, fluxdb_core::ToolRisk::Read);
+
+    let receipt = run_editor_read(
+        &tools,
+        r#"{"offset":100,"limit":3}"#,
+    );
+    let value: serde_json::Value = serde_json::from_str(&receipt.result_json).expect("合法 JSON");
+    assert_eq!(value["lines"], serde_json::json!(["line-100", "line-101", "line-102"]));
+    assert_eq!(value["total_lines"], 500);
+    assert_eq!(value["next_offset"], 103);
+    assert_eq!(value["has_more"], true);
+}
+
+#[test]
+fn ai_editor_read_range_rejects_unknown_tab_and_out_of_range_offset() {
+    let tools = editor_read_range_tools("only line", 9);
+    // 未知 tab_ref 不能读别的内容：只有本轮装配的那一个可读。
+    let bad = run_editor_read(&tools, r#"{"tab_ref":"other-tab","offset":0,"limit":5}"#);
+    assert_eq!(bad.status, fluxdb_core::ToolReceiptStatus::Failed);
+    assert!(bad.result_json.contains("tab_ref"));
+
+    let out = run_editor_read(&tools, r#"{"offset":99,"limit":5}"#);
+    assert_eq!(out.status, fluxdb_core::ToolReceiptStatus::Failed);
+    assert!(out.result_json.contains("超出"), "实际: {}", out.result_json);
+}
+
+#[test]
+fn ai_editor_read_range_marks_snapshot_scope_and_bounds_bytes() {
+    // 单行也要受字节上限约束：一行超长时按字节切字符边界，并显式标记截断。
+    let full = "x".repeat(EDITOR_READ_MAX_BYTES * 2);
+    let tools = editor_read_range_tools(&full, 3);
+    let receipt = run_editor_read(&tools, r#"{"offset":0,"limit":10}"#);
+    let value: serde_json::Value = serde_json::from_str(&receipt.result_json).expect("合法 JSON");
+    assert_eq!(value["truncated"], true);
+    // 超长单行必须给出可续读位置，否则模型拿到不完整行却无从继续。
+    let partial = &value["partial_line"];
+    assert_eq!(partial["line"], 0);
+    assert!(
+        partial["next_byte_offset"].as_u64().unwrap() > 0,
+        "必须给出该行内的续读字节偏移"
+    );
+    // 不能切出半个 UTF-8 字符：serde 能解析即证明切片合法。
+    let first_line = value["lines"][0].as_str().unwrap();
+    assert_eq!(first_line.len(), partial["next_byte_offset"].as_u64().unwrap() as usize);
+    assert!(
+        value["scope"].as_str().unwrap().contains("快照"),
+        "必须声明这是发送时的快照而非实时内容，实际: {}",
+        value["scope"]
+    );
+}
+
+fn editor_read_range_tools(full_text: &str, tab_id: u64) -> ToolCatalog {
+    let mut catalog = ToolCatalog::new(Vec::new());
+    add_ai_editor_read_tools(
+        &mut catalog,
+        Some(EditorGrant {
+            tab_ref: format!("tab-{tab_id}"),
+            full_text: full_text.to_string(),
+        }),
+        "s-1",
+        "t-1",
+    )
+    .expect("装配 editor.read_range");
+    catalog
+}
+
+fn run_editor_read(tools: &ToolCatalog, arguments_json: &str) -> fluxdb_core::ToolReceipt {
+    let prepared = tools
+        .prepare("editor.read_range", arguments_json)
+        .expect("参数应通过 schema 校验");
+    let tool = tools.executable("editor.read_range").expect("应可执行");
+    let ctx = fluxdb_core::ToolExecutionContext {
+        session_id: "s-1".into(),
+        turn_id: "t-1".into(),
+        iteration: 1,
+        call_id: "call-1".into(),
+        cancel: fluxdb_core::CancelFlag::new(),
+        progress: None,
+    };
+    block_on_ready(tool.execute(ctx, prepared.to_json_string()))
+        .expect("执行本身不应失败")
+        .expect("工具应回执而非 Err")
+}
+
+#[test]
+fn ai_editor_grant_is_turn_scoped_taken_once_and_never_persisted() {
+    // 全文只在本轮内存里：登记后能被目录装配取走，取走后不可再取，
+    // 也不会出现在运行快照里（设计 §13.2 不把整份内容持久化进会话）。
+    let grant = EditorGrant {
+        tab_ref: "tab-1".into(),
+        full_text: "select 1;".into(),
+    };
+    register_editor_grant("turn-a", grant.clone()).expect("登记");
+
+    let taken = take_editor_grant("turn-a").expect("装配时应取到");
+    assert_eq!(taken.full_text, grant.full_text);
+    assert!(
+        take_editor_grant("turn-a").is_none(),
+        "取走即释放：同一轮不能重复取到原文"
+    );
+    assert!(
+        take_editor_grant("turn-b").is_none(),
+        "其它 turn 读不到本轮全文"
+    );
+
+    // 真实发送一轮后，运行快照里只有界面摘录，不得出现编辑器全文。
+    let dir = std::env::temp_dir().join(format!("fluxdb-editor-grant-{}", uuid::Uuid::new_v4()));
+    let _ = std::fs::create_dir_all(&dir);
+    let storage = fluxdb_storage::FileStorage::new(&dir);
+    storage.with_ai_connection(|_| Ok(())).unwrap();
+    let secret_marker = "select 'UNIQUE-EDITOR-FULLTEXT-MARKER' from t;";
+    let mut controller = AppController::new();
+    controller.set_ai_storage(fluxdb_storage::FileStorage::new(&dir));
+    let model = match controller.dispatch(crate::AppCommand::SaveAiModel(
+        crate::AiModelSaveInput {
+            display_name: "editor-grant".into(),
+            provider: "openai".into(),
+            model: "offline-editor".into(),
+            enabled: true,
+            ..Default::default()
+        },
+    )) {
+        crate::AppEvent::AiModelSaved { id, .. } => id,
+        other => panic!("save model: {other:?}"),
+    };
+    let agent = match controller.dispatch(crate::AppCommand::SaveAiAgent(
+        crate::AiAgentSaveInput {
+            display_name: "editor-grant".into(),
+            system_prompt: "editor-grant".into(),
+            model_profile_id: Some(model),
+            ..Default::default()
+        },
+    )) {
+        crate::AppEvent::AiAgentSaved { id, .. } => id,
+        other => panic!("save agent: {other:?}"),
+    };
+    let job = controller
+        .prepare_ai_conversation_context(
+            "续读编辑器",
+            &TurnTargetPin {
+                target: TargetRef::default(),
+                captured_tab_id: Some(1),
+                captured_tab_revision: 0,
+                target_json: TargetRef::default().to_json(),
+            },
+            "界面摘录占位",
+        )
+        .expect("准备发送");
+    let _ = agent;
+    register_editor_grant(&job.turn_id, EditorGrant {
+        tab_ref: "tab-1".into(),
+        full_text: secret_marker.into(),
+    })
+    .expect("登记全文");
+    storage
+        .with_ai_connection(|conn| {
+            let turn = fluxdb_storage::ai_platform::sessions::load_turn(conn, &job.turn_id)?;
+            assert!(
+                !turn.runtime_snapshot_json.contains("UNIQUE-EDITOR-FULLTEXT-MARKER"),
+                "编辑器全文不得写入运行快照"
+            );
+            assert!(
+                turn.runtime_snapshot_json.contains("界面摘录占位"),
+                "快照仍应保留界面摘录"
+            );
+            Ok(())
+        })
+        .unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+
+    clear_editor_grant("turn-cleanup");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn ai_editor_grant_rejects_oversized_full_text() {
+    // 超大全文不登记：界面摘录已有 16 KiB 限额，让 turn 长期持有超大字符串
+    // 既无意义也会拖慢每个工具调用。
+    let huge = EditorGrant {
+        tab_ref: "tab-1".into(),
+        full_text: "x".repeat(EDITOR_FULL_TEXT_MAX_BYTES + 1),
+    };
+    let error = register_editor_grant("turn-huge", huge).expect_err("应拒绝");
+    assert!(
+        error.message.contains("缩小范围"),
+        "实际: {}",
+        error.message
+    );
+    assert!(
+        take_editor_grant("turn-huge").is_none(),
+        "被拒绝的全文不得留在登记处"
+    );
+}

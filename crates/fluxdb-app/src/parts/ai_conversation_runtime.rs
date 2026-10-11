@@ -54,6 +54,14 @@ impl AiRuntimeHandle {
                     tools = tools.with_hooks(ai_builtin_hooks(storage, job)?);
                     add_ai_file_tools(&mut tools, storage, job)?;
                     add_ai_reference_tools(&mut tools, storage, job)?;
+                    // 编辑器全文由宿主在发送时登记，取走即释放：不写运行快照，
+                    // 本轮结束后工具目录随之消失（设计 §13.2 不持久化整份内容）。
+                    add_ai_editor_read_tools(
+                        &mut tools,
+                        take_editor_grant(&job.turn_id),
+                        &job.session_id,
+                        &job.turn_id,
+                    )?;
                     let permission = TurnPermissionContext {
                         agent_allowed_tools: security.agent_allowed_tools,
                         disabled_tools: security.disabled_tools,

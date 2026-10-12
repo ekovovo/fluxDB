@@ -2742,6 +2742,19 @@ SELECT 1;",
         assert_eq!(execution.summaries[1].kind, QueryStatementKind::Command);
         assert_eq!(execution.summaries[1].affected_rows, 1);
 
+        let empty = connector.execute(&QueryRequest {
+            connection_id: ConnectionId(1),
+            database: Some("main".into()),
+            schema: None,
+            session_id: None,
+            text: "SELECT id, name FROM items WHERE 1=0".into(),
+            mode: QueryMode::All,
+            options: fluxdb_core::QueryExecutionOptions::default(),
+        }).unwrap();
+        assert!(empty.results[0].rows.is_empty());
+        assert_eq!(empty.results[0].columns.iter().map(|column| column.name.as_str()).collect::<Vec<_>>(),
+            vec!["id", "name"]);
+
         let _ = std::fs::remove_file(path);
     }
 

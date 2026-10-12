@@ -493,7 +493,15 @@ fn sqlite_execute_query_with_progress(
                     }
                 };
                 let elapsed_ms = elapsed_ms(started);
-                let page = sqlite_query_rows_to_page(rows, request.options.page_offset, request.options.page_size);
+                let mut page = sqlite_query_rows_to_page(rows, request.options.page_offset, request.options.page_size);
+                if page.columns.is_empty() {
+                    // 零行结果不能丢列结构；只准备语句元数据，不重新执行查询取数。
+                    let description = sqlx::Executor::describe(&mut connection, &statement)
+                        .await.map_err(sqlite_error)?;
+                    page.columns = description.columns().iter()
+                        .map(|column| query_column(column.name(), column.type_info().name()))
+                        .collect();
+                }
                 push_query_summary(
                     &mut execution,
                     QueryExecutionSummary {

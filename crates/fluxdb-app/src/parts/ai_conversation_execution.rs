@@ -756,7 +756,7 @@ fn resume_ai_approved_turn(
         let _ = with_ai_storage(storage, |conn| {
             fluxdb_storage::ai_platform::sessions::finish_tool_call(
                 conn,
-                &format!("{}-toolcall-{}", job.turn_id, receipt.call_id),
+                &ai_tool_call_row_id(&job.turn_id, &receipt.call_id),
                 "unknown",
                 Some(&receipt.result_json),
                 Some(receipt.started_at_ms),

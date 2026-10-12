@@ -658,7 +658,13 @@ fn ai_sql_exec_receipt_keeps_large_results_out_of_context_and_stays_readable() {
     let root = std::env::temp_dir().join(format!("fluxdb-t027-{}", uuid::Uuid::new_v4()));
     let mut store = ResultStore::for_turn(1024, "s-1", "t-1", Some(root.clone()));
     let (result, _) = store
-        .put("db.query", 1, outcome.rows.clone().into_iter().map(serde_json::Value::from))
+        .put(
+            "db.query",
+            "call-1",
+            &outcome.columns,
+            1,
+            outcome.rows.clone().into_iter().map(serde_json::Value::from),
+        )
         .expect("保存结果");
 
     let payload = outcome.to_model_json(Some(&result));

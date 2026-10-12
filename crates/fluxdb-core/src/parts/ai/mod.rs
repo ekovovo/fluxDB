@@ -284,11 +284,7 @@ pub struct DecisionResponse {
 pub trait GenerationProvider: Send + Sync {
     fn capabilities(&self) -> ModelCapabilities;
     /// 流式推理；`cancel` 触发后必须尽快结束（返回 `Finished(Cancelled)` 或错误）。
-    fn stream(
-        &self,
-        request: ModelRequest,
-        cancel: CancelFlag,
-    ) -> AiFuture<'_, Vec<ModelEvent>>;
+    fn stream(&self, request: ModelRequest, cancel: CancelFlag) -> AiFuture<'_, Vec<ModelEvent>>;
 }
 
 /// 决策模型能力（Jev 等）。
@@ -301,7 +297,18 @@ pub trait DecisionProvider: Send + Sync {
 }
 
 /// 审批卡的风险等级。
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum ApprovalRisk {
     #[default]
@@ -360,3 +367,5 @@ impl std::fmt::Display for ToolRisk {
         })
     }
 }
+
+include!("artifact.rs");

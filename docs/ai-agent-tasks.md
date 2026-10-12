@@ -586,10 +586,19 @@ cargo test -p fluxdb-app --locked ai_permission   # 15 passed
 
 
 ### T039 产物 schema、source 引用与内置 BI 插件
-- [ ] 依赖：T027、T032、T038；设计 §27、§42.7。
+- [x] 依赖：T027、T032、T038；设计 §27、§42.7。
 - 改动：报告/图表/表格声明、创建/增加/完成工具、source table、口径/时区/截断校验。
 - 验收：数字来自实际结果，不由模型编造；来源同任务且可解析；renderer 失败不改 SQL 结果；插件可替换。
 - 测试方式：将上述每项验收分别落实为相关crate的测试断言；用隔离fixture/受控Provider验证正常与异常路径，涉及工具时核对真实回执及副作用调用数，不用伪造成功结果跳过执行链。
+- 实现记录（Core / Storage / App）：
+  - **Core** `crates/fluxdb-core/src/parts/ai/artifact.rs`：版本化 `ArtifactSpec`（图表/表格/说明块、口径引用与假设、RFC3339 时间范围、UTC 或 ±HH:MM 时区、过滤条件、静态刷新语义、模板版本、可访问性描述、全部大小上限）；`oneOf`/`const` 让未知字段与非法时区在形状层即被拒绝。IANA 时区名明确 `Unsupported`，未引入手写时区表。
+  - **Storage** `artifacts.rs` + `conversation.rs`：`ai_artifacts` 草稿/staged/ready/failed/expired 状态机与对象级 revision CAS；`ai_artifact_sources` 正规化来源。声明句柄、结果行、实际产出调用三者必须一致且同任务，结果须 available、调用须 succeeded；提交 ready 时在同一事务再复核一次。ready 状态与产物卡片段同事务提交，任一失败都不留半成品。受控相对路径跨平台校验（反斜杠、盘符、`..`、尾部点/空格归一化歧义均拒绝）。
+  - **App** `ai_bi_artifacts.rs` / `ai_artifact_renderer.rs` / `ai_artifact_snapshot.rs` / `ai_artifact_tools.rs` / `ai_results.rs`：`builtin.bi` 的 `artifact.create` / `artifact.add_block` / `artifact.finalize`。模型只能提交来源句柄与字段名，数字由宿主从真实查询回执解析；数值列严格用 JSON number，数字字符串不自动转换。快照落 `ai-artifacts/<uuid>.json`，含 spec、列结构、有界真实行、口径与截断事实，查看时不重查库。工具依赖 `Arc<dyn ArtifactProducer>`、渲染依赖 `ArtifactRenderer`，插件可替换。全局实例或 Agent 绑定禁用时不注册入口。
+  - **相邻根因修复**：SQLite 零行查询丢列结构导致合法空表格被误判 `unknown_field`，用驱动 describe 补回元数据（不重跑查询取数）；schema 校验器补 `oneOf`/`const`，非法 tagged 参数在执行前拒绝（原有一条依赖非法参数穿过 schema 的测试改为验证前置拒绝，另补递归脱敏与真实 tagged 参数回归）。
+- 测试：Core 产物 10 项、Storage 产物 14 项、App `tests/ai_bi_artifacts.rs` 22 项（真实 SQLite + 受控 Provider，Provider 从真实回执取宿主 artifact ID，不预置成功、不跳执行链）、`ai_conversation_tools_guard` 6/6；`fluxdb-app --lib` 全量绿（一次并发 socket 争用用例单独重跑通过）。沙箱内 14 项既有网络 Mock 因禁止本地监听失败，经许可在沙箱外重跑通过。
+- 真实窗口验收：隔离 fixture `crates/fluxdb-app/examples/ai_artifact_fixture.rs`（生产装配链 + 受控 Provider，真实写库/产物文件）产出「各渠道销售额」会话；用户启动真实主窗口逐项核对截图——产物卡 `ready · 1 个来源`、四个工具全部完成、`db.query` 回执 succeeded、助手收尾文本正常、未新增任何页面或菜单项。数字一致性由后端核对（快照 items 为 web=12 / store=34，与隔离库一致，`truncated=false`）。完整记录：[docs/testing/ai-agent/t039-2026-10-12.md](testing/ai-agent/t039-2026-10-12.md)。
+- 未验证：Windows/Linux 未编译与原生验收；MySQL/PostgreSQL BI 实机未跑（本轮真实库仅 SQLite）；Redis 无本轮可解析结果句柄故不注册 BI 入口；时区仅支持 UTC 与固定偏移；不含 T040 的报告弹框、原生图表渲染与导出（卡片当前只显示定位与状态，图表/表格本体需 T040 报告弹框），未宣称产物查看 UI 已交付。
+- **T039 已勾选**（2026-10-12 用户真实窗口验收通过）。
 
 
 ### T040 原生图表/报告 UI 与安全导出

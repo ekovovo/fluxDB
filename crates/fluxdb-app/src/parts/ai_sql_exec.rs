@@ -1403,6 +1403,8 @@ impl<R: SqlExecutionResolver + 'static> fluxdb_core::AiTool for AiSqlReadTool<R>
                         let (result, _) = store
                             .put(
                                 &descriptor.id,
+                                &ctx.call_id,
+                                &outcome.columns,
                                 started_at_ms,
                                 outcome.rows.clone().into_iter().map(serde_json::Value::from),
                             )

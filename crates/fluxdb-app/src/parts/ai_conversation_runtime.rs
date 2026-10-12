@@ -47,13 +47,26 @@ impl AiRuntimeHandle {
                     {
                         standard_redis_catalog(resolver, include_write)?
                     } else {
-                        standard_sql_catalog_with_results(resolver, results, include_write)?
+                        standard_sql_catalog_with_results(
+                            resolver,
+                            std::sync::Arc::clone(&results),
+                            include_write,
+                        )?
                     };
                     // 全局停用的工具不进目录：模型既发现不到，也无法绕过发现直接调用。
                     tools = tools.with_hooks(ai_builtin_hooks(storage, job)?);
                     add_ai_file_tools(&mut tools, storage, job)?;
                     add_ai_reference_tools(&mut tools, storage, job)?;
                     add_ai_knowledge_read_tools(&mut tools, storage, job)?;
+                    // Redis 尚未提供可解析的结果快照句柄，不暴露不可兑现的产物入口。
+                    if tools.results().is_some() {
+                        add_ai_artifact_tools(
+                            &mut tools,
+                            storage,
+                            job,
+                            std::sync::Arc::clone(&results),
+                        )?;
+                    }
                     // 编辑器全文由宿主在发送时登记，取走即释放：不写运行快照，
                     // 本轮结束后工具目录随之消失（设计 §13.2 不持久化整份内容）。
                     add_ai_editor_read_tools(&mut tools, take_editor_grant(&job.turn_id))?;

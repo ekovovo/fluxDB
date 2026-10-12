@@ -82,24 +82,109 @@ pub trait ModelRouter: Send + Sync {
     ) -> fluxdb_core::AiFuture<'_, ModelRouteAdvice>;
 }
 
-/// 产物能力只接收宿主分配的来源引用；文件创建和提交由宿主完成。
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ArtifactBuildRequest {
-    pub artifact_type: String,
-    pub source_ids: Vec<String>,
+/// 产物能力错误：`code` 直接成为工具回执的 `error_code`，不被吞成"未知失败"。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ArtifactError {
+    pub code: &'static str,
+    pub message: String,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ArtifactBuildResult {
+impl ArtifactError {
+    pub fn new(code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
+
+    /// 转成宿主错误；保留 code 语义，避免调用方只能看到笼统的内部错误。
+    pub fn into_core(self) -> fluxdb_core::Error {
+        fluxdb_core::Error::new(
+            fluxdb_core::ErrorKind::Internal,
+            format!("{}: {}", self.code, self.message),
+        )
+    }
+}
+
+impl From<fluxdb_core::Error> for ArtifactError {
+    fn from(error: fluxdb_core::Error) -> Self {
+        let code = if error.kind == fluxdb_core::ErrorKind::Cancelled {
+            "cancelled"
+        } else {
+            "artifact_store_error"
+        };
+        Self::new(code, error.message)
+    }
+}
+
+/// 产物能力描述：本插件能产出的 renderer/类型与上限（设计 §23）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ArtifactProducerDescriptor {
+    pub instance_id: &'static str,
+    /// 已注册的 renderer ID；模型声明的 renderer 不在其中就是可见的"不支持"。
+    pub renderers: Vec<String>,
+    pub kinds: Vec<fluxdb_core::ArtifactKind>,
+    /// 单个图表最多取多少个来源数据点。
+    pub max_points: usize,
+}
+
+/// 一个来源在渲染时的公开事实（数据来自结果快照，不是模型提供的数字）。
+#[derive(Clone, Debug, PartialEq)]
+pub struct ArtifactSourceSummary {
+    /// 模型声明并由宿主解析过的结果句柄；为 `None` 表示只声明了工具调用来源。
+    pub declared_ref: Option<String>,
+    /// 宿主结果行 ID（`ai_results.id`）。
+    pub result_id: String,
+    pub tool_call_id: Option<String>,
+    /// 来源结果行的生成时间；行 ID 与该时间共同标识不可变快照版本。
+    pub snapshot_at_ms: i64,
+    /// 来源结果的总条目数与是否被抽样（spill）。
+    pub rows: usize,
+    pub truncated: bool,
+}
+
+/// 已提交的快照文件事实（相对受控根的路径 + 字节数 + 内容指纹）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ArtifactFileFact {
+    pub relative_path: String,
+    pub byte_count: i64,
+    pub content_hash: String,
+}
+
+/// 产物操作的可见结果（工具回执与卡片都从这里投影，不另造事实）。
+#[derive(Clone, Debug, PartialEq)]
+pub struct ArtifactOutcome {
     pub artifact_id: String,
+    /// `draft` / `staged` / `ready` / `failed`。
+    pub status: String,
+    pub revision: i64,
+    pub kind: String,
+    pub title: String,
+    pub renderer: String,
+    pub metric: Option<fluxdb_core::ArtifactMetric>,
+    /// 来源被抽样/数据点被截断时为 true；产物不得把抽样结果说成全集。
+    pub truncated: bool,
+    /// 真实结果里取出的数据点预览（图表块）。
+    pub points: Vec<serde_json::Value>,
+    pub sources: Vec<ArtifactSourceSummary>,
+    pub file: Option<ArtifactFileFact>,
 }
 
+/// 产物能力边界（设计 §23、§27）：工具只把已通过 schema 校验的声明交给插件，
+/// 插件负责字段/来源校验、渲染与提交；来源句柄与受控文件由宿主注入的依赖解析。
 pub trait ArtifactProducer: Send + Sync {
-    fn build(
+    fn descriptor(&self) -> &ArtifactProducerDescriptor;
+    /// 新建草稿：校验形状与来源可解析性，写入产物与来源事实。
+    fn create(&self, spec: fluxdb_core::ArtifactSpec, cancel: &fluxdb_core::CancelFlag) -> Result<ArtifactOutcome, ArtifactError>;
+    /// 追加一个块：块只引用已声明来源的字段，字段必须真实存在。
+    fn add_block(
         &self,
-        request: ArtifactBuildRequest,
-        cancel: fluxdb_core::CancelFlag,
-    ) -> fluxdb_core::AiFuture<'_, ArtifactBuildResult>;
+        artifact_id: &str,
+        block: fluxdb_core::ArtifactBlock,
+        cancel: &fluxdb_core::CancelFlag,
+    ) -> Result<ArtifactOutcome, ArtifactError>;
+    /// 完成：重新校验来源与块、渲染快照并提交；renderer 失败不改写来源结果。
+    fn finalize(&self, artifact_id: &str, cancel: &fluxdb_core::CancelFlag) -> Result<ArtifactOutcome, ArtifactError>;
 }
 
 /// 一个随应用注册的内置能力描述。

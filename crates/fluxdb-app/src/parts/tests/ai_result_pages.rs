@@ -20,18 +20,12 @@ fn ai_result_pages_ctx(call_id: &str) -> fluxdb_core::ToolExecutionContext {
     }
 }
 
-fn ai_result_pages_run(
-    tool: &AiResultReadPageTool,
-    arguments: &str,
-) -> fluxdb_core::ToolReceipt {
+fn ai_result_pages_run(tool: &AiResultReadPageTool, arguments: &str) -> fluxdb_core::ToolReceipt {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .expect("测试运行时")
-        .block_on(tool.execute(
-            ai_result_pages_ctx("call-read-page"),
-            arguments.to_string(),
-        ))
+        .block_on(tool.execute(ai_result_pages_ctx("call-read-page"), arguments.to_string()))
         .expect("工具执行")
 }
 
@@ -46,13 +40,17 @@ fn ai_result_pages_schema_is_registered_and_rejects_bad_arguments() {
     let results = std::sync::Arc::new(std::sync::Mutex::new(ResultStore::new(4096)));
     let mut catalog = ToolCatalog::new(vec![spec]);
     catalog
-        .register(Box::new(ai_result_pages_tool(std::sync::Arc::clone(&results))))
+        .register(Box::new(ai_result_pages_tool(std::sync::Arc::clone(
+            &results,
+        ))))
         .expect("注册 result.read_page");
     assert!(catalog.describe("result.read_page").is_some());
     assert!(catalog.executable("result.read_page").is_some());
-    assert!(catalog
-        .prepare("result.read_page", r#"{"limit":5}"#)
-        .is_err());
+    assert!(
+        catalog
+            .prepare("result.read_page", r#"{"limit":5}"#)
+            .is_err()
+    );
 }
 
 #[test]
@@ -70,7 +68,7 @@ fn ai_result_pages_reads_saved_results_page_by_page_without_recomputing() {
     let (result, spill) = results
         .lock()
         .unwrap()
-        .put("db.query", 7, rows)
+        .put("db.query", "call-rows", &[], 7, rows)
         .expect("保存结果");
     assert!(spill.spilled(), "大结果应走受控 spill");
 
@@ -103,7 +101,11 @@ fn ai_result_pages_reads_saved_results_page_by_page_without_recomputing() {
             None => break,
         }
     }
-    assert_eq!(seen, (0..25).collect::<Vec<i64>>(), "分页应读回全部行且不重不漏");
+    assert_eq!(
+        seen,
+        (0..25).collect::<Vec<i64>>(),
+        "分页应读回全部行且不重不漏"
+    );
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -131,7 +133,13 @@ fn ai_result_pages_reports_controlled_errors_for_expired_unknown_and_foreign() {
     let (result, _) = results
         .lock()
         .unwrap()
-        .put("db.query", 1, vec![serde_json::json!({"n": 1})])
+        .put(
+            "db.query",
+            "call-1",
+            &[],
+            1,
+            vec![serde_json::json!({"n": 1})],
+        )
         .expect("保存结果");
     assert!(results.lock().unwrap().release(&result.id));
     let released = ai_result_pages_run(
@@ -153,7 +161,13 @@ fn ai_result_pages_reports_controlled_errors_for_expired_unknown_and_foreign() {
     let (mine, _) = results
         .lock()
         .unwrap()
-        .put("db.query", 2, vec![serde_json::json!({"n": 3})])
+        .put(
+            "db.query",
+            "call-2",
+            &[],
+            2,
+            vec![serde_json::json!({"n": 3})],
+        )
         .expect("保存结果");
     let foreign_read = ai_result_pages_run(
         &foreign_tool,
@@ -179,6 +193,8 @@ fn ai_result_pages_damaged_spill_reports_error_instead_of_empty_page() {
         .unwrap()
         .put(
             "db.query",
+            "call-damaged",
+            &[],
             3,
             (0..20).map(|n| serde_json::json!({"n": n, "text": "x".repeat(16)})),
         )
@@ -204,7 +220,9 @@ fn ai_result_pages_damaged_spill_reports_error_instead_of_empty_page() {
 fn ai_result_pages_recorded_rows_match_the_store_spill_facts() {
     let root = std::env::temp_dir().join(format!("fluxdb-t027-{}", uuid::Uuid::new_v4()));
     let storage = fluxdb_storage::FileStorage::new(root.clone());
-    storage.with_ai_connection(|_| Ok(())).expect("初始化 schema");
+    storage
+        .with_ai_connection(|_| Ok(()))
+        .expect("初始化 schema");
     let results = std::sync::Arc::new(std::sync::Mutex::new(ResultStore::for_turn(
         64,
         "s-1",
@@ -216,13 +234,14 @@ fn ai_result_pages_recorded_rows_match_the_store_spill_facts() {
         let (result, _) = results
             .lock()
             .unwrap()
-            .put("db.query", 1, rows)
+            .put("db.query", call_id, &[], 1, rows)
             .expect("保存结果");
         fluxdb_core::ToolReceipt {
             call_id: call_id.into(),
             tool_id: "db.query".into(),
             status: fluxdb_core::ToolReceiptStatus::Succeeded,
-            result_json: serde_json::json!({"ok": true, "result_ref": {"id": result.id}}).to_string(),
+            result_json: serde_json::json!({"ok": true, "result_ref": {"id": result.id}})
+                .to_string(),
             error_code: None,
             affected_rows: None,
             started_at_ms: 1,
@@ -232,7 +251,9 @@ fn ai_result_pages_recorded_rows_match_the_store_spill_facts() {
 
     let spilled = receipt_for(
         "call-spilled",
-        (0..20).map(|n| serde_json::json!({"n": n, "text": "x".repeat(16)})).collect(),
+        (0..20)
+            .map(|n| serde_json::json!({"n": n, "text": "x".repeat(16)}))
+            .collect(),
     );
     let in_memory = receipt_for("call-small", vec![serde_json::json!({"n": 1})]);
     let job = AiConversationJob {
@@ -252,7 +273,16 @@ fn ai_result_pages_recorded_rows_match_the_store_spill_facts() {
                 })?
                 .id;
             fluxdb_storage::ai_platform::conversation::send(
-                conn, 1, true, "s-1", &agent, "t-1", "m-user", "查一下", "{}", "{}",
+                conn,
+                1,
+                true,
+                "s-1",
+                &agent,
+                "t-1",
+                "m-user",
+                "查一下",
+                "{}",
+                "{}",
             )?;
             fluxdb_storage::ai_platform::sessions::append_message(
                 conn,
@@ -373,12 +403,7 @@ fn ai_result_pages_declares_sample_shape_and_keeps_cursor_when_shedding_items() 
         started_at_ms: 0,
         finished_at_ms: 1,
     };
-    let projection = project_receipt_with_shape(
-        &receipt,
-        None,
-        512,
-        &spec.output_shape,
-    );
+    let projection = project_receipt_with_shape(&receipt, None, 512, &spec.output_shape);
     assert!(projection.truncated);
     assert!(projection.text.len() <= 512);
     let value: serde_json::Value = serde_json::from_str(&projection.text).expect("裁剪后合法 JSON");
@@ -387,4 +412,269 @@ fn ai_result_pages_declares_sample_shape_and_keeps_cursor_when_shedding_items() 
     assert_eq!(value["next_cursor"], "cursor-2", "翻页游标必须保留");
     assert_eq!(value["total_items"], 10000);
     assert_eq!(value["omitted_fields"], serde_json::json!(["items"]));
+}
+
+#[test]
+fn ai_result_pages_facts_name_positional_cells_without_changing_page_shape() {
+    let results = std::sync::Arc::new(std::sync::Mutex::new(ResultStore::for_turn(
+        64 * 1024,
+        "s-1",
+        "t-1",
+        None,
+    )));
+    let columns: Vec<String> = [
+        "label",
+        "amount",
+        "text_number",
+        "mixed",
+        "all_null",
+        "nullable",
+        "flag",
+        "nested",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect();
+    let rows = vec![
+        serde_json::json!(["first", 12, "12", 1, null, null, true, {"n": 1}]),
+        serde_json::json!(["second", -2.5, "2.5", "2", null, 0, false, [2]]),
+        serde_json::json!(["third", 0, null, null, null, null, null, null]),
+    ];
+    let (result, spill) = results
+        .lock()
+        .unwrap()
+        .put(
+            "db.query",
+            "source-call-private",
+            &columns,
+            42,
+            rows.clone(),
+        )
+        .expect("保存位置行");
+    assert!(!spill.spilled());
+    let facts = results.lock().unwrap().facts(&result.id).expect("读取事实");
+    assert_eq!(facts.result, result);
+    assert_eq!(facts.result.call_id, "source-call-private");
+    assert_eq!(facts.rows, rows.len());
+    assert!(!facts.truncated);
+    assert_eq!(
+        facts.sample,
+        vec![
+            serde_json::json!({
+                "label": "first", "amount": 12, "text_number": "12", "mixed": 1,
+                "all_null": null, "nullable": null, "flag": true, "nested": {"n": 1},
+            }),
+            serde_json::json!({
+                "label": "second", "amount": -2.5, "text_number": "2.5", "mixed": "2",
+                "all_null": null, "nullable": 0, "flag": false, "nested": [2],
+            }),
+            serde_json::json!({
+                "label": "third", "amount": 0, "text_number": null, "mixed": null,
+                "all_null": null, "nullable": null, "flag": null, "nested": null,
+            }),
+        ]
+    );
+    assert_eq!(
+        facts
+            .fields
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>(),
+        columns.iter().collect::<std::collections::BTreeSet<_>>(),
+    );
+    assert_eq!(facts.fields.len(), columns.len(), "字段名不得重复");
+    assert_eq!(facts.numeric_fields, vec!["amount", "nullable"]);
+
+    // facts 按名成形不能改写底层快照；模型翻页仍收到位置行，宿主调用 ID 不外泄。
+    let tool = ai_result_pages_tool(std::sync::Arc::clone(&results));
+    let mut cursor = None;
+    let mut seen = Vec::new();
+    for offset in 0..rows.len() {
+        let receipt = ai_result_pages_run(
+            &tool,
+            &serde_json::json!({
+                "result_ref": {"id": result.id},
+                "cursor": cursor,
+                "limit": 1,
+            })
+            .to_string(),
+        );
+        assert_eq!(receipt.status, fluxdb_core::ToolReceiptStatus::Succeeded);
+        assert_eq!(receipt.call_id, "call-read-page");
+        let payload: serde_json::Value = serde_json::from_str(&receipt.result_json).unwrap();
+        assert_eq!(
+            payload["result_ref"],
+            serde_json::json!({
+                "id": result.id, "tool_id": "db.query", "created_at_ms": 42,
+            }),
+        );
+        assert!(!receipt.result_json.contains("source-call-private"));
+        assert!(payload.get("call_id").is_none());
+        assert_eq!(payload["items"], serde_json::json!([rows[offset]]));
+        assert_eq!(payload["returned_items"], 1);
+        assert_eq!(payload["total_items"], rows.len());
+        let has_more = offset + 1 < rows.len();
+        assert_eq!(payload["truncated"], has_more);
+        cursor = payload["next_cursor"].as_str().map(str::to_string);
+        assert_eq!(
+            cursor,
+            has_more.then(|| format!("{}:{}", result.id, offset + 1)),
+        );
+        seen.extend(payload["items"].as_array().unwrap().iter().cloned());
+    }
+    assert_eq!(seen, rows);
+    assert_eq!(results.lock().unwrap().facts(&result.id).unwrap(), facts);
+}
+
+#[test]
+fn ai_result_pages_facts_count_spill_but_only_sample_memory_without_reading_files() {
+    let root = std::env::temp_dir().join(format!("fluxdb-t039-{}", uuid::Uuid::new_v4()));
+    let rows: Vec<serde_json::Value> = (0..6).map(|n| serde_json::json!([n, "fixed"])).collect();
+    let budget = 2 * serde_json::to_vec(&rows[0]).unwrap().len();
+    let mut store = ResultStore::for_turn(budget, "s-1", "t-1", Some(root.clone()));
+    let (result, spill) = store
+        .put(
+            "db.query",
+            "call-facts",
+            &["n".into(), "label".into()],
+            7,
+            rows.clone(),
+        )
+        .expect("保存结果");
+    assert!(spill.spilled());
+    let facts = store.facts(&result.id).expect("读取事实");
+    assert_eq!(facts.result, result);
+    assert_eq!(facts.rows, 6, "总数必须包含 spill，不能冒充样本行数");
+    assert!(facts.truncated);
+    assert_eq!(
+        facts.sample,
+        vec![
+            serde_json::json!({"n": 0, "label": "fixed"}),
+            serde_json::json!({"n": 1, "label": "fixed"}),
+        ],
+    );
+    assert_eq!(facts.fields, facts.sample[0].as_object().unwrap().keys().cloned().collect::<Vec<_>>());
+    assert_eq!(facts.numeric_fields, vec!["n"]);
+    let page = store.read_page(&result.id, None, 10, 4096).unwrap();
+    assert_eq!(page.items, rows);
+    assert!(!page.truncated);
+    assert_eq!(page.next_cursor, None);
+
+    std::fs::remove_file(root.join(spill.relative_path.unwrap())).expect("移除隔离 spill 文件");
+    assert_eq!(
+        store.facts(&result.id).unwrap(),
+        facts,
+        "facts 不应触盘或续读"
+    );
+    assert_eq!(
+        store
+            .read_page(&result.id, None, 10, 4096)
+            .unwrap_err()
+            .code,
+        "result_damaged",
+    );
+    std::fs::remove_dir_all(root).expect("清理测试目录");
+}
+
+#[test]
+fn ai_result_pages_facts_reject_released_expired_unknown_and_foreign_handles() {
+    let mut store = ResultStore::for_turn(4096, "s-1", "t-1", None);
+    let (result, _) = store
+        .put(
+            "db.query",
+            "call-facts",
+            &[],
+            1,
+            [serde_json::json!({"n": 1})],
+        )
+        .unwrap();
+    assert!(store.facts(&result.id).is_ok());
+    assert_eq!(
+        store.facts("result-missing").unwrap_err().code,
+        "unknown_result"
+    );
+    for (session, turn) in [("s-2", "t-1"), ("s-1", "t-2")] {
+        let foreign = ResultStore::for_turn(4096, session, turn, None);
+        assert_eq!(
+            foreign.facts(&result.id).unwrap_err().code,
+            "unknown_result"
+        );
+    }
+    assert!(store.release(&result.id));
+    assert_eq!(store.facts(&result.id).unwrap_err().code, "result_expired");
+    assert!(store.expire(&result.id));
+    assert_eq!(store.facts(&result.id).unwrap_err().code, "unknown_result");
+
+    let (next, _) = store
+        .put(
+            "db.query",
+            "call-next",
+            &[],
+            2,
+            [serde_json::json!({"n": 2})],
+        )
+        .unwrap();
+    store.expire_session();
+    assert_eq!(store.facts(&next.id).unwrap_err().code, "unknown_result");
+}
+
+#[test]
+fn ai_result_pages_valid_json_spill_tampering_is_damaged_even_with_same_row_count() {
+    let root = std::env::temp_dir().join(format!("fluxdb-t039-{}", uuid::Uuid::new_v4()));
+    let results = std::sync::Arc::new(std::sync::Mutex::new(ResultStore::for_turn(
+        16,
+        "s-1",
+        "t-1",
+        Some(root.clone()),
+    )));
+    let (result, spill) = results
+        .lock()
+        .unwrap()
+        .put(
+            "db.query",
+            "call-tampered",
+            &["n".into(), "label".into()],
+            3,
+            (0..6).map(|n| serde_json::json!([n, "fixed"])),
+        )
+        .unwrap();
+    assert!(spill.spilled());
+    let path = root.join(spill.relative_path.unwrap());
+    let original = std::fs::read(&path).unwrap();
+    let original_rows: Vec<serde_json::Value> = serde_json::from_slice(&original).unwrap();
+    let tool = ai_result_pages_tool(results);
+    let arguments = serde_json::json!({"result_ref": {"id": result.id}, "limit": 100}).to_string();
+    assert_eq!(
+        ai_result_pages_run(&tool, &arguments).status,
+        fluxdb_core::ToolReceiptStatus::Succeeded,
+    );
+    let mut changed_rows = original_rows.clone();
+    changed_rows[0][1] = serde_json::json!("other");
+    let changed = serde_json::to_vec(&changed_rows).unwrap();
+    assert_eq!(changed.len(), original.len(), "同字节数篡改必须靠指纹检出");
+    let mut padded = original.clone();
+    padded.push(b' ');
+    for modified in [changed, padded] {
+        let decoded: Vec<serde_json::Value> = serde_json::from_slice(&modified).unwrap();
+        assert_eq!(
+            decoded.len(),
+            original_rows.len(),
+            "夹具必须保留合法 JSON 与行数"
+        );
+        std::fs::write(&path, modified).unwrap();
+        let receipt = ai_result_pages_run(&tool, &arguments);
+        assert_eq!(receipt.status, fluxdb_core::ToolReceiptStatus::Failed);
+        assert_eq!(receipt.error_code.as_deref(), Some("result_damaged"));
+        let payload: serde_json::Value = serde_json::from_str(&receipt.result_json).unwrap();
+        assert_eq!(payload["ok"], false);
+        assert_eq!(payload["code"], "result_damaged");
+        assert_eq!(payload["retryable"], false);
+        assert!(payload.get("items").is_none());
+        assert!(payload.get("next_cursor").is_none());
+    }
+    std::fs::write(path, original).unwrap();
+    assert_eq!(
+        ai_result_pages_run(&tool, &arguments).status,
+        fluxdb_core::ToolReceiptStatus::Succeeded,
+    );
+    std::fs::remove_dir_all(root).expect("清理测试目录");
 }

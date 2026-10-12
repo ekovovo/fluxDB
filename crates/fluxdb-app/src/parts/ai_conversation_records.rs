@@ -1,3 +1,13 @@
+/// `ai_results` 行 ID 的稳定约定：产物来源表按它引用真实结果行。
+pub(crate) fn ai_result_row_id(turn_id: &str, call_id: &str) -> String {
+    format!("{turn_id}-result-{call_id}")
+}
+
+/// `ai_tool_calls` 行 ID 的稳定约定。
+pub(crate) fn ai_tool_call_row_id(turn_id: &str, call_id: &str) -> String {
+    format!("{turn_id}-toolcall-{call_id}")
+}
+
 /// 参数脱敏：保留工具与 SQL 结构，去掉疑似凭据字段后入库（审计可读，秘密不入库）。
 fn ai_conversation_redact_arguments(arguments_json: &str) -> String {
     let Ok(mut value) = serde_json::from_str::<serde_json::Value>(arguments_json) else {
@@ -50,7 +60,7 @@ fn ai_conversation_record_tool_start(
     target_json: &str,
     text_offset: usize,
 ) -> fluxdb_core::Result<()> {
-    let call_row = format!("{}-toolcall-{}", job.turn_id, call.provider_call_id);
+    let call_row = ai_tool_call_row_id(&job.turn_id, &call.provider_call_id);
     let payload=serde_json::json!({"tool":call.tool_id,"call_id":call.provider_call_id,"plan_hash":plan_hash,"text_offset":text_offset}).to_string();
     with_ai_storage(storage, |conn| {
         // 审批恢复和拒绝回执都会新增事实行，序号必须从落盘状态分配而非内存计数。
@@ -134,8 +144,8 @@ fn ai_conversation_record_tool_result(
     text_offset: usize,
     results: Option<&Arc<Mutex<ResultStore>>>,
 ) -> fluxdb_core::Result<()> {
-    let call_row = format!("{}-toolcall-{}", job.turn_id, receipt.call_id);
-    let result_row = format!("{}-result-{}", job.turn_id, receipt.call_id);
+    let call_row = ai_tool_call_row_id(&job.turn_id, &receipt.call_id);
+    let result_row = ai_result_row_id(&job.turn_id, &receipt.call_id);
     let call_status = match receipt.status {
         fluxdb_core::ToolReceiptStatus::Succeeded => "succeeded",
         fluxdb_core::ToolReceiptStatus::Failed => "failed",
@@ -163,6 +173,8 @@ fn ai_conversation_record_tool_result(
     })
     .to_string();
     let byte_count = receipt.result_json.len() as i64;
+    let declared_result = serde_json::from_str::<serde_json::Value>(&receipt.result_json)
+        .ok().and_then(|value| value.get("result_ref")?.get("id")?.as_str().map(str::to_owned));
     let plan_hash = serde_json::from_str::<serde_json::Value>(&receipt.result_json)
         .ok()
         .and_then(|value| {
@@ -231,7 +243,7 @@ fn ai_conversation_record_tool_result(
                 &job.session_id,
                 &job.turn_id,
                 &call_row,
-                &serde_json::json!({"tool":receipt.tool_id,"call_id":receipt.call_id}).to_string(),
+                &serde_json::json!({"tool":receipt.tool_id,"call_id":receipt.call_id,"result_ref":declared_result}).to_string(),
                 "available",
                 byte_count,
                 &retention,
@@ -288,7 +300,7 @@ fn ai_conversation_record_approval(
     target_json: &str,
     text_offset: usize,
 ) -> fluxdb_core::Result<String> {
-    let call_row = format!("{}-toolcall-{}", job.turn_id, call.provider_call_id);
+    let call_row = ai_tool_call_row_id(&job.turn_id, &call.provider_call_id);
     let approval_id = format!("{}-approval-{}", job.turn_id, call.provider_call_id);
     with_ai_storage(storage, |conn| {
         // 审批恢复和拒绝回执都会新增事实行，序号必须从落盘状态分配而非内存计数。

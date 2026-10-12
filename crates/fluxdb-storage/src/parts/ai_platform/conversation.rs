@@ -359,3 +359,131 @@ pub fn upsert_event_part_in_transaction(
     }
     Ok(())
 }
+
+/// 追加/更新产物卡片段（`kind='artifact_ref'`）。
+///
+/// 与事件片段同样的安全边界：Turn 归属必须匹配、终态 Turn 拒绝迟到事件；
+/// 产物须属于本 Turn，已有片段须匹配消息、类型及产物，不能借 ID 更新其他片段。
+#[allow(clippy::too_many_arguments)]
+pub fn upsert_artifact_part(
+    conn: &Connection,
+    now: i64,
+    session_id: &str,
+    turn_id: &str,
+    message_id: &str,
+    part_id: &str,
+    status: sessions::PartStatus,
+    payload_json: &str,
+    artifact_id: &str,
+) -> Result<()> {
+    let tx = conn.unchecked_transaction().map_err(sqlite_error)?;
+    upsert_artifact_part_in_transaction(
+        &tx,
+        now,
+        session_id,
+        turn_id,
+        message_id,
+        part_id,
+        status,
+        payload_json,
+        artifact_id,
+    )?;
+    tx.commit().map_err(sqlite_error)
+}
+
+/// ready 状态与产物片段共同提交，片段写入失败不能留下假就绪产物。
+#[allow(clippy::too_many_arguments)]
+pub fn upsert_artifact_part_in_transaction(
+    tx: &rusqlite::Transaction<'_>,
+    now: i64,
+    session_id: &str,
+    turn_id: &str,
+    message_id: &str,
+    part_id: &str,
+    status: sessions::PartStatus,
+    payload_json: &str,
+    artifact_id: &str,
+) -> Result<()> {
+    let turn = sessions::load_turn(&tx, turn_id)?;
+    if turn.session_id != session_id || turn.status.is_terminal() {
+        return Err(Error::new(
+            ErrorKind::Internal,
+            "拒绝迟到或归属不符的任务事件",
+        ));
+    }
+    let artifact: Option<(String, String)> = tx
+        .query_row(
+            "SELECT session_id, turn_id FROM ai_artifacts WHERE id=?1",
+            [artifact_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .map_err(sqlite_error)?;
+    let (artifact_session, artifact_turn) = artifact
+        .ok_or_else(|| Error::new(ErrorKind::Internal, format!("产物不存在: {artifact_id}")))?;
+    if artifact_session != session_id || artifact_turn != turn_id {
+        return Err(Error::new(
+            ErrorKind::Internal,
+            format!("产物不属于本任务: {artifact_id}"),
+        ));
+    }
+    let existing_message: Option<(String, Option<String>)> = tx
+        .query_row(
+            "SELECT session_id, turn_id FROM ai_messages WHERE id=?1",
+            [message_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .map_err(sqlite_error)?;
+    if existing_message
+        .as_ref()
+        .is_some_and(|(session, turn)| session != session_id || turn.as_deref() != Some(turn_id))
+    {
+        return Err(Error::new(ErrorKind::Internal, "产物消息不属于本任务"));
+    }
+    let existing_part: Option<(String, String, Option<String>, i64)> = tx
+        .query_row(
+            "SELECT message_id, kind, artifact_id, revision FROM ai_message_parts WHERE id=?1",
+            [part_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .optional()
+        .map_err(sqlite_error)?;
+    if existing_part
+        .as_ref()
+        .is_some_and(|(message, kind, artifact, _)| {
+            message != message_id
+                || kind != sessions::PartKind::ArtifactRef.as_str()
+                || artifact.as_deref() != Some(artifact_id)
+        })
+    {
+        return Err(Error::new(
+            ErrorKind::Internal,
+            "已有片段的消息、类型或产物不匹配",
+        ));
+    }
+    if existing_message.is_none() {
+        let seq:i64=tx.query_row("UPDATE ai_sessions SET next_message_seq=next_message_seq+1,updated_at_ms=?2 WHERE id=?1 RETURNING next_message_seq-1",params![session_id,now],|r|r.get(0)).map_err(sqlite_error)?;
+        tx.execute("INSERT INTO ai_messages(id,session_id,turn_id,seq,role,persistence_kind,created_at_ms) VALUES(?1,?2,?3,?4,'assistant','checkpoint',?5)",params![message_id,session_id,turn_id,seq,now]).map_err(sqlite_error)?;
+    }
+    match existing_part {
+        Some((_, _, _, rev)) => {
+            sessions::update_part(&tx, now, part_id, status, payload_json, rev)?;
+        }
+        None => {
+            sessions::append_part(
+                &tx,
+                now,
+                part_id,
+                message_id,
+                sessions::PartKind::ArtifactRef,
+                status,
+                payload_json,
+                None,
+                None,
+                Some(artifact_id),
+            )?;
+        }
+    }
+    Ok(())
+}

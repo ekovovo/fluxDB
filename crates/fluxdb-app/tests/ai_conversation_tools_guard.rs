@@ -431,7 +431,7 @@ fn tool_facts_and_parts_form_closed_loop_and_survive_reopen() {
 }
 
 #[test]
-fn arguments_redaction_removes_nested_credentials() {
+fn invalid_nested_credential_parameters_are_rejected_before_execution() {
     let fixture = Fixture::new();
     let mut controller = fixture.configured();
     let job = controller
@@ -441,8 +441,7 @@ fn arguments_redaction_removes_nested_credentials() {
     let plaintext_password = "guard-password-should-not-persist";
     let plaintext_api_key = "guard-api-key-should-not-persist";
     let plaintext_token = "guard-token-should-not-persist";
-    // `parameters` 的元素 schema 未限制字段；敏感字段放这里仍会通过工具 schema，
-    // 因此这是验证 `arguments_redacted_json` 是否递归脱敏的有效生产路径。
+    // 非 tagged 参数在 schema 阶段拒绝，不能为验证脱敏而绕过生产参数校验。
     let args = serde_json::json!({
         "target": "conn:1/db:main",
         "sql": "SELECT * FROM product",
@@ -463,37 +462,23 @@ fn arguments_redaction_removes_nested_credentials() {
         },
         vec![tool_call("guard-call-secret", &args), text_call("已处理。")],
     );
-    let _ = run_turn(&fixture, &job, &provider, &read_catalog());
-
-    let calls = tool_facts(&fixture.storage, &job.session_id);
-    assert_eq!(calls.len(), 1, "敏感参数在工具事实中留下可审计行");
-    let call = &calls[0];
-    let args: serde_json::Value =
-        serde_json::from_str(&call.arguments_redacted_json).expect("脱敏参数是合法 JSON");
-    assert_eq!(args["sql"].as_str(), Some("SELECT * FROM product"));
-    assert_eq!(args["target"].as_str(), Some("conn:1/db:main"));
-
-    let receipt = call.receipt_json.as_deref().unwrap_or("{}");
+    let update = run_turn(&fixture, &job, &provider, &read_catalog());
+    assert!(tool_facts(&fixture.storage, &job.session_id).is_empty());
+    assert!(result_facts(&fixture.storage, &job.session_id).is_empty());
+    let public = serde_json::to_string(
+        &update
+            .view
+            .as_ref()
+            .unwrap()
+            .messages
+            .iter()
+            .flat_map(|message| &message.parts)
+            .map(|part| &part.payload_json)
+            .collect::<Vec<_>>(),
+    )
+    .unwrap();
     for forbidden in [plaintext_password, plaintext_api_key, plaintext_token] {
-        assert!(
-            !receipt.contains(forbidden),
-            "receipt_json 不应包含明文凭据: {forbidden}"
-        );
-    }
-
-    let serialized = call.arguments_redacted_json.as_str();
-    for forbidden in [
-        "password",
-        "api_key",
-        "token",
-        plaintext_password,
-        plaintext_api_key,
-        plaintext_token,
-    ] {
-        assert!(
-            !serialized.contains(forbidden),
-            "arguments_redacted_json 不应包含凭据字段或值: {forbidden}; actual={serialized}"
-        );
+        assert!(!public.contains(forbidden), "拒绝反馈不得包含参数秘密");
     }
 }
 

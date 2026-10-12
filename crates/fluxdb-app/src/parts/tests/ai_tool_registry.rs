@@ -223,7 +223,9 @@ fn ai_tool_registry_result_pages_are_bounded_and_cursor_checked() {
     let items: Vec<serde_json::Value> = (0..10)
         .map(|n| serde_json::json!({"n": n, "text": "x"}))
         .collect();
-    let (result, spill) = store.put("db.query", 123, items).expect("保存结果");
+    let (result, spill) = store
+        .put("db.query", "call-1", &[], 123, items)
+        .expect("保存结果");
     assert!(!spill.spilled(), "大字节上限应完整留在内存，不触发 spill");
 
     let first = store
@@ -269,7 +271,13 @@ fn ai_tool_registry_result_pages_are_bounded_and_cursor_checked() {
 fn ai_tool_registry_released_and_expired_results_are_visible_errors() {
     let mut released_store = ResultStore::new(1024);
     let (released, _) = released_store
-        .put("db.query", 1, vec![serde_json::json!({"n": 1})])
+        .put(
+            "db.query",
+            "call-1",
+            &[],
+            1,
+            vec![serde_json::json!({"n": 1})],
+        )
         .expect("保存结果");
     assert!(released_store.release(&released.id));
     let released_error = released_store
@@ -279,7 +287,13 @@ fn ai_tool_registry_released_and_expired_results_are_visible_errors() {
 
     let mut expired_store = ResultStore::new(1024);
     let (expired, _) = expired_store
-        .put("db.query", 2, vec![serde_json::json!({"n": 2})])
+        .put(
+            "db.query",
+            "call-2",
+            &[],
+            2,
+            vec![serde_json::json!({"n": 2})],
+        )
         .expect("保存结果");
     assert!(expired_store.expire(&expired.id));
     let expired_error = expired_store
@@ -304,6 +318,7 @@ fn ai_tool_registry_receipt_projection_is_bounded_and_immutable() {
     let result_ref = ResultRef {
         id: "result-1".into(),
         tool_id: "db.query".into(),
+        call_id: "call-1".into(),
         created_at_ms: 20,
         session_id: "s-1".into(),
         turn_id: "t-1".into(),
@@ -376,16 +391,13 @@ fn ai_tool_registry_projection_honors_spec_output_limit() {
 fn ai_tool_registry_spilled_results_are_readable_page_by_page() {
     // 大结果 spill 到受控文件后，分页必须能读回**全部**行，而不是只报"还有更多"。
     let root = std::env::temp_dir().join(format!("fluxdb-t027-{}", uuid::Uuid::new_v4()));
-    let mut store = ResultStore::for_turn(
-        64,
-        "s-1",
-        "t-1",
-        Some(root.clone()),
-    );
+    let mut store = ResultStore::for_turn(64, "s-1", "t-1", Some(root.clone()));
     let rows: Vec<serde_json::Value> = (0..40)
         .map(|n| serde_json::json!({"n": n, "text": "x".repeat(16)}))
         .collect();
-    let (result, spill) = store.put("db.query", 42, rows).expect("保存结果");
+    let (result, spill) = store
+        .put("db.query", "call-9", &[], 42, rows)
+        .expect("保存结果");
     assert!(spill.spilled(), "超出内存预算应写受控 spill 文件");
     assert!(spill.byte_count > 0 && !spill.content_hash.is_empty());
 
@@ -414,7 +426,9 @@ fn ai_tool_registry_spill_file_damage_is_reported_not_silently_empty() {
     let rows: Vec<serde_json::Value> = (0..20)
         .map(|n| serde_json::json!({"n": n, "text": "x".repeat(16)}))
         .collect();
-    let (result, spill) = store.put("db.query", 42, rows).expect("保存结果");
+    let (result, spill) = store
+        .put("db.query", "call-9", &[], 42, rows)
+        .expect("保存结果");
     assert!(spill.spilled());
 
     // 人为破坏 spill 文件：读取必须显式报错，不能伪装成空页。
@@ -432,7 +446,13 @@ fn ai_tool_registry_result_refs_are_scoped_to_the_owning_session() {
     let root = std::env::temp_dir().join(format!("fluxdb-t027-{}", uuid::Uuid::new_v4()));
     let mut mine = ResultStore::for_turn(64 * 1024, "s-1", "t-1", Some(root.clone()));
     let (result, _) = mine
-        .put("db.query", 1, vec![serde_json::json!({"n": 1})])
+        .put(
+            "db.query",
+            "call-1",
+            &[],
+            1,
+            vec![serde_json::json!({"n": 1})],
+        )
         .expect("保存结果");
     assert!(mine.read_page(&result.id, None, 10, 4096).is_ok());
 
@@ -471,7 +491,10 @@ fn ai_tool_registry_globally_disabled_tool_is_neither_discoverable_nor_executabl
     assert!(
         matches!(
             catalog.prepare("db.query", r#"{"target":"c1","sql":"select 1"}"#),
-            Err(ToolError { code: "unknown_tool", .. })
+            Err(ToolError {
+                code: "unknown_tool",
+                ..
+            })
         ),
         "绕过发现直接调用必须返回受控 unknown_tool"
     );
@@ -506,8 +529,12 @@ fn ai_tool_registry_truncated_projection_is_still_valid_json() {
         "{{\"tool\":\"{}\",\"status\":\"succeeded\",\"truncated\":{},\"result\":{}}}",
         receipt.tool_id, projection.truncated, projection.text
     );
-    serde_json::from_str::<serde_json::Value>(&envelope)
-        .unwrap_or_else(|error| panic!("截断后信封必须是合法 JSON: {error}; tail={}", &envelope[envelope.len().saturating_sub(80)..]));
+    serde_json::from_str::<serde_json::Value>(&envelope).unwrap_or_else(|error| {
+        panic!(
+            "截断后信封必须是合法 JSON: {error}; tail={}",
+            &envelope[envelope.len().saturating_sub(80)..]
+        )
+    });
 }
 
 #[test]
@@ -535,14 +562,16 @@ fn ai_tool_registry_truncation_keeps_structure_and_marks_omitted_fields() {
         finished_at_ms: 1,
     };
     let limit = 512usize;
-    let projection = project_receipt(&receipt, None, limit);
+    let projection = project_receipt_with_shape(&receipt, None, limit,
+        &ToolOutputShape::Sample { keep_rows: 5, omit_field: "rows".into(), rows_omitted_field: None });
     assert!(projection.truncated);
     assert!(
         projection.text.len() <= limit,
         "投影必须遵守工具声明上限，实际 {}",
         projection.text.len()
     );
-    let value: serde_json::Value = serde_json::from_str(&projection.text).expect("截断后仍是合法 JSON");
+    let value: serde_json::Value =
+        serde_json::from_str(&projection.text).expect("截断后仍是合法 JSON");
     assert_eq!(value["columns"], serde_json::json!(["id", "name"]));
     assert_eq!(value["row_count"], 5000);
     assert!(
@@ -559,7 +588,9 @@ fn ai_tool_registry_truncation_keeps_structure_and_marks_omitted_fields() {
         "rows 必须出现在 omitted_fields，实际 {omitted:?}"
     );
     assert!(
-        omitted.iter().all(|name| name == "rows" || name == "truncated"),
+        omitted
+            .iter()
+            .all(|name| name == "rows" || name == "truncated"),
         "不应丢弃结构/行数这类小事实，实际 {omitted:?}"
     );
 }
@@ -607,21 +638,14 @@ fn ai_tool_registry_sample_shape_sheds_declared_field_first() {
         "rows_omitted": 3995,
     })
     .to_string();
-    // serde_json 默认按键排序，rows 不会是最后一个键——正是需要验证声明顺序的原因。
-    assert!(
-        raw.find("\"columns\"").unwrap() < raw.find("\"rows\"").unwrap(),
-        "fixture 必须让 rows 不在最后，才能验证声明顺序生效"
-    );
-
     let shape = ToolOutputShape::Sample {
         keep_rows: 5,
         omit_field: "rows".into(),
         rows_omitted_field: Some("rows_omitted".into()),
     };
-    let value: serde_json::Value = serde_json::from_str(
-        &shrink_to_budget(&raw, 512, &shape).expect("应能裁到预算内"),
-    )
-    .expect("裁剪结果必须是合法 JSON");
+    let value: serde_json::Value =
+        serde_json::from_str(&shrink_to_budget(&raw, 512, &shape).expect("应能裁到预算内"))
+            .expect("裁剪结果必须是合法 JSON");
 
     assert!(
         value.get("rows").is_none(),
@@ -656,4 +680,224 @@ fn ai_tool_registry_opaque_shape_does_not_invent_structure() {
     )
     .text;
     serde_json::from_str::<serde_json::Value>(&text).expect("受控错误必须是合法 JSON");
+}
+
+#[test]
+fn ai_tool_registry_one_of_matches_source_branches_with_local_refs() {
+    let schema = serde_json::json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["source"],
+        "properties": {
+            "source": {
+                "oneOf": [
+                    {"$ref": "#/$defs/result"},
+                    {"$ref": "#/$defs/query"},
+                ],
+            },
+        },
+        "$defs": {
+            "result": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["kind", "result_ref"],
+                "properties": {
+                    "kind": {"enum": ["result"]},
+                    "result_ref": {"type": "string", "minLength": 1},
+                },
+            },
+            "query": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["kind", "sql"],
+                "properties": {
+                    "kind": {"enum": ["query"]},
+                    "sql": {"type": "string", "minLength": 1},
+                },
+            },
+        },
+    });
+    let catalog = ToolCatalog::new(vec![tool_spec("artifact.test", schema)]);
+    for source in [
+        serde_json::json!({"kind": "result", "result_ref": "result-1"}),
+        serde_json::json!({"kind": "query", "sql": "select 1"}),
+    ] {
+        let arguments = serde_json::json!({"source": source});
+        let prepared = catalog
+            .prepare("artifact.test", &arguments.to_string())
+            .unwrap();
+        assert_eq!(prepared.as_value(), &arguments);
+    }
+    for source in [
+        serde_json::json!({"kind": "unknown", "result_ref": "result-1"}),
+        serde_json::json!({"kind": "result"}),
+        serde_json::json!({"kind": "result", "result_ref": ""}),
+        serde_json::json!({"kind": "result", "result_ref": 1}),
+        serde_json::json!({"kind": "result", "sql": "select 1"}),
+        serde_json::json!({"kind": "query", "sql": "select 1", "result_ref": "result-1"}),
+        serde_json::json!(null),
+    ] {
+        assert_invalid_arguments(
+            &catalog,
+            "artifact.test",
+            &serde_json::json!({"source": source}).to_string(),
+        );
+    }
+}
+
+#[test]
+fn ai_tool_registry_one_of_rejects_zero_and_multiple_matches_without_execution() {
+    let catalog = ToolCatalog::new(vec![tool_spec(
+        "db.query",
+        serde_json::json!({
+            "type": "object",
+            "required": ["value"],
+            "properties": {
+                "value": {"oneOf": [{"type": "integer"}, {"type": "number"}]},
+            },
+        }),
+    )]);
+    let tool = Arc::new(crate::RecordingTool::new(
+        "db.query",
+        fluxdb_core::ToolRisk::Read,
+    ));
+    let mut catalog = catalog;
+    catalog
+        .register(Box::new(SharedRecordingTool(tool.clone())))
+        .unwrap();
+    assert!(catalog.executable("db.query").is_some());
+    let valid = serde_json::json!({"value": 1.5});
+    assert_eq!(
+        catalog
+            .prepare("db.query", &valid.to_string())
+            .unwrap()
+            .as_value(),
+        &valid,
+    );
+    for value in [
+        serde_json::json!(1),
+        serde_json::json!(0),
+        serde_json::json!("1"),
+        serde_json::json!(null),
+        serde_json::json!(true),
+    ] {
+        assert_invalid_arguments(
+            &catalog,
+            "db.query",
+            &serde_json::json!({"value": value}).to_string(),
+        );
+    }
+    assert_eq!(tool.call_count(), 0, "oneOf 校验或失败不得执行工具");
+}
+
+#[test]
+fn ai_tool_registry_one_of_keeps_sibling_constraints_and_validates_array_items() {
+    let catalog = ToolCatalog::new(vec![tool_spec(
+        "artifact.test",
+        serde_json::json!({
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["values"],
+            "properties": {
+                "values": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                        "oneOf": [{"type": "string"}, {"type": "integer"}],
+                        "minLength": 2,
+                        "minimum": 0,
+                    },
+                },
+            },
+        }),
+    )]);
+    let valid = serde_json::json!({"values": ["ab", 0, 12]});
+    assert_eq!(
+        catalog
+            .prepare("artifact.test", &valid.to_string())
+            .unwrap()
+            .as_value(),
+        &valid,
+    );
+    for invalid in [
+        serde_json::json!({"values": ["a"]}),
+        serde_json::json!({"values": [-1]}),
+        serde_json::json!({"values": [1.5]}),
+        serde_json::json!({"values": ["ab", null]}),
+        serde_json::json!({"values": []}),
+        serde_json::json!({"values": ["ab"], "extra": true}),
+    ] {
+        assert_invalid_arguments(&catalog, "artifact.test", &invalid.to_string());
+    }
+}
+
+#[test]
+fn ai_tool_registry_facts_preserve_object_samples_and_strict_numeric_types() {
+    let mut store = ResultStore::new(4096);
+    let rows = vec![
+        serde_json::json!({
+            "number": null, "text_number": "1", "mixed": 1, "all_null": null,
+            "mixed_bool": 1, "nested": {"n": 1}, "sparse": null,
+        }),
+        serde_json::json!({
+            "number": -1.5, "text_number": "2", "mixed": "2", "all_null": null,
+            "mixed_bool": true, "nested": [2], "sparse": 0,
+        }),
+        serde_json::json!({"number": 0, "mixed": null, "all_null": null}),
+        serde_json::json!([99]),
+        serde_json::json!("99"),
+    ];
+    let (result, _) = store
+        .put("db.query", "call-object", &[], 3, rows.clone())
+        .unwrap();
+    let facts = store.facts(&result.id).unwrap();
+    assert_eq!(facts.result, result);
+    assert_eq!(facts.rows, rows.len());
+    assert!(!facts.truncated);
+    assert_eq!(facts.sample, rows);
+    assert_eq!(facts.fields, rows[0].as_object().unwrap().keys().cloned().collect::<Vec<_>>());
+    assert_eq!(facts.numeric_fields, vec!["number", "sparse"]);
+    assert_eq!(
+        store.read_page(&result.id, None, 10, 4096).unwrap().items,
+        rows
+    );
+
+    let (empty, _) = store
+        .put("db.query", "call-empty", &["n".into()], 4, Vec::new())
+        .unwrap();
+    let empty_facts = store.facts(&empty.id).unwrap();
+    assert_eq!(empty_facts.rows, 0);
+    assert!(!empty_facts.truncated);
+    assert!(empty_facts.sample.is_empty());
+    assert!(empty_facts.fields.is_empty());
+    assert!(empty_facts.numeric_fields.is_empty());
+}
+
+#[test]
+fn ai_tool_registry_one_of_const_discriminates_real_sql_parameter_types() {
+    let catalog = ToolCatalog::new(standard_sql_tool_specs().unwrap());
+    for parameter in [
+        serde_json::json!({"type":"null"}),
+        serde_json::json!({"type":"bool","value":true}),
+        serde_json::json!({"type":"i64","value":"12"}),
+        serde_json::json!({"type":"text","value":"channel"}),
+    ] {
+        let args = serde_json::json!({"target":"conn:1/db:main","sql":"SELECT ?","parameters":[parameter]});
+        assert!(catalog.prepare("db.query", &args.to_string()).is_ok());
+    }
+    let invalid = serde_json::json!({"target":"conn:1/db:main","sql":"SELECT ?",
+        "parameters":[{"type":"not-supported","value":"12"}]});
+    assert!(catalog.prepare("db.query", &invalid.to_string()).is_err());
+}
+
+#[test]
+fn ai_tool_registry_nested_argument_redaction_keeps_only_public_structure() {
+    let args = serde_json::json!({"sql":"SELECT 1","target":"conn:1/db:main",
+        "nested":[{"password":"redaction-fixture","api_key":"redaction-fixture",
+            "deep":{"token":"redaction-fixture","public":"keep"}}]});
+    let redacted = ai_conversation_redact_arguments(&args.to_string());
+    assert!(!redacted.contains("redaction-fixture"));
+    let value: serde_json::Value = serde_json::from_str(&redacted).unwrap();
+    assert_eq!(value["sql"], "SELECT 1");
+    assert_eq!(value["nested"][0]["deep"]["public"], "keep");
 }

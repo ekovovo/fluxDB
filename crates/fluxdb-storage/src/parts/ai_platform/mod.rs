@@ -4,6 +4,7 @@
 //! 随对应功能任务逐步加入，见 `docs/ai-agent-tasks.md`。
 
 pub mod agents;
+pub mod artifacts;
 pub mod audits;
 pub mod context_checkpoints;
 pub mod context_references;

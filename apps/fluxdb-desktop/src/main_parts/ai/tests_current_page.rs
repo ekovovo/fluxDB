@@ -57,7 +57,7 @@ async fn current_page_large_sql_send_records_typed_excerpt_not_full_document(
 }
 
 #[gpui_kit::test]
-async fn current_page_toggle_disables_capture_and_data_sharing_is_scoped_to_tab(
+async fn current_page_toggle_disables_capture_of_loaded_page_data(
     cx: &mut TestAppContext,
 ) {
     cx.executor().allow_parking();
@@ -73,22 +73,13 @@ async fn current_page_toggle_disables_capture_and_data_sharing_is_scoped_to_tab(
     open_panel(&view, visual);
     visual.update(|window, cx| {
         window.render_frame(cx);
-        window.click("ai-page-data-toggle", cx);
-    });
-    assert!(
-        view.read_with(visual, |main, _| main.ai_chat.page_data_enabled
-            && main.ai_chat.page_data_tab == Some(first))
-    );
-    visual.update(|window, cx| {
-        window.render_frame(cx);
         window.click("ai-current-page-toggle", cx);
     });
     assert!(view.read_with(visual, |main, _| !main.ai_chat.page_context_enabled));
-    // 切换页签不会把之前的业务数据共享同意自动带到新页。
     view.update(visual, |main, cx| {
         main.dispatch(AppCommand::OpenQueryEditor(ConnectionId(1)), cx);
         let page = main.capture_ai_page_context(cx, true);
-        assert_eq!(page.details["data_shared"], false);
+        // 关闭当前页面上下文后，发送不再附带页面与已加载数据。
         assert!(page.data_grant.is_none());
     });
     wait_source(&view, visual, "page toggle idle", |main| {
@@ -180,7 +171,7 @@ async fn sql_open_file_cancel_and_invalid_file_leave_existing_text_unchanged(
 }
 
 #[gpui_kit::test]
-async fn current_page_table_metadata_excludes_values_until_sharing_is_enabled(
+async fn current_page_table_metadata_carries_loaded_rows_without_putting_values_in_first_message(
     cx: &mut TestAppContext,
 ) {
     cx.executor().allow_parking();
@@ -221,15 +212,8 @@ async fn current_page_table_metadata_excludes_values_until_sharing_is_enabled(
             page.public_json()["details"]["columns"]["items"][0]["type"],
             "TEXT"
         );
+        // 已加载数据值只经 page.read_rows 按行读取，不塞进首条消息。
         assert!(!page.public_json().to_string().contains("DO-NOT-AUTO-SEND"));
-        assert!(page.data_grant.is_none());
-    });
-    visual.update(|window, cx| {
-        window.render_frame(cx);
-        window.click("ai-page-data-toggle", cx);
-    });
-    view.read_with(visual, |main, cx| {
-        let page = main.capture_ai_page_context(cx, true);
         assert!(page.data_grant.is_some());
         assert_eq!(
             page.public_json()["capabilities"],
@@ -237,7 +221,7 @@ async fn current_page_table_metadata_excludes_values_until_sharing_is_enabled(
         );
         assert!(!page.public_json().to_string().contains("DO-NOT-AUTO-SEND"));
     });
-    wait_source(&view, visual, "table sharing idle", |main| {
+    wait_source(&view, visual, "table context idle", |main| {
         main.ai_chat._io.is_none()
     })
     .await;

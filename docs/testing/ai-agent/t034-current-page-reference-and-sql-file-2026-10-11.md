@@ -6,7 +6,7 @@
 
 - 把“当前页面”当作一种自动、可查看范围、可关闭的特殊 `@` 引用，按内容类型选择全文、摘录或结构化摘要。
 - 移除编辑器的 256 KiB 发送门槛：大 SQL 保留共享不可变快照，`editor.search`/`editor.read_range` 覆盖全文。
-- 表数据、Redis Key 值与结构信息默认不自动发送；只有用户对当前页签明确开启“数据共享”才附带已加载快照。
+- 表数据、Redis Key 值与结构信息配置只进上下文元数据；已加载数据值只经只读 `page.read_rows` 按需读取，不塞进首条消息。
 - 查询工具栏增加纯图标“打开本地 SQL 文件”，默认新页签打开，不覆盖未保存内容、不自动执行。
 - `AGENTS.md` 增加：新增页面或页面功能时必须说明 AI 可见范围，未接入时询问用户是否接入。
 
@@ -33,8 +33,8 @@ cargo build -p fluxdb-desktop --locked --offline                # 通过
   引用 `delivery=excerpt`、`capabilities` 含 `editor.search`/`editor.read_range`；
   `editor.search` 能命中中段关键词。
 - 表数据页：默认只发列名/类型/主键、筛选排序、分页与状态；数据值不进入模型上下文；
-  开启“数据共享”后仅对当前页签生效，生成 `page.read_rows` 能力但不把值塞进首条消息。
-- 页面开关：关闭当前页面上下文后不再附带；数据共享开启后再切到别的页签不会自动继承。
+  发送时自动附带已加载快照并生成 `page.read_rows` 能力，但不把值塞进首条消息。
+- 页面开关：关闭当前页面上下文后页面与已加载数据都不再附带；切到别的页签不继承上一页数据快照。
 - 打开本地 SQL：`.sql` 内容（含 BOM）进入新页签并记录本地保存目标；原页签未保存内容保留；
   取消或选择非 `.sql` 文件时原内容不变、不新建页签并给出提示。
 - 配置库隔离：页面数据来源连接到应用自身 SQLite 配置库时被拒绝，与显式引用一致。
@@ -44,7 +44,7 @@ cargo build -p fluxdb-desktop --locked --offline                # 通过
 
 隔离 fixture：`ai_panel_fixture` 生成 `/private/tmp/fluxdb-current-page-fixture-20261011/config`；
 以 `FLUXDB_AI_TEST_ROOT` + `FLUXDB_PROFILE=currentpage-verify2` 启动真实窗口，
-AI 面板底部“当前页面 · …”控件（含可见范围说明、开关、数据共享开关）已渲染可见。
+AI 面板底部“当前页面 · …”控件（含可见范围说明、开关）已渲染可见。
 截图：`/private/tmp/fluxdb-composer-zoom2.png`。
 
 ## 5. 未验证 / 边界

@@ -38,8 +38,6 @@ impl NavicatMain {
         };
         page.label = tab.title.clone();
         page.snapshot.tab_id = Some(tab.id.0);
-        let share_data =
-            self.ai_chat.page_data_enabled && self.ai_chat.page_data_tab == Some(tab.id);
         if let Some(workspace) = tab.workspace() {
             page.snapshot.target.connection_id = Some(workspace.connection_id.0 as i64);
             page.snapshot.target.database = Some(workspace.database);
@@ -103,7 +101,7 @@ impl NavicatMain {
                     "executions":query.summaries.iter().rev().take(3).map(|s|serde_json::json!({
                         "success":s.success,"message":s.message.chars().take(1024).collect::<String>(),
                         "returned_rows":s.returned_rows,"affected_rows":s.affected_rows,"elapsed_ms":s.elapsed_ms
-                    })).collect::<Vec<_>>(),"data_shared":share_data,
+                    })).collect::<Vec<_>>(),
                 });
                 if result_index.is_some() {
                     if let Some(table) = self.data_table_states.get(&tab.id) {
@@ -123,7 +121,7 @@ impl NavicatMain {
                         snapshot: text,
                     });
                 }
-                if sending && share_data && !query.running {
+                if sending && !query.running {
                     let data = result_index.and_then(|selected| {
                         query
                             .result_editors
@@ -203,7 +201,7 @@ impl NavicatMain {
                     })),
                     "has_pending_changes":data.changes.is_some(),
                     "loaded_rows":data.page.as_ref().map(|p|p.rows.len()),"offset":data.page.as_ref().map(|p|p.offset),
-                    "has_more":data.page.as_ref().map(|p|p.has_more),"data_shared":share_data,
+                    "has_more":data.page.as_ref().map(|p|p.has_more),
                     "table_structure_tab":data.table_info.open.then(||format!("{:?}",data.table_info.active_tab)),
                 });
                 if data.table_info.open {
@@ -246,19 +244,17 @@ impl NavicatMain {
                             page.details["selected_key"] = serde_json::json!({
                             "key":key,"type":redis_row_text(loaded,row,"类型"),
                             "ttl":redis_row_text(loaded,row,"TTL"),"size":redis_row_text(loaded,row,"大小")});
-                            if share_data {
-                                let value = redis_row_text(loaded, row, "值").unwrap_or_default();
-                                let preview = fluxdb_app::bound_excerpt(
-                                    &value,
-                                    fluxdb_app::ContextLimits::default(),
-                                );
-                                page.details["value"] = serde_json::json!({"preview":preview.text,"truncated":preview.truncated,
-                                "scope":"已加载页面值预览；不是服务器上的完整值"});
-                            }
+                            let value = redis_row_text(loaded, row, "值").unwrap_or_default();
+                            let preview = fluxdb_app::bound_excerpt(
+                                &value,
+                                fluxdb_app::ContextLimits::default(),
+                            );
+                            page.details["value"] = serde_json::json!({"preview":preview.text,"truncated":preview.truncated,
+                            "scope":"已加载页面值预览；不是服务器上的完整值"});
                         }
                     }
                 }
-                if sending && share_data && !data.loading && !data.submitting {
+                if sending && !data.loading && !data.submitting {
                     if let Some(data_page) = &data.page {
                         let mut shared = data_page.clone();
                         if redis {
@@ -331,26 +327,24 @@ fn ai_current_page_chip(
             "SQL 文本/摘录、光标附近、当前结果结构与执行状态；完整 SQL 可搜索和续读"
         }
         fluxdb_app::PageContextKind::TableData => {
-            "表定位、列类型/主键、筛选排序、选中位置、分页和状态"
+            "表定位、列类型/主键、筛选排序、选中位置、分页和已加载数据"
         }
         fluxdb_app::PageContextKind::TableStructure => {
             "列结构、已加载索引/外键与有界 DDL；未加载结构不假装已读取"
         }
         fluxdb_app::PageContextKind::RedisKey => {
-            "当前 Key、类型、TTL、大小和状态；值预览另须开启共享"
+            "当前 Key、类型、TTL、大小、状态与已加载值预览"
         }
         fluxdb_app::PageContextKind::RedisBrowser => {
-            "Redis 数据页结构、分页与状态；不会自动上传 Key 值"
+            "Redis 数据页结构、分页、状态与已加载行"
         }
         fluxdb_app::PageContextKind::RedisWorkbench => {
-            "当前命令草稿与运行状态；历史回复尚未接入共享"
+            "当前命令草稿与运行状态；历史回复尚未接入"
         }
         fluxdb_app::PageContextKind::Other => {
             "此页面正文未接入 AI；仅提供目标定位，不发送设置表单或凭据"
         }
     };
-    let share_data = this.ai_chat.page_data_enabled
-        && this.ai_chat.page_data_tab.map(|id| id.0) == page.snapshot.tab_id;
     div()
         // 面板高度受限时不要把这一行压缩成 0 高度；固定自身高度参与布局。
         .flex_none()
@@ -401,36 +395,6 @@ fn ai_current_page_chip(
                             cx.notify();
                         })),
                 )
-                .child(
-                    Button::new("ai-page-data-toggle")
-                        .debug_selector(|| "ai-page-data-toggle".into())
-                        .small()
-                        .ghost()
-                        .cursor_pointer()
-                        .disabled(
-                            !ready
-                                || !this.ai_chat.page_context_enabled
-                                || matches!(
-                                    page.kind,
-                                    fluxdb_app::PageContextKind::Other
-                                        | fluxdb_app::PageContextKind::RedisWorkbench
-                                ),
-                        )
-                        .child(if share_data {
-                            "数据共享：开"
-                        } else {
-                            "数据共享：关"
-                        })
-                        .tooltip("开启后允许读取已加载页面数据值；结果片段会发送给模型服务")
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            let tab = this.ai_context_source_tab().map(|t| t.id);
-                            let enabled =
-                                this.ai_chat.page_data_enabled && this.ai_chat.page_data_tab == tab;
-                            this.ai_chat.page_data_enabled = !enabled;
-                            this.ai_chat.page_data_tab = if enabled { None } else { tab };
-                            cx.notify();
-                        })),
-                ),
         )
         .when(details, |view| {
             view.child(
@@ -441,7 +405,7 @@ fn ai_current_page_chip(
                     .text_color(colors.muted)
                     .child(if this.ai_chat.page_context_enabled {
                         format!(
-                            "{}：{}。{}。{}",
+                            "{}：{}。{}。",
                             page.label,
                             description,
                             if page.kind == fluxdb_app::PageContextKind::Other {
@@ -450,11 +414,6 @@ fn ai_current_page_chip(
                                 "只发送摘录，按授权工具读取详情"
                             } else {
                                 "文本或结构化信息"
-                            },
-                            if share_data {
-                                "本页已允许共享已加载数据值，片段会发送给模型服务"
-                            } else {
-                                "不自动共享业务数据值"
                             }
                         )
                     } else {

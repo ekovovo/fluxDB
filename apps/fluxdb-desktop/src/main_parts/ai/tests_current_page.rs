@@ -21,12 +21,8 @@ async fn current_page_large_sql_send_records_typed_excerpt_not_full_document(
     open_panel(&view, visual);
     visual.update(|window, cx| {
         window.render_frame(cx);
-        assert!(window.try_find("ai-current-page").is_some());
-        window.click("ai-current-page", cx);
-    });
-    visual.update(|window, cx| {
-        window.render_frame(cx);
-        assert!(window.try_find("ai-page-context-details").is_some());
+        // 当前页面上下文默认附带，且发送框不再显示任何可见控件。
+        assert!(window.try_find("ai-current-page").is_none());
     });
     let job = start_scripted_send(&fixture, &view, visual, "请搜索编辑器中段");
     fixture
@@ -57,30 +53,48 @@ async fn current_page_large_sql_send_records_typed_excerpt_not_full_document(
 }
 
 #[gpui_kit::test]
-async fn current_page_toggle_disables_capture_of_loaded_page_data(
+async fn current_page_capture_always_includes_loaded_page_data(
     cx: &mut TestAppContext,
 ) {
     cx.executor().allow_parking();
     let fixture = Fixture::seeded();
     let mut controller = fixture.controller();
-    controller.dispatch(AppCommand::OpenQueryEditor(ConnectionId(1)));
+    controller.dispatch(AppCommand::OpenDataEditor(ObjectPath {
+        connection_id: ConnectionId(1),
+        database: Some("main".into()),
+        schema: None,
+        kind: ObjectKind::Table,
+        name: "users".into(),
+    }));
     let first = controller.state().active_tab.unwrap();
-    controller.dispatch(AppCommand::UpdateQueryText {
+    controller.dispatch(AppCommand::FinishDataPageLoad {
         tab_id: first,
-        text: "select 1;".into(),
+        result: Ok(DataPage {
+            columns: vec![fluxdb_core::Column {
+                name: "email".into(),
+                type_name: Some("TEXT".into()),
+                nullable: true,
+                primary_key: false,
+                comment: None,
+            }],
+            rows: vec![Row {
+                values: vec![CellValue::Text("PAGE-DATA-FIXTURE".into())],
+            }],
+            offset: 0,
+            limit: 10,
+            has_more: false,
+        }),
     });
     let (view, visual) = open_main(cx, &fixture, controller, ThemeMode::Dark);
     open_panel(&view, visual);
-    visual.update(|window, cx| {
-        window.render_frame(cx);
-        window.click("ai-current-page-toggle", cx);
-    });
-    assert!(view.read_with(visual, |main, _| !main.ai_chat.page_context_enabled));
     view.update(visual, |main, cx| {
-        main.dispatch(AppCommand::OpenQueryEditor(ConnectionId(1)), cx);
         let page = main.capture_ai_page_context(cx, true);
-        // 关闭当前页面上下文后，发送不再附带页面与已加载数据。
-        assert!(page.data_grant.is_none());
+        // 发送时自动固定当前页面与已加载数据快照。
+        assert!(page.data_grant.is_some());
+        assert!(
+            !page.public_json().to_string().contains("PAGE-DATA-FIXTURE"),
+            "数据值只经 page.read_rows 工具读取，不写首条消息"
+        );
     });
     wait_source(&view, visual, "page toggle idle", |main| {
         main.ai_chat._io.is_none()

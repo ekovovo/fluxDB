@@ -185,7 +185,7 @@ impl NavicatMain {
         if self.ai_chat.attachment_loading
             || self.ai_chat.recovery_pending
             || self.ai_chat.recovery_failed
-            || self.ai_chat.running.is_some()
+            || self.ai_chat.session_running(self.controller.state().ai_conversation.session_id.as_deref())
             || self.ai_chat.loading
             || self.ai_chat._io.is_some()
         {
@@ -195,7 +195,7 @@ impl NavicatMain {
         if prompt.is_empty() {
             return;
         }
-        let page = self.ai_chat.page_context_enabled.then(|| self.capture_ai_page_context(cx, true));
+        let page = Some(self.capture_ai_page_context(cx, true));
         let context = page.as_ref().map(|page| page.snapshot.clone())
             .unwrap_or_else(|| fluxdb_app::capture(&fluxdb_app::CapturedTab::NoTab {
                 connection_id: None, database: None, schema: None, last_object: None,
@@ -419,7 +419,12 @@ impl NavicatMain {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.ai_chat.deciding_approval || self.ai_chat.loading || self.ai_chat.running.is_some() {
+        if self.ai_chat.deciding_approval
+            || self.ai_chat.loading
+            || self
+                .ai_chat
+                .session_running(self.controller.state().ai_conversation.session_id.as_deref())
+        {
             return;
         }
         self.ai_chat.deciding_approval = true;

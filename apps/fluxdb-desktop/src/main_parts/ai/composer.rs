@@ -17,7 +17,7 @@ fn ai_chat_composer(
 ) -> gpui::AnyElement {
     let chat = this.controller.state().ai_conversation.clone();
     let loading = this.ai_chat.loading;
-    let running = this.ai_chat.running.is_some();
+    let running = this.ai_chat.session_running(chat.session_id.as_deref());
     let cancel_requested = this
         .ai_chat
         .cancel
@@ -71,7 +71,6 @@ fn ai_chat_composer(
                 .flex()
                 .flex_col()
                 .gap_2()
-                .child(ai_current_page_chip(this, ready && !running, colors, cx))
                 // 引用较多时整个输入区最多占面板一半：输入框向上挤但不吞掉消息区。
                 .max_h(px(f32::from(panel_height) * 0.5))
                 .min_h(px(0.))
@@ -228,7 +227,9 @@ fn ai_chat_composer(
                                                 }),
                                         )
                                         .on_click(cx.listener(|this, _, _, cx| {
-                                            if let (Some(runtime), Some(job)) = (&this.ai_chat.runtime, &this.ai_chat.running) {
+                                            if let (Some(runtime), Some(job)) =
+                                                (&this.ai_chat.runtime, &this.ai_chat.running)
+                                            {
                                                 match runtime.cancel(&job.turn_id) {
                                                     Ok(()) => {
                                                         // 执行可能已收尾但正文仍在揭示；停止也应立即结束这段展示。

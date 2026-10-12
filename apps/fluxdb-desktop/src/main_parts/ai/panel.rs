@@ -183,7 +183,7 @@ fn ai_chat_panel(
     };
     let loading = this.ai_chat.loading;
     let history = this.ai_chat.history;
-    let running = this.ai_chat.running.is_some();
+    let running = this.ai_chat.session_running(chat.session_id.as_deref());
     let error = this.ai_chat.error.clone().or(chat.error.clone());
     let ready = !loading
         && !this.ai_chat.recovery_pending

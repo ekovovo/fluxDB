@@ -5,8 +5,6 @@ struct AiChatUi {
     loaded: bool,
     tab_id: Option<TabId>,
     context_tab: Option<TabId>,
-    page_context_enabled: bool,
-    page_context_details_open: bool,
     mode_menu_open: bool,
     history: bool,
     dirty: bool,
@@ -102,8 +100,6 @@ impl AiChatUi {
             loaded: false,
             tab_id: None,
             context_tab: None,
-            page_context_enabled: true,
-            page_context_details_open: false,
             mode_menu_open: false,
             history: false,
             dirty: false,
@@ -182,5 +178,11 @@ impl AiChatUi {
         } else {
             self.embedded
         }
+    }
+    /// 当前展示会话是否在生成：UI 判忙只看本会话，不接受其它会话串扰。
+    fn session_running(&self, session_id: Option<&str>) -> bool {
+        self.running
+            .as_ref()
+            .is_some_and(|job| session_id == Some(job.session_id.as_str()))
     }
 }

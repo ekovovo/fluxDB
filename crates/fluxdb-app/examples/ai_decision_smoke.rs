@@ -82,7 +82,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let timeout_ms: u64 = std::env::var("FLUXDB_AI_DECISION_TIMEOUT_MS")
         .ok()
         .and_then(|value| value.parse().ok())
-        .unwrap_or(fluxdb_app::DECISION_DEADLINE_MS);
+        .unwrap_or(fluxdb_app::MODEL_REQUEST_TIMEOUT_MS);
     let provider = decision_provider_from_storage_with_timeout(
         &storage,
         &model.id,

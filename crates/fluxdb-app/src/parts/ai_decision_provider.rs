@@ -462,22 +462,14 @@ pub fn decision_provider_from_storage(
     decision_provider_from_storage_with_timeout(
         storage,
         model_profile_id,
-        std::time::Duration::from_millis(DECISION_DEADLINE_MS),
+        std::time::Duration::from_millis(crate::MODEL_REQUEST_TIMEOUT_MS),
     )
 }
 
-/// 单次决策默认截止时间。
+/// 显式 deadline 版本；供验收或测试注入不同网络时延。
 ///
-/// 设计 §18 原起始值为 800ms；2026-10-12 真实验收（用户本机 Jev 模型
-/// `inception/mercury-decide:free`）实测单次决策在 2.4s–7.2s 波动，3000ms 会砍掉
-/// 一半以上的真实请求，故再次上调为 8000ms 覆盖实测上界。
-///
-/// 「不每轮等待」由 T037 的熔断保证（连续 3 次失败熔断 60s），不由压缩 deadline
-/// 保证：deadline 越宽，单次失败的成本越高，但成功率和真实可用性越好，两者需权衡。
-/// 无自动重试。
-pub const DECISION_DEADLINE_MS: u64 = 8_000;
-
-/// 显式 deadline 版本；供验收在不同网络时延下核对协议，生产走 [`DECISION_DEADLINE_MS`]。
+/// 生产走 [`crate::MODEL_REQUEST_TIMEOUT_MS`]：所有模型 HTTP 请求（含决策区间）
+/// 共用同一个超时常量，不再单独维护 Jev deadline。
 pub fn decision_provider_from_storage_with_timeout(
     storage: &fluxdb_storage::FileStorage,
     model_profile_id: &str,

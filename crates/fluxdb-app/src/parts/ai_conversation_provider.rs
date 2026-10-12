@@ -123,14 +123,13 @@ impl fluxdb_core::GenerationProvider for AiConversationProvider {
             } else {
                 &[]
             };
+            // 事件先缓冲在本地再返回：`stream()` 失败时不留下"半个回答"，
+            // 上层（按错误类别重试的那一层）可以安全地整段重发。
             let mut events: Vec<fluxdb_core::ModelEvent> = Vec::new();
             let mut emit = |event: &fluxdb_core::ModelEvent| events.push(event.clone());
             let events = stream_chat_emit(
                 TransportLimits {
                     max_total_bytes: 512 * 1024,
-                    // 正文读取给足长回答预算；等模型开口的阶段预算用统一的
-                    // MODEL_RESPONSE_DEADLINE_MS（默认 3000ms），远程模型实测约 2s。
-                    read_timeout: std::time::Duration::from_secs(30),
                     ..Default::default()
                 },
                 self.protocol,

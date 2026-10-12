@@ -414,12 +414,15 @@ fn ai_conversation_maybe_compact(
         model_profile_id: &summary_model_id,
         purpose: "compaction",
     };
-    let summary_result = match block_on_ready(fluxdb_core::GenerationProvider::stream(
-        &metered,
-        request,
-        cancel.clone(),
-    )) {
-        Ok(Ok(events)) => {
+    let summary_result = match retry_model_call(cancel, || {
+        block_on_ready(fluxdb_core::GenerationProvider::stream(
+            &metered,
+            request.clone(),
+            cancel.clone(),
+        ))
+        .and_then(|result| result)
+    }) {
+        Ok(events) => {
             for event in events {
                 match event {
                     fluxdb_core::ModelEvent::TextDelta(delta)=>summary_text.push_str(&delta),
@@ -429,7 +432,6 @@ fn ai_conversation_maybe_compact(
             }
             if finish==Some(fluxdb_core::FinishReason::Stop) {Ok(())}else{Err("摘要未正常结束，拒绝提交".to_string())}
         }
-        Ok(Err(error)) => Err(error.message),
         Err(error) => Err(error.message),
     };
     if cancel.is_cancelled() {

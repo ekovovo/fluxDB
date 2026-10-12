@@ -60,11 +60,17 @@ pub fn generate_session_title(
         model_profile_id: &job.model_profile_id,
         purpose: "title",
     };
-    let events = match block_on_ready(fluxdb_core::GenerationProvider::stream(
-        &metered, request, cancel,
-    )) {
-        Ok(Ok(events)) => events,
-        Ok(Err(_)) | Err(_) => return,
+    // 标题是尽力而为的附加请求，仍然复用统一重试：瞬时网络抖动不该白丢一次标题。
+    let events = match retry_model_call(&cancel, || {
+        block_on_ready(fluxdb_core::GenerationProvider::stream(
+            &metered,
+            request.clone(),
+            cancel.clone(),
+        ))
+        .and_then(|result| result)
+    }) {
+        Ok(events) => events,
+        Err(_) => return,
     };
     let mut raw = String::new();
     let mut finished = false;

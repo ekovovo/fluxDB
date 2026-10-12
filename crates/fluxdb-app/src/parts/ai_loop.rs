@@ -224,13 +224,12 @@ impl<'a> TurnRunner<'a> {
                 tools: loop_tool_descriptors(self.tools),
                 max_output_tokens: state.max_output_tokens,
             };
-            let events = match block_on_ready(self.provider.stream(request, cancel.clone())) {
-                Ok(Ok(events)) => events,
-                Ok(Err(error)) => {
-                    return TurnOutcome::Failed {
-                        message: error.message,
-                    };
-                }
+            // Provider 缓冲整段事件后再返回，失败尝试没有可见副作用，可按错误类别重发。
+            let events = match retry_model_call(cancel, || {
+                block_on_ready(self.provider.stream(request.clone(), cancel.clone()))
+                    .and_then(|result| result)
+            }) {
+                Ok(events) => events,
                 Err(error) => {
                     return TurnOutcome::Failed {
                         message: error.message,

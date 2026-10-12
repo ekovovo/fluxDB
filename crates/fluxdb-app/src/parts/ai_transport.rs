@@ -13,20 +13,20 @@ use std::fmt;
 use std::time::Duration;
 
 /// 传输上限与超时。
+///
+/// 三个超时字段的默认值都取自 [`MODEL_REQUEST_TIMEOUT_MS`]：需要单独收紧某一阶段
+/// （例如测试里的短超时）时仍可显式覆盖。
 #[derive(Clone, Copy, Debug)]
 pub struct TransportLimits {
     /// 单个 SSE 帧（两个空行之间）的最大字节数。
     pub max_frame_bytes: usize,
     /// 整个响应体的最大字节数。
     pub max_total_bytes: usize,
+    /// 建连（含 DNS/TLS 握手）超时。
     pub connect_timeout: Duration,
+    /// 响应体读取的空闲预算：两次数据之间允许的最长间隔（不是整包总时长）。
     pub read_timeout: Duration,
-    /// 等待模型**开始响应**的截止时间（DNS + 连接 + 响应头）。
-    ///
-    /// 与 Jev 的单次决策 deadline 同口径：只约束"多久能开始说话"，不约束
-    /// 一段正常的长回答要写多久——后者由 `read_timeout` 单独兜底。若把
-    /// `timeout_global` 设成 3s，任何超过 3s 的流式回答都会被拦腰截断，
-    /// 因此这里按阶段拆开而不是压缩整体预算。
+    /// 等待模型**开始响应**（响应头）的截止时间。
     pub response_deadline: Duration,
 }
 
@@ -35,19 +35,25 @@ impl Default for TransportLimits {
         Self {
             max_frame_bytes: 256 * 1024,
             max_total_bytes: 4 * 1024 * 1024,
-            connect_timeout: Duration::from_millis(MODEL_RESPONSE_DEADLINE_MS),
-            read_timeout: Duration::from_secs(60),
-            response_deadline: Duration::from_millis(MODEL_RESPONSE_DEADLINE_MS),
+            connect_timeout: Duration::from_millis(MODEL_REQUEST_TIMEOUT_MS),
+            read_timeout: Duration::from_millis(MODEL_REQUEST_TIMEOUT_MS),
+            response_deadline: Duration::from_millis(MODEL_REQUEST_TIMEOUT_MS),
         }
     }
 }
 
-/// 模型开始响应的默认截止时间（毫秒）。
+/// 所有模型 HTTP 请求的统一超时（毫秒）。
 ///
-/// 与决策模型 `DECISION_DEADLINE_MS` 统一为 3000ms：2026-10-12 真实验收中，
-/// 远程决策模型单次往返约 2s，800ms 起始值会稳定超时（用户决定上调）。
-/// 该值只覆盖 DNS/连接/响应头阶段，长回答的正文读取仍走 `read_timeout`。
-pub const MODEL_RESPONSE_DEADLINE_MS: u64 = 3_000;
+/// 唯一来源：连接/DNS/TLS、等待响应头（首响应）、正文读取，以及决策（Jev）
+/// 请求、连接测试、拉取模型列表都引用这一个值，不再各处各自定义。
+///
+/// 各阶段语义不同但共用同一时长：连接与首响应是硬 deadline；正文读取是
+/// **空闲超时**（两次数据之间不空超过该值，见 `IdleBodyTimeoutConnector`），
+/// 因此长回答只要持续产出就不会被总时长截断。
+///
+/// 3000ms 对真实远程/中转模型过短：排队、冷启动与网关抖动都会让"还没开始吐字"
+/// 被误报成超时；30s 只在真正无响应时才失败。
+pub const MODEL_REQUEST_TIMEOUT_MS: u64 = 30_000;
 
 /// 聊天协议（决定 SSE 载荷如何投影成 `fluxdb_core::ModelEvent`）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -69,8 +75,10 @@ pub enum TransportError {
     HttpStatus(u16),
     /// 载荷不是合法 JSON 或结构不符合协议。
     Malformed(String),
-    /// 网络错误（已脱敏）。
+    /// 连接/DNS/传输层失败（已脱敏；瞬时故障，可重试）。
     Network(String),
+    /// 超时：连接/响应头阶段或正文读取（已脱敏；瞬时故障，可重试）。
+    Timeout(String),
     /// 取消（不是错误，但调用方通常需要区分）。
     Cancelled,
 }
@@ -87,6 +95,7 @@ impl fmt::Display for TransportError {
             TransportError::HttpStatus(status) => write!(f, "HTTP {status}"),
             TransportError::Malformed(reason) => write!(f, "响应格式错误: {reason}"),
             TransportError::Network(reason) => write!(f, "网络错误: {reason}"),
+            TransportError::Timeout(reason) => write!(f, "网络错误: {reason}"),
             TransportError::Cancelled => f.write_str("已取消"),
         }
     }
@@ -95,9 +104,45 @@ impl fmt::Display for TransportError {
 impl std::error::Error for TransportError {}
 
 impl TransportError {
-    /// 转成领域错误；取消用一个可识别的 message。
+    /// 转成领域错误。
+    ///
+    /// 必须保留错误类别：`is_retryable` 只看 `ErrorKind` 与 `http_status`，
+    /// 一律降级成 `Internal` 会让超时/限流/上游故障都变成"不可重试"。
     pub fn to_core_error(self) -> fluxdb_core::Error {
-        fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, self.to_string())
+        match self {
+            TransportError::Timeout(reason) => fluxdb_core::Error::new(
+                fluxdb_core::ErrorKind::Timeout,
+                format!("网络错误: {reason}"),
+            ),
+            TransportError::Network(reason) => fluxdb_core::Error::new(
+                fluxdb_core::ErrorKind::Connection,
+                format!("网络错误: {reason}"),
+            ),
+            TransportError::Cancelled => {
+                fluxdb_core::Error::new(fluxdb_core::ErrorKind::Cancelled, "已取消")
+            }
+            TransportError::HttpStatus(status) => {
+                let kind = if status == 401 || status == 403 {
+                    fluxdb_core::ErrorKind::Authentication
+                } else {
+                    fluxdb_core::ErrorKind::Internal
+                };
+                fluxdb_core::Error::with_http_status(kind, format!("HTTP {status}"), status)
+            }
+            // 载荷超限/协议不合法都是确定性失败，重试只会再消费一次额度。
+            TransportError::FrameTooLarge { limit } => fluxdb_core::Error::new(
+                fluxdb_core::ErrorKind::Internal,
+                format!("SSE 帧超过 {limit} 字节上限"),
+            ),
+            TransportError::BodyTooLarge { limit } => fluxdb_core::Error::new(
+                fluxdb_core::ErrorKind::Internal,
+                format!("响应体超过 {limit} 字节上限"),
+            ),
+            TransportError::Malformed(reason) => fluxdb_core::Error::new(
+                fluxdb_core::ErrorKind::Internal,
+                format!("响应格式错误: {reason}"),
+            ),
+        }
     }
 }
 
@@ -211,9 +256,14 @@ pub fn stream_sse_reader_emit<R: std::io::Read>(
             ));
             return Ok(events);
         }
-        let read = reader
-            .read(&mut chunk)
-            .map_err(|e| TransportError::Network(sanitize_io_error(&e)))?;
+        let read = reader.read(&mut chunk).map_err(|e| {
+            if is_read_timeout(&e) {
+                // 正文读取超时同样是瞬时故障：上层可重试，不能降级成普通网络错误。
+                TransportError::Timeout(sanitize_io_error(&e))
+            } else {
+                TransportError::Network(sanitize_io_error(&e))
+            }
+        })?;
         if read == 0 {
             break;
         }
@@ -244,6 +294,20 @@ fn sanitize_io_error(error: &std::io::Error) -> String {
         std::io::ErrorKind::UnexpectedEof => "连接提前结束".to_string(),
         other => format!("{other:?}"),
     }
+}
+
+/// 正文读是否因超时结束。
+///
+/// ureq 的读取超时会以 `Error::Timeout` 包进 `io::Error`（kind 退化成 `Other`），
+/// 因此不能只看 `ErrorKind::TimedOut`，还要看被包裹的原始错误。
+fn is_read_timeout(error: &std::io::Error) -> bool {
+    if error.kind() == std::io::ErrorKind::TimedOut {
+        return true;
+    }
+    error
+        .get_ref()
+        .and_then(|inner| inner.downcast_ref::<ureq::Error>())
+        .is_some_and(|inner| matches!(inner, ureq::Error::Timeout(_)))
 }
 
 /// 流式解析过程中累积的状态（工具调用参数是分片到达的）。
@@ -542,27 +606,115 @@ pub fn stream_chat(
     stream_chat_emit(limits,protocol,url,auth,body_json,extra_headers,cancel,&mut |_| {})
 }
 
-/// 流式对话用的 HTTP Agent：分阶段超时 + IPv4 优先解析。
+/// 流式对话用的 HTTP Agent：分阶段超时 + 正文空闲超时 + IPv4 优先解析。
 ///
 /// 与设置页「测试连接」共用 IPv4 优先解析器：2026-10-12 真实验收中，系统 DNS
 /// 返回的不可用 IPv6 地址会让默认解析器在远程模型上挂起并最终超时。
+///
+/// 连接与响应头仍用硬 deadline（取 [`TransportLimits`] 的对应字段，默认同源）；
+/// 正文读取交给 [`IdleBodyTimeoutConnector`]，按"空闲间隔"而不是"整包总时长"计。
 pub(crate) fn chat_agent(limits: TransportLimits) -> ureq::Agent {
+    use ureq::unversioned::transport::Connector as _;
     let config = ureq::Agent::config_builder()
         .http_status_as_error(false)
         // 不跟随重定向：跨域 302 可能把请求（含认证头）引向非预期主机。
         // 3xx 直接按 HTTP 状态返回，由调用方决定如何处理。
         .max_redirects(0)
         .timeout_connect(Some(limits.connect_timeout))
-        // 等模型开口的阶段预算（DNS/连接/响应头）；正文另给长预算，
-        // 不用 timeout_global 把流式回答截断在 3s。
+        // 等模型开口的阶段预算（DNS/连接/响应头）。
         .timeout_recv_response(Some(limits.response_deadline))
-        .timeout_recv_body(Some(limits.read_timeout))
+        // 不设 timeout_recv_body：ureq 把该值当作"整包正文总预算"，
+        // 长回答会被总时长截断；正文改由空闲超时连接器逐次读预算兜底。
         .build();
-    ureq::Agent::with_parts(
-        config,
-        ureq::unversioned::transport::DefaultConnector::default(),
-        PrefersIpv4Resolver,
-    )
+    let connector = ureq::unversioned::transport::DefaultConnector::default().chain(
+        IdleBodyTimeoutConnector::new(limits.read_timeout),
+    );
+    ureq::Agent::with_parts(config, connector, PrefersIpv4Resolver)
+}
+
+/// 把**正文读取**阶段的每次读预算替换为固定空闲预算的连接器。
+///
+/// ureq 的 `timeout_recv_body` 语义是"收到响应头起算的整包总预算"，且预算耗尽后
+/// 连接直接失效、不可续读；因此长回答（例如分片缓慢但持续产出）会被总时长误杀。
+/// 这里把正文阶段的每次等待预算替换成固定的空闲预算，覆盖在底层传输上，使
+/// "每两次数据之间不空超过该时长"成为真正的判定口径；连接、响应头仍走各自阶段预算。
+#[derive(Debug)]
+struct IdleBodyTimeoutConnector {
+    idle: ureq::unversioned::transport::time::Duration,
+}
+
+impl IdleBodyTimeoutConnector {
+    fn new(idle: Duration) -> Self {
+        Self {
+            idle: ureq::unversioned::transport::time::Duration::from_millis(
+                u64::try_from(idle.as_millis()).unwrap_or(u64::MAX),
+            ),
+        }
+    }
+}
+
+impl<In: ureq::unversioned::transport::Transport> ureq::unversioned::transport::Connector<In>
+    for IdleBodyTimeoutConnector
+{
+    type Out = IdleBodyTimeoutTransport<In>;
+
+    fn connect(
+        &self,
+        _details: &ureq::unversioned::transport::ConnectionDetails,
+        chained: Option<In>,
+    ) -> Result<Option<Self::Out>, ureq::Error> {
+        Ok(chained.map(|inner| IdleBodyTimeoutTransport {
+            inner,
+            idle: self.idle,
+        }))
+    }
+}
+
+#[derive(Debug)]
+struct IdleBodyTimeoutTransport<In> {
+    inner: In,
+    idle: ureq::unversioned::transport::time::Duration,
+}
+
+impl<In: ureq::unversioned::transport::Transport> ureq::unversioned::transport::Transport
+    for IdleBodyTimeoutTransport<In>
+{
+    fn buffers(&mut self) -> &mut dyn ureq::unversioned::transport::Buffers {
+        self.inner.buffers()
+    }
+
+    fn transmit_output(
+        &mut self,
+        amount: usize,
+        timeout: ureq::unversioned::transport::NextTimeout,
+    ) -> Result<(), ureq::Error> {
+        self.inner.transmit_output(amount, timeout)
+    }
+
+    fn await_input(
+        &mut self,
+        timeout: ureq::unversioned::transport::NextTimeout,
+    ) -> Result<bool, ureq::Error> {
+        // 连接/响应头阶段由 agent 配置了明确预算，ureq 传进来的是有限时长；
+        // 正文阶段没有配置 `timeout_recv_body`（见 `chat_agent`），ureq 因此给出
+        // `NotHappening`——正好用来识别"这次等待属于正文读取"，替换成空闲预算。
+        if !timeout.after.is_not_happening() {
+            return self.inner.await_input(timeout);
+        }
+        let timeout = ureq::unversioned::transport::NextTimeout {
+            after: self.idle,
+            reason: ureq::Timeout::RecvBody,
+        };
+        self.inner.await_input(timeout)
+    }
+
+    fn is_open(&mut self) -> bool {
+        self.inner.is_open()
+    }
+
+    fn is_tls(&self) -> bool {
+        self.inner.is_tls()
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -592,9 +744,10 @@ pub fn stream_chat_emit(
     for (name, value) in extra_headers {
         request = request.header(*name, *value);
     }
-    let mut response = request
-        .send(body_json)
-        .map_err(|e| TransportError::Network(sanitize_ureq_error(&e)))?;
+    let mut response = request.send(body_json).map_err(|e| match e {
+        ureq::Error::Timeout(_) => TransportError::Timeout(sanitize_ureq_error(&e)),
+        other => TransportError::Network(sanitize_ureq_error(&other)),
+    })?;
     let status = response.status().as_u16();
     if !(200..300).contains(&status) {
         return Err(TransportError::HttpStatus(status));

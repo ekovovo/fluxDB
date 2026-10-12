@@ -842,3 +842,71 @@ fn ai_loop_iteration_limit_pauses() {
     }
     assert_eq!(tool.call_count(), 1, "单次迭代内应执行一次工具");
 }
+
+/// 第一轮 stream 返回瞬时超时、第二轮成功：主循环必须在同一轮内重试并完成，
+/// 不能把一次网络抖动直接暴露成整轮失败。
+#[test]
+fn ai_loop_retries_transient_provider_failure_within_same_turn() {
+    struct FlakyProvider {
+        calls: std::sync::Mutex<usize>,
+    }
+    impl GenerationProvider for FlakyProvider {
+        fn capabilities(&self) -> ModelCapabilities {
+            ModelCapabilities {
+                streaming: true,
+                tool_calling: true,
+                reasoning_summary: false,
+            }
+        }
+        fn stream(
+            &self,
+            _request: ModelRequest,
+            _cancel: CancelFlag,
+        ) -> fluxdb_core::AiFuture<'_, Vec<ModelEvent>> {
+            Box::pin(async move {
+                let mut calls = self.calls.lock().expect("calls");
+                *calls += 1;
+                if *calls == 1 {
+                    Err(fluxdb_core::Error::new(
+                        fluxdb_core::ErrorKind::Timeout,
+                        "网络错误: 超时",
+                    ))
+                } else {
+                    Ok(text_stop("已恢复"))
+                }
+            })
+        }
+    }
+
+    let provider = FlakyProvider {
+        calls: std::sync::Mutex::new(0),
+    };
+    let catalog = ToolCatalog::new(Vec::new());
+    let cancel = CancelFlag::new();
+    let mut steering = Vec::new();
+    let (outcome, events) = run(
+        &provider,
+        &catalog,
+        LoopLimits::default(),
+        "m",
+        vec![user_message("你好")],
+        &mut steering,
+        &cancel,
+    );
+    assert_eq!(
+        outcome,
+        TurnOutcome::Completed {
+            text: "已恢复".into()
+        },
+        "瞬时超时应重试而不是整轮失败"
+    );
+    assert_eq!(
+        *provider.calls.lock().expect("calls"),
+        2,
+        "应恰好重试一次"
+    );
+    assert!(events.iter().any(|event| matches!(
+        event,
+        LoopEvent::TextDelta(delta) if delta == "已恢复"
+    )));
+}

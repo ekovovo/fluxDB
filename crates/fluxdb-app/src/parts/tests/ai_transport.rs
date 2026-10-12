@@ -596,27 +596,204 @@ fn transport_invalid_or_overflowing_token_counts_are_rejected() {
 }
 
 #[test]
-fn transport_response_deadline_is_separate_from_long_read_budget() {
+fn transport_defaults_share_one_model_request_timeout() {
     let limits = TransportLimits::default();
-    // 模型"开始说话"的截止时间统一为 3000ms（与决策模型同口径）。
+    // 连接、等响应头（首响应）、正文读取共用同一个超时常量，避免各处各写一份。
+    let unified = std::time::Duration::from_millis(MODEL_REQUEST_TIMEOUT_MS);
     assert_eq!(
         limits.response_deadline,
-        std::time::Duration::from_millis(3_000),
-        "等模型开口的预算必须与决策 deadline 同口径"
+        unified,
+        "等模型开口的预算应取统一的 MODEL_REQUEST_TIMEOUT_MS"
     );
-    assert_eq!(
-        limits.connect_timeout,
-        limits.response_deadline,
-        "连接预算不应短于响应截止时间"
+    assert_eq!(limits.connect_timeout, unified, "连接预算应取同一常量");
+    assert_eq!(limits.read_timeout, unified, "正文读取预算应取同一常量");
+}
+
+/// 分片慢速但持续产出的回答不能被"整包总预算"误杀：这里让每个 SSE 帧之间
+/// 间隔超过单次读预算的一半，总时长明显超过读预算，但如果按空闲间隔判定就应成功。
+///
+/// 该用例只在允许绑定回环端口时执行（沙箱内会按真实失败报告为受阻）。
+#[test]
+fn transport_idle_body_timeout_keeps_slow_but_progressing_stream() {
+    use std::io::{Read as _, Write as _};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("绑定本地 mock 端口");
+    listener.set_nonblocking(true).expect("设置非阻塞");
+    let url = format!(
+        "http://{}/v1/chat/completions",
+        listener.local_addr().unwrap()
     );
-    // 长回答的正文读取不受 3s 限制，否则流式回答会被拦腰截断。
+    let handle = std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut stream = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::WouldBlock
+                        && std::time::Instant::now() < deadline =>
+                {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                other => panic!("未收到 mock 请求: {other:?}"),
+            }
+        };
+        stream
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .expect("设置读取超时");
+        let mut request = Vec::new();
+        let mut chunk = [0u8; 4096];
+        loop {
+            match stream.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(read) => request.extend_from_slice(&chunk[..read]),
+                Err(error) => panic!("读取 mock 请求失败: {error}"),
+            }
+            if let Some(end) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+                let head = String::from_utf8_lossy(&request[..end]);
+                let length = head
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().ok())
+                            .flatten()
+                    })
+                    .unwrap_or(0);
+                if request.len() >= end + 4 + length {
+                    break;
+                }
+            }
+        }
+        // 分块传输：每帧之间停顿，让整包总时长超过单次读预算。
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
+        )
+        .expect("写 mock 响应头");
+        for frame in [
+            r#"{"choices":[{"delta":{"content":"慢"},"finish_reason":null}]}"#,
+            r#"{"choices":[{"delta":{"content":"但"},"finish_reason":null}]}"#,
+            r#"{"choices":[{"delta":{"content":"在"},"finish_reason":null}]}"#,
+            r#"{"choices":[{"delta":{},"finish_reason":"stop"}]}"#,
+        ] {
+            std::thread::sleep(Duration::from_millis(250));
+            let payload = format!("data: {frame}\n\n");
+            write!(stream, "{:x}\r\n{}\r\n", payload.len(), payload).expect("写分块");
+        }
+        write!(stream, "0\r\n\r\n").expect("写结束分块");
+    });
+
+    // 单次读预算 400ms，整包总时长约 1s+：空闲判定应通过，总预算判定会失败。
+    let limits = TransportLimits {
+        connect_timeout: Duration::from_secs(2),
+        read_timeout: Duration::from_millis(400),
+        response_deadline: Duration::from_secs(2),
+        ..transport_limits(1024, 4096)
+    };
+    let events = stream_chat(
+        limits,
+        ChatProtocol::OpenAiCompatible,
+        &url,
+        &TransportAuth::None,
+        "{}",
+        &[],
+        &TransportCancelFlag::new(),
+    )
+    .expect("持续产出但间隔小于空闲预算的流不应被超时截断");
+
+    let text: String = events
+        .iter()
+        .filter_map(|event| match event {
+            TransportModelEvent::TextDelta(delta) => Some(delta.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(text, "慢但在", "分片内容应完整保留");
+    handle.join().expect("mock server 线程");
+}
+
+/// 反向用例：开始吐字后长时间不再有数据，必须按空闲预算超时，
+/// 证明空闲超时没有被实现成"无限等待"。
+#[test]
+fn transport_idle_body_timeout_still_trips_on_stalled_stream() {
+    use std::io::{Read as _, Write as _};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("绑定本地 mock 端口");
+    listener.set_nonblocking(true).expect("设置非阻塞");
+    let url = format!(
+        "http://{}/v1/chat/completions",
+        listener.local_addr().unwrap()
+    );
+    let handle = std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut stream = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::WouldBlock
+                        && std::time::Instant::now() < deadline =>
+                {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                other => panic!("未收到 mock 请求: {other:?}"),
+            }
+        };
+        stream
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .expect("设置读取超时");
+        let mut request = Vec::new();
+        let mut chunk = [0u8; 4096];
+        loop {
+            match stream.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(read) => request.extend_from_slice(&chunk[..read]),
+                Err(error) => panic!("读取 mock 请求失败: {error}"),
+            }
+            if let Some(end) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+                let head = String::from_utf8_lossy(&request[..end]);
+                let length = head
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().ok())
+                            .flatten()
+                    })
+                    .unwrap_or(0);
+                if request.len() >= end + 4 + length {
+                    break;
+                }
+            }
+        }
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
+        )
+        .expect("写 mock 响应头");
+        let payload = "data: {\"choices\":[{\"delta\":{\"content\":\"开始\"},\"finish_reason\":null}]}\n\n";
+        write!(stream, "{:x}\r\n{}\r\n", payload.len(), payload).expect("写首帧");
+        stream.flush().expect("刷新首帧");
+        // 之后长时间不再发送任何字节：应触发空闲超时。
+        std::thread::sleep(Duration::from_secs(2));
+    });
+
+    let limits = TransportLimits {
+        connect_timeout: Duration::from_secs(2),
+        read_timeout: Duration::from_millis(300),
+        response_deadline: Duration::from_secs(2),
+        ..transport_limits(1024, 4096)
+    };
+    let error = stream_chat(
+        limits,
+        ChatProtocol::OpenAiCompatible,
+        &url,
+        &TransportAuth::None,
+        "{}",
+        &[],
+        &TransportCancelFlag::new(),
+    )
+    .expect_err("长时间无数据的流必须超时");
     assert!(
-        limits.read_timeout > limits.response_deadline,
-        "正文读取预算必须长于响应起始预算"
+        matches!(error, TransportError::Timeout(_)),
+        "空闲超时应映射为 Timeout，实际：{error:?}"
     );
-    assert_eq!(
-        limits.read_timeout,
-        std::time::Duration::from_secs(60),
-        "正文读取预算保持 60s"
-    );
+    handle.join().expect("mock server 线程");
 }

@@ -24,17 +24,6 @@ pub const JEV_SYSTEM_BINDING_PRIORITY: i64 = 100;
 pub const CIRCUIT_FAILURE_THRESHOLD: u32 = 3;
 pub const CIRCUIT_COOLDOWN_MS: i64 = 60_000;
 
-/// 按错误类别的重试上限（设计 §18.1「无自动重试」在本任务按 Pi 复刻的 SDK 策略修订）。
-///
-/// 限流/超时/网络抖动/上游故障重试；确定性失败（鉴权、协议不合法、配置缺失）一次
-/// 都不重试——重试这些只会把已注定失败的等待再乘一遍。
-pub const MAX_RETRY_ATTEMPTS: usize = 2;
-
-/// 退避基数与上限（毫秒）。比 Pi 的 `0.5s→8s` 收敛得多：Jev 只是排序建议，
-/// 不值得为它阻塞 runtime actor 数秒。
-const RETRY_BACKOFF_BASE_MS: u64 = 200;
-const RETRY_BACKOFF_CAP_MS: u64 = 2_000;
-
 /// 采用建议所需的最低候选概率。
 ///
 /// 真实 System One 决策模型返回的顶层 `confidence` 常在 0.02–0.05（它表达"这个问题
@@ -550,54 +539,23 @@ pub fn advise_relevance(
 
 /// 按错误类别重试决策请求。
 ///
-/// 重试判定在 `fluxdb_core::Error::is_retryable`（口径同 Pi 复刻的 SDK 策略），
-/// 退避带抖动且可被取消打断。**每次失败都返回给调用方计入熔断**——重试不绕过熔断。
+/// 复用 `retry_model_call`：重试判定在 `fluxdb_core::Error::is_retryable`
+/// （口径同 Pi 复刻的 SDK 策略），退避带抖动且可被取消打断。**每次失败都经
+/// 计量 Provider 返回并计入熔断**——重试不绕过熔断。
 fn decide_with_retry(
     provider: &dyn fluxdb_core::DecisionProvider,
     request: fluxdb_core::DecisionRequest,
     cancel: &fluxdb_core::CancelFlag,
 ) -> fluxdb_core::Result<fluxdb_core::DecisionResponse> {
-    let mut attempt = 0usize;
-    loop {
-        let is_last = attempt + 1 >= MAX_RETRY_ATTEMPTS;
+    retry_model_call(cancel, || {
         let current = request.clone();
-        let result = block_on_ready(fluxdb_core::DecisionProvider::decide(
+        block_on_ready(fluxdb_core::DecisionProvider::decide(
             provider,
             current,
             cancel.clone(),
-        ));
-        let error = match result {
-            Ok(Ok(response)) => return Ok(response),
-            Ok(Err(error)) => error,
-            Err(error) => error,
-        };
-        if is_last || cancel.is_cancelled() || !error.is_retryable() {
-            return Err(error);
-        }
-        attempt += 1;
-        if !backoff_before_retry(attempt, cancel) {
-            return Err(error);
-        }
-    }
-}
-
-/// 退避等待；返回 `false` 表示等待途中被取消，不应再发下一次请求。
-fn backoff_before_retry(attempt: usize, cancel: &fluxdb_core::CancelFlag) -> bool {
-    let base = RETRY_BACKOFF_BASE_MS.saturating_mul(1u64 << (attempt - 1).min(4));
-    let capped = base.min(RETRY_BACKOFF_CAP_MS);
-    // 抖动 ±25%，避免多轮同时重试打在同一时刻。
-    let jitter = capped / 4;
-    let delay = capped.saturating_sub(jitter)
-        + jitter.saturating_mul(u64::from(uuid::Uuid::new_v4().as_u128() as u8 % 2));
-    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(delay);
-    // 分片睡眠以便及时响应取消；这是 runtime actor 线程，只能短暂占用。
-    while std::time::Instant::now() < deadline {
-        if cancel.is_cancelled() {
-            return false;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    }
-    !cancel.is_cancelled()
+        ))
+        .and_then(|result| result)
+    })
 }
 
 /// 组装"用户显式引用"系统消息，并按可选的 Jev 建议把最相关引用排到最前。

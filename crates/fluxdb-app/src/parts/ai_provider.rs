@@ -84,6 +84,7 @@ impl ChatTransport for UreqChatTransport {
             AuthStyle::Bearer => &[],
             AuthStyle::AnthropicApiKey => &[("anthropic-version", "2023-06-01")],
         };
+        // 保留传输错误类别：降级成 `Internal` 会让重试层认不出超时/限流/上游故障。
         crate::stream_chat(
             config.limits,
             config.protocol,
@@ -93,7 +94,7 @@ impl ChatTransport for UreqChatTransport {
             extra,
             cancel,
         )
-        .map_err(|e| fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, e.to_string()))
+        .map_err(crate::TransportError::to_core_error)
     }
 }
 

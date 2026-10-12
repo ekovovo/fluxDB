@@ -61,7 +61,7 @@ pub fn test_ai_model(
     let url = ai_request_url(&base, protocol, view.endpoint_is_full_url)?;
 
     // 测试数据不包含用户上下文；决策协议使用真实 Choice 请求。
-    let agent = ai_agent(std::time::Duration::from_secs(10));
+    let agent = ai_agent(std::time::Duration::from_millis(crate::MODEL_REQUEST_TIMEOUT_MS));
 
     // ureq 未启用 json feature，这里自行序列化并显式带 Content-Type。
     let body = if protocol == "system-one" {
@@ -204,7 +204,8 @@ pub fn fetch_ai_model_capabilities(
         .filter(|value| !value.is_empty())
         .unwrap_or(default_base);
     let candidates = ai_models_url_candidates(base)?;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    let deadline =
+        std::time::Instant::now() + std::time::Duration::from_millis(crate::MODEL_REQUEST_TIMEOUT_MS);
     for (index, url) in candidates.iter().enumerate() {
         let remaining = deadline.saturating_duration_since(std::time::Instant::now());
         if remaining.is_zero() {

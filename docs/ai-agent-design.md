@@ -825,9 +825,9 @@ MCP result 使用 object 顶层 structuredContent，并带可读 text JSON 兼�
 
 ## 21. SQL 执行、安全读取与事务
 
-读取与修改入口分开，但最终均经同一个权限服务。`db.query` 不能仅因 SQL 以 SELECT/WITH 开头就放行：CTE 可修改数据，函数可有副作用，SELECT INTO/锁定/导出/存储过程也可能越权。sqlparser 用数据库对应 dialect；未知/解析失败按高风险处理，不自动执行。
+读取与修改入口分开，但最终均经同一个权限服务。`db.query` 不能仅因 SQL 以 SELECT/WITH 开头就放行：CTE 可修改数据，函数可有副作用，SELECT INTO/锁定/导出/存储过程也可能越权。sqlparser 用数据库对应 dialect；判定采用「AST 结构分类 + 已知危险函数/语法/系统表 denylist」（见 §21.3），解析失败按高风险处理，不自动执行。
 
-纵深约束：连接只读配置、宿主 AST 策略、数据库权限/只读事务、资源限额。PostgreSQL/SQLite/MySQL 分别验证真实只读执行和取消能力；某驱动不能保证时，不展示“安全自动读”能力，要求受限只读账号或显式审批该风险。不将客户端提示当成服务器强制权限。
+纵深约束：连接只读配置、宿主 AST 策略、数据库权限/只读事务、资源限额。只读入口（`db.query`/`db.explain`）现已在 `QueryExecutionOptions.read_only` 上落实数据库级只读：PostgreSQL 逐语句包 `BEGIN READ ONLY … ROLLBACK`（读写工具复用同一条会话，不能置会话只读，故逐语句包装并带回滚保护）、MySQL 会话级 `SET SESSION TRANSACTION READ ONLY`、SQLite 连接级 `PRAGMA query_only=ON`（MySQL/SQLite 每次调用新建连接，无会话污染）。该层保证：即使客户端分类漏掉某个带副作用的函数/语法，服务端也会拒绝写入。PostgreSQL/SQLite/MySQL 分别验证真实只读执行和取消能力；某驱动不能保证时，不展示“安全自动读”能力，要求受限只读账号或显式审批该风险。不将客户端提示当成服务器强制权限。
 
 Agent 使用明确 `ExecutionScope` 和专属 `QuerySessionId`，不借用用户编辑器事务。默认每次读取有界独立事务；只有用户任务明确需要时才支持多步事务，并展示事务状态、提供 rollback、设置空闲超时。数据库不支持统一回滚的 DDL/批量操作不能伪装原子性。
 
@@ -853,7 +853,7 @@ Agent 使用明确 `ExecutionScope` 和专属 `QuerySessionId`，不借用用户
 
 ### 21.3 查询：`fluxdb_query`
 
-输入：target、sql、parameters、max_rows、timeout_ms。只允许一条只读语句；拒绝多语句、事务控制、设置、DML/DDL、SELECT INTO OUTFILE、LOAD_FILE、SLEEP/BENCHMARK/GET_LOCK 等越界或副作用能力。函数/未知语法不靠模型猜安全，read role/readonly transaction 与 host 策略共同约束。
+输入：target、sql、parameters、max_rows、timeout_ms。只允许一条只读语句；拒绝多语句、事务控制、设置、DML/DDL、SELECT INTO OUTFILE、LOAD_FILE、SLEEP/BENCHMARK/GET_LOCK 等越界或副作用能力。只读判定借鉴 Apache Superset（`is_mutating()` + `DISALLOWED_SQL_FUNCTIONS`/`DISALLOWED_SQL_TABLES`）：AST 结构上判定为读（SELECT/SHOW/DESCRIBE/EXPLAIN/只读 PRAGMA）后，仅对**已知危险**的函数/语法/系统表 denylist 降级为需授权，其余函数（含用户自定义/扩展）默认放行——不逐个枚举安全函数，避免遗漏枚举误伤正常只读查询；denylist 未覆盖的副作用由数据库权限与连接只读配置兜底。解析失败仍按高风险处理。
 
 SQL placeholders 是 MySQL `?`；参数数目、类型、size 验证，驱动 bind，不拼接值。对业务列标识符不能用 value parameter，应来源于真实对象并由 dialect quoting 处理。max_rows 是返回预算，不是对数据库计算/扫描成本的完整保证，须真实 server/driver deadline 和权限。
 

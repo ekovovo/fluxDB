@@ -91,6 +91,7 @@ fn ai_live_exec(
             split_statements: true,
             page_offset: 0,
             page_size: 100,
+            read_only: false,
         },
         session_id: None,
     })

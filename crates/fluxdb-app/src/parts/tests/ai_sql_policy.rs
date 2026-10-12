@@ -169,30 +169,71 @@ fn ai_sql_policy_side_effect_functions_require_authorization() {
 
     for sql in mysql_cases {
         let reasons = ai_sql_policy_assert_requires(sql, SqlDialectKind::MySql);
-        ai_sql_policy_assert_reason_prefix(&reasons, "side_effect_marker:");
+        ai_sql_policy_assert_reason_prefix(&reasons, "denied_function:");
     }
     for sql in postgres_cases {
         let reasons = ai_sql_policy_assert_requires(sql, SqlDialectKind::Postgres);
-        ai_sql_policy_assert_reason_prefix(&reasons, "side_effect_marker:");
+        ai_sql_policy_assert_reason_prefix(&reasons, "denied_function:");
     }
 }
 
 #[test]
 fn ai_sql_policy_locking_reads_require_authorization() {
-    let cases = [
+    // 锁定读（`FOR UPDATE`/`FOR SHARE`）改由 AST `query.locks` 识别，含嵌套子查询形态。
+    for (sql, dialect) in [
         ("SELECT * FROM orders FOR UPDATE", SqlDialectKind::Postgres),
         ("SELECT * FROM orders FOR SHARE", SqlDialectKind::Postgres),
         (
-            "SELECT * FROM orders LOCK IN SHARE MODE",
-            SqlDialectKind::MySql,
+            "SELECT * FROM orders FOR UPDATE SKIP LOCKED",
+            SqlDialectKind::Postgres,
         ),
-    ];
-
-    for (sql, dialect) in cases {
+        (
+            "SELECT * FROM (SELECT * FROM orders FOR UPDATE) s",
+            SqlDialectKind::Postgres,
+        ),
+        (
+            "SELECT (SELECT id FROM orders FOR UPDATE) AS x",
+            SqlDialectKind::Postgres,
+        ),
+        (
+            "SELECT * FROM orders WHERE id IN (SELECT id FROM t FOR UPDATE)",
+            SqlDialectKind::Postgres,
+        ),
+        (
+            "WITH c AS (SELECT * FROM orders FOR UPDATE) SELECT * FROM c",
+            SqlDialectKind::Postgres,
+        ),
+    ] {
         let reasons = ai_sql_policy_assert_requires(sql, dialect);
-        assert!(
-            !reasons.is_empty(),
-            "locking read must explain why it is gated"
+        ai_sql_policy_assert_reason_contains(&reasons, "locking_read");
+    }
+
+    // 方言不支持锁定读语法时按 unknown_syntax 兜底，不能误判只读。
+    let reasons = ai_sql_policy_assert_requires(
+        "SELECT * FROM orders LOCK IN SHARE MODE",
+        SqlDialectKind::MySql,
+    );
+    assert!(
+        !reasons.is_empty(),
+        "locking read must explain why it is gated"
+    );
+}
+
+#[test]
+fn ai_sql_policy_lock_keywords_in_literals_are_read_only() {
+    // 锁定读标记不再做裸文本匹配：字面量里的这些词不能误伤普通只读查询。
+    for (sql, dialect) in [
+        ("SELECT 'for update' AS note FROM orders", SqlDialectKind::Postgres),
+        ("SELECT 'for share' AS note FROM orders", SqlDialectKind::Postgres),
+        ("SELECT 'skip locked' AS note FROM orders", SqlDialectKind::Postgres),
+        ("SELECT 'nowait' AS note FROM orders", SqlDialectKind::Postgres),
+        ("SELECT 'into outfile' AS note FROM orders", SqlDialectKind::MySql),
+        ("SELECT 'load data' AS note FROM orders", SqlDialectKind::MySql),
+    ] {
+        assert_eq!(
+            analyze_sql(sql, dialect),
+            SqlRisk::ReadOnly,
+            "lock keyword in a literal must not block a read-only query: {sql}"
         );
     }
 }
@@ -285,17 +326,22 @@ fn ai_sql_policy_cross_schema_reference_remains_read_only_in_classifier() {
 }
 
 #[test]
-fn ai_sql_policy_unknown_functions_require_authorization() {
+fn ai_sql_policy_unknown_functions_default_to_read_only() {
+    // denylist 方向（借鉴 Superset）：用户自定义/扩展函数不逐个枚举，
+    // 未命中已知危险函数时按只读放行，最终由数据库权限/只读配置约束。
     for sql in [
         "SELECT process_data()",
         "SELECT custom_calc(total) FROM orders",
         "SELECT * FROM orders WHERE unknown_guard(id)",
     ] {
-        let reasons = ai_sql_policy_assert_requires(sql, SqlDialectKind::Postgres);
-        ai_sql_policy_assert_reason_contains(&reasons, "unknown_function");
+        assert_eq!(
+            analyze_sql(sql, SqlDialectKind::Postgres),
+            SqlRisk::ReadOnly,
+            "unknown function should not force approval: {sql}"
+        );
     }
 
-    // 常见纯函数仍可用，避免白名单把普通只读报表全部推入审批。
+    // 常见纯函数仍可用（回归：`date('now')` 之类不再误伤只读查询）。
     assert_eq!(
         analyze_sql(
             "SELECT count(*), upper(name) FROM orders WHERE coalesce(note, '') <> ''",
@@ -303,6 +349,16 @@ fn ai_sql_policy_unknown_functions_require_authorization() {
         ),
         SqlRisk::ReadOnly
     );
+
+    // 已知危险函数仍必须需授权。
+    for sql in [
+        "SELECT pg_read_file('/etc/passwd')",
+        "SELECT nextval('s')",
+        "SELECT pg_sleep(1)",
+    ] {
+        let reasons = ai_sql_policy_assert_requires(sql, SqlDialectKind::Postgres);
+        ai_sql_policy_assert_reason_prefix(&reasons, "denied_function:");
+    }
 }
 
 #[test]
@@ -370,7 +426,7 @@ fn ai_sql_policy_dialect_changes_backtick_identifier_classification() {
 }
 
 #[test]
-fn ai_sql_policy_nested_ctes_and_extended_side_effect_markers_require_authorization() {
+fn ai_sql_policy_nested_ctes_and_denied_functions_require_authorization() {
     // 嵌套 CTE：只看最外层 body 会漏掉内层 DELETE。
     let reasons = ai_sql_policy_assert_requires(
         "WITH outer_c AS (WITH inner_c AS (DELETE FROM orders RETURNING id) SELECT * FROM inner_c) \
@@ -379,17 +435,19 @@ fn ai_sql_policy_nested_ctes_and_extended_side_effect_markers_require_authorizat
     );
     ai_sql_policy_assert_reason_prefix(&reasons, "modifying_cte_");
 
-    // 评审发现的副作用/越权函数：不在旧 marker 列表里也不能当只读。
+    // 评审发现的副作用/越权函数：denylist 命中后不得只读（denylist 按方言分表）。
     for sql in [
         "SELECT pg_notify('chan', 'payload')",
         "SELECT lo_unlink(12345)",
         "SELECT pg_read_binary_file('/etc/hosts')",
         "SELECT dblink_exec('conn', 'UPDATE t SET v=1')",
-        "SELECT load_extension('evil')",
     ] {
         let reasons = ai_sql_policy_assert_requires(sql, SqlDialectKind::Postgres);
-        ai_sql_policy_assert_reason_prefix(&reasons, "side_effect_marker:");
+        ai_sql_policy_assert_reason_prefix(&reasons, "denied_function:");
     }
+    let reasons =
+        ai_sql_policy_assert_requires("SELECT load_extension('evil')", SqlDialectKind::Sqlite);
+    ai_sql_policy_assert_reason_prefix(&reasons, "denied_function:");
 }
 
 #[test]
@@ -487,4 +545,167 @@ fn ai_sql_policy_metadata_never_accepts_session_or_table_writes() {
         SqlDialectKind::Sqlite,
     );
     ai_sql_policy_assert_reason_prefix(&reasons, "non_read_statement:pragma");
+}
+
+#[test]
+fn ai_sql_policy_from_table_functions_are_not_automatic_reads() {
+    // 回归：`FROM f(...)` 表函数在 sqlparser 中是 TableFactor 而不是 Expr::Function，
+    // 只扫表达式会漏掉；denylist 命中的表函数（如 pg_stat_reset 会重置统计）必须需授权。
+    for sql in [
+        "SELECT * FROM pg_stat_reset()",
+        "SELECT * FROM pg_read_file('/etc/passwd')",
+        "SELECT * FROM pg_ls_dir('/etc')",
+        "SELECT * FROM dblink('c','s') AS t(a text)",
+        "SELECT * FROM TABLE(pg_read_file('/x'))",
+        "SELECT * FROM t JOIN pg_ls_waldir() ON TRUE",
+        "WITH c AS (SELECT * FROM pg_stat_reset()) SELECT * FROM c",
+    ] {
+        let reasons = ai_sql_policy_assert_requires(sql, SqlDialectKind::Postgres);
+        ai_sql_policy_assert_reason_prefix(&reasons, "denied_function:");
+    }
+
+    // 无副作用/未命中 denylist 的表函数仍按只读放行（denylist 方向，不是白名单）。
+    for sql in [
+        "SELECT * FROM generate_series(1, 10)",
+        "SELECT * FROM unnest(ARRAY[1,2,3])",
+        "SELECT * FROM my_custom_srf(1)",
+        "SELECT * FROM json_each('{\"a\":1}')",
+    ] {
+        let dialect = if sql.contains("json_each") {
+            SqlDialectKind::Sqlite
+        } else {
+            SqlDialectKind::Postgres
+        };
+        assert_eq!(
+            analyze_sql(sql, dialect),
+            SqlRisk::ReadOnly,
+            "benign table function should stay read-only: {sql}"
+        );
+    }
+}
+
+#[test]
+fn ai_sql_policy_denied_system_tables_require_authorization() {
+    // 借鉴 Superset DISALLOWED_SQL_TABLES：会话/角色/整库元数据系统表需授权。
+    for sql in [
+        "SELECT * FROM pg_stat_activity",
+        "SELECT usename FROM pg_shadow",
+        "SELECT * FROM pg_catalog.pg_roles",
+        "SELECT * FROM information_schema.tables",
+        "SELECT * FROM pg_stat_activity WHERE state = 'active'",
+        "WITH a AS (SELECT * FROM pg_stat_activity) SELECT * FROM a",
+        "SELECT count(*) FROM (SELECT * FROM information_schema.columns) c",
+    ] {
+        let reasons = ai_sql_policy_assert_requires(sql, SqlDialectKind::Postgres);
+        ai_sql_policy_assert_reason_prefix(&reasons, "denied_table:");
+    }
+
+    // 普通业务表（即使 schema/表名与系统视图同名但不同 schema）不受影响。
+    assert!(analyze_sql("SELECT * FROM public.orders", SqlDialectKind::Postgres).is_read_only());
+    assert!(
+        analyze_sql("SELECT * FROM app.information_schema_tables", SqlDialectKind::Postgres)
+            .is_read_only()
+    );
+
+    let mysql_reasons =
+        ai_sql_policy_assert_requires("SELECT * FROM mysql.user", SqlDialectKind::MySql);
+    ai_sql_policy_assert_reason_prefix(&mysql_reasons, "denied_table:");
+    let sqlite_reasons =
+        ai_sql_policy_assert_requires("SELECT * FROM sqlite_master", SqlDialectKind::Sqlite);
+    ai_sql_policy_assert_reason_prefix(&sqlite_reasons, "denied_table:");
+}
+
+#[test]
+fn ai_sql_policy_denied_functions_match_last_identifier_case_insensitively() {
+    // 按最后一段标识符、大小写不敏感匹配：schema 限定 / 带引号写法都不能绕过 denylist。
+    for sql in [
+        "SELECT pg_catalog.nextval('s')",
+        "SELECT NEXTVAL('s')",
+        "SELECT pg_catalog.\"nextval\"('s')",
+        "SELECT pg_catalog.\"pg_notify\"('c', 'p')",
+    ] {
+        let reasons = ai_sql_policy_assert_requires(sql, SqlDialectKind::Postgres);
+        ai_sql_policy_assert_reason_prefix(&reasons, "denied_function:");
+    }
+}
+
+#[test]
+fn ai_sql_policy_common_functions_remain_read_only() {
+    // denylist 方向的核心收益：遗漏枚举的常用函数不再把普通只读报表推入审批。
+    for sql in [
+        "SELECT row_number() OVER (ORDER BY id) FROM orders",
+        "SELECT lag(x) OVER (ORDER BY id) FROM orders",
+        "SELECT string_agg(name, ',') FROM orders",
+        "SELECT array_agg(id) FROM orders",
+        "SELECT jsonb_build_object('a', 1)",
+        "SELECT regexp_replace(name, 'x', 'y') FROM orders",
+        "SELECT to_char(created_at, 'YYYY') FROM orders",
+    ] {
+        assert_eq!(
+            analyze_sql(sql, SqlDialectKind::Postgres),
+            SqlRisk::ReadOnly,
+            "common read-only function must not require approval: {sql}"
+        );
+    }
+    for sql in [
+        "SELECT group_concat(name) FROM orders",
+        "SELECT ifnull(total, 0) FROM orders",
+        "SELECT json_extract(payload, '$.a') FROM orders",
+    ] {
+        assert_eq!(
+            analyze_sql(sql, SqlDialectKind::MySql),
+            SqlRisk::ReadOnly,
+            "common read-only function must not require approval: {sql}"
+        );
+    }
+    for sql in [
+        "SELECT typeof(x) FROM t",
+        "SELECT printf('%d', x) FROM t",
+        "SELECT json_extract(payload, '$.a') FROM t",
+    ] {
+        assert_eq!(
+            analyze_sql(sql, SqlDialectKind::Sqlite),
+            SqlRisk::ReadOnly,
+            "common read-only function must not require approval: {sql}"
+        );
+    }
+}
+
+#[test]
+fn ai_sql_policy_postgres_admin_and_replication_functions_require_authorization() {
+    // 这些函数名不带写关键字、也不改表数据，但会推进 WAL、创建/删除复制槽、控制恢复
+    // 或做备份/时间线管理——Superset 的 is_mutating() 会放行它们，fluxDB 用 denylist 单独点名。
+    for sql in [
+        "SELECT pg_logical_emit_message(true, 'a', 'b')",
+        "SELECT pg_export_snapshot()",
+        "SELECT pg_switch_wal()",
+        "SELECT pg_rotate_logfile()",
+        "SELECT pg_promote()",
+        "SELECT pg_wal_replay_pause()",
+        "SELECT pg_wal_replay_resume()",
+        "SELECT pg_start_backup('x')",
+        "SELECT pg_stop_backup()",
+        "SELECT pg_backup_start('x')",
+        "SELECT pg_backup_stop()",
+        "SELECT pg_create_restore_point('x')",
+        "SELECT pg_drop_replication_slot('s')",
+        "SELECT pg_create_logical_replication_slot('s', 'pgoutput')",
+        "SELECT pg_create_physical_replication_slot('s')",
+        "SELECT pg_replication_slot_advance('s', '0/0')",
+        "SELECT pg_replication_origin_create('x')",
+        "SELECT pg_replication_origin_drop('x')",
+        "SELECT pg_import_system_collations('public')",
+        "SELECT pg_logdir_ls()",
+        // 事务号分配：当前事务未分配 XID 时会分配并推进全局计数。
+        "SELECT txid_current()",
+        "SELECT pg_current_xact_id()",
+    ] {
+        let reasons = ai_sql_policy_assert_requires(sql, SqlDialectKind::Postgres);
+        ai_sql_policy_assert_reason_prefix(&reasons, "denied_function:");
+    }
+
+    // `pg_stat_reset()` 常以表函数形式出现（FROM 位置），同样要拦住。
+    let reasons =
+        ai_sql_policy_assert_requires("SELECT * FROM pg_stat_reset()", SqlDialectKind::Postgres);
+    ai_sql_policy_assert_reason_prefix(&reasons, "denied_function:");
 }

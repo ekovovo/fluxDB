@@ -78,15 +78,17 @@ fn sql_approval_guardrails(risk: &SqlRisk) -> (Vec<String>, ApprovalRisk) {
                 guardrails.push("单语句，不含事务或会话控制".to_string());
             }
             guardrails.push("未通过只读分类，必须逐次批准".to_string());
-            if reasons
-                .iter()
-                .any(|reason| reason.starts_with("side_effect_marker:"))
-            {
+            if reasons.iter().any(|reason| {
+                reason.starts_with("denied_function:")
+                    || reason.starts_with("denied_syntax:")
+            }) {
                 guardrails.push("语句含已知副作用语法，影响面无法从文本确定".to_string());
             }
             // 副作用语法或无法解析的语句无法判断影响面，一律按高风险提示。
             if reasons.iter().any(|reason| {
-                reason.starts_with("side_effect_marker:") || reason == "unknown_syntax"
+                reason.starts_with("denied_function:")
+                    || reason.starts_with("denied_syntax:")
+                    || reason == "unknown_syntax"
             }) {
                 ApprovalRisk::High
             } else {

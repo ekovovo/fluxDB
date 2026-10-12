@@ -52,6 +52,11 @@ pub struct QueryExecutionOptions {
     pub split_statements: bool,
     pub page_offset: u64,
     pub page_size: u64,
+    /// 只读执行（AI/受限只读入口）。置位时驱动以数据库级只读方式执行
+    /// （PG 只读事务、MySQL `SET SESSION TRANSACTION READ ONLY`、SQLite `PRAGMA query_only`），
+    /// 作为客户端 AST 策略之外的纵深防线：即使某个未在 denylist 里的函数/语法带副作用，
+    /// 服务端也会拒绝写入。默认 `false`，普通编辑器路径不受影响。
+    pub read_only: bool,
 }
 
 impl Default for QueryExecutionOptions {
@@ -61,6 +66,7 @@ impl Default for QueryExecutionOptions {
             split_statements: true,
             page_offset: 0,
             page_size: Pagination::DEFAULT_LIMIT,
+            read_only: false,
         }
     }
 }

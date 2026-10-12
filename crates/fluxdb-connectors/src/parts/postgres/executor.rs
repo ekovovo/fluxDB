@@ -170,8 +170,22 @@ async fn pg_run_statement(
     request: &QueryRequest, should_cancel: &dyn Fn() -> bool,
 ) -> fluxdb_core::Result<PgStatementOutcome> {
     let profile = config.postgres_profile.as_ref().ok_or_else(|| Error::new(ErrorKind::Connection, "PostgreSQL 连接档案缺失"))?;
+    // 只读入口：读写工具复用同一条后端会话，不能把连接/会话置成只读（会污染后续写工具），
+    // 也不能包成跨请求事务（会留下 idle-in-transaction）。因此逐语句把它包进一个带取消保护的
+    // 只读事务：`BEGIN READ ONLY` → 语句 → `ROLLBACK`。即使用户 SQL 自行 BEGIN/COMMIT，
+    // 也只会在本只读包装内生效；真正的外部 BEGIN 已被只读入口的策略层拒绝。
+    let wrap_read_only = request.options.read_only && !pg_is_transaction_recovery(statement);
     let run = async {
         if !pg_is_transaction_recovery(statement) { pg_ensure_search_path(session, request.schema.as_deref()).await?; }
+        if wrap_read_only {
+            session.client.batch_execute("BEGIN READ ONLY").await.map_err(pg_error)?;
+            let result = pg_collect_statement(&session.client, statement, request).await;
+            // 无论成功与否都结束事务：不回滚会把连接留在 idle-in-transaction，并让后续写工具失败。
+            if let Err(error) = session.client.batch_execute("ROLLBACK").await {
+                tracing::warn!(target: "fluxdb_connectors", message = %error, "PostgreSQL 只读事务 ROLLBACK 失败");
+            }
+            return result;
+        }
         let result = pg_collect_statement(&session.client, statement, request).await;
         // ROLLBACK/SET 会改变 search_path；下一次请求必须重新确认作用域。
         let word = pg_executable_sql(statement).split_whitespace().next().unwrap_or("").trim_end_matches(';');

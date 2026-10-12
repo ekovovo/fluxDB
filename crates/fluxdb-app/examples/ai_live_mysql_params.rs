@@ -56,6 +56,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 split_statements: true,
                 page_offset: 0,
                 page_size: 100,
+                read_only: false,
             },
             session_id: None,
         })?;
@@ -76,6 +77,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     split_statements: false,
                     page_offset: 0,
                     page_size: 100,
+                    read_only: false,
                 },
                 session_id: None,
             },

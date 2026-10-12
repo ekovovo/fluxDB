@@ -1,8 +1,14 @@
 // SQL 风险分类与只读保证（设计 §21，T023/T024）。
 //
 // 原则：
-// - **不靠前缀猜安全**：`SELECT/WITH` 开头不等于只读（CTE 可写、SELECT INTO、锁定读、副作用函数）。
-// - **未知/解析失败按高风险**：不给"自动安全读"结论，而是 RequiresAuthorization。
+// - **不靠前缀猜安全**：`SELECT/WITH` 开头不等于只读（CTE 可写、SELECT INTO、锁定读）。
+// - **只拦已知危险，未知放行**：借鉴 Apache Superset 的 `is_mutating()` + 函数/表 denylist
+//   （见 `superset/sql/parse.py`、`superset/config.py` 的 `DISALLOWED_SQL_FUNCTIONS`/`DISALLOWED_SQL_TABLES`）：
+//   结构上判定为读（SELECT/SHOW/DESCRIBE/EXPLAIN/只读 PRAGMA）且未命中已知危险函数/系统表时，
+//   即可自动只读执行；用户自定义或扩展函数不逐个枚举，交由数据库权限与只读配置约束。
+//   早先的「不在纯函数白名单内即需授权」会让每个漏列的常用函数（如 `date('now')`）都误伤只读查询，
+//   因此改为 denylist。
+// - **解析失败按高风险**：无法解析时给不出只读结论，走 RequiresAuthorization。
 // - 客户端策略只是纵深的一层：调用方还必须叠加连接只读配置与数据库账号权限。
 // - 多语句一律拒绝（AI 路径不做 split/continue_on_error）。
 
@@ -22,6 +28,15 @@ impl SqlDialectKind {
             SqlDialectKind::Sqlite => Box::new(sqlparser::dialect::SQLiteDialect {}),
         }
     }
+
+    /// denylist 键与系统表判定使用的稳定标签。
+    fn as_str(self) -> &'static str {
+        match self {
+            SqlDialectKind::MySql => "mysql",
+            SqlDialectKind::Postgres => "postgresql",
+            SqlDialectKind::Sqlite => "sqlite",
+        }
+    }
 }
 
 /// 风险分类结果。
@@ -29,7 +44,7 @@ impl SqlDialectKind {
 pub enum SqlRisk {
     /// 只读、单语句、无已知副作用 → 可以在只读事务中自动执行。
     ReadOnly,
-    /// 需要授权/审批：写操作，或无法保证只读（未知语法、锁定读、副作用函数）。
+    /// 需要授权/审批：写操作，或无法保证只读（未知语法、锁定读、危险函数/系统表）。
     RequiresAuthorization { reasons: Vec<String> },
     /// 直接拒绝：多语句等结构性禁止。
     Rejected { reasons: Vec<String> },
@@ -48,57 +63,180 @@ impl SqlRisk {
     }
 }
 
-/// 已知有副作用/越权能力的函数或语法片段（命中即降级为需授权）。
+/// 有副作用/越权能力函数的 denylist（借鉴 Superset `DISALLOWED_SQL_FUNCTIONS`）。
 ///
-/// 函数按 AST 标识符匹配，语法片段保留保守文本检查；这不是纯函数白名单，
-/// 未知函数的只读保障仍须由数据库权限/只读事务承担。
-const SIDE_EFFECT_MARKERS: &[&str] = &[
-    "sleep(",
-    "benchmark(",
-    "get_lock(",
-    "release_lock(",
-    "release_all_locks(",
-    "load_file(",
-    "into outfile",
-    "into dumpfile",
-    "load data",
-    "pg_sleep(",
-    "pg_advisory_lock(",
-    "pg_advisory_lock_shared(",
-    "pg_try_advisory_lock(",
-    "pg_try_advisory_lock_shared(",
-    "pg_advisory_unlock(",
-    "pg_advisory_unlock_shared(",
-    "pg_advisory_unlock_all(",
-    "pg_read_file(",
-    "pg_ls_dir(",
-    "dblink(",
-    "lo_import(",
-    "lo_export(",
-    "lo_unlink(",
-    "nextval(",
-    "setval(",
-    "copy ",
-    // 通知/外部连接/文件/进程类副作用：命中即降级为需授权（宁可误判，不放过真实副作用）。
-    "pg_notify(",
-    "pg_read_binary_file(",
-    "pg_write_file(",
-    "dblink_exec(",
-    "dblink_connect(",
-    "pg_terminate_backend(",
-    "pg_cancel_backend(",
-    "pg_advisory_xact_lock(",
-    "pg_advisory_xact_lock_shared(",
-    "pg_try_advisory_xact_lock(",
-    "pg_try_advisory_xact_lock_shared(",
-    "set_config(",
-    "load_extension(",
-    "pg_reload_conf(",
-    "for update",
-    "for share",
-    "lock in share mode",
-    "skip locked",
-    "nowait",
+/// 命中即降级为需授权。这是一份**黑名单**：其余函数（含用户自定义/扩展函数）默认按只读处理，
+/// 由数据库账号权限与连接只读配置承担最终约束。比对按最后一段标识符、大小写不敏感，
+/// 因此 `pg_catalog."pg_notify"`、`SETVAL` 等限定/带引号写法同样命中。
+///
+/// 只列真正有副作用、访问文件/网络/锁、改写服务端状态或可读取任意会话配置的函数；
+/// `current_user`/`version()`/`database()` 这类纯身份/版本自省不在其列——fluxDB 已有的只读
+/// 元数据入口（`SHOW server_version`、`SHOW search_path` 等）本就允许同类信息披露，此处保持一致。
+const SQL_FUNCTION_DENYLIST: &[(&str, &[&str])] = &[
+    (
+        "postgresql",
+        &[
+            // 阻塞/计时：可长时间占用连接。
+            "pg_sleep",
+            "pg_sleep_for",
+            "pg_sleep_until",
+            // 进程/会话控制：可终止其他后端或重载服务端配置。
+            "pg_terminate_backend",
+            "pg_cancel_backend",
+            "pg_reload_conf",
+            // 文件/大对象：读写服务器文件系统或 pg_largeobject 目录。
+            "pg_read_file",
+            "pg_read_binary_file",
+            "pg_write_file",
+            "pg_ls_dir",
+            "pg_ls_waldir",
+            "pg_ls_logdir",
+            "pg_ls_tmpdir",
+            "pg_stat_file",
+            "lo_import",
+            "lo_export",
+            "lo_unlink",
+            "lo_create",
+            "lo_creat",
+            "lo_from_bytea",
+            "lo_put",
+            "lowrite",
+            "lo_truncate",
+            "lo_truncate64",
+            // 咨询锁：获取/释放会改变跨会话可见的锁状态。
+            "pg_advisory_lock",
+            "pg_advisory_lock_shared",
+            "pg_try_advisory_lock",
+            "pg_try_advisory_lock_shared",
+            "pg_advisory_unlock",
+            "pg_advisory_unlock_shared",
+            "pg_advisory_unlock_all",
+            "pg_advisory_xact_lock",
+            "pg_advisory_xact_lock_shared",
+            "pg_try_advisory_xact_lock",
+            "pg_try_advisory_xact_lock_shared",
+            // 序列：取值会推进序列状态，影响后续调用者。
+            "nextval",
+            "setval",
+            // 外部连接/通知/会话与集群范围配置写入。
+            "dblink",
+            "dblink_exec",
+            "dblink_connect",
+            "pg_notify",
+            "set_config",
+            // 服务端统计：会重置或改写统计视图。
+            "pg_stat_reset",
+            "pg_stat_reset_shared",
+            "pg_stat_reset_single_table_counters",
+            "pg_stat_reset_single_function_counters",
+            "pg_stat_reset_replication_slot",
+            "pg_clear_relation_stats",
+            // WAL/复制/备份/恢复等管理操作：这些函数名不带写关键字，但会改写集群状态、
+            // 推进 WAL、创建/删除复制槽或控制恢复，属于需授权的高影响能力。
+            "pg_logical_emit_message",
+            "pg_export_snapshot",
+            "pg_switch_wal",
+            "pg_rotate_logfile",
+            "pg_promote",
+            "pg_wal_replay_pause",
+            "pg_wal_replay_resume",
+            "pg_start_backup",
+            "pg_stop_backup",
+            "pg_backup_start",
+            "pg_backup_stop",
+            "pg_create_restore_point",
+            "pg_drop_replication_slot",
+            "pg_create_logical_replication_slot",
+            "pg_create_physical_replication_slot",
+            "pg_replication_slot_advance",
+            "pg_replication_origin_create",
+            "pg_replication_origin_drop",
+            "pg_replication_origin_advance",
+            "pg_import_system_collations",
+            // 目录列举读取：可枚举服务端日志/数据目录内容。
+            "pg_logdir_ls",
+            // 非确定/会话状态：setseed 改会话随机种子；txid_current/pg_current_xact_id
+            // 在当前事务尚未分配事务号时会分配一个并推进全局 XID 计数（非只读）。
+            "setseed",
+            "txid_current",
+            "pg_current_xact_id",
+            // 无界配置读取：可读出任意 GUC（超出固定的只读 SHOW 白名单）。
+            "current_setting",
+        ],
+    ),
+    (
+        "mysql",
+        &[
+            // 阻塞/计时/命名锁：可长时间占用连接或改写锁状态。
+            "sleep",
+            "benchmark",
+            "get_lock",
+            "release_lock",
+            "release_all_locks",
+            // 文件访问。
+            "load_file",
+        ],
+    ),
+    (
+        "sqlite",
+        &[
+            // 扩展加载与文件 I/O。
+            "load_extension",
+            "readfile",
+            "writefile",
+            "fts3_tokenizer",
+            "edit",
+        ],
+    ),
+];
+
+/// 系统表/视图 denylist（借鉴 Superset `DISALLOWED_SQL_TABLES`）。
+///
+/// 命中会泄露全库元数据或其他会话信息的系统视图，降级为需授权。条目中带 `.` 的按
+/// `schema.table` 精确匹配（qualifier 与表名都相等），裸名匹配任意 schema 下的同名表。
+const SQL_TABLE_DENYLIST: &[(&str, &[&str])] = &[
+    (
+        "postgresql",
+        &[
+            "pg_stat_activity",
+            "pg_roles",
+            "pg_shadow",
+            "pg_authid",
+            "pg_settings",
+            "pg_config",
+            "pg_hba_file_rules",
+            "pg_stat_ssl",
+            "pg_stat_replication",
+            "pg_stat_wal_receiver",
+            "pg_user",
+            "information_schema.tables",
+            "information_schema.columns",
+            "information_schema.schemata",
+            "information_schema.views",
+            "information_schema.routines",
+            "information_schema.role_table_grants",
+            "information_schema.role_column_grants",
+            "information_schema.role_routine_grants",
+            "information_schema.table_privileges",
+            "information_schema.column_privileges",
+            "information_schema.usage_privileges",
+            "information_schema.key_column_usage",
+            "information_schema.table_constraints",
+            "information_schema.referential_constraints",
+            "information_schema.view_table_usage",
+            "information_schema.applicable_roles",
+            "information_schema.enabled_roles",
+        ],
+    ),
+    (
+        "mysql",
+        &[
+            "mysql.user",
+            "performance_schema.threads",
+            "performance_schema.processlist",
+        ],
+    ),
+    ("sqlite", &["sqlite_master", "sqlite_schema"]),
 ];
 
 /// 事务/会话控制：AI 单次调用不允许。
@@ -113,28 +251,48 @@ const TRANSACTION_MARKERS: &[&str] = &[
     "set ",
 ];
 
-/// 可在只读入口自动执行的已知纯函数（不承诺覆盖所有方言函数）。
-///
-/// 不在集合内的函数统一需授权：宿主不能证明用户定义/扩展函数没有副作用、
-/// 文件访问、锁、通知或消耗型序列读取，宁可拒绝自动执行。
-const PURE_FUNCTION_NAMES: &[&str] = &[
-    "abs", "sign", "ceil", "ceiling", "floor", "round", "trunc", "mod", "power", "pow", "sqrt",
-    "exp", "ln", "log", "greatest", "least", "coalesce", "nullif", "length", "char_length",
-    "character_length", "lower", "upper", "trim", "btrim", "ltrim", "rtrim", "substring",
-    "substr", "concat", "replace", "left", "right", "lpad", "rpad", "position", "strpos",
-    "ascii", "chr", "hex", "md5", "count", "sum", "min", "max", "avg", "bool_and", "bool_or",
-    "now", "current_date", "current_timestamp", "date_trunc", "date_part", "to_regclass",
-    // 日期/时间函数：无副作用，但模型大量用于确定“今天/当月/环比”等口径边界。
-    // 真实缺陷：`SELECT date('now')` 曾因不在白名单被判 unknown_function 而被只读入口拒绝。
-    "date", "time", "datetime", "julianday", "unixepoch", "strftime", "timediff",
-    "current_time", "localtime", "localtimestamp", "clock_timestamp", "statement_timestamp",
-    "transaction_timestamp", "to_char", "to_date", "to_timestamp", "to_number",
-    "date_format", "date_add", "date_sub", "adddate", "subdate", "datediff", "timestampdiff",
-    "from_unixtime", "unix_timestamp", "sec_to_time", "time_to_sec", "str_to_date",
-    "year", "quarter", "month", "week", "day", "hour", "minute", "second",
-    "dayofweek", "dayofmonth", "dayofyear", "last_day", "extract",
-    "make_date", "make_time", "make_timestamp", "make_interval", "age", "isfinite",
-];
+/// 函数名是否命中某方言的函数 denylist（按最后一段标识符、大小写不敏感）。
+fn function_name_denied(dialect: SqlDialectKind, name: &str) -> bool {
+    SQL_FUNCTION_DENYLIST
+        .iter()
+        .find(|(key, _)| *key == dialect.as_str())
+        .is_some_and(|(_, names)| {
+            names
+                .iter()
+                .any(|candidate| candidate.eq_ignore_ascii_case(name))
+        })
+}
+
+/// 对象名（`schema.table` / `table` / `db.table`）是否命中某方言的系统表 denylist。
+fn relation_denied(dialect: SqlDialectKind, name: &sqlparser::ast::ObjectName) -> bool {
+    use sqlparser::ast::ObjectNamePart;
+    let Some((_, names)) = SQL_TABLE_DENYLIST
+        .iter()
+        .find(|(key, _)| *key == dialect.as_str())
+    else {
+        return false;
+    };
+    let parts: Vec<String> = name
+        .0
+        .iter()
+        .filter_map(|part| match part {
+            ObjectNamePart::Identifier(ident) => Some(ident.value.to_ascii_lowercase()),
+            ObjectNamePart::Function(_) => None,
+        })
+        .collect();
+    let Some(table) = parts.last() else {
+        return false;
+    };
+    let qualifier = parts.iter().rev().nth(1);
+    names.iter().any(|entry| match entry.split_once('.') {
+        // 限定条目（`schema.table`）要求 schema 与表名都相等。
+        Some((schema, wanted_table)) => {
+            table == wanted_table && qualifier.is_some_and(|value| value == schema)
+        }
+        // 裸条目匹配任意 schema 下的同名表。
+        None => table == entry,
+    })
+}
 
 /// 分析一条 SQL。
 pub fn analyze_sql(sql: &str, dialect: SqlDialectKind) -> SqlRisk {
@@ -209,44 +367,24 @@ pub fn analyze_sql(sql: &str, dialect: SqlDialectKind) -> SqlRisk {
         }
     }
 
-    // 使用标识符实际值识别 schema 限定/双引号函数名，不能靠格式化 SQL 中的 `name(`。
-    let function_marker = sqlparser::ast::visit_expressions(statement, |expr| {
-        if let sqlparser::ast::Expr::Function(function) = expr
-            && let Some(name) = function.name.0.last().and_then(|part| part.as_ident())
-            && let Some(marker) = SIDE_EFFECT_MARKERS.iter().find(|marker| {
-                marker
-                    .strip_suffix('(')
-                    .is_some_and(|function_name| name.value.eq_ignore_ascii_case(function_name))
-            })
-        {
-            return std::ops::ControlFlow::Break(*marker);
-        }
-        std::ops::ControlFlow::Continue(())
-    });
-    let marker = match function_marker {
-        std::ops::ControlFlow::Break(marker) => Some(marker),
-        std::ops::ControlFlow::Continue(()) => {
-            SIDE_EFFECT_MARKERS.iter().copied().find(|marker| text.contains(marker))
-        }
-    };
-    if let Some(marker) = marker {
-        reasons.push(format!("side_effect_marker:{marker}"));
+    // 函数 denylist：从 AST 函数标识符与 FROM 子句表函数两处收集名字。
+    // 按标识符实际值匹配，schema 限定/带引号写法（`pg_catalog."nextval"`）同样命中。
+    if let Some(name) = first_denied_function(statement, dialect) {
+        reasons.push(format!("denied_function:{name}"));
     }
-    // 未知函数不能凭名字猜安全：不在纯函数集合内就降级为需授权。
-    if sqlparser::ast::visit_expressions(statement, |expr| {
-        if let sqlparser::ast::Expr::Function(function) = expr
-            && let Some(name) = function.name.0.last().and_then(|part| part.as_ident())
-            && !PURE_FUNCTION_NAMES
-                .iter()
-                .any(|pure| name.value.eq_ignore_ascii_case(pure))
-        {
-            return std::ops::ControlFlow::Break(name.value.to_ascii_lowercase());
-        }
-        std::ops::ControlFlow::Continue(())
-    })
-    .is_break()
-    {
-        reasons.push("unknown_function".into());
+
+    // 锁定读：遍历整条语句里的所有 Query 节点（含标量子查询/派生表/CTE/EXPLAIN 内层），
+    // 任一节点带 `lock_clause`（`FOR UPDATE/SHARE ...`）就降级。
+    // 用 AST 而不是裸文本 `for update` 匹配：字面量 `SELECT 'for update'` 不能被误伤，
+    // 嵌套子查询里的锁定读也不会被漏掉。`INTO OUTFILE`/`LOAD DATA` 这类越权语法在
+    // sqlparser 里直接解析失败，已由上面的 unknown_syntax 兜底。
+    if let Some(reason) = first_locking_query(statement) {
+        reasons.push(reason.into());
+    }
+
+    // 系统表 denylist：整个表达式树里的关系引用（含 CTE/子查询/派生表）都要检查。
+    if let Some(table) = first_denied_relation(statement, dialect) {
+        reasons.push(format!("denied_table:{table}"));
     }
 
     if reasons.is_empty() {
@@ -254,6 +392,109 @@ pub fn analyze_sql(sql: &str, dialect: SqlDialectKind) -> SqlRisk {
     } else {
         SqlRisk::RequiresAuthorization { reasons }
     }
+}
+
+/// 遍历整条语句，返回首个「锁定读」原因（`locking_read`/`for_clause`），无则 `None`。
+///
+/// 覆盖所有 `Query` 节点，因此标量子查询、派生表、集合查询、CTE 以及 EXPLAIN 内层语句里的
+/// `FOR UPDATE`/`FOR SHARE`（`query.locks`）与 `query.for_clause` 都能被识别——只检查最外层
+/// `Query` 会漏掉嵌套形态。这里不依赖文本 `for update` 匹配，字面量不受影响。
+fn first_locking_query(statement: &sqlparser::ast::Statement) -> Option<&'static str> {
+    use sqlparser::ast::{Query, Visit, Visitor};
+    use std::ops::ControlFlow;
+
+    struct LockScan;
+    impl Visitor for LockScan {
+        type Break = &'static str;
+
+        fn pre_visit_query(&mut self, query: &Query) -> ControlFlow<&'static str> {
+            if !query.locks.is_empty() {
+                return ControlFlow::Break("locking_read");
+            }
+            if query.for_clause.is_some() {
+                return ControlFlow::Break("for_clause");
+            }
+            ControlFlow::Continue(())
+        }
+    }
+
+    match statement.visit(&mut LockScan) {
+        ControlFlow::Break(reason) => Some(reason),
+        ControlFlow::Continue(()) => None,
+    }
+}
+
+/// 遍历整条语句，返回首个命中方言函数 denylist 的函数名。
+///
+/// 同时覆盖 `Expr::Function`（普通函数调用）与 `FROM f(...)` 表函数——
+/// 后者在 sqlparser 中是 `TableFactor::Table { args: Some(_) }` / `TableFactor::TableFunction`，
+/// 不属于 `Expr::Function`，只扫表达式会漏掉（`SELECT * FROM my_srf(1)` 曾被误判为只读）。
+fn first_denied_function(
+    statement: &sqlparser::ast::Statement,
+    dialect: SqlDialectKind,
+) -> Option<String> {
+    use sqlparser::ast::{Expr, TableFactor, Visit, Visitor};
+    use std::ops::ControlFlow;
+
+    struct DeniedFunctions {
+        dialect: SqlDialectKind,
+    }
+    impl Visitor for DeniedFunctions {
+        type Break = String;
+
+        fn pre_visit_expr(&mut self, expr: &Expr) -> ControlFlow<String> {
+            if let Expr::Function(function) = expr
+                && let Some(name) = function.name.0.last().and_then(|part| part.as_ident())
+                && function_name_denied(self.dialect, &name.value)
+            {
+                return ControlFlow::Break(name.value.to_ascii_lowercase());
+            }
+            ControlFlow::Continue(())
+        }
+
+        fn pre_visit_table_factor(&mut self, table_factor: &TableFactor) -> ControlFlow<String> {
+            // FROM 位置的表函数：`Table` 带 args，或 `TABLE(expr)` 形态。
+            let name = match table_factor {
+                TableFactor::Table { name, args, .. } if args.is_some() => Some(name),
+                TableFactor::TableFunction { expr, .. } => match expr {
+                    Expr::Function(function) => Some(&function.name),
+                    _ => None,
+                },
+                TableFactor::Function { name, .. } => Some(name),
+                _ => None,
+            };
+            if let Some(name) = name
+                && let Some(ident) = name.0.last().and_then(|part| part.as_ident())
+                && function_name_denied(self.dialect, &ident.value)
+            {
+                return ControlFlow::Break(ident.value.to_ascii_lowercase());
+            }
+            ControlFlow::Continue(())
+        }
+    }
+
+    match statement.visit(&mut DeniedFunctions { dialect }) {
+        ControlFlow::Break(name) => Some(name),
+        ControlFlow::Continue(()) => None,
+    }
+}
+
+/// 遍历整条语句，返回首个命中方言系统表 denylist 的关系名。
+fn first_denied_relation(
+    statement: &sqlparser::ast::Statement,
+    dialect: SqlDialectKind,
+) -> Option<String> {
+    use std::ops::ControlFlow;
+
+    let mut found: Option<String> = None;
+    let _ = sqlparser::ast::visit_relations(statement, |name| {
+        if relation_denied(dialect, name) {
+            found = Some(name.to_string().to_ascii_lowercase());
+            return ControlFlow::Break(());
+        }
+        ControlFlow::Continue(())
+    });
+    found
 }
 
 /// MySQL `SHOW <对象>` 的只读子集。MySQL 的这类语句解析成 `ShowVariable`，
@@ -403,12 +644,6 @@ fn classify_metadata_read(
 }
 
 fn classify_query(query: &sqlparser::ast::Query, reasons: &mut Vec<String>) {
-    if !query.locks.is_empty() {
-        reasons.push("locking_read".into());
-    }
-    if query.for_clause.is_some() {
-        reasons.push("for_clause".into());
-    }
     classify_set_expr(&query.body, reasons);
     if let Some(with) = &query.with {
         for cte in &with.cte_tables {

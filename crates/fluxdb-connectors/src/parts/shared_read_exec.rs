@@ -286,6 +286,15 @@ fn mysql_execute_query_with_progress(
                 .map_err(mysql_error)?;
         }
 
+        // 只读入口：连接为本次调用新建（不复用），故会话级只读是安全的；默认事务因此只读，
+        // 未在 denylist 里的 UDF/DML 由服务端拒绝，作为客户端 AST 策略之外的纵深。
+        if request.options.read_only {
+            sqlx::raw_sql("SET SESSION TRANSACTION READ ONLY")
+                .execute(&mut connection)
+                .await
+                .map_err(mysql_error)?;
+        }
+
         // 读取本连接的 server-side connection id，供取消时 `KILL QUERY` 定位。
         // CONNECTION_ID() 的 MySQL 类型是 BIGINT UNSIGNED，必须用 u64 解码；使用 i64
         // 会在用户 SQL 发出前触发 sqlx 类型不匹配，表现为结果与执行摘要同时为空。
@@ -442,6 +451,15 @@ fn sqlite_execute_query_with_progress(
             Ok(Err(error)) => return Err(error),
             Err(_) => return Err(Error::new(ErrorKind::Connection, "连接超时")),
         };
+
+        // 只读入口：连接为本次调用新建（不复用），故连接级 `PRAGMA query_only=ON` 不会外泄；
+        // 即使客户端分类漏掉某个带副作用的函数，SQLite 也会直接拒绝写入。
+        if request.options.read_only {
+            sqlx::query("PRAGMA query_only = ON")
+                .execute(&mut connection)
+                .await
+                .map_err(sqlite_error)?;
+        }
 
         let mut execution = QueryExecutionResult {
             summaries: Vec::new(),

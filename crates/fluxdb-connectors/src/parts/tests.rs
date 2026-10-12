@@ -2746,6 +2746,104 @@ SELECT 1;",
     }
 
     #[test]
+    fn sqlite_execute_read_only_blocks_writes_even_without_client_classification() {
+        // 纵深防御回归：即使调用方（AI 只读入口）漏掉了某个带副作用的语句，
+        // `options.read_only` 也要让驱动用 `PRAGMA query_only=ON` 在服务端拒绝写入。
+        let path = temp_sqlite_path("read-only-guard");
+        let mut config = sqlite_config();
+        config.endpoint = Endpoint::SqliteFile {
+            path: path.clone(),
+            read_only: false,
+        };
+
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let mut connection = SqliteConnectOptions::new()
+                .filename(&path)
+                .create_if_missing(true)
+                .connect()
+                .await
+                .unwrap();
+            sqlx::query("CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT NOT NULL)")
+                .execute(&mut connection)
+                .await
+                .unwrap();
+            sqlx::query("INSERT INTO items (id, name) VALUES (1, 'old')")
+                .execute(&mut connection)
+                .await
+                .unwrap();
+            connection.close().await.unwrap();
+        });
+
+        let connector = SqliteConnector::with_config(config);
+        // read_only=true，但故意发一条写语句：分类器之外，驱动必须拦住。
+        let execution = connector
+            .execute(&QueryRequest {
+                connection_id: ConnectionId(1),
+                database: Some("main".to_string()),
+                schema: None,
+                session_id: None,
+                text: "UPDATE items SET name = 'new' WHERE id = 1".to_string(),
+                mode: QueryMode::All,
+                options: fluxdb_core::QueryExecutionOptions {
+                    continue_on_error: false,
+                    ..fluxdb_core::QueryExecutionOptions {
+                        read_only: true,
+                        ..Default::default()
+                    }
+                },
+            })
+            .unwrap();
+
+        // 写语句必须以失败收尾（query_only 拒绝），不能报告 affected_rows。
+        assert_eq!(execution.summaries.len(), 1);
+        assert!(!execution.summaries[0].success, "read-only 驱动必须拒绝写入");
+        assert_eq!(execution.summaries[0].affected_rows, 0);
+
+        // 数据库内容未被改写。
+        runtime.block_on(async {
+            let mut connection = SqliteConnectOptions::new()
+                .filename(&path)
+                .connect()
+                .await
+                .unwrap();
+            let name: String = sqlx::query_scalar("SELECT name FROM items WHERE id = 1")
+                .fetch_one(&mut connection)
+                .await
+                .unwrap();
+            assert_eq!(name, "old", "read-only 执行后数据必须保持不变");
+            connection.close().await.unwrap();
+        });
+
+        // 同一连接配置走 read_only=false 时写入仍可正常生效（默认不受影响）。
+        let writable = SqliteConnector::with_config(ConnectionConfig {
+            endpoint: Endpoint::SqliteFile {
+                path: path.clone(),
+                read_only: false,
+            },
+            ..sqlite_config()
+        });
+        let execution = writable
+            .execute(&QueryRequest {
+                connection_id: ConnectionId(1),
+                database: Some("main".to_string()),
+                schema: None,
+                session_id: None,
+                text: "UPDATE items SET name = 'new' WHERE id = 1".to_string(),
+                mode: QueryMode::All,
+                options: fluxdb_core::QueryExecutionOptions::default(),
+            })
+            .unwrap();
+        assert!(execution.summaries[0].success);
+        assert_eq!(execution.summaries[0].affected_rows, 1);
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn sqlite_execute_split_sql_runs_create_trigger_body() {
         let path = temp_sqlite_path("execute-trigger");
         let mut config = sqlite_config();

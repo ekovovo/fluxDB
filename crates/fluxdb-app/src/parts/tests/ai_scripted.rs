@@ -115,6 +115,8 @@ fn scripted_decision_provider_records_request_and_returns_fixed_choice() {
         chosen: Some("model-b".into()),
         scores: vec![("model-a".into(), 0.2), ("model-b".into(), 0.8)],
         reason: Some("更便宜且满足能力".into()),
+        confidence: Some(0.8),
+        usage: None,
     });
     let response = block_on(provider.decide(
         DecisionRequest {

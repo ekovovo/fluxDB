@@ -18,6 +18,7 @@ fn transport_limits(max_frame_bytes: usize, max_total_bytes: usize) -> Transport
         max_total_bytes,
         connect_timeout: Duration::from_secs(2),
         read_timeout: Duration::from_secs(2),
+        response_deadline: Duration::from_secs(2),
     }
 }
 
@@ -592,4 +593,30 @@ fn transport_invalid_or_overflowing_token_counts_are_rejected() {
         }
         assert!(failed);
     }
+}
+
+#[test]
+fn transport_response_deadline_is_separate_from_long_read_budget() {
+    let limits = TransportLimits::default();
+    // 模型"开始说话"的截止时间统一为 3000ms（与决策模型同口径）。
+    assert_eq!(
+        limits.response_deadline,
+        std::time::Duration::from_millis(3_000),
+        "等模型开口的预算必须与决策 deadline 同口径"
+    );
+    assert_eq!(
+        limits.connect_timeout,
+        limits.response_deadline,
+        "连接预算不应短于响应截止时间"
+    );
+    // 长回答的正文读取不受 3s 限制，否则流式回答会被拦腰截断。
+    assert!(
+        limits.read_timeout > limits.response_deadline,
+        "正文读取预算必须长于响应起始预算"
+    );
+    assert_eq!(
+        limits.read_timeout,
+        std::time::Duration::from_secs(60),
+        "正文读取预算保持 60s"
+    );
 }

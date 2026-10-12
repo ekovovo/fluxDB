@@ -531,10 +531,18 @@ cargo test -p fluxdb-app --locked ai_permission   # 15 passed
 - 未产出（不因本次勾选冒充分已交付）：真实第三方模型（公司自建/决策模型）下的压缩表现与真实 token 计量的**可核对记录**（用户已实机验证，本仓库未收集副本）；"正在压缩"pending 态截图（本地 mock 响应太快抓不到该帧）；浅色主题逐项对照截图（暗色与窄窗已由用户截图，见 T035 验证记录）；Windows/Linux 三端（按 §B 分工由用户自行验收）。
 
 ### T036 System One/Jev decision Provider
-- [ ] 依赖：T017、T030、T032；设计 §18；参考本地 Pi System One 两个 adapter。
+- [x] 依赖：T017、T030、T032；设计 §18；参考本地 Pi System One 两个 adapter。
 - 改动：Choice/Score 协议和概率/数值校验、deadline、取消、隐私、usage；不走 generation.tool_call。
 - 验收：受控协议测试及§37.3 R02真实“决策模型”验证；不猜 provider 返回 schema；非法数值/置信度拒绝；密钥不出宿主。
 - 测试方式：先用受控响应验证Choice/Score及超时/非法数值，再按§37.3 R02调用真实“决策模型”，记录脱敏协议结果与用量；协议不支持明确受阻，不改用生成接口冒充。
+
+#### T036 实现记录（2026-10-12）
+- **受控协议层已交付**（`crates/fluxdb-app/src/parts/ai_decision_provider.rs`）：`parse_systemone_answers` 只接受 Choice/Score，校验概率/置信度/值域（有限数与 0–1），候选外 choice 与未知类型（`noul`）拒绝，缺失 confidence/usage 保留 `None` 不伪造；`DecisionTransport`/`UreqDecisionTransport` 不跟随重定向、受控 deadline、请求前后各查一次取消、响应体 256 KiB 上限、错误脱敏；`SystemOneDecisionProvider` 实现 `core::DecisionProvider`，凭据**请求前才租约**、认证头作用域结束即弃、Debug 脱敏；`decision_provider_from_storage` 复用 T033 候选过滤（全局出站→停用→用途→单模型出站→凭据）并要求 `api_protocol=system-one`，不按模型名猜协议、不用生成协议冒充；`MeteredDecisionProvider` 每次请求在 `ai_usage_ledger` 记 `purpose=decision`（有 usage=actual / 缺 usage=unknown）；core `DecisionResponse` 增加 `confidence`/`usage`。
+- **测试**（macOS arm64，非沙箱）：`cargo fmt --all`、`cargo check --locked`、`cargo test --workspace --locked --offline` → app lib **818 passed/0 failed/1 ignored**；`ai_decision_usage` 2/2、`ai_decision_provider_from_storage` 4/4、lib 内 14 项 `decision_*`（含回环）。沙箱内 11 个既有网络用例 + 1 项 T036 回环用例因禁止绑回环端口失败，非沙箱全通过。
+- **黑盒自测夹具**：`crates/fluxdb-app/examples/ai_t036_fixture.rs`（隔离配置，打印命令）+ `docs/testing/ai-agent/t036_mock_decision.py`（本地 System One mock）+ `examples/ai_decision_smoke.rs`（脱敏冒烟）；代理已跑通 `POST /systemone`、`auth=bearer`、Choice 解析、usage 上报。
+- **§37.3 R02 真实模型验收已执行并通过**（2026-10-12，用户本机 `inception/mercury-decide:free` @ `https://openrouter.ai/api/alpha/decisions`）：`chosen=候选A`、`confidence≈0.02`、`usage=input ~100/output 1`；并据此修复真实缺陷（默认 DNS 解析器在系统不可用 IPv6 上挂起 → 统一 IPv4 优先解析）。**默认 deadline 由设计 §18 的 800ms 上调为 3000ms**（用户决定），chat 模型同口径：新增 `TransportLimits::response_deadline` 作用于"等模型开始响应"阶段（不截断长流式回答，正文仍走 60s `read_timeout`）。该远程 `:free` 模型实测 2.4s–7.2s 波动，3000ms 仍会间歇超时，属 T037 熔断/默认模型策略范围。
+- 验收记录：[T036 记录](testing/ai-agent/t036-2026-10-12.md)。
+- **不在 T036 范围**：决策模型自动 reconcile、熔断/低置信度回基础路径、`#plugins`/`#models` 决策状态 UI 均属 T037。
 
 
 ### T037 Jev 路由/相关性插件与故障策略

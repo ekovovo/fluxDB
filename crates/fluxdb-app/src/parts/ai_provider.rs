@@ -15,7 +15,6 @@
 pub struct SecretLease(String);
 
 impl SecretLease {
-    #[cfg(test)]
     pub(crate) fn new(value: impl Into<String>) -> Self {
         Self(value.into())
     }

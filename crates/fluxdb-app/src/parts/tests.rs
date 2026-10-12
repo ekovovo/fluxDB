@@ -42,6 +42,7 @@ mod tests {
     include!("tests/ai_loop_authz.rs");
     include!("tests/ai_compaction.rs");
     include!("tests/ai_routing.rs");
+    include!("tests/ai_decision_provider.rs");
     include!("tests/ai_permission.rs");
     include!("tests/ai_context.rs");
     include!("tests/ai_page_context.rs");

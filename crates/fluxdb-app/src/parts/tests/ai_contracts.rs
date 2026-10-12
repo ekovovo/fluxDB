@@ -158,6 +158,8 @@ fn ai_contract_traits_are_object_safe_for_runtime_heterogeneity() {
             chosen: Some("candidate-a".into()),
             scores: vec![("candidate-a".into(), 1.0)],
             reason: None,
+            confidence: None,
+            usage: None,
         },
     ));
     let decision_response = ai_contract_block_on(decision.decide(
@@ -285,6 +287,8 @@ fn ai_contract_scripted_decision_records_requests_verbatim() {
         chosen: Some("model-b".into()),
         scores: vec![("model-a".into(), 0.2), ("model-b".into(), 0.8)],
         reason: Some("满足能力且更便宜".into()),
+            confidence: None,
+            usage: None,
     };
     let provider = ScriptedDecisionProvider::new(fixed.clone());
     let first = fluxdb_core::DecisionRequest {

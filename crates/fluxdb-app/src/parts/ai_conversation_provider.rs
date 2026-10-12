@@ -128,6 +128,8 @@ impl fluxdb_core::GenerationProvider for AiConversationProvider {
             let events = stream_chat_emit(
                 TransportLimits {
                     max_total_bytes: 512 * 1024,
+                    // 正文读取给足长回答预算；等模型开口的阶段预算用统一的
+                    // MODEL_RESPONSE_DEADLINE_MS（默认 3000ms），远程模型实测约 2s。
                     read_timeout: std::time::Duration::from_secs(30),
                     ..Default::default()
                 },

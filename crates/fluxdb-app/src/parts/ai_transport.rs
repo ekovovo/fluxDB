@@ -21,6 +21,13 @@ pub struct TransportLimits {
     pub max_total_bytes: usize,
     pub connect_timeout: Duration,
     pub read_timeout: Duration,
+    /// 等待模型**开始响应**的截止时间（DNS + 连接 + 响应头）。
+    ///
+    /// 与 Jev 的单次决策 deadline 同口径：只约束"多久能开始说话"，不约束
+    /// 一段正常的长回答要写多久——后者由 `read_timeout` 单独兜底。若把
+    /// `timeout_global` 设成 3s，任何超过 3s 的流式回答都会被拦腰截断，
+    /// 因此这里按阶段拆开而不是压缩整体预算。
+    pub response_deadline: Duration,
 }
 
 impl Default for TransportLimits {
@@ -28,11 +35,19 @@ impl Default for TransportLimits {
         Self {
             max_frame_bytes: 256 * 1024,
             max_total_bytes: 4 * 1024 * 1024,
-            connect_timeout: Duration::from_secs(10),
+            connect_timeout: Duration::from_millis(MODEL_RESPONSE_DEADLINE_MS),
             read_timeout: Duration::from_secs(60),
+            response_deadline: Duration::from_millis(MODEL_RESPONSE_DEADLINE_MS),
         }
     }
 }
+
+/// 模型开始响应的默认截止时间（毫秒）。
+///
+/// 与决策模型 `DECISION_DEADLINE_MS` 统一为 3000ms：2026-10-12 真实验收中，
+/// 远程决策模型单次往返约 2s，800ms 起始值会稳定超时（用户决定上调）。
+/// 该值只覆盖 DNS/连接/响应头阶段，长回答的正文读取仍走 `read_timeout`。
+pub const MODEL_RESPONSE_DEADLINE_MS: u64 = 3_000;
 
 /// 聊天协议（决定 SSE 载荷如何投影成 `fluxdb_core::ModelEvent`）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -527,6 +542,29 @@ pub fn stream_chat(
     stream_chat_emit(limits,protocol,url,auth,body_json,extra_headers,cancel,&mut |_| {})
 }
 
+/// 流式对话用的 HTTP Agent：分阶段超时 + IPv4 优先解析。
+///
+/// 与设置页「测试连接」共用 IPv4 优先解析器：2026-10-12 真实验收中，系统 DNS
+/// 返回的不可用 IPv6 地址会让默认解析器在远程模型上挂起并最终超时。
+pub(crate) fn chat_agent(limits: TransportLimits) -> ureq::Agent {
+    let config = ureq::Agent::config_builder()
+        .http_status_as_error(false)
+        // 不跟随重定向：跨域 302 可能把请求（含认证头）引向非预期主机。
+        // 3xx 直接按 HTTP 状态返回，由调用方决定如何处理。
+        .max_redirects(0)
+        .timeout_connect(Some(limits.connect_timeout))
+        // 等模型开口的阶段预算（DNS/连接/响应头）；正文另给长预算，
+        // 不用 timeout_global 把流式回答截断在 3s。
+        .timeout_recv_response(Some(limits.response_deadline))
+        .timeout_recv_body(Some(limits.read_timeout))
+        .build();
+    ureq::Agent::with_parts(
+        config,
+        ureq::unversioned::transport::DefaultConnector::default(),
+        PrefersIpv4Resolver,
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn stream_chat_emit(
     limits: TransportLimits,
@@ -541,15 +579,7 @@ pub fn stream_chat_emit(
     if cancel.is_cancelled() {
         return Ok(vec![fluxdb_core::ModelEvent::Finished(fluxdb_core::FinishReason::Cancelled)]);
     }
-    let agent = ureq::Agent::config_builder()
-        .http_status_as_error(false)
-        // 不跟随重定向：跨域 302 可能把请求（含认证头）引向非预期主机。
-        // 3xx 直接按 HTTP 状态返回，由调用方决定如何处理。
-        .max_redirects(0)
-        .timeout_connect(Some(limits.connect_timeout))
-        .timeout_global(Some(limits.read_timeout))
-        .build()
-        .new_agent();
+    let agent = chat_agent(limits);
     let mut request = agent
         .post(url)
         .header("Content-Type", "application/json")

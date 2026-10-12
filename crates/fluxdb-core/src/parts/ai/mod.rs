@@ -266,11 +266,18 @@ pub struct DecisionRequest {
 }
 
 /// 决策响应：稳定 ID + 分数；无法决策时给明确原因。
+///
+/// `confidence` 与 `usage` 只承载 Provider 明确返回的事实：置信度缺失时是 `None`
+/// 而不是伪造 0，`usage` 缺失时调用方必须按 `unknown` 计量，不能当作零消耗。
 #[derive(Clone, Debug, PartialEq)]
 pub struct DecisionResponse {
     pub chosen: Option<String>,
     pub scores: Vec<(String, f64)>,
     pub reason: Option<String>,
+    /// Provider 报出的整体置信度（0–1）；缺失为 `None`。
+    pub confidence: Option<f64>,
+    /// 本次决策请求的 token 用量；Provider 未返回时为 `None`。
+    pub usage: Option<Usage>,
 }
 
 /// 生成模型能力（运行时的多实现边界）。

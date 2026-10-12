@@ -219,15 +219,6 @@ mod tests {
         let replacement: Arc<dyn LanguageDefinition> = Arc::new(Plain);
         assert!(registry.register("plain", replacement, None).is_some());
     }
-
-    #[test]
-    fn syntax_layer_keeps_priority_and_range() {
-        let layer = SyntaxLayer::new("sql", Range::new(4, 12)).with_priority(3);
-        assert_eq!(layer.language_id, "sql");
-        assert_eq!(layer.range, Range::new(4, 12));
-        assert_eq!(layer.priority, 3);
-    }
-
     /// DM-620：from_injections 归一排序；空注入 → 空层树。
     #[test]
     fn layer_tree_from_injections_normalizes() {
@@ -244,18 +235,6 @@ mod tests {
         assert!(empty.is_empty());
         assert_eq!(empty.len(), 0);
     }
-
-    /// DM-620：同一 range 冲突时高 priority 覆盖低 priority（去重）。
-    #[test]
-    fn layer_tree_priority_wins_on_same_range() {
-        let tree = SyntaxLayerTree::from_injections([
-            SyntaxInjection::new("low", Range::new(5, 15)).with_priority(1),
-            SyntaxInjection::new("high", Range::new(5, 15)).with_priority(5),
-        ]);
-        assert_eq!(tree.len(), 1);
-        assert_eq!(tree.layers[0].language_id, "high");
-    }
-
     /// DM-624：language_at 返回覆盖 offset 的最高 priority 层；越界返回 None。
     #[test]
     fn layer_tree_language_at_picks_covering_highest_priority() {

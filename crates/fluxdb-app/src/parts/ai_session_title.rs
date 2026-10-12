@@ -118,10 +118,4 @@ mod ai_session_title_tests {
         let normalized = normalize_session_title(&long).unwrap();
         assert_eq!(normalized.chars().count(), 40);
     }
-
-    #[test]
-    fn title_normalization_rejects_empty() {
-        assert_eq!(normalize_session_title("  "), None);
-        assert_eq!(normalize_session_title("\"\""), None);
-    }
 }

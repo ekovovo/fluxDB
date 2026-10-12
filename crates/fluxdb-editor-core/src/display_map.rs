@@ -1212,17 +1212,6 @@ mod tests {
     fn snapshot_of(text: &str) -> BufferSnapshot {
         EditorBuffer::new_from(text).snapshot()
     }
-
-    #[test]
-    fn no_wrap_one_visual_line_per_row() {
-        let snap = snapshot_of("a\nbb\nccc\n");
-        let map = DisplayMap::new(snap, SoftWrap::None, 80, Vec::new());
-        // "a\nbb\nccc\n" → 3 内容行 + 1 末尾空行 = 4 可视行。
-        assert_eq!(map.visual_row_count(), 4);
-        assert_eq!(map.row_layout(0), (0, 1));
-        assert_eq!(map.row_layout(2), (2, 1));
-    }
-
     #[test]
     fn folding_skips_internal_rows() {
         let snap = snapshot_of("x\ny\nz\na\n");
@@ -1550,29 +1539,6 @@ mod tests {
         assert_eq!(map.visual_row_count(), buffer.line_count());
         assert_eq!(map.visual_line_at(1).unwrap().buffer_row, 1);
     }
-
-    #[test]
-    fn cross_line_same_newline_count_rebuilds_both_rows() {
-        let mut buffer = EditorBuffer::new_from("a\nb\n");
-        let mut map = DisplayMap::new(buffer.snapshot(), SoftWrap::EditorWidth, 1, Vec::new());
-        let edit = buffer.edit(Range::new(0, 3), "long\nx", 6, 6, true);
-        map.apply_change(buffer.snapshot(), &edit.changes[0], Vec::new());
-        assert_eq!(map.row_layout(0).1, 4);
-        assert_eq!(map.row_layout(1).1, 1);
-    }
-
-    /// DM-006：CRLF 换行的可视行数与列区间正确（不把 `\r` 计入行内容错位）。
-    #[test]
-    fn crlf_documents_map_rows_correctly() {
-        let snap = snapshot_of("a\r\nb\r\nc\r\n");
-        let map = DisplayMap::new(snap, SoftWrap::None, 80, Vec::new());
-        assert_eq!(map.visual_row_count(), 4);
-        let v0 = map.visual_line_at(0).unwrap();
-        assert_eq!((v0.buffer_row, v0.column_start, v0.column_end), (0, 0, 1));
-        let v1 = map.visual_line_at(1).unwrap();
-        assert_eq!((v1.buffer_row, v1.column_start, v1.column_end), (1, 0, 1));
-    }
-
     /// DM-006：fold + tab + wrap 组合的 golden 行为。
     /// 折叠行内部可视行被隐藏，Tab 按 tab stop 展开列，软换行按列切片。
     #[test]

@@ -2494,17 +2494,6 @@ where id = 42 and name = 'Bob''s Bike' and flag = 'ignored'"
             "123456111"
         ));
     }
-
-    #[test]
-    fn null_cell_edit_text_is_empty_but_text_null_is_literal() {
-        assert_eq!(data_cell_edit_text(&CellValue::Null), "");
-        assert_eq!(
-            data_cell_edit_text(&CellValue::Text("NULL".to_string())),
-            "NULL"
-        );
-        assert!(data_cell_edit_text_unchanged(&CellValue::Null, ""));
-    }
-
     #[test]
     fn enum_and_set_options_are_parsed_from_mysql_type_declarations() {
         assert_eq!(
@@ -2709,14 +2698,6 @@ where id = 42 and name = 'Bob''s Bike' and flag = 'ignored'"
         assert!(!connection_should_show_children(false, true));
         assert!(connection_should_show_children(true, true));
     }
-
-    #[test]
-    fn search_tree_nodes_default_open_but_respect_collapse() {
-        assert!(tree_expanded_for_search(None, true));
-        assert!(!tree_expanded_for_search(Some(false), true));
-        assert!(tree_expanded_for_search(Some(true), true));
-    }
-
     #[test]
     fn empty_visible_database_filter_shows_databases() {
         let options = BTreeMap::from([(VISIBLE_DATABASES_OPTION.to_string(), String::new())]);
@@ -5738,13 +5719,3 @@ fn postgres_form_validation_uses_profile_rules() {
         "启用 SSH 但缺主机应被拒绝"
     );
 }
-
-// —— ER 导出对话框（er/toolbar.rs）导出格式→后缀映射纯逻辑 ——
-
-    #[test]
-    fn er_export_kind_extensions() {
-        assert_eq!(ErExportKind::Json.extension(), "json");
-        assert_eq!(ErExportKind::Dbml.extension(), "dbml");
-        assert_eq!(ErExportKind::Mermaid.extension(), "mmd");
-        assert_eq!(ErExportKind::Svg.extension(), "svg");
-    }

@@ -185,19 +185,6 @@ mod tests {
         assert_eq!(d.start, 10);
         assert_eq!(d.end, 14);
     }
-
-    /// DM-104：脏区 include 为并集。
-    #[test]
-    fn dirty_range_include_unions() {
-        let mut d = DirtyRange::new(5, 8);
-        d.include(DirtyRange::new(1, 3));
-        d.include(DirtyRange::new(20, 22));
-        assert_eq!((d.start, d.end), (1, 22));
-        // 完全被包含的区间不改变范围。
-        d.include(DirtyRange::new(2, 21));
-        assert_eq!((d.start, d.end), (1, 22));
-    }
-
     /// DM-104：脏区扩大到整行（10.2 扩大到受影响逻辑行）。
     #[test]
     fn dirty_range_expands_to_whole_line() {

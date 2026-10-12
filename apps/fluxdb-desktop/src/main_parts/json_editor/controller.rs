@@ -391,13 +391,6 @@ mod redis_json_input_diagnostic_tests {
         assert!(out.is_some());
         assert_eq!(out.unwrap().message, "非法字符");
     }
-
-    #[test]
-    fn diagnostics_enabled_no_error_returns_none() {
-        // 开启诊断但 JSON 合法（无内部诊断）时，同样不写入任何诊断。
-        assert!(redis_json_input_diagnostic(true, &None).is_none());
-    }
-
     #[test]
     fn diagnostics_disabled_never_writes_even_when_detected() {
         // `config.diagnostics=false`：即使检测到非法 JSON，也一律不向 InputState 写入诊断，

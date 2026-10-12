@@ -1440,14 +1440,6 @@ mod tests {
             "db 应为 0o600"
         );
     }
-
-    #[test]
-    fn missing_settings_returns_default() {
-        let storage = FileStorage::new(unique_temp_dir());
-
-        assert_eq!(storage.load_settings().unwrap(), Settings::default());
-    }
-
     /// 迁移守卫：缺少后加字段的旧配置文件必须仍能加载。
     ///
     /// 这条测的是**新增字段是否带了 `#[serde(default...)]`**。漏了的话

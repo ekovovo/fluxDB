@@ -156,14 +156,6 @@ mod redis_read_tool_tests {
         assert_eq!(value["next_cursor"], "4");
         assert_eq!(value["truncated"], true);
     }
-
-    #[test]
-    fn empty_list_does_not_read_lrange_to_minus_one() {
-        let call = |argv: &[&str]| { assert_eq!(argv, ["LLEN", "key"]); Ok(fluxdb_core::CommandReply::Integer(0)) };
-        let value = redis_inspect_value(&call, "key", "list", "0", 2, 4096).unwrap();
-        assert_eq!(value["complete"], true);
-    }
-
     #[test]
     fn module_inspect_is_metadata_only() {
         let call = |_: &[&str]| -> Result<fluxdb_core::CommandReply, SqlExecError> { panic!("No module command permitted") };

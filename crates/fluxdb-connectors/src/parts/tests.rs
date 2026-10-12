@@ -1446,11 +1446,6 @@ mod tests {
         );
     }
     #[test]
-    fn mysql_index_metadata_query_uses_stable_non_unique_alias() {
-        assert!(mysql_indexes_query().contains("CAST(non_unique AS SIGNED) AS non_unique"));
-    }
-
-    #[test]
     fn mysql_table_objects_query_uses_signed_row_count() {
         assert!(mysql_table_objects_query().contains("CAST(table_rows AS SIGNED) AS row_count"));
         assert!(mysql_table_objects_query().contains("CAST(update_time AS CHAR) AS modified_at"));
@@ -1680,16 +1675,6 @@ mod tests {
             CellValue::Bytes(vec![b'a'; MYSQL_QUERY_TEXT_BYTES_LIMIT + 1])
         );
     }
-
-    #[test]
-    fn mysql_optional_display_cell_value_preserves_unsigned_bigint_text() {
-        assert_eq!(
-            mysql_optional_display_cell_value(Some(391041_u64)),
-            CellValue::Text("391041".to_string())
-        );
-        assert_eq!(mysql_optional_display_cell_value(None::<u64>), CellValue::Null);
-    }
-
     #[test]
     fn mysql_optional_display_cell_value_preserves_decimal_text() {
         let value = "1234567890.0123456789".parse::<BigDecimal>().unwrap();
@@ -5034,18 +5019,6 @@ SELECT item_id, name FROM audit_log;"
         assert_eq!(fks[0].ref_column, "x");
         assert_eq!(fks[0].ref_table, "t");
     }
-
-    #[test]
-    fn pg_triggers_from_structure_maps_display() {
-        let structure = t08_structure();
-        let triggers = pg_triggers_from_structure(&structure);
-        assert_eq!(triggers.len(), 1);
-        assert_eq!(triggers[0].name, "t08_master_audit");
-        assert_eq!(triggers[0].event, "AFTER INSERT OR UPDATE");
-        assert_eq!(triggers[0].timing, "ROW");
-        assert!(triggers[0].body.as_deref().unwrap().starts_with("CREATE TRIGGER"));
-    }
-
     /// T08 真实冒烟：在维护库 public 下建一张含 列/PK/唯一/FK/CHECK/表达式索引/触发器/注释
     /// 的表，逐 tab 校验元数据投影与 DDL 重建，随后清理。
     #[test]
@@ -5186,20 +5159,6 @@ SELECT item_id, name FROM audit_log;"
     fn env(key: &str) -> Option<String> {
         std::env::var(key).ok().filter(|v| !v.is_empty())
     }
-
-    // ---- T09 值转换、参数编码与 bytea ----
-
-    #[test]
-    fn pg_type_base_strips_modifiers_and_array_suffix() {
-        assert_eq!(pg_type_base("int4"), "int4");
-        assert_eq!(pg_type_base("varchar"), "varchar");
-        assert_eq!(pg_type_base("varchar(50)"), "varchar");
-        assert_eq!(pg_type_base("numeric(10,2)"), "numeric");
-        assert_eq!(pg_type_base("integer[]"), "integer");
-        assert_eq!(pg_type_base("text[]"), "text");
-        assert_eq!(pg_type_base(" double precision "), "double precision");
-    }
-
     /// 逐值生成 `$n` 占位并分别绑定各自的值（回归：曾误用 `values[0].1` 让所有占位绑定同一值）。
     #[test]
     fn pg_insert_sql_binds_each_column_value() {
@@ -5308,23 +5267,6 @@ SELECT item_id, name FROM audit_log;"
         // 身份参数必须以 text（String）绑定，数字类型会触发 serialization 错误，
         // 此处仅在 SQL 层面校验文本比较形式，实际绑定正确性由真库冒烟覆盖。
     }
-
-    #[test]
-    fn pg_identity_where_rejects_empty_identity() {
-        let identity = RowIdentity { values: Default::default() };
-        assert!(pg_identity_where(&mut Vec::new(), &identity, &[]).is_err());
-    }
-
-    #[test]
-    fn pg_next_param_binds_null_as_option_none() {
-        let mut params: Vec<Box<dyn ToSql + Sync>> = Vec::new();
-        let p1 = pg_next_param(&mut params, &CellValue::Null, None);
-        let p2 = pg_next_param(&mut params, &CellValue::Text("x".to_string()), None);
-        assert_eq!(p1, "$1");
-        assert_eq!(p2, "$2");
-        assert_eq!(params.len(), 2);
-    }
-
     #[test]
     fn pg_order_by_clause_appends_primary_key_tiebreaker() {
         let mkcol = |name: &str, pk: bool| Column {

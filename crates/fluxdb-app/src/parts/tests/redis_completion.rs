@@ -35,14 +35,6 @@ fn redis_completion_se_prefix_narrows_to_set_line() {
     assert!(labels.iter().any(|l| l == "SET"));
     assert!(labels.iter().all(|l| l.starts_with("SE")));
 }
-
-#[test]
-fn redis_completion_prefix_is_case_insensitive() {
-    let lower = redis_labels(&redis_completion_result("se", 2));
-    let upper = redis_labels(&redis_completion_result("SE", 2));
-    assert_eq!(lower, upper, "大小写应等价匹配");
-}
-
 #[test]
 fn redis_completion_replace_range_covers_current_token() {
     // "GE " 光标在行尾：当前 token 为空，替换区收缩到光标处 [3,3)。

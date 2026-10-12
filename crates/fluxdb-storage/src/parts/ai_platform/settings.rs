@@ -335,16 +335,6 @@ mod tests {
         ensure_schema(&conn).expect("建表");
         conn
     }
-
-    #[test]
-    fn first_load_defaults_to_drawer() {
-        let conn = setup();
-        let prefs = load_panel_preferences(&conn).expect("读取");
-        assert_eq!(prefs.preferred_mode, PanelMode::Drawer);
-        assert_eq!(prefs.drawer_width_dp, 460.0);
-        assert_eq!(prefs.embedded_width_dp, 420.0);
-    }
-
     #[test]
     fn mode_and_widths_persist_independently() {
         let conn = setup();

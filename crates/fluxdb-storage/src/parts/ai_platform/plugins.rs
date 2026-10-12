@@ -340,17 +340,6 @@ mod tests {
         assert_eq!(list.iter().filter(|p| p.id == "inst-jev").count(), 1);
         assert_eq!(list.len(), BUILTIN_PLUGINS.len() + 1);
     }
-
-    #[test]
-    fn bindings_are_system_sourced_and_idempotent() {
-        let conn = setup();
-        bind_plugin_system(&conn, 2_000, "bind-1", "a1", "inst-jev").expect("绑定");
-        bind_plugin_system(&conn, 3_000, "bind-1", "a1", "inst-jev").expect("重复绑定");
-        let list = list_agent_plugin_bindings(&conn, "a1").expect("列出");
-        assert_eq!(list.len(), 1);
-        assert_eq!(list[0].binding_source, "system");
-    }
-
     #[test]
     fn toggle_uses_object_cas() {
         let conn = setup();

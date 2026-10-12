@@ -259,6 +259,9 @@ fn ai_conversation_run_turn(
         &context_references,
         cancel,
     );
+    // 业务知识一次只送有界摘要，详读通过 knowledge.read；无条目或插件禁用时不变。
+    let knowledge_injection = ai_knowledge_message(storage, &target_json, system_messages);
+    let system_messages = knowledge_injection.system_messages;
 
     // —— 按模型窗口百分比/输出预留触发，自动压缩（无需用户确认）。 ——
     // 摘要不可用/失败时：仍在窗口内带提示继续；已超预算则可见暂停，不发出超窗请求。

@@ -5,14 +5,19 @@ fn seed_send_reference(fixture: &Fixture) {
             fluxdb_storage::ai_platform::knowledge::save(
                 conn,
                 10,
-                "k-send",
-                "发送引用测试",
-                "metric",
-                None,
-                None,
-                None,
-                "{}",
-                "confirmed",
+                &fluxdb_storage::ai_platform::knowledge::KnowledgeEntryEdit {
+                    id: "k-send".into(),
+                    title: "发送引用测试".into(),
+                    kind: "metric".into(),
+                    agent_id: None,
+                    connection_id: None,
+                    database_name: None,
+                    namespace: None,
+                    scope_json: "{}".into(),
+                    content_json: "{}".into(),
+                    source_json: "{}".into(),
+                    status: "confirmed".into(),
+                },
                 None,
             )?;
             Ok(())

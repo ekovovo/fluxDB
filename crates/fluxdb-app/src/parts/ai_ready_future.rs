@@ -4,7 +4,7 @@ use std::task::{Context, Poll, Wake, Waker};
 ///
 /// 设计 §6 明确 app 在生产中不引入 tokio；调用方必须提供不依赖外部 IO 反应堆的
 /// future。超出有限轮询仍 Pending 时返回错误，不自旋等待或假装已经完成。
-fn block_on_ready<F: std::future::Future>(future: F) -> Result<F::Output, fluxdb_core::Error> {
+pub fn block_on_ready<F: std::future::Future>(future: F) -> Result<F::Output, fluxdb_core::Error> {
     let waker = Waker::from(Arc::new(NoopWake));
     let mut context = Context::from_waker(&waker);
     let mut future = Box::pin(future);

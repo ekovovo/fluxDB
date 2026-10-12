@@ -556,10 +556,33 @@ cargo test -p fluxdb-app --locked ai_permission   # 15 passed
   - [x] 隔离配置启用已知决策模型后，插件页实际显示正确可用/绑定状态；禁用及故障后界面与实际decision调用一致，返回/重启不展示过期状态。
 
 ### T038 业务知识与按需 Skills
-- [ ] 依赖：T006、T022、T034；设计 §19、§42.10。
+- [x] 依赖：T006、T022、T034；设计 §19、§42.10。
 - 改动：独立 knowledge 表 CRUD/CAS、scope、来源/确认、插件 skills 注册/检索。
 - 验收：跨库口径不混用；模型提议不自动成为事实；用户确认/退休立即影响新任务；大知识不全量加载。
 - 测试方式：在隔离SQLite/文件fixture中逐条执行上述验收，核对操作前后行值、revision、引用及错误；适用的失败注入后重开存储确认无部分写入/数据丢失，测试输出不得含秘密。
+
+#### T038 实现记录（2026-10-12）
+- **存储层**（`crates/fluxdb-storage/src/parts/ai_platform/knowledge.rs`）：独立表 CRUD/CAS；
+  `proposed`→`confirmed`→`retired` 状态机（retired 为终态，确认/退休只能用户触发）；
+  `scope_json` 连接/库白名单过滤（无匹配目标不返回有作用域条目，跨库口径不混用）；
+  `confirmed_excerpt` 按 UTF-8 字符边界有界截断。
+- **运行期装配**（`crates/fluxdb-app/src/parts/ai_knowledge_skills.rs`）：Turn 按固定目标
+  筛选 confirmed 知识（上限 20 条、每条摘录 1 KiB）；仅 `builtin.knowledge` 启用时注入；
+  Turn 快照只写 `knowledge_ids`，正文不落快照。
+- **按需读取**：新增只读工具 `knowledge.read`（`ai_reference_details.rs`），按 offset 分段
+  读取本轮授权条目，非本轮 ID 拒绝，装配时校验仍为 confirmed（退休后连目录都装不出来）。
+- **`@` 引用**：候选按上下文来源 tab 的连接/库过滤，只给标题/类型/作用域/revision 摘要。
+- **本轮实机暴露并修复的相邻缺陷**：真实会话中 `SELECT date('now')` 被只读入口以
+  `not_read_only（unknown_function）` 拒绝——`ai_sql_policy.rs` 纯函数白名单漏了日期/时间
+  函数，模型无法确认「今天/当月」边界。已补齐常见三方言日期函数并新增回归用例
+  `ai_sql_policy_date_and_time_functions_are_read_only`（同时断言 DML 仍需授权）。
+- 测试：storage `ai_knowledge` 7/7、app `ai_knowledge_context` 5/5、lib `ai_sql_policy` 20/20、
+  `ai_reference_send` 14/14、`ai_jev_reconcile` 9/9、`ai_session_model_selection` 29/29；
+  桌面端全量 614 passed / 7 failed（7 项均为沙箱禁止本地监听的既有网络用例）。
+  真实窗口 + 真实「公司自建」模型的 `knowledge.read`、`db.query` 原始回执已核对
+  （模型逐字复述两条 confirmed 知识）。
+- Windows/Linux 未验证（按 §B 分工由用户执行）。
+- 验收记录：docs/testing/ai-agent/t038-2026-10-12.md
 
 
 ### T039 产物 schema、source 引用与内置 BI 插件

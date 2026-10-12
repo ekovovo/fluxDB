@@ -121,6 +121,7 @@ include!("parts/ai_references.rs");
 include!("parts/ai_file_content.rs");
 include!("parts/ai_reference_details.rs");
 include!("parts/ai_database_context.rs");
+include!("parts/ai_knowledge_skills.rs");
 include!("parts/ai_sql_policy.rs");
 include!("parts/ai_sql_exec.rs");
 include!("parts/ai_redis_policy.rs");

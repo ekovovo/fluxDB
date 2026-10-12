@@ -489,7 +489,9 @@ impl AppController {
             let public_refs=references.iter().map(|r|self.ai_public_reference(r)).collect::<fluxdb_core::Result<Vec<_>>>()?;
             let database_context=self.ai_database_context(&target_json)?;
             let file_grants=references.iter().filter(|r|r.kind=="file").map(AiContextReference::json).collect::<Vec<_>>();
-            let snapshot=serde_json::json!({"model_profile_id":model_id,"agent_id":agent.id,"agent_revision":agent.revision,"compression_trigger_percent":agent.compression_trigger_percent,"system_prompt":agent.system_prompt,"ui_context":context,"context_references":public_refs,"database_context":database_context,"file_grants":file_grants,"reference_grants":reference_grants});
+            // Turn 快照只保存知识 ID 列表；正文留给运行期工具实例按需读取。
+            let knowledge_ids=serde_json::to_value(knowledge_ids_for_snapshot(&storage,&target_json)?).unwrap_or_default();
+            let snapshot=serde_json::json!({"model_profile_id":model_id,"agent_id":agent.id,"agent_revision":agent.revision,"compression_trigger_percent":agent.compression_trigger_percent,"system_prompt":agent.system_prompt,"ui_context":context,"context_references":public_refs,"database_context":database_context,"file_grants":file_grants,"reference_grants":reference_grants,"knowledge_ids":knowledge_ids});
             if let Some(grant) = editor_grant {
                 register_editor_grant(&turn_id, grant)?;
             }

@@ -449,9 +449,18 @@ impl AppController {
         );
 
         // 知识条目：只取 confirmed，只暴露标题/类型/作用域元数据，不展开正文。
+        // `@` 候选只出现在上下文来源 tab（AI 面板遮罩下仍看原业务页）的作用域内；
+        // 无工作区的全局页面不引入跨库口径。
+        let target = ui_context
+            .and_then(|context| {
+                let connection = context.target.connection_id;
+                let database = context.target.database.clone();
+                connection.map(|id| (id, database))
+            });
         let entries = with_ai_storage(&storage, |conn| {
-            fluxdb_storage::ai_platform::knowledge::list_confirmed(
+            fluxdb_storage::ai_platform::knowledge::list_confirmed_scoped(
                 conn,
+                target.as_ref().map(|(id, db)| (*id, db.as_deref())),
                 &query,
                 AI_REFERENCE_CANDIDATE_LIMIT,
             )

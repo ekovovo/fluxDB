@@ -76,14 +76,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             fluxdb_storage::ai_platform::knowledge::save(
                 conn,
                 1,
-                id,
-                "订单口径",
-                "metric",
-                None,
-                None,
-                None,
-                r#"{"metric":"paid orders"}"#,
-                "confirmed",
+                &fluxdb_storage::ai_platform::knowledge::KnowledgeEntryEdit {
+                    id: id.into(),
+                    title: "订单口径".into(),
+                    kind: "metric".into(),
+                    agent_id: None,
+                    connection_id: None,
+                    database_name: None,
+                    namespace: None,
+                    scope_json: "{}".into(),
+                    content_json: r#"{"metric":"paid orders"}"#.into(),
+                    source_json: r#"{"origin":"manual"}"#.into(),
+                    status: "confirmed".into(),
+                },
                 None,
             )?;
         }

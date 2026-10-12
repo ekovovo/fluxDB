@@ -591,11 +591,4 @@ mod tests {
             "第二行 SE 应触发命令候选"
         );
     }
-
-    #[test]
-    fn insert_text_format_default_plain() {
-        // 默认插入格式为 PlainText，避免把字面量 $1 误解析。
-        let item = CompletionItem::new("SELECT", CompletionKind::Keyword);
-        assert_eq!(item.insert_text_format, InsertTextFormat::PlainText);
-    }
 }

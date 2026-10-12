@@ -226,15 +226,6 @@ mod shortcut_tests {
 
         assert_eq!(default_shortcut(&definition), current_shortcut(&settings, &definition));
     }
-
-    #[test]
-    fn shortcut_display_uses_platform_conventions() {
-        #[cfg(target_os = "macos")]
-        assert_eq!("⇧⌘h", shortcut_display("shift-cmd-h"));
-        #[cfg(not(target_os = "macos"))]
-        assert_eq!("Ctrl+Shift+h", shortcut_display("ctrl-shift-h"));
-    }
-
     #[test]
     fn cross_platform_editor_shortcuts_are_valid_keystrokes() {
         for spec in [

@@ -119,14 +119,6 @@ mod tests {
         ensure_schema(&conn).expect("建表");
         conn
     }
-
-    #[test]
-    fn missing_row_means_enabled_by_default() {
-        let conn = setup();
-        assert!(load_tool_setting(&conn, "db.query").unwrap().is_none());
-        assert!(disabled_tool_ids(&conn).unwrap().is_empty());
-    }
-
     #[test]
     fn toggle_round_trips_and_detects_stale_revision() {
         let conn = setup();

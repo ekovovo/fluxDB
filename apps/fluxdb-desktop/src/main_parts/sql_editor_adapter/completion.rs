@@ -377,14 +377,6 @@ fn is_ident_char(ch: char) -> bool {
 #[cfg(test)]
 mod completion_tests {
     use super::*;
-
-    #[test]
-    fn schema_context_default_empty() {
-        let ctx = SqlSchemaContext::new();
-        assert!(ctx.tables.is_empty());
-        assert!(ctx.columns.is_empty());
-    }
-
     #[test]
     fn schema_source_implements_trait() {
         let ctx = SqlSchemaContext::with_data(

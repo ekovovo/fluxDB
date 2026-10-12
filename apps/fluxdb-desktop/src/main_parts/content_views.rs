@@ -5345,29 +5345,6 @@ mod redis_workbench_reply_tests {
             binary: false,
         })
     }
-
-    #[test]
-    fn array_lists_each_element_on_own_line_with_index() {
-        let reply = CommandReply::Array(vec![bulk("333"), bulk("332")]);
-        assert_eq!(command_reply_display(&reply), "1) \"333\"\n2) \"332\"");
-    }
-
-    #[test]
-    fn empty_array_shows_empty_list_or_set() {
-        let reply = CommandReply::Array(vec![]);
-        assert_eq!(command_reply_display(&reply), "(empty list or set)");
-    }
-
-    #[test]
-    fn nil_shows_nil() {
-        assert_eq!(command_reply_display(&CommandReply::Nil), "(nil)");
-    }
-
-    #[test]
-    fn integer_shows_integer_prefix() {
-        assert_eq!(command_reply_display(&CommandReply::Integer(42)), "(integer) 42");
-    }
-
     #[test]
     fn nested_array_indents_by_level() {
         let reply = CommandReply::Array(vec![

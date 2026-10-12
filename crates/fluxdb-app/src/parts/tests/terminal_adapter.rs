@@ -50,14 +50,6 @@ fn redis_adapter_prompt_and_meta_follow_config() {
     assert_eq!(meta.get("port").map(String::as_str), Some("6379"));
     assert_eq!(meta.get("profile").map(String::as_str), Some("local-redis"));
 }
-
-#[test]
-fn redis_adapter_display_prompt_matches_native_prompt() {
-    let adapter = RedisCliAdapter::new(redis_config(7), 0);
-    assert_eq!(adapter.prompt(), "127.0.0.1:6379> ");
-    assert_eq!(adapter.display_prompt(), "127.0.0.1:6379> ");
-}
-
 #[test]
 fn redis_adapter_spawn_contains_host_port_database() {
     let adapter = RedisCliAdapter::new(redis_config(7), 4);

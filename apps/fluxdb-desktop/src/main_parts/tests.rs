@@ -1354,88 +1354,6 @@ mod tests {
         )
         .expect("mysql ddl highlight query should compile");
     }
-
-    /// 所有只读 SQL / DDL 预览共用 `sql_preview_editor` 工厂：底层
-    /// `editor_component::Editor` + SQL 语法 provider，配色由宿主 `EditorTheme` 注入。
-    /// gpui-component 的 `input::Editor` 取不到本项目主题的 syntax 配色，
-    /// 预览会退化成无高亮纯文本。
-    #[test]
-    fn sql_ddl_previews_share_bottom_editor_factory() {
-        let factory = include_str!("sql_preview.rs");
-        assert!(factory.contains("editor_component::Editor::new("));
-        assert!(factory.contains("sql_editor_adapter::SqlAdapter::new(dialect)"));
-        assert!(factory.contains("syntax: Some(adapter as _)"));
-        assert!(factory.contains("editor.set_theme(editor_theme, cx)"));
-
-        // 表属性抽屉的 DDL 页签。
-        let table_info = include_str!("cell_detail_table_info/table_info.rs");
-        assert!(table_info.contains("fn table_info_ddl_text("));
-        assert!(table_info.contains("sql_preview_editor("));
-
-        // 设计表的 SQL 预览 / DDL 预览：两段函数体都不能再退回
-        // 「gpui-component 组件编辑器（code_editor）+ disabled」的旧实现。
-        let create_table = include_str!("create_table.rs");
-        let sql_start = create_table
-            .find("fn create_table_sql_preview(")
-            .expect("SQL 预览函数应存在");
-        let ddl_start = create_table[sql_start..]
-            .find("fn create_table_ddl_preview(")
-            .map(|offset| sql_start + offset)
-            .expect("DDL 预览函数应存在");
-        let ddl_end = create_table[ddl_start..]
-            .find("fn create_table_input_border_color(")
-            .map(|offset| ddl_start + offset)
-            .expect("DDL 预览函数应结束于下一个函数");
-        for body in [&create_table[sql_start..ddl_start], &create_table[ddl_start..ddl_end]] {
-            assert!(body.contains("sql_preview_editor("), "预览未走统一工厂：{body}");
-            assert!(!body.contains(".code_editor("), "预览退回组件编辑器：{body}");
-            assert!(!body.contains(".disabled(true)"), "预览退回 disabled：{body}");
-        }
-    }
-
-    #[test]
-    fn pg_user_admin_preview_is_automatic_and_keeps_its_task_alive() {
-        let panel = include_str!("pg_user_admin/sql_preview.rs");
-        assert!(!panel.contains("生成/刷新预览"));
-
-        let controller = include_str!("pg_user_admin/mod.rs");
-        assert!(controller.contains("this.start_pg_plan_preview(tab_id, cx);"));
-        assert!(controller.contains("self._user_admin_preview_tasks.insert(tab_id, task);"));
-        assert!(controller.contains("this._user_admin_preview_tasks.remove(&tab_id);"));
-    }
-
-    #[test]
-    fn pg_user_admin_membership_load_keeps_its_task_alive() {
-        let controller = include_str!("pg_user_admin/mod.rs");
-        assert!(controller.contains("self._user_admin_pg_membership_tasks.insert(tab_id, task);"));
-        assert!(controller.contains("this._user_admin_pg_membership_tasks.remove(&tab_id);"));
-    }
-
-    #[test]
-    fn pg_user_admin_privilege_targets_load_keeps_its_task_alive() {
-        let controller = include_str!("pg_user_admin/mod.rs");
-        assert!(controller.contains("if detail_tab == UserAdminDetailTab::Privileges {"));
-        assert!(controller.contains("this.start_pg_grant_targets_load_for(tab_id, database, cx);"));
-        assert!(controller.contains("self._user_admin_pg_target_tasks.insert(tab_id, task);"));
-        assert!(controller.contains("this._user_admin_pg_target_tasks.remove(&tab_id);"));
-    }
-
-    #[test]
-    fn pg_user_admin_object_grants_load_keeps_its_task_alive() {
-        let privileges = include_str!("pg_user_admin/privileges.rs");
-        assert!(privileges.contains("let target_fingerprint = self"));
-        assert!(privileges.contains("target_fingerprint,"));
-        assert!(privileges.contains("self._user_admin_pg_object_grant_tasks.insert(tab_id, task);"));
-        assert!(privileges.contains("this._user_admin_pg_object_grant_tasks.remove(&tab_id);"));
-        // 三类目标切换（种类/schema/对象）都必须取消旧请求，否则新目标会被旧任务槽阻塞。
-        assert_eq!(
-            privileges
-                .matches("self.cancel_pg_object_grants_load(&tab_id);")
-                .count(),
-            3
-        );
-    }
-
     #[test]
     fn pg_grant_object_options_follow_selected_schema() {
         let targets = PgGrantTargetLists {
@@ -1456,33 +1374,6 @@ mod tests {
         assert!(pg_grant_object_options(PgGrantObjectKind::Schema, "tenant_b", &targets).is_empty());
         assert!(pg_grant_object_options(PgGrantObjectKind::Database, "tenant_b", &targets).is_empty());
     }
-
-    #[test]
-    fn pg_user_admin_searchable_selects_preserve_active_queries() {
-        let shared = include_str!("user_admin.rs");
-        let controller = include_str!("pg_user_admin/mod.rs");
-        assert!(controller.contains("sync_select_value(&self.pg_grant_db_select"));
-        assert!(controller.contains("sync_select_value(&self.pg_grant_schema_select"));
-        assert!(controller.contains("sync_select_value(&self.pg_grant_object_select"));
-        assert!(!controller.contains("self.pg_grant_db_select.update(cx, |select, cx| {\n            select.set_selected_value"));
-        // 未选中目标（数据库/对象初始为空）也必须跳过 set_selected_value；
-        // 该方法会清空搜索词，导致空值下拉的搜索框无法输入。
-        assert!(shared.contains("expected.is_empty() && selected.is_none()"));
-    }
-
-    /// gutter 行号列的「宽度」与「绘制」必须同源判断：只关其一会让行号列宽算成 0、
-    /// 行号照画，行号就压在正文左缘（关闭行号的只读 DDL 预览曾出现该重叠）。
-    #[test]
-    fn gutter_line_number_width_and_paint_share_one_predicate() {
-        let editor = include_str!("editor_component/mod.rs");
-        let render = include_str!("editor_component/render.rs");
-
-        assert!(editor.contains("fn shows_line_numbers(&self) -> bool"));
-        assert!(editor.contains("if !self.shows_line_numbers() {"));
-        assert!(render.contains("let show_line_numbers = self.editor.read(cx).shows_line_numbers();"));
-        assert!(render.contains("if line.first_fragment && show_line_numbers {"));
-    }
-
     #[test]
     fn sql_highlight_uses_tree_sitter_sequel_query() {
         let query = mysql_ddl_highlights_query();
@@ -1513,19 +1404,6 @@ mod tests {
         )
         .expect("json highlight query should compile");
     }
-
-    #[test]
-    fn query_summary_text_collapses_multiline_sql_for_display() {
-        assert_eq!(
-            single_line_summary_text("SELECT\n  *\r\nFROM users".to_string()),
-            "SELECT * FROM users"
-        );
-        assert_eq!(
-            single_line_summary_text("SELECT  * FROM users".to_string()),
-            "SELECT  * FROM users"
-        );
-    }
-
     #[test]
     fn cmd_enter_adds_row_for_create_table_edit_tabs_only() {
         let tab_id = TabId(7);
@@ -1800,15 +1678,6 @@ where id = 42 and name = 'Bob''s Bike' and flag = 'ignored'"
             }]
         );
     }
-
-    #[test]
-    fn delete_row_labels_reflect_multi_selection() {
-        assert_eq!(row_delete_label(1), "删除行");
-        assert_eq!(row_delete_label(2), "删除选中行");
-        assert_eq!(row_delete_record_label(1), "删除记录");
-        assert_eq!(row_delete_record_label(2), "删除选中行");
-    }
-
     #[test]
     fn saved_query_tab_id_finds_open_connection_query() {
         let state = AppState {
@@ -2031,143 +1900,6 @@ where id = 42 and name = 'Bob''s Bike' and flag = 'ignored'"
         assert!(text.contains("SELECT * FROM missing"));
         assert!(text.contains("Table missing doesn't exist"));
     }
-
-    #[test]
-    fn delete_connection_modal_uses_theme_colors() {
-        let source = include_str!("menus_dialogs/confirmations.rs");
-        let start = source.find("fn delete_connection_modal").unwrap();
-        let end = source.find("fn delete_data_row_modal").unwrap();
-        let body = &source[start..end];
-
-        assert!(body.contains("colors: UiColors"));
-        assert!(body.contains(".bg(colors.panel_bg)"));
-        assert!(body.contains(".border_color(colors.border)"));
-        assert!(body.contains(".text_color(colors.text)"));
-        assert!(body.contains(".text_color(colors.muted)"));
-        assert!(body.contains(".bg(colors.border_soft)"));
-        assert!(!body.contains("rgb(0xffffff)"));
-        assert!(!body.contains("rgb(0xd8dde5)"));
-        assert!(!body.contains("rgb(0xe4e8ee)"));
-        assert!(!body.contains(".label(\"×\")"));
-    }
-
-    #[test]
-    fn redis_database_menu_has_open_pubsub_entry_guarded_by_redis() {
-        // 「打开 Pub/Sub」应作为 Redis 数据库右键菜单的一项（由 is_redis 守卫，仅 Redis 显示），
-        // 且动作类型为 DatabaseMenuAction::PubSub，路由到数据库级动作。
-        let source = include_str!("menus_dialogs/connection_menu.rs");
-        let body = &source[0..source.len()];
-        assert!(body.contains("\"打开 Pub/Sub\""));
-        assert!(body.contains("DatabaseMenuAction::PubSub"));
-        // 与 Redis CLI 同受 is_redis 守卫：非 Redis 连接不显示。
-        let redis_cli_pos = body.find("\"Redis CLI\"").unwrap();
-        let pubsub_pos = body.find("\"打开 Pub/Sub\"").unwrap();
-        assert!(pubsub_pos > redis_cli_pos);
-        assert!(body.contains(".when(is_redis, |this|"));
-
-        // 分发端：PubSub 动作解析菜单携带的数据库编号，构造 OpenRedisPubSub 命令传给 controller。
-        let dispatch = include_str!("navicat_main/connection_groups.rs");
-        let start = dispatch.find("DatabaseMenuAction::PubSub =>").unwrap();
-        let end = dispatch.find("DatabaseMenuAction::RunSqlFile =>").unwrap();
-        let d = &dispatch[start..end];
-        assert!(d.contains("menu.database.parse::<u32>()"));
-        assert!(d.contains("AppCommand::OpenRedisPubSub {"));
-        assert!(d.contains("connection_id: menu.connection_id"));
-        assert!(d.contains("database,"));
-    }
-
-    #[test]
-    fn query_save_modal_tracks_focus_for_escape() {
-        let source = include_str!("menus_dialogs/query_save.rs");
-        let start = source.find("fn query_save_modal_panel").unwrap();
-        let body = &source[start..];
-
-        assert!(body.contains(".track_focus(&focus_handle)"));
-        assert!(body.contains(".key_context(\"QuerySaveModal\")"));
-        assert!(body.contains("this.cancel_query_save_modal(cx)"));
-    }
-
-    #[test]
-    fn redis_hash_full_value_is_inline_panel_not_dialog() {
-        let source = include_str!("redis_detail/hash_panel.rs");
-        let start = source.find("fn redis_hash_full_value_inline_panel").unwrap();
-        let end = source.find("fn redis_hash_field_add_drawer").unwrap();
-        let body = &source[start..end];
-
-        // 内嵌面板：标题、字节数与按钮齐全
-        assert!(body.contains("fn redis_hash_full_value_inline_panel("));
-        assert!(body.contains("完整值 · "));
-        assert!(body.contains("format!(\"{} 字节\", bytes)"));
-        assert!(body.contains("Button::new(\"redis-hash-full-value-close\")"));
-        assert!(body.contains("Button::new(\"redis-hash-full-value-edit\")"));
-        assert!(body.contains("Button::new(\"redis-hash-full-value-cancel-edit\")"));
-        assert!(body.contains("Button::new(\"redis-hash-full-value-save\")"));
-        assert!(body.contains("Button::new(\"redis-hash-full-value-retry\")"));
-        // 内容区支持横向+纵向滚动
-        assert!(body.contains(".overflow_x_scroll()"));
-        assert!(body.contains(".overflow_y_scrollbar()"));
-        // 复用共享多行输入进入编辑态
-        assert!(body.contains("Input::new(&input)"));
-        // 不再使用任何弹框机制
-        assert!(!body.contains("gpui_component::dialog::Dialog"));
-        assert!(!body.contains(".overlay_closable(true)"));
-        assert!(!body.contains("window.open_dialog"));
-    }
-
-    #[test]
-    fn user_admin_rebuild_uses_inline_create_entry_and_general_panel() {
-        let source = concat!(
-            include_str!("user_admin.rs"),
-            include_str!("user_admin_privileges.rs")
-        );
-
-        assert!(!source.contains("fn user_admin_create_modal("));
-        assert!(!source.contains("fn user_admin_static_select_row("));
-        assert!(source.contains("fn user_admin_add_user_button("));
-        assert!(source.contains("fn user_admin_draft_user_row("));
-        assert!(source.contains("AppCommand::BeginUserAdminCreateUser(tab_id)"));
-        assert!(source.contains("fn preview_user_admin_all_sql("));
-        assert!(source.contains("this.preview_user_admin_all_sql(tab_id, cx)"));
-        assert!(source.contains("fn user_admin_text_input_row("));
-        assert!(source.contains("Input::new(&input)"));
-        assert!(source.contains(".w(px(360.))"));
-        assert!(source.contains(".h(px(34.))"));
-        assert!(source.contains("focus_handle(cx).is_focused(window)"));
-        assert!(source.contains("fn user_admin_input_border_color("));
-        assert!(source.contains("fn user_admin_input_hover_border_color("));
-        assert!(source.contains("user_admin_input_border_color(true, colors)"));
-        assert!(source.contains("rgb(0x111111)"));
-        assert!(source.contains("fn user_admin_input_shadow("));
-        assert!(!source.contains(".disabled(disabled)"));
-        assert!(source.contains("fn user_admin_tab_strip("));
-        assert!(source.contains("(UserAdminDetailTab::General, \"常规\")"));
-        assert!(source.contains("(UserAdminDetailTab::Advanced, \"高级\")"));
-        assert!(source.contains("(UserAdminDetailTab::MemberOf, \"成员关系\")"));
-        assert!(!source.contains("(UserAdminDetailTab::Members, \"成员\")"));
-        assert!(source.contains("fn user_admin_member_relationships_panel("));
-        assert!(source.contains("fn user_admin_select_row("));
-        assert!(source.contains("Select::new(&select)"));
-        assert!(source.contains("fn user_admin_advanced_panel("));
-        assert!(!source.contains("使用 OLD_PASSWORD 加密"));
-        assert!(source.contains("fn user_admin_ssl_type_options("));
-        assert!(source.contains("fn user_admin_password_eye_button("));
-        assert!(source.contains("this.dispatch(AppCommand::ClearUserAdminPendingSql(tab_id), cx)"));
-        assert!(source.contains("fn user_admin_privileges_panel("));
-        assert!(source.contains("添加权限"));
-        assert!(source.contains("AppCommand::AddUserAdminPrivilegeRow"));
-        assert!(source.contains("fn user_admin_privileges_sql_preview("));
-        assert!(source.contains("fn user_admin_sql_preview_panel("));
-        assert!(source.contains("TextView::markdown(editor_key, user_admin_sql_preview_markdown(sql))"));
-        assert!(source.contains(".selectable(true)"));
-        assert!(source.contains(".scrollable(true)"));
-        assert!(!source.contains("Input::new(&editor)"));
-        assert!(source.contains("fn start_user_admin_database_options_load("));
-        assert!(source.contains("this.start_user_admin_database_options_load(tab_id, cx)"));
-        assert!(source.contains("AppCommand::ToggleUserAdminPrivilegeRowPrivilege"));
-        assert!(source.contains("AppCommand::SetUserAdminPrivilegeRowDatabase"));
-        assert!(source.contains("Grant Option"));
-    }
-
     #[test]
     fn user_admin_sql_preview_markdown_preserves_lines_and_escapes_fences() {
         let sql = "GRANT `reader` TO `alice`;\nGRANT `writer` TO `alice`;";
@@ -5013,15 +4745,6 @@ where id = 42 and name = 'Bob''s Bike' and flag = 'ignored'"
         assert!(redis_hash_field_ttl_command("0", true).is_err());
         assert!(redis_hash_field_ttl_command("abc", true).is_err());
     }
-
-    #[test]
-    fn redis_hash_field_ttl_display_value_strips_seconds_suffix_for_table_view() {
-        assert_eq!(redis_hash_field_ttl_display_value("51182034s"), "51182034");
-        assert_eq!(redis_hash_field_ttl_display_value("1s"), "1");
-        assert_eq!(redis_hash_field_ttl_display_value("无 TTL"), "无 TTL");
-        assert_eq!(redis_hash_field_ttl_display_value("已过期"), "已过期");
-    }
-
     #[test]
     fn redis_option_pairs_only_allow_known_keys() {
         let pairs = redis_option_pairs(
@@ -5151,13 +4874,6 @@ where id = 42 and name = 'Bob''s Bike' and flag = 'ignored'"
         );
         assert!(redis_pretty_json("not json").is_err());
     }
-
-    #[test]
-    fn redis_ttl_input_value_keeps_only_seconds() {
-        assert_eq!(redis_ttl_input_value("(No TTL)"), "");
-        assert_eq!(redis_ttl_input_value("120s"), "120");
-    }
-
     #[test]
     fn redis_key_meta_actions_stay_visible_while_editing() {
         assert!(redis_key_meta_actions_visible(

@@ -124,6 +124,16 @@ const PURE_FUNCTION_NAMES: &[&str] = &[
     "substr", "concat", "replace", "left", "right", "lpad", "rpad", "position", "strpos",
     "ascii", "chr", "hex", "md5", "count", "sum", "min", "max", "avg", "bool_and", "bool_or",
     "now", "current_date", "current_timestamp", "date_trunc", "date_part", "to_regclass",
+    // 日期/时间函数：无副作用，但模型大量用于确定“今天/当月/环比”等口径边界。
+    // 真实缺陷：`SELECT date('now')` 曾因不在白名单被判 unknown_function 而被只读入口拒绝。
+    "date", "time", "datetime", "julianday", "unixepoch", "strftime", "timediff",
+    "current_time", "localtime", "localtimestamp", "clock_timestamp", "statement_timestamp",
+    "transaction_timestamp", "to_char", "to_date", "to_timestamp", "to_number",
+    "date_format", "date_add", "date_sub", "adddate", "subdate", "datediff", "timestampdiff",
+    "from_unixtime", "unix_timestamp", "sec_to_time", "time_to_sec", "str_to_date",
+    "year", "quarter", "month", "week", "day", "hour", "minute", "second",
+    "dayofweek", "dayofmonth", "dayofyear", "last_day", "extract",
+    "make_date", "make_time", "make_timestamp", "make_interval", "age", "isfinite",
 ];
 
 /// 分析一条 SQL。

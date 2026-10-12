@@ -69,6 +69,54 @@ fn ai_sql_policy_read_only_queries_are_classified_per_dialect() {
 }
 
 #[test]
+fn ai_sql_policy_date_and_time_functions_are_read_only() {
+    // 真实缺陷复现：模型用 `SELECT date('now')` 确定“今天/当月”边界时，
+    // 因 `date` 不在纯函数白名单被判 `unknown_function`，只读入口直接拒绝，
+    // 模型只能放弃时间边界或用错误口径继续。日期/时间函数不产生副作用，
+    // 应按只读放行，且不能因此放宽真正的写语句判定。
+    for sql in [
+        "SELECT date('now') AS today",
+        "SELECT DATE('now') AS today",
+        "SELECT datetime('now') AS now_text",
+        "SELECT strftime('%Y-%m', created_at) AS month FROM orders",
+        "SELECT julianday('now') FROM orders",
+        "SELECT unixepoch('now') FROM orders",
+    ] {
+        assert_eq!(
+            analyze_sql(sql, SqlDialectKind::Sqlite),
+            SqlRisk::ReadOnly,
+            "sqlite: {sql}"
+        );
+    }
+    for (sql, dialect) in [
+        (
+            "SELECT DATE_FORMAT(created_at, '%Y-%m') AS month FROM orders",
+            SqlDialectKind::MySql,
+        ),
+        (
+            "SELECT UNIX_TIMESTAMP(created_at) FROM orders",
+            SqlDialectKind::MySql,
+        ),
+        (
+            "SELECT to_char(created_at, 'YYYY-MM') AS month FROM orders",
+            SqlDialectKind::Postgres,
+        ),
+        (
+            "SELECT date_trunc('month', created_at) FROM orders",
+            SqlDialectKind::Postgres,
+        ),
+    ] {
+        assert_eq!(
+            analyze_sql(sql, dialect),
+            SqlRisk::ReadOnly,
+            "{dialect:?}: {sql}"
+        );
+    }
+    // 白名单变宽不能顺带放过写语句：同一条被拒的 DML 仍必须需授权。
+    assert!(!analyze_sql("UPDATE orders SET status='x'", SqlDialectKind::Sqlite).is_read_only());
+}
+
+#[test]
 fn ai_sql_policy_modifying_ctes_require_authorization() {
     let cases = [
         (

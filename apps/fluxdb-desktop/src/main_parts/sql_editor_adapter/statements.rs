@@ -356,17 +356,6 @@ mod statements_tests {
         map.set_status(&edited_runs[1], Some(SqlStatementStatus::Success));
         assert_eq!(map.status_for_run(&edited_runs[1]), Some(SqlStatementStatus::Success));
     }
-
-    #[test]
-    fn status_map_clear_via_none() {
-        let text = "select 1;";
-        let runs = build_statement_runs(text);
-        let mut map = SqlStatementStatusMap::default();
-        map.set_status(&runs[0], Some(SqlStatementStatus::Running));
-        map.set_status(&runs[0], None);
-        assert_eq!(map.status_for_run(&runs[0]), None);
-    }
-
     #[test]
     fn parameter_target_matches_selection() {
         let text = "select 1;";

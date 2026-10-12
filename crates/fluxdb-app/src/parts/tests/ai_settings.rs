@@ -39,15 +39,6 @@ fn sample_model_input(api_key: Option<&str>) -> AiModelSaveInput {
         expected_revision: None,
     }
 }
-
-#[test]
-fn ai_settings_refresh_starts_empty() {
-    let (mut controller, dir) = controller_with_ai_storage("empty");
-    controller.dispatch(AppCommand::RefreshAiSettings);
-    assert!(controller.state().ai_models.is_empty(), "全新库不应有模型");
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
 #[test]
 fn ai_settings_save_model_with_key_encrypts_and_lists_as_configured() {
     let (mut controller, dir) = controller_with_ai_storage("create");

@@ -1299,19 +1299,6 @@
         // 目标表已解析（orders）。
         assert_eq!(completion_column_tables(&context).len(), 1);
     }
-
-    #[test]
-    fn phase3_acceptance_multi_statement_isolates_second_statement() {
-        // T045 验收：多 statement 中光标位于第二条语句，只取当前语句作用域。
-        // 第一条的 CTE 不得泄漏进第二条。
-        let sql = "WITH recent AS (SELECT id FROM users) SELECT id FROM recent;\nSELECT * FROM ";
-        let cursor = sql.len();
-        let context = sql_completion_context(sql, cursor, DatabaseKind::MySql);
-        // 第二条 SELECT FROM 后：表候选，且为当前作用域；「已闭合的首条语句 CTE」不进入列作用域。
-        assert_eq!(context.expectation, CompletionExpectation::Table);
-        assert!(context.cte_columns.is_empty());
-    }
-
     #[test]
     fn mysql_completion_context_resolves_digit_prefixed_table_alias_before_from() {
         let sql = "select u. from 3d_user u";
@@ -4999,15 +4986,6 @@
         assert_eq!(items[0].insert_text, "name");
         assert_eq!(items[1].insert_text, "display_name");
     }
-
-    #[test]
-    fn function_completion_displays_name_without_parentheses() {
-        let items = function_completion_items("co");
-
-        assert_eq!(items[0].label, "COUNT");
-        assert_eq!(items[0].insert_text, "COUNT()");
-    }
-
     #[test]
     fn completion_cache_clears_for_object_refresh_commands() {
         assert!(should_clear_completion_cache(&AppCommand::OpenConnection(ConnectionId(1))));

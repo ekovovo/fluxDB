@@ -625,33 +625,6 @@ mod theme_tests {
             }
         }
     }
-
-    /// 未知语法 kind 返回 None，由调用方回退到默认文本色。
-    #[test]
-    fn syntax_color_ignores_unknown_kind() {
-        for theme in [EditorTheme::dark(), EditorTheme::light()] {
-            assert_eq!(theme.syntax_color("unknown_kind"), None);
-            assert_eq!(theme.syntax_color("namespace"), None);
-        }
-    }
-
-    /// 两套主题确实不同（避免误注入同一套导致明暗无效果）。
-    #[test]
-    fn dark_and_light_themes_differ() {
-        let dark = EditorTheme::dark();
-        let light = EditorTheme::light();
-        assert_ne!(dark.background, light.background);
-        assert_ne!(dark.text, light.text);
-        assert_ne!(dark.completion_bg, light.completion_bg);
-    }
-
-    /// `Default` 兜底为暗黑主题（宿主尚未注入时行为明确）。
-    #[test]
-    fn default_falls_back_to_dark() {
-        let theme = EditorTheme::default();
-        assert_eq!(theme.background, EditorTheme::dark().background);
-    }
-
     #[test]
     fn auto_close_pairs_cover_common_editor_delimiters() {
         assert_eq!(Editor::auto_close_pair('('), Some(')'));

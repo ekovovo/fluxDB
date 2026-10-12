@@ -1,6 +1,7 @@
 /// 真实 PostgreSQL 元数据回归：设置 FLUXDB_PG_SMOKE 后，在本进程独立 schema
 /// 验证表改名、同名重建、删列的结构身份变化；未配置则跳过，不访问用户现有表。
 #[test]
+#[ignore = "requires FLUXDB_PG_SMOKE"]
 fn postgres_er_rebind_rename_rebuild_and_drop_column() {
     let Some(params) = postgres_create_table_smoke_params() else {
         tracing::warn!(target: "fluxdb_app", "未设置 FLUXDB_PG_SMOKE，跳过真实 PG ER A/B/C 冒烟");
@@ -79,6 +80,7 @@ fn postgres_er_rebind_rename_rebuild_and_drop_column() {
 /// 不出现在表目录；外键指向无权访问的表时该边必须被剔除（不泄露隐藏表名）。
 /// 设置 FLUXDB_PG_SMOKE 后运行；未配置则跳过，不访问用户现有表。
 #[test]
+#[ignore = "requires FLUXDB_PG_SMOKE"]
 fn postgres_er_visibility_hides_unauthorized_tables() {
     let Some(params) = postgres_create_table_smoke_params() else {
         tracing::warn!(target: "fluxdb_app", "未设置 FLUXDB_PG_SMOKE，跳过真实 PG ER 可见性冒烟");

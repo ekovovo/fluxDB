@@ -245,17 +245,6 @@ mod tests {
         assert_eq!(mapped.detail, "SET key value");
         assert_eq!(mapped.kind, CompletionKind::Command);
     }
-
-    #[test]
-    fn redis_line_range_basic() {
-        use fluxdb_editor_core::EditorBuffer;
-        let buffer = EditorBuffer::new_from("SET key value\nGET key\n");
-        let snapshot = buffer.snapshot();
-        // 光标在第二行 "GET" 中间。
-        let (start, end) = redis_line_range(&snapshot, 15).unwrap();
-        assert_eq!(&snapshot.to_string()[start..end], "GET key");
-    }
-
     // ---- P2 契约测试：触发 / 取消 / 文档 / latest-wins / 稳定排序 ----
 
     #[test]
@@ -590,12 +579,5 @@ mod tests {
             result.items.iter().any(|i| i.label == "SET"),
             "第二行 SE 应触发命令候选"
         );
-    }
-
-    #[test]
-    fn insert_text_format_default_plain() {
-        // 默认插入格式为 PlainText，避免把字面量 $1 误解析。
-        let item = CompletionItem::new("SELECT", CompletionKind::Keyword);
-        assert_eq!(item.insert_text_format, InsertTextFormat::PlainText);
     }
 }

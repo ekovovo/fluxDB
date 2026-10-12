@@ -170,6 +170,7 @@ fn ai_live_mysql_setup(connector: &dyn Connector, config: &ConnectionConfig, dat
 
 /// 元数据搜索/描述 + 受控只读查询 + 进度 + 取消 + 会话隔离（PostgreSQL）。
 #[test]
+#[ignore = "requires FLUXDB_PG_SMOKE"]
 fn t023_postgres_metadata_query_cancel_and_session_isolation() {
     let Some(params) = ai_live_params("PostgreSQL", "FLUXDB_PG_SMOKE") else {
         tracing::warn!(target: "fluxdb_app", "未设置 FLUXDB_PG_SMOKE，跳过 T023 PG 冒烟");
@@ -366,6 +367,7 @@ fn t023_postgres_metadata_query_cancel_and_session_isolation() {
 
 /// 元数据搜索/描述 + 受控只读查询 + 取消 + 会话隔离（MySQL）。
 #[test]
+#[ignore = "requires FLUXDB_MYSQL_SMOKE"]
 fn t023_mysql_metadata_query_cancel_and_session_isolation() {
     let Some(params) = ai_live_params("MySQL", "FLUXDB_MYSQL_SMOKE") else {
         tracing::warn!(target: "fluxdb_app", "未设置 FLUXDB_MYSQL_SMOKE，跳过 T023 MySQL 冒烟");

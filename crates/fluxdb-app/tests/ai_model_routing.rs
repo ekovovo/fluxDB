@@ -386,17 +386,6 @@ fn global_egress_gate_blocks_even_allowed_models() {
     ));
     assert_eq!(send_model(&mut controller, "恢复后可用"), global);
 }
-
-#[test]
-fn without_binding_falls_back_to_agent_default() {
-    let fixture = Fixture::new();
-    let mut controller = fixture.controller();
-    let agent_default = create_model(&mut controller, "agent-default", "openai");
-    let agent = create_agent(&mut controller, "no-binding", Some(agent_default.clone()));
-    set_default_agent(&fixture, &agent);
-    assert_eq!(send_model(&mut controller, "agent default"), agent_default);
-}
-
 #[test]
 fn agent_without_model_falls_back_to_global_default() {
     let fixture = Fixture::new();

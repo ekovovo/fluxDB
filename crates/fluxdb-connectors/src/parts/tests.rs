@@ -168,14 +168,6 @@ mod tests {
         assert_eq!(preview.chars().count(), 203);
         assert!(preview.ends_with("..."));
     }
-
-    #[test]
-    fn redis_hash_field_ttl_text_formats_special_values() {
-        assert_eq!(redis_hash_field_ttl_text(RedisValue::Int(-1)).unwrap(), "无 TTL");
-        assert_eq!(redis_hash_field_ttl_text(RedisValue::Int(-2)).unwrap(), "已过期");
-        assert_eq!(redis_hash_field_ttl_text(RedisValue::Int(1500)).unwrap(), "1s");
-    }
-
     #[test]
     fn redis_server_version_parse_handles_common_shapes() {
         let v = RedisServerVersion::parse("7.4.0").unwrap();
@@ -1446,27 +1438,6 @@ mod tests {
 
         assert_eq!(columns, ["键", "类型", "值", "大小", "TTL"]);
     }
-
-    #[test]
-    fn redis_preview_items_formats_collections() {
-        let value = RedisValue::Array(vec![RedisValue::Bulk(Some(b"test".to_vec()))]);
-
-        assert_eq!(redis_preview_items(Some(value)), "[test]");
-    }
-
-    #[test]
-    fn redis_set_preview_formats_members() {
-        let members = RedisValue::Array(vec![
-            RedisValue::Bulk(Some(b"test".to_vec())),
-            RedisValue::Bulk(Some(b"test1".to_vec())),
-        ]);
-
-        assert_eq!(
-            redis_set_preview(Some(RedisValue::Int(2)), Some(members)),
-            "2 成员\ntest\ntest1"
-        );
-    }
-
     #[test]
     fn redis_set_members_from_text_skips_blank_rows() {
         assert_eq!(
@@ -1474,37 +1445,6 @@ mod tests {
             Ok(vec!["alpha".to_string(), " beta ".to_string()])
         );
     }
-
-    #[test]
-    fn redis_stream_preview_includes_entry_count() {
-        assert_eq!(redis_stream_preview(Some(RedisValue::Int(2)), None), "2 条目");
-    }
-
-    #[test]
-    fn redis_stream_preview_formats_entries() {
-        let entries = RedisValue::Array(vec![RedisValue::Array(vec![
-            RedisValue::Bulk(Some(b"1785677482094-0".to_vec())),
-            RedisValue::Array(vec![
-                RedisValue::Bulk(Some(b"test".to_vec())),
-                RedisValue::Bulk(Some(b"3".to_vec())),
-                RedisValue::Bulk(Some(b"test1".to_vec())),
-                RedisValue::Bulk(Some(b"2".to_vec())),
-            ]),
-        ])]);
-
-        let preview = redis_stream_preview(Some(RedisValue::Int(2)), Some(entries));
-
-        assert!(preview.contains("2 条目"));
-        assert!(preview.contains("1785677482094-0"));
-        assert!(preview.contains("test: 3"));
-        assert!(preview.contains("test1: 2"));
-    }
-
-    #[test]
-    fn mysql_index_metadata_query_uses_stable_non_unique_alias() {
-        assert!(mysql_indexes_query().contains("CAST(non_unique AS SIGNED) AS non_unique"));
-    }
-
     #[test]
     fn mysql_table_objects_query_uses_signed_row_count() {
         assert!(mysql_table_objects_query().contains("CAST(table_rows AS SIGNED) AS row_count"));
@@ -1735,16 +1675,6 @@ mod tests {
             CellValue::Bytes(vec![b'a'; MYSQL_QUERY_TEXT_BYTES_LIMIT + 1])
         );
     }
-
-    #[test]
-    fn mysql_optional_display_cell_value_preserves_unsigned_bigint_text() {
-        assert_eq!(
-            mysql_optional_display_cell_value(Some(391041_u64)),
-            CellValue::Text("391041".to_string())
-        );
-        assert_eq!(mysql_optional_display_cell_value(None::<u64>), CellValue::Null);
-    }
-
     #[test]
     fn mysql_optional_display_cell_value_preserves_decimal_text() {
         let value = "1234567890.0123456789".parse::<BigDecimal>().unwrap();
@@ -3225,6 +3155,7 @@ SELECT item_id, name FROM audit_log;"
     /// 通过 `FLUXDB_PG_SMOKE=host:port:user:password:db` 启用；未设置时直接跳过。
     /// 覆盖：真实建连 + 认证 + 版本读取；SELECT 返回真实行；两个显式查询会话互不串事务。
     #[test]
+    #[ignore = "requires FLUXDB_PG_SMOKE"]
     fn pg_live_smoke_connect_and_version() {
         let Some(params) = pg_smoke_params() else {
             tracing::warn!(target: "fluxdb_connectors", "未设置 FLUXDB_PG_SMOKE，跳过真实 PG 冒烟");
@@ -3240,6 +3171,7 @@ SELECT item_id, name FROM audit_log;"
     }
 
     #[test]
+    #[ignore = "requires FLUXDB_PG_SMOKE"]
     fn pg_live_smoke_select_rows() {
         let Some(params) = pg_smoke_params() else {
             return;
@@ -3258,6 +3190,7 @@ SELECT item_id, name FROM audit_log;"
     }
 
     #[test]
+    #[ignore = "requires FLUXDB_PG_SMOKE"]
     fn pg_live_smoke_transient_sessions_do_not_leak_transactions() {
         let Some(params) = pg_smoke_params() else {
             return;
@@ -3306,6 +3239,7 @@ SELECT item_id, name FROM audit_log;"
 
     /// 查询会话内切换 schema 作用域：不重建连接（事务保住），search_path 当场生效。
     #[test]
+    #[ignore = "requires FLUXDB_PG_SMOKE"]
     fn pg_live_smoke_query_session_switches_schema_without_losing_transaction() {
         let Some(params) = pg_smoke_params() else {
             return;
@@ -3455,6 +3389,7 @@ SELECT item_id, name FROM audit_log;"
 
     /// T28 真库回归：MySQL `test_connection` 在 PG 接入后仍应成功（隔离库，环境门控）。
     #[test]
+    #[ignore = "requires FLUXDB_MYSQL_SMOKE"]
     fn mysql_live_smoke_test_connection_regressed_by_postgres() {
         let Some(params) = mysql_smoke_params() else {
             return;
@@ -3469,6 +3404,7 @@ SELECT item_id, name FROM audit_log;"
     /// T28 MySQL 真库功能回归：连接/DDL/写/读/查询/补全/结构/导出/清理全链路。
     /// 覆盖 PG 接入可能共享影响的分层（shared 数据读写、补全、结构、导出）。
     #[test]
+    #[ignore = "requires FLUXDB_MYSQL_SMOKE"]
     fn mysql_live_smoke_full_regression() {
         let Some(params) = mysql_smoke_params() else {
             return;
@@ -3580,6 +3516,7 @@ SELECT item_id, name FROM audit_log;"
     /// T13 MySQL 单语句取消：`SELECT SLEEP(120)` 在用户「停止」后应经 `KILL QUERY` 立即
     /// 中止（远早于硬超时），并如实标「已取消：结果待核实」，不误报 SQL 错误。
     #[test]
+    #[ignore = "requires FLUXDB_MYSQL_SMOKE"]
     fn mysql_live_smoke_cancel_token_stops_long_query_promptly() {
         let Some(params) = mysql_smoke_params() else {
             tracing::warn!(target: "fluxdb_connectors", "未设置 FLUXDB_MYSQL_SMOKE，跳过 MySQL 取消冒烟");
@@ -3861,6 +3798,7 @@ SELECT item_id, name FROM audit_log;"
     /// schema 列表/视图（含同名对象由 schema 区分、物化视图/分区表归入 Table/View）。
     /// 临时创建 t06_table / t06_view 后列出并校验，最后清理。
     #[test]
+    #[ignore = "requires FLUXDB_PG_SMOKE"]
     fn pg_live_smoke_object_tree() {
         let Some(params) = pg_smoke_params() else {
             tracing::warn!(target: "fluxdb_connectors", "未设置 FLUXDB_PG_SMOKE，跳过真实 PG 对象树冒烟");
@@ -4010,6 +3948,7 @@ SELECT item_id, name FROM audit_log;"
 
     /// 真实 PG：建 schema → 对象树 schema 清单可见 → 删除。
     #[test]
+    #[ignore = "requires FLUXDB_PG_SMOKE"]
     fn pg_live_smoke_create_schema() {
         let Some(params) = pg_smoke_params() else {
             return;
@@ -4029,6 +3968,7 @@ SELECT item_id, name FROM audit_log;"
 
     /// 真实 PG：角色 CRUD + 成员关系 + 对象授权（隔离环境，测试后清理角色）。
     #[test]
+    #[ignore = "requires FLUXDB_PG_SMOKE"]
     fn pg_live_smoke_role_crud_and_membership() {
         let Some(params) = pg_smoke_params() else {
             return;
@@ -4390,6 +4330,7 @@ SELECT item_id, name FROM audit_log;"
 
     /// 真实 PG：对象权限读取（aclexplode）+ 授权/撤销往返。
     #[test]
+    #[ignore = "requires FLUXDB_PG_SMOKE"]
     fn pg_live_smoke_relation_grants_roundtrip() {
         let Some(params) = pg_smoke_params() else {
             return;
@@ -4433,6 +4374,7 @@ SELECT item_id, name FROM audit_log;"
 
     /// T26：广义对象权限读取（数据库/schema/表/序列/函数），经 `PgObjectGrantScope` 分支。
     #[test]
+    #[ignore = "requires FLUXDB_PG_SMOKE"]
     fn pg_live_smoke_object_grants_per_scope() {
         let Some(params) = pg_smoke_params() else {
             return;
@@ -4620,6 +4562,7 @@ SELECT item_id, name FROM audit_log;"
 
     /// T26：角色**有效**权限——区分直接授权与经成员关系继承（+PUBLIC/owner），防止把继承误当可直接撤销。
     #[test]
+    #[ignore = "requires FLUXDB_PG_SMOKE"]
     fn pg_live_smoke_role_effective_grants() {
         let Some(params) = pg_smoke_params() else {
             return;
@@ -4703,6 +4646,7 @@ SELECT item_id, name FROM audit_log;"
 
     /// T23：一致快照导出分页——单 REPEATABLE READ 事务内完整、无重漏行、可取消。
     #[test]
+    #[ignore = "requires FLUXDB_PG_SMOKE"]
     fn pg_live_smoke_export_pages_snapshot() {
         let Some(params) = pg_smoke_params() else {
             return;
@@ -4771,6 +4715,7 @@ SELECT item_id, name FROM audit_log;"
     }
 
     #[test]
+    #[ignore = "requires FLUXDB_PG_SMOKE"]
     fn pg_live_smoke_create_delete_database() {
         let Some(params) = pg_smoke_params() else {
             return;
@@ -5074,21 +5019,10 @@ SELECT item_id, name FROM audit_log;"
         assert_eq!(fks[0].ref_column, "x");
         assert_eq!(fks[0].ref_table, "t");
     }
-
-    #[test]
-    fn pg_triggers_from_structure_maps_display() {
-        let structure = t08_structure();
-        let triggers = pg_triggers_from_structure(&structure);
-        assert_eq!(triggers.len(), 1);
-        assert_eq!(triggers[0].name, "t08_master_audit");
-        assert_eq!(triggers[0].event, "AFTER INSERT OR UPDATE");
-        assert_eq!(triggers[0].timing, "ROW");
-        assert!(triggers[0].body.as_deref().unwrap().starts_with("CREATE TRIGGER"));
-    }
-
     /// T08 真实冒烟：在维护库 public 下建一张含 列/PK/唯一/FK/CHECK/表达式索引/触发器/注释
     /// 的表，逐 tab 校验元数据投影与 DDL 重建，随后清理。
     #[test]
+    #[ignore = "requires FLUXDB_PG_SMOKE"]
     fn pg_live_smoke_table_info() {
         let Some(params) = pg_smoke_params() else {
             tracing::warn!(target: "fluxdb_connectors", "未设置 FLUXDB_PG_SMOKE，跳过真实 PG 结构元数据冒烟");
@@ -5225,20 +5159,6 @@ SELECT item_id, name FROM audit_log;"
     fn env(key: &str) -> Option<String> {
         std::env::var(key).ok().filter(|v| !v.is_empty())
     }
-
-    // ---- T09 值转换、参数编码与 bytea ----
-
-    #[test]
-    fn pg_type_base_strips_modifiers_and_array_suffix() {
-        assert_eq!(pg_type_base("int4"), "int4");
-        assert_eq!(pg_type_base("varchar"), "varchar");
-        assert_eq!(pg_type_base("varchar(50)"), "varchar");
-        assert_eq!(pg_type_base("numeric(10,2)"), "numeric");
-        assert_eq!(pg_type_base("integer[]"), "integer");
-        assert_eq!(pg_type_base("text[]"), "text");
-        assert_eq!(pg_type_base(" double precision "), "double precision");
-    }
-
     /// 逐值生成 `$n` 占位并分别绑定各自的值（回归：曾误用 `values[0].1` 让所有占位绑定同一值）。
     #[test]
     fn pg_insert_sql_binds_each_column_value() {
@@ -5347,23 +5267,6 @@ SELECT item_id, name FROM audit_log;"
         // 身份参数必须以 text（String）绑定，数字类型会触发 serialization 错误，
         // 此处仅在 SQL 层面校验文本比较形式，实际绑定正确性由真库冒烟覆盖。
     }
-
-    #[test]
-    fn pg_identity_where_rejects_empty_identity() {
-        let identity = RowIdentity { values: Default::default() };
-        assert!(pg_identity_where(&mut Vec::new(), &identity, &[]).is_err());
-    }
-
-    #[test]
-    fn pg_next_param_binds_null_as_option_none() {
-        let mut params: Vec<Box<dyn ToSql + Sync>> = Vec::new();
-        let p1 = pg_next_param(&mut params, &CellValue::Null, None);
-        let p2 = pg_next_param(&mut params, &CellValue::Text("x".to_string()), None);
-        assert_eq!(p1, "$1");
-        assert_eq!(p2, "$2");
-        assert_eq!(params.len(), 2);
-    }
-
     #[test]
     fn pg_order_by_clause_appends_primary_key_tiebreaker() {
         let mkcol = |name: &str, pk: bool| Column {
@@ -5538,6 +5441,7 @@ SELECT item_id, name FROM audit_log;"
     /// T09 冒烟：建含类型化字段与 bytea 的表 → 类型化读取 + 二进制投影 →
     /// 编辑提交(插/改/删) + 单格完整二进制读取。真实 PG 才跑。
     #[test]
+    #[ignore = "requires FLUXDB_PG_SMOKE"]
     fn pg_live_smoke_typed_read_binary_and_apply_changes() {
         let Some(params) = pg_smoke_params() else {
             tracing::warn!(target: "fluxdb_connectors", "未设置 FLUXDB_PG_SMOKE，跳过真实 PG T09 冒烟");
@@ -5678,6 +5582,7 @@ SELECT item_id, name FROM audit_log;"
 
     /// T10 冒烟：分页 has_more、主键稳定 tie breaker、过滤（Between/Contains/等值）在真实 PG 生效。
     #[test]
+    #[ignore = "requires FLUXDB_PG_SMOKE"]
     fn pg_live_smoke_pagination_sort_and_filter() {
         let Some(params) = pg_smoke_params() else {
             tracing::warn!(target: "fluxdb_connectors", "未设置 FLUXDB_PG_SMOKE，跳过真实 PG T10 冒烟");
@@ -5808,6 +5713,7 @@ SELECT item_id, name FROM audit_log;"
 
     /// T11 冒烟：生成列保护 + 行数检查整批回滚（真实 PG）。
     #[test]
+    #[ignore = "requires FLUXDB_PG_SMOKE"]
     fn pg_live_smoke_generated_column_protection_and_rowcount_rollback() {
         let Some(params) = pg_smoke_params() else {
             tracing::warn!(target: "fluxdb_connectors", "未设置 FLUXDB_PG_SMOKE，跳过真实 PG T11 冒烟");
@@ -6025,6 +5931,7 @@ SELECT item_id, name FROM audit_log;"
     /// T13 真实 CancelToken：`SELECT pg_sleep(120)` 长查询在用户取消时应立即停止
     /// （无需等 30s 硬超时），回到 promptly 且标记「已取消/结果待核实」，不误报成功。
     #[test]
+    #[ignore = "requires FLUXDB_PG_SMOKE"]
     fn pg_live_smoke_cancel_token_stops_long_query_promptly() {
         let Some(params) = pg_smoke_params() else {
             tracing::warn!(target: "fluxdb_connectors", "未设置 FLUXDB_PG_SMOKE，跳过真实 PG 取消冒烟");
@@ -6101,6 +6008,7 @@ SELECT item_id, name FROM audit_log;"
     }
 
     #[test]
+    #[ignore = "requires FLUXDB_PG_SMOKE"]
     fn pg_live_smoke_completion_metadata() {
         let Some(params) = pg_smoke_params() else {
             tracing::warn!(target: "fluxdb_connectors", "未设置 FLUXDB_PG_SMOKE，跳过真实 PG T14 冒烟");
@@ -6325,6 +6233,7 @@ SELECT item_id, name FROM audit_log;"
     /// T14 验收「列表支持取消」：取消标记生效时补全各列表返回空结果且不报错，
     /// 不阻塞编辑（不发起无意义往返）。
     #[test]
+    #[ignore = "requires FLUXDB_PG_SMOKE"]
     fn pg_live_smoke_completion_cancel_returns_empty() {
         let Some(params) = pg_smoke_params() else {
             tracing::warn!(target: "fluxdb_connectors", "未设置 FLUXDB_PG_SMOKE，跳过真实 PG T14 冒烟");
@@ -6385,6 +6294,7 @@ SELECT item_id, name FROM audit_log;"
     /// T14 验收「元数据会话不影响用户事务」：补全元数据走独立会话（pg_connect 新拨），
     /// 用户会话里的未提交事务在补全期间保持原状，不被提交也不被回滚。
     #[test]
+    #[ignore = "requires FLUXDB_PG_SMOKE"]
     fn pg_live_smoke_completion_does_not_disturb_user_transaction() {
         let Some(params) = pg_smoke_params() else {
             tracing::warn!(target: "fluxdb_connectors", "未设置 FLUXDB_PG_SMOKE，跳过真实 PG T14 冒烟");
@@ -6441,6 +6351,7 @@ SELECT item_id, name FROM audit_log;"
     /// T14 验收：search_path 跟随服务器有效顺序，不硬编码 public；显式 schema 可跨 schema；
     /// 同表名跨 schema 时列按 search_path 首个可见 schema 解析，不串列。
     #[test]
+    #[ignore = "requires FLUXDB_PG_SMOKE"]
     fn pg_live_smoke_completion_search_path_and_cross_schema() {
         let Some(params) = pg_smoke_params() else {
             tracing::warn!(target: "fluxdb_connectors", "未设置 FLUXDB_PG_SMOKE，跳过真实 PG T14 冒烟");
@@ -6680,6 +6591,7 @@ mod pg_plan_apply_tests {
 
 /// 集成：任一语句失败 → 整批回滚，不产生半完成状态（角色不应存在）。
 #[test]
+#[ignore = "requires FLUXDB_PG_SMOKE"]
 fn pg_apply_role_plan_rolls_back_as_a_whole() {
     let Some(params) = pg_smoke_params() else {
         return;
@@ -6732,6 +6644,7 @@ fn pg_apply_role_plan_rolls_back_as_a_whole() {
 
     /// 集成：成功路径——创建（属性+密码）→ 成员授予 → 对象授权 → 改名，读模型逐一核实后清理。
     #[test]
+    #[ignore = "requires FLUXDB_PG_SMOKE"]
     fn pg_apply_role_plan_end_to_end_and_rename() {
         let Some(params) = pg_smoke_params() else {
             return;

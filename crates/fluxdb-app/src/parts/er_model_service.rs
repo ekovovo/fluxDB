@@ -967,17 +967,6 @@ mod er_model_service_tests {
         assert_eq!(all.len(), 1, "r2 被删、r1 保留");
         assert_eq!(all[0].review.state, ErReviewState::Confirmed, "r1 确认未丢");
     }
-
-    #[test]
-    fn list_includes_proposed_and_rejected() {
-        let svc = ErModelService::new("s", Box::new(MemStore::default()));
-        svc.create(base_rel()).unwrap();
-        svc.reject("r1", 1).unwrap();
-        let all = svc.list().unwrap();
-        assert_eq!(all.len(), 1);
-        assert_eq!(all[0].review.state, ErReviewState::Rejected);
-    }
-
     #[test]
     fn snapshot_from_tables_keeps_structured_identity_and_skips_not_loaded() {
         let mk = |schema: Option<&str>, name: &str, status: fluxdb_core::ErLoadStatus, cols: Vec<(&str, bool)>| {

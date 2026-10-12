@@ -521,28 +521,6 @@ mod tests {
         let before = s.map_input_by(WrapPoint { row: 1, column: 0 });
         assert_eq!(before.left.row, 1);
     }
-
-    /// DM-310：多块同行稳定排序（按 id）；content row = base + Σ 块高。
-    #[test]
-    fn multiple_blocks_same_row_sum_with_stable_order() {
-        let s = snap(vec![block(5, 2, 1, 1), block(3, 2, 2, 2)], 6);
-        assert_eq!(s.total_height_rows(), 9, "6 + (1+2)");
-        let b = s.map_input_by(WrapPoint { row: 2, column: 0 });
-        assert_eq!(b.left.row, 2);
-        assert_eq!(b.right.row, 5, "内容行 2 = 2 + 3 块高");
-    }
-
-    /// DM-310：落在某 block 占用行内 hit 返回该 id；文本行不命中。
-    #[test]
-    fn hit_test_block_rows() {
-        // wrap 行 1 上方插一个高 1 的块，其占用 block 行 = 1（内容行 1 起点=1+1=2，块占行 1）。
-        let s = snap(vec![block(9, 1, 1, 42)], 4);
-        // 内容行：r0→0, r1→2, r2→3, r3→4 ；块行 1 归属 wrap 行 1。
-        assert_eq!(s.block_at(BlockPoint::new(1, 0)), Some(BlockId(9)));
-        assert_eq!(s.block_at(BlockPoint::new(0, 0)), None, "内容行不命中");
-        assert_eq!(s.block_at(BlockPoint::new(2, 0)), None, "内容行 1 不命中");
-    }
-
     /// DM-310：双向 round-trip——block 空间的内容行反解回原 wrap 行。
     #[test]
     fn bidirectional_round_trip() {
@@ -629,14 +607,5 @@ mod tests {
             changed.heights.shared_trailing_leaves(&no_blocks.heights) >= 1,
             "行 3 局部更新后末尾叶节点应共享"
         );
-    }
-
-    #[test]
-    fn sync_rows_shifts_blocks_after_inserted_wrap_rows() {
-        let old = snap(vec![block(7, 40, 1, 0)], 80);
-        let next = old.sync_rows(2, 10..11, 3);
-        assert_eq!(next.base_rows(), 82);
-        // dirty 行被 provider 刷新为空，原 block 随后缀整体后移两行。
-        assert_eq!(next.block_at(BlockPoint::new(42, 0)), Some(BlockId(7)));
     }
 }

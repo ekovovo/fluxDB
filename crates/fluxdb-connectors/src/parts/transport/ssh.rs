@@ -679,6 +679,7 @@ mod ssh_tunnel_tests {
     ///
     /// 环境：`FLUXDB_SSH_SMOKE=host:port:user:password`；未配置则跳过（不谎报通过）。
     #[test]
+    #[ignore = "requires FLUXDB_SSH_SMOKE"]
     fn ssh_tunnel_relays_both_directions() {
         let Some(value) = std::env::var("FLUXDB_SSH_SMOKE").ok() else {
             return;
@@ -746,6 +747,7 @@ mod ssh_tunnel_tests {
     /// tokio-postgres（App 同款驱动栈）连隧道本地端口做真实握手。这直接复现 App「测试连接」
     /// 的完整路径——若此处报 `error communicating with the server`，即为桥/驱动层缺陷。
     #[test]
+    #[ignore = "requires FLUXDB_SSH_PG_SMOKE"]
     fn ssh_tunnel_relays_to_real_pg() {
         let Some(Ok(value)) = std::env::var_os("FLUXDB_SSH_PG_SMOKE").map(|v| v.into_string()) else {
             return;

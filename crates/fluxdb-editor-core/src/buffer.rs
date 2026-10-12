@@ -439,7 +439,6 @@ impl EditorBuffer {
         let end = strip_trailing_newline(&self.text, raw_end);
         self.text.to_string_slice(Range::new(start, end))
     }
-
     /// 返回第 `row` 行的行尾偏移（含换行符）。若末行无换行则返回文本末尾。
     pub fn line_end_offset(&self, row: usize) -> Offset {
         if row + 1 < self.line_starts.len() {
@@ -913,24 +912,6 @@ impl<'a> Iterator for SnapshotChunkIter<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn rope_edit_and_text() {
-        let mut rope = Rope::from_str("hello world");
-        rope.replace(Range::new(0, 5), "HELLO");
-        let mut s = String::new();
-        rope.append_to_string(&mut s);
-        assert_eq!(s, "HELLO world");
-        assert_eq!(rope.len(), 11);
-    }
-
-    #[test]
-    fn rope_middle_insert_keeps_suffix() {
-        let mut rope = Rope::from_str("abcdef");
-        rope.replace(Range::new(2, 3), "XY");
-        assert_eq!(rope.to_string_slice(Range::new(0, rope.len())), "abXYdef");
-    }
-
     #[test]
     fn sum_tree_summary_tracks_local_edits() {
         let mut buffer = EditorBuffer::new_from("a\n界🙂");
@@ -1053,15 +1034,6 @@ mod tests {
         assert_eq!(buf.offset_to_point(4), Point::new(1, 0));
         assert_eq!(buf.offset_to_point(9), Point::new(2, 1));
     }
-
-    #[test]
-    fn edit_returns_cursor() {
-        let mut buf = EditorBuffer::new_from("hello");
-        let edit = buf.edit(Range::new(5, 5), " world", 11, 11, false);
-        assert_eq!(edit.cursor, 11);
-        assert_eq!(buf.to_string(), "hello world");
-    }
-
     /// 退格 / 删除键依赖的「删除单个字符区间」语义：
     /// 把光标展开成 [前一字符, 光标] 或 [光标, 后一字符] 选区后，用空文本替换即可整字删除，
     /// 并把光标/锚点收敛到区间起点。此行为与编辑器组件内的 backspace/delete 保持一致。

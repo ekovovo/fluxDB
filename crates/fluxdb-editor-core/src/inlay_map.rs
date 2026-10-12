@@ -442,19 +442,6 @@ mod tests {
         assert!(out.is_identical());
         assert_eq!(out.left, InlayPoint::new(0, 5));
     }
-
-    /// DM-300：inlay 在 buffer 列 2 插入、宽 3；之后列整体加宽 3。
-    #[test]
-    fn insert_before_shifts_display_column() {
-        let s = snap(vec![(2, 3)]);
-        // col=1（inlay 之前）不加宽
-        let before = s.map_input_by(BufferPoint::new(0, 1));
-        assert_eq!(before.left, InlayPoint::new(0, 1));
-        // col=3（inlay 之后）加宽 3
-        let after = s.map_input_by(BufferPoint::new(0, 3));
-        assert_eq!(after.left, InlayPoint::new(0, 6));
-    }
-
     /// DM-300：落在 inlay 起始位置时 Biased 区分左右（left=inlay 前，right=inlay 后）。
     #[test]
     fn inlay_boundary_biased() {

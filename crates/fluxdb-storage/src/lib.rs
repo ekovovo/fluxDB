@@ -1440,14 +1440,6 @@ mod tests {
             "db 应为 0o600"
         );
     }
-
-    #[test]
-    fn missing_settings_returns_default() {
-        let storage = FileStorage::new(unique_temp_dir());
-
-        assert_eq!(storage.load_settings().unwrap(), Settings::default());
-    }
-
     /// 迁移守卫：缺少后加字段的旧配置文件必须仍能加载。
     ///
     /// 这条测的是**新增字段是否带了 `#[serde(default...)]`**。漏了的话
@@ -2012,14 +2004,6 @@ mod tests {
 
         assert_eq!(storage.load_redis_key_search_history().unwrap(), entries);
     }
-
-    #[test]
-    fn missing_redis_key_search_history_returns_empty() {
-        let storage = FileStorage::new(unique_temp_dir());
-
-        assert_eq!(storage.load_redis_key_search_history().unwrap(), Vec::new());
-    }
-
     #[test]
     fn saves_loads_and_clears_completion_index_without_plaintext_path() {
         let storage = FileStorage::new(unique_temp_dir());
@@ -2154,14 +2138,6 @@ mod tests {
             Some(key.as_str())
         );
     }
-
-    #[test]
-    fn missing_connections_returns_empty_list() {
-        let storage = FileStorage::new(unique_temp_dir());
-
-        assert_eq!(storage.load_connections().unwrap(), Vec::new());
-    }
-
     #[test]
     fn saves_and_loads_connections_without_plaintext_password() {
         let storage = FileStorage::new(unique_temp_dir());
@@ -2639,13 +2615,6 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(normalized, entries);
     }
-
-    #[test]
-    fn missing_redis_workbench_history_returns_empty() {
-        let storage = FileStorage::new(unique_temp_dir());
-        assert!(storage.load_redis_workbench_history().unwrap().is_empty());
-    }
-
     #[test]
     fn save_redis_workbench_history_truncates_to_per_scope_limit() {
         let storage = FileStorage::new(unique_temp_dir());

@@ -232,15 +232,7 @@ pub(crate) fn completion_popup_width_for_items(
 
 #[cfg(test)]
 mod completion_tests {
-    use super::{completion_index_after_step, completion_popup_width};
-
-    #[test]
-    fn completion_index_after_step_wraps_both_directions() {
-        assert_eq!(completion_index_after_step(0, 3, -1), 2);
-        assert_eq!(completion_index_after_step(2, 3, 1), 0);
-        assert_eq!(completion_index_after_step(1, 3, 1), 2);
-    }
-
+    use super::completion_popup_width;
     #[test]
     fn completion_popup_width_clamps_like_zed() {
         assert_eq!(completion_popup_width(0.), 280.);

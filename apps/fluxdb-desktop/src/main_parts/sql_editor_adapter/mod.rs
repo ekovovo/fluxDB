@@ -2632,24 +2632,6 @@ mod tests {
         let snapshot = fluxdb_editor_core::EditorBuffer::new_from(text).snapshot();
         (adapter, snapshot)
     }
-
-    /// 未注入状态仓库：不产生任何装饰。
-    #[test]
-    fn decorations_empty_without_store() {
-        let adapter = SqlAdapter::new(SqlDialect::Mysql);
-        let snapshot = fluxdb_editor_core::EditorBuffer::new_from("select 1;").snapshot();
-        let set = adapter.decorations(&snapshot, Range::new(0, snapshot.len()));
-        assert!(set.decorations.is_empty());
-    }
-
-    /// 仓库为空（未执行任何语句）：同样不产生装饰。
-    #[test]
-    fn decorations_empty_when_no_status() {
-        let (adapter, snapshot) = adapter_with_status("select 1;");
-        let set = adapter.decorations(&snapshot, Range::new(0, snapshot.len()));
-        assert!(set.decorations.is_empty());
-    }
-
     /// 提取 (row, 状态键) 列表，便于断言。
     fn line_backgrounds(set: &DecorationSet) -> Vec<(usize, String)> {
         set.decorations

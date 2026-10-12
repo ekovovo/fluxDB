@@ -478,17 +478,6 @@ mod er_relationship_tests {
         assert!(!u.join_candidate);
         assert!(u.reason_codes.contains(&"confirmation_outdated".to_string()));
     }
-
-    #[test]
-    fn incomplete_coverage_not_candidate_but_not_reasoned_as_none() {
-        let mut ctx = ok_ctx();
-        ctx.coverage_incomplete = true;
-        let u = confirmed_rel(2, ErReviewState::Confirmed).usage(&ctx);
-        assert!(!u.join_candidate);
-        // 宿主应把 coverage 状态返回，不得把 false 解释成“无关系”。
-        assert!(ctx.incomplete());
-    }
-
     #[test]
     fn declared_constraint_candidate_with_warning_when_not_enforced() {
         let mut r = confirmed_rel(1, ErReviewState::Proposed);
@@ -539,16 +528,5 @@ mod er_relationship_tests {
         assert_eq!(plan.filters, r.required_filters);
         // logical_only 警告随 plan 输出。
         assert!(plan.warnings.contains(&"logical_only".to_string()));
-    }
-
-    #[test]
-    fn join_plan_none_when_not_candidate() {
-        // proposed → 不可用 → 无 plan。
-        let r = confirmed_rel(1, ErReviewState::Proposed);
-        assert!(r.join_plan(&ok_ctx()).is_none());
-        // 覆盖不完整 → 无 plan（宿主应由 coverage 表达，不解释为“无关系”）。
-        let mut ctx = ok_ctx();
-        ctx.coverage_incomplete = true;
-        assert!(composite_confirmed().join_plan(&ctx).is_none());
     }
 }

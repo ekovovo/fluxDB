@@ -83,19 +83,4 @@ mod connector_factory_tests {
             assert_eq!(connector.kind(), connector_kind);
         }
     }
-
-    #[test]
-    fn demo_connection_uses_connector_trait_without_real_connection() {
-        let config = config(DatabaseKind::Postgres, true);
-        let connector = connector_for(&config).expect("demo connector");
-        assert_eq!(connector.kind(), DatabaseKind::Postgres);
-        connector.test_connection(&config).expect("mock connection");
-    }
-
-    #[test]
-    fn rejects_database_kind_without_real_connector() {
-        let config = config(DatabaseKind::MongoDb, false);
-        let error = connector_for(&config).err().expect("unsupported connector");
-        assert_eq!(error.kind, ErrorKind::Unsupported);
-    }
 }

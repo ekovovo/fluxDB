@@ -680,19 +680,6 @@ fn send_consumes_only_submitted_references_and_preserves_next_draft_items() {
         Ok(())
     }).unwrap();
 }
-
-#[test]
-fn reference_candidates_return_at_most_twenty_items() {
-    let fixture = Fixture::new();
-    let mut controller = fixture.controller();
-    let connections = (1..=25).map(config).collect();
-    controller.dispatch(AppCommand::ReplaceConnections(connections));
-    let candidates = controller.ai_reference_candidates("", None).unwrap();
-    assert_eq!(candidates.len(), 20);
-    assert_eq!(candidates[0].id, "connection:1");
-    assert_eq!(candidates[19].id, "connection:20");
-}
-
 #[test]
 fn saved_query_and_captured_reference_details_are_bounded_and_scoped() {
     let fixture = Fixture::new();

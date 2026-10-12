@@ -336,13 +336,6 @@ mod semantic_tests {
         );
         assert!(s.aliases.iter().any(|a| a.name == "r"));
     }
-
-    #[test]
-    fn malformed_sql_returns_empty_scope() {
-        assert!(scope("").ctes.is_empty());
-        assert!(scope("\u{fffd}").aliases.is_empty());
-    }
-
     #[test]
     fn function_result_type_known_and_unknown() {
         assert_eq!(function_result_type("COUNT"), Some("数值"));

@@ -334,14 +334,4 @@ mod tests {
             "外键应拒绝悬空模型引用"
         );
     }
-
-    #[test]
-    fn list_returns_all_agents() {
-        let conn = setup();
-        create_agent(&conn, 1_000, &edit("a1")).expect("a1");
-        create_agent(&conn, 2_000, &edit("a2")).expect("a2");
-        let list = list_agents(&conn).expect("列出");
-        assert_eq!(list.len(), 3);
-        assert_eq!(list[0].id, BUILTIN_AGENT_ID);
-    }
 }

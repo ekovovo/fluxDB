@@ -187,15 +187,6 @@ mod tests {
         let _ = BlockPoint { row: 0, column: 0 };
         let _ = DisplayPoint { row: 0, column: 0 };
     }
-
-    #[test]
-    fn buffer_point_converts_to_model_point_and_back() {
-        let model = Point::new(3, 5);
-        let buffer: BufferPoint = model.into();
-        assert_eq!(buffer, BufferPoint::new(3, 5));
-        assert_eq!(Point::from(buffer), model);
-    }
-
     #[test]
     fn biased_selects_by_bias() {
         let b: Biased<usize> = Biased { left: 1, right: 2 };

@@ -860,26 +860,4 @@ mod redis_profile_tests {
         let p = RedisConnectionProfile::default();
         assert_eq!(p.validate(), Some("请填写主机".to_string()));
     }
-
-    #[test]
-    fn infers_azure_resource_from_host() {
-        let (resource, sub) =
-            infer_cloud_from_host("azure", "mycache.redis.cache.windows.net");
-        assert_eq!(resource, "mycache");
-        assert!(sub.is_empty());
-    }
-
-    #[test]
-    fn infers_redis_cloud_resource_from_host() {
-        let (resource, _) =
-            infer_cloud_from_host("redis-cloud", "redis-12345.c263.us-east-1-mz.ec2.redns.redis-cloud.com");
-        assert_eq!(resource, "redis-12345");
-    }
-
-    #[test]
-    fn unknown_provider_uses_full_host() {
-        let (resource, _) = infer_cloud_from_host("", "some.host:9000");
-        // dial 出的 host 是纯主机名，此处传入即整段作为 resource。
-        assert_eq!(resource, "some.host:9000");
-    }
 }

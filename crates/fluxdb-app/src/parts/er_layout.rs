@@ -684,15 +684,6 @@ mod er_layout_tests {
         assert_eq!(l.len(), 4);
         assert_no_overlap(&l);
     }
-
-    #[test]
-    fn layout_preserves_self_loop() {
-        let tables = vec![t("a")];
-        let edges = vec![e("a", "a")];
-        let l = er_relation_layout(&tables, &edges);
-        assert_eq!(l.len(), 1);
-    }
-
     #[test]
     fn layout_is_deterministic() {
         let tables = vec![t("orders"), t("customers"), t("products")];

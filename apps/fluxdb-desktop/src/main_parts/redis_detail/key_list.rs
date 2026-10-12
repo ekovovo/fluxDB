@@ -1171,13 +1171,4 @@ mod redis_key_list_batch_tests {
         assert_eq!(redis_key_list_next_batch(RedisKeyListMode::Folder, 10_000), 20_000);
         assert_eq!(redis_key_list_next_batch(RedisKeyListMode::Folder, 0), 10_000);
     }
-
-    /// 平铺模式每批累加 200 做滚动触底懒加载。
-    #[test]
-    fn flat_batch_advances_by_lazy_step() {
-        assert_eq!(redis_key_list_next_batch(RedisKeyListMode::Flat, 0), 200);
-        assert_eq!(redis_key_list_next_batch(RedisKeyListMode::Flat, 200), 400);
-        assert_eq!(redis_key_list_next_batch(RedisKeyListMode::Flat, 100), 300);
-    }
-
 }

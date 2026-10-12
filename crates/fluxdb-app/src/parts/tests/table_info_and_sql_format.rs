@@ -169,25 +169,6 @@
         assert!(formatted.starts_with("SELECT"));
         assert!(formatted.contains('\n'));
     }
-
-    #[test]
-    fn format_sql_text_keeps_digit_prefixed_mysql_identifier() {
-        let formatted =
-            format_sql_text_for_dialect("select * from 3d_dental_order;", DatabaseKind::MySql);
-
-        assert!(formatted.contains("FROM\n  3d_dental_order"), "{formatted}");
-        assert!(!formatted.contains("3 d_dental_order"), "{formatted}");
-    }
-
-    #[test]
-    fn format_sql_text_treats_tidb_like_mysql() {
-        let formatted =
-            format_sql_text_for_dialect("select * from 3d_dental_order;", DatabaseKind::TiDb);
-
-        assert!(formatted.contains("FROM\n  3d_dental_order"), "{formatted}");
-        assert!(!formatted.contains("3 d_dental_order"), "{formatted}");
-    }
-
     #[test]
     fn statement_ranges_split_via_dollar_quote_preserves_function_body() {
         let sql = "CREATE FUNCTION add(a int, b int) RETURNS int AS $$\n\

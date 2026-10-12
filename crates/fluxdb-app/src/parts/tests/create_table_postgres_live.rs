@@ -3,6 +3,7 @@
 /// 用 `FLUXDB_PG_SMOKE=host:port:user:password:db` 开启真实 PG 冒烟；未配置时跳过。
 /// 断言覆盖：列/联合主键/唯一索引/FK/check/表列注释全部落库，且回读元数据与设计一致。
 #[test]
+#[ignore = "requires FLUXDB_PG_SMOKE"]
 fn postgres_create_table_ddl_rebuilds_equivalent_metadata() {
     let Some(params) = postgres_create_table_smoke_params() else {
         tracing::warn!(target: "fluxdb_app", "未设置 FLUXDB_PG_SMOKE，跳过真实 PG T16 冒烟");
@@ -294,6 +295,7 @@ fn postgres_create_table_smoke_config(
 
 /// T17 验收：PG 设计差异在真实库执行（同一事务），外部 DDL 后拒绝应用过期快照。
 #[test]
+#[ignore = "requires FLUXDB_PG_SMOKE"]
 fn postgres_design_diff_applies_atomically_and_blocks_stale_snapshot() {
     let Some(params) = postgres_create_table_smoke_params() else {
         tracing::warn!(target: "fluxdb_app", "未设置 FLUXDB_PG_SMOKE，跳过真实 PG T17 冒烟");
@@ -536,6 +538,7 @@ fn postgres_design_diff_applies_atomically_and_blocks_stale_snapshot() {
 
 /// T18 验收：PG 复制表后源/目标自增独立，数据可复制，且不复制源序列。
 #[test]
+#[ignore = "requires FLUXDB_PG_SMOKE"]
 fn postgres_copy_table_gets_independent_sequence() {
     let Some(params) = postgres_create_table_smoke_params() else {
         tracing::warn!(target: "fluxdb_app", "未设置 FLUXDB_PG_SMOKE，跳过真实 PG T18 冒烟");
@@ -683,6 +686,7 @@ fn postgres_copy_table_gets_independent_sequence() {
 
 /// 复现：设计器内加索引后直接保存（无外部 DDL 改动），不应误判为「外部变化」。
 #[test]
+#[ignore = "requires FLUXDB_PG_SMOKE"]
 fn postgres_design_save_without_external_change_succeeds() {
     let Some(params) = postgres_create_table_smoke_params() else {
         tracing::warn!(target: "fluxdb_app", "未设置 FLUXDB_PG_SMOKE，跳过复现冒烟");

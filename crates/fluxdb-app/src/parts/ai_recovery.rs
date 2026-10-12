@@ -30,6 +30,20 @@ impl AppController {
                 purged = summary.retained_paths_to_purge.len(),
                 "AI 启动恢复扫描完成（未重放工具）"
             );
+            // 设计 §18.1：启动时统一 reconcile 内置能力（幂等建立 Jev 的 system 绑定）。
+            // 失败只记日志：Jev 是可选优化，不能让启动恢复整体失败。
+            match reconcile_jev_builtins(&conn, ai_chat_now()) {
+                Ok(status) => {
+                    tracing::info!(
+                        status = status.kind.as_str(),
+                        model_profile_id = status.model_profile_id.as_deref().unwrap_or(""),
+                        "内置 Jev 装配完成"
+                    );
+                }
+                Err(error) => {
+                    tracing::warn!(reason = %error.message, "内置 Jev 装配失败，继续按基础策略运行");
+                }
+            }
             Ok(self.state.ai_conversation.clone())
         });
         match result {

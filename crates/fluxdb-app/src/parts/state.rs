@@ -237,6 +237,64 @@ pub struct AiMcpItem {
     pub revision: i64,
 }
 
+/// 内置 Jev 的装配/可用状态（设计 §18 状态表；这是状态显示，不是一排错误 toast）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum JevStatusKind {
+    /// 没有合格决策模型：零请求、零等待。
+    #[default]
+    NotConfigured,
+    /// 内置能力被用户关闭：零请求、零等待。
+    Disabled,
+    /// 已自动装配，运行时可以发建议。
+    Available,
+    /// 多个合格候选且无默认：等用户选，绝不擅自挑贵的。
+    NeedsChoice,
+    /// 已配置但当前不可用（协议不兼容/默认模型失效/熔断中），附脱敏原因。
+    Unavailable,
+}
+
+impl JevStatusKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            JevStatusKind::NotConfigured => "not_configured",
+            JevStatusKind::Disabled => "disabled",
+            JevStatusKind::Available => "available",
+            JevStatusKind::NeedsChoice => "needs_choice",
+            JevStatusKind::Unavailable => "unavailable",
+        }
+    }
+}
+
+/// Jev 状态快照：设置页与运行期共用同一判定，避免 UI 与实际调用不一致。
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct JevStatus {
+    pub kind: JevStatusKind,
+    /// 当前生效的决策模型档案 id（`Available`/`Unavailable` 可能有值）。
+    pub model_profile_id: Option<String>,
+    /// 脱敏原因：不含 URL、响应正文或任何凭据材料。
+    pub detail: Option<String>,
+    /// 熔断截止（毫秒时间戳）；未熔断为 `None`。
+    pub circuit_until_ms: Option<i64>,
+}
+
+impl JevStatus {
+    /// 状态标签文案（插件页与大模型页共用）。
+    pub fn label(&self) -> &'static str {
+        match self.kind {
+            JevStatusKind::NotConfigured => "未配置",
+            JevStatusKind::Disabled => "已禁用",
+            JevStatusKind::Available => "可用",
+            JevStatusKind::NeedsChoice => "待选择模型",
+            JevStatusKind::Unavailable => "暂不可用",
+        }
+    }
+
+    /// 是否可以发决策请求；熔断期由调用方另行检查截止时间。
+    pub fn is_usable(&self) -> bool {
+        self.kind == JevStatusKind::Available && self.model_profile_id.is_some()
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct AppState {
     pub ai_conversation: AiConversationView,
@@ -259,6 +317,8 @@ pub struct AppState {
     pub ai_default_model_id: Option<String>,
     /// 默认决策（Jev）模型档案 id。
     pub ai_default_decision_model_id: Option<String>,
+    /// 内置 Jev 的装配/可用状态（设置页插件页与大模型页共用，实时反映熔断）。
+    pub ai_jev_status: JevStatus,
     /// 全局模型数据出站闸门（`privacy_policy_json`）；false 时任何模型都不再发送会话数据。
     pub ai_model_egress_enabled: bool,
     /// 运行设置行 revision（默认模型选择的 CAS 期望值）。
@@ -298,6 +358,7 @@ impl Default for AppState {
             ai_sessions: Vec::new(),
             ai_default_model_id: None,
             ai_default_decision_model_id: None,
+            ai_jev_status: JevStatus::default(),
             ai_model_egress_enabled: true,
             ai_runtime_revision: 0,
             tasks: Vec::new(),

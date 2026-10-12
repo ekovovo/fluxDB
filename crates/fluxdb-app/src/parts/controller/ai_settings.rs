@@ -199,6 +199,9 @@ pub fn refresh_ai_settings(
     state.ai_default_model_id = runtime.default_model_profile_id.clone();
     state.ai_default_decision_model_id = runtime.default_decision_model_profile_id.clone();
     state.ai_runtime_revision = runtime.revision;
+    state.ai_jev_status = with_ai_storage(storage, |conn| {
+        reconcile_jev_builtins(conn, ai_chat_now())
+    })?;
     Ok(())
 }
 
@@ -212,8 +215,10 @@ pub fn set_ai_model_enabled(
     now_ms: i64,
 ) -> fluxdb_core::Result<()> {
     with_ai_storage(storage, |conn| {
-        models::set_model_enabled(conn, now_ms, id, enabled, expected_revision)
+        models::set_model_enabled(conn, now_ms, id, enabled, expected_revision)?;
+        reconcile_jev_builtins(conn, now_ms)
     })?;
+    refresh_jev_status(state, storage)?;
     // 就地更新列表，避免整页重载闪烁。
     if let Some(m) = state.ai_models.iter_mut().find(|m| m.id == id) {
         m.enabled = enabled;
@@ -232,8 +237,10 @@ pub fn set_ai_plugin_enabled(
     now_ms: i64,
 ) -> fluxdb_core::Result<()> {
     with_ai_storage(storage, |conn| {
-        plugins::set_plugin_instance_enabled(conn, now_ms, id, enabled, expected_revision)
+        plugins::set_plugin_instance_enabled(conn, now_ms, id, enabled, expected_revision)?;
+        reconcile_jev_builtins(conn, now_ms)
     })?;
+    refresh_jev_status(state, storage)?;
     if let Some(p) = state.ai_plugin_instances.iter_mut().find(|p| p.id == id) {
         p.enabled = enabled;
         p.revision = expected_revision + 1;
@@ -253,15 +260,18 @@ pub fn set_ai_model_egress_enabled(
     now_ms: i64,
 ) -> fluxdb_core::Result<()> {
     let saved = with_ai_storage(storage, |conn| {
-        ai_settings::save_privacy_policy(
+        let saved = ai_settings::save_privacy_policy(
             conn,
             now_ms,
             ai_settings::PrivacyPolicy {
                 model_egress_enabled: enabled,
             },
             expected_revision,
-        )
+        )?;
+        reconcile_jev_builtins(conn, now_ms)?;
+        Ok(saved)
     })?;
+    refresh_jev_status(state, storage)?;
     state.ai_model_egress_enabled = saved.model_egress_enabled;
     state.ai_runtime_revision = expected_revision + 1;
     Ok(())
@@ -529,7 +539,7 @@ pub fn save_ai_model(
     };
 
     let saved = with_ai_storage(storage, |conn| {
-        fluxdb_storage::ai_platform::models::save_model(
+        let saved = fluxdb_storage::ai_platform::models::save_model(
             conn,
             &cipher,
             "k1",
@@ -537,8 +547,12 @@ pub fn save_ai_model(
             &edit,
             input.expected_revision,
             change,
-        )
+        )?;
+        // 模型保存会改用途/协议/启停/凭据（Keep/Set/Clear），任一变化都要重新装配。
+        reconcile_jev_builtins(conn, now)?;
+        Ok(saved)
     })?;
+    refresh_jev_status(state, storage)?;
     let (id, revision) = (saved.id.clone(), saved.revision);
     // 就地更新列表，避免整页刷新闪烁。
     match state.ai_models.iter_mut().find(|m| m.id == id) {
@@ -619,6 +633,15 @@ fn credential_label(status: fluxdb_storage::ai_platform::model_secret::Credentia
     }
 }
 
+/// 重新读取 Jev 状态（reconcile 后调用，保证 UI 与运行期看到同一判定）。
+pub fn refresh_jev_status(
+    state: &mut AppState,
+    storage: &fluxdb_storage::FileStorage,
+) -> fluxdb_core::Result<()> {
+    state.ai_jev_status = with_ai_storage(storage, |conn| jev_status(conn, ai_chat_now()))?;
+    Ok(())
+}
+
 /// 新建或保存 Agent 配置（提示词直接随 Agent 行 CAS）。
 ///
 /// `input.id` 为 `None` 走新建，`Some` 走带 `expected_revision` 的对象级 CAS。
@@ -656,11 +679,17 @@ pub fn save_ai_agent(
             budget_policy_id: existing.as_ref().and_then(|a| a.budget_policy_id.clone()),
             allowed_tools: input.allowed_tools.clone(),
         };
-        match &input.id {
+        let saved = match &input.id {
             None => agents::create_agent(conn, now_ms, &edit),
             Some(_) => agents::save_agent(conn, now_ms, &edit, input.expected_revision),
-        }
+        };
+        // Agent 新建/编辑是设计 §18.1 列出的 reconcile 触发点。
+        saved.and_then(|agent| {
+            reconcile_jev_builtins(conn, now_ms)?;
+            Ok(agent)
+        })
     })?;
+    refresh_jev_status(state, storage)?;
 
     let id = saved.id.clone();
     let item = AiAgentItem {
@@ -721,8 +750,12 @@ pub fn save_ai_default_models(
             max_active_turns: current.max_active_turns,
             revision: current.revision,
         };
-        ai_settings::save_runtime_settings(conn, now_ms, &next, expected_revision)
+        let saved = ai_settings::save_runtime_settings(conn, now_ms, &next, expected_revision)?;
+        // 默认决策模型变更按设计 §18.1 触发 reconcile：默认优先于"唯一合格候选"。
+        reconcile_jev_builtins(conn, now_ms)?;
+        Ok(saved)
     })?;
+    refresh_jev_status(state, storage)?;
     // 就地回填，避免整页刷新闪烁。
     state.ai_default_model_id = default_model_id;
     state.ai_default_decision_model_id = default_decision_model_id;

@@ -15,6 +15,9 @@ pub const MAX_SUMMARY_BYTES: usize = 8 * 1024;
 /// 模型路由决策事件（主模型/压缩/产物/决策角色各写一条）。
 pub const KIND_MODEL_ROUTE: &str = "model_route";
 
+/// 内置 Jev 建议事件（发出/采用/放弃的脱敏诊断，不含 prompt、候选正文或凭据）。
+pub const KIND_DECISION_ADVICE: &str = "decision_advice";
+
 /// 运行事件公开视图（不含任何凭据或正文）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunEventView {

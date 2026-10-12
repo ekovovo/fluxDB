@@ -954,6 +954,68 @@ mod ai_ui_tests {
         );
     }
 
+    /// T037 数据展示闭环：只保存一个合格决策模型，插件页显示"可用"且开关仍可点
+    /// （Jev 不可 required）；关闭插件后状态立即变为"已禁用"。
+    #[gpui::test]
+    fn ai_ui_jev_status_tracks_auto_assembly_and_toggle(cx: &mut TestAppContext) {
+        let root = isolated_root("jev-status");
+        let storage = FileStorage::new(root.clone());
+        let mut controller = AppController::new();
+        controller.set_ai_storage(storage.clone());
+        let mut decision = sample_model_input("UI 决策模型", "fixture-decide");
+        decision.provider = "decisions".into();
+        decision.api_key = Some(TEST_API_KEY.to_string());
+        match controller.dispatch(AppCommand::SaveAiModel(decision)) {
+            AppEvent::AiModelSaved { .. } => {}
+            other => panic!("保存决策模型应返回 AiModelSaved，实际: {other:?}"),
+        }
+        let _ = controller.dispatch(AppCommand::RefreshAiSettings);
+        let _ = controller.dispatch(AppCommand::OpenSettings);
+        let (view, cx) = open_main(cx, controller, storage, SettingsPanelSection::AiToolsMcp);
+
+        click_selector(cx, "ai-tools-tab:内置插件");
+        let (kind, jev) = view.read_with(cx, |main, _| {
+            let state = main.controller.state();
+            (
+                state.ai_jev_status.kind,
+                state
+                    .ai_plugin_instances
+                    .iter()
+                    .find(|plugin| plugin.id == fluxdb_app::JEV_INSTANCE_ID)
+                    .cloned(),
+            )
+        });
+        assert_eq!(
+            kind,
+            fluxdb_app::JevStatusKind::Available,
+            "只保存启用一个合格决策模型即应自动可用"
+        );
+        let jev = jev.expect("Jev 实例");
+        assert!(jev.enabled, "Jev 默认启用");
+        assert!(!jev.mandatory, "Jev 是可选优化，不可 required");
+        assert!(
+            cx.debug_bounds("ai-jev-status-note").is_some(),
+            "插件页应渲染 Jev 状态说明块"
+        );
+
+        // 真实点击开关：落库后状态必须立刻变成"已禁用"，而不是仍然显示可用。
+        click_selector(cx, "ai-plugin:builtin.jev");
+        let (disabled_kind, disabled) = view.read_with(cx, |main, _| {
+            let state = main.controller.state();
+            (
+                state.ai_jev_status.kind,
+                state
+                    .ai_plugin_instances
+                    .iter()
+                    .find(|plugin| plugin.id == fluxdb_app::JEV_INSTANCE_ID)
+                    .map(|plugin| plugin.enabled),
+            )
+        });
+        assert_eq!(disabled_kind, fluxdb_app::JevStatusKind::Disabled);
+        assert_eq!(disabled, Some(false), "开关应真实落库");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     /// 模型数据出站许可：编辑弹框可关闭单模型出站并真实落库，AppState 同步为禁止。
     #[gpui::test]
     fn ai_ui_model_egress_can_be_turned_off_in_dialog(cx: &mut TestAppContext) {

@@ -716,6 +716,55 @@ fn ai_default_model_section(
                 ),
         )
         .child(div().flex().gap_4().child(left).child(right))
+        .child(ai_decision_state_note(state, colors))
+}
+
+/// 决策模型（Jev）当前状态：状态显示，不是错误条。
+fn ai_decision_state_note(state: &AppState, colors: UiColors) -> impl IntoElement {
+    use fluxdb_app::JevStatusKind as K;
+    let status = &state.ai_jev_status;
+    let (label, detail) = match (status.kind, status.detail.as_deref()) {
+        (K::Available, _) => (
+            "Jev：可用".to_string(),
+            "已自动绑定默认决策模型，决策只是可选优化，不参与 SQL/文件权限判断。".to_string(),
+        ),
+        (K::NeedsChoice, Some(reason)) => ("Jev：待选择模型".to_string(), reason.to_string()),
+        (K::NeedsChoice, None) => (
+            "Jev：待选择模型".to_string(),
+            "存在多个合格决策模型，请在上方选择默认决策模型。".to_string(),
+        ),
+        (K::Unavailable, Some(reason)) => ("Jev：暂不可用".to_string(), reason.to_string()),
+        (K::Unavailable, None) => (
+            "Jev：暂不可用".to_string(),
+            "决策模型当前不可用，已按基础策略运行。".to_string(),
+        ),
+        (K::Disabled, _) => (
+            "Jev：已禁用".to_string(),
+            "已关闭内置 Jev，不会发起任何决策请求。".to_string(),
+        ),
+        (K::NotConfigured, _) => (
+            "Jev：未配置".to_string(),
+            "保存并启用一个 System One 决策模型即可自动可用，无需安装插件。".to_string(),
+        ),
+    };
+    div()
+        .debug_selector(|| "ai-decision-state".to_string())
+        .flex()
+        .flex_col()
+        .gap_1()
+        .child(
+            div()
+                .text_size(px(11.))
+                .font_weight(gpui::FontWeight::MEDIUM)
+                .text_color(colors.text)
+                .child(label),
+        )
+        .child(
+            div()
+                .text_size(px(11.))
+                .text_color(colors.muted)
+                .child(detail),
+        )
 }
 
 /// 默认模型下拉里的一个候选行；选中后派发保存命令。

@@ -27,6 +27,10 @@ pub const SYSTEMONE_QUESTION_ID: &str = "decision";
 pub enum DecisionProtocolError {
     /// HTTP 非 2xx。
     HttpStatus(u16),
+    /// 受控 deadline 内未收到响应（瞬时故障，可重试）。
+    Timeout,
+    /// 连接/DNS/传输层失败（瞬时故障，可重试）。
+    Network,
     /// 响应不是合法 JSON 或结构不符合 System One 协议。
     Malformed(String),
     /// 请求地址无效（非 HTTP/HTTPS、含凭据等）。
@@ -42,6 +46,8 @@ impl DecisionProtocolError {
     pub fn message(&self) -> String {
         match self {
             DecisionProtocolError::HttpStatus(status) => format!("决策模型返回 HTTP {status}"),
+            DecisionProtocolError::Timeout => "决策模型请求超时".to_string(),
+            DecisionProtocolError::Network => "决策模型网络请求失败".to_string(),
             DecisionProtocolError::Malformed(reason) => format!("决策响应不符合协议: {reason}"),
             DecisionProtocolError::BadEndpoint => "决策模型请求地址无效".to_string(),
             DecisionProtocolError::MissingCredential => "决策模型缺少可用凭据".to_string(),
@@ -52,9 +58,25 @@ impl DecisionProtocolError {
     pub fn to_core_error(self) -> fluxdb_core::Error {
         let kind = match self {
             DecisionProtocolError::Cancelled => fluxdb_core::ErrorKind::Cancelled,
-            _ => fluxdb_core::ErrorKind::Internal,
+            // 缺凭据/端点无效是配置问题，重试永远不会变好。
+            DecisionProtocolError::MissingCredential => fluxdb_core::ErrorKind::Authentication,
+            DecisionProtocolError::BadEndpoint => fluxdb_core::ErrorKind::Unsupported,
+            DecisionProtocolError::Timeout => fluxdb_core::ErrorKind::Timeout,
+            DecisionProtocolError::Network => fluxdb_core::ErrorKind::Connection,
+            DecisionProtocolError::HttpStatus(status) if status == 401 || status == 403 => {
+                fluxdb_core::ErrorKind::Authentication
+            }
+            // 协议不合法（模型答错）不重试：再问一次大概率同样错。
+            DecisionProtocolError::HttpStatus(_) | DecisionProtocolError::Malformed(_) => {
+                fluxdb_core::ErrorKind::Internal
+            }
         };
-        fluxdb_core::Error::new(kind, self.message())
+        let message = self.message();
+        // 状态码只用于重试决策与诊断，不进入公开文案。
+        let DecisionProtocolError::HttpStatus(status) = self else {
+            return fluxdb_core::Error::new(kind, message);
+        };
+        fluxdb_core::Error::with_http_status(kind, message, status)
     }
 }
 
@@ -246,13 +268,11 @@ impl DecisionTransport for UreqDecisionTransport {
         };
         let mut response = match request.send(body_json) {
             Ok(response) => response,
-            Err(ureq::Error::Timeout(_)) => {
-                return Err(DecisionProtocolError::Malformed("请求超时".into()));
-            }
+            Err(ureq::Error::Timeout(_)) => return Err(DecisionProtocolError::Timeout),
             Err(ureq::Error::StatusCode(status)) => {
                 return Err(DecisionProtocolError::HttpStatus(status));
             }
-            Err(_) => return Err(DecisionProtocolError::Malformed("网络请求失败".into())),
+            Err(_) => return Err(DecisionProtocolError::Network),
         };
         let status = response.status().as_u16();
         if !(200..300).contains(&status) {
@@ -449,11 +469,15 @@ pub fn decision_provider_from_storage(
 /// 单次决策默认截止时间。
 ///
 /// 设计 §18 原起始值为 800ms；2026-10-12 真实验收（用户本机 Jev 模型
-/// `inception/mercury-decide:free`）实测单次决策约 1978ms，800ms 会稳定超时，
-/// 故按用户决定上调为 3000ms。无自动重试；重试/熔断/「不每轮等待」由上层 T037 承担。
-pub const DECISION_DEADLINE_MS: u64 = 3_000;
+/// `inception/mercury-decide:free`）实测单次决策在 2.4s–7.2s 波动，3000ms 会砍掉
+/// 一半以上的真实请求，故再次上调为 8000ms 覆盖实测上界。
+///
+/// 「不每轮等待」由 T037 的熔断保证（连续 3 次失败熔断 60s），不由压缩 deadline
+/// 保证：deadline 越宽，单次失败的成本越高，但成功率和真实可用性越好，两者需权衡。
+/// 无自动重试。
+pub const DECISION_DEADLINE_MS: u64 = 8_000;
 
-/// 显式 deadline 版本；供验收在不同网络时延下核对协议，生产默认走 800ms。
+/// 显式 deadline 版本；供验收在不同网络时延下核对协议，生产走 [`DECISION_DEADLINE_MS`]。
 pub fn decision_provider_from_storage_with_timeout(
     storage: &fluxdb_storage::FileStorage,
     model_profile_id: &str,

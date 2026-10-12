@@ -340,6 +340,9 @@ fn ai_plugins_panel(state: &AppState, colors: UiColors, cx: &mut Context<Navicat
                 let enabled = p.enabled;
                 let revision = p.revision;
                 let mandatory = p.mandatory;
+                // Jev 有独立的装配/熔断状态，不复用通用启停标签。
+                let is_jev = p.package_key == "fluxdb.decision.jev";
+                let jev_status = state.ai_jev_status.clone();
                 ai_row_container(&p.id, colors)
                     .min_h(px(52.))
                     .py_2()
@@ -385,6 +388,9 @@ fn ai_plugins_panel(state: &AppState, colors: UiColors, cx: &mut Context<Navicat
                                     })
                                     .when(!mandatory, |this| {
                                         this.child(ai_status_pill(enabled, colors))
+                                    })
+                                    .when(is_jev, |this| {
+                                        this.child(ai_jev_status_pill(&jev_status, colors))
                                     }),
                             ),
                     )
@@ -437,6 +443,7 @@ fn ai_plugins_panel(state: &AppState, colors: UiColors, cx: &mut Context<Navicat
             )
             .child(div().children(body)),
         )
+        .child(ai_jev_status_note(&state.ai_jev_status, colors))
         .child(
             div()
                 .px_4()
@@ -452,6 +459,54 @@ fn ai_plugins_panel(state: &AppState, colors: UiColors, cx: &mut Context<Navicat
         )
 }
 
+/// Jev 状态说明块：把"为什么不可用"讲清楚，但不弹错、不阻断基础 Agent。
+fn ai_jev_status_note(status: &fluxdb_app::JevStatus, colors: UiColors) -> impl IntoElement {
+    use fluxdb_app::JevStatusKind as K;
+    let detail = match (status.kind, status.detail.clone(), status.circuit_until_ms) {
+        (K::Available, _, _) => {
+            "Jev 已自动装配：保存并启用一个合格的决策模型即可直接使用，无需安装插件或手工建绑定。"
+                .to_string()
+        }
+        (K::NeedsChoice, Some(reason), _) | (K::Unavailable, Some(reason), _) => reason,
+        (K::NeedsChoice, None, _) => {
+            "存在多个合格决策模型，请在大模型设置中选择默认决策模型后再自动装配。"
+                .to_string()
+        }
+        (K::Unavailable, None, Some(until)) => {
+            format!("Jev 连续失败已熔断，将于 {until} 之后重新尝试。")
+        }
+        (K::Unavailable, None, None) => "Jev 当前不可用，Agent 继续按基础策略运行。".to_string(),
+        (K::NotConfigured, _, _) => {
+            "尚未配置可用的决策模型。Jev 只是可选优化，未配置时主 Agent 照常运行。".to_string()
+        }
+        (K::Disabled, _, _) => {
+            "Jev 已关闭：不发起任何决策请求，主 Agent 与上下文压缩照常工作。".to_string()
+        }
+    };
+    div()
+        .debug_selector(|| "ai-jev-status-note".to_string())
+        .px_4()
+        .py_3()
+        .rounded(px(6.))
+        .bg(colors.border_soft)
+        .flex()
+        .flex_col()
+        .gap_1()
+        .child(
+            div()
+                .text_size(px(11.))
+                .font_weight(gpui::FontWeight::MEDIUM)
+                .text_color(colors.text)
+                .child(format!("Jev：{}", status.label())),
+        )
+        .child(
+            div()
+                .text_size(px(11.))
+                .text_color(colors.muted)
+                .child(detail),
+        )
+}
+
 /// 启停状态标签：可选能力显示真实启停，不显示成"一排错误"。
 fn ai_status_pill(enabled: bool, colors: UiColors) -> impl IntoElement {
     if enabled {
@@ -459,6 +514,28 @@ fn ai_status_pill(enabled: bool, colors: UiColors) -> impl IntoElement {
     } else {
         ai_pill("已关闭", colors.muted, colors)
     }
+}
+
+/// Jev 状态标签（设计 §18 的状态表）：状态而不是错误条。
+///
+/// Jev 是内置可选能力，永远不是内核约束，开关始终可用。
+fn ai_jev_status_pill(status: &fluxdb_app::JevStatus, colors: UiColors) -> impl IntoElement {
+    use fluxdb_app::JevStatusKind as K;
+    let (label, color) = match status.kind {
+        K::Available => ("可用", colors.success),
+        K::NeedsChoice => ("待选择模型", colors.warning),
+        K::Unavailable => ("暂不可用", colors.warning),
+        K::NotConfigured => ("未配置", colors.muted),
+        K::Disabled => ("已禁用", colors.muted),
+    };
+    let text = match (status.detail.clone(), status.circuit_until_ms) {
+        (Some(reason), _) => format!("{label}：{reason}"),
+        (None, Some(until)) => format!("{label}：熔断至 {until}"),
+        (None, None) => label.to_string(),
+    };
+    div().id("ai-jev-status").child(ai_pill(label, color, colors)).tooltip(move |window, cx| {
+        Tooltip::new(text.clone()).build(window, cx)
+    })
 }
 
 /// 「安全审计」页签：只读记录，不能在此执行任何操作。

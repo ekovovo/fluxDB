@@ -259,6 +259,51 @@ pub fn list_role_bindings(
     rows.into_iter().map(parse_binding_row).collect()
 }
 
+/// 删除某 Agent 某角色下**非保留模型**的 system 绑定行。
+///
+/// reconcile 换模型/撤销自动选择时用它清理旧行，避免同一角色同时挂着多个 system
+/// 候选。用户绑定（`binding_source='user'`）永不删除，保留项按模型 ID 精确匹配。
+pub fn prune_system_role_bindings(
+    conn: &Connection,
+    now_ms: i64,
+    agent_id: &str,
+    role: ModelRole,
+    keep_model_profile_id: Option<&str>,
+) -> Result<usize> {
+    let changed = conn
+        .execute(
+            "UPDATE ai_agent_model_bindings
+                SET enabled=0, revision=revision+1, updated_at_ms=?3
+              WHERE agent_id=?1 AND role=?2 AND binding_source='system' AND enabled=1
+                AND COALESCE(?4, '') <> model_profile_id",
+            params![agent_id, role.as_str(), now_ms, keep_model_profile_id],
+        )
+        .map_err(sqlite_error)?;
+    Ok(changed)
+}
+
+/// 重新启用某角色下指向指定模型的 system 绑定（换模型后把旧的自动选择重新启用）。
+///
+/// 只操作 `binding_source='system'` 行；用户绑定与其它模型的历史行不动。
+pub fn enable_system_role_bindings(
+    conn: &Connection,
+    now_ms: i64,
+    agent_id: &str,
+    role: ModelRole,
+    model_profile_id: &str,
+) -> Result<usize> {
+    let changed = conn
+        .execute(
+            "UPDATE ai_agent_model_bindings
+                SET enabled=1, revision=revision+1, updated_at_ms=?4
+              WHERE agent_id=?1 AND role=?2 AND binding_source='system'
+                AND model_profile_id=?3 AND enabled=0",
+            params![agent_id, role.as_str(), model_profile_id, now_ms],
+        )
+        .map_err(sqlite_error)?;
+    Ok(changed)
+}
+
 /// 启停绑定（对象级 CAS）。
 pub fn set_binding_enabled(
     conn: &Connection,

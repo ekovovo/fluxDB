@@ -238,8 +238,8 @@ fn ai_conversation_run_turn(
     };
 
     let AiTurnContext {
-        target_json,
         system_messages,
+        target_json,
         history,
         previous_summary,
         next_generation,
@@ -247,7 +247,18 @@ fn ai_conversation_run_turn(
         max_output_tokens,
         trigger_percent,
         compaction_model,
+        context_references,
     } = context;
+
+    // Jev 是可选的相关性建议：只在拿到建议时调整引用呈现顺序，拿不到就保持原样。
+    // 这条链路不参与任何权限判断，失败也不会让本轮失败。
+    let system_messages = ai_conversation_reference_message(
+        storage,
+        job,
+        system_messages,
+        &context_references,
+        cancel,
+    );
 
     // —— 按模型窗口百分比/输出预留触发，自动压缩（无需用户确认）。 ——
     // 摘要不可用/失败时：仍在窗口内带提示继续；已超预算则可见暂停，不发出超窗请求。

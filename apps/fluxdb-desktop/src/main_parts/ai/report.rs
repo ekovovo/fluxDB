@@ -20,6 +20,16 @@ struct AiReportModalData {
     exporting: bool,
 }
 
+impl AiReportModalData {
+    /// 关闭弹框后的统一清理：Dialog 内置关闭（X / Esc / 点击遮罩）与页脚「关闭」都必须清掉
+    /// `dialog_open`，否则残留标志会让产物卡后续「打开报告」被静默拦下。
+    fn reset(&mut self) {
+        self.dialog_open = false;
+        self.report = None;
+        self.sql_open = false;
+    }
+}
+
 #[derive(Clone)]
 struct AiReportDialogViews {
     view: Entity<NavicatMain>,
@@ -112,11 +122,7 @@ impl NavicatMain {
         });
         // 卡片「导出」直达：弹框先打开，再走同一路径选择与安全写文件链路。
         if intent == AiReportOpenIntent::Export {
-            self.begin_ai_report_export(
-                fluxdb_app::AiReportExportFormat::Markdown,
-                window,
-                cx,
-            );
+            self.begin_ai_report_export(fluxdb_app::AiReportExportFormat::Html, window, cx);
         }
     }
 
@@ -125,9 +131,7 @@ impl NavicatMain {
         let was_open = {
             let mut data = self.ai_report_modal.borrow_mut();
             let was_open = data.dialog_open;
-            data.dialog_open = false;
-            data.report = None;
-            data.sql_open = false;
+            data.reset();
             was_open
         };
         if was_open {
@@ -281,10 +285,10 @@ fn ai_report_build_dialog(
     let colors = views.colors;
     let title = format!("{} · 报告", report.title);
     let view_sql = views.view.clone();
-    let view_export_md = views.view.clone();
     let view_export_html = views.view.clone();
     let view_close = views.view.clone();
     let data_sql = views.data.clone();
+    let data_close = views.data.clone();
     let body = ai_report_body(&report, sql_open, exporting, available_px, colors);
     dialog
         .w(px(960.))
@@ -292,6 +296,9 @@ fn ai_report_build_dialog(
         .close_button(true)
         .overlay_closable(true)
         .keyboard(true)
+        // X / Esc / 点击遮罩由 Dialog 内部关闭，不经过页脚「关闭」按钮；这里必须清掉
+        // `dialog_open`，否则产物卡后续「打开报告」会被静默拦下。
+        .on_close(move |_, _, _| data_close.borrow_mut().reset())
         .title(title)
         .child(body)
         .footer(
@@ -318,32 +325,15 @@ fn ai_report_build_dialog(
                         }),
                 )
                 .child(
-                    Button::new("ai-report-export-md")
-                        .debug_selector(|| "ai-report-export-md".into())
-                        .small()
-                        .outline()
-                        .cursor_pointer()
-                        .disabled(exporting || report.metadata_only())
-                        .child(app_icon(AppIcon::FolderUp, 13., colors.muted))
-                        .child("导出 Markdown")
-                        .on_click(move |_, window, cx| {
-                            let _ = view_export_md.update(cx, |this, cx| {
-                                this.begin_ai_report_export(
-                                    fluxdb_app::AiReportExportFormat::Markdown,
-                                    window,
-                                    cx,
-                                );
-                            });
-                        }),
-                )
-                .child(
                     Button::new("ai-report-export-html")
                         .debug_selector(|| "ai-report-export-html".into())
                         .small()
                         .outline()
                         .cursor_pointer()
                         .disabled(exporting || report.metadata_only())
-                        .child("导出 HTML")
+                        .child(app_icon(AppIcon::FolderUp, 13., colors.muted))
+                        // 导出与弹框同构：自包含 HTML（含图表），不再提供 Markdown。
+                        .child("导出 HTML（含图表）")
                         .on_click(move |_, window, cx| {
                             let _ = view_export_html.update(cx, |this, cx| {
                                 this.begin_ai_report_export(
@@ -493,26 +483,6 @@ fn ai_report_body(
         );
     }
 
-    if let Some(markdown) = report.markdown.as_deref() {
-        column = column.child(
-            div()
-                .text_size(px(11.))
-                .text_color(colors.muted)
-                .child(format!("渲染正文（renderer 生成，{} 字节）", report.byte_count)),
-        );
-        column = column.child(
-            div()
-                .debug_selector(|| "ai-report-markdown".into())
-                .child(ai_chat_markdown_style(
-                    gpui_component::text::TextView::markdown(
-                        "ai-report-markdown",
-                        markdown.to_string(),
-                    ),
-                    colors,
-                )),
-        );
-    }
-
     column = column.child(ai_report_provenance(report, colors));
     if sql_open {
         column = column.child(ai_report_sql_section(report, colors));
@@ -534,25 +504,8 @@ fn ai_report_metrics(
     report: &fluxdb_app::AiReportView,
     colors: UiColors,
 ) -> Option<gpui::AnyElement> {
-    let (y_label, points) = report.spec.blocks.iter().find_map(|block| {
-        let fluxdb_core::ArtifactBlock::Chart {
-            result_ref, x, y, ..
-        } = block
-        else {
-            return None;
-        };
-        let source = ai_report_source(report, result_ref)?;
-        let points = ai_report_points(source, x, y);
-        (!points.is_empty()).then_some((y.clone(), points))
-    })?;
-    let count = points.len();
-    let sum: f64 = points.iter().map(|point| point.y).sum();
-    let max = points.iter().map(|point| point.y).fold(f64::MIN, f64::max);
-    let max_label = points
-        .iter()
-        .max_by(|left, right| left.y.partial_cmp(&right.y).unwrap_or(std::cmp::Ordering::Equal))
-        .map(|point| point.x.to_string())
-        .unwrap_or_default();
+    // 汇总口径由 App 层给出：图表、指标条与导出的 HTML 共用同一份真实点算术。
+    let summary = report.chart_summary()?;
     let number = |value: f64| {
         if (value.fract()).abs() < f64::EPSILON && value.abs() < 1e15 {
             format!("{}", value as i64)
@@ -591,17 +544,17 @@ fn ai_report_metrics(
             .flex()
             .gap_2()
             .child(cell(
-                &format!("{y_label} 合计"),
-                number(sum),
-                format!("{count} 个真实数据点"),
+                &format!("{} 合计", summary.y),
+                number(summary.sum),
+                format!("{} 个真实数据点", summary.count),
             ))
             .child(cell(
-                &format!("{y_label} 峰值"),
-                number(max),
-                if max_label.is_empty() {
+                &format!("{} 峰值", summary.y),
+                number(summary.max),
+                if summary.max_label.is_empty() {
                     "来源真实值".to_string()
                 } else {
-                    format!("最高：{max_label}")
+                    format!("最高：{}", summary.max_label)
                 },
             ))
             .into_any_element(),
@@ -634,32 +587,6 @@ fn ai_report_source<'a>(
 }
 
 /// 从快照行里按列名取出图表点：只读真实数值，null/非数值点直接省略。
-fn ai_report_points(source: &fluxdb_app::AiReportSource, x: &str, y: &str) -> Vec<AiReportPoint> {
-    source
-        .items
-        .iter()
-        .filter_map(|row| {
-            let object = row.as_object()?;
-            let x_value = object.get(x)?;
-            let y_value = object.get(y)?;
-            if x_value.is_null() || !y_value.is_number() {
-                return None;
-            }
-            let label = gpui::SharedString::from(
-                x_value
-                    .as_str()
-                    .map(str::to_owned)
-                    .unwrap_or_else(|| x_value.to_string()),
-            );
-            Some(AiReportPoint {
-                x: label.clone(),
-                display: label,
-                y: y_value.as_f64().unwrap_or_default(),
-            })
-        })
-        .collect()
-}
-
 /// 分类轴文本预算：半角字符计 1 个单位，CJK/全角计 2。绘图区轴标签字号 10px，
 /// 半角约 5.5px/单位、全角约 11px，这里按单位估算宽度并预留相邻标签间距；
 /// 估算偏乐观时只截断真正放不下的长标签（tooltip 始终显示完整值）。
@@ -774,11 +701,23 @@ fn ai_report_chart_block(
         );
     let body = match ai_report_source(report, result_ref) {
         None => ai_report_placeholder("来源不可解析，图表未渲染。", colors),
-        Some(source) => {
-            let mut points = ai_report_points(source, x, y);
-            if points.is_empty() {
-                ai_report_placeholder("来源没有可用数值点，图表未渲染。", colors)
-            } else {
+        Some(_) => {
+            // 真实点由 App 层按声明字段读取：与指标条、导出的 HTML 图表同一口径。
+            match report.chart_series(result_ref, chart, x, y) {
+                None => ai_report_placeholder("来源没有可用数值点，图表未渲染。", colors),
+                Some(series) => {
+                    let mut points: Vec<AiReportPoint> = series
+                        .points
+                        .into_iter()
+                        .map(|point| {
+                            let label = gpui::SharedString::from(point.x);
+                            AiReportPoint {
+                                x: label.clone(),
+                                display: label,
+                                y: point.y,
+                            }
+                        })
+                        .collect();
                 let plot_id =
                     gpui::SharedString::from(format!("ai-report-chart:{result_ref}:{x}:{y}"));
                 let chart_element = match chart {
@@ -822,6 +761,7 @@ fn ai_report_chart_block(
                     .debug_selector(|| "ai-report-chart".into())
                     .child(chart_element)
                     .into_any_element()
+                }
             }
         }
     };

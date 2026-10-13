@@ -413,8 +413,14 @@ impl ArtifactProducer for BuiltinBiProducer {
             );
             sources.push(data);
         }
+        let mut declared_blocks: Vec<fluxdb_core::ArtifactBlock> =
+            Vec::with_capacity(spec.blocks.len());
         for block in &spec.blocks {
             self.validate_block(block, &sources)?;
+            if declared_blocks.contains(block) {
+                return Err(duplicate_block_error());
+            }
+            declared_blocks.push(block.clone());
         }
         let artifact_id = format!("{}-artifact-{}", self.turn_id, uuid::Uuid::new_v4());
         artifact_check_cancel(cancel)?;
@@ -485,10 +491,7 @@ impl ArtifactProducer for BuiltinBiProducer {
         self.validate_block(&block, &sources)?;
         // 已声明过的块不再重复追加：返回受控错误而不是静默成功又渲染一份。
         if spec.blocks.contains(&block) {
-            return Err(ArtifactError::new(
-                "duplicate_block",
-                "该块已在产物中存在，无需重复添加；如需不同维度请显式声明另一个字段或图表类型",
-            ));
+            return Err(duplicate_block_error());
         }
         spec.blocks.push(block);
         spec.validate_shape()
@@ -734,6 +737,14 @@ fn artifact_check_cancel(cancel: &fluxdb_core::CancelFlag) -> Result<(), Artifac
     } else {
         Ok(())
     }
+}
+
+/// 完全相同的块没有信息增量（renderer 只会把同一份数据渲染两遍）：声明与追加走同一拒绝规则。
+fn duplicate_block_error() -> ArtifactError {
+    ArtifactError::new(
+        "duplicate_block",
+        "该块已在产物中存在，无需重复添加；如需不同维度请显式声明另一个字段或图表类型",
+    )
 }
 
 impl BuiltinBiProducer {

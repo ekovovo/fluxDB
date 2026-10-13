@@ -217,7 +217,7 @@ struct ArtifactCreateTool {
 impl ArtifactCreateTool {
     fn new(producer: std::sync::Arc<dyn ArtifactProducer>) -> fluxdb_core::Result<Self> {
         let description = format!(
-            "创建报告/图表/表格产物草稿：sources/blocks.result_ref 是结果句柄；metric.definition_ref 只能用本轮已授权的业务口径 ID，不能用结果句柄或数据库对象名。没有已授权口径时省略 definition_ref。数字从真实结果取，不执行 SQL。可用 renderer：{}。来源必须来自同一任务。",
+            "创建报告/图表/表格产物草稿：sources/blocks.result_ref 是结果句柄；metric.definition_ref 只能用本轮已授权的业务口径 ID，不能用结果句柄或数据库对象名。没有已授权口径时省略 definition_ref。数字从真实结果取，不执行 SQL。可用 renderer：{}。来源必须来自同一任务。同一来源同一组字段的块只需声明一次，完全相同的块会被拒绝。",
             producer.descriptor().renderers.join(", ")
         );
         Ok(Self {

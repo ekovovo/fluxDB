@@ -551,8 +551,9 @@ fn assert_ready(fixture: &Fixture, job: &AiConversationJob, view: &AiConversatio
     ]));
     assert_eq!(artifact.byte_count, content.len() as i64);
     assert_eq!(artifact.content_hash, Some(source_hash(&[&content])));
-    assert_eq!(content.matches("| web | 12 |").count(), 2, "{content}");
-    assert_eq!(content.matches("| store | 34 |").count(), 2, "{content}");
+    // 图表块在 Markdown 里只能降级成数据表，与同源同字段的表格块同数据：正文只输出一次。
+    assert_eq!(content.matches("| web | 12 |").count(), 1, "{content}");
+    assert_eq!(content.matches("| store | 34 |").count(), 1, "{content}");
     assert!(!content.contains(&fixture.dir.to_string_lossy().to_string()));
     let created = fixture.receipt(job, "create", "succeeded");
     assert_eq!(

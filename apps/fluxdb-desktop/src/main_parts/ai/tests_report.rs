@@ -1,7 +1,5 @@
 // T040 会话产物卡 → 报告弹框：真实 SQLite 产物与快照，经生产加载链到弹框控件。
 // 断言用户可见状态 + 业务事实（导出文件实际内容/hash），不直接调用处理函数替代交互。
-use fluxdb_app::AiReportExportFormat;
-
 /// 预置一条真实的 ready 产物（含快照文件）与产物卡，走生产 `load` 投影到面板。
 fn seed_ready_artifact(fixture: &Fixture, session: &str) -> String {
     let agent = fixture.agent(None);
@@ -133,23 +131,13 @@ fn ai_artifact_card_opens_report_dialog_with_real_values(cx: &mut TestAppContext
     assert_eq!(artifact_id, "report-open-turn-artifact-report");
     assert!(cx.debug_bounds("ai-artifact-open:report-open-turn-artifact-report").is_some());
     click_selector(cx, "ai-artifact-open:report-open-turn-artifact-report");
-    // 读快照是后台任务：等待弹框打开。
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
-    loop {
-        cx.run_until_parked();
-        if view.read_with(cx, |main, _| main.ai_report_modal.borrow().dialog_open) {
-            break;
-        }
-        assert!(std::time::Instant::now() < deadline, "报告弹框未打开");
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-    draw(cx);
-    // 弹框内结构齐全：图表、表格、来源、渲染正文。
+    wait_report_dialog(&view, cx);
+    // 弹框内结构齐全：图表、表格、来源；不再铺一份与结构化块重复的 renderer 正文。
     assert!(cx.debug_bounds("ai-report-chart").is_some(), "报告应渲染原生图表");
     assert!(cx.debug_bounds("ai-report-table").is_some(), "报告应渲染表格");
-    assert!(cx.debug_bounds("ai-report-markdown").is_some(), "报告应展示渲染正文");
     assert!(cx.debug_bounds("ai-report-metrics").is_some(), "报告应展示真实指标条");
     assert!(cx.debug_bounds("ai-report-source").is_some(), "报告应展示来源");
+    assert!(cx.debug_bounds("ai-report-markdown").is_none(), "弹框不再渲染 renderer 正文");
     // 来源 SQL 默认折叠，点击后才出现。
     assert!(cx.debug_bounds("ai-report-sql").is_none());
     click_selector(cx, "ai-report-sql-toggle");
@@ -163,6 +151,54 @@ fn ai_artifact_card_opens_report_dialog_with_real_values(cx: &mut TestAppContext
     assert_eq!(view_model.sources[0].items[1]["revenue"], serde_json::json!(34));
 }
 
+/// 读快照是后台任务：有界等待弹框真正打开（等待结果状态，不用固定 sleep）。
+fn wait_report_dialog(view: &Entity<NavicatMain>, cx: &mut VisualTestContext) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+    loop {
+        cx.run_until_parked();
+        if view.read_with(cx, |main, _| main.ai_report_modal.borrow().dialog_open) {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "报告弹框未打开");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    draw(cx);
+}
+
+/// 关闭同样有界等待：断言的是弹框状态，不是执行器空闲。
+fn wait_report_dialog_closed(view: &Entity<NavicatMain>, cx: &mut VisualTestContext) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+    loop {
+        cx.run_until_parked();
+        if !view.read_with(cx, |main, _| main.ai_report_modal.borrow().dialog_open) {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "报告弹框未关闭");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    draw(cx);
+}
+
+/// X / Esc / 遮罩关闭弹框后，产物卡必须能再次打开同一份报告（`dialog_open` 不得残留）。
+#[gpui::test]
+fn ai_report_dialog_reopens_after_dialog_internal_close(cx: &mut TestAppContext) {
+    cx.executor().allow_parking();
+    let fixture = Fixture::new();
+    seed_ready_artifact(&fixture, "report-reopen");
+    let (view, cx) = open_artifact_session(&fixture, cx, "report-reopen");
+    let open_card = "ai-artifact-open:report-reopen-turn-artifact-report";
+    click_selector(cx, open_card);
+    wait_report_dialog(&view, cx);
+    assert!(cx.debug_bounds("ai-report-chart").is_some());
+    // Esc 走 Dialog 内置关闭（Cancel → on_close），不经过页脚「关闭」按钮。
+    cx.simulate_keystrokes("escape");
+    wait_report_dialog_closed(&view, cx);
+    assert!(cx.debug_bounds("ai-report-chart").is_none(), "报告弹框应已关闭");
+    click_selector(cx, open_card);
+    wait_report_dialog(&view, cx);
+    assert!(cx.debug_bounds("ai-report-chart").is_some(), "再次点击应重新打开报告");
+}
+
 #[gpui::test]
 fn ai_artifact_card_export_writes_real_file_with_matching_hash(cx: &mut TestAppContext) {
     cx.executor().allow_parking();
@@ -171,7 +207,7 @@ fn ai_artifact_card_export_writes_real_file_with_matching_hash(cx: &mut TestAppC
     let (view, cx) = open_artifact_session(&fixture, cx, "report-export");
     click_selector(cx, "ai-artifact-export:report-export-turn-artifact-report");
     // 选择导出路径（真实系统对话框被测试平台替换为确定路径）。
-    let export_path = fixture.root.join("exports").join("report.md");
+    let export_path = fixture.root.join("exports").join("report.html");
     std::fs::create_dir_all(export_path.parent().unwrap()).unwrap();
     let target = export_path.clone();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
@@ -191,21 +227,18 @@ fn ai_artifact_card_export_writes_real_file_with_matching_hash(cx: &mut TestAppC
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     let content = std::fs::read_to_string(&export_path).unwrap();
-    // 文件实际内容与业务事实一致，且与成功提示的指纹一致。
+    // 导出内容与业务事实一致：自包含 HTML、带宿主自绘的内联 SVG 图表，无脚本与远程资源。
+    assert!(content.starts_with("<!doctype html>"));
     assert!(content.contains("web") && content.contains("store"));
+    assert!(content.contains("<svg") && content.contains("<rect"));
+    assert!(!content.contains("<script"));
+    assert!(!content.contains("http://") && !content.contains("https://"));
     assert_eq!(fluxdb_app::source_hash(&[content.as_str()]).len(), 16);
-    let fact_hash = view.read_with(cx, |main, _| {
-        main.ai_report_modal.borrow().report.as_ref().map(|report| {
-            fluxdb_app::source_hash(&[report.markdown.as_deref().unwrap_or_default()])
-        })
-    });
-    assert!(fact_hash.is_some());
-    // GUI 只对有正文的 ready 产物启用导出。
+    // GUI 只对渲染成功的 ready 产物启用导出。
     assert!(view.read_with(cx, |main, _| {
         let data = main.ai_report_modal.borrow();
         data.report.as_ref().is_some_and(|report| !report.metadata_only())
     }));
-    let _ = AiReportExportFormat::Markdown;
 }
 
 #[test]

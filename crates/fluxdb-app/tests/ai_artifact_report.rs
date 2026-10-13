@@ -85,7 +85,7 @@ fn report_missing_snapshot_keeps_metadata_and_shows_visible_reason() {
     assert_eq!(report.sources.len(), 1);
     // 元数据仍在：来源句柄/口径仍可解释。
     assert_eq!(report.spec.sources.len(), 1);
-    assert!(render_ai_report_export(&report, AiReportExportFormat::Markdown).is_err());
+    assert!(render_ai_report_export(&report, AiReportExportFormat::Html).is_err());
 }
 
 #[test]
@@ -108,33 +108,36 @@ fn report_tampered_snapshot_is_rejected_not_rendered() {
 }
 
 #[test]
-fn markdown_and_html_exports_escape_and_hash_real_content() {
+fn html_export_carries_real_values_and_inline_chart_without_script_or_remote_resources() {
     let (fixture, _job, artifact_id) = ready_fixture();
     let report = load_ai_report(&fixture.storage, &artifact_id).unwrap();
-    let markdown = render_ai_report_export(&report, AiReportExportFormat::Markdown).unwrap();
-    assert!(markdown.contains("web"));
     let html = render_ai_report_export(&report, AiReportExportFormat::Html).unwrap();
-    // 静态 HTML：无脚本、无远程资源。
+    // 与弹框同构的静态 HTML：真实表格值 + 宿主自绘的内联 SVG 图表；无脚本、无远程资源。
     assert!(html.starts_with("<!doctype html>"));
     assert!(!html.contains("<script"));
     assert!(!html.contains("http://") && !html.contains("https://"));
+    assert!(html.contains("web") && html.contains("34"));
+    assert!(html.contains("<svg") && html.contains("<rect"));
 
-    let out_md = fixture.dir.join("export.md");
-    let fact = write_ai_report_export(&out_md, &markdown).unwrap();
-    assert_eq!(fs::read_to_string(&out_md).unwrap(), markdown);
-    assert_eq!(fact.byte_count, markdown.len() as i64);
-    assert_eq!(
-        fluxdb_app::source_hash(&[markdown.as_str()]),
-        fact.content_hash
-    );
+    let out = fixture.dir.join("export.html");
+    let fact = write_ai_report_export(&out, &html).unwrap();
+    assert_eq!(fs::read_to_string(&out).unwrap(), html);
+    assert_eq!(fact.byte_count, html.len() as i64);
+    assert_eq!(fluxdb_app::source_hash(&[html.as_str()]), fact.content_hash);
 }
 
 #[test]
 fn html_export_escapes_database_text_to_avoid_injection() {
     let (fixture, _job, artifact_id) = ready_fixture();
     let mut report = load_ai_report(&fixture.storage, &artifact_id).unwrap();
-    // 模拟数据库文本/模型说明里的标签：必须按文本转义，不能构造 HTML。
-    report.markdown = Some("<img src=x onerror=alert(1)> & <b>bold</b>".to_string());
+    // 模拟模型说明与数据库文本里的标签：必须按文本转义，不能构造 HTML。
+    let payload = "<img src=x onerror=alert(1)> & <b>bold</b>";
+    report.spec.blocks.push(fluxdb_core::ArtifactBlock::Note {
+        text: payload.to_string(),
+    });
+    report.sources[0]
+        .items
+        .push(json!({"channel": payload, "revenue": 7}));
     let html = render_ai_report_export(&report, AiReportExportFormat::Html).unwrap();
     assert!(!html.contains("<img"));
     assert!(!html.contains("<b>bold"));
@@ -146,7 +149,7 @@ fn html_export_escapes_database_text_to_avoid_injection() {
 fn export_denies_symlink_and_directory_targets_without_writing() {
     let (fixture, _job, artifact_id) = ready_fixture();
     let report = load_ai_report(&fixture.storage, &artifact_id).unwrap();
-    let content = render_ai_report_export(&report, AiReportExportFormat::Markdown).unwrap();
+    let content = render_ai_report_export(&report, AiReportExportFormat::Html).unwrap();
     // 目录拒绝。
     let dir_target = fixture.dir.join("export-dir");
     fs::create_dir(&dir_target).unwrap();
@@ -230,7 +233,7 @@ fn report_of_failed_artifact_explains_metadata_only_without_fake_body() {
     // 元数据仍可解释来源，不伪造正文与下载。
     assert_eq!(report.sources.len(), 1);
     assert_eq!(report.spec.sources.len(), 1);
-    assert!(render_ai_report_export(&report, AiReportExportFormat::Markdown).is_err());
+    assert!(render_ai_report_export(&report, AiReportExportFormat::Html).is_err());
 }
 
 // 显式忽略未用告警

@@ -43,6 +43,7 @@ pub struct AiReportView {
     /// renderer 生成的 Markdown 正文；快照不可读时为 `None`。
     pub markdown: Option<String>,
     pub content_hash: Option<String>,
+    /// 产物快照文件字节数（spec + 来源行 + 正文），不是正文自身长度。
     pub byte_count: i64,
     pub truncated: bool,
     /// 快照缺失/损坏/未就绪时的可见解释；此时只展示元数据，不展示伪造正文。
@@ -54,12 +55,117 @@ impl AiReportView {
     pub fn metadata_only(&self) -> bool {
         self.markdown.is_none()
     }
+
+    /// 取某个图表块的真实点；来源不可解析或没有可用数值点时为 `None`。
+    pub fn chart_series(
+        &self,
+        result_ref: &str,
+        chart: fluxdb_core::ArtifactChart,
+        x: &str,
+        y: &str,
+    ) -> Option<AiReportChartSeries> {
+        let source = self
+            .sources
+            .iter()
+            .find(|source| source.declared_ref.as_deref() == Some(result_ref))?;
+        let points = source.chart_points(x, y);
+        (!points.is_empty()).then(|| AiReportChartSeries {
+            chart,
+            x: x.to_string(),
+            y: y.to_string(),
+            points,
+        })
+    }
+
+    /// 按块顺序取第一个可用图表序列：弹框图表、指标条与导出图共用同一份真实点。
+    pub fn primary_chart_series(&self) -> Option<AiReportChartSeries> {
+        self.spec.blocks.iter().find_map(|block| match block {
+            fluxdb_core::ArtifactBlock::Chart {
+                result_ref,
+                chart,
+                x,
+                y,
+            } => self.chart_series(result_ref, *chart, x, y),
+            _ => None,
+        })
+    }
+
+    /// 图表汇总：只对真实点做求和/取峰值/计点，不推断业务结论；没有可用点时为 `None`。
+    pub fn chart_summary(&self) -> Option<AiReportChartSummary> {
+        let series = self.primary_chart_series()?;
+        let max_point = series
+            .points
+            .iter()
+            .max_by(|left, right| {
+                left.y
+                    .partial_cmp(&right.y)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })?;
+        Some(AiReportChartSummary {
+            y: series.y.clone(),
+            count: series.points.len(),
+            sum: series.points.iter().map(|point| point.y).sum(),
+            max: max_point.y,
+            max_label: max_point.x.clone(),
+        })
+    }
 }
 
-/// 导出格式；PDF/XLSX 本期不实现，不在此列出，避免伪造可用格式。
+/// 图表真实数据点：`x` 为来源快照里的分类标签，`y` 为真实数值。
+#[derive(Clone, Debug, PartialEq)]
+pub struct AiReportChartPoint {
+    pub x: String,
+    pub y: f64,
+}
+
+/// 一个图表块的真实序列：声明字段 + 从快照取出的点。
+#[derive(Clone, Debug, PartialEq)]
+pub struct AiReportChartSeries {
+    pub chart: fluxdb_core::ArtifactChart,
+    pub x: String,
+    pub y: String,
+    pub points: Vec<AiReportChartPoint>,
+}
+
+/// 图表汇总数字：弹框指标条与导出文档共用，避免两处口径漂移。
+#[derive(Clone, Debug, PartialEq)]
+pub struct AiReportChartSummary {
+    pub y: String,
+    pub count: usize,
+    pub sum: f64,
+    pub max: f64,
+    pub max_label: String,
+}
+
+impl AiReportSource {
+    /// 图表点：`x` 与 `y` 都存在、`x` 非 null、`y` 为数值的行；其余行跳过，
+    /// 不补 0 也不推断，保证图上每个点都来自真实快照。
+    pub fn chart_points(&self, x: &str, y: &str) -> Vec<AiReportChartPoint> {
+        self.items
+            .iter()
+            .filter_map(|row| {
+                let object = row.as_object()?;
+                let x_value = object.get(x)?;
+                let y_value = object.get(y)?;
+                if x_value.is_null() || !y_value.is_number() {
+                    return None;
+                }
+                Some(AiReportChartPoint {
+                    x: x_value
+                        .as_str()
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| x_value.to_string()),
+                    y: y_value.as_f64().unwrap_or_default(),
+                })
+            })
+            .collect()
+    }
+}
+
+/// 导出格式：Markdown 不再提供（图表在 Markdown 里只能退化成表，与查看的界面不一致），
+/// 报告导出只给自包含 HTML；JSON 作为数据/审计用途保留。PDF/XLSX 本期不实现。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AiReportExportFormat {
-    Markdown,
     Html,
     Json,
 }
@@ -67,7 +173,6 @@ pub enum AiReportExportFormat {
 impl AiReportExportFormat {
     pub fn as_str(self) -> &'static str {
         match self {
-            AiReportExportFormat::Markdown => "markdown",
             AiReportExportFormat::Html => "html",
             AiReportExportFormat::Json => "json",
         }
@@ -75,7 +180,6 @@ impl AiReportExportFormat {
 
     pub fn extension(self) -> &'static str {
         match self {
-            AiReportExportFormat::Markdown => "md",
             AiReportExportFormat::Html => "html",
             AiReportExportFormat::Json => "json",
         }
@@ -262,15 +366,15 @@ pub fn render_ai_report_export(
     report: &AiReportView,
     format: AiReportExportFormat,
 ) -> fluxdb_core::Result<String> {
-    let markdown = report.markdown.as_deref().ok_or_else(|| {
+    // renderer 没有成功产出正文（卸载、渲染失败、快照不可读）时没有可导出的事实，一律拒绝。
+    report.markdown.as_deref().ok_or_else(|| {
         report_error(
             "export_unavailable",
-            "产物没有可导出的渲染正文（可能渲染失败或快照不可读）",
+            "产物没有可导出的内容（renderer 未渲染成功或快照不可读）",
         )
     })?;
     match format {
-        AiReportExportFormat::Markdown => Ok(markdown.to_string()),
-        AiReportExportFormat::Html => Ok(report_to_html(report, markdown)),
+        AiReportExportFormat::Html => Ok(render_report_html(report)),
         AiReportExportFormat::Json => {
             let sources = report
                 .sources
@@ -303,55 +407,6 @@ pub fn render_ai_report_export(
             .map_err(|error| report_error("export_failed", format!("序列化导出失败: {error}")))
         }
     }
-}
-
-/// HTML 转义：模型/数据库文本一律按文本输出，不能构造标签或脚本。
-fn html_escape(raw: &str) -> String {
-    let mut out = String::with_capacity(raw.len());
-    for ch in raw.chars() {
-        match ch {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&#39;"),
-            _ => out.push(ch),
-        }
-    }
-    out
-}
-
-fn report_to_html(report: &AiReportView, markdown: &str) -> String {
-    let mut body = String::new();
-    body.push_str(&format!("<h1>{}</h1>\n", html_escape(&report.title)));
-    body.push_str(&format!(
-        "<p class=\"meta\">类型 {} · renderer {} · revision {} · {}{}</p>\n",
-        html_escape(&report.kind),
-        html_escape(&report.renderer),
-        report.revision,
-        if report.status == "ready" { "快照 · 不自动刷新" } else { "" },
-        if report.truncated { " · 抽样/截断" } else { "" },
-    ));
-    body.push_str(&format!("<pre class=\"report\">{}</pre>\n", html_escape(markdown)));
-    for source in &report.sources {
-        body.push_str(&format!(
-            "<section class=\"source\"><h2>来源 {}</h2><p>{} 行{}{}</p>",
-            html_escape(source.declared_ref.as_deref().unwrap_or("-")),
-            source.rows,
-            if source.truncated { "（抽样）" } else { "" },
-            match &source.sql {
-                Some(sql) => format!("<pre class=\"sql\">{}</pre>", html_escape(sql)),
-                None => String::new(),
-            },
-        ));
-        body.push_str("</section>\n");
-    }
-    // 静态文档：无脚本、无远程资源、无外链样式，仅内联最小样式。
-    format!(
-        "<!doctype html>\n<html lang=\"zh\">\n<head>\n<meta charset=\"utf-8\">\n<title>{}</title>\n<style>body{{font-family:sans-serif;margin:24px;line-height:1.6;color:#111}}.meta{{color:#555}}.report,.sql{{white-space:pre-wrap;background:#f5f5f5;padding:10px;border-radius:6px}}</style>\n</head>\n<body>\n{}\n<p class=\"disclaimer\">本文件由 fluxDB 静态导出，仅含生成时快照；打开不会重新查询数据库。</p>\n</body>\n</html>\n",
-        html_escape(&report.title),
-        body,
-    )
 }
 
 /// 安全写出导出文件：目标来自用户选择的授权路径；拒绝符号链接与非文件覆盖，临时文件改名。

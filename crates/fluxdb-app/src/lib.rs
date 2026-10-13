@@ -116,6 +116,7 @@ include!("parts/ai_bi_artifacts.rs");
 include!("parts/ai_artifact_snapshot.rs");
 include!("parts/ai_artifact_tools.rs");
 include!("parts/ai_artifact_report.rs");
+include!("parts/ai_report_html.rs");
 include!("parts/ai_results.rs");
 include!("parts/ai_result_retention.rs");
 include!("parts/ai_result_pages.rs");

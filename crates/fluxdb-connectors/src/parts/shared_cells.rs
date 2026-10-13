@@ -228,8 +228,8 @@ where
         return mysql_float_cell_value(value);
     }
     if let Ok(value) = row.try_get::<Option<BigDecimal>, _>(index) {
-        // DECIMAL 保精：不经 f64 往返，保留真实十进制文本（与 PG numeric 一致）。
-        return mysql_optional_display_cell_value(value);
+        // DECIMAL 保精：不经 f64 往返；无小数的精确整数投影为 I64，其余保留十进制文本。
+        return mysql_decimal_cell_value(value);
     }
     if let Ok(value) = row.try_get::<Option<DateTime<Utc>>, _>(index) {
         return mysql_datetime_cell_value(value.map(|value| value.naive_utc()));
@@ -264,6 +264,24 @@ fn mysql_unsigned_cell_value(value: Option<u64>) -> CellValue {
             .unwrap_or_else(|_| CellValue::Text(value.to_string())),
         None => CellValue::Null,
     }
+}
+
+/// MySQL DECIMAL 投影：不经 f64 往返，保精度。
+///
+/// 无小数部分的精确整数（如 `SUM(int)`、`COUNT`、`FLOOR` 等以 DECIMAL 返回的聚合/函数结果）
+/// 在 i64 范围内投影为类型化 `I64`：这些值本就是精确整数，若统一保留文本会被下游当作非数值列，
+/// 无法作为图表/指标来源。含小数部分或超出 i64 范围（含 scale 为负的超大整数）的值仍保留真实
+/// 十进制文本，避免丢精度。
+fn mysql_decimal_cell_value(value: Option<BigDecimal>) -> CellValue {
+    let Some(value) = value else {
+        return CellValue::Null;
+    };
+    if value.fractional_digit_count() <= 0 {
+        if let Ok(integer) = value.to_string().parse::<i64>() {
+            return CellValue::I64(integer);
+        }
+    }
+    CellValue::Text(value.to_string())
 }
 
 /// MySQL 浮点投影：有限值返回类型化 `F64`；非有限值不能作为合法 JSON 数字，

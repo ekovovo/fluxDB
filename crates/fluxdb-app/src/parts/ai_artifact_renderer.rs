@@ -151,6 +151,24 @@ fn markdown_table(headers: &[String], rows: &[Vec<String>]) -> String {
     text
 }
 
+/// 正文去重键：同一来源 + 同一组字段名 + 同样行数视为同一份数据（字段声明顺序不参与判定）。
+///
+/// Markdown 没有原生图表，图表块只能降级成数据表；因此「图表 + 表格同源同字段」
+/// 或重复声明同一图表，会在正文里把同一份数字写多遍。行数参与判定，避免把点数被
+/// 截短或跳空值的图表，与仍保留完整行的表格误判成同一份数据。
+fn markdown_data_key<'a>(
+    result_ref: &str,
+    columns: impl IntoIterator<Item = &'a str>,
+    row_count: usize,
+) -> String {
+    let mut columns: Vec<&str> = columns.into_iter().collect();
+    columns.sort_unstable();
+    format!("{result_ref}\u{1}{row_count}\u{1}{}", columns.join("\u{1}"))
+}
+
+/// 重复数据块的正文提示（宿主文案，不是模型文本）。
+const DUPLICATE_DATA_NOTE: &str = "（本块与上文同源同字段的数据相同，未重复输出。）\n";
+
 /// 报告头部：类型/口径/时区/来源与抽样标记。
 fn render_header(spec: &fluxdb_core::ArtifactSpec, sources: &[ArtifactSourceData]) -> String {
     let mut text = format!(
@@ -226,6 +244,10 @@ impl ArtifactRenderer for BuiltinMarkdownRenderer {
             .filter_map(serde_json::Value::as_object)
             .flat_map(|row| row.values())
             .any(|cell| cell.as_str().is_some_and(|text| text.chars().count() > BI_SNAPSHOT_MAX_CELL_CHARS));
+        // 同一来源同字段的数据在正文里只写一次：重复声明或「图表 + 表格」同源时，
+        // 后续块只保留标题与说明，避免导出文档和报告正文里堆满一模一样的数据表。
+        let mut emitted_data: std::collections::BTreeSet<String> =
+            std::collections::BTreeSet::new();
         for block in &spec.blocks {
             match block {
                 fluxdb_core::ArtifactBlock::Chart {
@@ -256,7 +278,12 @@ impl ArtifactRenderer for BuiltinMarkdownRenderer {
                         },
                         markdown_text(result_ref)
                     ));
-                    text.push_str(&markdown_table(&headers, &rows));
+                    let key = markdown_data_key(result_ref, [x.as_str(), y.as_str()], rows.len());
+                    if emitted_data.insert(key) {
+                        text.push_str(&markdown_table(&headers, &rows));
+                    } else {
+                        text.push_str(DUPLICATE_DATA_NOTE);
+                    }
                     if points.is_empty() {
                         points = block_points;
                     }
@@ -285,7 +312,16 @@ impl ArtifactRenderer for BuiltinMarkdownRenderer {
                         );
                     }
                     text.push_str(&format!("\n## 表格（来源 {}）\n\n", markdown_text(result_ref)));
-                    text.push_str(&markdown_table(columns, &rows));
+                    let key = markdown_data_key(
+                        result_ref,
+                        columns.iter().map(String::as_str),
+                        rows.len(),
+                    );
+                    if emitted_data.insert(key) {
+                        text.push_str(&markdown_table(columns, &rows));
+                    } else {
+                        text.push_str(DUPLICATE_DATA_NOTE);
+                    }
                 }
                 fluxdb_core::ArtifactBlock::Note { text: note } => {
                     text.push_str(&format!("\n## 模型说明（未独立核实）\n\n{}\n", markdown_text(note)));

@@ -303,7 +303,13 @@ fn ai_conversation_run_turn(
     let mut notice_count: usize = 0;
     let mut approval_id: Option<String> = None;
     let mut part_error: Option<String> = None;
-    let mut tool_error: Option<String> = None;
+    // 本轮非成功工具回执轨迹：同工具后续成功即视为模型已自愈，不再在回合末尾重复提示。
+    struct ToolFailure {
+        tool_id: String,
+        code: String,
+        recovered: bool,
+    }
+    let mut tool_failures: Vec<ToolFailure> = Vec::new();
 
     let metered_provider = MeteredProvider {
         provider,
@@ -367,15 +373,22 @@ fn ai_conversation_run_turn(
                 }
                 // 工具真实回执：写 ai_tool_calls/ai_results 事实行 + 结果卡。
                 LoopEvent::ToolFinished { receipt } => {
-                    if !receipt.is_success() {
-                        tool_error = Some(format!(
-                            "工具 {} 未成功：{}",
-                            receipt.tool_id,
-                            receipt
+                    if receipt.is_success() {
+                        for failure in tool_failures
+                            .iter_mut()
+                            .filter(|failure| !failure.recovered && failure.tool_id == receipt.tool_id)
+                        {
+                            failure.recovered = true;
+                        }
+                    } else {
+                        tool_failures.push(ToolFailure {
+                            tool_id: receipt.tool_id.clone(),
+                            code: receipt
                                 .error_code
                                 .clone()
-                                .unwrap_or_else(|| "unknown".into())
-                        ));
+                                .unwrap_or_else(|| "unknown".into()),
+                            recovered: false,
+                        });
                     }
                     let saved =
                         ai_conversation_record_tool_result(
@@ -477,8 +490,25 @@ fn ai_conversation_run_turn(
     };
     let error = persist_error.clone().or(part_error.clone());
     if status == fluxdb_storage::ai_platform::sessions::TurnStatus::Completed {
-        if let Some(message) = tool_error {
-            // 工具失败不等于整个回合失败，但必须让用户看得见。
+        // 失败的工具卡本身已写在发生位置；这里只兜底"没人再成功的那些"，
+        // 且聚合为一条，避免同一失败既在内联卡上又在回答末尾重复出现。
+        let unrecovered: Vec<&ToolFailure> = tool_failures
+            .iter()
+            .filter(|failure| !failure.recovered)
+            .collect();
+        if !unrecovered.is_empty() {
+            let message = match unrecovered.as_slice() {
+                [failure] => format!("工具 {} 未成功：{}", failure.tool_id, failure.code),
+                failures => format!(
+                    "本轮 {} 项工具调用未成功：{}",
+                    failures.len(),
+                    failures
+                        .iter()
+                        .map(|failure| format!("{}({})", failure.tool_id, failure.code))
+                        .collect::<Vec<_>>()
+                        .join("、")
+                ),
+            };
             if let Err(save_error) = ai_conversation_save_part(
                 storage,
                 job,

@@ -339,6 +339,15 @@ fn ai_chat_part(
             _ => ("已完成", colors.success),
         }
     };
+    // 失败的工具行直接带上受控错误码：内联行自己就能说明原因，不必展开或再看末尾汇总。
+    // 状态位限宽截断，错误码再长也不会把整行标题挤出面板。
+    let status_text = match (
+        status,
+        payload.get("error_code").and_then(|value| value.as_str()),
+    ) {
+        ("失败", Some(code)) if !code.is_empty() => format!("{status} · {code}"),
+        _ => status.to_string(),
+    };
     div()
         .when(recovery_status.is_some(), |row| row.debug_selector({
             let id = part.id.clone(); move || format!("ai-recovery:{id}")
@@ -349,7 +358,7 @@ fn ai_chat_part(
         .gap_1()
         .child(
             Button::new(SharedString::from(format!("ai-part:{}", part.id)))
-                .accessibility_label(format!("{label}，{status}"))
+                .accessibility_label(format!("{label}，{status_text}"))
                 .debug_selector(move || format!("ai-part:{id}"))
                 .xsmall()
                 .w_full()
@@ -400,7 +409,7 @@ fn ai_chat_part(
                                     .child(format!("{duration_ms}ms")),
                             )
                         })
-                        .when(recovery_status.is_none() && !(part.kind == "notice" && part.status == "complete"), |row| row.child(div().flex_none().text_size(px(10.)).text_color(status_color).child(status)))
+                        .when(recovery_status.is_none() && !(part.kind == "notice" && part.status == "complete"), |row| row.child(div().flex_none().max_w(px(160.)).truncate().text_size(px(10.)).text_color(status_color).child(status_text)))
                         .child(app_icon(if expanded { AppIcon::ChevronDown } else { AppIcon::ChevronRight }, 10., colors.muted)),
                 )
                 .on_click(cx.listener({

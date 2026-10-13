@@ -449,6 +449,142 @@ pub fn list_sessions(conn: &Connection, limit: i64) -> Result<Vec<SessionView>> 
     ids.into_iter().map(|id| load_session(conn, &id)).collect()
 }
 
+/// 会话列表稳定游标：按 `(updated_at_ms DESC, id ASC)` 组织，指向“上一页最后一行”。
+///
+/// 用键集分页（keyset）而不是 OFFSET：新增/更新会话时不会出现重复或漏读。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionListCursor {
+    pub updated_at_ms: i64,
+    pub id: String,
+}
+
+impl SessionListCursor {
+    pub fn new(updated_at_ms: i64, id: impl Into<String>) -> Self {
+        Self {
+            updated_at_ms,
+            id: id.into(),
+        }
+    }
+}
+
+/// 一页会话概览 + 续读游标；`next_cursor` 为 `None` 表示已经到底。
+#[derive(Clone, Debug, PartialEq)]
+pub struct SessionOverviewPage {
+    pub sessions: Vec<SessionOverview>,
+    pub next_cursor: Option<SessionListCursor>,
+}
+
+/// 会话概览总数（供“共 N 个会话”显示；分页后不能再靠列表长度推断）。
+pub fn count_sessions(conn: &Connection, status: Option<SessionStatus>) -> Result<i64> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM ai_sessions WHERE (?1 IS NULL OR status = ?1)",
+        params![status.map(|status| status.as_str())],
+        |row| row.get(0),
+    )
+    .map_err(sqlite_error)
+}
+
+/// 分页读取会话概览：`status` 过滤归档/活跃，`cursor` 续读上一页。
+pub fn list_session_overviews_page(
+    conn: &Connection,
+    limit: i64,
+    cursor: Option<&SessionListCursor>,
+    status: Option<SessionStatus>,
+) -> Result<SessionOverviewPage> {
+    // 多取一行仅用于判断“还有下一页”，这一行不返回。
+    let limit = limit.clamp(1, 500);
+    let mut stmt = conn
+        .prepare(
+            "SELECT s.id, s.agent_id, s.title, s.status, s.revision,
+                    s.created_at_ms, s.updated_at_ms,
+                    (SELECT COUNT(*) FROM ai_messages m WHERE m.session_id=s.id),
+                    (SELECT COUNT(*) FROM ai_turns t WHERE t.session_id=s.id),
+                    (SELECT t.status FROM ai_turns t WHERE t.session_id=s.id
+                      ORDER BY t.ordinal DESC LIMIT 1),
+                    (SELECT t.target_json FROM ai_turns t WHERE t.session_id=s.id
+                      ORDER BY t.ordinal DESC LIMIT 1)
+               FROM ai_sessions s
+              WHERE (:status IS NULL OR s.status = :status)
+                AND (:cursor_ms IS NULL
+                     OR s.updated_at_ms < :cursor_ms
+                     OR (s.updated_at_ms = :cursor_ms AND s.id > :cursor_id))
+              ORDER BY s.updated_at_ms DESC, s.id
+              LIMIT :limit",
+        )
+        .map_err(sqlite_error)?;
+    let rows = stmt
+        .query_map(
+            rusqlite::named_params! {
+                ":status": status.map(|status| status.as_str()),
+                ":cursor_ms": cursor.map(|cursor| cursor.updated_at_ms),
+                ":cursor_id": cursor.map(|cursor| cursor.id.as_str()),
+                ":limit": limit + 1,
+            },
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, i64>(6)?,
+                    row.get::<_, i64>(7)?,
+                    row.get::<_, i64>(8)?,
+                    row.get::<_, Option<String>>(9)?,
+                    row.get::<_, Option<String>>(10)?,
+                ))
+            },
+        )
+        .map_err(sqlite_error)?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(sqlite_error)?;
+    let has_more = rows.len() as i64 > limit;
+    let mut sessions = Vec::with_capacity(rows.len().min(limit as usize));
+    for (
+        id,
+        agent_id,
+        title,
+        status_raw,
+        revision,
+        created_at_ms,
+        updated_at_ms,
+        message_count,
+        turn_count,
+        last_turn_status,
+        last_target_json,
+    ) in rows.into_iter().take(limit as usize)
+    {
+        sessions.push(SessionOverview {
+            id,
+            agent_id,
+            title,
+            status: SessionStatus::parse(&status_raw)?,
+            revision,
+            created_at_ms,
+            updated_at_ms,
+            message_count,
+            turn_count,
+            last_turn_status: last_turn_status
+                .as_deref()
+                .map(TurnStatus::parse)
+                .transpose()?,
+            last_target_json,
+        });
+    }
+    let next_cursor = if has_more {
+        sessions
+            .last()
+            .map(|session| SessionListCursor::new(session.updated_at_ms, session.id.clone()))
+    } else {
+        None
+    };
+    Ok(SessionOverviewPage {
+        sessions,
+        next_cursor,
+    })
+}
+
 /// 会话历史概览（设置页「会话历史」用）：一次查询取会话 + 派生统计。
 ///
 /// `last_turn_status` 取该会话最后一个 Turn 的状态，用于列表状态列；
@@ -522,6 +658,146 @@ pub fn list_session_overviews(conn: &Connection, limit: i64) -> Result<Vec<Sessi
             },
         )
         .collect()
+}
+
+/// 执行会话依赖清理后，需要由调用方在受控根内删除的文件事实（相对路径）。
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SessionPurgePlan {
+    pub purged_sessions: usize,
+    /// `ai-results` 受控根下的相对路径（spill 结果快照）。
+    pub result_files: Vec<String>,
+    /// `ai-artifacts` 受控根下的相对路径（产物快照）。
+    pub artifact_files: Vec<String>,
+}
+
+/// 删除会话及其全部依赖事实（FK RESTRICT 下按依赖顺序显式清理）。
+///
+/// 契约：
+/// - 只允许**已归档**会话；活跃会话需先归档再删除，避免误删正在进行/待审批任务。
+/// - 任何非终态 Turn（queued/preparing/generating/executing_tools/waiting_approval/
+///   waiting_user/cancel_requested）一律拒绝，符合「活跃任务不被清理」；
+///   不隐式级联删除历史。
+/// - 表格行在单事务内按依赖顺序删除；带落点的结果/产物相对路径随计划返回，
+///   由调用方在事务外在受控根内删除文件（文件删除失败不回滚已提交的数据库删除）。
+/// - 若 `ai_panel_preferences.last_session_id` 指向本会话（FK RESTRICT），在同一事务内置空，
+///   避免删除被外键拒绝；其它偏好字段不变。
+pub fn purge_archived_session(conn: &Connection, session_id: &str) -> Result<SessionPurgePlan> {
+    let session = load_session(conn, session_id)?;
+    if session.status != SessionStatus::Archived {
+        return Err(Error::new(
+            ErrorKind::Internal,
+            "只能删除已归档会话；请先归档再删除",
+        ));
+    }
+    let active_turns: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM ai_turns WHERE session_id=?1 AND status IN (
+                'queued','preparing','generating','executing_tools',
+                'waiting_approval','waiting_user','cancel_requested')",
+            [session_id],
+            |row| row.get(0),
+        )
+        .map_err(sqlite_error)?;
+    if active_turns > 0 {
+        return Err(Error::new(
+            ErrorKind::Internal,
+            "会话仍有进行中或待审批任务，不能删除",
+        ));
+    }
+
+    let tx = conn.unchecked_transaction().map_err(sqlite_error)?;
+    let result_files = collect_purge_paths(
+        &tx,
+        "SELECT relative_path FROM ai_results
+          WHERE session_id=?1 AND retention_kind='retained' AND relative_path IS NOT NULL",
+        session_id,
+    )?;
+    let artifact_files = collect_purge_paths(
+        &tx,
+        "SELECT relative_path FROM ai_artifacts
+          WHERE session_id=?1 AND relative_path IS NOT NULL",
+        session_id,
+    )?;
+
+    // 依赖顺序：先删引用方（审计/审批/片段/来源），再删被引用者（产物/结果/调用/消息/轮次）。
+    let exec = |sql: &str| tx.execute(sql, [session_id]).map_err(sqlite_error);
+    exec(
+        "DELETE FROM ai_tool_audits WHERE tool_call_id IN (
+            SELECT id FROM ai_tool_calls WHERE session_id=?1)",
+    )?;
+    exec(
+        "DELETE FROM ai_approvals WHERE tool_call_id IN (
+            SELECT id FROM ai_tool_calls WHERE session_id=?1)",
+    )?;
+    exec(
+        "DELETE FROM ai_message_parts WHERE artifact_id IN (
+            SELECT id FROM ai_artifacts WHERE session_id=?1)",
+    )?;
+    exec(
+        "DELETE FROM ai_message_parts WHERE result_id IN (
+            SELECT id FROM ai_results WHERE session_id=?1)",
+    )?;
+    exec(
+        "DELETE FROM ai_message_parts WHERE tool_call_id IN (
+            SELECT id FROM ai_tool_calls WHERE session_id=?1)",
+    )?;
+    exec(
+        "DELETE FROM ai_message_parts WHERE message_id IN (
+            SELECT id FROM ai_messages WHERE session_id=?1)",
+    )?;
+    exec(
+        "DELETE FROM ai_artifact_sources WHERE artifact_id IN (
+            SELECT id FROM ai_artifacts WHERE session_id=?1)",
+    )?;
+    exec("DELETE FROM ai_artifacts WHERE session_id=?1")?;
+    exec("DELETE FROM ai_results WHERE session_id=?1")?;
+    exec("DELETE FROM ai_tool_calls WHERE session_id=?1")?;
+    exec(
+        "DELETE FROM ai_run_events WHERE turn_id IN (
+            SELECT id FROM ai_turns WHERE session_id=?1)",
+    )?;
+    exec("DELETE FROM ai_context_checkpoints WHERE session_id=?1")?;
+    exec("DELETE FROM ai_usage_ledger WHERE session_id=?1")?;
+    // UI 状态引用 turn/message：必须在两者删除之前清理。
+    exec("DELETE FROM ai_session_ui_state WHERE session_id=?1")?;
+    exec("DELETE FROM ai_messages WHERE session_id=?1")?;
+    exec("DELETE FROM ai_turns WHERE session_id=?1")?;
+    // 只清本会话作用域引用；`draft` 作用域不动。
+    exec("DELETE FROM ai_context_references WHERE session_id=?1")?;
+    exec("DELETE FROM ai_session_model_selections WHERE session_id=?1")?;
+    // 面板偏好里的“上次查看会话”对会话行是 ON DELETE RESTRICT：指向本会话时先清空，
+    // 否则删除会被外键拒绝。这里只清指针，不动其它偏好与草稿。
+    exec("UPDATE ai_panel_preferences SET last_session_id=NULL WHERE last_session_id=?1")?;
+    let purged = exec("DELETE FROM ai_sessions WHERE id=?1")?;
+    if purged != 1 {
+        return Err(Error::new(ErrorKind::Internal, "删除会话失败"));
+    }
+    tx.commit().map_err(sqlite_error)?;
+    Ok(SessionPurgePlan {
+        purged_sessions: 1,
+        result_files,
+        artifact_files,
+    })
+}
+
+/// 收集受控相对路径；跳过空/绝对/父目录上跳路径，调用方不会拿到越界路径。
+fn collect_purge_paths(conn: &Connection, sql: &str, session_id: &str) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(sql).map_err(sqlite_error)?;
+    let rows = stmt
+        .query_map([session_id], |row| row.get::<_, String>(0))
+        .map_err(sqlite_error)?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(sqlite_error)?;
+    Ok(rows
+        .into_iter()
+        .filter(|path| {
+            let path = std::path::Path::new(path);
+            !path.is_absolute()
+                && !path
+                    .components()
+                    .any(|part| matches!(part, std::path::Component::ParentDir))
+        })
+        .collect())
 }
 
 /// 重命名会话（对象级 CAS）。

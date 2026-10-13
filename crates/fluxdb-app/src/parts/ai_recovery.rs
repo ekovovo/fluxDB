@@ -22,7 +22,11 @@ impl AppController {
                     }
                 }
             }
+            // T050：staged 产物崩溃对账——文件存在且字节/指纹吻合就提升 ready（幂等、不丢已完成文件）；
+            // 文件缺失/指纹不符/length 不符则置 failed 并清空落点，避免留下悬挂引用。
+            reconcile_staged_artifacts(&storage, &summary.staged_artifacts);
             tracing::info!(
+                staged = summary.staged_artifacts.len(),
                 interrupted = summary.interrupted_turns,
                 unknown = summary.unknown_turns,
                 waiting_approval = summary.waiting_approval_turns,
@@ -336,4 +340,82 @@ pub fn ai_tool_target_handle(target_json: &str) -> Option<String> {
         handle.push_str(&format!("/schema:{schema}"));
     }
     Some(handle)
+}
+
+/// staged 产物对账：把「已写文件、尚未提交 ready」的崩溃残留收敛为 ready 或 failed。
+///
+/// 只读文件、核对字节与内容指纹后推进状态；任何异常都收敛为 failed（不伪造 ready），
+/// 并清理落点，保证不会留下“登记了路径但读不到”的悬挂事实。
+fn reconcile_staged_artifacts(
+    storage: &fluxdb_storage::FileStorage,
+    candidates: &[fluxdb_storage::ai_platform::recovery::StagedArtifactCandidate],
+) {
+    if candidates.is_empty() {
+        return;
+    }
+    let root = storage.root_dir().join("ai-artifacts");
+    for candidate in candidates {
+        let path = std::path::Path::new(&candidate.relative_path);
+        let path_ok = path.components().count() == 1
+            && path
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .is_some_and(|stem| uuid::Uuid::parse_str(stem).is_ok())
+            && path.extension() == Some(std::ffi::OsStr::new("json"));
+        let ready = path_ok
+            && std::fs::read_to_string(root.join(path))
+                .ok()
+                .is_some_and(|content| {
+                    content.len() as i64 == candidate.byte_count
+                        && candidate
+                            .content_hash
+                            .as_deref()
+                            .is_some_and(|hash| crate::source_hash(&[content.as_str()]) == hash)
+                });
+        let result = if ready {
+            with_ai_storage(storage, |conn| {
+                fluxdb_storage::ai_platform::artifacts::reconcile_staged_artifact(
+                    conn,
+                    ai_chat_now(),
+                    &candidate.id,
+                    true,
+                )
+            })
+        } else {
+            // 先清落点（此时仍是 staged），再置 failed，避免 failed 后无法再清路径。
+            if path_ok {
+                let _ = std::fs::remove_file(root.join(path));
+            }
+            if let Err(error) = with_ai_storage(storage, |conn| {
+                fluxdb_storage::ai_platform::artifacts::clear_staged_artifact_path(
+                    conn,
+                    ai_chat_now(),
+                    &candidate.id,
+                )
+            }) {
+                tracing::warn!(artifact_id=%candidate.id, %error, "清理 staged 产物落点失败");
+            }
+            with_ai_storage(storage, |conn| {
+                fluxdb_storage::ai_platform::artifacts::reconcile_staged_artifact(
+                    conn,
+                    ai_chat_now(),
+                    &candidate.id,
+                    false,
+                )
+            })
+        };
+        match result {
+            Ok(Some(view)) => tracing::info!(
+                artifact_id = %candidate.id,
+                status = %view.status,
+                "staged 产物对账完成"
+            ),
+            Ok(None) => {}
+            Err(error) => tracing::warn!(
+                artifact_id = %candidate.id,
+                %error,
+                "staged 产物对账失败，保留原状态待下次处理"
+            ),
+        }
+    }
 }

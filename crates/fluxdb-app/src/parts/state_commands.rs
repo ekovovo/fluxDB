@@ -1185,6 +1185,8 @@ pub enum AppCommand {
     SaveSettings(Settings),
     /// 刷新设置页「大模型 / 工具与MCP / 会话历史」列表（模型、Agent、插件实例、MCP Client、会话）。
     RefreshAiSettings,
+    /// 续读设置页会话历史下一页（稳定游标分页；已加载部分不重复）。
+    LoadMoreAiSessions,
     /// 重命名会话（对象级 CAS；只改标题，不动消息与审计事实）。
     RenameAiSession {
         id: String,
@@ -1200,6 +1202,17 @@ pub enum AppCommand {
     RestoreAiSession {
         id: String,
         expected_revision: i64,
+    },
+    /// 删除已归档会话及其全部依赖事实（仅归档会话可删；活跃 Turn 拒绝）。
+    /// 对象级 CAS 校验 revision；成功后清理受控根内的 spill/产物文件。
+    PurgeAiSession {
+        id: String,
+        expected_revision: i64,
+    },
+    /// 后台删除会话结果回桥（在主窗口控制器上移除列表行）。
+    CompleteAiSessionPurge {
+        id: String,
+        result: std::result::Result<(), String>,
     },
     /// 后台重命名结果回桥（在主窗口控制器上合并列表，不覆盖并发变化）。
     CompleteAiSessionRename {

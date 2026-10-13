@@ -42,6 +42,22 @@ impl NavicatMain {
         .detach();
     }
 
+    /// 续读会话历史下一页：后台读库并追加；失败保留错误提示，不伪装成功。
+    ///
+    /// 与工具启停同一模式：只有一次本地 SQLite 短读，不触网也不连用户数据库，
+    /// 因此同步 dispatch 到主控制器，列表立即反映且不产生“克隆控制器状态”丢失。
+    fn load_more_ai_sessions(&mut self, cx: &mut Context<Self>) {
+        let state = self.controller.state();
+        if self.ai_settings_loading || state.ai_sessions_loading_more || !state.ai_sessions_has_more {
+            return;
+        }
+        match self.controller.dispatch(AppCommand::LoadMoreAiSessions) {
+            AppEvent::AiSettingsError(message) => self.ai_settings_error = Some(message),
+            _ => {}
+        }
+        cx.notify();
+    }
+
     /// 切换标准工具的全局启停：关闭会同时从各 Agent 白名单中移除该工具，
     /// 因此要提示用户实际受影响的 Agent，而不是只报"已关闭"。
     ///

@@ -4,6 +4,15 @@ use crate::sqlite::sqlite_error;
 use fluxdb_core::Result;
 use rusqlite::{Connection, TransactionBehavior, params};
 
+/// staged 产物候选：文件核对与状态推进由调用方在事务外完成（这里只给出事实）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StagedArtifactCandidate {
+    pub id: String,
+    pub relative_path: String,
+    pub byte_count: i64,
+    pub content_hash: Option<String>,
+}
+
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct RecoverySummary {
     pub interrupted_turns: usize,
@@ -12,6 +21,8 @@ pub struct RecoverySummary {
     pub expired_results: usize,
     /// 本次过期、需要调用方在受控根下删除的保留结果落点。
     pub retained_paths_to_purge: Vec<String>,
+    /// staged 产物候选：调用方核对落点文件后提升 ready 或置 failed。
+    pub staged_artifacts: Vec<StagedArtifactCandidate>,
 }
 
 /// 无执行回执的 running 不代表失败或取消；读取中断，写/未知工具保守标 unknown。
@@ -219,6 +230,28 @@ pub fn recover_on_startup(conn: &mut Connection, now: i64) -> Result<RecoverySum
             _ => result.interrupted_turns += 1,
         };
     }
+    // T050：崩溃在 finalize 中间会留下 staged 产物 + 已写文件。把「等待核对」的候选收集起来，
+    // 由调用方核对文件字节/指纹（文件系统操作不能在事务里做）后决定提升 ready 还是标 failed。
+    let mut staged_stmt = tx
+        .prepare(
+            "SELECT id, relative_path, byte_count, content_hash FROM ai_artifacts
+              WHERE status='staged' AND relative_path IS NOT NULL
+              ORDER BY updated_at_ms, id",
+        )
+        .map_err(sqlite_error)?;
+    result.staged_artifacts = staged_stmt
+        .query_map([], |row| {
+            Ok(StagedArtifactCandidate {
+                id: row.get(0)?,
+                relative_path: row.get(1)?,
+                byte_count: row.get(2)?,
+                content_hash: row.get(3)?,
+            })
+        })
+        .map_err(sqlite_error)?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(sqlite_error)?;
+    drop(staged_stmt);
     result.expired_results=tx.execute("UPDATE ai_results SET status='expired' WHERE retention_kind='memory' AND status='available'",[]).map_err(sqlite_error)?;
     // 保留结果按自身 TTL 过期；未设 TTL 的长期保留不因重启失效。
     // 过期前先取回落点：文件删除属于文件系统操作，SQLite 事务里做不得，
@@ -227,6 +260,30 @@ pub fn recover_on_startup(conn: &mut Connection, now: i64) -> Result<RecoverySum
     result.expired_results+=tx.execute("UPDATE ai_results SET status='expired' WHERE retention_kind='retained' AND status='available' AND expires_at_ms IS NOT NULL AND expires_at_ms<=?1",params![now]).map_err(sqlite_error)?;
     tx.commit().map_err(sqlite_error)?;
     Ok(result)
+}
+
+/// 只读查询 staged 产物候选（供启动对账与测试复用，不做任何写入）。
+pub fn staged_artifact_candidates(conn: &Connection) -> Result<Vec<StagedArtifactCandidate>> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, relative_path, byte_count, content_hash FROM ai_artifacts
+              WHERE status='staged' AND relative_path IS NOT NULL
+              ORDER BY updated_at_ms, id",
+        )
+        .map_err(sqlite_error)?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(StagedArtifactCandidate {
+                id: row.get(0)?,
+                relative_path: row.get(1)?,
+                byte_count: row.get(2)?,
+                content_hash: row.get(3)?,
+            })
+        })
+        .map_err(sqlite_error)?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(sqlite_error)?;
+    Ok(rows)
 }
 
 /// 本次要过期的保留结果落点（受控根内相对路径）；删除前先核对路径不越界。

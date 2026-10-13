@@ -65,23 +65,41 @@ fn with_ai_storage<T>(
 }
 
 /// 加载设置页需要的全部 AI 列表（模型/Agent/插件/MCP）。
+/// 会话历史每页条数；分页续读由 [`load_more_ai_sessions`] 负责。
+pub const AI_SESSION_PAGE_SIZE: i64 = 100;
+
 pub fn refresh_ai_settings(
     state: &mut AppState,
     storage: &fluxdb_storage::FileStorage,
 ) -> fluxdb_core::Result<()> {
-    let (models, agents_list, plugins_list, mcp_list, sessions_list, runtime, tools_list, privacy) =
-        with_ai_storage(&storage, |conn| {
-            Ok((
-                models::list_models_page(conn, 200, 0)?,
-                agents::list_agents(conn)?,
-                plugins::list_plugin_instances(conn)?,
-                mcp::list_mcp_settings(conn)?,
-                fluxdb_storage::ai_platform::sessions::list_session_overviews(conn, 200)?,
-                ai_settings::load_runtime_settings(conn)?,
-                tool_settings::list_tool_settings(conn)?,
-                ai_settings::load_privacy_policy(conn)?,
-            ))
-        })?;
+    let (
+        models,
+        agents_list,
+        plugins_list,
+        mcp_list,
+        sessions_page,
+        sessions_total,
+        runtime,
+        tools_list,
+        privacy,
+    ) = with_ai_storage(&storage, |conn| {
+        Ok((
+            models::list_models_page(conn, 200, 0)?,
+            agents::list_agents(conn)?,
+            plugins::list_plugin_instances(conn)?,
+            mcp::list_mcp_settings(conn)?,
+            fluxdb_storage::ai_platform::sessions::list_session_overviews_page(
+                conn,
+                AI_SESSION_PAGE_SIZE,
+                None,
+                None,
+            )?,
+            fluxdb_storage::ai_platform::sessions::count_sessions(conn, None)?,
+            ai_settings::load_runtime_settings(conn)?,
+            tool_settings::list_tool_settings(conn)?,
+            ai_settings::load_privacy_policy(conn)?,
+        ))
+    })?;
     state.ai_models = models
         .into_iter()
         .map(|m| {
@@ -181,21 +199,11 @@ pub fn refresh_ai_settings(
             revision: m.revision,
         })
         .collect();
-    state.ai_sessions = sessions_list
-        .into_iter()
-        .map(|s| AiSessionItem {
-            id: s.id,
-            title: s.title,
-            agent_id: s.agent_id,
-            status: s.status.as_str().to_string(),
-            last_turn_status: s.last_turn_status.map(|status| status.as_str().to_string()),
-            last_target_json: s.last_target_json,
-            message_count: s.message_count,
-            turn_count: s.turn_count,
-            updated_at_ms: s.updated_at_ms,
-            revision: s.revision,
-        })
-        .collect();
+    state.ai_sessions = sessions_page.sessions.into_iter().map(ai_session_item).collect();
+    state.ai_sessions_total = sessions_total;
+    state.ai_sessions_cursor = sessions_page.next_cursor;
+    state.ai_sessions_has_more = state.ai_sessions_cursor.is_some();
+    state.ai_sessions_loading_more = false;
     // 默认模型选择与运行设置 revision 一起回填，供「默认主/决策模型」选择器使用。
     state.ai_default_model_id = runtime.default_model_profile_id.clone();
     state.ai_default_decision_model_id = runtime.default_decision_model_profile_id.clone();
@@ -204,6 +212,61 @@ pub fn refresh_ai_settings(
         reconcile_jev_builtins(conn, ai_chat_now())
     })?;
     Ok(())
+}
+
+/// 会话概览 → 设置页列表项（不含正文与凭据）。
+fn ai_session_item(session: fluxdb_storage::ai_platform::sessions::SessionOverview) -> AiSessionItem {
+    AiSessionItem {
+        id: session.id,
+        title: session.title,
+        agent_id: session.agent_id,
+        status: session.status.as_str().to_string(),
+        last_turn_status: session
+            .last_turn_status
+            .map(|status| status.as_str().to_string()),
+        last_target_json: session.last_target_json,
+        message_count: session.message_count,
+        turn_count: session.turn_count,
+        updated_at_ms: session.updated_at_ms,
+        revision: session.revision,
+    }
+}
+
+/// 续读会话历史下一页：按当前游标追加，按 id 去重，不覆盖已有行。
+///
+/// 返回本页新增条数；调用后 `ai_sessions_has_more`/`ai_sessions_cursor` 反映下一页状态。
+pub fn load_more_ai_sessions(
+    state: &mut AppState,
+    storage: &fluxdb_storage::FileStorage,
+) -> fluxdb_core::Result<usize> {
+    if !state.ai_sessions_has_more || state.ai_sessions_loading_more {
+        return Ok(0);
+    }
+    let cursor = state.ai_sessions_cursor.clone();
+    state.ai_sessions_loading_more = true;
+    let loaded = with_ai_storage(storage, |conn| {
+        fluxdb_storage::ai_platform::sessions::list_session_overviews_page(
+            conn,
+            AI_SESSION_PAGE_SIZE,
+            cursor.as_ref(),
+            None,
+        )
+    });
+    state.ai_sessions_loading_more = false;
+    let page = loaded?;
+    let existing: std::collections::HashSet<String> =
+        state.ai_sessions.iter().map(|session| session.id.clone()).collect();
+    let mut appended = 0usize;
+    for session in page.sessions {
+        if existing.contains(&session.id) {
+            continue;
+        }
+        state.ai_sessions.push(ai_session_item(session));
+        appended += 1;
+    }
+    state.ai_sessions_cursor = page.next_cursor;
+    state.ai_sessions_has_more = state.ai_sessions_cursor.is_some();
+    Ok(appended)
 }
 
 /// 切换模型启用状态（对象级 CAS）。

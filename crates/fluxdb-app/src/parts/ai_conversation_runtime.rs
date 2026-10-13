@@ -21,6 +21,24 @@ impl AiRuntimeHandle {
                     if let Err(error) = purge_expired_result_files(storage) {
                         tracing::warn!(%error, "临时结果清理失败，继续准备工具");
                     }
+                    // T050：先清可判定的无引用文件（失败产物快照 + 未登记孤儿），再统计当前占用。
+                    // 清理失败只告警，不阻断本轮任务；`ready` 产物（供报告读取）一律保留。
+                    if let Err(error) = purge_failed_artifact_files(storage) {
+                        tracing::warn!(%error, "失败产物快照清理失败，继续准备工具");
+                    }
+                    if let Err(error) = purge_orphan_controlled_files(storage) {
+                        tracing::warn!(%error, "受控孤儿文件清理失败，继续准备工具");
+                    }
+                    match ai_storage_usage(storage) {
+                        Ok(usage) => tracing::debug!(
+                            artifact_files = usage.artifact_files,
+                            artifact_bytes = usage.artifact_bytes,
+                            result_files = usage.result_files,
+                            result_bytes = usage.result_bytes,
+                            "AI 受控存储用量"
+                        ),
+                        Err(error) => tracing::warn!(%error, "AI 受控存储用量统计失败"),
+                    }
                     let provider =
                         AiConversationProvider::from_storage(storage, &job.model_profile_id)?;
                     let security =

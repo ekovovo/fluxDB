@@ -578,6 +578,121 @@ fn resolve_sources(
     Ok(resolved)
 }
 
+/// 受控存储用量概览：产物快照与 spill 结果记录的条数与字节数。
+///
+/// 只统计**数据库已登记的落点**（`relative_path IS NOT NULL`），是「真实占用」下界；
+/// 磁盘上未登记的孤儿文件不计入，由文件侧清理单独处理。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ArtifactStorageUsage {
+    pub artifact_files: i64,
+    pub artifact_bytes: i64,
+    pub result_files: i64,
+    pub result_bytes: i64,
+}
+
+/// 统计产物/结果落点的条数与字节数（只读）。
+pub fn storage_usage(conn: &Connection) -> Result<ArtifactStorageUsage> {
+    let artifacts: (i64, i64) = conn
+        .query_row(
+            "SELECT COUNT(*), COALESCE(SUM(byte_count),0) FROM ai_artifacts
+              WHERE relative_path IS NOT NULL",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(sqlite_error)?;
+    let results: (i64, i64) = conn
+        .query_row(
+            "SELECT COUNT(*), COALESCE(SUM(byte_count),0) FROM ai_results
+              WHERE retention_kind='retained' AND relative_path IS NOT NULL",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(sqlite_error)?;
+    Ok(ArtifactStorageUsage {
+        artifact_files: artifacts.0,
+        artifact_bytes: artifacts.1,
+        result_files: results.0,
+        result_bytes: results.1,
+    })
+}
+
+/// 无引用的失败产物快照落点：`status='failed'` 且仍登记了 `relative_path`。
+///
+/// `failed` 是终态且不供报告读取，保留落点只会继续占用受控空间，因此可安全清理；
+/// `ready`（供报告快照读取）与其它状态不在此列，避免误删可读产物。
+pub fn failed_artifact_paths(conn: &Connection) -> Result<Vec<(String, String)>> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, relative_path FROM ai_artifacts
+              WHERE status='failed' AND relative_path IS NOT NULL
+              ORDER BY updated_at_ms, id",
+        )
+        .map_err(sqlite_error)?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(sqlite_error)?;
+    rows.collect::<std::result::Result<_, _>>()
+        .map_err(sqlite_error)
+}
+
+/// 清空指定产物行的落点（文件删除后调用；只清落点，保留行与状态供追溯）。
+/// 启动对账：把 staged 产物推进到 ready（文件已核对）或 failed（文件缺失/不匹配）。
+///
+/// 只允许 `staged → ready` / `staged → failed`，用当前 revision 做 CAS；
+/// 调用方必须已核对好文件字节/指纹。终态产物不受影响。
+pub fn reconcile_staged_artifact(
+    conn: &Connection,
+    now_ms: i64,
+    id: &str,
+    ready: bool,
+) -> Result<Option<ArtifactView>> {
+    let current = match load_artifact(conn, id) {
+        Ok(view) => view,
+        Err(_) => return Ok(None),
+    };
+    if current.status != "staged" {
+        // 已被其它路径推进（或已终态）：无需对账，避免覆盖并发结果。
+        return Ok(None);
+    }
+    let status = if ready { "ready" } else { "failed" };
+    let changed = conn
+        .execute(
+            "UPDATE ai_artifacts SET status=?2, revision=revision+1, updated_at_ms=?3
+              WHERE id=?1 AND status='staged' AND revision=?4",
+            params![id, status, now_ms, current.revision],
+        )
+        .map_err(sqlite_error)?;
+    if changed == 0 {
+        return Ok(None);
+    }
+    Ok(Some(load_artifact(conn, id)?))
+}
+
+/// 清空 staged 产物的落点（文件缺失/损坏时调用；保留行与 failed 状态供追溯）。
+pub fn clear_staged_artifact_path(conn: &Connection, now_ms: i64, id: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE ai_artifacts SET relative_path=NULL, byte_count=0, content_hash=NULL,
+            revision=revision+1, updated_at_ms=?2
+          WHERE id=?1 AND status='staged'",
+        params![id, now_ms],
+    )
+    .map_err(sqlite_error)?;
+    Ok(())
+}
+
+pub fn clear_artifact_path(conn: &Connection, now_ms: i64, id: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE ai_artifacts SET relative_path=NULL, byte_count=0, content_hash=NULL,
+            revision=revision+1, updated_at_ms=?2
+          WHERE id=?1 AND relative_path IS NOT NULL",
+        params![id, now_ms],
+    )
+    .map_err(sqlite_error)?;
+    Ok(())
+}
+
 fn insert_sources(conn: &Connection, artifact_id: &str, sources: &[ResolvedSource]) -> Result<()> {
     let mut stmt = conn
         .prepare(

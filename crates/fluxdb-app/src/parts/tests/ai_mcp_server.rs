@@ -316,3 +316,169 @@ fn sqlite_parameter_binding_executes_exact_value() {
     assert_eq!(page.rows.len(), 1, "命中 id=2 恰好一行");
     assert!(matches!(&page.rows[0].values[0], CellValue::Text(text) if text == "20.00"));
 }
+
+#[test]
+fn claude_export_requires_absolute_paths_and_hides_secrets() {
+    let json = claude_mcp_config_json(
+        "fluxdb_local",
+        "/opt/fluxdb/bin/fluxdb-mcp",
+        "p1",
+        Some("/home/u/.fluxdb"),
+    )
+    .expect("导出配置");
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let server = &value["mcpServers"]["fluxdb_local"];
+    assert_eq!(server["command"], serde_json::json!("/opt/fluxdb/bin/fluxdb-mcp"));
+    assert_eq!(server["args"], serde_json::json!(["--server-profile","p1","--config-root","/home/u/.fluxdb"]));
+    // 不含任何秘密字段。
+    assert!(!json.contains("password"));
+    assert!(!json.contains("api_key"));
+    assert!(!json.contains("token"));
+    // 相对路径被拒绝。
+    assert!(claude_mcp_config_json("s", "fluxdb-mcp", "p1", None).is_err());
+}
+
+#[test]
+fn scoped_write_policy_allows_only_authorized_update() {
+    use crate::SqlDialectKind;
+    let policy = ScopedWritePolicy::parse(
+        r#"{"allowed_operations":["update"],"allowed_objects":["orders"],"require_where":true,"max_affected_rows":1,"allow_ddl":false}"#,
+    )
+    .expect("解析写规则");
+    // 命中：授权表 + WHERE。
+    assert!(policy
+        .authorize_sql("UPDATE orders SET amount='1' WHERE id = 1", SqlDialectKind::Sqlite)
+        .is_ok());
+    // 非授权表拒绝。
+    assert!(policy
+        .authorize_sql("UPDATE customers SET x=1 WHERE id=1", SqlDialectKind::Sqlite)
+        .is_err());
+    // 缺 WHERE 拒绝。
+    assert!(policy
+        .authorize_sql("UPDATE orders SET amount='1'", SqlDialectKind::Sqlite)
+        .is_err());
+    // 非 UPDATE（DELETE）拒绝。
+    assert!(policy
+        .authorize_sql("DELETE FROM orders WHERE id=1", SqlDialectKind::Sqlite)
+        .is_err());
+    // 子查询谓词无法证明范围，拒绝。
+    assert!(policy
+        .authorize_sql(
+            "UPDATE orders SET amount='1' WHERE id IN (SELECT id FROM x)",
+            SqlDialectKind::Sqlite
+        )
+        .is_err());
+}
+
+#[test]
+fn scoped_write_policy_rejects_empty_or_ddl() {
+    use crate::SqlDialectKind;
+    let empty = ScopedWritePolicy::parse("{}").expect("默认写规则");
+    assert!(empty
+        .authorize_sql("UPDATE orders SET x=1 WHERE id=1", SqlDialectKind::Sqlite)
+        .is_err(), "空规则不放行任何写");
+    let ddl = ScopedWritePolicy::parse(
+        r#"{"allowed_operations":["update"],"allowed_objects":["orders"],"max_affected_rows":5,"allow_ddl":true}"#,
+    )
+    .expect("解析");
+    assert!(ddl
+        .authorize_sql("UPDATE orders SET x=1 WHERE id=1", SqlDialectKind::Sqlite)
+        .is_err(), "首版即使声明 allow_ddl 也拒绝 DDL 语义");
+}
+
+/// 受限写端到端：写连接 + scoped 规则命中 → 真实执行并影响行数；越界表被拒。
+#[test]
+fn scoped_write_executes_preauthorized_update_against_real_sqlite() {
+    // 与只读 fixture 不同：这里需要可写连接。
+    let dir = std::env::temp_dir().join(format!("fluxdb-mcp-write-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&dir).unwrap();
+    let path = dir.join("w.sqlite");
+    let db = rusqlite::Connection::open(&path).unwrap();
+    db.execute_batch(
+        "CREATE TABLE orders(id INTEGER PRIMARY KEY, amount TEXT);
+         INSERT INTO orders(id, amount) VALUES (1,'10.50'),(2,'20.00');",
+    )
+    .unwrap();
+    let config = ConnectionConfig {
+        id: ConnectionId(7),
+        name: "write".into(),
+        kind: DatabaseKind::Sqlite,
+        endpoint: fluxdb_core::Endpoint::SqliteFile { path: path.clone(), read_only: false },
+        options: Default::default(),
+        redis_profile: None,
+        mysql_profile: None,
+        postgres_profile: None,
+    };
+    let storage = fluxdb_storage::FileStorage::new(&dir);
+    storage.save_connections(&[config.clone()]).unwrap();
+    let (profile, grants) = storage
+        .with_ai_connection(|conn| {
+            let edit = ServerProfileEdit {
+                id: "wp".into(),
+                display_name: "写本地".into(),
+                enabled: true,
+                write_mode: WriteMode::Scoped,
+                allowed_tool_ids: vec!["fluxdb_execute".into()],
+                options_json: "{}".into(),
+                max_inflight: 4,
+                max_request_ms: 30_000,
+                max_request_bytes: 262_144,
+                max_response_bytes: 131_072,
+            };
+            let c = save_server_profile(conn, 1, &edit, None)?;
+            save_server_profile(conn, 2, &edit, Some(c.revision))?;
+            let grant = ResourceGrantEdit {
+                id: "wg1".into(),
+                profile_id: "wp".into(),
+                connection_id: 7,
+                database_name: "main".into(),
+                namespace: "".into(),
+                enabled: true,
+                allow_read: true,
+                allow_write: true,
+                object_policy_json: r#"{"all_objects":true}"#.into(),
+                write_policy_json: r#"{"allowed_operations":["update"],"allowed_objects":["orders"],"require_where":true,"max_affected_rows":1,"allow_ddl":false}"#.into(),
+                max_rows: 200,
+            };
+            save_resource_grant(conn, 3, &grant, GrantResourceKind::Sql, None)?;
+            let grants = fluxdb_storage::ai_platform::mcp_server::list_resource_grants(conn, "wp")?;
+            Ok((save_server_profile(conn, 4, &edit, Some(2))?, grants))
+        })
+        .unwrap();
+    let results = Arc::new(Mutex::new(ResultStore::for_turn(
+        RESULT_STORE_MEMORY_BYTES,
+        "s",
+        "s",
+        None,
+    )));
+    let service =
+        McpExecutionService::new(vec![config], profile, grants, results).unwrap();
+    let cancel = CancelFlag::new();
+    let identity = McpCallIdentity { session_id: "s".into(), request_id: "r".into() };
+
+    // 命中：授权表 + WHERE + update → 真实执行。
+    let ok = service.call(
+        &identity,
+        "fluxdb_execute",
+        r#"{"target":"conn:7/db:main","sql":"UPDATE orders SET amount='99.99' WHERE id = 1"}"#,
+        &cancel,
+    );
+    assert!(ok.ok, "预授权范围内应执行成功: {:?}", ok.error);
+    let check = rusqlite::Connection::open(&path).unwrap();
+    let amount: String = check
+        .query_row("SELECT amount FROM orders WHERE id = 1", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(amount, "99.99", "真实数据库已更新");
+
+    // 越界表：拒绝，数据库不变。
+    let denied = service.call(
+        &identity,
+        "fluxdb_execute",
+        r#"{"target":"conn:7/db:main","sql":"UPDATE customers SET x=1 WHERE id = 1"}"#,
+        &cancel,
+    );
+    assert!(!denied.ok);
+    assert_eq!(denied.error.unwrap().code, "write_object_not_allowed");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

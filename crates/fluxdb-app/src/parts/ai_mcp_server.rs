@@ -514,6 +514,13 @@ pub struct McpExecutionService {
     pub results: Arc<Mutex<ResultStore>>,
     audit: Arc<dyn crate::SecurityAuditHook>,
     host: Option<Arc<dyn McpRequestHost>>,
+    /// 原始授权视图（受限写需要 write_policy_json）。
+    grant_views: Vec<fluxdb_storage::ai_platform::mcp_server::ResourceGrantView>,
+    /// 本次调用的 SQL 文本（由 `call` 在执行前写入；受限写核对用）。
+    ///
+    /// 单次调用内使用；服务实例可被并发调用时应改为按调用传递，当前由协议层
+    /// 一次只处理一个 request（stdio 顺序），故用互斥保护。
+    call_sql: std::sync::Mutex<Option<String>>,
 }
 
 impl McpExecutionService {
@@ -554,6 +561,7 @@ impl McpExecutionService {
                 resource_handle(g, config)
             })
             .collect();
+        let grant_views = grants;
         Ok(Self {
             resolver: Arc::new(resolver),
             grants: McpGrantResolver::new(handles),
@@ -561,6 +569,8 @@ impl McpExecutionService {
             results,
             audit: Arc::new(KernelAuditHook),
             host: None,
+            grant_views,
+            call_sql: std::sync::Mutex::new(None),
         })
     }
 
@@ -698,6 +708,24 @@ impl McpExecutionService {
         };
         // 外部 MCP 调用不绑定内部插件 Hook：安全约束走强制审计（下方），
         // 不做参数补丁，避免插件借外部通道改写执行目标。
+        // 记录本次 SQL 文本，供受限写核对（读工具不涉及）。
+        if let Ok(mut slot) = self.call_sql.lock() {
+            *slot = prepared
+                .as_value()
+                .get("sql")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+        }
+        // 5c) 受限写：scoped 模式下按结构化写规则逐条核对，命中才允许执行；
+        //     desktop_approval/disabled 在上方已拒绝，这里只处理预授权路径。
+        let scoped_write_ok = if spec.risk == fluxdb_core::ToolRisk::Write {
+            match self.scoped_write_check(internal_id, target_of(&prepared)) {
+                Ok(()) => true,
+                Err(error) => return McpCallOutcome::failure(error),
+            }
+        } else {
+            false
+        };
         // 6) 校验 target 是已授权资源（读/写工具都带 target）。
         let target_value = extract_target(&prepared);
         let target_str = target_value.as_str().unwrap_or_default();
@@ -727,19 +755,30 @@ impl McpExecutionService {
                 ruleset_version: "kernel-v1".to_string(),
             },
         );
-        let policy = self.kernel_policy(&target_json);
-        let decision = crate::authorize(&AuthorizeInput {
-            tool_id: spec.id.clone(),
-            tool_version: spec.version,
-            risk: spec.risk,
-            target_json: target_json.clone(),
-            normalized_arguments_json: prepared.to_json_string(),
-            plugin_digest: None,
-            globally_disabled_tools: BTreeSet::new(),
-            agent_allowed_tools: Vec::new(),
-            policy,
-            audit: Some(audit),
-        });
+        let policy = self.kernel_policy(&target_json, scoped_write_ok);
+        // 受限写（scoped）已把"用户对具体资源的预授权"落实到 ScopedWritePolicy：命中即视为
+        // 已获批准（设计 §28.7 scoped 语义），不经内核的逐次审批（当前无审批桥）。强制审计
+        // 仍然生效——审计 Deny 一律拒绝，不得被预授权覆盖。
+        let decision = if spec.risk == fluxdb_core::ToolRisk::Write
+            && scoped_write_ok
+            && audit != AuditOutcome::Deny
+            && policy.write_allowed
+        {
+            PermissionDecision::Allow { plan_hash: hash.clone() }
+        } else {
+            crate::authorize(&AuthorizeInput {
+                tool_id: spec.id.clone(),
+                tool_version: spec.version,
+                risk: spec.risk,
+                target_json: target_json.clone(),
+                normalized_arguments_json: prepared.to_json_string(),
+                plugin_digest: None,
+                globally_disabled_tools: BTreeSet::new(),
+                agent_allowed_tools: Vec::new(),
+                policy,
+                audit: Some(audit),
+            })
+        };
         let audit_fact = |decision: &'static str, reasons: Vec<String>| McpAuditFact {
             tool_id: spec.id.clone(),
             tool_version: spec.version,
@@ -878,17 +917,59 @@ impl McpExecutionService {
         Ok(())
     }
 
-    fn kernel_policy(&self, target_json: &str) -> KernelPolicy {
-        // 写权限只在授权允许写且连接非只读、且 Profile 非 disabled 时开启。
+    fn kernel_policy(&self, target_json: &str, scoped_write_ok: bool) -> KernelPolicy {
+        // 写权限只在授权允许写、连接非只读、Profile 非 disabled，且本轮 scoped 写规则通过时开启。
         let handle = self.grants.handles().iter().find(|h| h.target == target_json);
         let writable = handle.is_some_and(|handle| {
-            !handle.read_only && self.profile.write_mode != fluxdb_storage::ai_platform::mcp_server::WriteMode::Disabled
+            !handle.read_only
+                && self.profile.write_mode
+                    != fluxdb_storage::ai_platform::mcp_server::WriteMode::Disabled
         });
         KernelPolicy {
             read_allowed: true,
-            write_allowed: writable,
+            write_allowed: writable && scoped_write_ok,
             admin_allowed: false,
         }
+    }
+
+    /// scoped 写：从对应资源的写规则构造策略并核对 SQL。
+    fn scoped_write_check(
+        &self,
+        internal_id: &str,
+        target: Option<&str>,
+    ) -> std::result::Result<(), McpCallError> {
+        if internal_id != "db.execute" {
+            // 首版仅放行关系型受限写；Redis 写仍走内核审批（当前无桥 → 拒绝）。
+            return Err(McpCallError::new(
+                "write_not_preauthorized",
+                "该写工具暂无预授权路径，需桌面审批（当前不可用）",
+                false,
+            ));
+        }
+        let target = target.ok_or_else(|| {
+            McpCallError::new("invalid_arguments", "写工具缺少 target", true)
+        })?;
+        let handle = self.grants.resolve(target)?;
+        let grant = self
+            .grant_views
+            .iter()
+            .find(|grant| grant.id == handle.grant_id)
+            .ok_or_else(|| McpCallError::new("STALE_RESOURCE", "授权已失效", false))?;
+        let policy = ScopedWritePolicy::parse(&grant.write_policy_json)?;
+        let sql = self
+            .call_sql
+            .lock()
+            .ok()
+            .and_then(|sql| sql.clone())
+            .unwrap_or_default();
+        let dialect = self
+            .resolver
+            .connection_config(handle.connection_id)
+            .and_then(|config| dialect_for_kind(config.kind))
+            .ok_or_else(|| {
+                McpCallError::new("unsupported_database", "该连接类型不支持 SQL 写工具", false)
+            })?;
+        policy.authorize_sql(&sql, dialect)
     }
 
     /// `operation.status`/`operation.cancel`：需要宿主 request 仓储。
@@ -971,6 +1052,271 @@ fn extract_target(prepared: &crate::ValidatedArguments) -> serde_json::Value {
         .unwrap_or(serde_json::Value::Null)
 }
 
+/// 从已校验参数取 `target` 字符串。
+fn target_of(prepared: &crate::ValidatedArguments) -> Option<&str> {
+    prepared.as_value().get("target").and_then(|v| v.as_str())
+}
+
+/// 连接类型 → SQL 方言。
+fn dialect_for_kind(kind: fluxdb_core::DatabaseKind) -> Option<crate::SqlDialectKind> {
+    match kind {
+        fluxdb_core::DatabaseKind::MySql | fluxdb_core::DatabaseKind::TiDb => {
+            Some(crate::SqlDialectKind::MySql)
+        }
+        fluxdb_core::DatabaseKind::Postgres => Some(crate::SqlDialectKind::Postgres),
+        fluxdb_core::DatabaseKind::Sqlite => Some(crate::SqlDialectKind::Sqlite),
+        _ => None,
+    }
+}
+
 fn tool_error_to_call(error: ToolError) -> McpCallError {
     McpCallError::new(error.code, error.message, error.retryable)
+}
+
+/// 受限写规则（Profile write_mode=scoped 时启用）：把"允许写多少"变成可判定的结构约束。
+///
+/// 只从**结构化授权**（`write_policy_json`）派生；`intent` 文字不构成权限（设计 §28.6.1）。
+/// 无法证明范围时一律拒绝，不做"大概安全"的放行。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScopedWritePolicy {
+    /// 允许的操作：仅 `update`（首版限定，避免 delete/insert 的范围难证）。
+    pub allowed_operations: Vec<String>,
+    /// 允许改写的表（小写比对）；为空表示不放行任何表。
+    pub allowed_objects: Vec<String>,
+    /// 是否强制 WHERE 子句（默认 true）。
+    pub require_where: bool,
+    /// 允许的受影响行数上限。
+    pub max_affected_rows: i64,
+    /// 是否允许 DDL（默认 false，始终拒绝）。
+    pub allow_ddl: bool,
+}
+
+impl ScopedWritePolicy {
+    /// 从授权 JSON 解析；缺字段按最保守默认（必须 WHERE、0 行、禁 DDL）。
+    pub fn parse(raw: &str) -> std::result::Result<Self, McpCallError> {
+        let value: serde_json::Value = serde_json::from_str(raw).map_err(|_| {
+            McpCallError::new("invalid_write_policy", "写规则不是合法 JSON", false)
+        })?;
+        let object = value.as_object().ok_or_else(|| {
+            McpCallError::new("invalid_write_policy", "写规则必须是对象", false)
+        })?;
+        let list = |key: &str| -> Vec<String> {
+            object
+                .get(key)
+                .and_then(serde_json::Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(serde_json::Value::as_str)
+                        .map(|s| s.to_ascii_lowercase())
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let flag = |key: &str, default: bool| {
+            object
+                .get(key)
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(default)
+        };
+        Ok(Self {
+            allowed_operations: list("allowed_operations"),
+            allowed_objects: list("allowed_objects"),
+            require_where: flag("require_where", true),
+            max_affected_rows: object
+                .get("max_affected_rows")
+                .and_then(serde_json::Value::as_i64)
+                .unwrap_or(0),
+            allow_ddl: flag("allow_ddl", false),
+        })
+    }
+
+    /// 判定一条 SQL 是否落在预授权范围内。
+    ///
+    /// 只做**结构判定**（语句种类、对象、是否有 WHERE、谓词结构）；真正的行数复核
+    /// 由连接器读到真实 affected rows 后由调用方核对，不能只靠这里断言。
+    pub fn authorize_sql(
+        &self,
+        sql: &str,
+        dialect: crate::SqlDialectKind,
+    ) -> std::result::Result<(), McpCallError> {
+        use sqlparser::ast::{Statement, TableFactor};
+
+        if self.allow_ddl {
+            return Err(McpCallError::new(
+                "ddl_not_allowed",
+                "MCP 首版不允许 DDL，即使 write_policy 声明 allow_ddl",
+                false,
+            ));
+        }
+        if self.allowed_objects.is_empty() || self.max_affected_rows <= 0 {
+            return Err(McpCallError::new(
+                "write_not_scoped",
+                "写规则未限定对象或行数上限，拒绝执行",
+                false,
+            ));
+        }
+        if !self.allowed_operations.iter().any(|op| op == "update") {
+            return Err(McpCallError::new(
+                "write_operation_not_allowed",
+                "写规则未允许 update",
+                false,
+            ));
+        }
+        let statements =
+            sqlparser::parser::Parser::parse_sql(dialect.parser_dialect().as_ref(), sql).map_err(
+                |_| McpCallError::new("write_unverifiable", "SQL 无法解析，无法核对写范围", false),
+            )?;
+        if statements.len() != 1 {
+            return Err(McpCallError::new(
+                "write_unverifiable",
+                "写工具只接受单条语句",
+                false,
+            ));
+        }
+        let Statement::Update(update) = &statements[0] else {
+            return Err(McpCallError::new(
+                "write_operation_not_allowed",
+                "受限写首版仅允许单表 UPDATE",
+                false,
+            ));
+        };
+        let table = &update.table;
+        let selection = update.selection.as_ref();
+        // 只允许普通表；派生表/join 等无法静态核对，直接拒绝。
+        let TableFactor::Table { name, .. } = &table.relation else {
+            return Err(McpCallError::new(
+                "write_unverifiable",
+                "只允许对普通表执行受限写",
+                false,
+            ));
+        };
+        if !table.joins.is_empty() {
+            return Err(McpCallError::new(
+                "write_unverifiable",
+                "受限写不允许 JOIN",
+                false,
+            ));
+        }
+        let table_name = name
+            .0
+            .last()
+            .and_then(|part| match part {
+                sqlparser::ast::ObjectNamePart::Identifier(ident) => Some(ident.value.clone()),
+                _ => None,
+            })
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if !self.allowed_objects.iter().any(|obj| obj == &table_name) {
+            return Err(McpCallError::new(
+                "write_object_not_allowed",
+                format!("写规则未允许表 {table_name}"),
+                false,
+            ));
+        }
+        match selection {
+            None if self.require_where => Err(McpCallError::new(
+                "write_requires_where",
+                "写规则要求 WHERE 子句",
+                false,
+            )),
+            None => Ok(()),
+            Some(expr) => {
+                if scoped_predicate_supported(expr) {
+                    Ok(())
+                } else {
+                    Err(McpCallError::new(
+                        "write_unverifiable",
+                        "写谓词包含子查询或不支持的结构，无法核对范围",
+                        false,
+                    ))
+                }
+            }
+        }
+    }
+}
+
+/// 只接受不含子查询的简单谓词（AND/OR/比较/IN 字面量/BETWEEN/IS NULL）。
+fn scoped_predicate_supported(expr: &sqlparser::ast::Expr) -> bool {
+    use sqlparser::ast::Expr;
+    match expr {
+        Expr::BinaryOp { left, right, .. } => {
+            scoped_predicate_supported(left) && scoped_predicate_supported(right)
+        }
+        Expr::UnaryOp { expr, .. } | Expr::Nested(expr) | Expr::IsNull(expr) | Expr::IsNotNull(expr) => {
+            scoped_predicate_supported(expr)
+        }
+        Expr::Between { expr, low, high, .. } => {
+            scoped_predicate_supported(expr)
+                && scoped_predicate_supported(low)
+                && scoped_predicate_supported(high)
+        }
+        Expr::InList { expr, list, .. } => {
+            scoped_predicate_supported(expr) && list.iter().all(scoped_predicate_supported)
+        }
+        Expr::Value(_) | Expr::Identifier(_) | Expr::CompoundIdentifier(_) => true,
+        // 其它一切（子查询、函数调用、CASE 等）保守拒绝。
+        _ => false,
+    }
+}
+
+// 对外 MCP Server 的 Claude 客户端配置导出（设计 §39.1，T060）。
+//
+// 导出**不含任何秘密**：只有绝对命令路径、`--server-profile` 与（可选）`--config-root`。
+// 客户端 JSON 里不出现数据库密码、API Key、连接 URI 或任意 SQL。
+
+/// 生成 Claude Code 的 `.mcp.json` 片段（不含秘密）。
+///
+/// `binary_path` 必须是三端绝对路径；`config_root` 非空时写入 `--config-root`，
+/// 让客户端启动的 Server 与桌面端看到同一份配置（测试隔离时尤其重要）。
+pub fn claude_mcp_config_json(
+    server_name: &str,
+    binary_path: &str,
+    server_profile_id: &str,
+    config_root: Option<&str>,
+) -> fluxdb_core::Result<String> {
+    if server_name.trim().is_empty() || binary_path.trim().is_empty() {
+        return Err(fluxdb_core::Error::new(
+            fluxdb_core::ErrorKind::Internal,
+            "server 名称与二进制路径不能为空",
+        ));
+    }
+    if !std::path::Path::new(binary_path).is_absolute() {
+        return Err(fluxdb_core::Error::new(
+            fluxdb_core::ErrorKind::Internal,
+            "MCP 客户端配置必须使用绝对二进制路径",
+        ));
+    }
+    if server_profile_id.trim().is_empty() {
+        return Err(fluxdb_core::Error::new(
+            fluxdb_core::ErrorKind::Internal,
+            "Server Profile ID 不能为空",
+        ));
+    }
+    let mut args = vec![
+        "--server-profile".to_string(),
+        server_profile_id.to_string(),
+    ];
+    if let Some(root) = config_root.filter(|root| !root.trim().is_empty()) {
+        if !std::path::Path::new(root).is_absolute() {
+            return Err(fluxdb_core::Error::new(
+                fluxdb_core::ErrorKind::Internal,
+                "config-root 必须是绝对路径",
+            ));
+        }
+        args.push("--config-root".to_string());
+        args.push(root.to_string());
+    }
+    let config = serde_json::json!({
+        "mcpServers": {
+            server_name: {
+                "command": binary_path,
+                "args": args,
+                // 默认不注入任何环境变量；凭据由 Server 从既有 AES 连接凭据临时读取。
+                "env": {}
+            }
+        }
+    });
+    serde_json::to_string_pretty(&config)
+        .map_err(|e| fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, format!("导出配置失败: {e}")))
 }

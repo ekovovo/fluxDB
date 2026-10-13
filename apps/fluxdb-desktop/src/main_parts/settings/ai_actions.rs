@@ -668,7 +668,9 @@ impl NavicatMain {
             let view = view.clone();
             let id = id.clone();
             dialog.title("删除模型").close_button(true).overlay_closable(true).keyboard(true)
-                .child(format!("确认删除「{name}」？模型配置及保存的 API Key 将一并删除，无法撤销。被默认设置、Agent 或历史会话引用的模型不能删除。"))
+                .child(div()
+                    .text_size(px(13.))
+                    .child(format!("确认删除「{name}」？模型配置及保存的 API Key 将一并删除，无法撤销。被默认设置、Agent 或历史会话引用的模型不能删除。")))
                 .footer(div().flex().justify_end().gap_2()
                     .child(Button::new("ai-delete-cancel").debug_selector(|| "ai-delete-cancel".into())
                         .cursor_pointer().child("取消")

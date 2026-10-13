@@ -22,9 +22,11 @@ impl NavicatMain {
                 .close_button(true)
                 .overlay_closable(true)
                 .keyboard(true)
-                .child(format!(
-                    "确认删除「{name}」？历史会话和审计记录保留；正在运行或待审批时不能删除。"
-                ))
+                .child(
+                    div().text_size(px(13.)).child(format!(
+                        "确认删除「{name}」？历史会话和审计记录保留；正在运行或待审批时不能删除。"
+                    )),
+                )
                 .footer(
                     div()
                         .flex()

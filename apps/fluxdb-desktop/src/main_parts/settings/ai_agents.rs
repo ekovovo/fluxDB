@@ -1067,10 +1067,12 @@ impl NavicatMain {
                 .close_button(true)
                 .overlay_closable(true)
                 .keyboard(true)
-                .child(format!(
-                    "确认删除「{name}」？将永久删除该会话的消息、任务、审批与审计事实，以及受控目录内的结果与产物快照。此操作不可撤销。",
-                    name = title
-                ))
+                .child(
+                    div().text_size(px(13.)).child(format!(
+                        "确认删除「{name}」？将永久删除该会话的消息、任务、审批与审计事实，以及受控目录内的结果与产物快照。此操作不可撤销。",
+                        name = title
+                    )),
+                )
                 .footer(
                     div()
                         .flex()

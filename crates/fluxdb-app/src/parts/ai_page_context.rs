@@ -351,5 +351,5 @@ pub fn add_ai_page_tools(
                 "columns":{"type":"array","items":{"type":"integer","minimum":0},"minItems":1,"maxItems":100}
             },"required":["reference_id"],"additionalProperties":false}).to_string(),
         }, grant, session_id:job.session_id.clone(), turn_id:job.turn_id.clone(),
-    }), ToolOutputShape::Opaque)
+    }), ToolOutputShape::Read)
 }

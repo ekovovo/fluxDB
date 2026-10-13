@@ -54,6 +54,7 @@ mod ai_chat_model_selection_tests {
             }
             let event = controller.dispatch(AppCommand::SaveAiAgent(AiAgentSaveInput {
                 compression_trigger_percent: 80,
+                max_iterations: 24,
                 id: None,
                 display_name: "B selection Agent".into(),
                 description: "isolated interaction fixture".into(),

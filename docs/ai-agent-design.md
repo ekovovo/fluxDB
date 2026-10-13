@@ -1405,9 +1405,9 @@ Claude Code 自身的工具 permission、`--allowedTools`、prompt“我批准�
 
 ### 30.1 内部执行保护与价格配置边界
 
-保留防失控保护：最大迭代、任务总时限、模型请求并发、连接读取/文件 IO 并发、工具输出字节、结果行数、文件读取字节；同资源写操作串行，独立读取有限并行。它们不是金额或累计 token 限额，不能通过调整它们绕过权限、审批、取消和真实回执。
+保留防失控保护：最大迭代、模型请求并发、连接读取/文件 IO 并发、工具输出字节、结果行数、文件读取字节；同资源写操作串行，独立读取有限并行。它们不是金额或累计 token 限额，不能通过调整它们绕过权限、审批、取消和真实回执。
 
-`ai_budget_policies` 沿用既有表名与 Agent 引用，但含义仅为运行保护策略：保留 `max_iterations`、`max_wall_time_ms`、`max_model_concurrency`、revision/CAS 等配置；删除 `session_limit_micros`、`daily_limit_micros`、`request_limit_micros`。删除 `ai_budget_reservations`，并发占用改为 ledger 的 pending 行。当前实现仍由主循环默认 24 轮、轮次边界检查 300 秒总时限；策略表的迭代/时限列尚未接入主循环，不能宣称全部策略配置已生效。已绑定并启用策略的模型并发值按策略共享。
+`ai_budget_policies` 沿用既有表名与 Agent 引用，但含义仅为运行保护策略：保留 `max_iterations`、`max_wall_time_ms`、`max_model_concurrency`、revision/CAS 等配置；删除 `session_limit_micros`、`daily_limit_micros`、`request_limit_micros`。删除 `ai_budget_reservations`，并发占用改为 ledger 的 pending 行。单个 Turn 的主模型迭代上限由 Agent 配置 `options_json.max_iterations` 决定（设置页「Agent → 模型与提示词」可配，默认 100、无上限、仅要求为正整数；内置通用助手默认 1000），随运行快照固定并驱动主循环；主循环不再检查整轮累计墙钟（与主流 Agent 一致，仅受迭代次数约束）。策略表的时限/并发列尚未接入主循环，不能宣称全部策略配置已生效。已绑定并启用策略的模型并发值按策略共享。
 
 实现落点：storage `usage_ledger.rs` 的登记/完成/汇总与启动恢复；app `MeteredProvider` 统一包裹主模型、摘要及标题请求；面板顶部渲染当前 session 的累计 token。模型价格配置仍在模型管理页，**只为选择模型参考，不参与会话计量或调用放行**。
 

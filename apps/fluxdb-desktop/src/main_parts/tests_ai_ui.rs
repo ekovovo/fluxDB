@@ -141,6 +141,7 @@ mod ai_ui_tests {
     fn save_agent(controller: &mut AppController, name: &str, prompt: &str) -> String {
         let input = fluxdb_app::AiAgentSaveInput {
             compression_trigger_percent: 80,
+            max_iterations: 24,
             id: None,
             display_name: name.to_string(),
             description: format!("{name} 的职责描述"),
@@ -797,6 +798,7 @@ mod ai_ui_tests {
         // Agent 显式允许 db.query：全局关闭后必须被级联移除。
         let agent_id = match controller.dispatch(AppCommand::SaveAiAgent(fluxdb_app::AiAgentSaveInput {
             compression_trigger_percent: 80,
+            max_iterations: 24,
             id: None,
             display_name: "工具联动 Agent".into(),
             description: "验证全局开关联动".into(),
@@ -1115,6 +1117,7 @@ mod ai_ui_tests {
         });
         let competing = fluxdb_app::AiAgentSaveInput {
             compression_trigger_percent: 80,
+            max_iterations: 24,
             id: Some(id_a.clone()),
             display_name: "后台 Agent 更新".into(),
             description: "后台抢占描述".into(),

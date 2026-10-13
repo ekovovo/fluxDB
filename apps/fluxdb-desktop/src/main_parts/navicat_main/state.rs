@@ -44,6 +44,12 @@ struct NavicatMain {
     ai_session_filter: String,
     /// 正在归档的会话 id（行内 disabled + loading）。
     ai_session_archiving_id: Option<String>,
+    /// 产物报告弹框（T040）：只读快照，dialog builder 在渲染期同步读取共享 RefCell。
+    ai_report_modal: Rc<std::cell::RefCell<AiReportModalData>>,
+    /// 打开产物报告的读快照任务；保持到完成，避免后台任务被提前丢弃。
+    _ai_report_task: Option<Task<()>>,
+    /// 报告导出（选择路径 + 安全写文件）任务。
+    _ai_report_export_task: Option<Task<()>>,
     /// 会话重命名弹框的输入与待保存对象。
     ai_session_rename_input: Entity<InputState>,
     _ai_session_rename_subscription: Subscription,

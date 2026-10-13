@@ -434,7 +434,7 @@ pub fn add_ai_reference_tools(
         grants,
         session_id: job.session_id.clone(),
         turn_id: job.turn_id.clone(),
-    }), ToolOutputShape::Opaque)
+    }), ToolOutputShape::Read)
 }
 
 /// 只有插件启用且本轮已有可用知识时才装配 knowledge.read；
@@ -497,7 +497,7 @@ pub fn add_ai_knowledge_read_tools(
             },
             entries,
         }),
-        ToolOutputShape::Opaque,
+        ToolOutputShape::Read,
     )?;
     Ok(())
 }

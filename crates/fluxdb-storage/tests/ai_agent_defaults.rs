@@ -150,6 +150,7 @@ impl Drop for Fixture {
 
 fn edit(id: &str) -> AgentEdit {
     AgentEdit {
+        max_iterations: 24,
         id: id.into(),
         display_name: "DEFAULTS 自定义 Agent".into(),
         description: "独立持久化 fixture".into(),

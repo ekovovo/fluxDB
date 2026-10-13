@@ -111,6 +111,7 @@ struct AiAgentEditorInputs {
     description: Entity<InputState>,
     system_prompt: Entity<gpui_component::input::TextareaState>,
     compression_percent: Entity<InputState>,
+    max_iterations: Entity<InputState>,
 }
 
 impl AiAgentEditorInputs {
@@ -128,6 +129,7 @@ impl AiAgentEditorInputs {
                     .rows(7)
             }),
             compression_percent: input("80", window, cx),
+            max_iterations: input("100", window, cx),
         }
     }
 }

@@ -227,6 +227,11 @@ fn ai_agent_editor_form(
                 &editor.inputs.compression_percent,
                 colors,
             ))
+            .child(ai_field(
+                "最大模型迭代次数（每轮）",
+                &editor.inputs.max_iterations,
+                colors,
+            ))
             .child(ai_prompt_field(
                 "提示词 · 直接输入",
                 &editor.inputs.system_prompt,

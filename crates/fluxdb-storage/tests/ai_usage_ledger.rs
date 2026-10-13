@@ -72,6 +72,7 @@ impl Fixture {
             fixture.db(),
             NOW,
             &agents::AgentEdit {
+                max_iterations: 24,
                 id: AGENT.into(),
                 display_name: "Offline ledger agent".into(),
                 description: String::new(),

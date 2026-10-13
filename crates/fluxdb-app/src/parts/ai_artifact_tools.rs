@@ -61,7 +61,8 @@ fn artifact_create_schema() -> serde_json::Value {
                 "required": ["name", "timezone"],
                 "properties": {
                     "name": {"type": "string", "minLength": 1, "maxLength": 200},
-                    "definition_ref": {"type": "string", "minLength": 1, "maxLength": 128},
+                    "definition_ref": {"type": "string", "minLength": 1, "maxLength": 128,
+                        "description":"本轮已授权业务口径的知识条目 ID；不是 result_ref"},
                     "timezone": {"type": "string", "minLength": 1, "maxLength": 64,
                         "description":"UTC 或 +/-HH:MM 固定偏移；IANA 时区名本期不支持"},
                     "assumption": {"type":"string","minLength":1,"maxLength":2000}
@@ -118,7 +119,11 @@ fn artifact_finalize_schema() -> serde_json::Value {
     })
 }
 
-fn artifact_tool_descriptor(id: &str, description: &str, schema: String) -> fluxdb_core::ToolDescriptor {
+fn artifact_tool_descriptor(
+    id: &str,
+    description: &str,
+    schema: String,
+) -> fluxdb_core::ToolDescriptor {
     fluxdb_core::ToolDescriptor {
         id: id.into(),
         version: 1,
@@ -183,7 +188,11 @@ fn artifact_receipt(
         Err(error) => fluxdb_core::ToolReceipt {
             call_id: call_id.to_string(),
             tool_id: descriptor.id.clone(),
-            status: if error.code == "cancelled" { fluxdb_core::ToolReceiptStatus::Cancelled } else { fluxdb_core::ToolReceiptStatus::Failed },
+            status: if error.code == "cancelled" {
+                fluxdb_core::ToolReceiptStatus::Cancelled
+            } else {
+                fluxdb_core::ToolReceiptStatus::Failed
+            },
             result_json: serde_json::json!({
                 "ok": false,
                 "code": error.code,
@@ -208,7 +217,7 @@ struct ArtifactCreateTool {
 impl ArtifactCreateTool {
     fn new(producer: std::sync::Arc<dyn ArtifactProducer>) -> fluxdb_core::Result<Self> {
         let description = format!(
-            "创建报告/图表/表格产物草稿：只声明来源结果句柄、字段与口径，数字从真实结果取；不执行 SQL。可用 renderer：{}。来源必须来自同一任务。",
+            "创建报告/图表/表格产物草稿：sources/blocks.result_ref 是结果句柄；metric.definition_ref 只能用本轮已授权的业务口径 ID，不能用结果句柄或数据库对象名。没有已授权口径时省略 definition_ref。数字从真实结果取，不执行 SQL。可用 renderer：{}。来源必须来自同一任务。",
             producer.descriptor().renderers.join(", ")
         );
         Ok(Self {
@@ -381,19 +390,23 @@ fn artifact_cancelled(
 fn parse_artifact_spec(arguments_json: &str) -> Result<fluxdb_core::ArtifactSpec, String> {
     let mut value: serde_json::Value =
         serde_json::from_str(arguments_json).map_err(|_| "工具入参不是合法 JSON".to_string())?;
-    let object = value.as_object_mut().ok_or_else(|| "产物声明必须是对象".to_string())?;
-    object.entry("schema_version").or_insert(serde_json::json!(fluxdb_core::ARTIFACT_SCHEMA_VERSION));
-    let mut spec: fluxdb_core::ArtifactSpec = serde_json::from_value(value)
-        .map_err(|error| format!("产物声明不合法: {error}"))?;
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| "产物声明必须是对象".to_string())?;
+    object
+        .entry("schema_version")
+        .or_insert(serde_json::json!(fluxdb_core::ARTIFACT_SCHEMA_VERSION));
+    let mut spec: fluxdb_core::ArtifactSpec =
+        serde_json::from_value(value).map_err(|error| format!("产物声明不合法: {error}"))?;
+    // 时区等可归一化写法在入口统一收敛，落库 spec 与报告显示因此一致。
+    spec.normalize().map_err(|error| error.message)?;
     if spec.accessibility_description.trim().is_empty() {
         spec.accessibility_description = spec.title.clone();
     }
     Ok(spec)
 }
 
-fn parse_add_block(
-    arguments_json: &str,
-) -> Result<(String, fluxdb_core::ArtifactBlock), String> {
+fn parse_add_block(arguments_json: &str) -> Result<(String, fluxdb_core::ArtifactBlock), String> {
     let value: serde_json::Value =
         serde_json::from_str(arguments_json).map_err(|_| "工具入参不是合法 JSON".to_string())?;
     let artifact_id = string_field(&value, "artifact_id")?;
@@ -425,14 +438,22 @@ fn string_field(value: &serde_json::Value, key: &str) -> Result<String, String> 
 /// `builtin.bi` 启用时才装配产物工具；关闭时不会给模型任何产物入口。
 fn bi_enabled(conn: &rusqlite::Connection, session_id: &str) -> fluxdb_core::Result<bool> {
     let enabled = fluxdb_storage::ai_platform::plugins::list_plugin_instances(conn)?
-        .iter().any(|instance| instance.id == BI_INSTANCE_ID && instance.enabled
-            && instance.runtime_kind == "builtin" && instance.package_key == "fluxdb.output.bi");
+        .iter()
+        .any(|instance| {
+            instance.id == BI_INSTANCE_ID
+                && instance.enabled
+                && instance.runtime_kind == "builtin"
+                && instance.package_key == "fluxdb.output.bi"
+        });
     if !enabled {
         return Ok(false);
     }
     let session = fluxdb_storage::ai_platform::sessions::load_session(conn, session_id)?;
-    let bindings = fluxdb_storage::ai_platform::plugins::list_agent_plugin_bindings(conn, &session.agent_id)?;
-    Ok(!bindings.iter().any(|binding| binding.plugin_instance_id == BI_INSTANCE_ID && !binding.enabled))
+    let bindings =
+        fluxdb_storage::ai_platform::plugins::list_agent_plugin_bindings(conn, &session.agent_id)?;
+    Ok(!bindings
+        .iter()
+        .any(|binding| binding.plugin_instance_id == BI_INSTANCE_ID && !binding.enabled))
 }
 
 /// 装配产物工具（内置 BI producer）：仅在 `builtin.bi` 启用时注册。
@@ -461,7 +482,6 @@ pub fn add_ai_artifact_tools_with_producer(
     producer: std::sync::Arc<dyn ArtifactProducer>,
 ) -> fluxdb_core::Result<()> {
     let shape = ToolOutputShape::Sample {
-        keep_rows: 0,
         omit_field: "points".into(),
         rows_omitted_field: None,
     };

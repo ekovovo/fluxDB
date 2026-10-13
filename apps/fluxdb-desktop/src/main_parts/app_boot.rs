@@ -3122,6 +3122,11 @@ fn navicat_main_new(
                             _ai_session_filter_subscription: ai_session_filter_subscription,
                             ai_session_filter: String::new(),
                             ai_session_archiving_id: None,
+                            ai_report_modal: Rc::new(std::cell::RefCell::new(
+                                AiReportModalData::default(),
+                            )),
+                            _ai_report_task: None,
+                            _ai_report_export_task: None,
                             ai_session_rename_input,
                             _ai_session_rename_subscription: ai_session_rename_subscription,
                             pending_ai_session_rename: None,

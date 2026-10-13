@@ -319,7 +319,7 @@ pub fn add_ai_editor_read_tools(
             },
             grant: grant.clone(),
         }),
-        ToolOutputShape::Opaque,
+        ToolOutputShape::Read,
     )?;
     catalog.add_tool_with_shape(
         Box::new(AiEditorSearchTool {
@@ -337,7 +337,7 @@ pub fn add_ai_editor_read_tools(
             },
             grant,
         }),
-        ToolOutputShape::Opaque,
+        ToolOutputShape::Read,
     )?;
     Ok(())
 }

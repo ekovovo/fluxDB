@@ -252,6 +252,9 @@ fn ai_chat_part(
             .child(gpui_component::alert::Alert::error(id, text).small())
             .into_any_element();
     }
+    if part.kind == "artifact_ref" {
+        return ai_chat_artifact_card(part, &payload, &text, colors, cx);
+    }
     if part.kind == "text" {
         // 流式进行中由平滑揭示实体渲染；其余（含已结束片段）按 Markdown 渲染。
         return match stream_view {

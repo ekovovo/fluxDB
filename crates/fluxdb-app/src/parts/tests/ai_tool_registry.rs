@@ -233,7 +233,7 @@ fn ai_tool_registry_result_pages_are_bounded_and_cursor_checked() {
         .expect("第一页应可读");
     assert_eq!(first.items.len(), 3);
     assert!(first.truncated);
-    assert_eq!(first.next_cursor.as_deref(), Some("result-1:3"));
+    assert_eq!(first.next_cursor, Some(format!("{}:3", result.id)));
     assert_eq!(first.total_items, 10);
 
     let mut seen = first.items.clone();
@@ -262,7 +262,7 @@ fn ai_tool_registry_result_pages_are_bounded_and_cursor_checked() {
         .expect_err("格式非法游标必须拒绝");
     assert_eq!(bad.code, "invalid_cursor");
     let out_of_range = store
-        .read_page(&result.id, Some("result-1:11"), 3, 1024)
+        .read_page(&result.id, Some(&format!("{}:11", result.id)), 3, 1024)
         .expect_err("越界游标必须拒绝");
     assert_eq!(out_of_range.code, "invalid_cursor");
 }
@@ -299,7 +299,7 @@ fn ai_tool_registry_released_and_expired_results_are_visible_errors() {
     let expired_error = expired_store
         .read_page(&expired.id, None, 10, 1024)
         .expect_err("过期后的结果必须报错");
-    assert_eq!(expired_error.code, "unknown_result");
+    assert_eq!(expired_error.code, "result_expired");
 }
 
 #[test]
@@ -322,6 +322,7 @@ fn ai_tool_registry_receipt_projection_is_bounded_and_immutable() {
         created_at_ms: 20,
         session_id: "s-1".into(),
         turn_id: "t-1".into(),
+        format: ResultFormat::Items,
     };
     let before = receipt.result_json.clone();
 
@@ -332,9 +333,9 @@ fn ai_tool_registry_receipt_projection_is_bounded_and_immutable() {
     assert_eq!(projection.result_ref, Some(result_ref));
     assert_eq!(receipt.result_json, before, "投影不得修改原始回执");
 
-    let full = project_receipt(&receipt, None, before.len());
+    let full = project_receipt(&receipt, None, before.len() + 32);
     assert!(!full.truncated);
-    assert_eq!(full.text, before);
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&full.text).unwrap(), serde_json::json!(before));
 }
 
 #[test]
@@ -563,7 +564,7 @@ fn ai_tool_registry_truncation_keeps_structure_and_marks_omitted_fields() {
     };
     let limit = 512usize;
     let projection = project_receipt_with_shape(&receipt, None, limit,
-        &ToolOutputShape::Sample { keep_rows: 5, omit_field: "rows".into(), rows_omitted_field: None });
+        &ToolOutputShape::Sample { omit_field: "rows".into(), rows_omitted_field: None });
     assert!(projection.truncated);
     assert!(
         projection.text.len() <= limit,
@@ -574,25 +575,11 @@ fn ai_tool_registry_truncation_keeps_structure_and_marks_omitted_fields() {
         serde_json::from_str(&projection.text).expect("截断后仍是合法 JSON");
     assert_eq!(value["columns"], serde_json::json!(["id", "name"]));
     assert_eq!(value["row_count"], 5000);
-    assert!(
-        value.get("rows").is_none(),
-        "大体量 rows 应被优先省略，实际 {}",
-        projection.text
-    );
-    // 被省略的字段必须显式列出，模型才知道内容是"被省略"而不是"本来就没有"。
-    let omitted = value["omitted_fields"]
-        .as_array()
-        .expect("必须有 omitted_fields");
-    assert!(
-        omitted.iter().any(|name| name == "rows"),
-        "rows 必须出现在 omitted_fields，实际 {omitted:?}"
-    );
-    assert!(
-        omitted
-            .iter()
-            .all(|name| name == "rows" || name == "truncated"),
-        "不应丢弃结构/行数这类小事实，实际 {omitted:?}"
-    );
+    let shown = value["rows"].as_array().unwrap().len();
+    assert!(shown > 5 && shown < 5000, "按预算保留完整前缀，不固定 5 行");
+    assert_eq!(value["returned_items"], shown);
+    assert_eq!(value["delivery_truncated"], true);
+
 }
 
 #[test]
@@ -639,24 +626,22 @@ fn ai_tool_registry_sample_shape_sheds_declared_field_first() {
     })
     .to_string();
     let shape = ToolOutputShape::Sample {
-        keep_rows: 5,
         omit_field: "rows".into(),
         rows_omitted_field: Some("rows_omitted".into()),
     };
-    let value: serde_json::Value =
-        serde_json::from_str(&shrink_to_budget(&raw, 512, &shape).expect("应能裁到预算内"))
-            .expect("裁剪结果必须是合法 JSON");
-
-    assert!(
-        value.get("rows").is_none(),
-        "声明的 rows 必须被优先丢弃，实际 {}",
-        value
-    );
-    // 结构与行数事实必须留下，模型才知道查询返回了多少行。
+    let receipt = fluxdb_core::ToolReceipt {
+        call_id: "c1".into(), tool_id: "db.query".into(),
+        status: fluxdb_core::ToolReceiptStatus::Succeeded, result_json: raw,
+        error_code: None, affected_rows: None, started_at_ms: 0, finished_at_ms: 1,
+    };
+    let projection = project_receipt_with_shape(&receipt, None, 512, &shape);
+    let value: serde_json::Value = serde_json::from_str(&projection.text).unwrap();
+    let shown = value["rows"].as_array().unwrap().len();
+    assert!(shown > 0 && shown < 4000);
     assert_eq!(value["columns"], serde_json::json!(["id", "name"]));
     assert_eq!(value["row_count"], 4000);
-    assert_eq!(value["rows_omitted"], 3995);
-    assert_eq!(value["omitted_fields"], serde_json::json!(["rows"]));
+    assert_eq!(value["rows_omitted"], 3995 + 4000 - shown);
+
 }
 
 #[test]

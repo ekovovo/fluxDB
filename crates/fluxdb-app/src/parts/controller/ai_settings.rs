@@ -140,6 +140,7 @@ pub fn refresh_ai_settings(
         .into_iter()
         .map(|a| AiAgentItem {
             compression_trigger_percent: a.compression_trigger_percent,
+            max_iterations: a.max_iterations,
             id: a.id,
             display_name: a.display_name,
             description: a.description,
@@ -316,6 +317,7 @@ pub fn set_ai_tool_enabled(
                 .collect();
             let edit = agents::AgentEdit {
                 compression_trigger_percent: agent.compression_trigger_percent,
+                max_iterations: agent.max_iterations,
                 id: agent.id.clone(),
                 display_name: agent.display_name,
                 description: agent.description,
@@ -670,6 +672,7 @@ pub fn save_ai_agent(
         };
         let edit = agents::AgentEdit {
             compression_trigger_percent: input.compression_trigger_percent,
+            max_iterations: input.max_iterations,
             id: input.id.clone().unwrap_or_else(|| new_entity_id("agent")),
             display_name: display_name.clone(),
             description: input.description.clone(),
@@ -694,6 +697,7 @@ pub fn save_ai_agent(
     let id = saved.id.clone();
     let item = AiAgentItem {
         compression_trigger_percent: saved.compression_trigger_percent,
+        max_iterations: saved.max_iterations,
         id: saved.id,
         display_name: saved.display_name,
         description: saved.description,

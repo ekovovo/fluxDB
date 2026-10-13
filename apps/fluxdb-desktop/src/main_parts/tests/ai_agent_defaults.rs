@@ -109,6 +109,7 @@ mod ai_agent_defaults_tests {
             allowed_tools: Vec::new(),
             enabled: true,
             compression_trigger_percent: 80,
+            max_iterations: 24,
             expected_revision: 0,
         }));
         let AppEvent::AiAgentSaved { id, .. } = event else {
@@ -244,6 +245,7 @@ mod ai_agent_defaults_tests {
         assert_eq!(builtin.system_prompt, stored.system_prompt);
         assert_eq!(builtin.compression_trigger_percent, 80);
         assert_eq!(stored.compression_trigger_percent, 80);
+        assert_eq!(stored.max_iterations, 1000, "内置 Agent 默认迭代上限更宽");
         assert_eq!(
             snapshot.ai_agents.len(),
             1,
@@ -268,6 +270,20 @@ mod ai_agent_defaults_tests {
         click(cx, "ai-agent-tab:模型与提示词");
         click(cx, "ai-field:上下文压缩触发（%）");
         assert_eq!(percent(&view, cx), "80", "默认值也必须展示在实际表单");
+        click(cx, "ai-field:最大模型迭代次数（每轮）");
+        assert_eq!(
+            view.read_with(cx, |main, app| main
+                .ai_agent_editor
+                .as_ref()
+                .unwrap()
+                .inputs
+                .max_iterations
+                .read(app)
+                .value()
+                .to_string()),
+            "1000",
+            "内置 Agent 的迭代上限也必须展示在实际表单"
+        );
         click(cx, "ai-agent-prompt");
         assert_eq!(
             view.read_with(cx, |main, app| main
@@ -297,6 +313,7 @@ mod ai_agent_defaults_tests {
         select_builtin(&view, cx);
         replace(cx, "ai-field:名称", "B 内置 Agent 修改标记");
         click(cx, "ai-agent-tab:模型与提示词");
+        replace(cx, "ai-field:最大模型迭代次数（每轮）", "128");
         replace(
             cx,
             "ai-agent-prompt",
@@ -312,6 +329,7 @@ mod ai_agent_defaults_tests {
         );
         assert_eq!(stored.revision, before.revision + 1);
         assert_eq!(stored.compression_trigger_percent, 80);
+        assert_eq!(stored.max_iterations, 128, "迭代上限应真实落库");
         let snapshot = view.read_with(cx, |main, _| render_state_snapshot(main.controller.state()));
         assert_eq!(snapshot.ai_agents.len(), 1, "编辑不得新增行");
         assert_eq!(snapshot.ai_agents[0].display_name, stored.display_name);
@@ -375,6 +393,7 @@ mod ai_agent_defaults_tests {
             allowed_tools: before.allowed_tools.clone(),
             enabled: before.enabled,
             compression_trigger_percent: 90,
+            max_iterations: 24,
             expected_revision: before.revision,
         };
         // 仅作为 CAS 竞争前置：用独立生产控制器模拟其他编辑者，不替代被测保存点击。

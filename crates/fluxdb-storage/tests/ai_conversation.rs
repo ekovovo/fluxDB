@@ -29,6 +29,7 @@ impl Fixture {
             fixture.db(),
             1_000,
             &agents::AgentEdit {
+                max_iterations: 24,
                 compression_trigger_percent: 80,
                 id: AGENT.into(),
                 display_name: "T028 存储验收 Agent".into(),

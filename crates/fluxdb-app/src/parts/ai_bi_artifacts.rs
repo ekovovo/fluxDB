@@ -71,34 +71,41 @@ impl BuiltinBiProducer {
     }
 
     /// 口径引用必须是本轮授权且仍确认的知识，完成时再次复核退休状态。
-    fn validate_metric_reference(&self, spec: &fluxdb_core::ArtifactSpec) -> Result<(), ArtifactError> {
-        if let Some(reference) = spec.metric.as_ref().and_then(|metric| metric.definition_ref.as_ref()) {
-                with_ai_storage(&self.storage, |conn| {
-                    let turn = fluxdb_storage::ai_platform::sessions::load_turn(conn, &self.turn_id)?;
-                    let snapshot: serde_json::Value = serde_json::from_str(&turn.runtime_snapshot_json)
+    fn validate_metric_reference(
+        &self,
+        spec: &fluxdb_core::ArtifactSpec,
+    ) -> Result<(), ArtifactError> {
+        if let Some(reference) = spec
+            .metric
+            .as_ref()
+            .and_then(|metric| metric.definition_ref.as_ref())
+        {
+            with_ai_storage(&self.storage, |conn| {
+                let turn = fluxdb_storage::ai_platform::sessions::load_turn(conn, &self.turn_id)?;
+                let snapshot: serde_json::Value =
+                    serde_json::from_str(&turn.runtime_snapshot_json)
                         .map_err(|_| Error::new(ErrorKind::Internal, "任务快照损坏"))?;
-                    if !snapshot["knowledge_ids"].as_array()
-                        .is_some_and(|ids| ids.iter().any(|id| id.as_str() == Some(reference))) {
-                        return Err(Error::new(ErrorKind::Internal, "口径引用不属于本轮授权知识"));
-                    }
-                    let entry = fluxdb_storage::ai_platform::knowledge::load(conn, reference)?;
-                    if entry.status != "confirmed" {
-                        return Err(Error::new(ErrorKind::Internal, "业务口径未确认或已退休"));
-                    }
+                let authorized = snapshot["knowledge_ids"].as_array().map_or(&Vec::new(), |array| array).iter()
+                    .any(|id| id.as_str() == Some(reference));
+                if !authorized {
+                    return Err(Error::new(ErrorKind::Internal, format!("口径引用 {reference} 不属于本轮授权知识；若你引用的是结果句柄，请只能用于 sources/blocks。本轮已授权口径：{}", snapshot["knowledge_ids"])));
+                }
+                let entry = fluxdb_storage::ai_platform::knowledge::load(conn, reference)?;
+                if entry.status != "confirmed" {
+                    return Err(Error::new(ErrorKind::Internal, format!("口径 {reference} 当前状态 {}，不可用于产物", entry.status)));
+                }
                     Ok(())
-                }).map_err(|error| ArtifactError::new("invalid_metric", error.message))?;
+            }).map_err(|error| ArtifactError::new("invalid_metric", error.message))?;
         }
         Ok(())
     }
 
     /// 从本轮结果仓库解析句柄；解析不到就是"来源不可用"，不能靠猜。
-    fn facts_for_handle(
-        &self,
-        declared: &str,
-    ) -> Result<ResultFacts, ArtifactError> {
-        let store = self.results.lock().map_err(|_| {
-            ArtifactError::new("result_store_unavailable", "结果仓库不可用")
-        })?;
+    fn facts_for_handle(&self, declared: &str) -> Result<ResultFacts, ArtifactError> {
+        let store = self
+            .results
+            .lock()
+            .map_err(|_| ArtifactError::new("result_store_unavailable", "结果仓库不可用"))?;
         store.facts(declared).map_err(|error| {
             ArtifactError::new(
                 "source_unavailable",
@@ -131,28 +138,40 @@ impl BuiltinBiProducer {
             }
             Ok((call, created_at_ms))
         }).map_err(|error| ArtifactError::new("source_unavailable", error.message))?;
-        let receipt: serde_json::Value = serde_json::from_str(
-            call.receipt_json.as_deref().unwrap_or("")
-        ).map_err(|_| ArtifactError::new("source_unavailable", "来源回执损坏"))?;
+        let receipt: serde_json::Value =
+            serde_json::from_str(call.receipt_json.as_deref().unwrap_or(""))
+                .map_err(|_| ArtifactError::new("source_unavailable", "来源回执损坏"))?;
         let columns: Vec<String> = serde_json::from_value(receipt["columns"].clone())
             .map_err(|_| ArtifactError::new("source_unavailable", "来源缺少列结构"))?;
         let mut unique = BTreeSet::new();
         if columns.iter().any(|column| !unique.insert(column)) {
-            return Err(ArtifactError::new("ambiguous_field", "来源列名重复，请通过 SQL 别名消除歧义"));
+            return Err(ArtifactError::new(
+                "ambiguous_field",
+                "来源列名重复，请通过 SQL 别名消除歧义",
+            ));
         }
         // 有界读取真实快照（含 spill），不会重新执行 SQL；损坏必须显式失败。
-        let page = self.results.lock()
+        let page = self
+            .results
+            .lock()
             .map_err(|_| ArtifactError::new("result_store_unavailable", "结果仓库不可用"))?
-            .read_page(declared, None, fluxdb_core::ARTIFACT_MAX_POINTS, BI_SNAPSHOT_MAX_BYTES)
+            .read_page(
+                declared,
+                None,
+                fluxdb_core::ARTIFACT_MAX_POINTS,
+                BI_SNAPSHOT_MAX_BYTES,
+            )
             .map_err(|error| ArtifactError::new("source_unavailable", error.message))?;
-        let sample = page.items.into_iter().map(|row| {
-            match row.as_array() {
+        let sample = page
+            .items
+            .into_iter()
+            .map(|row| match row.as_array() {
                 Some(cells) => serde_json::Value::Object(
-                    columns.iter().cloned().zip(cells.iter().cloned()).collect()
+                    columns.iter().cloned().zip(cells.iter().cloned()).collect(),
                 ),
                 None => row,
-            }
-        }).collect();
+            })
+            .collect();
         let truncated = page.truncated || receipt["truncated"].as_bool().unwrap_or(true);
         Ok(ArtifactSourceData {
             summary: ArtifactSourceSummary {
@@ -235,13 +254,7 @@ impl BuiltinBiProducer {
             )
         })?;
         // 失败也要在会话里留可见卡片（T040 据此显示"renderer 不可用"的解释）。
-        self.append_card(
-            &view,
-            spec,
-            truncated,
-            source_count,
-            Some(&error.code),
-        )
+        self.append_card(&view, spec, truncated, source_count, Some(&error.code))
     }
 
     /// 写产物卡片：同一 artifact 复用同一片段 ID，finalize 更新而不是再插一张。
@@ -272,7 +285,8 @@ impl BuiltinBiProducer {
                 &payload,
                 &view.id,
             )
-        }).map_err(|error| {
+        })
+        .map_err(|error| {
             tracing::warn!(artifact_id = %view.id, "产物卡片写入失败");
             ArtifactError::new("artifact_card_failed", error.message)
         })
@@ -307,10 +321,7 @@ impl BuiltinBiProducer {
         view: &fluxdb_storage::ai_platform::artifacts::ArtifactView,
     ) -> Result<fluxdb_core::ArtifactSpec, ArtifactError> {
         serde_json::from_str::<fluxdb_core::ArtifactSpec>(&view.spec_json).map_err(|error| {
-            ArtifactError::new(
-                "artifact_spec_damaged",
-                format!("产物声明损坏: {error}"),
-            )
+            ArtifactError::new("artifact_spec_damaged", format!("产物声明损坏: {error}"))
         })
     }
 
@@ -340,12 +351,16 @@ impl ArtifactProducer for BuiltinBiProducer {
         cancel: &fluxdb_core::CancelFlag,
     ) -> Result<ArtifactOutcome, ArtifactError> {
         artifact_check_cancel(cancel)?;
+        // 归一化可归一化写法（如 `UTC+08:00` → `+08:00`），落库 spec 与回执显示保持一致。
+        spec.normalize()
+            .map_err(|error| ArtifactError::new("invalid_spec", error.message))?;
         if spec.accessibility_description.trim().is_empty() {
             spec.accessibility_description = spec.title.clone();
         }
         if let Some(metric) = &mut spec.metric {
             if metric.definition_ref.is_none() && metric.assumption.is_none() {
-                metric.assumption = Some("未确认的口径假设；仅按来源原始字段展示，不视为业务事实".into());
+                metric.assumption =
+                    Some("未确认的口径假设；仅按来源原始字段展示，不视为业务事实".into());
             }
         }
         self.validate_metric_reference(&spec)?;
@@ -379,16 +394,23 @@ impl ArtifactProducer for BuiltinBiProducer {
                 )
             })?;
             let data = self.source_data(declared)?;
-            if source.tool_call_ref.as_ref().is_some_and(|reference| {
-                data.summary.tool_call_id.as_ref() != Some(reference)
-            }) {
-                return Err(ArtifactError::new("source_mismatch", "ToolCallRef 与实际产出调用不一致"));
+            if source
+                .tool_call_ref
+                .as_ref()
+                .is_some_and(|reference| data.summary.tool_call_id.as_ref() != Some(reference))
+            {
+                return Err(ArtifactError::new(
+                    "source_mismatch",
+                    "ToolCallRef 与实际产出调用不一致",
+                ));
             }
-            resolved.push(fluxdb_storage::ai_platform::artifacts::ArtifactSourceInput {
-                declared_ref: Some(declared.to_string()),
-                result_id: Some(data.summary.result_id.clone()),
-                tool_call_id: data.summary.tool_call_id.clone(),
-            });
+            resolved.push(
+                fluxdb_storage::ai_platform::artifacts::ArtifactSourceInput {
+                    declared_ref: Some(declared.to_string()),
+                    result_id: Some(data.summary.result_id.clone()),
+                    tool_call_id: data.summary.tool_call_id.clone(),
+                },
+            );
             sources.push(data);
         }
         for block in &spec.blocks {
@@ -410,7 +432,10 @@ impl ArtifactProducer for BuiltinBiProducer {
             )
         })?;
         let mut truncated = sources.iter().any(|source| source.summary.truncated);
-        let summaries = sources.iter().map(|source| source.summary.clone()).collect();
+        let summaries = sources
+            .iter()
+            .map(|source| source.summary.clone())
+            .collect();
         let points = if spec.blocks.is_empty() {
             Vec::new()
         } else {
@@ -422,12 +447,8 @@ impl ArtifactProducer for BuiltinBiProducer {
                 } = block
                 {
                     let source = source_by_ref(&sources, result_ref)?;
-                    let (block_points, cut) = chart_points(
-                        source,
-                        x,
-                        y,
-                        self.descriptor.max_points,
-                    );
+                    let (block_points, cut) =
+                        chart_points(source, x, y, self.descriptor.max_points);
                     truncated |= cut;
                     points.extend(block_points);
                     break;
@@ -462,6 +483,13 @@ impl ArtifactProducer for BuiltinBiProducer {
         }
         let sources = self.sources_for(&view)?;
         self.validate_block(&block, &sources)?;
+        // 已声明过的块不再重复追加：返回受控错误而不是静默成功又渲染一份。
+        if spec.blocks.contains(&block) {
+            return Err(ArtifactError::new(
+                "duplicate_block",
+                "该块已在产物中存在，无需重复添加；如需不同维度请显式声明另一个字段或图表类型",
+            ));
+        }
         spec.blocks.push(block);
         spec.validate_shape()
             .map_err(|error| ArtifactError::new("invalid_spec", error.message))?;
@@ -471,11 +499,13 @@ impl ArtifactProducer for BuiltinBiProducer {
         })?;
         let resolved = stored
             .iter()
-            .map(|source| fluxdb_storage::ai_platform::artifacts::ArtifactSourceInput {
-                declared_ref: declared_handle(&source.metadata_json),
-                result_id: source.result_id.clone(),
-                tool_call_id: source.tool_call_id.clone(),
-            })
+            .map(
+                |source| fluxdb_storage::ai_platform::artifacts::ArtifactSourceInput {
+                    declared_ref: declared_handle(&source.metadata_json),
+                    result_id: source.result_id.clone(),
+                    tool_call_id: source.tool_call_id.clone(),
+                },
+            )
             .collect::<Vec<_>>();
         let updated = with_ai_storage(&self.storage, |conn| {
             if cancel.is_cancelled() {
@@ -491,12 +521,19 @@ impl ArtifactProducer for BuiltinBiProducer {
             )
         })?;
         let truncated = sources.iter().any(|source| source.summary.truncated);
-        let summaries = sources.iter().map(|source| source.summary.clone()).collect();
+        let summaries = sources
+            .iter()
+            .map(|source| source.summary.clone())
+            .collect();
         self.append_card(&updated, &spec, truncated, sources.len(), None)?;
         Ok(self.outcome_from_view(&updated, &spec, summaries, truncated, Vec::new(), None))
     }
 
-    fn finalize(&self, artifact_id: &str, cancel: &fluxdb_core::CancelFlag) -> Result<ArtifactOutcome, ArtifactError> {
+    fn finalize(
+        &self,
+        artifact_id: &str,
+        cancel: &fluxdb_core::CancelFlag,
+    ) -> Result<ArtifactOutcome, ArtifactError> {
         artifact_check_cancel(cancel)?;
         let view = self.load_view(artifact_id)?;
         if view.status != "draft" && view.status != "staged" {
@@ -507,7 +544,8 @@ impl ArtifactProducer for BuiltinBiProducer {
         }
         let spec = self.parse_spec(&view)?;
         self.validate_metric_reference(&spec)?;
-        spec.validate_shape().map_err(|error| ArtifactError::new("invalid_spec", error.message))?;
+        spec.validate_shape()
+            .map_err(|error| ArtifactError::new("invalid_spec", error.message))?;
         // 来源仍可用：句柄必须还能从本轮结果仓库解析，字段也仍然存在。
         let sources = match self.sources_for(&view) {
             Ok(sources) => sources,
@@ -517,7 +555,10 @@ impl ArtifactProducer for BuiltinBiProducer {
             }
         };
         if spec.blocks.is_empty() {
-            return Err(ArtifactError::new("empty_artifact", "产物没有内容块，不能完成"));
+            return Err(ArtifactError::new(
+                "empty_artifact",
+                "产物没有内容块，不能完成",
+            ));
         }
         for block in &spec.blocks {
             if let Err(error) = self.validate_block(block, &sources) {
@@ -569,9 +610,11 @@ impl ArtifactProducer for BuiltinBiProducer {
                 "columns": source.columns,
                 "items": source.sample,
             })).collect::<Vec<_>>(),
-        }).to_string();
+        })
+        .to_string();
         if snapshot.len() > BI_SNAPSHOT_MAX_BYTES {
-            let error = ArtifactError::new("snapshot_too_large", "产物快照超过宿主上限，请缩小来源范围");
+            let error =
+                ArtifactError::new("snapshot_too_large", "产物快照超过宿主上限，请缩小来源范围");
             self.fail_artifact(artifact_id, &spec, truncated, source_count, &error)?;
             return Err(error);
         }
@@ -594,15 +637,19 @@ impl ArtifactProducer for BuiltinBiProducer {
         let mut pending = PendingSnapshot(Some(self.artifact_root.join(&file.relative_path)));
         artifact_check_cancel(cancel)?;
         // staged 表示"文件已写、尚未核对"；核对内容指纹后才置 ready。
-        let staged = if view.status == "staged" { view } else { with_ai_storage(&self.storage, |conn| {
-            fluxdb_storage::ai_platform::artifacts::set_artifact_status(
-                conn,
-                ai_chat_now(),
-                artifact_id,
-                "staged",
-                view.revision,
-            )
-        })? };
+        let staged = if view.status == "staged" {
+            view
+        } else {
+            with_ai_storage(&self.storage, |conn| {
+                fluxdb_storage::ai_platform::artifacts::set_artifact_status(
+                    conn,
+                    ai_chat_now(),
+                    artifact_id,
+                    "staged",
+                    view.revision,
+                )
+            })?
+        };
         let verified = match std::fs::read_to_string(self.artifact_root.join(&file.relative_path)) {
             Ok(content) => content,
             Err(error) => {
@@ -625,7 +672,8 @@ impl ArtifactProducer for BuiltinBiProducer {
             if cancel.is_cancelled() {
                 return Err(Error::new(ErrorKind::Cancelled, "产物操作已取消"));
             }
-            let tx = conn.unchecked_transaction()
+            let tx = conn
+                .unchecked_transaction()
                 .map_err(|error| Error::new(ErrorKind::Internal, error.to_string()))?;
             let ready = fluxdb_storage::ai_platform::artifacts::mark_artifact_ready_in_transaction(
                 &tx,
@@ -636,15 +684,29 @@ impl ArtifactProducer for BuiltinBiProducer {
                 &file.content_hash,
                 staged.revision,
             )?;
-            let payload = artifact_card_payload(&ready, &spec, truncated || rendered.truncated, source_count, None);
+            let payload = artifact_card_payload(
+                &ready,
+                &spec,
+                truncated || rendered.truncated,
+                source_count,
+                None,
+            );
             fluxdb_storage::ai_platform::conversation::upsert_artifact_part_in_transaction(
-                &tx, ai_chat_now(), &self.session_id, &self.turn_id, &self.message_id,
+                &tx,
+                ai_chat_now(),
+                &self.session_id,
+                &self.turn_id,
+                &self.message_id,
                 &format!("{}-artifact-{}", self.message_id, ready.id),
-                fluxdb_storage::ai_platform::sessions::PartStatus::Complete, &payload, &ready.id,
+                fluxdb_storage::ai_platform::sessions::PartStatus::Complete,
+                &payload,
+                &ready.id,
             )?;
-            tx.commit().map_err(|error| Error::new(ErrorKind::Internal, error.to_string()))?;
+            tx.commit()
+                .map_err(|error| Error::new(ErrorKind::Internal, error.to_string()))?;
             Ok(ready)
-        }).map_err(ArtifactError::from);
+        })
+        .map_err(ArtifactError::from);
         let ready = match ready {
             Ok(ready) => ready,
             Err(error) => {
@@ -692,15 +754,16 @@ impl BuiltinBiProducer {
         let mut sources = Vec::with_capacity(stored.len());
         for row in &stored {
             let declared = declared_handle(&row.metadata_json).ok_or_else(|| {
-                ArtifactError::new(
-                    "source_unavailable",
-                    "产物来源缺少可解析的结果句柄",
-                )
+                ArtifactError::new("source_unavailable", "产物来源缺少可解析的结果句柄")
             })?;
             let data = self.source_data(&declared)?;
             if row.result_id.as_ref() != Some(&data.summary.result_id)
-                || row.tool_call_id != data.summary.tool_call_id {
-                return Err(ArtifactError::new("source_mismatch", "来源句柄与创建时版本不一致"));
+                || row.tool_call_id != data.summary.tool_call_id
+            {
+                return Err(ArtifactError::new(
+                    "source_mismatch",
+                    "来源句柄与创建时版本不一致",
+                ));
             }
             sources.push(data);
         }
@@ -716,7 +779,6 @@ fn declared_handle(metadata_json: &str) -> Option<String> {
         .as_str()
         .map(str::to_owned)
 }
-
 
 /// 产物卡片只投影定位与状态，不复制来源业务行或文件载荷。
 fn artifact_card_payload(
@@ -739,5 +801,6 @@ fn artifact_card_payload(
             "truncated": truncated,
             "source_count": source_count,
             "failure_code": failure_code,
-    }).to_string()
+    })
+    .to_string()
 }

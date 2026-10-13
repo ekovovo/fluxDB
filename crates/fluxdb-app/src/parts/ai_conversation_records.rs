@@ -115,16 +115,16 @@ fn ai_conversation_record_tool_start(
 fn spill_retention(
     results: Option<&Arc<Mutex<ResultStore>>>,
     tool_id: &str,
+    call_id: &str,
     receipt_json: &str,
 ) -> Option<fluxdb_storage::ai_platform::sessions::ResultRetention> {
+    let store = results?.lock().ok()?;
     let id = serde_json::from_str::<serde_json::Value>(receipt_json)
-        .ok()?
-        .get("result_ref")?
-        .get("id")?
-        .as_str()?
-        .to_string();
-    let fact = results?.lock().ok()?.spill_fact(&id)?;
-    if fact.tool_id != tool_id {
+        .ok()
+        .and_then(|value| value.get("result_ref")?.get("id")?.as_str().map(str::to_owned));
+    let id = store.reference_for_call(call_id).map(|reference| reference.id).or(id)?;
+    let fact = store.spill_fact(&id)?;
+    if fact.tool_id != tool_id || store.reference_for_call(call_id).is_none() {
         return None;
     }
     // 仓库锁已被 poison 或句柄已不可查时不能伪造路径：退化成内存登记，
@@ -173,8 +173,9 @@ fn ai_conversation_record_tool_result(
     })
     .to_string();
     let byte_count = receipt.result_json.len() as i64;
-    let declared_result = serde_json::from_str::<serde_json::Value>(&receipt.result_json)
-        .ok().and_then(|value| value.get("result_ref")?.get("id")?.as_str().map(str::to_owned));
+    let snapshot = results.and_then(|store| store.lock().ok()?.reference_for_call(&receipt.call_id));
+    let declared_result = snapshot.as_ref().map(|reference| reference.id.clone()).or_else(|| serde_json::from_str::<serde_json::Value>(&receipt.result_json)
+        .ok().and_then(|value| value.get("result_ref")?.get("id")?.as_str().map(str::to_owned)));
     let plan_hash = serde_json::from_str::<serde_json::Value>(&receipt.result_json)
         .ok()
         .and_then(|value| {
@@ -233,6 +234,7 @@ fn ai_conversation_record_tool_result(
             let retention = spill_retention(
                 results.as_deref(),
                 &receipt.tool_id,
+                &receipt.call_id,
                 &receipt.result_json,
             )
             .unwrap_or(fluxdb_storage::ai_platform::sessions::ResultRetention::Memory);
@@ -243,11 +245,16 @@ fn ai_conversation_record_tool_result(
                 &job.session_id,
                 &job.turn_id,
                 &call_row,
-                &serde_json::json!({"tool":receipt.tool_id,"call_id":receipt.call_id,"result_ref":declared_result}).to_string(),
+                &serde_json::json!({"tool":receipt.tool_id,"call_id":receipt.call_id,"result_ref":declared_result,"scope":"turn","expires_on":"execution_end"}).to_string(),
                 "available",
                 byte_count,
                 &retention,
             )?;
+            // spill 是受控临时快照，不承诺跨轮可读；为遗留文件设置清理期限。
+            conn.execute(
+                "UPDATE ai_results SET expires_at_ms=?2 WHERE id=?1",
+                rusqlite::params![result_row, ai_chat_now() + 24 * 60 * 60 * 1000],
+            ).map_err(|error| Error::new(ErrorKind::Internal, error.to_string()))?;
             Some(result_row.clone())
         };
         // 恢复横幅若还在说"尚未执行"，执行完必须同步更新，不能让 UI 与事实相反。

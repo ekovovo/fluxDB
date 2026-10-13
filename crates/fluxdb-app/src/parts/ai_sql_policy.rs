@@ -873,12 +873,10 @@ pub fn standard_sql_tool_specs() -> fluxdb_core::Result<Vec<ToolSpec>> {
         .iter()
         .map(ToolSpec::from_descriptor)
         .collect::<fluxdb_core::Result<Vec<_>>>()?;
-    // db.query / db.explain 产出时已只放样本行 + rows_omitted + result_ref，
-    // 声明形状让通用投影层按同一字段顺序兜底，不再对已裁好的载荷二次裁剪。
+    // 执行回执保留已取得行；通用层按预算裁完整前缀，不固定样本行数。
     for spec in &mut specs {
         if matches!(spec.id.as_str(), "db.query" | "db.explain") {
             spec.output_shape = crate::ToolOutputShape::Sample {
-                keep_rows: crate::RECEIPT_SAMPLE_ROWS,
                 omit_field: "rows".into(),
                 rows_omitted_field: Some("rows_omitted".into()),
             };

@@ -31,7 +31,34 @@ pub fn estimate_tokens(text: &str) -> i64 {
 pub fn estimate_messages_tokens(messages: &[ModelMessage]) -> i64 {
     messages
         .iter()
-        .map(|m| estimate_tokens(&m.text) + 4)
+        .map(|m| {
+            estimate_tokens(&m.text)
+                + 4
+                + m.tool_call_id.as_deref().map(estimate_tokens).unwrap_or(0)
+                + m.tool_name.as_deref().map(estimate_tokens).unwrap_or(0)
+                + m.tool_calls
+                    .iter()
+                    .map(|call| {
+                        estimate_tokens(&call.provider_call_id)
+                            + estimate_tokens(&call.tool_id)
+                            + estimate_tokens(&call.arguments_json)
+                            + 16
+                    })
+                    .sum::<i64>()
+        })
+        .sum()
+}
+
+/// 工具定义也占上下文；首次压缩与每次发送前必须使用同一估算，不能只计算正文。
+fn estimate_tools_tokens(tools: &[fluxdb_core::ToolDescriptor]) -> i64 {
+    tools
+        .iter()
+        .map(|tool| {
+            estimate_tokens(&tool.id)
+                + estimate_tokens(&tool.input_schema_json)
+                + estimate_tokens(&tool.description)
+                + 16
+        })
         .sum()
 }
 
@@ -173,7 +200,10 @@ pub enum CompactionModelChoice {
     /// 使用独立摘要模型。
     Model(String),
     /// 已配置摘要模型但全部不可用：**不得静默改用主模型**，需要可见说明。
-    Unavailable { model_profile_id: String, reason: String },
+    Unavailable {
+        model_profile_id: String,
+        reason: String,
+    },
 }
 
 /// 摘要校验：必须非空、未被截断标记、且涵盖全部保护项。
@@ -185,11 +215,14 @@ pub fn validate_summary(summary: &str) -> Result<(), String> {
     if trimmed.contains("[truncated]") || trimmed.ends_with('…') {
         return Err("摘要疑似被截断".into());
     }
-    let value:serde_json::Value=serde_json::from_str(trimmed).map_err(|_|"摘要不是合法 JSON")?;
-    let object=value.as_object().ok_or("摘要必须是 JSON 对象")?;
+    let value: serde_json::Value =
+        serde_json::from_str(trimmed).map_err(|_| "摘要不是合法 JSON")?;
+    let object = value.as_object().ok_or("摘要必须是 JSON 对象")?;
     for key in REQUIRED_PROTECTED_ITEMS {
-        let item=object.get(*key).ok_or_else(||format!("摘要缺少保护项：{key}"))?;
-        if item.is_null() || item.as_str().is_some_and(|s|s.trim().is_empty()) {
+        let item = object
+            .get(*key)
+            .ok_or_else(|| format!("摘要缺少保护项：{key}"))?;
+        if item.is_null() || item.as_str().is_some_and(|s| s.trim().is_empty()) {
             return Err(format!("摘要保护项为空：{key}"));
         }
     }

@@ -267,7 +267,7 @@ impl ArtifactSpec {
             if let Some(assumption) = &metric.assumption {
                 validate_artifact_text(assumption, ARTIFACT_MAX_NOTE_CHARS, "口径假设")?;
             }
-            validate_timezone(&metric.timezone)?;
+            normalize_timezone(&metric.timezone)?;
         }
         validate_artifact_text(
             &self.template_version,
@@ -351,6 +351,15 @@ impl ArtifactSpec {
         }
         Ok(())
     }
+
+    /// 归一化可归一化的写法（时区），让落库 spec、回执与报告显示使用同一偏移表示。
+    pub fn normalize(&mut self) -> Result<()> {
+        if let Some(metric) = &mut self.metric {
+            metric.timezone = normalize_timezone(&metric.timezone)?;
+        }
+        Ok(())
+    }
+
 }
 
 fn validate_field(field: &str) -> Result<()> {
@@ -368,25 +377,64 @@ fn validate_artifact_text(text: &str, max_chars: usize, label: &str) -> Result<(
 }
 
 /// 不依赖系统时区数据库；只有 UTC 与经 chrono 核验的固定偏移可用。
-fn validate_timezone(timezone: &str) -> Result<()> {
+///
+/// 把常见写法归一化成 `UTC` / `±HH:MM`：模型常写 `UTC+08:00`、`GMT+8`、`+8`、
+/// `+0800`、`utc+8`。归一化只变换表示，不改变偏移语义；无法识别的写法（IANA
+/// 名称、缺数字、越界偏移）返回 `Unsupported`，错误信息回显收到的原文。
+pub fn normalize_timezone(timezone: &str) -> Result<String> {
     validate_artifact_text(timezone, ARTIFACT_MAX_TIMEZONE_CHARS, "时区标识")?;
-    if timezone == "UTC" {
-        return Ok(());
+    let raw = timezone.trim();
+    if raw.eq_ignore_ascii_case("UTC") || raw.eq_ignore_ascii_case("GMT") || raw == "Z" {
+        return Ok("UTC".into());
     }
-    let bytes = timezone.as_bytes();
-    let fixed = bytes.len() == 6
-        && matches!(bytes[0], b'+' | b'-')
-        && bytes[3] == b':'
-        && [1, 2, 4, 5]
-            .iter()
-            .all(|&index| bytes[index].is_ascii_digit());
-    if !fixed || timezone.parse::<chrono::FixedOffset>().is_err() {
-        return Err(Error::new(
-            ErrorKind::Unsupported,
-            "时区仅支持 UTC 或有效的 ±HH:MM 固定偏移；IANA 时区尚不支持",
-        ));
-    }
-    Ok(())
+    // 前缀大小写不敏感：`utc+08:00` 与 `UTC+08:00` 表示同一偏移。
+    let rest = ["UTC", "GMT"]
+        .iter()
+        .find_map(|prefix| {
+            raw.get(..prefix.len())
+                .filter(|head| head.eq_ignore_ascii_case(prefix))
+                .map(|_| raw[prefix.len()..].trim())
+        })
+        .unwrap_or(raw);
+    let (sign, digits) = match rest.as_bytes().first() {
+        Some(b'+') => ("+", rest[1..].trim()),
+        Some(b'-') => ("-", rest[1..].trim()),
+        _ => return Err(unsupported_timezone(timezone)),
+    };
+    // `+8` / `+8:00` / `+0800` 都是同一偏移；每段必须是 1–2 位数字。
+    let (hours, minutes) = match digits.split_once(':') {
+        Some((hours, minutes)) => (hours, Some(minutes)),
+        None if digits.len() == 4 => (&digits[..2], Some(&digits[2..])),
+        None => (digits, None),
+    };
+    // 每段必须是 1–2 位数字；未写分钟按 0 处理，写了非法分钟直接拒绝。
+    let parse_component = |text: &str| {
+        (text.len() <= 2 && !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit()))
+            .then(|| text.parse::<u32>().ok())
+            .flatten()
+    };
+    let (Some(hours), minutes) = (parse_component(hours), minutes) else {
+        return Err(unsupported_timezone(timezone));
+    };
+    let minutes = match minutes {
+        Some(text) => match parse_component(text) {
+            Some(value) => value,
+            None => return Err(unsupported_timezone(timezone)),
+        },
+        None => 0,
+    };
+    let formatted = format!("{sign}{hours:02}:{minutes:02}");
+    formatted
+        .parse::<chrono::FixedOffset>()
+        .map_err(|_| unsupported_timezone(timezone))?;
+    Ok(formatted)
+}
+
+fn unsupported_timezone(raw: &str) -> Error {
+    Error::new(
+        ErrorKind::Unsupported,
+        format!("时区仅支持 UTC 或有效的 ±HH:MM 固定偏移；收到 {raw:?}，IANA 时区名称尚不支持"),
+    )
 }
 
 #[cfg(test)]
@@ -527,18 +575,34 @@ mod artifact_tests {
             artifact.metric.as_mut().unwrap().timezone = timezone.into();
             artifact.validate_shape().unwrap();
         }
+        // 模型常见写法：带 UTC/GMT 前缀、单位数小时、无冒号、空格混杂，都应归一到标准偏移。
+        for (input, expected) in [
+            ("UTC+08:00", "+08:00"),
+            ("utc+08:00", "+08:00"),
+            ("GMT+08:00", "+08:00"),
+            ("UTC+8", "+08:00"),
+            ("+8", "+08:00"),
+            ("+8:00", "+08:00"),
+            ("+0800", "+08:00"),
+            ("  +08:00  ", "+08:00"),
+            ("UTC-05:30", "-05:30"),
+            ("Z", "UTC"),
+            ("+1:40", "+01:40"),
+            ("-00:30", "-00:30"),
+            ("+08:0", "+08:00"),
+            ("+08", "+08:00"),
+        ] {
+            assert_eq!(normalize_timezone(input).unwrap(), expected, "归一化 {input}");
+        }
         for timezone in [
             "Asia/Shanghai",
             "Mars/Fiction",
-            "utc",
-            " UTC",
-            "Z",
+            "UTC+0800junk",
             "+24:00",
             "-24:00",
             "+08:60",
-            "+8:00",
-            "+0800",
-            "+08:00junk",
+            "+08:",
+            "+:00",
         ] {
             let mut artifact = spec();
             artifact.metric.as_mut().unwrap().timezone = timezone.into();
@@ -547,6 +611,17 @@ mod artifact_tests {
                 ErrorKind::Unsupported
             );
         }
+    }
+
+    #[test]
+    fn unsupported_timezone_error_echoes_the_written_value() {
+        let error = normalize_timezone("Asia/Shanghai").unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Unsupported);
+        assert!(
+            error.message.contains("Asia/Shanghai"),
+            "错误必须回显收到的原文而不是笼统提示：{}",
+            error.message
+        );
     }
 
     #[test]

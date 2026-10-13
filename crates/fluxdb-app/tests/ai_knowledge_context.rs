@@ -213,7 +213,14 @@ fn large_knowledge_body_is_truncated_and_not_full_loaded() {
         .iter()
         .map(|message| message.text.clone())
         .collect::<String>();
-    let content_len = content.len();
+    // 只度量知识摘录，不把系统安全约束或历史正文算作知识内容。
+    let content_len = request
+        .messages
+        .iter()
+        .filter(|message| message.text.starts_with("已确认业务知识"))
+        .map(|message| message.text.len())
+        .sum::<usize>();
+    assert!(content_len > 0);
     assert!(
         content_len < 2400,
         "excerpt should be much smaller than full body. size={content_len}"
@@ -236,7 +243,10 @@ fn large_knowledge_body_is_truncated_and_not_full_loaded() {
         .unwrap();
     let request = scripted_turn_request(&fixture.storage, &job);
     assert!(
-        !request.messages[0].text.contains("大型知识"),
+        request
+            .messages
+            .iter()
+            .all(|message| !message.text.contains("大型知识")),
         "退休条目不应再进入文档"
     );
 }

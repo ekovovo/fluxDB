@@ -129,6 +129,7 @@ pub fn run_ai_conversation_source(
     }
 }
 
+include!("ai_conversation_history.rs");
 include!("ai_conversation_context.rs");
 
 /// 保存一条事件片段（工具卡/结果/通知）；失败只记错误，不让持久化问题吞掉真实回执。
@@ -246,6 +247,7 @@ fn ai_conversation_run_turn(
         context_window_tokens,
         max_output_tokens,
         trigger_percent,
+        max_iterations,
         compaction_model,
         context_references,
     } = context;
@@ -265,7 +267,8 @@ fn ai_conversation_run_turn(
 
     // —— 按模型窗口百分比/输出预留触发，自动压缩（无需用户确认）。 ——
     // 摘要不可用/失败时：仍在窗口内带提示继续；已超预算则可见暂停，不发出超窗请求。
-    let system_tokens = estimate_messages_tokens(&system_messages);
+    let system_tokens = estimate_messages_tokens(&system_messages)
+        + estimate_tools_tokens(&loop_tool_descriptors(tools));
     let history = match ai_conversation_maybe_compact(
         storage,
         job,
@@ -312,7 +315,10 @@ fn ai_conversation_run_turn(
     let runner = TurnRunner {
         provider: &metered_provider,
         tools,
-        limits: LoopLimits::default(),
+        limits: LoopLimits {
+            max_iterations,
+            ..LoopLimits::default()
+        },
         permission,
         audit,
     };

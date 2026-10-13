@@ -167,6 +167,13 @@ impl NavicatMain {
         inputs
             .compression_percent
             .update(cx, |state, cx| state.set_value("80", window, cx));
+        inputs.max_iterations.update(cx, |state, cx| {
+            state.set_value(
+                fluxdb_storage::ai_platform::agents::DEFAULT_MAX_ITERATIONS.to_string(),
+                window,
+                cx,
+            )
+        });
         if existing.is_none() {
             inputs.system_prompt.update(cx, |state, cx| {
                 state.set_value(
@@ -204,6 +211,9 @@ impl NavicatMain {
             editor.agent_id = Some(agent.id.clone());
             editor.inputs.compression_percent.update(cx, |state, cx| {
                 state.set_value(agent.compression_trigger_percent.to_string(), window, cx)
+            });
+            editor.inputs.max_iterations.update(cx, |state, cx| {
+                state.set_value(agent.max_iterations.to_string(), window, cx)
             });
             editor.expected_revision = agent.revision;
             editor.enabled = agent.enabled;
@@ -269,8 +279,17 @@ impl NavicatMain {
             Ok(p) if (10..=95).contains(&p) => p,
             _ => return self.set_ai_agent_editor_error("压缩触发比例必须在 10–95% 之间", cx),
         };
+        // 不设上限，只要求为正整数。
+        let max_iterations =
+            match ai_input_text(&editor.inputs.max_iterations, cx).parse::<i64>() {
+                Ok(v) if v >= 1 => v,
+                _ => {
+                    return self.set_ai_agent_editor_error("最大模型迭代次数必须不小于 1", cx);
+                }
+            };
         let input = fluxdb_app::AiAgentSaveInput {
             compression_trigger_percent: percent,
+            max_iterations,
             id: editor.agent_id.clone(),
             display_name,
             description: ai_input_text(&editor.inputs.description, cx),

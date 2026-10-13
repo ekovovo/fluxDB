@@ -1686,6 +1686,38 @@ mod tests {
     }
 
     #[test]
+    fn mysql_unsigned_cell_value_is_numeric_within_i64_range_and_text_beyond() {
+        assert_eq!(mysql_unsigned_cell_value(Some(0)), CellValue::I64(0));
+        assert_eq!(mysql_unsigned_cell_value(Some(42)), CellValue::I64(42));
+        assert_eq!(
+            mysql_unsigned_cell_value(Some(i64::MAX as u64)),
+            CellValue::I64(i64::MAX)
+        );
+        // 超出 i64 的无符号值不能丢精度造数：保留十进制文本。
+        assert_eq!(
+            mysql_unsigned_cell_value(Some(i64::MAX as u64 + 1)),
+            CellValue::Text((i64::MAX as u64 + 1).to_string())
+        );
+        assert_eq!(mysql_unsigned_cell_value(None), CellValue::Null);
+    }
+
+    #[test]
+    fn mysql_float_cell_value_is_numeric_when_finite_and_text_otherwise() {
+        assert_eq!(mysql_float_cell_value(Some(1.5)), CellValue::F64(1.5));
+        assert_eq!(mysql_float_cell_value(Some(-0.0)), CellValue::F64(-0.0));
+        // 非有限值不是合法 JSON 数字：保留类型化文本，与 PG 路径一致。
+        assert_eq!(
+            mysql_float_cell_value(Some(f64::NAN)),
+            CellValue::Text("NaN".to_string())
+        );
+        assert_eq!(
+            mysql_float_cell_value(Some(f64::INFINITY)),
+            CellValue::Text("inf".to_string())
+        );
+        assert_eq!(mysql_float_cell_value(None), CellValue::Null);
+    }
+
+    #[test]
     fn sqlite_test_connection_accepts_memory_database() {
         let connector = SqliteConnector::new();
         let mut config = sqlite_config();
@@ -3555,6 +3587,20 @@ SELECT item_id, name FROM audit_log;"
         assert!(
             result.results.first().is_some_and(|p| !p.rows.is_empty()),
             "查询应返回结果集"
+        );
+
+        // MySQL 数值列必须投影为类型化数值，而不是文本：否则 AI 产物会把
+        // COUNT/SUM 一类结果判为非数值列（T039 non_numeric_field）。
+        let count_cell = result
+            .results
+            .first()
+            .and_then(|p| p.rows.first())
+            .and_then(|row| row.values.first())
+            .cloned()
+            .expect("count(*) 应返回单元格");
+        assert!(
+            matches!(count_cell, CellValue::I64(3)),
+            "COUNT(*) 应为类型化数值 I64(3)，实际 {count_cell:?}"
         );
 
         // 写（apply_changes：更新）

@@ -332,6 +332,23 @@ impl GenerationProvider for ReceiptDrivenProvider {
                         .collect::<Vec<_>>()
                 )
             });
+            let source_ref = request.messages.iter().find_map(|message| {
+                if message.tool_call_id.as_deref() != Some("query") { return None; }
+                let value: Value = serde_json::from_str(&message.text).ok()?;
+                value["result"]["result_ref"]["id"].as_str().map(str::to_owned)
+            });
+            let substitute_source = |mut arguments: Value| {
+                fn substitute(value: &mut Value, reference: &str) {
+                    match value {
+                        Value::String(text) if text == "result-1" => *text = reference.to_owned(),
+                        Value::Array(items) => { for item in items { substitute(item, reference); } },
+                        Value::Object(object) => { for item in object.values_mut() { substitute(item, reference); } },
+                        _ => {}
+                    }
+                }
+                if let Some(reference) = &source_ref { substitute(&mut arguments, reference); }
+                arguments
+            };
             let events = match step {
                 Step::Done => vec![
                     ModelEvent::TextDelta(
@@ -343,7 +360,7 @@ impl GenerationProvider for ReceiptDrivenProvider {
                     id,
                     tool,
                     arguments,
-                } => tool_events(id, tool, arguments),
+                } => tool_events(id, tool, substitute_source(arguments)),
                 Step::WithArtifact {
                     id,
                     tool,
@@ -365,7 +382,7 @@ impl GenerationProvider for ReceiptDrivenProvider {
                         .as_str()
                         .expect("successful create must return the host artifact ID");
                     arguments["artifact_id"] = json!(artifact_id);
-                    tool_events(id, tool, arguments)
+                    tool_events(id, tool, substitute_source(arguments))
                 }
             };
             self.requests.lock().unwrap().push(request);
@@ -460,7 +477,11 @@ fn assert_ready(fixture: &Fixture, job: &AiConversationJob, view: &AiConversatio
     assert_eq!(artifact.turn_id, job.turn_id);
     assert_eq!(artifact.renderer_id, REPORT);
     let spec: Value = serde_json::from_str(&artifact.spec_json).unwrap();
-    assert_eq!(spec["metric"]["timezone"], "UTC");
+    assert!(
+        ["UTC", "+08:00"].contains(&spec["metric"]["timezone"].as_str().unwrap_or_default()),
+        "时区必须是校验通过的规范写法，实际 {}",
+        spec["metric"]["timezone"]
+    );
     assert_eq!(spec["blocks"].as_array().unwrap().len(), 2);
     assert_card(fixture, view, artifact, None);
     let sources = fixture.sources(&artifact.id);
@@ -475,7 +496,7 @@ fn assert_ready(fixture: &Fixture, job: &AiConversationJob, view: &AiConversatio
     );
     assert_eq!(
         serde_json::from_str::<Value>(&sources[0].metadata_json).unwrap()["result_ref"],
-        "result-1"
+        fixture.receipt(job, "query", "succeeded")["result_ref"]["id"]
     );
     fixture
         .storage

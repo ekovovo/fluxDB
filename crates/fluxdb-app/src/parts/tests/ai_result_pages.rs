@@ -332,10 +332,10 @@ fn ai_result_pages_recorded_rows_match_the_store_spill_facts() {
             assert_eq!(row.0, "retained", "溢写结果必须按 retained 登记");
             let relative_path = row.1.expect("retained 必须带相对路径");
             assert!(
-                results.lock().unwrap().spill_fact("result-1").is_some(),
+                results.lock().unwrap().spill_fact(serde_json::from_str::<serde_json::Value>(&spilled.result_json).unwrap()["result_ref"]["id"].as_str().unwrap()).is_some(),
                 "仓库里确有溢写事实"
             );
-            let fact = results.lock().unwrap().spill_fact("result-1").unwrap();
+            let fact = results.lock().unwrap().spill_fact(serde_json::from_str::<serde_json::Value>(&spilled.result_json).unwrap()["result_ref"]["id"].as_str().unwrap()).unwrap();
             assert_eq!(relative_path, fact.relative_path);
             assert_eq!(row.2.as_deref(), Some(fact.content_hash.as_str()));
             assert!(row.3 > 0);
@@ -364,54 +364,51 @@ fn ai_result_pages_recorded_rows_match_the_store_spill_facts() {
             Ok(())
         })
         .expect("读取登记事实");
+    let mut next_job = job.clone();
+    next_job.turn_id = "t-2".into();
+    let history = storage.with_ai_connection(|conn| ai_historical_tool_facts(conn, &next_job)).unwrap();
+    let facts = history.get("m-1").unwrap();
+    assert!(!facts.is_empty());
+    assert!(facts.iter().all(|fact| fact["readable"] == false && fact["unavailable_reason"] == "turn_scope"));
+    assert!(facts.iter().any(|fact| fact["tool"] == "db.query" && fact["status"] == "succeeded"));
+    assert!(!serde_json::json!(facts).to_string().contains("\"items\""), "历史不能回放数据值");
+    let handle = serde_json::from_str::<serde_json::Value>(&spilled.result_json).unwrap()["result_ref"]["id"].as_str().unwrap().to_owned();
+    let retained_path = root.join("ai-results").join(results.lock().unwrap().spill_fact(&handle).unwrap().relative_path);
+    storage.with_ai_connection(|conn| {
+        conn.execute("UPDATE ai_results SET expires_at_ms=0 WHERE id='t-1-result-call-spilled'", [])
+            .map_err(|error| Error::new(ErrorKind::Internal, error.to_string()))?;
+        Ok(())
+    }).unwrap();
+    purge_expired_result_files(&storage).unwrap();
+    assert!(!retained_path.exists(), "过期文件必须清理，不延长模型引用寿命");
+    let outside_name = format!("{}.json", uuid::Uuid::new_v4());
+    let outside = root.join(&outside_name);
+    std::fs::write(&outside, "keep").unwrap();
+    storage.with_ai_connection(|conn| {
+        conn.execute("UPDATE ai_results SET relative_path=?1,metadata_json=json_set(metadata_json,'$.file_purged',0) WHERE id='t-1-result-call-spilled'",
+            [format!("../{outside_name}")]).map_err(|error| Error::new(ErrorKind::Internal, error.to_string()))?;
+        Ok(())
+    }).unwrap();
+    purge_expired_result_files(&storage).unwrap();
+    assert!(outside.exists(), "清理不得越过受控根");
     let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
-fn ai_result_pages_declares_sample_shape_and_keeps_cursor_when_shedding_items() {
-    // 这一页 items 就是模型主动要的数据；超限时兜底裁剪必须丢 items 而保留
-    // result_ref/next_cursor，否则模型拿到一个没有游标的半截页，无法继续翻页。
-    let spec = result_read_page_spec().expect("工具定义");
-    assert_eq!(
-        spec.output_shape,
-        ToolOutputShape::Sample {
-            keep_rows: 0,
-            omit_field: "items".into(),
-            rows_omitted_field: None,
-        }
-    );
-
-    let items: Vec<serde_json::Value> = (0..3000)
-        .map(|i| serde_json::json!(format!("row-{i}")))
-        .collect();
+fn ai_result_pages_read_shape_does_not_return_a_cursor_for_an_omitted_page() {
+    let spec = result_read_page_spec().unwrap();
+    assert_eq!(spec.output_shape, ToolOutputShape::Read);
     let receipt = fluxdb_core::ToolReceipt {
-        call_id: "c1".into(),
-        tool_id: "result.read_page".into(),
+        call_id: "c1".into(), tool_id: "result.read_page".into(),
         status: fluxdb_core::ToolReceiptStatus::Succeeded,
-        result_json: serde_json::json!({
-            "ok": true,
-            "result_ref": {"id": "result-1", "tool_id": "db.query", "created_at_ms": 1},
-            "items": items,
-            "returned_items": 3000,
-            "total_items": 10000,
-            "truncated": true,
-            "next_cursor": "cursor-2",
-        })
-        .to_string(),
-        error_code: None,
-        affected_rows: None,
-        started_at_ms: 0,
-        finished_at_ms: 1,
+        result_json: serde_json::json!({"items":["x".repeat(4096)],"next_cursor":"cursor-2"}).to_string(),
+        error_code: None, affected_rows: None, started_at_ms: 0, finished_at_ms: 1,
     };
     let projection = project_receipt_with_shape(&receipt, None, 512, &spec.output_shape);
+    let value: serde_json::Value = serde_json::from_str(&projection.text).unwrap();
     assert!(projection.truncated);
-    assert!(projection.text.len() <= 512);
-    let value: serde_json::Value = serde_json::from_str(&projection.text).expect("裁剪后合法 JSON");
-    assert!(value.get("items").is_none(), "items 应被优先丢弃");
-    assert_eq!(value["result_ref"]["id"], "result-1");
-    assert_eq!(value["next_cursor"], "cursor-2", "翻页游标必须保留");
-    assert_eq!(value["total_items"], 10000);
-    assert_eq!(value["omitted_fields"], serde_json::json!(["items"]));
+    assert!(value.get("next_cursor").is_none(), "省略整页时不能跳到下一页");
+    assert_eq!(value["delivery_truncated"], true);
 }
 
 #[test]
@@ -504,7 +501,7 @@ fn ai_result_pages_facts_name_positional_cells_without_changing_page_shape() {
         assert_eq!(
             payload["result_ref"],
             serde_json::json!({
-                "id": result.id, "tool_id": "db.query", "created_at_ms": 42,
+                "id": result.id, "tool_id": "db.query", "created_at_ms": 42, "scope":"turn", "expires_on":"execution_end","content_type":"items",
             }),
         );
         assert!(!receipt.result_json.contains("source-call-private"));
@@ -602,7 +599,7 @@ fn ai_result_pages_facts_reject_released_expired_unknown_and_foreign_handles() {
     assert!(store.release(&result.id));
     assert_eq!(store.facts(&result.id).unwrap_err().code, "result_expired");
     assert!(store.expire(&result.id));
-    assert_eq!(store.facts(&result.id).unwrap_err().code, "unknown_result");
+    assert_eq!(store.facts(&result.id).unwrap_err().code, "result_expired");
 
     let (next, _) = store
         .put(
@@ -613,8 +610,8 @@ fn ai_result_pages_facts_reject_released_expired_unknown_and_foreign_handles() {
             [serde_json::json!({"n": 2})],
         )
         .unwrap();
-    store.expire_session();
-    assert_eq!(store.facts(&next.id).unwrap_err().code, "unknown_result");
+    store.expire_all();
+    assert_eq!(store.facts(&next.id).unwrap_err().code, "result_expired");
 }
 
 #[test]

@@ -16,34 +16,18 @@ pub enum EffectClass {
     ExternalSideEffect,
 }
 
-/// 工具产出结果的形状（设计 §15；参考 Pi `outputLimits` / Goose 大响应落盘）。
-///
-/// 截断应当发生在**产出**结果的地方：工具自己知道哪些内容可以省略、哪些是
-/// 必须保留的结构。传输层只按这里声明的形状做兜底，不再对已裁好的载荷二次裁剪，
-/// 也不去猜测未声明的结构。
+/// 工具声明可省略的内容；预算层不按工具名称猜测语义。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ToolOutputShape {
-    /// 结果由工具自己保证有界（如 `db.query` 只放样本行 + ResultRef）。
-    /// `keep_rows` 是回执里保留的样本行数；`omit_field`/`rows_omitted_field`
-    /// 是被省略行数的字段名，供兜底裁剪时优先丢弃前者、保留后者。
+    /// 有序条目：只保留预算能容纳的完整前缀，不裁剪单个条目。
     Sample {
-        keep_rows: usize,
         omit_field: String,
         rows_omitted_field: Option<String>,
     },
-    /// 结果整体有意义，不得按字段裁剪；超限只保留结构与截断标记。
-    /// 用于文件读取、Redis inspect 这类"内容本身就是产物"的工具。
+    /// 整体结果、执行回执或未知结构；超限保留权威状态及快照引用，不随机删字段。
     Opaque,
-}
-
-impl ToolOutputShape {
-    /// 该形状下兜底裁剪时可优先丢弃的字段（大字段在前）。
-    fn shed_order(&self) -> Vec<String> {
-        match self {
-            ToolOutputShape::Sample { omit_field, .. } => vec![omit_field.clone()],
-            ToolOutputShape::Opaque => Vec::new(),
-        }
-    }
+    /// 主动分段读取；原工具控制范围与游标，通用层不得删内容后仍回显原续读位置。
+    Read,
 }
 
 /// 工具目录项（描述 + schema + 限制）。
@@ -66,11 +50,11 @@ impl ToolSpec {
     pub fn from_descriptor(descriptor: &fluxdb_core::ToolDescriptor) -> fluxdb_core::Result<Self> {
         let input_schema: serde_json::Value = serde_json::from_str(&descriptor.input_schema_json)
             .map_err(|e| {
-                fluxdb_core::Error::new(
-                    fluxdb_core::ErrorKind::Internal,
-                    format!("工具 {} 的 input_schema 不是合法 JSON: {e}", descriptor.id),
-                )
-            })?;
+            fluxdb_core::Error::new(
+                fluxdb_core::ErrorKind::Internal,
+                format!("工具 {} 的 input_schema 不是合法 JSON: {e}", descriptor.id),
+            )
+        })?;
         Ok(Self {
             id: descriptor.id.clone(),
             version: descriptor.version,
@@ -85,8 +69,7 @@ impl ToolSpec {
             },
             timeout_ms: 30_000,
             output_limit_bytes: 128 * 1024,
-            // 未声明形状的工具按"内容本身是产物"处理：兜底裁剪只丢顶层字段，
-            // 不做结构猜测，避免把 file.read 这类结果的语义裁坏。
+            // 未声明结构仍有通用预算，但不猜测哪些业务字段可以删除。
             output_shape: ToolOutputShape::Opaque,
         })
     }
@@ -161,7 +144,7 @@ pub struct ToolCatalog {
     executable: HashMap<String, Box<dyn fluxdb_core::AiTool>>,
     max_argument_bytes: usize,
     hooks: HookPipeline,
-    /// 本轮结果仓库（`standard_sql_catalog_with_results` 注入）。
+    /// 当前轮的快照仓库；SQL 条目和其他工具的输出片段共用同一授权生命周期。
     ///
     /// 目录是工具实现与结果仓库的同一次装配，回执登记溢写事实时按此查句柄，
     /// 不再要求调用方把同一个仓库另传一遍——两处各传一次迟早会漏。
@@ -204,11 +187,13 @@ impl ToolCatalog {
             return;
         }
         self.specs.retain(|spec| !disabled_ids.contains(&spec.id));
-        self.executable
-            .retain(|id, _| !disabled_ids.contains(id));
+        self.executable.retain(|id, _| !disabled_ids.contains(id));
     }
 
-    pub fn with_hooks(mut self, hooks: HookPipeline) -> Self { self.hooks=hooks; self }
+    pub fn with_hooks(mut self, hooks: HookPipeline) -> Self {
+        self.hooks = hooks;
+        self
+    }
 
     /// 注册工具并显式声明其输出形状。
     ///
@@ -221,13 +206,18 @@ impl ToolCatalog {
     ) -> fluxdb_core::Result<()> {
         let mut spec = ToolSpec::from_descriptor(tool.descriptor())?;
         spec.output_shape = shape;
-        if self.describe(&spec.id).is_some(){return Err(fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal,"工具 ID 重复"));}
+        if self.describe(&spec.id).is_some() {
+            return Err(fluxdb_core::Error::new(
+                fluxdb_core::ErrorKind::Internal,
+                "工具 ID 重复",
+            ));
+        }
         self.specs.push(spec);
         self.register(tool)
     }
 
     /// 注册工具；未声明形状时按 [`ToolOutputShape::Opaque`] 处理。
-    pub fn add_tool(&mut self, tool:Box<dyn fluxdb_core::AiTool>)->fluxdb_core::Result<()> {
+    pub fn add_tool(&mut self, tool: Box<dyn fluxdb_core::AiTool>) -> fluxdb_core::Result<()> {
         self.add_tool_with_shape(tool, ToolOutputShape::Opaque)
     }
 
@@ -297,11 +287,7 @@ impl ToolCatalog {
         self.executable.get(id).map(|tool| tool.as_ref())
     }
 
-    /// 把回执投影成**该工具声明的**输出上限内的内容（未注册工具返回受控错误）。
-    ///
-    /// 这是"output 大小限制"的生效点：调用方不应自行决定上限，避免某个工具忘记截断。
-    /// 裁剪策略来自工具自己声明的 [`ToolOutputShape`]——已声明 `Sample` 的工具在
-    /// 产出时裁过一次，这里只按同一顺序兜底，不重新解释它的结构。
+    /// 回执不变；模型只获得按声明语义裁剪的投影及当前轮可用的续读引用。
     pub fn project(
         &self,
         id: &str,
@@ -311,12 +297,50 @@ impl ToolCatalog {
         let spec = self
             .describe(id)
             .ok_or_else(|| ToolError::unknown_tool(id))?;
-        Ok(project_receipt_with_shape(
-            receipt,
-            result_ref,
-            spec.output_limit_bytes as usize,
-            &spec.output_shape,
-        ))
+        let mut budget = ToolOutputBudget::for_spec(spec);
+        let framing = serde_json::json!({
+            "tool":id,"status":loop_tool_status_label(receipt.status),"truncated":false,"result":null,
+        }).to_string();
+        budget.max_bytes = budget
+            .max_bytes
+            .saturating_sub(framing.len().saturating_sub(4));
+        budget.max_tokens = budget
+            .max_tokens
+            .saturating_sub(estimate_tokens(&framing) as usize);
+        let mut reference = result_ref.or_else(|| {
+            self.results
+                .as_ref()?
+                .lock()
+                .ok()?
+                .reference_for_call(&receipt.call_id)
+        });
+        let mut projection =
+            project_receipt_with_budget(receipt, reference.clone(), budget, &spec.output_shape);
+        if projection.truncated && reference.is_none() {
+            if let Some(results) = &self.results {
+                let mut store = results.lock().map_err(|_| ToolError {
+                    code: "result_store_unavailable",
+                    message: "结果仓库不可用".into(),
+                    retryable: false,
+                })?;
+                reference = Some(store.put_output(receipt).map_err(|error| ToolError {
+                    code: "result_snapshot_unavailable",
+                    message: error.message,
+                    retryable: false,
+                })?);
+                projection =
+                    project_receipt_with_budget(receipt, reference, budget, &spec.output_shape);
+            }
+        }
+        tracing::debug!(
+            tool_id = id,
+            source_bytes = receipt.result_json.len(),
+            model_bytes = projection.text.len(),
+            estimated_tokens = estimate_tokens(&projection.text),
+            truncated = projection.truncated,
+            "工具输出预算投影完成"
+        );
+        Ok(projection)
     }
 }
 
@@ -325,7 +349,10 @@ impl ToolCatalog {
 /// 支持：`$ref`（仅 `#/$defs/<name>`）、`type`、`required`、`properties`、
 /// `additionalProperties: false`、`enum/const/oneOf`、`minLength/maxLength`、`minimum/maximum`、
 /// `minItems/maxItems`、`items`。其余关键字忽略（不猜测语义）。
-pub fn validate_schema(schema: &serde_json::Value, value: &serde_json::Value) -> Result<(), String> {
+pub fn validate_schema(
+    schema: &serde_json::Value,
+    value: &serde_json::Value,
+) -> Result<(), String> {
     validate_at(schema, value, schema, 0)
 }
 
@@ -459,160 +486,4 @@ fn validate_at(
         }
     }
     Ok(())
-}
-
-/// 面向模型的**有界投影**：超限截断并标记，绝不修改原始回执。
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ModelProjection {
-    pub text: String,
-    pub truncated: bool,
-    pub result_ref: Option<ResultRef>,
-}
-/// 不带形状声明的投影入口（供只需上限裁剪的调用方与测试使用）。
-///
-/// 等价于按 [`ToolOutputShape::Opaque`] 处理：不猜测结构，只在超限时按字段丢弃。
-pub fn project_receipt(
-    receipt: &fluxdb_core::ToolReceipt,
-    result_ref: Option<ResultRef>,
-    max_bytes: usize,
-) -> ModelProjection {
-    project_receipt_with_shape(receipt, result_ref, max_bytes, &ToolOutputShape::Opaque)
-}
-
-/// 把真实回执投影成有界内容（回执本身保持不变）。
-///
-/// 投影结果必须是**合法 JSON**：调用方（主循环）会把它原样嵌进
-/// `{"tool":..,"truncated":..,"result":<投影>}` 信封发给模型，所以按字节硬切会
-/// 截在字符串/数组中间，产出模型无法解析的半截 JSON。
-///
-/// 按工具声明的形状处理（参考 Pi `outputLimits`、Goose 大响应落盘）：
-/// 工具在产出时已经裁过一次（`Sample` 形状），传输层只按同一字段顺序兜底；
-/// 未声明形状时按 `Opaque` 处理，不做结构猜测。
-pub fn project_receipt_with_shape(
-    receipt: &fluxdb_core::ToolReceipt,
-    result_ref: Option<ResultRef>,
-    max_bytes: usize,
-    shape: &ToolOutputShape,
-) -> ModelProjection {
-    let raw = receipt.result_json.as_str();
-    if raw.len() <= max_bytes {
-        return ModelProjection {
-            text: raw.to_string(),
-            truncated: false,
-            result_ref,
-        };
-    }
-    // 工具声明的 output 上限是硬约束：投影必须在 max_bytes 内，因此连受控错误对象
-    // 也要按同样预算收敛，而不是"为了说明错误先超限"。
-    let text = match serde_json::from_str::<serde_json::Value>(raw) {
-        Ok(serde_json::Value::Object(_)) => shrink_to_budget(raw, max_bytes, shape)
-            .unwrap_or_else(|| too_large_marker(max_bytes, shape)),
-        // 非 JSON 回执（受控夹具/简单文本结果）不做结构猜测：按字节截断后作为
-        // JSON 字符串回传，保持"内容 + 截断标记"且仍是合法 JSON。
-        _ => truncated_json_string(raw, max_bytes),
-    };
-    ModelProjection {
-        text,
-        truncated: true,
-        result_ref,
-    }
-}
-
-/// 在字节预算内丢弃字段，直到序列化结果装得下。
-///
-/// 丢弃顺序由工具声明的 [`ToolOutputShape::shed_order`] 决定（大字段优先），
-/// 声明顺序之外的字段仍按"从末尾向前"兜底，这样结构、行数与截断标记等小事实
-/// 留在上下文里。每次成功的候选都写入 `omitted_fields`，让模型知道哪些内容被省略
-/// 而不是凭空消失。
-fn shrink_to_budget(raw: &str, max_bytes: usize, shape: &ToolOutputShape) -> Option<String> {
-    let mut value: serde_json::Value = serde_json::from_str(raw).ok()?;
-    let object = value.as_object_mut()?;
-    let shed = shape.shed_order();
-    let keys: Vec<String> = object.keys().cloned().collect();
-    // 声明要丢弃的字段排前面，其余保持"从末尾向前"。
-    let mut order: Vec<String> = Vec::with_capacity(keys.len());
-    order.extend(shed.iter().filter(|key| keys.contains(key)).cloned());
-    order.extend(keys.iter().rev().filter(|key| !shed.contains(key)).cloned());
-
-    let mut dropped: Vec<String> = Vec::new();
-    for key in &order {
-        let mut probe = object.clone();
-        probe.insert(
-            "omitted_fields".into(),
-            serde_json::Value::Array(
-                dropped
-                    .iter()
-                    .map(|name| serde_json::Value::String(name.clone()))
-                    .collect(),
-            ),
-        );
-        if let Ok(candidate) = serde_json::to_string(&probe)
-            && candidate.len() <= max_bytes
-        {
-            return Some(candidate);
-        }
-        object.remove(key);
-        dropped.push(key.clone());
-    }
-    None
-}
-
-/// 在给定预算内构造最小可解释的超限说明。
-///
-/// 优先给带 message 的完整说明；预算不够就退到只有错误码的最小对象，
-/// 极端预算（0–1 字节）返回空串——工具声明的上限才是硬约束。
-fn too_large_marker(max_bytes: usize, shape: &ToolOutputShape) -> String {
-    // 样本形状的工具本来就能分页读取，提示应指向续读而不是让模型缩小查询。
-    let hint = match shape {
-        ToolOutputShape::Sample {
-            rows_omitted_field, ..
-        } => rows_omitted_field.as_ref().map_or_else(
-            || "结果超过该工具的输出上限，请缩小查询范围".to_string(),
-            |field| {
-                format!(
-                    "结果超过该工具的输出上限，完整数据请用 result.read_page 按 {field} 指定的句柄分页读取"
-                )
-            },
-        ),
-        ToolOutputShape::Opaque => {
-            "结果超过该工具的输出上限，请缩小查询范围或读取范围".to_string()
-        }
-    };
-    let full = serde_json::json!({
-        "error": "result_too_large",
-        "message": hint,
-    })
-    .to_string();
-    if full.len() <= max_bytes {
-        return full;
-    }
-    let compact = serde_json::json!({"error": "result_too_large"}).to_string();
-    if compact.len() <= max_bytes {
-        return compact;
-    }
-    String::new()
-}
-
-/// 非 JSON 内容按字节安全截断，并作为合法 JSON 字符串返回。
-///
-/// 截断只保证 UTF-8 字符边界；JSON 转义由 serde 负责，因此序列化结果可能比
-/// 原始片段更长，这里按序列化后的实际长度回退到更短的前缀。
-fn truncated_json_string(raw: &str, max_bytes: usize) -> String {
-    let mut end = raw.len().min(max_bytes);
-    while end > 0 && !raw.is_char_boundary(end) {
-        end -= 1;
-    }
-    let mut slice = &raw[..end];
-    // 预留两个引号的预算。
-    while slice.len() + 2 > max_bytes {
-        let mut shorter = slice.len().saturating_sub(1);
-        while shorter > 0 && !slice.is_char_boundary(shorter) {
-            shorter -= 1;
-        }
-        slice = &slice[..shorter];
-        if slice.is_empty() {
-            break;
-        }
-    }
-    serde_json::to_string(slice).unwrap_or_default()
 }

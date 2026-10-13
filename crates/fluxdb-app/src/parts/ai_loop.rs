@@ -26,7 +26,8 @@ pub struct LoopLimits {
 impl Default for LoopLimits {
     fn default() -> Self {
         Self {
-            max_iterations: 24,
+            // 与 Agent 配置默认值同源，避免两处各写一个数字而漂移。
+            max_iterations: fluxdb_storage::ai_platform::agents::DEFAULT_MAX_ITERATIONS as usize,
             max_repeat_signature: 3,
         }
     }
@@ -205,10 +206,8 @@ impl<'a> TurnRunner<'a> {
     ) -> TurnOutcome {
         let mut signature_counts: HashMap<String, usize> = HashMap::new();
         let mut last_text = String::new();
-        let started=std::time::Instant::now();
 
         for iteration in 1..=self.limits.max_iterations {
-            if started.elapsed()>std::time::Duration::from_secs(300) {return TurnOutcome::Paused{reason:"任务达到内部总时限，已暂停".into()};}
             if cancel.is_cancelled() {
                 return TurnOutcome::Cancelled;
             }
@@ -218,9 +217,16 @@ impl<'a> TurnRunner<'a> {
             }
             emit(LoopEvent::IterationStarted { iteration });
 
+            let messages = match bounded_tool_history(&state.messages) {
+                Ok(messages) => messages,
+                Err(reason) => {
+                    emit(LoopEvent::Notice(reason.clone()));
+                    return TurnOutcome::Paused { reason };
+                }
+            };
             let request = fluxdb_core::ModelRequest {
                 model: state.model.clone(),
-                messages: state.messages.clone(),
+                messages,
                 tools: loop_tool_descriptors(self.tools),
                 max_output_tokens: state.max_output_tokens,
             };
@@ -551,6 +557,23 @@ impl<'a> TurnRunner<'a> {
                         };
                     }
                 };
+                if receipt.call_id != call.provider_call_id || receipt.tool_id != call.tool_id {
+                    let message = "工具回执归属与已授权调用不符；执行结果不可确认，禁止自动重放";
+                    tracing::warn!(tool_id=%call.tool_id, "拒绝登记归属不符的工具回执");
+                    emit(LoopEvent::ToolFinished {
+                        receipt: fluxdb_core::ToolReceipt {
+                            call_id: call.provider_call_id.clone(),
+                            tool_id: call.tool_id.clone(),
+                            status: fluxdb_core::ToolReceiptStatus::Unknown,
+                            result_json: serde_json::json!({"ok":false,"code":"receipt_identity_mismatch","message":message,"retryable":false}).to_string(),
+                            error_code: Some("receipt_identity_mismatch".into()),
+                            affected_rows: None,
+                            started_at_ms: loop_now_ms(),
+                            finished_at_ms: loop_now_ms(),
+                        },
+                    });
+                    return TurnOutcome::Failed { message: message.into() };
+                }
                 let progress = progress_events
                     .lock()
                     .map(|events| events.clone())
@@ -561,12 +584,6 @@ impl<'a> TurnRunner<'a> {
                         progress: event,
                     });
                 }
-                emit(LoopEvent::ToolFinished {
-                    receipt: receipt.clone(),
-                });
-                if let Err(error)=self.tools.hooks.after(&receipt,cancel) {
-                    return TurnOutcome::Failed{message:error.message};
-                }
                 // 5) 回给模型的是**该工具有界投影**，原始回执保持不变。
                 let projection = match self.tools.project(&receipt.tool_id, &receipt, None) {
                     Ok(projection) => projection,
@@ -576,24 +593,27 @@ impl<'a> TurnRunner<'a> {
                             error.code,
                             serde_json::Value::String(error.message).to_string()
                         ),
-                        truncated: false,
+                        truncated: true,
                         result_ref: None,
                     },
                 };
+                // 快照先生成，落库才能登记非 SQL 输出的真实引用与 spill 事实。
+                emit(LoopEvent::ToolFinished {
+                    receipt: receipt.clone(),
+                });
+                if let Err(error)=self.tools.hooks.after(&receipt,cancel) {
+                    return TurnOutcome::Failed{message:error.message};
+                }
                 state.messages.push(fluxdb_core::ModelMessage::tool_result(
                     receipt.call_id.clone(),
                     receipt.tool_id.clone(),
-                    format!(
-                        "{{\"tool\":\"{}\",\"status\":\"{}\",\"truncated\":{},\"result\":{}}}",
-                        receipt.tool_id,
-                        loop_tool_status_label(receipt.status),
-                        projection.truncated,
-                        if projection.text.trim().is_empty() {
-                            "null".to_string()
-                        } else {
-                            projection.text
-                        }
-                    ),
+                    serde_json::json!({
+                        "tool":receipt.tool_id,
+                        "status":loop_tool_status_label(receipt.status),
+                        "truncated":projection.truncated,
+                        "result":serde_json::from_str::<serde_json::Value>(&projection.text)
+                            .unwrap_or(serde_json::Value::Null),
+                    }).to_string(),
                 ));
             }
         }

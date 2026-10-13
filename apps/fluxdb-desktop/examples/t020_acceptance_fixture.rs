@@ -63,6 +63,7 @@ fn main() {
         system_prompt: "只能执行用户明确授权的写操作,每条写 SQL 都要请求审批。".into(),
         model_profile_id: Some(model_id.clone()),
         compression_trigger_percent: 80,
+        max_iterations: 24,
         allowed_tools: vec!["db.execute".into()],
         enabled: true,
         expected_revision: 0,

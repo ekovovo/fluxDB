@@ -59,6 +59,7 @@ fn main() {
         system_prompt: "解释当前页面，不执行任何写操作。".into(),
         model_profile_id: Some(model_id.clone()),
         compression_trigger_percent: 80,
+        max_iterations: 24,
         allowed_tools: Vec::new(),
         enabled: true,
         expected_revision: 0,

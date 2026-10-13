@@ -43,12 +43,17 @@ fn sqlite_query_create_add_table_finalize_has_real_sources_card_file_and_hash() 
     assert_eq!(query["columns"], json!(["channel", "revenue"]));
     assert_eq!(query["rows"], json!([["web", 12], ["store", 34]]));
     assert_eq!(query["row_count"], 2);
-    assert_eq!(query["result_ref"]["id"], "result-1");
+    assert!(
+        query["result_ref"]["id"]
+            .as_str()
+            .unwrap()
+            .starts_with("result-")
+    );
     assert_eq!(
         results
             .lock()
             .unwrap()
-            .read_page("result-1", None, 10, 4096)
+            .read_page(query["result_ref"]["id"].as_str().unwrap(), None, 10, 4096)
             .unwrap()
             .items,
         vec![json!(["web", 12]), json!(["store", 34])]
@@ -145,6 +150,69 @@ fn invalid_table_block_leaves_the_draft_usable_and_can_be_followed_by_valid_bloc
         created["revision"].as_i64().unwrap() + 1,
         "the rejected block must not increment the artifact revision"
     );
+    provider.assert_sql_unchanged();
+}
+
+#[test]
+fn model_written_utc_offset_succeeds_on_first_attempt_and_is_normalized() {
+    // 模型常写 `UTC+08:00`；它应被归一化为 `+08:00` 后直接创建成功，而不是先失败一次。
+    let fixture = Fixture::new();
+    let job = fixture.job();
+    let (mut catalog, results) = fixture.catalog(&job);
+    add_ai_artifact_tools(&mut catalog, &fixture.storage, &job, results).unwrap();
+    let mut steps = report_steps(QUERY);
+    steps[1] = call("create", "artifact.create", {
+        let mut arguments = create_args();
+        arguments["metric"]["timezone"] = json!("UTC+08:00");
+        arguments
+    });
+    let provider = ReceiptDrivenProvider::new(&fixture, &job, steps);
+    let view = run(&fixture, &job, &catalog, &provider);
+    assert_ready(&fixture, &job, &view);
+    let created = fixture.receipt(&job, "create", "succeeded");
+    assert_eq!(created["metric"]["timezone"], "+08:00");
+    let artifact = fixture.artifacts(&job).remove(0);
+    let spec: Value = serde_json::from_str(&artifact.spec_json).unwrap();
+    assert_eq!(
+        spec["metric"]["timezone"], "+08:00",
+        "落库 spec 也必须归一化"
+    );
+    provider.assert_sql_unchanged();
+}
+
+#[test]
+fn duplicate_block_is_rejected_without_adding_a_second_copy() {
+    // 模型可能先在 create 里声明图表、再用 add_block 加同一张图；重复块必须被拒绝，
+    // 否则产物会渲染两份完全相同的图表。
+    let fixture = Fixture::new();
+    let job = fixture.job();
+    let (mut catalog, results) = fixture.catalog(&job);
+    add_ai_artifact_tools(&mut catalog, &fixture.storage, &job, results).unwrap();
+    let mut steps = report_steps(QUERY);
+    steps.insert(
+        2,
+        with_artifact(
+            "dup-add",
+            "artifact.add_block",
+            json!({"block": chart("channel", "revenue")}),
+        ),
+    );
+    let provider = ReceiptDrivenProvider::new(&fixture, &job, steps);
+    let view = run(&fixture, &job, &catalog, &provider);
+    assert_eq!(
+        fixture.receipt(&job, "dup-add", "failed")["code"],
+        "duplicate_block"
+    );
+    assert_ready(&fixture, &job, &view);
+    let artifact = fixture.artifacts(&job).remove(0);
+    let spec: Value = serde_json::from_str(&artifact.spec_json).unwrap();
+    let charts = spec["blocks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|block| block["type"] == "chart")
+        .count();
+    assert_eq!(charts, 1, "重复图表块不能被追加：{}", spec["blocks"]);
     provider.assert_sql_unchanged();
 }
 
@@ -384,12 +452,15 @@ fn retained_sql_results_keep_positional_paging_shape_after_artifact_generation()
     let provider = ReceiptDrivenProvider::new(&fixture, &job, report_steps(wide_sql));
     let view = run(&fixture, &job, &catalog, &provider);
     let query = fixture.receipt(&job, "query", "succeeded");
-    assert_eq!(query["rows"].as_array().unwrap().len(), 5);
+    assert_eq!(
+        query["rows"].as_array().unwrap().len() as u64,
+        query["row_count"].as_u64().unwrap()
+    );
     assert_eq!(query["columns"], json!(["channel", "revenue", "padding"]));
     assert_eq!(query["truncated"], true);
     let total = query["row_count"].as_u64().unwrap() as usize;
     assert!(total > 100);
-    assert_eq!(query["rows_omitted"].as_u64(), Some((total - 5) as u64));
+    assert_eq!(query["rows_omitted"].as_u64(), Some(0));
     let artifact = fixture.artifacts(&job).remove(0);
     assert_eq!(artifact.status, "ready");
     assert_card(&fixture, &view, &artifact, None);
@@ -419,7 +490,7 @@ fn retained_sql_results_keep_positional_paging_shape_after_artifact_generation()
         .build()
         .unwrap();
     for _ in 0..32 {
-        let mut arguments = json!({"result_ref":{"id":"result-1"},"limit":16});
+        let mut arguments = json!({"result_ref":{"id":query["result_ref"]["id"]},"limit":16});
         if let Some(next) = cursor.take() {
             arguments["cursor"] = next;
         }

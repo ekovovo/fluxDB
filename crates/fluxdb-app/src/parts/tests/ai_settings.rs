@@ -599,6 +599,7 @@ fn ai_settings_test_ai_model_missing_key_without_network() {
 fn create_agent(controller: &mut AppController, display_name: &str, system_prompt: &str) -> String {
     match controller.dispatch(AppCommand::SaveAiAgent(AiAgentSaveInput {
         compression_trigger_percent: 80,
+        max_iterations: 24,
         id: None,
         display_name: display_name.into(),
         description: "描述".into(),
@@ -618,6 +619,7 @@ fn ai_settings_agent_create_round_trip() {
     let (mut controller, dir) = controller_with_ai_storage("agent-create");
     let event = controller.dispatch(AppCommand::SaveAiAgent(AiAgentSaveInput {
         compression_trigger_percent: 80,
+        max_iterations: 24,
         id: None,
         display_name: "通用数据库 Agent".into(),
         description: "探索并交付可追溯结果".into(),
@@ -668,6 +670,7 @@ fn ai_settings_agent_edit_updates_prompt_and_revision() {
 
     let event = controller.dispatch(AppCommand::SaveAiAgent(AiAgentSaveInput {
         compression_trigger_percent: 80,
+        max_iterations: 24,
         id: Some(id.clone()),
         display_name: "新名".into(),
         description: "新描述".into(),
@@ -708,6 +711,7 @@ fn ai_settings_agent_blank_name_rejected() {
     let (mut controller, dir) = controller_with_ai_storage("agent-blank");
     let event = controller.dispatch(AppCommand::SaveAiAgent(AiAgentSaveInput {
         compression_trigger_percent: 80,
+        max_iterations: 24,
         id: None,
         display_name: "   ".into(),
         description: "".into(),
@@ -747,6 +751,7 @@ fn ai_settings_agent_stale_revision_rejected() {
 
     let event = controller.dispatch(AppCommand::SaveAiAgent(AiAgentSaveInput {
         compression_trigger_percent: 80,
+        max_iterations: 24,
         id: Some(id.clone()),
         display_name: "改名".into(),
         description: "描述".into(),

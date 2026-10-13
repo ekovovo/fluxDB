@@ -13,6 +13,7 @@ mod ai_panel_tests {
     include!("tests_composer_shortcuts.rs");
     include!("tests_markdown.rs");
     include!("tests_compaction_status.rs");
+    include!("tests_report.rs");
     use fluxdb_app::{AiAgentSaveInput, AiConversationCommand, AiModelSaveInput};
     use fluxdb_storage::ai_platform::{conversation, sessions, settings};
     use gpui::{Modifiers, TestAppContext, VisualTestContext, point, size};
@@ -59,6 +60,7 @@ mod ai_panel_tests {
                 .controller()
                 .dispatch(AppCommand::SaveAiAgent(AiAgentSaveInput {
                     compression_trigger_percent: 80,
+                    max_iterations: 24,
                     id: None,
                     display_name: "Panel fixture Agent".into(),
                     description: "只用于交互回归".into(),

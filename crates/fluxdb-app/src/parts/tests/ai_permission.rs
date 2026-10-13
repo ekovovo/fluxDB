@@ -21,6 +21,7 @@ fn ap_setup() -> rusqlite::Connection {
         &conn,
         1_000,
         &agents::AgentEdit {
+            max_iterations: 24,
             compression_trigger_percent: 80,
             id: "agent-1".into(),
             display_name: "审批测试 Agent".into(),

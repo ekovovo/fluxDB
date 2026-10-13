@@ -213,6 +213,7 @@ fn ai_global_tool_switch_disables_discovery_and_execution_end_to_end() {
         .expect("读取内置 Agent");
     let agent_id = match controller.dispatch(AppCommand::SaveAiAgent(AiAgentSaveInput {
         compression_trigger_percent: 80,
+        max_iterations: 24,
         id: Some(builtin),
         display_name: "通用助手".into(),
         description: "默认智能助手，可修改配置，不可删除".into(),

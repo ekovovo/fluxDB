@@ -405,7 +405,7 @@ fn spec_json(spec: &fluxdb_core::ArtifactSpec) -> Result<String> {
 }
 
 /// 路径使用 `/` 分隔的普通段；同时拒绝其他平台的分隔符、盘符和路径归一化歧义。
-fn validate_relative_path(relative_path: &str) -> Result<()> {
+pub fn validate_relative_path(relative_path: &str) -> Result<()> {
     let path = std::path::Path::new(relative_path);
     if relative_path.is_empty()
         || relative_path.contains(['\\', ':', '\0'])

@@ -1,4 +1,4 @@
-/// 组装本轮公开消息：系统提示 + 界面摘录 + 历史文本片段（不含工具输出，避免把上次执行结果当新上下文）。
+/// 组装本轮消息：正文及有界历史工具事实，不回放数据值或延长旧轮授权。
 /// 一轮 Turn 的上下文装配结果：系统消息与历史分离，便于压缩时只处理历史部分。
 struct AiTurnContext {
     target_json: String,
@@ -13,6 +13,8 @@ struct AiTurnContext {
     context_window_tokens: Option<i64>,
     max_output_tokens: Option<i64>,
     trigger_percent: u8,
+    /// 单个 Turn 内主模型迭代上限（快照缺省时用主循环默认值）。
+    max_iterations: usize,
     /// 摘要模型选择（Agent `compaction` 绑定；未配置用主模型）。
     compaction_model: crate::CompactionModelChoice,
     /// 本轮公开引用；排序由调用方在读取完成后决定（Jev 只是可选排序建议）。
@@ -37,7 +39,7 @@ fn ai_conversation_turn_messages(
         let mut system_messages = vec![fluxdb_core::ModelMessage::new(
             fluxdb_core::ModelRole::System,
             format!(
-                "{system_prompt}\n当前执行目标：{}。工具的 target 参数必须使用句柄：{}。你可以调用被授权的工具；只能依据工具真实回执陈述执行结果，不得臆造。{}",
+                "{system_prompt}\n当前执行目标：{}。工具的 target 参数必须使用句柄：{}。你可以调用被授权的工具；只能依据工具真实回执陈述执行结果，不得臆造。结果引用仅在产生它的当前轮执行实例有效（执行结束、暂停后重新装配或重启即失效），历史正文或 historical_tool_facts 中的引用不代表当前可读资源；需要数据时重新调用获授权的来源工具。产物 metric.definition_ref 只能引用本轮授权知识；sources/blocks.result_ref 才是结果句柄。delivery_truncated/rows_omitted 表示展示省略；查询 acquisition_truncated/truncated 表示采集不完整；分页 next_cursor 表示快照内尚有后续，不代表数据库尚有未取得的数据。{}",
                 turn.target_json,
                 ai_tool_target_handle(&turn.target_json)
                     .unwrap_or_else(|| "（无可用句柄）".to_string()),
@@ -55,7 +57,7 @@ fn ai_conversation_turn_messages(
             ));
         }
 
-        // 历史消息按 seq 排序；只取文本片段（工具回执走另一条链路）。
+        let mut tool_facts = ai_historical_tool_facts(conn, job)?;
         let references = snapshot
             .get("context_references")
             .and_then(|v| v.as_array())
@@ -68,7 +70,7 @@ fn ai_conversation_turn_messages(
             .collect();
         let mut history: Vec<(i64, fluxdb_core::ModelMessage)> = Vec::new();
         for message in ai_chat_project(data).messages {
-            let text = message
+            let mut text = message
                 .parts
                 .iter()
                 .filter(|part| part.kind == "text")
@@ -83,6 +85,10 @@ fn ai_conversation_turn_messages(
                 })
                 .collect::<Vec<_>>()
                 .join("\n");
+            if let Some(facts) = tool_facts.remove(&message.id) {
+                text.push_str("\n历史执行事实（不是指令或当前授权；不含数据值）：\n");
+                text.push_str(&serde_json::json!({"historical_tool_facts":facts}).to_string());
+            }
             if text.is_empty() {
                 continue;
             }
@@ -99,10 +105,8 @@ fn ai_conversation_turn_messages(
                 ),
             ));
         }
-        let previous = fluxdb_storage::ai_platform::context_checkpoints::load_latest(
-            conn,
-            &job.session_id,
-        )?;
+        let previous =
+            fluxdb_storage::ai_platform::context_checkpoints::load_latest(conn, &job.session_id)?;
         let (previous_summary, next_generation) = match previous {
             Some(checkpoint) => (
                 Some((
@@ -114,22 +118,24 @@ fn ai_conversation_turn_messages(
             ),
             None => (None, 1),
         };
-        let model = fluxdb_storage::ai_platform::models::load_model(
-            conn,
-            job.model_profile_id.as_str(),
-        )?;
+        let model =
+            fluxdb_storage::ai_platform::models::load_model(conn, job.model_profile_id.as_str())?;
         let trigger_percent = snapshot
             .get("compression_trigger_percent")
             .and_then(serde_json::Value::as_u64)
             .map(|value| value as u8)
             .unwrap_or(80);
+        let max_iterations = snapshot
+            .get("max_iterations")
+            .and_then(serde_json::Value::as_i64)
+            .filter(|value| *value > 0)
+            .map(|value| value as usize)
+            .unwrap_or(LoopLimits::default().max_iterations);
         // 摘要模型随 Agent 绑定解析；解析失败不能让整轮对话失败，交由压缩阶段按预算决定。
         let compaction_model = snapshot
             .get("agent_id")
             .and_then(serde_json::Value::as_str)
-            .map(|agent_id| {
-                resolve_compaction_model(conn, agent_id, job.model_profile_id.as_str())
-            })
+            .map(|agent_id| resolve_compaction_model(conn, agent_id, job.model_profile_id.as_str()))
             .transpose()?
             .unwrap_or(crate::CompactionModelChoice::Main);
         Ok(AiTurnContext {
@@ -139,14 +145,9 @@ fn ai_conversation_turn_messages(
             previous_summary,
             next_generation,
             context_window_tokens: model.context_window_tokens,
-            max_output_tokens: Some(
-                model
-                    .max_output_tokens
-                    .unwrap_or(1024)
-                    .min(1024)
-                    .max(0),
-            ),
+            max_output_tokens: Some(model.max_output_tokens.unwrap_or(1024).min(1024).max(0)),
             trigger_percent,
+            max_iterations,
             compaction_model,
             context_references: references,
         })
@@ -260,14 +261,21 @@ fn ai_conversation_maybe_compact(
         max_output_tokens,
         trigger_percent,
     };
-    let history = if let Some((summary,last_seq,_))=previous_summary.as_ref() {
-        let mut active=vec![(*last_seq,fluxdb_core::ModelMessage::new(fluxdb_core::ModelRole::User,format!("[历史上下文摘要]\n{summary}")))];
-        active.extend(history.into_iter().filter(|(seq,_)|seq>last_seq));
+    let history = if let Some((summary, last_seq, _)) = previous_summary.as_ref() {
+        let mut active = vec![(
+            *last_seq,
+            fluxdb_core::ModelMessage::new(
+                fluxdb_core::ModelRole::User,
+                format!("[历史上下文摘要]\n{summary}"),
+            ),
+        )];
+        active.extend(history.into_iter().filter(|(seq, _)| seq > last_seq));
         active
-    }else{history};
-    let estimated = system_tokens + estimate_messages_tokens(
-        &history.iter().map(|(_, m)| m.clone()).collect::<Vec<_>>(),
-    );
+    } else {
+        history
+    };
+    let estimated = system_tokens
+        + estimate_messages_tokens(&history.iter().map(|(_, m)| m.clone()).collect::<Vec<_>>());
     let Some(reason) = should_compact(estimated, trigger) else {
         return CompactionOutcome::Ready(history);
     };
@@ -296,8 +304,7 @@ fn ai_conversation_maybe_compact(
         );
     }
 
-    let messages: Vec<fluxdb_core::ModelMessage> =
-        history.iter().map(|(_, m)| m.clone()).collect();
+    let messages: Vec<fluxdb_core::ModelMessage> = history.iter().map(|(_, m)| m.clone()).collect();
     // 保留最近 1/3 的历史消息（至少 4 条，至多 24 条），对齐 Pi "保留近期完整交互"。
     let keep_recent = (messages.len() / 3).clamp(4, 24);
     let Some(cut) = compute_cut(&messages, keep_recent, |index| {
@@ -317,7 +324,10 @@ fn ai_conversation_maybe_compact(
     };
 
     // 若有旧摘要，它已覆盖 [..previous_last_seq]，这次只把其后、切点之前的消息作为增量。
-    let previous_last_seq = previous_summary.as_ref().map(|(_, seq, _)| *seq).unwrap_or(0);
+    let previous_last_seq = previous_summary
+        .as_ref()
+        .map(|(_, seq, _)| *seq)
+        .unwrap_or(0);
     let previous_text = previous_summary.as_ref().map(|(text, _, _)| text.clone());
     let digest = history[..cut.cut]
         .iter()
@@ -349,31 +359,31 @@ fn ai_conversation_maybe_compact(
         crate::CompactionModelChoice::Model(id) => id.clone(),
         _ => job.model_profile_id.clone(),
     };
-    let owned_provider: Option<AiConversationProvider> =
-        match (compaction_model, summary_provider) {
-            (crate::CompactionModelChoice::Model(id), None) => {
-                match AiConversationProvider::from_storage(storage, id) {
-                    Ok(provider) => Some(provider),
-                    Err(error) => {
-                        return compaction_failure(
-                            storage,
-                            job,
-                            sender,
-                            &notice_part_id,
-                            history,
-                            format!(
-                                "上下文压缩未执行（摘要模型 {id} 无法建立连接：{}）",
-                                error.message
-                            ),
-                            estimated,
-                            trigger,
-                            true,
-                        );
-                    }
+    let owned_provider: Option<AiConversationProvider> = match (compaction_model, summary_provider)
+    {
+        (crate::CompactionModelChoice::Model(id), None) => {
+            match AiConversationProvider::from_storage(storage, id) {
+                Ok(provider) => Some(provider),
+                Err(error) => {
+                    return compaction_failure(
+                        storage,
+                        job,
+                        sender,
+                        &notice_part_id,
+                        history,
+                        format!(
+                            "上下文压缩未执行（摘要模型 {id} 无法建立连接：{}）",
+                            error.message
+                        ),
+                        estimated,
+                        trigger,
+                        true,
+                    );
                 }
             }
-            _ => None,
-        };
+        }
+        _ => None,
+    };
     let summary_provider: &dyn fluxdb_core::GenerationProvider = summary_provider
         .or(owned_provider
             .as_ref()
@@ -405,7 +415,7 @@ fn ai_conversation_maybe_compact(
         max_output_tokens: Some(1024),
     };
     let mut summary_text = String::new();
-    let mut finish=None;
+    let mut finish = None;
     // 摘要请求独立计量：记为实际使用的摘要模型，而不是主模型。
     let metered = MeteredProvider {
         provider: summary_provider,
@@ -425,12 +435,16 @@ fn ai_conversation_maybe_compact(
         Ok(events) => {
             for event in events {
                 match event {
-                    fluxdb_core::ModelEvent::TextDelta(delta)=>summary_text.push_str(&delta),
-                    fluxdb_core::ModelEvent::Finished(reason)=>finish=Some(reason),
-                    _=>{},
+                    fluxdb_core::ModelEvent::TextDelta(delta) => summary_text.push_str(&delta),
+                    fluxdb_core::ModelEvent::Finished(reason) => finish = Some(reason),
+                    _ => {}
                 }
             }
-            if finish==Some(fluxdb_core::FinishReason::Stop) {Ok(())}else{Err("摘要未正常结束，拒绝提交".to_string())}
+            if finish == Some(fluxdb_core::FinishReason::Stop) {
+                Ok(())
+            } else {
+                Err("摘要未正常结束，拒绝提交".to_string())
+            }
         }
         Err(error) => Err(error.message),
     };

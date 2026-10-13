@@ -268,16 +268,20 @@ fn wide_query_spills_to_retained_row_and_is_readable_page_by_page() {
     // 句柄给 result.read_page 用，行 ID 给持久化事实用。
     let row_id = format!("{}-result-call-wide", job.turn_id);
     let sample = receipt["rows"].as_array().expect("样本行数组");
-    assert_eq!(sample.len(), 5, "回执只带 5 行样本，实际 {}", sample.len());
+    assert_eq!(
+        sample.len() as u64,
+        receipt["row_count"].as_u64().unwrap(),
+        "原始回执保留已取得行"
+    );
     let row_count = receipt["row_count"].as_u64().expect("总行数");
     assert!(row_count > 100, "大结果必须有足够行数，实际 {row_count}");
     assert_eq!(
         receipt["rows_omitted"].as_u64(),
-        Some(row_count - 5),
+        Some(0),
         "回执要如实说明省略了多少行"
     );
     assert!(
-        call.receipt_json.as_deref().unwrap().len() < 32 * 1024,
+        call.receipt_json.as_deref().unwrap().len() < SQL_RESULT_MAX_BYTES + 8 * 1024,
         "回执不得接近完整结果大小：{}",
         call.receipt_json.as_deref().unwrap().len()
     );

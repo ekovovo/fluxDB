@@ -721,6 +721,7 @@ fn approval_resume_preserves_selected_turn_model_when_agent_default_changes() {
             allowed_tools: agent.allowed_tools,
             enabled: agent.enabled,
             compression_trigger_percent: agent.compression_trigger_percent,
+            max_iterations: agent.max_iterations,
         })),
         AppEvent::AiAgentSaved { .. }
     ));

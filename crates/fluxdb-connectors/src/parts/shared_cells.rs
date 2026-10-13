@@ -219,15 +219,16 @@ where
         return mysql_optional_display_cell_value(value);
     }
     if let Ok(value) = row.try_get::<Option<u64>, _>(index) {
-        return mysql_optional_display_cell_value(value);
+        return mysql_unsigned_cell_value(value);
     }
     if let Ok(value) = row.try_get::<Option<i64>, _>(index) {
-        return mysql_optional_display_cell_value(value);
+        return value.map(CellValue::I64).unwrap_or(CellValue::Null);
     }
     if let Ok(value) = row.try_get::<Option<f64>, _>(index) {
-        return mysql_optional_display_cell_value(value);
+        return mysql_float_cell_value(value);
     }
     if let Ok(value) = row.try_get::<Option<BigDecimal>, _>(index) {
+        // DECIMAL 保精：不经 f64 往返，保留真实十进制文本（与 PG numeric 一致）。
         return mysql_optional_display_cell_value(value);
     }
     if let Ok(value) = row.try_get::<Option<DateTime<Utc>>, _>(index) {
@@ -252,6 +253,27 @@ where
     }
 
     CellValue::Null
+}
+
+/// MySQL 无符号整型投影：类型化数值让下游能区分真实数值与文本（产物数值列判定、
+/// 回滚字面量等）。`CellValue` 只有有符号 `I64`，超出范围的值保留十进制文本以免丢精度。
+fn mysql_unsigned_cell_value(value: Option<u64>) -> CellValue {
+    match value {
+        Some(value) => i64::try_from(value)
+            .map(CellValue::I64)
+            .unwrap_or_else(|_| CellValue::Text(value.to_string())),
+        None => CellValue::Null,
+    }
+}
+
+/// MySQL 浮点投影：有限值返回类型化 `F64`；非有限值不能作为合法 JSON 数字，
+/// 保留类型化文本（与 PG 路径的处理一致）。
+fn mysql_float_cell_value(value: Option<f64>) -> CellValue {
+    match value {
+        Some(value) if value.is_finite() => CellValue::F64(value),
+        Some(value) => CellValue::Text(value.to_string()),
+        None => CellValue::Null,
+    }
 }
 
 fn mysql_optional_display_cell_value(value: Option<impl ToString>) -> CellValue {

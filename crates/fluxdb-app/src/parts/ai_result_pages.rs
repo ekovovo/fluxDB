@@ -19,12 +19,15 @@ pub const RESULT_READ_PAGE_INPUT_SCHEMA: &str = r#"{
       "properties": {
         "id": { "type": "string", "minLength": 1, "maxLength": 128 },
         "tool_id": { "type": "string", "maxLength": 128 },
-        "created_at_ms": { "type": "integer", "minimum": 0 }
+        "created_at_ms": { "type": "integer", "minimum": 0 },
+        "scope": { "type": "string", "enum": ["turn"] },
+        "expires_on": { "type": "string", "enum": ["execution_end"] },
+        "content_type": { "type": "string", "enum": ["items","output_fragments"] }
       }
     },
     "cursor": { "type": "string", "maxLength": 256 },
     "limit": { "type": "integer", "minimum": 1, "maximum": 500, "default": 50 },
-    "max_bytes": { "type": "integer", "minimum": 1, "maximum": 262144, "default": 65536 }
+    "max_bytes": { "type": "integer", "minimum": 1, "maximum": 262144, "default": 8192 }
   }
 }"#;
 
@@ -33,18 +36,12 @@ pub fn result_read_page_spec() -> fluxdb_core::Result<ToolSpec> {
     let mut spec = ToolSpec::from_descriptor(&fluxdb_core::ToolDescriptor {
         id: "result.read_page".into(),
         version: 1,
-        description: "按 ResultRef 游标分页读取已取得的结果快照；不重新执行来源工具".into(),
+        description: "按 ResultRef 读取当前轮已取得的不可变快照（条目或按 offset_bytes 重组的输出片段）；句柄仅当前轮有效，不可复用历史轮次引用；不重新执行来源工具".into(),
         risk: fluxdb_core::ToolRisk::Read,
         input_schema_json: RESULT_READ_PAGE_INPUT_SCHEMA.into(),
     })?;
-    // items 就是模型这一页主动要的数据，但仍有 max_bytes 上限；声明 Sample 让兜底
-    // 裁剪优先丢 items，保留 result_ref/next_cursor，模型才能继续翻页而不是
-    // 拿到一个没有游标的半截结果。
-    spec.output_shape = crate::ToolOutputShape::Sample {
-        keep_rows: 0,
-        omit_field: "items".into(),
-        rows_omitted_field: None,
-    };
+    // 读取的内容与游标必须一起返回，不能删掉本页条目后用原游标跳到下一页。
+    spec.output_shape = crate::ToolOutputShape::Read;
     Ok(spec)
 }
 
@@ -73,7 +70,7 @@ fn parse_result_read_page_args(arguments_json: &str) -> Result<ResultReadPageArg
     let max_bytes = value
         .get("max_bytes")
         .and_then(serde_json::Value::as_u64)
-        .unwrap_or(65_536)
+        .unwrap_or(8192)
         .clamp(1, 262_144) as usize;
     Ok(ResultReadPageArgs {
         id,
@@ -177,21 +174,26 @@ impl fluxdb_core::AiTool for AiResultReadPageTool {
                     ));
                 }
             };
+            if !store.matches_owner(&ctx.session_id, &ctx.turn_id) {
+                return Ok(receipt(
+                    fluxdb_core::ToolReceiptStatus::Failed,
+                    serde_json::json!({"ok":false,"code":"unknown_result","message":"结果不属于本轮","retryable":false}),
+                    Some("unknown_result"),
+                ));
+            }
             match store.read_page(&args.id, args.cursor.as_deref(), args.limit, args.max_bytes) {
                 Ok(page) => Ok(receipt(
                     fluxdb_core::ToolReceiptStatus::Succeeded,
                     serde_json::json!({
                         "ok": true,
-                        "result_ref": {
-                            "id": page.result.id,
-                            "tool_id": page.result.tool_id,
-                            "created_at_ms": page.result.created_at_ms,
-                        },
+                        "result_ref": result_reference_json(&page.result),
                         "items": page.items,
                         "returned_items": page.items.len(),
                         "total_items": page.total_items,
                         "truncated": page.truncated,
+                        "page_truncated": page.truncated,
                         "next_cursor": page.next_cursor,
+                        "snapshot_only": true,
                     }),
                     None,
                 )),
@@ -202,7 +204,7 @@ impl fluxdb_core::AiTool for AiResultReadPageTool {
                         "code": error.code,
                         "message": error.message,
                         // 句柄不可读时不可重试：重复同一句柄不会自己变可读。
-                        "retryable": false,
+                        "retryable": error.code == "result_item_too_large",
                     }),
                     Some(error.code),
                 )),

@@ -73,6 +73,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let _agent_id = match app.dispatch(AppCommand::SaveAiAgent(AiAgentSaveInput {
         compression_trigger_percent: 80,
+        max_iterations: 24,
         id: None,
         display_name: "T039 销售分析".into(),
         description: "生成图表与表格报告".into(),
@@ -257,7 +258,7 @@ impl GenerationProvider for FixtureProvider {
                             .as_str()
                             .map(str::to_owned)
                     })
-                    .unwrap_or_else(|| "result-1".into());
+                    .expect("查询必须返回真实结果句柄");
                 call(
                     "fixture-create",
                     "artifact.create",
@@ -274,6 +275,19 @@ impl GenerationProvider for FixtureProvider {
                 )
             }
             2 => {
+                let handle = request
+                    .messages
+                    .iter()
+                    .find(|message| message.tool_name.as_deref() == Some("db.query"))
+                    .and_then(|message| {
+                        serde_json::from_str::<serde_json::Value>(&message.text).ok()
+                    })
+                    .and_then(|value| {
+                        value["result"]["result_ref"]["id"]
+                            .as_str()
+                            .map(str::to_owned)
+                    })
+                    .expect("表格来源必须使用真实查询句柄");
                 let id = Self::artifact_id_from(&request.messages, "artifact.create")
                     .expect("上一轮必须真实创建产物");
                 let status = Self::tool_result_status(&request.messages, "artifact.create")
@@ -284,7 +298,7 @@ impl GenerationProvider for FixtureProvider {
                     "artifact.add_block",
                     serde_json::json!({
                         "artifact_id": id,
-                        "block": {"type": "table", "result_ref": "result-1",
+                        "block": {"type": "table", "result_ref": handle,
                                   "columns": ["channel", "revenue"]}
                     }),
                 )

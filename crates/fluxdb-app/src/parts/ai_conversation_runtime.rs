@@ -18,6 +18,9 @@ impl AiRuntimeHandle {
                     return;
                 }
                 let assembled = (|| {
+                    if let Err(error) = purge_expired_result_files(storage) {
+                        tracing::warn!(%error, "临时结果清理失败，继续准备工具");
+                    }
                     let provider =
                         AiConversationProvider::from_storage(storage, &job.model_profile_id)?;
                     let security =
@@ -58,7 +61,7 @@ impl AiRuntimeHandle {
                     add_ai_file_tools(&mut tools, storage, job)?;
                     add_ai_reference_tools(&mut tools, storage, job)?;
                     add_ai_knowledge_read_tools(&mut tools, storage, job)?;
-                    // Redis 尚未提供可解析的结果快照句柄，不暴露不可兑现的产物入口。
+                    // 产物依赖 SQL 列结构，不把 Redis 通用输出快照当成表格来源。
                     if tools.results().is_some() {
                         add_ai_artifact_tools(
                             &mut tools,
@@ -71,6 +74,14 @@ impl AiRuntimeHandle {
                     // 本轮结束后工具目录随之消失（设计 §13.2 不持久化整份内容）。
                     add_ai_editor_read_tools(&mut tools, take_editor_grant(&job.turn_id))?;
                     add_ai_page_tools(&mut tools, take_page_data_grant(&job.turn_id), job)?;
+                    if tools.results().is_none() {
+                        let spec = result_read_page_spec()?;
+                        tools = tools.with_results(std::sync::Arc::clone(&results));
+                        tools.add_tool_with_shape(
+                            Box::new(AiResultReadPageTool::new(std::sync::Arc::clone(&results))?),
+                            spec.output_shape,
+                        )?;
+                    }
                     tools.without_tools(&security.disabled_tools);
                     let permission = TurnPermissionContext {
                         agent_allowed_tools: security.agent_allowed_tools,

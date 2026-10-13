@@ -45,6 +45,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let agent_id = match app.dispatch(AppCommand::SaveAiAgent(AiAgentSaveInput {
         compression_trigger_percent: 80,
+        max_iterations: 24,
         id: None,
         display_name: "E2E 数据库助手".into(),
         description: "测试 fixture".into(),

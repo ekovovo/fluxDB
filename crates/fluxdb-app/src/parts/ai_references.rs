@@ -735,9 +735,8 @@ pub fn add_ai_file_tools(catalog:&mut ToolCatalog,storage:&fluxdb_storage::FileS
         ("file.search_content","在本轮已授权附件正文中搜索字面量，返回字节偏移、行号、上下文片段与续读位置；不扫描未授权路径",ai_search_tool_schema(Some(("file_ref","已授权附件的 FileRef，来自 file.search 返回结果",true)))),
     ] {
         let descriptor=fluxdb_core::ToolDescriptor{id:id.into(),description:desc.into(),version:1,risk:fluxdb_core::ToolRisk::Read,input_schema_json:schema.to_string()};
-        // 附件正文/记录本身就是产物（文本段、CSV 记录、二进制预览），不是可裁剪的
-        // 结构化样本：声明 Opaque，兜底裁剪提示"缩小读取范围"而不是丢弃字段。
-        catalog.add_tool_with_shape(Box::new(AiFileTool{descriptor,references:references.clone()}),ToolOutputShape::Opaque)?;
+        // 分段内容与原续读位置必须一起交付，使用独立读取预算。
+        catalog.add_tool_with_shape(Box::new(AiFileTool{descriptor,references:references.clone()}),ToolOutputShape::Read)?;
     }
     Ok(())
 }

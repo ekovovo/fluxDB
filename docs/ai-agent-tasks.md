@@ -602,14 +602,23 @@ cargo test -p fluxdb-app --locked ai_permission   # 15 passed
 
 
 ### T040 原生图表/报告 UI 与安全导出
-- [ ] 依赖：T028、T039；设计 §27、§31。
+- [x] 依赖：T028、T039；设计 §27、§31。
 - 改动：可信宿主renderer、会话产物卡片→独立报告弹框（非设置页）、来源/SQL/导出、主题/可访问性、Markdown/受控HTML、路径授权与 staged→ready；后续 PDF/XLSX 单独评估。
 - 验收：E10/E13；脚本/远程资源禁止；文件实际内容/hash；卸载 renderer 仍可解释元数据；导出失败无假下载链接。
 - 本任务功能/UI验收：原型 询问AI产物卡→报告弹框；实际打开图表/来源/SQL→导出至授权测试目录→读取文件核对数据和hash；目录拒绝/写失败不显示成功，卸载renderer显示解释；报告不放设置页，明暗主题、窄窗口可读。
 - UI证据：按设计§39.3–39.4实际操作并对照原型截图，明暗主题、正常/窄窗口及相关loading/空/错状态分别通过，修复后复测。
 - 测试方式：本任务上述流程分别编写GPUI模拟输入断言并执行真实窗口E2E；截图按指定原型入口逐项对比，业务写入独立核对存储/后端，不只检查提示文字。
 - 数据展示闭环（设计§39.5）：
-  - [ ] 预置已知结果与产物，经会话产物卡打开报告，实际图表/表格/来源值与结果快照一致；结果非空不能显示空报告，加载失败不能伪装无数据。
+  - [x] 预置已知结果与产物，经会话产物卡打开报告，实际图表/表格/来源值与结果快照一致；结果非空不能显示空报告，加载失败不能伪装无数据。
+- 实现记录（App / Desktop，2026-10-12）：
+  - **App 报告读取与导出** `crates/fluxdb-app/src/parts/ai_artifact_report.rs`：`load_ai_report` 只读 `ai_artifacts` 行 + 快照文件（不重查库/不调模型/不刷新来源），快照缺失/等长篡改/非法 JSON/未就绪都给可见 `data_issue` 并保留可解释元数据；`render_ai_report_export` 输出 Markdown / 转义 HTML（无脚本、无远程资源）/ JSON；`write_ai_report_export` 走用户授权路径，拒绝符号链接/目录/非法名/缺父目录，临时文件改名 + 回读核对，失败不留半截文件、不返回成功。来源 SQL 从产出调用脱敏参数只读取出。
+  - **Desktop 报告弹框与产物卡** `apps/fluxdb-desktop/src/main_parts/ai/report.rs`（新增，经 `message.rs` 的 `artifact_ref` 卡片接入）：会话产物卡 → 独立 `Dialog`（960dp、非设置页），含原生 `BarChart`/`LineChart`（真实快照点）、真实指标条（宿主算术求和/极值）、表格（真实列/行 + 抽样标记）、renderer 正文、来源与可追溯信息、可折叠来源 SQL；卡片「SQL/导出/打开报告」三动作进入同一弹框，`failed` 状态提示且禁止导出。颜色走 `UiColors`，Esc/遮罩/关闭按钮与内部不穿透由 `Dialog` 承载。
+  - **相邻改动**：`fluxdb-storage::ai_platform::artifacts::validate_relative_path` 提升为 `pub` 供报告侧复用同一路径校验；`Dialog` 打开期 builder 在渲染 lease 内，实时态经 `Rc<RefCell<AiReportModalData>>` 共享（先例 `SqlFileModalData`）。
+  - 测试：App `tests/ai_artifact_report.rs` 9/9（真实 SQLite + 受控 Provider 产出真实 ready 产物，覆盖真实值/等长篡改/缺失/未就绪/HTML 注入转义/目录与符号链接拒绝/导出 hash）；Desktop `ai/tests_report.rs` 2/2（生产加载链 → 弹框控件，打开报告与导出的真实点击、真实文件核对）；`ai_bi_artifacts` 22/22、storage artifacts 14/14、`ai_panel_tests` 93/93 回归通过。`cargo fmt --all`、`cargo check --locked --offline` 通过。
+  - 未验证：PDF/XLSX 导出未实现（不提供假格式/假下载）；Windows/Linux 未编译与原生验收。
+  - **真实窗口验收（2026-10-13，用户真机，真实库 community_test）**：报告可出、Markdown/HTML 可导出、明暗主题与窄窗口、取消与导出失败路径均通过。实机暴露并已修复「分类轴长标签相互遮挡」缺陷：按弹框真实可用宽度对分类轴标签自适应截断并保证 band 身份唯一，tooltip 仍显示完整原值；新增 3 个标签自适应回归用例。复测 `ai_panel_tests` 96/96（串行）、`ai_artifact_report` 9/9、报告弹框用例 2/2。用户真机复看确认遮挡已消除。
+  - 验收记录：docs/testing/ai-agent/t040-2026-10-12.md
+- **T040 已勾选**（2026-10-13 用户真机、真实库 `community_test` 验收通过）。
 
 ### T041 M3 串行界面和真实模型评测
 - [ ] 依赖：T031、T032–T040；设计 §37–39。

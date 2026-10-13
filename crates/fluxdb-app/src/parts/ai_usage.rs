@@ -22,6 +22,21 @@ impl fluxdb_core::GenerationProvider for MeteredProvider<'_> {
                     fluxdb_core::FinishReason::Cancelled,
                 )]);
             }
+            let model = with_ai_storage(self.storage, |conn| {
+                fluxdb_storage::ai_platform::models::load_model(conn, self.model_profile_id)
+            })?;
+            let tools_tokens = estimate_tools_tokens(&request.tools);
+            if exceeds_input_budget(
+                estimate_messages_tokens(&request.messages) + tools_tokens,
+                CompactionTrigger {
+                    context_window_tokens: model.context_window_tokens,
+                    max_output_tokens: request.max_output_tokens,
+                    trigger_percent: 95,
+                },
+            ) {
+                return Err(Error::new(ErrorKind::Internal,
+                    "累计上下文（含工具定义与回执）超出模型输入预算，未发送请求；请缩小读取范围或调整上下文"));
+            }
             let id = uuid::Uuid::new_v4().to_string();
             let descriptor = fluxdb_storage::ai_platform::usage_ledger::UsageRequest {
                 request_id: id.clone(),

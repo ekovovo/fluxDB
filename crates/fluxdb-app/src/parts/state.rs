@@ -136,6 +136,8 @@ impl PartialEq for AiModelSaveInput {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct AiAgentItem {
     pub compression_trigger_percent: u8,
+    /// 单个 Turn 内最多几次主模型迭代。
+    pub max_iterations: i64,
     pub id: String,
     pub display_name: String,
     pub description: String,
@@ -155,6 +157,8 @@ pub struct AiAgentItem {
 #[derive(Clone, Debug, PartialEq)]
 pub struct AiAgentSaveInput {
     pub compression_trigger_percent: u8,
+    /// 单个 Turn 内最多几次主模型迭代（1–1000）。
+    pub max_iterations: i64,
     /// `None` 表示新建。
     pub id: Option<String>,
     pub display_name: String,
@@ -180,6 +184,7 @@ impl Default for AiAgentSaveInput {
             enabled: true,
             expected_revision: 0,
             compression_trigger_percent: 80,
+            max_iterations: 100,
         }
     }
 }

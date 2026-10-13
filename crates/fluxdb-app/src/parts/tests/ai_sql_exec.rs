@@ -669,9 +669,9 @@ fn ai_sql_exec_receipt_keeps_large_results_out_of_context_and_stays_readable() {
 
     let payload = outcome.to_model_json(Some(&result));
     let rows = payload["rows"].as_array().expect("样本行数组");
-    assert_eq!(rows.len(), 5, "回执只带样本行，不带全量");
+    assert_eq!(rows.len(), 50, "原始回执保留全部已取得的行，模型投影另受预算约束");
     assert_eq!(payload["row_count"], 50);
-    assert_eq!(payload["rows_omitted"], 45);
+    assert_eq!(payload["rows_omitted"], 0);
     assert_eq!(payload["result_ref"]["id"], result.id.as_str());
 
     // 完整 50 行仍可经结果句柄分页读回。
@@ -705,7 +705,6 @@ fn ai_sql_exec_tool_declares_sample_output_shape_so_projection_never_cuts_it() {
     assert_eq!(
         query.output_shape,
         ToolOutputShape::Sample {
-            keep_rows: RECEIPT_SAMPLE_ROWS,
             omit_field: "rows".into(),
             rows_omitted_field: Some("rows_omitted".into()),
         },
@@ -715,7 +714,7 @@ fn ai_sql_exec_tool_declares_sample_output_shape_so_projection_never_cuts_it() {
     // 投影层对已声明形状的载荷只做"超限才兜底"，不会主动改变内容。
     let outcome = SqlExecutionOutcome {
         columns: vec!["id".into()],
-        rows: (0..RECEIPT_SAMPLE_ROWS)
+        rows: (0..5)
             .map(|n| vec![serde_json::json!(n)])
             .collect(),
         row_count: 50,

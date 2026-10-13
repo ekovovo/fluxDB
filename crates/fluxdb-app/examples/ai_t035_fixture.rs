@@ -94,6 +94,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     })?;
     match controller.dispatch(AppCommand::SaveAiAgent(AiAgentSaveInput {
         compression_trigger_percent: 10,
+        max_iterations: 24,
         id: Some(builtin.id.clone()),
         display_name: builtin.display_name.clone(),
         description: builtin.description.clone(),

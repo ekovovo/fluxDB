@@ -1,4 +1,11 @@
 // 结果句柄与有界快照仓库：归属、spill、分页及产物事实读取。
+/// 快照条目的表示格式；条目游标和输出片段游标不可混用。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResultFormat {
+    Items,
+    OutputFragments,
+}
+
 /// 结果引用（分页/过期的唯一句柄）。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ResultRef {
@@ -11,6 +18,7 @@ pub struct ResultRef {
     /// 句柄归属：只有同 session/turn 才能读取，防止跨会话取数据。
     pub session_id: String,
     pub turn_id: String,
+    pub format: ResultFormat,
 }
 
 /// 结果页：有界 + 截断标记 + 游标（不能用截断结果宣称全集）。
@@ -91,7 +99,6 @@ impl ResultError {
 /// 无法在此仓库读到数据；`read_page` 只读已取得的快照切片，不重新执行来源工具。
 pub struct ResultStore {
     entries: HashMap<String, StoredResult>,
-    next_id: u64,
     /// 单个结果的内存字节上限。
     pub byte_limit: usize,
     /// 句柄归属会话。
@@ -113,6 +120,7 @@ struct StoredResult {
     /// spill 文件相对受控根的路径字符串与内容指纹；溢写事实需与 `ai_results` 对账。
     spill_fact: Option<SpillFact>,
     status: ResultStatus,
+    payload_bytes: usize,
 }
 
 /// 已落盘结果的可核验事实：产出工具、受控根内相对路径、字节数、内容哈希。
@@ -160,11 +168,14 @@ fn result_io_error(message: &str) -> impl Fn(std::io::Error) -> fluxdb_core::Err
 }
 
 impl ResultStore {
+    pub(crate) fn matches_owner(&self, session_id: &str, turn_id: &str) -> bool {
+        (self.owner_session_id.is_empty() && self.owner_turn_id.is_empty())
+            || (self.owner_session_id == session_id && self.owner_turn_id == turn_id)
+    }
     /// 内存仓库（测试与无落盘场景）：超限条目回落内存，不写文件。
     pub fn new(byte_limit: usize) -> Self {
         Self {
             entries: HashMap::new(),
-            next_id: 1,
             byte_limit,
             owner_session_id: String::new(),
             owner_turn_id: String::new(),
@@ -181,7 +192,6 @@ impl ResultStore {
     ) -> Self {
         Self {
             entries: HashMap::new(),
-            next_id: 1,
             byte_limit,
             owner_session_id: session_id.to_string(),
             owner_turn_id: turn_id.to_string(),
@@ -205,11 +215,29 @@ impl ResultStore {
         now_ms: i64,
         items: impl IntoIterator<Item = serde_json::Value>,
     ) -> fluxdb_core::Result<(ResultRef, SpillResult)> {
+        if self.entries.len() >= 128 {
+            return Err(fluxdb_core::Error::new(
+                fluxdb_core::ErrorKind::Internal,
+                "本轮结果快照数量已达上限",
+            ));
+        }
+        let previous_bytes: usize = self.entries.values().map(|entry| entry.payload_bytes).sum();
+        let mut payload_bytes = 0;
         let mut memory = Vec::new();
         let mut overflow = Vec::new();
         let mut memory_bytes = 0usize;
         for item in items {
-            let size = serde_json::to_string(&item).map(|text| text.len()).unwrap_or(0);
+            let size = serde_json::to_string(&item)
+                .map(|text| text.len())
+                .unwrap_or(0);
+            payload_bytes += size;
+            if payload_bytes > 4 * 1024 * 1024 || previous_bytes + payload_bytes > 16 * 1024 * 1024
+            {
+                return Err(fluxdb_core::Error::new(
+                    fluxdb_core::ErrorKind::Internal,
+                    "本轮结果快照字节数已达上限",
+                ));
+            }
             // 一旦进入 spill，余下条目也进入 spill，保留查询的原始行序。
             if overflow.is_empty() && memory_bytes + size <= self.byte_limit {
                 memory_bytes += size;
@@ -234,7 +262,20 @@ impl ResultStore {
                     let dir = root.join("results");
                     std::fs::create_dir_all(&dir).map_err(result_io_error("创建结果目录失败"))?;
                     let path = dir.join(format!("{}.json", uuid::Uuid::new_v4()));
-                    std::fs::write(&path, &payload).map_err(result_io_error("写结果 spill 文件失败"))?;
+                    let mut options = std::fs::OpenOptions::new();
+                    options.write(true).create_new(true);
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::OpenOptionsExt;
+                        options.mode(0o600);
+                    }
+                    let mut file = options
+                        .open(&path)
+                        .map_err(result_io_error("创建结果文件失败"))?;
+                    if let Err(error) = std::io::Write::write_all(&mut file, &payload) {
+                        let _ = std::fs::remove_file(&path);
+                        return Err(result_io_error("写结果 spill 文件失败")(error));
+                    }
                     spill.relative_path = path
                         .strip_prefix(&root)
                         .ok()
@@ -250,8 +291,7 @@ impl ResultStore {
                 }
             }
         }
-        let id = format!("result-{}", self.next_id);
-        self.next_id += 1;
+        let id = format!("result-{}", uuid::Uuid::new_v4());
         let result = ResultRef {
             id: id.clone(),
             tool_id: tool_id.to_string(),
@@ -259,6 +299,7 @@ impl ResultStore {
             created_at_ms: now_ms,
             session_id: self.owner_session_id.clone(),
             turn_id: self.owner_turn_id.clone(),
+            format: ResultFormat::Items,
         };
         let spill_path = self
             .spill_root
@@ -273,16 +314,14 @@ impl ResultStore {
                 items: memory,
                 spilled_len,
                 spill_path,
-                spill_fact: spill
-                    .relative_path
-                    .as_ref()
-                    .map(|relative_path| SpillFact {
-                        tool_id: result.tool_id.clone(),
-                        relative_path: relative_path.clone(),
-                        byte_count: spill.byte_count,
-                        content_hash: spill.content_hash.clone(),
-                    }),
+                spill_fact: spill.relative_path.as_ref().map(|relative_path| SpillFact {
+                    tool_id: result.tool_id.clone(),
+                    relative_path: relative_path.clone(),
+                    byte_count: spill.byte_count,
+                    content_hash: spill.content_hash.clone(),
+                }),
                 status: ResultStatus::Available,
+                payload_bytes,
             },
         );
         Ok((result, spill))
@@ -291,6 +330,54 @@ impl ResultStore {
     /// 取句柄的 spill 事实；未溢写或句柄不存在返回 `None`。
     pub fn spill_fact(&self, id: &str) -> Option<SpillFact> {
         self.entries.get(id)?.spill_fact.clone()
+    }
+
+    pub(crate) fn reference_for_call(&self, call_id: &str) -> Option<ResultRef> {
+        self.entries
+            .values()
+            .find(|entry| entry.result.call_id == call_id)
+            .map(|entry| entry.result.clone())
+    }
+
+    /// 未声明结构的输出按 UTF-8 片段续读，重组后仍是原始 JSON/文本；不执行来源工具。
+    pub(crate) fn put_output(
+        &mut self,
+        receipt: &fluxdb_core::ToolReceipt,
+    ) -> fluxdb_core::Result<ResultRef> {
+        const MAX_SNAPSHOT_BYTES: usize = 2 * 1024 * 1024;
+        if receipt.result_json.len() > MAX_SNAPSHOT_BYTES || self.entries.len() >= 128 {
+            return Err(fluxdb_core::Error::new(
+                fluxdb_core::ErrorKind::Internal,
+                "工具输出快照超过容量限制",
+            ));
+        }
+        if let Some(reference) = self.reference_for_call(&receipt.call_id) {
+            return Ok(reference);
+        }
+        let mut items = Vec::new();
+        let mut offset = 0;
+        while offset < receipt.result_json.len() {
+            let mut end = (offset + 1024).min(receipt.result_json.len());
+            while !receipt.result_json.is_char_boundary(end) {
+                end -= 1;
+            }
+            items.push(serde_json::json!({
+                "content_type": "output_fragment",
+                "offset_bytes": offset,
+                "text": &receipt.result_json[offset..end],
+            }));
+            offset = end;
+        }
+        let (mut reference, _) = self.put(
+            &receipt.tool_id,
+            &receipt.call_id,
+            &[],
+            receipt.started_at_ms,
+            items,
+        )?;
+        reference.format = ResultFormat::OutputFragments;
+        self.entries.get_mut(&reference.id).unwrap().result = reference.clone();
+        Ok(reference)
     }
 
     /// 释放句柄（释放后读取必须报错，而不是返回空页）。
@@ -315,8 +402,8 @@ impl ResultStore {
         }
     }
 
-    /// 会话结束时释放该会话的全部句柄（memory 结果过期语义）。
-    pub fn expire_session(&mut self) {
+    /// 释放本仓库全部句柄；生产仓库归属单轮，不是跨轮会话缓存。
+    pub fn expire_all(&mut self) {
         for entry in self.entries.values_mut() {
             entry.status = ResultStatus::Expired;
         }
@@ -336,7 +423,7 @@ impl ResultStore {
         match entry.status {
             ResultStatus::Available => {}
             ResultStatus::Released => return Err(ResultError::expired(id)),
-            ResultStatus::Expired => return Err(ResultError::unknown(id)),
+            ResultStatus::Expired => return Err(ResultError::expired(id)),
         }
         if entry.result.session_id != self.owner_session_id
             || entry.result.turn_id != self.owner_turn_id
@@ -370,14 +457,16 @@ impl ResultStore {
                 })?;
                 if let Some(fact) = &entry.spill_fact {
                     if raw.len() as i64 != fact.byte_count
-                        || crate::source_hash(&[&String::from_utf8_lossy(&raw)]) != fact.content_hash
+                        || crate::source_hash(&[&String::from_utf8_lossy(&raw)])
+                            != fact.content_hash
                     {
                         return Err(ResultError::damaged("结果 spill 文件内容与登记指纹不一致"));
                     }
                 }
-                let decoded: Vec<serde_json::Value> = serde_json::from_slice(&raw).map_err(|error| {
-                    ResultError::damaged(format!("结果 spill 文件已损坏: {error}"))
-                })?;
+                let decoded: Vec<serde_json::Value> =
+                    serde_json::from_slice(&raw).map_err(|error| {
+                        ResultError::damaged(format!("结果 spill 文件已损坏: {error}"))
+                    })?;
                 if decoded.len() != expected {
                     return Err(ResultError::damaged("结果 spill 文件条目数与登记不一致"));
                 }
@@ -398,8 +487,16 @@ impl ResultStore {
                 true => &entry.items[index],
                 false => &spilled_items[index - entry.items.len()],
             };
-            let size = serde_json::to_string(item).map(|text| text.len()).unwrap_or(0);
-            if !items.is_empty() && used + size > max_bytes {
+            let size = serde_json::to_string(item)
+                .map(|text| text.len())
+                .unwrap_or(0);
+            if used + size > max_bytes {
+                if items.is_empty() {
+                    return Err(ResultError {
+                        code: "result_item_too_large",
+                        message: "单个条目超过本页字节预算，请增大 max_bytes 或缩小来源字段".into(),
+                    });
+                }
                 break;
             }
             used += size;
@@ -417,7 +514,7 @@ impl ResultStore {
     }
 
     /// 读取句柄的最小事实；归属/状态校验与 [`ResultStore::read_page`] 一致：
-    /// 非本仓库归属会话按 unknown 处理，已释放按 expired，已过期按 unknown，
+    /// 非本仓库归属会话按 unknown 处理，已释放/已过期按 expired，
     /// spill 损坏不在这里判（事实只读内存快照，不触盘）。
     pub fn facts(&self, id: &str) -> Result<ResultFacts, ResultError> {
         let Some(entry) = self.entries.get(id) else {
@@ -426,7 +523,7 @@ impl ResultStore {
         match entry.status {
             ResultStatus::Available => {}
             ResultStatus::Released => return Err(ResultError::expired(id)),
-            ResultStatus::Expired => return Err(ResultError::unknown(id)),
+            ResultStatus::Expired => return Err(ResultError::expired(id)),
         }
         if entry.result.session_id != self.owner_session_id
             || entry.result.turn_id != self.owner_turn_id
@@ -465,7 +562,6 @@ impl ResultStore {
         })
     }
 }
-
 
 /// 从有界对象行推导字段与严格数值列，仓库和产物校验复用同一规则。
 fn result_field_facts(sample: &[serde_json::Value]) -> (Vec<String>, Vec<String>) {

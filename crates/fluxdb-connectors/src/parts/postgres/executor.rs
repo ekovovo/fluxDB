@@ -299,3 +299,239 @@ async fn pg_collect_statement(client: &tokio_postgres::Client, statement: &str, 
     }
     Ok((completed, None))
 }
+
+/// PostgreSQL 参数化单语句执行（T055）。
+///
+/// 用扩展查询协议 `$1..$n` 真绑定：`i64/u64/decimal/text/bytes` 分别以原生类型下发，
+/// decimal 以文本下发到 `numeric`（驱动不支持字符串→numeric 隐式转换时由服务端解析），
+/// **绝不**把参数拼进 SQL 文本。只接受单条语句。
+pub(crate) fn pg_execute_parameterized(
+    config: &ConnectionConfig,
+    request: &QueryRequest,
+    parameters: &[fluxdb_core::SqlParameter],
+) -> fluxdb_core::Result<QueryExecutionResult> {
+    let statement = request.text.trim().to_string();
+    if statement.is_empty() {
+        return Err(Error::new(ErrorKind::Query, "查询不能为空"));
+    }
+    if statement.contains(';') && statement.trim_end().trim_end_matches(';').contains(';') {
+        return Err(Error::new(
+            ErrorKind::Query,
+            "参数化执行只接受单条语句；不支持多语句脚本",
+        ));
+    }
+    let owned = parameters
+        .iter()
+        .map(PgBindValue::from_parameter)
+        .collect::<fluxdb_core::Result<Vec<_>>>()?;
+    let bind_refs: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> =
+        owned.iter().map(|value| value.as_tosql()).collect();
+    pg_runtime().block_on(async {
+        let database = pg_request_database(config, request.database.as_deref());
+        let session = pg_session_acquire(config, request, &database).await?;
+        let lock = session.execution.lock();
+        tokio::pin!(lock);
+        let _guard = lock.await;
+        if session.driver.0.is_finished() || session.client.is_closed() {
+            return Err(Error::new(ErrorKind::Connection, "查询会话已失效，执行结果请先核实；关闭标签后重新连接"));
+        }
+        pg_ensure_search_path(&session, request.schema.as_deref()).await?;
+        let started = Instant::now();
+        let pagination = query_execution_pagination(request.options.page_offset, request.options.page_size);
+        let capability = query_execution_row_capacity(pagination.limit);
+        // 参数化路径走扩展协议：row 类型已知，按列类型解码，不做文本回退。
+        if statement_returns_rows(&statement) {
+            let rows = session
+                .client
+                .query(statement.as_str(), &bind_refs)
+                .await
+                .map_err(pg_error)?;
+            let page = pg_rows_to_page(&rows, pagination.offset, pagination.limit, capability)?;
+            let returned = page.rows.len() as u64;
+            return Ok(QueryExecutionResult {
+                summaries: vec![QueryExecutionSummary {
+                    sql: statement,
+                    kind: QueryStatementKind::ResultSet,
+                    success: true,
+                    message: format!("返回 {returned} 行结果表（参数化绑定）"),
+                    returned_rows: returned,
+                    affected_rows: 0,
+                    elapsed_ms: elapsed_ms(started),
+                }],
+                results: vec![page],
+                rollback_snapshots: Vec::new(),
+            });
+        }
+        let affected = session
+            .client
+            .execute(statement.as_str(), &bind_refs)
+            .await
+            .map_err(pg_error)?;
+        Ok(QueryExecutionResult {
+            summaries: vec![QueryExecutionSummary {
+                sql: statement,
+                kind: QueryStatementKind::Command,
+                success: true,
+                message: format!("OK，影响 {affected} 行（参数化绑定）"),
+                returned_rows: 0,
+                affected_rows: affected,
+                elapsed_ms: elapsed_ms(started),
+            }],
+            results: Vec::new(),
+            rollback_snapshots: Vec::new(),
+        })
+    })
+}
+
+/// 按扩展协议把 `Row` 解码为 `DataPage`；列类型取自服务端描述。
+fn pg_rows_to_page(
+    rows: &[tokio_postgres::Row],
+    offset: u64,
+    limit: u64,
+    capacity: usize,
+) -> fluxdb_core::Result<DataPage> {
+    let columns: Vec<Column> = match rows.first() {
+        Some(first) => first
+            .columns()
+            .iter()
+            .map(|col| {
+                let mut column = query_column(col.name(), col.type_().name());
+                column.type_name = Some(col.type_().name().to_string());
+                column
+            })
+            .collect(),
+        None => Vec::new(),
+    };
+    let mut page = DataPage {
+        columns: columns.clone(),
+        rows: Vec::new(),
+        offset,
+        limit,
+        has_more: false,
+    };
+    let mut stored_bytes = 0usize;
+    const RESULT_BYTES: usize = 16 * 1024 * 1024;
+    for (index, row) in rows.iter().enumerate() {
+        if (index as u64) < offset {
+            continue;
+        }
+        if page.rows.len() >= capacity {
+            page.has_more = true;
+            break;
+        }
+        let mut values = Vec::with_capacity(columns.len());
+        for (col_index, column) in columns.iter().enumerate() {
+            values.push(pg_row_cell(row, col_index, column)?);
+        }
+        // 只做大致的字节预算：文本/字节按实际长度，数值按 16 字节估算。
+        let row_bytes = values.iter().map(pg_cell_byte_estimate).sum::<usize>();
+        if stored_bytes.saturating_add(row_bytes) > RESULT_BYTES {
+            page.has_more = true;
+            break;
+        }
+        stored_bytes += row_bytes;
+        page.rows.push(Row { values });
+    }
+    Ok(page)
+}
+
+/// 单元格字节估算（仅用于结果内存预算，不参与精度）。
+fn pg_cell_byte_estimate(value: &CellValue) -> usize {
+    match value {
+        CellValue::Text(text) => text.len(),
+        CellValue::Json(text) => text.len(),
+        CellValue::Bytes(bytes) => bytes.len(),
+        CellValue::BinarySummary(summary) => summary.byte_length as usize,
+        CellValue::Null => 0,
+        _ => 16,
+    }
+}
+
+/// 借用型绑定值：以原生 Rust 类型交给驱动，避免字符串插值。
+enum PgBindValue {
+    Null,
+    Bool(bool),
+    I64(i64),
+    U64Text(String),
+    F64(f64),
+    Decimal(String),
+    Text(String),
+    Bytes(Vec<u8>),
+}
+
+impl PgBindValue {
+    fn from_parameter(parameter: &fluxdb_core::SqlParameter) -> fluxdb_core::Result<Self> {
+        use fluxdb_core::SqlParameter;
+        Ok(match parameter {
+            SqlParameter::Null => PgBindValue::Null,
+            SqlParameter::Bool(value) => PgBindValue::Bool(*value),
+            SqlParameter::I64(text) => PgBindValue::I64(text.parse::<i64>().map_err(|_| {
+                Error::new(ErrorKind::Query, "i64 参数不是合法的十进制文本")
+            })?),
+            // PG 无无符号整型：超出 i64 的 u64 以 numeric 文本下发，保留精度。
+            SqlParameter::U64(text) => match text.parse::<i64>() {
+                Ok(value) => PgBindValue::I64(value),
+                Err(_) => PgBindValue::U64Text(text.clone()),
+            },
+            SqlParameter::Decimal(text) => PgBindValue::Decimal(text.clone()),
+            SqlParameter::F64(value) => {
+                if !value.is_finite() {
+                    return Err(Error::new(ErrorKind::Query, "f64 参数必须是有限数值"));
+                }
+                PgBindValue::F64(*value)
+            }
+            SqlParameter::Text(value) => PgBindValue::Text(value.clone()),
+            SqlParameter::Bytes(value) => PgBindValue::Bytes(value.clone()),
+        })
+    }
+
+    fn as_tosql(&self) -> &(dyn tokio_postgres::types::ToSql + Sync) {
+        match self {
+            PgBindValue::Null => &PG_NULL,
+            PgBindValue::Bool(value) => value,
+            PgBindValue::I64(value) => value,
+            PgBindValue::U64Text(value) => value,
+            PgBindValue::F64(value) => value,
+            PgBindValue::Decimal(value) => value,
+            PgBindValue::Text(value) => value,
+            PgBindValue::Bytes(value) => value,
+        }
+    }
+}
+
+/// `NULL` 绑定：`Option::<i32>::None` 以 `ToSql` 提供（静态避免引用临时）。
+static PG_NULL: Option<i32> = None;
+
+/// 参数化行取单元格：按列类型的原生解码（与文本协议路径不同的入口）。
+fn pg_row_cell(
+    row: &tokio_postgres::Row,
+    index: usize,
+    column: &Column,
+) -> fluxdb_core::Result<CellValue> {
+    let type_name = column.type_name.as_deref().unwrap_or("text");
+    let value = match type_name {
+        "int2" => row.try_get::<_, Option<i16>>(index).ok().flatten().map(|v| CellValue::I64(i64::from(v))),
+        "int4" => row.try_get::<_, Option<i32>>(index).ok().flatten().map(|v| CellValue::I64(i64::from(v))),
+        "int8" => row.try_get::<_, Option<i64>>(index).ok().flatten().map(CellValue::I64),
+        "float4" => row.try_get::<_, Option<f32>>(index).ok().flatten().map(|v| CellValue::F64(f64::from(v))),
+        "float8" => row.try_get::<_, Option<f64>>(index).ok().flatten().map(CellValue::F64),
+        "bool" => row.try_get::<_, Option<bool>>(index).ok().flatten().map(CellValue::Bool),
+        "bytea" => row
+            .try_get::<_, Option<Vec<u8>>>(index)
+            .ok()
+            .flatten()
+            .map(CellValue::Bytes),
+        _ => row
+            .try_get::<_, Option<String>>(index)
+            .ok()
+            .flatten()
+            .map(CellValue::Text),
+    };
+    Ok(match value {
+        Some(value) => value,
+        None => match row.try_get::<_, Option<String>>(index) {
+            Ok(None) | Err(_) => CellValue::Null,
+            Ok(Some(text)) => CellValue::Text(text),
+        },
+    })
+}

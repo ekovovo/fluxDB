@@ -13,6 +13,10 @@ pub(crate) mod secret_crypto;
 #[path = "parts/ai_platform/mod.rs"]
 pub mod ai_platform;
 
+/// SQLite 连接类型再导出：供不直接依赖 rusqlite 的适配层（如 fluxdb-mcp）
+/// 在 `with_ai_connection` 闭包外显式标注连接参数。
+pub use rusqlite::Connection as AiConnection;
+
 #[path = "parts/connection_secrets.rs"]
 mod connection_secrets;
 

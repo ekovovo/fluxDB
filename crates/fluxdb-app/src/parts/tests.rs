@@ -56,5 +56,6 @@ mod tests {
     include!("tests/ai_tool_registry.rs");
     include!("tests/ai_tool_output.rs");
     include!("tests/ai_result_pages.rs");
+    include!("tests/ai_mcp_server.rs");
     include!("tests/ai_artifact_errors.rs");
 }

@@ -54,9 +54,18 @@ pub enum AppEvent {
         id: String,
         revision: i64,
     },
+    /// 会话历史续读一页：追加条数与是否还有下一页。
+    AiSessionsAppended {
+        appended: usize,
+        has_more: bool,
+    },
     AiSessionRestored {
         id: String,
         revision: i64,
+    },
+    /// 已归档会话及其依赖事实已删除（含受控根内文件清理）。
+    AiSessionPurged {
+        id: String,
     },
     /// 默认模型选择已保存（运行设置新 revision）。
     AiDefaultModelsSaved {

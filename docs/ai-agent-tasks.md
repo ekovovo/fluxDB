@@ -692,6 +692,13 @@ cargo test -p fluxdb-app --locked ai_permission   # 15 passed
 - 改动：归档分页/依赖清理、spill/产物空间、报告安全导出；一致快照只作测试helper，不做完整备份UI/配置导入产品。
 - 验收：活跃任务不被清理；FK 始终开启；测试一致快照实际可读且保持原连接/AES，无密钥/密文进入证据；文件/表 staged 恢复不丢已完成文件。
 - 测试方式：在隔离SQLite/文件fixture中逐条执行上述验收，核对操作前后行值、revision、引用及错误；适用的失败注入后重开存储确认无部分写入/数据丢失，测试输出不得含秘密。
+- 实现记录（Storage / App / Desktop，2026-10-13）：
+  - **归档分页（1）**：`sessions.rs` 新增键集分页 `SessionListCursor` / `SessionOverviewPage` / `count_sessions` / `list_session_overviews_page`（`(updated_at_ms DESC, id ASC)` 稳定游标，同时间按 id 兜底，多取一行判断 has_more）；App 增 `ai_sessions_total/cursor/has_more/loading_more` 与 `LoadMoreAiSessions`（按 id 去重追加）；设置页「会话历史」头部显示「共 N · 已加载 M」并提供「加载更多」，到底后按钮消失。改为同步 dispatch（同工具启停），避免后台 `AppController` 克隆状态丢失。
+  - **依赖清理（2）**：`sessions::purge_archived_session` 只允许**已归档**会话、非终态 Turn 一律拒绝；单事务按 FK 依赖顺序删除 audits/approvals/parts/sources/artifacts/results/tool_calls/run_events/checkpoints/usage/messages/ui_state/turns/context_references/model_selections，并在 `last_session_id` 指向本会话时置空；返回 `SessionPurgePlan`（spill 与产物相对路径），App 事务外做受控根内文件清理（越界/非 uuid 一律拒绝）。Desktop 会话行仅对归档态显示删除按钮 + 确认弹框。
+  - **spill/产物空间（3）**：`artifacts::storage_usage` / `failed_artifact_paths` / `clear_artifact_path`；App `purge_failed_artifact_files`（failed 终态且已登记落点的快照，文件删除后才清落点）与 `purge_orphan_controlled_files`（受控目录内未登记、形如 `<uuid>.json` 的直接子文件；`ready` 产物与非 uuid 文件保留）；运行期准备路径接入清理与用量日志。
+  - **staged 崩溃对账（4）**：`recovery::recover_on_startup` 收集 `StagedArtifactCandidate`；App `reconcile_staged_artifacts` 核对文件字节/指纹，吻合则 `staged→ready`（幂等、不丢已完成文件），缺失/不符先清落点再置 `failed`，避免悬挂引用。
+  - 测试：storage `ai_platform` 106/106（新增 4 项分页/清理）；app lib 新增 `load_more_pages_session_history…`、`purge_archived_session_deletes_facts_files_and_rejects_active`、`storage_cleanup_purges_failed_artifacts_and_orphans_but_keeps_ready`、`staged_artifact_reconcile_promotes_verified_and_fails_missing`；Desktop 新增 `ai_sessions_load_more_pages_real_list_and_hides_when_done`（真实点击 + 真实 SQLite/文件）。回归：`ai_bi_artifacts` 24/24、`ai_artifact_report` 9/9、桌面 `ai_panel_tests` 96/96。`cargo fmt --all`、`cargo check --locked --offline` 通过。
+  - 未验证/边界：一致快照 helper（`session_snapshot` 已有，保持原连接/AES、无密钥/密文入证据）沿用既有实现，本轮未新增备份/导入产品 UI；`ai_panel_preferences` 的悬空 `selected_turn_id`/滚动锚点由既有失效跳过逻辑处理，未额外迁移；Windows/Linux 未编译与原生验收。
 
 
 ### T051 明确的共享密钥轮换（非自动迁移）【延期，不属本期】

@@ -402,6 +402,103 @@ mod ai_ui_tests {
         cx.simulate_click(bounds.center(), Modifiers::default());
     }
 
+    /// 会话历史分页：首屏只加载一页，“加载更多”经真实 AppCommand 续读到底后按钮消失。
+    #[gpui::test]
+    async fn ai_sessions_load_more_pages_real_list_and_hides_when_done(cx: &mut TestAppContext) {
+        use gpui_kit::test::TestWindowExt as _;
+        cx.executor().allow_parking();
+        let root = isolated_root("sessions-paging");
+        let storage = FileStorage::new(root.clone());
+        let mut controller = AppController::new();
+        controller.set_ai_storage(storage.clone());
+        let total = fluxdb_app::AI_SESSION_PAGE_SIZE + 5;
+        for index in 0..total - 1 {
+            seed_session(&storage, &format!("session-{index:03}"), "分页会话");
+        }
+        // 一条可被搜索过滤命中的会话：过滤后列表只剩一行，「加载更多」随之回到可点击区域。
+        seed_session(&storage, "session-unique", "唯一标题会话");
+        let unique_filter = "唯一标题";
+        let _ = controller.dispatch(AppCommand::RefreshAiSettings);
+        let _ = controller.dispatch(AppCommand::OpenSettings);
+        let (view, cx) = open_main(cx, controller, storage, SettingsPanelSection::AiSessions);
+        cx.simulate_resize(size(px(1200.), px(800.)));
+        view.update(cx, |main, cx| {
+            main.ai_session_filter = unique_filter.to_string();
+            cx.notify();
+        });
+        cx.update(|window, cx| {
+            let _ = window.draw(cx).clear(cx);
+        });
+        assert_eq!(
+            view.read_with(cx, |main, _| main.controller.state().ai_sessions.len()),
+            fluxdb_app::AI_SESSION_PAGE_SIZE as usize,
+            "首屏只加载第一页"
+        );
+        assert_eq!(
+            view.read_with(cx, |main, _| main.controller.state().ai_sessions_total),
+            total,
+            "总数应反映全部会话，而不是已加载条数"
+        );
+        assert!(
+            cx.debug_bounds("ai-sessions-load-more").is_some(),
+            "还有下一页时必须显示「加载更多」"
+        );
+        // 用元素自身的命中测试点击（长列表下比坐标点击更可靠）。
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.click("ai-sessions-load-more", cx);
+        });
+        // 续读在后台任务里完成：有界等待真实状态，不用固定 sleep 断言。
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+        loop {
+            cx.run_until_parked();
+            if view.read_with(cx, |main, _| main.controller.state().ai_sessions.len() as i64)
+                == total
+            {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "会话续读未完成: error={:?} loading_more={} has_more={}",
+                view.read_with(cx, |main, _| main.ai_settings_error.clone()),
+                view.read_with(cx, |main, _| main
+                    .controller
+                    .state()
+                    .ai_sessions_loading_more),
+                view.read_with(cx, |main, _| main
+                    .controller
+                    .state()
+                    .ai_sessions_has_more),
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        cx.update(|window, cx| {
+            let _ = window.draw(cx).clear(cx);
+        });
+        let ids = view.read_with(cx, |main, _| {
+            main.controller
+                .state()
+                .ai_sessions
+                .iter()
+                .map(|session| session.id.clone())
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(ids.len(), total as usize);
+        assert_eq!(ids[0], "session-000", "同时间按 id 升序稳定排序");
+        // 同时间按 id 升序，"session-100..103" 之后是 "session-unique"。
+        assert!(ids.contains(&"session-103".to_string()));
+        assert_eq!(ids[ids.len() - 1], "session-unique");
+        let mut unique = ids.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(unique.len(), ids.len(), "分页不得重复");
+        assert!(
+            cx.debug_bounds("ai-sessions-load-more").is_none(),
+            "到底后不应再显示「加载更多」"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     /// 数据展示闭环：保存后的模型必须出现在渲染快照里，并保留公开字段与数据库行一致。
     #[gpui::test]
     fn ai_ui_saved_model_render_snapshot_has_data_and_evidence(cx: &mut TestAppContext) {

@@ -671,8 +671,9 @@ fn settings_ai_sessions_panel(
                                 .text_size(px(12.))
                                 .text_color(colors.muted)
                                 .child(format!(
-                                    "共 {} 个会话 · 归档保留消息与审计事实",
-                                    state.ai_sessions.len()
+                                    "共 {} 个会话 · 已加载 {} · 归档保留消息与审计事实",
+                                    state.ai_sessions_total,
+                                    state.ai_sessions.len(),
                                 )),
                         )
                         .child(
@@ -700,7 +701,27 @@ fn settings_ai_sessions_panel(
                                         .on_click(cx.listener(|this, _, _, cx| {
                                             this.reload_ai_settings(cx);
                                         })),
-                                ),
+                                )
+                                // 续读下一页：放在头部便于直接点击（长列表不必先滚到底）；
+                                // 加载中 disabled 防重复请求，已到底时不显示。
+                                .when(state.ai_sessions_has_more, |row| {
+                                    row.child(
+                                        Button::new("ai-sessions-load-more")
+                                            .small()
+                                            .outline()
+                                            .cursor_pointer()
+                                            .debug_selector(|| "ai-sessions-load-more".into())
+                                            .disabled(state.ai_sessions_loading_more)
+                                            .child(if state.ai_sessions_loading_more {
+                                                "加载中…"
+                                            } else {
+                                                "加载更多"
+                                            })
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.load_more_ai_sessions(cx);
+                                            })),
+                                    )
+                                }),
                         ),
                 )
                 .child(
@@ -726,7 +747,7 @@ fn settings_ai_sessions_panel(
                             .flex_col()
                             .child(div().children(rows)),
                     ),
-                ),
+                )
         )
 }
 
@@ -805,6 +826,10 @@ fn ai_session_row(
     let rename_revision = session.revision;
     let archive_id = session_id.clone();
     let archive_revision = session.revision;
+    let purge_id = session_id.clone();
+    let purge_revision = session.revision;
+    let purge_title = session.title.clone();
+    let archived = session.status == "archived";
     ai_row_container(&format!("ai-session-row:{session_id}"), colors)
         .debug_selector({
             let session_id = session_id.clone();
@@ -960,6 +985,33 @@ fn ai_session_row(
                             cx,
                         );
                     }))
+                })
+                // 删除只对已归档会话开放：活跃会话需先归档，避免误删进行中任务。
+                .when(archived, |row| {
+                    row.child(
+                        Button::new(SharedString::from(format!(
+                            "ai-session-purge:{purge_id}"
+                        )))
+                        .small()
+                        .ghost()
+                        .cursor_pointer()
+                        .tooltip("删除会话及其消息/审计/产物")
+                        .debug_selector({
+                            let purge_id = purge_id.clone();
+                            move || format!("ai-session-purge:{purge_id}")
+                        })
+                        .disabled(archiving)
+                        .child(app_icon(AppIcon::Trash, 13., colors.danger))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.confirm_ai_session_purge(
+                                purge_id.clone(),
+                                purge_title.clone(),
+                                purge_revision,
+                                window,
+                                cx,
+                            );
+                        })),
+                    )
                 }),
         )
 }
@@ -992,6 +1044,125 @@ impl NavicatMain {
             window,
             cx,
         );
+    }
+
+    /// 删除已归档会话：确认弹框（Esc/遮罩/取消不写库），后台按依赖清理并删除受控文件。
+    fn confirm_ai_session_purge(
+        &mut self,
+        id: String,
+        title: String,
+        expected_revision: i64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.ai_session_archiving_id.is_some() {
+            return;
+        }
+        let view = cx.entity().downgrade();
+        window.open_dialog(cx, move |dialog, _, _| {
+            let view = view.clone();
+            let id = id.clone();
+            dialog
+                .title("删除已归档会话")
+                .close_button(true)
+                .overlay_closable(true)
+                .keyboard(true)
+                .child(format!(
+                    "确认删除「{name}」？将永久删除该会话的消息、任务、审批与审计事实，以及受控目录内的结果与产物快照。此操作不可撤销。",
+                    name = title
+                ))
+                .footer(
+                    div()
+                        .flex()
+                        .justify_end()
+                        .gap_2()
+                        .child(
+                            Button::new("ai-session-purge-cancel")
+                                .debug_selector(|| "ai-session-purge-cancel".into())
+                                .cursor_pointer()
+                                .child("取消")
+                                .on_click(|_, window, cx| window.close_dialog(cx)),
+                        )
+                        .child(
+                            Button::new("ai-session-purge-confirm")
+                                .debug_selector(|| "ai-session-purge-confirm".into())
+                                .danger()
+                                .cursor_pointer()
+                                .child("删除")
+                                .on_click(|_, window, cx| {
+                                    window.dispatch_action(
+                                        Box::new(gpui_component::dialog::Confirm {
+                                            secondary: false,
+                                        }),
+                                        cx,
+                                    )
+                                }),
+                        ),
+                )
+                .on_ok(move |_, _, cx| {
+                    let _ = view.update(cx, |this, cx| {
+                        this.start_ai_session_purge(id.clone(), expected_revision, cx)
+                    });
+                    true
+                })
+        });
+    }
+
+    /// 执行删除：后台读依赖事实 + 删库 + 清文件，结果经 Complete 命令合并到主控制器。
+    fn start_ai_session_purge(
+        &mut self,
+        id: String,
+        expected_revision: i64,
+        cx: &mut Context<Self>,
+    ) {
+        if self.ai_session_archiving_id.is_some() {
+            return;
+        }
+        self.ai_session_archiving_id = Some(id.clone());
+        cx.notify();
+        let mut controller = self.controller.clone();
+        cx.spawn(async move |view, cx| {
+            let (id, result) = cx
+                .background_spawn({
+                    let id = id.clone();
+                    async move {
+                        let event = controller.dispatch(AppCommand::PurgeAiSession {
+                            id: id.clone(),
+                            expected_revision,
+                        });
+                        let result = match event {
+                            AppEvent::AiSessionPurged { .. } => Ok(()),
+                            AppEvent::AiSettingsError(message) => Err(message),
+                            _ => Err("删除会话失败".into()),
+                        };
+                        (id, result)
+                    }
+                })
+                .await;
+            let _ = cx.update(|cx| {
+                let Some(view) = view.upgrade() else {
+                    return;
+                };
+                view.update(cx, |this, cx| {
+                    this.ai_session_archiving_id = None;
+                    let event = this.controller.dispatch(AppCommand::CompleteAiSessionPurge {
+                        id: id.clone(),
+                        result,
+                    });
+                    match event {
+                        AppEvent::AiSessionPurged { .. } => {
+                            this.show_message("会话已删除", AppMessageKind::Success, cx)
+                        }
+                        AppEvent::AiSettingsError(message) => {
+                            this.show_message(message, AppMessageKind::Error, cx)
+                        }
+                        _ => {}
+                    }
+                    cx.notify();
+                });
+            });
+        })
+        .detach();
     }
 
     /// 归档 / 恢复会话：对象级 CAS 后台执行，行内 loading/disabled，失败保留原状态。

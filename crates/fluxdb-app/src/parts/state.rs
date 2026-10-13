@@ -318,6 +318,13 @@ pub struct AppState {
     pub ai_mcp_settings: Vec<AiMcpItem>,
     /// 设置页「会话历史」列表（活跃 + 已归档，最近更新优先）。
     pub ai_sessions: Vec<AiSessionItem>,
+    /// 会话历史分页：总数（分页后不能靠列表长度推断）。
+    pub ai_sessions_total: i64,
+    /// 会话历史分页：下一页游标；`None` 表示已读完。
+    pub ai_sessions_cursor: Option<fluxdb_storage::ai_platform::sessions::SessionListCursor>,
+    pub ai_sessions_has_more: bool,
+    /// 正在加载下一页（按钮 loading/disabled，拦重复请求）。
+    pub ai_sessions_loading_more: bool,
     /// 默认主模型档案 id（`ai_runtime_settings.default_model_profile_id`）。
     pub ai_default_model_id: Option<String>,
     /// 默认决策（Jev）模型档案 id。
@@ -361,6 +368,10 @@ impl Default for AppState {
             ai_tool_settings: Vec::new(),
             ai_mcp_settings: Vec::new(),
             ai_sessions: Vec::new(),
+            ai_sessions_total: 0,
+            ai_sessions_cursor: None,
+            ai_sessions_has_more: false,
+            ai_sessions_loading_more: false,
             ai_default_model_id: None,
             ai_default_decision_model_id: None,
             ai_jev_status: JevStatus::default(),

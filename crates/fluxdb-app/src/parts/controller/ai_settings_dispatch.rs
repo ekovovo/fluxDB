@@ -106,6 +106,19 @@ impl AppController {
                     Err(e) => return AppEvent::AiSettingsError(e.message),
                 }
             }
+            AppCommand::LoadMoreAiSessions => {
+                let storage = self.ai_storage();
+                let result = storage.and_then(|st| load_more_ai_sessions(&mut self.state, &st));
+                match result {
+                    Ok(appended) => {
+                        return AppEvent::AiSessionsAppended {
+                            appended,
+                            has_more: self.state.ai_sessions_has_more,
+                        };
+                    }
+                    Err(e) => return AppEvent::AiSettingsError(e.message),
+                }
+            }
             AppCommand::RenameAiSession {
                 id,
                 title,
@@ -202,6 +215,46 @@ impl AppController {
                     }
                     Err(error) => return AppEvent::AiSettingsError(error.message),
                 }
+            }
+            AppCommand::PurgeAiSession {
+                id,
+                expected_revision,
+            } => {
+                let result = self.ai_storage().and_then(|storage| {
+                    // CAS 复核：归档后的 revision 必须与调用方一致，避免误删并发变化的会话。
+                    let current = with_ai_storage(&storage, |conn| {
+                        fluxdb_storage::ai_platform::sessions::load_session(conn, &id)
+                    })?;
+                    if current.revision != expected_revision {
+                        return Err(fluxdb_core::Error::new(
+                            fluxdb_core::ErrorKind::Internal,
+                            "会话已被其他窗口修改，请重新加载",
+                        ));
+                    }
+                    let plan = with_ai_storage(&storage, |conn| {
+                        fluxdb_storage::ai_platform::sessions::purge_archived_session(conn, &id)
+                    })?;
+                    // 数据库删除已提交，文件清理失败不回滚；仅记录告警。
+                    purge_session_files(&storage, &plan);
+                    Ok(())
+                });
+                match result {
+                    Ok(()) => {
+                        self.state.ai_sessions.retain(|session| session.id != id);
+                        self.state.ai_sessions_total = (self.state.ai_sessions_total - 1).max(0);
+                        return AppEvent::AiSessionPurged { id };
+                    }
+                    Err(error) => return AppEvent::AiSettingsError(error.message),
+                }
+            }
+            AppCommand::CompleteAiSessionPurge { id, result } => {
+                return match result {
+                    Ok(()) => {
+                        self.state.ai_sessions.retain(|session| session.id != id);
+                        AppEvent::AiSessionPurged { id }
+                    }
+                    Err(message) => AppEvent::AiSettingsError(message),
+                };
             }
             AppCommand::CompleteAiSessionRename {
                 id,

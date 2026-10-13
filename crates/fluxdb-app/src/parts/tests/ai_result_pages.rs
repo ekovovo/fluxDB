@@ -675,3 +675,204 @@ fn ai_result_pages_valid_json_spill_tampering_is_damaged_even_with_same_row_coun
     );
     std::fs::remove_dir_all(root).expect("清理测试目录");
 }
+
+// T050：受控存储清理——失败产物快照、孤儿文件、用量统计。
+#[test]
+fn storage_cleanup_purges_failed_artifacts_and_orphans_but_keeps_ready() {
+    let dir = std::env::temp_dir().join(format!(
+        "fluxdb-ai-storage-cleanup-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let storage = fluxdb_storage::FileStorage::new(dir.clone());
+    storage.with_ai_connection(|_| Ok(())).unwrap();
+
+    // 建立会话 + Turn（供产物 FK）。
+    let agent = storage
+        .with_ai_connection(|conn| {
+            Ok(fluxdb_storage::ai_platform::agents::list_agents(conn)?
+                .into_iter()
+                .next()
+                .map(|agent| agent.id))
+        })
+        .unwrap()
+        .expect("内置 Agent");
+    storage
+        .with_ai_connection(|conn| {
+            fluxdb_storage::ai_platform::conversation::send(
+                conn, 1_000, true, "session-1", &agent, "turn-1", "msg-1", "会话", "{}", "{}",
+            )
+        })
+        .unwrap();
+
+    let artifacts_dir = storage.root_dir().join("ai-artifacts");
+    std::fs::create_dir_all(&artifacts_dir).unwrap();
+    let results_dir = storage.root_dir().join("ai-results").join("results");
+    std::fs::create_dir_all(&results_dir).unwrap();
+
+    // ready 产物（必须保留）+ failed 产物（带落点，应清理）。
+    let ready_file = "aaaaaaaa-0000-0000-0000-000000000001.json";
+    let failed_file = "bbbbbbbb-0000-0000-0000-000000000002.json";
+    std::fs::write(artifacts_dir.join(ready_file), b"{\"markdown\":\"x\"}").unwrap();
+    std::fs::write(artifacts_dir.join(failed_file), b"{\"markdown\":\"y\"}").unwrap();
+    // 孤儿文件（DB 未登记）应清理；非 uuid 命名的普通文件不应被误删。
+    let orphan_file = "cccccccc-0000-0000-0000-000000000003.json";
+    std::fs::write(artifacts_dir.join(orphan_file), b"{}").unwrap();
+    std::fs::write(artifacts_dir.join("notes.txt"), b"keep").unwrap();
+    // 结果孤儿。
+    let result_orphan = "dddddddd-0000-0000-0000-000000000004.json";
+    std::fs::write(results_dir.join(result_orphan), b"{}").unwrap();
+    storage
+        .with_ai_connection(|conn| {
+            conn.execute(
+                "INSERT INTO ai_artifacts(id,session_id,turn_id,kind,schema_version,title,renderer_id,renderer_version,spec_json,status,relative_path,byte_count,content_hash,revision,created_at_ms,updated_at_ms)
+                 VALUES('a-ready','session-1','turn-1','report',1,'t','r','1','{}','ready',?1,10,'h',1,1000,1000),
+                       ('a-failed','session-1','turn-1','report',1,'t','r','1','{}','failed',?2,10,'h',1,1000,1000)",
+                rusqlite::params![ready_file, failed_file],
+            )
+            .map_err(|e| fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, e.to_string()))?;
+            Ok(())
+        })
+        .unwrap();
+
+    let usage = storage
+        .with_ai_connection(|conn| {
+            Ok(fluxdb_storage::ai_platform::artifacts::storage_usage(conn)?)
+        })
+        .unwrap();
+    assert_eq!(usage.artifact_files, 2, "统计计数登记落点（含 failed）");
+    assert_eq!(usage.artifact_bytes, 20);
+    assert_eq!(usage.result_files, 0);
+
+    let purged = purge_failed_artifact_files(&storage).unwrap();
+    assert_eq!(purged, 1, "只清失败产物快照");
+    assert!(artifacts_dir.join(ready_file).exists(), "ready 产物必须保留");
+    assert!(!artifacts_dir.join(failed_file).exists(), "failed 产物文件应删除");
+
+    let orphans = purge_orphan_controlled_files(&storage).unwrap();
+    assert_eq!(orphans, 2, "清理产物与结果两个孤儿");
+    assert!(!artifacts_dir.join(orphan_file).exists());
+    assert!(artifacts_dir.join("notes.txt").exists(), "非 uuid 文件不得误删");
+    assert!(!results_dir.join(result_orphan).exists());
+
+    // 失败产物行仍在（保留追溯），但落点已清空、不再计入用量。
+    storage
+        .with_ai_connection(|conn| {
+            let (status, path): (String, Option<String>) = conn
+                .query_row(
+                    "SELECT status,relative_path FROM ai_artifacts WHERE id='a-failed'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(status, "failed");
+            assert!(path.is_none(), "清理后应清空落点");
+            Ok(())
+        })
+        .unwrap();
+    let usage = storage
+        .with_ai_connection(|conn| {
+            Ok(fluxdb_storage::ai_platform::artifacts::storage_usage(conn)?)
+        })
+        .unwrap();
+    assert_eq!(usage.artifact_files, 1, "只剩 ready 产物计费落点");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// T050：staged 产物崩溃对账。
+#[test]
+fn staged_artifact_reconcile_promotes_verified_and_fails_missing() {
+    let dir = std::env::temp_dir().join(format!(
+        "fluxdb-ai-staged-reconcile-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let storage = fluxdb_storage::FileStorage::new(dir.clone());
+    storage.with_ai_connection(|_| Ok(())).unwrap();
+    let agent = storage
+        .with_ai_connection(|conn| {
+            Ok(fluxdb_storage::ai_platform::agents::list_agents(conn)?
+                .into_iter()
+                .next()
+                .map(|a| a.id))
+        })
+        .unwrap()
+        .expect("内置 Agent");
+    storage
+        .with_ai_connection(|conn| {
+            fluxdb_storage::ai_platform::conversation::send(
+                conn, 1_000, true, "session-1", &agent, "turn-1", "msg-1", "会话", "{}", "{}",
+            )
+        })
+        .unwrap();
+
+    let artifacts_dir = storage.root_dir().join("ai-artifacts");
+    std::fs::create_dir_all(&artifacts_dir).unwrap();
+
+    // 1) staged + 文件字节/指纹吻合 → 应提升 ready。
+    let verified_name = "11111111-0000-0000-0000-000000000001.json";
+    let verified_content = "{\"markdown\":\"verified\"}";
+    std::fs::write(artifacts_dir.join(verified_name), verified_content).unwrap();
+    let verified_hash = crate::source_hash(&[verified_content]);
+    // 2) staged + 文件缺失 → 应置 failed 并清空落点。
+    let missing_name = "22222222-0000-0000-0000-000000000002.json";
+    storage
+        .with_ai_connection(|conn| {
+            conn.execute(
+                "INSERT INTO ai_artifacts(id,session_id,turn_id,kind,schema_version,title,renderer_id,renderer_version,spec_json,status,relative_path,byte_count,content_hash,revision,created_at_ms,updated_at_ms)
+                 VALUES('a-verified','session-1','turn-1','report',1,'t','r','1','{}','staged',?1,?2,?3,1,1000,1000),
+                       ('a-missing','session-1','turn-1','report',1,'t','r','1','{}','staged',?4,10,'deadbeef',1,1000,1000)",
+                rusqlite::params![
+                    verified_name,
+                    verified_content.len() as i64,
+                    verified_hash,
+                    missing_name,
+                ],
+            )
+            .map_err(|e| fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, e.to_string()))?;
+            Ok(())
+        })
+        .unwrap();
+
+    let candidates = storage
+        .with_ai_connection(|conn| {
+            Ok(fluxdb_storage::ai_platform::recovery::staged_artifact_candidates(conn)?)
+        })
+        .unwrap();
+    assert_eq!(candidates.len(), 2, "两个 staged 产物都应被收集");
+    reconcile_staged_artifacts(&storage, &candidates);
+
+    storage
+        .with_ai_connection(|conn| {
+            let (status, path): (String, Option<String>) = conn
+                .query_row(
+                    "SELECT status,relative_path FROM ai_artifacts WHERE id='a-verified'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(status, "ready", "核对通过必须提升 ready（不丢已完成文件）");
+            assert_eq!(path.as_deref(), Some(verified_name));
+
+            let (status, path): (String, Option<String>) = conn
+                .query_row(
+                    "SELECT status,relative_path FROM ai_artifacts WHERE id='a-missing'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(status, "failed", "文件缺失必须收敛为 failed");
+            assert!(path.is_none(), "失败后应清空悬挂落点");
+            Ok(())
+        })
+        .unwrap();
+    assert!(artifacts_dir.join(verified_name).exists(), "ready 文件保留");
+    let _ = std::fs::remove_dir_all(&dir);
+}

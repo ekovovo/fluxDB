@@ -888,6 +888,96 @@ fn sessions_file_db_reopen_recovers_public_snapshot_and_ui_state() {
 }
 
 #[test]
+fn session_overview_paging_is_stable_without_duplicates_or_gaps() {
+    let conn = setup();
+    // 7 个会话，更新时间递增；另外两个时间相同用于验证 id 兜底排序。
+    for index in 1..=7 {
+        create_session(&conn, &format!("session-{index}"));
+        conn.execute(
+            "UPDATE ai_sessions SET updated_at_ms=?2 WHERE id=?1",
+            rusqlite::params![format!("session-{index}"), 10_000 + index],
+        )
+        .unwrap();
+    }
+    for id in ["tie-a", "tie-b"] {
+        create_session(&conn, id);
+        conn.execute(
+            "UPDATE ai_sessions SET updated_at_ms=20_000 WHERE id=?1",
+            [id],
+        )
+        .unwrap();
+    }
+    assert_eq!(sessions::count_sessions(&conn, None).unwrap(), 9);
+
+    let mut seen: Vec<String> = Vec::new();
+    let mut cursor = None;
+    let mut pages = 0;
+    loop {
+        let page = sessions::list_session_overviews_page(&conn, 3, cursor.as_ref(), None).unwrap();
+        assert!(page.sessions.len() <= 3, "每页不能超过 limit");
+        seen.extend(page.sessions.iter().map(|session| session.id.clone()));
+        pages += 1;
+        match page.next_cursor {
+            Some(next) => cursor = Some(next),
+            None => break,
+        }
+        assert!(pages < 10, "分页必须收敛");
+    }
+    // 无重复、无遗漏；更新时间相同的一对按 id 升序稳定排序。
+    let mut unique = seen.clone();
+    unique.sort();
+    unique.dedup();
+    assert_eq!(unique.len(), seen.len(), "分页不得重复: {seen:?}");
+    assert_eq!(seen.len(), 9, "分页必须覆盖全部会话: {seen:?}");
+    assert_eq!(&seen[0], "tie-a", "同时间应按 id 升序: {seen:?}");
+    assert_eq!(&seen[1], "tie-b", "同时间应按 id 升序: {seen:?}");
+    assert_eq!(&seen[2], "session-7", "更新时间倒序: {seen:?}");
+    assert_eq!(seen.last().unwrap(), "session-1");
+
+    // 单页 limit 大于总数时一次读完且没有续读游标。
+    let page = sessions::list_session_overviews_page(&conn, 50, None, None).unwrap();
+    assert_eq!(page.sessions.len(), 9);
+    assert!(page.next_cursor.is_none());
+}
+
+#[test]
+fn session_overview_paging_filters_archived_and_counts_by_status() {
+    let conn = setup();
+    create_session(&conn, "session-live");
+    create_session(&conn, "session-old");
+    sessions::archive_session(&conn, 2_000, "session-old", 1).expect("归档会话");
+
+    let active = sessions::list_session_overviews_page(
+        &conn,
+        10,
+        None,
+        Some(sessions::SessionStatus::Active),
+    )
+    .unwrap();
+    assert_eq!(active.sessions.len(), 1);
+    assert_eq!(active.sessions[0].id, "session-live");
+    assert_eq!(
+        sessions::count_sessions(&conn, Some(sessions::SessionStatus::Active)).unwrap(),
+        1
+    );
+
+    let archived = sessions::list_session_overviews_page(
+        &conn,
+        10,
+        None,
+        Some(sessions::SessionStatus::Archived),
+    )
+    .unwrap();
+    assert_eq!(archived.sessions.len(), 1);
+    assert_eq!(archived.sessions[0].id, "session-old");
+    assert_eq!(
+        sessions::count_sessions(&conn, Some(sessions::SessionStatus::Archived)).unwrap(),
+        1
+    );
+    assert_eq!(sessions::count_sessions(&conn, None).unwrap(), 2);
+}
+
+#[test]
 fn session_overview_counts_and_rename_archive_restore_keep_facts() {
     let conn = setup();
     let session = create_session(&conn, "session-overview");
@@ -1172,4 +1262,218 @@ fn sessions_sigkill_recovery_after_process_kill() {
 
     drop(reopened);
     let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn purge_requires_archived_session_and_rejects_active_turn() {
+    let conn = setup();
+    create_session(&conn, "session-live");
+    // 未归档：拒绝删除。
+    let err = sessions::purge_archived_session(&conn, "session-live").unwrap_err();
+    assert!(err.message.contains("归档"), "{}", err.message);
+    assert!(sessions::load_session(&conn, "session-live").is_ok());
+
+    // 已归档但仍有活跃 Turn：拒绝删除，事实保留。
+    start_turn(&conn, "session-live", "turn-live", 1_100);
+    sessions::archive_session(&conn, 1_200, "session-live", 1).expect("归档");
+    let err = sessions::purge_archived_session(&conn, "session-live").unwrap_err();
+    assert!(
+        err.message.contains("进行中") || err.message.contains("待审批"),
+        "{}",
+        err.message
+    );
+    assert_eq!(
+        sessions::list_turns(&conn, "session-live").unwrap().len(),
+        1
+    );
+}
+
+#[test]
+fn purge_archived_session_removes_all_dependents_and_returns_file_facts() {
+    let conn = setup();
+    create_session(&conn, "session-a");
+    create_session(&conn, "session-b");
+    start_turn(&conn, "session-a", "turn-a", 1_100);
+    append_message(&conn, "message-a", "session-a", Some("turn-a"), 1_110);
+    sessions::append_part(
+        &conn,
+        1_120,
+        "part-a",
+        "message-a",
+        PartKind::Text,
+        PartStatus::Complete,
+        r#"{"text":"正文"}"#,
+        None,
+        None,
+        None,
+    )
+    .expect("片段");
+    // 模型档案与预算策略（usage_ledger / model_selection 的 FK 目标）。
+    conn.execute(
+        "INSERT INTO ai_model_profiles(id,display_name,provider,api_protocol,model_kind,model,auth_mode,revision,created_at_ms,updated_at_ms)
+         VALUES('model-a','测试模型','openai','openai_chat','generation','gpt-test','none',1,1000,1000)",
+        [],
+    ).unwrap();
+    // 工具调用 + 审计 + 审批事实。
+    sessions::create_tool_call(
+        &conn,
+        1_130,
+        "call-a",
+        "session-a",
+        "turn-a",
+        1,
+        0,
+        "provider-a",
+        "db.query",
+        1,
+        None,
+        r#"{"sql":"SELECT 1"}"#,
+        "{}",
+        "plan-a",
+        "succeeded",
+    )
+    .expect("工具调用");
+    conn.execute(
+        "INSERT INTO ai_tool_audits(id,tool_call_id,stage,hook_id,hook_version,ruleset_version,plan_hash,decision,risk,rule_ids_json,reason_codes_json,created_at_ms)
+         VALUES('audit-a','call-a','pre_execute','kernel','1','1','plan-a','allow','read','[]','[]',1131)",
+        [],
+    ).unwrap();
+    // 结果（带落点）+ 产物（带落点）+ 来源 + 片段引用。
+    sessions::insert_result(
+        &conn,
+        1_140,
+        "result-a",
+        "session-a",
+        "turn-a",
+        "call-a",
+        r#"{"tool":"db.query"}"#,
+        "available",
+        16,
+        &sessions::ResultRetention::Retained {
+            relative_path: "results/deadbeef.json".into(),
+            byte_count: 16,
+            content_hash: "hash-a".into(),
+        },
+    )
+    .expect("结果");
+    conn.execute(
+        "INSERT INTO ai_artifacts(id,session_id,turn_id,kind,schema_version,title,renderer_id,renderer_version,spec_json,status,relative_path,byte_count,content_hash,revision,created_at_ms,updated_at_ms)
+         VALUES('artifact-a','session-a','turn-a','report',1,'标题','r','1','{}','ready','cafebabe.json',10,'hash-b',1,1141,1141)",
+        [],
+    ).unwrap();
+    conn.execute(
+        "INSERT INTO ai_artifact_sources(artifact_id,ordinal,result_id,tool_call_id,metadata_json)
+         VALUES('artifact-a',0,'result-a','call-a','{\"result_ref\":\"r\"}')",
+        [],
+    )
+    .unwrap();
+    sessions::append_part(
+        &conn,
+        1_150,
+        "part-artifact",
+        "message-a",
+        PartKind::ArtifactRef,
+        PartStatus::Complete,
+        r#"{"artifact_status":"ready"}"#,
+        None,
+        None,
+        Some("artifact-a"),
+    )
+    .expect("产物片段");
+    conn.execute(
+        "INSERT INTO ai_usage_ledger(session_id,turn_id,request_id,attempt,purpose,model_profile_id,measurement,created_at_ms,updated_at_ms)
+         VALUES('session-a','turn-a','req-a',1,'main','model-a','unknown',1150,1150)",
+        [],
+    ).unwrap();
+    // 会话级作用域引用与模型选择；draft 作用域必须保留。
+    conn.execute(
+        "INSERT INTO ai_context_references(scope_id,session_id,reference_id,payload_json)
+         VALUES('session-a','session-a','ref-a','{}'),('draft',NULL,'ref-draft','{}')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO ai_session_model_selections(scope_id,session_id,model_profile_id,revision)
+         VALUES('session-a','session-a','model-a',1)",
+        [],
+    )
+    .unwrap();
+
+    // 另一个会话作为“必须不受影响”的对照。
+    start_turn(&conn, "session-b", "turn-b", 1_160);
+    append_message(&conn, "message-b", "session-b", Some("turn-b"), 1_170);
+    sessions::update_turn_status(&conn, 1_180, "turn-a", TurnStatus::Completed, None, 1).ok();
+    sessions::update_turn_status(&conn, 1_181, "turn-b", TurnStatus::Completed, None, 1).ok();
+    sessions::archive_session(&conn, 1_200, "session-a", 1).expect("归档 a");
+
+    let plan = sessions::purge_archived_session(&conn, "session-a").expect("删除已归档会话");
+    assert_eq!(plan.purged_sessions, 1);
+    assert_eq!(plan.result_files, vec!["results/deadbeef.json".to_string()]);
+    assert_eq!(plan.artifact_files, vec!["cafebabe.json".to_string()]);
+
+    let count = |sql: &str| -> i64 { conn.query_row(sql, [], |row| row.get(0)).unwrap() };
+    assert_eq!(
+        count("SELECT COUNT(*) FROM ai_sessions WHERE id='session-a'"),
+        0
+    );
+    assert_eq!(
+        count("SELECT COUNT(*) FROM ai_turns WHERE session_id='session-a'"),
+        0
+    );
+    assert_eq!(
+        count("SELECT COUNT(*) FROM ai_messages WHERE session_id='session-a'"),
+        0
+    );
+    assert_eq!(
+        count("SELECT COUNT(*) FROM ai_message_parts WHERE id='part-a'"),
+        0
+    );
+    assert_eq!(
+        count("SELECT COUNT(*) FROM ai_message_parts WHERE id='part-artifact'"),
+        0
+    );
+    assert_eq!(
+        count("SELECT COUNT(*) FROM ai_tool_calls WHERE session_id='session-a'"),
+        0
+    );
+    assert_eq!(
+        count("SELECT COUNT(*) FROM ai_tool_audits WHERE id='audit-a'"),
+        0
+    );
+    assert_eq!(
+        count("SELECT COUNT(*) FROM ai_results WHERE session_id='session-a'"),
+        0
+    );
+    assert_eq!(
+        count("SELECT COUNT(*) FROM ai_artifacts WHERE session_id='session-a'"),
+        0
+    );
+    assert_eq!(
+        count("SELECT COUNT(*) FROM ai_artifact_sources WHERE artifact_id='artifact-a'"),
+        0
+    );
+    assert_eq!(
+        count("SELECT COUNT(*) FROM ai_usage_ledger WHERE session_id='session-a'"),
+        0
+    );
+    assert_eq!(
+        count("SELECT COUNT(*) FROM ai_context_references WHERE scope_id='session-a'"),
+        0
+    );
+    // 对照会话与 draft 引用保留。
+    assert_eq!(
+        count("SELECT COUNT(*) FROM ai_sessions WHERE id='session-b'"),
+        1
+    );
+    assert_eq!(
+        count("SELECT COUNT(*) FROM ai_turns WHERE session_id='session-b'"),
+        1
+    );
+    assert_eq!(
+        count("SELECT COUNT(*) FROM ai_context_references WHERE scope_id='draft'"),
+        1
+    );
+    // 外键在删除后依然自洽：再次校验整库。
+    assert_eq!(count("PRAGMA foreign_keys"), 1);
+    assert!(sessions::load_session(&conn, "session-a").is_err());
 }

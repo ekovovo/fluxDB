@@ -6,6 +6,7 @@
 /// 缺少必填字段），因此这里的枚举仍是给模型看的**准确契约**而不是唯一校验点。
 fn artifact_block_schema() -> serde_json::Value {
     serde_json::json!({
+        "description": "产物内容块，三种形状互斥：chart 图表、table 表格、note 说明",
         "oneOf": [
             {
                 "type": "object",
@@ -13,10 +14,14 @@ fn artifact_block_schema() -> serde_json::Value {
                 "required": ["type", "result_ref", "chart", "x", "y"],
                 "properties": {
                     "type": {"type": "string", "enum": ["chart"]},
-                    "result_ref": {"type": "string", "minLength": 1, "maxLength": 128},
-                    "chart": {"type": "string", "enum": ["line", "bar"]},
-                    "x": {"type": "string", "minLength": 1, "maxLength": 200},
-                    "y": {"type": "string", "minLength": 1, "maxLength": 200}
+                    "result_ref": {"type": "string", "minLength": 1, "maxLength": 128,
+                        "description": "数据来源的结果句柄 ID，须已在 sources 中声明"},
+                    "chart": {"type": "string", "enum": ["line", "bar"],
+                        "description": "图表类型：line 折线、bar 柱状"},
+                    "x": {"type": "string", "minLength": 1, "maxLength": 200,
+                        "description": "横轴字段名（来源结果里的列名，不是数据值）"},
+                    "y": {"type": "string", "minLength": 1, "maxLength": 200,
+                        "description": "纵轴字段名（来源结果里的数值列）"}
                 }
             },
             {
@@ -25,9 +30,11 @@ fn artifact_block_schema() -> serde_json::Value {
                 "required": ["type", "result_ref", "columns"],
                 "properties": {
                     "type": {"type": "string", "enum": ["table"]},
-                    "result_ref": {"type": "string", "minLength": 1, "maxLength": 128},
+                    "result_ref": {"type": "string", "minLength": 1, "maxLength": 128,
+                        "description": "数据来源的结果句柄 ID，须已在 sources 中声明"},
                     "columns": {
                         "type": "array", "minItems": 1, "maxItems": 64,
+                        "description": "要展示的列名（来源结果里的列名）",
                         "items": {"type": "string", "minLength": 1, "maxLength": 200}
                     }
                 }
@@ -38,7 +45,8 @@ fn artifact_block_schema() -> serde_json::Value {
                 "required": ["type", "text"],
                 "properties": {
                     "type": {"type": "string", "enum": ["note"]},
-                    "text": {"type": "string", "minLength": 1, "maxLength": 2000}
+                    "text": {"type": "string", "minLength": 1, "maxLength": 2000,
+                        "description": "说明文字：数据范围、限制或假设；不要填入未查询到的数字"}
                 }
             }
         ]
@@ -52,46 +60,61 @@ fn artifact_create_schema() -> serde_json::Value {
         "required": ["kind", "title", "renderer", "sources"],
         "properties": {
             "schema_version": {"type":"integer","enum":[1]},
-            "kind": {"type": "string", "enum": ["report", "chart", "table"]},
+            "kind": {"type": "string", "enum": ["report", "chart", "table"],
+                "description":"产物类型：report 报告、chart 图表、table 表格"},
             "title": {"type": "string", "minLength": 1, "maxLength": 200},
-            "renderer": {"type": "string", "minLength": 1, "maxLength": 128},
+            "renderer": {"type": "string", "minLength": 1, "maxLength": 128,
+                "description":"渲染器 ID，取本工具描述里列出的可用 renderer"},
             "metric": {
                 "type": "object",
                 "additionalProperties": false,
                 "required": ["name", "timezone"],
+                "description":"指标口径；没有已授权口径时可整个省略 metric",
                 "properties": {
                     "name": {"type": "string", "minLength": 1, "maxLength": 200},
                     "definition_ref": {"type": "string", "minLength": 1, "maxLength": 128,
-                        "description":"本轮已授权业务口径的知识条目 ID；不是 result_ref"},
+                        "description":"已授权业务口径的知识条目 ID；不是 SQL 表达式、字段名或 result_ref。没有已授权口径时省略此字段"},
                     "timezone": {"type": "string", "minLength": 1, "maxLength": 64,
-                        "description":"UTC 或 +/-HH:MM 固定偏移；IANA 时区名本期不支持"},
-                    "assumption": {"type":"string","minLength":1,"maxLength":2000}
+                        "description":"指标时区：UTC 或 +/-HH:MM 固定偏移；不支持 IANA 名称"},
+                    "assumption": {"type":"string","minLength":1,"maxLength":2000,
+                        "description":"无已授权口径时对指标含义的假设说明"}
                 }
             },
             "sources": {
                 "type": "array", "minItems": 1, "maxItems": 32,
+                "description":"产物数据来源，取自本轮已执行工具返回的结果句柄",
                 "items": {
                     "type": "object",
                     "additionalProperties": false,
                     "required": ["result_ref"],
                     "properties": {
-                        "result_ref": {"type": "string", "minLength": 1, "maxLength": 128},
-                        "tool_call_ref": {"type": "string", "minLength": 1, "maxLength": 128}
+                        "result_ref": {"type": "string", "minLength": 1, "maxLength": 128,
+                            "description":"本轮工具返回的结果句柄 ID"},
+                        "tool_call_ref": {"type": "string", "minLength": 1, "maxLength": 128,
+                            "description":"产出该结果的工具调用 ID；可选，填了须与结果来源一致，只用 result_ref 引用时可省略"}
                     }
                 }
             },
-            "blocks": {"type": "array", "maxItems": 64, "items": artifact_block_schema()},
+            "blocks": {"type": "array", "maxItems": 64,
+                "description":"产物内容块，按顺序展示",
+                "items": artifact_block_schema()},
             "time_range": {
                 "type":"object","additionalProperties":false,"required":["start","end"],
+                "description":"数据时间范围",
                 "properties": {
-                    "start":{"type":"string","minLength":1,"maxLength":64},
-                    "end":{"type":"string","minLength":1,"maxLength":64}
+                    "start":{"type":"string","minLength":1,"maxLength":64,
+                        "description":"起始时间，RFC3339"},
+                    "end":{"type":"string","minLength":1,"maxLength":64,
+                        "description":"结束时间，RFC3339"}
                 }
             },
-            "filters":{"type":"array","maxItems":32,"items":{"type":"string","maxLength":2000}},
+            "filters":{"type":"array","maxItems":32,
+                "description":"生效的过滤条件说明，仅用于展示口径",
+                "items":{"type":"string","maxLength":2000}},
             "refresh":{"type":"string","enum":["snapshot"]},
             "template_version":{"type":"string","minLength":1,"maxLength":64},
-            "accessibility_description":{"type":"string","maxLength":2000}
+            "accessibility_description":{"type":"string","maxLength":2000,
+                "description":"图表不可读时替代的文字说明（可选）"}
         }
     })
 }
@@ -102,7 +125,8 @@ fn artifact_add_block_schema() -> serde_json::Value {
         "additionalProperties": false,
         "required": ["artifact_id", "block"],
         "properties": {
-            "artifact_id": {"type": "string", "minLength": 1, "maxLength": 128},
+            "artifact_id": {"type": "string", "minLength": 1, "maxLength": 128,
+                "description": "目标产物草稿 ID"},
             "block": artifact_block_schema()
         }
     })
@@ -114,7 +138,8 @@ fn artifact_finalize_schema() -> serde_json::Value {
         "additionalProperties": false,
         "required": ["artifact_id"],
         "properties": {
-            "artifact_id": {"type": "string", "minLength": 1, "maxLength": 128}
+            "artifact_id": {"type": "string", "minLength": 1, "maxLength": 128,
+                "description": "要完成的产物 ID"}
         }
     })
 }

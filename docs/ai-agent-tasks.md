@@ -1360,12 +1360,11 @@ T020按主设计§31.9实现询问AI内联批准卡片：参考Goose三态按钮
 - **T059 受限写**：`ScopedWritePolicy`（仅 UPDATE/授权表/必须 WHERE/禁 DDL/禁子查询），
   scoped 命中即视为预授权执行，强制审计 `Deny` 不可被覆盖；真实 SQLite 端到端：
   命中更新真实落库、越界表 `write_object_not_allowed` 拒绝。
-- **T060 配置导出（后端）**：`claude_mcp_config_json` 输出不含秘密、仅绝对路径与 profile 的
-  Claude `.mcp.json` 片段；**未完成** Server 管理页 UI 与活动审计页（需真实窗口截图验收）。
 - **T062 Claude CLI 实测**：真实 Claude Code CLI 2.1.66 经 `--mcp-config/--strict-mcp-config/--tools ""/
   --allowedTools mcp__fluxdb_local__fluxdb_query/-p` 调用 `fluxdb_query`，返回真实 SQLite 行；
   后端 `ai_mcp_server_requests=succeeded`、`ai_tool_audits=allow` 落库；隐藏写工具从 tools/list 消失且
   模型确认无法调用。仅 SQLite/只读范围内验证；MySQL/PG/Redis 真实后端与写入/拒绝测试未执行。
 
-**未完成/未验证**：T060 UI（含明暗/窄窗/loading 截图）、T061 Docker 多后端协议测试（本机无 Docker）、
-T064/T065/T066 跨模块与真实审计/重启端到端、Windows/Linux 三端编译与真实桌面行为。
+**未完成/未验证**：T060（Server 管理页、配置导出、活动审计 UI）整体未实施；
+T061 Docker 多后端协议测试（本机无 Docker）、T064/T065/T066 跨模块与真实审计/重启端到端、
+Windows/Linux 三端编译与真实桌面行为。

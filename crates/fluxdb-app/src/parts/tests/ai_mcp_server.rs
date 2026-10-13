@@ -318,27 +318,6 @@ fn sqlite_parameter_binding_executes_exact_value() {
 }
 
 #[test]
-fn claude_export_requires_absolute_paths_and_hides_secrets() {
-    let json = claude_mcp_config_json(
-        "fluxdb_local",
-        "/opt/fluxdb/bin/fluxdb-mcp",
-        "p1",
-        Some("/home/u/.fluxdb"),
-    )
-    .expect("导出配置");
-    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-    let server = &value["mcpServers"]["fluxdb_local"];
-    assert_eq!(server["command"], serde_json::json!("/opt/fluxdb/bin/fluxdb-mcp"));
-    assert_eq!(server["args"], serde_json::json!(["--server-profile","p1","--config-root","/home/u/.fluxdb"]));
-    // 不含任何秘密字段。
-    assert!(!json.contains("password"));
-    assert!(!json.contains("api_key"));
-    assert!(!json.contains("token"));
-    // 相对路径被拒绝。
-    assert!(claude_mcp_config_json("s", "fluxdb-mcp", "p1", None).is_err());
-}
-
-#[test]
 fn scoped_write_policy_allows_only_authorized_update() {
     use crate::SqlDialectKind;
     let policy = ScopedWritePolicy::parse(

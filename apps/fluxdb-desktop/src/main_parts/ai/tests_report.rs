@@ -21,6 +21,10 @@ fn seed_ready_artifact(fixture: &Fixture, session: &str) -> String {
             "sources": [{"result_ref": "result-1"}],
             "blocks": [
                 {"type": "chart", "result_ref": "result-1", "chart": "bar", "x": "channel", "y": "revenue"},
+                {"type": "chart", "result_ref": "result-1", "chart": "line", "x": "channel", "y": "revenue"},
+                {"type": "chart", "result_ref": "result-1", "chart": "area", "x": "channel", "y": "revenue"},
+                {"type": "chart", "result_ref": "result-1", "chart": "bar_horizontal", "x": "channel", "y": "revenue"},
+                {"type": "chart", "result_ref": "result-1", "chart": "pie", "x": "channel", "y": "revenue"},
                 {"type": "table", "result_ref": "result-1", "columns": ["channel", "revenue"]}
             ]
         },
@@ -132,7 +136,8 @@ fn ai_artifact_card_opens_report_dialog_with_real_values(cx: &mut TestAppContext
     assert!(cx.debug_bounds("ai-artifact-open:report-open-turn-artifact-report").is_some());
     click_selector(cx, "ai-artifact-open:report-open-turn-artifact-report");
     wait_report_dialog(&view, cx);
-    // 弹框内结构齐全：图表、表格、来源；不再铺一份与结构化块重复的 renderer 正文。
+    // 弹框内结构齐全：图表（折线/柱状/条形/面积/饼图五种块都在同一份快照里）、表格、来源；
+    // 不再铺一份与结构化块重复的 renderer 正文。任一图表块渲染失败都会 panic 或落回未渲染说明。
     assert!(cx.debug_bounds("ai-report-chart").is_some(), "报告应渲染原生图表");
     assert!(cx.debug_bounds("ai-report-table").is_some(), "报告应渲染表格");
     assert!(cx.debug_bounds("ai-report-metrics").is_some(), "报告应展示真实指标条");
@@ -277,6 +282,20 @@ fn band_labels_are_truncated_fitted_and_unique() {
     // 短标签保持原样。
     assert_eq!(labels[0], "stl");
     assert!(labels[10].starts_with("obj_"));
+}
+
+#[test]
+fn horizontal_bar_labels_keep_long_categories_untouched() {
+    // 横向条形的分类名在左侧标签栏，由组件按实测文本留出宽度，因此不截断，只消除重名。
+    let categories = vec![
+        "华东大区直营渠道".to_string(),
+        "华东大区直营渠道".to_string(),
+        "短".to_string(),
+    ];
+    let labels = ai_report_horizontal_labels(&categories);
+    assert_eq!(labels[0], "华东大区直营渠道");
+    assert_ne!(labels[0], labels[1], "重名必须消除歧义");
+    assert_eq!(labels[2], "短");
 }
 
 #[test]

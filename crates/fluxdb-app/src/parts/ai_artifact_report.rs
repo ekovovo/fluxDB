@@ -127,6 +127,32 @@ pub struct AiReportChartSeries {
     pub points: Vec<AiReportChartPoint>,
 }
 
+impl AiReportChartSeries {
+    /// 按声明的图表类型判断这组真实点能不能画出来；不能时返回给用户看的原因。
+    ///
+    /// 弹框与导出的静态文档共用这一条判断，避免同一份数据在两处得到不同结论。
+    /// 饼图对分类数量与数值都有限制：占比图切得太细读不出构成，负值或合计为 0 也算不出占比。
+    pub fn render_issue(&self) -> Option<String> {
+        if self.chart != fluxdb_core::ArtifactChart::Pie {
+            return None;
+        }
+        if self.points.len() > fluxdb_core::ARTIFACT_MAX_PIE_SLICES {
+            return Some(format!(
+                "饼图分类过多（{} 项，上限 {}），未渲染；请改用柱状图或条形图。",
+                self.points.len(),
+                fluxdb_core::ARTIFACT_MAX_PIE_SLICES
+            ));
+        }
+        if self.points.iter().any(|point| point.y < 0.0) {
+            return Some("饼图不适用于含负值的数值列，未渲染。".to_string());
+        }
+        if self.points.iter().all(|point| point.y == 0.0) {
+            return Some("饼图数值合计为 0，无法计算占比，未渲染。".to_string());
+        }
+        None
+    }
+}
+
 /// 图表汇总数字：弹框指标条与导出文档共用，避免两处口径漂移。
 #[derive(Clone, Debug, PartialEq)]
 pub struct AiReportChartSummary {

@@ -1606,4 +1606,52 @@ mod ai_ui_tests {
             smol::Timer::after(std::time::Duration::from_millis(20)).await;
         }
     }
+    /// 「工具与 MCP → 本地 MCP」：切页签后展示 Codex/Claude Code 注册状态行（真实渲染）。
+    /// 注册写入路径由 `crates/fluxdb-app/tests/ai_mcp_install.rs`（真实文件）与 T062 CLI 实测覆盖；
+    /// 这里只验证生产装配路径下设置页确实渲染出两行客户端状态。
+    #[gpui::test]
+    fn ai_ui_mcp_install_rows_render(cx: &mut TestAppContext) {
+        let home = std::env::temp_dir().join(format!(
+            "fluxdb-mcp-ui-home-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&home).unwrap();
+        let prev_home = std::env::var_os("HOME");
+        // SAFETY: 仅本用例读写该变量，GPUI 测试串行访问 UI。
+        unsafe { std::env::set_var("HOME", &home) };
+
+        let root = isolated_root("mcp-install-render");
+        let storage = FileStorage::new(root.clone());
+        let mut controller = AppController::new();
+        controller.set_ai_storage(storage.clone());
+        let _ = controller.dispatch(AppCommand::RefreshAiSettings);
+        let _ = controller.dispatch(AppCommand::OpenSettings);
+        let (view, cx) = open_main(cx, controller, storage, SettingsPanelSection::AiToolsMcp);
+
+        click_selector(cx, "ai-tools-tab:本地 MCP");
+        let rows = view.read_with(cx, |main, _| main.ai_mcp_install_status.clone());
+        assert_eq!(rows.len(), 2, "应展示 Codex 与 Claude Code 两行");
+        assert!(rows.iter().any(|r| r.key == "codex"));
+        assert!(rows.iter().any(|r| r.key == "claude"));
+        assert!(
+            cx.debug_bounds("ai-mcp-client:codex").is_some(),
+            "Codex 客户端行应已渲染"
+        );
+        assert!(
+            cx.debug_bounds("ai-mcp-install:claude").is_some(),
+            "Claude 注册按钮应已渲染"
+        );
+
+        match prev_home {
+            Some(value) => unsafe { std::env::set_var("HOME", value) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+        let _ = std::fs::remove_dir_all(&home);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
 }

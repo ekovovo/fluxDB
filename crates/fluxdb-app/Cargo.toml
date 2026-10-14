@@ -22,6 +22,10 @@ zip = { version = "8", default-features = false, features = ["deflate"] }
 csv = "1.4"
 # 已授权附件与编辑器快照的正文搜索：memchr 的 memmem 使用 SIMD 加速子串扫描。
 memchr = "2.8.3"
+# 本地 MCP 客户端注册：跨平台主目录/配置目录解析（6.0.0 已在 Cargo.lock，gpui 栈间接引入）。
+dirs = "6"
+# 注册到 Codex 的 `~/.codex/config.toml`：保留用户既有格式与注释，只增量改 `[mcp_servers.*]`。
+toml_edit = "0.22"
 
 [dev-dependencies]
 sqlx = { version = "0.8.6", default-features = false, features = ["sqlite", "runtime-tokio-rustls"] }

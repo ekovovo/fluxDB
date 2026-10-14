@@ -3701,6 +3701,9 @@ impl AppController {
             | AppCommand::SetAiToolEnabled { .. }
             | AppCommand::SaveAiDefaultModels { .. }
             | AppCommand::TestAiModel { .. }
+            | AppCommand::InstallMcpClient { .. }
+            | AppCommand::UninstallMcpClient { .. }
+            | AppCommand::AutoRegisterMcpClients { .. }
             | AppCommand::FetchAiModels { .. }) => self.dispatch_ai_settings(command),
             AppCommand::SaveSettings(settings) => {
                 self.state.settings = settings;

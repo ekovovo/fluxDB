@@ -166,6 +166,8 @@ fn content(
                     session_archiving_id: this.ai_session_archiving_id.clone(),
                     tools_tab: this.ai_tools_tab,
                     tool_settings: this.controller.state().ai_tool_settings.clone(),
+                    mcp_install_status: this.ai_mcp_install_status.clone(),
+                    mcp_install_busy: this.ai_mcp_install_busy.clone(),
                     agent_editor: this.ai_agent_editor.clone(),
                 },
                 this.theme_mode,

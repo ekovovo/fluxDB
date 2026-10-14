@@ -1,5 +1,48 @@
 // AI 管理命令独立职责；从既有 dispatch 结构拆出，公共状态仍通过 AppEvent 表达。
 impl AppController {
+    /// 确保用于一键注册的 Server Profile 存在且启用；仅在默认只读 Profile 缺失时创建。
+    fn ensure_mcp_profile(&self, profile_id: &str) -> fluxdb_core::Result<()> {
+        use fluxdb_storage::ai_platform::mcp_server::{
+            ServerProfileEdit, WriteMode, load_server_profile, save_server_profile,
+        };
+        let storage = self.ai_storage()?;
+        with_ai_storage(&storage, |conn| {
+            let now = ai_chat_now();
+            match load_server_profile(conn, profile_id)? {
+                Some(profile) if profile.enabled => Ok(()),
+                Some(_) => Err(fluxdb_core::Error::new(
+                    fluxdb_core::ErrorKind::Internal,
+                    format!("Server Profile 已存在但处于禁用状态: {profile_id}；请先在本地 MCP 设置里启用"),
+                )),
+                None if profile_id == crate::DEFAULT_MCP_PROFILE_ID => {
+                    let edit = ServerProfileEdit {
+                        id: profile_id.to_string(),
+                        display_name: "本地只读（自动创建）".into(),
+                        enabled: true,
+                        write_mode: WriteMode::Disabled,
+                        allowed_tool_ids: crate::DEFAULT_READONLY_TOOLS
+                            .iter()
+                            .map(|t| t.to_string())
+                            .collect(),
+                        options_json: "{}".into(),
+                        max_inflight: 4,
+                        max_request_ms: 30_000,
+                        max_request_bytes: 262_144,
+                        max_response_bytes: 131_072,
+                    };
+                    // 新建默认禁用，二次保存才启用（与存储层“保存即生效”防护一致）。
+                    let created = save_server_profile(conn, now, &edit, None)?;
+                    save_server_profile(conn, now, &edit, Some(created.revision))?;
+                    Ok(())
+                }
+                None => Err(fluxdb_core::Error::new(
+                    fluxdb_core::ErrorKind::Internal,
+                    format!("Server Profile 不存在: {profile_id}"),
+                )),
+            }
+        })
+    }
+
     fn dispatch_ai_settings(&mut self, command: AppCommand) -> AppEvent {
         match command {
             AppCommand::SaveAiModel(input) => {
@@ -105,6 +148,157 @@ impl AppController {
                     Ok(()) => return AppEvent::AiSettingsLoaded,
                     Err(e) => return AppEvent::AiSettingsError(e.message),
                 }
+            }
+            AppCommand::InstallMcpClient {
+                client,
+                profile_id,
+                binary_path,
+                config_root,
+                preapprove_claude_tools,
+            } => {
+                let home = match crate::home_dir() {
+                    Ok(home) => home,
+                    Err(error) => return AppEvent::AiSettingsError(error.message),
+                };
+                let Some(client_kind) = crate::client_from_key(&client) else {
+                    return AppEvent::AiSettingsError(format!("未知 MCP 客户端: {client}"));
+                };
+                // “一键注册”要求目标 Profile 存在且已启用；默认只读 Profile 缺失时按需创建。
+                // 已存在但被禁用则报错，不静默改用户已保存的 Profile。
+                if let Err(error) = self.ensure_mcp_profile(&profile_id) {
+                    return AppEvent::AiSettingsError(error.message);
+                }
+                let registration = crate::McpRegistration {
+                    server_name: "fluxdb".into(),
+                    binary_path: std::path::PathBuf::from(&binary_path),
+                    profile_id: profile_id.clone(),
+                    config_root: config_root.map(std::path::PathBuf::from),
+                    preapprove_claude_tools,
+                };
+                match crate::register(client_kind, &home, &registration) {
+                    Ok(fact) => {
+                        // Claude 预批准规则（仅只读）；失败只告警，不算注册失败。
+                        if client_kind == crate::McpClientKind::ClaudeCode
+                            && preapprove_claude_tools
+                        {
+                            if let Err(error) = crate::set_claude_tool_preapproval(
+                                &home,
+                                &registration.server_name,
+                                true,
+                            ) {
+                                tracing::warn!(%error, "写入 Claude MCP 预批准规则失败");
+                            }
+                        }
+                        let _ = self.ai_storage().and_then(|storage| {
+                            with_ai_storage(&storage, |conn| {
+                                fluxdb_storage::ai_platform::mcp_server::save_auto_register_enabled(conn, true)
+                            })
+                        });
+                        tracing::info!(
+                            client = %client,
+                            path = %fact.config_path.display(),
+                            changed = fact.changed,
+                            "本地 MCP Server 已注册到客户端"
+                        );
+                        return AppEvent::AiMcpClientRegistration {
+                            client,
+                            installed: true,
+                            config_path: fact.config_path.display().to_string(),
+                            restart_hint: true,
+                        };
+                    }
+                    Err(error) => return AppEvent::AiSettingsError(error.message),
+                }
+            }
+            AppCommand::UninstallMcpClient { client } => {
+                let home = match crate::home_dir() {
+                    Ok(home) => home,
+                    Err(error) => return AppEvent::AiSettingsError(error.message),
+                };
+                let Some(client_kind) = crate::client_from_key(&client) else {
+                    return AppEvent::AiSettingsError(format!("未知 MCP 客户端: {client}"));
+                };
+                match crate::unregister(client_kind, &home, "fluxdb") {
+                    Ok(fact) => {
+                        if client_kind == crate::McpClientKind::ClaudeCode {
+                            if let Err(error) = crate::set_claude_tool_preapproval(
+                                &home, "fluxdb", false,
+                            ) {
+                                tracing::warn!(%error, "移除 Claude MCP 预批准规则失败");
+                            }
+                        }
+                        let _ = self.ai_storage().and_then(|storage| {
+                            with_ai_storage(&storage, |conn| {
+                                fluxdb_storage::ai_platform::mcp_server::save_auto_register_enabled(conn, false)
+                            })
+                        });
+                        tracing::info!(
+                            client = %client,
+                            path = %fact.config_path.display(),
+                            changed = fact.changed,
+                            "本地 MCP Server 已从客户端移除"
+                        );
+                        return AppEvent::AiMcpClientRegistration {
+                            client,
+                            installed: false,
+                            config_path: fact.config_path.display().to_string(),
+                            restart_hint: false,
+                        };
+                    }
+                    Err(error) => return AppEvent::AiSettingsError(error.message),
+                }
+            }
+            AppCommand::AutoRegisterMcpClients { binary_path } => {
+                // 开关关闭 → 不再自动注册（用户显式卸载即关闭）。
+                let enabled = self.ai_storage().and_then(|storage| {
+                    with_ai_storage(&storage, |conn| {
+                        fluxdb_storage::ai_platform::mcp_server::load_auto_register_enabled(conn)
+                    })
+                });
+                if !matches!(enabled, Ok(true)) {
+                    return AppEvent::AiMcpAutoRegistered { clients: Vec::new() };
+                }
+                if binary_path.trim().is_empty() {
+                    tracing::debug!("跳过 MCP 自动注册：未解析到 fluxdb-mcp 路径");
+                    return AppEvent::AiMcpAutoRegistered { clients: Vec::new() };
+                }
+                // 确保默认只读 Profile 存在（缺失则创建），使注册即用。
+                if let Err(error) = self.ensure_mcp_profile(crate::DEFAULT_MCP_PROFILE_ID) {
+                    tracing::warn!(reason = %error.message, "MCP 自动注册：准备 Profile 失败");
+                    return AppEvent::AiSettingsError(error.message);
+                }
+                let home = match crate::home_dir() {
+                    Ok(home) => home,
+                    Err(error) => return AppEvent::AiSettingsError(error.message),
+                };
+                let registration = crate::McpRegistration {
+                    server_name: crate::DEFAULT_MCP_SERVER_NAME.into(),
+                    binary_path: std::path::PathBuf::from(&binary_path),
+                    profile_id: crate::DEFAULT_MCP_PROFILE_ID.into(),
+                    config_root: None,
+                    preapprove_claude_tools: true,
+                };
+                let results = crate::auto_register_installed_clients(&home, &registration);
+                let mut clients = Vec::new();
+                for (client, outcome) in results {
+                    match outcome {
+                        Ok(fact) => {
+                            tracing::info!(
+                                client = client.key(),
+                                path = %fact.config_path.display(),
+                                changed = fact.changed,
+                                "启动自动注册本地 MCP Server"
+                            );
+                            if fact.changed {
+                                clients.push(client.key().to_string());
+                            }
+                        }
+                        Err(message) => {
+                            tracing::warn!(client = client.key(), %message, "自动注册客户端失败");
+                        }
+                    }
+                }
+                return AppEvent::AiMcpAutoRegistered { clients };
             }
             AppCommand::LoadMoreAiSessions => {
                 let storage = self.ai_storage();

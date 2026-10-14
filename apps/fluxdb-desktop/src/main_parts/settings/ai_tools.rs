@@ -82,6 +82,10 @@ fn ai_tools_tab_button(
             MouseButton::Left,
             cx.listener(move |this, _, _, cx| {
                 this.ai_tools_tab = value;
+                // 切到「本地 MCP」时刷新客户端注册状态（读配置，不写）。
+                if matches!(value, AiToolsTab::Mcp) {
+                    this.refresh_mcp_install_status();
+                }
                 cx.notify();
                 cx.stop_propagation();
             }),
@@ -598,8 +602,12 @@ fn connection_database_label(config: &fluxdb_core::ConnectionConfig) -> String {
 }
 
 /// 「本地 MCP」页签：fluxdb-local Server 卡 + 授权范围 + 客户端验证示例。
-fn ai_mcp_panel(state: &AppState, colors: UiColors, cx: &mut Context<NavicatMain>) -> Div {
-    let _ = cx;
+fn ai_mcp_panel(
+    state: &AppState,
+    panel: &AiSettingsPanelState,
+    colors: UiColors,
+    cx: &mut Context<NavicatMain>,
+) -> Div {
     let connection_rows: Vec<gpui::AnyElement> = if state.connections.is_empty() {
         vec![ai_empty_state("尚未配置连接。", colors)]
     } else {
@@ -640,6 +648,16 @@ fn ai_mcp_panel(state: &AppState, colors: UiColors, cx: &mut Context<NavicatMain
                     .child(ai_pill("只读", colors.success, colors))
                     .into_any_element()
             })
+            .collect()
+    };
+
+    let client_rows: Vec<gpui::AnyElement> = if panel.mcp_install_status.is_empty() {
+        vec![ai_empty_state("正在读取客户端配置…", colors)]
+    } else {
+        panel
+            .mcp_install_status
+            .iter()
+            .map(|status| client_registration_row(status, panel.mcp_install_busy.as_deref(), colors, cx))
             .collect()
     };
 
@@ -693,6 +711,20 @@ fn ai_mcp_panel(state: &AppState, colors: UiColors, cx: &mut Context<NavicatMain
                 .child(div().children(connection_rows)),
         )
         .child(
+            settings_panel_group("注册到 CLI 客户端", colors)
+                .child(
+                    div()
+                        .border_t_1()
+                        .border_color(colors.border_soft)
+                        .px_4()
+                        .py_2()
+                        .child(div().text_size(px(11.)).text_color(colors.muted).child(
+                            "启动时会自动把本地只读 MCP Server 写入已安装客户端的用户级配置（幂等，不影响其它配置）；卸载后会关闭自动注册。下方按钮用于手动注册或卸载。",
+                        )),
+                )
+                .child(div().children(client_rows)),
+        )
+        .child(
             settings_panel_group("客户端验证示例", colors).child(
                 div()
                     .border_t_1()
@@ -706,6 +738,154 @@ fn ai_mcp_panel(state: &AppState, colors: UiColors, cx: &mut Context<NavicatMain
         )
 }
 
+/// 单个客户端注册行：名称 + 配置文件路径 + 状态胶囊 + 注册/卸载按钮。
+fn client_registration_row(
+    status: &fluxdb_app::McpInstallClientStatus,
+    busy: Option<&str>,
+    colors: UiColors,
+    cx: &mut Context<NavicatMain>,
+) -> gpui::AnyElement {
+    let key = status.key.clone();
+    let is_busy = busy == Some(status.key.as_str());
+    let registered = status.registered;
+    // 已安装但未注册 vs 客户端不存在：文案要区分，避免让用户以为按钮坏了。
+    let status_pill = if registered {
+        ai_pill("已注册", colors.success, colors)
+    } else if status.config_exists {
+        ai_pill("未注册", colors.muted, colors)
+    } else {
+        ai_pill("未检测到客户端", colors.muted, colors)
+    };
+    let action_key = status.key.clone();
+    let action_registered = registered;
+    let row_selector = format!("ai-mcp-client:{}", status.key);
+    let button_selector = format!("ai-mcp-install:{}", status.key);
+    div()
+        .id(SharedString::from(row_selector.clone()))
+        .debug_selector(move || row_selector.clone())
+        .border_t_1()
+        .border_color(colors.border_soft)
+        .px_4()
+        .py_2()
+        .min_h(px(52.))
+        .flex()
+        .items_center()
+        .gap_3()
+        .child(
+            div()
+                .flex_1()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(
+                    div()
+                        .text_size(px(13.))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(colors.text)
+                        .child(status.label.clone()),
+                )
+                .child(
+                    div()
+                        .text_size(px(11.))
+                        .text_color(colors.muted)
+                        .child(status.config_path.clone()),
+                ),
+        )
+        .child(status_pill)
+        .child({
+            let label = if is_busy {
+                "处理中…"
+            } else if action_registered {
+                "卸载"
+            } else {
+                "一键注册"
+            };
+            let mut button = Button::new(SharedString::from(format!("ai-mcp-install:{}", key)))
+                .small()
+                .debug_selector({
+                    let selector = button_selector.clone();
+                    move || selector.clone()
+                })
+                .child(label);
+            if is_busy {
+                button = button.disabled(true);
+            }
+            button.on_click(cx.listener(move |this, _, _, cx| {
+                if this.ai_mcp_install_busy.is_some() {
+                    return;
+                }
+                this.ai_mcp_install_busy = Some(action_key.clone());
+                cx.notify();
+                let key = action_key.clone();
+                let uninstall = action_registered;
+                let this_override_or_bundled = this.ai_mcp_binary_override.clone();
+                let mut controller = this.controller.clone();
+                let _ = cx.spawn(async move |view, cx| {
+                    let event = cx
+                        .background_spawn(async move {
+                            if uninstall {
+                                controller.dispatch(AppCommand::UninstallMcpClient { client: key })
+                            } else {
+                                // 一键注册：自动创建/复用默认只读 Profile，写客户端用户级配置。
+                                let binary = this_override_or_bundled
+                                    .clone()
+                                    .or_else(|| {
+                                        fluxdb_app::bundled_mcp_binary()
+                                            .map(|p| p.display().to_string())
+                                    })
+                                    .unwrap_or_default();
+                                if binary.is_empty() {
+                                    return AppEvent::AiSettingsError(
+                                        "未找到 fluxdb-mcp 二进制（应与 fluxdb-desktop 同目录）".into(),
+                                    );
+                                }
+                                controller.dispatch(AppCommand::InstallMcpClient {
+                                    client: key,
+                                    profile_id: fluxdb_app::DEFAULT_MCP_PROFILE_ID.into(),
+                                    binary_path: binary,
+                                    config_root: None,
+                                    preapprove_claude_tools: true,
+                                })
+                            }
+                        })
+                        .await;
+                    let _ = cx.update(|cx| {
+                        let Some(view) = view.upgrade() else {
+                            return;
+                        };
+                        view.update(cx, |this, cx| {
+                            this.ai_mcp_install_busy = None;
+                            match event {
+                                AppEvent::AiMcpClientRegistration { .. } => {
+                                    this.refresh_mcp_install_status();
+                                    this.show_message(
+                                        if uninstall {
+                                            "已从客户端移除本地 MCP Server"
+                                        } else {
+                                            "已注册到客户端，重启该客户端后生效"
+                                        },
+                                        AppMessageKind::Success,
+                                        cx,
+                                    );
+                                }
+                                AppEvent::AiSettingsError(message) => {
+                                    this.show_message(
+                                        format!("操作失败：{message}"),
+                                        AppMessageKind::Error,
+                                        cx,
+                                    );
+                                }
+                                _ => {}
+                            }
+                            cx.notify();
+                        });
+                    });
+                });
+            }))
+        })
+        .into_any_element()
+}
+
 /// 「工具与 MCP」分区：四页签。
 fn settings_ai_tools_mcp_panel(
     state: &AppState,
@@ -715,7 +895,7 @@ fn settings_ai_tools_mcp_panel(
 ) -> Div {
     let body = match panel.tools_tab {
         AiToolsTab::Tools => ai_tools_catalog_panel(panel, colors, cx),
-        AiToolsTab::Mcp => ai_mcp_panel(state, colors, cx),
+        AiToolsTab::Mcp => ai_mcp_panel(state, panel, colors, cx),
         AiToolsTab::Plugins => ai_plugins_panel(state, colors, cx),
         AiToolsTab::Audit => ai_audit_panel(colors),
     };

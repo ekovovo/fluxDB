@@ -1242,6 +1242,28 @@ pub enum AppCommand {
     },
     /// 新建或保存 Agent 配置（提示词直接随 Agent 保存）。
     SaveAiAgent(AiAgentSaveInput),
+    /// 把本地 MCP Server 注册到某个 CLI 客户端（用户级配置，stdio）。
+    InstallMcpClient {
+        /// 客户端：`codex` / `claude`（小写稳定标识）。
+        client: String,
+        /// Server Profile ID。
+        profile_id: String,
+        /// `fluxdb-mcp` 二进制绝对路径。
+        binary_path: String,
+        /// 可选隔离配置根。
+        config_root: Option<String>,
+        /// 是否写入 Claude Code 的工具预批准（仅只读 Profile 使用）。
+        preapprove_claude_tools: bool,
+    },
+    /// 从某个 CLI 客户端移除本应用的 MCP Server 注册。
+    UninstallMcpClient {
+        client: String,
+    },
+    /// 启动时把本地 MCP Server 自动注册到**已存在配置**的客户端（幂等，仅当开关开启）。
+    AutoRegisterMcpClients {
+        /// `fluxdb-mcp` 二进制绝对路径；空表示未能解析（记日志跳过，不报错）。
+        binary_path: String,
+    },
     DeleteAiAgent {
         id: String,
         expected_revision: i64,

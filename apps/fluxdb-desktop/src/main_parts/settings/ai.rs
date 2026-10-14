@@ -35,6 +35,9 @@ struct AiSettingsPanelState {
     session_archiving_id: Option<String>,
     tools_tab: AiToolsTab,
     tool_settings: Vec<fluxdb_app::AiToolSettingItem>,
+    /// 本地 MCP 客户端注册状态快照与进行中的客户端 key。
+    mcp_install_status: Vec<fluxdb_app::McpInstallClientStatus>,
+    mcp_install_busy: Option<String>,
     agent_editor: Option<AiAgentEditorState>,
 }
 

@@ -217,6 +217,38 @@ fn duplicate_block_is_rejected_without_adding_a_second_copy() {
 }
 
 #[test]
+fn receipts_report_current_blocks_so_the_model_does_not_repeat_declarations() {
+    // 方案 2：create 一次声明全部块，add_block 只补遗漏。回执必须回显草稿当前已有的块，
+    // 否则模型无从判断该不该再 add_block，只能靠猜并撞上 duplicate_block。
+    let fixture = Fixture::new();
+    let job = fixture.job();
+    let (mut catalog, results) = fixture.catalog(&job);
+    add_ai_artifact_tools(&mut catalog, &fixture.storage, &job, results).unwrap();
+    let provider = ReceiptDrivenProvider::new(&fixture, &job, report_steps(QUERY));
+    run(&fixture, &job, &catalog, &provider);
+    let created = fixture.receipt(&job, "create", "succeeded");
+    assert_eq!(
+        created["blocks"],
+        json!([{
+            "type": "chart",
+            "result_ref": created["sources"][0]["result_ref"].clone(),
+            "chart": "bar",
+            "x": "channel",
+            "y": "revenue",
+        }]),
+        "create 回执要回显已声明的块"
+    );
+    let added = fixture.receipt(&job, "add", "succeeded");
+    assert_eq!(
+        added["blocks"].as_array().unwrap().len(),
+        2,
+        "add_block 回执要回显追加后的完整块列表"
+    );
+    assert_eq!(added["blocks"][1]["type"], "table");
+    provider.assert_sql_unchanged();
+}
+
+#[test]
 fn cross_turn_add_block_and_finalize_cannot_modify_another_tasks_draft() {
     let fixture = Fixture::new();
     let first = fixture.job();

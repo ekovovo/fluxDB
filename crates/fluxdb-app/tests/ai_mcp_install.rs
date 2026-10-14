@@ -126,6 +126,15 @@ fn install_writes_codex_and_claude_configs_without_touching_others() {
         serde_json::json!("stdio")
     );
     assert_eq!(
+        claude["mcpServers"]["fluxdb"]["args"],
+        serde_json::json!([
+            "--server-profile",
+            DEFAULT_MCP_PROFILE_ID,
+            "--config-root",
+            fs::canonicalize(&fixture.storage_dir).unwrap()
+        ])
+    );
+    assert_eq!(
         claude["enabledMcpServers"]["fluxdb"],
         serde_json::json!(true)
     );
@@ -254,9 +263,45 @@ fn startup_auto_registers_only_clients_with_existing_config() {
         claude["mcpServers"]["fluxdb"]["type"],
         serde_json::json!("stdio")
     );
+    assert_eq!(
+        claude["mcpServers"]["fluxdb"]["args"],
+        serde_json::json!([
+            "--server-profile",
+            DEFAULT_MCP_PROFILE_ID,
+            "--config-root",
+            fs::canonicalize(&fixture.storage_dir).unwrap()
+        ])
+    );
     assert!(
         !fixture.home.join(".codex").join("config.toml").is_file(),
         "未安装的 Codex 不应被创建配置"
+    );
+}
+
+#[test]
+fn startup_reports_missing_binary_and_invalid_client_config() {
+    let _home_guard = lock_home();
+    let fixture = Fixture::new("auto-errors");
+    let mut controller = fixture.controller();
+    assert!(matches!(
+        controller.dispatch(AppCommand::AutoRegisterMcpClients {
+            binary_path: String::new(),
+        }),
+        AppEvent::AiSettingsError(_)
+    ));
+
+    let config = fixture.home.join(".claude.json");
+    fs::write(&config, "invalid json").unwrap();
+    assert!(matches!(
+        controller.dispatch(AppCommand::AutoRegisterMcpClients {
+            binary_path: binary_path(&fixture),
+        }),
+        AppEvent::AiSettingsError(_)
+    ));
+    assert_eq!(fs::read_to_string(config).unwrap(), "invalid json");
+    assert!(
+        !fixture.home.join(".claude/settings.json").exists(),
+        "注册失败不得增加预批准规则"
     );
 }
 

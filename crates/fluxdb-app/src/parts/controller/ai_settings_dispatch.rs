@@ -168,11 +168,22 @@ impl AppController {
                 if let Err(error) = self.ensure_mcp_profile(&profile_id) {
                     return AppEvent::AiSettingsError(error.message);
                 }
+                let config_root = match config_root {
+                    Some(root) => std::path::PathBuf::from(root),
+                    None => match self.ai_storage().and_then(|storage| {
+                        std::fs::canonicalize(storage.root_dir()).map_err(|error| {
+                            fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, format!("无法解析 MCP 数据目录：{error}"))
+                        })
+                    }) {
+                        Ok(root) => root,
+                        Err(error) => return AppEvent::AiSettingsError(error.message),
+                    },
+                };
                 let registration = crate::McpRegistration {
                     server_name: "fluxdb".into(),
                     binary_path: std::path::PathBuf::from(&binary_path),
                     profile_id: profile_id.clone(),
-                    config_root: config_root.map(std::path::PathBuf::from),
+                    config_root: Some(config_root),
                     preapprove_claude_tools,
                 };
                 match crate::register(client_kind, &home, &registration) {
@@ -255,18 +266,28 @@ impl AppController {
                         fluxdb_storage::ai_platform::mcp_server::load_auto_register_enabled(conn)
                     })
                 });
-                if !matches!(enabled, Ok(true)) {
-                    return AppEvent::AiMcpAutoRegistered { clients: Vec::new() };
+                match enabled {
+                    Ok(true) => {}
+                    Ok(false) => return AppEvent::AiMcpAutoRegistered { clients: Vec::new() },
+                    Err(error) => return AppEvent::AiSettingsError(error.message),
                 }
                 if binary_path.trim().is_empty() {
-                    tracing::debug!("跳过 MCP 自动注册：未解析到 fluxdb-mcp 路径");
-                    return AppEvent::AiMcpAutoRegistered { clients: Vec::new() };
+                    return AppEvent::AiSettingsError("MCP 自动注册失败：找不到本地 Server 可执行文件".into());
                 }
                 // 确保默认只读 Profile 存在（缺失则创建），使注册即用。
                 if let Err(error) = self.ensure_mcp_profile(crate::DEFAULT_MCP_PROFILE_ID) {
                     tracing::warn!(reason = %error.message, "MCP 自动注册：准备 Profile 失败");
                     return AppEvent::AiSettingsError(error.message);
                 }
+                // CLI 不会继承桌面进程的 FLUXDB_PROFILE；必须绑定 Profile 所在的真实存储根。
+                let config_root = match self.ai_storage().and_then(|storage| {
+                    std::fs::canonicalize(storage.root_dir()).map_err(|error| {
+                        fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, format!("无法解析 MCP 数据目录：{error}"))
+                    })
+                }) {
+                    Ok(root) => root,
+                    Err(error) => return AppEvent::AiSettingsError(error.message),
+                };
                 let home = match crate::home_dir() {
                     Ok(home) => home,
                     Err(error) => return AppEvent::AiSettingsError(error.message),
@@ -275,11 +296,12 @@ impl AppController {
                     server_name: crate::DEFAULT_MCP_SERVER_NAME.into(),
                     binary_path: std::path::PathBuf::from(&binary_path),
                     profile_id: crate::DEFAULT_MCP_PROFILE_ID.into(),
-                    config_root: None,
+                    config_root: Some(config_root),
                     preapprove_claude_tools: true,
                 };
                 let results = crate::auto_register_installed_clients(&home, &registration);
                 let mut clients = Vec::new();
+                let mut errors = Vec::new();
                 for (client, outcome) in results {
                     match outcome {
                         Ok(fact) => {
@@ -295,8 +317,12 @@ impl AppController {
                         }
                         Err(message) => {
                             tracing::warn!(client = client.key(), %message, "自动注册客户端失败");
+                            errors.push(format!("{}：{message}", client.label()));
                         }
                     }
+                }
+                if !errors.is_empty() {
+                    return AppEvent::AiSettingsError(format!("MCP 自动注册失败：{}", errors.join("；")));
                 }
                 return AppEvent::AiMcpAutoRegistered { clients };
             }

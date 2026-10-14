@@ -96,7 +96,7 @@ fn artifact_create_schema() -> serde_json::Value {
                 }
             },
             "blocks": {"type": "array", "maxItems": 64,
-                "description":"产物内容块，按顺序展示",
+                "description":"产物内容块，按顺序展示；首选在这里一次性声明全部块，遗漏时再用 artifact.add_block 追加",
                 "items": artifact_block_schema()},
             "time_range": {
                 "type":"object","additionalProperties":false,"required":["start","end"],
@@ -159,6 +159,43 @@ fn artifact_tool_descriptor(
     }
 }
 
+/// 已声明块的定位摘要：回执用它让模型确认草稿里已有哪些块，避免重复 add_block。
+/// 只含类型与字段/列名/说明截断，不复制业务数据行。
+fn artifact_block_summary(block: &fluxdb_core::ArtifactBlock) -> serde_json::Value {
+    match block {
+        fluxdb_core::ArtifactBlock::Chart {
+            result_ref,
+            chart,
+            x,
+            y,
+        } => serde_json::json!({
+            "type": "chart",
+            "result_ref": result_ref,
+            "chart": match chart {
+                fluxdb_core::ArtifactChart::Line => "line",
+                fluxdb_core::ArtifactChart::Bar => "bar",
+            },
+            "x": x,
+            "y": y,
+        }),
+        fluxdb_core::ArtifactBlock::Table {
+            result_ref,
+            columns,
+        } => serde_json::json!({
+            "type": "table",
+            "result_ref": result_ref,
+            "columns": columns,
+        }),
+        fluxdb_core::ArtifactBlock::Note { text } => {
+            let bounded: String = text.chars().take(120).collect();
+            serde_json::json!({
+                "type": "note",
+                "text": bounded,
+            })
+        }
+    }
+}
+
 /// 回执公共部分：产物事实 + 真实数据点；错误用受控 code，不伪造成功。
 fn artifact_receipt(
     descriptor: &fluxdb_core::ToolDescriptor,
@@ -197,6 +234,7 @@ fn artifact_receipt(
                         "truncated": source.truncated,
                     })).collect::<Vec<_>>(),
                     "points": points,
+                    "blocks": outcome.blocks.iter().map(artifact_block_summary).collect::<Vec<_>>(),
                     "file": outcome.file.map(|file| serde_json::json!({
                         "relative_path": file.relative_path,
                         "byte_count": file.byte_count,
@@ -242,7 +280,7 @@ struct ArtifactCreateTool {
 impl ArtifactCreateTool {
     fn new(producer: std::sync::Arc<dyn ArtifactProducer>) -> fluxdb_core::Result<Self> {
         let description = format!(
-            "创建报告/图表/表格产物草稿：sources/blocks.result_ref 是结果句柄；metric.definition_ref 只能用本轮已授权的业务口径 ID，不能用结果句柄或数据库对象名。没有已授权口径时省略 definition_ref。数字从真实结果取，不执行 SQL。可用 renderer：{}。来源必须来自同一任务。同一来源同一组字段的块只需声明一次，完全相同的块会被拒绝。",
+            "创建报告/图表/表格产物草稿：sources/blocks.result_ref 是结果句柄；metric.definition_ref 只能用本轮已授权的业务口径 ID，不能用结果句柄或数据库对象名。没有已授权口径时省略 definition_ref。数字从真实结果取，不执行 SQL。可用 renderer：{}。来源必须来自同一任务。首选在本次调用里一次声明全部 blocks（图表/表格/说明）；只有确实遗漏时再用 artifact.add_block 追加。同一来源同一组字段的块只需声明一次，完全相同的块会被拒绝。回执的 blocks 列出草稿当前已有的块。",
             producer.descriptor().renderers.join(", ")
         );
         Ok(Self {
@@ -298,7 +336,7 @@ impl ArtifactAddBlockTool {
         Ok(Self {
             descriptor: artifact_tool_descriptor(
                 "artifact.add_block",
-                "给产物草稿增加图表/表格/说明块；块只引用已声明来源的字段，字段必须真实存在",
+                "给已存在的产物草稿追加一个图表/表格/说明块，用于补齐 create 时未声明的块；不能新增来源，块只引用已声明来源的字段，字段必须真实存在。追加前先核对 create/上一次回执的 blocks，避免重复添加完全相同的块（重复会被拒绝）。",
                 artifact_add_block_schema().to_string(),
             ),
             producer,

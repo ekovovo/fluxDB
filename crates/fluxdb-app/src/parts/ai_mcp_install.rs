@@ -2,7 +2,7 @@
 //
 // 目标：像 Pencil 扩展那样，把 `fluxdb-mcp` 这个 stdio Server 注册进用户已安装的
 // Codex CLI / Claude Code 的**用户级配置**，用户无需手写 JSON/TOML。硬约束：
-// 1. **用户显式触发**：只在用户点按钮时执行；不静默改全局配置。
+// 1. **注册可控**：启动仅注册已有配置的客户端；显式卸载后关闭自动注册。
 // 2. **可回滚**：注册/卸载只增删本应用拥有的 server 条目，不触碰其它 server。
 // 3. **写入前备份、原子替换、失败不半写**：临时文件 + rename；备份保留原内容。
 // 4. **不猜格式**：目标文件若无法解析，报错退出，绝不改写未知结构。
@@ -103,16 +103,28 @@ pub fn install_status_snapshot(home: &Path) -> Vec<ClientStatus> {
 
 /// 解析随桌面端一起打包的 `fluxdb-mcp` 二进制路径：优先取当前可执行文件的同级目录。
 ///
-/// 找不到时返回 `None`（UI 据此禁用注册并提示路径），不猜测开发机目录。
+/// 未打包独立 Server 时复用桌面可执行文件的 `--mcp-server` 入口，不猜测开发机目录。
 pub fn bundled_mcp_binary() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
+    mcp_binary_next_to(&exe)
+}
+
+fn is_desktop_binary(exe: &Path) -> bool {
+    matches!(exe.file_stem().and_then(|name| name.to_str()), Some("fluxdb-desktop" | "fluxdb"))
+}
+
+fn mcp_binary_next_to(exe: &Path) -> Option<PathBuf> {
     let dir = exe.parent()?;
     let candidate = dir.join(if cfg!(windows) {
         "fluxdb-mcp.exe"
     } else {
         "fluxdb-mcp"
     });
-    candidate.is_file().then_some(candidate)
+    if candidate.is_file() {
+        Some(candidate)
+    } else {
+        (is_desktop_binary(exe) && exe.is_file()).then(|| exe.to_path_buf())
+    }
 }
 
 /// 一次注册的目标描述（由 UI 传入，全部为非敏感信息）。
@@ -120,7 +132,7 @@ pub fn bundled_mcp_binary() -> Option<PathBuf> {
 pub struct McpRegistration {
     /// 写入客户端配置的 server 名（如 `fluxdb`）；同时用于 Claude 的 allow 规则前缀。
     pub server_name: String,
-    /// `fluxdb-mcp` 二进制绝对路径。
+    /// 独立 MCP Server 或支持 `--mcp-server` 的桌面程序绝对路径。
     pub binary_path: PathBuf,
     /// Server Profile ID。
     pub profile_id: String,
@@ -162,7 +174,11 @@ impl McpRegistration {
 
     /// 该 server 在客户端里的启动命令与参数（stdio）。
     fn command_args(&self) -> (String, Vec<String>) {
-        let mut args = vec!["--server-profile".to_string(), self.profile_id.clone()];
+        let mut args = Vec::new();
+        if is_desktop_binary(&self.binary_path) {
+            args.push("--mcp-server".to_string());
+        }
+        args.extend(["--server-profile".to_string(), self.profile_id.clone()]);
         if let Some(root) = &self.config_root {
             args.push("--config-root".to_string());
             args.push(root.to_string_lossy().into_owned());
@@ -637,6 +653,24 @@ fn write_atomic(path: &Path, content: &str) -> fluxdb_core::Result<Option<PathBu
 mod mcp_install_tests {
     use super::*;
 
+    #[test]
+    fn desktop_mcp_entry_is_available_without_sidecar() {
+        let home = temp_home("desktop-entry");
+        for name in ["fluxdb-desktop", "fluxdb-desktop.exe", "fluxdb"] {
+            let exe = home.join(name);
+            std::fs::write(&exe, b"stub").unwrap();
+            assert_eq!(mcp_binary_next_to(&exe), Some(exe.clone()));
+            let mut reg = registration(&home);
+            reg.binary_path = exe;
+            assert_eq!(reg.command_args().1[0], "--mcp-server");
+        }
+        let sidecar = home.join(if cfg!(windows) { "fluxdb-mcp.exe" } else { "fluxdb-mcp" });
+        std::fs::write(&sidecar, b"stub").unwrap();
+        assert_eq!(mcp_binary_next_to(&home.join("fluxdb-desktop")), Some(sidecar));
+        assert_eq!(registration(&home).command_args().1[0], "--server-profile");
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
     fn temp_home(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("fluxdb-mcp-install-{tag}-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -788,7 +822,7 @@ pub fn auto_register_installed_clients(
         }
         // 已注册且内容一致时 register 会返回 changed=false（幂等），无需预先比对。
         let outcome = register(client, home, registration).map_err(|error| error.message);
-        if client == McpClientKind::ClaudeCode && registration.preapprove_claude_tools {
+        if outcome.is_ok() && client == McpClientKind::ClaudeCode && registration.preapprove_claude_tools {
             if let Err(error) = set_claude_tool_preapproval(home, &registration.server_name, true) {
                 tracing::warn!(%error, "自动注册：写入 Claude 预批准规则失败");
             }

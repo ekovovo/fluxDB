@@ -12,6 +12,17 @@ use fluxdb_storage::ai_platform::mcp_server::{
     save_server_profile,
 };
 
+// 可指定已构建的桌面程序，复用同一套协议断言验证无独立 Server 时的入口。
+fn server_command() -> Command {
+    if let Some(exe) = std::env::var_os("FLUXDB_TEST_MCP_DESKTOP") {
+        let mut command = Command::new(exe);
+        command.arg("--mcp-server");
+        command
+    } else {
+        Command::new(env!("CARGO_BIN_EXE_fluxdb-mcp"))
+    }
+}
+
 struct Fixture {
     dir: std::path::PathBuf,
 }
@@ -79,8 +90,7 @@ impl Fixture {
     }
 
     fn spawn(&self) -> Client {
-        let exe = env!("CARGO_BIN_EXE_fluxdb-mcp");
-        let mut child = Command::new(exe)
+        let mut child = server_command()
             .arg("--server-profile")
             .arg("p1")
             .arg("--config-root")
@@ -269,8 +279,7 @@ fn unauthorized_target_is_tool_error() {
 #[test]
 fn disabled_or_missing_profile_fails_to_start() {
     let fixture = Fixture::new();
-    let exe = env!("CARGO_BIN_EXE_fluxdb-mcp");
-    let output = Command::new(exe)
+    let output = server_command()
         .arg("--server-profile")
         .arg("does-not-exist")
         .arg("--config-root")

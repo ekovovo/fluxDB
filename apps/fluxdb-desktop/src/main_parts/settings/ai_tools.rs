@@ -820,7 +820,7 @@ fn client_registration_row(
                 let uninstall = action_registered;
                 let this_override_or_bundled = this.ai_mcp_binary_override.clone();
                 let mut controller = this.controller.clone();
-                let _ = cx.spawn(async move |view, cx| {
+                cx.spawn(async move |view, cx| {
                     let event = cx
                         .background_spawn(async move {
                             if uninstall {
@@ -836,7 +836,7 @@ fn client_registration_row(
                                     .unwrap_or_default();
                                 if binary.is_empty() {
                                     return AppEvent::AiSettingsError(
-                                        "未找到 fluxdb-mcp 二进制（应与 fluxdb-desktop 同目录）".into(),
+                                        "未找到本地 MCP Server 可执行文件".into(),
                                     );
                                 }
                                 controller.dispatch(AppCommand::InstallMcpClient {
@@ -880,7 +880,8 @@ fn client_registration_row(
                             cx.notify();
                         });
                     });
-                });
+                })
+                .detach();
             }))
         })
         .into_any_element()

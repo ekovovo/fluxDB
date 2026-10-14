@@ -1248,9 +1248,9 @@ pub enum AppCommand {
         client: String,
         /// Server Profile ID。
         profile_id: String,
-        /// `fluxdb-mcp` 二进制绝对路径。
+        /// 独立 Server 或支持 `--mcp-server` 的桌面程序绝对路径。
         binary_path: String,
-        /// 可选隔离配置根。
+        /// 显式配置根；未提供时绑定当前应用的存储根，不依赖客户端的环境变量。
         config_root: Option<String>,
         /// 是否写入 Claude Code 的工具预批准（仅只读 Profile 使用）。
         preapprove_claude_tools: bool,
@@ -1261,7 +1261,7 @@ pub enum AppCommand {
     },
     /// 启动时把本地 MCP Server 自动注册到**已存在配置**的客户端（幂等，仅当开关开启）。
     AutoRegisterMcpClients {
-        /// `fluxdb-mcp` 二进制绝对路径；空表示未能解析（记日志跳过，不报错）。
+        /// Server 可执行文件绝对路径；开关开启时空路径返回注册错误。
         binary_path: String,
     },
     DeleteAiAgent {

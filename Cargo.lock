@@ -2189,6 +2189,7 @@ dependencies = [
  "fluxdb-core",
  "fluxdb-editor-core",
  "fluxdb-editor-language",
+ "fluxdb-mcp",
  "fluxdb-storage",
  "futures",
  "gpui-component",

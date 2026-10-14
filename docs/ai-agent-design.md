@@ -1140,7 +1140,7 @@ AuditDecision：Allow / Deny / RequireApproval、risk、rule_ids、reason_codes�
 
 `ArtifactSpec` 至少有类型、标题、schema version、来源 ResultRef/ToolCallId、指标口径、时间范围/时区、过滤条件、刷新语义、模板版本、可访问性描述。图表引用已存在结果字段，不让模型随意填写未查询的数字。
 
-报表插件可主动提供 create/add_chart/add_table/finalize/export 工具，也可对最终结构化分析进行排版；不是只能在最后一段文字上挂 formatter。Agent 自主选择分析路径，插件控制产物规则与渲染说明。
+报表插件可主动提供 create/add_chart/add_table/finalize/export 工具，也可对最终结构化分析进行排版；不是只能在最后一段文字上挂 formatter。Agent 自主选择分析路径，插件控制产物规则与渲染说明。create 与增量加块工具的分工：create 一次声明整份产物（含全部 blocks），增量加块工具（`artifact.add_block`）只补齐 create 时遗漏的块、不能新增来源；两者回执都回显草稿当前已有的 blocks，模型据此判断是否需要再追加，完全相同的块一律拒绝。
 
 默认产物：表格、折线/柱图、Markdown 报告；HTML 导出做转义/净化/禁止主动脚本和远程资源；PDF/XLSX 导出按依赖能力分阶段增加。没有 renderer 时返回可见不支持，不伪造下载链接。
 

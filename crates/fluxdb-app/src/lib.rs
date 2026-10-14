@@ -141,6 +141,7 @@ include!("parts/ai_redis_keys.rs");
 include!("parts/ai_redis_read.rs");
 include!("parts/ai_redis_exec.rs");
 include!("parts/ai_mcp_server.rs");
+include!("parts/ai_mcp_install.rs");
 include!("parts/ai_scripted.rs");
 include!("parts/backup_restore.rs");
 

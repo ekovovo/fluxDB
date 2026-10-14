@@ -166,6 +166,8 @@ pub struct ArtifactOutcome {
     pub truncated: bool,
     /// 真实结果里取出的数据点预览（图表块）。
     pub points: Vec<serde_json::Value>,
+    /// 产物当前的完整块列表（与声明时的块形状一致），供模型确认已有哪些块、避免重复追加。
+    pub blocks: Vec<fluxdb_core::ArtifactBlock>,
     pub sources: Vec<ArtifactSourceSummary>,
     pub file: Option<ArtifactFileFact>,
 }

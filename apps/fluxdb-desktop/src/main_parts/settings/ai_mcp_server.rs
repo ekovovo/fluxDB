@@ -1289,4 +1289,18 @@ fn ai_mcp_panel(
                 )
                 .child(div().flex_1().min_w(px(0.)).child(body)),
         )
+        .child(
+            settings_panel_group("注册到 CLI 客户端", colors)
+                .child(
+                    div()
+                        .px_4()
+                        .py_2()
+                        .text_size(px(11.))
+                        .text_color(colors.muted)
+                        .child("沿用启动自动注册与手动注册/卸载；不导出客户端配置文件。"),
+                )
+                .children(panel.mcp_install_status.iter().map(|status| {
+                    client_registration_row(status, panel.mcp_install_busy.as_deref(), colors, cx)
+                })),
+        )
 }

@@ -1,4 +1,10 @@
 fn main() {
+    let mut args = std::env::args().skip(1);
+    if args.next().as_deref() == Some("--mcp-server") {
+        // stdio 子进程不能进入桌面单实例守卫、日志初始化或 GPUI。
+        std::process::exit(fluxdb_mcp::run_cli(args));
+    }
+
     // 实例标识最先校验：单实例守卫与数据目录解析都依赖它，非法取值必须在此明确
     // 报错退出，否则用户只会看到后续步骤的"无法解析应用数据目录"而不知根因。
     if let Err(err) = fluxdb_storage::instance_profile() {
@@ -103,6 +109,10 @@ fn main() {
                     // saved_queries 经内部 notify 补显，详见 load_persisted_history_in_background）。
                     view.update(cx, |this, cx| {
                         this.load_persisted_history_in_background(cx);
+                        // 启动自动注册：若 Codex/Claude Code 已有配置文件，则把本地只读
+                        // MCP Server 幂等写入（不带 `--mcp-config` 的客户端即可发现）；
+                        // 用户显式卸载会关闭该开关，不会在下次启动被加回。
+                        this.auto_register_mcp_clients_on_startup(cx);
                         // 调试入口：打开设置页的 AI 分区（仅 debug 构建，用于 UI 截图验证）。
                         if debug_ai_settings_requested() {
                             let _ = this.controller.dispatch(AppCommand::OpenSettings);
@@ -3115,6 +3125,9 @@ fn navicat_main_new(
         ai_settings_loading: false,
         ai_settings_error: None,
                             ai_tools_tab: debug_ai_tools_tab(),
+                            ai_mcp_install_status: Vec::new(),
+                            ai_mcp_install_busy: None,
+                            ai_mcp_binary_override: None,
                             ai_agent_editor: None,
                             ai_agent_editor_debug_pending: debug_ai_agent_draft_requested(),
                             ai_agent_delete_just_removed: String::new(),

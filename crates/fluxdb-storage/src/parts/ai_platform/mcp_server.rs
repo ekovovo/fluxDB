@@ -467,6 +467,21 @@ fn parse_string_list(raw: &str, label: &str) -> Result<Vec<String>> {
         .map_err(|e| Error::new(ErrorKind::Internal, format!("{label} 解析失败: {e}")))
 }
 
+/// kv 键：是否在启动时把本地 MCP Server 自动注册到已存在的 CLI 客户端配置。
+///
+/// 用户显式“卸载”会置为 false（避免下次启动又被加回来）；“一键注册”会置回 true。
+const AUTO_REGISTER_KEY: &str = "mcp_install_auto_register_v1";
+
+/// 读取“启动自动注册”开关；未设置时默认开启（首次使用即可发现本地 MCP Server）。
+pub fn load_auto_register_enabled(conn: &Connection) -> Result<bool> {
+    Ok(crate::sqlite::get_json::<bool>(conn, AUTO_REGISTER_KEY)?.unwrap_or(true))
+}
+
+/// 保存“启动自动注册”开关。
+pub fn save_auto_register_enabled(conn: &Connection, enabled: bool) -> Result<()> {
+    crate::sqlite::put_json(conn, AUTO_REGISTER_KEY, &enabled)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

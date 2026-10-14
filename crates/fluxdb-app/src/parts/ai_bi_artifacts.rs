@@ -311,6 +311,7 @@ impl BuiltinBiProducer {
             metric: spec.metric.clone(),
             truncated,
             points,
+            blocks: spec.blocks.clone(),
             sources,
             file,
         }
@@ -740,10 +741,11 @@ fn artifact_check_cancel(cancel: &fluxdb_core::CancelFlag) -> Result<(), Artifac
 }
 
 /// 完全相同的块没有信息增量（renderer 只会把同一份数据渲染两遍）：声明与追加走同一拒绝规则。
+/// 提示模型以回执中的 `blocks` 为准，不要再追加同一块。
 fn duplicate_block_error() -> ArtifactError {
     ArtifactError::new(
         "duplicate_block",
-        "该块已在产物中存在，无需重复添加；如需不同维度请显式声明另一个字段或图表类型",
+        "该块已在产物中存在，无需重复添加；请以回执中的 blocks 为准，如需不同维度请显式声明另一个字段或图表类型",
     )
 }
 

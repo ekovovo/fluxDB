@@ -1,4 +1,4 @@
-// fluxdb-mcp 内部模块：仅按启动/协议/工具职责划分，全部为二进制私有实现。
+// MCP 内部模块：独立 Server 与桌面 stdio 入口共用，不依赖 UI。
 pub mod cli;
 pub mod logging;
 pub mod server;

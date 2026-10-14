@@ -32,6 +32,12 @@ struct NavicatMain {
     ai_settings_error: Option<String>,
     /// 「工具与 MCP」页签当前停留的子页。
     ai_tools_tab: AiToolsTab,
+    /// 本地 MCP 客户端注册状态快照（Codex/Claude Code），渲染期只读。
+    ai_mcp_install_status: Vec<fluxdb_app::McpInstallClientStatus>,
+    /// 正在注册/卸载的客户端 key（行内 loading/disabled，拦重复点击）。
+    ai_mcp_install_busy: Option<String>,
+    /// 注册时使用的 `fluxdb-mcp` 二进制路径覆盖（测试注入；生产留空走 bundled_mcp_binary）。
+    ai_mcp_binary_override: Option<String>,
     /// 「Agent 配置」编辑草稿；`None` 表示未选中任何 Agent。
     ai_agent_editor: Option<AiAgentEditorState>,
     /// 调试用：首帧后自动打开 Agent 新建草稿（仅 debug 构建读取）。

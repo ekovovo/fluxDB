@@ -2031,4 +2031,97 @@ mod ai_ui_tests {
         assert_eq!(stored, r#"{"table_allowlist":["orders"]}"#);
         let _ = std::fs::remove_dir_all(root);
     }
+    /// 自动注册与按钮共用真实配置写入链路；检查任务存活、状态回桥及失败提示。
+    #[gpui_kit::test]
+    async fn ai_ui_mcp_install_rows_render(cx: &mut TestAppContext) {
+        use gpui_kit::test::{TestAppContextExt as _, TestWindowExt as _};
+        cx.executor().allow_parking();
+        let home = std::env::temp_dir().join(format!(
+            "fluxdb-mcp-ui-home-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&home).unwrap();
+        let claude_config = home.join(".claude.json");
+        std::fs::write(&claude_config, r#"{"userID":"test"}"#).unwrap();
+        let binary = home.join(if cfg!(windows) { "fluxdb-desktop.exe" } else { "fluxdb-desktop" });
+        std::fs::write(&binary, b"stub").unwrap();
+        let prev_home = std::env::var_os("HOME");
+        // SAFETY: 仅本用例读写该变量，GPUI 测试串行访问 UI。
+        unsafe { std::env::set_var("HOME", &home) };
+
+        let root = isolated_root("mcp-install-render");
+        let storage = FileStorage::new(root.clone());
+        let mut controller = AppController::new();
+        controller.set_ai_storage(storage.clone());
+        let _ = controller.dispatch(AppCommand::RefreshAiSettings);
+        let _ = controller.dispatch(AppCommand::OpenSettings);
+        let (view, cx) = open_main(cx, controller, storage, SettingsPanelSection::AiToolsMcp);
+
+        click_selector(cx, "ai-tools-tab:本地 MCP");
+        let rows = view.read_with(cx, |main, _| main.ai_mcp_install_status.clone());
+        assert_eq!(rows.len(), 2, "应展示 Codex 与 Claude Code 两行");
+        assert!(rows.iter().any(|r| r.key == "codex"));
+        assert!(rows.iter().any(|r| r.key == "claude"));
+        assert!(
+            cx.debug_bounds("ai-mcp-client:codex").is_some(),
+            "Codex 客户端行应已渲染"
+        );
+        assert!(
+            cx.debug_bounds("ai-mcp-install:claude").is_some(),
+            "Claude 注册按钮应已渲染"
+        );
+
+        view.update(cx, |main, cx| {
+            main.ai_mcp_binary_override = Some(binary.display().to_string());
+            main.auto_register_mcp_clients_on_startup(cx);
+        });
+        let handle = cx.update(|window, _| window.window_handle());
+        cx.wait_for(handle, Duration::from_secs(8), |_, cx| {
+            view.read(cx).ai_mcp_install_status.iter().any(|r| r.key == "claude" && r.registered)
+        }).await;
+        let value: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&claude_config).unwrap()).unwrap();
+        assert_eq!(value["mcpServers"]["fluxdb"]["args"][0], "--mcp-server");
+        assert_eq!(value["userID"], "test");
+        assert!(!home.join(".codex/config.toml").exists(), "不创建未安装客户端配置");
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.click("ai-mcp-install:claude", cx);
+        });
+        cx.wait_for(handle, Duration::from_secs(8), |_, cx| {
+            let main = view.read(cx);
+            main.ai_mcp_install_busy.is_none()
+                && main.ai_mcp_install_status.iter().any(|r| r.key == "claude" && !r.registered)
+        }).await;
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.click("ai-mcp-install:claude", cx);
+        });
+        cx.wait_for(handle, Duration::from_secs(8), |_, cx| {
+            let main = view.read(cx);
+            main.ai_mcp_install_busy.is_none()
+                && main.ai_mcp_install_status.iter().any(|r| r.key == "claude" && r.registered)
+        }).await;
+
+        std::fs::write(&claude_config, "invalid json").unwrap();
+        view.update(cx, |main, cx| main.auto_register_mcp_clients_on_startup(cx));
+        cx.wait_for(handle, Duration::from_secs(8), |_, cx| view.read(cx).ai_settings_error.is_some()).await;
+        assert!(view.read_with(cx, |main, _| {
+            main.app_message.as_ref().is_some_and(|message| message.kind == AppMessageKind::Error)
+        }));
+        assert_eq!(std::fs::read_to_string(&claude_config).unwrap(), "invalid json");
+
+        match prev_home {
+            Some(value) => unsafe { std::env::set_var("HOME", value) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+        cx.executor().forbid_parking();
+        let _ = std::fs::remove_dir_all(&home);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
 }

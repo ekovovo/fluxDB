@@ -1365,6 +1365,15 @@ T020按主设计§31.9实现询问AI内联批准卡片：参考Goose三态按钮
   后端 `ai_mcp_server_requests=succeeded`、`ai_tool_audits=allow` 落库；隐藏写工具从 tools/list 消失且
   模型确认无法调用。仅 SQLite/只读范围内验证；MySQL/PG/Redis 真实后端与写入/拒绝测试未执行。
 
+- **T061 纯协议集成测试（真实多后端）**：`apps/fluxdb-mcp/tests/t061_live.rs`（门控
+  `FLUXDB_T061_MYSQL`/`FLUXDB_T061_PG`/`FLUXDB_T061_REDIS`）经真实 `fluxdb-mcp` 二进制 +
+  stdio JSON-RPC 覆盖 initialize/list/call、只读 scope、默认不暴露写、越权拒绝、EOF 正常收尾、
+  ClientInfo 不能提权；对接本机 **podman** 的隔离 MySQL 8.4 / PostgreSQL 16 / Redis 7 容器
+  （非生产库，本 run 前缀 `t061:`）。**2026-10-14 实测 4/4 通过**（MySQL 查询、PG 参数真绑定
+  `$1` + 精确 numeric、Redis scan/inspect(含越权前缀拒绝)、未知工具 + 伪 admin 不能提权）。
+  PG 参数绑定经 `prepare` 取占位符类型后强制转换，并新增 PostgreSQL `numeric` 二进制精确编解码
+  （`PgNumeric`，不经 f64），2 项往返单测通过。**未覆盖**：T061 描述的 cancel/帧超限/日志污染/
+  未知写崩溃窗口、每阶段截图证据、MySQL/PG/Redis 真实写入用例。
+
 **未完成/未验证**：T060（Server 管理页、配置导出、活动审计 UI）整体未实施；
-T061 Docker 多后端协议测试（本机无 Docker）、T064/T065/T066 跨模块与真实审计/重启端到端、
-Windows/Linux 三端编译与真实桌面行为。
+T064/T065/T066 跨模块与真实审计/重启端到端、Windows/Linux 三端编译与真实桌面行为。

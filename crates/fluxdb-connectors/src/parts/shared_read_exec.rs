@@ -745,3 +745,116 @@ impl IntoNonEmpty for String {
         (!self.is_empty()).then_some(self)
     }
 }
+
+/// 参数化单语句执行（SQLite）：**必须**以 `?` 绑定，绝不做字符串插值。
+///
+/// 只接受单条语句（参数与语句的对应关系在多语句下不明确，直接拒绝）。
+pub(crate) fn sqlite_execute_parameterized(
+    config: &ConnectionConfig,
+    request: &QueryRequest,
+    parameters: &[fluxdb_core::SqlParameter],
+) -> fluxdb_core::Result<QueryExecutionResult> {
+    let statement = request.text.trim().to_string();
+    if statement.is_empty() {
+        return Err(Error::new(ErrorKind::Query, "查询不能为空"));
+    }
+    if statement.contains(';') && statement.trim_end().trim_end_matches(';').contains(';') {
+        return Err(Error::new(
+            ErrorKind::Query,
+            "参数化执行只接受单条语句；不支持多语句脚本",
+        ));
+    }
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| Error::new(ErrorKind::Internal, error.to_string()))?;
+    runtime.block_on(async {
+        let connect = tokio::time::timeout(Duration::from_secs(5), sqlite_connect(config)).await;
+        let mut connection = match connect {
+            Ok(Ok(connection)) => connection,
+            Ok(Err(error)) => return Err(error),
+            Err(_) => return Err(Error::new(ErrorKind::Connection, "连接超时")),
+        };
+        if request.options.read_only {
+            sqlx::query("PRAGMA query_only = ON")
+                .execute(&mut connection)
+                .await
+                .map_err(sqlite_error)?;
+        }
+        let started = std::time::Instant::now();
+        let pagination =
+            query_execution_pagination(request.options.page_offset, request.options.page_size);
+        if statement_returns_rows(&statement) {
+            let mut query = sqlx::query(&statement);
+            for parameter in parameters {
+                query = sqlite_bind_parameter(query, parameter)?;
+            }
+            let rows = query.fetch_all(&mut connection).await.map_err(sqlite_error)?;
+            let page = sqlite_query_rows_to_page(rows, pagination.offset, pagination.limit);
+            connection.close().await.map_err(sqlite_error)?;
+            let returned = page.rows.len() as u64;
+            return Ok(QueryExecutionResult {
+                summaries: vec![QueryExecutionSummary {
+                    sql: statement,
+                    kind: QueryStatementKind::ResultSet,
+                    success: true,
+                    message: format!("返回 {returned} 行结果表（参数化绑定）"),
+                    returned_rows: returned,
+                    affected_rows: 0,
+                    elapsed_ms: elapsed_ms(started),
+                }],
+                results: vec![page],
+                rollback_snapshots: Vec::new(),
+            });
+        }
+        let mut query = sqlx::query(&statement);
+        for parameter in parameters {
+            query = sqlite_bind_parameter(query, parameter)?;
+        }
+        let outcome = query.execute(&mut connection).await.map_err(sqlite_error)?;
+        let affected = outcome.rows_affected();
+        connection.close().await.map_err(sqlite_error)?;
+        Ok(QueryExecutionResult {
+            summaries: vec![QueryExecutionSummary {
+                sql: statement,
+                kind: QueryStatementKind::Command,
+                success: true,
+                message: format!("OK，影响 {affected} 行（参数化绑定）"),
+                returned_rows: 0,
+                affected_rows: affected,
+                elapsed_ms: elapsed_ms(started),
+            }],
+            results: Vec::new(),
+            rollback_snapshots: Vec::new(),
+        })
+    })
+}
+
+fn sqlite_bind_parameter<'q>(
+    query: sqlx::query::Query<'q, Sqlite, sqlx::sqlite::SqliteArguments<'q>>,
+    parameter: &'q fluxdb_core::SqlParameter,
+) -> fluxdb_core::Result<sqlx::query::Query<'q, Sqlite, sqlx::sqlite::SqliteArguments<'q>>> {
+    use fluxdb_core::SqlParameter;
+    Ok(match parameter {
+        SqlParameter::Null => query.bind(None::<String>),
+        SqlParameter::Bool(value) => query.bind(i64::from(*value)),
+        SqlParameter::I64(text) => query.bind(text.parse::<i64>().map_err(|_| {
+            Error::new(ErrorKind::Query, "i64 参数不是合法的十进制文本")
+        })?),
+        // SQLite 无原生 u64；超出 i64 的十进制以文本绑定，保留精度。
+        SqlParameter::U64(text) => match text.parse::<i64>() {
+            Ok(value) => query.bind(value),
+            Err(_) => query.bind(text.clone()),
+        },
+        // decimal 以文本绑定，避免经 f64 丢精度。
+        SqlParameter::Decimal(text) => query.bind(text.clone()),
+        SqlParameter::F64(value) => {
+            if !value.is_finite() {
+                return Err(Error::new(ErrorKind::Query, "f64 参数必须是有限数值"));
+            }
+            query.bind(*value)
+        }
+        SqlParameter::Text(value) => query.bind(value.clone()),
+        SqlParameter::Bytes(value) => query.bind(value.clone()),
+    })
+}

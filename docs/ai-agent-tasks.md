@@ -1336,3 +1336,44 @@ T020按主设计§31.9实现询问AI内联批准卡片：参考Goose三态按钮
 - **本调整只改任务清单口径，不改设计**：主设计 §25.1、§29、§40 的「必经审计」要求与 T065/T066 范围不变，发布门槛不因此降低。
 - **勾选口径**：T031 于 2026-10-11 以用户真实窗口与实际使用确认勾选；串行 E2E 脚本、每步 checkpoint/小图与 decision 计数断言仍未产出，详见 [T031 勾选记录](testing/ai-agent/t031-2026-10-11.md)。
 - **仍待办**：T005 截图预算工具；T054–T057 → T065 审计链路；`ai_recovery_close_reopen_history_does_not_rescan_live_task` 并发 flaky 修复。
+
+## T054–T062 实现状态补记（2026-10-14）
+
+分支 `codex/m2-mcp-server`（基于 `agent`）。**已落地并可验证的部分**：
+
+- **T054 公共执行服务**：`crates/fluxdb-app/src/parts/ai_mcp_server.rs` 的 `McpExecutionService`
+  与内部 Agent 共用同一执行链（`ToolCatalog` schema 校验 → 强制审计 → `authorize` → 连接器 → 回执/投影）；
+  13 工具名称映射、tools/list 动态投影、`connections.list` 服务实现。测试证明：隐藏写工具直接调用被拒、
+  未授权 target 返回 `STALE_RESOURCE`、`allowed_tool_ids` 之外的工具被拒。
+- **T055 参数真绑定**：新增 `sqlite_execute_parameterized` 与 `pg_execute_parameterized`
+  （`execute_parameterized`），MySQL 既有实现不变；SQLite 端到端证明 `?1` 绑定命中精确值。
+  **未完成**：PostgreSQL 无真实库验证（本机无 Docker/PG），PG 路径仅编译与单元覆盖，未跑真实后端；
+  MySQL 参数化的注入/超限边界沿用既有测试，未在本轮重跑。
+- **T056 Redis 解码预算**：`RedisReadBudget` 与 `execute_argv_with_budget` 已在 T025 落地并被 AI/MCP 路径复用；
+  本轮未新增 Redis 预算改动（无真实 Redis 后端可测）。
+- **T057 独立表**：`crates/fluxdb-storage/src/parts/ai_platform/mcp_server.rs`、
+  `mcp_server_runtime.rs` 提供 Profile/grant/session/request 的对象级 CAS、默认 disabled/readonly、
+  空对象/Key 规则拒绝、`(session,seq)` 请求身份与跨 Profile 复合外键。12 项单测通过。
+- **T058 headless stdio**：`apps/fluxdb-mcp`（rmcp 1.8，workspace 新成员）实现
+  initialize/tools/list/call、有界 stdin 帧（1 MiB 行限）、stdout 仅协议/stderr 日志、
+  request/审计落库、operation 状态/取消宿主。协议集成测试（真实二进制 + 真实 SQLite 管道）7 项通过。
+- **T059 受限写**：`ScopedWritePolicy`（仅 UPDATE/授权表/必须 WHERE/禁 DDL/禁子查询），
+  scoped 命中即视为预授权执行，强制审计 `Deny` 不可被覆盖；真实 SQLite 端到端：
+  命中更新真实落库、越界表 `write_object_not_allowed` 拒绝。
+- **T062 Claude CLI 实测**：真实 Claude Code CLI 2.1.66 经 `--mcp-config/--strict-mcp-config/--tools ""/
+  --allowedTools mcp__fluxdb_local__fluxdb_query/-p` 调用 `fluxdb_query`，返回真实 SQLite 行；
+  后端 `ai_mcp_server_requests=succeeded`、`ai_tool_audits=allow` 落库；隐藏写工具从 tools/list 消失且
+  模型确认无法调用。仅 SQLite/只读范围内验证；MySQL/PG/Redis 真实后端与写入/拒绝测试未执行。
+
+- **T061 纯协议集成测试（真实多后端）**：`apps/fluxdb-mcp/tests/t061_live.rs`（门控
+  `FLUXDB_T061_MYSQL`/`FLUXDB_T061_PG`/`FLUXDB_T061_REDIS`）经真实 `fluxdb-mcp` 二进制 +
+  stdio JSON-RPC 覆盖 initialize/list/call、只读 scope、默认不暴露写、越权拒绝、EOF 正常收尾、
+  ClientInfo 不能提权；对接本机 **podman** 的隔离 MySQL 8.4 / PostgreSQL 16 / Redis 7 容器
+  （非生产库，本 run 前缀 `t061:`）。**2026-10-14 实测 4/4 通过**（MySQL 查询、PG 参数真绑定
+  `$1` + 精确 numeric、Redis scan/inspect(含越权前缀拒绝)、未知工具 + 伪 admin 不能提权）。
+  PG 参数绑定经 `prepare` 取占位符类型后强制转换，并新增 PostgreSQL `numeric` 二进制精确编解码
+  （`PgNumeric`，不经 f64），2 项往返单测通过。**未覆盖**：T061 描述的 cancel/帧超限/日志污染/
+  未知写崩溃窗口、每阶段截图证据、MySQL/PG/Redis 真实写入用例。
+
+**未完成/未验证**：T060（Server 管理页、配置导出、活动审计 UI）整体未实施；
+T064/T065/T066 跨模块与真实审计/重启端到端、Windows/Linux 三端编译与真实桌面行为。

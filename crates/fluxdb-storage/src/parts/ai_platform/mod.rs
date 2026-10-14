@@ -11,6 +11,8 @@ pub mod context_references;
 pub mod conversation;
 pub mod knowledge;
 pub mod mcp;
+pub mod mcp_server;
+pub mod mcp_server_runtime;
 pub mod model_bindings;
 pub mod model_secret;
 pub mod model_selection;

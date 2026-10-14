@@ -299,3 +299,578 @@ async fn pg_collect_statement(client: &tokio_postgres::Client, statement: &str, 
     }
     Ok((completed, None))
 }
+
+// ---- PostgreSQL numeric 精确编解码（T055）----
+//
+// 本版本 tokio-postgres/postgres-types 未内置 numeric 的 ToSql/FromSql（需 bigdecimal 集成）。
+// 为**不丢精度**地绑定与解码 numeric，这里按 PostgreSQL 二进制 `numeric` 格式实现编解码：
+//   int16 ndigits; int16 weight; uint16 sign(0=+,0x4000=-,0xC000=NaN);
+//   int16 dscale(小数位); int16 digits[ndigits]（每项 0..9999，base-10000）。
+// 全部用十进制字符串运算，不经过 f64。
+
+/// 精确十进制数：符号 + 整数位数字串 + 小数位数字串（已去首尾多余 0，保留 dscale）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PgNumeric {
+    negative: bool,
+    /// display scale（小数位数）。
+    scale: u32,
+    /// base-10000 分组（已规范化）。
+    digits: Vec<i16>,
+    /// 首个分组的权重（10000^weight）。
+    weight: i16,
+}
+
+impl PgNumeric {
+    /// 解析十进制文本（`[+-]?digits[.digits]`）；拒绝 NaN/Inf/科学计数。
+    pub(crate) fn parse(text: &str) -> Result<Self, String> {
+        let text = text.trim();
+        let (negative, body) = match text.strip_prefix('-') {
+            Some(rest) => (true, rest),
+            None => (false, text.strip_prefix('+').unwrap_or(text)),
+        };
+        if body.is_empty() || !body.bytes().all(|b| b.is_ascii_digit() || b == b'.') {
+            return Err("不是合法十进制文本".into());
+        }
+        let (int_part, frac_part) = match body.split_once('.') {
+            Some((i, f)) => (i, f),
+            None => (body, ""),
+        };
+        if int_part.is_empty() && frac_part.is_empty() {
+            return Err("不是合法十进制文本".into());
+        }
+        let scale = frac_part.len() as u32;
+        // 左侧补齐到 4 的倍数，切成 base-10000 分组。
+        let mut int_padded = int_part.to_string();
+        while int_padded.len() % 4 != 0 {
+            int_padded.insert(0, '0');
+        }
+        let mut frac_padded = frac_part.to_string();
+        while frac_padded.len() % 4 != 0 {
+            frac_padded.push('0');
+        }
+        let mut groups: Vec<i16> = Vec::new();
+        for chunk in int_padded.as_bytes().chunks(4) {
+            groups.push(std::str::from_utf8(chunk).unwrap().parse::<i16>().unwrap());
+        }
+        for chunk in frac_padded.as_bytes().chunks(4) {
+            groups.push(std::str::from_utf8(chunk).unwrap().parse::<i16>().unwrap());
+        }
+        // weight = 整数分组数 - 1；若整数部分为空（如 ".5"）则补一组 0。
+        let int_groups = if int_part.is_empty() { 1 } else { int_part.len().div_ceil(4) };
+        let mut weight = int_groups as i16 - 1;
+        // 去前导 0 组。
+        let mut start = 0;
+        while start < groups.len() && groups[start] == 0 {
+            start += 1;
+            weight -= 1;
+        }
+        let mut normalized = groups[start..].to_vec();
+        // 去尾部 0 组。
+        while normalized.last() == Some(&0) {
+            normalized.pop();
+        }
+        let negative = negative && normalized.iter().any(|d| *d != 0);
+        Ok(Self {
+            negative,
+            scale,
+            digits: normalized,
+            weight,
+        })
+    }
+
+    /// 编码为 PostgreSQL numeric 二进制。
+    fn encode(&self, out: &mut tokio_postgres::types::private::BytesMut) {
+        out.extend_from_slice(&(self.digits.len() as i16).to_be_bytes());
+        let weight = if self.digits.is_empty() { 0 } else { self.weight };
+        out.extend_from_slice(&weight.to_be_bytes());
+        let sign: u16 = if self.negative { 0x4000 } else { 0x0000 };
+        out.extend_from_slice(&sign.to_be_bytes());
+        out.extend_from_slice(&(self.scale as i16).to_be_bytes());
+        for digit in &self.digits {
+            out.extend_from_slice(&digit.to_be_bytes());
+        }
+    }
+
+    /// 转为十进制文本（保留 scale）。
+    pub(crate) fn to_text(&self) -> CellValue {
+        CellValue::Text(self.render())
+    }
+
+    /// 渲染为十进制文本（测试与解码共用）。
+    pub(crate) fn render_text(&self) -> String {
+        self.render()
+    }
+
+    /// 由已解析字段渲染十进制文本（保留 scale）。
+    fn render(&self) -> String {
+        if self.digits.is_empty() {
+            // 0 也要保留 scale（如 0.00）。
+            return if self.scale == 0 {
+                "0".into()
+            } else {
+                format!("0.{}", "0".repeat(self.scale as usize))
+            };
+        }
+        // 整数分组：weight+1 个分组（不足补 0），前导分组去零。
+        let mut int_text = String::new();
+        if self.weight >= 0 {
+            for i in 0..=self.weight as usize {
+                let group = self.digits.get(i).copied().unwrap_or(0) as u32;
+                if i == 0 {
+                    int_text.push_str(&group.to_string());
+                } else {
+                    int_text.push_str(&format!("{group:04}"));
+                }
+            }
+        }
+        if int_text.is_empty() {
+            int_text.push('0');
+        }
+        let mut frac_text = String::new();
+        let mut idx = self.weight + 1;
+        while (frac_text.len() as i16) < self.scale as i16 {
+            let group = if idx >= 0 { self.digits.get(idx as usize).copied().unwrap_or(0) } else { 0 } as u32;
+            frac_text.push_str(&format!("{group:04}"));
+            idx += 1;
+        }
+        frac_text.truncate(self.scale as usize);
+        let sign = if self.negative { "-" } else { "" };
+        if self.scale > 0 {
+            format!("{sign}{int_text}.{frac_text}")
+        } else {
+            format!("{sign}{int_text}")
+        }
+    }
+
+    /// 从 PostgreSQL numeric 二进制解码（保留 dscale，不经 f64）。
+    fn decode(raw: &[u8]) -> Result<String, String> {
+        if raw.len() < 8 {
+            return Err("numeric 载荷过短".into());
+        }
+        let read_i16 = |o: usize| i16::from_be_bytes([raw[o], raw[o + 1]]);
+        let ndigits = read_i16(0);
+        let weight = read_i16(2);
+        let sign = u16::from_be_bytes([raw[4], raw[5]]);
+        let dscale = read_i16(6);
+        if ndigits < 0 || dscale < 0 {
+            return Err("numeric 头部非法".into());
+        }
+        if sign == 0xC000 {
+            return Ok("NaN".into());
+        }
+        let base = 8usize;
+        let mut digits = Vec::with_capacity(ndigits as usize);
+        for i in 0..ndigits as usize {
+            let offset = base + i * 2;
+            if offset + 1 >= raw.len() {
+                return Err("numeric 数字段截断".into());
+            }
+            digits.push(read_i16(offset));
+        }
+        let value = PgNumeric {
+            negative: sign == 0x4000,
+            scale: dscale as u32,
+            digits,
+            weight,
+        };
+        Ok(value.render())
+    }
+}
+
+
+impl tokio_postgres::types::ToSql for PgNumeric {
+    fn to_sql(
+        &self,
+        _ty: &tokio_postgres::types::Type,
+        out: &mut tokio_postgres::types::private::BytesMut,
+    ) -> Result<tokio_postgres::types::IsNull, Box<dyn std::error::Error + Sync + Send>> {
+        self.encode(out);
+        Ok(tokio_postgres::types::IsNull::No)
+    }
+
+    fn accepts(ty: &tokio_postgres::types::Type) -> bool {
+        ty == &tokio_postgres::types::Type::NUMERIC
+    }
+
+    tokio_postgres::types::to_sql_checked!();
+}
+
+impl<'a> tokio_postgres::types::FromSql<'a> for PgNumeric {
+    fn from_sql(
+        _ty: &tokio_postgres::types::Type,
+        raw: &'a [u8],
+    ) -> Result<Self, Box<dyn std::error::Error + Sync + Send>> {
+        let text = PgNumeric::decode(raw)?;
+        PgNumeric::parse(&text).map_err(Into::into)
+    }
+
+    fn accepts(ty: &tokio_postgres::types::Type) -> bool {
+        ty == &tokio_postgres::types::Type::NUMERIC
+    }
+}
+
+/// PostgreSQL 参数化单语句执行（T055）。
+///
+/// 用**扩展查询协议**：先 `prepare` 取得每个占位符的期望类型，再把 `SqlParameter`
+/// 强制转换成该类型后真绑定（`int2/int4/int8/float4/float8/bool/text/varchar/bytea/numeric`），
+/// **绝不**把参数拼进 SQL 文本。只接受单条语句。
+pub(crate) fn pg_execute_parameterized(
+    config: &ConnectionConfig,
+    request: &QueryRequest,
+    parameters: &[fluxdb_core::SqlParameter],
+) -> fluxdb_core::Result<QueryExecutionResult> {
+    let statement = request.text.trim().to_string();
+    if statement.is_empty() {
+        return Err(Error::new(ErrorKind::Query, "查询不能为空"));
+    }
+    if statement.contains(';') && statement.trim_end().trim_end_matches(';').contains(';') {
+        return Err(Error::new(
+            ErrorKind::Query,
+            "参数化执行只接受单条语句；不支持多语句脚本",
+        ));
+    }
+    pg_runtime().block_on(async {
+        let database = pg_request_database(config, request.database.as_deref());
+        let session = pg_session_acquire(config, request, &database).await?;
+        let lock = session.execution.lock();
+        tokio::pin!(lock);
+        let _guard = lock.await;
+        if session.driver.0.is_finished() || session.client.is_closed() {
+            return Err(Error::new(ErrorKind::Connection, "查询会话已失效，执行结果请先核实；关闭标签后重新连接"));
+        }
+        pg_ensure_search_path(&session, request.schema.as_deref()).await?;
+        // prepare 只描述参数类型，不执行用户语句。
+        let prepared = session
+            .client
+            .prepare(statement.as_str())
+            .await
+            .map_err(pg_error)?;
+        let expected = prepared.params();
+        if expected.len() != parameters.len() {
+            return Err(Error::new(
+                ErrorKind::Query,
+                format!(
+                    "参数个数不匹配：SQL 期望 {} 个，实际传入 {} 个",
+                    expected.len(),
+                    parameters.len()
+                ),
+            ));
+        }
+        let mut bound: Vec<PgBound> = Vec::with_capacity(parameters.len());
+        for (index, (parameter, ty)) in parameters.iter().zip(expected.iter()).enumerate() {
+            bound.push(PgBound::coerce(parameter, ty).map_err(|reason| {
+                Error::new(
+                    ErrorKind::Query,
+                    format!("参数 {} 与占位符类型 {} 不兼容：{reason}", index + 1, ty.name()),
+                )
+            })?);
+        }
+        let bind_refs: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> =
+            bound.iter().map(PgBound::as_tosql).collect();
+        let started = Instant::now();
+        let pagination = query_execution_pagination(request.options.page_offset, request.options.page_size);
+        let capacity = query_execution_row_capacity(pagination.limit);
+        let has_result_columns = !prepared.columns().is_empty();
+        if statement_returns_rows(&statement) || has_result_columns {
+            let stream = session
+                .client
+                .query_raw(&prepared, bind_refs.iter().copied())
+                .await
+                .map_err(pg_error)?;
+            tokio::pin!(stream);
+            let mut rows: Vec<tokio_postgres::Row> = Vec::new();
+            while let Some(row) = stream.next().await {
+                rows.push(row.map_err(pg_error)?);
+            }
+            let page = pg_rows_to_page(&rows, pagination.offset, pagination.limit, capacity)?;
+            let returned = page.rows.len() as u64;
+            return Ok(QueryExecutionResult {
+                summaries: vec![QueryExecutionSummary {
+                    sql: statement,
+                    kind: QueryStatementKind::ResultSet,
+                    success: true,
+                    message: format!("返回 {returned} 行结果表（参数化绑定）"),
+                    returned_rows: returned,
+                    affected_rows: 0,
+                    elapsed_ms: elapsed_ms(started),
+                }],
+                results: vec![page],
+                rollback_snapshots: Vec::new(),
+            });
+        }
+        let affected = session
+            .client
+            .execute_raw(&prepared, bind_refs.iter().copied())
+            .await
+            .map_err(pg_error)?;
+        Ok(QueryExecutionResult {
+            summaries: vec![QueryExecutionSummary {
+                sql: statement,
+                kind: QueryStatementKind::Command,
+                success: true,
+                message: format!("OK，影响 {affected} 行（参数化绑定）"),
+                returned_rows: 0,
+                affected_rows: affected,
+                elapsed_ms: elapsed_ms(started),
+            }],
+            results: Vec::new(),
+            rollback_snapshots: Vec::new(),
+        })
+    })
+}
+
+/// 按服务端期望类型强制转换后的绑定值。
+enum PgBound {
+    Null,
+    Bool(bool),
+    I16(i16),
+    I32(i32),
+    I64(i64),
+    F32(f32),
+    F64(f64),
+    Text(String),
+    Bytes(Vec<u8>),
+    /// 精确 numeric（base-10000 二进制编码，不经 f64）。
+    Numeric(PgNumeric),
+}
+
+impl PgBound {
+    /// 把 tagged 参数强制转换为占位符的期望类型；不兼容时给出明确原因。
+    fn coerce(
+        parameter: &fluxdb_core::SqlParameter,
+        ty: &tokio_postgres::types::Type,
+    ) -> Result<Self, String> {
+        use fluxdb_core::SqlParameter;
+        use tokio_postgres::types::Type;
+        if matches!(parameter, SqlParameter::Null) {
+            return Ok(PgBound::Null);
+        }
+        let as_i64 = || -> Result<i64, String> {
+            match parameter {
+                SqlParameter::I64(t) | SqlParameter::U64(t) => {
+                    t.parse::<i64>().map_err(|_| format!("不是整数: {t}"))
+                }
+                SqlParameter::Bool(b) => Ok(i64::from(*b)),
+                SqlParameter::F64(v)
+                    if v.fract() == 0.0 && *v >= i64::MIN as f64 && *v <= i64::MAX as f64 =>
+                {
+                    Ok(*v as i64)
+                }
+                _ => Err("无法转换为整数".into()),
+            }
+        };
+        let as_f64 = || -> Result<f64, String> {
+            match parameter {
+                SqlParameter::F64(v) => Ok(*v),
+                SqlParameter::I64(t) | SqlParameter::U64(t) | SqlParameter::Decimal(t) => {
+                    t.parse::<f64>().map_err(|_| format!("不是数值: {t}"))
+                }
+                SqlParameter::Bool(b) => Ok(if *b { 1.0 } else { 0.0 }),
+                _ => Err("无法转换为浮点".into()),
+            }
+        };
+        match *ty {
+            Type::BOOL => match parameter {
+                SqlParameter::Bool(b) => Ok(PgBound::Bool(*b)),
+                SqlParameter::I64(t) | SqlParameter::U64(t) => Ok(PgBound::Bool(t != "0")),
+                _ => Err("无法转换为 bool".into()),
+            },
+            Type::INT2 => Ok(PgBound::I16(
+                i16::try_from(as_i64()?).map_err(|_| "超出 int2 范围")?,
+            )),
+            Type::INT4 => Ok(PgBound::I32(
+                i32::try_from(as_i64()?).map_err(|_| "超出 int4 范围")?,
+            )),
+            Type::INT8 => Ok(PgBound::I64(as_i64()?)),
+            Type::FLOAT4 => Ok(PgBound::F32(as_f64()? as f32)),
+            Type::FLOAT8 => Ok(PgBound::F64(as_f64()?)),
+            Type::TEXT | Type::VARCHAR | Type::BPCHAR | Type::NAME | Type::UNKNOWN => {
+                Ok(PgBound::Text(value_text(parameter)))
+            }
+            Type::BYTEA => match parameter {
+                SqlParameter::Bytes(b) => Ok(PgBound::Bytes(b.clone())),
+                SqlParameter::Text(t) => Ok(PgBound::Bytes(t.clone().into_bytes())),
+                _ => Err("无法转换为 bytea".into()),
+            },
+            // numeric/decimal：以十进制**文本**绑定；调用方 SQL 应用 `$n` 且服务端按 numeric 解析文本。
+            // 仍不拼接进 SQL 文本，参数经协议绑定通道下发。
+            ref other if other.name() == "numeric" => {
+                PgNumeric::parse(&value_text(parameter))
+                    .map(PgBound::Numeric)
+                    .map_err(|reason| format!("numeric 参数非法：{reason}"))
+            }
+            ref other => Err(format!("暂不支持的占位符类型 {}", other.name())),
+        }
+    }
+
+    fn as_tosql(&self) -> &(dyn tokio_postgres::types::ToSql + Sync) {
+        match self {
+            PgBound::Null => &PG_NULL,
+            PgBound::Bool(v) => v,
+            PgBound::I16(v) => v,
+            PgBound::I32(v) => v,
+            PgBound::I64(v) => v,
+            PgBound::F32(v) => v,
+            PgBound::F64(v) => v,
+            PgBound::Text(v) => v,
+            PgBound::Bytes(v) => v,
+            PgBound::Numeric(v) => v,
+        }
+    }
+}
+
+/// 参数的文本投影（供 TEXT/numeric 类占位符）。
+fn value_text(parameter: &fluxdb_core::SqlParameter) -> String {
+    use fluxdb_core::SqlParameter;
+    match parameter {
+        SqlParameter::Text(v)
+        | SqlParameter::Decimal(v)
+        | SqlParameter::I64(v)
+        | SqlParameter::U64(v) => v.clone(),
+        SqlParameter::Bool(b) => {
+            if *b {
+                "t".into()
+            } else {
+                "f".into()
+            }
+        }
+        SqlParameter::F64(v) => v.to_string(),
+        SqlParameter::Null => String::new(),
+        SqlParameter::Bytes(_) => String::new(),
+    }
+}
+
+/// `NULL` 绑定：静态避免引用临时。
+static PG_NULL: Option<i32> = None;
+
+/// 按扩展协议把 `Row` 解码为 `DataPage`；列类型取自服务端描述。
+fn pg_rows_to_page(
+    rows: &[tokio_postgres::Row],
+    offset: u64,
+    limit: u64,
+    capacity: usize,
+) -> fluxdb_core::Result<DataPage> {
+    let columns: Vec<Column> = match rows.first() {
+        Some(first) => first
+            .columns()
+            .iter()
+            .map(|col| {
+                let mut column = query_column(col.name(), col.type_().name());
+                column.type_name = Some(col.type_().name().to_string());
+                column
+            })
+            .collect(),
+        None => Vec::new(),
+    };
+    let mut page = DataPage {
+        columns: columns.clone(),
+        rows: Vec::new(),
+        offset,
+        limit,
+        has_more: false,
+    };
+    let mut stored_bytes = 0usize;
+    const RESULT_BYTES: usize = 16 * 1024 * 1024;
+    for (index, row) in rows.iter().enumerate() {
+        if (index as u64) < offset {
+            continue;
+        }
+        if page.rows.len() >= capacity {
+            page.has_more = true;
+            break;
+        }
+        let mut values = Vec::with_capacity(columns.len());
+        for (col_index, column) in columns.iter().enumerate() {
+            values.push(pg_row_cell(row, col_index, column)?);
+        }
+        let row_bytes = values.iter().map(pg_cell_byte_estimate).sum::<usize>();
+        if stored_bytes.saturating_add(row_bytes) > RESULT_BYTES {
+            page.has_more = true;
+            break;
+        }
+        stored_bytes += row_bytes;
+        page.rows.push(Row { values });
+    }
+    Ok(page)
+}
+
+/// numeric 单元格转为受标签文本（保留 scale），避免经 f64 丢精度。
+fn numeric_to_text(value: PgNumeric) -> CellValue {
+    value.to_text()
+}
+
+/// 单元格字节估算（仅用于结果内存预算，不参与精度）。
+fn pg_cell_byte_estimate(value: &CellValue) -> usize {
+    match value {
+        CellValue::Text(text) => text.len(),
+        CellValue::Json(text) => text.len(),
+        CellValue::Bytes(bytes) => bytes.len(),
+        CellValue::BinarySummary(summary) => summary.byte_length as usize,
+        CellValue::Null => 0,
+        _ => 16,
+    }
+}
+
+/// 参数化行取单元格：按列类型的原生解码。
+fn pg_row_cell(
+    row: &tokio_postgres::Row,
+    index: usize,
+    column: &Column,
+) -> fluxdb_core::Result<CellValue> {
+    let type_name = column.type_name.as_deref().unwrap_or("text");
+    let value = match type_name {
+        "int2" => row.try_get::<_, Option<i16>>(index).ok().flatten().map(|v| CellValue::I64(i64::from(v))),
+        "int4" => row.try_get::<_, Option<i32>>(index).ok().flatten().map(|v| CellValue::I64(i64::from(v))),
+        "int8" => row.try_get::<_, Option<i64>>(index).ok().flatten().map(CellValue::I64),
+        "float4" => row.try_get::<_, Option<f32>>(index).ok().flatten().map(|v| CellValue::F64(f64::from(v))),
+        "float8" => row.try_get::<_, Option<f64>>(index).ok().flatten().map(CellValue::F64),
+        "bool" => row.try_get::<_, Option<bool>>(index).ok().flatten().map(CellValue::Bool),
+        "bytea" => row.try_get::<_, Option<Vec<u8>>>(index).ok().flatten().map(CellValue::Bytes),
+        "numeric" => row
+            .try_get::<_, Option<PgNumeric>>(index)
+            .ok()
+            .flatten()
+            .map(numeric_to_text),
+        _ => row.try_get::<_, Option<String>>(index).ok().flatten().map(CellValue::Text),
+    };
+    Ok(match value {
+        Some(value) => value,
+        None => match row.try_get::<_, Option<String>>(index) {
+            Ok(None) | Err(_) => CellValue::Null,
+            Ok(Some(text)) => CellValue::Text(text),
+        },
+    })
+}
+
+#[cfg(test)]
+mod pg_numeric_tests {
+    use super::PgNumeric;
+    use tokio_postgres::types::{FromSql as _, ToSql as _, Type};
+
+    /// 经 ToSql 编码（服务端二进制格式）再 FromSql 解码，等价于一次真实往返。
+    fn roundtrip(text: &str) -> String {
+        let parsed = PgNumeric::parse(text).expect("解析");
+        let mut buf = tokio_postgres::types::private::BytesMut::new();
+        parsed.to_sql(&Type::NUMERIC, &mut buf).expect("编码");
+        let decoded = PgNumeric::from_sql(&Type::NUMERIC, &buf).expect("解码");
+        decoded.render_text()
+    }
+
+    #[test]
+    fn decimal_text_roundtrips_without_precision_loss() {
+        for text in ["0", "0.00", "10.50", "-1234.5678", "99999999.999999", "20.00"] {
+            assert_eq!(roundtrip(text), text, "往返应保持十进制文本: {text}");
+        }
+    }
+
+    #[test]
+    fn large_and_small_values_stay_exact() {
+        assert_eq!(roundtrip("10000"), "10000");
+        assert_eq!(roundtrip("-0.5"), "-0.5");
+        // 大整数（超出 i64）仍精确，不经 f64。
+        assert_eq!(
+            roundtrip("12345678901234567890123456789.01"),
+            "12345678901234567890123456789.01"
+        );
+    }
+}

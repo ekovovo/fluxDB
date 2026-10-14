@@ -396,7 +396,8 @@ impl PgNumeric {
         CellValue::Text(self.render())
     }
 
-    /// 渲染为十进制文本（测试与解码共用）。
+    /// 渲染为十进制文本；仅单元测试的往返断言使用，生产路径经 [`Self::to_text`]。
+    #[cfg(test)]
     pub(crate) fn render_text(&self) -> String {
         self.render()
     }

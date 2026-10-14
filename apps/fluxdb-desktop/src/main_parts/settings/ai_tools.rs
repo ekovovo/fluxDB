@@ -585,127 +585,6 @@ fn ai_audit_panel(colors: UiColors) -> Div {
         )
 }
 
-/// 从连接配置里取一个用于展示的库/Schema 标签（Tcp 用 database，SQLite 用文件名）。
-fn connection_database_label(config: &fluxdb_core::ConnectionConfig) -> String {
-    match &config.endpoint {
-        fluxdb_core::Endpoint::Tcp { database, .. } => database.clone().unwrap_or_default(),
-        fluxdb_core::Endpoint::SqliteFile { path, .. } => path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default(),
-        fluxdb_core::Endpoint::Uri { .. } => String::new(),
-    }
-}
-
-/// 「本地 MCP」页签：fluxdb-local Server 卡 + 授权范围 + 客户端验证示例。
-fn ai_mcp_panel(state: &AppState, colors: UiColors, cx: &mut Context<NavicatMain>) -> Div {
-    let _ = cx;
-    let connection_rows: Vec<gpui::AnyElement> = if state.connections.is_empty() {
-        vec![ai_empty_state("尚未配置连接。", colors)]
-    } else {
-        state
-            .connections
-            .iter()
-            .map(|c| {
-                div()
-                    .border_t_1()
-                    .border_color(colors.border_soft)
-                    .px_4()
-                    .py_2()
-                    .min_h(px(48.))
-                    .flex()
-                    .items_center()
-                    .gap_3()
-                    .child(
-                        div()
-                            .flex_1()
-                            .flex()
-                            .flex_col()
-                            .gap_1()
-                            .child(
-                                div()
-                                    .text_size(px(13.))
-                                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                                    .text_color(colors.text)
-                                    .child(c.config.name.clone()),
-                            )
-                            .child(div().text_size(px(11.)).text_color(colors.muted).child(
-                                format!(
-                                    "{} · {}",
-                                    database_kind_name(c.config.kind),
-                                    connection_database_label(&c.config)
-                                ),
-                            )),
-                    )
-                    .child(ai_pill("只读", colors.success, colors))
-                    .into_any_element()
-            })
-            .collect()
-    };
-
-    div()
-        .flex()
-        .flex_col()
-        .gap_3()
-        .child(
-            settings_panel_group("fluxdb-local", colors)
-                .child(
-                    div()
-                        .border_t_1()
-                        .border_color(colors.border_soft)
-                        .px_4()
-                        .py_3()
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .gap_3()
-                        .child(
-                            div()
-                                .flex()
-                                .flex_col()
-                                .gap_1()
-                                .child(
-                                    div()
-                                        .text_size(px(13.))
-                                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                                        .text_color(colors.text)
-                                        .child("本地 Server · stdio"),
-                                )
-                        )
-                        .child(ai_pill("13 个候选工具", colors.info, colors)),
-                )
-        )
-        .child(
-            settings_panel_group("已配置连接的授权范围", colors)
-                .child(
-                    div()
-                        .border_t_1()
-                        .border_color(colors.border_soft)
-                        .px_4()
-                        .py_2()
-                        .flex()
-                        .items_center()
-                        .gap_3()
-                        .child(ai_table_head("连接 / 范围", 320., colors))
-                        .child(ai_table_head("读写边界", 120., colors))
-                        .child(div().flex_1()),
-                )
-                .child(div().children(connection_rows)),
-        )
-        .child(
-            settings_panel_group("客户端验证示例", colors).child(
-                div()
-                    .border_t_1()
-                    .border_color(colors.border_soft)
-                    .px_4()
-                    .py_3()
-                    .text_size(px(11.))
-                    .text_color(colors.muted)
-                    .child("claude -p --mcp-config ./fluxdb-local.json --strict-mcp-config --tools \"\" --allowedTools mcp__fluxdb_local__fluxdb_query \"使用授权测试库查询订单总额\""),
-            ),
-        )
-}
-
 /// 「工具与 MCP」分区：四页签。
 fn settings_ai_tools_mcp_panel(
     state: &AppState,
@@ -715,7 +594,7 @@ fn settings_ai_tools_mcp_panel(
 ) -> Div {
     let body = match panel.tools_tab {
         AiToolsTab::Tools => ai_tools_catalog_panel(panel, colors, cx),
-        AiToolsTab::Mcp => ai_mcp_panel(state, colors, cx),
+        AiToolsTab::Mcp => ai_mcp_panel(state, panel, colors, cx),
         AiToolsTab::Plugins => ai_plugins_panel(state, colors, cx),
         AiToolsTab::Audit => ai_audit_panel(colors),
     };

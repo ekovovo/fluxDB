@@ -3118,6 +3118,8 @@ fn navicat_main_new(
                             ai_agent_editor: None,
                             ai_agent_editor_debug_pending: debug_ai_agent_draft_requested(),
                             ai_agent_delete_just_removed: String::new(),
+                            ai_mcp_server_profile_editor: None,
+                            ai_mcp_server_grant_editor: None,
                             ai_session_filter_input,
                             _ai_session_filter_subscription: ai_session_filter_subscription,
                             ai_session_filter: String::new(),

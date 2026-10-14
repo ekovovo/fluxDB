@@ -1242,6 +1242,15 @@ pub enum AppCommand {
     },
     /// 新建或保存 Agent 配置（提示词直接随 Agent 保存）。
     SaveAiAgent(AiAgentSaveInput),
+    /// 新建或保存对外 MCP Server Profile（T060，对象级 CAS；新建默认禁用/只读）。
+    SaveAiMcpServerProfile(AiMcpServerProfileSaveInput),
+    /// 新建或保存 MCP 资源授权（T060，对象级 CAS；空对象规则不放行）。
+    SaveAiMcpServerGrant(AiMcpServerGrantSaveInput),
+    /// 删除 MCP 资源授权（收窄对外范围）。
+    DeleteAiMcpServerGrant {
+        id: String,
+        expected_revision: i64,
+    },
     DeleteAiAgent {
         id: String,
         expected_revision: i64,

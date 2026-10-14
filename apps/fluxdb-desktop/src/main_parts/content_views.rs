@@ -167,6 +167,8 @@ fn content(
                     tools_tab: this.ai_tools_tab,
                     tool_settings: this.controller.state().ai_tool_settings.clone(),
                     agent_editor: this.ai_agent_editor.clone(),
+                    mcp_server_profile_editor: this.ai_mcp_server_profile_editor.clone(),
+                    mcp_server_grant_editor: this.ai_mcp_server_grant_editor.clone(),
                 },
                 this.theme_mode,
                 this.settings_panel_section,

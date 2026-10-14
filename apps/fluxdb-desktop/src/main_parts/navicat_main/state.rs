@@ -38,6 +38,10 @@ struct NavicatMain {
     ai_agent_editor_debug_pending: bool,
     /// Agent 刚被删除时置位；下一帧自动选中剩余列表的第一项。
     ai_agent_delete_just_removed: String,
+    /// MCP Server Profile 编辑草稿（T060）；`None` 表示未选中任何 Profile。
+    ai_mcp_server_profile_editor: Option<AiMcpServerProfileEditor>,
+    /// MCP 资源授权编辑草稿（T060）；与 Profile 草稿独立，切换页签不丢输入。
+    ai_mcp_server_grant_editor: Option<AiMcpServerGrantEditor>,
     /// 「会话历史」页的搜索框与过滤文本（按标题过滤）。
     ai_session_filter_input: Entity<InputState>,
     _ai_session_filter_subscription: Subscription,

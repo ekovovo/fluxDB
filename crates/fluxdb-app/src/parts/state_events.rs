@@ -44,6 +44,20 @@ pub enum AppEvent {
     AiAgentDeleted {
         id: String,
     },
+    /// 对外 MCP Server Profile 已保存（T060）。
+    AiMcpServerProfileSaved {
+        id: String,
+        revision: i64,
+    },
+    /// MCP 资源授权已保存（T060）。
+    AiMcpServerGrantSaved {
+        id: String,
+        revision: i64,
+    },
+    /// MCP 资源授权已删除（T060）。
+    AiMcpServerGrantDeleted {
+        id: String,
+    },
     /// 会话已重命名（id、新标题、新 revision）。
     AiSessionRenamed {
         id: String,

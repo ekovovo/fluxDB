@@ -106,6 +106,51 @@ impl AppController {
                     Err(e) => return AppEvent::AiSettingsError(e.message),
                 }
             }
+            AppCommand::SaveAiMcpServerProfile(input) => {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or(0);
+                let storage = self.ai_storage();
+                let result =
+                    storage.and_then(|st| save_ai_mcp_server_profile(&mut self.state, &st, input, now));
+                match result {
+                    Ok((id, revision)) => {
+                        return AppEvent::AiMcpServerProfileSaved { id, revision };
+                    }
+                    Err(e) => return AppEvent::AiSettingsError(e.message),
+                }
+            }
+            AppCommand::SaveAiMcpServerGrant(input) => {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or(0);
+                let storage = self.ai_storage();
+                let result =
+                    storage.and_then(|st| save_ai_mcp_server_grant(&mut self.state, &st, input, now));
+                match result {
+                    Ok((id, revision)) => {
+                        return AppEvent::AiMcpServerGrantSaved { id, revision };
+                    }
+                    Err(e) => return AppEvent::AiSettingsError(e.message),
+                }
+            }
+            AppCommand::DeleteAiMcpServerGrant {
+                id,
+                expected_revision,
+            } => {
+                let storage = self.ai_storage();
+                let result = storage.and_then(|st| {
+                    delete_ai_mcp_server_grant(&mut self.state, &st, &id, expected_revision)
+                });
+                match result {
+                    Ok(()) => {
+                        return AppEvent::AiMcpServerGrantDeleted { id };
+                    }
+                    Err(e) => return AppEvent::AiSettingsError(e.message),
+                }
+            }
             AppCommand::LoadMoreAiSessions => {
                 let storage = self.ai_storage();
                 let result = storage.and_then(|st| load_more_ai_sessions(&mut self.state, &st));

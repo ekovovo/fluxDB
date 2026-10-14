@@ -3686,6 +3686,9 @@ impl AppController {
             | AppCommand::DeleteAiAgent { .. }
             | AppCommand::CompleteAiAgentDelete { .. }
             | AppCommand::SaveAiAgent(_)
+            | AppCommand::SaveAiMcpServerProfile(_)
+            | AppCommand::SaveAiMcpServerGrant(_)
+            | AppCommand::DeleteAiMcpServerGrant { .. }
             | AppCommand::RefreshAiSettings
             | AppCommand::LoadMoreAiSessions
             | AppCommand::RenameAiSession { .. }

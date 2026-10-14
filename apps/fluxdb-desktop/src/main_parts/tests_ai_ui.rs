@@ -1606,4 +1606,429 @@ mod ai_ui_tests {
             smol::Timer::after(std::time::Duration::from_millis(20)).await;
         }
     }
+
+    /// 「本地 MCP」页签：Profile 从存储进入 AppState → 渲染 → 可点开编辑器，
+    /// 新建保存走真实命令并落库（新建默认禁用/只读），授权与活动记录同步刷新。
+    #[gpui::test]
+    fn ai_ui_mcp_server_page_lists_profile_and_saves_new_profile(cx: &mut TestAppContext) {
+        let root = isolated_root("mcp-server-profile");
+        let storage = FileStorage::new(root.clone());
+        let mut controller = AppController::new();
+        controller.set_ai_storage(storage.clone());
+        // 预置一条 Profile 与授权：验证「有数据」路径不被空集合覆盖。
+        let profile_id = match controller.dispatch(AppCommand::SaveAiMcpServerProfile(
+            fluxdb_app::AiMcpServerProfileSaveInput {
+                display_name: "预置 Profile".into(),
+                enabled: true,
+                allowed_tool_ids: vec!["fluxdb_connections_list".into(), "fluxdb_query".into()],
+                ..Default::default()
+            },
+        )) {
+            AppEvent::AiMcpServerProfileSaved { id, .. } => id,
+            other => panic!("预置 Profile 失败: {other:?}"),
+        };
+        let _ = controller.dispatch(AppCommand::RefreshAiSettings);
+        let _ = controller.dispatch(AppCommand::OpenSettings);
+        let (view, cx) = open_main(cx, controller, storage, SettingsPanelSection::AiToolsMcp);
+
+        click_selector(cx, "ai-tools-tab:本地 MCP");
+
+        // 左侧列表渲染真实 Profile 行；点击后右侧出现编辑器与工具白名单。
+        cx.update(|window, cx| {
+            let _ = window.draw(cx).clear(cx);
+        });
+        let listed = view.read_with(cx, |main, _| {
+            main.controller
+                .state()
+                .ai_mcp_server_profiles
+                .iter()
+                .map(|profile| profile.id.clone())
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(listed, vec![profile_id.clone()], "列表应来自真实存储");
+        let profile_item_selector =
+            Box::leak(format!("ai-mcp-profile-item:{profile_id}").into_boxed_str());
+        cx.debug_bounds(profile_item_selector)
+            .expect("Profile 行应已渲染");
+
+        // 点「新建」打开草稿：默认关闭 + 只读 + 名称为空，保存按钮可见。
+        click_selector(cx, "ai-mcp-profile-new");
+        let (is_new, enabled, write_mode, tools) = view.read_with(cx, |main, _| {
+            let editor = main
+                .ai_mcp_server_profile_editor
+                .as_ref()
+                .expect("编辑器应打开");
+            (
+                editor.profile_id.is_none(),
+                editor.enabled,
+                editor.write_mode.clone(),
+                editor.selected_tools.len(),
+            )
+        });
+        assert!(is_new, "应处于新建草稿");
+        assert!(!enabled, "新建默认禁用，不能保存即对外开放");
+        assert_eq!(write_mode, "disabled", "新建默认只读");
+        assert!(tools > 0, "新建预置最小只读工具集");
+
+        // 填名称后点击保存：真实命令落库，成功后编辑器转为已保存状态。
+        // 表单输入用真实输入控件事件链写入：先取输入框范围，再点击聚焦后输入。
+        cx.update(|window, cx| {
+            let _ = window.draw(cx).clear(cx);
+        });
+        let field = cx
+            .debug_bounds("ai-mcp-profile-name")
+            .expect("名称输入框应已渲染");
+        cx.simulate_click(field.center(), Modifiers::default());
+        cx.simulate_input("新建 Profile");
+        cx.update(|window, cx| {
+            let _ = window.draw(cx).clear(cx);
+        });
+        click_selector(cx, "ai-mcp-profile-save");
+        let (saved_id, save_error) = view
+            .read_with(cx, |main, _| {
+                let editor = main.ai_mcp_server_profile_editor.as_ref();
+                (
+                    editor.and_then(|editor| editor.profile_id.clone()),
+                    editor.and_then(|editor| editor.error.clone()),
+                )
+            })
+            ;
+        let saved_id = saved_id
+            .unwrap_or_else(|| panic!("保存后应拿到 Profile id，编辑器错误: {save_error:?}"));
+        let (stored_name, stored_enabled, stored_mode) = FileStorage::new(&root)
+            .with_ai_connection(|conn| {
+                let profile =
+                    fluxdb_storage::ai_platform::mcp_server::load_server_profile(conn, &saved_id)?
+                        .expect("Profile 落库");
+                Ok((profile.display_name, profile.enabled, profile.write_mode))
+            })
+            .expect("读取存储");
+        assert_eq!(stored_name, "新建 Profile");
+        assert!(!stored_enabled, "新建保存后仍默认禁用");
+        assert_eq!(
+            stored_mode,
+            fluxdb_storage::ai_platform::mcp_server::WriteMode::Disabled
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// 活动记录为空与有数据两种情况显示不同内容；空态不能伪装成已有活动。
+    #[gpui::test]
+    fn ai_ui_mcp_server_activity_shows_empty_and_real_states(cx: &mut TestAppContext) {
+        let root = isolated_root("mcp-server-activity");
+        let storage = FileStorage::new(root.clone());
+        let mut controller = AppController::new();
+        controller.set_ai_storage(storage.clone());
+        let profile_id = match controller.dispatch(AppCommand::SaveAiMcpServerProfile(
+            fluxdb_app::AiMcpServerProfileSaveInput {
+                display_name: "活动 Profile".into(),
+                ..Default::default()
+            },
+        )) {
+            AppEvent::AiMcpServerProfileSaved { id, .. } => id,
+            other => panic!("保存 Profile 失败: {other:?}"),
+        };
+        let _ = controller.dispatch(AppCommand::RefreshAiSettings);
+        let _ = controller.dispatch(AppCommand::OpenSettings);
+        let (view, cx) = open_main(cx, controller, storage, SettingsPanelSection::AiToolsMcp);
+        // Profile 编辑器含工具白名单与限额，授权区在其下方；拉高视口保证控件在可见区内可点。
+        cx.simulate_resize(size(px(1600.), px(2400.)));
+        click_selector(cx, "ai-tools-tab:本地 MCP");
+        let profile_selector = format!("ai-mcp-profile-item:{profile_id}");
+        click_selector(cx, Box::leak(profile_selector.into_boxed_str()));
+
+        cx.update(|window, cx| {
+            let _ = window.draw(cx).clear(cx);
+        });
+        let empty_visible = cx.debug_bounds("ai-mcp-activity-empty").is_some();
+        assert!(empty_visible, "无活动时应显示空态而不是空白表头");
+
+        // 写入一条真实 MCP 活动后刷新，页面显示同一 request ID 对应的状态。
+        FileStorage::new(&root)
+            .with_ai_connection(|conn| {
+                use fluxdb_storage::ai_platform::mcp_server_runtime::*;
+                start_server_session(conn, 1, "s1", &profile_id, "2025-06-18", "{}")?;
+                start_server_request(
+                    conn,
+                    2,
+                    "req-42",
+                    "s1",
+                    &profile_id,
+                    "\"7\"",
+                    "fluxdb_query",
+                    1,
+                    None,
+                    r#"{"target":"conn:1/db:main"}"#,
+                    r#"{"sql":"SELECT 1"}"#,
+                    "plan-42",
+                )?;
+                Ok(())
+            })
+            .expect("写入 MCP 活动");
+        view.update(cx, |main, _| {
+            let _ = main.controller.dispatch(AppCommand::RefreshAiSettings);
+        });
+        cx.update(|window, cx| {
+            let _ = window.draw(cx).clear(cx);
+        });
+        let shown = cx.debug_bounds("ai-mcp-activity-row").is_some();
+        assert!(shown, "有活动时应显示真实工具行");
+        let requests = view.read_with(cx, |main, _| {
+            main.controller
+                .state()
+                .ai_mcp_server_requests
+                .iter()
+                .map(|request| (request.id.clone(), request.tool_id.clone(), request.status.clone()))
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(
+            requests,
+            vec![("req-42".to_string(), "fluxdb_query".to_string(), "prepared".to_string())],
+            "活动行来自 ai_mcp_server_requests"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// 资源授权：新增授权走真实输入 → 保存 → 授权行渲染 + 落库；关闭「整库」后必须
+    /// 显式列出表范围，空范围保存被拒且草稿保留。
+    #[gpui::test]
+    fn ai_ui_mcp_server_grant_requires_explicit_scope_and_persists(cx: &mut TestAppContext) {
+        let root = isolated_root("mcp-server-grant");
+        let storage = FileStorage::new(root.clone());
+        storage
+            .save_connections(&[fluxdb_core::ConnectionConfig {
+                id: fluxdb_core::ConnectionId(1),
+                name: "授权测试库".into(),
+                kind: fluxdb_core::DatabaseKind::Sqlite,
+                endpoint: fluxdb_core::Endpoint::SqliteFile {
+                    path: root.join("grant.sqlite"),
+                    read_only: false,
+                },
+                options: std::collections::BTreeMap::new(),
+                redis_profile: None,
+                mysql_profile: None,
+                postgres_profile: None,
+            }])
+            .expect("保存连接");
+        let mut controller = AppController::new();
+        controller.set_ai_storage(storage.clone());
+        let profile_id = match controller.dispatch(AppCommand::SaveAiMcpServerProfile(
+            fluxdb_app::AiMcpServerProfileSaveInput {
+                display_name: "授权 Profile".into(),
+                ..Default::default()
+            },
+        )) {
+            AppEvent::AiMcpServerProfileSaved { id, .. } => id,
+            other => panic!("保存 Profile 失败: {other:?}"),
+        };
+        let _ = controller.dispatch(AppCommand::RefreshAiSettings);
+        let _ = controller.dispatch(AppCommand::OpenSettings);
+        // 授权编辑器的连接候选读 AppState.connections；生产启动会从配置库加载，
+        // 这里用同一条 ReplaceConnections 路径装入隔离连接。
+        let _ = controller.dispatch(AppCommand::ReplaceConnections(vec![
+            fluxdb_core::ConnectionConfig {
+                id: fluxdb_core::ConnectionId(1),
+                name: "授权测试库".into(),
+                kind: fluxdb_core::DatabaseKind::Sqlite,
+                endpoint: fluxdb_core::Endpoint::SqliteFile {
+                    path: root.join("grant.sqlite"),
+                    read_only: false,
+                },
+                options: std::collections::BTreeMap::new(),
+                redis_profile: None,
+                mysql_profile: None,
+                postgres_profile: None,
+            },
+        ]));
+        let (view, cx) = open_main(
+            cx,
+            controller,
+            storage.clone(),
+            SettingsPanelSection::AiToolsMcp,
+        );
+        click_selector(cx, "ai-tools-tab:本地 MCP");
+        let profile_selector = format!("ai-mcp-profile-item:{profile_id}");
+        click_selector(cx, Box::leak(profile_selector.into_boxed_str()));
+        let (profile_editor_open, selected) = view.read_with(cx, |main, _| {
+            (
+                main.ai_mcp_server_profile_editor.is_some(),
+                main.ai_mcp_server_profile_editor
+                    .as_ref()
+                    .and_then(|editor| editor.profile_id.clone()),
+            )
+        });
+        assert!(
+            profile_editor_open && selected.as_deref() == Some(profile_id.as_str()),
+            "点击 Profile 行应打开该 Profile 的编辑器"
+        );
+
+        // 新增授权：默认选中第一个连接（SQLite → 关系型规则），整库默认开。
+        cx.update(|window, cx| {
+            let _ = window.draw(cx).clear(cx);
+        });
+        let new_grant_bounds = cx
+            .debug_bounds("ai-mcp-grant-new")
+            .expect("选中 Profile 后应显示「新增授权」入口");
+        let viewport = cx.update(|window, _| window.viewport_size());
+        assert!(
+            new_grant_bounds.center().y <= viewport.height,
+            "「新增授权」必须落在可见视口内，实际 y={:?} viewport={:?}",
+            new_grant_bounds.center().y,
+            viewport.height
+        );
+        click_selector(cx, "ai-mcp-grant-new");
+        let opened = view.read_with(cx, |main, _| {
+            main.ai_mcp_server_grant_editor
+                .as_ref()
+                .map(|editor| editor.grant_id.is_none())
+        });
+        let is_new =
+            opened.expect("点击「新增授权」后应打开授权编辑器（请确认按钮未被其它元素遮挡）");
+        assert!(is_new, "应为新建授权草稿");
+
+        // 通过真实下拉选择连接：展开 → 选中「授权测试库」→ 资源类型按连接推导。
+        click_selector(cx, "ai-mcp-grant-connection");
+        let menu_open = view.read_with(cx, |main, _| {
+            main.ai_mcp_server_grant_editor
+                .as_ref()
+                .map(|editor| editor.connection_menu_open)
+                .unwrap_or(false)
+        });
+        let visible_connections = view.read_with(cx, |main, _| {
+            main.controller
+                .state()
+                .connections
+                .iter()
+                .map(|c| c.config.name.clone())
+                .collect::<Vec<_>>()
+        });
+        assert!(
+            menu_open,
+            "点击连接下拉应展开菜单；AppState 连接: {visible_connections:?}"
+        );
+        cx.update(|window, cx| {
+            let _ = window.draw(cx).clear(cx);
+        });
+        assert!(
+            !visible_connections.is_empty(),
+            "生产路径应把已保存连接装入 AppState，实际为空说明装配链断了"
+        );
+        let conn_option = Box::leak("ai-mcp-grant-conn-opt:1".to_string().into_boxed_str());
+        assert!(
+            cx.debug_bounds(conn_option).is_some(),
+            "连接下拉应列出真实连接"
+        );
+        click_selector(cx, conn_option);
+        let (connection, kind) = view.read_with(cx, |main, _| {
+            let editor = main
+                .ai_mcp_server_grant_editor
+                .as_ref()
+                .expect("授权编辑器仍打开");
+            (editor.connection_label.clone(), editor.resource_kind.clone())
+        });
+        assert_eq!(connection, "授权测试库", "应选中真实连接");
+        assert_eq!(kind, "sql", "SQLite 连接按关系型规则校验");
+
+        // 填写库名后保存：授权行渲染并落库。
+        assert!(
+            view.read_with(cx, |main, _| main.ai_mcp_server_grant_editor.is_some()),
+            "填写库名前授权编辑器应仍打开"
+        );
+        click_selector(cx, "ai-mcp-grant-database");
+        assert!(
+            view.read_with(cx, |main, _| main.ai_mcp_server_grant_editor.is_some()),
+            "点击库名输入后授权编辑器应仍打开"
+        );
+        cx.simulate_input("main");
+        assert!(
+            view.read_with(cx, |main, _| main.ai_mcp_server_grant_editor.is_some()),
+            "输入后授权编辑器应仍打开"
+        );
+        cx.update(|window, cx| {
+            let _ = window.draw(cx).clear(cx);
+        });
+        let save_bounds = cx
+            .debug_bounds("ai-mcp-grant-save")
+            .expect("保存按钮应渲染");
+        assert!(
+            save_bounds.center().y <= cx.update(|window, _| window.viewport_size()).height,
+            "保存按钮必须在可见区内"
+        );
+        click_selector(cx, "ai-mcp-grant-save");
+        let (grant_id, error) = view.read_with(cx, |main, _| {
+            let editor = main.ai_mcp_server_grant_editor.as_ref();
+            (
+                editor.and_then(|editor| editor.grant_id.clone()),
+                editor.and_then(|editor| editor.error.clone()),
+            )
+        });
+        let grant_id = grant_id.unwrap_or_else(|| {
+            let stored = storage
+                .with_ai_connection(|conn| {
+                    fluxdb_storage::ai_platform::mcp_server::list_resource_grants(
+                        conn,
+                        &profile_id,
+                    )
+                })
+                .unwrap_or_default();
+            panic!(
+                "保存失败，错误: {error:?}；存储中授权: {:?}",
+                stored
+                    .iter()
+                    .map(|g| (g.id.clone(), g.database_name.clone(), g.object_policy_json.clone()))
+                    .collect::<Vec<_>>()
+            )
+        });
+        let (database, policy) = FileStorage::new(&root)
+            .with_ai_connection(|conn| {
+                let grant =
+                    fluxdb_storage::ai_platform::mcp_server::load_resource_grant(conn, &grant_id)?
+                        .expect("授权落库");
+                Ok((grant.database_name, grant.object_policy_json))
+            })
+            .expect("读取授权");
+        assert_eq!(database, "main");
+        assert_eq!(policy, r#"{"all_objects":true}"#);
+
+        // 编辑授权：关闭「整库」后必须显式列出表；留空保存被拒且草稿保留。
+        let grant_selector = format!("ai-mcp-grant-edit:{grant_id}");
+        click_selector(cx, Box::leak(grant_selector.into_boxed_str()));
+        click_selector(cx, "ai-mcp-grant-all");
+        cx.update(|window, cx| {
+            let _ = window.draw(cx).clear(cx);
+        });
+        click_selector(cx, "ai-mcp-grant-save");
+        let (kept_draft, error) = view.read_with(cx, |main, _| {
+            let editor = main.ai_mcp_server_grant_editor.as_ref();
+            (
+                editor.and_then(|editor| editor.grant_id.clone()),
+                editor.and_then(|editor| editor.error.clone()),
+            )
+        });
+        assert_eq!(kept_draft.as_deref(), Some(grant_id.as_str()), "草稿保留");
+        assert!(
+            error.expect("应有内联错误").contains("表"),
+            "关闭整库后未列范围必须被拒"
+        );
+
+        // 填写限定表后保存成功：规则按结构化 JSON 落库，不静默放行整库。
+        click_selector(cx, "ai-mcp-grant-tables");
+        cx.simulate_input("orders");
+        cx.update(|window, cx| {
+            let _ = window.draw(cx).clear(cx);
+        });
+        click_selector(cx, "ai-mcp-grant-save");
+        let stored = FileStorage::new(&root)
+            .with_ai_connection(|conn| {
+                let grant = fluxdb_storage::ai_platform::mcp_server::load_resource_grant(
+                    conn,
+                    &grant_id,
+                )?
+                .expect("授权仍存在");
+                Ok(grant.object_policy_json)
+            })
+            .expect("读取授权");
+        assert_eq!(stored, r#"{"table_allowlist":["orders"]}"#);
+        let _ = std::fs::remove_dir_all(root);
+    }
 }

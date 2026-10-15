@@ -9,8 +9,8 @@ enum AiToolsTab {
     Audit,
 }
 
-/// 标准工具目录（设计 §20.5 / 交互稿 + 设计 §22 的 Redis 有界订阅）。
-const AI_TOOL_CATALOG: &[(&str, &str, &str, bool)] = &[
+/// 内置 Agent 与 MCP 共用的工具；Agent 编辑器只展示这一组。
+const AI_AGENT_TOOL_CATALOG: &[(&str, &str, &str, bool)] = &[
     ("connections.list", "公共", "列出已授权连接资源", false),
     ("db.search_objects", "SQL", "渐进搜索表、视图与字段", false),
     ("db.describe_object", "SQL", "读取真实列、索引和关系", false),
@@ -33,16 +33,14 @@ const AI_TOOL_CATALOG: &[(&str, &str, &str, bool)] = &[
     ),
     ("redis.server_info", "Redis", "受限版本与诊断摘要", false),
     ("result.read_page", "公共", "读取已取得的结果快照", false),
+];
+
+/// 仅 MCP 提供的工具仍受全局开关控制，不进入内置 Agent 的配置。
+const AI_MCP_ONLY_TOOL_CATALOG: &[(&str, &str, &str, bool)] = &[
     (
         "operation.status",
         "公共",
-        "查询当前 caller 的操作状态",
-        false,
-    ),
-    (
-        "operation.cancel",
-        "公共",
-        "取消自身操作，不伪造服务端撤销",
+        "查询当前 caller 的操作状态（含中断后的未知结果）",
         false,
     ),
 ];
@@ -172,7 +170,7 @@ fn ai_tools_catalog_panel(
         .child(ai_table_head("启用", 60., colors))
         .child(div().flex_1());
     let mut rows = div().flex().flex_col();
-    for (id, group, desc, write) in AI_TOOL_CATALOG {
+    for (id, group, desc, write) in AI_AGENT_TOOL_CATALOG.iter().chain(AI_MCP_ONLY_TOOL_CATALOG) {
         // 没有行 = 从未被显式关闭，按默认启用显示。
         let setting = panel.tool_settings.iter().find(|t| t.tool_id == *id);
         let enabled = setting.map(|t| t.enabled).unwrap_or(true);
@@ -211,7 +209,10 @@ fn ai_tools_catalog_panel(
                             div()
                                 .text_size(px(11.))
                                 .text_color(colors.muted)
-                                .child(format!("{} 个标准工具", AI_TOOL_CATALOG.len())),
+                                .child(format!(
+                                    "{} 个标准工具",
+                                    AI_AGENT_TOOL_CATALOG.len() + AI_MCP_ONLY_TOOL_CATALOG.len()
+                                )),
                         ),
                 )
                 // 窄窗口：工具表保持最小宽度并横向滚动，避免列被压扁/裁切。
@@ -619,7 +620,7 @@ fn settings_ai_tools_mcp_panel(
 
 #[cfg(test)]
 mod ai_tools_catalog_tests {
-    use super::AI_TOOL_CATALOG;
+    use super::{AI_AGENT_TOOL_CATALOG, AI_MCP_ONLY_TOOL_CATALOG};
 
     /// 设置页目录必须与实际下发给模型的工具定义一致：漏一个会让用户看到的工具清单
     /// 与真实能力不符（新增工具时本用例失败即提醒同步）。
@@ -630,7 +631,7 @@ mod ai_tools_catalog_tests {
             .into_iter()
             .map(|spec| spec.id)
             .collect::<std::collections::BTreeSet<_>>();
-        let listed = AI_TOOL_CATALOG
+        let listed = AI_AGENT_TOOL_CATALOG
             .iter()
             .map(|(id, ..)| (*id).to_string())
             .collect::<std::collections::BTreeSet<_>>();
@@ -643,8 +644,21 @@ mod ai_tools_catalog_tests {
     #[test]
     fn catalog_has_no_duplicate_ids() {
         let mut seen = std::collections::BTreeSet::new();
-        for (id, ..) in AI_TOOL_CATALOG {
+        for (id, ..) in AI_AGENT_TOOL_CATALOG.iter().chain(AI_MCP_ONLY_TOOL_CATALOG) {
             assert!(seen.insert((*id).to_string()), "工具目录重复: {id}");
         }
+    }
+
+    #[test]
+    fn agent_catalog_excludes_mcp_only_operation_status() {
+        assert!(
+            AI_AGENT_TOOL_CATALOG.iter().any(|(id, ..)| *id == "connections.list")
+        );
+        assert!(
+            !AI_AGENT_TOOL_CATALOG.iter().any(|(id, ..)| *id == "operation.status")
+        );
+        assert!(
+            AI_MCP_ONLY_TOOL_CATALOG.iter().any(|(id, ..)| *id == "operation.status")
+        );
     }
 }

@@ -212,6 +212,210 @@ fn tool_event(name: &str, sql: &str) -> serde_json::Value {
 }
 
 #[test]
+fn production_connections_list_is_available_with_and_without_a_bound_connection() {
+    for kind in [None, Some(DatabaseKind::Sqlite), Some(DatabaseKind::Redis)] {
+        let mut steps = vec![
+            serde_json::json!({"choices":[{"delta":{"tool_calls":[{
+                "index":0,"id":"list-1","type":"function",
+                "function":{"name":"connections_list","arguments":"{}"}
+            }]},"finish_reason":"tool_calls"}]}),
+            text_event("Connections listed"),
+        ];
+        if kind == Some(DatabaseKind::Sqlite) {
+            steps.insert(
+                1,
+                serde_json::json!({"choices":[{"delta":{"tool_calls":[{
+                "index":0,"id":"query-other","type":"function",
+                "function":{"name":"db_query","arguments":
+                    r#"{"target":"conn:2","sql":"SELECT value FROM counter"}"#}
+            }]},"finish_reason":"tool_calls"}]}),
+            );
+        }
+        let (endpoint, server) = model_server(steps);
+        let mut fixture = Fixture::new(&endpoint);
+        let mut config = fixture.connection();
+        config.kind = kind.unwrap_or(DatabaseKind::Sqlite);
+        config
+            .options
+            .insert("password".into(), "not-for-model".into());
+        let mut other_config = config.clone();
+        other_config.id = ConnectionId(2);
+        other_config.name = "Other saved connection".into();
+        let target = TargetRef {
+            connection_id: kind.map(|_| 1),
+            ..Default::default()
+        };
+        let job = fixture
+            .controller
+            .prepare_ai_conversation(
+                "List saved connections",
+                &TurnTargetPin {
+                    target_json: target.to_json(),
+                    target,
+                    captured_tab_id: None,
+                    captured_tab_revision: 0,
+                },
+            )
+            .unwrap();
+        let mut runtime = AiRuntimeHandle::new(1).unwrap();
+        let receiver = runtime
+            .submit_conversation(
+                fixture.storage.clone(),
+                job.clone(),
+                vec![config, other_config],
+                None,
+                CancelFlag::new(),
+            )
+            .unwrap();
+        terminal(&receiver);
+        assert_eq!(fixture.status(&job), sessions::TurnStatus::Completed);
+        let requests = server.join().unwrap();
+        assert!(
+            requests[0]["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|tool| tool["function"]["name"] == "connections_list"),
+            "connection discovery must be advertised for {kind:?}"
+        );
+        let message = requests[1]["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|message| message["role"] == "tool")
+            .unwrap();
+        let content = message["content"].as_str().unwrap();
+        let receipt: serde_json::Value = serde_json::from_str(content).unwrap();
+        assert_eq!(receipt["status"], "succeeded");
+        assert_eq!(receipt["result"]["connections"][0]["connection_id"], 1);
+        assert_eq!(
+            receipt["result"]["connections"][0]["is_current"],
+            kind.is_some()
+        );
+        assert_eq!(receipt["result"]["connections"][1]["connection_id"], 2);
+        assert_eq!(receipt["result"]["connections"][1]["is_current"], false);
+        assert_eq!(
+            receipt["result"]["execution_scope"],
+            "current_connection_only"
+        );
+        assert!(!content.contains("not-for-model"));
+        assert!(!content.contains("target.sqlite"));
+        if kind == Some(DatabaseKind::Sqlite) {
+            let message = requests[2]["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|message| message["tool_call_id"] == "query-other")
+                .unwrap();
+            let receipt: serde_json::Value =
+                serde_json::from_str(message["content"].as_str().unwrap()).unwrap();
+            assert_eq!(receipt["status"], "failed");
+            assert!(
+                message["content"]
+                    .as_str()
+                    .unwrap()
+                    .contains("connection_not_found")
+            );
+        }
+        assert!(runtime.shutdown(Duration::from_secs(2)));
+    }
+}
+
+#[test]
+fn production_connections_list_respects_global_disable_and_agent_allowlist() {
+    for globally_disabled in [true, false] {
+        let mut steps = vec![
+            serde_json::json!({"choices":[{"delta":{"tool_calls":[{
+                "index":0,"id":"list-1","type":"function",
+                "function":{"name":"connections_list","arguments":"{}"}
+            }]},"finish_reason":"tool_calls"}]}),
+            text_event("No connection access"),
+        ];
+        if globally_disabled {
+            steps.remove(0);
+        }
+        let (endpoint, server) = model_server(steps);
+        let mut fixture = Fixture::new(&endpoint);
+        if globally_disabled {
+            assert!(matches!(
+                fixture.controller.dispatch(AppCommand::SetAiToolEnabled {
+                    tool_id: "connections.list".into(),
+                    enabled: false,
+                    expected_revision: 0,
+                }),
+                AppEvent::AiToolEnabled { .. }
+            ));
+        } else {
+            let agent = fixture
+                .controller
+                .state()
+                .ai_agents
+                .iter()
+                .find(|agent| agent.display_name == "Runtime agent")
+                .unwrap()
+                .clone();
+            assert!(matches!(
+                fixture
+                    .controller
+                    .dispatch(AppCommand::SaveAiAgent(AiAgentSaveInput {
+                        id: Some(agent.id),
+                        display_name: agent.display_name,
+                        model_profile_id: agent.model_profile_id,
+                        enabled: true,
+                        allowed_tools: vec!["db.query".into()],
+                        expected_revision: agent.revision,
+                        ..Default::default()
+                    })),
+                AppEvent::AiAgentSaved { .. }
+            ));
+        }
+        let job = fixture.job();
+        let mut runtime = AiRuntimeHandle::new(1).unwrap();
+        let receiver = runtime
+            .submit_conversation(
+                fixture.storage.clone(),
+                job.clone(),
+                vec![fixture.connection()],
+                None,
+                CancelFlag::new(),
+            )
+            .unwrap();
+        terminal(&receiver);
+        assert_eq!(fixture.status(&job), sessions::TurnStatus::Completed);
+        let requests = server.join().unwrap();
+        assert_eq!(
+            requests[0]["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|tool| tool["function"]["name"] == "connections_list"),
+            !globally_disabled
+        );
+        if !globally_disabled {
+            let message = requests[1]["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|message| message["role"] == "tool")
+                .unwrap();
+            assert!(
+                message["content"]
+                    .as_str()
+                    .unwrap()
+                    .contains("tool_not_allowed")
+            );
+            assert!(
+                !message["content"]
+                    .as_str()
+                    .unwrap()
+                    .contains("Isolated SQLite")
+            );
+        }
+        assert!(runtime.shutdown(Duration::from_secs(2)));
+    }
+}
+
+#[test]
 fn production_submission_executes_real_sqlite_read_and_projects_receipt() {
     let (endpoint, server) = model_server(vec![
         tool_event("db_query", "SELECT value FROM counter"),

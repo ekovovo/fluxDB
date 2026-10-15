@@ -74,6 +74,10 @@ impl AiRuntimeHandle {
                             include_write,
                         )?
                     };
+                    tools.add_tool(Box::new(AiConnectionsListTool::new(
+                        &connections,
+                        pinned.as_ref().map(|config| config.id),
+                    )))?;
                     // 全局停用的工具不进目录：模型既发现不到，也无法绕过发现直接调用。
                     tools = tools.with_hooks(ai_builtin_hooks(storage, job)?);
                     add_ai_file_tools(&mut tools, storage, job)?;

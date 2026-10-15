@@ -215,7 +215,7 @@ impl NavicatMain {
             selected_model_id: None,
             model_menu_open: false,
             // 新建默认全选（= 不限制）；编辑时按已存白名单，空表示不限制。
-            selected_tools: AI_TOOL_CATALOG
+            selected_tools: AI_AGENT_TOOL_CATALOG
                 .iter()
                 .map(|(id, ..)| id.to_string())
                 .collect(),
@@ -272,7 +272,7 @@ impl NavicatMain {
             return self.set_ai_agent_editor_error("名称不能为空", cx);
         }
         // 全选时保存空列表（内核默认全集不限制）；部分选中则保存白名单。
-        let all_tools: Vec<String> = AI_TOOL_CATALOG
+        let all_tools: Vec<String> = AI_AGENT_TOOL_CATALOG
             .iter()
             .map(|(id, ..)| id.to_string())
             .collect();
@@ -282,11 +282,8 @@ impl NavicatMain {
         {
             Vec::new()
         } else {
-            let mut list: Vec<String> = all_tools
-                .iter()
-                .filter(|id| editor.selected_tools.contains(*id))
-                .cloned()
-                .collect();
+            // 保留不可编辑的历史条目，避免收窄白名单被清空后误变为“不限制”。
+            let mut list: Vec<String> = editor.selected_tools.iter().cloned().collect();
             list.sort();
             list
         };

@@ -17,7 +17,7 @@ impl McpExecutionService {
                 false,
             ));
         }
-        // 1) 服务内实现的工具优先处理（connections.list / operation.*）。
+        // 1) 服务内实现的工具优先处理（connections.list / operation.status）。
         match mcp_tool_name {
             "fluxdb_connections_list" => {
                 if !self.tool_visible(mcp_tool_name) {
@@ -32,7 +32,7 @@ impl McpExecutionService {
                     Err(error) => McpCallOutcome::failure(error),
                 };
             }
-            "fluxdb_operation_status" | "fluxdb_operation_cancel" => {
+            "fluxdb_operation_status" => {
                 if !self.tool_visible(mcp_tool_name) {
                     return McpCallOutcome::failure(McpCallError::new(
                         "tool_not_allowed",
@@ -40,7 +40,7 @@ impl McpExecutionService {
                         false,
                     ));
                 }
-                return self.handle_operation(identity, mcp_tool_name, arguments_json);
+                return self.handle_operation(identity, arguments_json);
             }
             _ => {}
         }

@@ -1607,6 +1607,7 @@ mod ai_ui_tests {
         }
     }
 
+    include!("tests/ai_agent_tools.rs");
     include!("tests/ai_mcp_controls.rs");
     include!("tests/ai_mcp_clients.rs");
 

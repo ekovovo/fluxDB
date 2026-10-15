@@ -538,7 +538,7 @@ pub struct ToolReceipt {
 | 工具 ID | 输入摘要 | 结果 / 约束 |
 |---|---|---|
 | `connections.list` | caller scope | 只列已授权连接资源；不返回 endpoint/凭据 |
-| `operation.status` / `operation.cancel` | request ref | owner 权限、真实取消与 unknown 状态 |
+| `operation.status` | request ref | owner 权限与 unknown 状态；不提供取消工具 |
 | `redis.server_info` | target、sections | 受限版本/DB/诊断；非任意 CONFIG |
 | `ui.current_context` | 无或请求的字段集合 | 最新小快照，不改变固定目标 |
 | `context.resolve` | ContextRef、detail level | 受授权的对象详情 |
@@ -779,9 +779,10 @@ MySQL/PostgreSQL/SQLite 共用 db.* 契约，具体 dialect/capability 在 Conne
 | `fluxdb_redis_server_info` | `redis.server_info` | 授权范围的版本/当前 DB/受控诊断 | read |
 | `fluxdb_result_page` | `result.read_page` | 读已有结果快照，不重新执行 SQL | read |
 | `fluxdb_operation_status` | `operation.status` | 查当前 caller 有权看的 request 状态/未知结果 | read |
-| `fluxdb_operation_cancel` | `operation.cancel` | 取消 caller 自己的进行中请求 | control |
 
 外部名称采用普通下划线方便 CLI 精确授权；内部工具不重复建第二实现。annotations 仅提示 readOnly/destructive/idempotent，不用来做实际授权。MCP 不默认暴露 ui.current_context/file.read/artifact.export/内部模型管理；这些需要额外用户授权和已实现能力，不能因内部存在就全部公开。
+
+不提供「取消进行中请求」的工具。真实中断由协议取消通知与客户端断连承担（§28.8），另开一个只能改账面状态、动不了正在执行的操作的入口，会让调用方误以为已撤销。`fluxdb_operation_status` 保留的是另一半职责：进程可能在 SQL 已提交、终态未落库时被杀，此时账本停在 `running` 而数据库已改；启动恢复把它收敛为 `unknown`，执行策略层据此拦截同连接的冲突写入（§42.12），调用方拿到 `unknown` 时应改走只读核实而不是重放。
 
 <a id="tool-result-contract"></a>
 
@@ -2829,6 +2830,7 @@ CREATE INDEX IF NOT EXISTS ai_usage_session ON ai_usage_ledger(session_id, creat
 - parts的tool/result/artifact、UI scroll anchor和selected turn必须属于本session或明确授权来源；审计绑定最终plan hash，不能把旧判断挪到新参数。
 - session/turn 的 source_call、artifact source、context seq、usage session 必须实际归属于同一任务；本 DDL 的一般 FK 不自动证明所有跨行语义，storage 事务显式校验。
 - Activity index 不包含 interrupted/unknown；允许用户开启新 Turn，但若同资源有未知写操作，权限服务阻止冲突写入，不能因为 index 允许就继续危险操作。
+- 内部 Turn 与对外 MCP request 各有独立的启动恢复：进程可能死在「SQL 已提交、终态未落库」的窗口里，账本会永远停在 `running`/`prepared`。恢复时按执行阶段判定——`prepared`（未占用执行权）收敛为 `cancelled`；`running` + 已实现的只读工具收敛为 `cancelled`；`running` + 其他（含 `db.execute`/`redis.execute`）收敛为 `unknown`。等待审批的条目不自动决定，保持 `waiting_approval` 等待重新审批。未知行必须真的被产生，拦截 SQL 才有意义。
 - 清理已归档会话按依赖顺序显式确认并删除；不依靠关闭 FK 来清数据。秘密 Clear 不是删除模型行。
 - 运行记录表不允许 plugin 直接写入；receipt/event/usage 由内核保存。render/spec 参数不能伪装主模型的工具成功事件。
 - secret/arguments/spec/message 的大小与敏感数据策略由应用层执行；数据库的 json_valid 只验证语法。

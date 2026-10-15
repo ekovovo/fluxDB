@@ -369,3 +369,21 @@ fn read_write_datasource_executes_update_against_real_sqlite() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// 对外工具集不含取消入口：`operation.cancel` 只能改账面状态、动不了正在执行的操作，
+/// 真实中断已由协议取消与断连承担（§28.8）。
+#[test]
+fn operation_cancel_is_not_exposed() {
+    let names: Vec<&str> = MCP_TOOL_MAPPINGS
+        .iter()
+        .map(|(name, _)| *name)
+        .collect();
+    assert!(names.contains(&"fluxdb_operation_status"));
+    assert!(!names.contains(&"fluxdb_operation_cancel"));
+    assert_eq!(mcp_permission_tool_id("fluxdb_operation_cancel"), None);
+    // 已开放的全局停用项也不该留下指向已删工具的别名。
+    assert_eq!(
+        mcp_permission_tool_id("fluxdb_operation_status"),
+        Some("operation.status")
+    );
+}

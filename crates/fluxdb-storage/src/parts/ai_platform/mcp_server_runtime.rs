@@ -320,6 +320,15 @@ pub fn start_server_request(
 
 /// 读取 request。
 pub fn load_server_request(conn: &Connection, id: &str) -> Result<ServerRequestView> {
+    try_load_server_request(conn, id)?
+        .ok_or_else(|| Error::new(ErrorKind::Internal, "MCP request 不存在"))
+}
+
+/// 读取 request，缺失返回 `None`。
+///
+/// 与 [`load_server_request`] 的区别只在于把"不存在"和"读库失败"分开：
+/// 状态查询要靠它回答"这条不属于你"，不能把缺失当成存储故障上报。
+pub fn try_load_server_request(conn: &Connection, id: &str) -> Result<Option<ServerRequestView>> {
     conn.query_row(
         "SELECT id, profile_id, session_id, seq, protocol_request_id_json, tool_id, tool_version,
                 connection_id, target_json, arguments_redacted_json, plan_hash, status,
@@ -349,8 +358,7 @@ pub fn load_server_request(conn: &Connection, id: &str) -> Result<ServerRequestV
     )
     .optional()
     .map_err(sqlite_error)?
-    .ok_or_else(|| Error::new(ErrorKind::Internal, "MCP request 不存在"))
-    .and_then(|t| {
+    .map(|t| {
         Ok(ServerRequestView {
             id: t.0,
             profile_id: t.1,
@@ -370,6 +378,7 @@ pub fn load_server_request(conn: &Connection, id: &str) -> Result<ServerRequestV
             finished_at_ms: t.15,
         })
     })
+    .transpose()
 }
 
 /// 标记 request 进入运行中（行级 CAS）。
@@ -428,6 +437,81 @@ pub fn finish_server_request(
         ));
     }
     load_server_request(conn, id)
+}
+
+/// 启动恢复：把上次进程退出时残留的非终态 request 收敛为终态。
+///
+/// 进程可能在 SQL 已提交、但终态还没落库时被杀，账本就永远停在 `running`：
+/// 数据库已改、fluxDB 不知道结果。把它标成 `unknown` 而不是 `failed`，
+/// 是为了让执行策略层（`ai_execution_policy` 的未知写冲突检查）拦住后续写入，
+/// 直到人工核实——否则调用方重试会造成重复写。
+///
+/// 判定与内部 Turn 的启动恢复（`recovery::recover_on_startup`）一致：
+/// - `prepared`：还没占用执行权，SQL 未发出，确定未执行 → `cancelled`
+/// - `running` + 已实现的只读工具：读操作不改数据 → `cancelled`
+/// - `running` + 其他（含 `db.execute`/`redis.execute`）：结果待核实 → `unknown`
+///
+/// 等待审批的 request 不在这里处理：没有用户在场时不能把历史批准变成执行许可，
+/// 也不该由本进程替用户决定，应保持 `waiting_approval` 等待重新审批。
+pub fn recover_server_requests_on_start(conn: &Connection, now_ms: i64) -> Result<u64> {
+    let raw: Vec<(String, String, String)> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id,tool_id,status FROM ai_mcp_server_requests WHERE status IN ('prepared','running')",
+            )
+            .map_err(sqlite_error)?;
+        stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(sqlite_error)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(sqlite_error)?
+    };
+    let mut changed = 0u64;
+    for (id, tool_id, raw_status) in raw {
+        // status 受 DDL CHECK 约束；解析失败说明数据已损坏，必须报错而不是猜一个终态。
+        let status = ServerRequestStatus::parse(&raw_status)?;
+        let next = match status {
+            // 尚未占用执行权：SQL 未发出，无论什么工具都确定未执行。
+            ServerRequestStatus::Prepared => ServerRequestStatus::Cancelled,
+            ServerRequestStatus::Running if is_interrupted_read_only_tool(&tool_id) => {
+                ServerRequestStatus::Cancelled
+            }
+            _ => ServerRequestStatus::Unknown,
+        };
+        let updated = conn
+            .execute(
+                "UPDATE ai_mcp_server_requests
+                    SET status=?2, finished_at_ms=?3, revision=revision+1
+                  WHERE id=?1 AND status IN ('prepared','running')",
+                params![id, next.as_str(), now_ms],
+            )
+            .map_err(sqlite_error)?;
+        changed += updated as u64;
+    }
+    Ok(changed)
+}
+
+/// 启动恢复时的只读判定：与内部 Turn 恢复用同一份工具清单。
+///
+/// 只列已实现的专用只读工具；`redis.*` 不列入——它们的中断后果由各自的
+/// 有界游标/停止句柄处理，不按"只读"断言已无副作用。
+fn is_interrupted_read_only_tool(tool_id: &str) -> bool {
+    matches!(
+        tool_id,
+        "db.query"
+            | "db.search_objects"
+            | "db.describe_object"
+            | "db.explain"
+            | "fluxdb_query"
+            | "fluxdb_search_objects"
+            | "fluxdb_describe_object"
+            | "fluxdb_explain"
+    )
 }
 
 /// 列出某 session 的请求（活动页/状态查询用）。
@@ -644,6 +728,161 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.message.contains("已结束") || err.message.contains("状态"));
+    }
+
+    /// 进程死在 SQL 已提交、终态未落库的窗口后，重启必须把残留 request 收敛成终态，
+    /// 且写操作收敛成 unknown（结果待核实），由执行策略层拦住后续写入，避免重复写。
+    #[test]
+    fn recover_on_start_marks_interrupted_write_unknown_and_read_cancelled() {
+        let conn = setup();
+        add_datasource(&conn);
+        start_server_session(&conn, 3, "s1", "p1", "2025-06-18", "{}").expect("session");
+        // 写工具执行到一半被杀：状态停在 running，数据库可能已经提交。
+        let write = start_server_request(
+            &conn,
+            4,
+            "rw",
+            "s1",
+            "p1",
+            "\"1\"",
+            "fluxdb_execute",
+            1,
+            Some(1),
+            r#"{"target":"conn:1"}"#,
+            r#"{"sql":"UPDATE t SET a=1"}"#,
+            "h1",
+        )
+        .expect("写请求");
+        mark_server_request_running(&conn, 5, &write.id, write.revision).expect("进入运行");
+        // 只读工具用外部 MCP 名称登记，恢复判定必须同样认得。
+        let read = start_server_request(
+            &conn,
+            4,
+            "rq",
+            "s1",
+            "p1",
+            "\"2\"",
+            "fluxdb_query",
+            1,
+            Some(1),
+            r#"{"target":"conn:1"}"#,
+            r#"{"sql":"SELECT 1"}"#,
+            "h2",
+        )
+        .expect("读请求");
+        mark_server_request_running(&conn, 5, &read.id, read.revision).expect("进入运行");
+        // 还没拿到执行权就被杀：SQL 未发出，确定未执行。
+        start_server_request(
+            &conn,
+            4,
+            "rp",
+            "s1",
+            "p1",
+            "\"3\"",
+            "fluxdb_execute",
+            1,
+            Some(1),
+            r#"{"target":"conn:1"}"#,
+            r#"{"sql":"DELETE FROM t"}"#,
+            "h3",
+        )
+        .expect("未执行请求");
+        // 已完成的请求不能被动过。
+        let done = start_server_request(
+            &conn,
+            4,
+            "rd",
+            "s1",
+            "p1",
+            "\"4\"",
+            "fluxdb_query",
+            1,
+            Some(1),
+            r#"{"target":"conn:1"}"#,
+            r#"{"sql":"SELECT 2"}"#,
+            "h4",
+        )
+        .expect("已完成请求");
+        let running_done =
+            mark_server_request_running(&conn, 5, &done.id, done.revision).expect("运行");
+        finish_server_request(
+            &conn,
+            6,
+            &done.id,
+            ServerRequestStatus::Succeeded,
+            Some(r#"{"ok":true}"#),
+            running_done.revision,
+        )
+        .expect("完成");
+
+        let changed = recover_server_requests_on_start(&conn, 100).expect("启动恢复");
+        assert_eq!(changed, 3, "只收敛残留的三条");
+
+        let write_after = load_server_request(&conn, "rw").expect("写请求");
+        assert_eq!(
+            write_after.status,
+            ServerRequestStatus::Unknown,
+            "写操作中断不能断言未执行，也不能断言已执行"
+        );
+        assert!(write_after.finished_at_ms.is_some());
+        assert_eq!(
+            load_server_request(&conn, "rq").expect("读请求").status,
+            ServerRequestStatus::Cancelled,
+            "只读工具中断等于取消，事实清楚"
+        );
+        assert_eq!(
+            load_server_request(&conn, "rp").expect("未执行请求").status,
+            ServerRequestStatus::Cancelled,
+            "还没占用执行权就中断，确定未执行"
+        );
+        assert_eq!(
+            load_server_request(&conn, "rd").expect("已完成请求").status,
+            ServerRequestStatus::Succeeded,
+            "终态不受启动恢复影响"
+        );
+
+        // 幂等：再跑一次不应改动已终态的行，也不会重复计数。
+        assert_eq!(
+            recover_server_requests_on_start(&conn, 200).expect("二次恢复"),
+            0
+        );
+    }
+
+    /// 等待审批的请求不属于"执行中"：没有用户在场时不能替用户决定，也不能标 unknown。
+    #[test]
+    fn recover_on_start_keeps_waiting_approval_pending() {
+        let conn = setup();
+        add_datasource(&conn);
+        start_server_session(&conn, 3, "s1", "p1", "2025-06-18", "{}").expect("session");
+        start_server_request(
+            &conn,
+            4,
+            "r1",
+            "s1",
+            "p1",
+            "\"1\"",
+            "fluxdb_execute",
+            1,
+            Some(1),
+            r#"{"target":"conn:1"}"#,
+            r#"{"sql":"UPDATE t SET a=1"}"#,
+            "h1",
+        )
+        .expect("请求");
+        conn.execute(
+            "UPDATE ai_mcp_server_requests SET status='waiting_approval' WHERE id='r1'",
+            [],
+        )
+        .expect("置为待审批");
+
+        assert_eq!(
+            recover_server_requests_on_start(&conn, 100).expect("启动恢复"),
+            0
+        );
+        assert_eq!(
+            load_server_request(&conn, "r1").expect("请求").status,
+            ServerRequestStatus::WaitingApproval
+        );
     }
 
     #[test]

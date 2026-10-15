@@ -16,8 +16,9 @@ use fluxdb_app::{
 use fluxdb_storage::FileStorage;
 use fluxdb_storage::Storage as _;
 use fluxdb_storage::ai_platform::mcp_server_runtime::{
-    finish_server_request, load_server_request, start_server_request, start_server_session,
-    touch_server_session,
+    ServerRequestStatus, finish_server_request, load_server_request,
+    recover_server_requests_on_start, start_server_request, start_server_session,
+    touch_server_session, try_load_server_request,
 };
 use rmcp::handler::server::ServerHandler;
 use rmcp::model::{
@@ -66,6 +67,11 @@ impl ServeTarget {
         if !profile.enabled {
             return Err(format!("Server Profile 已禁用: {}", profile.id));
         }
+        // 上个进程可能死在 SQL 已提交、终态未落库的窗口里；先把残留 request 收敛成
+        // 终态，否则账本会永远停在 running，执行策略层的未知写拦截也永不触发。
+        storage
+            .with_ai_connection(|conn| recover_server_requests_on_start(conn, now_ms()))
+            .map_err(|error| error.message)?;
         let connections = storage.load_connections().map_err(|e| e.message)?;
 
         // 结果仓库与内部一致：句柄只在本次 session 内可读。
@@ -85,7 +91,7 @@ impl ServeTarget {
             results,
         )
         .map_err(|e| e.message)?;
-        // 注入 request 仓储：operation.status/cancel 由宿主实现，服务保持无 IO。
+        // 注入 request 仓储：operation.status 由宿主实现，服务保持无 IO。
         let host = Arc::new(StorageRequestHost {
             storage: storage.clone(),
             profile_id: profile.id.clone(),
@@ -212,9 +218,17 @@ impl FluxDbMcpServer {
         *started = true;
     }
 
-    fn tool_result(&self, outcome: McpCallOutcome) -> CallToolResult {
+    /// 回传结果，并附带本次调用在账本里的 request_id。
+    ///
+    /// 必须回传：调用方要靠它调 `fluxdb_operation_status` 核实这次调用的最终状态；
+    /// 不回传的话状态查询工具没有任何可用的入口参数。
+    fn tool_result(&self, request_id: &str, outcome: McpCallOutcome) -> CallToolResult {
+        let mut structured = outcome.structured;
+        if let Some(object) = structured.as_object_mut() {
+            object.insert("request_id".into(), serde_json::json!(request_id));
+        }
         let mut result = CallToolResult::success(vec![Content::text(outcome.text.clone())]);
-        result.structured_content = Some(outcome.structured);
+        result.structured_content = Some(structured);
         result.is_error = Some(!outcome.ok);
         result
     }
@@ -286,7 +300,10 @@ impl ServerHandler for FluxDbMcpServer {
         ServerInfo::new(capabilities)
             .with_server_info(Implementation::new("fluxdb-mcp", env!("CARGO_PKG_VERSION")))
             .with_instructions(
-                "fluxDB 本地 MCP Server：仅暴露本 Server Profile 已授权的连接/库/Key 范围。"
+                "fluxDB 本地 MCP Server：仅暴露本 Server Profile 已授权的连接/库/Key 范围。\
+                 每个 tools/call 的结果都带 request_id，可用 fluxdb_operation_status 查询该请求的最终状态；\
+                 若状态为 unknown（进程曾中断在该请求执行期间），表示结果待核实，\
+                 不要重放同一写入，改用只读工具核实。"
                     .to_string(),
             )
     }
@@ -338,13 +355,10 @@ impl ServerHandler for FluxDbMcpServer {
         };
         let now = now_ms();
         if let Err(message) = self.record_request(&identity, &mcp_name, &arguments_json, now) {
-            return Ok(
-                self.tool_result(McpCallOutcome::failure_of(McpCallError::new(
-                    "audit_unavailable",
-                    message,
-                    false,
-                ))),
-            );
+            return Ok(self.tool_result(
+                &identity.request_id,
+                McpCallOutcome::failure_of(McpCallError::new("audit_unavailable", message, false)),
+            ));
         }
         // 工具执行会建立自己的 tokio runtime 并 block_on；必须在阻塞线程池上跑，
         // 不能占用 rmcp 的 async worker（否则会 panic / 挂死请求）。
@@ -389,7 +403,7 @@ impl ServerHandler for FluxDbMcpServer {
             ))
         });
         self.finish_request(&identity, &outcome, now_ms());
-        Ok(self.tool_result(outcome))
+        Ok(self.tool_result(&identity.request_id, outcome))
     }
 }
 
@@ -442,64 +456,37 @@ impl McpRequestHost for StorageRequestHost {
     ) -> Result<serde_json::Value, McpCallError> {
         let view = self
             .storage
-            .with_ai_connection(|conn| load_server_request(conn, request_id))
+            .with_ai_connection(|conn| try_load_server_request(conn, request_id))
             .map_err(|error| McpCallError::new("request_unavailable", error.message, false))?;
-        if view.profile_id != self.profile_id || view.session_id != self.session_id {
-            // 另一个 session/profile 的请求不可见，不泄漏其存在。
-            return Err(McpCallError::new(
-                "request_not_found",
-                "请求不存在或不属于当前会话",
-                false,
-            ));
-        }
-        Ok(serde_json::json!({
+        // 不存在与不属于自己是同一种回答：区分开会泄漏其他 caller 的 request 是否存在。
+        let view = match view {
+            Some(view)
+                if view.profile_id == self.profile_id && view.session_id == self.session_id =>
+            {
+                view
+            }
+            _ => {
+                return Err(McpCallError::new(
+                    "request_not_found",
+                    "请求不存在或不属于当前会话",
+                    false,
+                ));
+            }
+        };
+        let mut payload = serde_json::json!({
             "ok": true,
             "request_id": view.id,
             "tool_id": view.tool_id,
             "status": view.status.as_str(),
             "outcome": if view.status.is_terminal() { "terminal" } else { "running" },
-        }))
-    }
-
-    fn cancel_request(
-        &self,
-        _identity: &McpCallIdentity,
-        request_id: &str,
-    ) -> Result<serde_json::Value, McpCallError> {
-        // 取消语义：把仍未终态的请求标为 cancelled；真正的执行中断由调用方 cancel flag 承担。
-        let cancelled = self
-            .storage
-            .with_ai_connection(|conn| {
-                let view = load_server_request(conn, request_id)?;
-                if view.profile_id != self.profile_id || view.session_id != self.session_id {
-                    return Ok(None);
-                }
-                if view.status.is_terminal() {
-                    return Ok(Some(view));
-                }
-                finish_server_request(
-                    conn,
-                    now_ms(),
-                    request_id,
-                    fluxdb_storage::ai_platform::mcp_server_runtime::ServerRequestStatus::Cancelled,
-                    None,
-                    view.revision,
-                )
-                .map(Some)
-            })
-            .map_err(|error| McpCallError::new("request_unavailable", error.message, false))?;
-        match cancelled {
-            Some(view) => Ok(serde_json::json!({
-                "ok": true,
-                "request_id": view.id,
-                "status": view.status.as_str(),
-            })),
-            None => Err(McpCallError::new(
-                "request_not_found",
-                "请求不存在或不属于当前会话",
-                false,
-            )),
+        });
+        // unknown 是调用方唯一必须改变行为的状态：明确告知不要重放该写入。
+        if view.status == ServerRequestStatus::Unknown {
+            payload["next_step"] = serde_json::json!(
+                "结果待核实：该操作可能已在数据库提交。不要重放同一写入；先用只读工具核实实际状态，必要时请用户确认。"
+            );
         }
+        Ok(payload)
     }
 }
 

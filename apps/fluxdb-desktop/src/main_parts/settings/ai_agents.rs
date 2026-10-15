@@ -248,7 +248,7 @@ fn ai_agent_editor_form(
                 .map(|t| t.tool_id.clone())
                 .collect();
             let mut list = div().flex().flex_col().gap_1();
-            for (id, group, desc, write) in AI_TOOL_CATALOG {
+            for (id, group, desc, write) in AI_AGENT_TOOL_CATALOG {
                 let id_owned = id.to_string();
                 let globally_off = globally_disabled.contains(*id);
                 let checked = editor.selected_tools.contains(*id) && !globally_off;
@@ -498,6 +498,7 @@ fn settings_ai_agents_panel(
                             cx.stop_propagation();
                         }),
                     )
+                    .test_support()
                     .into_any_element()
             })
             .collect()

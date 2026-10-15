@@ -17,8 +17,8 @@
     ['db.explain','SQL','不执行式查询计划',false],['db.execute','SQL','修改专用入口，范围授权与审批',true],
     ['redis.scan','Redis','渐进扫描，不全量 KEYS',false],['redis.inspect','Redis','按类型有界预览值与 TTL',false],
     ['redis.execute','Redis','受控命令，检查所有 Key 与风险',true],['redis.server_info','Redis','受限版本与诊断摘要',false],
-    ['result.read_page','公共','读取已取得的结果快照',false],['operation.status','公共','查询当前 caller 的操作状态',false],
-    ['operation.cancel','公共','取消自身操作，不伪造服务端撤销',false]
+    ['result.read_page','公共','读取已取得的结果快照',false],
+    ['operation.status','公共','查询自身操作状态，含中断后的未知结果',false]
   ].map(([id,group,description,write]) => ({id,name:id,group,description,write}));
   const plugins = [
     {id:'ui',name:'当前界面与 @ 上下文',icon:'text-select',description:'结构化快照，按需读细节，不全量发送界面。'},

@@ -193,6 +193,10 @@ fn initialize_lists_only_authorized_tools() {
     let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
     assert!(names.contains(&"fluxdb_query"));
     assert!(names.contains(&"fluxdb_connections_list"));
+    // operation.status 保留：调用方要靠它核实中断写入的结果。
+    // operation.cancel 不提供：真实中断由协议取消/断连承担，账面取消会误导调用方。
+    assert!(names.contains(&"fluxdb_operation_status"));
+    assert!(!names.contains(&"fluxdb_operation_cancel"));
     // 只读数据源下写工具不出现。
     assert!(!names.contains(&"fluxdb_execute"));
     assert!(!names.contains(&"fluxdb_redis_scan"));
@@ -220,6 +224,60 @@ fn query_returns_structured_content_through_protocol() {
     assert!(
         result["content"].as_array().is_some_and(|c| !c.is_empty()),
         "text 兼容投影"
+    );
+    // 调用方要靠这个 id 去 fluxdb_operation_status 核实这次调用的最终状态。
+    assert!(
+        result["structuredContent"]["request_id"]
+            .as_str()
+            .is_some_and(|id| id.starts_with("mcp-req-")),
+        "每次 tools/call 回传自己的 request_id"
+    );
+}
+
+#[test]
+fn operation_status_reports_own_request_and_hides_other_sessions() {
+    let fixture = Fixture::new();
+    let mut client = fixture.spawn();
+    client.initialize();
+
+    let called = tool_call(
+        &mut client,
+        "fluxdb_query",
+        serde_json::json!({
+            "target": "conn:1/db:main",
+            "sql": "SELECT id FROM orders"
+        }),
+    );
+    let request_id = called["structuredContent"]["request_id"]
+        .as_str()
+        .expect("request_id")
+        .to_string();
+
+    let status = tool_call(
+        &mut client,
+        "fluxdb_operation_status",
+        serde_json::json!({ "request_id": request_id }),
+    );
+    assert_eq!(status["isError"], serde_json::json!(false));
+    assert_eq!(
+        status["structuredContent"]["status"],
+        serde_json::json!("succeeded")
+    );
+    assert_eq!(
+        status["structuredContent"]["outcome"],
+        serde_json::json!("terminal")
+    );
+
+    // 另一个 caller 的 request 不可见，且不泄漏其存在。
+    let foreign = tool_call(
+        &mut client,
+        "fluxdb_operation_status",
+        serde_json::json!({ "request_id": "mcp-req-does-not-exist" }),
+    );
+    assert_eq!(foreign["isError"], serde_json::json!(true));
+    assert_eq!(
+        foreign["structuredContent"]["code"],
+        serde_json::json!("request_not_found")
     );
 }
 

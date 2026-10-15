@@ -15,8 +15,11 @@
 /// 对外 MCP 工具的稳定映射：MCP 名称 ↔ 内部 stable ToolId。
 ///
 /// 外部用普通下划线名称方便 CLI 精确授权；内部不重复建第二实现。
-/// `fluxdb_connections_list`/`fluxdb_operation_status`/`fluxdb_operation_cancel`
-/// 由服务内实现（内部 id 为空），其余映射到既有工具 ID。
+/// `fluxdb_connections_list`/`fluxdb_operation_status` 由服务内实现（内部 id 为空），
+/// 其余映射到既有工具 ID。
+///
+/// 不提供「取消进行中请求」的工具：客户端断开/协议取消已经真正中断执行，
+/// 再暴露一个只能改账面状态、动不了正在跑的操作的入口只会误导调用方。
 pub const MCP_TOOL_MAPPINGS: &[(&str, &str)] = &[
     ("fluxdb_connections_list", ""),
     ("fluxdb_search_objects", "db.search_objects"),
@@ -31,7 +34,6 @@ pub const MCP_TOOL_MAPPINGS: &[(&str, &str)] = &[
     ("fluxdb_redis_server_info", "redis.server_info"),
     ("fluxdb_result_page", "result.read_page"),
     ("fluxdb_operation_status", ""),
-    ("fluxdb_operation_cancel", ""),
 ];
 
 /// MCP 工具名 → 内部 ToolId；服务内实现的工具返回 `None`。
@@ -56,7 +58,6 @@ pub fn mcp_permission_tool_id(name: &str) -> Option<&'static str> {
     mcp_tool_internal_id(name).or(match name {
         "fluxdb_connections_list" => Some("connections.list"),
         "fluxdb_operation_status" => Some("operation.status"),
-        "fluxdb_operation_cancel" => Some("operation.cancel"),
         _ => None,
     })
 }
@@ -239,17 +240,12 @@ impl McpCallOutcome {
     }
 }
 
-/// 宿主提供的 request 仓储：实现 `fluxdb_operation_status` / `fluxdb_operation_cancel`。
+/// 宿主提供的 request 仓储：实现 `fluxdb_operation_status`。
 ///
 /// 执行服务本身不持有存储连接（保持可测试、无 IO），由宿主（stdio 二进制）注入。
-/// 未注入时这两个工具返回 `operation_unsupported`，不静默假装成功。
+/// 未注入时该工具返回 `operation_unsupported`，不静默假装成功。
 pub trait McpRequestHost: Send + Sync {
     fn request_status(
-        &self,
-        identity: &McpCallIdentity,
-        request_id: &str,
-    ) -> std::result::Result<serde_json::Value, McpCallError>;
-    fn cancel_request(
         &self,
         identity: &McpCallIdentity,
         request_id: &str,
@@ -319,7 +315,6 @@ pub fn visible_tools(
         }
     }
     views.push(operation_status_view()?);
-    views.push(operation_cancel_view()?);
 
     // 全局工具开关收窄（与内部工具一致，MCP 不能重新打开被全局关掉的工具）。
     views.retain(|view| {
@@ -382,26 +377,7 @@ pub fn operation_status_view() -> fluxdb_core::Result<McpToolView> {
         name: "fluxdb_operation_status".into(),
         internal_id: None,
         version: 1,
-        description: "查询本 caller 有权查看的 request 状态与已知结果引用".into(),
-        input_schema: serde_json::json!({
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["request_id"],
-            "properties": {
-                "request_id": { "type": "string", "minLength": 1, "maxLength": 128 }
-            }
-        }),
-        risk: fluxdb_core::ToolRisk::Read,
-    })
-}
-
-/// `fluxdb_operation_cancel` 的输入 schema。
-pub fn operation_cancel_view() -> fluxdb_core::Result<McpToolView> {
-    Ok(McpToolView {
-        name: "fluxdb_operation_cancel".into(),
-        internal_id: None,
-        version: 1,
-        description: "取消 caller 自己的进行中请求（不能取消他人请求）".into(),
+        description: "查询本 caller 有权查看的 request 状态与已知结果引用；进程重启后被中断的写操作会标记为 unknown（结果待核实），此时不要重放同一写入".into(),
         input_schema: serde_json::json!({
             "type": "object",
             "additionalProperties": false,
@@ -472,7 +448,7 @@ impl McpExecutionService {
         })
     }
 
-    /// 注入宿主 request 仓储（`operation.status`/`operation.cancel` 用）。
+    /// 注入宿主 request 仓储（`operation.status` 用）。
     pub fn with_request_host(mut self, host: Arc<dyn McpRequestHost>) -> Self {
         self.host = Some(host);
         self
@@ -570,11 +546,10 @@ impl McpExecutionService {
         }
     }
 
-    /// `operation.status`/`operation.cancel`：需要宿主 request 仓储。
+    /// `operation.status`：需要宿主 request 仓储。
     fn handle_operation(
         &self,
         identity: &McpCallIdentity,
-        mcp_tool_name: &str,
         arguments_json: &str,
     ) -> McpCallOutcome {
         let value: serde_json::Value = match serde_json::from_str(arguments_json) {
@@ -597,15 +572,11 @@ impl McpExecutionService {
         let Some(host) = self.host.as_ref() else {
             return McpCallOutcome::failure(McpCallError::new(
                 "operation_unsupported",
-                "宿主未提供 request 仓储，操作状态/取消不可用",
+                "宿主未提供 request 仓储，操作状态不可用",
                 false,
             ));
         };
-        let result = if mcp_tool_name == "fluxdb_operation_status" {
-            host.request_status(identity, request_id)
-        } else {
-            host.cancel_request(identity, request_id)
-        };
+        let result = host.request_status(identity, request_id);
         match result {
             Ok(structured) => McpCallOutcome::success(structured),
             Err(error) => McpCallOutcome::failure(error),

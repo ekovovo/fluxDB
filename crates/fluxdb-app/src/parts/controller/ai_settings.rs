@@ -79,6 +79,7 @@ pub fn ai_plugin_items(conn: &AiConn) -> fluxdb_core::Result<Vec<AiPluginItem>> 
         let (config_fields, config_error) = ai_plugin_config_fields(conn, &instance.id);
         items.push(AiPluginItem {
             mandatory: plugins::is_mandatory(&instance.id),
+            retired: registry.is_retired(&instance.id),
             id: instance.id,
             display_name: instance.display_name,
             package_key: instance.package_key,
@@ -436,6 +437,13 @@ pub fn set_ai_plugin_enabled(
     expected_revision: i64,
     now_ms: i64,
 ) -> fluxdb_core::Result<()> {
+    // 已下线的占位行没有实现，不能靠开关制造"已启用"的假象。
+    if BuiltinRegistry::default().is_retired(id) {
+        return Err(fluxdb_core::Error::new(
+            fluxdb_core::ErrorKind::Internal,
+            "该内置能力已下线，暂不可启停",
+        ));
+    }
     with_ai_storage(storage, |conn| {
         plugins::set_plugin_instance_enabled(conn, now_ms, id, enabled, expected_revision)?;
         reconcile_jev_builtins(conn, now_ms)
@@ -981,6 +989,10 @@ pub fn save_ai_default_models(
             default_agent_id: current.default_agent_id.clone(),
             default_model_profile_id: default_model_id.clone(),
             default_decision_model_profile_id: default_decision_model_id.clone(),
+            // 压缩决策槽位不属于大模型页的表单，保留当前值不被这里清空。
+            compaction_decision_model_profile_id: current
+                .compaction_decision_model_profile_id
+                .clone(),
             max_active_turns: current.max_active_turns,
             revision: current.revision,
         };

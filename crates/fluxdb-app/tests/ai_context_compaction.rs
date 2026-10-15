@@ -253,6 +253,159 @@ fn run_turn_with_summary(
     text
 }
 
+/// 建一个指向本地 mock 的 System One 决策模型，并把它写进压缩决策槽位。
+///
+/// 走「上下文压缩 · 管理」的同一条落库口径：槽位是宿主设置，模型引用不在插件 JSON 里。
+fn configure_compaction_decision_model(
+    fixture: &Fixture,
+    controller: &mut AppController,
+    endpoint: &str,
+) -> String {
+    let model_id = match controller.dispatch(AppCommand::SaveAiModel(AiModelSaveInput {
+        display_name: "T069 压缩决策模型".into(),
+        provider: "decisions".into(),
+        model: "t069-compaction-decision".into(),
+        endpoint: Some(endpoint.to_string()),
+        enabled: true,
+        api_key: Some("sk-fixture-not-real".into()),
+        context_window_tokens: Some(8_192),
+        max_output_tokens: Some(512),
+        ..Default::default()
+    })) {
+        AppEvent::AiModelSaved { id, .. } => id,
+        other => panic!("配置压缩决策模型失败: {other:?}"),
+    };
+    let event = controller.dispatch(AppCommand::SaveAiPluginConfig {
+        instance_id: "builtin.compaction".into(),
+        selections: vec![fluxdb_app::AiPluginFieldSelection {
+            key: fluxdb_app::COMPACTION_DECISION_MODEL_FIELD.into(),
+            resource_id: Some(model_id.clone()),
+        }],
+        expected_revision: controller.state().ai_runtime_revision,
+    });
+    assert!(
+        matches!(event, AppEvent::AiPluginConfigSaved { .. }),
+        "保存压缩决策模型失败: {event:?}"
+    );
+    // 槽位必须落在压缩决策列，而不是 Jev 决策列。
+    assert_eq!(controller.state().ai_default_decision_model_id, None);
+    fixture
+        .storage
+        .with_ai_connection(|conn| {
+            let runtime = fluxdb_storage::ai_platform::settings::load_runtime_settings(conn)?;
+            assert_eq!(
+                runtime.compaction_decision_model_profile_id.as_deref(),
+                Some(model_id.as_str())
+            );
+            Ok(())
+        })
+        .unwrap();
+    model_id
+}
+
+/// 决策模型的取舍：在宿主给出的合法切点里选哪一个（数字最大 = 压缩最多）。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CutPick {
+    Most,
+    Least,
+}
+
+/// 本地 mock System One 服务：记录收到的候选 ID，并按 [`CutPick`] 返回一个候选。
+fn spawn_compaction_mock(pick: CutPick) -> (String, Arc<std::sync::Mutex<Vec<Vec<String>>>>) {
+    use std::io::{Read as _, Write as _};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("绑定本地 mock 端口");
+    listener.set_nonblocking(true).expect("非阻塞");
+    let endpoint = format!("http://{}/systemone", listener.local_addr().unwrap());
+    let seen: Arc<std::sync::Mutex<Vec<Vec<String>>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let handle = Arc::clone(&seen);
+    std::thread::spawn(move || {
+        loop {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    let handle = Arc::clone(&handle);
+                    std::thread::spawn(move || {
+                        let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(2)));
+                        let mut request = Vec::new();
+                        let mut chunk = [0u8; 4096];
+                        while let Ok(read) = stream.read(&mut chunk) {
+                            request.extend_from_slice(&chunk[..read]);
+                            if request.windows(4).any(|w| w == b"\r\n\r\n") {
+                                break;
+                            }
+                        }
+                        let head = String::from_utf8_lossy(&request).to_string();
+                        let length = head
+                            .split("\r\n")
+                            .find_map(|line| {
+                                line.strip_prefix("Content-Length: ")
+                                    .and_then(|value| value.trim().parse::<usize>().ok())
+                            })
+                            .unwrap_or(0);
+                        let header_end = request
+                            .windows(4)
+                            .position(|window| window == b"\r\n\r\n")
+                            .map(|index| index + 4)
+                            .unwrap_or(request.len());
+                        let mut body = request[header_end..].to_vec();
+                        while body.len() < length {
+                            match stream.read(&mut chunk) {
+                                Ok(0) | Err(_) => break,
+                                Ok(read) => body.extend_from_slice(&chunk[..read]),
+                            }
+                        }
+                        let parsed: serde_json::Value =
+                            serde_json::from_slice(&body).unwrap_or_default();
+                        let ids: Vec<String> = parsed["questions"]["decision"]["criteria"]
+                            .as_object()
+                            .map(|map| map.keys().cloned().collect())
+                            .unwrap_or_default();
+                        handle.lock().unwrap().push(ids.clone());
+                        let seq = |id: &String| {
+                            id.strip_prefix("cut:")
+                                .and_then(|value| value.parse::<i64>().ok())
+                                .unwrap_or_default()
+                        };
+                        let chosen = match pick {
+                            CutPick::Most => ids.iter().max_by_key(|id| seq(id)).cloned(),
+                            CutPick::Least => ids.iter().min_by_key(|id| seq(id)).cloned(),
+                        }
+                        .unwrap_or_default();
+                        let payload = serde_json::json!({
+                            "answers": {"decision": {
+                                "type": "choice",
+                                "choice": chosen,
+                                "probabilities": ids.iter()
+                                    .map(|id| (
+                                        id.clone(),
+                                        serde_json::json!(if *id == chosen { 0.82 } else { 0.09 }),
+                                    ))
+                                    .collect::<serde_json::Map<_, _>>(),
+                            }},
+                            "usage": {"input_tokens": 21, "output_tokens": 3}
+                        })
+                        .to_string()
+                        .into_bytes();
+                        let _ = stream.write_all(
+                        format!(
+                            "HTTP/1.1 200 X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            payload.len()
+                        )
+                        .as_bytes(),
+                    );
+                        let _ = stream.write_all(&payload);
+                        let _ = stream.flush();
+                    });
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(_) => return,
+            }
+        }
+    });
+    (endpoint, seen)
+}
+
 /// 再建一个已启用的生成模型（摘要模型候选）。
 fn add_generation_model(controller: &mut AppController, display_name: &str) -> String {
     match controller.dispatch(AppCommand::SaveAiModel(AiModelSaveInput {
@@ -831,5 +984,113 @@ fn paused_compaction_keeps_two_visible_copies_and_never_marks_success() {
     assert!(
         texts.iter().any(|text| text.starts_with("本轮已暂停")),
         "暂停轮应有可见正文：{texts:?}"
+    );
+}
+
+/// 用给定取舍跑满 10 轮，返回（会话 id、每次决策请求的候选、最终 checkpoint 切点）。
+fn run_with_decision_pick(fixture: &Fixture, pick: CutPick) -> (String, Vec<Vec<String>>, i64) {
+    let mut controller = fixture.configured(35, Some(4_096));
+    let (endpoint, seen) = spawn_compaction_mock(pick);
+    configure_compaction_decision_model(fixture, &mut controller, &endpoint);
+    let provider = CompactionScript::new("压缩决策已验证事实");
+    for _ in 0..10 {
+        let _ = run_turn(fixture, &mut controller, &provider);
+    }
+    let session_id = controller
+        .state()
+        .ai_conversation
+        .session_id
+        .clone()
+        .expect("已有会话");
+    let checkpoint = fixture
+        .storage
+        .with_ai_connection(|conn| context_checkpoints::load_latest(conn, &session_id))
+        .unwrap()
+        .expect("触发后应提交 checkpoint");
+    // 空候选只可能来自 mock 没读全请求体；宿主在候选不足时根本不会发请求。
+    let requests: Vec<Vec<String>> = seen
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|ids| !ids.is_empty())
+        .cloned()
+        .collect();
+    (session_id, requests, checkpoint.last_message_seq)
+}
+
+/// 压缩决策模型真的参与压缩：它选的切点决定 checkpoint 覆盖到哪一条历史。
+///
+/// 走真实链路：真实 SQLite + 真实 System One HTTP（本地 mock）+ 真实 checkpoint 表。
+/// 两次运行只有"决策模型选哪个切点"不同，最终切点必须随之不同——否则说明建议没被采用。
+#[test]
+fn compaction_decision_model_choice_selects_the_cut() {
+    let fixture = Fixture::new();
+    let (session_id, requests, most_cut) = run_with_decision_pick(&fixture, CutPick::Most);
+    assert!(
+        !requests.is_empty(),
+        "配置了压缩决策模型后必须真的发出决策请求"
+    );
+    assert!(
+        requests.iter().all(|ids| ids.len() >= 2),
+        "候选必须是宿主算好的多个合法切点：{requests:?}"
+    );
+    // 提交的切点必须来自决策模型给出的候选，而不是宿主自己挑的。
+    let chosen: Vec<i64> = requests
+        .iter()
+        .filter_map(|ids| ids.iter().max_by_key(|id| seq_of_candidate(id)).cloned())
+        .filter_map(|id| seq_of_candidate(&id))
+        .collect();
+    assert!(
+        chosen.contains(&most_cut),
+        "checkpoint 切点 {most_cut} 必须来自决策模型的候选：{chosen:?}"
+    );
+    // 决策请求仍必须进入账本（不吞掉用量）。
+    let rows = ledger_rows(&fixture, &session_id);
+    assert!(
+        rows.iter().any(|(purpose, _)| purpose == "decision"),
+        "压缩决策请求必须进入计量账本：{rows:?}"
+    );
+
+    // 同样历史、只把决策模型换成"压缩最少"，最终切点必须不同。
+    let other = Fixture::new();
+    let (_, other_requests, least_cut) = run_with_decision_pick(&other, CutPick::Least);
+    assert!(!other_requests.is_empty(), "另一组也必须真的发出决策请求");
+    assert_ne!(
+        most_cut, least_cut,
+        "决策模型选了不同的切点，压缩结果必须随之不同（否则建议没有被采用）"
+    );
+}
+
+/// 从候选 ID 解析切点 seq（宿主用 `cut:<seq>` 编码）。
+fn seq_of_candidate(id: &str) -> Option<i64> {
+    id.strip_prefix("cut:")
+        .and_then(|value| value.parse::<i64>().ok())
+}
+
+/// 压缩决策模型不可用（未选择）时：不发决策请求，压缩仍按确定性切点正常完成。
+#[test]
+fn compaction_runs_on_deterministic_cut_without_decision_model() {
+    let fixture = Fixture::new();
+    let mut controller = fixture.configured(35, Some(4_096));
+    let provider = CompactionScript::new("无决策模型的确定性压缩");
+    for _ in 0..10 {
+        let _ = run_turn(&fixture, &mut controller, &provider);
+    }
+    let session_id = controller
+        .state()
+        .ai_conversation
+        .session_id
+        .clone()
+        .expect("已有会话");
+    let checkpoint = fixture
+        .storage
+        .with_ai_connection(|conn| context_checkpoints::load_latest(conn, &session_id))
+        .unwrap()
+        .expect("未配置压缩决策模型也必须正常压缩");
+    assert!(checkpoint.summary_text.contains("无决策模型的确定性压缩"));
+    let rows = ledger_rows(&fixture, &session_id);
+    assert!(
+        rows.iter().all(|(purpose, _)| purpose != "decision"),
+        "没有配置压缩决策模型时不得发出决策请求：{rows:?}"
     );
 }

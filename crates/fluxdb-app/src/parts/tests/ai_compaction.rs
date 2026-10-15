@@ -3,8 +3,8 @@
 
 use crate::{
     CompactionCut, CompactionReason, CompactionTrigger, build_summary_prompt, compute_cut,
-    estimate_messages_tokens, estimate_tokens, exceeds_input_budget, should_compact, source_hash,
-    validate_summary,
+    cut_candidates, estimate_messages_tokens, estimate_tokens, exceeds_input_budget,
+    should_compact, source_hash, validate_summary,
 };
 
 fn trigger(percent: u8, window: i64, output: i64) -> CompactionTrigger {
@@ -157,4 +157,49 @@ fn exceeds_input_budget_is_false_when_window_unknown() {
 #[test]
 fn exceeds_input_budget_treats_window_smaller_than_output_as_over_budget() {
     assert!(exceeds_input_budget(1, trigger(80, 1_000, 5_000)));
+}
+
+#[test]
+fn cut_candidates_always_include_the_deterministic_cut() {
+    let messages: Vec<ModelMessage> = (0..12)
+        .map(|i| ModelMessage::new(ModelRole::User, format!("m{i}")))
+        .collect();
+    let candidates = cut_candidates(&messages, 4, |index| index as i64 + 1).expect("有可压历史");
+    let deterministic = compute_cut(&messages, 4, |index| index as i64 + 1).unwrap();
+    assert_eq!(candidates.deterministic, deterministic);
+    assert!(candidates.all.contains(&deterministic));
+    assert!(candidates.all.len() >= 2, "应有可决策的多个合法切点");
+}
+
+#[test]
+fn cut_candidates_keep_tool_pairs_intact_for_every_candidate() {
+    let messages = vec![
+        ModelMessage::new(ModelRole::User, "q"),
+        ModelMessage::assistant_with_tool_calls("call-1", Vec::new()),
+        ModelMessage::tool_result("call-1", "read", "{}"),
+        ModelMessage::new(ModelRole::Assistant, "a"),
+        ModelMessage::new(ModelRole::User, "q2"),
+        ModelMessage::assistant_with_tool_calls("call-2", Vec::new()),
+        ModelMessage::tool_result("call-2", "read", "{}"),
+        ModelMessage::new(ModelRole::Assistant, "done"),
+    ];
+    let candidates = cut_candidates(&messages, 2, |index| index as i64 + 1).expect("有可压历史");
+    // 每个候选都必须是合法切点：保留段的第一条不能是孤立 Tool 回执。
+    for candidate in &candidates.all {
+        assert_ne!(
+            messages[candidate.cut].role,
+            ModelRole::Tool,
+            "候选切点不得落在工具调用与回执之间：{candidate:?}"
+        );
+        assert_eq!(candidate.last_message_seq, candidate.cut as i64);
+    }
+}
+
+#[test]
+fn cut_candidates_are_none_when_nothing_is_safe_to_compact() {
+    let messages = vec![
+        ModelMessage::new(ModelRole::User, "a"),
+        ModelMessage::new(ModelRole::Assistant, "b"),
+    ];
+    assert!(cut_candidates(&messages, 4, |index| index as i64 + 1).is_none());
 }

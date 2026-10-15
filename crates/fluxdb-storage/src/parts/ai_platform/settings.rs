@@ -60,6 +60,9 @@ pub struct RuntimeSettings {
     pub default_agent_id: Option<String>,
     pub default_model_profile_id: Option<String>,
     pub default_decision_model_profile_id: Option<String>,
+    /// 压缩决策槽位：压缩前判断历史取舍可选的 Jev 模型，与 [`Self::default_decision_model_profile_id`]
+    /// 各自独立（在压缩插件管理里选，不连带改动 Jev 决策优化的选择）。
+    pub compaction_decision_model_profile_id: Option<String>,
     pub max_active_turns: i64,
     pub revision: i64,
 }
@@ -140,7 +143,7 @@ pub fn load_runtime_settings(conn: &Connection) -> Result<RuntimeSettings> {
     let row = conn
         .query_row(
             "SELECT default_agent_id, default_model_profile_id, default_decision_model_profile_id,
-                    max_active_turns, revision
+                    compaction_decision_model_profile_id, max_active_turns, revision
                FROM ai_runtime_settings WHERE id=1",
             [],
             |row| {
@@ -148,8 +151,9 @@ pub fn load_runtime_settings(conn: &Connection) -> Result<RuntimeSettings> {
                     row.get::<_, Option<String>>(0)?,
                     row.get::<_, Option<String>>(1)?,
                     row.get::<_, Option<String>>(2)?,
-                    row.get::<_, i64>(3)?,
+                    row.get::<_, Option<String>>(3)?,
                     row.get::<_, i64>(4)?,
+                    row.get::<_, i64>(5)?,
                 ))
             },
         )
@@ -160,13 +164,15 @@ pub fn load_runtime_settings(conn: &Connection) -> Result<RuntimeSettings> {
             default_agent_id: r.0,
             default_model_profile_id: r.1,
             default_decision_model_profile_id: r.2,
-            max_active_turns: r.3,
-            revision: r.4,
+            compaction_decision_model_profile_id: r.3,
+            max_active_turns: r.4,
+            revision: r.5,
         },
         None => RuntimeSettings {
             default_agent_id: None,
             default_model_profile_id: None,
             default_decision_model_profile_id: None,
+            compaction_decision_model_profile_id: None,
             max_active_turns: 2,
             revision: 0,
         },
@@ -186,19 +192,22 @@ pub fn save_runtime_settings(
     let changed = conn
         .execute(
             "INSERT INTO ai_runtime_settings (id, default_agent_id, default_model_profile_id,
-                default_decision_model_profile_id, max_active_turns, revision, updated_at_ms)
-             VALUES (1,?1,?2,?3,?4,1,?5)
+                default_decision_model_profile_id, compaction_decision_model_profile_id,
+                max_active_turns, revision, updated_at_ms)
+             VALUES (1,?1,?2,?3,?4,?5,1,?6)
              ON CONFLICT(id) DO UPDATE SET
                 default_agent_id=excluded.default_agent_id,
                 default_model_profile_id=excluded.default_model_profile_id,
                 default_decision_model_profile_id=excluded.default_decision_model_profile_id,
+                compaction_decision_model_profile_id=excluded.compaction_decision_model_profile_id,
                 max_active_turns=excluded.max_active_turns,
                 revision=ai_runtime_settings.revision+1, updated_at_ms=excluded.updated_at_ms
-              WHERE ai_runtime_settings.revision=?6",
+              WHERE ai_runtime_settings.revision=?7",
             params![
                 settings.default_agent_id,
                 settings.default_model_profile_id,
                 settings.default_decision_model_profile_id,
+                settings.compaction_decision_model_profile_id,
                 settings.max_active_turns,
                 now_ms,
                 expected_revision,

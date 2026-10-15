@@ -131,6 +131,7 @@ fn builtin_plugins_render_in_catalog_order_not_name_order() {
         summary: String::new(),
         enabled: true,
         mandatory: false,
+        retired: false,
         config_fields: Vec::new(),
         config_error: None,
         revision: 1,
@@ -283,5 +284,95 @@ fn ai_ui_jev_config_dialog_selects_model_then_toggle(cx: &mut TestAppContext) {
     });
     assert_eq!(disabled_kind, fluxdb_app::JevStatusKind::Disabled);
     assert_eq!(disabled, Some(false), "开关应真实落库");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// 「上下文压缩」也走同一条配置协议：管理弹框里选压缩决策模型，落独立槽位，
+/// 且与 Jev 决策槽位互不影响。
+#[gpui::test]
+fn ai_ui_compaction_plugin_config_dialog_uses_its_own_slot(cx: &mut TestAppContext) {
+    let root = isolated_root("compaction-config");
+    let storage = FileStorage::new(root.clone());
+    let mut controller = AppController::new();
+    controller.set_ai_storage(storage.clone());
+    let mut decision = sample_model_input("UI 压缩决策模型", "fixture-compaction-decide");
+    decision.provider = "decisions".into();
+    decision.api_key = Some(TEST_API_KEY.to_string());
+    let model_id = match controller.dispatch(AppCommand::SaveAiModel(decision)) {
+        AppEvent::AiModelSaved { id, .. } => id,
+        other => panic!("保存决策模型应返回 AiModelSaved，实际: {other:?}"),
+    };
+    let _ = controller.dispatch(AppCommand::RefreshAiSettings);
+    let _ = controller.dispatch(AppCommand::OpenSettings);
+    let (view, cx) = open_main(cx, controller, storage.clone(), SettingsPanelSection::AiToolsMcp);
+    cx.simulate_resize(size(px(1600.), px(1800.)));
+    click_selector(cx, "ai-tools-tab:内置插件");
+
+    // 声明了字段的能力才有「管理」入口；字段非必填（未选择也照常压缩）。
+    let (field, selection) = view.read_with(cx, |main, _| {
+        let plugin = main
+            .controller
+            .state()
+            .ai_plugin_instances
+            .iter()
+            .find(|plugin| plugin.id == "builtin.compaction")
+            .cloned()
+            .expect("上下文压缩实例");
+        let field = plugin
+            .config_fields
+            .iter()
+            .find(|field| field.key == fluxdb_app::COMPACTION_DECISION_MODEL_FIELD)
+            .cloned()
+            .expect("上下文压缩必须声明压缩决策模型字段");
+        (field, plugin.config_fields.len())
+    });
+    assert_eq!(selection, 1, "上下文压缩只声明一个字段");
+    assert!(!field.required, "压缩决策模型非必填：未选择也照常压缩");
+    assert_eq!(field.selection, None);
+    assert_eq!(field.choices.len(), 1, "候选由宿主解析");
+
+    // 打开管理弹框 → 选择模型 → 保存。
+    click_selector(cx, "ai-plugin-manage:builtin.compaction");
+    click_selector(cx, "ai-plugin-config-field:compaction_decision_model");
+    let option: &'static str = Box::leak(
+        format!("ai-plugin-config-option:compaction_decision_model:{model_id}").into_boxed_str(),
+    );
+    click_selector(cx, option);
+    click_selector(cx, "ai-plugin-config-save");
+
+    let (dialog_open, jev_selection) = view.read_with(cx, |main, _| {
+        let state = main.controller.state();
+        (
+            main.ai_plugin_config_dialog.is_some(),
+            state
+                .ai_plugin_instances
+                .iter()
+                .find(|plugin| plugin.id == fluxdb_app::JEV_INSTANCE_ID)
+                .and_then(|plugin| plugin.config_fields.first())
+                .and_then(|field| field.selection.clone()),
+        )
+    });
+    assert!(!dialog_open, "保存成功后弹框应关闭");
+    assert_eq!(jev_selection, None, "压缩决策选择不得连带写入 Jev 决策槽位");
+    // 真实落库核对：写入的是压缩决策列，不是 Jev 决策列。
+    let runtime = storage
+        .with_ai_connection(fluxdb_storage::ai_platform::settings::load_runtime_settings)
+        .unwrap();
+    assert_eq!(
+        runtime.compaction_decision_model_profile_id.as_deref(),
+        Some(model_id.as_str())
+    );
+    assert_eq!(runtime.default_decision_model_profile_id, None);
+    // 重进插件页仍能看到选择（不是只在内存里）。
+    let reselected = view.read_with(cx, |main, _| {
+        main.controller
+            .state()
+            .ai_plugin_instances
+            .iter()
+            .find(|plugin| plugin.id == "builtin.compaction")
+            .and_then(|plugin| plugin.config_fields.first())
+            .and_then(|field| field.selection.clone())
+    });
+    assert_eq!(reselected.as_deref(), Some(model_id.as_str()));
     let _ = std::fs::remove_dir_all(root);
 }

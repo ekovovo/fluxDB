@@ -239,6 +239,52 @@ fn ai_conversation_publish_compaction_notice(
     }
 }
 
+/// 压缩决策候选的稳定 ID 前缀：只用于在建议与宿主算好的切点之间对齐，不落库。
+const COMPACTION_CUT_ID_PREFIX: &str = "cut:";
+
+/// 在宿主给出的合法切点里选一个：优先采用压缩决策模型的建议，拿不到就用确定性切点。
+///
+/// 建议只影响"多少历史进入摘要"，不改变保护项、切点合法性或 checkpoint 校验；
+/// 因此任何失败都只是回退，不是压缩失败。
+fn select_compaction_cut(
+    storage: &fluxdb_storage::FileStorage,
+    job: &AiConversationJob,
+    cancel: &fluxdb_core::CancelFlag,
+    messages: &[fluxdb_core::ModelMessage],
+    candidates: &CompactionCutCandidates,
+) -> CompactionCut {
+    let deterministic = candidates.deterministic;
+    if candidates.all.len() < 2 || cancel.is_cancelled() {
+        return deterministic;
+    }
+    let advisory: Vec<crate::CompactionCutCandidate> = candidates
+        .all
+        .iter()
+        .map(|cut| crate::CompactionCutCandidate {
+            id: format!("{COMPACTION_CUT_ID_PREFIX}{}", cut.last_message_seq),
+            label: format!("保留最近 {} 条历史", messages.len() - cut.cut),
+            detail: format!("进入摘要 {} 条", cut.cut),
+        })
+        .collect();
+    let advice = crate::advise_compaction_cut(
+        storage,
+        &job.session_id,
+        &job.turn_id,
+        &advisory,
+        cancel,
+    );
+    let Some(chosen) = advice.adopted_id() else {
+        return deterministic;
+    };
+    candidates
+        .all
+        .iter()
+        .zip(advisory.iter())
+        .find(|(_, candidate)| candidate.id == chosen)
+        .map(|(cut, _)| *cut)
+        .unwrap_or(deterministic)
+}
+
 /// 按窗口百分比/输出预留判断是否压缩；需要时调用摘要模型生成增量摘要并原子提交 checkpoint。
 ///
 /// 摘要模型优先取 Agent 的 `compaction` 绑定，未配置用主模型；已配置但不可用时**不静默改用主模型**。
@@ -311,9 +357,8 @@ fn ai_conversation_maybe_compact(
     let messages: Vec<fluxdb_core::ModelMessage> = history.iter().map(|(_, m)| m.clone()).collect();
     // 保留最近 1/3 的历史消息（至少 4 条，至多 24 条），对齐 Pi "保留近期完整交互"。
     let keep_recent = (messages.len() / 3).clamp(4, 24);
-    let Some(cut) = compute_cut(&messages, keep_recent, |index| {
-        history.get(index).map(|(seq, _)| *seq).unwrap_or(0)
-    }) else {
+    let seq_of = |index: usize| history.get(index).map(|(seq, _)| *seq).unwrap_or(0);
+    let Some(candidates) = cut_candidates(&messages, keep_recent, seq_of) else {
         return compaction_failure(
             storage,
             job,
@@ -326,6 +371,9 @@ fn ai_conversation_maybe_compact(
             false,
         );
     };
+    // 压缩决策模型（可选，独立槽位）：只在宿主算好的合法切点里选一个；拿不到建议、
+    // 低置信度或失败都回退到确定性切点，绝不因此让本轮压缩失败或暂停。
+    let cut = select_compaction_cut(storage, job, cancel, &messages, &candidates);
 
     // 若有旧摘要，它已覆盖 [..previous_last_seq]，这次只把其后、切点之前的消息作为增量。
     let previous_last_seq = previous_summary

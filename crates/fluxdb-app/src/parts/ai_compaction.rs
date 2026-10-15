@@ -183,6 +183,73 @@ pub fn compute_cut(
     })
 }
 
+/// 把确定性切点回退到成对边界的规则抽出来，供"候选切点"生成复用。
+///
+/// 与 [`compute_cut`] 用的是同一条规则：保留段的第一条不能是孤立 Tool 回执，
+/// 否则回退到工具请求/回执成对的边界。决策建议的候选必须同样合法，不能把
+/// "模型选了一个会拆散工具配对的位置"变成新的失败路径。
+fn legalize_cut(messages: &[ModelMessage], earliest: usize, mut cut: usize) -> Option<usize> {
+    while cut > earliest {
+        if cut >= messages.len() {
+            cut -= 1;
+            continue;
+        }
+        if messages[cut].role == fluxdb_core::ModelRole::Tool {
+            cut -= 1;
+            continue;
+        }
+        break;
+    }
+    (cut > earliest).then_some(cut)
+}
+
+/// 压缩决策候选：确定性切点 + 供决策模型挑选的合法切点集合。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompactionCutCandidates {
+    /// 未配置压缩决策模型或建议不可用时使用的确定性切点（等于 [`compute_cut`] 的结果）。
+    pub deterministic: CompactionCut,
+    /// 全部合法切点（含 `deterministic`），按"保留原文最多→最少"排序。
+    pub all: Vec<CompactionCut>,
+}
+
+/// 压缩决策的候选切点：宿主预先算好若干**合法**切点，决策模型只能从中选一个。
+///
+/// 切点越靠后，进入摘要的历史越多、保留原文越少。候选只在合法切点上取，因此模型
+/// 无论选哪个都不会拆散工具配对；`None` 表示当前历史没有可安全压缩的内容。
+pub fn cut_candidates(
+    messages: &[ModelMessage],
+    keep_recent_messages: usize,
+    seq_of: impl Fn(usize) -> i64,
+) -> Option<CompactionCutCandidates> {
+    let deterministic = compute_cut(messages, keep_recent_messages, &seq_of)?;
+    let earliest = 1usize;
+    let latest = messages.len().saturating_sub(1);
+    // 三个候选：确定性切点、少压一点、多压一点；都被回退规则校正到合法位置。
+    let mut cuts = vec![
+        deterministic.cut,
+        legalize_cut(messages, earliest, deterministic.cut.saturating_sub(2).max(earliest + 1))
+            .unwrap_or(deterministic.cut),
+        legalize_cut(
+            messages,
+            earliest,
+            (deterministic.cut + (latest - deterministic.cut) / 2).max(deterministic.cut),
+        )
+        .unwrap_or(deterministic.cut),
+    ];
+    cuts.sort_unstable();
+    cuts.dedup();
+    Some(CompactionCutCandidates {
+        deterministic,
+        all: cuts
+            .into_iter()
+            .map(|cut| CompactionCut {
+                cut,
+                last_message_seq: seq_of(cut - 1),
+            })
+            .collect(),
+    })
+}
+
 /// 保护项模板：这些条目缺失时摘要视为无效，不落盘。
 pub const REQUIRED_PROTECTED_ITEMS: &[&str] = &[
     "goal",

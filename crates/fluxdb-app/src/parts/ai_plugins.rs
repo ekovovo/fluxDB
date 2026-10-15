@@ -8,7 +8,6 @@
 pub enum BuiltinCapability {
     ContextProvider,
     ToolProvider,
-    ModelRouter,
     DecisionProvider,
     ContextProcessor,
     SecurityAudit,
@@ -59,27 +58,6 @@ pub trait ContextProcessor: Send + Sync {
         input: ContextPlanInput,
         cancel: fluxdb_core::CancelFlag,
     ) -> fluxdb_core::AiFuture<'_, ContextPlan>;
-}
-
-/// 路由能力只能引用宿主提供的候选 ID，不能提供 endpoint 或凭据。
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ModelRouteInput {
-    pub task_summary: String,
-    pub candidate_model_ids: Vec<String>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ModelRouteAdvice {
-    pub model_id: Option<String>,
-    pub reason: Option<String>,
-}
-
-pub trait ModelRouter: Send + Sync {
-    fn advise(
-        &self,
-        input: ModelRouteInput,
-        cancel: fluxdb_core::CancelFlag,
-    ) -> fluxdb_core::AiFuture<'_, ModelRouteAdvice>;
 }
 
 /// 产物能力错误：`code` 直接成为工具回执的 `error_code`，不被吞成"未知失败"。
@@ -199,6 +177,11 @@ pub struct BuiltinDescriptor {
     pub summary: &'static str,
     pub capabilities: &'static [BuiltinCapability],
     pub mandatory: bool,
+    /// 已下线的目录占位行：保留实例与页面行，但不再登记任何能力、不可启停。
+    ///
+    /// 与 `mandatory` 的区别是"没有实现"而不是"内核强制"：置灰行只在设置页占位，
+    /// 运行时不解析任何能力，也不显示说明文字。
+    pub retired: bool,
     /// 配置声明（协议见 [`PluginConfigDeclaration`]）；空串表示该能力没有可配置项，
     /// 宿主因此不显示「管理」入口。外置插件把同一份声明放进 manifest 的
     /// `config_declaration`，两条路径由同一个解析器处理。
@@ -207,7 +190,8 @@ pub struct BuiltinDescriptor {
 
 const CONTEXT_UI: &[BuiltinCapability] = &[BuiltinCapability::ContextProvider];
 const FILES: &[BuiltinCapability] = &[BuiltinCapability::ContextProvider];
-const ROUTER: &[BuiltinCapability] = &[BuiltinCapability::ModelRouter];
+/// 已下线能力的占位条目：不登记任何能力。
+const RETIRED: &[BuiltinCapability] = &[];
 const JEV: &[BuiltinCapability] = &[BuiltinCapability::DecisionProvider];
 const COMPACTION: &[BuiltinCapability] = &[BuiltinCapability::ContextProcessor];
 const SECURITY: &[BuiltinCapability] = &[BuiltinCapability::SecurityAudit];
@@ -253,6 +237,40 @@ pub fn jev_config_declaration() -> &'static PluginConfigDeclaration {
     })
 }
 
+/// 上下文压缩的压缩决策模型字段键；声明与运行期共用，改名等同协议不兼容变更。
+pub const COMPACTION_DECISION_MODEL_FIELD: &str = "compaction_decision_model";
+
+/// 上下文压缩的配置声明（协议见 [`PluginConfigDeclaration`]）。
+///
+/// 声明的是**压缩决策**槽位：压缩前由该决策模型在宿主给出的合法切点之间选择保留多少历史；
+/// 摘要正文仍由生成模型（Agent 的 `compaction` 绑定）写。未选择时压缩照常按确定性切点运行，
+/// 只是没有这一层建议，因此字段非必填。
+const COMPACTION_CONFIG_DECLARATION: &str = r#"{
+  "protocol": "fluxdb.plugin.config.v1",
+  "fields": [
+    {
+      "key": "compaction_decision_model",
+      "label": "压缩决策模型",
+      "help": "未选择时按确定性切点压缩，压缩与摘要照常运行；选择后仅影响哪些历史进入摘要。",
+      "required": false,
+      "resource": {
+        "type": "model",
+        "role": "compaction_decision",
+        "api_protocol": "system-one"
+      }
+    }
+  ]
+}"#;
+
+/// 上下文压缩的配置声明（解析一次后复用）。
+pub fn compaction_config_declaration() -> &'static PluginConfigDeclaration {
+    static DECLARATION: std::sync::OnceLock<PluginConfigDeclaration> = std::sync::OnceLock::new();
+    DECLARATION.get_or_init(|| {
+        PluginConfigDeclaration::parse(COMPACTION_CONFIG_DECLARATION)
+            .expect("上下文压缩配置声明必须通过注册表自洽检查")
+    })
+}
+
 /// 内置插件实例的唯一能力目录；数据库与 Redis 能力由工具目录管理。
 pub const BUILTIN_DESCRIPTORS: &[BuiltinDescriptor] = &[
     BuiltinDescriptor {
@@ -262,6 +280,7 @@ pub const BUILTIN_DESCRIPTORS: &[BuiltinDescriptor] = &[
         summary: "当前页面、@ 对象摘要和主动细节读取",
         capabilities: CONTEXT_UI,
         mandatory: true,
+        retired: false,
         config_declaration: "",
     },
     BuiltinDescriptor {
@@ -271,15 +290,17 @@ pub const BUILTIN_DESCRIPTORS: &[BuiltinDescriptor] = &[
         summary: "附件、授权目录、有界文件读取",
         capabilities: FILES,
         mandatory: false,
+        retired: false,
         config_declaration: "",
     },
     BuiltinDescriptor {
         instance_id: "builtin.router",
         package_key: "fluxdb.model.router",
         display_name: "模型路由",
-        summary: "默认模型、经济与高能力候选路由",
-        capabilities: ROUTER,
+        summary: "",
+        capabilities: RETIRED,
         mandatory: false,
+        retired: true,
         config_declaration: "",
     },
     BuiltinDescriptor {
@@ -289,6 +310,7 @@ pub const BUILTIN_DESCRIPTORS: &[BuiltinDescriptor] = &[
         summary: "可选分类、路由与相关性建议",
         capabilities: JEV,
         mandatory: false,
+        retired: false,
         config_declaration: JEV_CONFIG_DECLARATION,
     },
     BuiltinDescriptor {
@@ -298,7 +320,8 @@ pub const BUILTIN_DESCRIPTORS: &[BuiltinDescriptor] = &[
         summary: "保护条目、卸载、摘要与 checkpoint",
         capabilities: COMPACTION,
         mandatory: false,
-        config_declaration: "",
+        retired: false,
+        config_declaration: COMPACTION_CONFIG_DECLARATION,
     },
     BuiltinDescriptor {
         instance_id: "builtin.security-audit",
@@ -307,6 +330,7 @@ pub const BUILTIN_DESCRIPTORS: &[BuiltinDescriptor] = &[
         summary: "调用前确定性风险/授权检查与审计",
         capabilities: SECURITY,
         mandatory: true,
+        retired: false,
         config_declaration: "",
     },
     BuiltinDescriptor {
@@ -316,6 +340,7 @@ pub const BUILTIN_DESCRIPTORS: &[BuiltinDescriptor] = &[
         summary: "Token 用量与执行保护事件",
         capabilities: BUDGET,
         mandatory: true,
+        retired: false,
         config_declaration: "",
     },
     BuiltinDescriptor {
@@ -325,6 +350,7 @@ pub const BUILTIN_DESCRIPTORS: &[BuiltinDescriptor] = &[
         summary: "已确认业务知识与按需专业说明",
         capabilities: KNOWLEDGE,
         mandatory: false,
+        retired: false,
         config_declaration: "",
     },
     BuiltinDescriptor {
@@ -334,6 +360,7 @@ pub const BUILTIN_DESCRIPTORS: &[BuiltinDescriptor] = &[
         summary: "图表、表格、报告的创建与渲染说明",
         capabilities: BI,
         mandatory: false,
+        retired: false,
         config_declaration: "",
     },
     BuiltinDescriptor {
@@ -343,6 +370,7 @@ pub const BUILTIN_DESCRIPTORS: &[BuiltinDescriptor] = &[
         summary: "公开计划、工具进展与检查点说明",
         capabilities: PROGRESS,
         mandatory: false,
+        retired: false,
         config_declaration: "",
     },
     BuiltinDescriptor {
@@ -352,6 +380,7 @@ pub const BUILTIN_DESCRIPTORS: &[BuiltinDescriptor] = &[
         summary: "脱敏的阶段耗时/错误/诊断汇总",
         capabilities: TELEMETRY,
         mandatory: false,
+        retired: false,
         config_declaration: "",
     },
 ];
@@ -391,7 +420,17 @@ impl BuiltinRegistry {
                     "内置能力目录包含重复 ID",
                 ));
             }
-            if descriptor.capabilities.is_empty() {
+            // 占位行表示能力已下线：必须没有能力与配置入口，避免"行还在、能力却在跑"。
+            if descriptor.retired {
+                if !descriptor.capabilities.is_empty()
+                    || !descriptor.config_declaration.is_empty()
+                {
+                    return Err(fluxdb_core::Error::new(
+                        fluxdb_core::ErrorKind::Internal,
+                        "已下线的内置能力不得登记能力或配置项",
+                    ));
+                }
+            } else if descriptor.capabilities.is_empty() {
                 return Err(fluxdb_core::Error::new(
                     fluxdb_core::ErrorKind::Internal,
                     "内置能力目录包含空能力项",
@@ -456,6 +495,12 @@ impl BuiltinRegistry {
 
     pub fn can_disable(&self, instance_id: &str) -> bool {
         self.find_by_instance(instance_id)
-            .is_some_and(|descriptor| !descriptor.mandatory)
+            .is_some_and(|descriptor| !descriptor.mandatory && !descriptor.retired)
+    }
+
+    /// 该实例是否为已下线的目录占位行（没有能力、不可启停）。
+    pub fn is_retired(&self, instance_id: &str) -> bool {
+        self.find_by_instance(instance_id)
+            .is_some_and(|descriptor| descriptor.retired)
     }
 }

@@ -245,6 +245,8 @@ pub struct AiPluginItem {
     pub enabled: bool,
     /// 内核强制（安全审计/执行护栏），UI 需禁用开关并展示"内核约束"。
     pub mandatory: bool,
+    /// 已下线的目录占位行：UI 置灰整行、禁用开关，且不展示说明文字。
+    pub retired: bool,
     /// 插件声明的可配置字段（协议见 [`PluginConfigDeclaration`]）。
     ///
     /// 为空表示该插件不需要配置，UI 因此不显示「管理」入口；这也是内置与外置插件

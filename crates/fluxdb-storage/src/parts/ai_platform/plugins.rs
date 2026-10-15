@@ -207,6 +207,13 @@ pub fn seed_builtin_plugins(conn: &Connection, now_ms: i64) -> Result<()> {
         [now_ms],
     )
     .map_err(sqlite_error)?;
+    // 模型路由能力已删除，实例只作目录占位行；不允许停留在"已启用"。
+    tx.execute(
+        "UPDATE ai_plugin_instances SET enabled=0, revision=revision+1, updated_at_ms=?1
+         WHERE id='builtin.router' AND enabled=1",
+        [now_ms],
+    )
+    .map_err(sqlite_error)?;
     tx.execute(
         "DELETE FROM ai_agent_plugin_bindings WHERE plugin_instance_id='builtin.database'",
         [],

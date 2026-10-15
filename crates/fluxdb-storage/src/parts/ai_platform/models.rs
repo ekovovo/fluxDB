@@ -249,13 +249,19 @@ pub fn delete_model(conn: &Connection, id: &str, expected_revision: i64) -> Resu
         ));
     }
     // 默认主模型目前无外键，必须显式保护；其余引用仍保留数据库 RESTRICT 防线。
-    let referenced: bool = tx.query_row(
-        "SELECT EXISTS(SELECT 1 FROM ai_runtime_settings WHERE default_model_profile_id=?1 OR default_decision_model_profile_id=?1)
+    let referenced: bool = tx
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM ai_runtime_settings WHERE default_model_profile_id=?1 \
+                 OR default_decision_model_profile_id=?1 \
+                 OR compaction_decision_model_profile_id=?1)
              OR EXISTS(SELECT 1 FROM ai_agents WHERE default_model_profile_id=?1)
              OR EXISTS(SELECT 1 FROM ai_agent_model_bindings WHERE model_profile_id=?1)
              OR EXISTS(SELECT 1 FROM ai_context_checkpoints WHERE model_profile_id=?1)
              OR EXISTS(SELECT 1 FROM ai_usage_ledger WHERE model_profile_id=?1)",
-        [id], |row| row.get(0)).map_err(sqlite_error)?;
+            [id],
+            |row| row.get(0),
+        )
+        .map_err(sqlite_error)?;
     if referenced {
         return Err(Error::new(
             ErrorKind::Internal,

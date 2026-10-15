@@ -195,6 +195,7 @@ CREATE TABLE IF NOT EXISTS ai_runtime_settings (
     default_agent_id TEXT REFERENCES ai_agents(id) ON DELETE RESTRICT,
     default_model_profile_id TEXT,
     default_decision_model_profile_id TEXT REFERENCES ai_model_profiles(id) ON DELETE RESTRICT,
+    compaction_decision_model_profile_id TEXT REFERENCES ai_model_profiles(id) ON DELETE RESTRICT,
     max_active_turns INTEGER NOT NULL DEFAULT 2 CHECK (max_active_turns > 0),
     context_policy_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(context_policy_json)),
     privacy_policy_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(privacy_policy_json)),

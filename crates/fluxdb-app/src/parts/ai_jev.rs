@@ -18,6 +18,9 @@ use fluxdb_storage::ai_platform::model_bindings::{
 pub const JEV_INSTANCE_ID: &str = "builtin.jev";
 pub const JEV_PACKAGE_KEY: &str = "fluxdb.decision.jev";
 
+/// 上下文压缩插件实例 ID（压缩决策建议归属的能力）。
+pub const COMPACTION_INSTANCE_ID: &str = "builtin.compaction";
+
 /// system 决策绑定的优先级；用户绑定同角色由调用方优先取用，二者不混排。
 pub const JEV_SYSTEM_BINDING_PRIORITY: i64 = 100;
 
@@ -38,6 +41,9 @@ pub const MIN_RELEVANCE_CANDIDATES: usize = 3;
 
 /// 一次决策请求的候选上限，避免 System One 请求体随引用数量无界放大。
 pub const MAX_RELEVANCE_CANDIDATES: usize = 12;
+
+/// 触发压缩切点判断的最少候选数：只有一个合法切点时没有可决策空间。
+pub const MIN_COMPACTION_CANDIDATES: usize = 2;
 
 /// 决策角色在候选筛选中要求的模型用途。
 const DECISION_ROLE: ModelRole = ModelRole::Decision;
@@ -207,6 +213,38 @@ fn has_enabled_user_binding(
         }))
 }
 
+/// 压缩决策模型：用户在「上下文压缩 · 管理」里显式选择的槽位，与 Jev 决策模型互不影响。
+///
+/// 返回 `None` 表示能力已关闭、未配置，或已选择的模型当前不合格（停用/用途错配/禁止出站/
+/// 缺凭据/协议不符）；调用方一律回退确定性切点，不静默换用别的模型，也不因它失败而暂停压缩。
+pub fn resolve_compaction_decision_model(
+    conn: &rusqlite::Connection,
+) -> fluxdb_core::Result<Option<String>> {
+    // 插件关闭等于关掉这层优化：确定性压缩与保护约束照常，只是不再发决策请求。
+    let enabled = fluxdb_storage::ai_platform::plugins::list_plugin_instances(conn)?
+        .into_iter()
+        .any(|instance| instance.id == COMPACTION_INSTANCE_ID && instance.enabled);
+    if !enabled {
+        return Ok(None);
+    }
+    let field = compaction_decision_model_field()?;
+    let resolved = resolve_field(conn, field)?;
+    let usable = resolved.selection_is_usable();
+    Ok(if usable { resolved.selection } else { None })
+}
+
+/// 上下文压缩声明里的压缩决策模型字段：角色、协议与候选口径都由声明决定。
+fn compaction_decision_model_field() -> fluxdb_core::Result<&'static PluginConfigField> {
+    compaction_config_declaration()
+        .field(COMPACTION_DECISION_MODEL_FIELD)
+        .ok_or_else(|| {
+            fluxdb_core::Error::new(
+                fluxdb_core::ErrorKind::Internal,
+                "上下文压缩配置声明缺少压缩决策模型字段",
+            )
+        })
+}
+
 /// 该 Agent 本轮实际会用哪个决策模型。
 ///
 /// 顺序：用户手动 `decision` 绑定 → system 绑定 → 全局 reconcile 选中的模型。
@@ -371,6 +409,26 @@ pub fn advice_is_usable(
     Ok(())
 }
 
+/// 决策建议的来源标注：决定诊断事件里的 `role` / `source`，两种用途共用一个决策通道。
+#[derive(Clone, Copy)]
+struct AdviceOrigin {
+    role: &'static str,
+    source: &'static str,
+    circuit_reason: &'static str,
+}
+
+const RELEVANCE_ORIGIN: AdviceOrigin = AdviceOrigin {
+    role: "decision",
+    source: "builtin.jev",
+    circuit_reason: "Jev 熔断中，跳过本轮建议",
+};
+
+const COMPACTION_ORIGIN: AdviceOrigin = AdviceOrigin {
+    role: "compaction_decision",
+    source: "builtin.compaction",
+    circuit_reason: "压缩决策模型熔断中，跳过本轮建议",
+};
+
 /// 发起一次相关性建议；调用方必须已经有 Turn（计量账本要求真实 turn 归属）。
 pub fn advise_relevance(
     storage: &fluxdb_storage::FileStorage,
@@ -389,7 +447,6 @@ pub fn advise_relevance(
         .cloned()
         .collect();
     let now_ms = ai_chat_now();
-    let fallback = |reason: String| JevAdvice::Degraded { reason };
 
     let (model_profile_id, status) = match with_ai_storage(storage, |conn| {
         let status = jev_status(conn, now_ms)?;
@@ -401,7 +458,7 @@ pub fn advise_relevance(
         Ok((model, status))
     }) {
         Ok(value) => value,
-        Err(error) => return fallback(error.message),
+        Err(error) => return JevAdvice::Degraded { reason: error.message },
     };
     if !status.is_usable() || model_profile_id.is_empty() {
         return JevAdvice::NotAttempted(match status.detail {
@@ -409,47 +466,151 @@ pub fn advise_relevance(
             None => format!("Jev 不可用：{}", status.label()),
         });
     }
-    let circuit = circuit_snapshot(&model_profile_id, now_ms);
-    if circuit.open_until_ms > now_ms {
-        return JevAdvice::NotAttempted("Jev 熔断中，跳过本轮建议".into());
-    }
-
     let ids: Vec<String> = bounded.iter().map(|candidate| candidate.id.clone()).collect();
-    let request = fluxdb_core::DecisionRequest {
-        model: model_profile_id.clone(),
-        candidates: ids.clone(),
-        prompt: relevance_prompt(&bounded),
+    advise_with_model(
+        storage,
+        session_id,
+        turn_id,
+        &model_profile_id,
+        &ids,
+        relevance_prompt(&bounded),
+        RELEVANCE_ORIGIN,
+        cancel,
+        now_ms,
+    )
+}
+
+/// 压缩决策候选：宿主已经算好的一个合法切点，只暴露公开标签与取舍说明。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CompactionCutCandidate {
+    pub id: String,
+    pub label: String,
+    pub detail: String,
+}
+
+/// 压缩决策提示词：只说"保留多少历史"，不带消息正文、SQL 或凭据。
+fn compaction_prompt(candidates: &[CompactionCutCandidate]) -> String {
+    let mut prompt = String::from(
+        "为一次上下文压缩选择唯一最合适的一个切点。切点决定多少历史进入摘要、多少保留原文；         越靠后的切点压缩越多、保留的原文越少。未列出任何其他信息。\n",
+    );
+    for candidate in candidates {
+        prompt.push_str(&format!(
+            "- {}：{}（{}）\n",
+            candidate.id, candidate.label, candidate.detail
+        ));
+    }
+    prompt.push_str("必须从给定候选中挑出一个；无法判断时选择保留原文最多的那个。");
+    prompt
+}
+
+/// 发起一次压缩切点建议；调用方必须已经有 Turn（计量账本要求真实 turn 归属）。
+///
+/// 与相关性建议共用同一个决策通道与降级口径：未配置/关闭/熔断/失败/低置信度都返回非
+/// `Adopted`，由调用方回退到确定性切点。这里的建议只影响哪些历史进入摘要，不改变权限、
+/// 保护项与 checkpoint 校验。
+pub fn advise_compaction_cut(
+    storage: &fluxdb_storage::FileStorage,
+    session_id: &str,
+    turn_id: &str,
+    candidates: &[CompactionCutCandidate],
+    cancel: &fluxdb_core::CancelFlag,
+) -> JevAdvice {
+    if candidates.len() < MIN_COMPACTION_CANDIDATES {
+        return JevAdvice::NotAttempted("候选不足，无需决策".into());
+    }
+    let now_ms = ai_chat_now();
+    let model_profile_id = match with_ai_storage(storage, resolve_compaction_decision_model) {
+        Ok(Some(model)) => model,
+        Ok(None) => {
+            return JevAdvice::NotAttempted(
+                "压缩决策模型未配置或不可用，按确定性切点压缩".into(),
+            );
+        }
+        Err(error) => return JevAdvice::Degraded { reason: error.message },
     };
-    let provider = match decision_provider_from_storage(storage, &model_profile_id) {
+    let ids: Vec<String> = candidates.iter().map(|candidate| candidate.id.clone()).collect();
+    advise_with_model(
+        storage,
+        session_id,
+        turn_id,
+        &model_profile_id,
+        &ids,
+        compaction_prompt(candidates),
+        COMPACTION_ORIGIN,
+        cancel,
+        now_ms,
+    )
+}
+
+/// 决策建议的公共执行路径：熔断闸门 → Provider → 计量重试 → 采用门槛 → 诊断事件。
+#[allow(clippy::too_many_arguments)]
+fn advise_with_model(
+    storage: &fluxdb_storage::FileStorage,
+    session_id: &str,
+    turn_id: &str,
+    model_profile_id: &str,
+    ids: &[String],
+    prompt: String,
+    origin: AdviceOrigin,
+    cancel: &fluxdb_core::CancelFlag,
+    now_ms: i64,
+) -> JevAdvice {
+    let circuit = circuit_snapshot(model_profile_id, now_ms);
+    if circuit.open_until_ms > now_ms {
+        return JevAdvice::NotAttempted(origin.circuit_reason.into());
+    }
+    let request = fluxdb_core::DecisionRequest {
+        model: model_profile_id.to_string(),
+        candidates: ids.to_vec(),
+        prompt,
+    };
+    let provider = match decision_provider_from_storage(storage, model_profile_id) {
         Ok(provider) => provider,
         Err(error) => {
-            record_circuit_failure(&model_profile_id, &error.message, now_ms);
-            return fallback(error.message);
+            record_circuit_failure(model_profile_id, &error.message, now_ms);
+            return JevAdvice::Degraded {
+                reason: error.message,
+            };
         }
     };
     if cancel.is_cancelled() {
         return JevAdvice::NotAttempted("任务已取消，跳过决策建议".into());
     }
     let metered =
-        MeteredDecisionProvider::new(&provider, storage, session_id, turn_id, &model_profile_id);
-    let outcome = decide_with_retry(&metered, request, cancel);
-    let response = match outcome {
+        MeteredDecisionProvider::new(&provider, storage, session_id, turn_id, model_profile_id);
+    let response = match decide_with_retry(&metered, request, cancel) {
         Ok(response) => response,
         Err(error) => {
-            record_circuit_failure(&model_profile_id, &error.message, now_ms);
-            record_decision_event(storage, turn_id, &model_profile_id, "error", Some(&error.message));
-            return fallback(error.message);
+            record_circuit_failure(model_profile_id, &error.message, now_ms);
+            record_decision_event(
+                storage,
+                turn_id,
+                model_profile_id,
+                origin,
+                "error",
+                Some(&error.message),
+            );
+            return JevAdvice::Degraded {
+                reason: error.message,
+            };
         }
     };
-    if let Err(reason) = advice_is_usable(&response, &ids) {
-        record_circuit_failure(&model_profile_id, reason, now_ms);
-        record_decision_event(storage, turn_id, &model_profile_id, "rejected", Some(reason));
+    if let Err(reason) = advice_is_usable(&response, ids) {
+        record_circuit_failure(model_profile_id, reason, now_ms);
+        record_decision_event(
+            storage,
+            turn_id,
+            model_profile_id,
+            origin,
+            "rejected",
+            Some(reason),
+        );
         return JevAdvice::Degraded {
             reason: reason.to_string(),
         };
     }
-    record_circuit_success(&model_profile_id);
-    record_decision_event(storage, turn_id, &model_profile_id, "adopted", None);
+    record_circuit_success(model_profile_id);
+    record_decision_event(storage, turn_id, model_profile_id, origin, "adopted", None);
     JevAdvice::Adopted {
         chosen: response.chosen.unwrap_or_default(),
     }
@@ -569,12 +730,13 @@ fn record_decision_event(
     storage: &fluxdb_storage::FileStorage,
     turn_id: &str,
     model_profile_id: &str,
+    origin: AdviceOrigin,
     outcome: &str,
     reason: Option<&str>,
 ) {
     let summary = serde_json::json!({
-        "role": "decision",
-        "source": "builtin.jev",
+        "role": origin.role,
+        "source": origin.source,
         "model_profile_id": model_profile_id,
         "outcome": outcome,
         "reason": reason,

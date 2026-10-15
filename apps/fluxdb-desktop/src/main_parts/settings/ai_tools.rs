@@ -350,6 +350,7 @@ fn ai_plugins_panel(state: &AppState, colors: UiColors, cx: &mut Context<Navicat
                 let enabled = p.enabled;
                 let revision = p.revision;
                 let mandatory = p.mandatory;
+                let retired = p.retired;
                 // 「管理」入口由插件自己的配置声明决定：没有可配置项就不显示，
                 // 也不按插件 id 特判。
                 let has_config = !p.config_fields.is_empty();
@@ -378,6 +379,8 @@ fn ai_plugins_panel(state: &AppState, colors: UiColors, cx: &mut Context<Navicat
                 ai_row_container(&p.id, colors)
                     .min_h(px(52.))
                     .py_2()
+                    // 已下线能力整行置灰：只占目录位，不加说明文字。
+                    .when(retired, |this| this.opacity(0.45))
                     .child(app_icon_box(
                         ai_builtin_icon(&p.package_key),
                         28.,
@@ -395,15 +398,17 @@ fn ai_plugins_panel(state: &AppState, colors: UiColors, cx: &mut Context<Navicat
                                 div()
                                     .text_size(px(13.))
                                     .font_weight(gpui::FontWeight::SEMIBOLD)
-                                    .text_color(colors.text)
+                                    .text_color(if retired { colors.muted } else { colors.text })
                                     .child(p.display_name.clone()),
                             )
-                            .child(
-                                div()
-                                    .text_size(px(11.))
-                                    .text_color(colors.muted)
-                                    .child(p.summary.clone()),
-                            )
+                            .when(!p.summary.is_empty(), |this| {
+                                this.child(
+                                    div()
+                                        .text_size(px(11.))
+                                        .text_color(colors.muted)
+                                        .child(p.summary.clone()),
+                                )
+                            })
                             .child(
                                 div()
                                     .flex()
@@ -454,7 +459,7 @@ fn ai_plugins_panel(state: &AppState, colors: UiColors, cx: &mut Context<Navicat
                             .child(div().debug_selector(|| format!("ai-plugin:{id}")).child(
                                 Switch::new(SharedString::from(format!("ai-plugin:{id}")))
                                     .checked(enabled)
-                                    .disabled(mandatory)
+                                    .disabled(mandatory || retired)
                                     .on_click(move |checked, _, cx| {
                                         let _ = this.update(cx, |this, cx| {
                                             let _ = this.controller.dispatch(

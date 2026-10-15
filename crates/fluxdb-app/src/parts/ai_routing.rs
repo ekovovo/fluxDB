@@ -70,6 +70,8 @@ pub enum CandidateRole {
     Compaction,
     Artifact,
     Decision,
+    /// 压缩决策：在压缩切点候选之间做选择的决策模型（与主决策角色用途相同，单独命名只为拒绝原因可读）。
+    CompactionDecision,
 }
 
 /// 本轮实际选中模型的来源（precedence 的哪一级生效）。
@@ -98,7 +100,7 @@ impl RouteSource {
 impl CandidateRole {
     pub(crate) fn required_kind(self) -> ModelKind {
         match self {
-            CandidateRole::Decision => ModelKind::Decision,
+            CandidateRole::Decision | CandidateRole::CompactionDecision => ModelKind::Decision,
             _ => ModelKind::Generation,
         }
     }
@@ -109,6 +111,7 @@ impl CandidateRole {
             CandidateRole::Compaction => "压缩模型",
             CandidateRole::Artifact => "产物模型",
             CandidateRole::Decision => "决策模型",
+            CandidateRole::CompactionDecision => "压缩决策模型",
         }
     }
 }

@@ -137,6 +137,101 @@ fn builtin_declaration_only_covers_plugins_that_need_config() {
     );
 }
 
+/// 上下文压缩声明的是独立的压缩决策槽位：字段非必填，未选择时按确定性切点压缩。
+#[test]
+fn compaction_declaration_uses_its_own_slot_and_stays_optional() {
+    let declaration = fluxdb_app::compaction_config_declaration();
+    assert_eq!(declaration.protocol, fluxdb_app::PLUGIN_CONFIG_PROTOCOL);
+    let field = declaration
+        .field(fluxdb_app::COMPACTION_DECISION_MODEL_FIELD)
+        .expect("上下文压缩必须声明压缩决策模型字段");
+    assert!(!field.required, "未选择压缩决策模型也必须能正常压缩");
+    assert_eq!(field.resource.role, "compaction_decision");
+    assert_eq!(field.resource.api_protocol.as_deref(), Some("system-one"));
+    let reparsed = PluginConfigDeclaration::parse(&serde_json::to_string(declaration).unwrap())
+        .expect("内置声明应可回环解析");
+    assert_eq!(&reparsed, declaration);
+    assert!(
+        fluxdb_app::BuiltinRegistry::default()
+            .config_declaration("builtin.compaction")
+            .is_some(),
+        "声明了字段的能力必须有「管理」入口"
+    );
+}
+
+/// 压缩决策槽位与 Jev 决策槽位各自独立：配一个不会连带改动另一个。
+#[test]
+fn compaction_slot_is_independent_from_jev_decision_slot() {
+    let fixture = Fixture::new();
+    let mut controller = fixture.controller();
+    let jev_model = save_decision_model(&mut controller, "jev");
+    let compaction_model = save_decision_model(&mut controller, "compaction");
+
+    // 先在「上下文压缩 · 管理」里选压缩决策模型。
+    let event = controller.dispatch(AppCommand::SaveAiPluginConfig {
+        instance_id: "builtin.compaction".into(),
+        selections: vec![fluxdb_app::AiPluginFieldSelection {
+            key: fluxdb_app::COMPACTION_DECISION_MODEL_FIELD.into(),
+            resource_id: Some(compaction_model.clone()),
+        }],
+        expected_revision: controller.state().ai_runtime_revision,
+    });
+    assert!(
+        matches!(event, AppEvent::AiPluginConfigSaved { .. }),
+        "{event:?}"
+    );
+    assert_eq!(
+        config_field(
+            &plugin_item(&mut controller, "builtin.compaction"),
+            fluxdb_app::COMPACTION_DECISION_MODEL_FIELD
+        )
+        .selection
+        .as_deref(),
+        Some(compaction_model.as_str())
+    );
+    assert_eq!(
+        controller.state().ai_default_decision_model_id,
+        None,
+        "压缩决策槽位不得连带写入 Jev 决策槽位"
+    );
+    assert!(
+        config_field(
+            &plugin_item(&mut controller, fluxdb_app::JEV_INSTANCE_ID),
+            "decision_model"
+        )
+        .selection
+        .is_none()
+    );
+
+    // 再选 Jev 决策模型：两个槽位各自保留自己的选择。
+    let event = controller.dispatch(AppCommand::SaveAiPluginConfig {
+        instance_id: fluxdb_app::JEV_INSTANCE_ID.into(),
+        selections: vec![fluxdb_app::AiPluginFieldSelection {
+            key: fluxdb_app::JEV_DECISION_MODEL_FIELD.into(),
+            resource_id: Some(jev_model.clone()),
+        }],
+        expected_revision: controller.state().ai_runtime_revision,
+    });
+    assert!(
+        matches!(event, AppEvent::AiPluginConfigSaved { .. }),
+        "{event:?}"
+    );
+    assert_eq!(
+        config_field(
+            &plugin_item(&mut controller, "builtin.compaction"),
+            fluxdb_app::COMPACTION_DECISION_MODEL_FIELD
+        )
+        .selection
+        .as_deref(),
+        Some(compaction_model.as_str()),
+        "改 Jev 决策模型不得覆盖压缩决策选择"
+    );
+    assert_eq!(
+        controller.state().ai_default_decision_model_id.as_deref(),
+        Some(jev_model.as_str())
+    );
+}
+
 #[test]
 fn declaration_rejects_unsupported_or_ambiguous_shapes() {
     let invalid = [

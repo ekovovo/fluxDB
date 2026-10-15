@@ -125,6 +125,17 @@ fn ensure_runtime_columns(conn: &Connection) -> Result<()> {
         )
         .map_err(crate::sqlite::sqlite_error)?;
     }
+    // 压缩决策槽位与决策槽位是两个独立的用户选择，老库需要单独补列。
+    if !table_has_column(
+        conn,
+        "ai_runtime_settings",
+        "compaction_decision_model_profile_id",
+    )? {
+        conn.execute_batch(
+            "ALTER TABLE ai_runtime_settings ADD COLUMN compaction_decision_model_profile_id TEXT;",
+        )
+        .map_err(crate::sqlite::sqlite_error)?;
+    }
     Ok(())
 }
 
@@ -383,6 +394,15 @@ mod tests {
         assert!(
             table_has_column(&conn, "ai_runtime_settings", "default_model_profile_id").unwrap(),
             "升级后必须补上 default_model_profile_id 列"
+        );
+        assert!(
+            table_has_column(
+                &conn,
+                "ai_runtime_settings",
+                "compaction_decision_model_profile_id"
+            )
+            .unwrap(),
+            "升级后必须补上 compaction_decision_model_profile_id 列"
         );
         // 再跑一次仍幂等（不会因列已存在而报错）。
         ensure_schema(&conn).expect("重复升级应幂等");

@@ -115,37 +115,40 @@ impl PluginConfigField {
     /// 插件只能引用宿主已经存在的槽位，不能自己发明模型绑定位置；角色缺失、未知或
     /// 没有对应槽位都按声明错误处理，避免「写了配置但运行时找不到落点」。
     pub fn model_role(&self) -> fluxdb_core::Result<ModelRoleSlot> {
-        let role = ModelRole::parse(&self.resource.role).map_err(|_| {
+        ModelRoleSlot::parse(&self.resource.role).ok_or_else(|| {
             declaration_error(&format!(
-                "字段 `{}` 的角色 `{}` 不存在",
-                self.key, self.resource.role
-            ))
-        })?;
-        ModelRoleSlot::of(role).ok_or_else(|| {
-            declaration_error(&format!(
-                "宿主没有角色 `{}` 的默认模型槽位",
-                self.resource.role
+                "宿主没有角色 `{}` 的模型槽位（支持：{}）",
+                self.resource.role,
+                ModelRoleSlot::NAMES.join("、")
             ))
         })
     }
 }
 
-/// 宿主为模型角色提供的槽位：用户在这里选，内置能力的系统绑定跟着变。
+/// 宿主为模型角色提供的槽位：用户在这里选，宿主自己的角色槽位跟着变。
 ///
-/// 槽位逐个对应 `ai_runtime_settings` 里的默认模型列；没有列的模型角色不允许被插件
-/// 声明，避免出现「配置项存在但无处落地」。
+/// 槽位逐个对应 `ai_runtime_settings` 里的默认模型列；没有列的槽位不允许被插件声明，
+/// 避免出现「配置项存在但无处落地」。槽位名是对外协议里的稳定机器键，因此用 `&str`
+/// 解析而不是复用 Agent 绑定角色：`compaction_decision` 是宿主槽位，不是绑定角色。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ModelRoleSlot {
     MainCandidate,
     Decision,
+    /// 压缩决策槽位：压缩前在切点候选之间做选择的决策模型。
+    CompactionDecision,
 }
 
 impl ModelRoleSlot {
-    fn of(role: ModelRole) -> Option<Self> {
+    /// 宿主槽位名（协议 `resource.role` 的取值）。
+    pub const NAMES: &'static [&'static str] =
+        &["main_candidate", "decision", "compaction_decision"];
+
+    pub fn parse(role: &str) -> Option<Self> {
         match role {
-            ModelRole::MainCandidate => Some(Self::MainCandidate),
-            ModelRole::Decision => Some(Self::Decision),
-            ModelRole::Compaction | ModelRole::Artifact => None,
+            "main_candidate" => Some(Self::MainCandidate),
+            "decision" => Some(Self::Decision),
+            "compaction_decision" => Some(Self::CompactionDecision),
+            _ => None,
         }
     }
 
@@ -154,6 +157,7 @@ impl ModelRoleSlot {
         match self {
             Self::MainCandidate => CandidateRole::Main,
             Self::Decision => CandidateRole::Decision,
+            Self::CompactionDecision => CandidateRole::CompactionDecision,
         }
     }
 }
@@ -235,6 +239,7 @@ pub fn resolve_field(
 pub fn field_hint(field: &PluginConfigField) -> String {
     let usage = match field.model_role() {
         Ok(ModelRoleSlot::Decision) => "决策模型",
+        Ok(ModelRoleSlot::CompactionDecision) => "压缩决策模型",
         Ok(ModelRoleSlot::MainCandidate) => "生成模型",
         Err(_) => "模型",
     };
@@ -286,6 +291,7 @@ pub fn save_selection(
     let mut seen = std::collections::BTreeSet::new();
     let mut main_model_id = None;
     let mut decision_model_id = None;
+    let mut compaction_decision_model_id = None;
     for selection in selections {
         let field = declaration.field(&selection.key).ok_or_else(|| {
             declaration_error(&format!("字段 `{}` 不在插件声明里", selection.key))
@@ -305,6 +311,7 @@ pub fn save_selection(
         let target = match field.model_role()? {
             ModelRoleSlot::MainCandidate => &mut main_model_id,
             ModelRoleSlot::Decision => &mut decision_model_id,
+            ModelRoleSlot::CompactionDecision => &mut compaction_decision_model_id,
         };
         if target.is_some() {
             return Err(declaration_error(&format!(
@@ -320,6 +327,8 @@ pub fn save_selection(
         default_model_profile_id: main_model_id.unwrap_or(current.default_model_profile_id),
         default_decision_model_profile_id: decision_model_id
             .unwrap_or(current.default_decision_model_profile_id),
+        compaction_decision_model_profile_id: compaction_decision_model_id
+            .unwrap_or(current.compaction_decision_model_profile_id),
         max_active_turns: current.max_active_turns,
         revision: current.revision,
     };
@@ -369,6 +378,7 @@ fn load_slot_selection(
     Ok(match slot {
         ModelRoleSlot::MainCandidate => runtime.default_model_profile_id,
         ModelRoleSlot::Decision => runtime.default_decision_model_profile_id,
+        ModelRoleSlot::CompactionDecision => runtime.compaction_decision_model_profile_id,
     })
 }
 

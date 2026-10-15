@@ -29,21 +29,6 @@ const CREATE_SQL: &str = "CREATE TABLE IF NOT EXISTS connection_secrets (
 const VERSION: i64 = 1;
 
 pub(crate) fn ensure_schema(conn: &Connection) -> fluxdb_core::Result<()> {
-    let mut stmt = conn
-        .prepare("PRAGMA table_info(connection_secrets)")
-        .map_err(sqlite_error)?;
-    let columns = stmt
-        .query_map([], |row| row.get::<_, String>(1))
-        .map_err(sqlite_error)?;
-    let mut old_account_column = false;
-    for col in columns {
-        old_account_column |= col.map_err(sqlite_error)? == "account";
-    }
-    if old_account_column {
-        // 不迁移旧密文；仅改名留存，防止自动升级时不可逆删除用户数据。
-        conn.execute_batch("ALTER TABLE connection_secrets RENAME TO connection_secrets_obsolete")
-            .map_err(sqlite_error)?;
-    }
     conn.execute_batch(CREATE_SQL).map_err(sqlite_error)
 }
 
@@ -63,7 +48,7 @@ impl SqliteEncryptedBackend {
         Ok(conn)
     }
 
-    /// 与模型 Key 共享同一把数据密钥（`secret_key`，兼容 `connection_secret_key`）。
+    /// 与模型 Key 共享同一把数据密钥。
     fn cipher(&self) -> Result<Aes256Gcm, CredentialError> {
         crate::secret_crypto::load_cipher(&self.root).map(|(cipher, _)| cipher)
     }
@@ -239,21 +224,21 @@ mod tests {
         let key2 = "22".repeat(32);
         fs::write(
             root.join("config.toml"),
-            format!("connection_secret_key = \"{key1}\"\n"),
+            format!("{} = \"{key1}\"\n", crate::secret_crypto::CONFIG_KEY),
         )
         .unwrap();
         let backend = SqliteEncryptedBackend::new(root.clone());
         backend.write(3, DATABASE_PASSWORD, "secret").unwrap();
         fs::write(
             root.join("config.toml"),
-            format!("connection_secret_key = \"{key2}\"\n"),
+            format!("{} = \"{key2}\"\n", crate::secret_crypto::CONFIG_KEY),
         )
         .unwrap();
         assert!(backend.read(3, DATABASE_PASSWORD).is_err());
         assert!(backend.write(3, DATABASE_PASSWORD, "replacement").is_err());
         fs::write(
             root.join("config.toml"),
-            format!("connection_secret_key = \"{key1}\"\n"),
+            format!("{} = \"{key1}\"\n", crate::secret_crypto::CONFIG_KEY),
         )
         .unwrap();
         assert_eq!(
@@ -263,45 +248,14 @@ mod tests {
     }
 
     #[test]
-    fn old_account_table_is_ignored_and_connection_ref_column_removed() {
-        let root = root("old-schema");
-        let conn = crate::sqlite::open(&root).unwrap();
-        conn.execute_batch("CREATE TABLE connections (id INTEGER PRIMARY KEY, credential_ref TEXT);
-            INSERT INTO connections VALUES (7, 'old.account');
-            CREATE TABLE connection_secrets (account TEXT PRIMARY KEY, version INTEGER NOT NULL, nonce BLOB NOT NULL, ciphertext BLOB NOT NULL);
-            INSERT INTO connection_secrets VALUES ('old.account', 1, X'000000000000000000000000', X'1234');").unwrap();
-        drop(conn);
-        let backend = SqliteEncryptedBackend::new(root);
-        assert!(backend.read(7, DATABASE_PASSWORD).unwrap().is_none());
-        backend.write(7, DATABASE_PASSWORD, "new-secret").unwrap();
-        assert_eq!(
-            backend.read(7, DATABASE_PASSWORD).unwrap().as_deref(),
-            Some("new-secret")
-        );
-        let conn = backend.open().unwrap();
-        let old_ref_columns: i64 = conn
-            .query_row(
-                "SELECT count(*) FROM pragma_table_info('connections') WHERE name='credential_ref'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(old_ref_columns, 0);
-        let old_table: i64 = conn
-            .query_row(
-                "SELECT count(*) FROM sqlite_master WHERE name='connection_secrets_obsolete'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(old_table, 1);
-    }
-
-    #[test]
     fn malformed_unicode_key_fails_without_panicking() {
         let root = root("bad-key");
         fs::create_dir_all(&root).unwrap();
-        fs::write(root.join("config.toml"), "connection_secret_key = \"🔑\"\n").unwrap();
+        fs::write(
+            root.join("config.toml"),
+            format!("{} = \"🔑\"\n", crate::secret_crypto::CONFIG_KEY),
+        )
+        .unwrap();
         assert!(
             SqliteEncryptedBackend::new(root)
                 .write(1, DATABASE_PASSWORD, "pw")

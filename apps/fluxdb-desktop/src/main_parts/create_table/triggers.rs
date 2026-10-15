@@ -227,11 +227,10 @@ fn create_table_trigger_body_editor(
             .text_color(colors.muted)
             .child("添加触发器后填写定义");
     };
-    let body_input = this.create_table_multiline_input(
+    let body_input = this.create_table_input(
         CreateTableInputKey::TriggerBody(tab_id, trigger.id),
         "",
         &trigger.body,
-        8,
         window,
         cx,
     );

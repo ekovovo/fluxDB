@@ -4,16 +4,8 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::sqlite::sqlite_error;
 
-/// 旧版把「人工审批等待时间」和「大模型审批回退模型」存进执行策略 JSON；两者已删除，
-/// 读取时先剔除再反序列化，让 `deny_unknown_fields` 仍能拦截真正未知的字段。
 fn parse_policy(json: &str) -> Result<ExecutionPolicySettings> {
-    let mut value: serde_json::Value = serde_json::from_str(json)
-        .map_err(|_| Error::new(ErrorKind::Internal, "执行策略配置无效，拒绝执行"))?;
-    if let Some(object) = value.as_object_mut() {
-        object.remove("approval_timeout_ms");
-        object.remove("approval_model_id");
-    }
-    serde_json::from_value(value)
+    serde_json::from_str(json)
         .map_err(|_| Error::new(ErrorKind::Internal, "执行策略配置无效，拒绝执行"))
 }
 
@@ -93,26 +85,6 @@ mod tests {
         policy.tools_default = fluxdb_core::ExecutionPolicy::ReadOnly;
         assert_eq!(save(&conn, 3, &policy, 1).unwrap(), 2);
         assert!(save(&conn, 4, &policy, 1).is_err());
-    }
-
-    #[test]
-    fn legacy_timeout_field_is_ignored_on_load() {
-        let conn = Connection::open_in_memory().unwrap();
-        super::super::ensure_schema(&conn).unwrap();
-        let raw = r#"{"tools_default":"write_approval","mcp_default":"read_only","approval_model_id":null,"approval_timeout_ms":60000}"#;
-        conn.execute(
-            "INSERT INTO ai_runtime_settings(id,max_active_turns,execution_policy_json,revision,updated_at_ms)
-             VALUES(1,2,?1,1,0)",
-            params![raw],
-        )
-        .unwrap();
-        let (policy, rev) = load(&conn).unwrap();
-        assert_eq!(rev, 1);
-        assert_eq!(
-            policy.tools_default,
-            fluxdb_core::ExecutionPolicy::WriteApproval
-        );
-        assert!(save(&conn, 1, &policy, 1).is_ok());
     }
 
     #[test]

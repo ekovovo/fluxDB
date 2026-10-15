@@ -42,48 +42,11 @@ impl NavicatMain {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Entity<InputState> {
-        self.create_table_input_with_rows(key, placeholder, value, None, window, cx)
-    }
-
-    fn create_table_multiline_input(
-        &mut self,
-        key: CreateTableInputKey,
-        placeholder: &'static str,
-        value: &str,
-        rows: usize,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Entity<InputState> {
-        self.create_table_input_with_rows(key, placeholder, value, Some(rows), window, cx)
-    }
-
-    fn create_table_input_with_rows(
-        &mut self,
-        key: CreateTableInputKey,
-        placeholder: &'static str,
-        value: &str,
-        rows: Option<usize>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Entity<InputState> {
         if !self.create_table_inputs.contains_key(&key) {
             let input = cx.new(|cx| {
-                let mut input = InputState::new(window, cx)
+                InputState::new(window, cx)
                     .placeholder(placeholder)
-                    .default_value(value.to_string());
-                if let Some(rows) = rows {
-                    input = input.multi_line(true).rows(rows);
-                }
-                if matches!(
-                    key,
-                    CreateTableInputKey::TriggerBody(_, _) | CreateTableInputKey::TablePartitionSql(_)
-                ) {
-                    input = input
-                        .code_editor(SQL_HIGHLIGHT_LANGUAGE)
-                        .line_number(true)
-                        .legacy_soft_wrap(false);
-                }
-                input
+                    .default_value(value.to_string())
             });
             let subscription = cx.subscribe(&input, move |this, input, event: &InputEvent, cx| {
                 if matches!(event, InputEvent::Change) {
@@ -1291,11 +1254,10 @@ fn create_table_fields(
                 window,
                 cx,
             ),
-            comment_editor_input: this.create_table_multiline_input(
+            comment_editor_input: this.create_table_input(
                 CreateTableInputKey::ColumnCommentEditor(tab_id, column.id),
                 "输入字段注释...",
                 &column.comment,
-                8,
                 window,
                 cx,
             ),

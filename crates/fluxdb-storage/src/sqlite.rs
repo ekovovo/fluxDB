@@ -69,7 +69,6 @@ pub fn create_schema(conn: &Connection) -> Result<i64> {
     .map_err(sqlite_error)?;
     conn.execute_batch(crate::connection_store::CREATE_SQL)
         .map_err(sqlite_error)?;
-    crate::connection_store::drop_legacy_credential_ref(conn)?;
     conn.execute_batch(crate::history_store::CREATE_SQL)
         .map_err(sqlite_error)?;
     crate::connection_secrets::ensure_schema(conn)?;

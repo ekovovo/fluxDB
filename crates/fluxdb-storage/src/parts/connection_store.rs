@@ -41,24 +41,6 @@ CREATE TABLE IF NOT EXISTS connections (
 );
 ";
 
-/// 旧连接表若仍有外部凭据引用，删掉该废弃列；不读取旧凭据。
-pub(crate) fn drop_legacy_credential_ref(conn: &Connection) -> Result<()> {
-    let mut stmt = conn
-        .prepare("PRAGMA table_info(connections)")
-        .map_err(sqlite_error)?;
-    let columns = stmt
-        .query_map([], |row| row.get::<_, String>(1))
-        .map_err(sqlite_error)?;
-    for column in columns {
-        if column.map_err(sqlite_error)? == "credential_ref" {
-            conn.execute_batch("ALTER TABLE connections DROP COLUMN credential_ref")
-                .map_err(sqlite_error)?;
-            break;
-        }
-    }
-    Ok(())
-}
-
 /// 定位枚举 `Endpoint` 的三条取值，落 `endpoint_kind` 列。
 const ENDPOINT_TCP: &str = "tcp";
 const ENDPOINT_FILE: &str = "file";

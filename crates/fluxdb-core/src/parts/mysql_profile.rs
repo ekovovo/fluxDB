@@ -188,49 +188,12 @@ pub struct MysqlConnectionProfile {
     pub advanced: MysqlAdvancedOptions,
 }
 
-/// 历史 `options` 扁平参数里 MySQL 认识的全部键（白名单）。
-/// 用于把旧连接迁移进结构化模型，也用于 UI 回填。
-pub const MYSQL_LEGACY_OPTION_KEYS: &[&str] = &[
-    "database",
-    "username",
-    "password",
-    "tls",
-    "ssl_mode",
-    "tls_ca_ref",
-    "tls_client_cert_ref",
-    "tls_client_key_ref",
-    "tls_server_name",
-    "tls_insecure",
-    "charset",
-    "collation",
-    "ssh_enabled",
-    "ssh_host",
-    "ssh_port",
-    "ssh_username",
-    "ssh_auth",
-    "ssh_password",
-    "ssh_private_key_ref",
-    "ssh_passphrase",
-    "ssh_connect_timeout_secs",
-    "ssh_keepalive_interval_secs",
-    "proxy_enabled",
-    "proxy_type",
-    "proxy_host",
-    "proxy_port",
-    "proxy_username",
-    "proxy_password",
-    "connect_timeout_secs",
-    "query_timeout_secs",
-    "idle_ttl_secs",
-    "tcp_keepalive",
-];
-
 impl MysqlConnectionProfile {
     /// —— 解析职责 ——
 
     /// 从历史 `options` 扁平参数迁移出一份档案。
     ///
-    /// 仅迁移白名单键，其余任意参数不做透传，避免把垃圾灌进结构化模型。
+    /// 只读取已知键，其余任意参数不做透传，避免把垃圾灌进结构化模型。
     pub fn from_options(opts: &std::collections::BTreeMap<String, String>) -> Self {
         let get = |key: &str| opts.get(key).cloned();
         let basic = MysqlBasicOptions {

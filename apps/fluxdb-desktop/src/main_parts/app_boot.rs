@@ -481,7 +481,6 @@ fn navicat_main_new(
                             cx.new(|cx| InputState::new(window, cx).placeholder("输入筛选值"));
                         let data_filter_batch_input = cx.new(|cx| {
                             InputState::new(window, cx)
-                                .multi_line(true)
                                 .placeholder("粘贴多个值，每行一个……")
                         });
                         let local_filter_value_input =
@@ -490,7 +489,6 @@ fn navicat_main_new(
                             cx.new(|cx| InputState::new(window, cx).placeholder("搜索"));
                         let data_filter_text_input = cx.new(|cx| {
                             InputState::new(window, cx)
-                                .multi_line(true)
                                 .placeholder("例如：`question` LIKE '%0.648238%'")
                         });
                         let data_sort_text_input = cx.new(|cx| {
@@ -517,9 +515,6 @@ fn navicat_main_new(
                         let temporal_part_input = cx.new(|cx| InputState::new(window, cx));
                         let cell_detail_input = cx.new(|cx| {
                             InputState::new(window, cx)
-                                .code_editor("json")
-                                .line_number(false)
-                                .rows(10)
                                 .placeholder("编辑单元格值")
                         });
                         let data_search_input =
@@ -529,15 +524,10 @@ fn navicat_main_new(
                         let redis_key_value_input = cx.new(|cx| {
                             InputState::new(window, cx)
                                 .placeholder("值")
-                                .multi_line(true)
-                                .rows(12)
                         });
                         let redis_json_key_value_input = cx.new(|cx| {
                             InputState::new(window, cx)
-                                .code_editor(JSON_HIGHLIGHT_LANGUAGE)
-                                .line_number(false)
                                 .placeholder("值")
-                                .rows(12)
                         });
                         let redis_key_name_input =
                             cx.new(|cx| InputState::new(window, cx).placeholder("键名称"));
@@ -609,9 +599,6 @@ fn navicat_main_new(
                             cx.new(|cx| {
                                 InputState::new(window, cx)
                                     .placeholder("Value")
-                                    .multi_line(true)
-                                    .rows(3)
-                                    .legacy_soft_wrap(true)
                             });
                         let redis_hash_ttl_edit_input =
                             cx.new(|cx| InputState::new(window, cx).placeholder("TTL"));
@@ -773,9 +760,6 @@ fn navicat_main_new(
                         let redis_list_value_edit_input = cx.new(|cx| {
                             InputState::new(window, cx)
                                 .placeholder("Value")
-                                .multi_line(true)
-                                .rows(3)
-                                .legacy_soft_wrap(true)
                         });
                         let redis_list_value_edit_subscription = cx.subscribe_in(
                             &redis_list_value_edit_input,
@@ -922,8 +906,6 @@ fn navicat_main_new(
                         );
                         let redis_add_key_json_input = cx.new(|cx| {
                             InputState::new(window, cx)
-                                .code_editor(JSON_HIGHLIGHT_LANGUAGE)
-                                .line_number(false)
                                 .placeholder("{}")
                         });
                         let redis_add_key_json_subscription = cx.subscribe_in(

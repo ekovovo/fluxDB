@@ -156,54 +156,12 @@ pub fn infer_cloud_from_host(provider: &str, host: &str) -> (String, String) {
     }
 }
 
-/// 判断一个字符串键是否是密钥/证书类键（落盘前应剔除）。
-/// fluxdb-storage 在执行 `strip_plaintext_secrets` 时复用本判定，保证剥离口径一致。
-pub fn is_secret_option_key(key: &str) -> bool {
-    let key = key.to_ascii_lowercase();
-    key.contains("password")
-        || key.contains("secret")
-        || key.contains("private_key")
-        || key.contains("passphrase")
-        || key.contains("ca_cert")
-        || key.contains("client_cert")
-        || key.contains("client_key")
-}
-
-/// 历史 `options` 扁平参数里 Redis 认识的全部键（白名单）。
-/// 用于把旧连接迁移进结构化模型，也用于 UI 回填。
-pub const REDIS_LEGACY_OPTION_KEYS: &[&str] = &[
-    "username",
-    "password",
-    "database",
-    "tls",
-    "tls_insecure",
-    "tls_server_name",
-    "tls_ca_ref",
-    "tls_client_cert_ref",
-    "tls_client_key_ref",
-    "sentinel_master",
-    "sentinel_endpoints",
-    "cluster_start_nodes",
-    "cluster_readonly",
-    "ssh_enabled",
-    "ssh_host",
-    "ssh_port",
-    "ssh_username",
-    "ssh_auth",
-    "ssh_password",
-    "ssh_private_key_ref",
-    "ssh_passphrase",
-    "cloud_provider",
-    "cloud_subscription",
-    "cloud_resource",
-];
-
 impl RedisConnectionProfile {
     /// —— 解析职责 ——
 
     /// 从历史 `options` 扁平参数迁移出一份档案。
     ///
-    /// 仅迁移白名单键，其余任意参数不做透传，避免把垃圾灌进结构化模型。
+    /// 只读取已知键，其余任意参数不做透传，避免把垃圾灌进结构化模型。
     /// 迁移保留原始 `options` 亦无碍：模型是 `ConnectionConfig` 的可选补充。
     pub fn from_options(opts: &std::collections::BTreeMap<String, String>) -> Self {
         let get = |key: &str| opts.get(key).cloned();

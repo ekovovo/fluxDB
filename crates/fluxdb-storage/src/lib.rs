@@ -252,16 +252,6 @@ impl FileStorage {
             .join(database_hash(database, schema))
     }
 
-    fn legacy_completion_index_path(
-        &self,
-        connection: &ConnectionConfig,
-        database: Option<&str>,
-        schema: Option<&str>,
-    ) -> PathBuf {
-        self.completion_index_dir(connection, database, schema)
-            .join("index.toml")
-    }
-
     pub fn load_completion_index(
         &self,
         connection: &ConnectionConfig,
@@ -290,12 +280,7 @@ impl FileStorage {
                 meta: header.meta,
             }));
         }
-
-        let legacy_path = self.legacy_completion_index_path(connection, database, schema);
-        if !legacy_path.exists() {
-            return Ok(None);
-        }
-        read_toml_file::<CompletionIndexSnapshot>(&legacy_path).map(Some)
+        Ok(None)
     }
 
     pub fn save_completion_index(
@@ -550,15 +535,15 @@ impl Storage for FileStorage {
     fn save_settings(&self, settings: &Settings) -> Result<()> {
         ensure_private_dir(&self.root)?;
         let mut document = toml::Value::try_from(settings).map_err(storage_error)?;
-        // connection_secret_key 只允许直接编辑 config.toml；设置 UI 的保存不得擦除密钥。
+        // 数据密钥只允许直接编辑 config.toml；设置 UI 的保存不得擦除密钥。
         match fs::read_to_string(self.config_path()) {
             Ok(current) => {
                 let current: toml::Value = toml::from_str(&current).map_err(storage_error)?;
-                if let Some(key) = current.get("connection_secret_key") {
+                if let Some(key) = current.get(secret_crypto::CONFIG_KEY) {
                     document
                         .as_table_mut()
                         .ok_or_else(|| storage_error("Settings TOML 不是表"))?
-                        .insert("connection_secret_key".into(), key.clone());
+                        .insert(secret_crypto::CONFIG_KEY.into(), key.clone());
                 }
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -2076,24 +2061,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn completion_index_loads_legacy_single_file_snapshot() {
-        let storage = FileStorage::new(unique_temp_dir());
-        let connection = sample_connections()[0].clone();
-        let snapshot = sample_completion_snapshot(connection.id);
-        let legacy_path =
-            storage.legacy_completion_index_path(&connection, Some("production"), None);
-        fs::create_dir_all(legacy_path.parent().unwrap()).unwrap();
-        fs::write(&legacy_path, toml::to_string_pretty(&snapshot).unwrap()).unwrap();
-
-        assert_eq!(
-            storage
-                .load_completion_index(&connection, Some("production"), None)
-                .unwrap(),
-            Some(snapshot)
-        );
-    }
-
     /// 表指纹是 64 位哈希，取值范围可能超出 TOML 的 i64 整数上限：必须能落盘并原值读回。
     ///
     /// 回归：指纹曾按整数写入，哈希最高位为 1 时整份快照序列化即失败（错误一度被调用方
@@ -2129,7 +2096,7 @@ mod tests {
         fs::create_dir_all(&storage.root).unwrap();
         fs::write(
             storage.config_path(),
-            format!("connection_secret_key = \"{key}\"\n"),
+            format!("{} = \"{key}\"\n", secret_crypto::CONFIG_KEY),
         )
         .unwrap();
         let settings = Settings::default();
@@ -2141,7 +2108,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             document
-                .get("connection_secret_key")
+                .get(secret_crypto::CONFIG_KEY)
                 .and_then(toml::Value::as_str),
             Some(key.as_str())
         );

@@ -9,6 +9,7 @@ pub mod audits;
 pub mod context_checkpoints;
 pub mod context_references;
 pub mod conversation;
+pub mod execution_policy;
 pub mod knowledge;
 pub mod mcp;
 pub mod mcp_server;
@@ -45,7 +46,7 @@ pub const REQUIRED_TABLES: &[&str] = &[
     "ai_agent_plugin_bindings",
     "ai_mcp_settings",
     "ai_mcp_server_profiles",
-    "ai_mcp_server_resource_grants",
+    "ai_mcp_server_datasources",
     "ai_agent_model_bindings",
     "ai_agent_mcp_bindings",
     "ai_runtime_settings",
@@ -85,13 +86,21 @@ pub fn load_ai_cipher(
 pub fn ensure_schema(conn: &Connection) -> Result<()> {
     conn.execute_batch(schema::MANAGEMENT_SQL)
         .map_err(crate::sqlite::sqlite_error)?;
+    // 旧结构 `ai_mcp_server_requests` 带 `resource_grant_id` 外键；授权表已删除。
+    // 先丢弃该表，随后的 RUNTIME_SQL 会按当前结构重建（开发期不保留旧请求记录）。
+    drop_legacy_mcp_server_requests(conn)?;
     conn.execute_batch(schema::RUNTIME_SQL)
         .map_err(crate::sqlite::sqlite_error)?;
     conn.execute_batch(schema::PANEL_PREFERENCES_SQL)
         .map_err(crate::sqlite::sqlite_error)?;
     panel_preferences_migration::ensure_tab_mode(conn)?;
     ensure_runtime_columns(conn)?;
+    if !table_has_column(conn, "ai_runtime_settings", "execution_policy_json")? {
+        conn.execute_batch("ALTER TABLE ai_runtime_settings ADD COLUMN execution_policy_json TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(execution_policy_json));")
+            .map_err(crate::sqlite::sqlite_error)?;
+    }
     ensure_model_columns(conn)?;
+    ensure_mcp_server_profile_columns(conn)?;
     // 内置插件包/实例随应用注册（幂等）；缺失时设置页会显示为空而不是内置能力清单。
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -139,6 +148,64 @@ fn ensure_model_columns(conn: &Connection) -> Result<()> {
         .map_err(crate::sqlite::sqlite_error)?;
     }
     Ok(())
+}
+
+/// 移除已删除的 MCP Server 旧列与旧表。
+///
+/// `write_mode` / `allowed_tool_ids_json` / 执行限额列都没有运行时消费者；
+/// 资源授权表已由数据源表取代。开发期老库仍带着它们，SQLite 用 `DROP COLUMN` /
+/// `DROP TABLE` 原地清理（不动其余列与数据）。先查存在性再删，新库直接跳过。
+fn ensure_mcp_server_profile_columns(conn: &Connection) -> Result<()> {
+    for column in [
+        "max_inflight",
+        "max_request_ms",
+        "max_request_bytes",
+        "max_response_bytes",
+        "write_mode",
+        "allowed_tool_ids_json",
+    ] {
+        if table_has_column(conn, "ai_mcp_server_profiles", column)? {
+            conn.execute_batch(&format!(
+                "ALTER TABLE ai_mcp_server_profiles DROP COLUMN {column};"
+            ))
+            .map_err(crate::sqlite::sqlite_error)?;
+        }
+    }
+    conn.execute_batch("DROP TABLE IF EXISTS ai_mcp_server_resource_grants;")
+        .map_err(crate::sqlite::sqlite_error)?;
+    Ok(())
+}
+
+/// 丢弃带旧 `resource_grant_id` 列的 `ai_mcp_server_requests`，让 RUNTIME_SQL 按当前结构重建。
+///
+/// 该列的外键指向已删除的 `ai_mcp_server_resource_grants`，会导致 `verify_ai_schema` 报缺表。
+/// 子表（审批/审计/结果）对 request 是 `ON DELETE RESTRICT`，先清掉引用行再删表。
+fn drop_legacy_mcp_server_requests(conn: &Connection) -> Result<()> {
+    if table_has_column(conn, "ai_mcp_server_requests", "resource_grant_id")? {
+        for table in ["ai_tool_audits", "ai_approvals", "ai_results"] {
+            if table_exists(conn, table)? {
+                conn.execute_batch(&format!(
+                    "DELETE FROM {table} WHERE mcp_request_id IS NOT NULL;"
+                ))
+                .map_err(crate::sqlite::sqlite_error)?;
+            }
+        }
+        conn.execute_batch("DROP TABLE IF EXISTS ai_mcp_server_requests;")
+            .map_err(crate::sqlite::sqlite_error)?;
+    }
+    Ok(())
+}
+
+/// 判断表是否存在（用于开发期结构清理）。
+fn table_exists(conn: &Connection, table: &str) -> Result<bool> {
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+            [table],
+            |row| row.get(0),
+        )
+        .map_err(crate::sqlite::sqlite_error)?;
+    Ok(count != 0)
 }
 
 /// 判断某表是否已有指定列。
@@ -348,6 +415,65 @@ mod tests {
             "应补上 connection_checked_at_ms"
         );
         // 再跑一次仍幂等。
+        ensure_schema(&conn).expect("重复升级应幂等");
+    }
+
+    #[test]
+    fn ensure_schema_drops_legacy_mcp_server_columns_and_grants() {
+        let conn = memory_conn();
+        // 模拟带旧写模式/工具白名单/执行限额列与旧授权表的 Profile；升级后这些必须消失。
+        conn.execute_batch(
+            "CREATE TABLE ai_mcp_server_profiles (
+                id TEXT PRIMARY KEY,
+                display_name TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 0,
+                transport TEXT NOT NULL DEFAULT 'stdio',
+                write_mode TEXT NOT NULL DEFAULT 'disabled',
+                allowed_tool_ids_json TEXT NOT NULL DEFAULT '[]',
+                options_json TEXT NOT NULL DEFAULT '{}',
+                max_inflight INTEGER NOT NULL DEFAULT 4,
+                revision INTEGER NOT NULL DEFAULT 1,
+                created_at_ms INTEGER NOT NULL,
+                updated_at_ms INTEGER NOT NULL
+            );
+            CREATE TABLE ai_mcp_server_resource_grants (
+                id TEXT PRIMARY KEY,
+                profile_id TEXT NOT NULL,
+                connection_id INTEGER NOT NULL
+            );
+            INSERT INTO ai_mcp_server_profiles
+                (id, display_name, enabled, write_mode, revision, created_at_ms, updated_at_ms)
+            VALUES ('p1', '保留行', 1, 'scoped', 3, 1, 1);",
+        )
+        .expect("旧结构 Profile 表");
+        for column in ["max_inflight", "write_mode", "allowed_tool_ids_json"] {
+            assert!(table_has_column(&conn, "ai_mcp_server_profiles", column).unwrap());
+        }
+        ensure_schema(&conn).expect("升级建表");
+        for column in ["max_inflight", "write_mode", "allowed_tool_ids_json"] {
+            assert!(
+                !table_has_column(&conn, "ai_mcp_server_profiles", column).unwrap(),
+                "升级后应删除旧列 {column}"
+            );
+        }
+        let grants_table: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='ai_mcp_server_resource_grants'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("查询旧授权表");
+        assert_eq!(grants_table, 0, "旧资源授权表应被删除");
+        let (display_name, revision): (String, i64) = conn
+            .query_row(
+                "SELECT display_name, revision FROM ai_mcp_server_profiles WHERE id='p1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("升级后仍能读到原行");
+        assert_eq!(display_name, "保留行");
+        assert_eq!(revision, 3);
+        // 再跑一次仍幂等（列已不存在，不会重复报错）。
         ensure_schema(&conn).expect("重复升级应幂等");
     }
 

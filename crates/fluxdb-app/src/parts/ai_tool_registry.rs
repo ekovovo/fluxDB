@@ -139,6 +139,7 @@ pub const DEFAULT_MAX_ARGUMENT_BYTES: usize = 256 * 1024;
 
 /// 工具目录。
 pub struct ToolCatalog {
+    security: Option<Arc<ExecutionSecurity>>,
     specs: Vec<ToolSpec>,
     /// 可执行实现（没有实现的条目只能 describe，不能 prepare 执行）。
     executable: HashMap<String, Box<dyn fluxdb_core::AiTool>>,
@@ -154,12 +155,18 @@ pub struct ToolCatalog {
 impl ToolCatalog {
     pub fn new(specs: Vec<ToolSpec>) -> Self {
         Self {
+            security: None,
             specs,
             executable: HashMap::new(),
             max_argument_bytes: DEFAULT_MAX_ARGUMENT_BYTES,
             hooks: HookPipeline::default(),
             results: None,
         }
+    }
+
+    pub fn with_execution_security(mut self, security: ExecutionSecurity) -> Self {
+        self.security=Some(Arc::new(security));
+        self
     }
 
     /// 关联本轮结果仓库：工具产出的大结果句柄可被查到溢写事实。

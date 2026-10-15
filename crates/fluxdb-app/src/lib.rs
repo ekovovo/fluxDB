@@ -122,6 +122,7 @@ include!("parts/ai_result_retention.rs");
 include!("parts/ai_result_pages.rs");
 include!("parts/ai_hooks.rs");
 include!("parts/ai_permission.rs");
+include!("parts/ai_execution_policy.rs");
 include!("parts/ai_context.rs");
 include!("parts/ai_page_context.rs");
 include!("parts/ai_content_search.rs");
@@ -142,6 +143,7 @@ include!("parts/ai_redis_read.rs");
 include!("parts/ai_redis_exec.rs");
 include!("parts/ai_mcp_server.rs");
 include!("parts/ai_mcp_install.rs");
+include!("parts/ai_mcp_clients.rs");
 include!("parts/ai_scripted.rs");
 include!("parts/backup_restore.rs");
 

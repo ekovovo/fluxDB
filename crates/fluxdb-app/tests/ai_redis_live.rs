@@ -88,6 +88,7 @@ impl Fixture {
         let args = self.catalog.prepare(name, &arguments.to_string()).unwrap();
         block_on(self.catalog.executable(name).unwrap().execute(
             ToolExecutionContext {
+                automatic_approval: false,
                 session_id: "isolated".into(),
                 turn_id: "isolated".into(),
                 iteration: 1,

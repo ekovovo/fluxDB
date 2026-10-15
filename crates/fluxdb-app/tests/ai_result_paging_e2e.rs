@@ -181,6 +181,7 @@ fn run_read_page(
         .executable("result.read_page")
         .expect("目录里必须有 result.read_page 的可执行实现");
     let ctx = ToolExecutionContext {
+        automatic_approval: false,
         session_id: job.session_id.clone(),
         turn_id: job.turn_id.clone(),
         iteration: 1,

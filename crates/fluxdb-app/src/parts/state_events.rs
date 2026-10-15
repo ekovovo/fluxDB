@@ -28,18 +28,11 @@ pub enum AppEvent {
     },
     /// AI 设置操作失败（CAS 冲突、存储未初始化等）；UI 用主窗口 show_message 展示。
     AiSettingsError(String),
-    /// 本地 MCP 客户端注册/卸载完成（客户端、动作、目标配置路径、是否需要重启客户端）。
-    AiMcpClientRegistration {
-        client: String,
-        installed: bool,
-        config_path: String,
-        /// 目标客户端可能需要在下次启动才加载；UI 据此提示。
-        restart_hint: bool,
-    },
-    /// 启动自动注册已完成（已处理的客户端数量；无写入时为 0，UI 无需打扰用户）。
-    AiMcpAutoRegistered {
+    /// MCP 配置操作已完成；批量维护只列实际变化，显式接入/移除列出操作目标。
+    AiMcpClientsSynced {
         clients: Vec<String>,
     },
+    AiMcpClientsLoaded(McpClientsSnapshot),
     /// 模型已保存（id、新 revision）。
     AiModelSaved {
         id: String,
@@ -56,19 +49,19 @@ pub enum AppEvent {
     AiAgentDeleted {
         id: String,
     },
-    /// 对外 MCP Server Profile 已保存（T060）。
+    /// 对外 MCP Server Profile 已保存。
     AiMcpServerProfileSaved {
         id: String,
         revision: i64,
     },
-    /// MCP 资源授权已保存（T060）。
-    AiMcpServerGrantSaved {
-        id: String,
+    /// MCP 数据源已保存。
+    AiMcpDatasourceSaved {
+        connection_id: i64,
         revision: i64,
     },
-    /// MCP 资源授权已删除（T060）。
-    AiMcpServerGrantDeleted {
-        id: String,
+    /// MCP 数据源已移除。
+    AiMcpDatasourceDeleted {
+        connection_id: i64,
     },
     /// 会话已重命名（id、新标题、新 revision）。
     AiSessionRenamed {

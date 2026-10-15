@@ -46,7 +46,7 @@
       models:[{id:'model-main',name:'主模型 · 高能力',kind:'generation',provider:'兼容 API',modelId:'main-model',tier:'strong',endpoint:'https://model.example.invalid/v1',contextWindow:400000,maxOutput:32000,priceInput:2.5,priceOutput:10,priceCached:0.25,keyConfigured:true,enabled:true},{id:'model-economy',name:'经济模型 · 摘要',kind:'generation',provider:'兼容 API',modelId:'economy-model',tier:'economy',endpoint:'https://model.example.invalid/v1',contextWindow:400000,maxOutput:16000,priceInput:0.15,priceOutput:0.6,priceCached:0.075,keyConfigured:true,enabled:true},{id:'model-jev',name:'Jev · 决策模型',kind:'decision',provider:'TypeSafe System One',modelId:'jev-demo',tier:'decision',endpoint:'https://decision.example.invalid/v1',contextWindow:32768,maxOutput:4096,priceInput:0,priceOutput:0,priceCached:0,keyConfigured:true,enabled:true}],
       agents:[{id:'agent-general',builtin:true,compressionPercent:80,name:'通用数据库 Agent',description:'跨 SQL、Redis 与文件自主探索、验证，并交付可追溯结果。',icon:'bot',modelId:'model-main',systemPrompt:promptText,policy:'approval',report:true,enabled:true},{id:'agent-bi',name:'BI 分析与报表',description:'结合已确认指标口径，生成图表与报告，明确数据限制。',icon:'activity',modelId:'model-main',systemPrompt:promptText,policy:'read',report:true,enabled:true},{id:'agent-redis',name:'Redis 排障助手',description:'渐进扫描、类型检查、TTL 分析，不默认开放危险管理命令。',icon:'database',modelId:'model-economy',systemPrompt:promptText,policy:'approval',report:false,enabled:true}],
       pluginEnabled:Object.fromEntries(plugins.map(p=>[p.id,true])),toolEnabled:Object.fromEntries(toolDefs.map(t=>[t.id,true])),
-      mcp:{enabled:true,writeMode:'disabled',resources:['mysql','postgres','redis'],testing:false,lastTest:false},budget:{iterations:40,concurrency:2},
+      mcp:{enabled:true,globalPolicy:'read_only',datasources:['mysql','postgres','redis'],datasourcePolicy:{mysql:'default',postgres:'read_write',redis:'read_only'},registered:{codex:true,claude:false},testing:false,lastTest:false},budget:{iterations:40,concurrency:2},
       sessions:[{id:'session-approval',title:'清理7天前未支付订单',agentId:'agent-general',targetId:'mysql',draft:'',status:'approval',kind:'write',tokens:1200,messages:['把超过7天仍是 pending 的订单标记为过期。'],stage:3,folds:{},contexts:['开发环境 / 连接','orders 表']},{id:'session-sales',title:'月度销售趋势分析',agentId:'agent-general',targetId:'mysql',draft:'',status:'done',kind:'analysis',tokens:1800,messages:['分析3–8月净销售额趋势，按支付月份汇总并生成可追溯报告。'],stage:3,folds:{},contexts:['开发环境 / 连接','orders 表','月度销售分析 / 查询']},{id:'session-redis',title:'缓存 TTL 排查',agentId:'agent-redis',targetId:'redis',draft:'',status:'done',kind:'redis',tokens:600,messages:['检查 demo:order:* 的类型和 TTL，找出没有过期时间的缓存。'],stage:3,folds:{},contexts:[]}]
     };
   }
@@ -65,6 +65,13 @@
   state.agents.forEach(a=>{a.builtin=a.id==='agent-general';a.compressionPercent??=80;a.systemPrompt??=promptText;delete a.promptVersion;a.temperature??=.2;a.maxOutputTokens??=4096;a.toolIds??=toolDefs.map(t=>t.id);a.pluginIds??=plugins.filter(p=>p.id!=='jev').map(p=>p.id);a.allowExport??=true;a.privacy??='redacted';a.fileRoots??='';a.limits??={iterations:40,wallSeconds:600,concurrency:2,outputBytes:131072,rows:200,fileBytes:262144};a.revision??=1;});
   state.sessions.forEach(s => { if(s.status==='running') s.status='interrupted'; });
   state.models.forEach(m=>{delete m.testing;if(m.priceInput==null)m.priceInput=0;if(m.priceOutput==null)m.priceOutput=0;if(m.priceCached==null)m.priceCached=0;});state.mcp.testing=false;
+  // 旧版本原型状态没有分类/模式字段：补齐后再渲染，避免评审时读到半旧配置。
+  state.mcp={enabled:true,globalPolicy:'read_only',datasources:[],datasourcePolicy:{},registered:{},...state.mcp};
+  state.mcp.datasourcePolicy={...(state.mcp.datasourcePolicy||{})};
+  state.mcp.registered={codex:true,claude:false,...(state.mcp.registered||{})};
+  // 评审截图用：?theme=dark|light 覆盖本地保存的主题，不改动其它演示状态。
+  const themeOverride = new URLSearchParams(location.search).get('theme');
+  if(themeOverride==='dark'||themeOverride==='light')state.theme=themeOverride;
   let page = location.hash.replace(/^#/,'') || 'workbench';
   const initialModal=['report','budget'].includes(page)?page:null;if(initialModal)page='workbench';
   if (!(page in window.FluxPrototypePages)) page='workbench';
@@ -335,8 +342,11 @@ if(previous)state.models.splice(state.models.indexOf(previous),1,m);else state.m
     if(action==='audit-detail'){const a=audits.find(a=>a.id===id);showDialog('安全审计详情',`<div class="inline">${tag(a.tool)}${tag(a.decision==='deny'?'拒绝':a.decision==='allow'?'允许':'需审批',a.decision==='deny'?'red':a.decision==='allow'?'green':'amber')}</div><div class="field" style="margin-top:17px"><label>最终计划 · ${a.target}</label><div class="code-box"><pre>${esc(a.sql)}</pre></div><small>规则 ${esc(a.rule)} · plan hash 示例 · 审计不会包含秘密</small></div>`,button('关闭','close-modal'),'small');return;}
     if(action==='resolve-approval'){const c=state.sessions.find(c=>c.id===id);if(c){c.status=el.dataset.decision==='approve'?'done':'denied';save();renderPanel();icons();toast(c.status==='done'?'本次模拟修改已批准，影响1行。':'本次模拟修改已拒绝，数据不变。');}return;}
     if(action==='save-budget'){const b={iterations:Number($('iteration-budget').value),concurrency:Number($('concurrency-budget').value)};if(![b.iterations,b.concurrency].every(v=>Number.isInteger(v)&&v>0))return toast('运行保护上限必须是正整数。');state.budget=b;save();closeDialog();toast('执行保护已模拟保存；会话只统计 Token。');return;}
-    if(action==='export-mcp'){download('fluxdb-local.example.json',JSON.stringify({mcpServers:{fluxdb_local:{command:'/path/to/fluxdb-mcp',args:['--transport','stdio','--server-profile','demo-readonly','--config-root','/path/to/storage']}}},null,2),'application/json');toast('已导出不含秘密的示例配置，路径需要按实际安装位置生成。');return;}
-    if(action==='test-mcp'){if(!state.mcp.enabled||!state.mcp.resources.length)return toast('请先启用示例Server并授权至少一个资源。');state.mcp.testing=true;render();setTimeout(()=>{state.mcp.testing=false;state.mcp.lastTest=state.mcp.enabled;save();render();toast(state.mcp.enabled?'模拟握手与查询通过；未运行Claude或实际Server。':'Server已关闭，模拟测试停止。');},800);return;}
+    if(action==='export-mcp'){download('fluxdb-local.example.json',JSON.stringify({mcpServers:{fluxdb_local:{command:'/path/to/fluxdb-mcp',args:['--transport','stdio','--server-profile','fluxdb.local','--config-root','/path/to/storage']}}},null,2),'application/json');toast('已导出不含秘密的示例配置，路径需要按实际安装位置生成。');return;}
+    if(action==='toggle-mcp-client'){state.mcp.registered[id]=!state.mcp.registered[id];save();render();toast(state.mcp.registered[id]?'已把 fluxdb 写入示例客户端配置（模拟，未写磁盘）。':'已移除本应用写入的 server 条目，其它 server 不受影响。');return;}
+    if(action==='mcp-datasource-add'){const next=U().connections.find(c=>!state.mcp.datasources.includes(c.id));if(!next)return toast('没有可加入的连接。');state.mcp.datasources=[...state.mcp.datasources,next.id];state.mcp.datasourcePolicy[next.id]='default';save();render();toast(`已加入数据源 ${next.label}（默认跟随全局）。`);return;}
+    if(action==='mcp-datasource-remove'){state.mcp.datasources=state.mcp.datasources.filter(v=>v!==id);delete state.mcp.datasourcePolicy[id];save();render();toast('已从对外服务移除该数据源。');return;}
+    if(action==='test-mcp'){if(!state.mcp.enabled||!state.mcp.datasources.length)return toast('请先启用示例Server并加入至少一个数据源。');state.mcp.testing=true;render();setTimeout(()=>{state.mcp.testing=false;state.mcp.lastTest=state.mcp.enabled;save();render();toast(state.mcp.enabled?'模拟握手与查询通过；未运行Claude或实际Server。':'Server已关闭，模拟测试停止。');},800);return;}
     if(action==='source-sql'){if(modal==='销售趋势报告 · 3–8月'){const area=$('report-sql');area.hidden=!area.hidden;return;}showDialog('报告来源SQL',`<div class="code-box"><pre>SELECT DATE_FORMAT(paid_at, '%Y-%m') AS month,\n       SUM(amount-refund_amount) AS net_revenue\nFROM orders WHERE status=? AND paid_at&gt;=? AND paid_at&lt;?\nGROUP BY month ORDER BY month;\n\nResultRef：result_sales_9f2@1 · 6行完整聚合</pre></div>`,button('关闭','close-modal'));return;}
     if(action==='export-report'){const a=agentById(session()?.agentId||state.selectedAgentId);if(a?.allowExport===false)return toast('此Agent不允许导出产物。');download('monthly-sales.example.md','# 销售趋势报告（模拟）\n\n8月净销售额 ¥52.15万，环比+12.6%；3–8月累计 ¥243.80万。\n\n口径：支付月份，实付扣除退款，不含运费与税费。\n来源：result_sales_9f2@1 / call_db_query_7c21 / metric_net_revenue@rev4。\n限制：仅界面示例，不来自实际数据库。\n');toast('已导出示例报告，包含口径、快照和来源。');return;}
     if(action==='rename-session'){const c=state.sessions.find(c=>c.id===id);showDialog('重命名会话',`<div class="field"><label for="rename-title">会话名称</label><input id="rename-title" value="${esc(c.title)}"></div>`,button('取消','close-modal')+button('保存','save-session-title',`data-id="${id}"`,'primary'),'small');return;}
@@ -367,8 +377,8 @@ if(previous)state.models.splice(state.models.indexOf(previous),1,m);else state.m
     if(kind==='tool-group')state.toolGroup=el.value;
     if(kind==='audit-filter')state.auditFilter=el.value;
     if(kind==='mcp-enabled')state.mcp.enabled=el.checked;
-    if(kind==='mcp-write')state.mcp.writeMode=el.value;
-    if(kind==='mcp-resource'){state.mcp.resources=el.checked?[...new Set([...state.mcp.resources,id])]:state.mcp.resources.filter(v=>v!==id);}
+    if(kind==='mcp-global-policy')state.mcp.globalPolicy=el.value;
+    if(kind==='mcp-datasource-policy')state.mcp.datasourcePolicy[id]=el.value;
     save();render();
   });
 

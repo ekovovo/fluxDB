@@ -1180,6 +1180,11 @@ BI/报表不放“大模型/工具与MCP”的设置菜单，也不作为Agent�
 
 ## 28. 对外 MCP Server 与未来系统扩展
 
+**2026-10-15 更新：** 设置界面不再展示 Profile 列表/新建，也不增加“服务器模式”。
+默认本地服务固定使用 `fluxdb.local`。对外能力改为「全局默认写入策略 + 数据源写入策略」，
+不再有工具分类、人工审批队列、资源授权与按连接执行策略；本章的 `write_mode`/对象范围/写规则描述为历史设计，
+现行模型以 §29.1 为准。
+
 ### 28.1 MCP Server：用户要求的主方向
 
 fluxDB 原生工具通过 **本应用提供的 stdio MCP Server** 对外开放，具体实现见§28.4–28.8，13个工具见§20.5，Claude CLI测试见§37.2；[实现入口](/Users/shining3d/fusuwei/code/fluxDB/docs/ai-agent-design.md#mcp-server-implementation)。新增 apps/fluxdb-mcp 小型 headless binary，依赖 app/core/storage 和官方 Rust SDK，不依赖 GPUI、不启动内部主模型、不要求 fluxDB 的模型 API Key/Jev/Agent prompt。
@@ -1320,8 +1325,8 @@ SDK生成schema必须与内部registry的input/output schema一致（测试比�
 
 | 表 | 内容 | 关键约束 |
 |---|---|---|
-| ai_mcp_server_profiles | 本应用对外服务配置、启用/只读/工具集/限额 | 对象级 revision/CAS，默认 disabled、write_mode disabled |
-| ai_mcp_server_resource_grants | Profile 可访问的连接、库/namespace、对象/key范围、读写规则 | 独立 revision；connection_id 建列但不向当前全量重写 connections 加 FK |
+| ai_mcp_server_profiles | 本应用对外服务配置、启用/只读/工具集 | 对象级 revision/CAS，默认 disabled、write_mode disabled |
+| ai_mcp_server_datasources | 对外 MCP 数据源（连接 + 写入策略 default/read_only/read_write） | (profile_id, connection_id) 主键；连接只读标记仍在运行期强制 |
 | ai_mcp_server_sessions | 一个 stdio Client 连接的协议版本/审计身份/状态 | profile FK；clientInfo 不授权 |
 | ai_mcp_server_requests | 每次调用的 server ID、tool、scope、hash、状态/回执 | session/profile composite FK；协议 request ID 只是关联，不当幂等键 |
 
@@ -1393,6 +1398,65 @@ Claude Code 自身的工具 permission、`--allowedTools`、prompt“我批准�
 
 **就近参考：**[Goose审批检查](/Users/shining3d/fusuwei/code/goose/crates/goose/src/permission/permission_inspector.rs)。实际落点按本章/§7，不照搬源项目私有状态。
 
+### 29.1 内部工具执行策略与 MCP 数据源读写策略（2026-10-15 更新）
+
+**2026-10-15 用户修订**：设置页「本地 MCP」不再有对外工具分类、人工审批队列、资源授权与按连接执行策略；
+MCP 改为「全局默认写入策略 + 每个数据源写入策略」两段式，删除相应存储与运行时代码。
+
+内部工具使用四种 `ExecutionPolicy`，它是审批方式，不是可取 min/max 的风险数字：
+
+| 配置值 | 用户文案 | 写入行为 |
+| --- | --- | --- |
+| read_only | 只读 | 隐藏/拒绝写工具；直调不得绕过 |
+| write_approval | 写审批 | 人工批准本次计划后执行 |
+| ai_approval | 帮我审批 | 程序先核实低风险边界；Jev 优先，大模型回退；不确定转人工 |
+| automatic | 自动执行 | 授权范围内不逐次确认；启用前明确确认风险 |
+
+`ai_runtime_settings.execution_policy_json` 存储内部工具默认策略（`tools_default`）与
+MCP 全局默认写入策略（`mcp_default`：只读 / 允许读写），复用该实体的 revision/CAS。
+内部默认写审批。
+
+对外 MCP 的写入是**数据源维度**的开关，不逐次审批：
+
+| 配置值 | 用户文案 | 写入行为 |
+| --- | --- | --- |
+| read_only | 只读 | 写工具不列出，直调也拒绝 |
+| read_write | 允许读写 | 放行数据修改（INSERT/UPDATE/DELETE）；结构/权限/管理语句仍拒绝 |
+
+每个数据源自身可再选「只读 / 允许读写 / 默认」：`默认` 跟随全局 `mcp_default`，
+新建数据源默认即「默认」（因此默认只读）。数据源是用户显式加入对外服务的连接，
+存在 `ai_mcp_server_datasources(profile_id, connection_id, write_policy)`，不再配置表/Key 范围与写规则；
+数据范围等于该连接自身的授权范围。**允许读写也不放开结构或管理写入**：DDL/GRANT/事务控制与
+Redis 管理命令（CONFIG/FLUSH/SCRIPT 等）仍按内核拒绝列表拦下。
+设置页面不为每个 Agent 再复制一份同类策略。
+
+工具开关与写入策略相互独立。全局工具开关同时约束 Agent/MCP，MCP 页只能进一步收窄。
+按真实目录展开稳定工具 ID，不包含未实现的终端/SSH/SFTP/MongoDB，也不对外开放内部页面、文件与产物能力。
+连接只读、数据库账号权限、schema 校验、强制审计与执行硬拒绝不能被任何策略覆盖。
+
+“风险过高”不由 AI 自报分数定义。删除、结构/权限变更、批量/不明范围、不可回滚、触发器/外键等间接影响
+无法核实、复杂表达式或未知执行能力，在“帮我审批”下均转人工。首版可自动审批的生产能力刻意限定为
+SQLite 单表、INTEGER 主键等值、非主键常量/绑定值赋值的 UPDATE：最多一行；无虚拟表、触发器、外键、
+CHECK/生成列表达式或 REPLACE 冲突语义。检查阶段只产出脱敏结构事实；执行阶段在独立 BEGIN IMMEDIATE
+事务内再次核实 schema、执行并检查真实影响，提交前取消/超限/验证失败均回滚，不能退到普通写路径。
+MySQL/PostgreSQL/Redis 暂无同等有界提交证明的写操作转人工，不宣称 AI 已验证安全。
+不自动识别业务敏感性；关键业务连接应设为只读/写审批，不能把单行更新视为业务安全的充分条件。
+
+AI 审批只接收程序生成的有界结构证据，不发送 SQL 原文、参数值、对象名、结果集、会话全文或凭据。
+Jev 使用可用性/出站许可检查后的决策模型；有效拒绝或人工结论不再找另一个模型翻案，批准选项不明确时
+转人工。Jev 不可用/调用失败/非法输出才回退默认生成模型；生成模型必须启用且有出站许可。
+生成模型无工具，输出严格的 `{"decision":"approve|manual|deny"}`；截断、工具调用、超限、非法 JSON、
+没有模型或网络失败均转人工。用户选择“帮我审批”时页面明确说明这部分出站内容；不静默扩大页面上下文。
+
+MCP 不再有本地人工审批队列：写入由数据源「允许读写」直接放行（仍受连接只读、内核权限与强制审计约束）。
+无论读写，MCP 执行前都追加带 owner/hash 的强制审计，审计保存失败不得执行；不可恢复的未知写结果不自动重试。
+它和其他本地 stdio 配置一样，不能防同 OS 账号的恶意程序直接修改用户文件。
+
+设置页面布局：工具页顶部为内部工具默认策略，下面是具体工具；
+本地 MCP 页为「MCP 控制（启用 + 全局默认策略）」「数据源（每行写入策略 + 新增/移除）」「客户端接入」。
+客户端接入与服务启停独立：只展示已检测到配置或已添加的客户端。客户端配置里的同名键是本应用的固定槽位：用户通过「添加客户端」或行内「安装 / 重新安装」显式写入已适配的 Codex / Claude Code 配置，写入即接管该槽位并登记管理权；条目与本应用写入的启动命令一致时提供「卸载」，删除该键并放弃管理权。无法解析的配置与同名非 stdio 条目（可能是用户自有的远端服务）一律不猜、不改写。启动仅维护用户已安装且启动参数仍与上次写入一致的条目；已被手工修改的条目停止自动维护并提示重新安装，手动卸载的条目不自动补回。管理记录为独立 kv JSON blob，不保存客户端其它配置或凭据。关闭服务保留接入配置，不写入客户端预批准规则。「已配置」不等于有活跃连接。其他支持 MCP stdio 的客户端使用同一份启动程序、参数、平台 shell 命令和 JSON 示例接入；示例不承诺兼容所有客户端格式，未适配工具不猜配置路径。
+设置页当前仅向 AI 提供页面定位和“正文未接入”标记，不上传表单、策略或授权内容；后续接入需用户另行确认。
+
 ## 30. 会话 Token 统计与执行保护
 
 **2026-10-11 用户确认的唯一口径**：本项目自用，不统计会话花了多少钱，不设置会话/每日/单次金额上限，也不设置累计 token 上限。删除费用计算、价格快照、费用预留与结算；不为将来企业配额保留金额限制。模型设置页的输入/输出/缓存价格及模型表价格列继续保留，供后续经济模型路由参考；价格缺失不阻止模型调用，也不影响实际 token 统计。路由不能把未知价格当作免费。
@@ -1438,7 +1502,7 @@ Claude Code 自身的工具 permission、`--allowedTools`、prompt“我批准�
     普通打开恢复上次会话，新建才开新草稿（运行记录在 M2 写入）
   工具与 MCP
     工具       每Agent启停、读写风险、作用域、超时/结果上限
-    本地 MCP   Server Profile、资源授权、导出客户端配置、活动
+    本地 MCP   服务控制（启用 + 全局默认策略）、数据源（每源读写策略）、客户端接入（无 Profile 列表/服务器模式）
     内置插件   开关、自动状态、绑定角色、允许的参数
     安全审计   规则/记录/批准状态（必经检查不能关闭）
 ```
@@ -2360,38 +2424,23 @@ CREATE TABLE IF NOT EXISTS ai_mcp_server_profiles (
     display_name TEXT NOT NULL,
     enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0,1)),
     transport TEXT NOT NULL DEFAULT 'stdio' CHECK (transport='stdio'),
-    write_mode TEXT NOT NULL DEFAULT 'disabled'
-        CHECK (write_mode IN ('disabled','scoped','desktop_approval')),
-    allowed_tool_ids_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(allowed_tool_ids_json)),
     options_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(options_json)),
-    max_inflight INTEGER NOT NULL DEFAULT 4 CHECK (max_inflight > 0),
-    max_request_ms INTEGER NOT NULL DEFAULT 30000 CHECK (max_request_ms > 0),
-    max_request_bytes INTEGER NOT NULL DEFAULT 262144 CHECK (max_request_bytes > 0),
-    max_response_bytes INTEGER NOT NULL DEFAULT 131072 CHECK (max_response_bytes > 0),
     revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
     created_at_ms INTEGER NOT NULL,
     updated_at_ms INTEGER NOT NULL
 );
-CREATE TABLE IF NOT EXISTS ai_mcp_server_resource_grants (
-    id TEXT PRIMARY KEY,
+-- 对外 MCP 数据源：显式加入对外服务的连接 + 写入策略。
+-- write_policy = 'default'（跟随全局）| 'read_only' | 'read_write'。
+CREATE TABLE IF NOT EXISTS ai_mcp_server_datasources (
     profile_id TEXT NOT NULL REFERENCES ai_mcp_server_profiles(id) ON DELETE RESTRICT,
     connection_id INTEGER NOT NULL,
-    database_name TEXT NOT NULL,
-    namespace TEXT NOT NULL DEFAULT '',
-    enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0,1)),
-    allow_read INTEGER NOT NULL DEFAULT 1 CHECK (allow_read IN (0,1)),
-    allow_write INTEGER NOT NULL DEFAULT 0 CHECK (allow_write IN (0,1)),
-    object_policy_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(object_policy_json)),
-    write_policy_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(write_policy_json)),
-    max_rows INTEGER NOT NULL DEFAULT 200 CHECK (max_rows BETWEEN 1 AND 1000),
+    write_policy TEXT NOT NULL DEFAULT 'default'
+        CHECK (write_policy IN ('default','read_only','read_write')),
     revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
     created_at_ms INTEGER NOT NULL,
     updated_at_ms INTEGER NOT NULL,
-    UNIQUE(profile_id, connection_id, database_name, namespace),
-    UNIQUE(profile_id, id)
+    PRIMARY KEY(profile_id, connection_id)
 );
-CREATE INDEX IF NOT EXISTS ai_mcp_server_grants_profile
-    ON ai_mcp_server_resource_grants(profile_id, enabled);
 
 CREATE TABLE IF NOT EXISTS ai_agent_model_bindings (
     id TEXT PRIMARY KEY,
@@ -2424,6 +2473,7 @@ CREATE TABLE IF NOT EXISTS ai_agent_mcp_bindings (
 
 CREATE TABLE IF NOT EXISTS ai_runtime_settings (
     id INTEGER PRIMARY KEY CHECK (id=1),
+    execution_policy_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(execution_policy_json)),
     default_agent_id TEXT REFERENCES ai_agents(id) ON DELETE RESTRICT,
     default_decision_model_profile_id TEXT REFERENCES ai_model_profiles(id) ON DELETE RESTRICT,
     max_active_turns INTEGER NOT NULL DEFAULT 2 CHECK (max_active_turns > 0),
@@ -2509,7 +2559,7 @@ CREATE TABLE IF NOT EXISTS ai_mcp_server_requests (
     protocol_request_id_json TEXT NOT NULL CHECK (json_valid(protocol_request_id_json)),
     tool_id TEXT NOT NULL,
     tool_version INTEGER NOT NULL CHECK (tool_version >= 1),
-    resource_grant_id TEXT,
+    connection_id INTEGER,
     target_json TEXT NOT NULL CHECK (json_valid(target_json)),
     arguments_redacted_json TEXT NOT NULL CHECK (json_valid(arguments_redacted_json)),
     plan_hash TEXT NOT NULL,
@@ -2521,8 +2571,6 @@ CREATE TABLE IF NOT EXISTS ai_mcp_server_requests (
     finished_at_ms INTEGER,
     FOREIGN KEY(profile_id, session_id)
         REFERENCES ai_mcp_server_sessions(profile_id, id) ON DELETE RESTRICT,
-    FOREIGN KEY(profile_id, resource_grant_id)
-        REFERENCES ai_mcp_server_resource_grants(profile_id, id) ON DELETE RESTRICT,
     UNIQUE(session_id, seq),
     UNIQUE(session_id, id)
 );

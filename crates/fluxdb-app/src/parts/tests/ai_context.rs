@@ -428,6 +428,7 @@ fn run_editor_tool(
         .expect("参数应通过 schema 校验");
     let tool = tools.executable(tool_id).expect("应可执行");
     let ctx = fluxdb_core::ToolExecutionContext {
+        automatic_approval: false,
         session_id: "s-1".into(),
         turn_id: "t-1".into(),
         iteration: 1,

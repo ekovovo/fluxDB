@@ -2,7 +2,7 @@
 //
 // 关键约束：
 // - `tools/list` 动态投影当前 Profile 的可见能力；`tools/call` 即使名称已隐藏也再次检查权限
-//   （见 `McpExecutionService::call` 内的 allowed_tool_ids 判定）；
+//   （见 `McpExecutionService::call` 内的数据源写入策略与全局工具开关判定）；
 // - 普通执行/权限失败映射为 `isError=true` 的 tool result（客户端可读）；
 //   只有协议/未知方法用 JSON-RPC ErrorData；
 // - 每次调用写入 `ai_mcp_server_requests`（独立 owner，不建假 Turn），并登记 session。
@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 
 use fluxdb_app::{
     McpAuditFact, McpCallError, McpCallIdentity, McpCallOutcome, McpExecutionService,
-    McpRequestHost, McpToolView, mcp_tool_internal_id, visible_tools,
+    McpRequestHost,
 };
 use fluxdb_storage::FileStorage;
 use fluxdb_storage::Storage as _;
@@ -34,7 +34,6 @@ use rmcp::{ErrorData, RoleServer};
 pub struct ServeTarget {
     storage: FileStorage,
     service: Arc<McpExecutionService>,
-    tools: Vec<McpToolView>,
     profile_id: String,
     session_id: String,
 }
@@ -45,7 +44,7 @@ impl ServeTarget {
     /// Profile 不存在/禁用 → 明确错误；不默认开放所有已有连接。
     pub fn load(args: &crate::parts::cli::Args) -> Result<Self, String> {
         let storage = args.storage()?;
-        let (profile, grants, disabled) = storage
+        let (profile, datasources, global_policy, disabled) = storage
             .with_ai_connection(|conn| {
                 let profile = fluxdb_storage::ai_platform::mcp_server::load_server_profile(
                     conn,
@@ -57,20 +56,17 @@ impl ServeTarget {
                         format!("Server Profile 不存在: {}", args.server_profile),
                     )
                 })?;
-                let grants = fluxdb_storage::ai_platform::mcp_server::list_resource_grants(
-                    conn,
-                    &profile.id,
-                )?;
+                let datasources =
+                    fluxdb_storage::ai_platform::mcp_server::list_datasources(conn, &profile.id)?;
+                let (settings, _) = fluxdb_storage::ai_platform::execution_policy::load(conn)?;
                 let disabled = fluxdb_storage::ai_platform::tool_settings::disabled_tool_ids(conn)?;
-                Ok((profile, grants, disabled))
+                Ok((profile, datasources, settings.mcp_default, disabled))
             })
             .map_err(|error| error.message)?;
         if !profile.enabled {
             return Err(format!("Server Profile 已禁用: {}", profile.id));
         }
-        let profile = filter_globally_disabled(profile, &disabled);
         let connections = storage.load_connections().map_err(|e| e.message)?;
-        let tools = visible_tools(&profile, &grants).map_err(|e| e.message)?;
 
         // 结果仓库与内部一致：句柄只在本次 session 内可读。
         let session_id = format!("mcp-{}", uuid::Uuid::new_v4());
@@ -80,19 +76,29 @@ impl ServeTarget {
             &session_id,
             None,
         )));
-        let service = McpExecutionService::new(connections, profile.clone(), grants, results)
-            .map_err(|e| e.message)?;
+        let service = McpExecutionService::new(
+            connections,
+            profile.clone(),
+            datasources,
+            global_policy,
+            disabled.clone(),
+            results,
+        )
+        .map_err(|e| e.message)?;
         // 注入 request 仓储：operation.status/cancel 由宿主实现，服务保持无 IO。
         let host = Arc::new(StorageRequestHost {
             storage: storage.clone(),
             profile_id: profile.id.clone(),
             session_id: session_id.clone(),
         });
-        let service = Arc::new(service.with_request_host(host));
+        let service = Arc::new(
+            service
+                .with_request_host(host)
+                .with_execution_security(storage.clone()),
+        );
         Ok(Self {
             storage,
             service,
-            tools,
             profile_id: profile.id.clone(),
             session_id,
         })
@@ -103,44 +109,71 @@ impl ServeTarget {
     }
 
     pub fn tool_names(&self) -> Vec<String> {
-        self.tools.iter().map(|t| t.name.clone()).collect()
+        self.current_service()
+            .and_then(|s| s.tool_views().map_err(|e| e.message))
+            .unwrap_or_default()
+            .into_iter()
+            .map(|t| t.name)
+            .collect()
     }
 
     fn tool(&self, name: &str) -> Option<Tool> {
-        self.tools
-            .iter()
-            .find(|view| view.name == name)
-            .map(|view| {
-                let schema: serde_json::Map<String, serde_json::Value> =
-                    view.input_schema.as_object().cloned().unwrap_or_else(|| {
-                        serde_json::json!({"type":"object"})
-                            .as_object()
-                            .cloned()
-                            .unwrap()
-                    });
-                let mut tool = Tool::new(
-                    view.name.clone(),
-                    view.description.clone(),
-                    Arc::new(schema),
-                );
-                tool.annotations = Some(tool_annotations(view.risk));
-                tool
-            })
+        let views = self.current_service().ok()?.tool_views().ok()?;
+        views.iter().find(|view| view.name == name).map(|view| {
+            let schema: serde_json::Map<String, serde_json::Value> =
+                view.input_schema.as_object().cloned().unwrap_or_else(|| {
+                    serde_json::json!({"type":"object"})
+                        .as_object()
+                        .cloned()
+                        .unwrap()
+                });
+            let mut tool = Tool::new(
+                view.name.clone(),
+                view.description.clone(),
+                Arc::new(schema),
+            );
+            tool.annotations = Some(tool_annotations(view.risk));
+            tool
+        })
     }
-}
 
-/// 从 Profile 的 allowed_tool_ids 中剔除全局停用工具（用内部工具 ID 比对）。
-fn filter_globally_disabled(
-    mut profile: fluxdb_storage::ai_platform::mcp_server::ServerProfileView,
-    disabled: &std::collections::BTreeSet<String>,
-) -> fluxdb_storage::ai_platform::mcp_server::ServerProfileView {
-    profile
-        .allowed_tool_ids
-        .retain(|mcp_name| match mcp_tool_internal_id(mcp_name) {
-            Some(internal) => !disabled.contains(internal),
-            None => true,
-        });
-    profile
+    fn current_service(&self) -> Result<McpExecutionService, String> {
+        let (profile, datasources, global_policy, disabled) = self
+            .storage
+            .with_ai_connection(|conn| {
+                let profile = fluxdb_storage::ai_platform::mcp_server::load_server_profile(
+                    conn,
+                    &self.profile_id,
+                )?
+                .filter(|p| p.enabled)
+                .ok_or_else(|| {
+                    fluxdb_core::Error::new(fluxdb_core::ErrorKind::Permission, "MCP 服务已关闭")
+                })?;
+                let datasources =
+                    fluxdb_storage::ai_platform::mcp_server::list_datasources(conn, &profile.id)?;
+                let (settings, _) = fluxdb_storage::ai_platform::execution_policy::load(conn)?;
+                let disabled = fluxdb_storage::ai_platform::tool_settings::disabled_tool_ids(conn)?;
+                Ok((profile, datasources, settings.mcp_default, disabled))
+            })
+            .map_err(|e| e.message)?;
+        McpExecutionService::new(
+            self.storage.load_connections().map_err(|e| e.message)?,
+            profile,
+            datasources,
+            global_policy,
+            disabled,
+            self.service.results.clone(),
+        )
+        .map(|s| {
+            s.with_request_host(Arc::new(StorageRequestHost {
+                storage: self.storage.clone(),
+                profile_id: self.profile_id.clone(),
+                session_id: self.session_id.clone(),
+            }))
+            .with_execution_security(self.storage.clone())
+        })
+        .map_err(|e| e.message)
+    }
 }
 
 /// rmcp ServerHandler 实现：把协议请求映射到共享执行服务。
@@ -192,7 +225,7 @@ impl FluxDbMcpServer {
         mcp_name: &str,
         arguments_json: &str,
         now: i64,
-    ) {
+    ) -> Result<(), String> {
         let _ = self
             .target
             .storage
@@ -209,13 +242,13 @@ impl FluxDbMcpServer {
                 1,
                 None,
                 "{}",
-                arguments_json,
+                "{}",
                 "pending",
             )
         });
-        if let Err(error) = view {
-            tracing::warn!(%error, "MCP request 记录失败（不阻断执行）");
-        }
+        let _ = arguments_json;
+        view.map(|_| ())
+            .map_err(|_| "MCP 请求审计登记失败，未执行".into())
     }
 
     fn finish_request(&self, identity: &McpCallIdentity, outcome: &McpCallOutcome, now: i64) {
@@ -276,9 +309,12 @@ impl ServerHandler for FluxDbMcpServer {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
-        let tools = self
+        let views = self
             .target
-            .tools
+            .current_service()
+            .and_then(|s| s.tool_views().map_err(|e| e.message))
+            .unwrap_or_default();
+        let tools = views
             .iter()
             .filter_map(|view| self.target.tool(&view.name))
             .collect();
@@ -292,7 +328,7 @@ impl ServerHandler for FluxDbMcpServer {
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let mcp_name = request.name.to_string();
         let arguments_json = crate::parts::tools::arguments_to_json(request.arguments.as_ref());
@@ -301,28 +337,58 @@ impl ServerHandler for FluxDbMcpServer {
             request_id: format!("mcp-req-{}", uuid::Uuid::new_v4()),
         };
         let now = now_ms();
-        self.record_request(&identity, &mcp_name, &arguments_json, now);
+        if let Err(message) = self.record_request(&identity, &mcp_name, &arguments_json, now) {
+            return Ok(
+                self.tool_result(McpCallOutcome::failure_of(McpCallError::new(
+                    "audit_unavailable",
+                    message,
+                    false,
+                ))),
+            );
+        }
         // 工具执行会建立自己的 tokio runtime 并 block_on；必须在阻塞线程池上跑，
         // 不能占用 rmcp 的 async worker（否则会 panic / 挂死请求）。
         let target = Arc::clone(&self.target);
         let name_for_task = mcp_name.clone();
         let args_for_task = arguments_json.clone();
         let identity_for_task = identity.clone();
-        let outcome = tokio::task::spawn_blocking(move || {
-            let cancel = fluxdb_core::CancelFlag::new();
-            target
-                .service
-                .call(&identity_for_task, &name_for_task, &args_for_task, &cancel)
-        })
-        .await
-        .unwrap_or_else(|_| {
+        let cancel = fluxdb_core::CancelFlag::new();
+        struct CancelOnDrop(fluxdb_core::CancelFlag);
+        impl Drop for CancelOnDrop {
+            fn drop(&mut self) {
+                self.0.request();
+            }
+        }
+        let _guard = CancelOnDrop(cancel.clone());
+        let worker_cancel = cancel.clone();
+        let mut execution = tokio::task::spawn_blocking(move || match target.current_service() {
+            Ok(service) => service.call(
+                &identity_for_task,
+                &name_for_task,
+                &args_for_task,
+                &worker_cancel,
+            ),
+            Err(message) => {
+                McpCallOutcome::failure_of(McpCallError::new("service_unavailable", message, false))
+            }
+        });
+        let result = tokio::select! {
+            result=&mut execution=>result,
+            _=async {
+                loop {
+                    if context.ct.is_cancelled() || context.peer.is_transport_closed() {break;}
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+            }=>{cancel.request();execution.await},
+        };
+        let outcome = result.unwrap_or_else(|_| {
             McpCallOutcome::failure_of(fluxdb_app::McpCallError::new(
                 "execution_panicked",
                 "工具执行线程异常结束",
                 false,
             ))
         });
-        self.finish_request(&identity, &outcome, now);
+        self.finish_request(&identity, &outcome, now_ms());
         Ok(self.tool_result(outcome))
     }
 }

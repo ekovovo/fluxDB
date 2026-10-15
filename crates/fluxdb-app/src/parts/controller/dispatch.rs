@@ -3687,8 +3687,10 @@ impl AppController {
             | AppCommand::CompleteAiAgentDelete { .. }
             | AppCommand::SaveAiAgent(_)
             | AppCommand::SaveAiMcpServerProfile(_)
-            | AppCommand::SaveAiMcpServerGrant(_)
-            | AppCommand::DeleteAiMcpServerGrant { .. }
+            | AppCommand::SaveExecutionPolicy {..}
+            | AppCommand::EnsureMcpControl
+            | AppCommand::SaveAiMcpDatasource(_)
+            | AppCommand::DeleteAiMcpDatasource { .. }
             | AppCommand::RefreshAiSettings
             | AppCommand::LoadMoreAiSessions
             | AppCommand::RenameAiSession { .. }
@@ -3704,10 +3706,10 @@ impl AppController {
             | AppCommand::SetAiToolEnabled { .. }
             | AppCommand::SaveAiDefaultModels { .. }
             | AppCommand::TestAiModel { .. }
-            | AppCommand::InstallMcpClient { .. }
-            | AppCommand::UninstallMcpClient { .. }
-            | AppCommand::AutoRegisterMcpClients { .. }
             | AppCommand::FetchAiModels { .. }) => self.dispatch_ai_settings(command),
+            command @ (AppCommand::SyncMcpClients { .. }
+            | AppCommand::RefreshMcpClients { .. }
+            | AppCommand::SetMcpClientRegistration { .. }) => self.dispatch_mcp_clients(command),
             AppCommand::SaveSettings(settings) => {
                 self.state.settings = settings;
                 AppEvent::SettingsSaved

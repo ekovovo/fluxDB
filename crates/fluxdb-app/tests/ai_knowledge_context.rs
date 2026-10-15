@@ -455,6 +455,7 @@ fn ai_tool_execute_receipt(
         return failed_receipt(tool_id, "工具没有实现".to_string());
     };
     let ctx = fluxdb_core::ToolExecutionContext {
+        automatic_approval: false,
         session_id: job.session_id.clone(),
         turn_id: job.turn_id.clone(),
         iteration: 1,

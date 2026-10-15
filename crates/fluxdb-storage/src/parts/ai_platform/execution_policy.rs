@@ -1,0 +1,130 @@
+//! 执行策略复用运行设置的 revision/CAS；不把模型凭据或业务数据放进配置。
+use fluxdb_core::{Error, ErrorKind, ExecutionPolicySettings, Result};
+use rusqlite::{Connection, OptionalExtension, params};
+
+use crate::sqlite::sqlite_error;
+
+/// 旧版把「人工审批等待时间」和「大模型审批回退模型」存进执行策略 JSON；两者已删除，
+/// 读取时先剔除再反序列化，让 `deny_unknown_fields` 仍能拦截真正未知的字段。
+fn parse_policy(json: &str) -> Result<ExecutionPolicySettings> {
+    let mut value: serde_json::Value = serde_json::from_str(json)
+        .map_err(|_| Error::new(ErrorKind::Internal, "执行策略配置无效，拒绝执行"))?;
+    if let Some(object) = value.as_object_mut() {
+        object.remove("approval_timeout_ms");
+        object.remove("approval_model_id");
+    }
+    serde_json::from_value(value)
+        .map_err(|_| Error::new(ErrorKind::Internal, "执行策略配置无效，拒绝执行"))
+}
+
+pub fn load(conn: &Connection) -> Result<(ExecutionPolicySettings, i64)> {
+    let row: Option<(String, i64)> = conn
+        .query_row(
+            "SELECT execution_policy_json, revision FROM ai_runtime_settings WHERE id=1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .map_err(sqlite_error)?;
+    match row {
+        None => Ok((ExecutionPolicySettings::default(), 0)),
+        Some((json, revision)) => {
+            let policy = parse_policy(&json)?;
+            Ok((policy, revision))
+        }
+    }
+}
+
+pub fn save(
+    conn: &Connection,
+    now: i64,
+    policy: &ExecutionPolicySettings,
+    expected_revision: i64,
+) -> Result<i64> {
+    let json = serde_json::to_string(policy)
+        .map_err(|_| Error::new(ErrorKind::Internal, "执行策略序列化失败"))?;
+    let tx = conn.unchecked_transaction().map_err(sqlite_error)?;
+    let count = if expected_revision == 0 {
+        tx.execute(
+            "INSERT INTO ai_runtime_settings(id,max_active_turns,execution_policy_json,revision,updated_at_ms)
+             VALUES(1,2,?1,1,?2) ON CONFLICT(id) DO NOTHING",
+            params![json, now],
+        ).map_err(sqlite_error)?
+    } else {
+        tx.execute(
+            "UPDATE ai_runtime_settings SET execution_policy_json=?1,revision=revision+1,
+             updated_at_ms=?2 WHERE id=1 AND revision=?3",
+            params![json, now, expected_revision],
+        )
+        .map_err(sqlite_error)?
+    };
+    if count != 1 {
+        return Err(Error::new(
+            ErrorKind::Internal,
+            "执行策略已变化，请刷新后重试",
+        ));
+    }
+    // 策略变化使等待中的批准失效；已发出的操作无法撤回，不进行自动重放。
+    tx.execute(
+        "UPDATE ai_approvals SET status='invalidated',reason_code='execution_policy_changed',
+         decided_at_ms=?1,revision=revision+1 WHERE status IN ('pending','approved')",
+        [now],
+    )
+    .map_err(sqlite_error)?;
+    tx.commit().map_err(sqlite_error)?;
+    Ok(expected_revision + 1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn policy_defaults_overrides_cas_and_round_trip() {
+        let conn = Connection::open_in_memory().unwrap();
+        super::super::ensure_schema(&conn).unwrap();
+        let (mut policy, rev) = load(&conn).unwrap();
+        assert_eq!(rev, 0);
+        assert_eq!(policy.mcp_default, fluxdb_core::McpWritePolicy::ReadOnly);
+        policy.mcp_default = fluxdb_core::McpWritePolicy::ReadWrite;
+        assert_eq!(save(&conn, 1, &policy, 0).unwrap(), 1);
+        assert_eq!(load(&conn).unwrap(), (policy.clone(), 1));
+        assert!(save(&conn, 2, &policy, 0).is_err());
+        policy.tools_default = fluxdb_core::ExecutionPolicy::ReadOnly;
+        assert_eq!(save(&conn, 3, &policy, 1).unwrap(), 2);
+        assert!(save(&conn, 4, &policy, 1).is_err());
+    }
+
+    #[test]
+    fn legacy_timeout_field_is_ignored_on_load() {
+        let conn = Connection::open_in_memory().unwrap();
+        super::super::ensure_schema(&conn).unwrap();
+        let raw = r#"{"tools_default":"write_approval","mcp_default":"read_only","approval_model_id":null,"approval_timeout_ms":60000}"#;
+        conn.execute(
+            "INSERT INTO ai_runtime_settings(id,max_active_turns,execution_policy_json,revision,updated_at_ms)
+             VALUES(1,2,?1,1,0)",
+            params![raw],
+        )
+        .unwrap();
+        let (policy, rev) = load(&conn).unwrap();
+        assert_eq!(rev, 1);
+        assert_eq!(
+            policy.tools_default,
+            fluxdb_core::ExecutionPolicy::WriteApproval
+        );
+        assert!(save(&conn, 1, &policy, 1).is_ok());
+    }
+
+    #[test]
+    fn unknown_policy_field_is_rejected() {
+        let conn = Connection::open_in_memory().unwrap();
+        super::super::ensure_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO ai_runtime_settings(id,max_active_turns,execution_policy_json,revision,updated_at_ms)
+             VALUES(1,2,'{\"bogus\":1}',1,0)",
+            [],
+        )
+        .unwrap();
+        assert!(load(&conn).is_err());
+    }
+}

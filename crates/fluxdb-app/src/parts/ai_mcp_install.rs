@@ -2,7 +2,7 @@
 //
 // 目标：像 Pencil 扩展那样，把 `fluxdb-mcp` 这个 stdio Server 注册进用户已安装的
 // Codex CLI / Claude Code 的**用户级配置**，用户无需手写 JSON/TOML。硬约束：
-// 1. **注册可控**：启动仅注册已有配置的客户端；显式卸载后关闭自动注册。
+// 1. **注册可控**：显式接入，启动只维护已选择且归属核对通过的客户端。
 // 2. **可回滚**：注册/卸载只增删本应用拥有的 server 条目，不触碰其它 server。
 // 3. **写入前备份、原子替换、失败不半写**：临时文件 + rename；备份保留原内容。
 // 4. **不猜格式**：目标文件若无法解析，报错退出，绝不改写未知结构。
@@ -12,7 +12,7 @@
 
 // 本文件以 include! 引入 crate 根作用域：Path/PathBuf 已在 lib.rs 顶部导入。
 
-/// 支持自动注册的 CLI 客户端（首版：Codex + Claude Code）。
+/// 已适配配置格式的 CLI 客户端；未适配的客户端使用通用 stdio 启动信息。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum McpClientKind {
     /// Codex CLI：`~/.codex/config.toml` 的 `[mcp_servers.<name>]`。
@@ -49,7 +49,7 @@ impl McpClientKind {
         }
     }
 
-    /// Claude Code 的工具预批准文件（仅只读工具时使用）。
+    /// 旧版本写入工具预批准的文件；现在仅在移除接入时清理旧规则。
     pub fn claude_allow_settings_path(home: &Path) -> PathBuf {
         home.join(".claude").join("settings.json")
     }
@@ -79,19 +79,6 @@ pub const DEFAULT_MCP_SERVER_NAME: &str = "fluxdb";
 /// 默认 Server Profile ID（自动为“一键注册”创建一个只读、空授权的 Profile）。
 pub const DEFAULT_MCP_PROFILE_ID: &str = "fluxdb.local";
 
-/// 一键注册时使用的默认只读工具白名单（不含任何写工具）。
-pub const DEFAULT_READONLY_TOOLS: &[&str] = &[
-    "fluxdb_connections_list",
-    "fluxdb_search_objects",
-    "fluxdb_describe_object",
-    "fluxdb_query",
-    "fluxdb_explain",
-    "fluxdb_redis_scan",
-    "fluxdb_redis_inspect",
-    "fluxdb_redis_server_info",
-    "fluxdb_result_page",
-];
-
 /// 查询所有支持客户端的注册状态（供 UI 一次性渲染）。
 pub fn install_status_snapshot(home: &Path) -> Vec<ClientStatus> {
     McpClientKind::all()
@@ -110,7 +97,10 @@ pub fn bundled_mcp_binary() -> Option<PathBuf> {
 }
 
 fn is_desktop_binary(exe: &Path) -> bool {
-    matches!(exe.file_stem().and_then(|name| name.to_str()), Some("fluxdb-desktop" | "fluxdb"))
+    matches!(
+        exe.file_stem().and_then(|name| name.to_str()),
+        Some("fluxdb-desktop" | "fluxdb")
+    )
 }
 
 fn mcp_binary_next_to(exe: &Path) -> Option<PathBuf> {
@@ -138,16 +128,14 @@ pub struct McpRegistration {
     pub profile_id: String,
     /// 可选隔离配置根；`None` 表示 Server 复用平台默认存储目录。
     pub config_root: Option<PathBuf>,
-    /// 是否额外写入 Claude Code 的工具预批准规则（`mcp__<name>`）。
-    ///
-    /// 仅当注册的是**只读** Profile 时才应由 UI 置位；写权限不经此捷径。
-    pub preapprove_claude_tools: bool,
 }
 
 impl McpRegistration {
     /// 校验注册输入：路径必须绝对、名称/ID 非空、名称不含会破坏配置的字符。
     pub fn validate(&self) -> fluxdb_core::Result<()> {
-        let err = |message: &str| fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, message.to_string());
+        let err = |message: &str| {
+            fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, message.to_string())
+        };
         if self.server_name.trim().is_empty() || self.server_name.len() > 64 {
             return Err(err("MCP server 名称不能为空且不超过 64 字符"));
         }
@@ -211,6 +199,10 @@ pub struct McpInstallClientStatus {
     pub config_exists: bool,
     /// 是否已注册本应用的 server。
     pub registered: bool,
+    pub managed: bool,
+    /// 客户端里的同名条目与本应用将写入的启动命令一致；此时「卸载」才是对应用例行的撤销。
+    pub up_to_date: bool,
+    pub error: Option<String>,
 }
 
 /// 一次性生成 UI 用的注册状态快照。
@@ -223,16 +215,15 @@ pub fn install_client_statuses(home: &Path) -> Vec<McpInstallClientStatus> {
             config_path: status.config_path.display().to_string(),
             config_exists: status.config_exists,
             registered: status.registered,
+            managed: false,
+            up_to_date: false,
+            error: None,
         })
         .collect()
 }
 
 /// 查询某客户端的注册状态；读取失败按“未注册 + 文件不存在”处理，不抛错。
-pub fn client_status(
-    client: McpClientKind,
-    home: &Path,
-    server_name: &str,
-) -> ClientStatus {
+pub fn client_status(client: McpClientKind, home: &Path, server_name: &str) -> ClientStatus {
     let config_path = client.config_path(home);
     let config_exists = config_path.is_file();
     let registered = if config_exists {
@@ -264,7 +255,7 @@ pub struct ClientWriteFact {
     pub changed: bool,
 }
 
-/// 注册到指定客户端（幂等：已存在同名条目则覆盖为最新命令/参数）。
+/// 写入指定客户端；调用方必须先核对同名条目的归属。
 pub fn register(
     client: McpClientKind,
     home: &Path,
@@ -275,7 +266,9 @@ pub fn register(
     let existing = read_optional(&config_path)?;
     match client {
         McpClientKind::Codex => register_codex(&config_path, existing.as_deref(), registration),
-        McpClientKind::ClaudeCode => register_claude(&config_path, existing.as_deref(), registration),
+        McpClientKind::ClaudeCode => {
+            register_claude(&config_path, existing.as_deref(), registration)
+        }
     }
 }
 
@@ -289,7 +282,9 @@ pub fn unregister(
     let existing = read_optional(&config_path)?;
     match client {
         McpClientKind::Codex => unregister_codex(&config_path, existing.as_deref(), server_name),
-        McpClientKind::ClaudeCode => unregister_claude(&config_path, existing.as_deref(), server_name),
+        McpClientKind::ClaudeCode => {
+            unregister_claude(&config_path, existing.as_deref(), server_name)
+        }
     }
 }
 
@@ -297,7 +292,10 @@ fn read_optional(path: &Path) -> fluxdb_core::Result<Option<String>> {
     match std::fs::read_to_string(path) {
         Ok(text) => Ok(Some(text)),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(write_error(format!("读取 {} 失败: {error}", path.display()))),
+        Err(error) => Err(write_error(format!(
+            "读取 {} 失败: {error}",
+            path.display()
+        ))),
     }
 }
 
@@ -310,7 +308,11 @@ fn write_error(message: impl Into<String>) -> fluxdb_core::Error {
 fn codex_has_server(text: &str, server_name: &str) -> bool {
     text.parse::<toml_edit::DocumentMut>()
         .ok()
-        .and_then(|doc| doc.get("mcp_servers").and_then(|m| m.get(server_name)).map(|_| ()))
+        .and_then(|doc| {
+            doc.get("mcp_servers")
+                .and_then(|m| m.get(server_name))
+                .map(|_| ())
+        })
         .is_some()
 }
 
@@ -339,14 +341,18 @@ fn register_codex(
     let servers = doc["mcp_servers"]
         .as_table_mut()
         .ok_or_else(|| write_error("config.toml 里的 mcp_servers 不是表，拒绝改写"))?;
-    let mut entry = toml_edit::Table::new();
-    entry["command"] = toml_edit::value(command);
+    if !servers.contains_key(&registration.server_name) {
+        servers[&registration.server_name] = toml_edit::Item::Table(toml_edit::Table::new());
+    }
+    let entry = servers[&registration.server_name]
+        .as_table_like_mut()
+        .ok_or_else(|| write_error("同名 MCP 条目不是表，拒绝改写"))?;
+    entry.insert("command", toml_edit::value(command));
     let mut arg_array = toml_edit::Array::new();
     for arg in args {
         arg_array.push(arg);
     }
-    entry["args"] = toml_edit::value(arg_array);
-    servers[&registration.server_name] = toml_edit::Item::Table(entry);
+    entry.insert("args", toml_edit::value(arg_array));
     let after = doc.to_string();
     if before == after {
         return Ok(ClientWriteFact {
@@ -447,21 +453,22 @@ fn register_claude(
     let servers = servers
         .as_object_mut()
         .ok_or_else(|| write_error("mcpServers 不是对象，拒绝改写"))?;
-    servers.insert(
-        registration.server_name.clone(),
-        serde_json::json!({
-            "command": command,
-            "args": args,
-            "env": {},
-            "type": "stdio",
-        }),
-    );
+    let entry = servers
+        .entry(registration.server_name.clone())
+        .or_insert_with(|| serde_json::json!({"type":"stdio"}))
+        .as_object_mut()
+        .ok_or_else(|| write_error("同名 MCP 条目不是对象，拒绝改写"))?;
+    entry.insert("command".into(), serde_json::json!(command));
+    entry.insert("args".into(), serde_json::json!(args));
     // enabledMcpServers：Claude Code 用它记录启停；注册即可用。
     let enabled = object
         .entry("enabledMcpServers")
         .or_insert_with(|| serde_json::json!({}));
     if let Some(enabled) = enabled.as_object_mut() {
-        enabled.insert(registration.server_name.clone(), serde_json::Value::Bool(true));
+        enabled.insert(
+            registration.server_name.clone(),
+            serde_json::Value::Bool(true),
+        );
     }
     let rendered = serde_json::to_string_pretty(&root)
         .map_err(|error| write_error(format!("序列化配置失败: {error}")))?;
@@ -469,7 +476,11 @@ fn register_claude(
         &serde_json::from_str::<serde_json::Value>(source).unwrap_or(serde_json::json!({})),
     )
     .unwrap_or_default();
-    let backup = write_atomic(config_path, &rendered)?;
+    let backup = if before != rendered {
+        write_atomic(config_path, &rendered)?
+    } else {
+        None
+    };
     Ok(ClientWriteFact {
         client: McpClientKind::ClaudeCode,
         config_path: config_path.to_path_buf(),
@@ -529,16 +540,12 @@ fn unregister_claude(
     })
 }
 
-// ---- Claude Code 工具预批准（仅只读）----
+// ---- 旧版本 Claude Code 预批准清理 ----
 
-/// 写入/移除 Claude Code 的 `mcp__<name>` 预批准规则（`~/.claude/settings.json`）。
-///
-/// `allow=true` 时确保存在该规则；`false` 时移除。仅接受 `mcp__<name>` 前缀，
-/// 不触碰用户的其它权限项；文件无法解析则拒绝改写。
-pub fn set_claude_tool_preapproval(
+/// 仅移除旧版本写入的本服务规则；不存在时不创建文件，不触碰其它权限。
+fn remove_claude_tool_preapproval(
     home: &Path,
     server_name: &str,
-    allow: bool,
 ) -> fluxdb_core::Result<Option<PathBuf>> {
     if !server_name
         .chars()
@@ -548,9 +555,15 @@ pub fn set_claude_tool_preapproval(
     }
     let path = McpClientKind::claude_allow_settings_path(home);
     let existing = read_optional(&path)?;
+    if existing.is_none() {
+        return Ok(None);
+    }
     let mut root: serde_json::Value = match existing.as_deref() {
         Some(text) if !text.trim().is_empty() => serde_json::from_str(text).map_err(|error| {
-            write_error(format!("{} 不是合法 JSON，拒绝改写: {error}", path.display()))
+            write_error(format!(
+                "{} 不是合法 JSON，拒绝改写: {error}",
+                path.display()
+            ))
         })?,
         _ => serde_json::json!({}),
     };
@@ -570,17 +583,9 @@ pub fn set_claude_tool_preapproval(
     let list = allow_list
         .as_array_mut()
         .ok_or_else(|| write_error("permissions.allow 不是数组，拒绝改写"))?;
-    let mut changed = false;
-    if allow {
-        if !list.iter().any(|v| v.as_str() == Some(rule.as_str())) {
-            list.push(serde_json::Value::String(rule.clone()));
-            changed = true;
-        }
-    } else {
-        let before = list.len();
-        list.retain(|v| v.as_str() != Some(rule.as_str()));
-        changed = before != list.len();
-    }
+    let before = list.len();
+    list.retain(|v| v.as_str() != Some(rule.as_str()));
+    let changed = before != list.len();
     if !changed {
         return Ok(None);
     }
@@ -629,12 +634,21 @@ fn write_atomic(path: &Path, content: &str) -> fluxdb_core::Result<Option<PathBu
         .and_then(|n| n.to_str())
         .ok_or_else(|| write_error("配置文件名非法"))?;
     let temp = parent.join(format!(".{file_name}.fluxdb.{}.tmp", uuid::Uuid::new_v4()));
+    let permissions = std::fs::metadata(path).ok().map(|meta| meta.permissions());
     let write = (|| -> std::io::Result<()> {
         use std::io::Write;
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temp)?;
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&temp)?;
+        // 客户端配置可能含其它服务的凭据，原子替换不能放宽原文件权限。
+        if let Some(permissions) = permissions {
+            file.set_permissions(permissions)?;
+        }
         file.write_all(content.as_bytes())?;
         file.sync_all()
     })();
@@ -644,190 +658,13 @@ fn write_atomic(path: &Path, content: &str) -> fluxdb_core::Result<Option<PathBu
     }
     if let Err(error) = std::fs::rename(&temp, path) {
         let _ = std::fs::remove_file(&temp);
-        return Err(write_error(format!("替换 {} 失败: {error}", path.display())));
+        return Err(write_error(format!(
+            "替换 {} 失败: {error}",
+            path.display()
+        )));
     }
     Ok(backup)
 }
 
 #[cfg(test)]
-mod mcp_install_tests {
-    use super::*;
-
-    #[test]
-    fn desktop_mcp_entry_is_available_without_sidecar() {
-        let home = temp_home("desktop-entry");
-        for name in ["fluxdb-desktop", "fluxdb-desktop.exe", "fluxdb"] {
-            let exe = home.join(name);
-            std::fs::write(&exe, b"stub").unwrap();
-            assert_eq!(mcp_binary_next_to(&exe), Some(exe.clone()));
-            let mut reg = registration(&home);
-            reg.binary_path = exe;
-            assert_eq!(reg.command_args().1[0], "--mcp-server");
-        }
-        let sidecar = home.join(if cfg!(windows) { "fluxdb-mcp.exe" } else { "fluxdb-mcp" });
-        std::fs::write(&sidecar, b"stub").unwrap();
-        assert_eq!(mcp_binary_next_to(&home.join("fluxdb-desktop")), Some(sidecar));
-        assert_eq!(registration(&home).command_args().1[0], "--server-profile");
-        std::fs::remove_dir_all(home).unwrap();
-    }
-
-    fn temp_home(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("fluxdb-mcp-install-{tag}-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
-    }
-
-    fn registration(home: &Path) -> McpRegistration {
-        McpRegistration {
-            server_name: "fluxdb".into(),
-            binary_path: home.join("bin").join("fluxdb-mcp"),
-            profile_id: "local-readonly".into(),
-            config_root: Some(home.join("data")),
-            preapprove_claude_tools: true,
-        }
-    }
-
-    #[test]
-    fn validate_rejects_relative_paths_and_bad_names() {
-        let home = temp_home("validate");
-        let mut reg = registration(&home);
-        assert!(reg.validate().is_ok());
-        reg.binary_path = PathBuf::from("fluxdb-mcp");
-        assert!(reg.validate().is_err(), "相对路径必须拒绝");
-        reg = registration(&home);
-        reg.server_name = "bad name!".into();
-        assert!(reg.validate().is_err(), "非法名称必须拒绝");
-        std::fs::remove_dir_all(&home).ok();
-    }
-
-    #[test]
-    fn codex_register_preserves_existing_content_and_is_idempotent() {
-        let home = temp_home("codex");
-        let config = home.join(".codex").join("config.toml");
-        std::fs::create_dir_all(config.parent().unwrap()).unwrap();
-        std::fs::write(&config, "model = \"gpt-5\"\n\n[mcp_servers.other]\ncommand = \"x\"\n").unwrap();
-        let reg = registration(&home);
-        let fact = register(McpClientKind::Codex, &home, &reg).unwrap();
-        assert!(fact.changed);
-        assert!(fact.backup_path.is_some(), "首次写入应保留备份");
-        let text = std::fs::read_to_string(&config).unwrap();
-        assert!(text.contains("model = \"gpt-5\""), "保留用户既有配置");
-        assert!(text.contains("[mcp_servers.other]"), "保留其它 server");
-        assert!(text.contains("[mcp_servers.fluxdb]"));
-        assert!(text.contains("--server-profile"));
-        assert!(text.contains("local-readonly"));
-        // 二次注册幂等：内容一致则 changed=false（覆盖为相同内容）。
-        let again = register(McpClientKind::Codex, &home, &reg).unwrap();
-        assert!(!again.changed, "重复注册相同内容不应重写");
-        // 状态查询。
-        let status = client_status(McpClientKind::Codex, &home, "fluxdb");
-        assert!(status.registered && status.config_exists);
-        // 卸载只删自己的条目。
-        let removed = unregister(McpClientKind::Codex, &home, "fluxdb").unwrap();
-        assert!(removed.changed);
-        let text = std::fs::read_to_string(&config).unwrap();
-        assert!(!text.contains("[mcp_servers.fluxdb]"));
-        assert!(text.contains("[mcp_servers.other]"), "不误删其它 server");
-        std::fs::remove_dir_all(&home).ok();
-    }
-
-    #[test]
-    fn codex_register_rejects_invalid_toml() {
-        let home = temp_home("codex-bad");
-        let config = home.join(".codex").join("config.toml");
-        std::fs::create_dir_all(config.parent().unwrap()).unwrap();
-        std::fs::write(&config, "this is = = not toml\n").unwrap();
-        let reg = registration(&home);
-        assert!(register(McpClientKind::Codex, &home, &reg).is_err(), "非法 TOML 必须拒绝改写");
-        // 原文件未被破坏。
-        assert_eq!(std::fs::read_to_string(&config).unwrap(), "this is = = not toml\n");
-        std::fs::remove_dir_all(&home).ok();
-    }
-
-    #[test]
-    fn claude_register_roundtrip_and_allow_rule() {
-        let home = temp_home("claude");
-        std::fs::write(home.join(".claude.json"), r#"{"userID":"u1","mcpServers":{"other":{"command":"x"}}}"#).unwrap();
-        let reg = registration(&home);
-        let fact = register(McpClientKind::ClaudeCode, &home, &reg).unwrap();
-        assert!(fact.changed);
-        let value: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(home.join(".claude.json")).unwrap()).unwrap();
-        assert_eq!(value["userID"], serde_json::json!("u1"), "保留其它键");
-        assert_eq!(value["mcpServers"]["other"]["command"], serde_json::json!("x"));
-        assert_eq!(value["mcpServers"]["fluxdb"]["type"], serde_json::json!("stdio"));
-        assert!(value["mcpServers"]["fluxdb"]["args"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|a| a == "local-readonly"));
-        assert_eq!(value["enabledMcpServers"]["fluxdb"], serde_json::json!(true));
-
-        // allow 规则写入。
-        let backup = set_claude_tool_preapproval(&home, "fluxdb", true).unwrap();
-        assert!(backup.is_some() || true);
-        let settings: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(home.join(".claude").join("settings.json")).unwrap()).unwrap();
-        assert!(settings["permissions"]["allow"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|v| v == "mcp__fluxdb"));
-        // 卸载同时清掉 allow 与条目。
-        unregister(McpClientKind::ClaudeCode, &home, "fluxdb").unwrap();
-        let value: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(home.join(".claude.json")).unwrap()).unwrap();
-        assert!(value["mcpServers"].get("fluxdb").is_none());
-        assert!(value["mcpServers"].get("other").is_some());
-        std::fs::remove_dir_all(&home).ok();
-    }
-
-    #[test]
-    fn claude_register_rejects_invalid_json() {
-        let home = temp_home("claude-bad");
-        std::fs::write(home.join(".claude.json"), "{ not json").unwrap();
-        let reg = registration(&home);
-        assert!(register(McpClientKind::ClaudeCode, &home, &reg).is_err());
-        assert_eq!(std::fs::read_to_string(home.join(".claude.json")).unwrap(), "{ not json");
-        std::fs::remove_dir_all(&home).ok();
-    }
-
-    #[test]
-    fn status_reports_absence_for_missing_config() {
-        let home = temp_home("missing");
-        let status = client_status(McpClientKind::Codex, &home, "fluxdb");
-        assert!(!status.config_exists && !status.registered);
-        std::fs::remove_dir_all(&home).ok();
-    }
-}
-
-/// 启动自动注册：对**已存在配置文件**的客户端，若本应用 server 尚未注册，则自动写入。
-///
-/// 语义（按用户要求：「启动时先看有没有配置文件，有就自动注册」）：
-/// - 只处理 `config_exists == true` 的客户端（即该 CLI 已安装），不为未安装的客户端创建配置；
-/// - 已注册且命令/参数一致的客户端不重写（幂等）；
-/// - 已注册但参数变化（如二进制路径变更）会更新为最新；
-/// - 单个客户端失败不影响其它客户端，也不阻断启动；返回每个客户端的处理结果。
-///
-/// 调用方需先确认“自动注册”开关开启（见 `load_auto_register_enabled`）。
-pub fn auto_register_installed_clients(
-    home: &Path,
-    registration: &McpRegistration,
-) -> Vec<(McpClientKind, std::result::Result<ClientWriteFact, String>)> {
-    let mut results = Vec::new();
-    for client in McpClientKind::all().iter().copied() {
-        let status = client_status(client, home, &registration.server_name);
-        if !status.config_exists {
-            continue;
-        }
-        // 已注册且内容一致时 register 会返回 changed=false（幂等），无需预先比对。
-        let outcome = register(client, home, registration).map_err(|error| error.message);
-        if outcome.is_ok() && client == McpClientKind::ClaudeCode && registration.preapprove_claude_tools {
-            if let Err(error) = set_claude_tool_preapproval(home, &registration.server_name, true) {
-                tracing::warn!(%error, "自动注册：写入 Claude 预批准规则失败");
-            }
-        }
-        results.push((client, outcome));
-    }
-    results
-}
+include!("tests/ai_mcp_install.rs");

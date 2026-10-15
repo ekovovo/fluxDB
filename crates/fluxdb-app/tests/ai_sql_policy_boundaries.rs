@@ -219,6 +219,7 @@ fn query_tool_rejects_pragma_writes_and_preserves_real_sqlite_state() {
         // 工具返回就绪 future，不能在 Connector 自带 runtime 外再嵌套 Tokio runtime。
         let mut future = tool.execute(
             ToolExecutionContext {
+                automatic_approval: false,
                 session_id: "isolated-session".into(),
                 turn_id: "isolated-turn".into(),
                 iteration: 1,

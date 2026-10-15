@@ -1,16 +1,13 @@
 // 对外 MCP Server 执行服务的行为测试（T054/T059）。
 //
-// 用真实 SQLite fixture 走生产链路：schema 校验→强制审计→授权→执行→投影，
-// 只替换模型与传输（不存在）。断言工具可见性过滤、隐藏写工具直接调用被拒、
-// 未授权 target 拒绝、只读 Profile 不执行写、结果协议形状。
-use fluxdb_storage::Storage as _;
+// 用真实 SQLite fixture 走生产链路：schema 校验→数据源判定→强制审计→内核授权→执行→投影，
+// 只替换模型与传输（不存在）。断言工具可见性、隐藏写工具直接调用被拒、未授权 target 拒绝、
+// 只读数据源不执行写、参数化查询结果形状。
 use fluxdb_storage::ai_platform::mcp_server::{
-    GrantResourceKind, ResourceGrantEdit, ServerProfileEdit, WriteMode, save_resource_grant,
+    DatasourceWritePolicy, ServerProfileEdit, list_datasources, save_datasource,
     save_server_profile,
 };
 use fluxdb_storage::ai_platform::mcp_server_runtime::ServerRequestStatus;
-
-use super::*;
 
 struct Fixture {
     dir: std::path::PathBuf,
@@ -44,45 +41,27 @@ impl Fixture {
         Self { dir, storage, connection: config }
     }
 
-    /// 建 profile + 授权；`allowed` 为 allowed_tool_ids；`write_mode` 控制写权限。
+    /// 建 profile + 数据源；`policy` 为数据源写入策略。
     fn profile_with(
         &self,
-        allowed: &[&str],
-        write_mode: WriteMode,
-        allow_write: bool,
-    ) -> (fluxdb_storage::ai_platform::mcp_server::ServerProfileView, Vec<fluxdb_storage::ai_platform::mcp_server::ResourceGrantView>) {
+        policy: DatasourceWritePolicy,
+    ) -> (
+        fluxdb_storage::ai_platform::mcp_server::ServerProfileView,
+        Vec<fluxdb_storage::ai_platform::mcp_server::DatasourceView>,
+    ) {
         self.storage
             .with_ai_connection(|conn| {
                 let edit = ServerProfileEdit {
                     id: "p1".into(),
                     display_name: "本地".into(),
                     enabled: true,
-                    write_mode,
-                    allowed_tool_ids: allowed.iter().map(|s| s.to_string()).collect(),
                     options_json: "{}".into(),
-                    max_inflight: 4,
-                    max_request_ms: 30_000,
-                    max_request_bytes: 262_144,
-                    max_response_bytes: 131_072,
                 };
                 let created = save_server_profile(conn, 1, &edit, None)?;
                 let profile = save_server_profile(conn, 2, &edit, Some(created.revision))?;
-                let grant = ResourceGrantEdit {
-                    id: "g1".into(),
-                    profile_id: "p1".into(),
-                    connection_id: 1,
-                    database_name: "main".into(),
-                    namespace: "".into(),
-                    enabled: true,
-                    allow_read: true,
-                    allow_write,
-                    object_policy_json: r#"{"all_objects":true}"#.into(),
-                    write_policy_json: "{}".into(),
-                    max_rows: 200,
-                };
-                save_resource_grant(conn, 3, &grant, GrantResourceKind::Sql, None)?;
-                let grants = fluxdb_storage::ai_platform::mcp_server::list_resource_grants(conn, "p1")?;
-                Ok((profile, grants))
+                save_datasource(conn, 3, "p1", 1, policy, None)?;
+                let datasources = list_datasources(conn, "p1")?;
+                Ok((profile, datasources))
             })
             .unwrap()
     }
@@ -90,7 +69,7 @@ impl Fixture {
     fn service(
         &self,
         profile: fluxdb_storage::ai_platform::mcp_server::ServerProfileView,
-        grants: Vec<fluxdb_storage::ai_platform::mcp_server::ResourceGrantView>,
+        datasources: Vec<fluxdb_storage::ai_platform::mcp_server::DatasourceView>,
     ) -> McpExecutionService {
         let results = Arc::new(Mutex::new(ResultStore::for_turn(
             RESULT_STORE_MEMORY_BYTES,
@@ -98,7 +77,15 @@ impl Fixture {
             "mcp-request",
             None,
         )));
-        McpExecutionService::new(vec![self.connection.clone()], profile, grants, results).unwrap()
+        McpExecutionService::new(
+            vec![self.connection.clone()],
+            profile,
+            datasources,
+            fluxdb_core::McpWritePolicy::ReadOnly,
+            BTreeSet::new(),
+            results,
+        )
+        .unwrap()
     }
 }
 
@@ -109,20 +96,15 @@ impl Drop for Fixture {
 }
 
 #[test]
-fn readonly_profile_hides_write_tool_and_rejects_direct_call() {
+fn readonly_datasource_hides_write_tool_and_rejects_direct_call() {
     let fixture = Fixture::new();
-    // allowed 里故意写入 db.execute，验证 visibility 与授权各自独立判定。
-    let (profile, grants) = fixture.profile_with(
-        &["fluxdb_query", "fluxdb_connections_list", "fluxdb_execute"],
-        WriteMode::Disabled,
-        true,
-    );
-    let views = visible_tools(&profile, &grants).unwrap();
+    let (profile, datasources) = fixture.profile_with(DatasourceWritePolicy::ReadOnly);
+    let service = fixture.service(profile, datasources);
+    let views = service.tool_views().unwrap();
     let names = views.iter().map(|v| v.name.as_str()).collect::<Vec<_>>();
     assert!(names.contains(&"fluxdb_query"));
-    assert!(!names.contains(&"fluxdb_execute"), "disabled 模式不能列出写工具");
+    assert!(!names.contains(&"fluxdb_execute"), "只读数据源不能列出写工具");
 
-    let service = fixture.service(profile, grants);
     let cancel = CancelFlag::new();
     let identity = McpCallIdentity {
         session_id: "s".into(),
@@ -141,9 +123,8 @@ fn readonly_profile_hides_write_tool_and_rejects_direct_call() {
 #[test]
 fn query_returns_structured_rows_and_supports_pagination_envelope() {
     let fixture = Fixture::new();
-    let (profile, grants) =
-        fixture.profile_with(&["fluxdb_query", "fluxdb_connections_list"], WriteMode::Disabled, false);
-    let service = fixture.service(profile, grants);
+    let (profile, datasources) = fixture.profile_with(DatasourceWritePolicy::Default);
+    let service = fixture.service(profile, datasources);
     let cancel = CancelFlag::new();
     let identity = McpCallIdentity {
         session_id: "s".into(),
@@ -166,18 +147,18 @@ fn query_returns_structured_rows_and_supports_pagination_envelope() {
 #[test]
 fn unauthorized_target_is_rejected() {
     let fixture = Fixture::new();
-    let (profile, grants) = fixture.profile_with(&["fluxdb_query"], WriteMode::Disabled, false);
-    let service = fixture.service(profile, grants);
+    let (profile, datasources) = fixture.profile_with(DatasourceWritePolicy::Default);
+    let service = fixture.service(profile, datasources);
     let cancel = CancelFlag::new();
     let identity = McpCallIdentity {
         session_id: "s".into(),
         request_id: "r".into(),
     };
-    // 句柄不在授权列表里（换库）。
+    // 句柄指向未加入数据源的连接。
     let outcome = service.call(
         &identity,
         "fluxdb_query",
-        r#"{"target":"conn:1/db:secret","sql":"SELECT 1"}"#,
+        r#"{"target":"conn:99/db:main","sql":"SELECT 1"}"#,
         &cancel,
     );
     assert!(!outcome.ok);
@@ -185,60 +166,21 @@ fn unauthorized_target_is_rejected() {
 }
 
 #[test]
-fn tool_not_in_allowed_ids_is_rejected_even_if_visible_shape() {
+fn write_tool_not_visible_when_no_writable_datasource() {
     let fixture = Fixture::new();
-    // 授权了关系型资源，但 allowed_tool_ids 不含 db.query。
-    let (profile, grants) =
-        fixture.profile_with(&["fluxdb_connections_list"], WriteMode::Disabled, false);
-    let service = fixture.service(profile, grants);
-    let cancel = CancelFlag::new();
-    let identity = McpCallIdentity {
-        session_id: "s".into(),
-        request_id: "r".into(),
-    };
-    let outcome = service.call(
-        &identity,
-        "fluxdb_query",
-        r#"{"target":"conn:1/db:main","sql":"SELECT 1"}"#,
-        &cancel,
+    // 连接本身标记只读：即便数据源策略为允许读写，写工具也不应出现。
+    let (profile, datasources) = fixture.profile_with(DatasourceWritePolicy::ReadWrite);
+    let service = fixture.service(profile, datasources);
+    let names = service
+        .tool_views()
+        .unwrap()
+        .iter()
+        .map(|v| v.name.clone())
+        .collect::<Vec<_>>();
+    assert!(
+        !names.contains(&"fluxdb_execute".to_string()),
+        "只读连接上的写工具不应列出"
     );
-    assert!(!outcome.ok);
-    assert_eq!(outcome.error.unwrap().code, "tool_not_allowed");
-}
-
-#[test]
-fn connections_list_only_returns_authorized_resources_without_endpoint() {
-    let fixture = Fixture::new();
-    let (profile, grants) =
-        fixture.profile_with(&["fluxdb_connections_list"], WriteMode::Disabled, false);
-    let service = fixture.service(profile, grants);
-    let cancel = CancelFlag::new();
-    let identity = McpCallIdentity {
-        session_id: "s".into(),
-        request_id: "r".into(),
-    };
-    let outcome = service.call(&identity, "fluxdb_connections_list", "{}", &cancel);
-    assert!(outcome.ok);
-    // 不得泄漏 endpoint 或凭据。
-    let text = outcome.text.clone();
-    assert!(!text.contains("sqlite"), "不得返回 endpoint: {text}");
-    assert!(!text.contains("password"));
-    let resources = outcome.structured["resources"].as_array().unwrap();
-    assert_eq!(resources.len(), 1);
-    assert_eq!(resources[0]["target"], serde_json::json!("conn:1/db:main"));
-    // 终态映射。
-    assert_eq!(
-        McpExecutionService::terminal_status(&outcome),
-        ServerRequestStatus::Succeeded
-    );
-}
-
-#[test]
-fn scoped_write_without_readonly_connection_is_denied_when_connection_readonly() {
-    // 连接本身标记只读：即便 Profile scoped + grant allow_write，也不能写。
-    let fixture = Fixture::new();
-    let (profile, grants) = fixture.profile_with(&["fluxdb_execute"], WriteMode::Scoped, true);
-    let service = fixture.service(profile, grants);
     let cancel = CancelFlag::new();
     let identity = McpCallIdentity {
         session_id: "s".into(),
@@ -250,17 +192,78 @@ fn scoped_write_without_readonly_connection_is_denied_when_connection_readonly()
         r#"{"target":"conn:1/db:main","sql":"update orders set amount='1' where id=1"}"#,
         &cancel,
     );
-    // 只读连接 → 写权限关闭 → 拒绝（不是审批）。
     assert!(!outcome.ok, "只读连接上的写应被拒绝");
-    let _ = outcome;
+}
+
+#[test]
+fn globally_disabled_tool_is_hidden_and_rejected() {
+    let fixture = Fixture::new();
+    let (profile, datasources) = fixture.profile_with(DatasourceWritePolicy::Default);
+    let mut disabled = BTreeSet::new();
+    disabled.insert("db.query".to_string());
+    let results = Arc::new(Mutex::new(ResultStore::for_turn(
+        RESULT_STORE_MEMORY_BYTES,
+        "s",
+        "r",
+        None,
+    )));
+    let service = McpExecutionService::new(
+        vec![fixture.connection.clone()],
+        profile,
+        datasources,
+        fluxdb_core::McpWritePolicy::ReadOnly,
+        disabled,
+        results,
+    )
+    .unwrap();
+    let names = service
+        .tool_views()
+        .unwrap()
+        .iter()
+        .map(|v| v.name.clone())
+        .collect::<Vec<_>>();
+    assert!(!names.contains(&"fluxdb_query".to_string()), "全局关闭的工具不列出");
+    let outcome = service.call(
+        &McpCallIdentity { session_id: "s".into(), request_id: "r".into() },
+        "fluxdb_query",
+        r#"{"target":"conn:1/db:main","sql":"SELECT 1"}"#,
+        &CancelFlag::new(),
+    );
+    assert!(!outcome.ok);
+    assert_eq!(outcome.error.unwrap().code, "tool_not_allowed");
+}
+
+#[test]
+fn connections_list_only_returns_datasources_without_endpoint() {
+    let fixture = Fixture::new();
+    let (profile, datasources) = fixture.profile_with(DatasourceWritePolicy::ReadOnly);
+    let service = fixture.service(profile, datasources);
+    let cancel = CancelFlag::new();
+    let identity = McpCallIdentity {
+        session_id: "s".into(),
+        request_id: "r".into(),
+    };
+    let outcome = service.call(&identity, "fluxdb_connections_list", "{}", &cancel);
+    assert!(outcome.ok);
+    // 不得泄漏 endpoint 或凭据。
+    let text = outcome.text.clone();
+    assert!(!text.contains("sqlite"), "不得返回 endpoint: {text}");
+    let resources = outcome.structured["resources"].as_array().unwrap();
+    assert_eq!(resources.len(), 1);
+    assert_eq!(resources[0]["target"], serde_json::json!("conn:1"));
+    assert_eq!(resources[0]["write_policy"], serde_json::json!("read_only"));
+    // 终态映射。
+    assert_eq!(
+        McpExecutionService::terminal_status(&outcome),
+        ServerRequestStatus::Succeeded
+    );
 }
 
 #[test]
 fn query_binds_typed_parameters_without_string_interpolation() {
     let fixture = Fixture::new();
-    let (profile, grants) =
-        fixture.profile_with(&["fluxdb_query"], WriteMode::Disabled, false);
-    let service = fixture.service(profile, grants);
+    let (profile, datasources) = fixture.profile_with(DatasourceWritePolicy::Default);
+    let service = fixture.service(profile, datasources);
     let cancel = CancelFlag::new();
     let identity = McpCallIdentity {
         session_id: "s".into(),
@@ -273,7 +276,6 @@ fn query_binds_typed_parameters_without_string_interpolation() {
         r#"{"target":"conn:1/db:main","sql":"SELECT id, amount FROM orders WHERE amount = ?1","parameters":[{"type":"text","value":"10.50"}]}"#,
         &cancel,
     );
-    // SQLite 的连接器默认不注册 `?` 绑定以外的语法；至少证明参数被真实绑定（不是报“不支持参数化”）。
     if outcome.ok {
         assert!(outcome.structured["data"].is_object());
     } else {
@@ -285,90 +287,9 @@ fn query_binds_typed_parameters_without_string_interpolation() {
     }
 }
 
+/// 允许读写的数据源上，真实 SQLite 写入会落库；越界表由 SQL 分类器拒绝。
 #[test]
-fn sqlite_parameter_binding_executes_exact_value() {
-    // 直接经连接器验证 SQLite 参数绑定：`?1` 占位符必须被真实 bind。
-    let fixture = Fixture::new();
-    let config = fixture.connection.clone();
-    let request = fluxdb_core::QueryRequest {
-        connection_id: config.id,
-        database: Some("main".into()),
-        schema: None,
-        text: "SELECT amount FROM orders WHERE id = ?1".into(),
-        mode: fluxdb_core::QueryMode::Selection,
-        options: fluxdb_core::QueryExecutionOptions {
-            continue_on_error: false,
-            split_statements: false,
-            page_offset: 0,
-            page_size: 200,
-            read_only: true,
-        },
-        session_id: None,
-    };
-    let connector = fluxdb_connectors::connector_for(&config).unwrap();
-    let result = connector
-        .execute_parameterized(&fluxdb_core::ParameterizedQueryRequest {
-            request,
-            parameters: vec![fluxdb_core::SqlParameter::I64("2".into())],
-        })
-        .expect("SQLite 参数化执行");
-    let page = &result.results[0];
-    assert_eq!(page.rows.len(), 1, "命中 id=2 恰好一行");
-    assert!(matches!(&page.rows[0].values[0], CellValue::Text(text) if text == "20.00"));
-}
-
-#[test]
-fn scoped_write_policy_allows_only_authorized_update() {
-    use crate::SqlDialectKind;
-    let policy = ScopedWritePolicy::parse(
-        r#"{"allowed_operations":["update"],"allowed_objects":["orders"],"require_where":true,"max_affected_rows":1,"allow_ddl":false}"#,
-    )
-    .expect("解析写规则");
-    // 命中：授权表 + WHERE。
-    assert!(policy
-        .authorize_sql("UPDATE orders SET amount='1' WHERE id = 1", SqlDialectKind::Sqlite)
-        .is_ok());
-    // 非授权表拒绝。
-    assert!(policy
-        .authorize_sql("UPDATE customers SET x=1 WHERE id=1", SqlDialectKind::Sqlite)
-        .is_err());
-    // 缺 WHERE 拒绝。
-    assert!(policy
-        .authorize_sql("UPDATE orders SET amount='1'", SqlDialectKind::Sqlite)
-        .is_err());
-    // 非 UPDATE（DELETE）拒绝。
-    assert!(policy
-        .authorize_sql("DELETE FROM orders WHERE id=1", SqlDialectKind::Sqlite)
-        .is_err());
-    // 子查询谓词无法证明范围，拒绝。
-    assert!(policy
-        .authorize_sql(
-            "UPDATE orders SET amount='1' WHERE id IN (SELECT id FROM x)",
-            SqlDialectKind::Sqlite
-        )
-        .is_err());
-}
-
-#[test]
-fn scoped_write_policy_rejects_empty_or_ddl() {
-    use crate::SqlDialectKind;
-    let empty = ScopedWritePolicy::parse("{}").expect("默认写规则");
-    assert!(empty
-        .authorize_sql("UPDATE orders SET x=1 WHERE id=1", SqlDialectKind::Sqlite)
-        .is_err(), "空规则不放行任何写");
-    let ddl = ScopedWritePolicy::parse(
-        r#"{"allowed_operations":["update"],"allowed_objects":["orders"],"max_affected_rows":5,"allow_ddl":true}"#,
-    )
-    .expect("解析");
-    assert!(ddl
-        .authorize_sql("UPDATE orders SET x=1 WHERE id=1", SqlDialectKind::Sqlite)
-        .is_err(), "首版即使声明 allow_ddl 也拒绝 DDL 语义");
-}
-
-/// 受限写端到端：写连接 + scoped 规则命中 → 真实执行并影响行数；越界表被拒。
-#[test]
-fn scoped_write_executes_preauthorized_update_against_real_sqlite() {
-    // 与只读 fixture 不同：这里需要可写连接。
+fn read_write_datasource_executes_update_against_real_sqlite() {
     let dir = std::env::temp_dir().join(format!("fluxdb-mcp-write-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir(&dir).unwrap();
     let path = dir.join("w.sqlite");
@@ -390,38 +311,19 @@ fn scoped_write_executes_preauthorized_update_against_real_sqlite() {
     };
     let storage = fluxdb_storage::FileStorage::new(&dir);
     storage.save_connections(&[config.clone()]).unwrap();
-    let (profile, grants) = storage
+    let (profile, datasources) = storage
         .with_ai_connection(|conn| {
             let edit = ServerProfileEdit {
                 id: "wp".into(),
                 display_name: "写本地".into(),
                 enabled: true,
-                write_mode: WriteMode::Scoped,
-                allowed_tool_ids: vec!["fluxdb_execute".into()],
                 options_json: "{}".into(),
-                max_inflight: 4,
-                max_request_ms: 30_000,
-                max_request_bytes: 262_144,
-                max_response_bytes: 131_072,
             };
             let c = save_server_profile(conn, 1, &edit, None)?;
-            save_server_profile(conn, 2, &edit, Some(c.revision))?;
-            let grant = ResourceGrantEdit {
-                id: "wg1".into(),
-                profile_id: "wp".into(),
-                connection_id: 7,
-                database_name: "main".into(),
-                namespace: "".into(),
-                enabled: true,
-                allow_read: true,
-                allow_write: true,
-                object_policy_json: r#"{"all_objects":true}"#.into(),
-                write_policy_json: r#"{"allowed_operations":["update"],"allowed_objects":["orders"],"require_where":true,"max_affected_rows":1,"allow_ddl":false}"#.into(),
-                max_rows: 200,
-            };
-            save_resource_grant(conn, 3, &grant, GrantResourceKind::Sql, None)?;
-            let grants = fluxdb_storage::ai_platform::mcp_server::list_resource_grants(conn, "wp")?;
-            Ok((save_server_profile(conn, 4, &edit, Some(2))?, grants))
+            let profile = save_server_profile(conn, 2, &edit, Some(c.revision))?;
+            save_datasource(conn, 3, "wp", 7, DatasourceWritePolicy::ReadWrite, None)?;
+            let datasources = list_datasources(conn, "wp")?;
+            Ok((profile, datasources))
         })
         .unwrap();
     let results = Arc::new(Mutex::new(ResultStore::for_turn(
@@ -430,34 +332,40 @@ fn scoped_write_executes_preauthorized_update_against_real_sqlite() {
         "s",
         None,
     )));
-    let service =
-        McpExecutionService::new(vec![config], profile, grants, results).unwrap();
+    let service = McpExecutionService::new(
+        vec![config],
+        profile,
+        datasources,
+        fluxdb_core::McpWritePolicy::ReadOnly,
+        BTreeSet::new(),
+        results,
+    )
+    .unwrap();
     let cancel = CancelFlag::new();
     let identity = McpCallIdentity { session_id: "s".into(), request_id: "r".into() };
 
-    // 命中：授权表 + WHERE + update → 真实执行。
+    // 命中：允许写的数据源 + 可写连接 → 真实执行。
     let ok = service.call(
         &identity,
         "fluxdb_execute",
         r#"{"target":"conn:7/db:main","sql":"UPDATE orders SET amount='99.99' WHERE id = 1"}"#,
         &cancel,
     );
-    assert!(ok.ok, "预授权范围内应执行成功: {:?}", ok.error);
+    assert!(ok.ok, "允许读写的数据源应执行成功: {:?}", ok.error);
     let check = rusqlite::Connection::open(&path).unwrap();
     let amount: String = check
         .query_row("SELECT amount FROM orders WHERE id = 1", [], |r| r.get(0))
         .unwrap();
     assert_eq!(amount, "99.99", "真实数据库已更新");
 
-    // 越界表：拒绝，数据库不变。
+    // 结构/权限类语句（DROP）必须被分类器拒绝，数据库不变。
     let denied = service.call(
         &identity,
         "fluxdb_execute",
-        r#"{"target":"conn:7/db:main","sql":"UPDATE customers SET x=1 WHERE id = 1"}"#,
+        r#"{"target":"conn:7/db:main","sql":"DROP TABLE orders"}"#,
         &cancel,
     );
-    assert!(!denied.ok);
-    assert_eq!(denied.error.unwrap().code, "write_object_not_allowed");
+    assert!(!denied.ok, "DDL 应被拒绝");
 
     let _ = std::fs::remove_dir_all(&dir);
 }

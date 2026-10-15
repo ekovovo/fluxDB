@@ -18,6 +18,7 @@ fn call(
     let tool = catalog.executable(tool_id).expect("工具实现");
     let receipt = block_on(tool.execute(
         ToolExecutionContext {
+            automatic_approval: false,
             session_id: "e2e".into(),
             turn_id: "e2e-turn".into(),
             iteration: 1,

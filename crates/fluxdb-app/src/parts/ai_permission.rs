@@ -336,7 +336,7 @@ pub fn authorize(input: &AuthorizeInput) -> PermissionDecision {
         None => AuditOutcome::RequireApproval,
     };
 
-    // 5) 写操作一律需要审批（内核规则），读操作按审计结论。
+    // 5) 默认写审批。显式执行策略只能在前面的硬性授权与审计放行后改变审批方式。
     let needs_approval =
         audit == AuditOutcome::RequireApproval || input.risk != fluxdb_core::ToolRisk::Read;
     if needs_approval {
@@ -399,7 +399,7 @@ pub fn connection_is_read_only(config: &fluxdb_core::ConnectionConfig) -> bool {
 /// 由**本轮固定目标连接**推导内核权限（设计 §25、§29）。
 ///
 /// - 读：允许（真正的资源校验仍在 resolver/连接层，未固定连接时工具会因目标无效失败）；
-/// - 写：只有目标连接未被标记只读才允许，且**仍需逐次审批**（`authorize` 对 Write 强制 RequireApproval）；
+/// - 写：只有目标连接未被标记只读才具备写能力；是否逐次审批由执行策略决定；
 /// - 管理：默认拒绝。
 ///
 /// 没有固定连接时写权限为 false：不能因为"没指定目标"就落到任意连接去写。

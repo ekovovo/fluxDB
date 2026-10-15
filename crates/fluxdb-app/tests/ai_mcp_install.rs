@@ -1,341 +1,470 @@
-//! 本地 MCP「一键注册到 CLI 客户端」应用链路（T060 派生能力）。
-//!
-//! 用隔离 HOME（`dirs::home_dir` 在 Unix 读 `$HOME`）驱动 AppController 的
-//! InstallMcpClient / UninstallMcpClient，核对真实写入到 `~/.codex/config.toml` 与
-//! `~/.claude.json`，以及其它配置键/其它 server 不被破坏。不触网、不读生产配置。
-use std::{fs, path::PathBuf, sync::Mutex};
+//! 客户端显式安装/卸载、同名槽位接管与通用 stdio 信息；所有配置均位于隔离临时目录。
+use std::{fs, path::PathBuf};
 
-use fluxdb_app::{AppCommand, AppController, AppEvent, DEFAULT_MCP_PROFILE_ID};
+use fluxdb_app::{
+    DEFAULT_MCP_PROFILE_ID, McpClientKind, McpRegistration, connect_mcp_client_registration,
+    mcp_clients_snapshot, remove_mcp_client_registration, sync_mcp_client_registrations,
+};
 use fluxdb_storage::FileStorage;
 
-/// 本文件的所有用例都会改 `HOME`，用进程内互斥串行，避免并行时互相污染。
-static HOME_LOCK: Mutex<()> = Mutex::new(());
-
-/// 持有 HOME 互斥并返回守卫（调用方在守卫存活期内设置并使用隔离 HOME）。
-fn lock_home() -> std::sync::MutexGuard<'static, ()> {
-    HOME_LOCK
-        .lock()
-        .unwrap_or_else(|poison| poison.into_inner())
-}
-
 struct Fixture {
+    root: PathBuf,
     home: PathBuf,
-    storage_dir: PathBuf,
+    storage: FileStorage,
 }
-
 impl Fixture {
-    fn new(tag: &str) -> Self {
-        let base = std::env::temp_dir().join(format!(
-            "fluxdb-mcp-install-e2e-{tag}-{}",
-            uuid::Uuid::new_v4()
-        ));
-        let home = base.join("home");
-        let storage_dir = base.join("data");
+    fn new() -> Self {
+        let root =
+            std::env::temp_dir().join(format!("fluxdb-mcp-clients-{}", uuid::Uuid::new_v4()));
+        let home = root.join("home");
         fs::create_dir_all(&home).unwrap();
-        fs::create_dir_all(&storage_dir).unwrap();
-        // dirs::home_dir 在 Unix 读 HOME；本测试进程独占该变量。
-        // SAFETY: 测试串行（--test-threads=1 时）；这里仅在写入前设置一次。
-        unsafe { std::env::set_var("HOME", &home) };
-        Self { home, storage_dir }
+        let storage = FileStorage::new(root.join("data"));
+        storage.load_mcp_client_registrations().unwrap();
+        Self {
+            root,
+            home,
+            storage,
+        }
     }
-
-    fn controller(&self) -> AppController {
-        let mut controller = AppController::new();
-        controller.set_ai_storage(FileStorage::new(&self.storage_dir));
-        // 建库/建表。
-        FileStorage::new(&self.storage_dir)
-            .with_ai_connection(|_| Ok(()))
+    fn registration(&self) -> McpRegistration {
+        McpRegistration {
+            server_name: "fluxdb".into(),
+            binary_path: self.root.join("bin").join("fluxdb-mcp"),
+            profile_id: DEFAULT_MCP_PROFILE_ID.into(),
+            config_root: Some(fs::canonicalize(self.storage.root_dir()).unwrap()),
+        }
+    }
+    fn claude_path(&self) -> PathBuf {
+        self.home.join(".claude.json")
+    }
+    fn claude(&self) -> serde_json::Value {
+        serde_json::from_slice(&fs::read(self.claude_path()).unwrap()).unwrap()
+    }
+    fn connect(&self, client: McpClientKind) {
+        connect_mcp_client_registration(&self.storage, &self.home, client, &self.registration())
             .unwrap();
-        controller
     }
 }
-
 impl Drop for Fixture {
     fn drop(&mut self) {
-        let base = self.home.parent().unwrap().to_path_buf();
-        let _ = fs::remove_dir_all(base);
+        let _ = fs::remove_dir_all(&self.root);
     }
 }
 
-fn binary_path(fixture: &Fixture) -> String {
-    let path = fixture.home.join("bin").join("fluxdb-mcp");
-    fs::create_dir_all(path.parent().unwrap()).unwrap();
-    fs::write(&path, b"stub").unwrap();
-    path.display().to_string()
+#[test]
+fn discovery_and_startup_do_not_register_detected_clients() {
+    let f = Fixture::new();
+    fs::write(f.claude_path(), r#"{"userID":"user"}"#).unwrap();
+    let before = fs::read(f.claude_path()).unwrap();
+    let snapshot = mcp_clients_snapshot(&f.storage, &f.home, Ok(f.registration())).unwrap();
+    let claude = snapshot.clients.iter().find(|c| c.key == "claude").unwrap();
+    assert!(claude.config_exists && !claude.registered && !claude.managed);
+    assert!(
+        sync_mcp_client_registrations(&f.storage, &f.home, &f.registration())
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(fs::read(f.claude_path()).unwrap(), before);
+    assert!(!f.home.join(".codex/config.toml").exists());
+    assert!(
+        f.storage
+            .load_mcp_client_registrations()
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]
-fn install_writes_codex_and_claude_configs_without_touching_others() {
-    let _home_guard = lock_home();
-    let fixture = Fixture::new("both");
-    // 预置：Codex 已有其它 server，Claude 有其它键。
-    let codex_dir = fixture.home.join(".codex");
-    fs::create_dir_all(&codex_dir).unwrap();
+fn explicit_connect_preserves_other_settings_and_does_not_preapprove() {
+    let f = Fixture::new();
     fs::write(
-        codex_dir.join("config.toml"),
-        "model = \"gpt-5\"\n\n[mcp_servers.existing]\ncommand = \"x\"\n",
+        f.claude_path(),
+        r#"{"userID":"user","mcpServers":{"other":{"command":"other"}}}"#,
     )
     .unwrap();
+    f.connect(McpClientKind::ClaudeCode);
+    let value = f.claude();
+    assert_eq!(value["userID"], "user");
+    assert_eq!(value["mcpServers"]["other"]["command"], "other");
+    assert_eq!(
+        value["mcpServers"]["fluxdb"]["args"][3],
+        fs::canonicalize(f.storage.root_dir())
+            .unwrap()
+            .to_str()
+            .unwrap()
+    );
+    assert!(!f.home.join(".claude/settings.json").exists());
+    assert!(
+        f.claude_path()
+            .with_file_name(".claude.json.fluxdb.bak")
+            .exists()
+    );
+    assert!(
+        FileStorage::new(f.storage.root_dir())
+            .load_mcp_client_registrations()
+            .unwrap()
+            .contains_key("claude")
+    );
+    let snapshot = mcp_clients_snapshot(&f.storage, &f.home, Ok(f.registration())).unwrap();
+    assert!(
+        snapshot
+            .clients
+            .iter()
+            .any(|s| s.key == "claude" && s.managed && s.registered && s.up_to_date)
+    );
+}
+
+#[test]
+fn adding_an_absent_client_is_explicit_and_codex_comments_are_preserved() {
+    let f = Fixture::new();
+    f.connect(McpClientKind::Codex);
+    let path = f.home.join(".codex/config.toml");
+    assert!(path.exists());
+    let text = fs::read_to_string(&path).unwrap();
+    fs::write(&path, format!("# keep comment\nmodel = \"test\"\n{text}")).unwrap();
+    f.connect(McpClientKind::Codex);
+    let text = fs::read_to_string(&path).unwrap();
+    assert!(text.contains("# keep comment") && text.contains("model = \"test\""));
+    remove_mcp_client_registration(&f.storage, &f.home, McpClientKind::Codex).unwrap();
+    let text = fs::read_to_string(&path).unwrap();
+    assert!(!text.contains("[mcp_servers.fluxdb]"));
+    assert!(text.contains("# keep comment"));
+    sync_mcp_client_registrations(&f.storage, &f.home, &f.registration()).unwrap();
+    assert_eq!(fs::read_to_string(&path).unwrap(), text);
+}
+
+#[test]
+fn sync_updates_only_managed_entries_and_preserves_entry_options() {
+    let f = Fixture::new();
+    f.connect(McpClientKind::ClaudeCode);
+    let mut value = f.claude();
+    value["mcpServers"]["fluxdb"]["env"] = serde_json::json!({"MY_SETTING":"keep"});
+    fs::write(f.claude_path(), serde_json::to_vec(&value).unwrap()).unwrap();
+    let mut next = f.registration();
+    next.binary_path = f.root.join("new-location").join("fluxdb-mcp");
+    let changed = sync_mcp_client_registrations(&f.storage, &f.home, &next).unwrap();
+    assert_eq!(changed, ["Claude Code"]);
+    assert_eq!(
+        f.claude()["mcpServers"]["fluxdb"]["command"],
+        next.binary_path.to_str().unwrap()
+    );
+    assert_eq!(
+        f.claude()["mcpServers"]["fluxdb"]["env"]["MY_SETTING"],
+        "keep"
+    );
+    let bytes = fs::read(f.claude_path()).unwrap();
+    let backup = fs::read(f.claude_path().with_file_name(".claude.json.fluxdb.bak")).unwrap();
+    assert!(
+        sync_mcp_client_registrations(&f.storage, &f.home, &next)
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(fs::read(f.claude_path()).unwrap(), bytes);
+    assert_eq!(
+        fs::read(f.claude_path().with_file_name(".claude.json.fluxdb.bak")).unwrap(),
+        backup
+    );
+}
+
+#[test]
+fn explicit_install_takes_over_the_same_name_slot_and_uninstall_clears_it() {
+    let f = Fixture::new();
+    let original = r#"{"mcpServers":{"fluxdb":{"command":"another-server","args":[]}}}"#;
+    fs::write(f.claude_path(), original).unwrap();
+    // 尚未安装：启动维护不接管任何条目。
+    let snapshot = mcp_clients_snapshot(&f.storage, &f.home, Ok(f.registration())).unwrap();
+    let claude = snapshot.clients.iter().find(|s| s.key == "claude").unwrap();
+    assert!(claude.registered && !claude.up_to_date && !claude.managed);
+    assert!(
+        sync_mcp_client_registrations(&f.storage, &f.home, &f.registration())
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(fs::read_to_string(f.claude_path()).unwrap(), original);
+
+    // 显式安装接管同名键：写成本应用的启动命令并登记管理权。
+    f.connect(McpClientKind::ClaudeCode);
+    assert_eq!(
+        f.claude()["mcpServers"]["fluxdb"]["command"],
+        f.registration().binary_path.to_str().unwrap()
+    );
+    let snapshot = mcp_clients_snapshot(&f.storage, &f.home, Ok(f.registration())).unwrap();
+    let claude = snapshot.clients.iter().find(|s| s.key == "claude").unwrap();
+    assert!(claude.registered && claude.up_to_date && claude.managed);
+
+    // 卸载删除同名键并放弃管理权，不影响其它 server。
     fs::write(
-        fixture.home.join(".claude.json"),
-        r#"{"userID":"u1","mcpServers":{"other":{"command":"y"}}}"#,
+        f.claude_path(),
+        r#"{"mcpServers":{"other":{"command":"other"},"fluxdb":{"command":"another-server","args":[]}}}"#,
     )
     .unwrap();
+    remove_mcp_client_registration(&f.storage, &f.home, McpClientKind::ClaudeCode).unwrap();
+    let value = f.claude();
+    assert!(value["mcpServers"].get("fluxdb").is_none());
+    assert_eq!(value["mcpServers"]["other"]["command"], "other");
+    assert!(
+        f.storage
+            .load_mcp_client_registrations()
+            .unwrap()
+            .is_empty()
+    );
+}
 
-    let mut controller = fixture.controller();
-    let binary = binary_path(&fixture);
+#[test]
+fn same_name_remote_entry_is_never_rewritten() {
+    let f = Fixture::new();
+    let original =
+        r#"{"mcpServers":{"fluxdb":{"url":"https://example.invalid/mcp","type":"http"}}}"#;
+    fs::write(f.claude_path(), original).unwrap();
+    assert!(
+        connect_mcp_client_registration(
+            &f.storage,
+            &f.home,
+            McpClientKind::ClaudeCode,
+            &f.registration()
+        )
+        .is_err()
+    );
+    assert!(
+        f.storage
+            .load_mcp_client_registrations()
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(fs::read_to_string(f.claude_path()).unwrap(), original);
+    let snapshot = mcp_clients_snapshot(&f.storage, &f.home, Ok(f.registration())).unwrap();
+    let claude = snapshot.clients.iter().find(|s| s.key == "claude").unwrap();
+    assert!(!claude.up_to_date && claude.error.is_some());
+}
 
-    for client in ["codex", "claude"] {
-        let event = controller.dispatch(AppCommand::InstallMcpClient {
-            client: client.into(),
-            profile_id: DEFAULT_MCP_PROFILE_ID.into(),
-            binary_path: binary.clone(),
-            config_root: None,
-            preapprove_claude_tools: true,
-        });
+#[test]
+fn edited_managed_config_stops_auto_maintenance_until_explicit_install() {
+    let f = Fixture::new();
+    f.connect(McpClientKind::ClaudeCode);
+    let mut value = f.claude();
+    value["mcpServers"]["fluxdb"]["command"] = serde_json::json!("user-changed");
+    let bytes = serde_json::to_vec(&value).unwrap();
+    fs::write(f.claude_path(), &bytes).unwrap();
+    assert!(sync_mcp_client_registrations(&f.storage, &f.home, &f.registration()).is_err());
+    assert_eq!(fs::read(f.claude_path()).unwrap(), bytes);
+    let snapshot = mcp_clients_snapshot(&f.storage, &f.home, Ok(f.registration())).unwrap();
+    let claude = snapshot.clients.iter().find(|s| s.key == "claude").unwrap();
+    assert!(claude.registered && claude.managed && !claude.up_to_date);
+    assert!(
+        claude
+            .error
+            .as_deref()
+            .is_some_and(|e| e.contains("重新安装"))
+    );
+
+    // 显式重新安装即恢复管理权，后台维护重新可用。
+    f.connect(McpClientKind::ClaudeCode);
+    assert_eq!(
+        f.claude()["mcpServers"]["fluxdb"]["command"],
+        f.registration().binary_path.to_str().unwrap()
+    );
+    assert!(
+        sync_mcp_client_registrations(&f.storage, &f.home, &f.registration())
+            .unwrap()
+            .is_empty()
+    );
+    let snapshot = mcp_clients_snapshot(&f.storage, &f.home, Ok(f.registration())).unwrap();
+    let claude = snapshot.clients.iter().find(|s| s.key == "claude").unwrap();
+    assert!(claude.up_to_date && claude.error.is_none());
+}
+
+#[test]
+fn removed_client_entry_is_not_recreated_at_startup() {
+    let f = Fixture::new();
+    f.connect(McpClientKind::ClaudeCode);
+    fs::write(f.claude_path(), "{}").unwrap();
+    sync_mcp_client_registrations(&f.storage, &f.home, &f.registration()).unwrap();
+    assert_eq!(fs::read_to_string(f.claude_path()).unwrap(), "{}");
+    remove_mcp_client_registration(&f.storage, &f.home, McpClientKind::ClaudeCode).unwrap();
+    assert!(
+        f.storage
+            .load_mcp_client_registrations()
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn malformed_config_and_remote_name_conflicts_fail_closed() {
+    for text in [
+        "invalid json",
+        r#"{"mcpServers":{"fluxdb":{"url":"https://example.invalid/mcp"}}}"#,
+        r#"{"mcpServers":[]}"#,
+    ] {
+        let f = Fixture::new();
+        fs::write(f.claude_path(), text).unwrap();
         assert!(
-            matches!(
-                event,
-                AppEvent::AiMcpClientRegistration {
-                    installed: true,
-                    ..
-                }
-            ),
-            "注册 {client} 应成功: {event:?}"
+            connect_mcp_client_registration(
+                &f.storage,
+                &f.home,
+                McpClientKind::ClaudeCode,
+                &f.registration()
+            )
+            .is_err()
+        );
+        assert_eq!(fs::read_to_string(f.claude_path()).unwrap(), text);
+        let snapshot = mcp_clients_snapshot(&f.storage, &f.home, Ok(f.registration())).unwrap();
+        assert!(
+            snapshot
+                .clients
+                .iter()
+                .find(|s| s.key == "claude")
+                .unwrap()
+                .error
+                .is_some()
+        );
+        assert!(
+            f.storage
+                .load_mcp_client_registrations()
+                .unwrap()
+                .is_empty()
         );
     }
-
-    // Codex：保留既有内容，新增 fluxdb 条目。
-    let codex = fs::read_to_string(codex_dir.join("config.toml")).unwrap();
-    assert!(codex.contains("model = \"gpt-5\""));
-    assert!(codex.contains("[mcp_servers.existing]"));
-    assert!(codex.contains("[mcp_servers.fluxdb]"));
-    assert!(codex.contains(DEFAULT_MCP_PROFILE_ID));
-
-    // Claude：保留 userID 与其它 server，新增 fluxdb + enabled。
-    let claude: serde_json::Value =
-        serde_json::from_str(&fs::read_to_string(fixture.home.join(".claude.json")).unwrap())
-            .unwrap();
-    assert_eq!(claude["userID"], serde_json::json!("u1"));
-    assert_eq!(
-        claude["mcpServers"]["other"]["command"],
-        serde_json::json!("y")
-    );
-    assert_eq!(
-        claude["mcpServers"]["fluxdb"]["type"],
-        serde_json::json!("stdio")
-    );
-    assert_eq!(
-        claude["mcpServers"]["fluxdb"]["args"],
-        serde_json::json!([
-            "--server-profile",
-            DEFAULT_MCP_PROFILE_ID,
-            "--config-root",
-            fs::canonicalize(&fixture.storage_dir).unwrap()
-        ])
-    );
-    assert_eq!(
-        claude["enabledMcpServers"]["fluxdb"],
-        serde_json::json!(true)
-    );
-
-    // 自动创建的默认只读 Profile 存在且禁用写。
-    let storage = FileStorage::new(&fixture.storage_dir);
-    let profile = storage
-        .with_ai_connection(|conn| {
-            fluxdb_storage::ai_platform::mcp_server::load_server_profile(
-                conn,
-                DEFAULT_MCP_PROFILE_ID,
-            )
-        })
-        .unwrap()
-        .expect("默认 Profile 应被创建");
-    assert!(profile.enabled);
-    assert_eq!(
-        profile.write_mode,
-        fluxdb_storage::ai_platform::mcp_server::WriteMode::Disabled
-    );
-
-    // 卸载：只删 fluxdb，保留其它。
-    let event = controller.dispatch(AppCommand::UninstallMcpClient {
-        client: "codex".into(),
-    });
-    assert!(matches!(
-        event,
-        AppEvent::AiMcpClientRegistration {
-            installed: false,
-            ..
-        }
-    ));
-    let codex = fs::read_to_string(codex_dir.join("config.toml")).unwrap();
-    assert!(!codex.contains("[mcp_servers.fluxdb]"));
-    assert!(codex.contains("[mcp_servers.existing]"));
-    assert!(codex.contains("model = \"gpt-5\""));
 }
 
 #[test]
-fn install_is_idempotent_and_reports_status() {
-    let _home_guard = lock_home();
-    let fixture = Fixture::new("idem");
-    let mut controller = fixture.controller();
-    let binary = binary_path(&fixture);
-    let install = || AppCommand::InstallMcpClient {
-        client: "codex".into(),
-        profile_id: DEFAULT_MCP_PROFILE_ID.into(),
-        binary_path: binary.clone(),
-        config_root: None,
-        preapprove_claude_tools: false,
-    };
-    assert!(matches!(
-        controller.dispatch(install()),
-        AppEvent::AiMcpClientRegistration {
-            installed: true,
-            ..
-        }
-    ));
-    // 重复注册仍成功且内容稳定。
-    assert!(matches!(
-        controller.dispatch(install()),
-        AppEvent::AiMcpClientRegistration {
-            installed: true,
-            ..
-        }
-    ));
-    let statuses = fluxdb_app::install_client_statuses(&fixture.home);
-    let codex = statuses.iter().find(|s| s.key == "codex").unwrap();
-    assert!(codex.registered && codex.config_exists);
+fn generic_launch_matches_registration_and_quotes_paths() {
+    let f = Fixture::new();
+    let mut registration = f.registration();
+    registration.binary_path = f.root.join("a path's executable").join(if cfg!(windows) {
+        "fluxdb-desktop.exe"
+    } else {
+        "fluxdb-desktop"
+    });
+    let details = registration.connection_details().unwrap();
+    assert_eq!(details.args[0], "--mcp-server");
+    assert!(details.args.contains(&"--config-root".into()));
+    assert!(details.command_line.contains(if cfg!(windows) {
+        "path''s"
+    } else {
+        "path'\\''s"
+    }));
+    let json: serde_json::Value = serde_json::from_str(&details.json_example).unwrap();
+    connect_mcp_client_registration(
+        &f.storage,
+        &f.home,
+        McpClientKind::ClaudeCode,
+        &registration,
+    )
+    .unwrap();
+    assert_eq!(
+        json["mcpServers"]["fluxdb"]["command"],
+        f.claude()["mcpServers"]["fluxdb"]["command"]
+    );
+    assert_eq!(
+        json["mcpServers"]["fluxdb"]["args"],
+        f.claude()["mcpServers"]["fluxdb"]["args"]
+    );
+    registration.binary_path = PathBuf::from("relative");
+    assert!(registration.connection_details().is_err());
 }
 
 #[test]
-fn install_rejects_unknown_client_and_missing_binary() {
-    let _home_guard = lock_home();
-    let fixture = Fixture::new("reject");
-    let mut controller = fixture.controller();
-    let event = controller.dispatch(AppCommand::InstallMcpClient {
-        client: "vscode".into(),
-        profile_id: DEFAULT_MCP_PROFILE_ID.into(),
-        binary_path: "/abs/fluxdb-mcp".into(),
-        config_root: None,
-        preapprove_claude_tools: false,
-    });
-    assert!(
-        matches!(event, AppEvent::AiSettingsError(_)),
-        "未知客户端应报错"
+fn removal_cleans_legacy_preapproval_but_keeps_other_permissions() {
+    let f = Fixture::new();
+    f.connect(McpClientKind::ClaudeCode);
+    let path = f.home.join(".claude/settings.json");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(
+        &path,
+        r#"{"permissions":{"allow":["Read","mcp__fluxdb","mcp__other"]}}"#,
+    )
+    .unwrap();
+    remove_mcp_client_registration(&f.storage, &f.home, McpClientKind::ClaudeCode).unwrap();
+    let settings: serde_json::Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+    assert_eq!(
+        settings["permissions"]["allow"],
+        serde_json::json!(["Read", "mcp__other"])
     );
-
-    // 相对路径二进制被拒（validate）。
-    let event = controller.dispatch(AppCommand::InstallMcpClient {
-        client: "codex".into(),
-        profile_id: DEFAULT_MCP_PROFILE_ID.into(),
-        binary_path: "fluxdb-mcp".into(),
-        config_root: None,
-        preapprove_claude_tools: false,
-    });
-    assert!(
-        matches!(event, AppEvent::AiSettingsError(_)),
-        "相对路径应被拒"
-    );
+    assert!(f.claude()["mcpServers"].get("fluxdb").is_none());
 }
 
+#[cfg(unix)]
 #[test]
-fn startup_auto_registers_only_clients_with_existing_config() {
-    let _home_guard = lock_home();
-    let fixture = Fixture::new("auto");
-    // 只有 Claude Code 的配置已存在；Codex 未安装（无 config.toml）。
-    fs::write(fixture.home.join(".claude.json"), r#"{"userID":"u1"}"#).unwrap();
-
-    let mut controller = fixture.controller();
-    let binary = binary_path(&fixture);
-    let event = controller.dispatch(AppCommand::AutoRegisterMcpClients {
-        binary_path: binary,
-    });
-    match event {
-        AppEvent::AiMcpAutoRegistered { clients } => {
-            assert_eq!(clients, vec!["claude".to_string()], "只注册已安装的客户端");
+fn app_commands_require_explicit_choice_and_keep_configuration_when_disabled() {
+    use fluxdb_app::{AppCommand, AppController, AppEvent};
+    // 本集成测试只有此用例使用进程 HOME；其余用例全部显式传隔离路径。
+    struct RestoreHome(Option<std::ffi::OsString>);
+    impl Drop for RestoreHome {
+        fn drop(&mut self) {
+            unsafe {
+                match &self.0 {
+                    Some(v) => std::env::set_var("HOME", v),
+                    None => std::env::remove_var("HOME"),
+                }
+            }
         }
-        other => panic!("应为自动注册完成事件: {other:?}"),
     }
-    let claude: serde_json::Value =
-        serde_json::from_str(&fs::read_to_string(fixture.home.join(".claude.json")).unwrap())
-            .unwrap();
-    assert_eq!(claude["userID"], serde_json::json!("u1"));
-    assert_eq!(
-        claude["mcpServers"]["fluxdb"]["type"],
-        serde_json::json!("stdio")
-    );
-    assert_eq!(
-        claude["mcpServers"]["fluxdb"]["args"],
-        serde_json::json!([
-            "--server-profile",
-            DEFAULT_MCP_PROFILE_ID,
-            "--config-root",
-            fs::canonicalize(&fixture.storage_dir).unwrap()
-        ])
-    );
-    assert!(
-        !fixture.home.join(".codex").join("config.toml").is_file(),
-        "未安装的 Codex 不应被创建配置"
-    );
-}
-
-#[test]
-fn startup_reports_missing_binary_and_invalid_client_config() {
-    let _home_guard = lock_home();
-    let fixture = Fixture::new("auto-errors");
-    let mut controller = fixture.controller();
+    let f = Fixture::new();
+    let _restore = RestoreHome(std::env::var_os("HOME"));
+    unsafe { std::env::set_var("HOME", &f.home) };
+    fs::write(f.claude_path(), "{}").unwrap();
+    let mut controller = AppController::new();
+    controller.set_ai_storage(f.storage.clone());
     assert!(matches!(
-        controller.dispatch(AppCommand::AutoRegisterMcpClients {
-            binary_path: String::new(),
+        controller.dispatch(AppCommand::EnsureMcpControl),
+        AppEvent::AiSettingsLoaded
+    ));
+    let binary_path = f.registration().binary_path.display().to_string();
+    assert!(matches!(
+        controller.dispatch(AppCommand::SyncMcpClients {
+            binary_path: binary_path.clone()
+        }),
+        AppEvent::AiMcpClientsSynced { .. }
+    ));
+    assert_eq!(fs::read_to_string(f.claude_path()).unwrap(), "{}");
+    let event = controller.dispatch(AppCommand::SetMcpClientRegistration {
+        client_key: "claude".into(),
+        registered: true,
+        binary_path: binary_path.clone(),
+    });
+    assert!(
+        matches!(event, AppEvent::AiMcpClientsSynced { .. }),
+        "{event:?}"
+    );
+    let before = fs::read(f.claude_path()).unwrap();
+    // Profile 默认关闭；维护配置不得隐式启用服务或删除接入。
+    assert!(!controller.state().ai_mcp_server_profiles[0].enabled);
+    assert!(matches!(
+        controller.dispatch(AppCommand::SyncMcpClients {
+            binary_path: binary_path.clone()
+        }),
+        AppEvent::AiMcpClientsSynced { .. }
+    ));
+    assert_eq!(fs::read(f.claude_path()).unwrap(), before);
+    let event = controller.dispatch(AppCommand::RefreshMcpClients {
+        binary_path: binary_path.clone(),
+    });
+    assert!(
+        matches!(event, AppEvent::AiMcpClientsLoaded(_)),
+        "{event:?}"
+    );
+    assert!(matches!(
+        controller.dispatch(AppCommand::SetMcpClientRegistration {
+            client_key: "unknown".into(),
+            registered: true,
+            binary_path: binary_path.clone()
         }),
         AppEvent::AiSettingsError(_)
     ));
-
-    let config = fixture.home.join(".claude.json");
-    fs::write(&config, "invalid json").unwrap();
+    // 即便可执行文件不可用，移除操作仍然可执行。
     assert!(matches!(
-        controller.dispatch(AppCommand::AutoRegisterMcpClients {
-            binary_path: binary_path(&fixture),
+        controller.dispatch(AppCommand::SetMcpClientRegistration {
+            client_key: "claude".into(),
+            registered: false,
+            binary_path: String::new()
         }),
-        AppEvent::AiSettingsError(_)
+        AppEvent::AiMcpClientsSynced { .. }
     ));
-    assert_eq!(fs::read_to_string(config).unwrap(), "invalid json");
     assert!(
-        !fixture.home.join(".claude/settings.json").exists(),
-        "注册失败不得增加预批准规则"
-    );
-}
-
-#[test]
-fn manual_uninstall_disables_future_auto_registration() {
-    let _home_guard = lock_home();
-    let fixture = Fixture::new("autoff");
-    fs::write(fixture.home.join(".claude.json"), r#"{"userID":"u1"}"#).unwrap();
-    let mut controller = fixture.controller();
-    let binary = binary_path(&fixture);
-
-    let _ = controller.dispatch(AppCommand::AutoRegisterMcpClients {
-        binary_path: binary.clone(),
-    });
-    let _ = controller.dispatch(AppCommand::UninstallMcpClient {
-        client: "claude".into(),
-    });
-    let after_uninstall: serde_json::Value =
-        serde_json::from_str(&fs::read_to_string(fixture.home.join(".claude.json")).unwrap())
-            .unwrap();
-    assert!(after_uninstall["mcpServers"].get("fluxdb").is_none());
-
-    let event = controller.dispatch(AppCommand::AutoRegisterMcpClients {
-        binary_path: binary,
-    });
-    assert!(
-        matches!(event, AppEvent::AiMcpAutoRegistered { ref clients } if clients.is_empty()),
-        "卸载后自动注册应保持关闭: {event:?}"
-    );
-    let final_value: serde_json::Value =
-        serde_json::from_str(&fs::read_to_string(fixture.home.join(".claude.json")).unwrap())
-            .unwrap();
-    assert!(
-        final_value["mcpServers"].get("fluxdb").is_none(),
-        "不应被加回"
+        f.storage
+            .load_mcp_client_registrations()
+            .unwrap()
+            .is_empty()
     );
 }

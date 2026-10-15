@@ -529,8 +529,16 @@ struct Assets {
 }
 
 impl AssetSource for Assets {
+    /// 读取不到资源按 GPUI 约定返回 `Ok(None)`，只有真实读取故障才是错误：
+    /// 上层会周期性请求可选资源（如组件库的空图标占位、自带字体探测），
+    /// 报错误会让这些探测每次绘制都刷一条 ERROR。是否为普通文件用 `is_file`
+    /// 判断而非匹配 `ErrorKind`，因为空路径拼出的是资源目录，各平台对其读取
+    /// 的报错并不一致（macOS/Linux 为 IsADirectory，Windows 为 PermissionDenied）。
     fn load(&self, path: &str) -> anyhow::Result<Option<Cow<'static, [u8]>>> {
         let asset_path = self.base.join(path);
+        if !asset_path.is_file() {
+            return Ok(None);
+        }
         fs::read(&asset_path)
             .map(Cow::Owned)
             .map(Some)

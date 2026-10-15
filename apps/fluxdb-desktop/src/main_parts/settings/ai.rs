@@ -35,14 +35,14 @@ struct AiSettingsPanelState {
     session_archiving_id: Option<String>,
     tools_tab: AiToolsTab,
     tool_settings: Vec<fluxdb_app::AiToolSettingItem>,
-    /// 本地 MCP 客户端注册状态快照与进行中的客户端 key。
+    /// 本地 MCP 客户端配置状态；不代表进程或会话已连接。
     mcp_install_status: Vec<fluxdb_app::McpInstallClientStatus>,
-    mcp_install_busy: Option<String>,
+    mcp_clients_busy: Option<String>,
+    mcp_clients_error: Option<String>,
+    mcp_connection_details: Option<fluxdb_app::McpConnectionDetails>,
+    mcp_connection_error: Option<String>,
+    mcp_details_open: bool,
     agent_editor: Option<AiAgentEditorState>,
-    /// MCP Server Profile 编辑草稿（T060）；`None` 表示未选中任何 Profile。
-    mcp_server_profile_editor: Option<AiMcpServerProfileEditor>,
-    /// MCP 资源授权编辑草稿（T060）；与 Profile 草稿独立。
-    mcp_server_grant_editor: Option<AiMcpServerGrantEditor>,
 }
 
 /// 通用小胶囊：浅色底 + 彩色文字。
@@ -145,9 +145,11 @@ fn ai_empty_state(text: &str, colors: UiColors) -> gpui::AnyElement {
 include!("ai_models.rs");
 include!("ai_tools.rs");
 include!("ai_mcp_server.rs");
+include!("ai_execution_policy.rs");
 include!("ai_mcp_server_actions.rs");
 include!("ai_model_dialog.rs");
 include!("ai_actions.rs");
+include!("ai_mcp_clients.rs");
 include!("ai_agents.rs");
 include!("ai_session_rename.rs");
 

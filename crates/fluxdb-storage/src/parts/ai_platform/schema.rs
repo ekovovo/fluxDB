@@ -141,38 +141,24 @@ CREATE TABLE IF NOT EXISTS ai_mcp_server_profiles (
     display_name TEXT NOT NULL,
     enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0,1)),
     transport TEXT NOT NULL DEFAULT 'stdio' CHECK (transport='stdio'),
-    write_mode TEXT NOT NULL DEFAULT 'disabled'
-        CHECK (write_mode IN ('disabled','scoped','desktop_approval')),
-    allowed_tool_ids_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(allowed_tool_ids_json)),
     options_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(options_json)),
-    max_inflight INTEGER NOT NULL DEFAULT 4 CHECK (max_inflight > 0),
-    max_request_ms INTEGER NOT NULL DEFAULT 30000 CHECK (max_request_ms > 0),
-    max_request_bytes INTEGER NOT NULL DEFAULT 262144 CHECK (max_request_bytes > 0),
-    max_response_bytes INTEGER NOT NULL DEFAULT 131072 CHECK (max_response_bytes > 0),
     revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
     created_at_ms INTEGER NOT NULL,
     updated_at_ms INTEGER NOT NULL
 );
-CREATE TABLE IF NOT EXISTS ai_mcp_server_resource_grants (
-    id TEXT PRIMARY KEY,
+-- 对外 MCP 数据源：用户显式加入对外服务的一个连接。
+-- `write_policy` 为 `default`（跟随全局）或 `read_only` / `read_write`；
+-- 表/Key 范围与写规则不再配置，数据范围等于该连接的授权范围。
+CREATE TABLE IF NOT EXISTS ai_mcp_server_datasources (
     profile_id TEXT NOT NULL REFERENCES ai_mcp_server_profiles(id) ON DELETE RESTRICT,
     connection_id INTEGER NOT NULL,
-    database_name TEXT NOT NULL,
-    namespace TEXT NOT NULL DEFAULT '',
-    enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0,1)),
-    allow_read INTEGER NOT NULL DEFAULT 1 CHECK (allow_read IN (0,1)),
-    allow_write INTEGER NOT NULL DEFAULT 0 CHECK (allow_write IN (0,1)),
-    object_policy_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(object_policy_json)),
-    write_policy_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(write_policy_json)),
-    max_rows INTEGER NOT NULL DEFAULT 200 CHECK (max_rows BETWEEN 1 AND 1000),
+    write_policy TEXT NOT NULL DEFAULT 'default'
+        CHECK (write_policy IN ('default','read_only','read_write')),
     revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
     created_at_ms INTEGER NOT NULL,
     updated_at_ms INTEGER NOT NULL,
-    UNIQUE(profile_id, connection_id, database_name, namespace),
-    UNIQUE(profile_id, id)
+    PRIMARY KEY(profile_id, connection_id)
 );
-CREATE INDEX IF NOT EXISTS ai_mcp_server_grants_profile
-    ON ai_mcp_server_resource_grants(profile_id, enabled);
 
 CREATE TABLE IF NOT EXISTS ai_agent_model_bindings (
     id TEXT PRIMARY KEY,
@@ -205,6 +191,7 @@ CREATE TABLE IF NOT EXISTS ai_agent_mcp_bindings (
 
 CREATE TABLE IF NOT EXISTS ai_runtime_settings (
     id INTEGER PRIMARY KEY CHECK (id=1),
+    execution_policy_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(execution_policy_json)),
     default_agent_id TEXT REFERENCES ai_agents(id) ON DELETE RESTRICT,
     default_model_profile_id TEXT,
     default_decision_model_profile_id TEXT REFERENCES ai_model_profiles(id) ON DELETE RESTRICT,
@@ -283,7 +270,7 @@ CREATE TABLE IF NOT EXISTS ai_mcp_server_requests (
     protocol_request_id_json TEXT NOT NULL CHECK (json_valid(protocol_request_id_json)),
     tool_id TEXT NOT NULL,
     tool_version INTEGER NOT NULL CHECK (tool_version >= 1),
-    resource_grant_id TEXT,
+    connection_id INTEGER,
     target_json TEXT NOT NULL CHECK (json_valid(target_json)),
     arguments_redacted_json TEXT NOT NULL CHECK (json_valid(arguments_redacted_json)),
     plan_hash TEXT NOT NULL,
@@ -295,8 +282,6 @@ CREATE TABLE IF NOT EXISTS ai_mcp_server_requests (
     finished_at_ms INTEGER,
     FOREIGN KEY(profile_id, session_id)
         REFERENCES ai_mcp_server_sessions(profile_id, id) ON DELETE RESTRICT,
-    FOREIGN KEY(profile_id, resource_grant_id)
-        REFERENCES ai_mcp_server_resource_grants(profile_id, id) ON DELETE RESTRICT,
     UNIQUE(session_id, seq),
     UNIQUE(session_id, id)
 );

@@ -244,6 +244,8 @@ pub struct ToolProgressEvent {
 /// 工具执行上下文（由运行时提供；工具自身不接触 UI/SQLite 锁）。
 #[derive(Clone, Debug)]
 pub struct ToolExecutionContext {
+    /// AI 自动批准的写入必须走工具的有界提交路径，不能退回普通写执行。
+    pub automatic_approval: bool,
     pub session_id: String,
     pub turn_id: String,
     pub iteration: i64,
@@ -337,6 +339,11 @@ pub struct ApprovalDetails {
 
 /// 工具能力。
 pub trait AiTool: Send + Sync {
+    /// 可自动审批的确定性证据；仅包含脱敏结构，不包含业务值。
+    /// 不支持影响验证/有界提交时返回 Unsupported，宿主必须转人工。
+    fn automatic_approval_facts(&self, _arguments_json: &str) -> Result<String> {
+        Err(Error::new(ErrorKind::Unsupported, "影响范围或回滚能力无法核实，需要人工审核"))
+    }
     fn descriptor(&self) -> &ToolDescriptor;
     /// 执行一次调用；返回的回执是事实来源，不能被 Hook 改写。
     fn execute(
@@ -347,8 +354,8 @@ pub trait AiTool: Send + Sync {
 
     /// 给审批卡提供展示事实；默认按未核实高风险处理，需要细分的工具各自覆盖。
     ///
-    /// 只作为展示投影，不参与授权判定：即使这里给低风险，也拦不住 `authorize`
-    /// 对写操作强制逐次审批。未覆盖或拿不到判定依据时保持默认高风险，不做安全预设。
+    /// 只作为展示投影，不参与授权判定；自动审批还需独立的确定性证据与有界提交能力。
+    /// 未覆盖或拿不到判定依据时保持默认高风险，不做安全预设。
     fn approval_details(&self, _arguments_json: &str) -> ApprovalDetails {
         ApprovalDetails {
             risk: ApprovalRisk::High,
@@ -369,3 +376,4 @@ impl std::fmt::Display for ToolRisk {
 }
 
 include!("artifact.rs");
+include!("execution_policy.rs");

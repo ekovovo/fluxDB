@@ -32,6 +32,10 @@ mod history_store;
 #[path = "parts/instance_profile.rs"]
 mod instance_profile;
 
+#[path = "parts/mcp_clients.rs"]
+mod mcp_clients;
+pub use mcp_clients::McpClientLaunch;
+
 pub use history_store::{
     QueryHistoryRecord, RedisKeySearchHistoryRecord, RedisWorkbenchHistoryRecord,
 };

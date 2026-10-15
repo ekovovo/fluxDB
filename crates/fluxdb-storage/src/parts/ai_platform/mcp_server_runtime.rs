@@ -3,9 +3,9 @@
 //! 三条规则：
 //! 1. request 记录身份是 `(session_id, seq)`，不是协议 request ID：协议 ID 允许客户端复用，
 //!    只能作为关联字段保存，不能当永远唯一的幂等键。
-//! 2. 归属靠复合外键：request 的 `(profile_id, session_id)` 与 `(profile_id, resource_grant_id)`
-//!    都必须落在同一 Profile 内，跨 Profile 的引用会被数据库拒绝。
-//! 3. 结果与审批分内部 Turn / 外部 MCP 两支，不建假 Turn（见 [`insert_mcp_result`] 与 audits）。
+//! 2. 归属靠复合外键：request 的 `(profile_id, session_id)` 必须落在同一 Profile 内，
+//!    跨 Profile 的引用会被数据库拒绝。
+//! 3. 结果分内部 Turn / 外部 MCP 两支，不建假 Turn（见 [`insert_mcp_result`] 与 audits）。
 
 use rusqlite::{Connection, OptionalExtension, params};
 
@@ -227,7 +227,8 @@ pub struct ServerRequestView {
     pub protocol_request_id_json: String,
     pub tool_id: String,
     pub tool_version: i64,
-    pub resource_grant_id: Option<String>,
+    /// 本次调用绑定的连接（数据源）；服务内工具（如 connections.list）为 `None`。
+    pub connection_id: Option<i64>,
     pub target_json: String,
     pub arguments_redacted_json: String,
     pub plan_hash: String,
@@ -250,7 +251,7 @@ pub fn start_server_request(
     protocol_request_id_json: &str,
     tool_id: &str,
     tool_version: i64,
-    resource_grant_id: Option<&str>,
+    connection_id: Option<i64>,
     target_json: &str,
     arguments_redacted_json: &str,
     plan_hash: &str,
@@ -294,7 +295,7 @@ pub fn start_server_request(
         .ok_or_else(|| Error::new(ErrorKind::Internal, "MCP session 不存在或不属于该 Profile"))?;
     tx.execute(
         "INSERT INTO ai_mcp_server_requests (id, profile_id, session_id, seq,
-            protocol_request_id_json, tool_id, tool_version, resource_grant_id, target_json,
+            protocol_request_id_json, tool_id, tool_version, connection_id, target_json,
             arguments_redacted_json, plan_hash, status, revision, started_at_ms)
          VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,'prepared',1,?12)",
         params![
@@ -305,24 +306,14 @@ pub fn start_server_request(
             protocol_request_id_json,
             tool_id,
             tool_version,
-            resource_grant_id,
+            connection_id,
             target_json,
             arguments_redacted_json,
             plan_hash,
             now_ms,
         ],
     )
-    .map_err(|e| {
-        let message = e.to_string();
-        if message.contains("FOREIGN KEY") {
-            Error::new(
-                ErrorKind::Internal,
-                "MCP request 的资源授权不属于该 Profile",
-            )
-        } else {
-            sqlite_error(e)
-        }
-    })?;
+    .map_err(sqlite_error)?;
     tx.commit().map_err(sqlite_error)?;
     load_server_request(conn, id)
 }
@@ -331,7 +322,7 @@ pub fn start_server_request(
 pub fn load_server_request(conn: &Connection, id: &str) -> Result<ServerRequestView> {
     conn.query_row(
         "SELECT id, profile_id, session_id, seq, protocol_request_id_json, tool_id, tool_version,
-                resource_grant_id, target_json, arguments_redacted_json, plan_hash, status,
+                connection_id, target_json, arguments_redacted_json, plan_hash, status,
                 receipt_json, revision, started_at_ms, finished_at_ms
            FROM ai_mcp_server_requests WHERE id=?1",
         [id],
@@ -344,7 +335,7 @@ pub fn load_server_request(conn: &Connection, id: &str) -> Result<ServerRequestV
                 row.get::<_, String>(4)?,
                 row.get::<_, String>(5)?,
                 row.get::<_, i64>(6)?,
-                row.get::<_, Option<String>>(7)?,
+                row.get::<_, Option<i64>>(7)?,
                 row.get::<_, String>(8)?,
                 row.get::<_, String>(9)?,
                 row.get::<_, String>(10)?,
@@ -368,7 +359,7 @@ pub fn load_server_request(conn: &Connection, id: &str) -> Result<ServerRequestV
             protocol_request_id_json: t.4,
             tool_id: t.5,
             tool_version: t.6,
-            resource_grant_id: t.7,
+            connection_id: t.7,
             target_json: t.8,
             arguments_redacted_json: t.9,
             plan_hash: t.10,
@@ -458,7 +449,7 @@ pub fn list_requests_for_session(
         .collect()
 }
 
-/// 列出某 Profile 最近的请求（活动审计页用）。
+/// 列出某 Profile 最近的请求（协议/审批审计用）。
 pub fn list_requests_for_profile(
     conn: &Connection,
     profile_id: &str,
@@ -557,8 +548,7 @@ mod tests {
     use super::*;
     use crate::ai_platform::ensure_schema;
     use crate::ai_platform::mcp_server::{
-        GrantResourceKind, ResourceGrantEdit, ServerProfileEdit, WriteMode, save_resource_grant,
-        save_server_profile,
+        DatasourceWritePolicy, ServerProfileEdit, save_datasource, save_server_profile,
     };
 
     fn setup() -> Connection {
@@ -571,39 +561,18 @@ mod tests {
             id: "p1".into(),
             display_name: "本地".into(),
             enabled: true,
-            write_mode: WriteMode::Scoped,
-            allowed_tool_ids: vec!["db.query".into()],
             options_json: "{}".into(),
-            max_inflight: 4,
-            max_request_ms: 30_000,
-            max_request_bytes: 262_144,
-            max_response_bytes: 131_072,
         };
         let saved = save_server_profile(&conn, 0, &edit, None).expect("建 profile");
         save_server_profile(&conn, 1, &edit, Some(saved.revision)).expect("启用 profile");
         conn
     }
 
-    fn grant(conn: &Connection) -> String {
-        let g = ResourceGrantEdit {
-            id: "g1".into(),
-            profile_id: "p1".into(),
-            connection_id: 1,
-            database_name: "sales".into(),
-            namespace: "".into(),
-            enabled: true,
-            allow_read: true,
-            allow_write: false,
-            object_policy_json: r#"{"all_objects":true}"#.into(),
-            write_policy_json: "{}".into(),
-            max_rows: 200,
-        };
-        save_resource_grant(conn, 2, &g, GrantResourceKind::Sql, None)
-            .expect("建授权")
-            .id
+    fn add_datasource(conn: &Connection) {
+        save_datasource(conn, 2, "p1", 1, DatasourceWritePolicy::Default, None).expect("建数据源");
     }
 
-    fn start_request(conn: &Connection, grant_id: &str) -> ServerRequestView {
+    fn start_request(conn: &Connection) -> ServerRequestView {
         start_server_session(conn, 3, "s1", "p1", "2025-06-18", "{}").expect("session");
         start_server_request(
             conn,
@@ -614,7 +583,7 @@ mod tests {
             "\"42\"",
             "db.query",
             1,
-            Some(grant_id),
+            Some(1),
             r#"{"target":"conn:1"}"#,
             r#"{"sql":"select 1"}"#,
             "hash1",
@@ -625,8 +594,8 @@ mod tests {
     #[test]
     fn request_seq_is_allocated_per_session() {
         let conn = setup();
-        let g = grant(&conn);
-        let first = start_request(&conn, &g);
+        add_datasource(&conn);
+        let first = start_request(&conn);
         assert_eq!(first.seq, 1);
         let second = start_server_request(
             &conn,
@@ -637,7 +606,7 @@ mod tests {
             "\"43\"",
             "db.query",
             1,
-            Some(&g),
+            Some(1),
             r#"{"target":"conn:1"}"#,
             r#"{"sql":"select 2"}"#,
             "hash2",
@@ -647,64 +616,10 @@ mod tests {
     }
 
     #[test]
-    fn request_rejects_grant_from_other_profile() {
-        let conn = setup();
-        // 另建一个 Profile + 授权，用它去挂到 p1 的 session 上必须被复合外键拒绝。
-        let other = ServerProfileEdit {
-            id: "p2".into(),
-            display_name: "另一个".into(),
-            enabled: true,
-            write_mode: WriteMode::Disabled,
-            allowed_tool_ids: vec![],
-            options_json: "{}".into(),
-            max_inflight: 4,
-            max_request_ms: 30_000,
-            max_request_bytes: 262_144,
-            max_response_bytes: 131_072,
-        };
-        save_server_profile(&conn, 0, &other, None).expect("p2");
-        let og = ResourceGrantEdit {
-            id: "g2".into(),
-            profile_id: "p2".into(),
-            connection_id: 9,
-            database_name: "x".into(),
-            namespace: "".into(),
-            enabled: true,
-            allow_read: true,
-            allow_write: false,
-            object_policy_json: r#"{"all_objects":true}"#.into(),
-            write_policy_json: "{}".into(),
-            max_rows: 100,
-        };
-        save_resource_grant(&conn, 2, &og, GrantResourceKind::Sql, None).expect("g2");
-        start_server_session(&conn, 3, "s1", "p1", "2025-06-18", "{}").expect("session");
-        let err = start_server_request(
-            &conn,
-            4,
-            "r1",
-            "s1",
-            "p1",
-            "1",
-            "db.query",
-            1,
-            Some("g2"),
-            "{}",
-            "{}",
-            "h",
-        )
-        .unwrap_err();
-        assert!(
-            err.message.contains("Profile"),
-            "跨 Profile 授权应被拒绝: {}",
-            err.message
-        );
-    }
-
-    #[test]
     fn finish_request_is_terminal_and_cas() {
         let conn = setup();
-        let g = grant(&conn);
-        let req = start_request(&conn, &g);
+        add_datasource(&conn);
+        let req = start_request(&conn);
         let running = mark_server_request_running(&conn, 5, &req.id, req.revision).expect("运行");
         assert_eq!(running.status, ServerRequestStatus::Running);
         let done = finish_server_request(
@@ -734,7 +649,7 @@ mod tests {
     #[test]
     fn protocol_request_id_is_not_a_uniqueness_key() {
         let conn = setup();
-        let g = grant(&conn);
+        add_datasource(&conn);
         start_server_session(&conn, 3, "s1", "p1", "2025-06-18", "{}").expect("session");
         // 协议允许客户端复用同一个 request ID：两条记录都必须能写入。
         for (rid, seqid) in [("r1", "7"), ("r2", "7")] {
@@ -747,7 +662,7 @@ mod tests {
                 seqid,
                 "db.query",
                 1,
-                Some(&g),
+                Some(1),
                 "{}",
                 "{}",
                 rid,
@@ -760,8 +675,8 @@ mod tests {
     #[test]
     fn mcp_result_requires_same_session_request_pair() {
         let conn = setup();
-        let g = grant(&conn);
-        let req = start_request(&conn, &g);
+        add_datasource(&conn);
+        let req = start_request(&conn);
         insert_mcp_result(
             &conn,
             5,

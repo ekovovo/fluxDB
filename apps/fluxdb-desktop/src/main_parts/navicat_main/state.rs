@@ -34,8 +34,11 @@ struct NavicatMain {
     ai_tools_tab: AiToolsTab,
     /// 本地 MCP 客户端注册状态快照（Codex/Claude Code），渲染期只读。
     ai_mcp_install_status: Vec<fluxdb_app::McpInstallClientStatus>,
-    /// 正在注册/卸载的客户端 key（行内 loading/disabled，拦重复点击）。
-    ai_mcp_install_busy: Option<String>,
+    ai_mcp_clients_busy: Option<String>,
+    ai_mcp_clients_error: Option<String>,
+    ai_mcp_connection_details: Option<fluxdb_app::McpConnectionDetails>,
+    ai_mcp_connection_error: Option<String>,
+    ai_mcp_details_open: bool,
     /// 注册时使用的 `fluxdb-mcp` 二进制路径覆盖（测试注入；生产留空走 bundled_mcp_binary）。
     ai_mcp_binary_override: Option<String>,
     /// 「Agent 配置」编辑草稿；`None` 表示未选中任何 Agent。
@@ -44,10 +47,6 @@ struct NavicatMain {
     ai_agent_editor_debug_pending: bool,
     /// Agent 刚被删除时置位；下一帧自动选中剩余列表的第一项。
     ai_agent_delete_just_removed: String,
-    /// MCP Server Profile 编辑草稿（T060）；`None` 表示未选中任何 Profile。
-    ai_mcp_server_profile_editor: Option<AiMcpServerProfileEditor>,
-    /// MCP 资源授权编辑草稿（T060）；与 Profile 草稿独立，切换页签不丢输入。
-    ai_mcp_server_grant_editor: Option<AiMcpServerGrantEditor>,
     /// 「会话历史」页的搜索框与过滤文本（按标题过滤）。
     ai_session_filter_input: Entity<InputState>,
     _ai_session_filter_subscription: Subscription,

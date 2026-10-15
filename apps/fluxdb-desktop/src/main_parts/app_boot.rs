@@ -109,10 +109,8 @@ fn main() {
                     // saved_queries 经内部 notify 补显，详见 load_persisted_history_in_background）。
                     view.update(cx, |this, cx| {
                         this.load_persisted_history_in_background(cx);
-                        // 启动自动注册：若 Codex/Claude Code 已有配置文件，则把本地只读
-                        // MCP Server 幂等写入（不带 `--mcp-config` 的客户端即可发现）；
-                        // 用户显式卸载会关闭该开关，不会在下次启动被加回。
-                        this.auto_register_mcp_clients_on_startup(cx);
+                        // 只维护用户明确接入的客户端，不自动接管检测到的配置。
+                        this.sync_mcp_clients(cx);
                         // 调试入口：打开设置页的 AI 分区（仅 debug 构建，用于 UI 截图验证）。
                         if debug_ai_settings_requested() {
                             let _ = this.controller.dispatch(AppCommand::OpenSettings);
@@ -3126,13 +3124,15 @@ fn navicat_main_new(
         ai_settings_error: None,
                             ai_tools_tab: debug_ai_tools_tab(),
                             ai_mcp_install_status: Vec::new(),
-                            ai_mcp_install_busy: None,
+                            ai_mcp_clients_busy: None,
+                            ai_mcp_clients_error: None,
+                            ai_mcp_connection_details: None,
+                            ai_mcp_connection_error: None,
+                            ai_mcp_details_open: false,
                             ai_mcp_binary_override: None,
                             ai_agent_editor: None,
                             ai_agent_editor_debug_pending: debug_ai_agent_draft_requested(),
                             ai_agent_delete_just_removed: String::new(),
-                            ai_mcp_server_profile_editor: None,
-                            ai_mcp_server_grant_editor: None,
                             ai_session_filter_input,
                             _ai_session_filter_subscription: ai_session_filter_subscription,
                             ai_session_filter: String::new(),

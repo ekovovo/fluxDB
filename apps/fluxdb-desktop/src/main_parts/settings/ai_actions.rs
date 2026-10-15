@@ -12,58 +12,6 @@ impl NavicatMain {
         }
     }
 
-    /// 刷新本地 MCP 客户端注册状态（Codex/Claude Code）；同步读取，失败按未检测处理。
-    fn refresh_mcp_install_status(&mut self) {
-        self.ai_mcp_install_status = fluxdb_app::home_dir()
-            .map(|home| fluxdb_app::install_client_statuses(&home))
-            .unwrap_or_default();
-    }
-
-    /// 启动时自动注册本地 MCP Server 到已存在配置的 CLI 客户端（幂等，后台执行）。
-    ///
-    /// 优先测试覆盖路径，其次取同级 Server 或桌面自身的 stdio 入口。
-    fn auto_register_mcp_clients_on_startup(&mut self, cx: &mut Context<Self>) {
-        let binary = self
-            .ai_mcp_binary_override
-            .clone()
-            .or_else(|| fluxdb_app::bundled_mcp_binary().map(|p| p.display().to_string()))
-            .unwrap_or_default();
-        let mut controller = self.controller.clone();
-        cx.spawn(async move |view, cx| {
-            let event = cx
-                .background_spawn(async move {
-                    controller.dispatch(AppCommand::AutoRegisterMcpClients {
-                        binary_path: binary,
-                    })
-                })
-                .await;
-            let _ = cx.update(|cx| {
-                let Some(view) = view.upgrade() else {
-                    return;
-                };
-                view.update(cx, |this, cx| {
-                    this.refresh_mcp_install_status();
-                    match event {
-                        AppEvent::AiMcpAutoRegistered { clients } if !clients.is_empty() => {
-                            this.show_message(
-                                format!("已自动注册本地 MCP Server 到：{}", clients.join("、")),
-                                AppMessageKind::Success,
-                                cx,
-                            );
-                        }
-                        AppEvent::AiSettingsError(message) => {
-                            this.ai_settings_error = Some(message.clone());
-                            this.show_message(message, AppMessageKind::Error, cx);
-                        }
-                        _ => {}
-                    }
-                    cx.notify();
-                });
-            });
-        })
-        .detach();
-    }
-
     fn reload_ai_settings(&mut self, cx: &mut Context<Self>) {
         if self.ai_settings_loading {
             return;

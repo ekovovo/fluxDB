@@ -529,6 +529,7 @@ fn retained_sql_results_keep_positional_paging_shape_after_artifact_generation()
         let receipt = runtime
             .block_on(catalog.executable("result.read_page").unwrap().execute(
                 ToolExecutionContext {
+                    automatic_approval: false,
                     session_id: job.session_id.clone(),
                     turn_id: job.turn_id.clone(),
                     iteration: 1,

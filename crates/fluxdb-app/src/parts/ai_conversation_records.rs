@@ -340,6 +340,7 @@ fn ai_conversation_record_approval(
             &call_row,
             plan_hash,
             scope_json,
+            // 人工审批不计时：一直等到用户批准/拒绝，或授权/策略变化使该审批失效。
             None,
         )?;
         let payload=serde_json::json!({

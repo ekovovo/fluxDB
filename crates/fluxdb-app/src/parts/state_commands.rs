@@ -1244,33 +1244,23 @@ pub enum AppCommand {
     SaveAiAgent(AiAgentSaveInput),
     /// 新建或保存对外 MCP Server Profile（T060，对象级 CAS；新建默认禁用/只读）。
     SaveAiMcpServerProfile(AiMcpServerProfileSaveInput),
-    /// 新建或保存 MCP 资源授权（T060，对象级 CAS；空对象规则不放行）。
-    SaveAiMcpServerGrant(AiMcpServerGrantSaveInput),
-    /// 删除 MCP 资源授权（收窄对外范围）。
-    DeleteAiMcpServerGrant {
-        id: String,
+    SaveExecutionPolicy {
+        settings: fluxdb_core::ExecutionPolicySettings,
         expected_revision: i64,
     },
-    /// 把本地 MCP Server 注册到某个 CLI 客户端（用户级配置，stdio）。
-    InstallMcpClient {
-        /// 客户端：`codex` / `claude`（小写稳定标识）。
-        client: String,
-        /// Server Profile ID。
+    EnsureMcpControl,
+    /// 新增或更新 MCP 数据源（对象级 CAS）。
+    SaveAiMcpDatasource(AiMcpDatasourceSaveInput),
+    /// 从对外服务移除 MCP 数据源。
+    DeleteAiMcpDatasource {
         profile_id: String,
-        /// 独立 Server 或支持 `--mcp-server` 的桌面程序绝对路径。
-        binary_path: String,
-        /// 显式配置根；未提供时绑定当前应用的存储根，不依赖客户端的环境变量。
-        config_root: Option<String>,
-        /// 是否写入 Claude Code 的工具预批准（仅只读 Profile 使用）。
-        preapprove_claude_tools: bool,
+        connection_id: i64,
     },
-    /// 从某个 CLI 客户端移除本应用的 MCP Server 注册。
-    UninstallMcpClient {
-        client: String,
-    },
-    /// 启动时把本地 MCP Server 自动注册到**已存在配置**的客户端（幂等，仅当开关开启）。
-    AutoRegisterMcpClients {
-        /// Server 可执行文件绝对路径；开关开启时空路径返回注册错误。
+    RefreshMcpClients { binary_path: String },
+    SetMcpClientRegistration { client_key: String, registered: bool, binary_path: String },
+    /// 只维护已显式选择且配置归属未改变的客户端。
+    SyncMcpClients {
+        /// Server 可执行文件绝对路径；有待维护的接入记录时必须可用。
         binary_path: String,
     },
     DeleteAiAgent {

@@ -15,8 +15,7 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
 use fluxdb_storage::Storage as _;
 use fluxdb_storage::ai_platform::mcp_server::{
-    GrantResourceKind, ResourceGrantEdit, ServerProfileEdit, WriteMode, save_resource_grant,
-    save_server_profile,
+    DatasourceWritePolicy, ServerProfileEdit, save_datasource, save_server_profile,
 };
 
 /// host:port:user:password:db（password 允许为空，但冒号分隔位必须保留）。
@@ -100,7 +99,8 @@ fn redis_config(
             // Redis 逻辑库固定 0（T061 未启用多 DB）；target/授权都用 db:0。
             database: Some("0".to_string()),
         },
-        options: BTreeMap::new(),
+        // Key 范围收窄来自连接配置（数据源模型不再配置表/Key 范围）。
+        options: BTreeMap::from([("ai_key_prefixes".to_string(), "t061:".to_string())]),
         redis_profile: None,
         mysql_profile: None,
         postgres_profile: None,
@@ -115,7 +115,7 @@ impl Harness {
     /// 建隔离配置根：写入连接 + Profile + 授权；返回句柄。
     fn new(
         connections: Vec<fluxdb_core::ConnectionConfig>,
-        grants: Vec<ResourceGrantEdit>,
+        datasources: Vec<DatasourceWritePolicy>,
     ) -> Self {
         let dir = std::env::temp_dir().join(format!("fluxdb-t061-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -127,33 +127,12 @@ impl Harness {
                     id: "t061".into(),
                     display_name: "T061 协议".into(),
                     enabled: true,
-                    write_mode: WriteMode::Disabled,
-                    allowed_tool_ids: vec![
-                        "fluxdb_connections_list".into(),
-                        "fluxdb_query".into(),
-                        "fluxdb_search_objects".into(),
-                        "fluxdb_describe_object".into(),
-                        "fluxdb_redis_scan".into(),
-                        "fluxdb_redis_inspect".into(),
-                        "fluxdb_redis_server_info".into(),
-                    ],
                     options_json: "{}".into(),
-                    max_inflight: 4,
-                    max_request_ms: 30_000,
-                    max_request_bytes: 262_144,
-                    max_response_bytes: 131_072,
                 };
                 let created = save_server_profile(conn, 1, &profile, None)?;
                 save_server_profile(conn, 2, &profile, Some(created.revision))?;
-                for grant in &grants {
-                    let kind = if grant.object_policy_json.contains("key_prefixes")
-                        || grant.object_policy_json.contains("all_keys")
-                    {
-                        GrantResourceKind::Redis
-                    } else {
-                        GrantResourceKind::Sql
-                    };
-                    save_resource_grant(conn, 3, grant, kind, None)?;
+                for (connection, policy) in connections.iter().zip(datasources) {
+                    save_datasource(conn, 3, "t061", connection.id.0 as i64, policy, None)?;
                 }
                 Ok(())
             })
@@ -184,36 +163,18 @@ impl Harness {
         }
     }
 
-    fn sql_grant(connection_id: i64, database: &str, write: bool) -> ResourceGrantEdit {
-        ResourceGrantEdit {
-            id: format!("g-sql-{connection_id}"),
-            profile_id: "t061".into(),
-            connection_id,
-            database_name: database.into(),
-            namespace: "".into(),
-            enabled: true,
-            allow_read: true,
-            allow_write: write,
-            object_policy_json: r#"{"all_objects":true}"#.into(),
-            write_policy_json: "{}".into(),
-            max_rows: 200,
+    /// SQL 数据源策略：`write` 为 true 时允许读写，否则只读。
+    fn sql_policy(write: bool) -> DatasourceWritePolicy {
+        if write {
+            DatasourceWritePolicy::ReadWrite
+        } else {
+            DatasourceWritePolicy::ReadOnly
         }
     }
 
-    fn redis_grant(connection_id: i64, database: &str) -> ResourceGrantEdit {
-        ResourceGrantEdit {
-            id: format!("g-redis-{connection_id}"),
-            profile_id: "t061".into(),
-            connection_id,
-            database_name: database.into(),
-            namespace: "".into(),
-            enabled: true,
-            allow_read: true,
-            allow_write: false,
-            object_policy_json: r#"{"key_prefixes":["t061:"]}"#.into(),
-            write_policy_json: "{}".into(),
-            max_rows: 200,
-        }
+    /// Redis 数据源策略：只读。
+    fn redis_policy() -> DatasourceWritePolicy {
+        DatasourceWritePolicy::ReadOnly
     }
 }
 
@@ -314,7 +275,7 @@ fn t061_mysql_query_through_protocol() {
         return;
     };
     let config = mysql_config(301, &p);
-    let harness = Harness::new(vec![config], vec![Harness::sql_grant(301, &p.4, false)]);
+    let harness = Harness::new(vec![config], vec![Harness::sql_policy(false)]);
     let mut client = harness.spawn();
     client.initialize();
 
@@ -322,7 +283,7 @@ fn t061_mysql_query_through_protocol() {
     assert!(names.contains(&"fluxdb_query".to_string()));
     assert!(
         !names.contains(&"fluxdb_execute".to_string()),
-        "禁用写不列出写工具"
+        "只读数据源不列出写工具"
     );
 
     let result = client.call(
@@ -352,9 +313,7 @@ fn t061_postgres_query_and_write_rejected_through_protocol() {
         return;
     };
     let config = pg_config(302, &p);
-    let mut grant = Harness::sql_grant(302, &p.4, false);
-    grant.namespace = "public".into();
-    let harness = Harness::new(vec![config], vec![grant]);
+    let harness = Harness::new(vec![config], vec![Harness::sql_policy(false)]);
     let mut client = harness.spawn();
     client.initialize();
 
@@ -380,7 +339,7 @@ fn t061_postgres_query_and_write_rejected_through_protocol() {
         stdout_of(&result)
     );
 
-    // 默认关闭写：db.execute 未在 allowed_tool_ids，直接调用被拒。
+    // 只读数据源：db.execute 直接调用被拒。
     let denied = client.call(
         "fluxdb_execute",
         serde_json::json!({
@@ -391,7 +350,7 @@ fn t061_postgres_query_and_write_rejected_through_protocol() {
     assert_eq!(denied["isError"], serde_json::json!(true));
     assert_eq!(
         denied["structuredContent"]["code"],
-        serde_json::json!("tool_not_allowed")
+        serde_json::json!("write_disabled")
     );
 
     assert!(client.close_and_wait());
@@ -404,14 +363,14 @@ fn t061_redis_scan_inspect_through_protocol() {
         return;
     };
     let config = redis_config(303, &p);
-    let harness = Harness::new(vec![config], vec![Harness::redis_grant(303, "0")]);
+    let harness = Harness::new(vec![config], vec![Harness::redis_policy()]);
     let mut client = harness.spawn();
     client.initialize();
 
     let names = client.tool_names();
     assert!(names.contains(&"fluxdb_redis_scan".to_string()));
     assert!(names.contains(&"fluxdb_redis_inspect".to_string()));
-    // Redis 写工具未列入 allowed_tool_ids。
+    // 只读数据源不列出 Redis 写工具。
     assert!(!names.contains(&"fluxdb_redis_execute".to_string()));
 
     let scan = client.call(
@@ -480,7 +439,7 @@ fn t061_unknown_tool_and_client_info_does_not_grant_permission() {
         return;
     };
     let config = mysql_config(304, &p);
-    let harness = Harness::new(vec![config], vec![Harness::sql_grant(304, &p.4, false)]);
+    let harness = Harness::new(vec![config], vec![Harness::sql_policy(false)]);
     let mut client = harness.spawn();
     // 用伪造的 clientInfo 声明"我是管理员"；clientInfo 只审计，不授权。
     client.send(

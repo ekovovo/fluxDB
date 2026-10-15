@@ -127,9 +127,12 @@ pub struct TurnRunner<'a> {
 
 /// `ToolSpec` → Provider 可见的 `ToolDescriptor`（只暴露描述与 schema）。
 fn loop_tool_descriptors(catalog: &ToolCatalog) -> Vec<fluxdb_core::ToolDescriptor> {
+    let read_only=catalog.security.as_ref().is_some_and(|s|
+        s.settings().map(|(p,_)|p.tools_default==ExecutionPolicy::ReadOnly).unwrap_or(true));
     catalog
         .specs()
         .iter()
+        .filter(|spec| !read_only || spec.risk==fluxdb_core::ToolRisk::Read)
         .map(|spec| fluxdb_core::ToolDescriptor {
             id: spec.id.clone(),
             version: spec.version,
@@ -462,7 +465,7 @@ impl<'a> TurnRunner<'a> {
                 else if let Some(reason)=hook_approval {
                     if audit!=AuditOutcome::Deny {emit(LoopEvent::Notice(reason));audit=AuditOutcome::RequireApproval;}
                 }
-                let decision = authorize(&AuthorizeInput {
+                let input = AuthorizeInput {
                     tool_id: spec.id.clone(),
                     tool_version: spec.version,
                     risk: spec.risk,
@@ -473,7 +476,35 @@ impl<'a> TurnRunner<'a> {
                     agent_allowed_tools: self.permission.agent_allowed_tools.clone(),
                     policy: self.permission.policy,
                     audit: Some(audit),
-                });
+                };
+                let mut automatic_approval=false;
+                let decision=if let Some(security)=&self.tools.security {
+                    let policy=match security.settings() {
+                        Ok((p,_))=>p.tools_default,
+                        Err(error)=>return TurnOutcome::Failed{message:error.message},
+                    };
+                    match security.authorize(&input,policy,||{
+                        self.tools.executable(&call.tool_id).ok_or_else(||
+                            fluxdb_core::Error::new(fluxdb_core::ErrorKind::Unsupported,"工具不可用")
+                        )?.automatic_approval_facts(&prepared.to_json_string())
+                    },cancel) {
+                        Ok(result)=>{
+                            automatic_approval=result.automatic_approval;
+                            if spec.risk!=fluxdb_core::ToolRisk::Read {
+                                emit(LoopEvent::Notice(result.reason.clone()));
+                            }
+                            // 审批事实先落盘，失败时不得发出写入。
+                            if let Err(error)=with_ai_storage(&security.storage,|conn|
+                                fluxdb_storage::ai_platform::run_events::append(conn,&state.turn_id,"execution_policy",
+                                &serde_json::json!({"tool":spec.id,"plan_hash":hash,"policy":policy,
+                                    "reason":result.reason,"automatic_approval":automatic_approval,
+                                    "settings_revision":result.settings_revision}).to_string(),ai_chat_now()).map(|_|()))
+                            {return TurnOutcome::Failed{message:error.message};}
+                            result.decision
+                        },
+                        Err(error)=>return TurnOutcome::Failed{message:error.message},
+                    }
+                } else {authorize(&input)};
 
                 match decision {
                     // 4a) 拒绝：合成 Denied 回执回给模型，永不执行。
@@ -541,6 +572,7 @@ impl<'a> TurnRunner<'a> {
                 });
                 let progress_events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
                 let ctx = fluxdb_core::ToolExecutionContext {
+                    automatic_approval,
                     session_id: state.session_id.clone(),
                     turn_id: state.turn_id.clone(),
                     iteration: iteration as i64,
@@ -601,6 +633,9 @@ impl<'a> TurnRunner<'a> {
                 emit(LoopEvent::ToolFinished {
                     receipt: receipt.clone(),
                 });
+                if receipt.status==fluxdb_core::ToolReceiptStatus::Unknown {
+                    return TurnOutcome::Paused {reason:"写入结果未知，已停止后续工具调用，请人工核实；不会自动重试".into()};
+                }
                 if let Err(error)=self.tools.hooks.after(&receipt,cancel) {
                     return TurnOutcome::Failed{message:error.message};
                 }

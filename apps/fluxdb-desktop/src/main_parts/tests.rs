@@ -4054,6 +4054,21 @@ where id = 42 and name = 'Bob''s Bike' and flag = 'ignored'"
         }
     }
 
+    /// `Assets::load` 必须按 GPUI 约定把“取不到资源”表达为 `Ok(None)`，只有真实读取故障
+    /// 才是错误。组件库（如菜单未选中项的空图标占位）会每帧请求空路径，`base.join("")`
+    /// 拼出资源目录本身，若按读取错误上报，日志会被每帧刷屏。
+    #[test]
+    fn asset_source_reports_missing_asset_as_none() {
+        let assets = Assets {
+            base: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets"),
+        };
+
+        assert!(assets.load("").unwrap().is_none());
+        assert!(assets.load("icons").unwrap().is_none());
+        assert!(assets.load("icons/does-not-exist.svg").unwrap().is_none());
+        assert!(assets.load("icons/check.svg").unwrap().is_some());
+    }
+
     #[test]
     fn sql_text_selection_returns_selected_text() {
         let selection = SqlTextSelection {

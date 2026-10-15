@@ -200,99 +200,65 @@ pub fn refresh_ai_settings(
             revision: m.revision,
         })
         .collect();
-    // 对外 Server 的 Profile / 授权 / 活动记录与 Client 设置严格分开加载（T060）。
+    // 对外 Server 的 Profile / 数据源与 Client 设置严格分开加载。
     // 连接名称来自普通配置（config.toml），与 AI SQLite 无关，先读一次避免在闭包内再进存储。
     let connection_names = storage
         .load_connections()
         .unwrap_or_default()
         .iter()
-        .map(|config| (config.id.0 as i64, config.name.clone()))
+        .map(|config| (config.id.0 as i64, config.name.clone(), config.kind))
         .collect::<Vec<_>>();
-    let (server_profiles, server_grants, server_requests) =
-        with_ai_storage(&storage, |conn| {
-            use fluxdb_storage::ai_platform::mcp_server;
-            use fluxdb_storage::ai_platform::mcp_server_runtime;
+    let (server_profiles, datasources) = with_ai_storage(&storage, |conn| {
+        use fluxdb_storage::ai_platform::mcp_server;
 
-            let profiles = mcp_server::list_server_profiles(conn)?;
-            let grants = profiles
-                .iter()
-                .flat_map(|profile| {
-                    mcp_server::list_resource_grants(conn, &profile.id)
-                        .unwrap_or_default()
-                        .into_iter()
-                        .map(|grant| (profile.id.clone(), grant))
-                })
-                .collect::<Vec<_>>();
-            let requests = profiles
-                .iter()
-                .flat_map(|profile| {
-                    mcp_server_runtime::list_requests_for_profile(conn, &profile.id, 100)
-                        .unwrap_or_default()
-                })
-                .collect::<Vec<_>>();
-            Ok((profiles, grants, requests))
-        })?;
+        let profiles = mcp_server::list_server_profiles(conn)?;
+        let datasources = profiles
+            .iter()
+            .flat_map(|profile| {
+                mcp_server::list_datasources(conn, &profile.id)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|datasource| (profile.id.clone(), datasource))
+            })
+            .collect::<Vec<_>>();
+        Ok((profiles, datasources))
+    })?;
     state.ai_mcp_server_profiles = server_profiles
         .into_iter()
         .map(|profile| AiMcpServerProfileItem {
             id: profile.id,
             display_name: profile.display_name,
             enabled: profile.enabled,
-            write_mode: profile.write_mode.as_str().to_string(),
-            allowed_tool_ids: profile.allowed_tool_ids,
-            max_inflight: profile.max_inflight,
-            max_request_ms: profile.max_request_ms,
-            max_request_bytes: profile.max_request_bytes,
-            max_response_bytes: profile.max_response_bytes,
             revision: profile.revision,
         })
         .collect();
-    state.ai_mcp_server_grants = server_grants
+    state.ai_mcp_datasources = datasources
         .into_iter()
-        .map(|(profile_id, grant)| {
-            let connection_name = connection_names
+        .map(|(profile_id, datasource)| {
+            let (connection_name, kind) = connection_names
                 .iter()
-                .find(|(id, _)| *id == grant.connection_id)
-                .map(|(_, name)| name.clone())
-                .unwrap_or_else(|| format!("连接 #{}", grant.connection_id));
-            let object_policy: serde_json::Value =
-                serde_json::from_str(&grant.object_policy_json).unwrap_or_default();
-            let resource_kind = if object_policy.get("all_keys").is_some()
-                || object_policy.get("key_prefixes").is_some()
-            {
-                "redis".to_string()
+                .find(|(id, _, _)| *id == datasource.connection_id)
+                .map(|(_, name, kind)| (name.clone(), *kind))
+                .unwrap_or_else(|| {
+                    (
+                        format!("连接 #{}", datasource.connection_id),
+                        fluxdb_core::DatabaseKind::Sqlite,
+                    )
+                });
+            let resource_kind = if kind == fluxdb_core::DatabaseKind::Redis {
+                "redis"
             } else {
-                "sql".to_string()
-            };
-            AiMcpServerGrantItem {
-                id: grant.id,
-                profile_id,
-                connection_name,
-                connection_id: grant.connection_id,
-                database_name: grant.database_name,
-                namespace: grant.namespace,
-                enabled: grant.enabled,
-                allow_read: grant.allow_read,
-                allow_write: grant.allow_write,
-                resource_kind,
-                object_policy_json: grant.object_policy_json,
-                write_policy_json: grant.write_policy_json,
-                max_rows: grant.max_rows,
-                revision: grant.revision,
+                "sql"
             }
-        })
-        .collect();
-    state.ai_mcp_server_requests = server_requests
-        .into_iter()
-        .map(|request| AiMcpServerRequestItem {
-            id: request.id,
-            profile_id: request.profile_id,
-            session_id: request.session_id,
-            tool_id: request.tool_id,
-            status: request.status.as_str().to_string(),
-            target_json: request.target_json,
-            started_at_ms: request.started_at_ms,
-            finished_at_ms: request.finished_at_ms,
+            .to_string();
+            AiMcpDatasourceItem {
+                profile_id,
+                connection_id: datasource.connection_id,
+                connection_name,
+                resource_kind,
+                write_policy: datasource.write_policy.as_str().to_string(),
+                revision: datasource.revision,
+            }
         })
         .collect();
     state.ai_sessions = sessions_page.sessions.into_iter().map(ai_session_item).collect();
@@ -304,6 +270,7 @@ pub fn refresh_ai_settings(
     state.ai_default_model_id = runtime.default_model_profile_id.clone();
     state.ai_default_decision_model_id = runtime.default_decision_model_profile_id.clone();
     state.ai_runtime_revision = runtime.revision;
+    state.ai_execution_policy=with_ai_storage(storage,fluxdb_storage::ai_platform::execution_policy::load)?.0;
     state.ai_jev_status = with_ai_storage(storage, |conn| {
         reconcile_jev_builtins(conn, ai_chat_now())
     })?;
@@ -926,17 +893,16 @@ pub fn save_ai_default_models(
     Ok(saved.revision)
 }
 
-/// 新建或保存对外 MCP Server Profile（T060）。
+/// 新建或保存对外 MCP Server Profile。
 ///
-/// 新建时存储层强制 `enabled=false`、`write_mode=disabled`；`desktop_approval` 在桌面审批桥
-/// 落地前按 §28.7 明确拒绝，不能把假审批能力保存成可用。
+/// 新建时存储层强制 `enabled=false`。
 pub fn save_ai_mcp_server_profile(
     state: &mut AppState,
     storage: &fluxdb_storage::FileStorage,
     input: AiMcpServerProfileSaveInput,
     now_ms: i64,
 ) -> fluxdb_core::Result<(String, i64)> {
-    use fluxdb_storage::ai_platform::mcp_server::{ServerProfileEdit, WriteMode};
+    use fluxdb_storage::ai_platform::mcp_server::ServerProfileEdit;
 
     let display_name = input.display_name.trim().to_string();
     if display_name.is_empty() {
@@ -945,33 +911,11 @@ pub fn save_ai_mcp_server_profile(
             "Server Profile 名称不能为空",
         ));
     }
-    let write_mode = match input.write_mode.as_str() {
-        "disabled" => WriteMode::Disabled,
-        "scoped" => WriteMode::Scoped,
-        "desktop_approval" => {
-            return Err(fluxdb_core::Error::new(
-                fluxdb_core::ErrorKind::Unsupported,
-                "桌面审批桥尚未实现，无法启用 desktop_approval 写模式",
-            ));
-        }
-        other => {
-            return Err(fluxdb_core::Error::new(
-                fluxdb_core::ErrorKind::Internal,
-                format!("未知 MCP 写模式: {other}"),
-            ));
-        }
-    };
     let edit = ServerProfileEdit {
         id: input.id.clone().unwrap_or_else(|| new_entity_id("mcp-server")),
         display_name,
         enabled: input.enabled,
-        write_mode,
-        allowed_tool_ids: input.allowed_tool_ids,
         options_json: "{}".to_string(),
-        max_inflight: input.max_inflight,
-        max_request_ms: input.max_request_ms,
-        max_request_bytes: input.max_request_bytes,
-        max_response_bytes: input.max_response_bytes,
     };
     let saved = with_ai_storage(&storage, |conn| {
         fluxdb_storage::ai_platform::mcp_server::save_server_profile(
@@ -985,12 +929,6 @@ pub fn save_ai_mcp_server_profile(
         id: saved.id.clone(),
         display_name: saved.display_name,
         enabled: saved.enabled,
-        write_mode: saved.write_mode.as_str().to_string(),
-        allowed_tool_ids: saved.allowed_tool_ids,
-        max_inflight: saved.max_inflight,
-        max_request_ms: saved.max_request_ms,
-        max_request_bytes: saved.max_request_bytes,
-        max_response_bytes: saved.max_response_bytes,
         revision: saved.revision,
     };
     // 新建 push、编辑就地替换 revision，避免整页重载闪烁。
@@ -1008,121 +946,78 @@ pub fn save_ai_mcp_server_profile(
     Ok((saved.id, saved.revision))
 }
 
-/// 新建或保存 MCP 资源授权（T060）。
-///
-/// 资源类型必须与连接类型一致：Redis 连接只接受 `key_prefixes`/`all_keys`，关系型只接受
-/// `all_objects`/`table_allowlist`；空规则一律拒绝保存（设计 §28.6.1）。
-pub fn save_ai_mcp_server_grant(
+/// 新增或更新 MCP 数据源（写入策略：`default` / `read_only` / `read_write`）。
+pub fn save_ai_mcp_datasource(
     state: &mut AppState,
     storage: &fluxdb_storage::FileStorage,
-    input: AiMcpServerGrantSaveInput,
+    input: AiMcpDatasourceSaveInput,
     now_ms: i64,
-) -> fluxdb_core::Result<(String, i64)> {
+) -> fluxdb_core::Result<(i64, i64)> {
     use fluxdb_storage::ai_platform::mcp_server::{
-        GrantResourceKind, ResourceGrantEdit, save_resource_grant,
+        DatasourceWritePolicy, save_datasource,
     };
 
     if input.profile_id.trim().is_empty() {
         return Err(fluxdb_core::Error::new(
             fluxdb_core::ErrorKind::Internal,
-            "资源授权必须选择 Server Profile",
+            "数据源必须归属一个 Server Profile",
         ));
     }
-    let kind = match input.resource_kind.as_str() {
-        "sql" => GrantResourceKind::Sql,
-        "redis" => GrantResourceKind::Redis,
-        other => {
-            return Err(fluxdb_core::Error::new(
-                fluxdb_core::ErrorKind::Internal,
-                format!("未知授权资源类型: {other}"),
-            ));
-        }
-    };
+    let policy = DatasourceWritePolicy::parse(&input.write_policy)?;
     let connections = storage.load_connections().unwrap_or_default();
     let config = connections
         .iter()
         .find(|config| config.id.0 as i64 == input.connection_id)
         .ok_or_else(|| {
-            fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, "授权引用的连接不存在")
+            fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, "数据源引用的连接不存在")
         })?;
-    let config_kind = if config.kind == fluxdb_core::DatabaseKind::Redis {
-        "redis"
-    } else {
-        "sql"
-    };
-    if config_kind != input.resource_kind {
-        return Err(fluxdb_core::Error::new(
-            fluxdb_core::ErrorKind::Internal,
-            format!(
-                "授权资源类型与连接类型不一致：连接为 {}，授权为 {}",
-                config_kind, input.resource_kind
-            ),
-        ));
-    }
-    let edit = ResourceGrantEdit {
-        id: input.id.clone().unwrap_or_else(|| new_entity_id("mcp-grant")),
-        profile_id: input.profile_id.clone(),
-        connection_id: input.connection_id,
-        database_name: input.database_name,
-        namespace: input.namespace,
-        enabled: input.enabled,
-        allow_read: input.allow_read,
-        allow_write: input.allow_write,
-        object_policy_json: input.object_policy_json,
-        write_policy_json: input.write_policy_json,
-        max_rows: input.max_rows,
-    };
     let saved = with_ai_storage(&storage, |conn| {
-        save_resource_grant(conn, now_ms, &edit, kind, input.expected_revision)
+        save_datasource(
+            conn,
+            now_ms,
+            &input.profile_id,
+            input.connection_id,
+            policy,
+            input.expected_revision,
+        )
     })?;
-    let item = AiMcpServerGrantItem {
-        id: saved.id.clone(),
-        profile_id: saved.profile_id,
+    let item = AiMcpDatasourceItem {
+        profile_id: saved.profile_id.clone(),
         connection_id: saved.connection_id,
         connection_name: config.name.clone(),
-        database_name: saved.database_name,
-        namespace: saved.namespace,
-        enabled: saved.enabled,
-        allow_read: saved.allow_read,
-        allow_write: saved.allow_write,
-        resource_kind: input.resource_kind,
-        object_policy_json: saved.object_policy_json,
-        write_policy_json: saved.write_policy_json,
-        max_rows: saved.max_rows,
+        resource_kind: if config.kind == fluxdb_core::DatabaseKind::Redis {
+            "redis"
+        } else {
+            "sql"
+        }
+        .to_string(),
+        write_policy: saved.write_policy.as_str().to_string(),
         revision: saved.revision,
     };
     match state
-        .ai_mcp_server_grants
+        .ai_mcp_datasources
         .iter_mut()
-        .find(|grant| grant.id == item.id)
+        .find(|ds| ds.profile_id == item.profile_id && ds.connection_id == item.connection_id)
     {
         Some(slot) => *slot = item,
-        None => state.ai_mcp_server_grants.push(item),
+        None => state.ai_mcp_datasources.push(item),
     }
-    Ok((saved.id, saved.revision))
+    Ok((saved.connection_id, saved.revision))
 }
 
-/// 删除 MCP 资源授权（收窄对外范围；对象级 CAS 防止删掉其他窗口刚更新的授权）。
-pub fn delete_ai_mcp_server_grant(
+/// 删除 MCP 数据源（从对外服务移除该连接）。
+pub fn delete_ai_mcp_datasource(
     state: &mut AppState,
     storage: &fluxdb_storage::FileStorage,
-    id: &str,
-    expected_revision: i64,
+    profile_id: &str,
+    connection_id: i64,
 ) -> fluxdb_core::Result<()> {
     with_ai_storage(&storage, |conn| {
-        use fluxdb_storage::ai_platform::mcp_server;
-        let current = mcp_server::load_resource_grant(conn, id)?.ok_or_else(|| {
-            fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, "资源授权不存在")
-        })?;
-        if current.revision != expected_revision {
-            return Err(fluxdb_core::Error::new(
-                fluxdb_core::ErrorKind::Internal,
-                "资源授权已被其他窗口修改，请重新加载",
-            ));
-        }
-        mcp_server::delete_resource_grant(conn, id)
+        fluxdb_storage::ai_platform::mcp_server::delete_datasource(conn, profile_id, connection_id)
     })?;
-    state.ai_mcp_server_grants.retain(|grant| grant.id != id);
+    state
+        .ai_mcp_datasources
+        .retain(|ds| !(ds.profile_id == profile_id && ds.connection_id == connection_id));
     Ok(())
 }
 

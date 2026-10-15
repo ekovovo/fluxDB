@@ -62,6 +62,7 @@ fn scripted_round_trip_executes_real_tool_and_feeds_receipt_back() {
     // 真实执行工具（脚本不参与），拿到不可变回执。
     let receipt = block_on(tool.execute(
         ToolExecutionContext {
+            automatic_approval: false,
             session_id: "s-1".into(),
             turn_id: "t-1".into(),
             iteration: 1,

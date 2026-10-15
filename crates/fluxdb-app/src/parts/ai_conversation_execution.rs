@@ -763,6 +763,7 @@ fn resume_ai_approved_turn(
         return;
     }
     let ctx = fluxdb_core::ToolExecutionContext {
+        automatic_approval: false,
         session_id: job.session_id.clone(),
         turn_id: job.turn_id.clone(),
         iteration: 1,

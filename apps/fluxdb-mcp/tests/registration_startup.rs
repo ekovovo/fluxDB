@@ -6,11 +6,13 @@ use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-use fluxdb_app::{AppCommand, AppController, AppEvent};
+use fluxdb_app::{
+    AiMcpServerProfileSaveInput, AppCommand, AppController, AppEvent, DEFAULT_MCP_PROFILE_ID,
+};
 use fluxdb_storage::FileStorage;
 
 #[test]
-fn auto_registered_server_starts_without_desktop_profile_environment() {
+fn synced_server_starts_without_desktop_profile_environment() {
     let root =
         std::env::temp_dir().join(format!("fluxdb-mcp-registration-{}", uuid::Uuid::new_v4()));
     let home = root.join("home");
@@ -22,7 +24,29 @@ fn auto_registered_server_starts_without_desktop_profile_environment() {
     unsafe { std::env::set_var("HOME", &home) };
     let mut controller = AppController::new();
     controller.set_ai_storage(FileStorage::new(&data));
-    let event = controller.dispatch(AppCommand::AutoRegisterMcpClients {
+    // 服务启用与客户端接入分离；显式接入后才能读取到启动配置。
+    assert!(matches!(
+        controller.dispatch(AppCommand::EnsureMcpControl),
+        AppEvent::AiSettingsLoaded
+    ));
+    let revision = controller
+        .state()
+        .ai_mcp_server_profiles
+        .iter()
+        .find(|p| p.id == DEFAULT_MCP_PROFILE_ID)
+        .map(|p| p.revision)
+        .expect("默认 Profile 应存在");
+    let _ = controller.dispatch(AppCommand::SaveAiMcpServerProfile(
+        AiMcpServerProfileSaveInput {
+            id: Some(DEFAULT_MCP_PROFILE_ID.into()),
+            display_name: "本地 MCP".into(),
+            enabled: true,
+            expected_revision: Some(revision),
+        },
+    ));
+    let event = controller.dispatch(AppCommand::SetMcpClientRegistration {
+        client_key: "claude".into(),
+        registered: true,
         binary_path: env!("CARGO_BIN_EXE_fluxdb-mcp").into(),
     });
     match previous_home {
@@ -30,7 +54,7 @@ fn auto_registered_server_starts_without_desktop_profile_environment() {
         None => unsafe { std::env::remove_var("HOME") },
     }
     assert!(
-        matches!(event, AppEvent::AiMcpAutoRegistered { .. }),
+        matches!(event, AppEvent::AiMcpClientsSynced { .. }),
         "{event:?}"
     );
     let config: serde_json::Value =

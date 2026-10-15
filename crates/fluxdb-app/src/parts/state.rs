@@ -189,22 +189,14 @@ impl Default for AiAgentSaveInput {
     }
 }
 
-/// 保存对外 MCP Server Profile 的输入（T060）。
+/// 保存对外 MCP Server Profile 的输入。
 ///
-/// `id` 为 `None` 时新建：存储层强制 `enabled=false` 与 `write_mode=disabled`，
-/// 保存配置本身不会意外对外开放服务。
+/// `id` 为 `None` 时新建：存储层强制 `enabled=false`，保存配置本身不会意外对外开放服务。
 #[derive(Clone, Debug, PartialEq)]
 pub struct AiMcpServerProfileSaveInput {
     pub id: Option<String>,
     pub display_name: String,
     pub enabled: bool,
-    pub write_mode: String,
-    /// 允许对外公开的 MCP 工具名；空表示不开放任何工具。
-    pub allowed_tool_ids: Vec<String>,
-    pub max_inflight: i64,
-    pub max_request_ms: i64,
-    pub max_request_bytes: i64,
-    pub max_response_bytes: i64,
     /// 新建忽略；编辑必须带上打开时的 revision 做对象级 CAS。
     pub expected_revision: Option<i64>,
 }
@@ -215,52 +207,29 @@ impl Default for AiMcpServerProfileSaveInput {
             id: None,
             display_name: String::new(),
             enabled: false,
-            write_mode: "disabled".to_string(),
-            allowed_tool_ids: Vec::new(),
-            max_inflight: 4,
-            max_request_ms: 30_000,
-            max_request_bytes: 262_144,
-            max_response_bytes: 131_072,
             expected_revision: None,
         }
     }
 }
 
-/// 保存 MCP 资源授权的输入（T060）。
+/// 保存 MCP 数据源写入策略的输入。
+///
+/// `write_policy` 为 `default`（跟随全局）/ `read_only` / `read_write`。
 #[derive(Clone, Debug, PartialEq)]
-pub struct AiMcpServerGrantSaveInput {
-    pub id: Option<String>,
+pub struct AiMcpDatasourceSaveInput {
     pub profile_id: String,
     pub connection_id: i64,
-    pub database_name: String,
-    pub namespace: String,
-    pub enabled: bool,
-    pub allow_read: bool,
-    pub allow_write: bool,
-    /// `sql` / `redis`；决定对象范围字段的形状校验。
-    pub resource_kind: String,
-    pub object_policy_json: String,
-    pub write_policy_json: String,
-    pub max_rows: i64,
+    pub write_policy: String,
     /// 新建忽略；编辑必须带上打开时的 revision 做对象级 CAS。
     pub expected_revision: Option<i64>,
 }
 
-impl Default for AiMcpServerGrantSaveInput {
+impl Default for AiMcpDatasourceSaveInput {
     fn default() -> Self {
         Self {
-            id: None,
             profile_id: String::new(),
             connection_id: 0,
-            database_name: String::new(),
-            namespace: String::new(),
-            enabled: true,
-            allow_read: true,
-            allow_write: false,
-            resource_kind: "sql".to_string(),
-            object_policy_json: r#"{"all_objects":true}"#.to_string(),
-            write_policy_json: "{}".to_string(),
-            max_rows: 200,
+            write_policy: "default".to_string(),
             expected_revision: None,
         }
     }
@@ -325,48 +294,20 @@ pub struct AiMcpServerProfileItem {
     pub id: String,
     pub display_name: String,
     pub enabled: bool,
-    /// `disabled` / `scoped` / `desktop_approval`。
-    pub write_mode: String,
-    /// 允许对外公开的 MCP 工具名；空表示不开放任何工具。
-    pub allowed_tool_ids: Vec<String>,
-    pub max_inflight: i64,
-    pub max_request_ms: i64,
-    pub max_request_bytes: i64,
-    pub max_response_bytes: i64,
     pub revision: i64,
 }
 
-/// 设置页「MCP 资源授权」列表行：Profile 可访问的连接/库/对象范围。
+/// 设置页「MCP 数据源」列表行：对外可见的连接 + 写入策略。
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct AiMcpServerGrantItem {
-    pub id: String,
+pub struct AiMcpDatasourceItem {
     pub profile_id: String,
     pub connection_id: i64,
     pub connection_name: String,
-    pub database_name: String,
-    pub namespace: String,
-    pub enabled: bool,
-    pub allow_read: bool,
-    pub allow_write: bool,
-    /// `sql` / `redis`，由对象规则形状与连接类型共同判定。
+    /// `sql` / `redis`，由连接类型决定（决定展示的资源种类）。
     pub resource_kind: String,
-    pub object_policy_json: String,
-    pub write_policy_json: String,
-    pub max_rows: i64,
+    /// `default` / `read_only` / `read_write`。
+    pub write_policy: String,
     pub revision: i64,
-}
-
-/// 设置页「MCP 活动」列表行：外部 Client 每次调用的状态摘要，不含凭据。
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct AiMcpServerRequestItem {
-    pub id: String,
-    pub profile_id: String,
-    pub session_id: String,
-    pub tool_id: String,
-    pub status: String,
-    pub target_json: String,
-    pub started_at_ms: i64,
-    pub finished_at_ms: Option<i64>,
 }
 
 /// 内置 Jev 的装配/可用状态（设计 §18 状态表；这是状态显示，不是一排错误 toast）。
@@ -442,14 +383,13 @@ pub struct AppState {
     pub ai_plugin_instances: Vec<AiPluginItem>,
     /// 标准工具的全局启停；列表项缺失表示该工具从未被显式关闭（默认启用）。
     pub ai_tool_settings: Vec<AiToolSettingItem>,
+    pub ai_execution_policy: fluxdb_core::ExecutionPolicySettings,
     /// 本应用作为 Client 接入外部 MCP Server 的设置（与对外 Server 表严格区分）。
     pub ai_mcp_settings: Vec<AiMcpItem>,
-    /// 设置页「本地 MCP」页签的对外 Server Profile 列表（T060）。
+    /// 设置页「本地 MCP」页签的对外 Server Profile 列表。
     pub ai_mcp_server_profiles: Vec<AiMcpServerProfileItem>,
-    /// 各 Profile 的资源授权（T060）；按 profile_id 归属，UI 分组展示。
-    pub ai_mcp_server_grants: Vec<AiMcpServerGrantItem>,
-    /// 各 Profile 最近的 MCP 活动记录（T060）；按 profile_id 归属。
-    pub ai_mcp_server_requests: Vec<AiMcpServerRequestItem>,
+    /// 各 Profile 的数据源（对外可见连接 + 写入策略）；按 profile_id 归属，UI 分组展示。
+    pub ai_mcp_datasources: Vec<AiMcpDatasourceItem>,
     /// 设置页「会话历史」列表（活跃 + 已归档，最近更新优先）。
     pub ai_sessions: Vec<AiSessionItem>,
     /// 会话历史分页：总数（分页后不能靠列表长度推断）。
@@ -500,10 +440,10 @@ impl Default for AppState {
             ai_agents: Vec::new(),
             ai_plugin_instances: Vec::new(),
             ai_tool_settings: Vec::new(),
+            ai_execution_policy: Default::default(),
             ai_mcp_settings: Vec::new(),
             ai_mcp_server_profiles: Vec::new(),
-            ai_mcp_server_grants: Vec::new(),
-            ai_mcp_server_requests: Vec::new(),
+            ai_mcp_datasources: Vec::new(),
             ai_sessions: Vec::new(),
             ai_sessions_total: 0,
             ai_sessions_cursor: None,

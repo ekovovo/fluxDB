@@ -8,8 +8,7 @@ use std::sync::Arc;
 
 use fluxdb_storage::Storage as _;
 use fluxdb_storage::ai_platform::mcp_server::{
-    GrantResourceKind, ResourceGrantEdit, ServerProfileEdit, WriteMode, save_resource_grant,
-    save_server_profile,
+    DatasourceWritePolicy, ServerProfileEdit, save_datasource, save_server_profile,
 };
 
 // 可指定已构建的桌面程序，复用同一套协议断言验证无独立 Server 时的入口。
@@ -59,30 +58,11 @@ impl Fixture {
                     id: "p1".into(),
                     display_name: "本地".into(),
                     enabled: true,
-                    write_mode: WriteMode::Disabled,
-                    allowed_tool_ids: vec!["fluxdb_connections_list".into(), "fluxdb_query".into()],
                     options_json: "{}".into(),
-                    max_inflight: 4,
-                    max_request_ms: 30_000,
-                    max_request_bytes: 262_144,
-                    max_response_bytes: 131_072,
                 };
                 let created = save_server_profile(conn, 1, &edit, None)?;
                 save_server_profile(conn, 2, &edit, Some(created.revision))?;
-                let grant = ResourceGrantEdit {
-                    id: "g1".into(),
-                    profile_id: "p1".into(),
-                    connection_id: 1,
-                    database_name: "main".into(),
-                    namespace: "".into(),
-                    enabled: true,
-                    allow_read: true,
-                    allow_write: false,
-                    object_policy_json: r#"{"all_objects":true}"#.into(),
-                    write_policy_json: "{}".into(),
-                    max_rows: 200,
-                };
-                save_resource_grant(conn, 3, &grant, GrantResourceKind::Sql, None)?;
+                save_datasource(conn, 3, "p1", 1, DatasourceWritePolicy::ReadOnly, None)?;
                 Ok(())
             })
             .unwrap();
@@ -213,7 +193,7 @@ fn initialize_lists_only_authorized_tools() {
     let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
     assert!(names.contains(&"fluxdb_query"));
     assert!(names.contains(&"fluxdb_connections_list"));
-    // 未在 allowed_tool_ids 里的工具不能出现。
+    // 只读数据源下写工具不出现。
     assert!(!names.contains(&"fluxdb_execute"));
     assert!(!names.contains(&"fluxdb_redis_scan"));
 }

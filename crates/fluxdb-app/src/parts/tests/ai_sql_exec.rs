@@ -31,6 +31,7 @@ fn ai_sql_exec_demo_config(id: u64) -> ConnectionConfig {
 
 fn ai_sql_exec_ctx(call_id: &str, cancel: CancelFlag) -> ToolExecutionContext {
     ToolExecutionContext {
+        automatic_approval: false,
         session_id: "s-sql".into(),
         turn_id: "t-sql".into(),
         iteration: 1,
@@ -282,6 +283,7 @@ fn ai_sql_exec_reports_progress_to_runtime_context() {
     let resolver = Arc::new(MapSqlResolver::new([ai_sql_exec_demo_config(1)]));
     let events = Arc::new(std::sync::Mutex::new(Vec::new()));
     let ctx = ToolExecutionContext {
+        automatic_approval: false,
         session_id: "s-sql".into(),
         turn_id: "t-sql".into(),
         iteration: 1,

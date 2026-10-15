@@ -225,6 +225,21 @@ pub trait Connector {
     }
     fn apply_changes(&self, changes: &DataChangeSet) -> Result<AppliedChangeOutcome>;
     fn execute(&self, request: &QueryRequest) -> Result<QueryExecutionResult>;
+
+    /// 检查单行 UPDATE 的对象、主键与间接副作用，返回不含值的结构摘要。
+    /// 默认不具备此证明能力，不能被 AI 的判断替代。
+    fn inspect_bounded_update(&self, _request: &ParameterizedQueryRequest) -> Result<String> {
+        Err(Error::new(ErrorKind::Unsupported, "该连接尚不支持自动审批所需的影响验证"))
+    }
+
+    /// 独立事务内重新验证并提交最多一行 UPDATE；任何无法证明或超限都回滚。
+    fn execute_bounded_update(
+        &self,
+        _request: &ParameterizedQueryRequest,
+        _should_cancel: &dyn Fn() -> bool,
+    ) -> Result<QueryExecutionResult> {
+        Err(Error::new(ErrorKind::Unsupported, "该连接尚不支持有界写入提交"))
+    }
     /// 参数化执行：**必须**由驱动真实 bind（如 MySQL/SQLite 的 `?`、PostgreSQL 的 `$n`）。
     ///
     /// 默认明确拒绝：不支持绑定的连接器绝不能把参数拼进 SQL（字符串插值＝注入面）。

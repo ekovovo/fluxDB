@@ -139,6 +139,7 @@ impl<R: SqlExecutionResolver + 'static> fluxdb_core::AiTool for AiSqlReadTool<R>
                             true,
                             &|| cancel.is_cancelled(),
                             &mut report_progress,
+                            false,
                         ),
                         Err(error) => Err(error),
                     }
@@ -398,8 +399,8 @@ impl<R: SqlExecutionResolver + 'static> fluxdb_core::AiTool for AiSqlDescribeToo
 
 /// 修改工具：`db.execute`（Write）。
 ///
-/// 只由**审批通过之后**的运行时调用：本工具自身不判断审批，内核（`TurnRunner` 的
-/// `authorize` + 审批行 plan_hash 复核）是唯一放行点；未接审批时不得注册给模型。
+/// 只由授权链放行后的运行时调用；本工具不授予权限。AI 自动批准必须使用有界提交，
+/// 人工批准由审批行 plan_hash 复核，自动执行也不能绕过目标与语句硬校验。
 pub struct AiSqlExecuteTool<R: SqlExecutionResolver> {
     descriptor: fluxdb_core::ToolDescriptor,
     resolver: Arc<R>,
@@ -430,6 +431,23 @@ impl<R: SqlExecutionResolver> AiSqlExecuteTool<R> {
 }
 
 impl<R: SqlExecutionResolver + 'static> fluxdb_core::AiTool for AiSqlExecuteTool<R> {
+    fn automatic_approval_facts(&self, arguments_json: &str) -> fluxdb_core::Result<String> {
+        let args=parse_sql_args(arguments_json).map_err(|_| fluxdb_core::Error::new(fluxdb_core::ErrorKind::Unsupported,"计划参数无效"))?;
+        let config=self.resolver.connection_config(args.target.connection_id)
+            .ok_or_else(|| fluxdb_core::Error::new(fluxdb_core::ErrorKind::Permission,"连接未授权"))?;
+        let dialect=dialect_for(config.kind).ok_or_else(|| fluxdb_core::Error::new(fluxdb_core::ErrorKind::Unsupported,"无法检查数据库类型"))?;
+        validate_sql_scope(&args.sql,dialect,&args.target)
+            .map_err(|_| fluxdb_core::Error::new(fluxdb_core::ErrorKind::Permission,"SQL 超出作用域"))?;
+        fluxdb_connectors::connector_for(&config)?.inspect_bounded_update(&fluxdb_core::ParameterizedQueryRequest {
+            request:fluxdb_core::QueryRequest {
+                connection_id:args.target.connection_id, database:args.target.database,
+                schema:args.target.schema,text:args.sql,mode:fluxdb_core::QueryMode::Selection,
+                options:fluxdb_core::QueryExecutionOptions {
+                    continue_on_error:false,split_statements:false,page_offset:0,page_size:1,read_only:false,
+                },session_id:Some(self.resolver.query_session_id()),
+            },parameters:args.parameters,
+        })
+    }
     fn descriptor(&self) -> &fluxdb_core::ToolDescriptor {
         &self.descriptor
     }
@@ -490,6 +508,7 @@ impl<R: SqlExecutionResolver + 'static> fluxdb_core::AiTool for AiSqlExecuteTool
                     false,
                     &|| cancel.is_cancelled(),
                     &mut report_progress,
+                    ctx.automatic_approval,
                 ),
                 Err(error) => Err(error),
             };

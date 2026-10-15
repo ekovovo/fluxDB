@@ -276,8 +276,11 @@ fn handle_mock_connection(
         )),
     };
     let Some((status, body)) = payload else {
-        // 挂起时长必须大于生产 deadline（8s）+ 重试退避，否则不会触发超时。
-        std::thread::sleep(Duration::from_secs(30));
+        // 挂起时长必须大于生产 deadline + 重试退避，否则不会触发超时；
+        // 按统一常量推导，超时值再调整时这里不会悄悄变成"mock 先返回"。
+        std::thread::sleep(Duration::from_millis(
+            fluxdb_app::MODEL_REQUEST_TIMEOUT_MS + 5_000,
+        ));
         return;
     };
     let body = body.into_bytes();
@@ -331,7 +334,7 @@ fn low_confidence_is_not_adopted() {
 #[test]
 fn timeout_falls_back_without_blocking_repeatedly() {
     let fixture = Fixture::new();
-    // mock 只收请求不回应，触发受控 deadline（8s）。
+    // mock 只收请求不回应，触发受控 deadline（生产值 `MODEL_REQUEST_TIMEOUT_MS`）。
     let (endpoint, hits) = spawn_mock("hang");
     fixture.decision_model("slow", &endpoint, true);
     let started = std::time::Instant::now();
@@ -346,9 +349,12 @@ fn timeout_falls_back_without_blocking_repeatedly() {
         2,
         "超时按错误类别重试一次，共两次请求"
     );
+    // 上限按生产常量推导：两次 deadline + 一次退避，再留 5s 余量给调度与抖动。
+    // 不写死数字，超时常量调整时这条断言跟着走，而不是变成陈旧假设。
+    let budget = Duration::from_millis(fluxdb_app::MODEL_REQUEST_TIMEOUT_MS * 2 + 5_000);
     assert!(
-        elapsed < Duration::from_secs(25),
-        "两次 deadline + 退避应受控返回，实际 {elapsed:?}"
+        elapsed < budget,
+        "两次 deadline + 退避应受控返回，预算 {budget:?}，实际 {elapsed:?}"
     );
 }
 

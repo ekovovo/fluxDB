@@ -49,10 +49,6 @@ impl McpClientKind {
         }
     }
 
-    /// 旧版本写入工具预批准的文件；现在仅在移除接入时清理旧规则。
-    pub fn claude_allow_settings_path(home: &Path) -> PathBuf {
-        home.join(".claude").join("settings.json")
-    }
 }
 
 /// 解析当前用户主目录；失败时给出可读错误（不猜路径）。
@@ -538,60 +534,6 @@ fn unregister_claude(
         backup_path: backup,
         changed: true,
     })
-}
-
-// ---- 旧版本 Claude Code 预批准清理 ----
-
-/// 仅移除旧版本写入的本服务规则；不存在时不创建文件，不触碰其它权限。
-fn remove_claude_tool_preapproval(
-    home: &Path,
-    server_name: &str,
-) -> fluxdb_core::Result<Option<PathBuf>> {
-    if !server_name
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-    {
-        return Err(write_error("server 名称含非法字符，拒绝写 allow 规则"));
-    }
-    let path = McpClientKind::claude_allow_settings_path(home);
-    let existing = read_optional(&path)?;
-    if existing.is_none() {
-        return Ok(None);
-    }
-    let mut root: serde_json::Value = match existing.as_deref() {
-        Some(text) if !text.trim().is_empty() => serde_json::from_str(text).map_err(|error| {
-            write_error(format!(
-                "{} 不是合法 JSON，拒绝改写: {error}",
-                path.display()
-            ))
-        })?,
-        _ => serde_json::json!({}),
-    };
-    let rule = format!("mcp__{server_name}");
-    let object = root
-        .as_object_mut()
-        .ok_or_else(|| write_error("settings.json 根不是对象，拒绝改写"))?;
-    let permissions = object
-        .entry("permissions")
-        .or_insert_with(|| serde_json::json!({}));
-    let permissions = permissions
-        .as_object_mut()
-        .ok_or_else(|| write_error("permissions 不是对象，拒绝改写"))?;
-    let allow_list = permissions
-        .entry("allow")
-        .or_insert_with(|| serde_json::json!([]));
-    let list = allow_list
-        .as_array_mut()
-        .ok_or_else(|| write_error("permissions.allow 不是数组，拒绝改写"))?;
-    let before = list.len();
-    list.retain(|v| v.as_str() != Some(rule.as_str()));
-    let changed = before != list.len();
-    if !changed {
-        return Ok(None);
-    }
-    let rendered = serde_json::to_string_pretty(&root)
-        .map_err(|error| write_error(format!("序列化 settings.json 失败: {error}")))?;
-    write_atomic(&path, &rendered)
 }
 
 // ---- 原子写 + 备份 ----

@@ -116,30 +116,6 @@ impl FoldSet {
         set
     }
 
-    /// 迁移入口：从旧行区间折叠（`Vec<Fold>`）建立稳定状态。
-    ///
-    /// `row_to_offset(row) -> 行首字节` 由调用方提供（基于当前快照）。
-    /// 折叠终点取 `end_row` 的下一行行首，使折叠覆盖整段内容行；无法解析时跳过。
-    pub fn from_row_folds(folds: &[Fold], row_to_offset: impl Fn(usize) -> Option<usize>) -> Self {
-        let mut set = FoldSet::new();
-        let mut entries: Vec<(usize, usize)> = Vec::new(); // (start_offset, end_offset)
-        for f in folds {
-            let (Some(start), Some(end)) =
-                (row_to_offset(f.start_row), row_to_offset(f.end_row + 1))
-            else {
-                continue;
-            };
-            if end > start {
-                entries.push((start, end));
-            }
-        }
-        entries.sort_unstable();
-        for (start, end) in entries {
-            set.insert_normalized(Range::new(start, end.max(start + 1)));
-        }
-        set
-    }
-
     /// 插入一个区间，规范化内部重叠/包含（含相触合并），保持排序，不重复 id 分配。
     /// 新条目总会获得一个新 [`FoldId`]。
     ///
@@ -321,10 +297,6 @@ mod tests {
     fn offset_to_row_6(offset: usize) -> usize {
         offset / 6
     }
-    /// 用于 `from_row_folds` 的 row→offset 映射。
-    fn row_to_offset_6(row: usize) -> Option<usize> {
-        Some(row * 6)
-    }
 
     /// DM-106：从字节区间迁移建立稳定 fold 状态，自动排序并丢弃退化区间。
     #[test]
@@ -413,19 +385,6 @@ mod tests {
         // 删除整段 + 周围：old 覆盖 [6,18)。
         set.relocate(Range::new(6, 18), 0);
         assert!(set.is_empty());
-    }
-
-    /// DM-106：从旧行区间 `Vec<Fold>` 迁移为稳定状态，再解析回行区间应一致。
-    #[test]
-    fn migrates_from_row_folds_round_trips_rows() {
-        let folds = vec![Fold {
-            start_row: 2,
-            end_row: 4,
-        }];
-        let set = FoldSet::from_row_folds(&folds, row_to_offset_6);
-        assert_eq!(set.len(), 1);
-        let rows = set.resolve_rows(offset_to_row_6);
-        assert_eq!((rows[0].start_row, rows[0].end_row), (2, 4));
     }
 
     /// DM-202：增量 add/edit 只替换「相交叶子区间」——首段合并只重建被命中路径上的

@@ -216,10 +216,6 @@ pub fn remove_mcp_client_registration(
     client: McpClientKind,
 ) -> fluxdb_core::Result<()> {
     let mut managed = storage.load_mcp_client_registrations()?;
-    // 先清理旧版本预批准，失败时保留接入记录以便用户重试。
-    if client == McpClientKind::ClaudeCode && managed.contains_key(client.key()) {
-        remove_claude_tool_preapproval(home, DEFAULT_MCP_SERVER_NAME)?;
-    }
     unregister(client, home, DEFAULT_MCP_SERVER_NAME)?;
     managed.remove(client.key());
     storage.save_mcp_client_registrations(&managed)

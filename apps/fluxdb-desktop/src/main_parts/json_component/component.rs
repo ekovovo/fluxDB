@@ -142,10 +142,7 @@ impl JsonComponent {
         if self.input.is_none() {
             let input = cx.new(|cx| {
                 InputState::new(window, cx)
-                    .code_editor(JSON_HIGHLIGHT_LANGUAGE)
-                    .line_number(true)
                     .placeholder("值")
-                    .rows(12)
             });
             self.input = Some(input);
         }

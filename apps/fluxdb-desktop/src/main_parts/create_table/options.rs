@@ -191,11 +191,10 @@ fn create_table_partitions(
             window,
             cx,
         );
-        let sql_input = this.create_table_multiline_input(
+        let sql_input = this.create_table_input(
             CreateTableInputKey::TablePartitionSql(tab_id),
             "PARTITION BY RANGE (created_at)",
             &create.partition_sql,
-            8,
             window,
             cx,
         );

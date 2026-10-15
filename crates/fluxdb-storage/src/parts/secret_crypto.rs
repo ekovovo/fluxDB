@@ -2,9 +2,8 @@
 //! （设计文档 §33）。
 //!
 //! 规则：
-//! - 先读 `config.toml` 的 `secret_key`，再读兼容字段 `connection_secret_key`；
-//! - 两者同时存在且值不同 → 拒绝操作并说明冲突（不猜测用哪个，避免静默写坏密文）；
-//! - 都没有 → 用内置 `DEFAULT_KEY`（只避免 SQLite 明文，不能抵御同时拿到程序与库的攻击者）；
+//! - 读取 `config.toml` 的 `secret_key`；缺失或没有该键 → 用内置 `DEFAULT_KEY`
+//!   （只避免 SQLite 明文，不能抵御同时拿到程序与库的攻击者）；
 //! - 本期不做密钥轮换，也不改写已有连接凭据。
 
 use std::fs;
@@ -15,20 +14,16 @@ use aes_gcm::aead::KeyInit;
 
 use crate::credential::CredentialError;
 
-/// 新字段：共享数据密钥（连接 + 模型共用）。
+/// 共享数据密钥（连接 + 模型共用），存在 `config.toml` 的该键下。
 pub const CONFIG_KEY: &str = "secret_key";
-/// 兼容字段：历史实现实际使用的键名。
-pub const LEGACY_CONFIG_KEY: &str = "connection_secret_key";
 /// 内置密钥，仅避免 SQLite 明文存储。
 pub const DEFAULT_KEY: [u8; 32] = *b"fluxdb-default-aes256-key-v1-001";
 
-/// 密钥来源，用于日志与冲突提示（不含密钥内容）。
+/// 密钥来源，用于日志提示（不含密钥内容）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeySource {
     /// `secret_key`
     Config,
-    /// `connection_secret_key`（兼容）
-    LegacyConfig,
     /// 内置默认密钥
     Builtin,
 }
@@ -52,21 +47,10 @@ pub(crate) fn load_key(root: &Path) -> Result<([u8; 32], KeySource), CredentialE
     let config: toml::Value = toml::from_str(&text)
         .map_err(|_| CredentialError::Failure("config.toml 格式无效".into()))?;
 
-    let primary = config.get(CONFIG_KEY).and_then(toml::Value::as_str);
-    let legacy = config.get(LEGACY_CONFIG_KEY).and_then(toml::Value::as_str);
-    match (primary, legacy) {
-        (Some(a), Some(b)) => {
-            if a != b {
-                return Err(CredentialError::Failure(format!(
-                    "config.toml 同时存在 {CONFIG_KEY} 与 {LEGACY_CONFIG_KEY} 且值不同，请只保留其中一个后重试"
-                )));
-            }
-            Ok((decode_key(a)?, KeySource::Config))
-        }
-        (Some(a), None) => Ok((decode_key(a)?, KeySource::Config)),
-        (None, Some(b)) => Ok((decode_key(b)?, KeySource::LegacyConfig)),
-        (None, None) => Ok((DEFAULT_KEY, KeySource::Builtin)),
-    }
+    let Some(primary) = config.get(CONFIG_KEY).and_then(toml::Value::as_str) else {
+        return Ok((DEFAULT_KEY, KeySource::Builtin));
+    };
+    Ok((decode_key(primary)?, KeySource::Config))
 }
 
 fn decode_key(hex: &str) -> Result<[u8; 32], CredentialError> {
@@ -140,51 +124,6 @@ mod tests {
         let (key, source) = load_key(&dir).expect("读取主字段");
         assert_eq!(key, [1u8; 32]);
         assert_eq!(source, KeySource::Config);
-    }
-
-    #[test]
-    fn legacy_key_still_reads() {
-        let dir = std::env::temp_dir().join(format!("fluxdb-key-b-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        write_config(&dir, &format!("{LEGACY_CONFIG_KEY} = \"{}\"\n", hex_of(2)));
-        let (key, source) = load_key(&dir).expect("读取兼容字段");
-        assert_eq!(key, [2u8; 32]);
-        assert_eq!(source, KeySource::LegacyConfig);
-    }
-
-    #[test]
-    fn identical_both_fields_are_accepted() {
-        let dir = std::env::temp_dir().join(format!("fluxdb-key-c-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        write_config(
-            &dir,
-            &format!(
-                "{CONFIG_KEY} = \"{}\"\n{LEGACY_CONFIG_KEY} = \"{}\"\n",
-                hex_of(3),
-                hex_of(3)
-            ),
-        );
-        let (_, source) = load_key(&dir).expect("同值应允许");
-        assert_eq!(source, KeySource::Config);
-    }
-
-    #[test]
-    fn conflicting_fields_are_rejected() {
-        let dir = std::env::temp_dir().join(format!("fluxdb-key-d-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        write_config(
-            &dir,
-            &format!(
-                "{CONFIG_KEY} = \"{}\"\n{LEGACY_CONFIG_KEY} = \"{}\"\n",
-                hex_of(4),
-                hex_of(5)
-            ),
-        );
-        let err = load_key(&dir).expect_err("冲突必须拒绝");
-        assert!(
-            err.to_string().contains(CONFIG_KEY),
-            "错误应指出冲突字段: {err}"
-        );
     }
 
     #[test]

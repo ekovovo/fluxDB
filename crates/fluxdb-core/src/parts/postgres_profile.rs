@@ -252,51 +252,10 @@ fn postgres_first_layer(profile: &PostgresConnectionProfile) -> Option<&Postgres
     profile.transport.first()
 }
 
-/// 历史 `options` 扁平参数里 PostgreSQL 认识的全部键（白名单）。
-pub const POSTGRES_LEGACY_OPTION_KEYS: &[&str] = &[
-    "host",
-    "port",
-    "database",
-    "maintenance_database",
-    "username",
-    "password",
-    "default_schema",
-    "show_other_databases",
-    "show_system_schemas",
-    "tls",
-    "ssl_mode",
-    "tls_ca_ref",
-    "tls_client_cert_ref",
-    "tls_client_key_ref",
-    "tls_server_name",
-    "ssh_enabled",
-    "ssh_host",
-    "ssh_port",
-    "ssh_username",
-    "ssh_auth",
-    "ssh_password",
-    "ssh_private_key_ref",
-    "ssh_passphrase",
-    "ssh_connect_timeout_secs",
-    "ssh_keepalive_interval_secs",
-    "proxy_enabled",
-    "proxy_type",
-    "proxy_host",
-    "proxy_port",
-    "proxy_username",
-    "proxy_password",
-    "connect_timeout_secs",
-    "query_timeout_secs",
-    "idle_ttl_secs",
-    "tcp_keepalive",
-    "application_name",
-    "timezone",
-];
-
 impl PostgresConnectionProfile {
     /// —— 解析/迁移职责 ——
 
-    /// 从历史 `options` 扁平参数迁移出一份档案。仅迁移白名单键。
+    /// 从历史 `options` 扁平参数迁移出一份档案。只读取已知键。
     pub fn from_options(opts: &std::collections::BTreeMap<String, String>) -> Self {
         let get = |key: &str| opts.get(key).cloned();
         let basic = PostgresBasicOptions {

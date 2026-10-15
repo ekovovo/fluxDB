@@ -101,38 +101,6 @@ use gpui_kit::base::ObservedElement;
 use lsp_types::Position;
 use serde::{Deserialize, Serialize};
 
-// gpui-component 0.6 fixes input mode at the state type level. Keep the old
-// builder calls source-compatible while the existing state fields migrate.
-trait LegacyInputStateExt {
-    fn code_editor(self, _: impl Into<SharedString>) -> Self;
-    fn multi_line(self, _: bool) -> Self;
-    fn line_number(self, _: bool) -> Self;
-    fn rows(self, _: usize) -> Self;
-    fn legacy_soft_wrap(self, _: bool) -> Self;
-}
-
-impl LegacyInputStateExt for InputState {
-    fn code_editor(self, _: impl Into<SharedString>) -> Self {
-        self
-    }
-
-    fn multi_line(self, _: bool) -> Self {
-        self
-    }
-
-    fn line_number(self, _: bool) -> Self {
-        self
-    }
-
-    fn rows(self, _: usize) -> Self {
-        self
-    }
-
-    fn legacy_soft_wrap(self, _: bool) -> Self {
-        self
-    }
-}
-
 // 平台等宽字体仅指定通用首选项；具体 CJK/emoji 回退仍由系统字体栈处理。
 #[cfg(target_os = "macos")]
 pub(crate) const PLATFORM_MONOSPACE_FONT: &str = "Menlo";

@@ -145,37 +145,6 @@ mod mcp_install_tests {
             serde_json::json!(true)
         );
 
-        // 旧版本规则只清理，不再提供新写入入口。
-        let settings_path = home.join(".claude").join("settings.json");
-        std::fs::create_dir_all(settings_path.parent().unwrap()).unwrap();
-        std::fs::write(
-            &settings_path,
-            r#"{"permissions":{"allow":["mcp__fluxdb","Read"]}}"#,
-        )
-        .unwrap();
-        assert!(
-            remove_claude_tool_preapproval(&home, "fluxdb")
-                .unwrap()
-                .is_some()
-        );
-        let settings: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(home.join(".claude").join("settings.json")).unwrap(),
-        )
-        .unwrap();
-        assert!(
-            !settings["permissions"]["allow"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|v| v == "mcp__fluxdb")
-        );
-        assert!(
-            settings["permissions"]["allow"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|v| v == "Read")
-        );
         // 卸载同时清掉 allow 与条目。
         unregister(McpClientKind::ClaudeCode, &home, "fluxdb").unwrap();
         let value: serde_json::Value =

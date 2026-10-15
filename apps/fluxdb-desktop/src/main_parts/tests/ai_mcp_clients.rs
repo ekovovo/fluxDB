@@ -61,7 +61,6 @@ mod mcp_clients {
         let storage = FileStorage::new(isolated.root.join("app data"));
         let claude = fluxdb_app::McpClientKind::ClaudeCode.config_path(&isolated.home);
         let codex = fluxdb_app::McpClientKind::Codex.config_path(&isolated.home);
-        let approvals = fluxdb_app::McpClientKind::claude_allow_settings_path(&isolated.home);
         let binary = isolated.root.join("binary path").join("fluxdb-desktop");
         std::fs::create_dir_all(binary.parent().unwrap()).unwrap();
         std::fs::write(&binary, b"not executed by registration").unwrap();
@@ -162,7 +161,7 @@ mod mcp_clients {
             .unwrap();
         assert!(profile.enabled);
         assert_eq!(std::fs::read_to_string(&claude).unwrap(), original);
-        assert!(!codex.exists() && !approvals.exists());
+        assert!(!codex.exists());
         assert!(storage.load_mcp_client_registrations().unwrap().is_empty());
 
         // 显式接入走后台写入与快照回桥；忙时所有入口不得覆盖当前操作。
@@ -228,10 +227,7 @@ mod mcp_clients {
         assert_eq!(managed.len(), 1);
         assert_eq!(managed["claude"].command, details.command);
         assert_eq!(managed["claude"].args, expected_args);
-        assert!(
-            !codex.exists() && !approvals.exists(),
-            "接入不创建其他客户端或审批规则"
-        );
+        assert!(!codex.exists(), "接入不创建其他客户端");
 
         // 关闭服务只撤销调用许可；配置和管理权均保留，重新启用也不改写配置。
         cx.update(|window, cx| {
@@ -335,8 +331,7 @@ mod mcp_clients {
         });
         assert_eq!(std::fs::read_to_string(&claude).unwrap(), connected);
         assert_eq!(std::fs::read_to_string(&codex).unwrap(), codex_text);
-        assert!(!approvals.exists());
-
+        
         // 显式移除保留用户其他配置；检测到的配置文件仍显示为可接入行。
         cx.update(|window, cx| {
             window.click("ai-mcp-client-remove:claude", cx);
@@ -432,7 +427,6 @@ mod mcp_clients {
             );
         });
         assert_eq!(storage.load_mcp_client_registrations().unwrap().len(), 2);
-        assert!(!approvals.exists());
 
         // 手工改过的同名条目停止自动维护：行内不再提供卸载，改为可覆盖的重新安装。
         let mut edited: serde_json::Value =

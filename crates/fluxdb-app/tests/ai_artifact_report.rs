@@ -126,6 +126,80 @@ fn html_export_carries_real_values_and_inline_chart_without_script_or_remote_res
     assert_eq!(fluxdb_app::source_hash(&[html.as_str()]), fact.content_hash);
 }
 
+/// 五种图表类型都按真实值画出图体：折线/面积是折线路径，柱状/条形是矩形，饼图是扇形路径。
+
+#[test]
+fn html_export_draws_every_chart_kind_from_real_values() {
+    use fluxdb_core::{ArtifactBlock, ArtifactChart};
+    let (fixture, _job, artifact_id) = ready_fixture();
+    let mut report = load_ai_report(&fixture.storage, &artifact_id).unwrap();
+    // 加载后的声明引用是解析过的句柄（带唯一后缀），不是模型原始写法。
+    let result_ref = report.sources[0].declared_ref.clone().unwrap();
+    for (chart, marker) in [
+        (ArtifactChart::Line, "<polyline"),
+        (ArtifactChart::Area, "<polygon"),
+        (ArtifactChart::Bar, "<rect"),
+        (ArtifactChart::BarHorizontal, "<rect"),
+        (ArtifactChart::Pie, "<path"),
+    ] {
+        report.spec.blocks = vec![ArtifactBlock::Chart {
+            result_ref: result_ref.clone(),
+            chart,
+            x: "channel".into(),
+            y: "revenue".into(),
+        }];
+        let html = render_ai_report_export(&report, AiReportExportFormat::Html).unwrap();
+        assert!(html.contains("<svg"), "{chart:?} 应画出内联 SVG 图体");
+        assert!(html.contains(marker), "{chart:?} 应使用 {marker} 绘制");
+        assert!(!html.contains("未渲染"), "{chart:?} 不应落回未渲染说明");
+        // 图体里的分类名与数值都来自快照，不是模型编的数字。
+        assert!(html.contains("web") && html.contains("34"));
+    }
+}
+
+/// 饼图放不下时报出可见原因而不是硬画：分类过多、含负值、合计为 0 都算不出占比。
+#[test]
+fn html_export_reports_pie_limits_instead_of_drawing() {
+    use fluxdb_core::{ArtifactBlock, ArtifactChart};
+    let (fixture, _job, artifact_id) = ready_fixture();
+    let mut report = load_ai_report(&fixture.storage, &artifact_id).unwrap();
+    let result_ref = report.sources[0].declared_ref.clone().unwrap();
+    report.spec.blocks = vec![ArtifactBlock::Chart {
+        result_ref,
+        chart: ArtifactChart::Pie,
+        x: "channel".into(),
+        y: "revenue".into(),
+    }];
+    let cases: Vec<(Vec<Value>, &str)> = vec![
+        (
+            (0..=fluxdb_core::ARTIFACT_MAX_PIE_SLICES)
+                .map(|index| json!({"channel": format!("channel-{index}"), "revenue": 5}))
+                .collect(),
+            "饼图分类过多",
+        ),
+        (
+            vec![
+                json!({"channel": "web", "revenue": 12}),
+                json!({"channel": "store", "revenue": -3}),
+            ],
+            "含负值",
+        ),
+        (
+            vec![
+                json!({"channel": "web", "revenue": 0}),
+                json!({"channel": "store", "revenue": 0}),
+            ],
+            "合计为 0",
+        ),
+    ];
+    for (items, expected) in cases {
+        report.sources[0].items = items;
+        let html = render_ai_report_export(&report, AiReportExportFormat::Html).unwrap();
+        assert!(html.contains(expected), "应说明：{expected}");
+        assert!(!html.contains("<svg"), "不可绘制时不应画图：{expected}");
+    }
+}
+
 #[test]
 fn html_export_escapes_database_text_to_avoid_injection() {
     let (fixture, _job, artifact_id) = ready_fixture();

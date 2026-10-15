@@ -275,6 +275,9 @@ impl ArtifactRenderer for BuiltinMarkdownRenderer {
                         match chart {
                             fluxdb_core::ArtifactChart::Line => "折线",
                             fluxdb_core::ArtifactChart::Bar => "柱状",
+                            fluxdb_core::ArtifactChart::BarHorizontal => "条形",
+                            fluxdb_core::ArtifactChart::Area => "面积",
+                            fluxdb_core::ArtifactChart::Pie => "饼图",
                         },
                         markdown_text(result_ref)
                     ));

@@ -25,6 +25,8 @@ pub const ARTIFACT_MAX_FIELD_CHARS: usize = 200;
 pub const ARTIFACT_MAX_TIMEZONE_CHARS: usize = 64;
 /// 单图表数据点上限；超出的行由 renderer 截断并标记 `truncated`。
 pub const ARTIFACT_MAX_POINTS: usize = 500;
+/// 饼图切片上限：分类数超过此值时 renderer 不绘制饼图，改用可见说明（占比图切得太细读不出构成）。
+pub const ARTIFACT_MAX_PIE_SLICES: usize = 8;
 /// 来源及口径引用 ID 字符上限。
 pub const ARTIFACT_MAX_REF_CHARS: usize = 256;
 /// 过滤条件条数上限。
@@ -88,12 +90,21 @@ impl ArtifactKind {
     }
 }
 
-/// 图表种类。
+/// 图表种类。选择依据是 x 的语义与分类数量，而不是渲染偏好：连续有序的 x（时间序列）看趋势
+/// 用折线、强调量级用面积；无序分类做比较用柱状，分类名长或按值排名用条形；分类不多且看占比构成用饼图。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ArtifactChart {
+    /// 折线：x 为有序/连续量，看变化趋势。
     Line,
+    /// 柱状（纵向）：x 为分类且标签较短，做分类间比较。
     Bar,
+    /// 条形（横向柱状）：分类标签较长或需要按数值排名。
+    BarHorizontal,
+    /// 面积：形状同折线，强调量级与累计规模。
+    Area,
+    /// 饼图：分类数不超过 `ARTIFACT_MAX_PIE_SLICES` 时的占比构成。
+    Pie,
 }
 
 /// 一个产物块：图表/表格引用已存在结果的字段；说明只写范围与限制，不填未查询的数字。
@@ -472,6 +483,24 @@ mod artifact_tests {
             result_ref: "result-1".into(),
             columns: vec!["channel".into(), "revenue".into()],
         }
+    }
+
+    #[test]
+    fn chart_kinds_round_trip_by_declared_name() {
+        for (raw, kind) in [
+            ("line", ArtifactChart::Line),
+            ("bar", ArtifactChart::Bar),
+            ("bar_horizontal", ArtifactChart::BarHorizontal),
+            ("area", ArtifactChart::Area),
+            ("pie", ArtifactChart::Pie),
+        ] {
+            assert_eq!(serde_json::to_value(kind).unwrap(), json!(raw));
+            assert_eq!(
+                serde_json::from_value::<ArtifactChart>(json!(raw)).unwrap(),
+                kind
+            );
+        }
+        assert!(serde_json::from_value::<ArtifactChart>(json!("donut")).is_err());
     }
 
     #[test]

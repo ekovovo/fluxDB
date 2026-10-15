@@ -135,6 +135,7 @@ impl AppController {
                 self.saved_reference_text(reference)?;
             }
             "file" => {
+                self.ai_storage()?.with_ai_connection(ensure_ai_files_enabled)?;
                 let grant: serde_json::Value =
                     serde_json::from_str(&reference.source).map_err(reference_json_error)?;
                 let path = grant["path"]

@@ -199,10 +199,13 @@ pub struct BuiltinDescriptor {
     pub summary: &'static str,
     pub capabilities: &'static [BuiltinCapability],
     pub mandatory: bool,
+    /// 配置声明（协议见 [`PluginConfigDeclaration`]）；空串表示该能力没有可配置项，
+    /// 宿主因此不显示「管理」入口。外置插件把同一份声明放进 manifest 的
+    /// `config_declaration`，两条路径由同一个解析器处理。
+    pub config_declaration: &'static str,
 }
 
 const CONTEXT_UI: &[BuiltinCapability] = &[BuiltinCapability::ContextProvider];
-const DATABASE: &[BuiltinCapability] = &[BuiltinCapability::ToolProvider];
 const FILES: &[BuiltinCapability] = &[BuiltinCapability::ContextProvider];
 const ROUTER: &[BuiltinCapability] = &[BuiltinCapability::ModelRouter];
 const JEV: &[BuiltinCapability] = &[BuiltinCapability::DecisionProvider];
@@ -215,7 +218,42 @@ const PROGRESS: &[BuiltinCapability] = &[BuiltinCapability::Progress];
 const TELEMETRY: &[BuiltinCapability] =
     &[BuiltinCapability::AgentHook, BuiltinCapability::Telemetry];
 
-/// 12 个内置插件实例的唯一能力目录。
+/// Jev 的决策模型配置字段键；声明与运行期共用，改名等同协议不兼容变更。
+pub const JEV_DECISION_MODEL_FIELD: &str = "decision_model";
+
+/// Jev 的配置声明（协议见 [`PluginConfigDeclaration`]）。
+///
+/// 用户显式选择一个支持 System One 协议的决策模型，未选择就不参与运行；
+/// 不按「唯一合格候选」替用户挑模型，也不把模型 id 写进插件自己的 JSON。
+const JEV_CONFIG_DECLARATION: &str = r#"{
+  "protocol": "fluxdb.plugin.config.v1",
+  "fields": [
+    {
+      "key": "decision_model",
+      "label": "决策模型",
+      "help": "未选择时 Jev 不参与运行，基础 Agent 不受影响。",
+      "required": true,
+      "resource": {
+        "type": "model",
+        "role": "decision",
+        "api_protocol": "system-one"
+      }
+    }
+  ]
+}"#;
+
+/// Jev 的配置声明（解析一次后复用）。
+///
+/// 注册表构造时已校验过同一份文本，这里的 `expect` 只在「改声明忘了跑校验」时才会触发。
+pub fn jev_config_declaration() -> &'static PluginConfigDeclaration {
+    static DECLARATION: std::sync::OnceLock<PluginConfigDeclaration> = std::sync::OnceLock::new();
+    DECLARATION.get_or_init(|| {
+        PluginConfigDeclaration::parse(JEV_CONFIG_DECLARATION)
+            .expect("Jev 配置声明必须通过注册表自洽检查")
+    })
+}
+
+/// 内置插件实例的唯一能力目录；数据库与 Redis 能力由工具目录管理。
 pub const BUILTIN_DESCRIPTORS: &[BuiltinDescriptor] = &[
     BuiltinDescriptor {
         instance_id: "builtin.context-ui",
@@ -223,15 +261,8 @@ pub const BUILTIN_DESCRIPTORS: &[BuiltinDescriptor] = &[
         display_name: "当前界面与 @ 上下文",
         summary: "当前页面、@ 对象摘要和主动细节读取",
         capabilities: CONTEXT_UI,
-        mandatory: false,
-    },
-    BuiltinDescriptor {
-        instance_id: "builtin.database",
-        package_key: "fluxdb.tools.database",
-        display_name: "数据库与 Redis 工具",
-        summary: "关系型探索、SQL、Redis 标准工具",
-        capabilities: DATABASE,
-        mandatory: false,
+        mandatory: true,
+        config_declaration: "",
     },
     BuiltinDescriptor {
         instance_id: "builtin.files",
@@ -240,6 +271,7 @@ pub const BUILTIN_DESCRIPTORS: &[BuiltinDescriptor] = &[
         summary: "附件、授权目录、有界文件读取",
         capabilities: FILES,
         mandatory: false,
+        config_declaration: "",
     },
     BuiltinDescriptor {
         instance_id: "builtin.router",
@@ -248,6 +280,7 @@ pub const BUILTIN_DESCRIPTORS: &[BuiltinDescriptor] = &[
         summary: "默认模型、经济与高能力候选路由",
         capabilities: ROUTER,
         mandatory: false,
+        config_declaration: "",
     },
     BuiltinDescriptor {
         instance_id: "builtin.jev",
@@ -256,6 +289,7 @@ pub const BUILTIN_DESCRIPTORS: &[BuiltinDescriptor] = &[
         summary: "可选分类、路由与相关性建议",
         capabilities: JEV,
         mandatory: false,
+        config_declaration: JEV_CONFIG_DECLARATION,
     },
     BuiltinDescriptor {
         instance_id: "builtin.compaction",
@@ -264,6 +298,7 @@ pub const BUILTIN_DESCRIPTORS: &[BuiltinDescriptor] = &[
         summary: "保护条目、卸载、摘要与 checkpoint",
         capabilities: COMPACTION,
         mandatory: false,
+        config_declaration: "",
     },
     BuiltinDescriptor {
         instance_id: "builtin.security-audit",
@@ -272,6 +307,7 @@ pub const BUILTIN_DESCRIPTORS: &[BuiltinDescriptor] = &[
         summary: "调用前确定性风险/授权检查与审计",
         capabilities: SECURITY,
         mandatory: true,
+        config_declaration: "",
     },
     BuiltinDescriptor {
         instance_id: "builtin.budget",
@@ -280,6 +316,7 @@ pub const BUILTIN_DESCRIPTORS: &[BuiltinDescriptor] = &[
         summary: "Token 用量与执行保护事件",
         capabilities: BUDGET,
         mandatory: true,
+        config_declaration: "",
     },
     BuiltinDescriptor {
         instance_id: "builtin.knowledge",
@@ -288,6 +325,7 @@ pub const BUILTIN_DESCRIPTORS: &[BuiltinDescriptor] = &[
         summary: "已确认业务知识与按需专业说明",
         capabilities: KNOWLEDGE,
         mandatory: false,
+        config_declaration: "",
     },
     BuiltinDescriptor {
         instance_id: "builtin.bi",
@@ -296,6 +334,7 @@ pub const BUILTIN_DESCRIPTORS: &[BuiltinDescriptor] = &[
         summary: "图表、表格、报告的创建与渲染说明",
         capabilities: BI,
         mandatory: false,
+        config_declaration: "",
     },
     BuiltinDescriptor {
         instance_id: "builtin.progress",
@@ -304,6 +343,7 @@ pub const BUILTIN_DESCRIPTORS: &[BuiltinDescriptor] = &[
         summary: "公开计划、工具进展与检查点说明",
         capabilities: PROGRESS,
         mandatory: false,
+        config_declaration: "",
     },
     BuiltinDescriptor {
         instance_id: "builtin.telemetry",
@@ -312,6 +352,7 @@ pub const BUILTIN_DESCRIPTORS: &[BuiltinDescriptor] = &[
         summary: "脱敏的阶段耗时/错误/诊断汇总",
         capabilities: TELEMETRY,
         mandatory: false,
+        config_declaration: "",
     },
 ];
 
@@ -356,12 +397,11 @@ impl BuiltinRegistry {
                     "内置能力目录包含空能力项",
                 ));
             }
-        }
-        if BUILTIN_DESCRIPTORS.len() != 12 {
-            return Err(fluxdb_core::Error::new(
-                fluxdb_core::ErrorKind::Internal,
-                "内置能力目录数量与设计契约不一致",
-            ));
+            // 内置声明与 manifest 声明同协议：目录自洽检查顺带把声明解析一遍，
+            // 写错的声明在启动时就暴露，而不是等用户打开管理弹框。
+            if !descriptor.config_declaration.is_empty() {
+                PluginConfigDeclaration::parse(descriptor.config_declaration)?;
+            }
         }
         Ok(Self {
             descriptors: BUILTIN_DESCRIPTORS,
@@ -382,6 +422,13 @@ impl BuiltinRegistry {
         self.descriptors
             .iter()
             .find(|descriptor| descriptor.instance_id == instance_id)
+    }
+
+    /// 该内置能力的配置声明；`None` 表示没有可配置项（宿主不显示「管理」入口）。
+    pub fn config_declaration(&self, instance_id: &str) -> Option<&'static str> {
+        self.find_by_instance(instance_id)
+            .map(|descriptor| descriptor.config_declaration)
+            .filter(|declaration| !declaration.is_empty())
     }
 
     /// 返回当前已启用且属于本注册表的能力，未知实例被忽略并记录诊断。

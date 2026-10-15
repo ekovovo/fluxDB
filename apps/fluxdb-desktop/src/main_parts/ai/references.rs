@@ -20,6 +20,16 @@ impl NavicatMain {
         if self.ai_chat.attachment_loading {
             return;
         }
+        if self.controller.state().ai_plugin_instances.iter()
+            .any(|plugin| plugin.id == "builtin.files" && !plugin.enabled)
+        {
+            self.show_message(
+                "文件与附件已停用，请先在内置插件中启用",
+                AppMessageKind::Warning,
+                cx,
+            );
+            return;
+        }
         self.ai_chat.attachment_loading = true;
         let epoch = self.ai_chat.epoch;
         let session_id = self.controller.state().ai_conversation.session_id.clone();

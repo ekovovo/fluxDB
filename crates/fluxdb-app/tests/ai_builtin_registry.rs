@@ -18,7 +18,7 @@ fn instance(id: &str, package_key: &str, runtime_kind: &str, enabled: bool) -> P
 #[test]
 fn registry_contains_all_builtin_capability_entries() {
     let registry = BuiltinRegistry::new().unwrap();
-    assert_eq!(registry.descriptors().len(), 12);
+    assert_eq!(registry.descriptors().len(), 11);
     assert_eq!(
         registry
             .descriptors()
@@ -26,7 +26,7 @@ fn registry_contains_all_builtin_capability_entries() {
             .map(|descriptor| descriptor.package_key)
             .collect::<BTreeSet<_>>()
             .len(),
-        12
+        11
     );
     assert_eq!(
         registry
@@ -41,6 +41,7 @@ fn registry_contains_all_builtin_capability_entries() {
             .unwrap()
             .mandatory
     );
+    assert!(registry.find_by_package("fluxdb.tools.database").is_none());
     let storage_keys = fluxdb_storage::ai_platform::plugins::BUILTIN_PLUGINS
         .iter()
         .map(|(_, _, package_key, _)| *package_key)
@@ -80,6 +81,7 @@ fn enabled_capabilities_ignore_disabled_and_unknown_runtime_entries() {
 #[test]
 fn mandatory_capabilities_cannot_be_disabled() {
     let registry = BuiltinRegistry::default();
+    assert!(!registry.can_disable("builtin.context-ui"));
     assert!(!registry.can_disable("builtin.security-audit"));
     assert!(!registry.can_disable("builtin.budget"));
     assert!(registry.can_disable("builtin.jev"));

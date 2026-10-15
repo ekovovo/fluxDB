@@ -148,6 +148,7 @@ include!("ai_mcp_server.rs");
 include!("ai_execution_policy.rs");
 include!("ai_mcp_server_actions.rs");
 include!("ai_model_dialog.rs");
+include!("ai_plugin_config_dialog.rs");
 include!("ai_actions.rs");
 include!("ai_mcp_clients.rs");
 include!("ai_agents.rs");

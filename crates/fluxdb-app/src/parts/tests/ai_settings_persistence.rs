@@ -473,7 +473,7 @@ fn ai_settings_plugin_toggle_persists_and_mandatory_instances_cannot_disable() {
             .enabled
     );
 
-    for mandatory in ["builtin.security-audit", "builtin.budget"] {
+    for mandatory in ["builtin.context-ui", "builtin.security-audit", "builtin.budget"] {
         let before = pa_plugin_row(&dir, mandatory);
         let event = controller.dispatch(AppCommand::SetAiPluginInstanceEnabled {
             id: mandatory.into(),

@@ -245,7 +245,49 @@ pub struct AiPluginItem {
     pub enabled: bool,
     /// 内核强制（安全审计/执行护栏），UI 需禁用开关并展示"内核约束"。
     pub mandatory: bool,
+    /// 插件声明的可配置字段（协议见 [`PluginConfigDeclaration`]）。
+    ///
+    /// 为空表示该插件不需要配置，UI 因此不显示「管理」入口；这也是内置与外置插件
+    /// 共用的一条判断，不按插件 id 特判。
+    pub config_fields: Vec<AiPluginConfigFieldItem>,
+    /// 声明解析失败的原因（外置插件 manifest 写错时可见，不静默当成"无配置"）。
+    pub config_error: Option<String>,
     pub revision: i64,
+}
+
+/// 插件配置字段的展示与候选快照；数据全部来自宿主解析，不含凭据材料。
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AiPluginConfigFieldItem {
+    /// 稳定机器键：保存时原样回传给应用层定位需求。
+    pub key: String,
+    pub label: String,
+    /// 插件自己写的补充说明（可空）：只讲插件特有的后果，不描述宿主的过滤规则。
+    pub help: Option<String>,
+    /// 宿主按声明生成的候选口径说明（例如「只列出…的决策模型」）。
+    pub hint: String,
+    pub required: bool,
+    /// 当前选择；`None` 表示未配置（插件因此不参与运行）。
+    pub selection: Option<String>,
+    /// 当前选择是否仍满足插件要求；选择失效时保留原值并提示重选。
+    pub selection_usable: bool,
+    pub choices: Vec<AiPluginConfigChoiceItem>,
+    /// 没有候选项且原因与协议有关时的可见说明。
+    pub rejection: Option<String>,
+}
+
+/// 一个资源候选项（只含 ID 与公开标签）。
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AiPluginConfigChoiceItem {
+    pub id: String,
+    pub label: String,
+    pub detail: String,
+}
+
+/// 一次插件配置提交里的单个字段选择；`resource_id = None` 表示清空。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AiPluginFieldSelection {
+    pub key: String,
+    pub resource_id: Option<String>,
 }
 
 /// 设置页「工具与 MCP → 工具」的一行：标准工具的全局启停状态。
@@ -318,9 +360,9 @@ pub enum JevStatusKind {
     NotConfigured,
     /// 内置能力被用户关闭：零请求、零等待。
     Disabled,
-    /// 已自动装配，运行时可以发建议。
+    /// 已显式选择决策模型，运行时可以发建议。
     Available,
-    /// 多个合格候选且无默认：等用户选，绝不擅自挑贵的。
+    /// 有合格候选但用户还没选：等用户选，绝不擅自挑一个。
     NeedsChoice,
     /// 已配置但当前不可用（协议不兼容/默认模型失效/熔断中），附脱敏原因。
     Unavailable,

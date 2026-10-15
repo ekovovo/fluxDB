@@ -416,6 +416,36 @@ impl AppController {
                     Err(e) => return AppEvent::AiSettingsError(e.message),
                 }
             }
+            AppCommand::SaveAiPluginConfig {
+                instance_id,
+                selections,
+                expected_revision,
+            } => {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or(0);
+                let storage = self.ai_storage();
+                let result = storage.and_then(|st| {
+                    save_ai_plugin_config(
+                        &mut self.state,
+                        &st,
+                        &instance_id,
+                        &selections,
+                        expected_revision,
+                        now,
+                    )
+                });
+                match result {
+                    Ok(revision) => {
+                        return AppEvent::AiPluginConfigSaved {
+                            instance_id,
+                            revision,
+                        };
+                    }
+                    Err(e) => return AppEvent::AiSettingsError(e.message),
+                }
+            }
             AppCommand::SetAiModelEgressEnabled {
                 enabled,
                 expected_revision,

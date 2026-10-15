@@ -3,18 +3,22 @@
 //! 本期只有内置插件：`ai_plugin_packages` 由代码种子写入，外部安装/Wasm 不实现。
 //! Agent↔实例绑定区分 user/system 来源，system 绑定由 reconcile 维护且不被用户覆盖。
 
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::sqlite::sqlite_error;
 use fluxdb_core::{Error, ErrorKind, Result};
 
-/// 内核强制的插件实例：安全审计与执行护栏，任何调用方（含设置页）都不能关闭。
+/// 常驻插件实例：页面上下文、安全审计与执行护栏，任何调用方都不能关闭。
 ///
-/// 这是内核不变量而非用户偏好，因此不放在实例行里，改用固定 ID 白名单，
+/// 这是宿主固定能力而非用户偏好，因此不放在实例行里，改用固定 ID 白名单，
 /// 避免"忘记写 mandatory 列"导致可被绕过。
-pub const MANDATORY_INSTANCE_IDS: &[&str] = &["builtin.security-audit", "builtin.budget"];
+pub const MANDATORY_INSTANCE_IDS: &[&str] = &[
+    "builtin.context-ui",
+    "builtin.security-audit",
+    "builtin.budget",
+];
 
-/// 该实例是否为内核强制（不可停用）。
+/// 该实例是否为常驻能力（不可停用）。
 pub fn is_mandatory(instance_id: &str) -> bool {
     MANDATORY_INSTANCE_IDS.contains(&instance_id)
 }
@@ -41,6 +45,35 @@ pub struct PluginBindingView {
     pub enabled: bool,
     pub priority: i64,
     pub revision: i64,
+}
+
+/// 插件实例的声明来源：`runtime_kind` 决定配置声明读代码注册表还是读 manifest。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PluginInstanceSource {
+    pub runtime_kind: String,
+    pub manifest_json: String,
+}
+
+/// 读取实例的运行来源与 manifest（外置插件配置声明的接入点）。
+pub fn load_plugin_instance_source(
+    conn: &Connection,
+    id: &str,
+) -> Result<Option<PluginInstanceSource>> {
+    conn.query_row(
+        "SELECT p.runtime_kind, p.manifest_json
+           FROM ai_plugin_instances i
+           JOIN ai_plugin_packages p ON p.id = i.package_id
+          WHERE i.id=?1",
+        [id],
+        |row| {
+            Ok(PluginInstanceSource {
+                runtime_kind: row.get(0)?,
+                manifest_json: row.get(1)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(sqlite_error)
 }
 
 /// 幂等写入内置插件包与实例（无密钥、无外部代码）。
@@ -87,7 +120,7 @@ pub fn seed_builtin_instance(
 
 /// 内置插件注册表：(instance_id, package_id, package_key, 显示名)。
 ///
-/// 与设计 §23 的 12 项内置能力一一对应；安全审计与执行保护的 instance_id 必须与
+/// 与设计 §23 的内置能力一一对应；常驻能力的 instance_id 必须与
 /// [`MANDATORY_INSTANCE_IDS`] 保持一致，否则强制项会被误当作可关闭。
 pub const BUILTIN_PLUGINS: &[(&str, &str, &str, &str)] = &[
     (
@@ -95,12 +128,6 @@ pub const BUILTIN_PLUGINS: &[(&str, &str, &str, &str)] = &[
         "pkg.fluxdb.context.ui",
         "fluxdb.context.ui",
         "当前界面与 @ 上下文",
-    ),
-    (
-        "builtin.database",
-        "pkg.fluxdb.tools.database",
-        "fluxdb.tools.database",
-        "数据库与 Redis 工具",
     ),
     (
         "builtin.files",
@@ -166,12 +193,38 @@ pub const BUILTIN_PLUGINS: &[(&str, &str, &str, &str)] = &[
 
 /// 幂等注册全部内置插件包与实例（随应用注册，用户无需安装）。
 ///
-/// 已有实例不覆盖：用户启停状态、绑定与配置由各自任务维护。
+/// 保留可选实例的启停状态；修正常驻上下文旧状态，并移除已归入工具目录的旧实例。
 pub fn seed_builtin_plugins(conn: &Connection, now_ms: i64) -> Result<()> {
+    let tx = conn.unchecked_transaction().map_err(sqlite_error)?;
     for (instance_id, package_id, package_key, display_name) in BUILTIN_PLUGINS {
-        seed_builtin_package(conn, now_ms, package_id, package_key, "1", "{}")?;
-        seed_builtin_instance(conn, now_ms, instance_id, package_id, display_name)?;
+        seed_builtin_package(&tx, now_ms, package_id, package_key, "1", "{}")?;
+        seed_builtin_instance(&tx, now_ms, instance_id, package_id, display_name)?;
     }
+    // 旧版允许关闭上下文；升级后恢复常驻状态，且不反复递增 revision。
+    tx.execute(
+        "UPDATE ai_plugin_instances SET enabled=1, revision=revision+1, updated_at_ms=?1
+         WHERE id='builtin.context-ui' AND enabled=0",
+        [now_ms],
+    )
+    .map_err(sqlite_error)?;
+    tx.execute(
+        "DELETE FROM ai_agent_plugin_bindings WHERE plugin_instance_id='builtin.database'",
+        [],
+    )
+    .map_err(sqlite_error)?;
+    tx.execute(
+        "DELETE FROM ai_plugin_instances WHERE id='builtin.database'",
+        [],
+    )
+    .map_err(sqlite_error)?;
+    tx.execute(
+        "DELETE FROM ai_plugin_packages
+         WHERE package_key='fluxdb.tools.database' AND runtime_kind='builtin'
+         AND NOT EXISTS (SELECT 1 FROM ai_plugin_instances WHERE package_id=ai_plugin_packages.id)",
+        [],
+    )
+    .map_err(sqlite_error)?;
+    tx.commit().map_err(sqlite_error)?;
     Ok(())
 }
 
@@ -224,7 +277,7 @@ pub fn list_plugin_instances(conn: &Connection) -> Result<Vec<PluginInstanceView
     Ok(rows)
 }
 
-/// 切换插件实例启停（对象级 CAS）。安全审计等内核约束由上层拒绝调用。
+/// 切换插件实例启停（对象级 CAS），在存储边界拒绝停用常驻能力。
 pub fn set_plugin_instance_enabled(
     conn: &Connection,
     now_ms: i64,
@@ -235,7 +288,7 @@ pub fn set_plugin_instance_enabled(
     if enabled == false && is_mandatory(id) {
         return Err(Error::new(
             ErrorKind::Internal,
-            "调用前安全审计与执行护栏是内核约束，不可停用",
+            "当前界面与 @ 上下文、安全审计与执行护栏是常驻能力，不可停用",
         ));
     }
     let changed = conn
@@ -336,7 +389,7 @@ mod tests {
         )
         .expect("重复种子");
         seed_builtin_instance(&conn, 2_000, "inst-jev", "pkg-jev", "Jev 决策").expect("重复种子");
-        // ensure_schema 会注册 12 个内置实例；这里只断言自定义实例没有重复。
+        // ensure_schema 会注册内置实例；这里只断言自定义实例没有重复。
         let list = list_plugin_instances(&conn).unwrap();
         assert_eq!(list.iter().filter(|p| p.id == "inst-jev").count(), 1);
         assert_eq!(list.len(), BUILTIN_PLUGINS.len() + 1);
@@ -359,19 +412,74 @@ mod tests {
     #[test]
     fn mandatory_instances_cannot_be_disabled() {
         let conn = setup();
+        for id in MANDATORY_INSTANCE_IDS {
+            let err = set_plugin_instance_enabled(&conn, 2_000, id, false, 1)
+                .expect_err("常驻实例不可停用");
+            assert!(err.message.contains("不可停用"), "实际: {}", err.message);
+        }
+        // 反向：普通实例仍可停用。
+        set_plugin_instance_enabled(&conn, 3_000, "inst-jev", false, 1).expect("普通实例可停用");
+    }
+
+    #[test]
+    fn seeding_upgrades_legacy_catalog_without_resetting_optional_plugins() {
+        let conn = setup();
+        seed_builtin_package(
+            &conn,
+            1_000,
+            "pkg.fluxdb.tools.database",
+            "fluxdb.tools.database",
+            "1",
+            "{}",
+        )
+        .unwrap();
         seed_builtin_instance(
             &conn,
             1_000,
-            "builtin.security-audit",
-            "pkg-jev",
-            "安全审计",
+            "builtin.database",
+            "pkg.fluxdb.tools.database",
+            "数据库与 Redis 工具",
         )
-        .expect("种子");
-        let err = set_plugin_instance_enabled(&conn, 2_000, "builtin.security-audit", false, 1)
-            .expect_err("内核强制实例不可停用");
-        assert!(err.message.contains("内核约束"), "实际: {}", err.message);
-        // 反向：普通实例仍可停用。
-        set_plugin_instance_enabled(&conn, 3_000, "inst-jev", false, 1).expect("普通实例可停用");
+        .unwrap();
+        bind_plugin_system(&conn, 1_000, "legacy-binding", "a1", "builtin.database").unwrap();
+        conn.execute(
+            "UPDATE ai_plugin_instances SET enabled=0 WHERE id='builtin.context-ui'",
+            [],
+        )
+        .unwrap();
+        set_plugin_instance_enabled(&conn, 1_001, "builtin.files", false, 1).unwrap();
+
+        seed_builtin_plugins(&conn, 2_000).unwrap();
+        let first = list_plugin_instances(&conn).unwrap();
+        let context = first.iter().find(|p| p.id == "builtin.context-ui").unwrap();
+        assert!(context.enabled);
+        assert_eq!(context.revision, 2);
+        assert!(
+            !first
+                .iter()
+                .find(|p| p.id == "builtin.files")
+                .unwrap()
+                .enabled
+        );
+        assert!(!first.iter().any(|p| p.id == "builtin.database"));
+        assert!(list_agent_plugin_bindings(&conn, "a1").unwrap().is_empty());
+        let packages: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM ai_plugin_packages WHERE package_key='fluxdb.tools.database'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(packages, 0);
+        assert!(
+            !conn
+                .prepare("PRAGMA foreign_key_check")
+                .unwrap()
+                .exists([])
+                .unwrap()
+        );
+        seed_builtin_plugins(&conn, 3_000).unwrap();
+        assert_eq!(first, list_plugin_instances(&conn).unwrap());
     }
 
     #[test]

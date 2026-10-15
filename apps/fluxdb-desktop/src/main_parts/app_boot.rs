@@ -203,6 +203,11 @@ fn debug_ai_model_dialog_requested() -> bool {
             .is_ok_and(|v| v == "1" || v == "edit" || v == "invalid")
 }
 
+/// 调试用：是否请求直接打开第一个可配置插件的「管理」弹框（截图核对用）。
+fn debug_ai_plugin_config_requested() -> bool {
+    cfg!(debug_assertions) && std::env::var("FLUXDB_DEBUG_AI_PLUGIN_CONFIG").is_ok_and(|v| v == "1")
+}
+
 /// 构造主视图 `NavicatMain`。
 ///
 /// 从 `main()` 里约 3000 行的内联结构体字面量抽出：生产启动与 `#[gpui::test]` 交互测试
@@ -2484,6 +2489,7 @@ fn navicat_main_new(
                             ),
                             new_connection_inputs: NewConnectionInputs::new(window, cx),
                             ai_model_dialog: None,
+                            ai_plugin_config_dialog: None,
                             new_connection_password_visible: false,
                             editing_connection_id: None,
                             rename_group_input,
@@ -3109,6 +3115,7 @@ fn navicat_main_new(
                             query_result_display_pages: BTreeMap::new(),
                             settings_panel_section: debug_ai_settings_section(),
                             ai_model_dialog_debug_pending: debug_ai_model_dialog_requested(),
+                            ai_plugin_config_dialog_debug_pending: debug_ai_plugin_config_requested(),
                             ai_model_dialog_filter_input,
                             _ai_model_dialog_filter_subscription:
                                 ai_model_dialog_filter_subscription,

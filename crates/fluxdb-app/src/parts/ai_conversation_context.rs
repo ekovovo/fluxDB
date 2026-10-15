@@ -58,11 +58,15 @@ fn ai_conversation_turn_messages(
         }
 
         let mut tool_facts = ai_historical_tool_facts(conn, job)?;
-        let references = snapshot
+        let mut references = snapshot
             .get("context_references")
             .and_then(|v| v.as_array())
             .cloned()
             .unwrap_or_default();
+        // 审批恢复可复用旧快照；关闭附件后不再向新模型请求提供旧附件摘要。
+        if !ai_files_enabled(conn)? {
+            references.retain(|reference| reference["kind"].as_str() != Some("file"));
+        }
         let seq_by_message: std::collections::HashMap<String, i64> = data
             .messages
             .iter()

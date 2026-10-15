@@ -213,6 +213,7 @@ impl AppController {
                     }
                     AiConversationCommand::AddReference {ref reference} => {
                         let reference=if reference.kind=="file" {
+                            ensure_ai_files_enabled(conn)?;
                             let raw:serde_json::Value=serde_json::from_str(&reference.source).map_err(|_|fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal,"附件授权损坏"))?;
                             let path=raw["path"].as_str().ok_or_else(||fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal,"附件路径缺失"))?;
                             let mut validated=authorize_ai_file(std::path::Path::new(path),storage.root_dir())?;

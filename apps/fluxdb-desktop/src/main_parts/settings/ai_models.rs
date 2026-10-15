@@ -573,7 +573,7 @@ fn ai_default_model_section(
     let current_main = label_for(&generation, &state.ai_default_model_id)
         .unwrap_or_else(|| "未设置（跟随 Agent）".to_string());
     let current_decision = label_for(&decision, &state.ai_default_decision_model_id)
-        .unwrap_or_else(|| "自动选择唯一合格模型".to_string());
+        .unwrap_or_else(|| "未配置".to_string());
 
     let revision = state.ai_runtime_revision;
     let cur_main = state.ai_default_model_id.clone();
@@ -726,12 +726,13 @@ fn ai_decision_state_note(state: &AppState, colors: UiColors) -> impl IntoElemen
     let (label, detail) = match (status.kind, status.detail.as_deref()) {
         (K::Available, _) => (
             "Jev：可用".to_string(),
-            "已自动绑定默认决策模型，决策只是可选优化，不参与 SQL/文件权限判断。".to_string(),
+            "已使用所选决策模型；它是可选优化，不参与 SQL/文件权限判断。".to_string(),
         ),
         (K::NeedsChoice, Some(reason)) => ("Jev：待选择模型".to_string(), reason.to_string()),
         (K::NeedsChoice, None) => (
             "Jev：待选择模型".to_string(),
-            "存在多个合格决策模型，请在上方选择默认决策模型。".to_string(),
+            "有合格决策模型但尚未选择：请在「Jev 决策优化 · 管理」或上方选择默认决策模型。"
+                .to_string(),
         ),
         (K::Unavailable, Some(reason)) => ("Jev：暂不可用".to_string(), reason.to_string()),
         (K::Unavailable, None) => (
@@ -744,7 +745,7 @@ fn ai_decision_state_note(state: &AppState, colors: UiColors) -> impl IntoElemen
         ),
         (K::NotConfigured, _) => (
             "Jev：未配置".to_string(),
-            "保存并启用一个 System One 决策模型即可自动可用，无需安装插件。".to_string(),
+            "尚无合格决策模型：先在大模型页添加并启用一个 System One 决策模型，再到「Jev 决策优化 · 管理」中选择。".to_string(),
         ),
     };
     div()

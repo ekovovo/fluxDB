@@ -18,7 +18,7 @@ use std::{
 use fluxdb_app::reconcile_jev_builtins;
 use fluxdb_app::{RelevanceCandidate, advise_relevance};
 use fluxdb_storage::FileStorage;
-use fluxdb_storage::ai_platform::{agents, models, sessions};
+use fluxdb_storage::ai_platform::{agents, models, sessions, settings};
 
 struct Fixture {
     dir: PathBuf,
@@ -90,6 +90,19 @@ impl Fixture {
                         models::ApiKeyChange::Keep
                     },
                 )
+            })
+            .unwrap();
+        // 决策模型必须由用户显式选择（「Jev 决策优化 · 管理」）；fixture 直接写槽位，
+        // 再交给 reconcile 建立 system 绑定。
+        self.storage
+            .with_ai_connection(|conn| {
+                let current = settings::load_runtime_settings(conn)?;
+                let next = settings::RuntimeSettings {
+                    default_decision_model_profile_id: Some(id.to_string()),
+                    ..current.clone()
+                };
+                settings::save_runtime_settings(conn, 2_500, &next, current.revision)?;
+                Ok(())
             })
             .unwrap();
         self.reconcile();

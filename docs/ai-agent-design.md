@@ -18,7 +18,7 @@
 
 ## 阅读索引（主文内）
 
-- [Jev自动装配](#builtin-jev-activation) · [内置插件目录](#builtin-plugin-catalog) · [第三方接口边界](#extension-reserved)
+- [Jev装配](#builtin-jev-activation) · [插件配置声明协议](#plugin-config-protocol) · [内置插件目录](#builtin-plugin-catalog) · [第三方接口边界](#extension-reserved)
 - [工具目录与映射](#mcp-tool-catalog) · [MySQL/关系型工具](#mysql-tools) · [Redis工具](#redis-tools)
 - [本地MCP实现](#mcp-server-implementation) · [Server授权](#mcp-server-grants) · [Claude CLI测试](#claude-mcp-test)
 - [抽屉/内嵌与宽度](#ai-panel-presentation) · [打开/新建/会话恢复](#ai-panel-session-open)
@@ -431,17 +431,18 @@ Agent 配置 `compression_trigger_percent` 默认 80，范围 10–95，存在 `
 
 UI参考唯一入口 [ai-agent-ui.html](/Users/shining3d/fusuwei/code/fluxDB/docs/prototype/ai-agent-ui.html)，需同步HTML原型；符合 §39.3–39.5 正常/窄窗、明暗主题、真实点击与有数据闭环。
 
-## 18. Jev 内置插件：自动可用且完全可选
+## 18. Jev 内置插件：显式配置且完全可选
 
-内置ID `fluxdb.decision.jev`，随应用注册，默认auto；使用通用DecisionProvider。用户只需启用该内置能力并配置可用Jev决策模型，不需要下载安装/手工建instance/binding。
+内置ID `fluxdb.decision.jev`，随应用注册，默认auto；使用通用DecisionProvider。用户启用该内置能力，并在插件行的「管理」弹框里显式选择一个可用Jev决策模型，不需要下载安装/手工建instance/binding。
 
-启动/模型保存与状态变化/Agent创建时reconcile system-managed绑定：默认决策模型优先，否则唯一合格候选自动使用；多个候选无默认时提示选择，基础Agent继续运行，不擅自发数据或选择贵模型。默认引用在ai_runtime_settings.default_decision_model_profile_id，自动角色在ai_agent_model_bindings列，binding_source=system；用户手动绑定优先不被覆盖。
+启动/模型保存与状态变化/选择变化/Agent创建时reconcile system-managed绑定：只有用户在插件管理里选过决策模型才可用，**唯一合格候选也不自动使用**；未选择时状态是「待选择」/「未配置」，基础Agent继续运行，不擅自发数据或选择贵模型。选择落在宿主槽位ai_runtime_settings.default_decision_model_profile_id（大模型页的「默认决策模型」是同一个值），自动角色在ai_agent_model_bindings列，binding_source=system；用户手动绑定优先不被覆盖。
 
 | 状态 | 行为 |
 |---|---|
 | 未配置/关闭/无可用模型 | 不请求、不等待；基础路由/压缩照常 |
-| 合格模型已配置且插件启用 | 自动可用，建议通过内核能力/隐私/执行保护过滤 |
-| 多候选未设默认 | 状态“待选择”，不阻断 |
+| 已选择合格模型且插件启用 | 可用，建议通过内核能力/隐私/执行保护过滤 |
+| 有合格候选但未选择 | 状态“待选择”，提示在插件管理中选择，不阻断 |
+| 选择已失效（停用/撤权/删档） | 状态“暂不可用”并附原因，保留选择等用户重选 |
 | 低置信度/非法返回 | 放弃建议，使用基础策略 |
 | 超时/无凭据/网络错 | 一次脱敏诊断，熔断暂跳过，不每轮等待 |
 
@@ -453,21 +454,21 @@ UI参考唯一入口 [ai-agent-ui.html](/Users/shining3d/fusuwei/code/fluxDB/doc
 
 <a id="builtin-jev-activation"></a>
 
-### 18.1 内置Jev自动装配与状态规则
+### 18.1 内置Jev装配与状态规则
 
 内置 ID：`fluxdb.decision.jev`。它使用 DecisionProvider，不是主模型；插件程序随 fluxDB 编译，用户不用安装包或手工建立 instance/binding。
 
 启动和配置变化时统一执行 `reconcile_builtins`：
 
 1. 注册所有内置能力，幂等建立 system-managed package/instance/binding 元数据；不写 API Key 或默认付费模型。
-2. 筛选 enabled、decision 类型、支持 Choice/Score、身份可用且符合隐私授权的模型。不能只根据 model 名称含 jev 猜协议。
-3. 有明确默认决策模型时使用它；只有一个合格 Jev profile 时自动使用；多个候选又无默认时显示“请选择默认决策模型”，不偷偷选贵模型或发数据。
+2. 按Jev自己的[配置声明](#plugin-config-protocol)（角色 `decision` + 协议 `system-one`）筛候选：enabled、decision 用途、出站许可、凭据状态逐项过滤。不能只根据 model 名称含 jev 猜协议。
+3. 只使用用户显式选择的那一个；未选择时不使用任何模型（清爽：唯一合格候选也不自动挑），状态“待选择”并提示在插件管理中选择。
 4. 为 Agent 自动建立 system 来源的 decision role binding，模型 ID 在引用列，不藏 plugin config JSON；用户手动指定的 role binding 优先，不能被 reconcile 覆盖。
 5. 已启用内置 Jev 且模型可用时运行；未配置/禁用/无凭据/协议不兼容/超时/低置信度使用基础策略。
 
-模型保存/测试通过、启用/禁用、凭据 Set/Clear、默认决策模型改变、Agent 新建都会触发 reconcile。运行中只在下一安全边界采用新配置；当前模型请求不可无声换目标。
+模型保存/测试通过、启用/禁用、凭据 Set/Clear、插件配置（决策模型）改变、Agent 新建都会触发 reconcile。运行中只在下一安全边界采用新配置；当前模型请求不可无声换目标。
 
-状态显示：未配置、已禁用、可用、待选择模型、暂不可用（附脱敏原因/熔断截止），不是一排永久错误 toast。插件可启停；不可设置 required。先前“未配置时必须手工创建插件实例”设计作废。
+状态显示：未配置、已禁用、可用、待选择模型、暂不可用（附脱敏原因/熔断截止），不是一排永久错误 toast。插件可启停；不可设置 required。先前“未配置时必须手工创建插件实例”“唯一候选自动装配”设计作废。
 
 自动启用不代表自动允许数据出站：DecisionRequest 仅包含任务/结构摘要，仍检查该 Provider 的隐私/执行保护约束。无 Jev 完整运行，主模型有无配置是另一个独立问题。
 
@@ -1026,11 +1027,10 @@ ScopedArtifactHost 仅提供结果分页、来源校验、受控文件创建/提
 
 | 内置能力 ID | 负责内容 | 启用方式 / 不允许关闭的边界 |
 |---|---|---|
-| `fluxdb.context.ui` | 当前页面、@对象摘要和主动细节读取 | 默认开；数据出站仍检查权限 |
-| `fluxdb.tools.database` | 关系型探索、SQL、Redis 标准工具 | 默认注册；每 Agent/工具/连接可收窄 |
-| `fluxdb.context.files` | 附件、授权目录、有界文件读取 | 按授权开启，不默认全盘 |
+| `fluxdb.context.ui` | 当前页面、@对象摘要和主动细节读取 | 常驻，不允许关闭；不新增上下文启停分支，数据出站仍检查权限 |
+| `fluxdb.context.files` | 附件、授权目录、有界文件读取 | 可开关且仍需逐项授权，不默认全盘；停用后拒绝添加/发送附件、不装配文件工具，旧目录执行前也重新检查 |
 | `fluxdb.model.router` | 默认模型/经济与高能力候选路由 | 默认开；用户固定模型优先，关闭优化仍有主模型基线 |
-| `fluxdb.decision.jev` | 可选分类、路由/相关性建议 | 自动可用，允许关闭，不阻断 |
+| `fluxdb.decision.jev` | 可选分类、路由/相关性建议 | 需在「管理」里显式选择决策模型（唯一候选也不自动用），允许关闭，不阻断 |
 | `fluxdb.context.compaction` | 保护条目、卸载、摘要、checkpoint | 默认开；优化关闭不移除输入上限和保护约束 |
 | `fluxdb.security.audit` | 调用前确定性风险/授权检查和审计 | 强制注册，不能由配置删除/跳过 |
 | `fluxdb.usage.budget` | token 用量与执行保护事件（沿用插件 ID） | 执行保护属于内核；统计展示可调整，无金额限额 |
@@ -1041,15 +1041,71 @@ ScopedArtifactHost 仅提供结果分页、来源校验、受控文件创建/提
 
 不把“插件化”解释成能卸掉全部保护：执行保护、权限、取消、真实回执和已确认副作用是内核不变量。内置安全审计使用相同 Hook 接口便于扩展，但 该Hook的执行必经，用户只能在允许范围内收窄/增强规则。
 
-UI 显示系统实例，普通用户不需要先配置12个插件；高级页只编辑可选能力和参数。当前没有市场/安装/上传第三方代码操作。
+UI 显示 11 个系统实例，普通用户不需要先配置插件；高级页只编辑可选能力和参数。声明了可配置字段的能力（当前只有 Jev）在行上多一个「管理」入口，弹框内容由插件自己的配置声明驱动（[§24.1](#plugin-config-protocol)），不按插件 ID 特判。关系型探索、SQL、Redis 属于工具能力，不再登记 `fluxdb.tools.database` 插件，仍由每 Agent/工具/连接权限收窄；升级时清理旧插件实例与绑定。旧版停用的 `fluxdb.context.ui` 恢复常驻，其余可选插件状态保留。附件关闭不撤回已经发送的内容，也不删除历史消息。当前没有市场/安装/上传第三方代码操作。
 
 **参考与落点：**[OpenCode plugin API](https://github.com/anomalyco/opencode/blob/dev/packages/plugin/src/index.ts)、[Pi types](/Users/shining3d/fusuwei/code/pi/packages/agent/src/types.ts)、[Goose tool inspection](/Users/shining3d/fusuwei/code/goose/crates/goose/src/tool_inspection.rs)；落 app ai/plugins/builtin 与 capability registry。
 
 **就近参考：**[Pi扩展事件/能力](/Users/shining3d/fusuwei/code/pi/packages/coding-agent/src/core/extensions/types.ts)；[Pi扩展调度](/Users/shining3d/fusuwei/code/pi/packages/coding-agent/src/core/extensions/runner.ts)。实际落点按本章/§7，不照搬源项目私有状态。
 
-## 24. Manifest 与配置协议示例
+## 24. Manifest 与插件配置声明协议
 
-以下是 fluxDB 的拟定格式，不是 Codex 插件格式，也不是最终 Extism manifest：
+<a id="plugin-config-protocol"></a>
+
+### 24.1 配置声明协议 v1（当前实现）
+
+插件只声明「我需要什么」，宿主决定「能选什么、怎么存、能不能跑」。声明是插件的**唯一**配置入口；UI 不判断插件 id，也不自己拼资源列表，因此新增可配置插件不需要改界面代码。
+
+协议标识 `fluxdb.plugin.config.v1`（`PLUGIN_CONFIG_PROTOCOL`）。声明结构（`PluginConfigDeclaration`）：
+
+```json
+{
+  "protocol": "fluxdb.plugin.config.v1",
+  "fields": [
+    {
+      "key": "decision_model",
+      "label": "决策模型",
+      "help": "只列出支持 System One 决策协议、已启用、允许出站且凭据可用的决策模型。",
+      "required": true,
+      "resource": {"type": "model", "role": "decision", "api_protocol": "system-one"}
+    }
+  ]
+}
+```
+
+| 位置 | 含义 |
+|---|---|
+| `protocol` | 主版本标识；宿主只接受自己认识的版本，不做猜测兼容 |
+| `fields[].key` | 稳定 snake_case 机器键：回填选择与校验按它定位，改名等同不兼容变更 |
+| `fields[].label` / `help` | 弹框的标签与插件自己的补充说明（`help` 可空，只讲插件特有后果）；两者都只影响展示，不参与权限判断 |
+| `fields[].required` | 必填字段未配置时插件不可用（不阻止用户先启用插件，只是不参与运行） |
+| `fields[].resource.type` | 资源类型；v1 只有 `model`，未知类型反序列化即拒绝 |
+| `fields[].resource.role` | 宿主里承担该资源的角色槽位；v1 支持 `decision`、`main_candidate`（各对应 `ai_runtime_settings` 的一个默认模型列） |
+| `fields[].resource.api_protocol` | 追加的协议要求（例 `system-one`）；缺省表示不限协议 |
+
+规则：
+
+1. **插件不写具体模型 ID**：声明只给角色与约束，具体选择由用户在宿主槽位上做，模型引用仍留在 `ai_agent_model_bindings` / 运行设置列，不藏进插件 JSON。
+2. **候选由宿主解析**：用途、启停、出站许可、凭据状态复用路由的 `candidate_check`，再叠加 `api_protocol`；插件拿不到内部表、endpoint 或凭据材料。
+3. **没有字段就不显示「管理」**：`fields` 为空（或声明解析失败）的能力没有管理入口，不给出空表单。
+4. **声明写错可见**：未知协议、未知资源类型、无槽位的角色、重复/非法字段键都按声明错误报告；外置插件因此显示「配置不可读」，不静默当成「没有可配置项」。
+5. **保存是一次原子提交**：多字段一次 CAS 写回所有受影响的槽位，失败不留半套配置；同一槽位被两个字段占用直接拒绝。
+6. **标量参数**（超时、条数上限等）留待协议主版本升级：`ai_plugin_instances.config_json` / `config_schema_version` 已经预留落点，v1 不假装支持。
+7. **过滤口径由宿主生成**：弹框里「只列出已启用、允许出站、凭据可用的 system-one 决策模型」这类说明由声明 + 宿主规则推导（`field_hint`），不由插件自述；插件只解释自己的后果（`help`），两者分开渲染，避免规则变了文案没变。
+
+弹框形态：插件行有「管理」按钮 → 宿主渲染声明字段（左侧标签 + 必填标记，右侧资源选择器 + 宿主口径说明 + 插件后果说明；候选用浮层下拉，展开不改变弹框高度）→ 保存走 `AppCommand::SaveAiPluginConfig` → 应用层按声明校验并写回槽位 → 触发内置能力 reconcile。选择失效时保留原选择并附原因，不自动换模型。
+
+### 24.2 内置与外置插件接入同一条路径
+
+| 来源 | 声明位置 | 宿主读取方式 |
+|---|---|---|
+| 内置能力 | 代码注册表 `BuiltinDescriptor.config_declaration`（Jev 为 `fluxdb.decision.jev`） | 以代码为准，升级后立即生效，不依赖数据库里的旧副本 |
+| 外置插件（未来） | manifest 的 `config_declaration` 字段 | 同一个解析器与校验，`runtime_kind <> 'builtin'` 时读 manifest |
+
+两条路径共用 `PluginConfigDeclaration::parse`、候选解析与保存校验，内置不是特权路径；注册表构造时会把内置声明解析一遍，写错的声明在启动时就暴露。外置插件只能引用宿主已有的角色槽位，不能自己发明模型绑定位置，也拿不到界面控件或秘密输入通道。
+
+### 24.3 Manifest 示例（拟定格式）
+
+以下是 fluxDB 的拟定格式，不是 Codex 插件格式，也不是最终 Extism manifest；`config_declaration` 是本节 v1 协议，`config_schema` 留给将来的标量参数：
 
 ```json
 {
@@ -1060,15 +1116,15 @@ UI 显示系统实例，普通用户不需要先配置12个插件；高级页只
   "runtime": "builtin",
   "capabilities": ["tool_provider", "artifact_producer"],
   "permissions": ["result.read", "artifact.create", "artifact.export.request"],
-  "config_schema": {
-    "type": "object", "additionalProperties": false,
-    "properties": {"theme": {"enum": ["system", "light", "dark"]}}
+  "config_declaration": {
+    "protocol": "fluxdb.plugin.config.v1",
+    "fields": []
   },
   "entrypoints": {"describe": "describe", "invoke": "invoke"}
 }
 ```
 
-模型引用统一保存在 ai_agent_model_bindings，插件配置只选用其已注册角色，不将模型 ID 列表藏在普通 config_json；MCP 授权引用保存在 ai_agent_mcp_bindings。实例配置和 secret bindings 分离；manifest 标明 secret 字段类型，普通 JSON 中只能出现 SecretBindingRef。内核阻止把 api_key/password/token/Authorization 等敏感字段写入普通配置；字段黑名单仅辅助，不能替代 schema 与专用秘密输入。
+模型引用统一保存在 ai_agent_model_bindings，插件配置只选用其已注册角色，不将模型 ID 列表藏在普通 config_json；MCP 授权引用保存在 ai_agent_mcp_bindings。实例配置和 secret bindings 分离；manifest 标明 secret 字段类型，普通 JSON 中只能出现 SecretBindingRef。内核阻止把 api_key/password/token/Authorization 等敏感字段写入普通配置；字段黑名单仅辅助，不能替代 schema 与专用秘密输入。声明与保存路径都不接受秘密字段：v1 没有秘密输入通道，插件凭据将来走 `ai_integration_secrets`，界面与协议都不允许把明文塞进配置。
 
 远程 MCP/plugin 中需要的凭据与模型不同，后续用独立 `ai_integration_secrets` 加密表；**不能把模型 API Key 移到那里**。插件请求模型调用时只传 profile ID，通过宿主调用，拿不到密钥。
 
@@ -1655,7 +1711,7 @@ API Key输入框默认掩码`***`，输入框内末尾提供眼睛按钮：点�
 
 **实现对照入口（本文顶部也列出）**：[ai-agent-ui.html](/Users/shining3d/fusuwei/code/fluxDB/docs/prototype/ai-agent-ui.html)，样式/脚本按职责拆文件，复用仓库Lucide SVG，离线不依赖CDN。
 
-覆盖整个AI Agent功能：数据库工作台、抽屉/内嵌会话、模式/宽度/会话记忆、新建/关闭、公开摘要与执行时间线、模型Keep/Set/Clear演示、Agent主页面编辑（列表+右侧五分区）、Agent内直接提示词、12个内置插件/Jev开关、13个工具、本地MCP授权/配置导出、安全审计、会话历史、报表弹框/来源/导出，以及执行保护与 Token 用量。
+覆盖整个AI Agent功能：数据库工作台、抽屉/内嵌会话、模式/宽度/会话记忆、新建/关闭、公开摘要与执行时间线、模型Keep/Set/Clear演示、Agent主页面编辑（列表+右侧五分区）、Agent内直接提示词、内置插件/Jev开关、13个工具、本地MCP授权/配置导出、安全审计、会话历史、报表弹框/来源/导出，以及执行保护与 Token 用量。
 
 这是浏览器交互稿：所有数据/模型/工具/MCP执行均模拟，不实现AES、不读取实际附件内容、不连接Docker、不调用Claude或模型。表单不能输入真实密钥，密钥字节不保存localStorage。截图测试只证明HTML交互，不替代§37的真实GPUI/连接/MCP E2E。
 

@@ -65,6 +65,97 @@ fn with_ai_storage<T>(
     storage.with_ai_connection(|conn| f(conn).map_err(Into::into))
 }
 
+/// 插件实例 → 设置页列表项：附带声明字段与宿主解析好的候选项。
+///
+/// 声明解析失败不隐藏实例，而是带上 `config_error`，让「插件在、但配置读不出来」可见。
+pub fn ai_plugin_items(conn: &AiConn) -> fluxdb_core::Result<Vec<AiPluginItem>> {
+    let registry = BuiltinRegistry::default();
+    let mut items = Vec::new();
+    for instance in plugins::list_plugin_instances(conn)? {
+        let summary = registry
+            .find_by_package(&instance.package_key)
+            .map(|descriptor| descriptor.summary.to_string())
+            .unwrap_or_default();
+        let (config_fields, config_error) = ai_plugin_config_fields(conn, &instance.id);
+        items.push(AiPluginItem {
+            mandatory: plugins::is_mandatory(&instance.id),
+            id: instance.id,
+            display_name: instance.display_name,
+            package_key: instance.package_key,
+            summary,
+            enabled: instance.enabled,
+            config_fields,
+            config_error,
+            revision: instance.revision,
+        });
+    }
+    Ok(items)
+}
+
+/// 解析一个实例的声明并解析每个字段的候选；失败转成可见文案而不是整页 `Err`。
+fn ai_plugin_config_fields(
+    conn: &AiConn,
+    instance_id: &str,
+) -> (Vec<AiPluginConfigFieldItem>, Option<String>) {
+    let declaration = match instance_declaration(conn, instance_id) {
+        Ok(Some(declaration)) => declaration,
+        Ok(None) => return (Vec::new(), None),
+        Err(error) => return (Vec::new(), Some(error.message)),
+    };
+    let mut fields = Vec::new();
+    for field in &declaration.fields {
+        match resolve_field(conn, field) {
+            Ok(resolved) => {
+                let selection_usable = resolved.selection_is_usable();
+                let rejection = plugin_field_rejection(conn, field, &resolved);
+                fields.push(AiPluginConfigFieldItem {
+                    key: field.key.clone(),
+                    label: field.label.clone(),
+                    help: field.help.clone(),
+                    hint: field_hint(field),
+                    required: field.required,
+                    selection: resolved.selection,
+                    selection_usable,
+                    choices: resolved
+                        .choices
+                        .into_iter()
+                        .map(|choice| AiPluginConfigChoiceItem {
+                            id: choice.id,
+                            label: choice.label,
+                            detail: choice.detail,
+                        })
+                        .collect(),
+                    rejection,
+                });
+            }
+            Err(error) => return (fields, Some(error.message)),
+        }
+    }
+    (fields, None)
+}
+
+/// 字段当前不能直接使用时的可见原因：选择失效优先，其次是没有满足协议要求的候选。
+fn plugin_field_rejection(
+    conn: &AiConn,
+    field: &PluginConfigField,
+    resolved: &ResolvedPluginField,
+) -> Option<String> {
+    if let Some(id) = resolved.selection.as_deref() {
+        return if resolved.selection_is_usable() {
+            None
+        } else {
+            Some(selection_rejection(conn, field, id))
+        };
+    }
+    if resolved.choices.is_empty() && resolved.protocol_rejected > 0 {
+        return Some(format!(
+            "已配置的 {} 个模型不满足该插件声明的协议要求",
+            resolved.protocol_rejected
+        ));
+    }
+    None
+}
+
 /// 加载设置页需要的全部 AI 列表（模型/Agent/插件/MCP）。
 /// 会话历史每页条数；分页续读由 [`load_more_ai_sessions`] 负责。
 pub const AI_SESSION_PAGE_SIZE: i64 = 100;
@@ -76,7 +167,7 @@ pub fn refresh_ai_settings(
     let (
         models,
         agents_list,
-        plugins_list,
+        plugin_items,
         mcp_list,
         sessions_page,
         sessions_total,
@@ -87,7 +178,7 @@ pub fn refresh_ai_settings(
         Ok((
             models::list_models_page(conn, 200, 0)?,
             agents::list_agents(conn)?,
-            plugins::list_plugin_instances(conn)?,
+            ai_plugin_items(conn)?,
             mcp::list_mcp_settings(conn)?,
             fluxdb_storage::ai_platform::sessions::list_session_overviews_page(
                 conn,
@@ -170,25 +261,7 @@ pub fn refresh_ai_settings(
             revision: a.revision,
         })
         .collect();
-    state.ai_plugin_instances = plugins_list
-        .into_iter()
-        .map(|p| {
-            let mandatory = plugins::is_mandatory(&p.id);
-            let summary = BuiltinRegistry::default()
-                .find_by_package(&p.package_key)
-                .map(|descriptor| descriptor.summary.to_string())
-                .unwrap_or_default();
-            AiPluginItem {
-                id: p.id,
-                display_name: p.display_name,
-                package_key: p.package_key,
-                summary,
-                enabled: p.enabled,
-                mandatory,
-                revision: p.revision,
-            }
-        })
-        .collect();
+    state.ai_plugin_instances = plugin_items;
     state.ai_model_egress_enabled = privacy.model_egress_enabled;
     state.ai_mcp_settings = mcp_list
         .into_iter()
@@ -373,6 +446,37 @@ pub fn set_ai_plugin_enabled(
         p.revision = expected_revision + 1;
     }
     Ok(())
+}
+
+/// 保存插件配置：按插件声明校验后写回宿主槽位，再就地刷新可见状态。
+///
+/// 应用层在这里承担三件事：从声明定位需求（不认插件 id 特判）、按声明过滤候选
+/// （不满足要求的模型即使存在也存不进去）、把结果落回宿主自己的角色槽位。
+pub fn save_ai_plugin_config(
+    state: &mut AppState,
+    storage: &fluxdb_storage::FileStorage,
+    instance_id: &str,
+    selections: &[AiPluginFieldSelection],
+    expected_revision: i64,
+    now_ms: i64,
+) -> fluxdb_core::Result<i64> {
+    let revision = with_ai_storage(storage, |conn| {
+        let declaration = instance_declaration(conn, instance_id)?.ok_or_else(|| {
+            fluxdb_core::Error::new(
+                fluxdb_core::ErrorKind::Internal,
+                "该插件没有配置声明，无法保存配置",
+            )
+        })?;
+        save_selection(conn, &declaration, selections, expected_revision, now_ms)
+    })?;
+    // 候选与状态都由槽位推导，保存后就地重算，避免整页刷新闪烁。
+    let runtime = with_ai_storage(storage, ai_settings::load_runtime_settings)?;
+    state.ai_default_model_id = runtime.default_model_profile_id.clone();
+    state.ai_default_decision_model_id = runtime.default_decision_model_profile_id.clone();
+    state.ai_runtime_revision = revision;
+    state.ai_plugin_instances = with_ai_storage(storage, ai_plugin_items)?;
+    refresh_jev_status(state, storage)?;
+    Ok(revision)
 }
 
 /// 切换全局模型数据出站闸门（`privacy_policy_json`，复用运行设置行 CAS）。
@@ -881,7 +985,7 @@ pub fn save_ai_default_models(
             revision: current.revision,
         };
         let saved = ai_settings::save_runtime_settings(conn, now_ms, &next, expected_revision)?;
-        // 默认决策模型变更按设计 §18.1 触发 reconcile：默认优先于"唯一合格候选"。
+        // 决策模型槽位变更后按设计 §18.1 触发 reconcile：system 绑定跟着显式选择走。
         reconcile_jev_builtins(conn, now_ms)?;
         Ok(saved)
     })?;

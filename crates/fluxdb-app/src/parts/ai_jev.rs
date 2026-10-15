@@ -1,8 +1,9 @@
-// 内置 Jev 自动装配与故障策略（设计 §18/§18.1，T037）。
+// 内置 Jev 装配与故障策略（设计 §18/§18.1，T037）。
 //
 // 这个模块只做两件事，都不参与 SQL/文件权限裁判：
-// 1. `reconcile_jev_builtins`：按"默认决策模型 → 唯一合格候选 → 待选择"重建
-//    system 来源的 `decision` 角色绑定与插件绑定，永不覆盖/删除 `user` 绑定；
+// 1. `reconcile_jev_builtins`：按用户在插件管理里显式选择的决策模型重建 system 来源的
+//    `decision` 角色绑定与插件绑定；未选择就撤掉旧 system 行、不擅自挑模型，永不覆盖/删除
+//    `user` 绑定；
 // 2. 决策建议的降级闸门：低置信度/非法返回/超时/无凭据/网络错一律放弃建议走基础策略，
 //    连续失败熔断，不重试、不阻塞每一轮。
 //
@@ -41,99 +42,67 @@ pub const MAX_RELEVANCE_CANDIDATES: usize = 12;
 /// 决策角色在候选筛选中要求的模型用途。
 const DECISION_ROLE: ModelRole = ModelRole::Decision;
 
-/// 决策模型候选筛选结果：区分"路由不合格"与"协议不兼容"，两者状态文案不同。
-struct DecisionCandidates {
-    /// 通过 T033 候选过滤（停用/用途/出站/凭据）的决策模型。
-    policy_ok: Vec<fluxdb_storage::ai_platform::models::ModelProfileView>,
-    /// 再要求 `api_protocol=system-one`（T036 唯一支持的决策协议）。
-    usable: Vec<fluxdb_storage::ai_platform::models::ModelProfileView>,
+/// Jev 声明里的决策模型字段：角色、协议要求与候选口径都由声明决定，
+/// 运行期不再自己维护一套「合格候选」判定。
+fn jev_decision_model_field() -> fluxdb_core::Result<&'static PluginConfigField> {
+    jev_config_declaration()
+        .field(JEV_DECISION_MODEL_FIELD)
+        .ok_or_else(|| {
+            fluxdb_core::Error::new(
+                fluxdb_core::ErrorKind::Internal,
+                "Jev 配置声明缺少决策模型字段",
+            )
+        })
 }
-
-/// 筛出决策候选。协议不靠模型名判断，只看 `api_protocol`。
-fn decision_candidates(
-    conn: &rusqlite::Connection,
-    policy: EgressPolicy,
-) -> fluxdb_core::Result<DecisionCandidates> {
-    let mut policy_ok = Vec::new();
-    let mut usable = Vec::new();
-    for model in fluxdb_storage::ai_platform::models::list_models_page(conn, 500, 0)? {
-        if model.kind != fluxdb_storage::ai_platform::models::ModelKind::Decision {
-            continue;
-        }
-        if candidate_check(&model, CandidateRole::Decision, policy).is_err() {
-            continue;
-        }
-        if model.api_protocol == SYSTEM_ONE_PROTOCOL {
-            usable.push(model);
-        } else {
-            policy_ok.push(model);
-        }
-    }
-    Ok(DecisionCandidates { policy_ok, usable })
-}
-
-/// Jev 唯一接受的决策协议；与 T036 `decision_provider_from_storage` 保持一致。
-const SYSTEM_ONE_PROTOCOL: &str = "system-one";
 
 /// 计算当前状态（只读，不写库）。UI 与运行期共用，避免两套判定漂移。
 pub fn jev_status(
     conn: &rusqlite::Connection,
     now_ms: i64,
 ) -> fluxdb_core::Result<JevStatus> {
-    let policy = EgressPolicy {
-        enabled: fluxdb_storage::ai_platform::settings::load_privacy_policy(conn)?
-            .model_egress_enabled,
-    };
     let enabled = fluxdb_storage::ai_platform::plugins::list_plugin_instances(conn)?
         .into_iter()
         .any(|instance| instance.id == JEV_INSTANCE_ID && instance.enabled);
-    let candidates = decision_candidates(conn, policy)?;
-    let runtime = fluxdb_storage::ai_platform::settings::load_runtime_settings(conn)?;
-
-    let pick = pick_decision_model(&candidates, runtime.default_decision_model_profile_id.as_deref());
-    let status = match (enabled, pick) {
-        (false, _) => JevStatus {
+    if !enabled {
+        return Ok(JevStatus {
             kind: JevStatusKind::Disabled,
             ..JevStatus::default()
-        },
-        (true, DecisionPick::Usable(model)) => JevStatus {
+        });
+    }
+    let field = jev_decision_model_field()?;
+    let resolved = resolve_field(conn, field)?;
+    let status = match resolved.selection.as_deref() {
+        // 只有用户在插件管理里选过决策模型，Jev 才运行。
+        Some(model_profile_id) if resolved.selection_is_usable() => JevStatus {
             kind: JevStatusKind::Available,
-            model_profile_id: Some(model.id),
+            model_profile_id: Some(model_profile_id.to_string()),
             ..JevStatus::default()
         },
-        (true, DecisionPick::NeedsChoice) => JevStatus {
+        // 选过但现在不合格：不静默换成别的模型，只给出可见原因。
+        Some(model_profile_id) => JevStatus {
+            kind: JevStatusKind::Unavailable,
+            model_profile_id: Some(model_profile_id.to_string()),
+            detail: Some(selection_rejection(conn, field, model_profile_id)),
+            ..JevStatus::default()
+        },
+        None if !resolved.choices.is_empty() => JevStatus {
             kind: JevStatusKind::NeedsChoice,
             detail: Some(format!(
-                "有 {} 个合格决策模型，请在大模型设置中选择默认决策模型",
-                candidates.usable.len()
+                "有 {} 个合格决策模型，请在「Jev 决策优化 · 管理」中选择决策模型",
+                resolved.choices.len()
             )),
             ..JevStatus::default()
         },
-        (true, DecisionPick::None) => {
-            let detail = if candidates.policy_ok.is_empty() {
-                None
-            } else {
-                Some(format!(
-                    "已配置的 {} 个决策模型不支持 System One 决策协议",
-                    candidates.policy_ok.len()
-                ))
-            };
-            JevStatus {
-                kind: if detail.is_some() {
-                    JevStatusKind::Unavailable
-                } else {
-                    JevStatusKind::NotConfigured
-                },
-                detail,
-                ..JevStatus::default()
-            }
-        }
-        (true, DecisionPick::DefaultUnavailable { model_profile_id, reason }) => JevStatus {
+        None if resolved.protocol_rejected > 0 => JevStatus {
             kind: JevStatusKind::Unavailable,
-            detail: Some(reason),
-            model_profile_id: Some(model_profile_id),
+            detail: Some(format!(
+                "已配置的 {} 个决策模型不支持该插件声明的决策协议",
+                resolved.protocol_rejected
+            )),
             ..JevStatus::default()
         },
+        // 没有合格候选：零请求、零等待。
+        None => JevStatus::default(),
     };
     // 熔断是运行期事实：即便配置齐全，处于熔断期也显示"暂不可用"而不是"可用"。
     if status.kind == JevStatusKind::Available {
@@ -152,57 +121,6 @@ pub fn jev_status(
         }
     }
     Ok(status)
-}
-
-/// 决策模型挑选结果（设计 §18.1 第 3 条）。
-enum DecisionPick {
-    /// 有明确可用选择。
-    Usable(fluxdb_storage::ai_platform::models::ModelProfileView),
-    /// 多个合格候选且无默认：不擅自选。
-    NeedsChoice,
-    /// 没有合格候选。
-    None,
-    /// 设了默认但当前不合格：不静默换成别的模型，只给出可见原因。
-    DefaultUnavailable {
-        model_profile_id: String,
-        reason: String,
-    },
-}
-
-fn pick_decision_model(
-    candidates: &DecisionCandidates,
-    default_model_profile_id: Option<&str>,
-) -> DecisionPick {
-    if let Some(default_id) = default_model_profile_id {
-        return match candidates
-            .usable
-            .iter()
-            .find(|model| model.id == default_id)
-        {
-            Some(model) => DecisionPick::Usable(model.clone()),
-            None => DecisionPick::DefaultUnavailable {
-                model_profile_id: default_id.to_string(),
-                reason: default_rejection(default_id, candidates),
-            },
-        };
-    }
-    match candidates.usable.len() {
-        0 => DecisionPick::None,
-        1 => DecisionPick::Usable(candidates.usable[0].clone()),
-        _ => DecisionPick::NeedsChoice,
-    }
-}
-
-/// 默认决策模型不合格时的脱敏原因（与 T033 的拒绝口径一致）。
-fn default_rejection(model_profile_id: &str, candidates: &DecisionCandidates) -> String {
-    if candidates
-        .policy_ok
-        .iter()
-        .any(|model| model.id == model_profile_id)
-    {
-        return "默认决策模型不支持 System One 决策协议".to_string();
-    }
-    "默认决策模型当前不可用（已停用、用途不符、禁止出站或缺少凭据）".to_string()
 }
 
 /// 统一 reconcile 入口（设计 §18.1）。

@@ -23,6 +23,20 @@ impl Render for NavicatMain {
                 self.set_ai_model_dialog_error("请填写显示名称与模型标识", cx);
             }
         }
+        // 调试入口：首帧后打开第一个可配置插件的管理弹框（截图核对用）。
+        if self.ai_plugin_config_dialog_debug_pending && self.ai_plugin_config_dialog.is_none() {
+            self.ai_plugin_config_dialog_debug_pending = false;
+            if let Some(id) = self
+                .controller
+                .state()
+                .ai_plugin_instances
+                .iter()
+                .find(|plugin| !plugin.config_fields.is_empty())
+                .map(|plugin| plugin.id.clone())
+            {
+                self.open_ai_plugin_config_dialog(&id, cx);
+            }
+        }
         // 调试入口：首帧后自动对第一个模型跑一次测试连接（截图核对 Alert 与状态标签）。
         if self.ai_model_test_debug_pending {
             self.ai_model_test_debug_pending = false;
@@ -406,6 +420,14 @@ impl Render for NavicatMain {
                     self.ai_model_dialog.clone(),
                     self.ai_model_dialog_filter_input.clone(),
                     self.ai_model_dialog_filter.clone(),
+                    colors,
+                    cx,
+                ),
+                |this, dialog| this.child(dialog),
+            )
+            .when_some(
+                ai_plugin_config_dialog(
+                    self.ai_plugin_config_dialog.clone(),
                     colors,
                     cx,
                 ),

@@ -2129,6 +2129,7 @@ dependencies = [
  "libc",
  "memchr",
  "rusqlite",
+ "serde",
  "serde_json",
  "sqlformat",
  "sqlparser",

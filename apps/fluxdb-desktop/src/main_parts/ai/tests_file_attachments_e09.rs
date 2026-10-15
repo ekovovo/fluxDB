@@ -2,6 +2,51 @@
 // 安全打开、CSV 分段、二进制反馈的生产逻辑由 fluxdb-app 集成测试覆盖，
 // 这里只验证 UI 侧的 chip、摘要与错误提示，不重复断言文件内容解析。
 
+#[gpui_kit::test]
+fn e09_disabled_file_plugin_disables_upload_but_keeps_context_available(
+    cx: &mut TestAppContext,
+) {
+    for theme in [ThemeMode::Light, ThemeMode::Dark] {
+        let fixture = Fixture::seeded();
+        let mut controller = fixture.controller();
+        let plugin = controller.state().ai_plugin_instances.iter()
+            .find(|plugin| plugin.id == "builtin.files").unwrap().clone();
+        assert!(matches!(controller.dispatch(AppCommand::SetAiPluginInstanceEnabled {
+            id: plugin.id, enabled: false, expected_revision: plugin.revision,
+        }), AppEvent::AiPluginInstanceEnabled { .. }));
+        let (view, cx) = open_main(cx, &fixture, controller, theme);
+        open_panel(&view, cx);
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.click("ai-chat-add", cx);
+        });
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.click("ai-chat-upload", cx);
+        });
+        assert!(!cx.did_prompt_for_paths());
+        view.read_with(cx, |main, _| {
+            assert!(!main.ai_chat.attachment_loading);
+            assert!(main.controller.state().ai_conversation.context_references.is_empty());
+            assert!(main.app_message.is_none(), "禁用项不应调用上传回调并弹出提示");
+        });
+        let draft = view.read_with(cx, |main, cx| main.ai_chat.input.read(cx).value().to_string());
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.click("ai-chat-add-context", cx);
+        });
+        view.read_with(cx, |main, cx| {
+            let value = main.ai_chat.input.read(cx).value();
+            assert!(value.starts_with(&draft) && value.ends_with('@'));
+            assert_ne!(value.as_str(), draft.as_str());
+        });
+        cx.update(|window, cx| {
+            window.render_frame(cx);
+            window.remove_window();
+        });
+    }
+}
+
 /// 走生产附件入口：点击「添加」→附件菜单→路径面板返回路径，等待授权完成。
 async fn authorize_attachment(
     view: &Entity<NavicatMain>,

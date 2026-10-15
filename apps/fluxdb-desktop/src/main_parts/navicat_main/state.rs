@@ -11,6 +11,10 @@ struct NavicatMain {
     new_connection_inputs: NewConnectionInputs,
     /// 模型新建/编辑弹框；`None` 表示未打开（T013）。
     ai_model_dialog: Option<AiModelDialog>,
+    /// 插件「管理」弹框；`None` 表示未打开。字段来自插件自己的配置声明。
+    ai_plugin_config_dialog: Option<AiPluginConfigDialog>,
+    /// 调试用：首帧后自动打开第一个可配置插件的管理弹框（仅 debug 构建读取）。
+    ai_plugin_config_dialog_debug_pending: bool,
     /// 弹框内「获取模型列表」面板的搜索框（弹框关闭后保留实体但清空文本）。
     ai_model_dialog_filter_input: Entity<InputState>,
     _ai_model_dialog_filter_subscription: Subscription,

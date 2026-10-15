@@ -3703,6 +3703,7 @@ impl AppController {
             | AppCommand::SetAiModelEnabled { .. }
             | AppCommand::SetAiModelEgressEnabled { .. }
             | AppCommand::SetAiPluginInstanceEnabled { .. }
+            | AppCommand::SaveAiPluginConfig { .. }
             | AppCommand::SetAiToolEnabled { .. }
             | AppCommand::SaveAiDefaultModels { .. }
             | AppCommand::TestAiModel { .. }

@@ -1284,6 +1284,15 @@ pub enum AppCommand {
         enabled: bool,
         expected_revision: i64,
     },
+    /// 保存插件配置（「插件管理」弹框提交，运行设置单例 CAS）。
+    ///
+    /// 一次提交插件的所有字段：选择落到宿主为该需求声明的角色槽位，`resource_id=None`
+    /// 表示清空；插件随即回到「未配置」，不会退回自动挑选。
+    SaveAiPluginConfig {
+        instance_id: String,
+        selections: Vec<AiPluginFieldSelection>,
+        expected_revision: i64,
+    },
     /// 切换全局模型数据出站闸门（对象级 CAS，复用运行设置行 revision）。
     ///
     /// 关闭后任何模型都不再发送会话数据；这是应急开关，不是单模型许可的替代。

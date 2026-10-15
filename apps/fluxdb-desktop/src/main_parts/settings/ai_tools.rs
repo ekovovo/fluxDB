@@ -303,7 +303,6 @@ fn ai_tool_row(
 fn ai_builtin_icon(package_key: &str) -> AppIcon {
     match package_key {
         "fluxdb.context.ui" => AppIcon::Text,
-        "fluxdb.tools.database" => AppIcon::Database,
         "fluxdb.context.files" => AppIcon::FileSearch,
         "fluxdb.model.router" => AppIcon::Workflow,
         "fluxdb.decision.jev" => AppIcon::Activity,
@@ -334,7 +333,7 @@ fn ai_plugins_in_catalog_order(
     rows
 }
 
-/// 「内置插件」页签：内置能力行（说明 + 状态 + 启停）+ 内核约束标签。
+/// 「内置插件」页签：能力说明、启停状态，以及常驻能力/内核约束标签。
 fn ai_plugins_panel(state: &AppState, colors: UiColors, cx: &mut Context<NavicatMain>) -> Div {
     let body: Vec<gpui::AnyElement> = if state.ai_plugin_instances.is_empty() {
         vec![ai_empty_state(
@@ -347,12 +346,35 @@ fn ai_plugins_panel(state: &AppState, colors: UiColors, cx: &mut Context<Navicat
             .map(|p| {
                 let this = cx.entity().downgrade();
                 let id = p.id.clone();
+                let manage_id = p.id.clone();
                 let enabled = p.enabled;
                 let revision = p.revision;
                 let mandatory = p.mandatory;
+                // 「管理」入口由插件自己的配置声明决定：没有可配置项就不显示，
+                // 也不按插件 id 特判。
+                let has_config = !p.config_fields.is_empty();
+                let config_error = p.config_error.clone();
                 // Jev 有独立的装配/熔断状态，不复用通用启停标签。
                 let is_jev = p.package_key == "fluxdb.decision.jev";
                 let jev_status = state.ai_jev_status.clone();
+                // 管理入口与插件行共用同一个 owner，避免在 `when` 闭包里被行元素遮蔽。
+                let manage_owner = this.clone();
+                let manage_selector = format!("ai-plugin-manage:{manage_id}");
+                let manage_click_id = manage_id.clone();
+                let manage_button = Button::new(SharedString::from(manage_selector.clone()))
+                    .debug_selector({
+                        let selector = manage_selector.clone();
+                        move || selector.clone()
+                    })
+                    .small()
+                    .ghost()
+                    .cursor_pointer()
+                    .child("管理")
+                    .on_click(move |_, _, cx| {
+                        let _ = manage_owner.update(cx, |this, cx| {
+                            this.open_ai_plugin_config_dialog(&manage_click_id, cx);
+                        });
+                    });
                 ai_row_container(&p.id, colors)
                     .min_h(px(52.))
                     .py_2()
@@ -394,33 +416,59 @@ fn ai_plugins_panel(state: &AppState, colors: UiColors, cx: &mut Context<Navicat
                                             .child(format!("{} · 内置", p.package_key)),
                                     )
                                     .when(mandatory, |this| {
-                                        this.child(ai_pill("内核约束", colors.info, colors))
+                                        this.child(ai_pill(
+                                            if p.package_key == "fluxdb.context.ui" {
+                                                "常驻能力"
+                                            } else {
+                                                "内核约束"
+                                            },
+                                            colors.info,
+                                            colors,
+                                        ))
                                     })
                                     .when(!mandatory, |this| {
                                         this.child(ai_status_pill(enabled, colors))
                                     })
                                     .when(is_jev, |this| {
                                         this.child(ai_jev_status_pill(&jev_status, colors))
+                                    })
+                                    .when_some(config_error.clone(), |this, message| {
+                                        this.child(ai_pill("配置不可读", colors.warning, colors))
+                                            .child(
+                                                div()
+                                                    .text_size(px(11.))
+                                                    .text_color(colors.warning)
+                                                    .child(message),
+                                            )
                                     }),
                             ),
                     )
-                    .child(div().debug_selector(|| format!("ai-plugin:{id}")).child(
-                        Switch::new(SharedString::from(format!("ai-plugin:{id}")))
-                            .checked(enabled)
-                            .disabled(mandatory)
-                            .on_click(move |checked, _, cx| {
-                                let _ = this.update(cx, |this, cx| {
-                                    let _ = this.controller.dispatch(
-                                        AppCommand::SetAiPluginInstanceEnabled {
-                                            id: id.clone(),
-                                            enabled: *checked,
-                                            expected_revision: revision,
-                                        },
-                                    );
-                                    cx.notify();
-                                });
-                            }),
-                    ))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .when(has_config, |this| {
+                                this.child(manage_button)
+                            })
+                            .child(div().debug_selector(|| format!("ai-plugin:{id}")).child(
+                                Switch::new(SharedString::from(format!("ai-plugin:{id}")))
+                                    .checked(enabled)
+                                    .disabled(mandatory)
+                                    .on_click(move |checked, _, cx| {
+                                        let _ = this.update(cx, |this, cx| {
+                                            let _ = this.controller.dispatch(
+                                                AppCommand::SetAiPluginInstanceEnabled {
+                                                    id: id.clone(),
+                                                    enabled: *checked,
+                                                    expected_revision: revision,
+                                                },
+                                            );
+                                            cx.notify();
+                                        });
+                                    }),
+                            )),
+                    )
                     .into_any_element()
             })
             .collect()
@@ -474,12 +522,11 @@ fn ai_jev_status_note(status: &fluxdb_app::JevStatus, colors: UiColors) -> impl 
     use fluxdb_app::JevStatusKind as K;
     let detail = match (status.kind, status.detail.clone(), status.circuit_until_ms) {
         (K::Available, _, _) => {
-            "Jev 已自动装配：保存并启用一个合格的决策模型即可直接使用，无需安装插件或手工建绑定。"
-                .to_string()
+            "Jev 已使用「管理」里选定的决策模型；无需安装插件或手工建绑定。".to_string()
         }
         (K::NeedsChoice, Some(reason), _) | (K::Unavailable, Some(reason), _) => reason,
         (K::NeedsChoice, None, _) => {
-            "存在多个合格决策模型，请在大模型设置中选择默认决策模型后再自动装配。"
+            "已有合格决策模型但尚未选择：点该行的「管理」选择决策模型后 Jev 才参与运行。"
                 .to_string()
         }
         (K::Unavailable, None, Some(until)) => {
@@ -487,7 +534,7 @@ fn ai_jev_status_note(status: &fluxdb_app::JevStatus, colors: UiColors) -> impl 
         }
         (K::Unavailable, None, None) => "Jev 当前不可用，Agent 继续按基础策略运行。".to_string(),
         (K::NotConfigured, _, _) => {
-            "尚未配置可用的决策模型。Jev 只是可选优化，未配置时主 Agent 照常运行。".to_string()
+            "尚未配置可用的决策模型：先在大模型页添加并启用一个 System One 决策模型。Jev 只是可选优化，未配置时主 Agent 照常运行。".to_string()
         }
         (K::Disabled, _, _) => {
             "Jev 已关闭：不发起任何决策请求，主 Agent 与上下文压缩照常工作。".to_string()

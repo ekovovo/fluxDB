@@ -15,6 +15,11 @@ pub enum AppEvent {
         enabled: bool,
         revision: i64,
     },
+    /// 插件配置已保存（新运行设置 revision）。
+    AiPluginConfigSaved {
+        instance_id: String,
+        revision: i64,
+    },
     /// 全局模型数据出站闸门已变化。
     AiModelEgressEnabledChanged {
         enabled: bool,

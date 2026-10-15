@@ -164,11 +164,14 @@ fn ai_chat_composer(
                                             .child(app_icon(AppIcon::Plus, 16., colors.muted))
                                             .dropdown_menu_with_anchor(gpui::Anchor::BottomLeft, {
                                                 let owner = cx.entity().downgrade();
+                                                let upload_disabled = this.controller.state().ai_plugin_instances.iter()
+                                                    .any(|plugin| plugin.id == "builtin.files" && !plugin.enabled);
                                                 move |menu, _, _| {
                                                     let upload_owner = owner.clone();
                                                     let context_owner = owner.clone();
                                                     menu.item(PopupMenuItem::element(|_, _| div()
                                                         .id("ai-chat-upload").test_support().child("从电脑上传"))
+                                                        .disabled(upload_disabled)
                                                         .on_click(move |_, window, cx| {
                                                             let _ = upload_owner.update(cx, |this, cx| {
                                                                 this.choose_ai_attachment(window, cx);

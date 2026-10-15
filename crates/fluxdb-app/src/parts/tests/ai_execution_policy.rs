@@ -59,7 +59,8 @@ fn four_modes_preserve_hard_denials_and_manual_unknowns() {
         let calls = Arc::new(AtomicUsize::new(0));
         let security = ExecutionSecurity {
             storage: fixture.storage.clone(),
-            connections: fixture.storage.load_connections().ok(),
+            connections: fixture.storage.load_connections().unwrap_or_default(),
+            revalidate_from_storage: true,
             reviewer: Arc::new(FakeReviewer {
                 choice: ReviewChoice::Approve,
                 calls: calls.clone(),
@@ -138,7 +139,8 @@ fn ai_manual_and_deny_are_not_treated_as_approval() {
     for choice in [ReviewChoice::Manual, ReviewChoice::Deny] {
         let security = ExecutionSecurity {
             storage: fixture.storage.clone(),
-            connections: fixture.storage.load_connections().ok(),
+            connections: fixture.storage.load_connections().unwrap_or_default(),
+            revalidate_from_storage: true,
             reviewer: Arc::new(FakeReviewer {
                 choice,
                 calls: Arc::new(AtomicUsize::new(0)),

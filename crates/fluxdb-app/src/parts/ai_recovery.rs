@@ -107,10 +107,12 @@ fn claim_ai_approved_call(
     let spec = tools
         .describe(&call.tool_id)
         .ok_or_else(|| reject("工具不可用"))?;
-    if let Some(security)=&tools.security {
-        if security.settings()?.0.tools_default==ExecutionPolicy::ReadOnly
-            && spec.risk!=fluxdb_core::ToolRisk::Read
-        {return Err(reject("执行策略已改为只读，旧审批不得放行"));}
+    // 复用当前事务读取执行策略：在 IMMEDIATE 事务内另开连接会直接撞上库锁。
+    let (execution_policy, _) = fluxdb_storage::ai_platform::execution_policy::load(&tx)?;
+    if execution_policy.tools_default == ExecutionPolicy::ReadOnly
+        && spec.risk != fluxdb_core::ToolRisk::Read
+    {
+        return Err(reject("执行策略已改为只读，旧审批不得放行"));
     }
     if tools.executable(&call.tool_id).is_none() {
         return Err(reject("工具没有可执行实现"));

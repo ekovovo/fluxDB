@@ -101,7 +101,7 @@ impl AiRuntimeHandle {
                         )?;
                     }
                     tools.without_tools(&security.disabled_tools);
-                    tools=tools.with_execution_security(ExecutionSecurity::new(storage.clone()));
+                    tools=tools.with_execution_security(ExecutionSecurity::with_connections(storage.clone(),connections.clone()));
                     let permission = TurnPermissionContext {
                         agent_allowed_tools: security.agent_allowed_tools,
                         disabled_tools: security.disabled_tools,

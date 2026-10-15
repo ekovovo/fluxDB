@@ -158,7 +158,12 @@ impl WriteReviewer for StorageWriteReviewer {
 pub struct ExecutionSecurity {
     storage: fluxdb_storage::FileStorage,
     reviewer: Arc<dyn WriteReviewer>,
-    connections: Option<Vec<ConnectionConfig>>,
+    /// 进入本轮时的连接快照：执行期间目标连接被改写或删除都必须拒绝。
+    connections: Vec<ConnectionConfig>,
+    /// 快照是否来自存储。来自存储时（对外 MCP）连接必须与存储保持一致；
+    /// 调用方直接给出的连接（内部会话按固定目标装配）没有可重新读取的登记来源，
+    /// 只能与快照比对，不能按“存储里查不到”判定为已删除。
+    revalidate_from_storage: bool,
 }
 
 pub struct PolicyAuthorization {
@@ -169,13 +174,32 @@ pub struct PolicyAuthorization {
 }
 
 impl ExecutionSecurity {
+    /// 对外 MCP：数据源引用存储中已登记的连接，执行期间按存储复核。
     pub fn new(storage: fluxdb_storage::FileStorage) -> Self {
+        let connections = storage.load_connections().unwrap_or_default();
+        Self::assemble(storage, connections, true)
+    }
+
+    /// 内部会话：连接由调用方按本轮固定目标给出，未必已登记到存储。
+    pub fn with_connections(
+        storage: fluxdb_storage::FileStorage,
+        connections: Vec<ConnectionConfig>,
+    ) -> Self {
+        Self::assemble(storage, connections, false)
+    }
+
+    fn assemble(
+        storage: fluxdb_storage::FileStorage,
+        connections: Vec<ConnectionConfig>,
+        revalidate_from_storage: bool,
+    ) -> Self {
         Self {
-            connections: storage.load_connections().ok(),
             reviewer: Arc::new(StorageWriteReviewer {
                 storage: storage.clone(),
             }),
             storage,
+            connections,
+            revalidate_from_storage,
         }
     }
 
@@ -202,20 +226,27 @@ impl ExecutionSecurity {
         let Some(id) = id else {
             return Ok(());
         };
-        let expected = self
-            .connections
-            .as_ref()
-            .and_then(|items| items.iter().find(|c| c.id == id));
-        let connections = self.storage.load_connections()?;
-        let current = connections.iter().find(|c| c.id == id);
-        if expected.is_none() || expected != current {
+        let Some(expected) = self.connections.iter().find(|config| config.id == id) else {
             return Err(Error::new(
                 ErrorKind::Permission,
-                "连接配置已变化或连接已删除，未执行",
+                "连接不在本轮授权集合内，未执行",
             ));
+        };
+        // 来自存储的快照必须与存储保持一致：连接被改写或删除都不能继续用旧配置执行。
+        if self.revalidate_from_storage {
+            let current = self
+                .storage
+                .load_connections()?
+                .into_iter()
+                .find(|config| config.id == id);
+            if current.as_ref() != Some(expected) {
+                return Err(Error::new(
+                    ErrorKind::Permission,
+                    "连接配置已变化或连接已删除，未执行",
+                ));
+            }
         }
-        if input.risk != fluxdb_core::ToolRisk::Read && current.is_some_and(connection_is_read_only)
-        {
+        if input.risk != fluxdb_core::ToolRisk::Read && connection_is_read_only(expected) {
             return Err(Error::new(ErrorKind::Permission, "连接已设为只读，未执行"));
         }
         if input.risk != fluxdb_core::ToolRisk::Read {

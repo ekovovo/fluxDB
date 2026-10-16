@@ -48,6 +48,9 @@ mod ai_panel_tests {
         fn controller(&self) -> AppController {
             let mut controller = AppController::new();
             controller.set_ai_storage(self.storage.clone());
+            controller.dispatch(AppCommand::ReplaceConnections(
+                self.storage.load_connections().unwrap(),
+            ));
             assert!(matches!(
                 controller.dispatch(AppCommand::RefreshAiSettings),
                 AppEvent::AiSettingsLoaded
@@ -198,6 +201,7 @@ mod ai_panel_tests {
         fn drop(&mut self) {
             // 仅清理由当前 fixture 创建的唯一临时目录，不接触用户的配置库。
             let _ = std::fs::remove_dir_all(&self.root);
+            let _ = std::fs::remove_file(self.root.with_extension("sqlite"));
         }
     }
 

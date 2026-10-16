@@ -39,7 +39,7 @@ fn ai_conversation_turn_messages(
         let mut system_messages = vec![fluxdb_core::ModelMessage::new(
             fluxdb_core::ModelRole::System,
             format!(
-                "{system_prompt}\n当前执行目标：{}。工具的 target 参数必须使用句柄：{}。你可以调用被授权的工具；只能依据工具真实回执陈述执行结果，不得臆造。结果引用仅在产生它的当前轮执行实例有效（执行结束、暂停后重新装配或重启即失效），历史正文或 historical_tool_facts 中的引用不代表当前可读资源；需要数据时重新调用获授权的来源工具。产物 metric.definition_ref 只能引用本轮授权知识；sources/blocks.result_ref 才是结果句柄。delivery_truncated/rows_omitted 表示展示省略；查询 acquisition_truncated/truncated 表示采集不完整；分页 next_cursor 表示快照内尚有后续，不代表数据库尚有未取得的数据。{}",
+                "{system_prompt}\n当前执行目标：{}。工具的 target 参数必须使用句柄：{}。你可以调用被授权的工具；只能依据工具真实回执陈述执行结果，不得臆造。结果引用仅在产生它的当前轮执行实例有效（执行结束、暂停后重新装配或重启即失效），历史正文或 historical_tool_facts 中的引用不代表当前可读资源；需要数据时重新调用获授权的来源工具。产物 sources/blocks.result_ref 必须使用本轮真实结果句柄。delivery_truncated/rows_omitted 表示展示省略；查询 acquisition_truncated/truncated 表示采集不完整；分页 next_cursor 表示快照内尚有后续，不代表数据库尚有未取得的数据。{}",
                 turn.target_json,
                 ai_tool_target_handle(&turn.target_json)
                     .unwrap_or_else(|| "（无可用句柄）".to_string()),

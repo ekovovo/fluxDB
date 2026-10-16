@@ -126,6 +126,9 @@ mod ai_chat_model_selection_tests {
             let mut controller = AppController::new();
             if self.ai_storage {
                 controller.set_ai_storage(self.storage.clone());
+                controller.dispatch(AppCommand::ReplaceConnections(
+                    self.storage.load_connections().unwrap(),
+                ));
             }
             if self.ai_storage {
                 assert!(matches!(
@@ -169,6 +172,7 @@ mod ai_chat_model_selection_tests {
 
     impl Drop for Fixture {
         fn drop(&mut self) {
+            let _ = std::fs::remove_file(self.root.with_extension("sqlite"));
             if let Err(error) = std::fs::remove_dir_all(&self.root) {
                 eprintln!(
                     "清理 B 模型选择 fixture 失败: {}: {error}",
@@ -773,48 +777,46 @@ mod ai_chat_model_selection_tests {
         finish(view, visual);
     }
 
-    #[gpui::test]
-    fn at_reference_lists_kinds_filters_and_shows_no_match(cx: &mut TestAppContext) {
-        let fixture = Fixture::new(false);
-        // 通过生产命令种入一条 confirmed 知识条目，让 `@` 候选包含"知识"类型。
+    fn seed_saved_reference_queries(fixture: &Fixture, ids: &[u64]) {
+        let path = fixture.root.with_extension("sqlite");
+        std::fs::File::create(&path).unwrap();
         fixture
             .storage
-            .with_ai_connection(|conn| {
-                fluxdb_storage::ai_platform::knowledge::save(
-                    conn,
-                    10,
-                    &fluxdb_storage::ai_platform::knowledge::KnowledgeEntryEdit {
-                        id: "k-amount".into(),
-                        title: "订单金额口径".into(),
-                        kind: "metric".into(),
-                        agent_id: None,
-                        connection_id: Some(17),
-                        database_name: Some("shop".into()),
-                        namespace: None,
-                        scope_json: "{}".into(),
-                        content_json: "{}".into(),
-                        source_json: "{}".into(),
-                        status: "confirmed".into(),
-                    },
-                    None,
-                )?;
-                Ok(())
-            })
+            .save_connections(&[fluxdb_core::ConnectionConfig {
+                id: fluxdb_core::ConnectionId(17),
+                name: "订单引用连接".into(),
+                kind: fluxdb_core::DatabaseKind::Sqlite,
+                endpoint: fluxdb_core::Endpoint::SqliteFile {
+                    path,
+                    read_only: true,
+                },
+                options: Default::default(),
+                redis_profile: None,
+                mysql_profile: None,
+                postgres_profile: None,
+            }])
             .unwrap();
-        fixture
-            .storage
-            .save_saved_queries(&[fluxdb_core::SavedQuery {
-                id: 91,
+        let queries = ids
+            .iter()
+            .map(|id| fluxdb_core::SavedQuery {
+                id: *id,
                 connection_id: fluxdb_core::ConnectionId(17),
-                database: Some("shop".into()),
+                database: Some("main".into()),
                 schema: None,
                 name: "订单金额口径".into(),
                 text: "SELECT 1".into(),
-            }])
-            .unwrap();
+            })
+            .collect::<Vec<_>>();
+        fixture.storage.save_saved_queries(&queries).unwrap();
+    }
+
+    #[gpui::test]
+    fn at_reference_lists_kinds_filters_and_shows_no_match(cx: &mut TestAppContext) {
+        let fixture = Fixture::new(false);
+        seed_saved_reference_queries(&fixture, &[91]);
         let (view, visual) = open(cx, &fixture, ThemeMode::Light);
 
-        // 输入 `@订单` → 打开候选下拉，至少包含知识条目。
+        // 输入 `@订单` → 同时展示连接和保存查询候选。
         type_input(&view, visual, "@订单");
         assert!(
             bounds(visual, "ai-chat-reference-select").is_some(),
@@ -822,8 +824,8 @@ mod ai_chat_model_selection_tests {
         );
         let kinds = reference_kinds(&view, visual);
         assert!(
-            kinds.iter().any(|kind| kind == "knowledge"),
-            "知识条目应作为 @ 候选：{kinds:?}"
+            kinds.iter().any(|kind| kind == "connection"),
+            "连接应作为 @ 候选：{kinds:?}"
         );
         assert!(
             kinds.iter().any(|kind| kind == "saved_query"),
@@ -838,21 +840,21 @@ mod ai_chat_model_selection_tests {
         );
         assert!(view.read_with(visual, |main, _| main.ai_chat.reference_error.is_none()));
 
-        // 命中查询 → 选中知识候选 → chip 出现。
+        // 命中查询 → 选中候选 → chip 出现。
         type_input(&view, visual, "@订单金额");
         let id = view.read_with(visual, |main, _| {
             main.ai_chat
                 .reference_options
                 .iter()
-                .find(|reference| reference.kind == "knowledge")
+                .find(|reference| reference.kind == "saved_query")
                 .map(|reference| reference.id.clone())
-                .expect("应有知识候选")
+                .expect("应有保存查询候选")
         });
         click(visual, &format!("ai-reference-candidate:{id}"));
         wait_idle(&view, visual);
         let selected = chips(&view, visual);
         assert_eq!(selected.len(), 1, "选择后应写入一个引用 chip");
-        assert_eq!(selected[0].kind, "knowledge");
+        assert_eq!(selected[0].kind, "saved_query");
 
         // 移除 chip → 引用清空，下一次提交不再包含。
         let chip_id = selected[0].id.clone();
@@ -883,38 +885,13 @@ mod ai_chat_model_selection_tests {
     fn at_reference_candidate_ids_are_unique_and_typed(cx: &mut TestAppContext) {
         // 候选 ID 必须唯一，同名对象不能靠裸名区分（按连接/库/schema 全路径生成）。
         let fixture = Fixture::new(false);
-        fixture
-            .storage
-            .with_ai_connection(|conn| {
-                for (id, title) in [("k1", "订单金额口径"), ("k2", "订单金额口径")] {
-                    fluxdb_storage::ai_platform::knowledge::save(
-                        conn,
-                        10,
-                        &fluxdb_storage::ai_platform::knowledge::KnowledgeEntryEdit {
-                            id: id.into(),
-                            title: title.into(),
-                            kind: "metric".into(),
-                            agent_id: None,
-                            connection_id: Some(17),
-                            database_name: Some("shop".into()),
-                            namespace: None,
-                            scope_json: "{}".into(),
-                            content_json: "{}".into(),
-                            source_json: "{}".into(),
-                            status: "confirmed".into(),
-                        },
-                        None,
-                    )?;
-                }
-                Ok(())
-            })
-            .unwrap();
+        seed_saved_reference_queries(&fixture, &[91, 92]);
         let (view, visual) = open(cx, &fixture, ThemeMode::Light);
         type_input(&view, visual, "@订单金额口径");
         let candidates = view.read_with(visual, |main, _| main.ai_chat.reference_options.clone());
         assert!(
             candidates.len() >= 2,
-            "两条同名知识都应成为候选：{candidates:?}"
+            "两条同名保存查询都应成为候选：{candidates:?}"
         );
         let mut ids: Vec<&str> = candidates.iter().map(|c| c.id.as_str()).collect();
         let total = ids.len();

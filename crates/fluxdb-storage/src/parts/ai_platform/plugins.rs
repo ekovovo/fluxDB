@@ -162,12 +162,6 @@ pub const BUILTIN_PLUGINS: &[(&str, &str, &str, &str)] = &[
         "AI 用量统计",
     ),
     (
-        "builtin.knowledge",
-        "pkg.fluxdb.knowledge.skills",
-        "fluxdb.knowledge.skills",
-        "业务知识与 Skills",
-    ),
-    (
         "builtin.bi",
         "pkg.fluxdb.output.bi",
         "fluxdb.output.bi",

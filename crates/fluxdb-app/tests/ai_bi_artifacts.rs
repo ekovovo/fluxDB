@@ -786,32 +786,6 @@ fn null_chart_values_are_omitted_with_an_explicit_limit_marker() {
 }
 
 #[test]
-fn ungranted_knowledge_definition_cannot_be_claimed_as_a_confirmed_metric() {
-    let fixture = Fixture::new();
-    let job = fixture.job();
-    let (mut catalog, results) = fixture.catalog(&job);
-    add_ai_artifact_tools(&mut catalog, &fixture.storage, &job, results).unwrap();
-    let mut arguments = create_args();
-    arguments["metric"]["definition_ref"] = json!("fake-knowledge");
-    let provider = ReceiptDrivenProvider::new(
-        &fixture,
-        &job,
-        vec![
-            query(QUERY),
-            call("create", "artifact.create", arguments),
-            Step::Done,
-        ],
-    );
-    run(&fixture, &job, &catalog, &provider);
-    assert_eq!(
-        fixture.receipt(&job, "create", "failed")["code"],
-        "invalid_metric"
-    );
-    assert!(fixture.artifacts(&job).is_empty());
-    provider.assert_sql_unchanged();
-}
-
-#[test]
 fn ready_card_failure_rolls_back_ready_metadata_and_removes_file() {
     let fixture = Fixture::new();
     let job = fixture.job();

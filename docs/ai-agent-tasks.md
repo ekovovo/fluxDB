@@ -277,7 +277,7 @@ cargo test -p fluxdb-app --locked ai_permission   # 15 passed
   - [x] 预置同名但不同ID/目标的候选，检索实际显示正确结果；选择后chip对应正确引用，移除后提交内容不再包含该引用；区分无匹配与检索失败。
 - 验收记录（2026-10-09 补齐后勾选，平台 macOS arm64）：
   - 改动文件：`crates/fluxdb-app/src/parts/ai_references.rs`、新增 `crates/fluxdb-app/src/parts/ai_reference_details.rs`（`context.read` 详情、引用校验/授权）、`crates/fluxdb-app/src/parts/ai_conversation.rs`（运行快照 `reference_grants`）、`ai_conversation_context.rs`（引用不授予写权限提示）、`ai_conversation_runtime.rs`、`ai_loop.rs`/`ai_conversation_execution.rs`（`TurnState` 透传 `session_id/turn_id`）、`apps/fluxdb-desktop/src/main_parts/ai/{references,composer,message,state,actions,panel}.rs`；夹具 `crates/fluxdb-app/examples/ai_reference_fixture.rs`、mock 模型 `docs/testing/ai-agent/t022_mock_model.py`。
-  - 候选类型补齐：连接、库/schema、表/视图、列/索引/集合、Redis DB/Key、知识条目 + 保存查询、编辑器选区、结果页快照、已授权附件；上限 20；同名按连接+库+schema 全路径与 ID 区分。
+  - 候选类型补齐：连接、库/schema、表/视图、列/索引/集合、Redis DB/Key、保存查询、编辑器选区、结果页快照、已授权附件；上限 20；同名按连接+库+schema 全路径与 ID 区分。
   - 无匹配与检索失败分离：候选检索返回 `Result`，`ai_reference_errors` 汇总逐项失败，UI 显示「检索失败：…」与「无匹配引用：@…」互斥。
   - 失效对象：chip 前跑内存/存储校验，失效项红框 + 「失效」标记 + tooltip；跨连接/库/schema 合并冲突提前标记。
   - 详情按需：`context.read` 工具按 opaque ref 读取保存查询/选区/结果页有界快照，限定本轮 `session_id/turn_id`；结果页列 32/行 10/单元格 128 字符，二进制只记字节数。
@@ -555,43 +555,18 @@ cargo test -p fluxdb-app --locked ai_permission   # 15 passed
 - 数据展示闭环（设计§39.5）：
   - [x] 隔离配置启用已知决策模型后，插件页实际显示正确可用/绑定状态；禁用及故障后界面与实际decision调用一致，返回/重启不展示过期状态。
 
-### T038 业务知识与按需 Skills
-- [x] 依赖：T006、T022、T034；设计 §19、§42.10。
-- 改动：独立 knowledge 表 CRUD/CAS、scope、来源/确认、插件 skills 注册/检索。
-- 验收：跨库口径不混用；模型提议不自动成为事实；用户确认/退休立即影响新任务；大知识不全量加载。
-- 测试方式：在隔离SQLite/文件fixture中逐条执行上述验收，核对操作前后行值、revision、引用及错误；适用的失败注入后重开存储确认无部分写入/数据丢失，测试输出不得含秘密。
-
-#### T038 实现记录（2026-10-12）
-- **存储层**（`crates/fluxdb-storage/src/parts/ai_platform/knowledge.rs`）：独立表 CRUD/CAS；
-  `proposed`→`confirmed`→`retired` 状态机（retired 为终态，确认/退休只能用户触发）；
-  `scope_json` 连接/库白名单过滤（无匹配目标不返回有作用域条目，跨库口径不混用）；
-  `confirmed_excerpt` 按 UTF-8 字符边界有界截断。
-- **运行期装配**（`crates/fluxdb-app/src/parts/ai_knowledge_skills.rs`）：Turn 按固定目标
-  筛选 confirmed 知识（上限 20 条、每条摘录 1 KiB）；仅 `builtin.knowledge` 启用时注入；
-  Turn 快照只写 `knowledge_ids`，正文不落快照。
-- **按需读取**：新增只读工具 `knowledge.read`（`ai_reference_details.rs`），按 offset 分段
-  读取本轮授权条目，非本轮 ID 拒绝，装配时校验仍为 confirmed（退休后连目录都装不出来）。
-- **`@` 引用**：候选按上下文来源 tab 的连接/库过滤，只给标题/类型/作用域/revision 摘要。
-- **本轮实机暴露并修复的相邻缺陷**：真实会话中 `SELECT date('now')` 被只读入口以
-  `not_read_only（unknown_function）` 拒绝——`ai_sql_policy.rs` 纯函数白名单漏了日期/时间
-  函数，模型无法确认「今天/当月」边界。已补齐常见三方言日期函数并新增回归用例
-  `ai_sql_policy_date_and_time_functions_are_read_only`（同时断言 DML 仍需授权）。
-- 测试：storage `ai_knowledge` 7/7、app `ai_knowledge_context` 5/5、lib `ai_sql_policy` 20/20、
-  `ai_reference_send` 14/14、`ai_jev_reconcile` 9/9、`ai_session_model_selection` 29/29；
-  桌面端全量 614 passed / 7 failed（7 项均为沙箱禁止本地监听的既有网络用例）。
-  真实窗口 + 真实「公司自建」模型的 `knowledge.read`、`db.query` 原始回执已核对
-  （模型逐字复述两条 confirmed 知识）。
-- Windows/Linux 未验证（按 §B 分工由用户执行）。
-- 验收记录：docs/testing/ai-agent/t038-2026-10-12.md
-
+### T038 业务知识与 Skills（已撤回）
+- 2026-10-16：按用户要求删除本期插件、知识存储、运行期注入、读取工具和专属测试，不做历史数据兼容或迁移。
+- 不再作为其他任务的依赖，能力后续另行规划。
+- 保留 `docs/prototype/knowledge-skills-ui.html`、CSS 与 JS 作为设计参考，尚未接入应用。
 
 ### T039 产物 schema、source 引用与内置 BI 插件
-- [x] 依赖：T027、T032、T038；设计 §27、§42.7。
+- [x] 依赖：T027、T032；设计 §27、§42.7。
 - 改动：报告/图表/表格声明、创建/增加/完成工具、source table、口径/时区/截断校验。
 - 验收：数字来自实际结果，不由模型编造；来源同任务且可解析；renderer 失败不改 SQL 结果；插件可替换。
 - 测试方式：将上述每项验收分别落实为相关crate的测试断言；用隔离fixture/受控Provider验证正常与异常路径，涉及工具时核对真实回执及副作用调用数，不用伪造成功结果跳过执行链。
 - 实现记录（Core / Storage / App）：
-  - **Core** `crates/fluxdb-core/src/parts/ai/artifact.rs`：版本化 `ArtifactSpec`（图表/表格/说明块、口径引用与假设、RFC3339 时间范围、UTC 或 ±HH:MM 时区、过滤条件、静态刷新语义、模板版本、可访问性描述、全部大小上限）；`oneOf`/`const` 让未知字段与非法时区在形状层即被拒绝。IANA 时区名明确 `Unsupported`，未引入手写时区表。
+  - **Core** `crates/fluxdb-core/src/parts/ai/artifact.rs`：版本化 `ArtifactSpec`（图表/表格/说明块、指标声明与假设、RFC3339 时间范围、UTC 或 ±HH:MM 时区、过滤条件、静态刷新语义、模板版本、可访问性描述、全部大小上限）；`oneOf`/`const` 让未知字段与非法时区在形状层即被拒绝。IANA 时区名明确 `Unsupported`，未引入手写时区表。
   - **Storage** `artifacts.rs` + `conversation.rs`：`ai_artifacts` 草稿/staged/ready/failed/expired 状态机与对象级 revision CAS；`ai_artifact_sources` 正规化来源。声明句柄、结果行、实际产出调用三者必须一致且同任务，结果须 available、调用须 succeeded；提交 ready 时在同一事务再复核一次。ready 状态与产物卡片段同事务提交，任一失败都不留半成品。受控相对路径跨平台校验（反斜杠、盘符、`..`、尾部点/空格归一化歧义均拒绝）。
   - **App** `ai_bi_artifacts.rs` / `ai_artifact_renderer.rs` / `ai_artifact_snapshot.rs` / `ai_artifact_tools.rs` / `ai_results.rs`：`builtin.bi` 的 `artifact.create` / `artifact.add_block` / `artifact.finalize`。模型只能提交来源句柄与字段名，数字由宿主从真实查询回执解析；数值列严格用 JSON number，数字字符串不自动转换。快照落 `ai-artifacts/<uuid>.json`，含 spec、列结构、有界真实行、口径与截断事实，查看时不重查库。工具依赖 `Arc<dyn ArtifactProducer>`、渲染依赖 `ArtifactRenderer`，插件可替换。全局实例或 Agent 绑定禁用时不注册入口。
   - **相邻根因修复**：SQLite 零行查询丢列结构导致合法空表格被误判 `unknown_field`，用驱动 describe 补回元数据（不重跑查询取数）；schema 校验器补 `oneOf`/`const`，非法 tagged 参数在执行前拒绝（原有一条依赖非法参数穿过 schema 的测试改为验证前置拒绝，另补递归脱敏与真实 tagged 参数回归）。

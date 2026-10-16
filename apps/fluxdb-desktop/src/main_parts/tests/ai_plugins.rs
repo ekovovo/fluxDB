@@ -25,7 +25,7 @@ fn ai_ui_builtin_plugins_page_lists_catalog_and_enforces_mandatory(cx: &mut Test
             pick("builtin.telemetry"),
         )
     });
-    assert_eq!(count, 11, "内置能力页应列出 11 项");
+    assert_eq!(count, 10, "内置能力页应列出 10 项");
     cx.update(|window, cx| {
         use gpui_kit::test::TestWindowExt as _;
         window.render_frame(cx);

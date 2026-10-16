@@ -84,9 +84,6 @@ pub(crate) fn render_report_html(report: &AiReportView) -> String {
             html_escape(&metric.name),
             html_escape(&metric.timezone)
         );
-        if let Some(reference) = &metric.definition_ref {
-            text.push_str(&format!(" · 定义引用 {}", html_escape(reference)));
-        }
         if let Some(assumption) = &metric.assumption {
             text.push_str(&format!(" · 未确认假设：{}", html_escape(assumption)));
         }

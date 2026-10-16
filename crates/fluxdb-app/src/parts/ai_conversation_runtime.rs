@@ -82,7 +82,6 @@ impl AiRuntimeHandle {
                     tools = tools.with_hooks(ai_builtin_hooks(storage, job)?);
                     add_ai_file_tools(&mut tools, storage, job)?;
                     add_ai_reference_tools(&mut tools, storage, job)?;
-                    add_ai_knowledge_read_tools(&mut tools, storage, job)?;
                     // 产物依赖 SQL 列结构，不把 Redis 通用输出快照当成表格来源。
                     if tools.results().is_some() {
                         add_ai_artifact_tools(

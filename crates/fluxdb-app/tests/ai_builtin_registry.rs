@@ -18,7 +18,7 @@ fn instance(id: &str, package_key: &str, runtime_kind: &str, enabled: bool) -> P
 #[test]
 fn registry_contains_all_builtin_capability_entries() {
     let registry = BuiltinRegistry::new().unwrap();
-    assert_eq!(registry.descriptors().len(), 11);
+    assert_eq!(registry.descriptors().len(), 10);
     assert_eq!(
         registry
             .descriptors()
@@ -26,7 +26,7 @@ fn registry_contains_all_builtin_capability_entries() {
             .map(|descriptor| descriptor.package_key)
             .collect::<BTreeSet<_>>()
             .len(),
-        11
+        10
     );
     assert_eq!(
         registry

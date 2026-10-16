@@ -231,24 +231,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS ai_plugin_secret_kind
     ON ai_integration_secrets(plugin_instance_id, secret_kind) WHERE plugin_instance_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS ai_mcp_secret_kind
     ON ai_integration_secrets(mcp_setting_id, secret_kind) WHERE mcp_setting_id IS NOT NULL;
-
-CREATE TABLE IF NOT EXISTS ai_knowledge_entries (
-    id TEXT PRIMARY KEY,
-    title TEXT NOT NULL,
-    kind TEXT NOT NULL,
-    connection_id INTEGER,
-    database_name TEXT,
-    namespace TEXT,
-    agent_id TEXT REFERENCES ai_agents(id) ON DELETE RESTRICT,
-    scope_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(scope_json)),
-    content_json TEXT NOT NULL CHECK (json_valid(content_json)),
-    source_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(source_json)),
-    status TEXT NOT NULL CHECK (status IN ('proposed','confirmed','retired')),
-    revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
-    created_at_ms INTEGER NOT NULL,
-    updated_at_ms INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS ai_knowledge_kind_status ON ai_knowledge_entries(kind, status);"##;
+"##;
 
 /// 运行实体 DDL（会话 / 轮次 / 消息 / 工具 / 审计 / 结果 / 产物 / 计量 / 面板偏好）。
 pub const RUNTIME_SQL: &str = r##"CREATE TABLE IF NOT EXISTS ai_mcp_server_sessions (

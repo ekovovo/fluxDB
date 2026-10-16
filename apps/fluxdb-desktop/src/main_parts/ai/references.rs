@@ -466,7 +466,6 @@ fn ai_reference_visual(kind: &str, colors: UiColors) -> (AppIcon, gpui::Rgba) {
     match kind {
         "connection" | "database" | "redis_db" => (AppIcon::Database, colors.info),
         "table" | "view" | "schema" => (AppIcon::Table, colors.success),
-        "knowledge" => (AppIcon::Text, colors.warning),
         "saved_query" => (AppIcon::Query, colors.info),
         "selection" => (AppIcon::Select, colors.warning),
         "result_set" => (AppIcon::List, colors.success),
@@ -484,7 +483,6 @@ fn ai_reference_badge(kind: &str, colors: UiColors) -> gpui::AnyElement {
         "collection" => "集合",
         "redis_db" => "Redis DB",
         "redis_key" => "Redis Key",
-        "knowledge" => "知识",
         "file" => "文件",
         "saved_query" => "保存查询",
         "selection" => "选区",

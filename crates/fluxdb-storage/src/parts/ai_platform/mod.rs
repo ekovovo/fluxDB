@@ -10,7 +10,6 @@ pub mod context_checkpoints;
 pub mod context_references;
 pub mod conversation;
 pub mod execution_policy;
-pub mod knowledge;
 pub mod mcp;
 pub mod mcp_server;
 pub mod mcp_server_runtime;
@@ -53,7 +52,6 @@ pub const REQUIRED_TABLES: &[&str] = &[
     "ai_tool_settings",
     "ai_panel_preferences",
     "ai_integration_secrets",
-    "ai_knowledge_entries",
     "ai_mcp_server_sessions",
     "ai_mcp_server_requests",
     "ai_sessions",
@@ -172,6 +170,14 @@ mod tests {
             assert_eq!(count, 1, "缺少表 {table}");
         }
         verify_ai_schema(&conn).expect("结构校验");
+        let removed_table_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name='ai_knowledge_entries'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(removed_table_count, 0, "新库不再创建已移除的知识表");
     }
 
     #[test]

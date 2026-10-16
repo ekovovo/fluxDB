@@ -329,7 +329,7 @@ pub fn visible_tools(
 
 fn tool_view_from_spec(spec: &crate::ToolSpec) -> fluxdb_core::Result<Option<McpToolView>> {
     let Some(name) = mcp_tool_name(&spec.id) else {
-        // 内部工具（artifact.*/knowledge.* 等）不对外暴露。
+        // 内部工具（artifact.* 等）不对外暴露。
         return Ok(None);
     };
     Ok(Some(McpToolView {

@@ -70,15 +70,13 @@ fn artifact_create_schema() -> serde_json::Value {
                 "type": "object",
                 "additionalProperties": false,
                 "required": ["name", "timezone"],
-                "description":"指标口径；没有已授权口径时可整个省略 metric",
+                "description":"指标名称、时区与未确认的统计假设；不声明指标时可省略 metric",
                 "properties": {
                     "name": {"type": "string", "minLength": 1, "maxLength": 200},
-                    "definition_ref": {"type": "string", "minLength": 1, "maxLength": 128,
-                        "description":"已授权业务口径的知识条目 ID；不是 SQL 表达式、字段名或 result_ref。没有已授权口径时省略此字段"},
                     "timezone": {"type": "string", "minLength": 1, "maxLength": 64,
                         "description":"指标时区：UTC 或 +/-HH:MM 固定偏移；不支持 IANA 名称"},
                     "assumption": {"type":"string","minLength":1,"maxLength":2000,
-                        "description":"无已授权口径时对指标含义的假设说明"}
+                        "description":"对指标含义和统计范围的假设说明"}
                 }
             },
             "sources": {
@@ -284,7 +282,7 @@ struct ArtifactCreateTool {
 impl ArtifactCreateTool {
     fn new(producer: std::sync::Arc<dyn ArtifactProducer>) -> fluxdb_core::Result<Self> {
         let description = format!(
-            "创建报告/图表/表格产物草稿：sources/blocks.result_ref 是结果句柄；metric.definition_ref 只能用本轮已授权的业务口径 ID，不能用结果句柄或数据库对象名。没有已授权口径时省略 definition_ref。数字从真实结果取，不执行 SQL。可用 renderer：{}。来源必须来自同一任务。首选在本次调用里一次声明全部 blocks（图表/表格/说明）；只有确实遗漏时再用 artifact.add_block 追加。同一来源同一组字段的块只需声明一次，完全相同的块会被拒绝。回执的 blocks 列出草稿当前已有的块。",
+            "创建报告/图表/表格产物草稿：sources/blocks.result_ref 是结果句柄；metric 仅声明指标名称、时区及假设，不代表已核实的业务事实。数字从真实结果取，不执行 SQL。可用 renderer：{}。来源必须来自同一任务。首选在本次调用里一次声明全部 blocks（图表/表格/说明）；只有确实遗漏时再用 artifact.add_block 追加。同一来源同一组字段的块只需声明一次，完全相同的块会被拒绝。回执的 blocks 列出草稿当前已有的块。",
             producer.descriptor().renderers.join(", ")
         );
         Ok(Self {

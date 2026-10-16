@@ -11,7 +11,6 @@ pub enum BuiltinCapability {
     DecisionProvider,
     ContextProcessor,
     SecurityAudit,
-    KnowledgeSkills,
     ArtifactProducer,
     Progress,
     AgentHook,
@@ -194,7 +193,6 @@ const RETIRED: &[BuiltinCapability] = &[];
 const JEV: &[BuiltinCapability] = &[BuiltinCapability::DecisionProvider];
 const COMPACTION: &[BuiltinCapability] = &[BuiltinCapability::ContextProcessor];
 const SECURITY: &[BuiltinCapability] = &[BuiltinCapability::SecurityAudit];
-const KNOWLEDGE: &[BuiltinCapability] = &[BuiltinCapability::KnowledgeSkills];
 const BI: &[BuiltinCapability] = &[BuiltinCapability::ArtifactProducer];
 const PROGRESS: &[BuiltinCapability] = &[BuiltinCapability::Progress];
 const TELEMETRY: &[BuiltinCapability] =
@@ -427,16 +425,6 @@ pub const BUILTIN_DESCRIPTORS: &[BuiltinDescriptor] = &[
         capabilities: RETIRED,
         mandatory: false,
         retired: true,
-        config_declaration: "",
-    },
-    BuiltinDescriptor {
-        instance_id: "builtin.knowledge",
-        package_key: "fluxdb.knowledge.skills",
-        display_name: "业务知识与 Skills",
-        summary: "已确认业务知识与按需专业说明",
-        capabilities: KNOWLEDGE,
-        mandatory: false,
-        retired: false,
         config_declaration: "",
     },
     BuiltinDescriptor {

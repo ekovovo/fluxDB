@@ -70,36 +70,6 @@ impl BuiltinBiProducer {
         self
     }
 
-    /// 口径引用必须是本轮授权且仍确认的知识，完成时再次复核退休状态。
-    fn validate_metric_reference(
-        &self,
-        spec: &fluxdb_core::ArtifactSpec,
-    ) -> Result<(), ArtifactError> {
-        if let Some(reference) = spec
-            .metric
-            .as_ref()
-            .and_then(|metric| metric.definition_ref.as_ref())
-        {
-            with_ai_storage(&self.storage, |conn| {
-                let turn = fluxdb_storage::ai_platform::sessions::load_turn(conn, &self.turn_id)?;
-                let snapshot: serde_json::Value =
-                    serde_json::from_str(&turn.runtime_snapshot_json)
-                        .map_err(|_| Error::new(ErrorKind::Internal, "任务快照损坏"))?;
-                let authorized = snapshot["knowledge_ids"].as_array().map_or(&Vec::new(), |array| array).iter()
-                    .any(|id| id.as_str() == Some(reference));
-                if !authorized {
-                    return Err(Error::new(ErrorKind::Internal, format!("口径引用 {reference} 不属于本轮授权知识；若你引用的是结果句柄，请只能用于 sources/blocks。本轮已授权口径：{}", snapshot["knowledge_ids"])));
-                }
-                let entry = fluxdb_storage::ai_platform::knowledge::load(conn, reference)?;
-                if entry.status != "confirmed" {
-                    return Err(Error::new(ErrorKind::Internal, format!("口径 {reference} 当前状态 {}，不可用于产物", entry.status)));
-                }
-                    Ok(())
-            }).map_err(|error| ArtifactError::new("invalid_metric", error.message))?;
-        }
-        Ok(())
-    }
-
     /// 从本轮结果仓库解析句柄；解析不到就是"来源不可用"，不能靠猜。
     fn facts_for_handle(&self, declared: &str) -> Result<ResultFacts, ArtifactError> {
         let store = self
@@ -359,12 +329,11 @@ impl ArtifactProducer for BuiltinBiProducer {
             spec.accessibility_description = spec.title.clone();
         }
         if let Some(metric) = &mut spec.metric {
-            if metric.definition_ref.is_none() && metric.assumption.is_none() {
+            if metric.assumption.is_none() {
                 metric.assumption =
                     Some("未确认的口径假设；仅按来源原始字段展示，不视为业务事实".into());
             }
         }
-        self.validate_metric_reference(&spec)?;
         spec.validate_shape()
             .map_err(|error| ArtifactError::new("invalid_spec", error.message))?;
         if !self.descriptor.kinds.contains(&spec.kind) {
@@ -547,7 +516,6 @@ impl ArtifactProducer for BuiltinBiProducer {
             ));
         }
         let spec = self.parse_spec(&view)?;
-        self.validate_metric_reference(&spec)?;
         spec.validate_shape()
             .map_err(|error| ArtifactError::new("invalid_spec", error.message))?;
         // 来源仍可用：句柄必须还能从本轮结果仓库解析，字段也仍然存在。

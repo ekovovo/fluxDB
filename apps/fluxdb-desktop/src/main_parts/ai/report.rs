@@ -415,9 +415,6 @@ fn ai_report_body(
     }
     if let Some(metric) = &report.spec.metric {
         let mut meta = format!("指标口径：{} · 时区 {}", metric.name, metric.timezone);
-        if let Some(reference) = &metric.definition_ref {
-            meta.push_str(&format!(" · 定义引用 {reference}"));
-        }
         if let Some(assumption) = &metric.assumption {
             meta.push_str(&format!(" · 未确认假设：{assumption}"));
         }

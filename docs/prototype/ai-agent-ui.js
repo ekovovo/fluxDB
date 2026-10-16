@@ -29,7 +29,6 @@
     {id:'compaction',name:'上下文压缩',icon:'list-filter',description:'保护用户约束，卸载大结果，保留来源和检查点。'},
     {id:'security',name:'调用前安全审计',icon:'circle-check',description:'最终参数与目标审计；不可关闭，错误时阻止执行。',mandatory:true},
     {id:'budget',name:'Token 用量与执行保护',icon:'calendar-clock',description:'统计会话 Token；缺 usage 明确未知，保留运行保护。',mandatory:true},
-    {id:'knowledge',name:'业务知识与 Skills',icon:'folder',description:'按需加载已确认口径，不把模型提议当事实。'},
     {id:'bi',name:'BI 与报表输出',icon:'activity',description:'声明式图表与报告；数字回到查询来源。'},
     {id:'progress',name:'计划与执行进度',icon:'list',description:'公开计划、真实工具状态，不编造私有思考链。'},
     {id:'telemetry',name:'生命周期诊断',icon:'terminal-square',description:'脱敏耗时与错误信息；关闭不移除关键审计。'}

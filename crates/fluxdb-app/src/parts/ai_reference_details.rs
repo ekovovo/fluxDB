@@ -150,17 +150,6 @@ impl AppController {
                     ));
                 }
             }
-            "knowledge" => {
-                self.ai_storage()?.with_ai_connection(|conn| {
-                    let confirmed: bool = conn.query_row(
-                        "SELECT EXISTS(SELECT 1 FROM ai_knowledge_entries WHERE id=?1 AND status='confirmed')",
-                        [&reference.source], |row| row.get(0),
-                    ).map_err(|error| Error::new(ErrorKind::Internal, error.to_string()))?;
-                    if confirmed { Ok(()) } else {
-                        Err(Error::new(ErrorKind::Internal, "知识条目已移除或退休，请重新选择"))
-                    }
-                })?;
-            }
             "selection" | "result_set" => {
                 let source: serde_json::Value =
                     serde_json::from_str(&reference.source).map_err(reference_json_error)?;
@@ -218,98 +207,6 @@ impl AppController {
                 "text": excerpt.text, "truncated": excerpt.truncated || source["truncated"].as_bool().unwrap_or(false)}));
         }
         Ok(grants)
-    }
-}
-
-/// Turn 生效的知识正文列表（装配时从存储读取，一次即可，不重复回数据库）。
-struct KnowledgeEntryGrant {
-    id: String,
-    body: String,
-}
-
-pub struct KnowledgeReadTool {
-    descriptor: fluxdb_core::ToolDescriptor,
-    entries: Vec<KnowledgeEntryGrant>,
-}
-
-impl fluxdb_core::AiTool for KnowledgeReadTool {
-    fn descriptor(&self) -> &fluxdb_core::ToolDescriptor {
-        &self.descriptor
-    }
-
-    fn execute(
-        &self,
-        ctx: fluxdb_core::ToolExecutionContext,
-        arguments_json: String,
-    ) -> fluxdb_core::AiFuture<'_, fluxdb_core::ToolReceipt> {
-        Box::pin(async move {
-            let now = ai_chat_now();
-            let result = (|| {
-                if ctx.cancel.is_cancelled() {
-                    return Err(Error::new(ErrorKind::Internal, "知识读取已取消"));
-                }
-                let args: serde_json::Value =
-                    serde_json::from_str(&arguments_json).map_err(reference_json_error)?;
-                let id = args["knowledge_id"].as_str().unwrap_or_default();
-                let entry = self
-                    .entries
-                    .iter()
-                    .find(|entry| entry.id == id)
-                    .ok_or_else(|| {
-                        Error::new(ErrorKind::Internal, "知识条目不在本轮授权列表")
-                    })?;
-                let offset =
-                    usize::try_from(args["offset"].as_u64().unwrap_or(0)).unwrap_or(usize::MAX);
-                if offset > entry.body.len() || !entry.body.is_char_boundary(offset) {
-                    return Err(Error::new(
-                        ErrorKind::Internal,
-                        "知识偏移不在 UTF-8 边界",
-                    ));
-                }
-                let max_bytes =
-                    args["max_bytes"].as_u64().unwrap_or(1024).clamp(1, 4096) as usize;
-                let mut end = entry.body.len().min(offset.saturating_add(max_bytes));
-                while end > offset && !entry.body.is_char_boundary(end) {
-                    end -= 1;
-                }
-                let text = entry.body[offset..end].to_string();
-                Ok(serde_json::json!({
-                    "knowledge_id": id,
-                    "text": text,
-                    "next_offset": end,
-                    "has_more": end < entry.body.len(),
-                    "truncated": end < entry.body.len(),
-                    "untrusted": true,
-                    "scope": "用户按目标确认的业务口径，不是可执行 SQL"
-                }))
-            })();
-            let (status, result_json, error_code) = match result {
-                Ok(value) => (
-                    fluxdb_core::ToolReceiptStatus::Succeeded,
-                    value.to_string(),
-                    None,
-                ),
-                Err(error) => (
-                    if ctx.cancel.is_cancelled() {
-                        fluxdb_core::ToolReceiptStatus::Cancelled
-                    } else {
-                        fluxdb_core::ToolReceiptStatus::Failed
-                    },
-                    serde_json::json!({"error": error.message}).to_string(),
-                    Some("knowledge_unavailable".into()),
-                ),
-            };
-            Ok(fluxdb_core::ToolReceipt {
-                call_id: ctx.call_id,
-                tool_id: self.descriptor.id.clone(),
-                status,
-                result_json,
-                error_code,
-                affected_rows: None,
-                started_at_ms: now,
-                finished_at_ms: ai_chat_now(),
-            })
-        })
     }
 }
 
@@ -436,69 +333,4 @@ pub fn add_ai_reference_tools(
         session_id: job.session_id.clone(),
         turn_id: job.turn_id.clone(),
     }), ToolOutputShape::Read)
-}
-
-/// 只有插件启用且本轮已有可用知识时才装配 knowledge.read；
-/// 空目录不只是"没有工具"，让模型知道知识库对当前目标不可用。
-pub fn add_ai_knowledge_read_tools(
-    catalog: &mut ToolCatalog,
-    storage: &fluxdb_storage::FileStorage,
-    job: &AiConversationJob,
-) -> fluxdb_core::Result<()> {
-    let turn = storage
-        .with_ai_connection(|conn| {
-            fluxdb_storage::ai_platform::sessions::load_turn(conn, &job.turn_id)
-        })
-        .map(|turn| turn.runtime_snapshot_json)?;
-    let snapshot: serde_json::Value = serde_json::from_str(&turn).map_err(reference_json_error)?;
-    let allowed_ids: Vec<String> = snapshot["knowledge_ids"]
-        .as_array()
-        .map(|values| {
-            values
-                .iter()
-                .filter_map(|value| value.as_str().map(str::to_owned))
-                .collect()
-        })
-        .unwrap_or_default();
-    if allowed_ids.is_empty() {
-        return Ok(());
-    }
-    // 装配时才读正文；工具实例随目录释放，不进入运行快照。
-    let entries = storage.with_ai_connection(|conn| {
-        allowed_ids
-            .iter()
-            .map(|id| {
-                let entry = fluxdb_storage::ai_platform::knowledge::load(conn, id)?;
-                if entry.status != "confirmed" {
-                    return Err(Error::new(
-                        ErrorKind::Internal,
-                        "知识条目已退休或未确认，读取失败",
-                    ));
-                }
-                Ok(KnowledgeEntryGrant {
-                    id: entry.id.clone(),
-                    body: entry.content_json.clone(),
-                })
-            })
-            .collect::<fluxdb_core::Result<Vec<_>>>()
-    })?;
-    catalog.add_tool_with_shape(
-        Box::new(KnowledgeReadTool {
-            descriptor: fluxdb_core::ToolDescriptor {
-                id: "knowledge.read".into(),
-                version: 1,
-                risk: fluxdb_core::ToolRisk::Read,
-                description: "读取本轮已提示的 confirmed 知识正文；分段读取，不执行 SQL".into(),
-                input_schema_json: serde_json::json!({
-                    "type":"object","properties":{
-                        "knowledge_id":{"type":"string"},
-                        "offset":{"type":"integer","minimum":0},
-                        "max_bytes":{"type":"integer","minimum":1,"maximum":4096}
-                    },"required":["knowledge_id"],"additionalProperties":false}).to_string(),
-            },
-            entries,
-        }),
-        ToolOutputShape::Read,
-    )?;
-    Ok(())
 }

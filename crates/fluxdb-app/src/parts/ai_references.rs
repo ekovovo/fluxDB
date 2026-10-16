@@ -173,7 +173,7 @@ fn ai_reference_target(reference: &AiContextReference) -> fluxdb_core::Result<Op
     Ok((!target.is_empty()).then_some(target))
 }
 impl AppController {
-    /// 显式数据库引用决定本轮目标；文件/知识引用不改变目标，也不授予写权限。
+    /// 显式数据库引用决定本轮目标；文件引用不改变目标，也不授予写权限。
     fn referenced_execution_target(
         &self,
         references: &[AiContextReference],
@@ -277,9 +277,9 @@ fn ai_object_kind_label(kind: fluxdb_core::ObjectKind) -> &'static str {
 }
 
 impl AppController {
-    /// `@` 候选检索：连接、库/schema、表/视图、保存查询、选区、结果集、已授权附件与知识条目。
+    /// `@` 候选检索：连接、库/schema、表/视图、保存查询、选区、结果集、已授权附件。
     ///
-    /// 只返回**摘要元数据**（稳定 ID、标签、来源、简述）；对象正文/文件内容/知识正文
+    /// 只返回**摘要元数据**（稳定 ID、标签、来源、简述）；对象正文/文件内容
     /// 一律不在这里展开，详情走受控工具按需读取。查询为空时返回各类前若干条。
     pub fn ai_reference_candidates(
         &self,
@@ -450,39 +450,6 @@ impl AppController {
             );
         }
 
-        // 知识条目：只取 confirmed，只暴露标题/类型/作用域元数据，不展开正文。
-        // `@` 候选只出现在上下文来源 tab（AI 面板遮罩下仍看原业务页）的作用域内；
-        // 无工作区的全局页面不引入跨库口径。
-        let target = ui_context
-            .and_then(|context| {
-                let connection = context.target.connection_id;
-                let database = context.target.database.clone();
-                connection.map(|id| (id, database))
-            });
-        let entries = with_ai_storage(&storage, |conn| {
-            fluxdb_storage::ai_platform::knowledge::list_confirmed_scoped(
-                conn,
-                target.as_ref().map(|(id, db)| (*id, db.as_deref())),
-                &query,
-                AI_REFERENCE_CANDIDATE_LIMIT,
-            )
-        })?;
-        candidates.extend(entries.into_iter().map(|entry| AiContextReference {
-            id: format!("knowledge:{}", entry.id),
-            label: entry.title.clone(),
-            kind: "knowledge".into(),
-            source: entry.id.clone(),
-            summary: format!(
-                    "知识 · {} · {}（revision {}）· {}",
-                    entry.kind,
-                    entry
-                        .database_name
-                        .as_deref()
-                        .map(|db| format!("作用域 {db}"))
-                        .unwrap_or_else(|| "全局作用域".into()),
-                    entry.revision, entry.id
-                ),
-        }));
         let candidates = candidates
             .into_iter()
             .filter(|reference| {

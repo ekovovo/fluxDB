@@ -179,9 +179,6 @@ fn render_header(spec: &fluxdb_core::ArtifactSpec, sources: &[ArtifactSourceData
     );
     if let Some(metric) = &spec.metric {
         text.push_str(&format!("- 指标口径：{}", markdown_text(&metric.name)));
-        if let Some(reference) = &metric.definition_ref {
-            text.push_str(&format!("（定义引用 {}）", markdown_text(reference)));
-        }
         text.push_str(&format!("，时区 {}\n", metric.timezone));
         if let Some(assumption) = &metric.assumption {
             text.push_str(&format!("- 未确认假设：{}\n", markdown_text(assumption)));

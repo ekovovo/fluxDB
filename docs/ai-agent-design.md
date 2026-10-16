@@ -124,7 +124,7 @@
 | [Codex App Server](https://developers.openai.com/codex/app-server/)；[core 源码入口](https://github.com/openai/codex/tree/main/codex-rs/core/src) | session/turn/item、流式事件、审批与恢复分离 | 使用自己的 AppCommand/AppEvent；不连接其 App Server，不把其 UI 协议原样搬进领域模型 |
 | [Cline 文件上下文](https://docs.cline.bot/core-workflows/working-with-files)；[仓库](https://github.com/cline/cline) | 显式附件与 Agent 主动读取互补 | `@` 扩展到连接/表/结果集/Redis；不依赖 VS Code API |
 | [OpenCode 插件](https://opencode.ai/docs/plugins/)、[Agents](https://opencode.ai/docs/agents/)、[插件源码](https://github.com/anomalyco/opencode/blob/dev/packages/plugin/src/index.ts) | 插件事件、工具前后 Hook、Agent 配置 | 使用类型化能力和确定的冲突规则；不运行第三方 JS，也不允许 Hook 伪造成功回执 |
-| [Deep Agents](https://docs.langchain.com/oss/python/deepagents/overview)；[源码入口](https://github.com/langchain-ai/deepagents) | 按需 Skills、上下文卸载、专业能力组合 | 应用层上下文/工具/产物插件；首版不引入 Python 和默认多 Agent |
+| [Deep Agents](https://docs.langchain.com/oss/python/deepagents/overview)；[源码入口](https://github.com/langchain-ai/deepagents) | 上下文卸载、专业能力组合 | 应用层上下文/工具/产物插件；首版不引入 Python 和默认多 Agent |
 | [LangGraph 持久执行](https://docs.langchain.com/oss/python/langgraph/durable-execution)；[仓库](https://github.com/langchain-ai/langgraph) | 检查点、暂停/恢复与外部副作用边界 | 独立运行表与安全恢复；不能因为 checkpoint 就宣称跨数据库 exactly-once |
 | [DBHub](https://github.com/bytebase/dbhub) | 少量探索工具、渐进发现、查询与元数据能力 | 不把整库结构塞提示词；风险校验用真实驱动能力，不只 SQL 字符串检查 |
 | [Rig](https://github.com/0xPlaygrounds/rig)；[Agent 库源码](https://github.com/0xPlaygrounds/rig/tree/main/crates/rig-agent) | Rust 库、模型适配、类型化 Hook | 作为 Provider 层/基础组件候选；不把产品状态绑定到其当前 main 的 API |
@@ -369,7 +369,7 @@ Runtime 使用后台 actor 管理任务，控制消息与取消通过有界通�
 
 `ContextRef` 是结构化引用：类型、稳定 ID、连接与作用域、revision/fingerprint、展示标签、来源、授权范围。输入框显示 chip，不依靠模型解析字符串 `@orders`。
 
-候选包括连接、库/schema、表/视图、保存查询、编辑器选区、结果集、Redis Key、文件、知识条目；禁止默认把候选对象正文全发给模型。失效引用给可见说明；同名表按连接+库+schema 区分。
+候选包括连接、库/schema、表/视图、保存查询、编辑器选区、结果集、Redis Key、文件；禁止默认把候选对象正文全发给模型。失效引用给可见说明；同名表按连接+库+schema 区分。
 
 安全审计同时拒绝将fluxDB配置/凭据SQLite作为可查询数据库资源，不能只拦file.read而通过SQL读取配置。文件授权采用canonical root + 单文件授权，Path/PathBuf、平台目录和安全打开策略；每次读取检查 symlink/目录穿越与授权。存在 TOCTOU 风险的平台优先采用受控打开句柄，无法保证时明确限制。远端 SSH 文件与本机文件是不同资源空间。
 
@@ -476,17 +476,13 @@ UI参考唯一入口 [ai-agent-ui.html](/Users/shining3d/fusuwei/code/fluxDB/doc
 
 **就近参考：**[Pi TypeSafe协议](/Users/shining3d/fusuwei/code/pi/packages/ai/src/api/typesafe-system-one.ts)；[System One返回校验](/Users/shining3d/fusuwei/code/pi/packages/ai/src/api/system-one-shared.ts)。实际落点按本章/§7，不照搬源项目私有状态。
 
-## 19. Agent内提示词、Skills与业务知识
+## 19. Agent 内提示词
 
 提示词直接在Agent的“模型与提示词”页用多行输入框编辑，保存在ai_agents.system_prompt，与该Agent一起做revision/CAS；不建Agent内提示词表，不提供发布、版本比较或独立提示词管理页面。revision用于对象并发控制，不是提示词多版本管理。
 
 Turn开始捕获Agent revision、system_prompt原文与其hash到受隐私策略约束的运行快照；编辑只影响下一Turn，不能热替换正在执行的提示词。内核权限、执行保护、工具校验不依赖用户提示词，可以为空时仍有安全系统约束。原文不写入普通诊断日志，长度限64KiB UTF-8；摘要/上下文计入模型预算。
 
-Skills 是按需加载的专业说明、工具使用原则和输出要求，不是强制固定流程；插件提供 skills 与业务知识。指标定义、时间口径、退款/取消规则和表关系必须有作用域、来源、确认状态和 revision。
-
-首版使用结构化知识条目和检索，不依赖全库向量索引；模型提出的新规则必须用户确认才能成为长期事实。知识与上下文隔离到连接/库/Agent，不能把另一生产库的口径当作当前库真相。
-
-**就近参考：**[Pi Skills](/Users/shining3d/fusuwei/code/pi/packages/coding-agent/src/core/skills.ts)。实际落点按本章/§7，不照搬源项目私有状态。
+业务知识与 Skills 能力已于 2026-10-16 撤出本期实现：不作为插件提供，不建知识表，不装配知识工具、引用或提示词。后续另行规划；仅保留 `docs/prototype/knowledge-skills-ui.html` 及其样式、脚本供设计讨论，不代表已实现功能。
 
 ### 19.1 内置默认 Agent 与自定义助手（2026-10-06 用户修订）
 
@@ -1034,7 +1030,6 @@ ScopedArtifactHost 仅提供结果分页、来源校验、受控文件创建/提
 | `fluxdb.context.compaction` | 保护条目、卸载、摘要、checkpoint | 默认开；优化关闭不移除输入上限和保护约束 |
 | `fluxdb.security.audit` | 调用前确定性风险/授权检查和审计 | 强制注册，不能由配置删除/跳过 |
 | `fluxdb.usage.budget` | 会话 Token 用量统计看板（沿用插件 ID，**尚未实现**） | 目录占位行：置灰、不可启停、不登记能力；执行保护由内核负责，与本行是否启用无关 |
-| `fluxdb.knowledge.skills` | 已确认业务知识、按需专业说明 | 可开关/配置 scope，不把提议当事实 |
 | `fluxdb.output.bi` | 图表、表格、报告创建和渲染说明 | 可开关/绑定模板，控制输出 |
 | `fluxdb.progress.plan` | 公开计划、工具进展、检查点说明 | 默认开；只显示真实事件/模型公开内容 |
 | `fluxdb.lifecycle.telemetry` | 脱敏阶段耗时/错误/诊断汇总 | 可开关；关键执行/审计落盘不依赖它 |
@@ -1251,7 +1246,7 @@ AuditDecision：Allow / Deny / RequireApproval、risk、rule_ids、reason_codes�
   "kind": "report",
   "title": "销售额分析",
   "renderer": "fluxdb.bi.report",
-  "metric": {"name": "net_revenue", "definition_ref": "knowledge-ref", "timezone": "UTC"},
+  "metric": {"name": "net_revenue", "assumption": "按来源字段展示，业务口径未独立核实", "timezone": "UTC"},
   "sources": [{"result_ref": "result-handle", "tool_call_ref": "call-handle"}],
   "blocks": [
     {"type": "chart", "chart": "bar", "result_ref": "result-handle", "x": "channel", "y": "revenue"},
@@ -1923,7 +1918,7 @@ update_* 的每次 UPDATE 都必须检查 affected_rows=1，成功将 revision �
 
 AI 管理 DDL 见 §42.10，运行/辅助 DDL 见 §42.11。实现时唯一源码为 `ai_platform/schema.rs`；本设计作为评审基准，不再在 sqlite.rs 手写复制 DDL。所有打开 AI 表的 SQLite Connection 必须 foreign_keys=ON、busy_timeout；WAL 保持现有策略。
 
-管理实体一行一个 revision 做 CAS。会话追加型记录使用 seq/unique 与事务，不全量重写历史。现有 connection_store 的普通保存会 DELETE 全表再插入，因此本阶段不向 connections 添加 AI FK：知识条目的 connection_id 单独建列，由应用校验/标记失效，避免破坏现有保存；不顺手改连接存储。模型/Agent 等被引用时逻辑 disable；显式删除按 FK 拒绝或有确认的完整依赖清理，不隐式级联删除历史。
+管理实体一行一个 revision 做 CAS。会话追加型记录使用 seq/unique 与事务，不全量重写历史。现有 connection_store 的普通保存会 DELETE 全表再插入，因此本阶段不向 connections 添加 AI FK，避免破坏现有保存；不顺手改连接存储。模型/Agent 等被引用时逻辑 disable；显式删除按 FK 拒绝或有确认的完整依赖清理，不隐式级联删除历史。
 
 默认不保存完整结果集；按用户保留策略保存消息必要内容、执行摘要/引用。保留数据带 retention/redaction 状态；同库权限控制不等于全数据库加密，报告包含业务数据时仍需用户管理导出位置。
 
@@ -2281,7 +2276,7 @@ CLI 测试不必为了截图输出终端整屏长图。实际界面串行步骤�
 - M1：模型/Agent/提示词/插件实例等独立表管理与凭据；界面可配置。
 - M2：内置 runtime、无 Jev 路径、`@`/UI 上下文、受控 SQL/Redis/文件工具、审批/停止/恢复。
 - M2-MCP：复用 M2 工具提供 headless 本地 Server、Profile UI、独立审计和 Claude Code CLI 测试；不依赖Jev/未来第三方。
-- M3：路由/压缩/Hook、可选 Jev、业务知识与 BI 报表插件。
+- M3：路由/压缩/Hook、可选 Jev 与 BI 报表插件。
 - 本期边界：只交付内置插件与第三方接口；MCP Client、MongoDB/HTTP/SSH、安装/沙箱/市场另列未来，不是本期验收门槛。
 
 M2/M3 是用户核心体验目标，不能以只有管理页和聊天接口宣布完成。本期不交付第三方安装，不把内置能力或预留接口冒充热安装；发布文档如实标明。
@@ -2335,7 +2330,7 @@ T054–T063为MCP专项，T064–T066补设置/审计/当前Docker验收，见�
 | ai_mcp_settings | 一个 MCP server 设置 | revision；可选，不是整个全局 JSON |
 | ai_runtime_settings | 一份应用级 AI 运行设置 | singleton id=1 + revision；仍独立表 |
 
-辅助管理表：ai_agent_model_bindings、ai_agent_mcp_bindings、ai_mcp_server_profiles、ai_mcp_server_resource_grants、ai_plugin_packages、ai_integration_secrets、ai_knowledge_entries；公共模型/MCP 引用独立建列与 FK，不能藏在 plugin JSON。package/integration secrets 用于可安装插件/MCP 阶段，不能把它们借机做模型密钥存储。
+辅助管理表：ai_agent_model_bindings、ai_agent_mcp_bindings、ai_mcp_server_profiles、ai_mcp_server_resource_grants、ai_plugin_packages、ai_integration_secrets；公共模型/MCP 引用独立建列与 FK，不能藏在 plugin JSON。package/integration secrets 用于可安装插件/MCP 阶段，不能把它们借机做模型密钥存储。
 
 ### 42.3 模型 API Key 私有行与公共 DTO
 
@@ -2613,24 +2608,6 @@ CREATE UNIQUE INDEX IF NOT EXISTS ai_plugin_secret_kind
     ON ai_integration_secrets(plugin_instance_id, secret_kind) WHERE plugin_instance_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS ai_mcp_secret_kind
     ON ai_integration_secrets(mcp_setting_id, secret_kind) WHERE mcp_setting_id IS NOT NULL;
-
-CREATE TABLE IF NOT EXISTS ai_knowledge_entries (
-    id TEXT PRIMARY KEY,
-    title TEXT NOT NULL,
-    kind TEXT NOT NULL,
-    connection_id INTEGER,
-    database_name TEXT,
-    namespace TEXT,
-    agent_id TEXT REFERENCES ai_agents(id) ON DELETE RESTRICT,
-    scope_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(scope_json)),
-    content_json TEXT NOT NULL CHECK (json_valid(content_json)),
-    source_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(source_json)),
-    status TEXT NOT NULL CHECK (status IN ('proposed','confirmed','retired')),
-    revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
-    created_at_ms INTEGER NOT NULL,
-    updated_at_ms INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS ai_knowledge_kind_status ON ai_knowledge_entries(kind, status);
 ```
 
 字段约束补充：endpoint 禁止 embedded credentials/控制字符，非敏感 Provider JSON 禁止 auth headers；capabilities/config/permissions/tool lists 需限定形状，不因 json_valid 就直接可信。default_decision_model和decision角色必须decision；system绑定reconcile不得覆盖user绑定。ai_agents的默认/主/压缩/产物模型必须generation，decision role必须decision，提示词由Agent直接输入并限制长度；Jev binding 不可 required，这些项目需要应用事务校验，不能被普通保存接口绕过。

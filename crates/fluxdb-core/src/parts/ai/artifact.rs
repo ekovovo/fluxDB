@@ -27,7 +27,7 @@ pub const ARTIFACT_MAX_TIMEZONE_CHARS: usize = 64;
 pub const ARTIFACT_MAX_POINTS: usize = 500;
 /// 饼图切片上限：分类数超过此值时 renderer 不绘制饼图，改用可见说明（占比图切得太细读不出构成）。
 pub const ARTIFACT_MAX_PIE_SLICES: usize = 8;
-/// 来源及口径引用 ID 字符上限。
+/// 来源引用 ID 字符上限。
 pub const ARTIFACT_MAX_REF_CHARS: usize = 256;
 /// 过滤条件条数上限。
 pub const ARTIFACT_MAX_FILTERS: usize = 32;
@@ -127,13 +127,11 @@ pub enum ArtifactBlock {
     Note { text: String },
 }
 
-/// 指标口径：名称、可选知识定义引用或未确认假设、时区。
+/// 指标口径：名称、未确认假设与时区。
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ArtifactMetric {
     pub name: String,
-    /// 指向业务知识条目的 ID（口径来源）；没有确认口径时留空并在产物里标注假设。
-    pub definition_ref: Option<String>,
     /// 本期只支持 `UTC` 或 `±HH:MM` 固定偏移；IANA 名称返回不支持。
     pub timezone: String,
     /// 未确认的业务口径假设；是否需要用户确认由应用层决定。
@@ -145,7 +143,6 @@ impl Default for ArtifactMetric {
     fn default() -> Self {
         Self {
             name: String::new(),
-            definition_ref: None,
             timezone: "UTC".into(),
             assumption: None,
         }
@@ -272,9 +269,6 @@ impl ArtifactSpec {
         }
         if let Some(metric) = &self.metric {
             validate_artifact_text(&metric.name, ARTIFACT_MAX_FIELD_CHARS, "指标名称")?;
-            if let Some(reference) = &metric.definition_ref {
-                validate_artifact_text(reference, ARTIFACT_MAX_REF_CHARS, "口径定义 ID")?;
-            }
             if let Some(assumption) = &metric.assumption {
                 validate_artifact_text(assumption, ARTIFACT_MAX_NOTE_CHARS, "口径假设")?;
             }
@@ -459,7 +453,7 @@ mod artifact_tests {
             "kind": "report",
             "title": "Sales",
             "renderer": "fluxdb.bi.report",
-            "metric": {"name": "revenue", "definition_ref": null, "timezone": "UTC"},
+            "metric": {"name": "revenue", "timezone": "UTC"},
             "sources": [{"result_ref": "result-1", "tool_call_ref": "call-1"}],
             "blocks": []
         })
@@ -796,11 +790,6 @@ mod artifact_tests {
             |s| s.filters = vec!["x".repeat(ARTIFACT_MAX_FILTER_CHARS + 1)],
             |s| s.filters = vec!["x".into(); ARTIFACT_MAX_FILTERS + 1],
             |s| s.metric.as_mut().unwrap().name = "x".repeat(ARTIFACT_MAX_FIELD_CHARS + 1),
-            |s| s.metric.as_mut().unwrap().definition_ref = Some(" ".into()),
-            |s| {
-                s.metric.as_mut().unwrap().definition_ref =
-                    Some("x".repeat(ARTIFACT_MAX_REF_CHARS + 1))
-            },
             |s| s.metric.as_mut().unwrap().assumption = Some(" ".into()),
             |s| {
                 s.metric.as_mut().unwrap().assumption =

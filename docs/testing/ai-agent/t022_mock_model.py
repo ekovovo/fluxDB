@@ -33,7 +33,7 @@ class H(BaseHTTPRequestHandler):
             for m in msgs:
                 c = m.get("content")
                 if isinstance(c, str):
-                    mm = re.search(r'"(selection|result_set|knowledge|saved_query|file):[^"]+"', c)
+                    mm = re.search(r'"(selection|result_set|saved_query|file):[^"]+"', c)
                     if mm:
                         ref = mm.group(0).strip('"'); break
             if ref is None:

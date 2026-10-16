@@ -291,48 +291,7 @@ fn chat_enter_adds_newline_grows_and_caps_at_half_panel(cx: &mut TestAppContext)
 #[gpui::test]
 fn chat_reference_list_is_above_input_and_keyboard_accepts(cx: &mut TestAppContext) {
     let fixture = Fixture::new();
-    fixture
-        .storage
-        .with_ai_connection(|conn| {
-            fluxdb_storage::ai_platform::knowledge::save(
-                conn,
-                10,
-                &fluxdb_storage::ai_platform::knowledge::KnowledgeEntryEdit {
-                    id: "k-keyboard".into(),
-                    title: "测试键盘引用".into(),
-                    kind: "metric".into(),
-                    agent_id: None,
-                    connection_id: None,
-                    database_name: None,
-                    namespace: None,
-                    scope_json: "{}".into(),
-                    content_json: "{}".into(),
-                    source_json: "{}".into(),
-                    status: "confirmed".into(),
-                },
-                None,
-            )?;
-            fluxdb_storage::ai_platform::knowledge::save(
-                conn,
-                11,
-                &fluxdb_storage::ai_platform::knowledge::KnowledgeEntryEdit {
-                    id: "k-mouse".into(),
-                    title: "测试键盘引用二".into(),
-                    kind: "metric".into(),
-                    agent_id: None,
-                    connection_id: None,
-                    database_name: None,
-                    namespace: None,
-                    scope_json: "{}".into(),
-                    content_json: "{}".into(),
-                    source_json: "{}".into(),
-                    status: "confirmed".into(),
-                },
-                None,
-            )?;
-            Ok(())
-        })
-        .unwrap();
+    seed_reference_connections(&fixture, &["测试键盘引用", "测试键盘引用二"]);
     let (view, cx) = open_main(cx, &fixture, fixture.controller(), ThemeMode::Dark);
     open_panel(&view, cx);
     replace_input(&view, cx, "@测试键盘");
@@ -373,7 +332,7 @@ fn chat_reference_list_is_above_input_and_keyboard_accepts(cx: &mut TestAppConte
     }));
     replace_input(&view, cx, "@测试键盘");
     draw(cx);
-    click_selector(cx, "ai-reference-candidate:knowledge:k-keyboard");
+    click_selector(cx, "ai-reference-candidate:connection:1");
     wait_idle(&view, cx);
     assert!(view.read_with(cx, |main, _| {
         main.controller
@@ -381,7 +340,7 @@ fn chat_reference_list_is_above_input_and_keyboard_accepts(cx: &mut TestAppConte
             .ai_conversation
             .context_references
             .iter()
-            .any(|r| r.id == "knowledge:k-keyboard")
+            .any(|r| r.id == "connection:1")
     }));
     replace_input(&view, cx, "@测试键盘");
     cx.simulate_keystrokes("escape");
@@ -406,30 +365,7 @@ fn selected_reference_chip_stays_visible_above_textarea_dark(cx: &mut TestAppCon
 
 fn check_selected_reference_visibility(cx: &mut TestAppContext, mode: ThemeMode) {
     let fixture = Fixture::new();
-    fixture
-        .storage
-        .with_ai_connection(|conn| {
-            fluxdb_storage::ai_platform::knowledge::save(
-                conn,
-                10,
-                &fluxdb_storage::ai_platform::knowledge::KnowledgeEntryEdit {
-                    id: "k-visible".into(),
-                    title: "已选引用标签".into(),
-                    kind: "metric".into(),
-                    agent_id: None,
-                    connection_id: None,
-                    database_name: None,
-                    namespace: None,
-                    scope_json: "{}".into(),
-                    content_json: "{}".into(),
-                    source_json: "{}".into(),
-                    status: "confirmed".into(),
-                },
-                None,
-            )?;
-            Ok(())
-        })
-        .unwrap();
+    seed_reference_connections(&fixture, &["已选引用标签"]);
     let (view, cx) = open_main(cx, &fixture, fixture.controller(), mode);
     open_panel(&view, cx);
     cx.simulate_resize(size(px(900.), px(600.)));
@@ -449,7 +385,7 @@ fn check_selected_reference_visibility(cx: &mut TestAppContext, mode: ThemeMode)
     let assert_visible = |cx: &mut VisualTestContext| {
         draw(cx);
         let area = cx.debug_bounds("ai-chat-references-scroll").unwrap();
-        let chip = cx.debug_bounds("ai-reference:knowledge:k-visible").unwrap();
+        let chip = cx.debug_bounds("ai-reference:connection:1").unwrap();
         let input = cx.debug_bounds("ai-chat-input").unwrap();
         assert!(area.size.height >= px(28.), "引用区不能塌缩: {area:?}");
         assert!(
@@ -466,7 +402,7 @@ fn check_selected_reference_visibility(cx: &mut TestAppContext, mode: ThemeMode)
     replace_input(&view, cx, &"多行草稿\n".repeat(50));
     cx.run_until_parked();
     assert_visible(cx);
-    click_selector(cx, "ai-reference-remove:knowledge:k-visible");
+    click_selector(cx, "ai-reference-remove:connection:1");
     wait_idle(&view, cx);
     assert!(view.read_with(cx, |main, _| {
         main.controller

@@ -1,41 +1,40 @@
-fn seed_send_reference(fixture: &Fixture) {
-    fixture
-        .storage
-        .with_ai_connection(|conn| {
-            fluxdb_storage::ai_platform::knowledge::save(
-                conn,
-                10,
-                &fluxdb_storage::ai_platform::knowledge::KnowledgeEntryEdit {
-                    id: "k-send".into(),
-                    title: "发送引用测试".into(),
-                    kind: "metric".into(),
-                    agent_id: None,
-                    connection_id: None,
-                    database_name: None,
-                    namespace: None,
-                    scope_json: "{}".into(),
-                    content_json: "{}".into(),
-                    source_json: "{}".into(),
-                    status: "confirmed".into(),
+fn seed_reference_connections(fixture: &Fixture, names: &[&str]) {
+    let connections = names
+        .iter()
+        .enumerate()
+        .map(|(index, name)| {
+            // 数据库放在配置目录之外，仍走生产的配置库隔离校验。
+            let path = fixture.root.with_extension("sqlite");
+            std::fs::File::create(&path).unwrap();
+            fluxdb_core::ConnectionConfig {
+                id: fluxdb_core::ConnectionId(index as u64 + 1),
+                name: (*name).into(),
+                kind: fluxdb_core::DatabaseKind::Sqlite,
+                endpoint: fluxdb_core::Endpoint::SqliteFile {
+                    path,
+                    read_only: true,
                 },
-                None,
-            )?;
-            Ok(())
+                options: Default::default(),
+                redis_profile: None,
+                mysql_profile: None,
+                postgres_profile: None,
+            }
         })
-        .unwrap();
+        .collect::<Vec<_>>();
+    fixture.storage.save_connections(&connections).unwrap();
 }
 
 #[gpui::test]
 async fn send_consumes_draft_references_but_keeps_message_tags(cx: &mut TestAppContext) {
     cx.executor().allow_parking();
     let fixture = Fixture::seeded();
-    seed_send_reference(&fixture);
+    seed_reference_connections(&fixture, &["发送引用测试"]);
     let (view, cx) = open_main(cx, &fixture, fixture.controller(), ThemeMode::Light);
     open_panel(&view, cx);
     replace_input(&view, cx, "@发送引用测试");
     cx.simulate_keystrokes("enter");
     wait_idle(&view, cx);
-    assert!(cx.debug_bounds("ai-reference:knowledge:k-send").is_some());
+    assert!(cx.debug_bounds("ai-reference:connection:1").is_some());
     let job = start_scripted_send(&fixture, &view, cx, "解释该引用");
     assert!(cx.debug_bounds("ai-chat-references-scroll").is_none());
     assert!(view.read_with(cx, |main, _| {
@@ -80,7 +79,7 @@ async fn send_consumes_draft_references_but_keeps_message_tags(cx: &mut TestAppC
             let turn = sessions::load_turn(conn, &job.turn_id)?;
             let snapshot: serde_json::Value =
                 serde_json::from_str(&turn.runtime_snapshot_json).unwrap();
-            assert_eq!(snapshot["context_references"][0]["id"], "knowledge:k-send");
+            assert_eq!(snapshot["context_references"][0]["id"], "connection:1");
             assert!(
                 fluxdb_storage::ai_platform::context_references::list(conn, Some("one"))?
                     .is_empty()
@@ -93,7 +92,7 @@ async fn send_consumes_draft_references_but_keeps_message_tags(cx: &mut TestAppC
 #[gpui::test]
 fn failed_send_preserves_prompt_and_reference_chip(cx: &mut TestAppContext) {
     let fixture = Fixture::seeded();
-    seed_send_reference(&fixture);
+    seed_reference_connections(&fixture, &["发送引用测试"]);
     fixture.storage.with_ai_connection(|conn| {
         conn.execute_batch("CREATE TRIGGER fail_send_ref BEFORE INSERT ON ai_turns BEGIN SELECT RAISE(ABORT,'send failure'); END;").unwrap();
         Ok(())
@@ -107,7 +106,7 @@ fn failed_send_preserves_prompt_and_reference_chip(cx: &mut TestAppContext) {
     click_selector(cx, "ai-chat-send");
     wait_idle(&view, cx);
     assert_eq!(input_value(&view, cx), "发送失败必须保留");
-    assert!(cx.debug_bounds("ai-reference:knowledge:k-send").is_some());
+    assert!(cx.debug_bounds("ai-reference:connection:1").is_some());
     assert!(view.read_with(cx, |main, _| main.ai_chat.error.is_some()
         && main.ai_chat.running.is_none()));
     assert_eq!(

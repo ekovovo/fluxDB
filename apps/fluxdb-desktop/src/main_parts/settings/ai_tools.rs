@@ -309,7 +309,6 @@ fn ai_builtin_icon(package_key: &str) -> AppIcon {
         "fluxdb.context.compaction" => AppIcon::Filter,
         "fluxdb.security.audit" => AppIcon::Check,
         "fluxdb.usage.budget" => AppIcon::CalendarClock,
-        "fluxdb.knowledge.skills" => AppIcon::Folder,
         "fluxdb.output.bi" => AppIcon::Table,
         "fluxdb.progress.plan" => AppIcon::List,
         _ => AppIcon::Plug,

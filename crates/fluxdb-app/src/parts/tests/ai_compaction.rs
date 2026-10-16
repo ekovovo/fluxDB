@@ -4,8 +4,34 @@
 use crate::{
     CompactionCut, CompactionReason, CompactionTrigger, build_summary_prompt, compute_cut,
     cut_candidates, estimate_messages_tokens, estimate_tokens, exceeds_input_budget,
-    should_compact, source_hash, validate_summary,
+    resolve_output_token_limit, should_compact, source_hash, validate_summary,
 };
+
+#[test]
+fn configured_output_budget_is_used_instead_of_a_fixed_ceiling() {
+    // 曾经这里被封顶到 1024：推理模型思考用光额度后正文为空。
+    assert_eq!(
+        resolve_output_token_limit(Some(1_000_000), Some(16_000)),
+        16_000
+    );
+    assert_eq!(resolve_output_token_limit(Some(32_768), Some(4_096)), 4_096);
+}
+
+#[test]
+fn missing_output_budget_is_derived_from_window_and_never_starves_input() {
+    // 窗口未知：给固定默认值，不能退化成 0 或极小值。
+    assert_eq!(resolve_output_token_limit(None, None), 8_192);
+    assert_eq!(resolve_output_token_limit(Some(0), None), 8_192);
+    // 大窗口按 1/4 推导但不超过默认值；小窗口不超出窗口本身。
+    assert_eq!(resolve_output_token_limit(Some(1_000_000), None), 8_192);
+    assert_eq!(resolve_output_token_limit(Some(8_192), None), 2_048);
+    // 输出必须给输入留位置：显式配置顶满窗口也要收敛。
+    assert_eq!(resolve_output_token_limit(Some(4_096), Some(4_096)), 3_072);
+    assert_eq!(resolve_output_token_limit(Some(1_024), Some(4_096)), 1);
+    // 非法的 0 / 负数按未配置处理。
+    assert_eq!(resolve_output_token_limit(Some(1_000_000), Some(0)), 8_192);
+    assert_eq!(resolve_output_token_limit(Some(1_000_000), Some(-5)), 8_192);
+}
 
 fn trigger(percent: u8, window: i64, output: i64) -> CompactionTrigger {
     CompactionTrigger {

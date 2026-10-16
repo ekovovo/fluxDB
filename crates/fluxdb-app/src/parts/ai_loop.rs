@@ -111,7 +111,11 @@ pub enum LoopEvent {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TurnOutcome {
     /// 模型给出了最终回答（本轮没有工具调用）。
-    Completed { text: String },
+    Completed {
+        text: String,
+        /// 结束原因为长度截断：正文可能不完整，推理模型下甚至可能完全没有正文。
+        truncated: bool,
+    },
     /// 安全暂停：达到迭代上限或无进展，需要用户介入。
     Paused { reason: String },
     /// 基础设施失败（Provider/工具返回 Err），不是普通工具错误。
@@ -316,7 +320,10 @@ impl<'a> TurnRunner<'a> {
                         "回答达到长度上限，内容可能被截断。".to_string(),
                     ));
                 }
-                return TurnOutcome::Completed { text: last_text };
+                return TurnOutcome::Completed {
+                    text: last_text,
+                    truncated: finish == Some(fluxdb_core::FinishReason::Length),
+                };
             }
 
             // 输出被截断：工具参数可能不完整，**不执行**，把结构化说明回给模型让它修正。

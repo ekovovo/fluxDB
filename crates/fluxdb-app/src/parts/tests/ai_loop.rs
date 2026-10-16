@@ -471,7 +471,8 @@ fn ai_loop_failed_tool_receipt_is_fed_back_and_completes() {
     assert_eq!(
         outcome,
         crate::TurnOutcome::Completed {
-            text: "已根据失败回执调整".into()
+            text: "已根据失败回执调整".into(),
+            truncated: false
         }
     );
 }
@@ -599,7 +600,8 @@ fn ai_loop_completes_without_decision_provider() {
     assert_eq!(
         outcome,
         crate::TurnOutcome::Completed {
-            text: "你好".into()
+            text: "你好".into(),
+            truncated: false
         }
     );
     let iterations = events
@@ -896,7 +898,8 @@ fn ai_loop_retries_transient_provider_failure_within_same_turn() {
     assert_eq!(
         outcome,
         TurnOutcome::Completed {
-            text: "已恢复".into()
+            text: "已恢复".into(),
+            truncated: false
         },
         "瞬时超时应重试而不是整轮失败"
     );

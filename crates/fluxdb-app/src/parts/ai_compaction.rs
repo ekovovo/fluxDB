@@ -62,6 +62,32 @@ fn estimate_tools_tokens(tools: &[fluxdb_core::ToolDescriptor]) -> i64 {
         .sum()
 }
 
+/// 单次回复的输出 token 上限：优先用模型档案配置，未配置时按上下文窗口推导。
+///
+/// 这个值同时决定请求的 `max_output_tokens` 和压缩时的输出预留，两者必须同源，
+/// 否则会出现「预留了很多、实际只发很少」的偏差。
+///
+/// 推理模型的思考 token 与正文共用同一额度，上限过小会让模型想完就停、正文一个字都没有
+/// （协议返回 `response.incomplete`），因此未配置时给一个够用的默认值而不是极小值。
+/// 同时必须给输入留出正预算：输出上限顶满窗口时输入无处安放，请求必然被服务端拒绝，
+/// 所以显式配置也按「窗口 − 最小输入预留」收敛。
+pub fn resolve_output_token_limit(context_window: Option<i64>, configured: Option<i64>) -> i64 {
+    /// 窗口未知时的输出默认值。
+    const DEFAULT_OUTPUT: i64 = 8_192;
+    /// 输出之外必须保留的输入空间。
+    const MIN_INPUT_RESERVE: i64 = 1_024;
+    let window = context_window.filter(|window| *window > 0);
+    let derived = match window {
+        Some(window) => (window / 4).min(DEFAULT_OUTPUT),
+        None => DEFAULT_OUTPUT,
+    };
+    let requested = configured.filter(|value| *value > 0).unwrap_or(derived);
+    match window {
+        Some(window) => requested.min((window - MIN_INPUT_RESERVE).max(1)),
+        None => requested,
+    }
+}
+
 /// 压缩触发判定输入。
 #[derive(Debug, Clone, Copy)]
 pub struct CompactionTrigger {

@@ -330,7 +330,7 @@ fn ai_conversation_run_turn(
         turn_id: job.turn_id.clone(),
         model: job.model_profile_id.clone(),
         messages,
-        max_output_tokens: Some(1024),
+        max_output_tokens,
         target_json,
     };
     let mut stream = AiConversationStreamPublisher::new(text.len());
@@ -470,8 +470,10 @@ fn ai_conversation_run_turn(
         },
     );
 
+    let mut truncated = false;
     let status = match outcome {
-        TurnOutcome::Completed { .. } => {
+        TurnOutcome::Completed { truncated: cut, .. } => {
+            truncated = cut;
             fluxdb_storage::ai_platform::sessions::TurnStatus::Completed
         }
         TurnOutcome::Cancelled => fluxdb_storage::ai_platform::sessions::TurnStatus::Cancelled,
@@ -544,6 +546,12 @@ fn ai_conversation_run_turn(
             }
             fluxdb_storage::ai_platform::sessions::TurnStatus::WaitingApproval => {
                 paused_reason.clone().unwrap_or_else(|| "等待审批。".into())
+            }
+            // 推理模型在输出上限内把额度全部用于思考时，正文一个字都不会产生；
+            // 这种"长度截断但无正文"必须提示调大输出上限，不能笼统说成空响应。
+            _ if truncated => {
+                "模型在输出上限内未产出正文（额度可能全部用于推理）。请调大该模型的最大输出后重试。"
+                    .into()
             }
             _ => "模型未返回正文。".into(),
         });

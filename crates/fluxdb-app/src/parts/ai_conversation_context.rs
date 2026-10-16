@@ -149,7 +149,10 @@ fn ai_conversation_turn_messages(
             previous_summary,
             next_generation,
             context_window_tokens: model.context_window_tokens,
-            max_output_tokens: Some(model.max_output_tokens.unwrap_or(1024).min(1024).max(0)),
+            max_output_tokens: Some(resolve_output_token_limit(
+                model.context_window_tokens,
+                model.max_output_tokens,
+            )),
             trigger_percent,
             max_iterations,
             compaction_model,

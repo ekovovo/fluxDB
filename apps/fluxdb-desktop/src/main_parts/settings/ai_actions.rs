@@ -416,7 +416,7 @@ impl NavicatMain {
             dialog.enabled = model.enabled;
             dialog.egress = model.egress;
             dialog.endpoint_is_full_url = model.endpoint_is_full_url;
-            fill_ai_model_inputs(&dialog.inputs, model, window, cx);
+            fill_ai_model_inputs(&mut dialog, model, window, cx);
             // 编辑态把已存 Key 预填进掩码输入框（显示黑点，点眼睛看真实值）。
             // 明文只活在这个 InputState 里：不进事件、不进快照、不落日志。
             if model.credential_status == "已配置" {
@@ -606,7 +606,7 @@ impl NavicatMain {
 ///
 /// 只回填非敏感字段；API Key 不回显（掩码框留空表示保留原凭据）。
 fn fill_ai_model_inputs(
-    inputs: &AiModelDialogInputs,
+    dialog: &mut AiModelDialog,
     model: &fluxdb_app::AiModelItem,
     window: &mut Window,
     cx: &mut Context<NavicatMain>,
@@ -620,6 +620,7 @@ fn fill_ai_model_inputs(
     ) {
         input.update(cx, |state, cx| state.set_value(value, window, cx));
     }
+    let inputs = &dialog.inputs;
     // Provider 下拉回填：编辑时必须显示已存 Provider，否则保存会把类型改掉。
     let expected = fluxdb_app::ModelProvider::from_stored(&model.provider).label();
     let current = inputs
@@ -642,21 +643,20 @@ fn fill_ai_model_inputs(
         window,
         cx,
     );
-    set(
+    // 容量字段的单位按数量级回填：1M 显示为「1 M」而不是「1000 K」。
+    fill_ai_capacity_field(
+        model.context_window_tokens,
         &inputs.context_window,
-        model
-            .context_window_tokens
-            .map(|v| ai_format_token_count(v, AiTokenUnit::K))
-            .unwrap_or_default(),
+        &inputs.context_unit,
+        &mut dialog.capacity_units[0],
         window,
         cx,
     );
-    set(
+    fill_ai_capacity_field(
+        model.max_output_tokens,
         &inputs.max_output,
-        model
-            .max_output_tokens
-            .map(|v| ai_format_token_count(v, AiTokenUnit::K))
-            .unwrap_or_default(),
+        &inputs.output_unit,
+        &mut dialog.capacity_units[1],
         window,
         cx,
     );

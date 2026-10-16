@@ -70,7 +70,10 @@ impl AiConversationProvider {
             endpoint,
             auth,
             model: model.model.clone(),
-            max_output_tokens: Some(model.max_output_tokens.unwrap_or(1024).min(1024)),
+            max_output_tokens: Some(resolve_output_token_limit(
+                model.context_window_tokens,
+                model.max_output_tokens,
+            )),
             capabilities: fluxdb_core::ModelCapabilities {
                 streaming: true,
                 // 工具交给模型前仍要经过内核授权；这里只声明协议能力。

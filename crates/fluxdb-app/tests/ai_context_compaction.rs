@@ -987,8 +987,11 @@ fn paused_compaction_keeps_two_visible_copies_and_never_marks_success() {
     );
 }
 
-/// 用给定取舍跑满 10 轮，返回（会话 id、每次决策请求的候选、最终 checkpoint 切点）。
-fn run_with_decision_pick(fixture: &Fixture, pick: CutPick) -> (String, Vec<Vec<String>>, i64) {
+/// 用给定取舍跑满 10 轮，返回（会话 id、每次决策请求的候选、全部已提交 checkpoint 的切点）。
+fn run_with_decision_pick(
+    fixture: &Fixture,
+    pick: CutPick,
+) -> (String, Vec<Vec<String>>, Vec<i64>) {
     let mut controller = fixture.configured(35, Some(4_096));
     let (endpoint, seen) = spawn_compaction_mock(pick);
     configure_compaction_decision_model(fixture, &mut controller, &endpoint);
@@ -1002,11 +1005,29 @@ fn run_with_decision_pick(fixture: &Fixture, pick: CutPick) -> (String, Vec<Vec<
         .session_id
         .clone()
         .expect("已有会话");
-    let checkpoint = fixture
+    // 取全部 checkpoint 而不只是最后一个：候选不足 2 个的轮次本就不发决策请求，
+    // 最终落在哪一轮取决于轨迹，不能据此判断决策建议是否被采用。
+    let cuts: Vec<i64> = fixture
         .storage
-        .with_ai_connection(|conn| context_checkpoints::load_latest(conn, &session_id))
-        .unwrap()
-        .expect("触发后应提交 checkpoint");
+        .with_ai_connection(|conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT last_message_seq FROM ai_context_checkpoints WHERE session_id=?1 ORDER BY generation",
+                )
+                .map_err(|e| {
+                    fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, e.to_string())
+                })?;
+            let rows = stmt
+                .query_map([session_id.as_str()], |row| row.get::<_, i64>(0))
+                .map_err(|e| fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, e.to_string()))?
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(|e| {
+                    fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, e.to_string())
+                })?;
+            Ok(rows)
+        })
+        .unwrap();
+    assert!(!cuts.is_empty(), "触发后应提交 checkpoint");
     // 空候选只可能来自 mock 没读全请求体；宿主在候选不足时根本不会发请求。
     let requests: Vec<Vec<String>> = seen
         .lock()
@@ -1015,17 +1036,17 @@ fn run_with_decision_pick(fixture: &Fixture, pick: CutPick) -> (String, Vec<Vec<
         .filter(|ids| !ids.is_empty())
         .cloned()
         .collect();
-    (session_id, requests, checkpoint.last_message_seq)
+    (session_id, requests, cuts)
 }
 
 /// 压缩决策模型真的参与压缩：它选的切点决定 checkpoint 覆盖到哪一条历史。
 ///
 /// 走真实链路：真实 SQLite + 真实 System One HTTP（本地 mock）+ 真实 checkpoint 表。
-/// 两次运行只有"决策模型选哪个切点"不同，最终切点必须随之不同——否则说明建议没被采用。
+/// 两次运行只有"决策模型选哪个切点"不同，已提交切点序列必须随之不同——否则说明建议没被采用。
 #[test]
 fn compaction_decision_model_choice_selects_the_cut() {
     let fixture = Fixture::new();
-    let (session_id, requests, most_cut) = run_with_decision_pick(&fixture, CutPick::Most);
+    let (session_id, requests, most_cuts) = run_with_decision_pick(&fixture, CutPick::Most);
     assert!(
         !requests.is_empty(),
         "配置了压缩决策模型后必须真的发出决策请求"
@@ -1034,15 +1055,16 @@ fn compaction_decision_model_choice_selects_the_cut() {
         requests.iter().all(|ids| ids.len() >= 2),
         "候选必须是宿主算好的多个合法切点：{requests:?}"
     );
-    // 提交的切点必须来自决策模型给出的候选，而不是宿主自己挑的。
+    // mock 每次都选最大的候选：这些切点必须真的落在 checkpoint 上，
+    // 而不是宿主自己挑的确定性切点。
     let chosen: Vec<i64> = requests
         .iter()
         .filter_map(|ids| ids.iter().max_by_key(|id| seq_of_candidate(id)).cloned())
         .filter_map(|id| seq_of_candidate(&id))
         .collect();
     assert!(
-        chosen.contains(&most_cut),
-        "checkpoint 切点 {most_cut} 必须来自决策模型的候选：{chosen:?}"
+        most_cuts.iter().any(|cut| chosen.contains(cut)),
+        "至少一个 checkpoint 切点必须来自决策模型的候选：cuts={most_cuts:?}, chosen={chosen:?}"
     );
     // 决策请求仍必须进入账本（不吞掉用量）。
     let rows = ledger_rows(&fixture, &session_id);
@@ -1051,12 +1073,12 @@ fn compaction_decision_model_choice_selects_the_cut() {
         "压缩决策请求必须进入计量账本：{rows:?}"
     );
 
-    // 同样历史、只把决策模型换成"压缩最少"，最终切点必须不同。
+    // 同样历史、只把决策模型换成"压缩最少"，切点序列必须不同。
     let other = Fixture::new();
-    let (_, other_requests, least_cut) = run_with_decision_pick(&other, CutPick::Least);
+    let (_, other_requests, least_cuts) = run_with_decision_pick(&other, CutPick::Least);
     assert!(!other_requests.is_empty(), "另一组也必须真的发出决策请求");
     assert_ne!(
-        most_cut, least_cut,
+        most_cuts, least_cuts,
         "决策模型选了不同的切点，压缩结果必须随之不同（否则建议没有被采用）"
     );
 }

@@ -230,6 +230,8 @@ fn ai_chat_part(
     target_json: Option<&str>,
     // 非空表示该正文片段正由平滑揭示实体驱动（流式进行中）。
     stream_view: Option<&Entity<gpui_component::text::TextViewState>>,
+    // 该工具调用正在执行时的实时进度；仅未完成调用有值。
+    live_progress: Option<&fluxdb_app::AiConversationToolProgress>,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> gpui::AnyElement {
@@ -254,6 +256,9 @@ fn ai_chat_part(
     }
     if part.kind == "artifact_ref" {
         return ai_chat_artifact_card(part, &payload, &text, colors, cx);
+    }
+    if part.kind == "plan" {
+        return ai_chat_plan_card(part, &payload, colors);
     }
     if part.kind == "text" {
         // 流式进行中由平滑揭示实体渲染；其余（含已结束片段）按 Markdown 渲染。
@@ -315,6 +320,10 @@ fn ai_chat_part(
         .get("duration_ms")
         .and_then(serde_json::Value::as_i64)
         .filter(|duration_ms| *duration_ms >= 0);
+    // 执行中（回执未到）用实时进度里的耗时；回执到达后以落盘 duration 为准。
+    let duration_ms = duration_ms.or_else(|| {
+        live_progress.map(|progress| progress.elapsed_ms as i64)
+    });
     let id = part.id.clone();
     let execution_unknown =
         payload.get("execution_status").and_then(|v| v.as_str()) == Some("unknown");
@@ -462,6 +471,40 @@ fn ai_chat_part(
                     ),
             )
         })
+        // 执行中的实时进度：只有尚未收到回执的调用才有值，展示已返回/影响行数与耗时。
+        .when_some(live_progress, |this, progress| {
+            let detail = if progress.affected_rows > 0 {
+                format!(
+                    "进行中 · 已影响 {} 行 · {}ms",
+                    progress.affected_rows, progress.elapsed_ms
+                )
+            } else {
+                format!(
+                    "进行中 · 已返回 {} 行 · {}ms",
+                    progress.returned_rows, progress.elapsed_ms
+                )
+            };
+            this.child(
+                div()
+                    .id(SharedString::from(format!("ai-part-progress:{}", part.id)))
+                    .debug_selector({
+                        let id = part.id.clone();
+                        move || format!("ai-part-progress:{id}")
+                    })
+                    .test_support()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .pl(px(18.))
+                    .child(div().size(px(5.)).rounded_full().bg(colors.info))
+                    .child(
+                        div()
+                            .text_size(px(10.))
+                            .text_color(colors.info)
+                            .child(detail),
+                    ),
+            )
+        })
         .when(expanded, |this| {
             this.child(
                 div()
@@ -480,6 +523,145 @@ fn ai_chat_part(
                     }),
             )
         })
+        .into_any_element()
+}
+
+/// 「计划与执行进度」卡片：展示模型公开的步骤计划与各步状态。
+///
+/// 只呈现模型声明的状态，不按工具名/关键词自动推进；状态用颜色图标区分，
+/// 文案随明暗主题走 `UiColors`。
+fn ai_chat_plan_card(
+    part: &fluxdb_app::AiConversationPart,
+    payload: &serde_json::Value,
+    colors: UiColors,
+) -> gpui::AnyElement {
+    let title = payload
+        .get("title")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("任务计划");
+    let steps = payload
+        .get("steps")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let done = steps
+        .iter()
+        .filter(|step| step.get("status").and_then(serde_json::Value::as_str) == Some("done"))
+        .count();
+    let total = steps.len();
+    let mut rows = Vec::with_capacity(total);
+    for (index, step) in steps.iter().enumerate() {
+        let step_title = step
+            .get("title")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let status = step
+            .get("status")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("pending");
+        // 状态 → (图标, 文案, 颜色)：颜色/图标都要与审计卡一致的明暗语义。
+        let (icon, status_text, tone) = match status {
+            "done" => (AppIcon::CircleCheck, "已完成", colors.success),
+            "in_progress" => (AppIcon::Loader, "进行中", colors.info),
+            "blocked" => (AppIcon::TriangleAlert, "受阻", colors.warning),
+            "skipped" => (AppIcon::CircleSlash, "已跳过", colors.muted),
+            _ => (AppIcon::Circle, "待开始", colors.muted),
+        };
+        let note = step
+            .get("note")
+            .and_then(serde_json::Value::as_str)
+            .filter(|note| !note.is_empty());
+        rows.push(
+            div()
+                .id(SharedString::from(format!("ai-plan-step:{}:{index}", part.id)))
+                .debug_selector({
+                    let id = part.id.clone();
+                    move || format!("ai-plan-step:{id}:{index}")
+                })
+                .test_support()
+                .flex()
+                .items_start()
+                .gap_2()
+                .child(app_icon(icon, 12., tone))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .flex()
+                        .flex_col()
+                        .gap_0p5()
+                        .child(
+                            div()
+                                .text_size(px(11.))
+                                .text_color(colors.text)
+                                .child(step_title),
+                        )
+                        .when_some(note, |this, note| {
+                            this.child(
+                                div()
+                                    .text_size(px(10.))
+                                    .text_color(colors.muted)
+                                    .child(note.to_string()),
+                            )
+                        }),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .text_size(px(10.))
+                        .text_color(tone)
+                        .child(status_text),
+                ),
+        );
+    }
+    div()
+        .id(SharedString::from(format!("ai-plan:{}", part.id)))
+        .debug_selector({
+            let id = part.id.clone();
+            move || format!("ai-plan:{id}")
+        })
+        .test_support()
+        .w_full()
+        .flex()
+        .flex_col()
+        .gap_2()
+        .rounded(px(6.))
+        .border_1()
+        .border_color(colors.border_soft)
+        .bg(colors.panel_bg)
+        .p_3()
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap_2()
+                .child(
+                    div()
+                        .min_w(px(0.))
+                        .flex()
+                        .items_center()
+                        .gap_1p5()
+                        .child(app_icon(AppIcon::List, 12., colors.muted))
+                        .child(
+                            div()
+                                .min_w(px(0.))
+                                .text_size(px(11.))
+                                .text_color(colors.text)
+                                .truncate()
+                                .child(title.to_string()),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .text_size(px(10.))
+                        .text_color(colors.muted)
+                        .child(format!("{done}/{total}")),
+                ),
+        )
+        .child(div().flex().flex_col().gap_1p5().children(rows))
         .into_any_element()
 }
 
@@ -550,9 +732,24 @@ fn ai_chat_message_parts(
     // 该消息若正是活跃流式正文，用揭示实体渲染；否则 None。
     stream_view: Option<&Entity<gpui_component::text::TextViewState>>,
     revealed: Option<&str>,
+    // 正在执行的工具实时进度（按 call_id）；终态回执到达后由消费端清理。
+    tool_progress: &std::collections::BTreeMap<String, fluxdb_app::AiConversationToolProgress>,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Vec<gpui::AnyElement> {
+    // 从工具卡的 payload 里取 `call_id`，命中正在执行的调用才有实时进度。
+    let live_progress = |part: &fluxdb_app::AiConversationPart| {
+        serde_json::from_str::<serde_json::Value>(&part.payload_json)
+            .ok()
+            .and_then(|payload| {
+                payload
+                    .get("call_id")
+                    .or_else(|| payload.get("tool_call_id"))
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned)
+            })
+            .and_then(|call_id| tool_progress.get(&call_id))
+    };
     let compact = ai_compact_parts(&message.parts);
     let segmented = compact.iter().any(|part| ai_part_text_offset(part).is_some());
     let parts = ai_timeline_parts(&compact, revealed);
@@ -591,11 +788,11 @@ fn ai_chat_message_parts(
                         cx.notify();
                     })))
                 .when(open, |column| column.child(div().w_full().min_w(px(0.)).pl_2().border_l_1().border_color(colors.border_soft)
-                    .flex().flex_col().gap_1().children(tools.iter().map(|p| ai_chat_part(p, chat.expanded_parts.contains(&p.id), approval, chat.target_json.as_deref(), None, colors, cx)))))
+                    .flex().flex_col().gap_1().children(tools.iter().map(|p| ai_chat_part(p, chat.expanded_parts.contains(&p.id), approval, chat.target_json.as_deref(), None, live_progress(p), colors, cx)))))
                 .into_any_element());
         } else {
             let part_stream = (part.kind == "text" && !segmented).then_some(stream_view).flatten();
-            output.push(ai_chat_part(part, chat.expanded_parts.contains(&part.id), approval, chat.target_json.as_deref(), part_stream, colors, cx));
+            output.push(ai_chat_part(part, chat.expanded_parts.contains(&part.id), approval, chat.target_json.as_deref(), part_stream, live_progress(part), colors, cx));
             index += 1;
         }
     }

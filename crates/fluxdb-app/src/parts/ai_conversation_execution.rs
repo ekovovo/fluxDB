@@ -10,17 +10,7 @@ pub fn persist_ai_conversation_event(
     error: Option<&str>,
 ) -> fluxdb_core::Result<AiConversationView> {
     with_ai_storage(storage, |conn| {
-        fluxdb_storage::ai_platform::conversation::checkpoint(
-            conn,
-            ai_chat_now(),
-            &job.session_id,
-            &job.turn_id,
-            &job.assistant_message_id,
-            text,
-            summary,
-            status,
-            error,
-        )?;
+        checkpoint_ai_conversation(conn, job, text, summary, status, error)?;
         let mut view = ai_chat_project(fluxdb_storage::ai_platform::conversation::load(
             conn,
             Some(&job.session_id),
@@ -28,6 +18,21 @@ pub fn persist_ai_conversation_event(
         view.error = error.map(str::to_owned);
         Ok(view)
     })
+}
+
+/// 保存正文检查点，不重读/复制整个会话历史；流式热路径只需这个写边界。
+fn checkpoint_ai_conversation(
+    conn: &AiConn,
+    job: &AiConversationJob,
+    text: &str,
+    summary: &str,
+    status: Option<fluxdb_storage::ai_platform::sessions::TurnStatus>,
+    error: Option<&str>,
+) -> fluxdb_core::Result<()> {
+    fluxdb_storage::ai_platform::conversation::checkpoint(
+        conn, ai_chat_now(), &job.session_id, &job.turn_id, &job.assistant_message_id,
+        text, summary, status, error,
+    )
 }
 
 include!("ai_conversation_stream.rs");
@@ -60,7 +65,6 @@ pub fn run_ai_conversation_source(
             job,
             &text,
             &summary,
-            matches!(event, fluxdb_core::ModelEvent::Finished(_)),
         );
         if saved.elapsed() >= std::time::Duration::from_millis(300) && persist_error.is_none() {
             match persist_ai_conversation_event(storage, job, &text, &summary, None, None) {
@@ -297,6 +301,7 @@ fn ai_conversation_run_turn(
     let mut persist_error: Option<String> = None;
     let mut paused_reason: Option<String> = None;
     let mut notice_count: usize = 0;
+    let mut plan_count: usize = 0;
     let mut approval_id: Option<String> = None;
     let mut part_error: Option<String> = None;
     // 本轮非成功工具回执轨迹：同工具后续成功即视为模型已自愈，不再在回合末尾重复提示。
@@ -323,6 +328,7 @@ fn ai_conversation_run_turn(
         },
         permission,
         audit,
+        progress: sender.tool_progress_source(job),
     };
     let target_json_for_parts = target_json.clone();
     let state = TurnState {
@@ -334,6 +340,13 @@ fn ai_conversation_run_turn(
         target_json,
     };
     let mut stream = AiConversationStreamPublisher::new(text.len());
+    let mut summary_checkpoint_len = summary.len();
+    // 「生命周期诊断」：只在插件启用时累计阶段耗时/错误；关闭时为全空操作，
+    // 不影响任何执行事实或审计落盘。
+    let telemetry_enabled =
+        with_ai_storage(storage, |conn| lifecycle_telemetry_enabled(conn, &job.session_id))
+            .unwrap_or(false);
+    let mut diagnostics = TurnDiagnostics::new(telemetry_enabled);
     let outcome = runner.run_with_steering(
         state,
         cancel,
@@ -342,6 +355,7 @@ fn ai_conversation_run_turn(
             let force = !matches!(
                 &event,
                 LoopEvent::TextDelta(_) | LoopEvent::ReasoningSummaryDelta(_)
+                    | LoopEvent::StageTiming { .. } | LoopEvent::ToolCallRequested(_)
             );
             match event {
                 LoopEvent::TextDelta(delta) => text.push_str(&delta),
@@ -401,7 +415,6 @@ fn ai_conversation_run_turn(
                         part_error.get_or_insert_with(|| error.message.clone());
                     }
                 }
-                LoopEvent::ToolProgress { .. } => {}
                 LoopEvent::Notice(notice) => {
                     let payload =
                         serde_json::json!({"text":notice,"text_offset":text.len()}).to_string();
@@ -419,6 +432,24 @@ fn ai_conversation_run_turn(
                         part_error.get_or_insert_with(|| error.message.clone());
                     }
                     notice_count += 1;
+                }
+                // 公开计划：落成 `Plan` 片段并立即发布快照，重启后仍可见。
+                LoopEvent::PlanUpdated { plan } => {
+                    let payload = crate::plan_part_payload(&plan);
+                    let saved = ai_conversation_save_part(
+                        storage,
+                        job,
+                        &format!("{}-plan-{}", job.assistant_message_id, plan_count),
+                        fluxdb_storage::ai_platform::sessions::PartKind::Plan,
+                        fluxdb_storage::ai_platform::sessions::PartStatus::Complete,
+                        &payload,
+                        None,
+                        None,
+                    );
+                    if let Err(error) = &saved {
+                        part_error.get_or_insert_with(|| error.message.clone());
+                    }
+                    plan_count += 1;
                 }
                 // 需要审批：写工具调用事实行（waiting_approval）+ 审批行（pending）+ 可见审批片段。
                 LoopEvent::ApprovalRequired {
@@ -449,26 +480,37 @@ fn ai_conversation_run_turn(
                     }
                 }
                 LoopEvent::IterationStarted { .. } => {}
+                // 阶段耗时：累计进本轮诊断；关闭插件时 `record` 为空操作。
+                LoopEvent::StageTiming {
+                    stage,
+                    duration_ms,
+                    ok,
+                    error_code,
+                } => {
+                    diagnostics.record(stage, duration_ms, ok, error_code.as_deref());
+                }
             }
-            stream.publish(sender, job, &text, &summary, force);
-            // 操作边界立即发布快照，正文仍按 300ms 合并，避免工具卡滞后到整轮回复结束。
+            stream.publish(sender, job, &text, &summary);
+            // 操作边界发布权威快照；正文期间只保存低频检查点，不重复加载整段历史。
             if (force || saved.elapsed() >= std::time::Duration::from_millis(300))
                 && persist_error.is_none()
             {
-                match persist_ai_conversation_event(storage, job, &text, &summary, None, None) {
-                    Ok(view) => {
-                        let _ = sender.try_publish(AiConversationUpdate::view(
-                            job.clone(),
-                            view,
-                            false,
-                        ));
-                    }
-                    Err(error) => persist_error = Some(error.message),
-                }
+                // 公开摘要沿用已有折叠卡的低频投影；纯正文不重读历史。
+                let result = if force || summary.len() != summary_checkpoint_len {
+                    persist_ai_conversation_event(storage, job, &text, &summary, None, None)
+                        .map(|view| { let _ = sender.try_publish(AiConversationUpdate::view(job.clone(), view, false)); })
+                } else {
+                    with_ai_storage(storage, |conn| checkpoint_ai_conversation(conn, job, &text, &summary, None, None))
+                };
+                if let Err(error) = result { persist_error = Some(error.message); }
+                summary_checkpoint_len = summary.len();
                 saved = std::time::Instant::now();
             }
         },
     );
+
+    // 生命周期诊断汇总：一轮结束后落一条，供排查看"慢在哪/错在哪"。写失败只告警。
+    diagnostics.persist(storage, &job.turn_id, ai_chat_now());
 
     let status = match outcome {
         TurnOutcome::Completed { .. } => {
@@ -772,7 +814,10 @@ fn resume_ai_approved_turn(
         progress: None,
         cancel: cancel.clone(),
     };
-    let receipt = match block_on_ready(tool.execute(ctx, prepared.to_json_string())) {
+    let receipt = match crate::ai_executor::block_on_cancellable(
+        tool.execute(ctx, prepared.to_json_string()),
+        cancel,
+    ) {
         Ok(Ok(receipt)) => receipt,
         Ok(Err(error)) | Err(error) => {
             run_ai_conversation_failure(

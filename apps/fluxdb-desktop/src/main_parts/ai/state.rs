@@ -51,6 +51,9 @@ struct AiChatUi {
     _pump: Option<Task<()>>,
     running: Option<fluxdb_app::AiConversationJob>,
     cancel: Option<fluxdb_core::CancelFlag>,
+    /// 正在执行工具的最新实时进度（按 `call_id`）；终态回执到达后清理。
+    /// 只保留未完成调用，避免长会话无限累积。
+    tool_progress: std::collections::BTreeMap<String, fluxdb_app::AiConversationToolProgress>,
     runtime: Option<fluxdb_app::AiRuntimeHandle>,
     _runtime_quit: Subscription,
     recovery_pending: bool,
@@ -141,6 +144,7 @@ impl AiChatUi {
             _pump: None,
             running: None,
             cancel: None,
+            tool_progress: std::collections::BTreeMap::new(),
             runtime: None,
             _runtime_quit: cx.on_app_quit(|this, cx| {
                 let runtime = this.ai_chat.runtime.take();

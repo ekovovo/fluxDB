@@ -23,6 +23,26 @@ pub struct LoopLimits {
     pub max_repeat_signature: usize,
 }
 
+/// 主循环的执行阶段标签；只用于脱敏耗时与错误汇总，不携带业务内容。
+pub mod loop_stage {
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub enum Stage {
+        /// 一次模型请求（含重试后的最终一次）。
+        ModelRequest,
+        /// 一次工具的 schema 校验 + 审计 + 授权 + 执行。
+        ToolCall,
+    }
+
+    impl Stage {
+        pub fn as_str(self) -> &'static str {
+            match self {
+                Stage::ModelRequest => "model_request",
+                Stage::ToolCall => "tool_call",
+            }
+        }
+    }
+}
+
 impl Default for LoopLimits {
     fn default() -> Self {
         Self {
@@ -86,10 +106,17 @@ pub enum LoopEvent {
         receipt: fluxdb_core::ToolReceipt,
         audit: AuditFacts,
     },
-    /// 工具执行中的有界进度摘要。
-    ToolProgress {
-        call_id: String,
-        progress: fluxdb_core::ToolProgressEvent,
+    /// 模型发布/更新了公开计划（`plan.update` 工具校验通过后的规范化结果）。
+    ///
+    /// 计划是**模型公开内容**，不是执行事实；步骤状态由模型显式声明，宿主不推断。
+    PlanUpdated { plan: crate::PlanUpdate },
+    /// 一个执行阶段的脱敏耗时/结果；供「生命周期诊断」汇总，不含正文或凭据。
+    StageTiming {
+        stage: loop_stage::Stage,
+        duration_ms: u64,
+        ok: bool,
+        /// 失败时的受控错误码（如 `timeout`、`http_429`）；成功为 `None`。
+        error_code: Option<String>,
     },
     /// 需要用户审批：**不执行**、不产生工具回执，等审批决定后继续（设计 §25.3）。
     ApprovalRequired {
@@ -130,6 +157,8 @@ pub struct TurnRunner<'a> {
     pub permission: TurnPermissionContext,
     /// 强制安全审计 Hook（不可禁用；审计失败 fail closed）。
     pub audit: &'a dyn SecurityAuditHook,
+    /// 工具执行期的实时进度接收端；`None` 表示本轮不订阅进度。
+    pub progress: Option<std::sync::Arc<dyn ToolProgressSource>>,
 }
 
 /// `ToolSpec` → Provider 可见的 `ToolDescriptor`（只暴露描述与 schema）。
@@ -195,13 +224,31 @@ fn loop_tool_status_label(status: fluxdb_core::ToolReceiptStatus) -> &'static st
     }
 }
 
+/// 把错误类别映射成稳定的脱敏码；不含 message 正文，避免把上游细节写进诊断。
+fn loop_stage_error_code(error: &fluxdb_core::Error) -> String {
+    if let Some(status) = error.http_status {
+        return format!("http_{status}");
+    }
+    match error.kind {
+        fluxdb_core::ErrorKind::Timeout => "timeout",
+        fluxdb_core::ErrorKind::Cancelled => "cancelled",
+        fluxdb_core::ErrorKind::Connection => "connection",
+        fluxdb_core::ErrorKind::Authentication => "authentication",
+        fluxdb_core::ErrorKind::Permission => "permission",
+        fluxdb_core::ErrorKind::Query => "query",
+        fluxdb_core::ErrorKind::Unsupported => "unsupported",
+        fluxdb_core::ErrorKind::Internal => "internal",
+    }
+    .to_string()
+}
+
 impl<'a> TurnRunner<'a> {
     pub fn run(
         &self,
         state: TurnState,
         steering: &mut Vec<String>,
         cancel: &fluxdb_core::CancelFlag,
-        emit: &mut dyn FnMut(LoopEvent),
+        emit: &mut (dyn FnMut(LoopEvent) + Send),
     ) -> TurnOutcome {
         self.run_with_steering(state, cancel, &mut || std::mem::take(steering), emit)
     }
@@ -212,7 +259,7 @@ impl<'a> TurnRunner<'a> {
         mut state: TurnState,
         cancel: &fluxdb_core::CancelFlag,
         steering: &mut dyn FnMut() -> Vec<String>,
-        emit: &mut dyn FnMut(LoopEvent),
+        emit: &mut (dyn FnMut(LoopEvent) + Send),
     ) -> TurnOutcome {
         let mut signature_counts: HashMap<String, usize> = HashMap::new();
         let mut last_text = String::new();
@@ -240,47 +287,52 @@ impl<'a> TurnRunner<'a> {
                 tools: loop_tool_descriptors(self.tools),
                 max_output_tokens: state.max_output_tokens,
             };
-            // Provider 缓冲整段事件后再返回，失败尝试没有可见副作用，可按错误类别重发。
-            let events = match retry_model_call(cancel, || {
-                block_on_ready(self.provider.stream(request.clone(), cancel.clone()))
-                    .and_then(|result| result)
-            }) {
-                Ok(events) => events,
-                Err(error) => {
-                    return TurnOutcome::Failed {
-                        message: error.message,
-                    };
-                }
-            };
-
-            // 逐事件消费：取消在事件之间即刻生效，流式输出不会"取消后继续刷"。
+            let stage_start = std::time::Instant::now();
             let mut text = String::new();
-            let mut tool_calls: Vec<fluxdb_core::ToolCallRequest> = Vec::new();
-            let mut finish: Option<fluxdb_core::FinishReason> = None;
-            for event in events {
-                if cancel.is_cancelled() {
-                    return TurnOutcome::Cancelled;
-                }
+            let mut tool_calls = Vec::new();
+            let mut finish = None;
+            let response = retry_streamed_model_call(cancel, &mut |receive| {
+                crate::ai_executor::block_on_cancellable(
+                    self.provider.stream_events(request.clone(), cancel.clone(), receive), cancel,
+                ).and_then(|result| result)
+            }, &mut |event| {
+                if cancel.is_cancelled() { return; }
                 match event {
                     fluxdb_core::ModelEvent::TextDelta(delta) => {
-                        text.push_str(&delta);
-                        emit(LoopEvent::TextDelta(delta));
+                        text.push_str(delta);
+                        emit(LoopEvent::TextDelta(delta.clone()));
                     }
                     fluxdb_core::ModelEvent::ReasoningSummaryDelta(delta) => {
-                        emit(LoopEvent::ReasoningSummaryDelta(delta));
+                        emit(LoopEvent::ReasoningSummaryDelta(delta.clone()));
                     }
                     fluxdb_core::ModelEvent::ToolCallRequested(call) => {
                         emit(LoopEvent::ToolCallRequested(call.clone()));
-                        tool_calls.push(call);
+                        tool_calls.push(call.clone());
                     }
-                    fluxdb_core::ModelEvent::Usage(_) => {
-                        // usage 由统一计量宿主记入会话 token 账本，不丢弃也不伪造。
-                    }
-                    fluxdb_core::ModelEvent::Finished(reason) => finish = Some(reason),
+                    fluxdb_core::ModelEvent::Usage(_) => {}
+                    fluxdb_core::ModelEvent::Finished(reason) => finish = Some(*reason),
                 }
-            }
-            if cancel.is_cancelled() {
+            });
+            // EOF/[DONE] 不能代替模型结束事实；此校验在重试边界之外，
+            // 同时让生命周期诊断把提前断流记为失败，而不是“请求成功”。
+            let response = response.and_then(|()| match finish {
+                None => Err(fluxdb_core::Error::new(fluxdb_core::ErrorKind::Connection,
+                    "模型连接提前结束，未收到完整结束事件")),
+                Some(fluxdb_core::FinishReason::Error) => Err(fluxdb_core::Error::new(
+                    fluxdb_core::ErrorKind::Internal, "模型返回错误结束")),
+                _ => Ok(()),
+            });
+            emit(LoopEvent::StageTiming {
+                stage: loop_stage::Stage::ModelRequest,
+                duration_ms: stage_start.elapsed().as_millis() as u64,
+                ok: response.is_ok(),
+                error_code: response.as_ref().err().map(loop_stage_error_code),
+            });
+            if cancel.is_cancelled() || finish == Some(fluxdb_core::FinishReason::Cancelled) {
                 return TurnOutcome::Cancelled;
+            }
+            if let Err(error) = response {
+                return TurnOutcome::Failed { message: error.message };
             }
             if !text.is_empty() || !tool_calls.is_empty() {
                 last_text = text.clone();
@@ -603,7 +655,6 @@ impl<'a> TurnRunner<'a> {
                     tool_version: spec.version,
                     audit: facts.clone(),
                 });
-                let progress_events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
                 let ctx = fluxdb_core::ToolExecutionContext {
                     automatic_approval,
                     session_id: state.session_id.clone(),
@@ -611,11 +662,34 @@ impl<'a> TurnRunner<'a> {
                     iteration: iteration as i64,
                     call_id: call.provider_call_id.clone(),
                     cancel: cancel.clone(),
-                    progress: Some(progress_events.clone()),
+                    // 进度在产生点由 sink 即时投递（见 `TurnRunner::progress`），
+                    // 不再攒进 Vec 等工具结束后回放。
+                    progress: self
+                        .progress
+                        .as_ref()
+                        .map(|source| source.sink_for(&call.provider_call_id)),
                 };
-                let receipt = match block_on_ready(tool.execute(ctx, prepared.to_json_string())) {
-                    Ok(Ok(receipt)) => receipt,
+                let tool_stage_start = std::time::Instant::now();
+                let receipt = match crate::ai_executor::block_on_cancellable(
+                    tool.execute(ctx, prepared.to_json_string()),
+                    cancel,
+                ) {
+                    Ok(Ok(receipt)) => {
+                        emit(LoopEvent::StageTiming {
+                            stage: loop_stage::Stage::ToolCall,
+                            duration_ms: tool_stage_start.elapsed().as_millis() as u64,
+                            ok: receipt.status != fluxdb_core::ToolReceiptStatus::Failed,
+                            error_code: receipt.error_code.clone(),
+                        });
+                        receipt
+                    }
                     Ok(Err(error)) | Err(error) => {
+                        emit(LoopEvent::StageTiming {
+                            stage: loop_stage::Stage::ToolCall,
+                            duration_ms: tool_stage_start.elapsed().as_millis() as u64,
+                            ok: false,
+                            error_code: Some(loop_stage_error_code(&error)),
+                        });
                         // 基础设施失败：退出整个任务（普通工具错误走 Failed 回执分支）。
                         return TurnOutcome::Failed {
                             message: error.message,
@@ -640,16 +714,6 @@ impl<'a> TurnRunner<'a> {
                     });
                     return TurnOutcome::Failed { message: message.into() };
                 }
-                let progress = progress_events
-                    .lock()
-                    .map(|events| events.clone())
-                    .unwrap_or_default();
-                for event in progress {
-                    emit(LoopEvent::ToolProgress {
-                        call_id: call.provider_call_id.clone(),
-                        progress: event,
-                    });
-                }
                 // 5) 回给模型的是**该工具有界投影**，原始回执保持不变。
                 let projection = match self.tools.project(&receipt.tool_id, &receipt, None) {
                     Ok(projection) => projection,
@@ -668,6 +732,14 @@ impl<'a> TurnRunner<'a> {
                     receipt: receipt.clone(),
                     audit: facts.clone(),
                 });
+                // `plan.update` 成功时，把校验过的规范化计划作为公开计划事件发出。
+                // 只认工具成功回执；失败/拒绝的计划不落成卡片，避免显示未生效的计划。
+                if receipt.tool_id == "plan.update"
+                    && receipt.status == fluxdb_core::ToolReceiptStatus::Succeeded
+                    && let Ok(plan) = crate::parse_plan_update(&call.arguments_json)
+                {
+                    emit(LoopEvent::PlanUpdated { plan });
+                }
                 if receipt.status==fluxdb_core::ToolReceiptStatus::Unknown {
                     return TurnOutcome::Paused {reason:"写入结果未知，已停止后续工具调用，请人工核实；不会自动重试".into()};
                 }

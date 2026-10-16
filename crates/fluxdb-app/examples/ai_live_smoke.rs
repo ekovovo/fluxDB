@@ -140,6 +140,7 @@ fn live_tools_smoke(provider: &AiConversationProvider) -> Result<(), Box<dyn std
             plugin_digest: None,
         },
         audit: &fluxdb_app::KernelAuditHook,
+        progress: None,
     };
     let state = fluxdb_app::TurnState {
         session_id: "live-smoke-session".into(),

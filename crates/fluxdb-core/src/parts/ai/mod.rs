@@ -241,6 +241,15 @@ pub struct ToolProgressEvent {
     pub success: bool,
 }
 
+/// 工具执行期间的实时进度接收端。
+///
+/// 工具在产生进度的那一刻调用 [`ToolProgressSink::report`]，宿主据此立即投递
+/// 事件；因此实现必须是**非阻塞、有界**的——不能因为 UI 消费慢就卡住工具，
+/// 也不能无界堆积。终态以工具回执为准，进度只是过程快照，允许按既定策略合并。
+pub trait ToolProgressSink: Send + Sync + std::fmt::Debug {
+    fn report(&self, event: ToolProgressEvent);
+}
+
 /// 工具执行上下文（由运行时提供；工具自身不接触 UI/SQLite 锁）。
 #[derive(Clone, Debug)]
 pub struct ToolExecutionContext {
@@ -253,8 +262,8 @@ pub struct ToolExecutionContext {
     pub call_id: String,
     /// 本轮 Turn 的取消标志；会阻塞/批量的工具必须在检查点轮询它并尽快收尾。
     pub cancel: CancelFlag,
-    /// 工具向运行时报告阶段性摘要。
-    pub progress: Option<Arc<std::sync::Mutex<Vec<ToolProgressEvent>>>>,
+    /// 工具向运行时实时报告阶段性摘要；`None` 表示宿主不订阅进度。
+    pub progress: Option<Arc<dyn ToolProgressSink>>,
 }
 
 /// 决策（Jev）请求：只在需要做选择/排序/分类时调用，不参与主模型 tool calling。
@@ -285,8 +294,31 @@ pub struct DecisionResponse {
 /// 生成模型能力（运行时的多实现边界）。
 pub trait GenerationProvider: Send + Sync {
     fn capabilities(&self) -> ModelCapabilities;
-    /// 流式推理；`cancel` 触发后必须尽快结束（返回 `Finished(Cancelled)` 或错误）。
+    /// 收集完整响应，供摘要/标题等不展示中间内容的调用方使用。
     fn stream(&self, request: ModelRequest, cancel: CancelFlag) -> AiFuture<'_, Vec<ModelEvent>>;
+
+    /// 在事件产生时同步通知宿主，不保留整段事件副本。回调仅在返回的 future 存活期间调用，
+    /// 不得阻塞 UI 或无界缓存；工具参数只能在完整结束并通过宿主校验后执行。
+    /// 已发出内容后失败允许保留半截回答，调用方不得自动重放并拼接重复正文。
+    ///
+    /// 默认适配收集型 Provider；网络 Provider 必须覆盖此方法以实现真正的增量交付。
+    fn stream_events<'a>(
+        &'a self,
+        request: ModelRequest,
+        cancel: CancelFlag,
+        emit: &'a mut (dyn FnMut(&ModelEvent) + Send),
+    ) -> AiFuture<'a, ()> {
+        Box::pin(async move {
+            for event in self.stream(request, cancel.clone()).await? {
+                if cancel.is_cancelled() {
+                    emit(&ModelEvent::Finished(FinishReason::Cancelled));
+                    break;
+                }
+                emit(&event);
+            }
+            Ok(())
+        })
+    }
 }
 
 /// 决策模型能力（Jev 等）。

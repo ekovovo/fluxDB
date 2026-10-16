@@ -265,7 +265,7 @@ fn t023_postgres_metadata_query_cancel_and_session_isolation() {
     assert_eq!(outcome.executed_sql.contains("LIMIT"), true);
 
     // 4) 进度事件通道：真实 Connector summary 进入 ToolExecutionContext.progress。
-    let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let events = std::sync::Arc::new(crate::RecordingProgressSink::new());
     let tool = AiSqlReadTool::query(std::sync::Arc::new(AiLiveResolver::new(config.clone())))
         .expect("db.query 工具");
     let receipt = ai_block_on(tool.execute(
@@ -275,7 +275,7 @@ fn t023_postgres_metadata_query_cancel_and_session_isolation() {
             turn_id: "t023-live-turn".into(),
             iteration: 1,
             call_id: "t023-progress".into(),
-            progress: Some(events.clone()),
+            progress: Some(events.clone() as std::sync::Arc<dyn fluxdb_core::ToolProgressSink>),
             cancel: fluxdb_core::CancelFlag::new(),
         },
         serde_json::json!({
@@ -294,7 +294,7 @@ fn t023_postgres_metadata_query_cancel_and_session_isolation() {
         fluxdb_core::ToolReceiptStatus::Succeeded,
         "真实 PG 只读查询失败：{receipt:?}"
     );
-    let progress = events.lock().expect("进度锁");
+    let progress = events.snapshot();
     assert!(
         progress.iter().any(|event| event.success && event.returned_rows > 0),
         "真实进度事件应报告返回行数：{progress:?}"

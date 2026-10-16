@@ -28,13 +28,39 @@ impl NavicatMain {
             return;
         }
         let terminal = update.terminal;
-        let changed = update.delta.is_some() || update.view.is_some();
-        let mut immediate = self.ai_chat.cancel.as_ref().is_some_and(|cancel| cancel.is_cancelled());
+        let structural_change = update.view.is_some() || update.tool_progress.is_some() || terminal;
+        let had_new_reply = self.ai_chat.new_reply;
+        let changed = update.delta.is_some() || update.view.is_some() || update.tool_progress.is_some();
         if let Some(delta) = update.delta {
             self.ai_chat_apply_delta(delta, cx);
         }
+        if let Some(progress) = update.tool_progress {
+            // 工具执行中的实时进度：按 call_id 记录，供工具卡就地显示；终态回执到达后清理。
+            if progress.success || progress.returned_rows > 0 || progress.affected_rows > 0 {
+                self.ai_chat.tool_progress.insert(progress.call_id.clone(), progress);
+            }
+        }
         if let Some(view) = update.view {
-            immediate |= view.error.is_some();
+            // 工具回执（终态）到达：对应调用的实时进度不再需要，即时清理避免陈旧数值残留。
+            for message in &view.messages {
+                for part in &message.parts {
+                    // 工具卡payload 用 `call_id`；结果引用若有 `tool_call_id` 也一并认。
+                    if let Ok(payload) =
+                        serde_json::from_str::<serde_json::Value>(&part.payload_json)
+                    {
+                        let call_id = payload
+                            .get("call_id")
+                            .or_else(|| payload.get("tool_call_id"))
+                            .and_then(serde_json::Value::as_str);
+                        if let Some(call_id) = call_id
+                            && (part.kind == "tool_result_ref"
+                                || (part.kind == "tool_call_ref" && part.status != "streaming"))
+                        {
+                            self.ai_chat.tool_progress.remove(call_id);
+                        }
+                    }
+                }
+            }
             // 最终快照可能是首个成功送达的回包，也必须从空正文平滑显示。
             if !self.ai_chat.stream.is_active() {
                 if let Some(part) = view.messages.iter()
@@ -45,7 +71,6 @@ impl NavicatMain {
                         let baseline = self.ai_chat_stream_baseline(&update.job.assistant_message_id);
                         self.ai_chat_begin_stream(&update.job.assistant_message_id, &baseline, cx);
                     }
-                    immediate |= matches!(part.status.as_str(), "error" | "interrupted");
                 }
             }
             // 草稿由独立输入 Entity 持有，stream checkpoint 不覆盖当前未发送内容。
@@ -57,19 +82,25 @@ impl NavicatMain {
             }
             self.ai_chat_ensure_reveal_task(cx);
         }
-        if self.ai_chat.follow_reply {
+        if self.ai_chat.follow_reply && structural_change {
             self.ai_chat.scroll.scroll_to_bottom();
         } else if changed {
-            self.ai_chat.new_reply = true;
+            self.ai_chat.new_reply |= !self.ai_chat.follow_reply;
         }
         if terminal {
             self.ai_chat.stream.finish();
-            // 停止/失败立即收尾；正常结束继续排空，不把最终快照直接替换成全文。
-            if immediate || !self.ai_chat.stream.has_pending() {
-                self.ai_chat_finish_stream();
-            } else {
-                self.ai_chat_ensure_reveal_task(cx);
+            // 结束/失败立即冲刷最新尾片，不让 Markdown 节流留下额外的“打字动画”。
+            if let Some(chunk) = self.ai_chat.stream.reveal_next()
+                && let Some(view) = self.ai_chat.stream_view.clone()
+            {
+                view.update(cx, |state, cx| state.push_str(&chunk, cx));
             }
+            self.ai_chat_finish_stream();
+        }
+        // 正文增量只更新缓冲，重绘交给 Markdown 节拍；不能让 16ms 的回桥泵
+        // 又把整个聊天列表重绘一遍。工具/终态和“有新回复”标记仍即时刷新。
+        if structural_change || had_new_reply != self.ai_chat.new_reply {
+            cx.notify();
         }
     }
     /// 把一段未落盘增量并入流缓冲，必要时绑定正文实体并启动揭示任务。
@@ -102,6 +133,7 @@ impl NavicatMain {
         self.ai_chat.stream.reset();
         self.ai_chat.running = None;
         self.ai_chat.cancel = None;
+        self.ai_chat.tool_progress.clear();
     }
     /// 末端助手正文已 checkpoint 的正文，作为流式渲染基线（避免重打历史内容）。
     fn ai_chat_stream_baseline(&self, message_id: &str) -> String {
@@ -122,7 +154,7 @@ impl NavicatMain {
         let payload = self.ai_chat_stream_baseline(message_id);
         self.ai_chat.stream.reconcile(&payload);
     }
-    /// 启动/保持 16ms 平滑揭示任务；只揭示已进入 buffer 的文本。
+    /// 启动/保持流式渲染任务；按 50ms（长正文 250ms）合并 Markdown 更新。
     ///
     /// 任务只在*有待揭示文本*时存活；一旦排空且没有新 delta 就自然结束，
     /// 不留下空转定时器（下一个 delta 会重新拉起）。已结束的句柄由
@@ -138,9 +170,9 @@ impl NavicatMain {
             return;
         }
         self.ai_chat.stream_reveal = Some(cx.spawn(async move |view, cx| loop {
-            cx.background_executor()
-                .timer(std::time::Duration::from_millis(16))
-                .await;
+            let interval = view.read_with(cx, |this, _| this.ai_chat.stream.render_interval())
+                .unwrap_or(std::time::Duration::from_millis(STREAM_RENDER_INTERVAL_MS));
+            cx.background_executor().timer(interval).await;
             let keep = view
                 .update(cx, |this, cx| {
                     if !this.ai_chat.stream.is_active() {

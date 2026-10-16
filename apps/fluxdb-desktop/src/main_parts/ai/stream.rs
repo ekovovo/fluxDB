@@ -1,13 +1,8 @@
-// 流式正文的平滑揭示缓冲。
-//
-// 应用的 checkpoint 每 300ms 才回投影一次；如果直接渲染 checkpoint，文字会成块跳变。
-// 这里把 checkpoint 之间的增量 delta 累积成 buffer，再按 16ms 节拍匀速"揭示"，
-// 得到连续、可读的输出（做法参考 Zed agent 的 StreamingTextBuffer）。
-//
-// 不变式：TextViewState 的正文 == `buffer[..revealed]`，即 entity 只持有已揭示文本。
-// 增量按绝对字节偏移与 checkpoint 去重；终态只标记结束，继续排空显示缓冲。
-const STREAM_REVEAL_TARGET_MS: f32 = 200.;
-const STREAM_REVEAL_TICK_MS: f32 = 16.;
+// 流式增量合并缓冲：网络事件按偏移去重，Markdown 在固定节拍追加整批新增内容。
+// 借鉴 Goose 的 50ms / 长正文 250ms 渲染节流；不通过逐字动画伪造模型输出速度。
+const STREAM_RENDER_INTERVAL_MS: u64 = 50;
+const LARGE_STREAM_RENDER_INTERVAL_MS: u64 = 250;
+const LARGE_STREAM_TEXT_BYTES: usize = 16_000;
 
 #[derive(Clone, Copy)]
 enum AiChatStreamFixture {
@@ -26,7 +21,6 @@ pub(crate) struct AiChatStream {
     buffer: String,
     /// 已揭示到 `buffer` 的字节数，始终落在 UTF-8 char 边界且等于 entity 正文长度。
     revealed: usize,
-    bytes_per_tick: usize,
     finished: bool,
 }
 
@@ -35,7 +29,6 @@ impl AiChatStream {
         self.message_id = None;
         self.buffer.clear();
         self.revealed = 0;
-        self.bytes_per_tick = 0;
         self.finished = false;
     }
 
@@ -77,7 +70,6 @@ impl AiChatStream {
         let overlap = self.buffer.len() - start_offset;
         if overlap < delta.len() && delta.is_char_boundary(overlap) {
             self.buffer.push_str(&delta[overlap..]);
-            self.update_reveal_rate();
         }
     }
 
@@ -88,14 +80,13 @@ impl AiChatStream {
             self.buffer.clear();
             self.buffer.push_str(payload);
             self.revealed = self.revealed.min(self.buffer.len());
-            self.update_reveal_rate();
         }
     }
 
-    fn update_reveal_rate(&mut self) {
-        // 速率只在新内容入队时计算，避免每帧按剩余量递减导致长尾。
-        self.bytes_per_tick = ((self.buffer.len().saturating_sub(self.revealed) as f32
-            * STREAM_REVEAL_TICK_MS / STREAM_REVEAL_TARGET_MS).ceil() as usize).max(1);
+    pub(crate) fn render_interval(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(if self.buffer.len() > LARGE_STREAM_TEXT_BYTES {
+            LARGE_STREAM_RENDER_INTERVAL_MS
+        } else { STREAM_RENDER_INTERVAL_MS })
     }
 
     pub(crate) fn finish(&mut self) {
@@ -122,22 +113,7 @@ impl AiChatStream {
         if pending == 0 {
             return None;
         }
-        let per_tick = self.bytes_per_tick.max(1);
-        let mut next = (self.revealed + per_tick).min(self.buffer.len());
-        while next > self.revealed && !self.buffer.is_char_boundary(next) {
-            next -= 1;
-        }
-        if next == self.revealed {
-            // 单字符步长大于剩余空间（罕见）；推进到下一个边界，避免永久卡住。
-            next = (self.revealed + per_tick).min(self.buffer.len());
-            while next < self.buffer.len() && !self.buffer.is_char_boundary(next) {
-                next += 1;
-            }
-            next = next.min(self.buffer.len());
-        }
-        if next == self.revealed {
-            return None;
-        }
+        let next = self.buffer.len();
         let chunk = self.buffer[self.revealed..next].to_string();
         self.revealed = next;
         Some(chunk)

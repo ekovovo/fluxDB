@@ -44,6 +44,7 @@ mod ai_loop_test_support {
                 plugin_digest: None,
             },
             audit: &audit,
+            progress: None,
         };
         let state = TurnState {
         session_id: "loop-session".into(),
@@ -909,4 +910,136 @@ fn ai_loop_retries_transient_provider_failure_within_same_turn() {
         event,
         LoopEvent::TextDelta(delta) if delta == "已恢复"
     )));
+}
+
+#[test]
+fn ai_loop_emits_plan_updated_for_successful_plan_update() {
+    // 模型调用 `plan.update` 发布公开计划：主循环必须在成功回执后发出 `PlanUpdated`，
+    // 携带校验过的规范化计划（状态与步骤照抄模型声明，不推断）。
+    let provider = crate::ScriptedGenerationProvider::new(
+        ModelCapabilities {
+            streaming: true,
+            tool_calling: true,
+            reasoning_summary: false,
+        },
+        vec![
+            tool_call_stop(
+                "plan.update",
+                "plan-1",
+                r#"{"title":"分析订单","steps":[
+                    {"title":"读取表结构","status":"done"},
+                    {"title":"生成报表","status":"in_progress"}
+                ]}"#,
+            ),
+            text_stop("已完成"),
+        ],
+    );
+    let tool = std::sync::Arc::new(crate::RecordingTool::new(
+        "plan.update",
+        fluxdb_core::ToolRisk::Read,
+    ));
+    let tools = ai_loop_test_support::catalog_with_shared_tool(tool);
+    let cancel = CancelFlag::new();
+    let mut steering = Vec::new();
+    let (outcome, events) = run(
+        &provider,
+        &tools,
+        crate::LoopLimits::default(),
+        "m",
+        vec![user_message("做个报表")],
+        &mut steering,
+        &cancel,
+    );
+    assert_eq!(
+        outcome,
+        crate::TurnOutcome::Completed {
+            text: "已完成".into()
+        }
+    );
+    let plan = events
+        .iter()
+        .find_map(|event| match event {
+            crate::LoopEvent::PlanUpdated { plan } => Some(plan.clone()),
+            _ => None,
+        })
+        .expect("成功回执后必须发出 PlanUpdated");
+    assert_eq!(plan.title, "分析订单");
+    assert_eq!(plan.steps.len(), 2);
+    assert_eq!(plan.steps[1].status, crate::PlanStepStatus::InProgress);
+}
+
+#[test]
+fn ai_loop_emits_stage_timings_for_model_and_tool() {
+    // 阶段耗时事件必须真实发出：模型请求与工具调用各一条，供「生命周期诊断」累计。
+    let provider = crate::ScriptedGenerationProvider::new(
+        ModelCapabilities {
+            streaming: true,
+            tool_calling: true,
+            reasoning_summary: false,
+        },
+        vec![
+            tool_call_stop("db.query", "call-1", r#"{"sql":"select 1"}"#),
+            text_stop("完成"),
+        ],
+    );
+    let tool = std::sync::Arc::new(crate::RecordingTool::new(
+        "db.query",
+        fluxdb_core::ToolRisk::Read,
+    ));
+    let tools = ai_loop_test_support::catalog_with_shared_tool(tool);
+    let cancel = CancelFlag::new();
+    let mut steering = Vec::new();
+    let (_outcome, events) = run(
+        &provider,
+        &tools,
+        crate::LoopLimits::default(),
+        "m",
+        vec![user_message("查一下")],
+        &mut steering,
+        &cancel,
+    );
+    let model_stages = events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event,
+                crate::LoopEvent::StageTiming {
+                    stage: crate::loop_stage::Stage::ModelRequest,
+                    ..
+                }
+            )
+        })
+        .count();
+    let tool_stages = events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event,
+                crate::LoopEvent::StageTiming {
+                    stage: crate::loop_stage::Stage::ToolCall,
+                    ..
+                }
+            )
+        })
+        .count();
+    assert_eq!(model_stages, 2, "两次模型请求各一条阶段事件：{events:?}");
+    assert_eq!(tool_stages, 1, "一次工具调用一条阶段事件：{events:?}");
+}
+
+#[test]
+fn ai_loop_requires_model_finish_even_with_complete_tool_arguments() {
+    let provider = crate::ScriptedGenerationProvider::new(
+        ModelCapabilities { streaming: true, tool_calling: true, reasoning_summary: false },
+        vec![vec![fluxdb_core::ModelEvent::ToolCallRequested(fluxdb_core::ToolCallRequest {
+            provider_call_id: "incomplete-stream".into(),
+            tool_id: "db.query".into(),
+            arguments_json: r#"{"sql":"select 1"}"#.into(),
+        })]],
+    );
+    let tool = std::sync::Arc::new(crate::RecordingTool::new("db.query", fluxdb_core::ToolRisk::Read));
+    let tools = ai_loop_test_support::catalog_with_shared_tool(tool.clone());
+    let (outcome, _) = run(&provider, &tools, crate::LoopLimits::default(), "m",
+        vec![user_message("query")], &mut Vec::new(), &CancelFlag::new());
+    assert!(matches!(outcome, crate::TurnOutcome::Failed { .. }));
+    assert_eq!(tool.call_count(), 0, "完整 JSON 不是完整模型结束事实");
 }

@@ -1,26 +1,10 @@
-use std::task::{Context, Poll, Wake, Waker};
+// 兼容别名：执行器已升级为在真实 waker 上停放/唤醒（见 `ai_executor.rs`）。
+//
+// 保留此模块名是因为多处历史调用点仍写着 `block_on_ready`；新代码应优先使用
+// `ai_executor::block_on` / `block_on_cancellable`，需要取消语义的调用点尤其
+// 必须迁移，否则等待期间取消不会生效。
 
-/// 就绪 future 的最小阻塞器。
-///
-/// 设计 §6 明确 app 在生产中不引入 tokio；调用方必须提供不依赖外部 IO 反应堆的
-/// future。超出有限轮询仍 Pending 时返回错误，不自旋等待或假装已经完成。
+/// 不带取消语义的阻塞等待（等价于 [`crate::ai_executor::block_on`]）。
 pub fn block_on_ready<F: std::future::Future>(future: F) -> Result<F::Output, fluxdb_core::Error> {
-    let waker = Waker::from(Arc::new(NoopWake));
-    let mut context = Context::from_waker(&waker);
-    let mut future = Box::pin(future);
-    for _ in 0..64 {
-        match future.as_mut().poll(&mut context) {
-            Poll::Ready(value) => return Ok(value),
-            Poll::Pending => continue,
-        }
-    }
-    Err(fluxdb_core::Error::new(
-        fluxdb_core::ErrorKind::Internal,
-        "Provider 未在就绪轮次内完成：需要引入异步执行器（当前切片不支持挂起等待）",
-    ))
-}
-
-struct NoopWake;
-impl Wake for NoopWake {
-    fn wake(self: Arc<Self>) {}
+    crate::ai_executor::block_on(future)
 }

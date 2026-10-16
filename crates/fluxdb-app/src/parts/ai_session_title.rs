@@ -62,11 +62,14 @@ pub fn generate_session_title(
     };
     // 标题是尽力而为的附加请求，仍然复用统一重试：瞬时网络抖动不该白丢一次标题。
     let events = match retry_model_call(&cancel, || {
-        block_on_ready(fluxdb_core::GenerationProvider::stream(
+        crate::ai_executor::block_on_cancellable(
+            fluxdb_core::GenerationProvider::stream(
             &metered,
             request.clone(),
             cancel.clone(),
-        ))
+        ),
+            &cancel,
+        )
         .and_then(|result| result)
     }) {
         Ok(events) => events,

@@ -66,11 +66,14 @@ impl WriteReviewer for StorageWriteReviewer {
                         candidates: vec!["approve".into(), "manual".into(), "deny".into()],
                         prompt: prompt.clone(),
                     };
-                    if let Ok(Ok(response)) = block_on_ready(fluxdb_core::DecisionProvider::decide(
-                        &provider,
-                        request,
-                        cancel.clone(),
-                    )) {
+                    if let Ok(Ok(response)) = crate::ai_executor::block_on_cancellable(
+                        fluxdb_core::DecisionProvider::decide(
+                            &provider,
+                            request,
+                            cancel.clone(),
+                        ),
+                        cancel,
+                    ) {
                         if let Some(choice) =
                             response.chosen.as_deref().and_then(ReviewChoice::parse)
                         {
@@ -119,11 +122,10 @@ impl WriteReviewer for StorageWriteReviewer {
             tools: vec![],
             max_output_tokens: Some(128),
         };
-        let result = block_on_ready(fluxdb_core::GenerationProvider::stream(
-            &provider,
-            request,
-            cancel.clone(),
-        ));
+        let result = crate::ai_executor::block_on_cancellable(
+            fluxdb_core::GenerationProvider::stream(&provider, request, cancel.clone()),
+            cancel,
+        );
         let Ok(Ok(events)) = result else {
             return (ReviewChoice::Manual, "generation_request_failed");
         };

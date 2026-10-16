@@ -8,6 +8,33 @@
 /// 一次 `stream()` 调用要吐出的事件序列。
 pub type ScriptedStep = Vec<fluxdb_core::ModelEvent>;
 
+/// 记录工具进度事件的测试接收端。
+///
+/// 供需要断言"工具确实在产生点上报了进度"的测试使用；生产路径用
+/// `ConversationToolProgressSink` 直接投递到会话回桥。
+#[derive(Debug, Default)]
+pub struct RecordingProgressSink {
+    events: Mutex<Vec<fluxdb_core::ToolProgressEvent>>,
+}
+
+impl RecordingProgressSink {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn snapshot(&self) -> Vec<fluxdb_core::ToolProgressEvent> {
+        self.events.lock().map(|events| events.clone()).unwrap_or_default()
+    }
+}
+
+impl fluxdb_core::ToolProgressSink for RecordingProgressSink {
+    fn report(&self, event: fluxdb_core::ToolProgressEvent) {
+        if let Ok(mut events) = self.events.lock() {
+            events.push(event);
+        }
+    }
+}
+
 /// 可编排的生成 Provider：按调用次序返回脚本，并记录收到的请求供断言。
 pub struct ScriptedGenerationProvider {
     capabilities: fluxdb_core::ModelCapabilities,

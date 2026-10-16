@@ -93,6 +93,9 @@ impl AiRuntimeHandle {
                     // 本轮结束后工具目录随之消失（设计 §13.2 不持久化整份内容）。
                     add_ai_editor_read_tools(&mut tools, take_editor_grant(&job.turn_id))?;
                     add_ai_page_tools(&mut tools, take_page_data_grant(&job.turn_id), job)?;
+                    // 「计划与执行进度」插件：仅在实例开启且当前 Agent 未禁用绑定时
+                    // 暴露 `plan.update`；关闭后工具不进入目录，模型发现不到。
+                    add_ai_plan_tool(&mut tools, storage, &job.session_id)?;
                     if tools.results().is_none() {
                         let spec = result_read_page_spec()?;
                         tools = tools.with_results(std::sync::Arc::clone(&results));

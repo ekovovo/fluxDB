@@ -99,6 +99,7 @@ pub use fluxdb_connectors::{
 
 include!("parts/ai_transport.rs");
 include!("parts/ai_retry.rs");
+include!("parts/ai_executor.rs");
 include!("parts/ai_ready_future.rs");
 include!("parts/ai_runtime.rs");
 include!("parts/ai_provider.rs");
@@ -112,6 +113,8 @@ include!("parts/ai_tool_registry.rs");
 include!("parts/ai_tool_output.rs");
 include!("parts/ai_plugins.rs");
 include!("parts/ai_plugin_config.rs");
+include!("parts/ai_plan.rs");
+include!("parts/ai_diagnostics.rs");
 include!("parts/ai_artifact_renderer.rs");
 include!("parts/ai_bi_artifacts.rs");
 include!("parts/ai_artifact_snapshot.rs");

@@ -67,6 +67,21 @@ pub trait ChatTransport: Send + Sync {
         body_json: &str,
         cancel: &fluxdb_core::CancelFlag,
     ) -> fluxdb_core::Result<Vec<fluxdb_core::ModelEvent>>;
+    /// 网络实现从解析点即时回调；简单测试传输可沿用收集型接口。
+    fn call_events(
+        &self,
+        config: &ProviderConfig,
+        auth: &crate::TransportAuth,
+        body_json: &str,
+        cancel: &fluxdb_core::CancelFlag,
+        emit: &mut dyn FnMut(&fluxdb_core::ModelEvent),
+    ) -> fluxdb_core::Result<()> {
+        for event in self.call(config, auth, body_json, cancel)? {
+            emit(&event);
+        }
+        Ok(())
+    }
+
 }
 
 /// 生产实现：`stream_chat`（ureq，禁重定向，有界可取消）。
@@ -80,22 +95,51 @@ impl ChatTransport for UreqChatTransport {
         body_json: &str,
         cancel: &fluxdb_core::CancelFlag,
     ) -> fluxdb_core::Result<Vec<fluxdb_core::ModelEvent>> {
+        let mut events = Vec::new();
+        self.call_events(config, auth, body_json, cancel, &mut |event| events.push(event.clone()))?;
+        Ok(events)
+    }
+
+    fn call_events(
+        &self,
+        config: &ProviderConfig,
+        auth: &crate::TransportAuth,
+        body_json: &str,
+        cancel: &fluxdb_core::CancelFlag,
+        emit: &mut dyn FnMut(&fluxdb_core::ModelEvent),
+    ) -> fluxdb_core::Result<()> {
         let extra: &[(&str, &str)] = match config.auth_style {
             AuthStyle::Bearer => &[],
             AuthStyle::AnthropicApiKey => &[("anthropic-version", "2023-06-01")],
         };
-        // 保留传输错误类别：降级成 `Internal` 会让重试层认不出超时/限流/上游故障。
-        crate::stream_chat(
-            config.limits,
-            config.protocol,
-            &config.endpoint,
-            auth,
-            body_json,
-            extra,
-            cancel,
-        )
-        .map_err(crate::TransportError::to_core_error)
+        crate::stream_chat_events(config.limits, config.protocol, &config.endpoint,
+            auth, body_json, extra, cancel, emit).map_err(crate::TransportError::to_core_error)
     }
+}
+
+/// 只在工具调用事件上分配映射后的 ID；正文增量直接借用，避免逐 token 复制。
+fn emit_host_model_event(
+    event: &fluxdb_core::ModelEvent,
+    mapper: &ToolNameMapper,
+    tool_calling: bool,
+    emit: &mut dyn FnMut(&fluxdb_core::ModelEvent),
+) -> fluxdb_core::Result<()> {
+    if let fluxdb_core::ModelEvent::ToolCallRequested(call) = event {
+        if !tool_calling {
+            return Err(fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal,
+                "模型未声明工具能力却返回工具调用"));
+        }
+        let host_id = mapper.to_host(&call.tool_id).ok_or_else(||
+            fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, "模型返回了未注册的工具"))?;
+        emit(&fluxdb_core::ModelEvent::ToolCallRequested(fluxdb_core::ToolCallRequest {
+            provider_call_id: call.provider_call_id.clone(),
+            tool_id: host_id.into(),
+            arguments_json: call.arguments_json.clone(),
+        }));
+    } else {
+        emit(event);
+    }
+    Ok(())
 }
 
 /// 宿主稳定工具 ID ↔ Provider 安全名称的可逆映射。
@@ -421,8 +465,22 @@ impl fluxdb_core::GenerationProvider for HttpChatProvider {
         cancel: fluxdb_core::CancelFlag,
     ) -> fluxdb_core::AiFuture<'_, Vec<fluxdb_core::ModelEvent>> {
         Box::pin(async move {
+            let mut events = Vec::new();
+            self.stream_events(request, cancel, &mut |event| events.push(event.clone())).await?;
+            Ok(events)
+        })
+    }
+
+    fn stream_events<'a>(
+        &'a self,
+        request: fluxdb_core::ModelRequest,
+        cancel: fluxdb_core::CancelFlag,
+        emit: &'a mut (dyn FnMut(&fluxdb_core::ModelEvent) + Send),
+    ) -> fluxdb_core::AiFuture<'a, ()> {
+        Box::pin(async move {
             if cancel.is_cancelled() {
-                return Ok(vec![fluxdb_core::ModelEvent::Finished(fluxdb_core::FinishReason::Cancelled)]);
+                emit(&fluxdb_core::ModelEvent::Finished(fluxdb_core::FinishReason::Cancelled));
+                return Ok(());
             }
             let mapper = ToolNameMapper::new(&request.tools)?;
             let body = build_chat_body(
@@ -446,37 +504,17 @@ impl fluxdb_core::GenerationProvider for HttpChatProvider {
                 },
             };
 
-            let events = self.transport.call(&self.config, &auth, &body_json, &cancel)?;
+            let mut mapping_error = None;
+            let result = self.transport.call_events(&self.config, &auth, &body_json, &cancel,
+                &mut |event| {
+                    if mapping_error.is_none() {
+                        mapping_error = emit_host_model_event(event, &mapper, self.config.capabilities.tool_calling, emit).err();
+                    }
+                });
             drop(auth);
             drop(lease);
-
-            // 回程：Provider 名称 → 宿主稳定 ID；未声明的工具能力却返回工具调用视为协议错误。
-            let mut mapped = Vec::with_capacity(events.len());
-            for event in events {
-                match event {
-                    fluxdb_core::ModelEvent::ToolCallRequested(call) => {
-                        if !self.config.capabilities.tool_calling {
-                            return Err(fluxdb_core::Error::new(
-                                fluxdb_core::ErrorKind::Internal,
-                                "模型未声明工具能力却返回工具调用",
-                            ));
-                        }
-                        let Some(host_id) = mapper.to_host(&call.tool_id) else {
-                            return Err(fluxdb_core::Error::new(
-                                fluxdb_core::ErrorKind::Internal,
-                                format!("模型返回了未注册的工具: {}", call.tool_id),
-                            ));
-                        };
-                        mapped.push(fluxdb_core::ModelEvent::ToolCallRequested(fluxdb_core::ToolCallRequest {
-                            provider_call_id: call.provider_call_id,
-                            tool_id: host_id.to_string(),
-                            arguments_json: call.arguments_json,
-                        }));
-                    }
-                    other => mapped.push(other),
-                }
-            }
-            Ok(mapped)
+            if let Some(error) = mapping_error { return Err(error); }
+            result
         })
     }
 }

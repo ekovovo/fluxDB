@@ -46,7 +46,7 @@ async fn streaming_assistant_text_uses_reveal_entity_then_settles(cx: &mut TestA
         cx.debug_bounds("ai-chat-stream-text").is_some(),
         "流式正文应挂载揭示实体并按 Markdown 渲染"
     );
-    // 平滑揭示：16ms 节拍会逐帧吐出文本，等到至少有一次非空已揭示内容。
+    // Markdown 按节拍合并已收到的文本，等待至少一次非空渲染。
     wait_source(&view, cx, "reveal produced visible text", |main| {
         main.ai_chat.running.is_none() || main.ai_chat.stream.revealed_len() > 0
     })

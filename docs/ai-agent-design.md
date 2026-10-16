@@ -168,6 +168,16 @@
 
 HTTP 流式调用要可取消、有大小限制、有 connect/read deadline；现有 ureq 不自动视为足够的异步 SSE 实现。新 async 网络逻辑与同步 Connector 必须隔离在后台执行器。
 
+**异步执行器（2026-10-16 实现）**：`crates/fluxdb-app/src/parts/ai_executor.rs` 提供在**真实 waker**上停放/唤醒的执行器（`block_on` / `block_on_cancellable` / `block_on_until`），替换早期"有限就绪轮询"的 `block_on_ready`。它由 AI 运行时 actor 线程调用，停放的是后台线程而非 UI 主线程；等待期间持续检查 `CancelFlag` 与 deadline，无需外部 IO 反应堆，也不引入生产 tokio。工具执行期的进度改为在产生点经 `ToolProgressSink` 即时投递到有界会话回桥（节流后合并），不再攒进 `Vec` 等工具结束后回放。
+
+**模型真流式与渲染性能（2026-10-16）**：`GenerationProvider::stream_events` 为借用型增量回调，生产两个 HTTP Provider 在 SSE 解析点即时映射工具 ID 并交付事件，`MeteredProvider` 透传而不是重新缓冲。主循环不依赖 `Vec<ModelEvent>` 重放；`stream` 仅保留给摘要/标题等需要收集完整响应的调用方。当前同步 ureq 在已有后台 actor 内读取网络；执行器不会抢占单次 `poll` 内的阻塞 IO，连接/空闲超时仍由 transport 负责，不把它描述成完整异步网络反应堆。
+
+- 参考本机锁定源码：Pi `a276dabe57911253350bffb93cb7d7aff6a73261` 的 `agent-loop.ts`（即时事件）与 `tui.ts`（16ms 合并重绘），Goose `591edd47cf2cfea4957d720c607cf2a4def8673d` 的 `useThrottledStreamingText.ts` / `GooseMessage.tsx`（50ms、超过 16,000 字符时 250ms Markdown 节流）。不直接照搬终端/React 私有接口。
+- 回桥保留容量 4 的结构队列、正文/摘要各一个增量合并槽（总计最多 4 MiB）、独立终态槽；按 UTF-8 字节偏移追加、去重，消费次序为结构快照→待发增量→终态。增量不等待下一个 token 才能发出，不让 UI 消费速度反压网络线程。
+- GPUI 复用既有 `TextViewState::push_str`；普通正文 50ms 合并一次，超过 16,000 UTF-8 字节的正文 250ms 合并一次（多字节文字更早降频）。结束/错误/取消立即冲刷尾片，不追加人为逐字动画；空闲时没有渲染定时器。
+- 正文热路径每 300ms 保存检查点但不重读整个会话；首次模型请求前、工具/审批等操作边界与终态发布权威视图，公开摘要沿用折叠卡的低频投影。前台中间正文是内存增量，不是每个 token 一次 SQLite 写入或全量 AppState 回投影。
+- 首个非空正文/公开摘要、工具或结束事件发出前允许有限瞬时重试；已有可见内容后报错保留半截正文、结束为失败，不重新请求并拼接重复文本。HTTP EOF 或 `[DONE]` 不能代替模型结束事实；参数尚未完整结束、截断或传输失败均不得执行工具。usage 事件即时计入本次请求，取消丢弃挂起 future 也通过 RAII 结算为 actual/unknown，不留下 pending。
+
 ## 7. 分层与建议代码落点
 
 以下路径为**拟新增**，每个目录按职责拆小文件；原有 lib/main 只加声明。
@@ -1033,6 +1043,11 @@ ScopedArtifactHost 仅提供结果分页、来源校验、受控文件创建/提
 | `fluxdb.output.bi` | 内置图表、表格、报告生成与渲染 | 可开关/按 Agent 绑定；不控制通用产物工具是否注册 |
 | `fluxdb.progress.plan` | 公开计划、工具进展、检查点说明 | 默认开；只显示真实事件/模型公开内容 |
 | `fluxdb.lifecycle.telemetry` | 脱敏阶段耗时/错误/诊断汇总 | 可开关；关键执行/审计落盘不依赖它 |
+
+**实现补记（2026-10-16）**：
+
+- `fluxdb.progress.plan` 落 `crates/fluxdb-app/src/parts/ai_plan.rs`：模型通过 `plan.update` 工具发布/更新公开结构化计划（标题 + 有序步骤，状态 `pending/in_progress/done/blocked/skipped`，可选 `note` 与 `tool_call_id`），严格校验后落成 `PartKind::Plan` 片段。步骤状态目前来自模型显式声明，`tool_call_id` 保留引用，不按关键词/工具名自动推进；工具卡仍以真实回执为准。工具仅在插件实例开启且当前 Agent 未禁用绑定时进入目录（`add_ai_plan_tool`），关闭后模型既发现不到也无可执行实现，但已发布的历史计划片段保留。工具执行期的实时进度由执行器在产生点经 `ToolProgressSink` 投递，UI 按 `call_id` 贴到对应工具卡。
+- `fluxdb.lifecycle.telemetry` 落 `crates/fluxdb-app/src/parts/ai_diagnostics.rs`：`TurnDiagnostics` 累计模型请求/工具调用两阶段的耗时与受控错误码（`http_<status>` / `timeout` / `cancelled` 等脱敏码），一轮结束写 `ai_run_events`（`kind = turn_diagnostics` 与 `stage_timing`）。只写计数、耗时与脱敏码，**不含**正文、参数、结果或凭据；关闭后不写诊断，但安全审计、工具回执、审批事实等关键落盘照常进行。
 
 不把“插件化”解释成能卸掉全部保护：执行保护、权限、取消、真实回执和已确认副作用是内核不变量。内置安全审计使用相同 Hook 接口便于扩展，但 该Hook的执行必经，用户只能在允许范围内收窄/增强规则。
 

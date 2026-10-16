@@ -12,6 +12,7 @@ mod ai_panel_tests {
     include!("tests_display.rs");
     include!("tests_composer_shortcuts.rs");
     include!("tests_markdown.rs");
+    include!("tests_live_streaming.rs");
     include!("tests_compaction_status.rs");
     include!("tests_report.rs");
     use fluxdb_app::{AiAgentSaveInput, AiConversationCommand, AiModelSaveInput};

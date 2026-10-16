@@ -43,6 +43,7 @@ fn authz_run(
         limits: crate::LoopLimits::default(),
         permission,
         audit,
+        progress: None,
     };
     let state = crate::TurnState {
         session_id: "loop-session".into(),

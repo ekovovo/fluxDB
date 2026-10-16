@@ -364,7 +364,6 @@ impl NavicatMain {
                             done |= update.terminal;
                             this.ai_chat_consume_update(update, cx);
                         }
-                        cx.notify();
                     });
                     if result.is_err() { break; }
                 }

@@ -116,10 +116,8 @@ impl<R: SqlExecutionResolver + 'static> fluxdb_core::AiTool for AiSqlReadTool<R>
         let results = Arc::clone(&self.results);
         Box::pin(async move {
             let mut report_progress = |event: fluxdb_core::ToolProgressEvent| {
-                if let Some(events) = &progress_events {
-                    if let Ok(mut events) = events.lock() {
-                        events.push(event);
-                    }
+                if let Some(sink) = &progress_events {
+                    sink.report(event);
                 }
             };
             let outcome = match parse_sql_args(&arguments_json) {
@@ -491,10 +489,8 @@ impl<R: SqlExecutionResolver + 'static> fluxdb_core::AiTool for AiSqlExecuteTool
         let progress_events = ctx.progress.clone();
         Box::pin(async move {
             let mut report_progress = |event: fluxdb_core::ToolProgressEvent| {
-                if let Some(events) = &progress_events {
-                    if let Ok(mut events) = events.lock() {
-                        events.push(event);
-                    }
+                if let Some(sink) = &progress_events {
+                    sink.report(event);
                 }
             };
             let outcome = match parse_sql_args(&arguments_json) {

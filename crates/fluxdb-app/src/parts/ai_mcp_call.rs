@@ -296,7 +296,10 @@ impl McpExecutionService {
             cancel: cancel.clone(),
             progress: None,
         };
-        let receipt = match crate::block_on_ready(tool.execute(ctx, prepared.to_json_string())) {
+        let receipt = match crate::ai_executor::block_on_cancellable(
+            tool.execute(ctx, prepared.to_json_string()),
+            &cancel,
+        ) {
             Ok(Ok(receipt)) => receipt,
             Ok(Err(error)) | Err(error) => {
                 return McpCallOutcome::failure(McpCallError::new(

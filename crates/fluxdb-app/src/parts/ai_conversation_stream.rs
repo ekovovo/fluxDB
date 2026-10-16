@@ -16,6 +16,17 @@ pub struct AiConversationStreamDelta {
     pub delta: String,
 }
 
+/// 工具执行中的实时进度（尚未落盘；终态仍以工具回执为准）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AiConversationToolProgress {
+    /// 对应 `ToolReceipt.call_id`；UI 用它把进度贴到正确的工具卡。
+    pub call_id: String,
+    pub returned_rows: u64,
+    pub affected_rows: u64,
+    pub elapsed_ms: u64,
+    pub success: bool,
+}
+
 /// 仅主线程消费的回桥包；身份用于拒绝切会话后的迟到回调。
 ///
 /// 一个回包要么携带**重投影视图**（checkpoint/终态，画面来源仍是数据库），
@@ -27,6 +38,8 @@ pub struct AiConversationUpdate {
     pub view: Option<AiConversationView>,
     /// 未落盘的内存增量；视图回包为 `None`。
     pub delta: Option<AiConversationStreamDelta>,
+    /// 工具执行中的实时进度；视图/增量回包为 `None`。
+    pub tool_progress: Option<AiConversationToolProgress>,
     pub terminal: bool,
 }
 
@@ -37,6 +50,7 @@ impl AiConversationUpdate {
             job,
             view: Some(view),
             delta: None,
+            tool_progress: None,
             terminal,
         }
     }
@@ -58,6 +72,18 @@ impl AiConversationUpdate {
                 start_offset,
                 delta: delta.to_string(),
             }),
+            tool_progress: None,
+            terminal: false,
+        }
+    }
+
+    /// 工具执行中的实时进度回包；不落盘、不建行，终态由回执快照覆盖。
+    pub fn tool_progress(job: AiConversationJob, progress: AiConversationToolProgress) -> Self {
+        Self {
+            job,
+            view: None,
+            delta: None,
+            tool_progress: Some(progress),
             terminal: false,
         }
     }
@@ -66,12 +92,11 @@ impl AiConversationUpdate {
 struct AiConversationStreamPublisher {
     text_sent: usize,
     summary_sent: usize,
-    published_at: Option<std::time::Instant>,
 }
 
 impl AiConversationStreamPublisher {
     fn new(text_sent: usize) -> Self {
-        Self { text_sent, summary_sent: 0, published_at: None }
+        Self { text_sent, summary_sent: 0 }
     }
 
     fn publish(
@@ -80,12 +105,7 @@ impl AiConversationStreamPublisher {
         job: &AiConversationJob,
         text: &str,
         summary: &str,
-        force: bool,
     ) {
-        if !force && self.published_at.is_some_and(|at| at.elapsed() < std::time::Duration::from_millis(16)) {
-            return;
-        }
-        self.published_at = Some(std::time::Instant::now());
         for (kind, content, sent) in [
             (AiConversationDeltaKind::Text, text, &mut self.text_sent),
             (AiConversationDeltaKind::Summary, summary, &mut self.summary_sent),
@@ -121,21 +141,21 @@ mod conversation_stream_tests {
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
         let job = job();
         let mut publisher = AiConversationStreamPublisher::new(0);
-        publisher.publish(&tx, &job, "你", "", true);
+        publisher.publish(&tx, &job, "你", "");
         let mut text = "你".to_owned();
         for _ in 0..2_000 {
             text.push_str("好🙂");
-            publisher.publish(&tx, &job, &text, "", true);
+            publisher.publish(&tx, &job, &text, "");
         }
         assert_eq!(publisher.text_sent, "你".len(), "满队列不能推进游标");
         let first = rx.try_recv().unwrap().delta.unwrap();
         assert_eq!(first.start_offset, 0);
-        publisher.publish(&tx, &job, &text, "", true);
+        publisher.publish(&tx, &job, &text, "");
         let tail = rx.try_recv().unwrap().delta.unwrap();
         assert_eq!(tail.start_offset, first.delta.len());
         assert_eq!(first.delta + &tail.delta, text);
         assert_eq!(publisher.text_sent, text.len());
-        publisher.publish(&tx, &job, &text, "", true);
+        publisher.publish(&tx, &job, &text, "");
         assert!(rx.try_recv().is_err());
     }
 
@@ -144,12 +164,12 @@ mod conversation_stream_tests {
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
         let job = job();
         let mut publisher = AiConversationStreamPublisher::new("历史".len());
-        publisher.publish(&tx, &job, "历史正文", "摘要", true);
+        publisher.publish(&tx, &job, "历史正文", "摘要");
         let text = rx.try_recv().unwrap().delta.unwrap();
         assert_eq!(text.start_offset, "历史".len());
         assert_eq!(text.delta, "正文");
         assert_eq!(publisher.summary_sent, 0);
-        publisher.publish(&tx, &job, "历史正文", "摘要更新", true);
+        publisher.publish(&tx, &job, "历史正文", "摘要更新");
         let summary = rx.try_recv().unwrap().delta.unwrap();
         assert_eq!(summary.kind, AiConversationDeltaKind::Summary);
         assert_eq!(summary.start_offset, 0);
@@ -157,17 +177,14 @@ mod conversation_stream_tests {
     }
 
     #[test]
-    fn first_fragment_is_immediate_and_finish_flushes_throttled_tail() {
+    fn fragments_are_immediate_and_never_replayed_at_finish() {
         let (tx, rx) = std::sync::mpsc::sync_channel(4);
         let job = job();
         let mut publisher = AiConversationStreamPublisher::new(0);
-        publisher.publish(&tx, &job, "a", "", false);
+        publisher.publish(&tx, &job, "a", "");
         assert_eq!(rx.try_recv().unwrap().delta.unwrap().delta, "a");
-        // 模拟同一批快速到达的分片，不依赖测试机器速度。
-        publisher.published_at = Some(std::time::Instant::now());
-        publisher.publish(&tx, &job, "abc", "", false);
-        assert!(rx.try_recv().is_err());
-        publisher.publish(&tx, &job, "abc", "", true);
+        // 合并由回桥槽负责，生产方不节流到依赖下一 token 才能发送尾片。
+        publisher.publish(&tx, &job, "abc", "");
         let tail = rx.try_recv().unwrap().delta.unwrap();
         assert_eq!(tail.start_offset, 1);
         assert_eq!(tail.delta, "bc");

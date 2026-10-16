@@ -199,6 +199,8 @@ include!("main_parts/tests/ai_model_capacity.rs");
 #[cfg(test)]
 include!("main_parts/tests/ai_chat_model_selection.rs");
 #[cfg(test)]
+include!("main_parts/tests/ai_plan_card.rs");
+#[cfg(test)]
 include!("main_parts/tests_table_ui.rs");
 #[cfg(test)]
 include!("main_parts/tests/data_change_commit.rs");

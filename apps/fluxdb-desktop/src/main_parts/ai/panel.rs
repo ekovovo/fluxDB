@@ -520,6 +520,7 @@ fn ai_chat_panel(
                                     ),
                                     stream_view.as_ref().filter(|_| active_stream),
                                     active_stream.then(|| this.ai_chat.stream.revealed_text()),
+                                    &this.ai_chat.tool_progress,
                                     colors,
                                     cx,
                                 )

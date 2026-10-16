@@ -1300,6 +1300,27 @@ T020按主设计§31.9实现询问AI内联批准卡片：参考Goose三态按钮
 - [x] 内置 `fluxdb.lifecycle.telemetry` 只读 Hook 由插件实例/绑定表装配（`ai_builtin_hooks`）；安全审计仍由内核强制，不能被禁用。
 - 未完成：12 类内置能力完整注册表、ContextProcessor/ModelRouter/ArtifactProducer 契约与第三方加载（本期仅留口子）；原型 `#plugins` 对照截图。
 
+### T071 异步执行器与「计划与执行进度」「生命周期诊断」两个内置插件（2026-10-16）
+
+分支 `codex/ai-executor-plugins`（基于 `agent`），仅在该 worktree 内改动。
+
+- [x] 约束先改：`AGENTS.md` 新增「AI 运行时与执行器」条款（真实 waker 停放、await 点取消/超时、有界通道、即时发布、不引入生产 tokio 与第二个自主循环）。设计 §6/§23.2、本清单同步。
+- [x] 异步执行器 `crates/fluxdb-app/src/parts/ai_executor.rs`：`block_on`/`block_on_cancellable`/`block_on_until` 在真实 waker 上停放/唤醒，等待期间检查取消与 deadline；原 `block_on_ready` 收敛为兼容别名。生产调用点已迁移（历史测试仍可使用兼容别名）；单测 5 条（就绪直返、被其他线程唤醒、预取消、停放中取消、死 future 超时）。
+- [x] 实时工具进度：`ToolExecutionContext.progress` 改为 `Option<Arc<dyn ToolProgressSink>>`；`ai_loop` 在产生点即时 `report`，经有界会话回桥（`ConversationToolProgressSink`，节流 150ms、满则丢弃）投递 `AiConversationUpdate::tool_progress`；桌面按 `call_id` 在工具卡就地显示并在回执到达后清理。不再"结束后批量回放"。
+- [x] 「计划与执行进度」`crates/fluxdb-app/src/parts/ai_plan.rs`：`plan.update` 工具 + `PlanUpdate` 严格校验；`LoopEvent::PlanUpdated` → `PartKind::Plan` 片段；`add_ai_plan_tool` 按实例/绑定门控；桌面 `ai_chat_plan_card` 渲染步骤状态。单测 5 条 + 门控集成 `crates/fluxdb-app/tests/ai_plan_plugin_gating.rs`（开启落片段 / 关闭不进目录且无实现 / 关闭不删历史）。
+- [x] 「生命周期诊断」`crates/fluxdb-app/src/parts/ai_diagnostics.rs`：`TurnDiagnostics` 累计模型/工具阶段耗时与脱敏错误码，写 `ai_run_events`（`turn_diagnostics`/`stage_timing`）；`LoopEvent::StageTiming` 由主循环发出；`lifecycle_telemetry_enabled` 按实例/绑定门控。单测 3 条 + 门控集成 `crates/fluxdb-app/tests/ai_telemetry_plugin_gating.rs`（开启写事件 / 关闭不写）。
+- 验收：`cargo fmt --all`、`cargo check --locked --workspace` 通过；`cargo test -p fluxdb-app --lib` **902 passed / 0 failed**；`cargo test -p fluxdb-app --tests` 除既有 `ai_mcp_install::removal_cleans_legacy_preapproval_but_keeps_other_permissions` 外全绿；`cargo test -p fluxdb-desktop --bin fluxdb-desktop` 600 passed（8 项失败：5 项需沙箱外绑定端口、2 项经基线复现为既有失败、1 项并行时序偶发）。
+- 平台：macOS arm64 实测。未验证：Windows/Linux、真实窗口 E2E、真实第三方模型流式。
+
+### T071 补充：模型真流式与页面性能（2026-10-16）
+
+- 先阅读本机 Pi `a276dabe`、Goose `591edd47` 的事件交付与页面渲染源码，参考路径/采用点见主设计 §6。未升级 GPUI 或增加异步网络依赖。
+- `GenerationProvider::stream_events`、两个生产 Provider、`MeteredProvider` 与 `TurnRunner` 接成增量回调；SSE 解析后的正文直接发布，不再由主循环重放完整事件数组。收集型 `stream` 仅供摘要/标题等调用方使用。
+- 有界结构队列 + 正文/摘要双合并槽 + 独立终态槽；UTF-8 偏移连续追加、满槽受控拒绝，尾片不依赖下一 token。前台正文批量渲染 50ms / 长正文 250ms；回桥泵不额外通知整个聊天列表重绘，结束时冲刷。
+- 正文检查点与会话重投影分离；每 300ms 保存正文但不全量重读会话。已交付内容后中断不自动重试；缺少完整模型结束事实不执行工具。挂起 future 被取消时用量也结算为 actual/unknown。
+- 新增：`ai_live_streaming` 回环 HTTP 集成（3 协议首片先于尾帧、EOF 禁止工具执行、取消、挂起用量结算）；`tests_live_streaming.rs` 使用生产 View 点击发送/停止、检查明暗主题与草稿；10,000 次 UTF-8 增量合并及渲染频率断言。
+- 本项不因代码编译或 Headless 通过而宣称可见桌面 E2E 已通过。完整验收记录见 `docs/testing/ai-agent/t071-live-streaming-2026-10-16.md`。
+
 ### T030 主循环 Token 计量与执行保护
 - **2026-10-11 用户需求修订**：原金额预留/结算实现已取消，不保留未来企业费用限额；以下替代 2026-10-07 的费用验收口径。当前验收记录见 `docs/testing/ai-agent/t030-tokens-2026-10-11.md`。
 - storage `usage_ledger.rs`：`start_request`/`finish_request`/`totals`，pending/actual/unknown、归属/状态校验、并发/幂等、input+output 总量、cache 子集与缺 usage 标记；不计算金额、不读取价格快照。

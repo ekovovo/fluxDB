@@ -477,11 +477,14 @@ fn ai_conversation_maybe_compact(
         purpose: "compaction",
     };
     let summary_result = match retry_model_call(cancel, || {
-        block_on_ready(fluxdb_core::GenerationProvider::stream(
+        crate::ai_executor::block_on_cancellable(
+            fluxdb_core::GenerationProvider::stream(
             &metered,
             request.clone(),
             cancel.clone(),
-        ))
+        ),
+            cancel,
+        )
         .and_then(|result| result)
     }) {
         Ok(events) => {

@@ -628,11 +628,10 @@ fn decide_with_retry(
 ) -> fluxdb_core::Result<fluxdb_core::DecisionResponse> {
     retry_model_call(cancel, || {
         let current = request.clone();
-        block_on_ready(fluxdb_core::DecisionProvider::decide(
-            provider,
-            current,
-            cancel.clone(),
-        ))
+        crate::ai_executor::block_on_cancellable(
+            fluxdb_core::DecisionProvider::decide(provider, current, cancel.clone()),
+            cancel,
+        )
         .and_then(|result| result)
     })
 }

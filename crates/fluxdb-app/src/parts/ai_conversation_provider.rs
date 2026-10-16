@@ -109,68 +109,41 @@ impl fluxdb_core::GenerationProvider for AiConversationProvider {
         cancel: fluxdb_core::CancelFlag,
     ) -> fluxdb_core::AiFuture<'_, Vec<fluxdb_core::ModelEvent>> {
         Box::pin(async move {
+            let mut events = Vec::new();
+            self.stream_events(request, cancel, &mut |event| events.push(event.clone())).await?;
+            Ok(events)
+        })
+    }
+
+    fn stream_events<'a>(
+        &'a self,
+        request: fluxdb_core::ModelRequest,
+        cancel: fluxdb_core::CancelFlag,
+        emit: &'a mut (dyn FnMut(&fluxdb_core::ModelEvent) + Send),
+    ) -> fluxdb_core::AiFuture<'a, ()> {
+        Box::pin(async move {
             let mapper = ToolNameMapper::new(&request.tools)?;
             let body = build_chat_body(
-                self.protocol,
-                &self.model,
-                &request,
-                &mapper,
-                self.capabilities,
-                self.max_output_tokens,
+                self.protocol, &self.model, &request, &mapper,
+                self.capabilities, self.max_output_tokens,
             );
             let headers: &[(&str, &str)] = if self.protocol == ChatProtocol::AnthropicMessages {
                 &[("anthropic-version", "2023-06-01")]
             } else {
                 &[]
             };
-            // 事件先缓冲在本地再返回：`stream()` 失败时不留下"半个回答"，
-            // 上层（按错误类别重试的那一层）可以安全地整段重发。
-            let mut events: Vec<fluxdb_core::ModelEvent> = Vec::new();
-            let mut emit = |event: &fluxdb_core::ModelEvent| events.push(event.clone());
-            let events = stream_chat_emit(
-                TransportLimits {
-                    max_total_bytes: 512 * 1024,
-                    ..Default::default()
-                },
-                self.protocol,
-                &self.endpoint,
-                &self.auth,
-                &body.to_string(),
-                headers,
-                &cancel,
-                &mut emit,
-            )
-            .map_err(TransportError::to_core_error)?;
-            // 回程：Provider 安全名称 → 宿主稳定 ID（`db_query` → `db.query`）。
-            // 不做这步，真实模型返回的工具名会被当成"未注册工具"拒绝；声明了工具能力却收到未知名称属协议错误。
-            let mut mapped = Vec::with_capacity(events.len());
-            for event in events {
-                match event {
-                    fluxdb_core::ModelEvent::ToolCallRequested(call) => {
-                        if !self.capabilities.tool_calling {
-                            return Err(fluxdb_core::Error::new(
-                                fluxdb_core::ErrorKind::Internal,
-                                "模型未声明工具能力却返回工具调用",
-                            ));
-                        }
-                        let Some(host_id) = mapper.to_host(&call.tool_id) else {
-                            return Err(fluxdb_core::Error::new(
-                                fluxdb_core::ErrorKind::Internal,
-                                format!("模型返回了未注册的工具: {}", call.tool_id),
-                            ));
-                        };
-                        mapped.push(fluxdb_core::ModelEvent::ToolCallRequested(
-                            fluxdb_core::ToolCallRequest {
-                                provider_call_id: call.provider_call_id,
-                                tool_id: host_id.to_string(),
-                                arguments_json: call.arguments_json,
-                            },
-                        ));
+            let mut mapping_error = None;
+            let result = stream_chat_events(
+                TransportLimits { max_total_bytes: 512 * 1024, ..Default::default() },
+                self.protocol, &self.endpoint, &self.auth, &body.to_string(), headers, &cancel,
+                &mut |event| {
+                    if mapping_error.is_none() {
+                        mapping_error = emit_host_model_event(event, &mapper, self.capabilities.tool_calling, emit).err();
                     }
-                    other => mapped.push(other),
-                }
-            }
-            Ok(mapped)
+                },
+            ).map_err(TransportError::to_core_error);
+            if let Some(error) = mapping_error { return Err(error); }
+            result
         })
     }
 }

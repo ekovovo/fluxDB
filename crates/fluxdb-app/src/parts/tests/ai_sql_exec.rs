@@ -281,14 +281,14 @@ fn ai_sql_exec_cancel_flag_yields_cancelled_receipt() {
 #[test]
 fn ai_sql_exec_reports_progress_to_runtime_context() {
     let resolver = Arc::new(MapSqlResolver::new([ai_sql_exec_demo_config(1)]));
-    let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let events = Arc::new(crate::RecordingProgressSink::new());
     let ctx = ToolExecutionContext {
         automatic_approval: false,
         session_id: "s-sql".into(),
         turn_id: "t-sql".into(),
         iteration: 1,
         call_id: "call-progress".into(),
-        progress: Some(events.clone()),
+        progress: Some(events.clone() as std::sync::Arc<dyn fluxdb_core::ToolProgressSink>),
         cancel: CancelFlag::new(),
     };
     let tool = AiSqlReadTool::query(resolver).expect("db.query 工具");
@@ -298,7 +298,7 @@ fn ai_sql_exec_reports_progress_to_runtime_context() {
     ))
     .expect("工具调用");
     assert_eq!(receipt.status, fluxdb_core::ToolReceiptStatus::Succeeded);
-    let events = events.lock().expect("进度锁");
+    let events = events.snapshot();
     assert_eq!(events.len(), 1);
     assert!(events[0].success);
     assert_eq!(events[0].returned_rows, 2);

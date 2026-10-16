@@ -384,101 +384,162 @@ fn mcp_datasource_read_write_policy_executes_write_when_allowed() {
 }
 
 
+/// 一个审批 Mock：记录是否真的被问到，并回放固定结论。
+struct ReviewMock {
+    endpoint: String,
+    hit: Arc<AtomicUsize>,
+    handle: std::thread::JoinHandle<()>,
+}
+
+impl ReviewMock {
+    fn endpoint(&self) -> String {
+        self.endpoint.clone()
+    }
+
+    fn assert_asked_and_join(self) {
+        self.handle.join().unwrap();
+        assert_eq!(
+            self.hit.load(Ordering::SeqCst),
+            1,
+            "审批请求没有发到这个模型"
+        );
+    }
+}
+
+/// 起一个只回放固定审批结论的 OpenAI 兼容 Mock。
+///
+/// `expected_hits` 是 5 秒窗口内期望收到的请求数：为 1 时收不到即判失败（证明请求确实
+/// 发到了这个模型），为 0 时收不到才是正确结果（证明不该被问到）。线程内同时校验
+/// "只有一个 system 消息"和"证据里没有业务值"，审批请求的出站边界由这里守住。
+fn spawn_review_mock(output: &str, expected_hits: usize) -> ReviewMock {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
+    let output = output.to_string();
+    let hit = Arc::new(AtomicUsize::new(0));
+    let handle = {
+        let hit = hit.clone();
+        std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            let mut served = 0usize;
+            while served < expected_hits {
+                let mut stream = loop {
+                    match listener.accept() {
+                        Ok((stream, _)) => break stream,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            assert!(
+                                std::time::Instant::now() < deadline,
+                                "审批模型收到的请求数不符预期：期望 {expected_hits}，实际 {served}"
+                            );
+                            std::thread::yield_now();
+                        }
+                        Err(error) => panic!("Mock 监听失败：{error}"),
+                    }
+                };
+                stream.set_nonblocking(false).unwrap();
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                    .unwrap();
+                let mut bytes = Vec::new();
+                let mut chunk = [0; 4096];
+                let header_end = loop {
+                    let n = stream.read(&mut chunk).unwrap();
+                    assert!(n > 0);
+                    bytes.extend_from_slice(&chunk[..n]);
+                    if let Some(index) = bytes.windows(4).position(|w| w == b"\r\n\r\n") {
+                        break index + 4;
+                    }
+                };
+                let headers = String::from_utf8_lossy(&bytes[..header_end]).to_ascii_lowercase();
+                let length = headers
+                    .lines()
+                    .find_map(|line| {
+                        line.strip_prefix("content-length:")
+                            .and_then(|v| v.trim().parse::<usize>().ok())
+                    })
+                    .unwrap();
+                while bytes.len() < header_end + length {
+                    let n = stream.read(&mut chunk).unwrap();
+                    assert!(n > 0);
+                    bytes.extend_from_slice(&chunk[..n]);
+                }
+                let body: serde_json::Value =
+                    serde_json::from_slice(&bytes[header_end..header_end + length]).unwrap();
+                assert_eq!(body["messages"].as_array().unwrap().len(), 1);
+                assert!(!body.to_string().contains("business-secret"));
+                let delta = serde_json::json!({"choices":[{"index":0,"delta":{"content":output},"finish_reason":null}]});
+                let end =
+                    serde_json::json!({"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]});
+                let response =
+                    format!("data: {delta}\n\ndata: {end}\n\ndata: [DONE]\n\n");
+                write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",response.len(),response).unwrap();
+                served += 1;
+                hit.fetch_add(1, Ordering::SeqCst);
+            }
+        })
+    };
+    ReviewMock {
+        endpoint,
+        hit,
+        handle,
+    }
+}
+
+/// 存一个指向 Mock 的生成模型，返回档案 id。
+fn save_mock_generation_model(fixture: &PolicyFixture, name: &str, endpoint: String) -> String {
+    let mut controller = AppController::new();
+    controller.set_ai_storage(fixture.storage.clone());
+    match controller.dispatch(AppCommand::SaveAiModel(AiModelSaveInput {
+        display_name: name.into(),
+        provider: "openai".into(),
+        model: "review-mock".into(),
+        endpoint: Some(endpoint),
+        enabled: true,
+        egress: true,
+        api_key: Some("not-a-real-key".into()),
+        ..Default::default()
+    })) {
+        AppEvent::AiModelSaved { id, .. } => id,
+        other => panic!("隔离模型保存失败：{other:?}"),
+    }
+}
+
+fn set_global_default_model(fixture: &PolicyFixture, id: &str) {
+    let mut controller = AppController::new();
+    controller.set_ai_storage(fixture.storage.clone());
+    match controller.dispatch(AppCommand::SaveAiDefaultModels {
+        default_model_id: Some(id.to_string()),
+        default_decision_model_id: None,
+        expected_revision: 0,
+    }) {
+        AppEvent::AiDefaultModelsSaved { .. } => {}
+        other => panic!("设置默认生成模型失败：{other:?}"),
+    }
+}
+
 #[test]
 fn generation_reviewer_is_used_without_jev_and_invalid_output_requires_human() {
-    use std::io::{Read, Write};
     for output in [
         r#"{"decision":"approve"}"#,
         r#"{"decision":"deny"}"#,
         "approve please",
     ] {
         let fixture = PolicyFixture::new();
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        listener.set_nonblocking(true).unwrap();
-        let endpoint = format!("http://{}/v1", listener.local_addr().unwrap());
+        let mock = spawn_review_mock(output, 1);
         let expected = output.to_string();
-        let output = output.to_string();
-        let mock = std::thread::spawn(move || {
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-            let mut stream = loop {
-                match listener.accept() {
-                    Ok((stream, _)) => break stream,
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        assert!(std::time::Instant::now() < deadline, "回退模型没有收到请求");
-                        std::thread::yield_now();
-                    }
-                    Err(error) => panic!("Mock 监听失败：{error}"),
-                }
-            };
-            stream.set_nonblocking(false).unwrap();
-            stream
-                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
-                .unwrap();
-            let mut bytes = Vec::new();
-            let mut chunk = [0; 4096];
-            let header_end = loop {
-                let n = stream.read(&mut chunk).unwrap();
-                assert!(n > 0);
-                bytes.extend_from_slice(&chunk[..n]);
-                if let Some(index) = bytes.windows(4).position(|w| w == b"\r\n\r\n") {
-                    break index + 4;
-                }
-            };
-            let headers = String::from_utf8_lossy(&bytes[..header_end]).to_ascii_lowercase();
-            let length = headers
-                .lines()
-                .find_map(|line| {
-                    line.strip_prefix("content-length:")
-                        .and_then(|v| v.trim().parse::<usize>().ok())
-                })
-                .unwrap();
-            while bytes.len() < header_end + length {
-                let n = stream.read(&mut chunk).unwrap();
-                assert!(n > 0);
-                bytes.extend_from_slice(&chunk[..n]);
-            }
-            let body: serde_json::Value =
-                serde_json::from_slice(&bytes[header_end..header_end + length]).unwrap();
-            assert_eq!(body["messages"].as_array().unwrap().len(), 1);
-            assert!(!body.to_string().contains("business-secret"));
-            let delta = serde_json::json!({"choices":[{"index":0,"delta":{"content":output},"finish_reason":null}]});
-            let end =
-                serde_json::json!({"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]});
-            let response = format!("data: {delta}\n\ndata: {end}\n\ndata: [DONE]\n\n");
-            write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",response.len(),response).unwrap();
-        });
-        let mut controller = AppController::new();
-        controller.set_ai_storage(fixture.storage.clone());
-        let id = match controller.dispatch(AppCommand::SaveAiModel(AiModelSaveInput {
-            display_name: "审批 Mock".into(),
-            provider: "openai".into(),
-            model: "review-mock".into(),
-            endpoint: Some(endpoint),
-            enabled: true,
-            egress: true,
-            api_key: Some("not-a-real-key".into()),
-            ..Default::default()
-        })) {
-            AppEvent::AiModelSaved { id, .. } => id,
-            other => panic!("隔离模型保存失败：{other:?}"),
-        };
-        // 无 Jev 时回退到默认生成模型（`approval_model_id` 已移除）。
-        match controller.dispatch(AppCommand::SaveAiDefaultModels {
-            default_model_id: Some(id),
-            default_decision_model_id: None,
-            expected_revision: 0,
-        }) {
-            AppEvent::AiDefaultModelsSaved { .. } => {}
-            other => panic!("设置默认生成模型失败：{other:?}"),
-        }
+        let id = save_mock_generation_model(&fixture, "审批 Mock", mock.endpoint());
+        // 无 Jev 时回退到全局默认生成模型（对外 MCP 没有 Agent 概念）。
+        set_global_default_model(&fixture, &id);
         let result = StorageWriteReviewer {
             storage: fixture.storage.clone(),
+            turn_model_profile_id: None,
         }
         .review(
             r#"{"max_affected_rows":1,"business_values":"omitted"}"#,
             &CancelFlag::new(),
         );
-        mock.join().unwrap();
+        mock.assert_asked_and_join();
         match expected.as_str() {
             r#"{"decision":"approve"}"# => {
                 assert_eq!(result, (ReviewChoice::Approve, "generation_model"))
@@ -489,4 +550,39 @@ fn generation_reviewer_is_used_without_jev_and_invalid_output_requires_human() {
             _ => assert_eq!(result.0, ReviewChoice::Manual),
         }
     }
+}
+
+/// 无 Jev 时审批必须问"当前 Agent 正在用的那个模型"，而不是全局默认主模型。
+///
+/// 两个 Mock 给出相反结论：全局默认说 deny、本轮模型说 approve。全局默认那个 Mock
+/// 期望 0 次请求，因此"它没被问到"和"结论来自本轮模型"是同一次请求的两个面。
+#[test]
+fn generation_reviewer_falls_back_to_the_turn_model_not_the_global_default() {
+    let fixture = PolicyFixture::new();
+    let default_mock = spawn_review_mock(r#"{"decision":"deny"}"#, 0);
+    let turn_mock = spawn_review_mock(r#"{"decision":"approve"}"#, 1);
+    let default_id = save_mock_generation_model(&fixture, "全局默认", default_mock.endpoint());
+    let turn_id = save_mock_generation_model(&fixture, "本轮模型", turn_mock.endpoint());
+    set_global_default_model(&fixture, &default_id);
+
+    let result = StorageWriteReviewer {
+        storage: fixture.storage.clone(),
+        turn_model_profile_id: Some(turn_id),
+    }
+    .review(
+        r#"{"max_affected_rows":1,"business_values":"omitted"}"#,
+        &CancelFlag::new(),
+    );
+    turn_mock.assert_asked_and_join();
+    default_mock.handle.join().unwrap();
+    assert_eq!(
+        default_mock.hit.load(Ordering::SeqCst),
+        0,
+        "审批不得绕过本轮 Agent 去问全局默认模型"
+    );
+    assert_eq!(
+        result,
+        (ReviewChoice::Approve, "generation_model"),
+        "结论必须来自本轮模型"
+    );
 }

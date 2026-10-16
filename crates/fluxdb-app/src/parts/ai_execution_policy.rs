@@ -26,6 +26,13 @@ pub trait WriteReviewer: Send + Sync {
 
 struct StorageWriteReviewer {
     storage: fluxdb_storage::FileStorage,
+    /// 本轮 Agent 正在用的生成模型档案 id：Jev 决策不可用时的审批模型。
+    ///
+    /// 审批必须问"正在干这件事的那个模型"，而不是另一个无关模型，所以这里取本轮
+    /// 实际路由到的档案（设计 §17 的会话选择/Agent 绑定/Agent 默认/全局默认已经解析完），
+    /// 而不是重新读全局默认。`None` 表示没有本轮 Agent 上下文（对外 MCP 没有 Agent
+    /// 概念），此时才退回全局默认生成模型。
+    turn_model_profile_id: Option<String>,
 }
 
 impl WriteReviewer for StorageWriteReviewer {
@@ -86,7 +93,8 @@ impl WriteReviewer for StorageWriteReviewer {
         if cancel.is_cancelled() {
             return (ReviewChoice::Manual, "cancelled");
         }
-        let Some(id) = runtime.default_model_profile_id else {
+        let Some(id) = self.turn_model_profile_id.clone().or(runtime.default_model_profile_id)
+        else {
             return (ReviewChoice::Manual, "no_generation_model");
         };
         let permitted = with_ai_storage(&self.storage, |conn| {
@@ -175,27 +183,35 @@ pub struct PolicyAuthorization {
 
 impl ExecutionSecurity {
     /// 对外 MCP：数据源引用存储中已登记的连接，执行期间按存储复核。
+    ///
+    /// MCP 写入由数据源写入策略直接放行，不走「帮我审批」，因此没有本轮 Agent 模型。
     pub fn new(storage: fluxdb_storage::FileStorage) -> Self {
         let connections = storage.load_connections().unwrap_or_default();
-        Self::assemble(storage, connections, true)
+        Self::assemble(storage, connections, true, None)
     }
 
     /// 内部会话：连接由调用方按本轮固定目标给出，未必已登记到存储。
+    ///
+    /// `turn_model_profile_id` 是本轮 Agent 实际路由到的生成模型，作为 Jev 决策不可用时
+    /// 的审批模型；调用方必须传本轮真实模型，不能传别的模型或留空。
     pub fn with_connections(
         storage: fluxdb_storage::FileStorage,
         connections: Vec<ConnectionConfig>,
+        turn_model_profile_id: String,
     ) -> Self {
-        Self::assemble(storage, connections, false)
+        Self::assemble(storage, connections, false, Some(turn_model_profile_id))
     }
 
     fn assemble(
         storage: fluxdb_storage::FileStorage,
         connections: Vec<ConnectionConfig>,
         revalidate_from_storage: bool,
+        turn_model_profile_id: Option<String>,
     ) -> Self {
         Self {
             reviewer: Arc::new(StorageWriteReviewer {
                 storage: storage.clone(),
+                turn_model_profile_id,
             }),
             storage,
             connections,

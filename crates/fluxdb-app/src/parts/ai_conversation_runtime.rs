@@ -102,7 +102,8 @@ impl AiRuntimeHandle {
                         )?;
                     }
                     tools.without_tools(&security.disabled_tools);
-                    tools=tools.with_execution_security(ExecutionSecurity::with_connections(storage.clone(),connections.clone()));
+                    // 审批模型与本轮 Agent 用的是同一个模型：Jev 决策不可用时由它回退审批。
+                    tools=tools.with_execution_security(ExecutionSecurity::with_connections(storage.clone(),connections.clone(),job.model_profile_id.clone()));
                     let permission = TurnPermissionContext {
                         agent_allowed_tools: security.agent_allowed_tools,
                         disabled_tools: security.disabled_tools,

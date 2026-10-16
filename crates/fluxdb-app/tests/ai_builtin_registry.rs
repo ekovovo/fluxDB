@@ -83,7 +83,26 @@ fn mandatory_capabilities_cannot_be_disabled() {
     let registry = BuiltinRegistry::default();
     assert!(!registry.can_disable("builtin.context-ui"));
     assert!(!registry.can_disable("builtin.security-audit"));
-    assert!(!registry.can_disable("builtin.budget"));
     assert!(registry.can_disable("builtin.jev"));
     assert!(!registry.can_disable("unknown"));
+}
+
+/// 用量统计看板尚未实现：只占目录位，不登记能力、不可启停，也不显示成内核约束。
+#[test]
+fn usage_stats_entry_is_a_placeholder_until_the_dashboard_exists() {
+    let registry = BuiltinRegistry::default();
+    let descriptor = registry
+        .find_by_instance("builtin.budget")
+        .expect("占位实例仍保留目录行");
+    assert_eq!(descriptor.display_name, "AI 用量统计");
+    assert!(descriptor.retired);
+    assert!(!descriptor.mandatory);
+    assert!(descriptor.capabilities.is_empty());
+    assert!(registry.is_retired("builtin.budget"));
+    assert!(!registry.can_disable("builtin.budget"));
+    assert!(
+        !registry
+            .enabled_capabilities(&[instance("budget", "fluxdb.usage.budget", "builtin", true)])
+            .contains(&BuiltinCapability::SecurityAudit)
+    );
 }

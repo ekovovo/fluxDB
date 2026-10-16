@@ -110,6 +110,25 @@ fn ai_chat_small_button(
         .tooltip(title)
         .child(app_icon(icon, 14., colors.muted))
 }
+
+/// 顶部会话用量标签的紧凑数字：千位以上按一位小数定标为 K/M。
+///
+/// 只影响展示，累计值仍按整 token 统计；取整后到 1000K 时进位到 M，避免出现 "1000K"。
+fn ai_format_usage_tokens(tokens: i64) -> String {
+    let tokens = tokens.max(0);
+    if tokens < 1_000 {
+        return tokens.to_string();
+    }
+    let (mut tenths, mut unit) = ((tokens * 10 + 500) / 1_000, "K");
+    if tenths >= 10_000 {
+        tenths = (tokens * 10 + 500_000) / 1_000_000;
+        unit = "M";
+    }
+    match tenths % 10 {
+        0 => format!("{}{unit}", tenths / 10),
+        frac => format!("{}.{frac}{unit}", tenths / 10),
+    }
+}
 fn ai_chat_panel(
     this: &mut NavicatMain,
     _window: &mut Window,
@@ -520,9 +539,9 @@ fn ai_chat_panel(
     let token_label = if chat.usage.requests > 0 && chat.usage.unknown_requests == chat.usage.requests {
         "Token 用量未知".to_string()
     } else if chat.usage.unknown_requests > 0 {
-        format!("{} tokens（部分未知）", chat.usage.total_tokens)
+        format!("{} tokens（部分未知）", ai_format_usage_tokens(chat.usage.total_tokens))
     } else {
-        format!("{} tokens", chat.usage.total_tokens)
+        format!("{} tokens", ai_format_usage_tokens(chat.usage.total_tokens))
     };
     // 恢复记录已解释暂停原因时，不再叠加重复的全宽警告。
     let has_recovery_notice = chat.messages.iter().flat_map(|message| &message.parts).any(|part| {

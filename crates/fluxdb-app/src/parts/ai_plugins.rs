@@ -11,7 +11,6 @@ pub enum BuiltinCapability {
     DecisionProvider,
     ContextProcessor,
     SecurityAudit,
-    UsageBudget,
     KnowledgeSkills,
     ArtifactProducer,
     Progress,
@@ -177,10 +176,10 @@ pub struct BuiltinDescriptor {
     pub summary: &'static str,
     pub capabilities: &'static [BuiltinCapability],
     pub mandatory: bool,
-    /// 已下线的目录占位行：保留实例与页面行，但不再登记任何能力、不可启停。
+    /// 无实现或已下线的目录占位行：保留实例与页面行，但不登记任何能力、不可启停。
     ///
     /// 与 `mandatory` 的区别是"没有实现"而不是"内核强制"：置灰行只在设置页占位，
-    /// 运行时不解析任何能力，也不显示说明文字。
+    /// 运行时不解析任何能力；`summary` 可写明该行尚未实现的用途。
     pub retired: bool,
     /// 配置声明（协议见 [`PluginConfigDeclaration`]）；空串表示该能力没有可配置项，
     /// 宿主因此不显示「管理」入口。外置插件把同一份声明放进 manifest 的
@@ -195,7 +194,6 @@ const RETIRED: &[BuiltinCapability] = &[];
 const JEV: &[BuiltinCapability] = &[BuiltinCapability::DecisionProvider];
 const COMPACTION: &[BuiltinCapability] = &[BuiltinCapability::ContextProcessor];
 const SECURITY: &[BuiltinCapability] = &[BuiltinCapability::SecurityAudit];
-const BUDGET: &[BuiltinCapability] = &[BuiltinCapability::UsageBudget];
 const KNOWLEDGE: &[BuiltinCapability] = &[BuiltinCapability::KnowledgeSkills];
 const BI: &[BuiltinCapability] = &[BuiltinCapability::ArtifactProducer];
 const PROGRESS: &[BuiltinCapability] = &[BuiltinCapability::Progress];
@@ -336,11 +334,11 @@ pub const BUILTIN_DESCRIPTORS: &[BuiltinDescriptor] = &[
     BuiltinDescriptor {
         instance_id: "builtin.budget",
         package_key: "fluxdb.usage.budget",
-        display_name: "Token 用量与执行保护",
-        summary: "Token 用量与执行保护事件",
-        capabilities: BUDGET,
-        mandatory: true,
-        retired: false,
+        display_name: "AI 用量统计",
+        summary: "会话 Token 用量统计看板（待实现）",
+        capabilities: RETIRED,
+        mandatory: false,
+        retired: true,
         config_declaration: "",
     },
     BuiltinDescriptor {

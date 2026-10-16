@@ -87,8 +87,29 @@ fn ai_ui_builtin_plugins_page_lists_catalog_and_enforces_mandatory(cx: &mut Test
     assert_eq!(jev.summary, "可选分类、路由与相关性建议");
     assert!(jev.enabled && !jev.mandatory);
     assert!(telemetry.expect("诊断实例").enabled);
+    // 用量统计看板尚未实现：只占目录位，开关禁用，且不再标成内核约束。
+    let budget = view.read_with(cx, |main, _| {
+        main.controller
+            .state()
+            .ai_plugin_instances
+            .iter()
+            .find(|p| p.id == "builtin.budget")
+            .cloned()
+            .expect("占位实例仍在目录中")
+    });
+    assert_eq!(budget.display_name, "AI 用量统计");
+    assert!(!budget.enabled, "占位行不允许停留在已启用");
+    assert!(budget.retired);
+    assert!(!budget.mandatory);
+    cx.update(|window, cx| {
+        use gpui_kit::test::TestWindowExt as _;
+        window.render_frame(cx);
+        let switch = window.find("ai-plugin:builtin.budget");
+        assert!(!switch.checked().unwrap_or(false), "占位行开关必须为关");
+        assert!(window.try_find("ai-plugin-manage:builtin.budget").is_none());
+    });
 
-    // 内核约束项：真实点击开关后必须仍然启用（不改 UI 状态、不落库）。
+    // 常驻能力项：真实点击开关后必须仍然启用（不改 UI 状态、不落库）。
     click_selector(cx, "ai-plugin:builtin.security-audit");
     let audit_enabled = view.read_with(cx, |main, _| {
         main.controller
@@ -98,7 +119,7 @@ fn ai_ui_builtin_plugins_page_lists_catalog_and_enforces_mandatory(cx: &mut Test
             .find(|p| p.id == "builtin.security-audit")
             .map(|p| p.enabled)
     });
-    assert_eq!(audit_enabled, Some(true), "内核约束项不可被停用");
+    assert_eq!(audit_enabled, Some(true), "常驻能力项不可被停用");
 
     // 可选能力：点击即真实落库停用（用目录中靠前的行，避免测试窗口高度不足）。
     click_selector(cx, "ai-plugin:builtin.jev");

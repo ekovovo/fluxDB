@@ -473,7 +473,7 @@ fn ai_settings_plugin_toggle_persists_and_mandatory_instances_cannot_disable() {
             .enabled
     );
 
-    for mandatory in ["builtin.context-ui", "builtin.security-audit", "builtin.budget"] {
+    for mandatory in ["builtin.context-ui", "builtin.security-audit"] {
         let before = pa_plugin_row(&dir, mandatory);
         let event = controller.dispatch(AppCommand::SetAiPluginInstanceEnabled {
             id: mandatory.into(),
@@ -483,8 +483,8 @@ fn ai_settings_plugin_toggle_persists_and_mandatory_instances_cannot_disable() {
         match event {
             AppEvent::AiSettingsError(message) => {
                 assert!(
-                    message.contains("内核约束") || message.contains("不可停用"),
-                    "{mandatory} 应给出内核约束错误: {message}"
+                    message.contains("常驻") || message.contains("不可停用"),
+                    "{mandatory} 应给出常驻能力错误: {message}"
                 );
             }
             other => panic!("{mandatory} 不可停用，实际: {other:?}"),
@@ -495,6 +495,19 @@ fn ai_settings_plugin_toggle_persists_and_mandatory_instances_cannot_disable() {
             "{mandatory} 被拒后数据库状态不得变化"
         );
     }
+    // 用量统计看板尚未实现：占位行同样不可启停，但拒绝原因是"没有实现"而不是"内核强制"。
+    let budget_before = pa_plugin_row(&dir, "builtin.budget");
+    match controller.dispatch(AppCommand::SetAiPluginInstanceEnabled {
+        id: "builtin.budget".into(),
+        enabled: true,
+        expected_revision: budget_before.1,
+    }) {
+        AppEvent::AiSettingsError(message) => {
+            assert!(message.contains("暂不可启停"), "实际: {message}");
+        }
+        other => panic!("占位行不可启停，实际: {other:?}"),
+    }
+    assert_eq!(pa_plugin_row(&dir, "builtin.budget"), budget_before);
     let _ = std::fs::remove_dir_all(&dir);
 }
 

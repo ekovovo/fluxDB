@@ -4,9 +4,10 @@ use std::{fs, path::PathBuf, sync::Arc};
 
 use fluxdb_app::{
     AiAgentSaveInput, AiConversationCommand, AiModelSaveInput, AppCommand, AppController, AppEvent,
-    KernelAuditHook, KernelPolicy, MapSqlResolver, ScriptedGenerationProvider, TargetRef,
-    TurnPermissionContext, TurnTargetPin, connection_is_read_only, kernel_policy_for_connection,
-    run_ai_conversation_resume_approval, run_ai_conversation_turn, standard_sql_catalog,
+    ConfiguredAuditHook, KernelAuditHook, KernelPolicy, MapSqlResolver, ScriptedGenerationProvider,
+    TargetRef, TurnPermissionContext, TurnTargetPin, connection_is_read_only,
+    kernel_policy_for_connection, load_audit_rules, run_ai_conversation_resume_approval,
+    run_ai_conversation_turn, standard_sql_catalog,
 };
 use fluxdb_core::{
     CancelFlag, ConnectionConfig, ConnectionId, DatabaseKind, FinishReason, ModelCapabilities,
@@ -14,7 +15,7 @@ use fluxdb_core::{
 };
 use fluxdb_storage::{
     FileStorage, Storage as _,
-    ai_platform::{audits, sessions},
+    ai_platform::{audits, plugins, sessions},
 };
 
 struct Fixture {
@@ -479,4 +480,175 @@ fn tool_target_outside_pinned_connection_is_rejected() {
         receipt.contains("connection_not_found") || receipt.contains("target"),
         "失败原因应指向无效目标: {receipt}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// 调用前安全审计规则：配置 → 拦截 → append-only 审计可查（设计 §25.1）。
+// ---------------------------------------------------------------------------
+
+/// 直接把规则写进安全审计插件的实例配置（等价于用户在「管理」弹框里填写）。
+fn set_audit_rules(fixture: &Fixture, values: serde_json::Value) {
+    let map = values.as_object().cloned().unwrap_or_default();
+    fixture
+        .storage
+        .with_ai_connection(|conn| {
+            let revision =
+                plugins::load_plugin_instance_config(conn, "builtin.security-audit")?.revision;
+            plugins::save_plugin_instance_config(
+                conn,
+                1_000,
+                "builtin.security-audit",
+                &map,
+                revision,
+            )
+            .map(|_| ())
+        })
+        .expect("写入审计规则");
+}
+
+/// 用带规则的审计 Hook 跑一次写工具回合；返回终态视图。
+fn run_turn_with_audit(
+    fixture: &Fixture,
+    config: &ConnectionConfig,
+    events: Vec<Vec<ModelEvent>>,
+) -> fluxdb_app::AiConversationView {
+    let mut controller = fixture.configured();
+    let job = controller
+        .prepare_ai_conversation("执行一次写入", &target(1))
+        .expect("准备任务");
+    let permission = TurnPermissionContext {
+        agent_allowed_tools: Vec::new(),
+        disabled_tools: Default::default(),
+        policy: kernel_policy_for_connection(Some(config)),
+        plugin_digest: None,
+    };
+    let catalog =
+        standard_sql_catalog(Arc::new(MapSqlResolver::new([config.clone()])), true).expect("目录");
+    let audit = ConfiguredAuditHook::new(load_audit_rules(&fixture.storage).expect("读取规则"));
+    let cancel = CancelFlag::new();
+    let (tx, rx) = std::sync::mpsc::sync_channel(16);
+    let provider = ScriptedGenerationProvider::new(capabilities(), events);
+    run_ai_conversation_turn(
+        &fixture.storage,
+        &job,
+        &cancel,
+        &tx,
+        &provider,
+        &catalog,
+        &audit,
+        permission,
+    );
+    last_terminal(&rx)
+}
+
+fn execute_product_step(sql: &str) -> Vec<ModelEvent> {
+    vec![
+        ModelEvent::ToolCallRequested(ToolCallRequest {
+            provider_call_id: "call-audit".into(),
+            tool_id: "db.execute".into(),
+            arguments_json: serde_json::json!({
+                "target": "conn:1/db:main",
+                "sql": sql,
+            })
+            .to_string(),
+        }),
+        ModelEvent::Finished(FinishReason::Stop),
+    ]
+}
+
+/// 被规则命中的写入必须真的不执行，并留下可查的审计事实行。
+#[test]
+fn audit_rule_denies_write_and_records_append_only_fact() {
+    let fixture = Fixture::new();
+    let config = fixture.config(1);
+    set_audit_rules(&fixture, serde_json::json!({"denied_tables": ["product"]}));
+
+    run_turn_with_audit(
+        &fixture,
+        &config,
+        vec![
+            execute_product_step("UPDATE product SET name='x' WHERE id=1"),
+            text_step("被审计规则拒绝"),
+        ],
+    );
+
+    let recorded = calls(&fixture.storage, "does-not-matter");
+    // turn_id 由 prepare 生成，这里直接查唯一一行调用事实。
+    let _ = recorded;
+    let (call_id, status, receipt) = fixture
+        .storage
+        .with_ai_connection(|conn| {
+            let row = conn
+                .query_row(
+                    "SELECT id, status, receipt_json FROM ai_tool_calls ORDER BY started_at_ms",
+                    [],
+                    |row| {
+                        Ok::<_, rusqlite::Error>((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, Option<String>>(2)?,
+                        ))
+                    },
+                )
+                .map_err(|error| {
+                    fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, error.to_string())
+                })?;
+            Ok(row)
+        })
+        .expect("被拒绝也要留调用事实行");
+    assert_eq!(status, "denied", "规则命中的写入必须被拒绝");
+    assert!(
+        receipt.unwrap_or_default().contains("audit_denied"),
+        "拒绝原因应来自审计"
+    );
+
+    let facts = fixture
+        .storage
+        .with_ai_connection(|conn| audits::list_tool_audits(conn, &call_id))
+        .expect("读取审计事实");
+    assert_eq!(facts.len(), 1, "每次判定写一行审计事实");
+    assert_eq!(facts[0].decision, audits::AuditDecision::Deny);
+    assert_eq!(facts[0].risk, "write");
+    assert!(
+        facts[0]
+            .rule_ids
+            .iter()
+            .any(|id| id.contains("denied_tables")),
+        "应记录命中的规则：{:?}",
+        facts[0].rule_ids
+    );
+    assert!(
+        facts[0].ruleset_version.starts_with("kernel-audit-v1-"),
+        "应记录规则集版本：{}",
+        facts[0].ruleset_version
+    );
+}
+
+/// 空规则集不改变原有行为：写操作仍停在审批，而不是被审计拒绝。
+#[test]
+fn without_audit_rules_write_still_waits_for_approval() {
+    let fixture = Fixture::new();
+    let config = fixture.config(1);
+    run_turn_with_audit(
+        &fixture,
+        &config,
+        vec![
+            execute_product_step("UPDATE product SET name='x' WHERE id=1"),
+            text_step("等待审批"),
+        ],
+    );
+    let status: String = fixture
+        .storage
+        .with_ai_connection(|conn| {
+            let status = conn
+                .query_row("SELECT status FROM ai_tool_calls", [], |row| {
+                    row.get::<_, String>(0)
+                })
+                .map_err(|error| {
+                    fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, error.to_string())
+                })?;
+            Ok(status)
+        })
+        .expect("应有调用事实行");
+    assert_eq!(status, "waiting_approval");
 }

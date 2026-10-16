@@ -376,3 +376,251 @@ fn ai_ui_compaction_plugin_config_dialog_uses_its_own_slot(cx: &mut TestAppConte
     assert_eq!(reselected.as_deref(), Some(model_id.as_str()));
     let _ = std::fs::remove_dir_all(root);
 }
+
+
+/// 「安全审计」页签：统计卡筛选、行展开详情、空态与错误态区分。
+///
+/// 种入真实审计事实（走存储层 API），不伪造内存列表。
+#[gpui_kit::test]
+fn ai_ui_audit_page_filters_expands_and_shows_decision_facts(cx: &mut TestAppContext) {
+    use fluxdb_storage::ai_platform::audits;
+
+    let root = isolated_root("audit-page");
+    let storage = FileStorage::new(root.clone());
+    let mut controller = AppController::new();
+    controller.set_ai_storage(storage.clone());
+    let _ = controller.dispatch(AppCommand::RefreshAiSettings);
+    let _ = controller.dispatch(AppCommand::OpenSettings);
+
+    // 种两条审计：一条拒绝（命中 denied_tables），一条允许。
+    storage
+        .with_ai_connection(|conn| {
+            fluxdb_storage::ai_platform::ensure_schema(conn)?;
+            fluxdb_storage::ai_platform::agents::create_agent(
+                conn,
+                1_000,
+                &fluxdb_storage::ai_platform::agents::AgentEdit {
+                    max_iterations: 10,
+                    compression_trigger_percent: 80,
+                    id: "agent-audit".into(),
+                    display_name: "审计页 Agent".into(),
+                    description: String::new(),
+                    enabled: true,
+                    default_model_profile_id: None,
+                    system_prompt: "测试".into(),
+                    budget_policy_id: None,
+                    allowed_tools: Vec::new(),
+                },
+            )?;
+            fluxdb_storage::ai_platform::sessions::create_session(
+                conn,
+                1_000,
+                "sess-audit",
+                "agent-audit",
+                "审计页会话",
+            )?;
+            fluxdb_storage::ai_platform::sessions::start_turn(
+                conn,
+                1_000,
+                "sess-audit",
+                "turn-audit",
+                "{\"connection_id\":1}",
+                "{}",
+            )?;
+            for (ordinal, call, at) in
+                [(0_i64, "call-denied", 1_000_i64), (1, "call-allow", 2_000)]
+            {
+                fluxdb_storage::ai_platform::sessions::start_tool_call(
+                    conn,
+                    at,
+                    call,
+                    "sess-audit",
+                    "turn-audit",
+                    1,
+                    ordinal,
+                    call,
+                    "db.execute",
+                    1,
+                    None,
+                    &format!("{{\"sql\":\"UPDATE t SET x=1 -- {call}\"}}"),
+                    "{\"connection_id\":1}",
+                    "hash-x",
+                )?;
+            }
+            audits::insert_tool_audit(
+                conn,
+                1_000,
+                &audits::ToolAuditEdit {
+                    id: "a-denied".into(),
+                    tool_call_id: Some("call-denied".into()),
+                    mcp_request_id: None,
+                    stage: audits::AuditStage::PreExecute,
+                    hook_id: "kernel.security-audit".into(),
+                    hook_version: "1".into(),
+                    ruleset_version: "kernel-audit-v1-test".into(),
+                    plan_hash: "hash-x".into(),
+                    decision: audits::AuditDecision::Deny,
+                    risk: "write".into(),
+                    rule_ids: vec!["denied_tables".into()],
+                    reason_codes: vec!["denied_table:orders".into()],
+                },
+            )?;
+            audits::insert_tool_audit(
+                conn,
+                2_000,
+                &audits::ToolAuditEdit {
+                    id: "a-allow".into(),
+                    tool_call_id: Some("call-allow".into()),
+                    mcp_request_id: None,
+                    stage: audits::AuditStage::PreExecute,
+                    hook_id: "kernel.security-audit".into(),
+                    hook_version: "1".into(),
+                    ruleset_version: "kernel-audit-v1-test".into(),
+                    plan_hash: "hash-x".into(),
+                    decision: audits::AuditDecision::Allow,
+                    risk: "write".into(),
+                    rule_ids: Vec::new(),
+                    reason_codes: vec!["read_only".into()],
+                },
+            )?;
+            Ok(())
+        })
+        .expect("种审计数据");
+    let _ = controller.dispatch(AppCommand::RefreshAiSettings);
+
+    let (view, cx) = open_main(
+        cx,
+        controller,
+        storage.clone(),
+        SettingsPanelSection::AiToolsMcp,
+    );
+    cx.update(|window, cx| {
+        use gpui_kit::test::TestWindowExt as _;
+        window.render_frame(cx);
+        window.click("ai-tools-tab:安全审计", cx);
+    });
+    cx.update(|window, cx| {
+        use gpui_kit::test::TestWindowExt as _;
+        window.render_frame(cx);
+        // 统计卡可被观察（普通 div 需要 test_support）。
+        assert!(window.try_find("ai-audit-stat:all").is_some());
+        assert!(window.try_find("ai-audit-row:a-denied").is_some());
+        assert!(window.try_find("ai-audit-row:a-allow").is_some());
+    });
+
+    // 点"拒绝"统计卡 → 只保留拒绝行；再点同一张回到全部。
+    cx.update(|window, cx| {
+        use gpui_kit::test::TestWindowExt as _;
+        window.render_frame(cx);
+        window.click("ai-audit-stat:deny", cx);
+    });
+    view.read_with(cx, |main, _| {
+        assert_eq!(main.ai_audit_filter, Some(fluxdb_app::AiAuditDecision::Deny));
+    });
+    cx.update(|window, cx| {
+        use gpui_kit::test::TestWindowExt as _;
+        window.render_frame(cx);
+        assert!(window.try_find("ai-audit-row:a-denied").is_some());
+        assert!(window.try_find("ai-audit-row:a-allow").is_none());
+    });
+
+    // 展开详情：行 id 稳定，展开状态写回。
+    cx.update(|window, cx| {
+        use gpui_kit::test::TestWindowExt as _;
+        window.render_frame(cx);
+        window.click("ai-audit-stat:deny", cx); // 取消筛选，回到全部
+    });
+    cx.update(|window, cx| {
+        use gpui_kit::test::TestWindowExt as _;
+        window.render_frame(cx);
+        window.click("ai-audit-row:a-denied", cx);
+    });
+    view.read_with(cx, |main, _| {
+        assert_eq!(main.ai_audit_expanded.as_deref(), Some("a-denied"));
+    });
+    let _ = std::fs::remove_dir_all(root);
+}
+
+
+/// 安全审计插件的「管理」弹框：标量规则字段按声明分组渲染，且给出"生效中"摘要。
+#[gpui_kit::test]
+fn ai_ui_security_audit_config_dialog_groups_scalar_rules(cx: &mut TestAppContext) {
+    let root = isolated_root("audit-plugin-dialog");
+    let storage = FileStorage::new(root.clone());
+    let mut controller = AppController::new();
+    controller.set_ai_storage(storage.clone());
+    let _ = controller.dispatch(AppCommand::RefreshAiSettings);
+    let _ = controller.dispatch(AppCommand::OpenSettings);
+    let (view, cx) = open_main(
+        cx,
+        controller,
+        storage.clone(),
+        SettingsPanelSection::AiToolsMcp,
+    );
+    cx.update(|window, cx| {
+        use gpui_kit::test::TestWindowExt as _;
+        window.render_frame(cx);
+        window.click("ai-tools-tab:内置插件", cx);
+    });
+    // 打开安全审计插件的管理弹框（标量规则字段所在）。
+    view.update_in(cx, |main, window, cx| {
+        main.open_ai_plugin_config_dialog("builtin.security-audit", window, cx);
+    });
+    cx.update(|window, cx| {
+        use gpui_kit::test::TestWindowExt as _;
+        window.render_frame(cx);
+        // 分组下的标量字段控件按稳定 selector 存在（text_list 用 textarea）。
+        assert!(
+            window.try_find("ai-plugin-config-input:denied_tables").is_some(),
+            "禁止访问的表字段应渲染"
+        );
+        assert!(
+            window.try_find("ai-plugin-config-switch:forbid_ddl:wrap").is_some(),
+            "禁止结构变更开关应渲染"
+        );
+    });
+    let _ = std::fs::remove_dir_all(root);
+}
+
+
+/// 解析结果 chip：填了内容后显示"解析为 N 项"与规范化条目（与落库口径同源）。
+#[gpui_kit::test]
+fn ai_ui_security_audit_dialog_shows_parsed_items(cx: &mut TestAppContext) {
+    let root = isolated_root("audit-plugin-parsed");
+    let storage = FileStorage::new(root.clone());
+    let mut controller = AppController::new();
+    controller.set_ai_storage(storage.clone());
+    let _ = controller.dispatch(AppCommand::RefreshAiSettings);
+    let _ = controller.dispatch(AppCommand::OpenSettings);
+    let (view, cx) = open_main(
+        cx,
+        controller,
+        storage.clone(),
+        SettingsPanelSection::AiToolsMcp,
+    );
+    view.update_in(cx, |main, window, cx| {
+        main.open_ai_plugin_config_dialog("builtin.security-audit", window, cx);
+    });
+    // 直接往"禁止访问的表"的草稿实体里写入带重复与空行的内容。
+    view.update_in(cx, |main, window, cx| {
+        if let Some(dialog) = main.ai_plugin_config_dialog.as_mut() {
+            if let Some(input) = dialog.textareas.get("denied_tables").cloned() {
+                let _ = input.update(cx, |state, cx| {
+                    state.set_value("audit_logs\n\naudit_logs\nlogin_attempts".to_string(), window, cx)
+                });
+            }
+        }
+    });
+    cx.update(|window, cx| {
+        use gpui_kit::test::TestWindowExt as _;
+        window.render_frame(cx);
+        assert!(
+            window.try_find("ai-plugin-config-parsed:denied_tables").is_some(),
+            "有内容时应显示解析结果 chip"
+        );
+    });
+    // 去重口径与应用层一致：3 行去重后 2 项。
+    let parsed = fluxdb_app::text_list_items("audit_logs\n\naudit_logs\nlogin_attempts");
+    assert_eq!(parsed, vec!["audit_logs".to_string(), "login_attempts".to_string()]);
+    let _ = std::fs::remove_dir_all(root);
+}

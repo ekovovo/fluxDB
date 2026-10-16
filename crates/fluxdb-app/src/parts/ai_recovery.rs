@@ -72,7 +72,11 @@ fn claim_ai_approved_call(
     audit: &dyn SecurityAuditHook,
     permission: &TurnPermissionContext,
     approval_id: &str,
-) -> fluxdb_core::Result<(fluxdb_storage::ai_platform::sessions::ToolCallView, String)> {
+) -> fluxdb_core::Result<(
+    fluxdb_storage::ai_platform::sessions::ToolCallView,
+    String,
+    AuditFacts,
+)> {
     let mut conn = storage.open_ai_connection()?;
     let tx = conn
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
@@ -138,7 +142,7 @@ fn claim_ai_approved_call(
     {
         return Err(reject("参数、目标或工具版本已变化，请重新核实并重新审批"));
     }
-    let outcome = audit_or_fail_closed(
+    let mut facts = audit_or_fail_closed(
         audit,
         &AuditInput {
             tool_id: spec.id.clone(),
@@ -146,9 +150,10 @@ fn claim_ai_approved_call(
             plan_hash: hash.clone(),
             target_json: turn.target_json.clone(),
             normalized_arguments_json: prepared.to_json_string(),
-            ruleset_version: "kernel-v1".into(),
+            ruleset_version: "kernel-audit-v1".into(),
         },
     );
+    facts.risk = spec.risk.to_string();
     if matches!(
         authorize(&AuthorizeInput {
             tool_id: spec.id.clone(),
@@ -160,7 +165,7 @@ fn claim_ai_approved_call(
             globally_disabled_tools: permission.disabled_tools.clone(),
             agent_allowed_tools: permission.agent_allowed_tools.clone(),
             policy: permission.policy,
-            audit: Some(outcome),
+            audit: Some(facts.outcome),
         }),
         PermissionDecision::Deny { .. }
     ) {
@@ -177,6 +182,34 @@ fn claim_ai_approved_call(
     fluxdb_storage::ai_platform::sessions::finish_tool_call(
         &tx, call_id, "running", None, None, None,
     )?;
+    // 审批恢复是第二次审计边界：旧审批可能对应旧规则，这里按当前规则再判一次并留痕。
+    if !fluxdb_storage::ai_platform::audits::has_tool_audit(
+        &tx,
+        call_id,
+        fluxdb_storage::ai_platform::audits::AuditStage::Revalidate,
+    )? {
+        let edit = fluxdb_storage::ai_platform::audits::ToolAuditEdit {
+            id: format!("{call_id}-audit-revalidate"),
+            tool_call_id: Some(call_id.to_string()),
+            mcp_request_id: None,
+            stage: fluxdb_storage::ai_platform::audits::AuditStage::Revalidate,
+            hook_id: "kernel.security-audit".into(),
+            hook_version: "1".into(),
+            ruleset_version: facts.ruleset_version.clone(),
+            plan_hash: hash.clone(),
+            decision: match facts.outcome {
+                AuditOutcome::Allow => fluxdb_storage::ai_platform::audits::AuditDecision::Allow,
+                AuditOutcome::RequireApproval => {
+                    fluxdb_storage::ai_platform::audits::AuditDecision::RequireApproval
+                }
+                AuditOutcome::Deny => fluxdb_storage::ai_platform::audits::AuditDecision::Deny,
+            },
+            risk: facts.risk.clone(),
+            rule_ids: facts.rule_ids.clone(),
+            reason_codes: facts.reason_codes.clone(),
+        };
+        fluxdb_storage::ai_platform::audits::insert_tool_audit(&tx, ai_chat_now(), &edit)?;
+    }
     fluxdb_storage::ai_platform::audits::invalidate_approval(
         &tx,
         ai_chat_now(),
@@ -185,7 +218,7 @@ fn claim_ai_approved_call(
     )?;
     tx.commit()
         .map_err(|e| fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, e.to_string()))?;
-    Ok((call, message))
+    Ok((call, message, facts))
 }
 
 impl AppController {

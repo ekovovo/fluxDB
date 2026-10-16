@@ -140,9 +140,11 @@ impl McpExecutionService {
                 plan_hash: hash.clone(),
                 target_json: target_json.clone(),
                 normalized_arguments_json: prepared.to_json_string(),
-                ruleset_version: "kernel-v1".to_string(),
+                ruleset_version: "kernel-audit-v1".to_string(),
             },
         );
+        // 审批恢复与拒绝分支都要把审计事实落库；这里保留完整事实，授权只用其结论。
+        let audit_facts = audit.clone();
         let input = AuthorizeInput {
             tool_id: spec.id.clone(),
             tool_version: spec.version,
@@ -153,7 +155,7 @@ impl McpExecutionService {
             globally_disabled_tools: BTreeSet::new(),
             agent_allowed_tools: vec![],
             policy,
-            audit: Some(audit),
+            audit: Some(audit_facts.outcome),
         };
         if let Some(security) = &self.security {
             if let Err(error) = security.verify_connection(&input) {
@@ -177,12 +179,21 @@ impl McpExecutionService {
                 fluxdb_core::ToolRisk::Admin => "admin",
             }
             .to_string(),
+            rule_ids: audit_facts.rule_ids.clone(),
             reason_codes: reasons,
+            ruleset_version: audit_facts.ruleset_version.clone(),
         };
         match decision {
             PermissionDecision::Deny { code, reason, .. } => {
+                let mut fact = audit_fact("deny", vec![code.to_string()]);
+                // 内核拒绝可能来自审计本身；把命中的规则与原因一并带给调用方。
+                if let Some(code) = audit_facts.reason_codes.first() {
+                    if !fact.reason_codes.iter().any(|reason| reason == code) {
+                        fact.reason_codes.push(code.clone());
+                    }
+                }
                 return McpCallOutcome::failure(McpCallError::new(code, reason.clone(), false))
-                    .with_audit(audit_fact("deny", vec![code.to_string()]));
+                    .with_audit(fact);
             }
             PermissionDecision::RequireApproval { .. } => {
                 // 审批队列已移除：写工具走数据源「允许读写」直接执行；

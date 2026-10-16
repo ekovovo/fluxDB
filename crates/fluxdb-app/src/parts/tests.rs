@@ -46,6 +46,7 @@ mod tests {
     include!("tests/ai_decision_provider.rs");
     include!("tests/ai_jev_policy.rs");
     include!("tests/ai_permission.rs");
+    include!("tests/ai_audit_rules.rs");
     include!("tests/ai_context.rs");
     include!("tests/ai_page_context.rs");
     include!("tests/ai_sql_policy.rs");

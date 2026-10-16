@@ -814,6 +814,28 @@ cargo test -p fluxdb-app --locked ai_permission   # 15 passed
 
 ### T065 必经安全审计Hook与持久化展示
 - [ ] 依赖：T002/T020/T054/T057；主设计§25.1、§42.11。
+- **进展（2026-10-16，规则集与落库链路）**：实现内置规则集 `crates/fluxdb-app/src/parts/ai_audit_rules.rs`
+  （表黑/白名单、只读保护表、列黑名[REDACTED]、DDL 禁止、无 WHERE 写入转审批、Redis 命令/Key 前缀），
+  规则来自安全审计插件自己的配置声明，用户可在「内置插件 → 管理」中填写；新增 `ConfiguredAuditHook`
+  在每轮开始时装载规则，内部会话与对外 MCP 共用。内部工具回合在 `ToolStarted` 同事务写 `ai_tool_audits`
+  （`pre_execute`），内核拒绝由结果路径补写，审批恢复追加 `revalidate`；规则读不出来按 fail closed 拒绝。
+  配置协议随之升级到 `fluxdb.plugin.config.v2`（新增标量字段 `switch`/`text`/`text_list`/`select`）。
+  测试：`cargo test -p fluxdb-app --lib tests::` 中的 13 项规则用例 + `--test ai_plugin_config` 的
+  标量往返用例 + `--test ai_conversation_write_tool` 的「规则命中即拒绝且落审计行」闭环，均通过。
+- **进展（2026-10-16，UI 落地）**：`#audit` 页签改为读库渲染——统计卡（全部/允许/需审批/拒绝）即筛选器、
+  搜索（工具/目标/规则）、行展开详情（最终计划、命中规则与原因码、plan hash 与规则集版本）；读库失败单独显示错误态，
+  不伪装空态。规则配置弹框按声明 `group` 分组并给"几条规则生效中"摘要。存储新增按会话/时间查询
+  `list_recent_tool_audits`。测试：`ai_ui_audit_page_filters_expands_and_shows_decision_facts`、
+  `ai_ui_security_audit_config_dialog_groups_scalar_rules` 通过；真实窗口（隔离 `FLUXDB_PROFILE=auditui`）
+  核对审计页显示 5 条事实（允许 2 / 需审批 1 / 拒绝 2）与统计一致。
+- **进展（2026-10-16，时间线审计卡）**：工具卡新增"安全审计：允许 / 等待批准 / 拒绝"一行（判定写进
+  `ai_message_parts.payload_json`，开始/审批/结果三处都带；内核拒绝不经过 ToolStarted，由结果路径补写，
+  因此"拒绝"在时间线上同样可见）；颜色与审计页一致（绿/黄/红）。规则弹框另加解析结果 chip（显示
+  `text_list` 去重后的实际落库条目）与"哪几条规则生效"的摘要 chip。测试：
+  `execution_timeline_shows_audit_decision_on_tool_card`、`ai_ui_security_audit_dialog_shows_parsed_items`
+  通过。
+  **仍未完成（故不勾选）**：重启后同一判定的真实窗口 E2E、明暗主题与窄窗口截图证据、
+  以及 §39.3–39.4 要求的逐项原型对照。
 - 改动：最终参数patch后执行强制BuiltinSecurityAuditHook、owner互斥audit表、规则/hash/version、执行前revision变动再审计；内外工具同链。
 - 验收：审计无法执行/保存fail closed；不能禁用、不能被Jev/插件Allow覆盖；修改参数旧audit/approval失效；重启显示同一判定，无Key/秘密载荷。
 - 本任务功能/UI验收：原型 `#audit`及时间线审计卡；显示只读审计列表/详情→筛选→核对目标/规则/判定与事实表→重启仍一致；不能关闭必经审计，失败阻断执行且UI可见。

@@ -78,9 +78,14 @@ pub enum LoopEvent {
         call: fluxdb_core::ToolCallRequest,
         plan_hash: String,
         tool_version: u32,
+        /// 强制审计的判定事实；调用方据此写 append-only 的 `ai_tool_audits` 行。
+        audit: AuditFacts,
     },
-    /// 工具真实回执。
-    ToolFinished { receipt: fluxdb_core::ToolReceipt },
+    /// 工具真实回执；`audit` 是本次调用的强制审计事实（含内核拒绝与执行结果）。
+    ToolFinished {
+        receipt: fluxdb_core::ToolReceipt,
+        audit: AuditFacts,
+    },
     /// 工具执行中的有界进度摘要。
     ToolProgress {
         call_id: String,
@@ -95,6 +100,8 @@ pub enum LoopEvent {
         /// 审批卡要展示给用户的计划事实（SQL 原文、护栏命中、影响预估依据）。
         /// 只是内核已经算出的结论的投影，不参与授权判定，也不能改写放行结果。
         details: ApprovalDetails,
+        /// 强制审计的判定事实；等待审批同样要留下审计记录。
+        audit: AuditFacts,
     },
     /// 给用户/模型的可见说明（未知工具、截断未执行、无进展暂停等）。
     Notice(String),
@@ -450,7 +457,7 @@ impl<'a> TurnRunner<'a> {
                     &prepared.to_json_string(),
                     self.permission.plugin_digest.as_deref(),
                 );
-                let mut audit = audit_or_fail_closed(
+                let mut facts = audit_or_fail_closed(
                     self.audit,
                     &AuditInput {
                         tool_id: spec.id.clone(),
@@ -458,13 +465,36 @@ impl<'a> TurnRunner<'a> {
                         plan_hash: hash.clone(),
                         target_json: state.target_json.clone(),
                         normalized_arguments_json: prepared.to_json_string(),
-                        ruleset_version: "kernel-v1".to_string(),
+                        ruleset_version: "kernel-audit-v1".to_string(),
                     },
                 );
-                if let Some(reason)=hook_deny {emit(LoopEvent::Notice(reason));audit=AuditOutcome::Deny;}
-                else if let Some(reason)=hook_approval {
-                    if audit!=AuditOutcome::Deny {emit(LoopEvent::Notice(reason));audit=AuditOutcome::RequireApproval;}
+                // 风险等级由工具 spec 决定，不在 Hook 里推断（Hook 只看参数与目标）。
+                facts.risk = spec.risk.to_string();
+                // before-tool Hook 只能收紧：Deny 优先，其次 RequireApproval，反过来不行。
+                if let Some(reason) = hook_deny {
+                    emit(LoopEvent::Notice(reason));
+                    if facts.outcome != AuditOutcome::Deny {
+                        facts = AuditFacts {
+                            outcome: AuditOutcome::Deny,
+                            rule_ids: vec!["hook.before_tool".to_string()],
+                            reason_codes: vec!["hook_denied".to_string()],
+                            ruleset_version: facts.ruleset_version,
+                            risk: facts.risk,
+                        };
+                    }
+                } else if let Some(reason) = hook_approval {
+                    if facts.outcome != AuditOutcome::Deny {
+                        emit(LoopEvent::Notice(reason));
+                        facts = AuditFacts {
+                            outcome: AuditOutcome::RequireApproval,
+                            rule_ids: vec!["hook.before_tool".to_string()],
+                            reason_codes: vec!["hook_require_approval".to_string()],
+                            ruleset_version: facts.ruleset_version,
+                            risk: facts.risk,
+                        };
+                    }
                 }
+                let audit = facts.outcome;
                 let input = AuthorizeInput {
                     tool_id: spec.id.clone(),
                     tool_version: spec.version,
@@ -512,6 +542,7 @@ impl<'a> TurnRunner<'a> {
                         let receipt = loop_denied_receipt(&call, code, &reason, &hash, loop_now_ms());
                         emit(LoopEvent::ToolFinished {
                             receipt: receipt.clone(),
+                            audit: facts.clone(),
                         });
                         state.messages.push(fluxdb_core::ModelMessage::tool_result(
                             receipt.call_id.clone(),
@@ -545,6 +576,7 @@ impl<'a> TurnRunner<'a> {
                             plan_hash,
                             scope,
                             details,
+                            audit: facts.clone(),
                         });
                         return TurnOutcome::Paused { reason };
                     }
@@ -569,6 +601,7 @@ impl<'a> TurnRunner<'a> {
                     call: call.clone(),
                     plan_hash: hash.clone(),
                     tool_version: spec.version,
+                    audit: facts.clone(),
                 });
                 let progress_events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
                 let ctx = fluxdb_core::ToolExecutionContext {
@@ -603,6 +636,7 @@ impl<'a> TurnRunner<'a> {
                             started_at_ms: loop_now_ms(),
                             finished_at_ms: loop_now_ms(),
                         },
+                        audit: facts.clone(),
                     });
                     return TurnOutcome::Failed { message: message.into() };
                 }
@@ -632,6 +666,7 @@ impl<'a> TurnRunner<'a> {
                 // 快照先生成，落库才能登记非 SQL 输出的真实引用与 spill 事实。
                 emit(LoopEvent::ToolFinished {
                     receipt: receipt.clone(),
+                    audit: facts.clone(),
                 });
                 if receipt.status==fluxdb_core::ToolReceiptStatus::Unknown {
                     return TurnOutcome::Paused {reason:"写入结果未知，已停止后续工具调用，请人工核实；不会自动重试".into()};

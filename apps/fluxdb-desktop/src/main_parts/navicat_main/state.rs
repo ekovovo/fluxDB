@@ -14,7 +14,8 @@ struct NavicatMain {
     /// 插件「管理」弹框；`None` 表示未打开。字段来自插件自己的配置声明。
     ai_plugin_config_dialog: Option<AiPluginConfigDialog>,
     /// 调试用：首帧后自动打开第一个可配置插件的管理弹框（仅 debug 构建读取）。
-    ai_plugin_config_dialog_debug_pending: bool,
+    /// 调试用：请求打开插件的「管理」弹框；空串表示"第一个可配置插件"。
+    ai_plugin_config_dialog_debug_pending: Option<String>,
     /// 弹框内「获取模型列表」面板的搜索框（弹框关闭后保留实体但清空文本）。
     ai_model_dialog_filter_input: Entity<InputState>,
     _ai_model_dialog_filter_subscription: Subscription,
@@ -55,6 +56,13 @@ struct NavicatMain {
     ai_session_filter_input: Entity<InputState>,
     _ai_session_filter_subscription: Subscription,
     ai_session_filter: String,
+    /// 「安全审计」页签的筛选与搜索（仅作用于当前快照，不查库）。
+    ai_audit_filter: Option<fluxdb_app::AiAuditDecision>,
+    ai_audit_filter_input: Entity<InputState>,
+    _ai_audit_filter_subscription: Subscription,
+    ai_audit_filter_text: String,
+    /// 展开查看详情的审计行 id。
+    ai_audit_expanded: Option<String>,
     /// 正在归档的会话 id（行内 disabled + loading）。
     ai_session_archiving_id: Option<String>,
     /// 产物报告弹框（T040）：只读快照，dialog builder 在渲染期同步读取共享 RefCell。

@@ -203,9 +203,19 @@ fn debug_ai_model_dialog_requested() -> bool {
             .is_ok_and(|v| v == "1" || v == "edit" || v == "invalid")
 }
 
-/// 调试用：是否请求直接打开第一个可配置插件的「管理」弹框（截图核对用）。
-fn debug_ai_plugin_config_requested() -> bool {
-    cfg!(debug_assertions) && std::env::var("FLUXDB_DEBUG_AI_PLUGIN_CONFIG").is_ok_and(|v| v == "1")
+/// 调试用：请求直接打开某个可配置插件的「管理」弹框（截图核对用）。
+///
+/// `FLUXDB_DEBUG_AI_PLUGIN_CONFIG=1` 打开第一个可配置插件；
+/// 设为具体实例 id（如 `builtin.security-audit`）则打开该实例。
+fn debug_ai_plugin_config_target() -> Option<String> {
+    if !cfg!(debug_assertions) {
+        return None;
+    }
+    match std::env::var("FLUXDB_DEBUG_AI_PLUGIN_CONFIG").as_deref() {
+        Ok("1") => Some(String::new()),
+        Ok(id) if !id.is_empty() => Some(id.to_string()),
+        _ => None,
+    }
 }
 
 /// 构造主视图 `NavicatMain`。
@@ -228,6 +238,17 @@ fn navicat_main_new(
                             |this: &mut NavicatMain, input, event: &InputEvent, cx| {
                                 if matches!(event, InputEvent::Change) {
                                     this.ai_session_filter = input.read(cx).value().to_string();
+                                    cx.notify();
+                                }
+                            },
+                        );
+                        let ai_audit_filter_input =
+                            cx.new(|cx| InputState::new(window, cx).placeholder("搜索工具、目标或规则"));
+                        let ai_audit_filter_subscription = cx.subscribe(
+                            &ai_audit_filter_input,
+                            |this: &mut NavicatMain, input, event: &InputEvent, cx| {
+                                if matches!(event, InputEvent::Change) {
+                                    this.ai_audit_filter_text = input.read(cx).value().to_string();
                                     cx.notify();
                                 }
                             },
@@ -3097,7 +3118,7 @@ fn navicat_main_new(
                             query_result_display_pages: BTreeMap::new(),
                             settings_panel_section: debug_ai_settings_section(),
                             ai_model_dialog_debug_pending: debug_ai_model_dialog_requested(),
-                            ai_plugin_config_dialog_debug_pending: debug_ai_plugin_config_requested(),
+                            ai_plugin_config_dialog_debug_pending: debug_ai_plugin_config_target(),
                             ai_model_dialog_filter_input,
                             _ai_model_dialog_filter_subscription:
                                 ai_model_dialog_filter_subscription,
@@ -3125,6 +3146,11 @@ fn navicat_main_new(
                             ai_session_filter_input,
                             _ai_session_filter_subscription: ai_session_filter_subscription,
                             ai_session_filter: String::new(),
+                            ai_audit_filter: None,
+                            ai_audit_filter_input,
+                            _ai_audit_filter_subscription: ai_audit_filter_subscription,
+                            ai_audit_filter_text: String::new(),
+                            ai_audit_expanded: None,
                             ai_session_archiving_id: None,
                             ai_report_modal: Rc::new(std::cell::RefCell::new(
                                 AiReportModalData::default(),

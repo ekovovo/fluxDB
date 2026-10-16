@@ -427,7 +427,7 @@ mod tool_output_tests {
             "归属不符不能再次请求模型或重放工具"
         );
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
-        assert!(events.iter().any(|event| matches!(event, LoopEvent::ToolFinished { receipt }
+        assert!(events.iter().any(|event| matches!(event, LoopEvent::ToolFinished { receipt, .. }
             if receipt.call_id == "authorized-call" && receipt.status == fluxdb_core::ToolReceiptStatus::Unknown)));
     }
 

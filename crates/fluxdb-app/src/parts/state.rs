@@ -257,22 +257,56 @@ pub struct AiPluginItem {
     pub revision: i64,
 }
 
+/// 插件配置字段的种类；决定弹框渲染哪种控件与回填什么值。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AiPluginConfigFieldKind {
+    /// 资源选择（模型角色槽位）。
+    #[default]
+    Resource,
+    /// 开关。
+    Switch,
+    /// 单行文本。
+    Text,
+    /// 多行文本，一行一个条目。
+    TextList,
+    /// 枚举选择。
+    Select,
+}
+
+/// 枚举字段的一个候选项。
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AiPluginConfigOptionItem {
+    pub value: String,
+    pub label: String,
+}
+
 /// 插件配置字段的展示与候选快照；数据全部来自宿主解析，不含凭据材料。
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct AiPluginConfigFieldItem {
     /// 稳定机器键：保存时原样回传给应用层定位需求。
     pub key: String,
+    /// 字段种类：决定控件形态与提交的值类型。
+    pub kind: AiPluginConfigFieldKind,
+    /// 可选分组名：同一分组的字段在弹框里合并成一块，缺省表示不分组。
+    pub group: Option<String>,
     pub label: String,
     /// 插件自己写的补充说明（可空）：只讲插件特有的后果，不描述宿主的过滤规则。
     pub help: Option<String>,
-    /// 宿主按声明生成的候选口径说明（例如「只列出…的决策模型」）。
+    /// 宿主按声明生成的候选口径说明（例如「只列出…的决策模型」）；标量字段为空。
     pub hint: String,
+    /// 标量字段的输入提示（可空）。
+    pub placeholder: Option<String>,
     pub required: bool,
-    /// 当前选择；`None` 表示未配置（插件因此不参与运行）。
+    /// 当前值：资源字段是资源 ID，标量字段是文本值（`text_list` 为多行文本）。
+    /// `None` 表示未配置。
     pub selection: Option<String>,
     /// 当前选择是否仍满足插件要求；选择失效时保留原值并提示重选。
+    /// 标量字段只要通过自身类型校验即为 `true`。
     pub selection_usable: bool,
+    /// 资源字段的候选项；标量字段为空。
     pub choices: Vec<AiPluginConfigChoiceItem>,
+    /// 枚举字段的候选项。
+    pub options: Vec<AiPluginConfigOptionItem>,
     /// 没有候选项且原因与协议有关时的可见说明。
     pub rejection: Option<String>,
 }
@@ -285,11 +319,76 @@ pub struct AiPluginConfigChoiceItem {
     pub detail: String,
 }
 
-/// 一次插件配置提交里的单个字段选择；`resource_id = None` 表示清空。
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// 一次插件配置提交里的单个字段值。
+///
+/// 资源字段用 `resource_id`（模型档案 ID），标量字段用 `value`（文本原值，
+/// `text_list` 传多行文本，由应用层按声明规范化）；两者都为空表示清空该字段。
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AiPluginFieldSelection {
     pub key: String,
     pub resource_id: Option<String>,
+    pub value: Option<String>,
+}
+
+/// 审计列表的判定（与存储层 `AuditDecision` 对应，UI 只读）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AiAuditDecision {
+    Allow,
+    RequireApproval,
+    Deny,
+}
+
+impl AiAuditDecision {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Allow => "允许",
+            Self::RequireApproval => "需审批",
+            Self::Deny => "拒绝",
+        }
+    }
+
+    /// 机器键，供筛选与测试断言使用。
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Allow => "allow",
+            Self::RequireApproval => "approval",
+            Self::Deny => "deny",
+        }
+    }
+}
+
+/// 审计记录页的一行：审计事实的只读投影。
+///
+/// 不含凭据、密文或未脱敏参数；`statement` 来自入库前已脱敏的参数。
+#[derive(Clone, Debug, PartialEq)]
+pub struct AiAuditRow {
+    pub id: String,
+    pub tool_id: String,
+    /// 来源：内部 Agent 或对外 MCP。
+    pub origin: String,
+    /// 目标的可读投影（连接/库/schema）。
+    pub target: String,
+    pub decision: AiAuditDecision,
+    /// 命中的规则（机器键）；未命中为空。
+    pub rule_ids: Vec<String>,
+    /// 原因码（脱敏，只含规则标签与对象名）。
+    pub reason_codes: Vec<String>,
+    /// 已脱敏的语句/命令，供详情展示。
+    pub statement: String,
+    pub ruleset_version: String,
+    pub plan_hash: String,
+    pub created_at_ms: i64,
+    /// 执行前 / 重新校验。
+    pub stage: String,
+}
+
+/// 审计记录页的筛选统计（当前快照内）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AiAuditCounts {
+    pub all: usize,
+    pub allow: usize,
+    pub approval: usize,
+    pub deny: usize,
 }
 
 /// 设置页「工具与 MCP → 工具」的一行：标准工具的全局启停状态。
@@ -434,6 +533,10 @@ pub struct AppState {
     pub ai_mcp_server_profiles: Vec<AiMcpServerProfileItem>,
     /// 各 Profile 的数据源（对外可见连接 + 写入策略）；按 profile_id 归属，UI 分组展示。
     pub ai_mcp_datasources: Vec<AiMcpDatasourceItem>,
+    /// 设置页「安全审计」列表：最近的审计事实（只读），判定统计由它推导。
+    pub ai_audit_rows: Vec<AiAuditRow>,
+    /// 审计列表是否加载失败；失败时页面给出可见原因，不伪装成"暂无记录"。
+    pub ai_audit_error: Option<String>,
     /// 设置页「会话历史」列表（活跃 + 已归档，最近更新优先）。
     pub ai_sessions: Vec<AiSessionItem>,
     /// 会话历史分页：总数（分页后不能靠列表长度推断）。
@@ -488,6 +591,8 @@ impl Default for AppState {
             ai_mcp_settings: Vec::new(),
             ai_mcp_server_profiles: Vec::new(),
             ai_mcp_datasources: Vec::new(),
+            ai_audit_rows: Vec::new(),
+            ai_audit_error: None,
             ai_sessions: Vec::new(),
             ai_sessions_total: 0,
             ai_sessions_cursor: None,

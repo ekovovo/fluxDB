@@ -75,7 +75,7 @@ fn authz_receipts(events: &[crate::LoopEvent]) -> Vec<fluxdb_core::ToolReceipt> 
     events
         .iter()
         .filter_map(|e| match e {
-            crate::LoopEvent::ToolFinished { receipt } => Some(receipt.clone()),
+            crate::LoopEvent::ToolFinished { receipt, .. } => Some(receipt.clone()),
             _ => None,
         })
         .collect()

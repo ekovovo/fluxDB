@@ -472,7 +472,7 @@ fn ai_permission_fail_closed_without_audit() {
         ruleset_version: "v1".into(),
     };
     assert_eq!(
-        crate::audit_or_fail_closed(&ApFailingHook, &audit_input),
+        crate::audit_or_fail_closed(&ApFailingHook, &audit_input).outcome,
         AuditOutcome::Deny,
         "审计 hook 报错必须 fail closed"
     );
@@ -663,4 +663,64 @@ fn ai_permission_unspecified_tool_defaults_to_unverified_high_risk() {
     assert_eq!(details.risk, ApprovalRisk::High);
     assert_eq!(details.guardrails, vec!["计划风险尚未核实".to_string()]);
     assert!(details.statements.is_empty());
+}
+
+
+/// 审计列表按会话归属：内部调用经 turn 归属会话，跨会话不串台。
+#[test]
+fn ai_permission_audit_list_scopes_by_session_and_orders_recent_first() {
+    let conn = ap_setup();
+    // 第二个会话，用来验证筛选不会把它的审计混进来。
+    sessions::create_session(&conn, 1_000, "sess-2", "agent-1", "另一个会话").expect("建会话");
+    sessions::start_turn(&conn, 1_000, "sess-2", "turn-2", "{}", "{}").expect("建 Turn");
+
+    for (turn, call, table, at) in [
+        ("turn-1", "call-1", "orders", 1_000),
+        ("turn-2", "call-2", "audit_logs", 2_000),
+    ] {
+        sessions::start_tool_call(
+            &conn, at, call, &format!("sess-{}", if turn == "turn-1" { 1 } else { 2 }),
+            turn, 1, 0, call, "db.query", 1, None,
+            &format!("{{\"sql\":\"SELECT 1 FROM {table}\"}}"),
+            "{\"connection_id\":1}", "hash-x",
+        )
+        .expect("工具调用");
+        audits::insert_tool_audit(
+            &conn,
+            at,
+            &audits::ToolAuditEdit {
+                id: format!("audit-{call}"),
+                tool_call_id: Some(call.into()),
+                mcp_request_id: None,
+                stage: audits::AuditStage::PreExecute,
+                hook_id: "kernel.security-audit".into(),
+                hook_version: "1".into(),
+                ruleset_version: "kernel-audit-v1-test".into(),
+                plan_hash: "hash-x".into(),
+                decision: audits::AuditDecision::Deny,
+                risk: "read".into(),
+                rule_ids: vec!["denied_tables".into()],
+                reason_codes: vec![format!("denied_table:{table}")],
+            },
+        )
+        .expect("审计落行");
+    }
+
+    // 不带会话：按时间倒序返回两条。
+    let all = audits::list_recent_tool_audits(&conn, None, 50).expect("查询全部");
+    assert_eq!(all.len(), 2);
+    assert_eq!(all[0].id, "audit-call-2", "最近的在前");
+    assert_eq!(all[0].tool_id, "db.query");
+    assert_eq!(all[0].origin, "internal");
+    assert_eq!(all[0].decision, audits::AuditDecision::Deny);
+
+    // 带会话：只返回该会话的审计。
+    let scoped = audits::list_recent_tool_audits(&conn, Some("sess-1"), 50).expect("按会话");
+    assert_eq!(scoped.len(), 1);
+    assert_eq!(scoped[0].id, "audit-call-1");
+    assert_eq!(scoped[0].rule_ids, vec!["denied_tables".to_string()]);
+    assert!(
+        scoped[0].arguments_redacted_json.contains("orders"),
+        "应带上脱敏参数用于详情展示"
+    );
 }

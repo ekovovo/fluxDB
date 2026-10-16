@@ -134,6 +134,7 @@ fn select_jev_decision_model(controller: &mut AppController, model_id: Option<&s
         instance_id: fluxdb_app::JEV_INSTANCE_ID.into(),
         selections: vec![fluxdb_app::AiPluginFieldSelection {
             key: fluxdb_app::JEV_DECISION_MODEL_FIELD.into(),
+            value: None,
             resource_id: model_id.map(str::to_string),
         }],
         expected_revision,

@@ -371,9 +371,9 @@ fn ai_plugins_panel(state: &AppState, colors: UiColors, cx: &mut Context<Navicat
                     .ghost()
                     .cursor_pointer()
                     .child("管理")
-                    .on_click(move |_, _, cx| {
+                    .on_click(move |_, window, cx| {
                         let _ = manage_owner.update(cx, |this, cx| {
-                            this.open_ai_plugin_config_dialog(&manage_click_id, cx);
+                            this.open_ai_plugin_config_dialog(&manage_click_id, window, cx);
                         });
                     });
                 ai_row_container(&p.id, colors)
@@ -600,51 +600,415 @@ fn ai_jev_status_pill(status: &fluxdb_app::JevStatus, colors: UiColors) -> impl 
     })
 }
 
-/// 「安全审计」页签：只读记录，不能在此执行任何操作。
-fn ai_audit_panel(colors: UiColors) -> Div {
-    div()
-        .flex()
-        .flex_col()
-        .gap_3()
-        .child(
-            settings_panel_group("安全审计", colors).child(
-                div()
-                    .px_4()
-                    .py_3()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .child(
-                        div()
-                            .text_size(px(12.))
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .text_color(colors.text)
-                            .child("安全审计始终开启（只读）"),
-                    )
-            ),
-        )
-        .child(
-            settings_panel_group("审计记录", colors)
+/// 「安全审计」页签：只读记录。
+///
+/// 结构与设置页其余页签一致：先给"审计始终开启"的不可变事实，再给统计筛选与列表。
+/// 列表来自 `AppState.ai_audit_rows`（读库失败时为 `ai_audit_error`，与空态分开显示）。
+/// 行可展开查看最终计划、命中规则、plan hash；本页不提供任何执行/修改操作。
+fn ai_audit_panel(state: &AppState, panel: &AiSettingsPanelState, colors: UiColors, cx: &mut Context<NavicatMain>) -> Div {
+    let rows = &state.ai_audit_rows;
+    // 统计基于当前快照（不单独查库），与列表同源，避免数字与行数不一致。
+    let counts = fluxdb_app::AiAuditCounts {
+        all: rows.len(),
+        allow: rows.iter().filter(|r| r.decision == fluxdb_app::AiAuditDecision::Allow).count(),
+        approval: rows.iter().filter(|r| r.decision == fluxdb_app::AiAuditDecision::RequireApproval).count(),
+        deny: rows.iter().filter(|r| r.decision == fluxdb_app::AiAuditDecision::Deny).count(),
+    };
+    let filter = panel.audit_filter;
+    let query = panel.audit_filter_text.trim().to_ascii_lowercase();
+    let visible: Vec<&fluxdb_app::AiAuditRow> = rows
+        .iter()
+        .filter(|row| filter.is_none() || filter == Some(row.decision))
+        .filter(|row| {
+            query.is_empty()
+                || row.tool_id.to_ascii_lowercase().contains(&query)
+                || row.target.to_ascii_lowercase().contains(&query)
+                || row.rule_ids.iter().any(|id| id.to_ascii_lowercase().contains(&query))
+        })
+        .collect();
+
+    let mut panel_body = div().flex().flex_col().gap_3().child(
+        settings_panel_group("安全审计", colors).child(
+            div()
+                .px_4()
+                .py_3()
+                .flex()
+                .flex_col()
+                .gap_1()
                 .child(
                     div()
-                        .border_t_1()
-                        .border_color(colors.border_soft)
-                        .px_4()
-                        .py_2()
                         .flex()
                         .items_center()
-                        .gap_3()
-                        .child(ai_table_head("调用 / 来源", 260., colors))
-                        .child(ai_table_head("目标", 220., colors))
-                        .child(ai_table_head("判断", 100., colors))
-                        .child(ai_table_head("匹配规则", 220., colors))
-                        .child(div().flex_1()),
+                        .gap_2()
+                        .child(app_icon(AppIcon::Check, 14., colors.success))
+                        .child(
+                            div()
+                                .text_size(px(12.))
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .text_color(colors.text)
+                                .child("安全审计始终开启（只读）"),
+                        ),
                 )
-                .child(ai_empty_state(
-                    "暂无审计记录。",
-                    colors,
-                )),
+                .child(
+                    div()
+                        .text_size(px(11.))
+                        .text_color(colors.muted)
+                        .child("参数或目标变化会让旧审计与审批失效；审计无法执行或保存时，操作不会继续。规则在「内置插件 → 调用前安全审计 → 管理」中调整。"),
+                ),
+        ),
+    );
+
+    // 统计卡即筛选器：点一张筛一类，再点同一张回到全部。
+    let mut stats = div().flex().items_center().gap_2();
+    for (decision, label, count) in [
+        (None, "全部判断", counts.all),
+        (Some(fluxdb_app::AiAuditDecision::Allow), "允许", counts.allow),
+        (Some(fluxdb_app::AiAuditDecision::RequireApproval), "需审批", counts.approval),
+        (Some(fluxdb_app::AiAuditDecision::Deny), "拒绝", counts.deny),
+    ] {
+        stats = stats.child(ai_audit_stat_card(
+            decision,
+            label,
+            count,
+            filter == decision,
+            colors,
+            cx,
+        ));
+    }
+    panel_body = panel_body.child(stats);
+
+    // 搜索与筛选只作用于当前快照；清空筛选按钮在有筛选时可见。
+    let mut toolbar = div().flex().items_center().gap_2().child(ai_session_search_field(
+        &panel.audit_filter_input,
+        colors,
+        cx,
+    ));
+    if filter.is_some() || !query.is_empty() {
+        toolbar = toolbar.child(
+            Button::new("ai-audit-clear-filter")
+                .debug_selector(|| "ai-audit-clear-filter".into())
+                .small()
+                .ghost()
+                .cursor_pointer()
+                .child("清除筛选")
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.clear_ai_audit_filter(window, cx)
+                })),
+        );
+    }
+    toolbar = toolbar.child(div().flex_1()).child(
+        div()
+            .text_size(px(11.))
+            .text_color(colors.muted)
+            .child(format!(
+                "保留最近 {} 条 · 仅追加，不可修改",
+                fluxdb_app::AI_AUDIT_PAGE_SIZE
+            )),
+    );
+    panel_body = panel_body.child(toolbar);
+
+    // 错误态优先于空态：读库失败不能显示成"暂无记录"。
+    let list_body = if let Some(error) = state.ai_audit_error.clone() {
+        ai_audit_error_state(&error, colors)
+    } else if visible.is_empty() {
+        ai_empty_state(
+            if rows.is_empty() {
+                "暂无审计记录。"
+            } else {
+                "当前筛选下没有匹配的审计记录。"
+            },
+            colors,
         )
+    } else {
+        let mut list = div().flex().flex_col();
+        for row in &visible {
+            list = list.child(ai_audit_row(row, panel, colors, cx));
+        }
+        list.into_any_element()
+    };
+
+    panel_body.child(
+        settings_panel_group("审计记录", colors)
+            .child(
+                div()
+                    .border_t_1()
+                    .border_color(colors.border_soft)
+                    .px_4()
+                    .py_2()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .child(ai_table_head("调用 / 来源", 240., colors))
+                    .child(ai_table_head("目标", 190., colors))
+                    .child(ai_table_head("判断", 90., colors))
+                    .child(ai_table_head("匹配规则", 210., colors))
+                    .child(div().flex_1()),
+            )
+            .child(list_body),
+    )
+}
+
+/// 一张统计卡：既是数字也是筛选入口。
+fn ai_audit_stat_card(
+    decision: Option<fluxdb_app::AiAuditDecision>,
+    label: &str,
+    count: usize,
+    selected: bool,
+    colors: UiColors,
+    cx: &mut Context<NavicatMain>,
+) -> gpui::AnyElement {
+    let selector = format!(
+        "ai-audit-stat:{}",
+        decision.map(fluxdb_app::AiAuditDecision::key).unwrap_or("all")
+    );
+    let dot = decision.map(|d| match d {
+        fluxdb_app::AiAuditDecision::Allow => colors.success,
+        fluxdb_app::AiAuditDecision::RequireApproval => colors.warning,
+        fluxdb_app::AiAuditDecision::Deny => colors.danger,
+    });
+    // 自绘卡片而非 Button：组件 Button 的行高被 small() 压扁，撑不开"标题+数字"两行；
+    // 这里保留同样的点击/筛选语义（点击即筛选，再点取消）。
+    div()
+        .id(SharedString::from(selector.clone()))
+        .debug_selector({
+            let selector = selector.clone();
+            move || selector.clone()
+        })
+        .test_support()
+        .cursor_pointer()
+        .min_w(px(132.))
+        .px_3()
+        .py_2()
+        .rounded(colors.radius)
+        .border_1()
+        .border_color(if selected { colors.info } else { colors.border })
+        .bg(colors.panel_bg)
+        .hover(|style| style.bg(colors.hover))
+        .flex()
+        .flex_col()
+        .items_start()
+        .gap_1()
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .child(
+                    div()
+                        .text_size(px(11.))
+                        .text_color(if selected { colors.text } else { colors.muted })
+                        .child(label.to_string()),
+                )
+                .when_some(dot, |this, color| {
+                    this.child(div().size(px(6.)).rounded_full().bg(color))
+                }),
+        )
+        .child(
+            div()
+                .text_size(px(18.))
+                .font_weight(gpui::FontWeight::BOLD)
+                .text_color(if selected { colors.text } else { colors.muted })
+                .child(count.to_string()),
+        )
+        .on_click(cx.listener(move |this, _, _, cx| {
+            this.set_ai_audit_filter(decision, cx);
+        }))
+        .into_any_element()
+}
+
+/// 审计行：摘要行 + 可展开详情。
+fn ai_audit_row(
+    row: &fluxdb_app::AiAuditRow,
+    panel: &AiSettingsPanelState,
+    colors: UiColors,
+    cx: &mut Context<NavicatMain>,
+) -> gpui::AnyElement {
+    let expanded = panel.expanded_audit.as_deref() == Some(row.id.as_str());
+    let id = row.id.clone();
+    let click_id = row.id.clone();
+    let (tag_label, tag_color) = ai_audit_decision_tag(row.decision, colors);
+    let row_selector = format!("ai-audit-row:{}", row.id);
+    let mut summary = div()
+        .id(SharedString::from(row_selector.clone()))
+        .debug_selector({
+            let row_selector = row_selector.clone();
+            move || row_selector.clone()
+        })
+        .test_support()
+        .border_t_1()
+        .border_color(colors.border_soft)
+        .px_4()
+        .py_2()
+        .flex()
+        .items_center()
+        .gap_3()
+        .cursor_pointer()
+        .child(
+            div()
+                .w(px(240.))
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(
+                    div()
+                        .text_size(px(12.))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(colors.text)
+                        .child(row.tool_id.clone()),
+                )
+                .child(
+                    div()
+                        .text_size(px(11.))
+                        .text_color(colors.muted)
+                        .child(format!("{} · {}", row.origin, row.id)),
+                ),
+        )
+        .child(div().w(px(190.)).text_size(px(12.)).text_color(colors.text).child(row.target.clone()))
+        .child(div().w(px(90.)).child(ai_pill(tag_label, tag_color, colors)))
+        .child(
+            div()
+                .w(px(210.))
+                .text_size(px(11.))
+                .text_color(colors.muted)
+                .child(ai_audit_rule_label(row)),
+        )
+        .child(div().flex_1())
+        .child(
+            div()
+                .text_size(px(11.))
+                .text_color(colors.muted)
+                .child(if expanded { "收起" } else { "详情" }),
+        )
+        .on_click(cx.listener(move |this, _, _, cx| {
+            this.toggle_ai_audit_detail(&click_id, cx);
+        }));
+    let _ = id;
+    if expanded {
+        summary = summary.bg(colors.border_soft);
+    }
+    let mut container = div().flex().flex_col().child(summary);
+    if expanded {
+        container = container.child(ai_audit_detail(row, colors));
+    }
+    container.into_any_element()
+}
+
+/// 命中规则的展示：机器键直接显示，未命中显示占位符。
+fn ai_audit_rule_label(row: &fluxdb_app::AiAuditRow) -> String {
+    if row.rule_ids.is_empty() {
+        "—".to_string()
+    } else {
+        row.rule_ids.join(" · ")
+    }
+}
+
+/// 展开详情：最终计划、命中规则与原因码、plan hash 与规则集版本，以及不泄漏秘密的说明。
+fn ai_audit_detail(row: &fluxdb_app::AiAuditRow, colors: UiColors) -> Div {
+    let mut detail = div()
+        .px_4()
+        .pb_3()
+        .flex()
+        .flex_col()
+        .gap_2()
+        .bg(colors.border_soft);
+    let line = |key: &str, value: gpui::AnyElement| {
+        div()
+            .flex()
+            .items_start()
+            .gap_3()
+            .child(
+                div()
+                    .w(px(88.))
+                    .flex_shrink_0()
+                    .text_size(px(11.))
+                    .text_color(colors.muted)
+                    .child(key.to_string()),
+            )
+            .child(value)
+    };
+    if !row.statement.is_empty() {
+        detail = detail.child(line(
+            "最终计划",
+            div()
+                .flex_1()
+                .min_w(px(0.))
+                .px_3()
+                .py_2()
+                .rounded(colors.radius)
+                .bg(colors.panel_bg)
+                .border_1()
+                .border_color(colors.border_soft)
+                .text_size(px(11.))
+                .text_color(colors.text)
+                .child(row.statement.clone())
+                .into_any_element(),
+        ));
+    }
+    detail = detail.child(line(
+        "命中规则",
+        div()
+            .flex_1()
+            .min_w(px(0.))
+            .text_size(px(11.))
+            .text_color(colors.text)
+            .child(if row.reason_codes.is_empty() {
+                ai_audit_rule_label(row)
+            } else {
+                format!("{} · {}", ai_audit_rule_label(row), row.reason_codes.join("、"))
+            })
+            .into_any_element(),
+    ));
+    detail = detail.child(line(
+        "plan hash",
+        div()
+            .flex_1()
+            .min_w(px(0.))
+            .text_size(px(11.))
+            .text_color(colors.muted)
+            .child(format!(
+                "{} · {} · 规则集 {}",
+                row.plan_hash, row.stage, row.ruleset_version
+            ))
+            .into_any_element(),
+    ));
+    detail.child(line(
+        "说明",
+        div()
+            .flex_1()
+            .min_w(px(0.))
+            .text_size(px(11.))
+            .text_color(colors.muted)
+            .child("审计只记录规则与对象，不含参数值之外的密钥或密文。")
+            .into_any_element(),
+    ))
+}
+
+/// 判定标签：颜色与工具卡的允许/需审批/拒绝一致（绿/黄/红）。
+fn ai_audit_decision_tag(decision: fluxdb_app::AiAuditDecision, colors: UiColors) -> (&'static str, gpui::Rgba) {
+    match decision {
+        fluxdb_app::AiAuditDecision::Allow => (decision.label(), colors.success),
+        fluxdb_app::AiAuditDecision::RequireApproval => (decision.label(), colors.warning),
+        fluxdb_app::AiAuditDecision::Deny => (decision.label(), colors.danger),
+    }
+}
+
+/// 审计列表读库失败：给出可见原因，不伪装成空态。
+fn ai_audit_error_state(message: &str, colors: UiColors) -> gpui::AnyElement {
+    div()
+        .px_4()
+        .py_6()
+        .flex()
+        .items_center()
+        .gap_2()
+        .child(app_icon(AppIcon::CircleSlash, 14., colors.danger))
+        .child(
+            div()
+                .debug_selector(|| "ai-audit-error".into())
+                .text_size(px(12.))
+                .text_color(colors.danger)
+                .child(format!("审计记录加载失败：{message}")),
+        )
+        .into_any_element()
 }
 
 /// 「工具与 MCP」分区：四页签。
@@ -658,7 +1022,7 @@ fn settings_ai_tools_mcp_panel(
         AiToolsTab::Tools => ai_tools_catalog_panel(state,panel, colors, cx),
         AiToolsTab::Mcp => ai_mcp_panel(state, panel, colors, cx),
         AiToolsTab::Plugins => ai_plugins_panel(state, colors, cx),
-        AiToolsTab::Audit => ai_audit_panel(colors),
+        AiToolsTab::Audit => ai_audit_panel(state, panel, colors, cx),
     };
     div()
         .flex()

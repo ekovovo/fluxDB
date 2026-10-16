@@ -103,17 +103,55 @@ fn ai_plugin_config_fields(
         Ok(None) => return (Vec::new(), None),
         Err(error) => return (Vec::new(), Some(error.message)),
     };
+    // 标量字段的值存在实例自己的 `config_json`；读不出来按空配置处理（字段默认值兜底）。
+    let instance_config = fluxdb_storage::ai_platform::plugins::load_plugin_instance_config(
+        conn,
+        instance_id,
+    )
+    .map(|config| config.values)
+    .unwrap_or_default();
     let mut fields = Vec::new();
     for field in &declaration.fields {
+        if !field.is_resource() {
+            let resolved = resolve_scalar_field(&instance_config, field);
+            fields.push(AiPluginConfigFieldItem {
+                key: field.key.clone(),
+                kind: scalar_kind(field.kind),
+                group: field.group.clone(),
+                label: field.label.clone(),
+                help: field.help.clone(),
+                hint: String::new(),
+                placeholder: field.placeholder.clone(),
+                required: field.required,
+                selection: resolved.selection,
+                selection_usable: resolved.selection_usable,
+                choices: Vec::new(),
+                options: field
+                    .options
+                    .clone()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|option| AiPluginConfigOptionItem {
+                        value: option.value,
+                        label: option.label,
+                    })
+                    .collect(),
+                rejection: resolved.rejection,
+            });
+            continue;
+        }
         match resolve_field(conn, field) {
             Ok(resolved) => {
                 let selection_usable = resolved.selection_is_usable();
                 let rejection = plugin_field_rejection(conn, field, &resolved);
                 fields.push(AiPluginConfigFieldItem {
                     key: field.key.clone(),
+                    kind: AiPluginConfigFieldKind::Resource,
+                    group: field.group.clone(),
                     label: field.label.clone(),
                     help: field.help.clone(),
                     hint: field_hint(field),
+                    placeholder: None,
                     required: field.required,
                     selection: resolved.selection,
                     selection_usable,
@@ -126,6 +164,7 @@ fn ai_plugin_config_fields(
                             detail: choice.detail,
                         })
                         .collect(),
+                    options: Vec::new(),
                     rejection,
                 });
             }
@@ -133,6 +172,103 @@ fn ai_plugin_config_fields(
         }
     }
     (fields, None)
+}
+
+/// 审计事实 → 审计列表行。
+///
+/// 目标与语句只做**有界投影**：目标从 `conn:<id>` 句柄还原成可读的连接名+库/schema，
+/// 语句取入库前已脱敏的参数；解析失败时留可见占位而不是编造内容。
+fn ai_audit_row(row: fluxdb_storage::ai_platform::audits::ToolAuditListRow) -> AiAuditRow {
+    use fluxdb_storage::ai_platform::audits::{AuditDecision, AuditStage};
+    let target = ai_audit_target_label(&row.target_json);
+    let statement = ai_audit_statement(&row.arguments_redacted_json);
+    AiAuditRow {
+        id: row.id,
+        tool_id: row.tool_id,
+        origin: if row.origin == "mcp" {
+            "对外 MCP".to_string()
+        } else {
+            "内部 Agent".to_string()
+        },
+        target,
+        decision: match row.decision {
+            AuditDecision::Allow => AiAuditDecision::Allow,
+            AuditDecision::RequireApproval => AiAuditDecision::RequireApproval,
+            AuditDecision::Deny => AiAuditDecision::Deny,
+        },
+        rule_ids: row.rule_ids,
+        reason_codes: row.reason_codes,
+        statement,
+        ruleset_version: row.ruleset_version,
+        plan_hash: row.plan_hash,
+        created_at_ms: row.created_at_ms,
+        stage: match row.stage {
+            AuditStage::PreExecute => "pre_execute".to_string(),
+            AuditStage::Revalidate => "revalidate".to_string(),
+        },
+    }
+}
+
+/// 审计目标的可读投影：从目标 JSON/句柄还原连接名与库/schema，不做网络查询。
+fn ai_audit_target_label(target_json: &str) -> String {
+    // 句柄形态：`conn:3[/db:demo][/schema:public]`。
+    let handle = target_json.trim_matches('"');
+    if handle.starts_with("conn:") {
+        let mut parts = handle.split('/');
+        let connection = parts.next().unwrap_or_default().replace("conn:", "");
+        let mut label = format!("连接 #{connection}");
+        for part in parts {
+            if let Some(rest) = part.strip_prefix("db:") {
+                label.push_str(&format!(" / {rest}"));
+            } else if let Some(rest) = part.strip_prefix("schema:") {
+                label.push_str(&format!(" · {rest}"));
+            }
+        }
+        return label;
+    }
+    // JSON 形态：`{"connection_id":3,...}`。
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(target_json) {
+        if let Some(id) = value.get("connection_id").and_then(|v| v.as_i64()) {
+            let mut label = format!("连接 #{id}");
+            if let Some(db) = value.get("database").and_then(|v| v.as_str()) {
+                label.push_str(&format!(" / {db}"));
+            }
+            if let Some(schema) = value.get("schema").and_then(|v| v.as_str()) {
+                label.push_str(&format!(" · {schema}"));
+            }
+            return label;
+        }
+    }
+    "未指定目标".to_string()
+}
+
+/// 审计语句/命令的只读投影：取脱敏参数里的 `sql` 或 `argv`，都取不到时留空。
+fn ai_audit_statement(arguments_redacted_json: &str) -> String {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(arguments_redacted_json) else {
+        return String::new();
+    };
+    if let Some(sql) = value.get("sql").and_then(|v| v.as_str()) {
+        return sql.to_string();
+    }
+    if let Some(argv) = value.get("argv").and_then(|v| v.as_array()) {
+        return argv
+            .iter()
+            .filter_map(|item| item.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+    }
+    String::new()
+}
+
+/// 声明字段种类 → 展示侧种类。
+fn scalar_kind(kind: PluginFieldKind) -> AiPluginConfigFieldKind {
+    match kind {
+        PluginFieldKind::Switch => AiPluginConfigFieldKind::Switch,
+        PluginFieldKind::Text => AiPluginConfigFieldKind::Text,
+        PluginFieldKind::TextList => AiPluginConfigFieldKind::TextList,
+        PluginFieldKind::Select => AiPluginConfigFieldKind::Select,
+        PluginFieldKind::Resource => AiPluginConfigFieldKind::Resource,
+    }
 }
 
 /// 字段当前不能直接使用时的可见原因：选择失效优先，其次是没有满足协议要求的候选。
@@ -160,6 +296,9 @@ fn plugin_field_rejection(
 /// 加载设置页需要的全部 AI 列表（模型/Agent/插件/MCP）。
 /// 会话历史每页条数；分页续读由 [`load_more_ai_sessions`] 负责。
 pub const AI_SESSION_PAGE_SIZE: i64 = 100;
+
+/// 安全审计列表一次加载的条数上界；审计是只读回溯，不分页续读。
+pub const AI_AUDIT_PAGE_SIZE: i64 = 200;
 
 pub fn refresh_ai_settings(
     state: &mut AppState,
@@ -335,6 +474,19 @@ pub fn refresh_ai_settings(
             }
         })
         .collect();
+    // 审计列表：读库失败转成可见原因，不伪装成"暂无记录"（空态与错误态必须区分）。
+    match with_ai_storage(storage, |conn| {
+        fluxdb_storage::ai_platform::audits::list_recent_tool_audits(conn, None, AI_AUDIT_PAGE_SIZE)
+    }) {
+        Ok(rows) => {
+            state.ai_audit_rows = rows.into_iter().map(ai_audit_row).collect();
+            state.ai_audit_error = None;
+        }
+        Err(error) => {
+            state.ai_audit_rows = Vec::new();
+            state.ai_audit_error = Some(error.message);
+        }
+    }
     state.ai_sessions = sessions_page.sessions.into_iter().map(ai_session_item).collect();
     state.ai_sessions_total = sessions_total;
     state.ai_sessions_cursor = sessions_page.next_cursor;
@@ -475,7 +627,14 @@ pub fn save_ai_plugin_config(
                 "该插件没有配置声明，无法保存配置",
             )
         })?;
-        save_selection(conn, &declaration, selections, expected_revision, now_ms)
+        save_selection(
+            conn,
+            instance_id,
+            &declaration,
+            selections,
+            expected_revision,
+            now_ms,
+        )
     })?;
     // 候选与状态都由槽位推导，保存后就地重算，避免整页刷新闪烁。
     let runtime = with_ai_storage(storage, ai_settings::load_runtime_settings)?;

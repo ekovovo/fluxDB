@@ -357,6 +357,7 @@ fn ai_conversation_run_turn(
                     call,
                     plan_hash,
                     tool_version,
+                    audit,
                 } => {
                     let saved_part = ai_conversation_record_tool_start(
                         storage,
@@ -366,13 +367,14 @@ fn ai_conversation_run_turn(
                         tool_version,
                         &target_json_for_parts,
                         text.len(),
+                        &audit,
                     );
                     if let Err(error) = &saved_part {
                         part_error.get_or_insert_with(|| error.message.clone());
                     }
                 }
                 // 工具真实回执：写 ai_tool_calls/ai_results 事实行 + 结果卡。
-                LoopEvent::ToolFinished { receipt } => {
+                LoopEvent::ToolFinished { receipt, audit } => {
                     if receipt.is_success() {
                         for failure in tool_failures
                             .iter_mut()
@@ -397,6 +399,7 @@ fn ai_conversation_run_turn(
                             &receipt,
                             text.len(),
                             tools.results(),
+                            &audit,
                         );
                     if let Err(error) = &saved {
                         part_error.get_or_insert_with(|| error.message.clone());
@@ -428,6 +431,7 @@ fn ai_conversation_run_turn(
                     plan_hash,
                     scope,
                     details,
+                    audit,
                 } => {
                     let saved = ai_conversation_record_approval(
                         storage,
@@ -439,6 +443,7 @@ fn ai_conversation_run_turn(
                         &serde_json::to_string(&details).unwrap_or_default(),
                         &target_json_for_parts,
                         text.len(),
+                        &audit,
                     );
                     match saved {
                         Ok(id) => approval_id = Some(id),
@@ -710,7 +715,7 @@ fn resume_ai_approved_turn(
         return;
     }
     let loaded = claim_ai_approved_call(storage, job, tools, audit, &permission, approval_id);
-    let (call, message_id) = match loaded {
+    let (call, message_id, audit_facts) = match loaded {
         Ok(value) => value,
         Err(error) => {
             run_ai_conversation_failure(storage, job, sender, error.message);
@@ -784,9 +789,14 @@ fn resume_ai_approved_turn(
         }
     };
     let existing = ai_conversation_existing_text(storage, &job);
-    if let Err(error) =
-        ai_conversation_record_tool_result(storage, &job, &receipt, existing.len(), tools.results())
-    {
+    if let Err(error) = ai_conversation_record_tool_result(
+        storage,
+        &job,
+        &receipt,
+        existing.len(),
+        tools.results(),
+        &audit_facts,
+    ) {
         // 工具已经真实执行，但回执没能落盘：绝不能让调用停在 running 假装"还在跑"。
         // 先尽力标记 unknown（T029 按未知副作用处理），再把错误显式交给用户。
         tracing::warn!(turn_id=%job.turn_id, error=%error.message, "工具回执保存失败");

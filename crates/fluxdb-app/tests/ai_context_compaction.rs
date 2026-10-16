@@ -279,6 +279,7 @@ fn configure_compaction_decision_model(
         instance_id: "builtin.compaction".into(),
         selections: vec![fluxdb_app::AiPluginFieldSelection {
             key: fluxdb_app::COMPACTION_DECISION_MODEL_FIELD.into(),
+            value: None,
             resource_id: Some(model_id.clone()),
         }],
         expected_revision: controller.state().ai_runtime_revision,

@@ -96,6 +96,42 @@ impl NavicatMain {
         cx.notify();
     }
 
+    /// 切换审计列表的判定筛选：点同一张卡回到"全部"。
+    fn set_ai_audit_filter(
+        &mut self,
+        filter: Option<fluxdb_app::AiAuditDecision>,
+        cx: &mut Context<Self>,
+    ) {
+        // 再次点击同一筛选等价于取消，回到全部。
+        self.ai_audit_filter = if self.ai_audit_filter == filter {
+            None
+        } else {
+            filter
+        };
+        self.ai_audit_expanded = None;
+        cx.notify();
+    }
+
+    /// 清除审计列表的筛选与搜索文本。
+    fn clear_ai_audit_filter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.ai_audit_filter = None;
+        self.ai_audit_filter_text.clear();
+        self.ai_audit_filter_input
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        self.ai_audit_expanded = None;
+        cx.notify();
+    }
+
+    /// 展开/收起一条审计记录的详情。
+    fn toggle_ai_audit_detail(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.ai_audit_expanded = if self.ai_audit_expanded.as_deref() == Some(id) {
+            None
+        } else {
+            Some(id.to_string())
+        };
+        cx.notify();
+    }
+
     /// 测试模型连接：真实网络 I/O 放后台线程；失败走 Alert，不写进列表。
     fn start_ai_model_test(&mut self, id: String, cx: &mut Context<Self>) {
         if self.ai_model_testing_id.is_some() {

@@ -114,35 +114,43 @@ impl AiRuntimeHandle {
                     };
                     Ok::<_, fluxdb_core::Error>((provider, tools, permission))
                 })();
+                // 规则集在每轮开始时读一次：规则变更作用于下一个调用边界。
+                // 读不出来就 fail closed（审计不可用 = 本轮回绝所有工具），不按"没有规则"放行。
+                let assembled = assembled.and_then(|(provider, tools, permission)| {
+                    let audit = ConfiguredAuditHook::from_storage(storage)?;
+                    Ok((provider, tools, permission, audit))
+                });
                 match assembled {
-                    Ok((provider, tools, permission)) => match resume_approval.as_deref() {
-                        Some(approval_id) => resume_ai_approved_turn(
-                            storage,
-                            job,
-                            &turn.cancel,
-                            sender,
-                            &provider,
-                            &tools,
-                            &KernelAuditHook,
-                            permission,
-                            approval_id,
-                            Some(turn),
-                        ),
-                        None => ai_conversation_run_turn(
-                            storage,
-                            job,
-                            &turn.cancel,
-                            sender,
-                            &provider,
-                            None,
-                            &tools,
-                            &KernelAuditHook,
-                            permission,
-                            Vec::new(),
-                            String::new(),
-                            Some(turn),
-                        ),
-                    },
+                    Ok((provider, tools, permission, audit)) => {
+                        match resume_approval.as_deref() {
+                            Some(approval_id) => resume_ai_approved_turn(
+                                storage,
+                                job,
+                                &turn.cancel,
+                                sender,
+                                &provider,
+                                &tools,
+                                &audit,
+                                permission,
+                                approval_id,
+                                Some(turn),
+                            ),
+                            None => ai_conversation_run_turn(
+                                storage,
+                                job,
+                                &turn.cancel,
+                                sender,
+                                &provider,
+                                None,
+                                &tools,
+                                &audit,
+                                permission,
+                                Vec::new(),
+                                String::new(),
+                                Some(turn),
+                            ),
+                        }
+                    }
                     Err(error) => run_ai_conversation_failure(storage, job, sender, error.message),
                 }
             },

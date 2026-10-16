@@ -298,7 +298,8 @@ fn ai_result_pages_recorded_rows_match_the_store_spill_facts() {
         })
         .expect("准备会话与助手消息");
     for receipt in [&spilled, &in_memory] {
-        ai_conversation_record_tool_result(&storage, &job, receipt, 0, Some(&results))
+        let audit = AuditFacts::bare(crate::AuditOutcome::Allow, "kernel-audit-v1");
+        ai_conversation_record_tool_result(&storage, &job, receipt, 0, Some(&results), &audit)
             .expect("登记回执");
     }
     // result.read_page 的回执会回显来源句柄（`result-1`），但翻页只读已有快照、不产生新落盘文件：
@@ -318,8 +319,16 @@ fn ai_result_pages_recorded_rows_match_the_store_spill_facts() {
         started_at_ms: 3,
         finished_at_ms: 4,
     };
-    ai_conversation_record_tool_result(&storage, &job, &read_page_receipt, 0, Some(&results))
-        .expect("登记翻页回执");
+    let audit = AuditFacts::bare(crate::AuditOutcome::Allow, "kernel-audit-v1");
+    ai_conversation_record_tool_result(
+        &storage,
+        &job,
+        &read_page_receipt,
+        0,
+        Some(&results),
+        &audit,
+    )
+    .expect("登记翻页回执");
 
     storage
         .with_ai_connection(|conn| {

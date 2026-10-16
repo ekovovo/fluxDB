@@ -457,7 +457,7 @@ fn ai_loop_failed_tool_receipt_is_fed_back_and_completes() {
     assert!(
         events.iter().any(|e| matches!(
             e,
-            crate::LoopEvent::ToolFinished { receipt }
+            crate::LoopEvent::ToolFinished { receipt, .. }
                 if receipt.status == fluxdb_core::ToolReceiptStatus::Failed
         )),
         "应发出 ToolFinished(status=Failed)，实际 {events:?}"

@@ -314,6 +314,66 @@ pub fn set_plugin_instance_enabled(
     Ok(())
 }
 
+/// 插件实例的标量配置（当前值与对象级 revision）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PluginInstanceConfig {
+    /// 实例行当前 revision；写入按它做 CAS。
+    pub revision: i64,
+    /// `config_json` 解析后的对象；不是 JSON 对象时按空对象处理（DDL 只保证 json_valid）。
+    pub values: serde_json::Map<String, serde_json::Value>,
+}
+
+/// 读取插件实例的标量配置。
+///
+/// 资源字段（模型槽位）不在这里：它们落在运行设置的槽位列，本函数只返回标量参数。
+pub fn load_plugin_instance_config(conn: &Connection, id: &str) -> Result<PluginInstanceConfig> {
+    let (config_json, revision): (String, i64) = conn
+        .query_row(
+            "SELECT config_json, revision FROM ai_plugin_instances WHERE id=?1",
+            [id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(sqlite_error)?
+        .ok_or_else(|| Error::new(ErrorKind::Internal, "插件实例不存在"))?;
+    let values = serde_json::from_str::<serde_json::Value>(&config_json)
+        .ok()
+        .and_then(|value| match value {
+            serde_json::Value::Object(map) => Some(map),
+            _ => None,
+        })
+        .unwrap_or_default();
+    Ok(PluginInstanceConfig { revision, values })
+}
+
+/// 覆盖写入插件实例的标量配置（对象级 CAS）。
+///
+/// 整份 `config_json` 一次替换：调用方先把两类字段合并成完整对象再写入，避免
+/// 「一半新值、一半旧值」的半套配置。
+pub fn save_plugin_instance_config(
+    conn: &Connection,
+    now_ms: i64,
+    id: &str,
+    values: &serde_json::Map<String, serde_json::Value>,
+    expected_revision: i64,
+) -> Result<i64> {
+    let config_json = serde_json::Value::Object(values.clone()).to_string();
+    let changed = conn
+        .execute(
+            "UPDATE ai_plugin_instances SET config_json=?2, revision=revision+1, updated_at_ms=?3
+              WHERE id=?1 AND revision=?4",
+            params![id, config_json, now_ms, expected_revision],
+        )
+        .map_err(sqlite_error)?;
+    if changed == 0 {
+        return Err(Error::new(
+            ErrorKind::Internal,
+            "插件配置已被其他窗口修改，请重新加载",
+        ));
+    }
+    Ok(expected_revision + 1)
+}
+
 /// 列出某 Agent 的插件绑定，按优先级、ID 稳定排序。
 pub fn list_agent_plugin_bindings(
     conn: &Connection,

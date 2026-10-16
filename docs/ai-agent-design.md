@@ -1175,6 +1175,46 @@ AuditDecision：Allow / Deny / RequireApproval、risk、rule_ids、reason_codes�
 
 独立表 `ai_tool_audits`（本文§42.11）保存 append-only 判断；InternalCall/McpRequest owner 二选一。工具参数修改后旧 audit/approval 不适用；过期重新审计。工具失败/denied/unknown 在UI能看到原因但不泄漏秘密。
 
+**实现补记（2026-10-16）：内置规则集与配置入口。**
+规则内容落在 `crates/fluxdb-app/src/parts/ai_audit_rules.rs` 的 `AuditRules`：全部来自插件自己的配置声明，
+用户在「内置插件 → 调用前安全审计 → 管理」里填写，值存在该实例的 `ai_plugin_instances.config_json`。
+新增一条规则 = 改声明 + 加一个求值分支，不动权限链、审批链与存储结构。已实现：
+
+| 规则字段 | 判定 | 语义 |
+|---|---|---|
+| `denied_tables` | Deny | 禁止访问的表；裸名匹配任意 schema，`schema.表名` 只匹配该 schema |
+| `allowed_tables` | Deny | 白名单；不在名单里的表一律拒绝，**语句解析不出表名时也拒绝**（fail closed） |
+| `protected_tables` | Deny（写） | 允许读、禁止写 |
+| `denied_columns` | Deny | 禁止出现的列；`表名.列名` 只匹配该表 |
+| `forbid_ddl` | Deny | 拒绝 CREATE/ALTER/DROP/TRUNCATE/GRANT 等结构与管理语句 |
+| `write_requires_where` | RequireApproval | 没有 WHERE 的 UPDATE/DELETE 转人工，不直接拒绝 |
+| `denied_redis_commands` | Deny | 额外禁止的 Redis 命令（大小写不敏感） |
+| `denied_redis_key_prefixes` | Deny | 命令触碰任一前缀的 Key 即拒绝 |
+
+判定合并取最严格者（Deny > RequireApproval > Allow）；规则集为空时恒 `Allow`，不改变基础授权链。
+`ruleset_version` 由规则内容推导，改任何一条规则都会换版本，便于区分"旧规则放的"与"新规则放的"。
+原因码只写规则标签与对象名（表/列/命令/前缀），不含 SQL 原文、参数值或完整 Key 名。
+
+落库：内部工具回合在 `ToolStarted` 时把审计事实与工具调用事实**同事务**写进 `ai_tool_audits`（`pre_execute`）；
+内核拒绝不经过 `ToolStarted`，由结果路径补写同一阶段；审批恢复时按当前规则重新审计并追加 `revalidate` 行。
+规则集读不出来时换成「审计不可用」Hook，按 fail closed 拒绝本轮工具。
+
+**UI 落地（2026-10-16）。**
+- **规则配置弹框**（`apps/fluxdb-desktop/.../ai_plugin_config_dialog.rs`）：标量字段按声明里的 `group` 分组渲染并给组标题与
+  `2/4 生效` 计数；顶部给"几条规则生效中"摘要；文本域下方显示解析结果 chip。分组名来自插件声明（协议 v2 新增
+  `group` 字段），UI 不判断插件 id、不预设分组集合。
+- **审计记录页**（`apps/fluxdb-desktop/.../settings/ai_tools.rs` 的 `ai_audit_panel`）：统计卡（全部/允许/需审批/拒绝）本身就是
+  筛选器，点选即筛、再点取消；带搜索（工具/目标/规则）；行可展开查看最终计划、命中规则与原因码、plan hash 与规则集版本。
+  数据来自 `AppState.ai_audit_rows`，由 `refresh_ai_settings` 经 `audits::list_recent_tool_audits` 读库；
+  **读库失败写入 `ai_audit_error` 并单独显示错误态，不伪装成空态**。
+- 存储新增 `list_recent_tool_audits(conn, session_id, limit)`：内部调用经 `ai_tool_calls.turn_id → ai_turns.session_id`
+  归属会话，MCP 请求自带 `session_id`，两类来源用同一列输出，UI 不必区分。
+
+**配置协议：v2。** 标量参数（`switch` / `text` / `text_list` / `select`）是 v1 明确保留给主版本升级的能力，
+因此本次一并把 `PLUGIN_CONFIG_PROTOCOL` 升到 `fluxdb.plugin.config.v2`，三个内置声明同步升版；
+宿主只认自己这一版，旧版声明直接拒绝，不做猜测兼容。资源字段与标量字段可在同一份声明里混用，
+一次提交同事务落盘（资源写运行设置槽位、标量写实例 `config_json`），失败不留半套配置。
+
 **参考与落点：**[Goose ToolInspector/manager](/Users/shining3d/fusuwei/code/goose/crates/goose/src/tool_inspection.rs)、[permission inspector](/Users/shining3d/fusuwei/code/goose/crates/goose/src/permission/permission_inspector.rs)、[Pi beforeToolCall](/Users/shining3d/fusuwei/code/pi/packages/agent/src/agent-loop.ts)、[Claude PreToolUse](https://code.claude.com/docs/en/hooks)；落 app policy/permission、plugins/hook、tools/service、storage audits。借鉴控制点，不执行第三方shell审计脚本。
 
 **就近参考：**[Pi before/afterToolCall](/Users/shining3d/fusuwei/code/pi/packages/agent/src/agent-loop.ts)；[Goose检查链](/Users/shining3d/fusuwei/code/goose/crates/goose/src/tool_inspection.rs)。实际落点按本章/§7，不照搬源项目私有状态。

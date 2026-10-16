@@ -4,14 +4,21 @@
 // manifest 的 `config_declaration`，宿主用同一个解析器读取声明、生成表单、解析候选项。
 // 插件因此拿不到内部表、模型凭据和界面控件，宿主始终掌握「能选什么、怎么存、能不能跑」。
 //
-// v1 只有资源需求字段（当前实现 `model`）：插件声明所需的模型角色槽位，不写具体模型 id，
-// 因此不存在「插件私自指向某个模型」的路径。标量参数留待协议主版本升级，
-// `ai_plugin_instances.config_json` / `config_schema_version` 已为它预留。
+// 字段分两类，同一份声明里可以混用：
+// - `kind = "resource"`（默认）：资源需求，插件只声明角色槽位与约束，不写具体资源 id；
+// - `kind = switch | text | text_list | select`：标量参数，值原样存进该实例的
+//   `ai_plugin_instances.config_json`，由宿主校验类型与取值后再交给插件读取。
+//
+// 标量字段是对 v1 的加法扩展：旧声明不写 `kind` 时仍按资源字段解析，协议标识不变。
 
 use serde::{Deserialize, Serialize};
 
 /// 宿主认识的声明协议标识；主版本不匹配直接拒绝，不做猜测兼容。
-pub const PLUGIN_CONFIG_PROTOCOL: &str = "fluxdb.plugin.config.v1";
+///
+/// v2 在 v1 的资源字段之外增加了标量参数（`switch` / `text` / `text_list` / `select`），
+/// 值落在实例的 `config_json`。v1 声明里不写 `kind` 时仍按资源字段解析，但协议标识必须
+/// 写 v2：宿主只认自己这一版，避免"看起来能跑、其实少了校验"的静默降级。
+pub const PLUGIN_CONFIG_PROTOCOL: &str = "fluxdb.plugin.config.v2";
 
 /// 声明字段的资源类型。v1 只有模型；未知类型由反序列化直接拒绝，不会静默忽略。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -34,6 +41,34 @@ pub struct ResourceRequirement {
     pub api_protocol: Option<String>,
 }
 
+/// 字段种类：资源选择或标量参数。
+///
+/// 缺省是 `Resource`，旧声明因此不必改写；未知种类由反序列化直接拒绝，不会静默忽略。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PluginFieldKind {
+    /// 资源需求（模型角色槽位），具体资源由用户在宿主的槽位上选。
+    #[default]
+    Resource,
+    /// 开关：取值 `"true"` / `"false"`。
+    Switch,
+    /// 单行文本。
+    Text,
+    /// 多行文本，一行一个条目；宿主按行去重、去空白后存成字符串数组。
+    TextList,
+    /// 枚举：取值必须是 `options` 里的某一个 `value`。
+    Select,
+}
+
+/// 枚举字段的一个可选值。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PluginFieldOption {
+    /// 落库值（稳定机器键）。
+    pub value: String,
+    pub label: String,
+}
+
 /// 一个可配置字段。`key` 是宿主回填选择与校验用的稳定机器键。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -47,7 +82,29 @@ pub struct PluginConfigField {
     /// 必填字段未配置时插件不可用（不阻止用户先启用，只是不参与运行）。
     #[serde(default)]
     pub required: bool,
-    pub resource: ResourceRequirement,
+    /// 字段种类；缺省按资源字段解析。
+    #[serde(default)]
+    pub kind: PluginFieldKind,
+    /// 可选分组名：同一分组的字段在弹框里归到一块，便于长表单扫读。
+    ///
+    /// 只影响展示顺序与分组标题，不参与校验；缺省表示不分组。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+    /// `kind = resource` 时的资源需求；其它种类必须省略，避免出现两种解释。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource: Option<ResourceRequirement>,
+    /// 标量字段的输入提示（仅展示，不参与校验）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placeholder: Option<String>,
+    /// `kind = select` 的候选值；其它种类必须省略。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub options: Option<Vec<PluginFieldOption>>,
+    /// 标量字段的初始值（`switch` 取 `"true"`/`"false"`，`select` 取某个选项值）。
+    ///
+    /// 仅用于「尚未保存过该字段」时给出可见初值；用户保存后一律以落库值为准，
+    /// 因此改默认值不会悄悄改写用户已经保存的配置。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<String>,
 }
 
 /// 插件的完整配置声明。
@@ -70,7 +127,7 @@ impl PluginConfigDeclaration {
         Ok(declaration)
     }
 
-    /// 校验协议版本、字段键与资源角色；未知/缺槽位的能力界限在这里拦下。
+    /// 校验协议版本、字段键与各类字段自身形状；未知/缺槽位的能力界限在这里拦下。
     fn validate(&self) -> fluxdb_core::Result<()> {
         if self.protocol != PLUGIN_CONFIG_PROTOCOL {
             return Err(declaration_error(&format!(
@@ -95,7 +152,13 @@ impl PluginConfigDeclaration {
                     field.key
                 )));
             }
-            field.model_role()?;
+            if field.group.as_ref().is_some_and(|g| g.trim().is_empty()) {
+                return Err(declaration_error(&format!(
+                    "字段 `{}` 的分组名不能为空白",
+                    field.key
+                )));
+            }
+            field.validate_shape()?;
         }
         Ok(())
     }
@@ -110,18 +173,119 @@ impl PluginConfigDeclaration {
 }
 
 impl PluginConfigField {
+    /// 该字段是否是资源需求字段。
+    pub fn is_resource(&self) -> bool {
+        self.kind == PluginFieldKind::Resource
+    }
+
+    /// 逐类校验字段形状：资源字段必须有能落地的角色槽位，标量字段不得带资源需求，
+    /// 枚举字段必须有候选值。声明写错在解析时就报错，不留给运行期猜。
+    fn validate_shape(&self) -> fluxdb_core::Result<()> {
+        match self.kind {
+            PluginFieldKind::Resource => {
+                self.model_role()?;
+                if self.options.is_some() {
+                    return Err(declaration_error(&format!(
+                        "资源字段 `{}` 不能声明选项列表",
+                        self.key
+                    )));
+                }
+                Ok(())
+            }
+            PluginFieldKind::Switch | PluginFieldKind::Text | PluginFieldKind::TextList => {
+                if self.resource.is_some() {
+                    return Err(declaration_error(&format!(
+                        "标量字段 `{}` 不能声明资源需求",
+                        self.key
+                    )));
+                }
+                if self.options.is_some() {
+                    return Err(declaration_error(&format!(
+                        "字段 `{}` 不是枚举字段，不能声明选项列表",
+                        self.key
+                    )));
+                }
+                if self.kind == PluginFieldKind::Switch {
+                    if let Some(value) = self.default.as_deref() {
+                        if value != "true" && value != "false" {
+                            return Err(declaration_error(&format!(
+                                "开关字段 `{}` 的默认值必须是 \"true\" 或 \"false\"",
+                                self.key
+                            )));
+                        }
+                    }
+                } else if self.default.is_some() {
+                    return Err(declaration_error(&format!(
+                        "字段 `{}` 不是开关或枚举字段，不能声明默认值",
+                        self.key
+                    )));
+                }
+                Ok(())
+            }
+            PluginFieldKind::Select => {
+                if self.resource.is_some() {
+                    return Err(declaration_error(&format!(
+                        "标量字段 `{}` 不能声明资源需求",
+                        self.key
+                    )));
+                }
+                let options = self.options.as_deref().unwrap_or_default();
+                if options.is_empty() {
+                    return Err(declaration_error(&format!(
+                        "枚举字段 `{}` 必须声明至少一个选项",
+                        self.key
+                    )));
+                }
+                let mut values = std::collections::BTreeSet::new();
+                for option in options {
+                    if option.value.trim().is_empty() || option.label.trim().is_empty() {
+                        return Err(declaration_error(&format!(
+                            "枚举字段 `{}` 的选项缺少取值或标签",
+                            self.key
+                        )));
+                    }
+                    if !values.insert(option.value.as_str()) {
+                        return Err(declaration_error(&format!(
+                            "枚举字段 `{}` 的取值 `{}` 重复",
+                            self.key, option.value
+                        )));
+                    }
+                }
+                if let Some(value) = self.default.as_deref() {
+                    if !values.contains(value) {
+                        return Err(declaration_error(&format!(
+                            "枚举字段 `{}` 的默认值 `{}` 不在候选项里",
+                            self.key, value
+                        )));
+                    }
+                }
+                Ok(())
+            }
+        }
+    }
+
     /// 该字段要求的模型角色槽位。
     ///
     /// 插件只能引用宿主已经存在的槽位，不能自己发明模型绑定位置；角色缺失、未知或
     /// 没有对应槽位都按声明错误处理，避免「写了配置但运行时找不到落点」。
     pub fn model_role(&self) -> fluxdb_core::Result<ModelRoleSlot> {
-        ModelRoleSlot::parse(&self.resource.role).ok_or_else(|| {
+        let resource = self.resource.as_ref().ok_or_else(|| {
+            declaration_error(&format!("字段 `{}` 不是资源字段", self.key))
+        })?;
+        ModelRoleSlot::parse(&resource.role).ok_or_else(|| {
             declaration_error(&format!(
                 "宿主没有角色 `{}` 的模型槽位（支持：{}）",
-                self.resource.role,
+                resource.role,
                 ModelRoleSlot::NAMES.join("、")
             ))
         })
+    }
+
+    /// 该字段的模型协议要求（仅资源字段有）。
+    pub fn api_protocol(&self) -> Option<&str> {
+        self.resource
+            .as_ref()
+            .and_then(|resource| resource.api_protocol.as_deref())
     }
 }
 
@@ -205,7 +369,7 @@ pub fn resolve_field(
 ) -> fluxdb_core::Result<ResolvedPluginField> {
     let slot = field.model_role()?;
     let policy = egress_policy(conn)?;
-    let required_protocol = field.resource.api_protocol.as_deref();
+    let required_protocol = field.api_protocol();
     // 候选口径与 Agent 绑定共用 candidate_check：启停、用途、出站许可、凭据一个都不放过。
     let models = fluxdb_storage::ai_platform::models::list_models_page(conn, 500, 0)?;
     let mut choices = Vec::new();
@@ -243,7 +407,7 @@ pub fn field_hint(field: &PluginConfigField) -> String {
         Ok(ModelRoleSlot::MainCandidate) => "生成模型",
         Err(_) => "模型",
     };
-    match field.resource.api_protocol.as_deref() {
+    match field.api_protocol() {
         Some(protocol) => format!("只列出已启用、允许出站、凭据可用的 {protocol} {usage}。"),
         None => format!("只列出已启用、允许出站、凭据可用的{usage}。"),
     }
@@ -267,7 +431,7 @@ pub fn selection_rejection(
     if candidate_check(&model, slot.candidate_role(), policy).is_err() {
         return "所选模型当前不可用（已停用、用途不符、禁止出站或缺少凭据）".to_string();
     }
-    if let Some(required) = field.resource.api_protocol.as_deref() {
+    if let Some(required) = field.api_protocol() {
         if model.api_protocol != required {
             return format!("所选模型不支持 {required} 协议");
         }
@@ -281,6 +445,7 @@ pub fn selection_rejection(
 /// 表示清空该字段（插件随即回到「未配置」，不会退回自动挑选）。
 pub fn save_selection(
     conn: &rusqlite::Connection,
+    instance_id: &str,
     declaration: &PluginConfigDeclaration,
     selections: &[AiPluginFieldSelection],
     expected_revision: i64,
@@ -292,6 +457,9 @@ pub fn save_selection(
     let mut main_model_id = None;
     let mut decision_model_id = None;
     let mut compaction_decision_model_id = None;
+    // 标量字段的待写值；只有声明里确实有标量字段时才回写实例行。
+    let mut scalar_values = None;
+    let mut has_resource_field = false;
     for selection in selections {
         let field = declaration.field(&selection.key).ok_or_else(|| {
             declaration_error(&format!("字段 `{}` 不在插件声明里", selection.key))
@@ -299,6 +467,30 @@ pub fn save_selection(
         if !seen.insert(field.key.as_str()) {
             return Err(declaration_error(&format!("字段 `{}` 重复提交", field.key)));
         }
+        if !field.is_resource() {
+            let text = selection.value.as_deref().unwrap_or("").trim();
+            let values = scalar_values.get_or_insert_with(|| {
+                fluxdb_storage::ai_platform::plugins::load_plugin_instance_config(
+                    conn, instance_id,
+                )
+                .map(|config| config.values)
+                .unwrap_or_default()
+            });
+            if text.is_empty() {
+                // 清空 = 移除该键，交回声明默认值；不写入空串，避免"配置了空值"这种歧义状态。
+                values.remove(&field.key);
+                continue;
+            }
+            if let Err(reason) = validate_scalar_value(field, text) {
+                return Err(declaration_error(&format!(
+                    "字段 `{}` 取值无效：{reason}",
+                    field.key
+                )));
+            }
+            values.insert(field.key.clone(), scalar_text_to_json(field, text));
+            continue;
+        }
+        has_resource_field = true;
         if let Some(id) = selection.resource_id.as_deref() {
             let resolved = resolve_field(conn, field)?;
             if !resolved.choices.iter().any(|choice| choice.id == id) {
@@ -321,21 +513,167 @@ pub fn save_selection(
         }
         *target = Some(selection.resource_id.clone());
     }
-    let current = settings::load_runtime_settings(conn)?;
-    let next = RuntimeSettings {
-        default_agent_id: current.default_agent_id.clone(),
-        default_model_profile_id: main_model_id.unwrap_or(current.default_model_profile_id),
-        default_decision_model_profile_id: decision_model_id
-            .unwrap_or(current.default_decision_model_profile_id),
-        compaction_decision_model_profile_id: compaction_decision_model_id
-            .unwrap_or(current.compaction_decision_model_profile_id),
-        max_active_turns: current.max_active_turns,
-        revision: current.revision,
+    // 两类字段一次提交：资源槽位与实例标量同事务落盘，失败不留半套配置。
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|error| fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, error.to_string()))?;
+    let mut revision = expected_revision;
+    if has_resource_field {
+        let current = settings::load_runtime_settings(&tx)?;
+        let next = RuntimeSettings {
+            default_agent_id: current.default_agent_id.clone(),
+            default_model_profile_id: main_model_id.unwrap_or(current.default_model_profile_id),
+            default_decision_model_profile_id: decision_model_id
+                .unwrap_or(current.default_decision_model_profile_id),
+            compaction_decision_model_profile_id: compaction_decision_model_id
+                .unwrap_or(current.compaction_decision_model_profile_id),
+            max_active_turns: current.max_active_turns,
+            revision: current.revision,
+        };
+        let saved = settings::save_runtime_settings(&tx, now_ms, &next, expected_revision)?;
+        // 槽位变化后立刻重新装配：内置 Jev 是当前唯一按角色槽位建 system 绑定的能力。
+        reconcile_jev_builtins(&tx, now_ms)?;
+        revision = saved.revision;
+    }
+    if let Some(values) = scalar_values {
+        // 标量配置走实例行的对象级 CAS：与运行设置槽位各用各的 revision。
+        let instance_revision = fluxdb_storage::ai_platform::plugins::load_plugin_instance_config(
+            &tx, instance_id,
+        )
+        .map(|config| config.revision)
+        .map_err(|_| declaration_error("插件实例不存在，无法保存配置"))?;
+        fluxdb_storage::ai_platform::plugins::save_plugin_instance_config(
+            &tx,
+            now_ms,
+            instance_id,
+            &values,
+            instance_revision,
+        )?;
+        revision = revision.max(instance_revision + 1);
+    }
+    tx.commit()
+        .map_err(|error| fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, error.to_string()))?;
+    Ok(revision)
+}
+
+/// 一个标量字段的解析结果：当前值 + 类型是否合规。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResolvedScalarField {
+    /// 当前值（`text_list` 为多行文本）；`None` = 未配置且没有默认值。
+    pub selection: Option<String>,
+    /// 值是否通过该字段的类型/取值校验；不通过时保留原值但标为不可用。
+    pub selection_usable: bool,
+    /// 校验失败时的可见原因（枚举取值不在候选、开关取值非法等）。
+    pub rejection: Option<String>,
+}
+
+/// 解析一个标量字段：从实例 `config_json` 读值，缺省时回落到声明默认值。
+///
+/// 不在这里做"猜修复"：值类型不对就标记不可用并给出原因，由用户在弹框里改。
+pub fn resolve_scalar_field(
+    instance_config: &serde_json::Map<String, serde_json::Value>,
+    field: &PluginConfigField,
+) -> ResolvedScalarField {
+    let raw = instance_config.get(&field.key);
+    let selection = match raw {
+        Some(value) => scalar_to_text(field.kind, value),
+        // 未保存过：用声明默认值给出可见初值，但不视为"用户已配置"。
+        None => field.default.clone().filter(|value| !value.is_empty()),
     };
-    let saved = settings::save_runtime_settings(conn, now_ms, &next, expected_revision)?;
-    // 槽位变化后立刻重新装配：内置 Jev 是当前唯一按角色槽位建 system 绑定的能力。
-    reconcile_jev_builtins(conn, now_ms)?;
-    Ok(saved.revision)
+    let Some(text) = selection.as_ref() else {
+        return ResolvedScalarField {
+            selection: None,
+            selection_usable: true,
+            rejection: None,
+        };
+    };
+    match validate_scalar_value(field, text) {
+        Ok(()) => ResolvedScalarField {
+            selection,
+            selection_usable: true,
+            rejection: None,
+        },
+        Err(reason) => ResolvedScalarField {
+            selection,
+            selection_usable: false,
+            rejection: Some(reason),
+        },
+    }
+}
+
+/// 标量值 → 弹框可编辑文本。`text_list` 用换行连接，其余按字符串原样。
+fn scalar_to_text(kind: PluginFieldKind, value: &serde_json::Value) -> Option<String> {
+    match kind {
+        PluginFieldKind::TextList => match value {
+            serde_json::Value::Array(items) => Some(
+                items
+                    .iter()
+                    .filter_map(|item| item.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            ),
+            // 手改成字符串也接受，按整段文本展示。
+            serde_json::Value::String(text) => Some(text.clone()),
+            _ => Some(String::new()),
+        },
+        PluginFieldKind::Switch => Some(match value {
+            serde_json::Value::Bool(flag) => flag.to_string(),
+            serde_json::Value::String(text) => text.clone(),
+            _ => String::new(),
+        }),
+        _ => value.as_str().map(str::to_string),
+    }
+}
+
+/// 校验一个标量字段的文本值。
+pub fn validate_scalar_value(field: &PluginConfigField, text: &str) -> Result<(), String> {
+    match field.kind {
+        PluginFieldKind::Resource => Ok(()),
+        PluginFieldKind::Switch => {
+            if text == "true" || text == "false" {
+                Ok(())
+            } else {
+                Err("开关只能取 true 或 false".to_string())
+            }
+        }
+        PluginFieldKind::Text | PluginFieldKind::TextList => Ok(()),
+        PluginFieldKind::Select => {
+            let allowed = field.options.as_deref().unwrap_or_default();
+            if allowed.iter().any(|option| option.value == text) {
+                Ok(())
+            } else {
+                Err(format!("取值 `{text}` 不在该字段的候选项里"))
+            }
+        }
+    }
+}
+
+/// `text_list` 文本 → 规范化条目：按行拆分、去空白、去空、按大小写不敏感去重。
+///
+/// 保存与界面回显共用同一份实现，避免"界面显示的和真正落库的不一致"。
+pub fn text_list_items(text: &str) -> Vec<String> {
+    let mut seen = std::collections::BTreeSet::new();
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .filter(|line| seen.insert(line.to_ascii_lowercase()))
+        .map(str::to_string)
+        .collect()
+}
+
+/// 标量文本值 → 落 `config_json` 的 JSON 值（`text_list` 拆成字符串数组并去重）。
+pub fn scalar_text_to_json(field: &PluginConfigField, text: &str) -> serde_json::Value {
+    match field.kind {
+        PluginFieldKind::TextList => serde_json::Value::Array(
+            text_list_items(text)
+                .into_iter()
+                .map(serde_json::Value::String)
+                .collect(),
+        ),
+        // 开关按布尔落库：语义清晰，读取端兼容字符串形态的历史值。
+        PluginFieldKind::Switch => serde_json::Value::Bool(text == "true"),
+        _ => serde_json::Value::String(text.to_string()),
+    }
 }
 
 /// 实例的配置声明。

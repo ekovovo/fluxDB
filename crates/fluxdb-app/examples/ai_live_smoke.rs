@@ -161,7 +161,7 @@ fn live_tools_smoke(provider: &AiConversationProvider) -> Result<(), Box<dyn std
         fluxdb_app::LoopEvent::ToolStarted { call, .. } => {
             tools_used.push(format!("start:{}", call.tool_id))
         }
-        fluxdb_app::LoopEvent::ToolFinished { receipt } => tools_used.push(format!(
+        fluxdb_app::LoopEvent::ToolFinished { receipt, .. } => tools_used.push(format!(
             "done:{}:{}:affected={:?}",
             receipt.tool_id,
             if receipt.is_success() { "ok" } else { "fail" },

@@ -431,11 +431,11 @@ fn persist_audit_fact(
         stage: AuditStage::PreExecute,
         hook_id: "kernel.security-audit".into(),
         hook_version: "1".into(),
-        ruleset_version: "kernel-v1".into(),
+        ruleset_version: fact.ruleset_version.clone(),
         plan_hash: fact.plan_hash.clone(),
         decision,
         risk: fact.risk.clone(),
-        rule_ids: Vec::new(),
+        rule_ids: fact.rule_ids.clone(),
         reason_codes: fact.reason_codes.clone(),
     };
     insert_tool_audit(conn, now, &edit)

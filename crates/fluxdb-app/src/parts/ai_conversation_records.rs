@@ -8,6 +8,53 @@ pub(crate) fn ai_tool_call_row_id(turn_id: &str, call_id: &str) -> String {
     format!("{turn_id}-toolcall-{call_id}")
 }
 
+/// 审计行 ID：同一调用在同一阶段只写一行，重复登记按主键冲突暴露而不是静默追加。
+fn ai_tool_audit_row_id(call_row: &str, stage: &str) -> String {
+    format!("{call_row}-audit-{stage}")
+}
+
+/// 把强制审计事实写入 `ai_tool_audits`（append-only）。
+///
+/// 必须在**已有** `ai_tool_calls` 行的事务里调用：`tool_call_id` 是外键，
+/// 审计事实不能先于调用事实存在。写失败按 fail closed 返回错误，调用方不得继续执行。
+fn ai_conversation_record_tool_audit(
+    conn: &AiConn,
+    stage: fluxdb_storage::ai_platform::audits::AuditStage,
+    call_row: &str,
+    plan_hash: &str,
+    risk: &str,
+    facts: &AuditFacts,
+) -> fluxdb_core::Result<()> {
+    use fluxdb_storage::ai_platform::audits::{
+        AuditDecision, ToolAuditEdit, insert_tool_audit,
+    };
+    let decision = match facts.outcome {
+        AuditOutcome::Allow => AuditDecision::Allow,
+        AuditOutcome::RequireApproval => AuditDecision::RequireApproval,
+        AuditOutcome::Deny => AuditDecision::Deny,
+    };
+    let stage_label = match stage {
+        fluxdb_storage::ai_platform::audits::AuditStage::PreExecute => "pre_execute",
+        fluxdb_storage::ai_platform::audits::AuditStage::Revalidate => "revalidate",
+    };
+    let edit = ToolAuditEdit {
+        id: ai_tool_audit_row_id(call_row, stage_label),
+        tool_call_id: Some(call_row.to_string()),
+        mcp_request_id: None,
+        stage,
+        hook_id: "kernel.security-audit".into(),
+        hook_version: "1".into(),
+        ruleset_version: facts.ruleset_version.clone(),
+        plan_hash: plan_hash.to_string(),
+        decision,
+        // 风险等级以工具 spec 为准；Hook 不推断风险，缺失时留空而不是编造等级。
+        risk: risk.to_string(),
+        rule_ids: facts.rule_ids.clone(),
+        reason_codes: facts.reason_codes.clone(),
+    };
+    insert_tool_audit(conn, ai_chat_now(), &edit)
+}
+
 /// 参数脱敏：保留工具与 SQL 结构，去掉疑似凭据字段后入库（审计可读，秘密不入库）。
 fn ai_conversation_redact_arguments(arguments_json: &str) -> String {
     let Ok(mut value) = serde_json::from_str::<serde_json::Value>(arguments_json) else {
@@ -59,9 +106,19 @@ fn ai_conversation_record_tool_start(
     tool_version: u32,
     target_json: &str,
     text_offset: usize,
+    audit: &AuditFacts,
 ) -> fluxdb_core::Result<()> {
     let call_row = ai_tool_call_row_id(&job.turn_id, &call.provider_call_id);
-    let payload=serde_json::json!({"tool":call.tool_id,"call_id":call.provider_call_id,"plan_hash":plan_hash,"text_offset":text_offset}).to_string();
+    // 审计判定与规则随工具卡一起落片段：时间线不用回查审计表就能显示"这次判了什么"。
+    let payload=serde_json::json!({
+        "tool":call.tool_id,
+        "call_id":call.provider_call_id,
+        "plan_hash":plan_hash,
+        "text_offset":text_offset,
+        "audit_decision":audit.outcome.key(),
+        "audit_rule_ids":audit.rule_ids,
+        "audit_reason_codes":audit.reason_codes,
+    }).to_string();
     with_ai_storage(storage, |conn| {
         // 审批恢复和拒绝回执都会新增事实行，序号必须从落盘状态分配而非内存计数。
         let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)
@@ -84,6 +141,15 @@ fn ai_conversation_record_tool_start(
             &ai_conversation_redact_arguments(&call.arguments_json),
             target_json,
             plan_hash,
+        )?;
+        // 审计事实与调用事实同事务：审计写不出来就整笔失败，不允许"执行了但没记录"。
+        ai_conversation_record_tool_audit(
+            conn,
+            fluxdb_storage::ai_platform::audits::AuditStage::PreExecute,
+            &call_row,
+            plan_hash,
+            &audit.risk,
+            audit,
         )?;
         fluxdb_storage::ai_platform::conversation::upsert_event_part_in_transaction(
             &tx,
@@ -143,6 +209,7 @@ fn ai_conversation_record_tool_result(
     receipt: &fluxdb_core::ToolReceipt,
     text_offset: usize,
     results: Option<&Arc<Mutex<ResultStore>>>,
+    audit: &AuditFacts,
 ) -> fluxdb_core::Result<()> {
     let call_row = ai_tool_call_row_id(&job.turn_id, &receipt.call_id);
     let result_row = ai_result_row_id(&job.turn_id, &receipt.call_id);
@@ -170,6 +237,10 @@ fn ai_conversation_record_tool_result(
         "duration_ms":(receipt.finished_at_ms - receipt.started_at_ms).max(0),
         "truncated":false,
         "text_offset":text_offset,
+        // 内核拒绝不经过 ToolStarted，判定只在结果路径出现；这里补上，拒绝也可见。
+        "audit_decision":audit.outcome.key(),
+        "audit_rule_ids":audit.rule_ids,
+        "audit_reason_codes":audit.reason_codes,
     })
     .to_string();
     let byte_count = receipt.result_json.len() as i64;
@@ -225,6 +296,27 @@ fn ai_conversation_record_tool_result(
             Some(receipt.started_at_ms),
             Some(receipt.finished_at_ms),
         )?;
+        // 放行路径的审计行已由 ToolStarted 写入；内核拒绝不经过 ToolStarted，
+        // 这里补写 pre_execute，保证「拒绝」也有 append-only 判断可查。
+        //
+        // `plan_hash` 是审计行的必填项：回执里没有它（例如翻页回执、早期来源）时
+        // 不补写——审计事实挂不上计划，写一行空 hash 只会伪造"已审计"的假象。
+        if !plan_hash.is_empty()
+            && !fluxdb_storage::ai_platform::audits::has_tool_audit(
+                conn,
+                &call_row,
+                fluxdb_storage::ai_platform::audits::AuditStage::PreExecute,
+            )?
+        {
+            ai_conversation_record_tool_audit(
+                conn,
+                fluxdb_storage::ai_platform::audits::AuditStage::PreExecute,
+                &call_row,
+                &plan_hash,
+                &audit.risk,
+                audit,
+            )?;
+        }
         // 拒绝不是"执行结果"：只留调用事实与卡片，不登记结果句柄。
         let result_ref = if receipt.status == fluxdb_core::ToolReceiptStatus::Denied {
             None
@@ -306,6 +398,7 @@ fn ai_conversation_record_approval(
     details_json: &str,
     target_json: &str,
     text_offset: usize,
+    audit: &AuditFacts,
 ) -> fluxdb_core::Result<String> {
     let call_row = ai_tool_call_row_id(&job.turn_id, &call.provider_call_id);
     let approval_id = format!("{}-approval-{}", job.turn_id, call.provider_call_id);
@@ -333,6 +426,15 @@ fn ai_conversation_record_approval(
             plan_hash,
             "waiting_approval",
         )?;
+        // 等待审批同样是审计结论：审批行与审计事实一起落，拒绝/超时后仍可回溯判定。
+        ai_conversation_record_tool_audit(
+            conn,
+            fluxdb_storage::ai_platform::audits::AuditStage::PreExecute,
+            &call_row,
+            plan_hash,
+            &audit.risk,
+            audit,
+        )?;
         let approval = fluxdb_storage::ai_platform::audits::create_approval(
             conn,
             ai_chat_now(),
@@ -351,6 +453,9 @@ fn ai_conversation_record_approval(
             "text_offset":text_offset,
             "scope":serde_json::from_str::<serde_json::Value>(scope_json).unwrap_or(serde_json::Value::Null),
             "details":serde_json::from_str::<serde_json::Value>(details_json).unwrap_or(serde_json::Value::Null),
+            "audit_decision":audit.outcome.key(),
+            "audit_rule_ids":audit.rule_ids,
+            "audit_reason_codes":audit.reason_codes,
         }).to_string();
         fluxdb_storage::ai_platform::conversation::upsert_event_part_in_transaction(
             &tx,

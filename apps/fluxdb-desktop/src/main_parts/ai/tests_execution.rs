@@ -477,3 +477,46 @@ fn check_selected_reference_visibility(cx: &mut TestAppContext, mode: ThemeMode)
     }));
     assert!(cx.debug_bounds("ai-chat-references-scroll").is_none());
 }
+
+
+/// 时间线工具卡显示审计判定（设计 §31.2）：判定写进片段后卡上出现"安全审计：…"一行。
+#[gpui::test]
+fn execution_timeline_shows_audit_decision_on_tool_card(cx: &mut TestAppContext) {
+    let fixture = Fixture::new();
+    seed_regular_parts(&fixture, "auditline");
+    // 工具卡渲染时会用结果片段合并覆盖调用片段，因此判定要像真实链路一样写在两端。
+    fixture
+        .storage
+        .with_ai_connection(|conn| {
+            for id in ["auditline-assistant-tool-call", "auditline-assistant-tool-result"] {
+                let part = sessions::load_part(conn, id)?;
+                sessions::update_part(
+                    conn,
+                    110,
+                    &part.id,
+                    sessions::PartStatus::Complete,
+                    &serde_json::json!({
+                        "tool": "db.execute",
+                        "text_offset": "解释这段 SQL".len(),
+                        "audit_decision": "deny",
+                        "audit_rule_ids": ["denied_tables"],
+                        "audit_reason_codes": ["denied_table:orders"],
+                    })
+                    .to_string(),
+                    part.revision,
+                )?;
+            }
+            Ok(())
+        })
+        .unwrap();
+    let (view, cx) = open_main(cx, &fixture, fixture.controller(), ThemeMode::Light);
+    open_panel(&view, cx);
+    // 工具卡要展开操作分组后才渲染，先点开分组。
+    click_selector(cx, "execution:auditline-assistant");
+    wait_idle(&view, cx);
+    // 工具卡在展开后显示审计判定行（判定是最该一眼看到的信息）。
+    assert!(
+        cx.debug_bounds("ai-part-audit:auditline-assistant-tool-call").is_some(),
+        "工具卡应显示审计判定行"
+    );
+}

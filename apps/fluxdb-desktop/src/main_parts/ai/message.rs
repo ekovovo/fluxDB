@@ -318,6 +318,16 @@ fn ai_chat_part(
     let id = part.id.clone();
     let execution_unknown =
         payload.get("execution_status").and_then(|v| v.as_str()) == Some("unknown");
+    // 审计判定行：只在工具调用/结果卡上显示，文案与颜色与审计页一致（绿/黄/红）。
+    let audit_line: Option<(String, gpui::Rgba)> =
+        match payload.get("audit_decision").and_then(|v| v.as_str()) {
+            Some("allow") => Some(("安全审计：允许".to_string(), colors.success)),
+            Some("require_approval") => {
+                Some(("安全审计：等待批准".to_string(), colors.warning))
+            }
+            Some("deny") => Some(("安全审计：拒绝".to_string(), colors.danger)),
+            _ => None,
+        };
     let (status, status_color) = if let Some(decision) = approval_decision {
         // 批准只是提交决定，不能把仍待复核或恢复失败的工具称为“已完成”。
         match decision {
@@ -429,6 +439,29 @@ fn ai_chat_part(
                     }
                 })),
         )
+        // 审计判定单独一行：工具名那行已被名称/目标/耗时占满，判定是用户最该一眼看到的信息。
+        .when_some(audit_line, |this, (text, color)| {
+            this.child(
+                div()
+                    .id(SharedString::from(format!("ai-part-audit:{}", part.id)))
+                    .debug_selector({
+                        let id = part.id.clone();
+                        move || format!("ai-part-audit:{id}")
+                    })
+                    .test_support()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .pl(px(18.))
+                    .child(div().size(px(5.)).rounded_full().bg(color))
+                    .child(
+                        div()
+                            .text_size(px(10.))
+                            .text_color(color)
+                            .child(text),
+                    ),
+            )
+        })
         .when(expanded, |this| {
             this.child(
                 div()

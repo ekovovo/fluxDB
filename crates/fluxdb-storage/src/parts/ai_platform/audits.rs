@@ -104,6 +104,125 @@ pub struct ToolAuditView {
     pub created_at_ms: i64,
 }
 
+/// 审计列表的一行：审计事实 + 关联调用的可见投影。
+///
+/// 只带展示需要的字段：工具、来源、目标、判定、规则、计划指纹。**不含**参数值原文之外
+/// 的任何秘密材料——`arguments_redacted_json` 是入库前已脱敏的版本。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ToolAuditListRow {
+    pub id: String,
+    pub stage: AuditStage,
+    /// 内部工具调用的 id；MCP 来源为 `None`。
+    pub tool_call_id: Option<String>,
+    /// MCP 请求的 id；内部来源为 `None`。
+    pub mcp_request_id: Option<String>,
+    /// 来源：`internal`（内置 Agent）或 `mcp`（对外 MCP）。
+    pub origin: &'static str,
+    pub tool_id: String,
+    pub target_json: String,
+    /// 已脱敏的参数（入库前处理过），供详情展示 SQL/命令。
+    pub arguments_redacted_json: String,
+    pub decision: AuditDecision,
+    pub risk: String,
+    pub rule_ids: Vec<String>,
+    pub reason_codes: Vec<String>,
+    pub ruleset_version: String,
+    pub plan_hash: String,
+    pub created_at_ms: i64,
+}
+
+/// 列出最近的审计事实（按时间倒序）。
+///
+/// - `session_id` 为 `Some` 时只返回该会话内产生的审计；`None` 表示跨会话。
+/// - `limit` 由调用方给出上界，存储层不再二次放大。
+///
+/// 内部调用经 `ai_tool_calls.turn_id → ai_turns.session_id` 归属会话；
+/// MCP 请求自带 `session_id`。两类来源用同一列输出，UI 不必区分。
+pub fn list_recent_tool_audits(
+    conn: &Connection,
+    session_id: Option<&str>,
+    limit: i64,
+) -> Result<Vec<ToolAuditListRow>> {
+    let limit = limit.clamp(1, 1000);
+    let sql = "
+        SELECT a.id, a.stage, a.tool_call_id, a.mcp_request_id,
+               a.decision, a.risk, a.rule_ids_json, a.reason_codes_json,
+               a.ruleset_version, a.plan_hash, a.created_at_ms,
+               COALESCE(c.tool_id, r.tool_id) AS tool_id,
+               COALESCE(c.target_json, r.target_json) AS target_json,
+               COALESCE(c.arguments_redacted_json, r.arguments_redacted_json) AS args_json,
+               CASE WHEN a.mcp_request_id IS NULL THEN 'internal' ELSE 'mcp' END AS origin,
+               COALESCE(t.session_id, r.session_id) AS owner_session
+          FROM ai_tool_audits a
+          LEFT JOIN ai_tool_calls c ON c.id = a.tool_call_id
+          LEFT JOIN ai_turns t ON t.id = c.turn_id
+          LEFT JOIN ai_mcp_server_requests r ON r.id = a.mcp_request_id
+         WHERE (?1 IS NULL OR COALESCE(t.session_id, r.session_id) = ?1)
+         ORDER BY a.created_at_ms DESC, a.id DESC
+         LIMIT ?2";
+    let mut stmt = conn.prepare(sql).map_err(sqlite_error)?;
+    let rows = stmt
+        .query_map(params![session_id, limit], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, String>(6)?,
+                row.get::<_, String>(7)?,
+                row.get::<_, String>(8)?,
+                row.get::<_, String>(9)?,
+                row.get::<_, i64>(10)?,
+                row.get::<_, Option<String>>(11)?,
+                row.get::<_, Option<String>>(12)?,
+                row.get::<_, Option<String>>(13)?,
+                row.get::<_, String>(14)?,
+            ))
+        })
+        .map_err(sqlite_error)?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (
+            id,
+            stage,
+            tool_call_id,
+            mcp_request_id,
+            decision,
+            risk,
+            rule_ids,
+            reason_codes,
+            ruleset_version,
+            plan_hash,
+            created_at_ms,
+            tool_id,
+            target_json,
+            args_json,
+            origin,
+        ) = row.map_err(sqlite_error)?;
+        out.push(ToolAuditListRow {
+            id,
+            stage: AuditStage::parse(&stage)?,
+            tool_call_id,
+            mcp_request_id,
+            origin: if origin == "mcp" { "mcp" } else { "internal" },
+            // 关联调用行缺失时（外键 RESTRICT，正常不会发生）留空而不是伪造工具名。
+            tool_id: tool_id.unwrap_or_default(),
+            target_json: target_json.unwrap_or_else(|| "{}".into()),
+            arguments_redacted_json: args_json.unwrap_or_else(|| "{}".into()),
+            decision: AuditDecision::parse(&decision)?,
+            risk,
+            rule_ids: parse_list(&rule_ids, "rule_ids")?,
+            reason_codes: parse_list(&reason_codes, "reason_codes")?,
+            ruleset_version,
+            plan_hash,
+            created_at_ms,
+        });
+    }
+    Ok(out)
+}
+
 fn json_list(items: &[String], label: &str) -> Result<String> {
     serde_json::to_string(items)
         .map_err(|e| Error::new(ErrorKind::Internal, format!("{label} 序列化失败: {e}")))
@@ -115,6 +234,16 @@ fn parse_list(raw: &str, label: &str) -> Result<Vec<String>> {
 }
 
 /// 追加一条审计。**没有对应的更新/删除接口**：审计是事实，只能追加。
+/// 是否已存在同一调用同一阶段的审计行（用于避免重复登记）。
+pub fn has_tool_audit(conn: &Connection, tool_call_id: &str, stage: AuditStage) -> Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM ai_tool_audits WHERE tool_call_id=?1 AND stage=?2)",
+        params![tool_call_id, stage.as_str()],
+        |row| row.get::<_, bool>(0),
+    )
+    .map_err(sqlite_error)
+}
+
 pub fn insert_tool_audit(conn: &Connection, now_ms: i64, edit: &ToolAuditEdit) -> Result<()> {
     if edit.plan_hash.trim().is_empty() {
         return Err(Error::new(ErrorKind::Internal, "审计必须绑定 plan_hash"));

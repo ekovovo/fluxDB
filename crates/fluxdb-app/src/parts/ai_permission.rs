@@ -207,6 +207,17 @@ pub enum AuditOutcome {
     Deny,
 }
 
+impl AuditOutcome {
+    /// 落库/落片段的稳定机器键；UI 按它上色与文案。
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Allow => "allow",
+            Self::RequireApproval => "require_approval",
+            Self::Deny => "deny",
+        }
+    }
+}
+
 /// 授权结论。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PermissionDecision {
@@ -239,12 +250,53 @@ impl PermissionDecision {
     }
 }
 
+/// 一次审计的完整事实：结论 + 命中的规则 + 脱敏原因码。
+///
+/// 事实行要写进 `ai_tool_audits`，因此原因码只放规则标签与对象名（表/列/命令），
+/// 不放参数值、SQL 原文或密钥材料。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AuditFacts {
+    pub outcome: AuditOutcome,
+    /// 命中的规则 ID（机器键），未命中为空。
+    pub rule_ids: Vec<String>,
+    /// 可见原因码；只描述规则与对象，不含参数值。
+    pub reason_codes: Vec<String>,
+    /// 判定时使用的规则集版本，用于区分"旧规则放的"与"新规则放的"。
+    pub ruleset_version: String,
+    /// 本次调用的工具风险等级（`read`/`write`/`admin`），落库供审计页筛选。
+    pub risk: String,
+}
+
+impl AuditFacts {
+    /// 无规则信息的最小事实（默认 Hook 与失败路径使用）。
+    ///
+    /// `risk` 先留空：Hook 只看到 `AuditInput`，风险等级由主循环按工具 spec 补齐。
+    pub fn bare(outcome: AuditOutcome, ruleset_version: impl Into<String>) -> Self {
+        Self {
+            outcome,
+            rule_ids: Vec::new(),
+            reason_codes: Vec::new(),
+            ruleset_version: ruleset_version.into(),
+            risk: String::new(),
+        }
+    }
+}
+
 /// 强制安全审计：审计无法执行时 **fail closed**（返回 Deny）。
-pub fn audit_or_fail_closed(hook: &dyn SecurityAuditHook, input: &AuditInput) -> AuditOutcome {
-    match hook.audit(input) {
-        Ok(outcome) => outcome,
+///
+/// 返回完整事实供持久化；不可用时的事实是 `Deny` + 固定原因码，
+/// 保证"审计挂掉"和"规则拒绝"在审计表里都能查到。
+pub fn audit_or_fail_closed(hook: &dyn SecurityAuditHook, input: &AuditInput) -> AuditFacts {
+    match hook.audit_facts(input) {
+        Ok(facts) => facts,
         // 审计不可用 = 拒绝，绝不"先执行再说"。
-        Err(_) => AuditOutcome::Deny,
+        Err(_) => AuditFacts {
+            outcome: AuditOutcome::Deny,
+            rule_ids: vec!["kernel.audit_unavailable".to_string()],
+            reason_codes: vec!["audit_unavailable".to_string()],
+            ruleset_version: input.ruleset_version.clone(),
+            risk: String::new(),
+        },
     }
 }
 
@@ -262,6 +314,14 @@ pub struct AuditInput {
 /// 强制安全审计 Hook（内核注册，插件不能卸载/跳过）。
 pub trait SecurityAuditHook: Send + Sync {
     fn audit(&self, input: &AuditInput) -> fluxdb_core::Result<AuditOutcome>;
+
+    /// 带规则详情的审计；默认实现只给出结论，不编造规则信息。
+    ///
+    /// 需要把规则写入 `ai_tool_audits` 的实现覆写它；只关心结论的调用方用 [`Self::audit`]。
+    fn audit_facts(&self, input: &AuditInput) -> fluxdb_core::Result<AuditFacts> {
+        self.audit(input)
+            .map(|outcome| AuditFacts::bare(outcome, input.ruleset_version.clone()))
+    }
 }
 
 /// 内核授权：把工具风险、Agent 白名单、连接权限与审计结果求交集。
@@ -369,16 +429,100 @@ pub fn approval_matches(
         && expires_at_ms.is_none_or(|expiry| expiry > now_ms)
 }
 
-/// 内置规则审计（内核自带规则集）。
+/// 无规则集的内核审计 Hook：恒 `Allow`。
 ///
-/// 当前规则集只有"内核自身的风险 / Agent 白名单 / 连接权限"，这些由 `authorize` 强制执行；
-/// 所以这里放行，不代表跳过审计——`authorize` 仍会对写操作强制审批。
-/// 新增规则（命令黑名单、路径/前缀限制、跨库限制等）在此实现，且**不能被插件禁用**。
+/// 供测试、示例与尚未接入配置的调用方使用；**规则集为空不等于跳过审计链**，
+/// 审计仍在必经位置执行，只是没有规则命中。生产路径使用
+/// [`ConfiguredAuditHook`]（携带从插件配置装载的规则集）。
 pub struct KernelAuditHook;
 
 impl SecurityAuditHook for KernelAuditHook {
     fn audit(&self, _input: &AuditInput) -> fluxdb_core::Result<AuditOutcome> {
         Ok(AuditOutcome::Allow)
+    }
+}
+
+/// 携带规则集的内核审计 Hook。
+///
+/// 规则集是**快照**：在每轮（含审批恢复）开始时从「调用前安全审计」插件的配置读一次，
+/// 因此规则变更作用于下一个工具调用边界，不会在调用进行中被半途改写。
+/// Hook 自身不访问存储，避免在已开启的事务内另开连接。
+pub struct ConfiguredAuditHook {
+    rules: AuditRules,
+}
+
+impl ConfiguredAuditHook {
+    pub fn new(rules: AuditRules) -> Self {
+        Self { rules }
+    }
+
+    /// 读取安全审计插件的规则配置并构造 Hook。
+    ///
+    /// 配置读不出来时返回 `Err`，由 [`audit_or_fail_closed`] 转成 `Deny`：
+    /// 规则集不可信时不得按"没有规则"放行。
+    pub fn from_storage(storage: &fluxdb_storage::FileStorage) -> fluxdb_core::Result<Self> {
+        Ok(Self::new(load_audit_rules(storage)?))
+    }
+}
+
+impl SecurityAuditHook for ConfiguredAuditHook {
+    fn audit(&self, input: &AuditInput) -> fluxdb_core::Result<AuditOutcome> {
+        Ok(self.rules.evaluate(input).outcome)
+    }
+
+    fn audit_facts(&self, input: &AuditInput) -> fluxdb_core::Result<AuditFacts> {
+        let verdict = self.rules.evaluate(input);
+        Ok(AuditFacts {
+            outcome: verdict.outcome,
+            rule_ids: verdict.rule_id.map(str::to_string).into_iter().collect(),
+            reason_codes: verdict.reason_code.into_iter().collect(),
+            ruleset_version: self.rules.version(),
+            risk: String::new(),
+        })
+    }
+}
+
+/// 读取安全审计插件的规则配置；插件实例缺失或已下线时返回空规则集（不拦截）。
+///
+/// 空规则集仍然会走完审计链：`authorize` 的工具开关、Agent 白名单、连接权限与
+/// 写审批不受这里影响。
+pub fn load_audit_rules(
+    storage: &fluxdb_storage::FileStorage,
+) -> fluxdb_core::Result<AuditRules> {
+    let values = storage.with_ai_connection(|conn| {
+        fluxdb_storage::ai_platform::plugins::load_plugin_instance_config(
+            conn,
+            SECURITY_AUDIT_INSTANCE_ID,
+        )
+        .map(|config| config.values)
+        .map_err(Into::into)
+    })?;
+    Ok(AuditRules::from_config(&values))
+}
+
+/// 安全审计插件实例 ID；规则配置存在该实例的 `config_json`。
+pub const SECURITY_AUDIT_INSTANCE_ID: &str = "builtin.security-audit";
+
+/// 规则集读不出来时的审计 Hook：`audit` 返回 `Err`。
+///
+/// 配合 [`audit_or_fail_closed`] 即"审计不可用 = 拒绝"。调用方拿不到可信规则时
+/// 不能退回"没有规则"的放行语义。
+pub struct UnavailableAuditHook {
+    reason: String,
+}
+
+impl UnavailableAuditHook {
+    pub fn new(reason: String) -> Self {
+        Self { reason }
+    }
+}
+
+impl SecurityAuditHook for UnavailableAuditHook {
+    fn audit(&self, _input: &AuditInput) -> fluxdb_core::Result<AuditOutcome> {
+        Err(fluxdb_core::Error::new(
+            fluxdb_core::ErrorKind::Permission,
+            self.reason.clone(),
+        ))
     }
 }
 

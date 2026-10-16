@@ -122,6 +122,7 @@ include!("parts/ai_results.rs");
 include!("parts/ai_result_retention.rs");
 include!("parts/ai_result_pages.rs");
 include!("parts/ai_hooks.rs");
+include!("parts/ai_audit_rules.rs");
 include!("parts/ai_permission.rs");
 include!("parts/ai_execution_policy.rs");
 include!("parts/ai_context.rs");

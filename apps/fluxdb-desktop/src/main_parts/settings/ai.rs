@@ -42,6 +42,11 @@ struct AiSettingsPanelState {
     mcp_connection_details: Option<fluxdb_app::McpConnectionDetails>,
     mcp_connection_error: Option<String>,
     mcp_details_open: bool,
+    /// 「安全审计」页签：判定筛选（`None` = 全部）、搜索文本、展开的审计行 id。
+    audit_filter: Option<fluxdb_app::AiAuditDecision>,
+    audit_filter_input: Entity<InputState>,
+    audit_filter_text: String,
+    expanded_audit: Option<String>,
     agent_editor: Option<AiAgentEditorState>,
 }
 

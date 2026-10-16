@@ -24,17 +24,23 @@ impl Render for NavicatMain {
             }
         }
         // 调试入口：首帧后打开第一个可配置插件的管理弹框（截图核对用）。
-        if self.ai_plugin_config_dialog_debug_pending && self.ai_plugin_config_dialog.is_none() {
-            self.ai_plugin_config_dialog_debug_pending = false;
-            if let Some(id) = self
-                .controller
-                .state()
-                .ai_plugin_instances
-                .iter()
-                .find(|plugin| !plugin.config_fields.is_empty())
-                .map(|plugin| plugin.id.clone())
-            {
-                self.open_ai_plugin_config_dialog(&id, cx);
+        if let Some(target) = self.ai_plugin_config_dialog_debug_pending.clone()
+            && self.ai_plugin_config_dialog.is_none()
+        {
+            self.ai_plugin_config_dialog_debug_pending = None;
+            let id = if target.is_empty() {
+                // 空串：第一个可配置插件。
+                self.controller
+                    .state()
+                    .ai_plugin_instances
+                    .iter()
+                    .find(|plugin| !plugin.config_fields.is_empty())
+                    .map(|plugin| plugin.id.clone())
+            } else {
+                Some(target)
+            };
+            if let Some(id) = id {
+                self.open_ai_plugin_config_dialog(&id, window, cx);
             }
         }
         // 调试入口：首帧后自动对第一个模型跑一次测试连接（截图核对 Alert 与状态标签）。
@@ -787,6 +793,8 @@ fn render_state_snapshot(state: &AppState) -> AppState {
         ai_mcp_settings: state.ai_mcp_settings.clone(),
         ai_mcp_server_profiles: state.ai_mcp_server_profiles.clone(),
         ai_mcp_datasources: state.ai_mcp_datasources.clone(),
+        ai_audit_rows: state.ai_audit_rows.clone(),
+        ai_audit_error: state.ai_audit_error.clone(),
         ai_sessions: state.ai_sessions.clone(),
         ai_sessions_total: state.ai_sessions_total,
         ai_sessions_cursor: state.ai_sessions_cursor.clone(),

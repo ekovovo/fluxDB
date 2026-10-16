@@ -210,7 +210,7 @@ pub const JEV_DECISION_MODEL_FIELD: &str = "decision_model";
 /// 用户显式选择一个支持 System One 协议的决策模型，未选择就不参与运行；
 /// 不按「唯一合格候选」替用户挑模型，也不把模型 id 写进插件自己的 JSON。
 const JEV_CONFIG_DECLARATION: &str = r#"{
-  "protocol": "fluxdb.plugin.config.v1",
+  "protocol": "fluxdb.plugin.config.v2",
   "fields": [
     {
       "key": "decision_model",
@@ -240,13 +240,101 @@ pub fn jev_config_declaration() -> &'static PluginConfigDeclaration {
 /// 上下文压缩的压缩决策模型字段键；声明与运行期共用，改名等同协议不兼容变更。
 pub const COMPACTION_DECISION_MODEL_FIELD: &str = "compaction_decision_model";
 
+/// 调用前安全审计的规则字段键；声明、存储与求值共用，改名等同协议不兼容变更。
+///
+/// 字段键与 `ai_audit_rules.rs` 里的 `RULE_*` 常量一一对应，两侧必须同步改名。
+pub const SECURITY_AUDIT_INSTANCE: &str = "builtin.security-audit";
+
+/// 调用前安全审计的配置声明（协议见 [`PluginConfigDeclaration`]）。
+///
+/// 规则全部是**可选项**：不填即不拦，插件的存在不改变基础授权链的行为。
+/// 填写后作用于每一次工具调用的最终计划，命中即按声明的方式拒绝或转人工。
+const SECURITY_AUDIT_CONFIG_DECLARATION: &str = r#"{
+  "protocol": "fluxdb.plugin.config.v2",
+  "fields": [
+    {
+      "key": "denied_tables",
+      "group": "数据范围", "kind": "text_list",
+      "label": "禁止访问的表",
+      "help": "读写都拒绝。一行一个：裸名匹配任意 schema，schema.表名 只匹配该 schema。",
+      "required": false,
+      "placeholder": "例如 audit_logs 或 public.secrets"
+    },
+    {
+      "key": "allowed_tables",
+      "group": "数据范围", "kind": "text_list",
+      "label": "允许访问的表",
+      "help": "填了就变成白名单：不在名单里的表一律拒绝，语句无法解析出表名时也拒绝。留空表示不限制。",
+      "required": false,
+      "placeholder": "例如 orders\norder_items"
+    },
+    {
+      "key": "protected_tables",
+      "group": "数据范围", "kind": "text_list",
+      "label": "只读保护的表",
+      "help": "允许查询，但任何写入都拒绝。一行一个表名。",
+      "required": false,
+      "placeholder": "例如 customers"
+    },
+    {
+      "key": "denied_columns",
+      "group": "数据范围", "kind": "text_list",
+      "label": "禁止访问的列",
+      "help": "语句里出现这些列即拒绝。裸列名匹配任意表，表名.列名 只匹配该表。",
+      "required": false,
+      "placeholder": "例如 api_token 或 app_users.password_hash"
+    },
+    {
+      "key": "forbid_ddl",
+      "group": "写入与结构", "kind": "switch",
+      "label": "禁止结构变更",
+      "help": "打开后拒绝 CREATE / ALTER / DROP / TRUNCATE / GRANT 等结构与管理语句。",
+      "required": false,
+      "default": "true"
+    },
+    {
+      "key": "write_requires_where",
+      "group": "写入与结构", "kind": "switch",
+      "label": "写操作必须带条件",
+      "help": "打开后，没有 WHERE 的 UPDATE / DELETE 转为待审批，而不是直接拒绝。",
+      "required": false,
+      "default": "true"
+    },
+    {
+      "key": "denied_redis_commands",
+      "group": "Redis", "kind": "text_list",
+      "label": "禁止的 Redis 命令",
+      "help": "一行一个命令名，不区分大小写。覆盖内核拒绝列表之外的额外命令。",
+      "required": false,
+      "placeholder": "例如 KEYS\nFLUSHALL"
+    },
+    {
+      "key": "denied_redis_key_prefixes",
+      "group": "Redis", "kind": "text_list",
+      "label": "禁止的 Redis Key 前缀",
+      "help": "命令触碰任一以此开头的 Key 即拒绝；前缀按字面匹配。",
+      "required": false,
+      "placeholder": "例如 prod:session:"
+    }
+  ]
+}"#;
+
+/// 调用前安全审计的配置声明（解析一次后复用）。
+pub fn security_audit_config_declaration() -> &'static PluginConfigDeclaration {
+    static DECLARATION: std::sync::OnceLock<PluginConfigDeclaration> = std::sync::OnceLock::new();
+    DECLARATION.get_or_init(|| {
+        PluginConfigDeclaration::parse(SECURITY_AUDIT_CONFIG_DECLARATION)
+            .expect("调用前安全审计配置声明必须通过注册表自洽检查")
+    })
+}
+
 /// 上下文压缩的配置声明（协议见 [`PluginConfigDeclaration`]）。
 ///
 /// 声明的是**压缩决策**槽位：压缩前由该决策模型在宿主给出的合法切点之间选择保留多少历史；
 /// 摘要正文仍由生成模型（Agent 的 `compaction` 绑定）写。未选择时压缩照常按确定性切点运行，
 /// 只是没有这一层建议，因此字段非必填。
 const COMPACTION_CONFIG_DECLARATION: &str = r#"{
-  "protocol": "fluxdb.plugin.config.v1",
+  "protocol": "fluxdb.plugin.config.v2",
   "fields": [
     {
       "key": "compaction_decision_model",
@@ -331,7 +419,7 @@ pub const BUILTIN_DESCRIPTORS: &[BuiltinDescriptor] = &[
         capabilities: SECURITY,
         mandatory: true,
         retired: false,
-        config_declaration: "",
+        config_declaration: SECURITY_AUDIT_CONFIG_DECLARATION,
     },
     BuiltinDescriptor {
         instance_id: "builtin.budget",

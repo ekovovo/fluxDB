@@ -182,8 +182,12 @@ pub struct McpAuditFact {
     /// `allow` / `deny` / `require_approval`。
     pub decision: &'static str,
     pub risk: String,
-    /// 命中的规则/原因（当前内核规则集为固定标签）。
+    /// 命中的规则 ID（机器键）；内核规则集没命中时为空。
+    pub rule_ids: Vec<String>,
+    /// 命中的原因码；只放规则标签与对象名，不含参数值。
     pub reason_codes: Vec<String>,
+    /// 判定时使用的规则集版本。
+    pub ruleset_version: String,
 }
 
 /// 一次外部调用的结果投影。
@@ -455,7 +459,15 @@ impl McpExecutionService {
     }
 
     /// 注入执行安全上下文（连接变更复核与强制审计超时/取消复核）。
+    ///
+    /// 同时把审计 Hook 换成带规则集的实现：MCP 与内部会话共用同一份安全审计插件配置。
+    /// 规则读不出来时换成「审计不可用」Hook，让调用按 fail closed 被拒绝，
+    /// 而不是退回恒放行的 [`KernelAuditHook`]。
     pub fn with_execution_security(mut self, storage: fluxdb_storage::FileStorage) -> Self {
+        self.audit = match crate::load_audit_rules(&storage) {
+            Ok(rules) => Arc::new(crate::ConfiguredAuditHook::new(rules)),
+            Err(error) => Arc::new(crate::UnavailableAuditHook::new(error.message)),
+        };
         self.security = Some(ExecutionSecurity::new(storage));
         self
     }

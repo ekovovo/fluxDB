@@ -13,6 +13,17 @@ pub struct BuiltinBiProducer {
 }
 
 impl BuiltinBiProducer {
+    fn require_enabled(&self) -> Result<(), ArtifactError> {
+        if !with_ai_storage(&self.storage, |conn| builtin_bi_enabled(conn, &self.session_id))? {
+            tracing::debug!(instance_id = BI_INSTANCE_ID, "内置图表与报告能力已停用，拒绝产物操作");
+            return Err(ArtifactError::new(
+                "artifact_capability_disabled",
+                "BI 与报表输出能力未启用或已被当前 Agent 禁用；请启用该能力后重试，三个产物工具本身仍可用",
+            ));
+        }
+        Ok(())
+    }
+
     pub fn new(
         storage: fluxdb_storage::FileStorage,
         session_id: String,
@@ -322,6 +333,7 @@ impl ArtifactProducer for BuiltinBiProducer {
         cancel: &fluxdb_core::CancelFlag,
     ) -> Result<ArtifactOutcome, ArtifactError> {
         artifact_check_cancel(cancel)?;
+        self.require_enabled()?;
         // 归一化可归一化写法（如 `UTC+08:00` → `+08:00`），落库 spec 与回执显示保持一致。
         spec.normalize()
             .map_err(|error| ArtifactError::new("invalid_spec", error.message))?;
@@ -443,6 +455,7 @@ impl ArtifactProducer for BuiltinBiProducer {
         cancel: &fluxdb_core::CancelFlag,
     ) -> Result<ArtifactOutcome, ArtifactError> {
         artifact_check_cancel(cancel)?;
+        self.require_enabled()?;
         let view = self.load_view(artifact_id)?;
         if view.status != "draft" {
             return Err(ArtifactError::new(
@@ -508,6 +521,7 @@ impl ArtifactProducer for BuiltinBiProducer {
         cancel: &fluxdb_core::CancelFlag,
     ) -> Result<ArtifactOutcome, ArtifactError> {
         artifact_check_cancel(cancel)?;
+        self.require_enabled()?;
         let view = self.load_view(artifact_id)?;
         if view.status != "draft" && view.status != "staged" {
             return Err(ArtifactError::new(

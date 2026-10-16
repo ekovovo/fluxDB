@@ -1030,7 +1030,7 @@ ScopedArtifactHost 仅提供结果分页、来源校验、受控文件创建/提
 | `fluxdb.context.compaction` | 保护条目、卸载、摘要、checkpoint | 默认开；优化关闭不移除输入上限和保护约束 |
 | `fluxdb.security.audit` | 调用前确定性风险/授权检查和审计 | 强制注册，不能由配置删除/跳过 |
 | `fluxdb.usage.budget` | 会话 Token 用量统计看板（沿用插件 ID，**尚未实现**） | 目录占位行：置灰、不可启停、不登记能力；执行保护由内核负责，与本行是否启用无关 |
-| `fluxdb.output.bi` | 图表、表格、报告创建和渲染说明 | 可开关/绑定模板，控制输出 |
+| `fluxdb.output.bi` | 内置图表、表格、报告生成与渲染 | 可开关/按 Agent 绑定；不控制通用产物工具是否注册 |
 | `fluxdb.progress.plan` | 公开计划、工具进展、检查点说明 | 默认开；只显示真实事件/模型公开内容 |
 | `fluxdb.lifecycle.telemetry` | 脱敏阶段耗时/错误/诊断汇总 | 可开关；关键执行/审计落盘不依赖它 |
 
@@ -1229,6 +1229,10 @@ AuditDecision：Allow / Deny / RequireApproval、risk、rule_ids、reason_codes�
 **就近参考：**[本期内置/预留边界](/Users/shining3d/fusuwei/code/fluxDB/docs/ai-agent-design.md#extension-reserved)。实际落点按本章/§7，不照搬源项目私有状态。
 
 ## 27. BI 与产物协议
+
+`artifact.create`、`artifact.add_block`、`artifact.finalize` 是内置通用产物工具，独立于 `fluxdb.output.bi` 注册，并列入工具目录与 Agent 工具配置；全局工具开关、Agent 白名单、审计和内核权限仍生效，三个工具不通过对外 MCP Server 暴露。没有 SQL 来源的任务同样保留工具入口，但内置 BI 能力只接受本轮真实 SQL 结果，不把 Redis 输出冒充表格来源。
+
+`fluxdb.output.bi` 是内置图表与报告能力提供者，不是三个工具的总开关。全局实例或 Agent 绑定关闭时，新一轮工具描述不列出该能力的 renderer；实际创建、追加、完成操作均重新检查插件启停状态，返回 `artifact_capability_disabled`，不写草稿、不追加块、不生成快照，也不把已有草稿标记失败。启停变化在下一次产物操作时生效，不中断已经进入执行中的操作；模型工具描述在下一轮重新装配时更新。已完成报告继续通过宿主保存的快照查看与导出，不要求生成插件启用。当前复用 `ArtifactProducer` / `ArtifactRenderer` 接口与内置实现，不新增第三方代码加载、模板编辑器或自定义报告插件。
 
 `ArtifactSpec` 至少有类型、标题、schema version、来源 ResultRef/ToolCallId、指标口径、时间范围/时区、过滤条件、刷新语义、模板版本、可访问性描述。图表引用已存在结果字段，不让模型随意填写未查询的数字。
 

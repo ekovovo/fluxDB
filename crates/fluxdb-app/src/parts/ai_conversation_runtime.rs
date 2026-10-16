@@ -82,15 +82,13 @@ impl AiRuntimeHandle {
                     tools = tools.with_hooks(ai_builtin_hooks(storage, job)?);
                     add_ai_file_tools(&mut tools, storage, job)?;
                     add_ai_reference_tools(&mut tools, storage, job)?;
-                    // 产物依赖 SQL 列结构，不把 Redis 通用输出快照当成表格来源。
-                    if tools.results().is_some() {
-                        add_ai_artifact_tools(
-                            &mut tools,
-                            storage,
-                            job,
-                            std::sync::Arc::clone(&results),
-                        )?;
-                    }
+                    // 通用产物工具始终装配；来源兼容性由实际产物能力校验。
+                    add_ai_artifact_tools(
+                        &mut tools,
+                        storage,
+                        job,
+                        std::sync::Arc::clone(&results),
+                    )?;
                     // 编辑器全文由宿主在发送时登记，取走即释放：不写运行快照，
                     // 本轮结束后工具目录随之消失（设计 §13.2 不持久化整份内容）。
                     add_ai_editor_read_tools(&mut tools, take_editor_grant(&job.turn_id))?;

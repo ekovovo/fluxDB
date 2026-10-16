@@ -28,6 +28,7 @@ use fluxdb_storage::{
 use serde_json::{Value, json};
 
 include!("support/bi_artifacts_fixture.rs");
+include!("support/bi_capability_tests.rs");
 
 #[test]
 fn sqlite_query_create_add_table_finalize_has_real_sources_card_file_and_hash() {
@@ -447,7 +448,7 @@ fn renderer_failure_marks_failed_without_changing_sql() {
 }
 
 #[test]
-fn disabled_builtin_bi_registers_no_artifact_tools_but_keeps_sql_tools() {
+fn disabled_builtin_bi_keeps_tools_but_rejects_report_creation() {
     let fixture = Fixture::new();
     let job = fixture.job();
     fixture
@@ -464,12 +465,31 @@ fn disabled_builtin_bi_registers_no_artifact_tools_but_keeps_sql_tools() {
     add_ai_artifact_tools(&mut catalog, &fixture.storage, &job, results).unwrap();
     for tool in ["artifact.create", "artifact.add_block", "artifact.finalize"] {
         assert!(
-            catalog.executable(tool).is_none(),
-            "{tool} must not be registered"
+            catalog.executable(tool).is_some(),
+            "{tool} must remain registered"
         );
     }
     assert!(catalog.executable("db.query").is_some());
     assert!(catalog.executable("result.read_page").is_some());
+    let description = &catalog.describe("artifact.create").unwrap().description;
+    assert!(!description.contains(REPORT));
+    assert!(description.contains("无可用"));
+    let provider = ReceiptDrivenProvider::new(
+        &fixture,
+        &job,
+        vec![
+            query(QUERY),
+            call("create", "artifact.create", create_args()),
+            Step::Done,
+        ],
+    );
+    run(&fixture, &job, &catalog, &provider);
+    assert_eq!(
+        fixture.receipt(&job, "create", "failed")["code"],
+        "artifact_capability_disabled"
+    );
+    assert!(fixture.artifacts(&job).is_empty());
+    provider.assert_sql_unchanged();
 }
 
 #[test]
@@ -566,7 +586,7 @@ fn retained_sql_results_keep_positional_paging_shape_after_artifact_generation()
 }
 
 #[test]
-fn disabled_agent_binding_removes_bi_even_with_global_instance_enabled() {
+fn disabled_agent_binding_keeps_tools_but_rejects_bi_with_global_instance_enabled() {
     let fixture = Fixture::new();
     let job = fixture.job();
     fixture
@@ -584,8 +604,31 @@ fn disabled_agent_binding_removes_bi_even_with_global_instance_enabled() {
         .unwrap();
     let (mut catalog, results) = fixture.catalog(&job);
     add_ai_artifact_tools(&mut catalog, &fixture.storage, &job, results).unwrap();
-    assert!(catalog.describe("artifact.create").is_none());
+    assert!(catalog.executable("artifact.create").is_some());
+    assert!(
+        !catalog
+            .describe("artifact.create")
+            .unwrap()
+            .description
+            .contains(REPORT)
+    );
     assert!(catalog.executable("db.query").is_some());
+    let provider = ReceiptDrivenProvider::new(
+        &fixture,
+        &job,
+        vec![
+            query(QUERY),
+            call("create", "artifact.create", create_args()),
+            Step::Done,
+        ],
+    );
+    run(&fixture, &job, &catalog, &provider);
+    assert_eq!(
+        fixture.receipt(&job, "create", "failed")["code"],
+        "artifact_capability_disabled"
+    );
+    assert!(fixture.artifacts(&job).is_empty());
+    provider.assert_sql_unchanged();
 }
 
 #[test]

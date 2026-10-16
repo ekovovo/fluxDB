@@ -281,9 +281,14 @@ struct ArtifactCreateTool {
 
 impl ArtifactCreateTool {
     fn new(producer: std::sync::Arc<dyn ArtifactProducer>) -> fluxdb_core::Result<Self> {
-        let description = format!(
-            "创建报告/图表/表格产物草稿：sources/blocks.result_ref 是结果句柄；metric 仅声明指标名称、时区及假设，不代表已核实的业务事实。数字从真实结果取，不执行 SQL。可用 renderer：{}。来源必须来自同一任务。首选在本次调用里一次声明全部 blocks（图表/表格/说明）；只有确实遗漏时再用 artifact.add_block 追加。同一来源同一组字段的块只需声明一次，完全相同的块会被拒绝。回执的 blocks 列出草稿当前已有的块。",
+        let renderers = if producer.descriptor().renderers.is_empty() {
+            "无可用 renderer，请启用相应产物插件".to_string()
+        } else {
             producer.descriptor().renderers.join(", ")
+        };
+        let description = format!(
+            "创建报告/图表/表格产物草稿：sources/blocks.result_ref 是结果句柄；metric 仅声明指标名称、时区及假设，不代表已核实的业务事实。数字从真实结果取，不执行 SQL。可用 renderer：{}。内置图表与报告来源必须来自同一任务的 SQL 查询结果，不支持 Redis 输出。首选在本次调用里一次声明全部 blocks（图表/表格/说明）；只有确实遗漏时再用 artifact.add_block 追加。同一来源同一组字段的块只需声明一次，完全相同的块会被拒绝。回执的 blocks 列出草稿当前已有的块。",
+            renderers
         );
         Ok(Self {
             descriptor: artifact_tool_descriptor(
@@ -500,44 +505,24 @@ fn string_field(value: &serde_json::Value, key: &str) -> Result<String, String> 
         .ok_or_else(|| format!("缺少字段 {key}"))
 }
 
-/// `builtin.bi` 启用时才装配产物工具；关闭时不会给模型任何产物入口。
-fn bi_enabled(conn: &rusqlite::Connection, session_id: &str) -> fluxdb_core::Result<bool> {
-    let enabled = fluxdb_storage::ai_platform::plugins::list_plugin_instances(conn)?
-        .iter()
-        .any(|instance| {
-            instance.id == BI_INSTANCE_ID
-                && instance.enabled
-                && instance.runtime_kind == "builtin"
-                && instance.package_key == "fluxdb.output.bi"
-        });
-    if !enabled {
-        return Ok(false);
-    }
-    let session = fluxdb_storage::ai_platform::sessions::load_session(conn, session_id)?;
-    let bindings =
-        fluxdb_storage::ai_platform::plugins::list_agent_plugin_bindings(conn, &session.agent_id)?;
-    Ok(!bindings
-        .iter()
-        .any(|binding| binding.plugin_instance_id == BI_INSTANCE_ID && !binding.enabled))
-}
-
-/// 装配产物工具（内置 BI producer）：仅在 `builtin.bi` 启用时注册。
+/// 内置产物工具独立注册；插件状态只影响可用 renderer 与实际产物操作。
 pub fn add_ai_artifact_tools(
     catalog: &mut ToolCatalog,
     storage: &fluxdb_storage::FileStorage,
     job: &AiConversationJob,
     results: std::sync::Arc<std::sync::Mutex<ResultStore>>,
 ) -> fluxdb_core::Result<()> {
-    if !with_ai_storage(storage, |conn| bi_enabled(conn, &job.session_id))? {
-        return Ok(());
-    }
-    let producer = BuiltinBiProducer::new(
+    let mut producer = BuiltinBiProducer::new(
         storage.clone(),
         job.session_id.clone(),
         job.turn_id.clone(),
         job.assistant_message_id.clone(),
         results,
     );
+    if !with_ai_storage(storage, |conn| builtin_bi_enabled(conn, &job.session_id))? {
+        // 目录只声明当前可用能力；实现仍保留，以便调用时重新校验最新启停状态。
+        producer.descriptor.renderers.clear();
+    }
     add_ai_artifact_tools_with_producer(catalog, std::sync::Arc::new(producer))
 }
 

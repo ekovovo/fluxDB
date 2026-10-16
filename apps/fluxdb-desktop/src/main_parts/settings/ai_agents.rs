@@ -274,8 +274,10 @@ fn ai_agent_editor_form(
                                 .child(desc.to_string()),
                         )
                         .child(ai_pill(
-                            if *write { "写入" } else { "读取" },
-                            if *write {
+                            if *group == "产物" { "产物" } else if *write { "写入" } else { "读取" },
+                            if *group == "产物" {
+                                colors.info
+                            } else if *write {
                                 colors.warning
                             } else {
                                 colors.success

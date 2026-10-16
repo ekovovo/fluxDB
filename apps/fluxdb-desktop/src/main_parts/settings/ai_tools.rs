@@ -9,7 +9,7 @@ enum AiToolsTab {
     Audit,
 }
 
-/// 内置 Agent 与 MCP 共用的工具；Agent 编辑器只展示这一组。
+/// 内置 Agent 工具；数据库/Redis 工具同时供 MCP 使用，产物工具不对外暴露。
 const AI_AGENT_TOOL_CATALOG: &[(&str, &str, &str, bool)] = &[
     ("connections.list", "公共", "列出已授权连接资源", false),
     ("db.search_objects", "SQL", "渐进搜索表、视图与字段", false),
@@ -33,6 +33,9 @@ const AI_AGENT_TOOL_CATALOG: &[(&str, &str, &str, bool)] = &[
     ),
     ("redis.server_info", "Redis", "受限版本与诊断摘要", false),
     ("result.read_page", "公共", "读取已取得的结果快照", false),
+    ("artifact.create", "产物", "创建报告草稿；内置渲染需启用 BI 插件", true),
+    ("artifact.add_block", "产物", "为报告追加图表、表格或说明，不修改数据库", true),
+    ("artifact.finalize", "产物", "校验来源并生成报告快照，不修改数据库", true),
 ];
 
 /// 仅 MCP 提供的工具仍受全局开关控制，不进入内置 Agent 的配置。
@@ -215,6 +218,21 @@ fn ai_tools_catalog_panel(
                                 )),
                         ),
                 )
+                .child(
+                    div()
+                        .px_4()
+                        .pb_3()
+                        .text_size(px(11.))
+                        .text_color(colors.muted)
+                        .child(format!(
+                            "产物工具独立启停；BI 与报表输出{}，关闭只停用内置生成能力，工具仍显示，已完成报告仍可查看和导出。",
+                            if state.ai_plugin_instances.iter().any(|plugin| plugin.id == fluxdb_app::BI_INSTANCE_ID && plugin.enabled) {
+                                "已启用"
+                            } else {
+                                "未启用"
+                            }
+                        )),
+                )
                 // 窄窗口：工具表保持最小宽度并横向滚动，避免列被压扁/裁切。
                 .child(
                     div()
@@ -267,7 +285,9 @@ fn ai_tool_row(
                 .text_color(colors.muted)
                 .child(desc.to_string()),
         )
-        .child(div().w(px(120.)).flex().items_start().child(if write {
+        .child(div().w(px(120.)).flex().items_start().child(if group == "产物" {
+            ai_pill("产物 / 本地", colors.info, colors).into_any_element()
+        } else if write {
             ai_pill("修改 / 授权", colors.warning, colors).into_any_element()
         } else {
             ai_pill("读取 / 有界", colors.success, colors).into_any_element()

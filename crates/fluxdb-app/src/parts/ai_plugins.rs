@@ -97,7 +97,7 @@ impl From<fluxdb_core::Error> for ArtifactError {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ArtifactProducerDescriptor {
     pub instance_id: &'static str,
-    /// 已注册的 renderer ID；模型声明的 renderer 不在其中就是可见的"不支持"。
+    /// 当前目录快照中可用的 renderer ID；实际操作仍须检查对应实现与启停状态。
     pub renderers: Vec<String>,
     pub kinds: Vec<fluxdb_core::ArtifactKind>,
     /// 单个图表最多取多少个来源数据点。
@@ -197,6 +197,27 @@ const BI: &[BuiltinCapability] = &[BuiltinCapability::ArtifactProducer];
 const PROGRESS: &[BuiltinCapability] = &[BuiltinCapability::Progress];
 const TELEMETRY: &[BuiltinCapability] =
     &[BuiltinCapability::AgentHook, BuiltinCapability::Telemetry];
+
+/// 全局实例与 Agent 绑定共同决定内置产物能力是否可用，不控制通用工具的注册。
+fn builtin_bi_enabled(conn: &rusqlite::Connection, session_id: &str) -> fluxdb_core::Result<bool> {
+    let enabled = fluxdb_storage::ai_platform::plugins::list_plugin_instances(conn)?
+        .iter()
+        .any(|instance| {
+            instance.id == BI_INSTANCE_ID
+                && instance.enabled
+                && instance.runtime_kind == "builtin"
+                && instance.package_key == "fluxdb.output.bi"
+        });
+    if !enabled {
+        return Ok(false);
+    }
+    let session = fluxdb_storage::ai_platform::sessions::load_session(conn, session_id)?;
+    let bindings =
+        fluxdb_storage::ai_platform::plugins::list_agent_plugin_bindings(conn, &session.agent_id)?;
+    Ok(!bindings
+        .iter()
+        .any(|binding| binding.plugin_instance_id == BI_INSTANCE_ID && !binding.enabled))
+}
 
 /// Jev 的决策模型配置字段键；声明与运行期共用，改名等同协议不兼容变更。
 pub const JEV_DECISION_MODEL_FIELD: &str = "decision_model";
@@ -431,7 +452,7 @@ pub const BUILTIN_DESCRIPTORS: &[BuiltinDescriptor] = &[
         instance_id: "builtin.bi",
         package_key: "fluxdb.output.bi",
         display_name: "BI 与报表输出",
-        summary: "图表、表格、报告的创建与渲染说明",
+        summary: "提供内置图表、表格与报告生成；关闭不隐藏产物工具，已完成报告仍可查看和导出",
         capabilities: BI,
         mandatory: false,
         retired: false,

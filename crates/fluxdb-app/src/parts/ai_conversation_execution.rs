@@ -301,7 +301,6 @@ fn ai_conversation_run_turn(
     let mut persist_error: Option<String> = None;
     let mut paused_reason: Option<String> = None;
     let mut notice_count: usize = 0;
-    let mut plan_count: usize = 0;
     let mut approval_id: Option<String> = None;
     let mut part_error: Option<String> = None;
     // 本轮非成功工具回执轨迹：同工具后续成功即视为模型已自愈，不再在回合末尾重复提示。
@@ -433,13 +432,14 @@ fn ai_conversation_run_turn(
                     }
                     notice_count += 1;
                 }
-                // 公开计划：落成 `Plan` 片段并立即发布快照，重启后仍可见。
+                // 同一助手消息只有一份公开计划：固定 ID 复用 upsert，
+                // 更新载荷与 revision，不新增卡片或改变首次出现的位置。
                 LoopEvent::PlanUpdated { plan } => {
                     let payload = crate::plan_part_payload(&plan);
                     let saved = ai_conversation_save_part(
                         storage,
                         job,
-                        &format!("{}-plan-{}", job.assistant_message_id, plan_count),
+                        &format!("{}-plan", job.assistant_message_id),
                         fluxdb_storage::ai_platform::sessions::PartKind::Plan,
                         fluxdb_storage::ai_platform::sessions::PartStatus::Complete,
                         &payload,
@@ -449,7 +449,6 @@ fn ai_conversation_run_turn(
                     if let Err(error) = &saved {
                         part_error.get_or_insert_with(|| error.message.clone());
                     }
-                    plan_count += 1;
                 }
                 // 需要审批：写工具调用事实行（waiting_approval）+ 审批行（pending）+ 可见审批片段。
                 LoopEvent::ApprovalRequired {

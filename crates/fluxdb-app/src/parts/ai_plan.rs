@@ -1,8 +1,8 @@
 // 「计划与执行进度」内置插件（设计 §23.2，`fluxdb.progress.plan`）。
 //
 // 这个插件向模型暴露一个 `plan.update` 工具：模型用它发布/更新**公开的结构化任务
-// 计划**（步骤 + 状态 + 检查点说明）。计划落成 `PartKind::Plan` 片段，重启后仍可
-// 查看；历史不被删除。
+// 计划**（步骤 + 状态 + 检查点说明）。同一助手消息复用一个 `PartKind::Plan` 片段，
+// 每次用完整快照替换卡片内容、保留首次位置；各次工具调用/回执仍独立留存。
 //
 // 边界（设计 §23.2「只显示真实事件/模型公开内容」）：
 // - 步骤状态由模型显式声明，或由步骤引用的**真实工具回执**驱动，不做关键词/工具名
@@ -219,7 +219,7 @@ impl PlanUpdateTool {
             descriptor: fluxdb_core::ToolDescriptor {
                 id: "plan.update".into(),
                 version: 1,
-                description: "发布或更新本次任务的公开计划：给出计划标题与有序步骤（每步含标题与状态 pending/in_progress/done/blocked/skipped，可选检查点说明 note）。这是给用户看的计划，不授予任何执行权限；步骤状态必须如实填写，不要为了好看提前标 done。".into(),
+                description: "发布或更新本轮同一张公开计划卡：每次给出完整计划标题与全部有序步骤（每步含标题与状态 pending/in_progress/done/blocked/skipped，可选检查点说明 note），不要只传变化的步骤。这是给用户看的计划，不授予任何执行权限；步骤状态必须如实填写，不要提前标 done。".into(),
                 risk: fluxdb_core::ToolRisk::Read,
                 input_schema_json: r#"{
                     "type":"object",

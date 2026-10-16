@@ -283,3 +283,84 @@ fn enabled_plugin_publishes_plan_part_and_disabled_hides_tool_but_keeps_history(
         "关闭插件不得删除已发布的历史计划"
     );
 }
+
+#[test]
+fn repeated_plan_updates_replace_one_card_and_keep_execution_history() {
+    let fixture = Fixture::new("updates");
+    let mut controller = fixture.controller();
+    let job = job(&mut controller);
+    let catalog = catalog(&fixture, &job);
+    let mut final_call = plan_call("plan-final");
+    if let ModelEvent::ToolCallRequested(call) = &mut final_call[0] {
+        let mut args: serde_json::Value = serde_json::from_str(&call.arguments_json).unwrap();
+        args["title"] = json!("订单分析完成");
+        args["steps"][1]["status"] = json!("done");
+        call.arguments_json = args.to_string();
+    }
+    let next_call = final_call.clone();
+    let provider = ScriptedGenerationProvider::new(
+        ModelCapabilities {
+            streaming: true,
+            tool_calling: true,
+            reasoning_summary: false,
+        },
+        vec![
+            plan_call("plan-first"),
+            plan_call("plan-second"),
+            final_call,
+            text_call("完成"),
+        ],
+    );
+    run_turn(&fixture, &job, &provider, &catalog);
+    let plans = fixture.plan_payloads(&job.session_id);
+    assert_eq!(plans.len(), 1, "同一助手消息里的更新不能追加计划卡");
+    assert_eq!(
+        plans[0]["title"], "订单分析完成",
+        "标题变化也不能新建另一张卡"
+    );
+    assert_eq!(plans[0]["steps"][1]["status"], "done");
+    fixture
+        .storage
+        .with_ai_connection(|conn| {
+            let revision: i64 = conn
+                .query_row(
+                    "SELECT p.revision FROM ai_message_parts p
+             WHERE p.message_id=?1 AND p.kind='plan'",
+                    [&job.assistant_message_id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(revision, 3, "复用同一片段并递增版本");
+            let calls: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM ai_tool_calls WHERE turn_id=?1 AND tool_id='plan.update'",
+                    [&job.turn_id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(calls, 3, "卡片更新不删除真实调用/回执");
+            Ok(())
+        })
+        .unwrap();
+
+    // 相同标题的新一轮任务有自己的计划，不覆盖上一轮已完成的计划。
+    let next = controller
+        .prepare_ai_conversation("继续分析", &target())
+        .unwrap();
+    let next_catalog = self::catalog(&fixture, &next);
+    let next_provider = ScriptedGenerationProvider::new(
+        ModelCapabilities {
+            streaming: true,
+            tool_calling: true,
+            reasoning_summary: false,
+        },
+        vec![next_call, text_call("下一轮完成")],
+    );
+    run_turn(&fixture, &next, &next_provider, &next_catalog);
+    let plans = fixture.plan_payloads(&job.session_id);
+    assert_eq!(
+        plans.len(),
+        2,
+        "计划身份按助手消息隔离，不按标题或整个会话合并"
+    );
+}

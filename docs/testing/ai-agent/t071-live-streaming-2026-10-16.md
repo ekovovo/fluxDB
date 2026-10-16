@@ -59,3 +59,12 @@ Windows/Linux、真实第三方 Provider、系统 IME/原生无障碍映射未�
 整合 `agent` 的 `84be6b2`（模型配置简化）和 `2f5904a`（输出上限修复）。保留实际模型输出额度、截断状态/提示与生命周期诊断；新增集成夹具适配 `SetAiDefaultModel`，不恢复已删除的全局出站/决策配置接口。
 
 合并后重新执行 `cargo fmt --all`、`cargo check --locked --workspace`、app 单测（910 passed / 10 ignored）、三组集成测试（真 SSE 4 passed、计划门控 1 passed、诊断门控 1 passed）、生产 View 真 SSE 测试（1 passed，含明暗主题和停止），均通过。本节不代表重新跑完所有工作区用例或可见桌面 E2E。
+
+## T071 补充：公开计划单卡片更新
+
+修复用户在真实窗口发现的问题：同一轮多次 `plan.update` 会追加成多张计划卡。改为同一助手消息固定复用 `…-plan` 片段（`upsert` 覆盖、revision 递增），首次出现位置不变；各次 `plan.update` 的工具调用与回执仍完整留存，不是删除历史。
+
+回归：
+- `cargo test --locked -p fluxdb-app --test ai_plan_plugin_gating -- --nocapture`：`repeated_plan_updates_replace_one_card_and_keep_execution_history` 通过（三次更新仍 1 张卡、载荷为最后一次、revision=3、工具调用 3 条留存；下一轮新任务不覆盖旧计划）。
+- `cargo test --locked -p fluxdb-desktop plan_updates_keep_one_card -- --test-threads=1`：真实 GPUI View 点击发送，SSE 两次计划调用后确认卡片 ID、首次出现位置不变、状态最终 done，不新增卡片。
+- 工具描述同步改为“每次提交完整计划快照”。

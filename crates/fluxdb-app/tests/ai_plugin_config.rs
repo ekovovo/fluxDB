@@ -105,6 +105,19 @@ fn plugin_item(controller: &mut AppController, instance_id: &str) -> fluxdb_app:
         .unwrap_or_else(|| panic!("插件实例 {instance_id} 应在列表里"))
 }
 
+/// 决策模型槽位真值：只由插件管理弹框写入，这里从运行设置直接读。
+fn decision_slot(fixture: &Fixture) -> Option<String> {
+    fixture
+        .storage
+        .with_ai_connection(|conn| {
+            Ok(
+                fluxdb_storage::ai_platform::settings::load_runtime_settings(conn)?
+                    .default_decision_model_profile_id,
+            )
+        })
+        .unwrap()
+}
+
 fn config_field(item: &fluxdb_app::AiPluginItem, key: &str) -> AiPluginConfigFieldItem {
     item.config_fields
         .iter()
@@ -197,7 +210,7 @@ fn compaction_slot_is_independent_from_jev_decision_slot() {
         Some(compaction_model.as_str())
     );
     assert_eq!(
-        controller.state().ai_default_decision_model_id,
+        decision_slot(&fixture).as_deref(),
         None,
         "压缩决策槽位不得连带写入 Jev 决策槽位"
     );
@@ -234,10 +247,7 @@ fn compaction_slot_is_independent_from_jev_decision_slot() {
         Some(compaction_model.as_str()),
         "改 Jev 决策模型不得覆盖压缩决策选择"
     );
-    assert_eq!(
-        controller.state().ai_default_decision_model_id.as_deref(),
-        Some(jev_model.as_str())
-    );
+    assert_eq!(decision_slot(&fixture).as_deref(), Some(jev_model.as_str()));
 }
 
 #[test]
@@ -311,10 +321,7 @@ fn wasm_manifest_declaration_uses_the_same_form_and_slot() {
         matches!(event, AppEvent::AiPluginConfigSaved { .. }),
         "{event:?}"
     );
-    assert_eq!(
-        controller.state().ai_default_decision_model_id.as_deref(),
-        Some(model_id.as_str())
-    );
+    assert_eq!(decision_slot(&fixture).as_deref(), Some(model_id.as_str()));
     assert_eq!(
         config_field(&plugin_item(&mut controller, "inst-demo"), "decision_model")
             .selection

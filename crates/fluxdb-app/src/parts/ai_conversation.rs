@@ -444,15 +444,8 @@ impl AppController {
             };
             let explicit = route_source == crate::RouteSource::SessionSelection;
             let model = fluxdb_storage::ai_platform::models::load_model(conn, &model_id)?;
-            // 出站策略：全局应急闸门（`privacy_policy_json`）+ 该模型的显式许可。
-            // 被拒绝时给出可见原因，绝不静默换成别的模型。
-            let egress_policy = crate::EgressPolicy {
-                enabled: fluxdb_storage::ai_platform::settings::load_privacy_policy(conn)?
-                    .model_egress_enabled,
-            };
-            if let Err(rejection) =
-                candidate_check(&model, CandidateRole::Main, egress_policy)
-            {
+            // 出站许可只看该模型自己的标记。被拒绝时给出可见原因，绝不静默换成别的模型。
+            if let Err(rejection) = candidate_check(&model, CandidateRole::Main) {
                 let suffix = if explicit {
                     "，请重新选择"
                 } else {

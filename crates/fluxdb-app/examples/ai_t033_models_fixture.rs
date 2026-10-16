@@ -138,14 +138,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         fluxdb_storage::ai_platform::models::set_connection_status(conn, 1_000, &ids[2], "failed")
     })?;
 
-    // 默认主模型 = 日常通用模型；默认决策模型 = 决策行：两个下拉都有值。
+    // 默认主模型 = 日常通用模型（列表内「默认」单选）；决策模型由 Jev 插件管理弹框选。
     assert!(matches!(
-        controller.dispatch(AppCommand::SaveAiDefaultModels {
-            default_model_id: Some(ids[2].clone()),
-            default_decision_model_id: Some(ids[3].clone()),
+        controller.dispatch(AppCommand::SetAiDefaultModel {
+            model_id: Some(ids[2].clone()),
             expected_revision: controller.state().ai_runtime_revision,
         }),
         AppEvent::AiDefaultModelsSaved { .. }
+    ));
+    assert!(matches!(
+        controller.dispatch(AppCommand::SaveAiPluginConfig {
+            instance_id: fluxdb_app::JEV_INSTANCE_ID.into(),
+            selections: vec![fluxdb_app::AiPluginFieldSelection {
+                key: fluxdb_app::JEV_DECISION_MODEL_FIELD.into(),
+                value: None,
+                resource_id: Some(ids[3].clone()),
+            }],
+            expected_revision: controller.state().ai_runtime_revision,
+        }),
+        AppEvent::AiPluginConfigSaved { .. }
     ));
 
     // 内置 Agent 绑主模型，避免新会话没有模型。

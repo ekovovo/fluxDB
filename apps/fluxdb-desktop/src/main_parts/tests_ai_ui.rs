@@ -11,8 +11,6 @@ mod ai_ui_tests {
     const NEW_MODEL_BUTTON: (f32, f32) = (1840., 180.);
     const SEARCH_INPUT: (f32, f32) = (600., 235.);
     const SEARCH_CLEAR: (f32, f32) = (740., 235.);
-    const DEFAULT_TRIGGER: (f32, f32) = (600., 445.);
-    const DEFAULT_OPTION: (f32, f32) = (600., 480.);
     const AGENT_A_ROW: (f32, f32) = (520., 220.);
     const AGENT_B_ROW: (f32, f32) = (520., 280.);
     const REFRESH_MODELS: (f32, f32) = (1860., 232.);
@@ -323,13 +321,27 @@ mod ai_ui_tests {
     fn db_default_model(root: &std::path::Path) -> Option<String> {
         FileStorage::new(root.to_path_buf())
             .with_ai_connection(|conn| {
-                Ok(conn
+                // 运行设置行可能还没创建：先数行，避免把"未设置"读成查询失败。
+                let rows: i64 = conn
                     .query_row(
-                        "SELECT default_model_profile_id FROM ai_runtime_settings WHERE id=1",
+                        "SELECT COUNT(*) FROM ai_runtime_settings WHERE id=1",
                         [],
                         |row| row.get(0),
                     )
-                    .unwrap())
+                    .map_err(|e| {
+                        fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, e.to_string())
+                    })?;
+                if rows == 0 {
+                    return Ok(None);
+                }
+                conn.query_row(
+                    "SELECT default_model_profile_id FROM ai_runtime_settings WHERE id=1",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|e| {
+                    fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, e.to_string())
+                })
             })
             .unwrap()
     }
@@ -649,21 +661,15 @@ mod ai_ui_tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
-    /// 默认模型选择器：展开 → 点选 → AppState 与 ai_runtime_settings 同步落库。
+    /// 列表内「默认」单选：点选后 AppState 与 ai_runtime_settings 同步落库。
     #[gpui::test]
-    fn ai_ui_default_model_selector_persists_runtime_setting(cx: &mut TestAppContext) {
+    fn ai_ui_default_model_radio_persists_runtime_setting(cx: &mut TestAppContext) {
         let (view, cx, root, id) = harness(cx, "default-model");
-        click(cx, DEFAULT_TRIGGER);
-        let menu_open = view.read_with(cx, |main, _| main.ai_default_model_menu_open);
-        assert!(menu_open, "点击默认模型触发器应展开候选");
-        click(cx, DEFAULT_OPTION);
-        let (state_default, menu_open) = view.read_with(cx, |main, _| {
-            (
-                main.controller.state().ai_default_model_id.clone(),
-                main.ai_default_model_menu_open,
-            )
+        assert_eq!(db_default_model(&root), None, "初始没有默认主模型");
+        click_selector(cx, "ai-model-default-radio");
+        let state_default = view.read_with(cx, |main, _| {
+            main.controller.state().ai_default_model_id.clone()
         });
-        assert!(!menu_open);
         assert_eq!(state_default.as_deref(), Some(id.as_str()));
         assert_eq!(db_default_model(&root).as_deref(), Some(id.as_str()));
         let _ = std::fs::remove_dir_all(root);
@@ -998,30 +1004,6 @@ mod ai_ui_tests {
         assert_eq!(egress, Some(false), "AppState 应同步为禁止出站");
         let stored: bool = main_db_egress(&root, &id);
         assert!(!stored, "SQLite 应持久化禁止出站");
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    /// 全局模型数据出站闸门：开关真实落库，且关闭后发送会被拒绝。
-    #[gpui::test]
-    fn ai_ui_global_egress_gate_persists_and_blocks(cx: &mut TestAppContext) {
-        let (view, cx, root, _id) = harness(cx, "global-egress");
-        click_selector(cx, "ai-egress-gate-switch");
-        let state = view.read_with(cx, |main, _| main.controller.state().ai_model_egress_enabled);
-        assert!(!state, "关闭全局闸门后 AppState 应同步为 false");
-
-        let sqlite_enabled: bool = FileStorage::new(root.join("."))
-            .with_ai_connection(|conn| {
-                conn.query_row::<i64, _, _>(
-                    "SELECT CASE WHEN json_extract(privacy_policy_json, '$.model_egress_enabled') THEN 1 ELSE 0 END
-                       FROM ai_runtime_settings WHERE id=1",
-                    [],
-                    |row| row.get::<_, i64>(0),
-                )
-                .map(|v: i64| v != 0)
-                .map_err(|e| fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, e.to_string()))
-            })
-            .expect("读取全局闸门");
-        assert!(!sqlite_enabled, "SQLite 应持久化全局闸门关闭");
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -1389,9 +1371,8 @@ mod ai_ui_tests {
         view.update(cx, |main, _| {
             main.controller.dispatch(AppCommand::RefreshAiSettings);
             let revision = main.controller.state().ai_runtime_revision;
-            let event = main.controller.dispatch(AppCommand::SaveAiDefaultModels {
-                default_model_id: Some(id.clone()),
-                default_decision_model_id: None,
+            let event = main.controller.dispatch(AppCommand::SetAiDefaultModel {
+                model_id: Some(id.clone()),
                 expected_revision: revision,
             });
             assert!(

@@ -44,16 +44,12 @@ impl WriteReviewer for StorageWriteReviewer {
         );
         let config = with_ai_storage(&self.storage, |conn| {
             let runtime = ai_settings::load_runtime_settings(conn)?;
-            let privacy = ai_settings::load_privacy_policy(conn)?;
             let jev = jev_status(conn, ai_chat_now())?;
-            Ok((runtime, privacy, jev))
+            Ok((runtime, jev))
         });
-        let Ok((runtime, privacy, jev)) = config else {
+        let Ok((runtime, jev)) = config else {
             return (ReviewChoice::Manual, "settings_unavailable");
         };
-        if cancel.is_cancelled() || !privacy.model_egress_enabled {
-            return (ReviewChoice::Manual, "model_egress_disabled");
-        }
         if jev.is_usable() {
             if let Some(id) = jev.model_profile_id {
                 if let Ok(provider) = decision_provider_from_storage_with_timeout(

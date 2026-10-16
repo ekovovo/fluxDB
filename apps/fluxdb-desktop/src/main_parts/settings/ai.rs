@@ -24,8 +24,6 @@ struct AiSettingsPanelState {
     filter_input: Entity<InputState>,
     testing_id: Option<String>,
     deleting_id: Option<String>,
-    default_model_menu_open: bool,
-    default_decision_menu_open: bool,
     settings_loading: bool,
     settings_error: Option<String>,
     /// 「会话历史」页搜索框实体与过滤文本。

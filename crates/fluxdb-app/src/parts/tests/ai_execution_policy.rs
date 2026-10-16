@@ -508,9 +508,8 @@ fn save_mock_generation_model(fixture: &PolicyFixture, name: &str, endpoint: Str
 fn set_global_default_model(fixture: &PolicyFixture, id: &str) {
     let mut controller = AppController::new();
     controller.set_ai_storage(fixture.storage.clone());
-    match controller.dispatch(AppCommand::SaveAiDefaultModels {
-        default_model_id: Some(id.to_string()),
-        default_decision_model_id: None,
+    match controller.dispatch(AppCommand::SetAiDefaultModel {
+        model_id: Some(id.to_string()),
         expected_revision: 0,
     }) {
         AppEvent::AiDefaultModelsSaved { .. } => {}

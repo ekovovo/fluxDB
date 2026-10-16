@@ -82,6 +82,7 @@ use gpui_component::{
     input::{Input, InputEvent, InputState, Textarea, TextareaState},
     popover::{Popover, PopoverState},
     progress::Progress,
+    radio::Radio,
     scroll::{ScrollableElement, Scrollbar},
     select::{SearchableVec, Select, SelectEvent, SelectItem, SelectState},
     sidebar::{Sidebar, SidebarGroup, SidebarMenuItem},

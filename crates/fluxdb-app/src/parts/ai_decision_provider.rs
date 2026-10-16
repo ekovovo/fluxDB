@@ -475,18 +475,12 @@ pub fn decision_provider_from_storage_with_timeout(
     model_profile_id: &str,
     timeout: std::time::Duration,
 ) -> fluxdb_core::Result<SystemOneDecisionProvider> {
-    let (model, policy) = storage.with_ai_connection(|conn| {
-        Ok((
-            fluxdb_storage::ai_platform::models::load_model(conn, model_profile_id)?,
-            crate::EgressPolicy {
-                enabled: fluxdb_storage::ai_platform::settings::load_privacy_policy(conn)?
-                    .model_egress_enabled,
-            },
-        ))
+    let model = storage.with_ai_connection(|conn| {
+        fluxdb_storage::ai_platform::models::load_model(conn, model_profile_id)
     })?;
-    // 复用 T033 候选过滤：停用 / 用途错配 / 全局出站闸门 / 单模型出站许可 / 凭据。
+    // 复用 T033 候选过滤：停用 / 用途错配 / 单模型出站许可 / 凭据。
     // 这里再要求 System One 协议，避免把生成协议当成决策协议。
-    crate::candidate_check(&model, crate::CandidateRole::Decision, policy)
+    crate::candidate_check(&model, crate::CandidateRole::Decision)
         .map_err(|rejection| {
             fluxdb_core::Error::new(
                 fluxdb_core::ErrorKind::Unsupported,

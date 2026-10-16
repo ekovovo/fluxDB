@@ -409,9 +409,8 @@ fn clear_session_override_falls_back_to_agent_not_global_and_keeps_old_snapshot(
         .with_ai_connection(|conn| Ok(settings::load_runtime_settings(conn)?.revision))
         .unwrap();
     assert!(matches!(
-        controller.dispatch(AppCommand::SaveAiDefaultModels {
-            default_model_id: Some(global),
-            default_decision_model_id: None,
+        controller.dispatch(AppCommand::SetAiDefaultModel {
+            model_id: Some(global),
             expected_revision: revision,
         }),
         AppEvent::AiDefaultModelsSaved { .. }

@@ -548,12 +548,8 @@ pub struct AppState {
     pub ai_sessions_loading_more: bool,
     /// 默认主模型档案 id（`ai_runtime_settings.default_model_profile_id`）。
     pub ai_default_model_id: Option<String>,
-    /// 默认决策（Jev）模型档案 id。
-    pub ai_default_decision_model_id: Option<String>,
     /// 内置 Jev 的装配/可用状态（设置页插件页与大模型页共用，实时反映熔断）。
     pub ai_jev_status: JevStatus,
-    /// 全局模型数据出站闸门（`privacy_policy_json`）；false 时任何模型都不再发送会话数据。
-    pub ai_model_egress_enabled: bool,
     /// 运行设置行 revision（默认模型选择的 CAS 期望值）。
     pub ai_runtime_revision: i64,
     pub tasks: Vec<TaskState>,
@@ -599,9 +595,7 @@ impl Default for AppState {
             ai_sessions_has_more: false,
             ai_sessions_loading_more: false,
             ai_default_model_id: None,
-            ai_default_decision_model_id: None,
             ai_jev_status: JevStatus::default(),
-            ai_model_egress_enabled: true,
             ai_runtime_revision: 0,
             tasks: Vec::new(),
             query_history: Vec::new(),

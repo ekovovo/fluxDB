@@ -368,14 +368,13 @@ pub fn resolve_field(
     field: &PluginConfigField,
 ) -> fluxdb_core::Result<ResolvedPluginField> {
     let slot = field.model_role()?;
-    let policy = egress_policy(conn)?;
     let required_protocol = field.api_protocol();
     // 候选口径与 Agent 绑定共用 candidate_check：启停、用途、出站许可、凭据一个都不放过。
     let models = fluxdb_storage::ai_platform::models::list_models_page(conn, 500, 0)?;
     let mut choices = Vec::new();
     let mut protocol_rejected = 0usize;
     for model in models {
-        if candidate_check(&model, slot.candidate_role(), policy).is_err() {
+        if candidate_check(&model, slot.candidate_role()).is_err() {
             continue;
         }
         match required_protocol {
@@ -422,13 +421,10 @@ pub fn selection_rejection(
     let Ok(slot) = field.model_role() else {
         return "配置声明无效".to_string();
     };
-    let Ok(policy) = egress_policy(conn) else {
-        return "模型状态无法确认".to_string();
-    };
     let Ok(model) = fluxdb_storage::ai_platform::models::load_model(conn, model_id) else {
         return "所选模型已被删除或不可用".to_string();
     };
-    if candidate_check(&model, slot.candidate_role(), policy).is_err() {
+    if candidate_check(&model, slot.candidate_role()).is_err() {
         return "所选模型当前不可用（已停用、用途不符、禁止出站或缺少凭据）".to_string();
     }
     if let Some(required) = field.api_protocol() {
@@ -717,14 +713,6 @@ fn load_slot_selection(
         ModelRoleSlot::MainCandidate => runtime.default_model_profile_id,
         ModelRoleSlot::Decision => runtime.default_decision_model_profile_id,
         ModelRoleSlot::CompactionDecision => runtime.compaction_decision_model_profile_id,
-    })
-}
-
-/// 当前全局模型出站闸门；模型候选过滤必须与路由共用同一来源。
-pub(crate) fn egress_policy(conn: &rusqlite::Connection) -> fluxdb_core::Result<EgressPolicy> {
-    Ok(EgressPolicy {
-        enabled: fluxdb_storage::ai_platform::settings::load_privacy_policy(conn)?
-            .model_egress_enabled,
     })
 }
 

@@ -513,74 +513,10 @@ fn ai_plugins_panel(state: &AppState, colors: UiColors, cx: &mut Context<Navicat
                         div()
                             .text_size(px(11.))
                             .text_color(colors.muted)
-                            .child(format!(
-                                "{} 项 · 第三方仅预留接口",
-                                state.ai_plugin_instances.len()
-                            )),
+                            .child(format!("{} 项", state.ai_plugin_instances.len())),
                     ),
             )
             .child(div().children(body)),
-        )
-        .child(ai_jev_status_note(&state.ai_jev_status, colors))
-        .child(
-            div()
-                .px_4()
-                .py_3()
-                .rounded(px(6.))
-                .bg(colors.border_soft)
-                .text_size(px(11.))
-                .text_color(colors.muted)
-                .child(
-                    "第三方插件安装、市场与沙箱当前不实现。未来通过相同的能力契约扩展，\
-                     不直接访问数据库、密钥或界面控件。",
-                ),
-        )
-}
-
-/// Jev 状态说明块：把"为什么不可用"讲清楚，但不弹错、不阻断基础 Agent。
-fn ai_jev_status_note(status: &fluxdb_app::JevStatus, colors: UiColors) -> impl IntoElement {
-    use fluxdb_app::JevStatusKind as K;
-    let detail = match (status.kind, status.detail.clone(), status.circuit_until_ms) {
-        (K::Available, _, _) => {
-            "Jev 已使用「管理」里选定的决策模型；无需安装插件或手工建绑定。".to_string()
-        }
-        (K::NeedsChoice, Some(reason), _) | (K::Unavailable, Some(reason), _) => reason,
-        (K::NeedsChoice, None, _) => {
-            "已有合格决策模型但尚未选择：点该行的「管理」选择决策模型后 Jev 才参与运行。"
-                .to_string()
-        }
-        (K::Unavailable, None, Some(until)) => {
-            format!("Jev 连续失败已熔断，将于 {until} 之后重新尝试。")
-        }
-        (K::Unavailable, None, None) => "Jev 当前不可用，Agent 继续按基础策略运行。".to_string(),
-        (K::NotConfigured, _, _) => {
-            "尚未配置可用的决策模型：先在大模型页添加并启用一个 System One 决策模型。Jev 只是可选优化，未配置时主 Agent 照常运行。".to_string()
-        }
-        (K::Disabled, _, _) => {
-            "Jev 已关闭：不发起任何决策请求，主 Agent 与上下文压缩照常工作。".to_string()
-        }
-    };
-    div()
-        .debug_selector(|| "ai-jev-status-note".to_string())
-        .px_4()
-        .py_3()
-        .rounded(px(6.))
-        .bg(colors.border_soft)
-        .flex()
-        .flex_col()
-        .gap_1()
-        .child(
-            div()
-                .text_size(px(11.))
-                .font_weight(gpui::FontWeight::MEDIUM)
-                .text_color(colors.text)
-                .child(format!("Jev：{}", status.label())),
-        )
-        .child(
-            div()
-                .text_size(px(11.))
-                .text_color(colors.muted)
-                .child(detail),
         )
 }
 

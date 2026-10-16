@@ -801,9 +801,7 @@ fn render_state_snapshot(state: &AppState) -> AppState {
         ai_sessions_has_more: state.ai_sessions_has_more,
         ai_sessions_loading_more: state.ai_sessions_loading_more,
         ai_default_model_id: state.ai_default_model_id.clone(),
-        ai_default_decision_model_id: state.ai_default_decision_model_id.clone(),
         ai_jev_status: state.ai_jev_status.clone(),
-        ai_model_egress_enabled: state.ai_model_egress_enabled,
         ai_runtime_revision: state.ai_runtime_revision,
         connections: state.connections.clone(),
         tabs: state

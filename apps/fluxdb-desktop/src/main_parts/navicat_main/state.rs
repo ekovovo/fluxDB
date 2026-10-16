@@ -29,9 +29,6 @@ struct NavicatMain {
     /// 正在测试连接的模型 id（行内显示「测试中…」）。
     ai_model_testing_id: Option<String>,
     ai_model_deleting_id: Option<String>,
-    /// 默认主模型 / 默认决策模型下拉的展开状态。
-    ai_default_model_menu_open: bool,
-    ai_default_decision_menu_open: bool,
     /// AI 设置列表的加载态与错误态（设计 §39.5：错误不能被空列表掩盖）。
     ai_settings_loading: bool,
     ai_settings_error: Option<String>,

@@ -1,17 +1,6 @@
 // AI 设置职责拆分；由 ai.rs include! 引入，保持原有作用域。
 
 impl NavicatMain {
-    /// 切换「默认主模型 / 默认决策模型」候选列表的展开状态。
-    fn toggle_ai_default_menu(&mut self, which: &str) {
-        if which == "main" {
-            self.ai_default_model_menu_open = !self.ai_default_model_menu_open;
-            self.ai_default_decision_menu_open = false;
-        } else {
-            self.ai_default_decision_menu_open = !self.ai_default_decision_menu_open;
-            self.ai_default_model_menu_open = false;
-        }
-    }
-
     /// 后台重载 AI 设置页的全部列表（模型/Agent/插件/MCP/会话/安全审计）。
     ///
     /// 读库在克隆控制器上进行以免阻塞 UI；后台任务连同加载后的控制器一起回传，

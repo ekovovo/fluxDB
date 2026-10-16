@@ -435,7 +435,7 @@ UI参考唯一入口 [ai-agent-ui.html](/Users/shining3d/fusuwei/code/fluxDB/doc
 
 内置ID `fluxdb.decision.jev`，随应用注册，默认auto；使用通用DecisionProvider。用户启用该内置能力，并在插件行的「管理」弹框里显式选择一个可用Jev决策模型，不需要下载安装/手工建instance/binding。
 
-启动/模型保存与状态变化/选择变化/Agent创建时reconcile system-managed绑定：只有用户在插件管理里选过决策模型才可用，**唯一合格候选也不自动使用**；未选择时状态是「待选择」/「未配置」，基础Agent继续运行，不擅自发数据或选择贵模型。选择落在宿主槽位ai_runtime_settings.default_decision_model_profile_id（大模型页的「默认决策模型」是同一个值），自动角色在ai_agent_model_bindings列，binding_source=system；用户手动绑定优先不被覆盖。
+启动/模型保存与状态变化/选择变化/Agent创建时reconcile system-managed绑定：只有用户在插件管理里选过决策模型才可用，**唯一合格候选也不自动使用**；未选择时状态是「待选择」/「未配置」，基础Agent继续运行，不擅自发数据或选择贵模型。选择落在宿主槽位ai_runtime_settings.default_decision_model_profile_id（只由该插件的「管理」弹框写入，大模型页不提供决策模型选择器），自动角色在ai_agent_model_bindings列，binding_source=system；用户手动绑定优先不被覆盖。
 
 | 状态 | 行为 |
 |---|---|
@@ -1593,7 +1593,7 @@ MCP 不再有本地人工审批队列：写入由数据源「允许读写」直�
     模型列表 / 新建编辑 / 测试连接 / 获取模型列表
     连接状态（成功/失败/未连接）落库常驻；测试=真实最小对话请求（提示词「你好」）
     编辑态 API Key 预填为黑点，点眼睛用 AppController::reveal_ai_model_secret 短时解密
-    默认主模型 / 默认决策模型 / 凭据状态
+    默认主模型（列表内「默认」单选，同一时刻只有一个）/ 凭据状态
     每模型能力与隐私许可（价格只在编辑弹框填写与回填，列表不展示）
     （模型 ID 排在 API Key 之后：拉取依赖 Key，Key 仅作请求头、不落库/不写日志）
   Agent 配置
@@ -2578,7 +2578,6 @@ CREATE TABLE IF NOT EXISTS ai_runtime_settings (
     default_decision_model_profile_id TEXT REFERENCES ai_model_profiles(id) ON DELETE RESTRICT,
     max_active_turns INTEGER NOT NULL DEFAULT 2 CHECK (max_active_turns > 0),
     context_policy_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(context_policy_json)),
-    privacy_policy_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(privacy_policy_json)),
     retention_policy_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(retention_policy_json)),
     revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
     updated_at_ms INTEGER NOT NULL

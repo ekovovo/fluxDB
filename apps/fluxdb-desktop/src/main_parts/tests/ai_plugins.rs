@@ -230,8 +230,8 @@ fn ai_ui_jev_config_dialog_selects_model_then_toggle(cx: &mut TestAppContext) {
         );
     });
     assert!(
-        cx.debug_bounds("ai-jev-status-note").is_some(),
-        "插件页应渲染 Jev 状态说明块"
+        cx.debug_bounds("ai-jev-status-note").is_none(),
+        "插件页底部不再有 Jev 状态说明块，状态只保留在插件行的标签上"
     );
 
     // 打开管理弹框 → 打开候选 → 选择模型 → 保存。
@@ -242,19 +242,13 @@ fn ai_ui_jev_config_dialog_selects_model_then_toggle(cx: &mut TestAppContext) {
     click_selector(cx, option);
     click_selector(cx, "ai-plugin-config-save");
 
-    let (selected_kind, saved, dialog_open) = view.read_with(cx, |main, _| {
+    let (selected_kind, dialog_open) = view.read_with(cx, |main, _| {
         let state = main.controller.state();
         (
             state.ai_jev_status.kind,
-            state.ai_default_decision_model_id.clone(),
             main.ai_plugin_config_dialog.is_some(),
         )
     });
-    assert_eq!(
-        saved.as_deref(),
-        Some(model_id.as_str()),
-        "选择应落到决策模型槽位"
-    );
     assert_eq!(
         selected_kind,
         fluxdb_app::JevStatusKind::Available,
@@ -276,14 +270,7 @@ fn ai_ui_jev_config_dialog_selects_model_then_toggle(cx: &mut TestAppContext) {
     click_selector(cx, "ai-plugin-config-field:decision_model");
     click_selector(cx, "ai-plugin-config-clear:decision_model");
     click_selector(cx, "ai-plugin-config-save");
-    let (cleared_kind, cleared) = view.read_with(cx, |main, _| {
-        let state = main.controller.state();
-        (
-            state.ai_jev_status.kind,
-            state.ai_default_decision_model_id.clone(),
-        )
-    });
-    assert_eq!(cleared, None, "清空应写回宿主槽位");
+    let cleared_kind = view.read_with(cx, |main, _| main.controller.state().ai_jev_status.kind);
     assert_eq!(
         cleared_kind,
         fluxdb_app::JevStatusKind::NeedsChoice,

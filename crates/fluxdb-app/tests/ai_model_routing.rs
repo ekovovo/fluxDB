@@ -186,9 +186,8 @@ fn configured_agent_binding_wins_over_agent_default_and_global_default() {
         .with_ai_connection(|conn| Ok(settings::load_runtime_settings(conn)?.revision))
         .unwrap();
     assert!(matches!(
-        controller.dispatch(AppCommand::SaveAiDefaultModels {
-            default_model_id: Some(global.clone()),
-            default_decision_model_id: None,
+        controller.dispatch(AppCommand::SetAiDefaultModel {
+            model_id: Some(global.clone()),
             expected_revision: revision,
         }),
         AppEvent::AiDefaultModelsSaved { .. }
@@ -289,9 +288,8 @@ fn denied_egress_model_fails_visibly_without_silent_fallback() {
         .with_ai_connection(|conn| Ok(settings::load_runtime_settings(conn)?.revision))
         .unwrap();
     assert!(matches!(
-        controller.dispatch(AppCommand::SaveAiDefaultModels {
-            default_model_id: Some(allowed.clone()),
-            default_decision_model_id: None,
+        controller.dispatch(AppCommand::SetAiDefaultModel {
+            model_id: Some(allowed.clone()),
             expected_revision: revision,
         }),
         AppEvent::AiDefaultModelsSaved { .. }
@@ -337,56 +335,6 @@ fn denied_egress_model_fails_visibly_without_silent_fallback() {
 }
 
 #[test]
-fn global_egress_gate_blocks_even_allowed_models() {
-    let fixture = Fixture::new();
-    let mut controller = fixture.controller();
-    let global = create_model(&mut controller, "global", "openai");
-    let bare = create_agent(&mut controller, "bare-gate", None);
-    set_default_agent(&fixture, &bare);
-    let revision = fixture
-        .storage
-        .with_ai_connection(|conn| Ok(settings::load_runtime_settings(conn)?.revision))
-        .unwrap();
-    assert!(matches!(
-        controller.dispatch(AppCommand::SaveAiDefaultModels {
-            default_model_id: Some(global.clone()),
-            default_decision_model_id: None,
-            expected_revision: revision,
-        }),
-        AppEvent::AiDefaultModelsSaved { .. }
-    ));
-    // 关闭全局出站闸门：即使模型本身允许发送，也必须全部拒绝。
-    let gate_revision = fixture
-        .storage
-        .with_ai_connection(|conn| Ok(settings::load_runtime_settings(conn)?.revision))
-        .unwrap();
-    let gate_event = controller.dispatch(AppCommand::SetAiModelEgressEnabled {
-        enabled: false,
-        expected_revision: gate_revision,
-    });
-    assert!(
-        matches!(gate_event, AppEvent::AiModelEgressEnabledChanged { .. }),
-        "关闭全局闸门失败: {gate_event:?}"
-    );
-    let err = controller
-        .prepare_ai_conversation("全局禁止出站", &target())
-        .expect_err("全局闸门关闭时必须可见失败");
-    assert!(
-        err.message.contains("全局禁止模型数据出站"),
-        "实际: {}",
-        err.message
-    );
-    // 重新打开后恢复可用。
-    assert!(matches!(
-        controller.dispatch(AppCommand::SetAiModelEgressEnabled {
-            enabled: true,
-            expected_revision: gate_revision + 1,
-        }),
-        AppEvent::AiModelEgressEnabledChanged { .. }
-    ));
-    assert_eq!(send_model(&mut controller, "恢复后可用"), global);
-}
-#[test]
 fn agent_without_model_falls_back_to_global_default() {
     let fixture = Fixture::new();
     let mut controller = fixture.controller();
@@ -398,9 +346,8 @@ fn agent_without_model_falls_back_to_global_default() {
         .with_ai_connection(|conn| Ok(settings::load_runtime_settings(conn)?.revision))
         .unwrap();
     assert!(matches!(
-        controller.dispatch(AppCommand::SaveAiDefaultModels {
-            default_model_id: Some(global.clone()),
-            default_decision_model_id: None,
+        controller.dispatch(AppCommand::SetAiDefaultModel {
+            model_id: Some(global.clone()),
             expected_revision: revision,
         }),
         AppEvent::AiDefaultModelsSaved { .. }
@@ -475,9 +422,8 @@ fn agent_default_that_is_not_usable_fails_visibly_without_silent_fallback() {
         .with_ai_connection(|conn| Ok(settings::load_runtime_settings(conn)?.revision))
         .unwrap();
     assert!(matches!(
-        controller.dispatch(AppCommand::SaveAiDefaultModels {
-            default_model_id: Some(global),
-            default_decision_model_id: None,
+        controller.dispatch(AppCommand::SetAiDefaultModel {
+            model_id: Some(global),
             expected_revision: revision,
         }),
         AppEvent::AiDefaultModelsSaved { .. }

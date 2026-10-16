@@ -360,26 +360,24 @@ fn ai_settings_failed_model_save_preserves_config_and_ciphertext_bytes() {
 }
 
 #[test]
-fn ai_settings_default_models_reject_invalid_kind_and_stale_without_overwrite() {
+fn ai_settings_default_model_reject_invalid_kind_and_stale_without_overwrite() {
     let (mut controller, dir) = controller_with_ai_storage("persist-defaults");
     let gen_id = create_model(&mut controller, "openai", "主模型", Some("sk-default-main"));
     let dec_id = create_model(&mut controller, "decisions", "决策模型", None);
 
     let AppEvent::AiDefaultModelsSaved { revision } =
-        controller.dispatch(AppCommand::SaveAiDefaultModels {
-            default_model_id: Some(gen_id.clone()),
-            default_decision_model_id: Some(dec_id.clone()),
+        controller.dispatch(AppCommand::SetAiDefaultModel {
+            model_id: Some(gen_id.clone()),
             expected_revision: 0,
         })
     else {
-        panic!("首次保存默认模型失败");
+        panic!("首次保存默认主模型失败");
     };
     assert_eq!(revision, 1);
     let before_invalid = pa_runtime_row(&dir);
 
-    match controller.dispatch(AppCommand::SaveAiDefaultModels {
-        default_model_id: Some(dec_id.clone()),
-        default_decision_model_id: None,
+    match controller.dispatch(AppCommand::SetAiDefaultModel {
+        model_id: Some(dec_id.clone()),
         expected_revision: revision,
     }) {
         AppEvent::AiSettingsError(message) => {
@@ -393,9 +391,8 @@ fn ai_settings_default_models_reject_invalid_kind_and_stale_without_overwrite() 
         "非法 kind 不得改写运行设置"
     );
 
-    match controller.dispatch(AppCommand::SaveAiDefaultModels {
-        default_model_id: Some(gen_id.clone()),
-        default_decision_model_id: None,
+    match controller.dispatch(AppCommand::SetAiDefaultModel {
+        model_id: Some(gen_id.clone()),
         expected_revision: 0,
     }) {
         AppEvent::AiSettingsError(message) => {
@@ -419,10 +416,6 @@ fn ai_settings_default_models_reject_invalid_kind_and_stale_without_overwrite() 
     assert_eq!(
         reloaded.state().ai_default_model_id.as_deref(),
         Some(gen_id.as_str())
-    );
-    assert_eq!(
-        reloaded.state().ai_default_decision_model_id.as_deref(),
-        Some(dec_id.as_str())
     );
     let _ = std::fs::remove_dir_all(&dir);
 }

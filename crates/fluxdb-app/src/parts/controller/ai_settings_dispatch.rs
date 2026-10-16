@@ -446,34 +446,6 @@ impl AppController {
                     Err(e) => return AppEvent::AiSettingsError(e.message),
                 }
             }
-            AppCommand::SetAiModelEgressEnabled {
-                enabled,
-                expected_revision,
-            } => {
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis() as i64)
-                    .unwrap_or(0);
-                let storage = self.ai_storage();
-                let result = storage.and_then(|st| {
-                    set_ai_model_egress_enabled(
-                        &mut self.state,
-                        &st,
-                        enabled,
-                        expected_revision,
-                        now,
-                    )
-                });
-                match result {
-                    Ok(()) => {
-                        return AppEvent::AiModelEgressEnabledChanged {
-                            enabled,
-                            revision: expected_revision + 1,
-                        };
-                    }
-                    Err(e) => return AppEvent::AiSettingsError(e.message),
-                }
-            }
             AppCommand::SetAiToolEnabled {
                 tool_id,
                 enabled,
@@ -510,9 +482,8 @@ impl AppController {
                     Err(e) => return AppEvent::AiSettingsError(e.message),
                 }
             }
-            AppCommand::SaveAiDefaultModels {
-                default_model_id,
-                default_decision_model_id,
+            AppCommand::SetAiDefaultModel {
+                model_id,
                 expected_revision,
             } => {
                 let now = std::time::SystemTime::now()
@@ -521,14 +492,7 @@ impl AppController {
                     .unwrap_or(0);
                 let storage = self.ai_storage();
                 let result = storage.and_then(|st| {
-                    save_ai_default_models(
-                        &mut self.state,
-                        &st,
-                        default_model_id,
-                        default_decision_model_id,
-                        expected_revision,
-                        now,
-                    )
+                    set_ai_default_model(&mut self.state, &st, model_id, expected_revision, now)
                 });
                 match result {
                     Ok(revision) => return AppEvent::AiDefaultModelsSaved { revision },

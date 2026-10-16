@@ -3701,11 +3701,10 @@ impl AppController {
             | AppCommand::CompleteAiSessionRename { .. }
             | AppCommand::CompleteAiSessionStatus { .. }
             | AppCommand::SetAiModelEnabled { .. }
-            | AppCommand::SetAiModelEgressEnabled { .. }
             | AppCommand::SetAiPluginInstanceEnabled { .. }
             | AppCommand::SaveAiPluginConfig { .. }
             | AppCommand::SetAiToolEnabled { .. }
-            | AppCommand::SaveAiDefaultModels { .. }
+            | AppCommand::SetAiDefaultModel { .. }
             | AppCommand::TestAiModel { .. }
             | AppCommand::FetchAiModels { .. }) => self.dispatch_ai_settings(command),
             command @ (AppCommand::SyncMcpClients { .. }

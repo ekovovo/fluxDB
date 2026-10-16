@@ -1293,13 +1293,6 @@ pub enum AppCommand {
         selections: Vec<AiPluginFieldSelection>,
         expected_revision: i64,
     },
-    /// 切换全局模型数据出站闸门（对象级 CAS，复用运行设置行 revision）。
-    ///
-    /// 关闭后任何模型都不再发送会话数据；这是应急开关，不是单模型许可的替代。
-    SetAiModelEgressEnabled {
-        enabled: bool,
-        expected_revision: i64,
-    },
     /// 切换标准工具的全局启停（对象级 CAS）。
     ///
     /// 全局关闭的工具不下发给模型，且 Agent 白名单不能重新打开它。
@@ -1308,10 +1301,12 @@ pub enum AppCommand {
         enabled: bool,
         expected_revision: i64,
     },
-    /// 保存默认主模型 / 默认决策模型选择（运行设置单例 CAS）。
-    SaveAiDefaultModels {
-        default_model_id: Option<String>,
-        default_decision_model_id: Option<String>,
+    /// 保存默认主模型选择（运行设置单例 CAS）。
+    ///
+    /// 只写主模型槽位：决策模型由「Jev 决策优化」插件的管理弹框写入同一行的决策槽位，
+    /// 两者互不覆盖。
+    SetAiDefaultModel {
+        model_id: Option<String>,
         expected_revision: i64,
     },
     /// 测试模型连接（真实协议请求并记录结果，不改配置 revision）。

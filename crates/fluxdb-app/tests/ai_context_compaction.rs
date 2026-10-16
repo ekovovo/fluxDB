@@ -289,7 +289,6 @@ fn configure_compaction_decision_model(
         "保存压缩决策模型失败: {event:?}"
     );
     // 槽位必须落在压缩决策列，而不是 Jev 决策列。
-    assert_eq!(controller.state().ai_default_decision_model_id, None);
     fixture
         .storage
         .with_ai_connection(|conn| {

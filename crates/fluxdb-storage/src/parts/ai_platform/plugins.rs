@@ -181,9 +181,18 @@ pub const BUILTIN_PLUGINS: &[(&str, &str, &str, &str)] = &[
     ),
 ];
 
+/// 已下线内置插件的 (instance_id, package_key)。
+///
+/// 能力实现与目录登记都已删除；此处只用于清理升级前数据库留下的实例与包行，
+/// 避免陈旧行继续出现在插件列表或被当作未知能力读取。
+const RETIRED_BUILTIN_PLUGINS: &[(&str, &str)] = &[
+    ("builtin.database", "fluxdb.tools.database"),
+    ("builtin.knowledge", "fluxdb.knowledge.skills"),
+];
+
 /// 幂等注册全部内置插件包与实例（随应用注册，用户无需安装）。
 ///
-/// 保留可选实例的启停状态；修正常驻上下文旧状态，并移除已归入工具目录的旧实例。
+/// 保留可选实例的启停状态；修正常驻上下文旧状态，并清理已下线能力的旧实例、绑定与包行。
 pub fn seed_builtin_plugins(conn: &Connection, now_ms: i64) -> Result<()> {
     let tx = conn.unchecked_transaction().map_err(sqlite_error)?;
     for (instance_id, package_id, package_key, display_name) in BUILTIN_PLUGINS {
@@ -212,23 +221,24 @@ pub fn seed_builtin_plugins(conn: &Connection, now_ms: i64) -> Result<()> {
         params!["AI 用量统计", now_ms],
     )
     .map_err(sqlite_error)?;
-    tx.execute(
-        "DELETE FROM ai_agent_plugin_bindings WHERE plugin_instance_id='builtin.database'",
-        [],
-    )
-    .map_err(sqlite_error)?;
-    tx.execute(
-        "DELETE FROM ai_plugin_instances WHERE id='builtin.database'",
-        [],
-    )
-    .map_err(sqlite_error)?;
-    tx.execute(
-        "DELETE FROM ai_plugin_packages
-         WHERE package_key='fluxdb.tools.database' AND runtime_kind='builtin'
-         AND NOT EXISTS (SELECT 1 FROM ai_plugin_instances WHERE package_id=ai_plugin_packages.id)",
-        [],
-    )
-    .map_err(sqlite_error)?;
+    // 能力已下线的内置插件：目录不再登记，但旧库可能仍留着实例、Agent 绑定与包行，
+    // 它们不在能力目录内又不会自动消失，会继续出现在插件列表里，这里启动时幂等清掉。
+    for (instance_id, package_key) in RETIRED_BUILTIN_PLUGINS {
+        tx.execute(
+            "DELETE FROM ai_agent_plugin_bindings WHERE plugin_instance_id=?1",
+            [instance_id],
+        )
+        .map_err(sqlite_error)?;
+        tx.execute("DELETE FROM ai_plugin_instances WHERE id=?1", [instance_id])
+            .map_err(sqlite_error)?;
+        tx.execute(
+            "DELETE FROM ai_plugin_packages
+             WHERE package_key=?1 AND runtime_kind='builtin'
+             AND NOT EXISTS (SELECT 1 FROM ai_plugin_instances WHERE package_id=ai_plugin_packages.id)",
+            [package_key],
+        )
+        .map_err(sqlite_error)?;
+    }
     tx.commit().map_err(sqlite_error)?;
     Ok(())
 }

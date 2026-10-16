@@ -503,6 +503,36 @@ pub fn refresh_ai_settings(
     Ok(())
 }
 
+/// 把后台克隆控制器加载出的 AI 设置快照合并回 live 控制器的 `AppState`。
+///
+/// 后台刷新跑在自己的克隆控制器上（不阻塞 UI），克隆状态与页面持有的控制器无关，
+/// 因此必须显式回搬，否则页面仍显示刷新前的旧记录。写入字段与
+/// [`refresh_ai_settings`] 的写入集合严格一致；会话面板与其它 UI 私有状态
+/// （如 `ai_conversation`）不在合并范围内，避免用点击瞬间的旧快照覆盖。
+pub fn merge_ai_settings(state: &mut AppState, loaded: &AppState) {
+    state.ai_models = loaded.ai_models.clone();
+    state.ai_tool_settings = loaded.ai_tool_settings.clone();
+    state.ai_agents = loaded.ai_agents.clone();
+    state.ai_plugin_instances = loaded.ai_plugin_instances.clone();
+    state.ai_model_egress_enabled = loaded.ai_model_egress_enabled;
+    state.ai_mcp_settings = loaded.ai_mcp_settings.clone();
+    state.ai_mcp_server_profiles = loaded.ai_mcp_server_profiles.clone();
+    state.ai_mcp_datasources = loaded.ai_mcp_datasources.clone();
+    state.ai_audit_rows = loaded.ai_audit_rows.clone();
+    state.ai_audit_error = loaded.ai_audit_error.clone();
+    // 刷新回到首页：会话分页游标与已加载页一起被替换，"加载更多" 按新游标续读。
+    state.ai_sessions = loaded.ai_sessions.clone();
+    state.ai_sessions_total = loaded.ai_sessions_total;
+    state.ai_sessions_cursor = loaded.ai_sessions_cursor.clone();
+    state.ai_sessions_has_more = loaded.ai_sessions_has_more;
+    state.ai_sessions_loading_more = loaded.ai_sessions_loading_more;
+    state.ai_default_model_id = loaded.ai_default_model_id.clone();
+    state.ai_default_decision_model_id = loaded.ai_default_decision_model_id.clone();
+    state.ai_runtime_revision = loaded.ai_runtime_revision;
+    state.ai_execution_policy = loaded.ai_execution_policy.clone();
+    state.ai_jev_status = loaded.ai_jev_status.clone();
+}
+
 /// 会话概览 → 设置页列表项（不含正文与凭据）。
 fn ai_session_item(session: fluxdb_storage::ai_platform::sessions::SessionOverview) -> AiSessionItem {
     AiSessionItem {

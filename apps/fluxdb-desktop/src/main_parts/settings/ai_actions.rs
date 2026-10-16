@@ -12,6 +12,11 @@ impl NavicatMain {
         }
     }
 
+    /// 后台重载 AI 设置页的全部列表（模型/Agent/插件/MCP/会话/安全审计）。
+    ///
+    /// 读库在克隆控制器上进行以免阻塞 UI；后台任务连同加载后的控制器一起回传，
+    /// 成功后必须经 `merge_ai_settings_from` 合并回页面持有的控制器，
+    /// 否则页面仍显示刷新前的旧记录。
     fn reload_ai_settings(&mut self, cx: &mut Context<Self>) {
         if self.ai_settings_loading {
             return;
@@ -21,18 +26,28 @@ impl NavicatMain {
         cx.notify();
         let mut controller = self.controller.clone();
         cx.spawn(async move |view, cx| {
-            let event = cx
-                .background_spawn(async move { controller.dispatch(AppCommand::RefreshAiSettings) })
+            let loaded = cx
+                .background_spawn(async move {
+                    let event = controller.dispatch(AppCommand::RefreshAiSettings);
+                    (event, controller)
+                })
                 .await;
+            let (event, controller) = loaded;
             let _ = cx.update(|cx| {
                 let Some(view) = view.upgrade() else {
                     return;
                 };
                 view.update(cx, |this, cx| {
                     this.ai_settings_loading = false;
-                    eprintln!("DEBUG tool switch event: {event:?}");
-                    if let AppEvent::AiSettingsError(message) = &event {
-                        this.ai_settings_error = Some(message.clone());
+                    match &event {
+                        // 只有成功才回搬：失败时旧数据继续可见，错误另行提示。
+                        AppEvent::AiSettingsLoaded => {
+                            this.controller.merge_ai_settings_from(&controller);
+                        }
+                        AppEvent::AiSettingsError(message) => {
+                            this.ai_settings_error = Some(message.clone());
+                        }
+                        _ => {}
                     }
                     cx.notify();
                 });

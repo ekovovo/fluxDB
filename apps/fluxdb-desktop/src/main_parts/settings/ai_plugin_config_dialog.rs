@@ -1005,32 +1005,6 @@ fn ai_plugin_config_resource_field(
     ai_plugin_config_field_shell(field, controls, colors)
 }
 
-/// 字段注释：软底 + 图标的说明块（提示与警示共用一套，只有图标与颜色不同）。
-fn ai_plugin_config_note(
-    icon: AppIcon,
-    color: gpui::Rgba,
-    text: String,
-    colors: UiColors,
-) -> Div {
-    div()
-        .rounded(colors.radius)
-        .bg(colors.border_soft)
-        .px_3()
-        .py_2()
-        .flex()
-        .items_start()
-        .gap_2()
-        .child(app_icon(icon, 13., color))
-        .child(
-            div()
-                .flex_1()
-                .min_w(px(0.))
-                .text_size(px(11.))
-                .text_color(color)
-                .child(text),
-        )
-}
-
 impl NavicatMain {
     /// 打开插件管理弹框；字段与候选取当前列表快照（弹框内不再查库）。
     ///

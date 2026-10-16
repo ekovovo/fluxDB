@@ -399,21 +399,8 @@ fn ai_ui_compaction_plugin_config_dialog_uses_its_own_slot(cx: &mut TestAppConte
 }
 
 
-/// 「安全审计」页签：统计卡筛选、行展开详情、空态与错误态区分。
-///
-/// 种入真实审计事实（走存储层 API），不伪造内存列表。
-#[gpui_kit::test]
-fn ai_ui_audit_page_filters_expands_and_shows_decision_facts(cx: &mut TestAppContext) {
-    use fluxdb_storage::ai_platform::audits;
-
-    let root = isolated_root("audit-page");
-    let storage = FileStorage::new(root.clone());
-    let mut controller = AppController::new();
-    controller.set_ai_storage(storage.clone());
-    let _ = controller.dispatch(AppCommand::RefreshAiSettings);
-    let _ = controller.dispatch(AppCommand::OpenSettings);
-
-    // 种两条审计：一条拒绝（命中 denied_tables），一条允许。
+/// 种审计会话事实：Agent/会话/Turn 各一条，供后续工具调用与审计挂靠。
+fn seed_audit_session(storage: &FileStorage, session_id: &str, turn_id: &str) {
     storage
         .with_ai_connection(|conn| {
             fluxdb_storage::ai_platform::ensure_schema(conn)?;
@@ -436,77 +423,123 @@ fn ai_ui_audit_page_filters_expands_and_shows_decision_facts(cx: &mut TestAppCon
             fluxdb_storage::ai_platform::sessions::create_session(
                 conn,
                 1_000,
-                "sess-audit",
+                session_id,
                 "agent-audit",
                 "审计页会话",
             )?;
             fluxdb_storage::ai_platform::sessions::start_turn(
                 conn,
                 1_000,
-                "sess-audit",
-                "turn-audit",
+                session_id,
+                turn_id,
                 "{\"connection_id\":1}",
                 "{}",
-            )?;
-            for (ordinal, call, at) in
-                [(0_i64, "call-denied", 1_000_i64), (1, "call-allow", 2_000)]
-            {
-                fluxdb_storage::ai_platform::sessions::start_tool_call(
-                    conn,
-                    at,
-                    call,
-                    "sess-audit",
-                    "turn-audit",
-                    1,
-                    ordinal,
-                    call,
-                    "db.execute",
-                    1,
-                    None,
-                    &format!("{{\"sql\":\"UPDATE t SET x=1 -- {call}\"}}"),
-                    "{\"connection_id\":1}",
-                    "hash-x",
-                )?;
-            }
-            audits::insert_tool_audit(
-                conn,
-                1_000,
-                &audits::ToolAuditEdit {
-                    id: "a-denied".into(),
-                    tool_call_id: Some("call-denied".into()),
-                    mcp_request_id: None,
-                    stage: audits::AuditStage::PreExecute,
-                    hook_id: "kernel.security-audit".into(),
-                    hook_version: "1".into(),
-                    ruleset_version: "kernel-audit-v1-test".into(),
-                    plan_hash: "hash-x".into(),
-                    decision: audits::AuditDecision::Deny,
-                    risk: "write".into(),
-                    rule_ids: vec!["denied_tables".into()],
-                    reason_codes: vec!["denied_table:orders".into()],
-                },
-            )?;
-            audits::insert_tool_audit(
-                conn,
-                2_000,
-                &audits::ToolAuditEdit {
-                    id: "a-allow".into(),
-                    tool_call_id: Some("call-allow".into()),
-                    mcp_request_id: None,
-                    stage: audits::AuditStage::PreExecute,
-                    hook_id: "kernel.security-audit".into(),
-                    hook_version: "1".into(),
-                    ruleset_version: "kernel-audit-v1-test".into(),
-                    plan_hash: "hash-x".into(),
-                    decision: audits::AuditDecision::Allow,
-                    risk: "write".into(),
-                    rule_ids: Vec::new(),
-                    reason_codes: vec!["read_only".into()],
-                },
-            )?;
-            Ok(())
+            )
         })
-        .expect("种审计数据");
+        .expect("种审计会话事实");
+}
+
+/// 一条待写入的工具调用审计；同一 Turn 内 `ordinal` 必须互不相同。
+struct SeededAudit<'a> {
+    call_id: &'a str,
+    audit_id: &'a str,
+    ordinal: i64,
+    at_ms: i64,
+    decision: fluxdb_storage::ai_platform::audits::AuditDecision,
+    rule_ids: &'a [&'a str],
+    reason_codes: &'a [&'a str],
+}
+
+/// 种一条工具调用及其调用前审计：调用事实必须先落库（审计表对 `tool_call_id` 有外键）。
+fn seed_tool_call_audit(
+    storage: &FileStorage,
+    session_id: &str,
+    turn_id: &str,
+    audit: SeededAudit<'_>,
+) {
+    use fluxdb_storage::ai_platform::audits;
+    storage
+        .with_ai_connection(|conn| {
+            fluxdb_storage::ai_platform::sessions::start_tool_call(
+                conn,
+                audit.at_ms,
+                audit.call_id,
+                session_id,
+                turn_id,
+                1,
+                audit.ordinal,
+                audit.call_id,
+                "db.execute",
+                1,
+                None,
+                &format!("{{\"sql\":\"UPDATE t SET x=1 -- {}\"}}", audit.call_id),
+                "{\"connection_id\":1}",
+                "hash-x",
+            )?;
+            audits::insert_tool_audit(
+                conn,
+                audit.at_ms,
+                &audits::ToolAuditEdit {
+                    id: audit.audit_id.into(),
+                    tool_call_id: Some(audit.call_id.into()),
+                    mcp_request_id: None,
+                    stage: audits::AuditStage::PreExecute,
+                    hook_id: "kernel.security-audit".into(),
+                    hook_version: "1".into(),
+                    ruleset_version: "kernel-audit-v1-test".into(),
+                    plan_hash: "hash-x".into(),
+                    decision: audit.decision,
+                    risk: "write".into(),
+                    rule_ids: audit.rule_ids.iter().map(|s| s.to_string()).collect(),
+                    reason_codes: audit
+                        .reason_codes
+                        .iter()
+                        .map(|s| s.to_string())
+                        .collect(),
+                },
+            )
+        })
+        .expect("种工具调用审计");
+}
+
+/// 「安全审计」页签：统计卡筛选、行展开详情、空态与错误态区分。
+///
+/// 种入真实审计事实（走存储层 API），不伪造内存列表。
+#[gpui_kit::test]
+fn ai_ui_audit_page_filters_expands_and_shows_decision_facts(cx: &mut TestAppContext) {
+    use fluxdb_storage::ai_platform::audits;
+
+    let root = isolated_root("audit-page");
+    let storage = FileStorage::new(root.clone());
+    let mut controller = AppController::new();
+    controller.set_ai_storage(storage.clone());
+    let _ = controller.dispatch(AppCommand::RefreshAiSettings);
+    let _ = controller.dispatch(AppCommand::OpenSettings);
+
+    // 种两条审计：一条拒绝（命中 denied_tables），一条允许。
+    seed_audit_session(&storage, "sess-audit", "turn-audit");
+    for audit in [
+        SeededAudit {
+            call_id: "call-denied",
+            audit_id: "a-denied",
+            ordinal: 0,
+            at_ms: 1_000,
+            decision: audits::AuditDecision::Deny,
+            rule_ids: &["denied_tables"],
+            reason_codes: &["denied_table:orders"],
+        },
+        SeededAudit {
+            call_id: "call-allow",
+            audit_id: "a-allow",
+            ordinal: 1,
+            at_ms: 2_000,
+            decision: audits::AuditDecision::Allow,
+            rule_ids: &[],
+            reason_codes: &["read_only"],
+        },
+    ] {
+        seed_tool_call_audit(&storage, "sess-audit", "turn-audit", audit);
+    }
     let _ = controller.dispatch(AppCommand::RefreshAiSettings);
 
     let (view, cx) = open_main(
@@ -559,6 +592,82 @@ fn ai_ui_audit_page_filters_expands_and_shows_decision_facts(cx: &mut TestAppCon
     view.read_with(cx, |main, _| {
         assert_eq!(main.ai_audit_expanded.as_deref(), Some("a-denied"));
     });
+    let _ = std::fs::remove_dir_all(root);
+}
+
+
+/// 刷新按钮必须把刷新之后才产生的审计记录搬进页面。
+///
+/// 回归背景：读库在克隆控制器上做，结果没合并回页面持有的控制器时，
+/// 审计列表永远停在刷新前的快照（内置 AI 的调用看起来"没记审计"）。
+#[gpui_kit::test]
+async fn ai_ui_refresh_button_loads_audit_rows_written_after_last_load(cx: &mut TestAppContext) {
+    use fluxdb_storage::ai_platform::audits;
+    use gpui_kit::test::TestWindowExt as _;
+
+    cx.executor().allow_parking();
+    let root = isolated_root("audit-refresh");
+    let storage = FileStorage::new(root.clone());
+    let mut controller = AppController::new();
+    controller.set_ai_storage(storage.clone());
+    // 先装载一次，再种审计：页面此刻持有的快照必然没有这些行。
+    let _ = controller.dispatch(AppCommand::RefreshAiSettings);
+    let _ = controller.dispatch(AppCommand::OpenSettings);
+    seed_audit_session(&storage, "sess-refresh", "turn-refresh");
+    seed_tool_call_audit(
+        &storage,
+        "sess-refresh",
+        "turn-refresh",
+        SeededAudit {
+            call_id: "call-late",
+            audit_id: "a-late",
+            ordinal: 0,
+            at_ms: 3_000,
+            decision: audits::AuditDecision::Allow,
+            rule_ids: &[],
+            reason_codes: &["read_only"],
+        },
+    );
+
+    let (view, cx) = open_main(
+        cx,
+        controller,
+        storage.clone(),
+        SettingsPanelSection::AiToolsMcp,
+    );
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.click("ai-tools-tab:安全审计", cx);
+    });
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window.try_find("ai-audit-row:a-late").is_none(),
+            "刷新前不应出现刷新后写入的审计"
+        );
+    });
+
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.click("ai-refresh-tools", cx);
+    });
+    // 后台读库 + 回搬：有界等待业务状态，不用固定 sleep 断言。
+    wait_ui_condition(&view, cx, "刷新装载新审计记录", |main| {
+        main.controller
+            .state()
+            .ai_audit_rows
+            .iter()
+            .any(|row| row.id == "a-late")
+    })
+    .await;
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window.try_find("ai-audit-row:a-late").is_some(),
+            "刷新后审计行必须渲染"
+        );
+    });
+    view.read_with(cx, |main, _| assert!(!main.ai_settings_loading));
     let _ = std::fs::remove_dir_all(root);
 }
 

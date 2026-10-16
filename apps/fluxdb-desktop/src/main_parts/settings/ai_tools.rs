@@ -133,6 +133,7 @@ fn ai_tools_tab_bar(active: AiToolsTab, colors: UiColors, cx: &mut Context<Navic
         .child(div().flex_1())
         .child(
             Button::new("ai-refresh-tools")
+                .debug_selector(|| "ai-refresh-tools".into())
                 .small()
                 .ghost()
                 .child("刷新")

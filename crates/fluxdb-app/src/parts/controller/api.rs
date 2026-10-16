@@ -439,6 +439,15 @@ impl AppController {
         self.state.last_error = loaded.state.last_error.clone();
     }
 
+    /// 把后台刷新加载到的 AI 设置快照合并回 live 控制器。
+    ///
+    /// 刷新为避免阻塞 UI 在克隆控制器上进行，其结果只存在于克隆的状态里；
+    /// 不回搬的话页面读到的仍是刷新前的旧记录（审计、会话、模型列表都不会变）。
+    /// 仅在加载成功时调用：失败时保留旧数据并展示错误，不用半份快照覆盖。
+    pub fn merge_ai_settings_from(&mut self, loaded: &Self) {
+        merge_ai_settings(&mut self.state, &loaded.state);
+    }
+
     pub fn query_completions_for_text(
         &self,
         connection_id: ConnectionId,

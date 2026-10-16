@@ -37,9 +37,8 @@ impl Fixture {
             panic!("fixture model");
         };
         let revision = app.state().ai_runtime_revision;
-        app.dispatch(AppCommand::SaveAiDefaultModels {
-            default_model_id: Some(id),
-            default_decision_model_id: None,
+        app.dispatch(AppCommand::SetAiDefaultModel {
+            model_id: Some(id),
             expected_revision: revision,
         });
         let target = TargetRef {

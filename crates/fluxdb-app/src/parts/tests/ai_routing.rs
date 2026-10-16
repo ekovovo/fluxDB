@@ -39,55 +39,46 @@ fn model(
 #[test]
 fn candidate_check_enforces_kind_enabled_and_credential() {
     let generation = model("g", ModelKind::Generation, true, CredentialStatus::Configured);
-    assert!(candidate_check(&generation, CandidateRole::Main, EgressPolicy::default()).is_ok());
+    assert!(candidate_check(&generation, CandidateRole::Main).is_ok());
 
     let disabled = model("g2", ModelKind::Generation, false, CredentialStatus::Configured);
     assert_eq!(
-        candidate_check(&disabled, CandidateRole::Main, EgressPolicy::default()),
+        candidate_check(&disabled, CandidateRole::Main),
         Err(RouteRejection::Disabled)
     );
 
     let decision = model("d", ModelKind::Decision, true, CredentialStatus::Configured);
     assert_eq!(
-        candidate_check(&decision, CandidateRole::Main, EgressPolicy::default()),
+        candidate_check(&decision, CandidateRole::Main),
         Err(RouteRejection::WrongKind {
             expected: ModelKind::Generation
         })
     );
-    assert!(candidate_check(&decision, CandidateRole::Decision, EgressPolicy::default()).is_ok());
+    assert!(candidate_check(&decision, CandidateRole::Decision).is_ok());
 
     let missing = model("m", ModelKind::Generation, true, CredentialStatus::Missing);
     assert_eq!(
-        candidate_check(&missing, CandidateRole::Main, EgressPolicy::default()),
+        candidate_check(&missing, CandidateRole::Main),
         Err(RouteRejection::MissingCredential)
     );
 
     // 无需凭据的模型即使没有密文仍可路由。
     let mut no_key = model("n", ModelKind::Generation, true, CredentialStatus::NotRequired);
     no_key.auth_mode = fluxdb_storage::ai_platform::models::AuthMode::None;
-    assert!(candidate_check(&no_key, CandidateRole::Main, EgressPolicy::default()).is_ok());
+    assert!(candidate_check(&no_key, CandidateRole::Main).is_ok());
 }
 
 #[test]
-fn candidate_check_rejects_denied_egress_and_global_disabled_in_order() {
+fn candidate_check_rejects_denied_egress() {
     // 单模型拒绝出站：即使其它合格，也因用户显式收紧而不能路由。
     let mut denied = model("d1", ModelKind::Generation, true, CredentialStatus::Configured);
     denied.egress = EgressPermission::Deny;
     assert_eq!(
-        candidate_check(&denied, CandidateRole::Main, EgressPolicy::default()),
+        candidate_check(&denied, CandidateRole::Main),
         Err(RouteRejection::EgressDenied)
     );
-    // 全局闸门关闭优先于单模型许可与凭据。
-    let global_off = EgressPolicy::disabled();
-    assert_eq!(
-        candidate_check(&denied, CandidateRole::Main, global_off),
-        Err(RouteRejection::EgressGloballyDisabled)
-    );
     let allowed = model("a1", ModelKind::Generation, true, CredentialStatus::Configured);
-    assert_eq!(
-        candidate_check(&allowed, CandidateRole::Main, global_off),
-        Err(RouteRejection::EgressGloballyDisabled)
-    );
+    assert!(candidate_check(&allowed, CandidateRole::Main).is_ok());
 }
 
 #[test]
@@ -97,7 +88,7 @@ fn first_usable_picks_first_valid_and_reports_rejections() {
     let ok = model("c", ModelKind::Generation, true, CredentialStatus::Configured);
     let candidates = vec![disabled, wrong, ok];
     let (chosen, rejections) =
-        first_usable(candidates.iter(), CandidateRole::Main, EgressPolicy::default());
+        first_usable(candidates.iter(), CandidateRole::Main);
     assert_eq!(chosen.map(|m| m.id.as_str()), Some("c"));
     assert_eq!(
         rejections,
@@ -113,7 +104,7 @@ fn first_usable_with_no_valid_candidate_returns_all_reasons() {
     let missing = model("b", ModelKind::Generation, true, CredentialStatus::Missing);
     let candidates = vec![disabled, missing];
     let (chosen, rejections) =
-        first_usable(candidates.iter(), CandidateRole::Main, EgressPolicy::default());
+        first_usable(candidates.iter(), CandidateRole::Main);
     assert!(chosen.is_none());
     assert_eq!(rejections.len(), 2, "应保留每条不合格原因，不能显示成无模型");
 }

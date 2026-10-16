@@ -53,3 +53,9 @@
 原生桌面操作服务在枚举和绑定已启动窗口时均返回 `Sky Computer Use service startup request failed`，无法执行可见窗口内的点击、输入、截图；因此仅记为“启动已验证，可见桌面 E2E/像素观感未验证”。已关闭本次创建并核对工作目录的隔离应用与回环服务，不关闭其他实例。
 
 Windows/Linux、真实第三方 Provider、系统 IME/原生无障碍映射未验证。不把单元/Headless 结果描述为三端 E2E 通过，也不以这些计数宣称已有 FPS/内存峰值基准。
+
+## 合并 agent 的兼容性验证
+
+整合 `agent` 的 `84be6b2`（模型配置简化）和 `2f5904a`（输出上限修复）。保留实际模型输出额度、截断状态/提示与生命周期诊断；新增集成夹具适配 `SetAiDefaultModel`，不恢复已删除的全局出站/决策配置接口。
+
+合并后重新执行 `cargo fmt --all`、`cargo check --locked --workspace`、app 单测（910 passed / 10 ignored）、三组集成测试（真 SSE 4 passed、计划门控 1 passed、诊断门控 1 passed）、生产 View 真 SSE 测试（1 passed，含明暗主题和停止），均通过。本节不代表重新跑完所有工作区用例或可见桌面 E2E。

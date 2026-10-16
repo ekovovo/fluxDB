@@ -555,6 +555,13 @@ cargo test -p fluxdb-app --locked ai_permission   # 15 passed
 - 数据展示闭环（设计§39.5）：
   - [x] 隔离配置启用已知决策模型后，插件页实际显示正确可用/绑定状态；禁用及故障后界面与实际decision调用一致，返回/重启不展示过期状态。
 
+### 2026-10-16 设置页简化：删除「默认模型与决策」分组与全局出站闸门
+- 大模型页删除「默认模型与决策」整组：默认主模型改为模型列表内新增的「默认」单选列（同一时刻只有一个，决策行不参与）；默认决策模型不再提供选择器，决策模型只由「Jev 决策优化」插件的「管理」弹框写入同一行的决策槽位。
+- 同时删除全局模型数据出站闸门（`SetAiModelEgressEnabled` / `AiModelEgressEnabledChanged` / `AppState.ai_model_egress_enabled` / `ai_runtime_settings.privacy_policy_json` 与 `PrivacyPolicy`）：出站只由每模型 `privacy_egress` 决定，`candidate_check` 去掉全局闸门档与 `EgressPolicy`。
+- `SaveAiDefaultModels` 收敛为 `SetAiDefaultModel`（只写主模型槽位，决策与压缩决策槽位保持原值），避免在模型页保存时清掉 Jev 已选决策模型。
+- 插件页删除 Jev 状态说明块，Jev 状态只保留插件行的状态标签（原因在标签 tooltip）；`ai_default_decision_model_id` 状态字段删除，决策槽位真值从 `ai_runtime_settings` 读。
+- 顺带修复：Agent 编辑页「默认生成模型」下拉此前误写默认模型页的展开状态，点击无反应；现由编辑器自己的 `model_menu_open` 驱动。
+
 ### T038 业务知识与 Skills（已撤回）
 - 2026-10-16：按用户要求删除本期插件、知识存储、运行期注入、读取工具和专属测试，不做历史数据兼容或迁移。
 - 不再作为其他任务的依赖，能力后续另行规划。

@@ -63,12 +63,20 @@ fn ai_model_delete_protects_defaults_agents_and_bindings() {
         let conn = fluxdb_storage::FileStorage::new(dir.clone())
             .open_ai_connection()
             .unwrap();
-        if matches!(reference, "main" | "decision") {
-            controller.dispatch(AppCommand::SaveAiDefaultModels {
-                default_model_id: (reference == "main").then_some(id.clone()),
-                default_decision_model_id: (reference == "decision").then_some(id.clone()),
+        if reference == "main" {
+            controller.dispatch(AppCommand::SetAiDefaultModel {
+                model_id: Some(id.clone()),
                 expected_revision: controller.state().ai_runtime_revision,
             });
+        } else if reference == "decision" {
+            // 决策槽位只由 Jev 插件管理弹框写入，这里直接落该行以构造"被引用"前置状态。
+            conn.execute(
+                "INSERT INTO ai_runtime_settings (id, default_decision_model_profile_id, revision, updated_at_ms)
+                 VALUES (1, ?1, 1, 1)
+                 ON CONFLICT(id) DO UPDATE SET default_decision_model_profile_id=excluded.default_decision_model_profile_id",
+                [&id],
+            )
+            .unwrap();
         } else {
             let agent = create_agent(&mut controller, "引用 Agent", "测试");
             if reference == "agent" {

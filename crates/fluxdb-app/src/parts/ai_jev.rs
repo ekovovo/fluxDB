@@ -131,8 +131,8 @@ pub fn jev_status(
 
 /// 统一 reconcile 入口（设计 §18.1）。
 ///
-/// 触发点：启动、模型保存/启停、凭据 Set/Clear、默认决策模型变更、Agent 新建/编辑、
-/// 插件启停与全局出站闸门变化。幂等：只有真的需要变更时才写库。
+/// 触发点：启动、模型保存/启停、凭据 Set/Clear、Jev 决策模型（插件管理弹框）变更、
+/// Agent 新建/编辑、插件启停。幂等：只有真的需要变更时才写库。
 pub fn reconcile_jev_builtins(
     conn: &rusqlite::Connection,
     now_ms: i64,

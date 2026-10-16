@@ -72,6 +72,39 @@ fn ai_format_token_count(tokens: i64, unit: AiTokenUnit) -> String {
         .to_string()
 }
 
+/// 回填容量字段时展示的单位：按数量级推导（≥1M 用 M，否则用 K）。
+///
+/// 单位只是展示单位、不落库，因此必须由 token 数推导 —— 否则会出现「存的是 1M、
+/// 重开却显示 1000 K」这种数字与单位不一致的假象。切单位的换算行为保持不变。
+fn ai_capacity_unit_for(tokens: i64) -> AiTokenUnit {
+    if tokens.abs() >= AiTokenUnit::M.scale() {
+        AiTokenUnit::M
+    } else {
+        AiTokenUnit::K
+    }
+}
+
+/// 回填单个容量字段：单位下拉与输入框数字来自同一个 token 值。
+#[allow(clippy::too_many_arguments)]
+fn fill_ai_capacity_field(
+    tokens: Option<i64>,
+    input: &Entity<InputState>,
+    unit_select: &Entity<SelectState<SearchableVec<String>>>,
+    unit: &mut AiTokenUnit,
+    window: &mut Window,
+    cx: &mut Context<NavicatMain>,
+) {
+    let kind = tokens.map(ai_capacity_unit_for).unwrap_or(AiTokenUnit::K);
+    unit_select.update(cx, |select, cx| {
+        select.set_selected_value(&kind.label().to_string(), window, cx)
+    });
+    *unit = kind;
+    let text = tokens
+        .map(|value| ai_format_token_count(value, kind))
+        .unwrap_or_default();
+    input.update(cx, |state, cx| state.set_value(text, window, cx));
+}
+
 fn ai_capacity_field(
     label: &str,
     input: &Entity<InputState>,

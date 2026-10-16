@@ -157,8 +157,6 @@ fn content(
                     filter_input: this.ai_model_filter_input.clone(),
                     testing_id: this.ai_model_testing_id.clone(),
                     deleting_id: this.ai_model_deleting_id.clone(),
-                    default_model_menu_open: this.ai_default_model_menu_open,
-                    default_decision_menu_open: this.ai_default_decision_menu_open,
                     settings_loading: this.ai_settings_loading,
                     settings_error: this.ai_settings_error.clone(),
                     session_filter_input: this.ai_session_filter_input.clone(),

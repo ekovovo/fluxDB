@@ -198,7 +198,6 @@ CREATE TABLE IF NOT EXISTS ai_runtime_settings (
     compaction_decision_model_profile_id TEXT REFERENCES ai_model_profiles(id) ON DELETE RESTRICT,
     max_active_turns INTEGER NOT NULL DEFAULT 2 CHECK (max_active_turns > 0),
     context_policy_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(context_policy_json)),
-    privacy_policy_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(privacy_policy_json)),
     retention_policy_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(retention_policy_json)),
     revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
     updated_at_ms INTEGER NOT NULL

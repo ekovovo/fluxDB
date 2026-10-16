@@ -18,8 +18,6 @@ pub enum RouteRejection {
     MissingCredential,
     /// 该模型被用户显式禁止接收会话数据（设计 §29/§31.1）。
     EgressDenied,
-    /// 全局出站闸门关闭：任何模型都不再发送会话数据。
-    EgressGloballyDisabled,
 }
 
 impl RouteRejection {
@@ -38,28 +36,7 @@ impl RouteRejection {
             RouteRejection::EgressDenied => {
                 "所选模型已禁止数据出站（可在模型设置中重新允许）".to_string()
             }
-            RouteRejection::EgressGloballyDisabled => {
-                "已全局禁止模型数据出站（可在模型设置中开启）".to_string()
-            }
         }
-    }
-}
-
-/// 路由使用的出站策略快照：全局闸门（`privacy_policy_json`）+ 单模型许可。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct EgressPolicy {
-    pub enabled: bool,
-}
-
-impl Default for EgressPolicy {
-    fn default() -> Self {
-        Self { enabled: true }
-    }
-}
-
-impl EgressPolicy {
-    pub fn disabled() -> Self {
-        Self { enabled: false }
     }
 }
 
@@ -118,16 +95,9 @@ impl CandidateRole {
 
 /// 判定单个模型是否可作为该角色候选。
 ///
-/// 顺序：全局出站闸门 → 停用 → 用途 → 单模型出站许可 → 凭据。出站类拒绝排在凭据前，
+/// 顺序：停用 → 用途 → 单模型出站许可 → 凭据。出站类拒绝排在凭据前，
 /// 便于用户先看到"是我禁止发数据"，而不是被凭据状态掩盖。
-pub fn candidate_check(
-    model: &ModelProfileView,
-    role: CandidateRole,
-    policy: EgressPolicy,
-) -> Result<(), RouteRejection> {
-    if !policy.enabled {
-        return Err(RouteRejection::EgressGloballyDisabled);
-    }
+pub fn candidate_check(model: &ModelProfileView, role: CandidateRole) -> Result<(), RouteRejection> {
     if !model.enabled {
         return Err(RouteRejection::Disabled);
     }
@@ -155,11 +125,10 @@ pub fn candidate_check(
 pub fn first_usable<'a>(
     models: impl IntoIterator<Item = &'a ModelProfileView>,
     role: CandidateRole,
-    policy: EgressPolicy,
 ) -> (Option<&'a ModelProfileView>, Vec<RouteRejection>) {
     let mut rejections = Vec::new();
     for model in models {
-        match candidate_check(model, role, policy) {
+        match candidate_check(model, role) {
             Ok(()) => return (Some(model), rejections),
             Err(reason) => rejections.push(reason),
         }
@@ -188,10 +157,6 @@ pub fn resolve_compaction_model(
     agent_id: &str,
     main_model_id: &str,
 ) -> fluxdb_core::Result<crate::CompactionModelChoice> {
-    let policy = EgressPolicy {
-        enabled: fluxdb_storage::ai_platform::settings::load_privacy_policy(conn)?
-            .model_egress_enabled,
-    };
     let bindings = fluxdb_storage::ai_platform::model_bindings::list_role_bindings(
         conn,
         agent_id,
@@ -203,7 +168,7 @@ pub fn resolve_compaction_model(
     let mut first_rejection: Option<(String, String)> = None;
     for binding in &bindings {
         let model = fluxdb_storage::ai_platform::models::load_model(conn, &binding.model_profile_id)?;
-        match candidate_check(&model, CandidateRole::Compaction, policy) {
+        match candidate_check(&model, CandidateRole::Compaction) {
             Ok(()) => {
                 return Ok(if model.id == main_model_id {
                     // 显式绑定到主模型：仍按主模型走，不需要第二个 Provider。

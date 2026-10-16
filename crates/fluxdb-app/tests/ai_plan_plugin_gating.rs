@@ -81,9 +81,8 @@ impl Fixture {
         let revision = controller.state().ai_runtime_revision;
         assert!(
             matches!(
-                controller.dispatch(AppCommand::SaveAiDefaultModels {
-                    default_model_id: Some(model_id),
-                    default_decision_model_id: None,
+                controller.dispatch(AppCommand::SetAiDefaultModel {
+                    model_id: Some(model_id),
                     expected_revision: revision,
                 }),
                 AppEvent::AiDefaultModelsSaved { .. }

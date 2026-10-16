@@ -3128,8 +3128,6 @@ fn navicat_main_new(
                             ai_model_filter: String::new(),
                             ai_model_testing_id: None,
                             ai_model_deleting_id: None,
-                            ai_default_model_menu_open: false,
-                            ai_default_decision_menu_open: false,
         ai_settings_loading: false,
         ai_settings_error: None,
                             ai_tools_tab: debug_ai_tools_tab(),

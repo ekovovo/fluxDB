@@ -77,6 +77,11 @@ mod ai_model_capacity_tests {
         cx.simulate_keystrokes("enter");
     }
 
+    /// 展示单位按数量级推导：≥1M 用 M，否则用 K。
+    fn expected_unit(tokens: i64) -> String {
+        if tokens.abs() >= 1_000_000 { "M" } else { "K" }.into()
+    }
+
     fn assert_saved(
         fixture: &Fixture,
         view: &Entity<NavicatMain>,
@@ -103,13 +108,13 @@ mod ai_model_capacity_tests {
             stored.max_output_tokens
         );
         assert_eq!(snapshot.ai_models[0].revision, stored.revision);
-        // 即时重新打开真实编辑控件，确认保存后无需手动刷新即得到正确 K 展示。
+        // 即时重新打开真实编辑控件，确认保存后无需手动刷新即得到与容量一致的单位展示。
         click(cx, "ai-model-edit");
         assert!(view.read_with(cx, |main, _| main.ai_model_dialog.is_some()));
         assert_eq!(
             units(view, cx),
-            ("K".into(), "K".into()),
-            "重开两个单位均默认 K"
+            (expected_unit(context), expected_unit(output)),
+            "重开后的单位必须由实际 token 数推导，不能一律回到 K"
         );
         println!(
             "capacity evidence: id={id}, context={context}, output={output}, revision={}, snapshot=1",
@@ -132,6 +137,28 @@ mod ai_model_capacity_tests {
         assert!(!view.read_with(cx, |main, _| main.ai_model_dialog.is_some()));
         assert_saved(&fixture, &view, cx, &id, 128_001, 8_192);
         assert_eq!(capacities(&view, cx), ("128.001".into(), "8.192".into()));
+    }
+
+    #[gpui::test]
+    fn ai_ui_model_capacity_million_tokens_reopen_as_m_not_thousand_k(
+        cx: &mut TestAppContext,
+    ) {
+        let fixture = Fixture::new("capacity-million-unit");
+        let (controller, id) = seeded_model(&fixture, 1_000_000, 32_000);
+        let (view, cx) = open(cx, &fixture, controller, SettingsPanelSection::AiModels);
+        // 重开（等价于重启后再编辑）：单位必须由 1,000,000 这个值推导成 M。
+        click(cx, "ai-model-edit");
+        assert_eq!(
+            units(&view, cx),
+            ("M".into(), "K".into()),
+            "百万级容量不得显示成 K"
+        );
+        assert_eq!(capacities(&view, cx), ("1".into(), "32".into()));
+        // 原样保存不能改动真实 token 数。
+        click(cx, "ai-model-save");
+        assert!(!view.read_with(cx, |main, _| main.ai_model_dialog.is_some()));
+        assert_saved(&fixture, &view, cx, &id, 1_000_000, 32_000);
+        assert_eq!(capacities(&view, cx), ("1".into(), "32".into()));
     }
 
     #[gpui::test]
@@ -304,7 +331,11 @@ mod ai_model_capacity_tests {
         click(cx, "ai-model-save");
         assert!(!view.read_with(cx, |main, _| main.ai_model_dialog.is_some()));
         assert_saved(&fixture, &view, cx, &id, 1_000_001, 8_193);
-        assert_eq!(capacities(&view, cx), ("1000.001".into(), "8.193".into()));
+        assert_eq!(
+            capacities(&view, cx),
+            ("1.000001".into(), "8.193".into()),
+            "1,000,001 tokens 重开后按 M 展示，不得退化成 1000.001 K"
+        );
     }
 
     #[gpui::test]

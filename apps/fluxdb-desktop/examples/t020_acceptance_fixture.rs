@@ -47,9 +47,8 @@ fn main() {
         other => panic!("模型保存失败: {other:?}"),
     };
 
-    match controller.dispatch(AppCommand::SaveAiDefaultModels {
-        default_model_id: Some(model_id.clone()),
-        default_decision_model_id: None,
+    match controller.dispatch(AppCommand::SetAiDefaultModel {
+        model_id: Some(model_id.clone()),
         expected_revision: 0,
     }) {
         AppEvent::AiDefaultModelsSaved { .. } => {}

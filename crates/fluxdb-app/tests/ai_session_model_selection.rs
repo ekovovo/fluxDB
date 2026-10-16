@@ -126,6 +126,28 @@ fn create_model(
     }
 }
 
+/// 带显式容量的模型档案：输出上限必须原样出现在 Provider 请求里。
+fn create_model_with_capacity(
+    controller: &mut AppController,
+    name: &str,
+    context_window: i64,
+    max_output: i64,
+) -> String {
+    match controller.dispatch(AppCommand::SaveAiModel(AiModelSaveInput {
+        display_name: name.into(),
+        provider: "openai".into(),
+        model: format!("offline-{name}"),
+        endpoint: Some("http://127.0.0.1:9/v1".into()),
+        enabled: true,
+        context_window_tokens: Some(context_window),
+        max_output_tokens: Some(max_output),
+        ..Default::default()
+    })) {
+        AppEvent::AiModelSaved { id, .. } => id,
+        other => panic!("save model: {other:?}"),
+    }
+}
+
 fn edit_model(
     fixture: &Fixture,
     controller: &mut AppController,
@@ -409,9 +431,8 @@ fn clear_session_override_falls_back_to_agent_not_global_and_keeps_old_snapshot(
         .with_ai_connection(|conn| Ok(settings::load_runtime_settings(conn)?.revision))
         .unwrap();
     assert!(matches!(
-        controller.dispatch(AppCommand::SaveAiDefaultModels {
-            default_model_id: Some(global),
-            default_decision_model_id: None,
+        controller.dispatch(AppCommand::SetAiDefaultModel {
+            model_id: Some(global),
             expected_revision: revision,
         }),
         AppEvent::AiDefaultModelsSaved { .. }
@@ -433,6 +454,68 @@ fn clear_session_override_falls_back_to_agent_not_global_and_keeps_old_snapshot(
     assert_eq!(second.model_profile_id, agent);
     assert_eq!(fixture.snapshot_model(&first), selected);
     finish(&fixture, &mut controller, &second, &agent);
+}
+
+#[test]
+fn configured_output_budget_reaches_provider_request_instead_of_a_fixed_ceiling() {
+    let fixture = Fixture::new();
+    let (mut controller, _, _) = fixture.configured();
+    let model = create_model_with_capacity(&mut controller, "output-budget", 1_000_000, 16_000);
+    select(&mut controller, Some(&model));
+    let job = controller
+        .prepare_ai_conversation("output budget", &target())
+        .unwrap();
+    let provider = ScriptedGenerationProvider::text_only("budget-ok");
+    let view = run(
+        &fixture,
+        &job,
+        &provider,
+        &ToolCatalog::new(Vec::new()),
+        false,
+    );
+    assert!(view.error.is_none(), "{:?}", view.error);
+    // 档案里配的 16k 必须原样发出去：曾经这里被硬编码成 1024，
+    // 推理模型思考用光额度后正文为空，界面只显示"未返回正文"。
+    assert_eq!(
+        provider.request_at(0).unwrap().max_output_tokens,
+        Some(16_000)
+    );
+}
+
+#[test]
+fn missing_output_budget_falls_back_to_window_derived_limit() {
+    let fixture = Fixture::new();
+    let (mut controller, _, _) = fixture.configured();
+    let model = match controller.dispatch(AppCommand::SaveAiModel(AiModelSaveInput {
+        display_name: "output-missing".into(),
+        provider: "openai".into(),
+        model: "offline-output-missing".into(),
+        endpoint: Some("http://127.0.0.1:9/v1".into()),
+        enabled: true,
+        context_window_tokens: Some(1_000_000),
+        max_output_tokens: None,
+        ..Default::default()
+    })) {
+        AppEvent::AiModelSaved { id, .. } => id,
+        other => panic!("save model: {other:?}"),
+    };
+    select(&mut controller, Some(&model));
+    let job = controller
+        .prepare_ai_conversation("output missing", &target())
+        .unwrap();
+    let provider = ScriptedGenerationProvider::text_only("budget-fallback");
+    run(
+        &fixture,
+        &job,
+        &provider,
+        &ToolCatalog::new(Vec::new()),
+        false,
+    );
+    // 未配置输出时按窗口推导（1M 窗口 → min(1M/4, 8k)），既不是 0 也不是 1024。
+    assert_eq!(
+        provider.request_at(0).unwrap().max_output_tokens,
+        Some(8_192)
+    );
 }
 
 #[test]

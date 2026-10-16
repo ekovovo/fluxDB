@@ -171,9 +171,8 @@ fn default_model(f: &Fixture, controller: &mut AppController) -> String {
         .with_ai_connection(|conn| Ok(settings::load_runtime_settings(conn)?.revision))
         .unwrap();
     assert!(matches!(
-        controller.dispatch(AppCommand::SaveAiDefaultModels {
-            default_model_id: Some(model.clone()),
-            default_decision_model_id: None,
+        controller.dispatch(AppCommand::SetAiDefaultModel {
+            model_id: Some(model.clone()),
             expected_revision: revision,
         }),
         AppEvent::AiDefaultModelsSaved { .. }
@@ -1019,9 +1018,8 @@ fn deleting_default_agent_updates_runtime_revision_before_saving_default_models(
     assert_eq!(deleted.revision, before.revision + 1);
     let state_revision_after_delete = controller.state().ai_runtime_revision;
     // 模拟 UI 紧接删除操作保存默认模型，必须使用当前 AppState 提供的 CAS token。
-    let event = controller.dispatch(AppCommand::SaveAiDefaultModels {
-        default_model_id: Some(model.clone()),
-        default_decision_model_id: None,
+    let event = controller.dispatch(AppCommand::SetAiDefaultModel {
+        model_id: Some(model.clone()),
         expected_revision: state_revision_after_delete,
     });
     eprintln!(
@@ -1164,9 +1162,8 @@ fn async_delete_completion_updates_runtime_revision_and_late_result_cannot_regre
     );
     assert_eq!(controller.state().ai_runtime_revision, deleted_revision);
     assert!(controller.state().ai_agents.iter().all(|a| a.id != id));
-    let save_defaults = |expected_revision| AppCommand::SaveAiDefaultModels {
-        default_model_id: Some(model.clone()),
-        default_decision_model_id: None,
+    let save_defaults = |expected_revision| AppCommand::SetAiDefaultModel {
+        model_id: Some(model.clone()),
         expected_revision,
     };
     assert!(matches!(

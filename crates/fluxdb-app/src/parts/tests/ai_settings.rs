@@ -473,27 +473,22 @@ fn create_model(
 }
 
 #[test]
-fn ai_settings_default_models_round_trip_and_validate_kind() {
+fn ai_settings_default_model_round_trip_and_validate_kind() {
     let (mut controller, dir) = controller_with_ai_storage("defaults");
     let gen_id = create_model(&mut controller, "openai", "主模型", Some("sk-main"));
     let dec_id = create_model(&mut controller, "decisions", "决策模型", None);
 
-    let event = controller.dispatch(AppCommand::SaveAiDefaultModels {
-        default_model_id: Some(gen_id.clone()),
-        default_decision_model_id: Some(dec_id.clone()),
+    let event = controller.dispatch(AppCommand::SetAiDefaultModel {
+        model_id: Some(gen_id.clone()),
         expected_revision: 0,
     });
     let AppEvent::AiDefaultModelsSaved { revision } = event else {
-        panic!("保存默认模型应返回 AiDefaultModelsSaved，实际: {event:?}");
+        panic!("保存默认主模型应返回 AiDefaultModelsSaved，实际: {event:?}");
     };
     assert_eq!(revision, 1);
     assert_eq!(
         controller.state().ai_default_model_id.as_deref(),
         Some(gen_id.as_str())
-    );
-    assert_eq!(
-        controller.state().ai_default_decision_model_id.as_deref(),
-        Some(dec_id.as_str())
     );
 
     // 换一个控制器、复用同一存储目录，验证确实落库、可回读。
@@ -506,17 +501,11 @@ fn ai_settings_default_models_round_trip_and_validate_kind() {
         Some(gen_id.as_str()),
         "默认主模型应持久化"
     );
-    assert_eq!(
-        reloaded.state().ai_default_decision_model_id.as_deref(),
-        Some(dec_id.as_str()),
-        "默认决策模型应持久化"
-    );
     assert_eq!(reloaded.state().ai_runtime_revision, 1);
 
     // 错误 kind：决策模型不能当默认主模型。
-    let event = controller.dispatch(AppCommand::SaveAiDefaultModels {
-        default_model_id: Some(dec_id.clone()),
-        default_decision_model_id: None,
+    let event = controller.dispatch(AppCommand::SetAiDefaultModel {
+        model_id: Some(dec_id.clone()),
         expected_revision: 1,
     });
     match event {
@@ -530,9 +519,8 @@ fn ai_settings_default_models_round_trip_and_validate_kind() {
     }
 
     // 过期 revision：真实已是 1，这里用 0。
-    let event = controller.dispatch(AppCommand::SaveAiDefaultModels {
-        default_model_id: Some(gen_id.clone()),
-        default_decision_model_id: None,
+    let event = controller.dispatch(AppCommand::SetAiDefaultModel {
+        model_id: Some(gen_id.clone()),
         expected_revision: 0,
     });
     assert!(

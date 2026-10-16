@@ -313,7 +313,6 @@ pub fn refresh_ai_settings(
         sessions_total,
         runtime,
         tools_list,
-        privacy,
     ) = with_ai_storage(&storage, |conn| {
         Ok((
             models::list_models_page(conn, 200, 0)?,
@@ -329,7 +328,6 @@ pub fn refresh_ai_settings(
             fluxdb_storage::ai_platform::sessions::count_sessions(conn, None)?,
             ai_settings::load_runtime_settings(conn)?,
             tool_settings::list_tool_settings(conn)?,
-            ai_settings::load_privacy_policy(conn)?,
         ))
     })?;
     state.ai_models = models
@@ -402,7 +400,6 @@ pub fn refresh_ai_settings(
         })
         .collect();
     state.ai_plugin_instances = plugin_items;
-    state.ai_model_egress_enabled = privacy.model_egress_enabled;
     state.ai_mcp_settings = mcp_list
         .into_iter()
         .map(|m| AiMcpItem {
@@ -492,9 +489,8 @@ pub fn refresh_ai_settings(
     state.ai_sessions_cursor = sessions_page.next_cursor;
     state.ai_sessions_has_more = state.ai_sessions_cursor.is_some();
     state.ai_sessions_loading_more = false;
-    // 默认模型选择与运行设置 revision 一起回填，供「默认主/决策模型」选择器使用。
+    // 默认主模型与运行设置 revision 一起回填，供大模型列表的「默认」单选使用。
     state.ai_default_model_id = runtime.default_model_profile_id.clone();
-    state.ai_default_decision_model_id = runtime.default_decision_model_profile_id.clone();
     state.ai_runtime_revision = runtime.revision;
     state.ai_execution_policy=with_ai_storage(storage,fluxdb_storage::ai_platform::execution_policy::load)?.0;
     state.ai_jev_status = with_ai_storage(storage, |conn| {
@@ -514,7 +510,6 @@ pub fn merge_ai_settings(state: &mut AppState, loaded: &AppState) {
     state.ai_tool_settings = loaded.ai_tool_settings.clone();
     state.ai_agents = loaded.ai_agents.clone();
     state.ai_plugin_instances = loaded.ai_plugin_instances.clone();
-    state.ai_model_egress_enabled = loaded.ai_model_egress_enabled;
     state.ai_mcp_settings = loaded.ai_mcp_settings.clone();
     state.ai_mcp_server_profiles = loaded.ai_mcp_server_profiles.clone();
     state.ai_mcp_datasources = loaded.ai_mcp_datasources.clone();
@@ -527,7 +522,6 @@ pub fn merge_ai_settings(state: &mut AppState, loaded: &AppState) {
     state.ai_sessions_has_more = loaded.ai_sessions_has_more;
     state.ai_sessions_loading_more = loaded.ai_sessions_loading_more;
     state.ai_default_model_id = loaded.ai_default_model_id.clone();
-    state.ai_default_decision_model_id = loaded.ai_default_decision_model_id.clone();
     state.ai_runtime_revision = loaded.ai_runtime_revision;
     state.ai_execution_policy = loaded.ai_execution_policy.clone();
     state.ai_jev_status = loaded.ai_jev_status.clone();
@@ -669,40 +663,10 @@ pub fn save_ai_plugin_config(
     // 候选与状态都由槽位推导，保存后就地重算，避免整页刷新闪烁。
     let runtime = with_ai_storage(storage, ai_settings::load_runtime_settings)?;
     state.ai_default_model_id = runtime.default_model_profile_id.clone();
-    state.ai_default_decision_model_id = runtime.default_decision_model_profile_id.clone();
     state.ai_runtime_revision = revision;
     state.ai_plugin_instances = with_ai_storage(storage, ai_plugin_items)?;
     refresh_jev_status(state, storage)?;
     Ok(revision)
-}
-
-/// 切换全局模型数据出站闸门（`privacy_policy_json`，复用运行设置行 CAS）。
-///
-/// 这是"怀疑数据外泄先全停"的应急开关：关闭后任何模型都不再发送会话数据，
-/// 打开后各自模型的单模型许可恢复生效。
-pub fn set_ai_model_egress_enabled(
-    state: &mut AppState,
-    storage: &fluxdb_storage::FileStorage,
-    enabled: bool,
-    expected_revision: i64,
-    now_ms: i64,
-) -> fluxdb_core::Result<()> {
-    let saved = with_ai_storage(storage, |conn| {
-        let saved = ai_settings::save_privacy_policy(
-            conn,
-            now_ms,
-            ai_settings::PrivacyPolicy {
-                model_egress_enabled: enabled,
-            },
-            expected_revision,
-        )?;
-        reconcile_jev_builtins(conn, now_ms)?;
-        Ok(saved)
-    })?;
-    refresh_jev_status(state, storage)?;
-    state.ai_model_egress_enabled = saved.model_egress_enabled;
-    state.ai_runtime_revision = expected_revision + 1;
-    Ok(())
 }
 
 /// 切换标准工具的全局启停。
@@ -1141,21 +1105,20 @@ pub fn save_ai_agent(
     Ok(id)
 }
 
-/// 保存默认主模型 / 默认决策模型选择（运行设置单例 CAS）。
+/// 保存默认主模型选择（运行设置单例 CAS）。
 ///
-/// 应用层强校验：主模型必须是存在的 `generation`，决策模型必须是存在的 `decision`；
-/// 其余运行设置字段（默认 Agent、最大活动任务数）保持原值不动。
-pub fn save_ai_default_models(
+/// 应用层强校验：主模型必须是存在的 `generation`；决策与压缩决策槽位由各自的插件
+/// 管理弹框写入，这里保持原值不动（默认 Agent、最大活动任务数同理）。
+pub fn set_ai_default_model(
     state: &mut AppState,
     storage: &fluxdb_storage::FileStorage,
-    default_model_id: Option<String>,
-    default_decision_model_id: Option<String>,
+    model_id: Option<String>,
     expected_revision: i64,
     now_ms: i64,
 ) -> fluxdb_core::Result<i64> {
     use fluxdb_storage::ai_platform::models::ModelKind;
     let saved = with_ai_storage(storage, |conn| {
-        if let Some(id) = &default_model_id {
+        if let Some(id) = &model_id {
             let model = models::load_model(conn, id)?;
             if model.kind != ModelKind::Generation {
                 return Err(fluxdb_core::Error::new(
@@ -1164,36 +1127,23 @@ pub fn save_ai_default_models(
                 ));
             }
         }
-        if let Some(id) = &default_decision_model_id {
-            let model = models::load_model(conn, id)?;
-            if model.kind != ModelKind::Decision {
-                return Err(fluxdb_core::Error::new(
-                    fluxdb_core::ErrorKind::Internal,
-                    "默认决策模型必须是决策模型",
-                ));
-            }
-        }
         let current = ai_settings::load_runtime_settings(conn)?;
         let next = ai_settings::RuntimeSettings {
             default_agent_id: current.default_agent_id.clone(),
-            default_model_profile_id: default_model_id.clone(),
-            default_decision_model_profile_id: default_decision_model_id.clone(),
-            // 压缩决策槽位不属于大模型页的表单，保留当前值不被这里清空。
+            default_model_profile_id: model_id.clone(),
+            default_decision_model_profile_id: current
+                .default_decision_model_profile_id
+                .clone(),
             compaction_decision_model_profile_id: current
                 .compaction_decision_model_profile_id
                 .clone(),
             max_active_turns: current.max_active_turns,
             revision: current.revision,
         };
-        let saved = ai_settings::save_runtime_settings(conn, now_ms, &next, expected_revision)?;
-        // 决策模型槽位变更后按设计 §18.1 触发 reconcile：system 绑定跟着显式选择走。
-        reconcile_jev_builtins(conn, now_ms)?;
-        Ok(saved)
+        ai_settings::save_runtime_settings(conn, now_ms, &next, expected_revision)
     })?;
-    refresh_jev_status(state, storage)?;
     // 就地回填，避免整页刷新闪烁。
-    state.ai_default_model_id = default_model_id;
-    state.ai_default_decision_model_id = default_decision_model_id;
+    state.ai_default_model_id = model_id;
     state.ai_runtime_revision = saved.revision;
     Ok(saved.revision)
 }

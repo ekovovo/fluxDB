@@ -1,5 +1,63 @@
 // AI 设置职责拆分；由 ai.rs include! 引入，保持原有作用域。
 
+/// Agent 绑定模型的下拉触发条；展开态归编辑器所有（`AiAgentEditorState::model_menu_open`）。
+fn ai_agent_model_trigger(
+    current: &str,
+    open: bool,
+    colors: UiColors,
+    cx: &mut Context<NavicatMain>,
+) -> Stateful<Div> {
+    div()
+        .id(SharedString::from("ai-agent-model-trigger"))
+        .h(px(34.))
+        .px_3()
+        .rounded(colors.radius)
+        .border_1()
+        .border_color(if open { colors.info } else { colors.border })
+        .bg(colors.input_bg)
+        .flex()
+        .items_center()
+        .justify_between()
+        .gap_2()
+        .cursor_pointer()
+        .hover(move |style| style.bg(colors.hover))
+        .child(
+            div()
+                .text_size(px(12.))
+                .text_color(colors.text)
+                .child(current.to_string()),
+        )
+        .child(app_icon(
+            if open {
+                AppIcon::ChevronUp
+            } else {
+                AppIcon::ChevronDown
+            },
+            14.,
+            colors.muted,
+        ))
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |this, _, _, cx| {
+                if let Some(editor) = this.ai_agent_editor.as_mut() {
+                    editor.model_menu_open = !editor.model_menu_open;
+                }
+                cx.notify();
+                cx.stop_propagation();
+            }),
+        )
+}
+
+/// 模型候选列表容器（内联展开，不用浮层以免定位复杂）。
+fn ai_model_candidates(colors: UiColors) -> Div {
+    div()
+        .rounded(colors.radius)
+        .border_1()
+        .border_color(colors.border)
+        .bg(colors.panel_bg)
+        .overflow_hidden()
+}
+
 /// Agent 编辑页签按钮。
 fn ai_agent_tab_button(
     label: &'static str,
@@ -169,16 +227,10 @@ fn ai_agent_editor_form(
                             .text_color(colors.text)
                             .child("默认生成模型"),
                     )
-                    .child(ai_default_selector_trigger(
-                        "agent-model",
-                        &current_label,
-                        editor.model_menu_open,
-                        colors,
-                        cx,
-                    )),
+                    .child(ai_agent_model_trigger(&current_label, editor.model_menu_open, colors, cx)),
             );
             if editor.model_menu_open {
-                let mut menu = ai_default_options(colors);
+                let mut menu = ai_model_candidates(colors);
                 for (id, name) in &generation {
                     let id_owned = id.clone();
                     let selected = editor.selected_model_id.as_deref() == Some(id.as_str());

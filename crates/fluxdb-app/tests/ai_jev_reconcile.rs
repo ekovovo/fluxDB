@@ -12,7 +12,7 @@ use std::{fs, path::PathBuf};
 
 use fluxdb_app::{AiAgentSaveInput, AiModelSaveInput, AppCommand, AppController, AppEvent};
 use fluxdb_storage::FileStorage;
-use fluxdb_storage::ai_platform::{model_bindings, models, settings};
+use fluxdb_storage::ai_platform::{model_bindings, models};
 
 const BUILTIN_AGENT: &str = fluxdb_storage::ai_platform::agents::BUILTIN_AGENT_ID;
 
@@ -369,22 +369,22 @@ fn multiple_qualified_models_without_default_need_user_choice() {
 }
 
 #[test]
-fn default_decision_model_wins_over_single_candidate_rule() {
+fn jev_chosen_decision_model_wins_over_single_candidate_rule() {
     let fixture = Fixture::new();
     let mut controller = fixture.controller();
     let first = save_decision_model(&mut controller, "first", "system-one", true, true);
     let second = save_decision_model(&mut controller, "second", "system-one", true, true);
-    let revision = fixture
-        .storage
-        .with_ai_connection(|conn| Ok(settings::load_runtime_settings(conn)?.revision))
-        .unwrap();
-    let event = controller.dispatch(AppCommand::SaveAiDefaultModels {
-        default_model_id: None,
-        default_decision_model_id: Some(second.clone()),
-        expected_revision: revision,
+    let event = controller.dispatch(AppCommand::SaveAiPluginConfig {
+        instance_id: fluxdb_app::JEV_INSTANCE_ID.into(),
+        selections: vec![fluxdb_app::AiPluginFieldSelection {
+            key: fluxdb_app::JEV_DECISION_MODEL_FIELD.into(),
+            value: None,
+            resource_id: Some(second.clone()),
+        }],
+        expected_revision: controller.state().ai_runtime_revision,
     });
     assert!(
-        matches!(event, AppEvent::AiDefaultModelsSaved { .. }),
+        matches!(event, AppEvent::AiPluginConfigSaved { .. }),
         "{event:?}"
     );
     let status = refresh(&mut controller);

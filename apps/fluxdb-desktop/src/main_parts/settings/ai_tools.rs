@@ -333,7 +333,7 @@ fn ai_plugins_in_catalog_order(
     rows
 }
 
-/// 「内置插件」页签：能力说明、启停状态，以及常驻能力/内核约束标签。
+/// 「内置插件」页签：能力说明、启停状态，以及常驻能力/待实现标签。
 fn ai_plugins_panel(state: &AppState, colors: UiColors, cx: &mut Context<NavicatMain>) -> Div {
     let body: Vec<gpui::AnyElement> = if state.ai_plugin_instances.is_empty() {
         vec![ai_empty_state(
@@ -379,7 +379,7 @@ fn ai_plugins_panel(state: &AppState, colors: UiColors, cx: &mut Context<Navicat
                 ai_row_container(&p.id, colors)
                     .min_h(px(52.))
                     .py_2()
-                    // 已下线能力整行置灰：只占目录位，不加说明文字。
+                    // 无实现的占位行整行置灰：只占目录位，不给出可操作的启停状态。
                     .when(retired, |this| this.opacity(0.45))
                     .child(app_icon_box(
                         ai_builtin_icon(&p.package_key),
@@ -420,18 +420,13 @@ fn ai_plugins_panel(state: &AppState, colors: UiColors, cx: &mut Context<Navicat
                                             .text_color(colors.muted)
                                             .child(format!("{} · 内置", p.package_key)),
                                     )
-                                    .when(mandatory, |this| {
-                                        this.child(ai_pill(
-                                            if p.package_key == "fluxdb.context.ui" {
-                                                "常驻能力"
-                                            } else {
-                                                "内核约束"
-                                            },
-                                            colors.info,
-                                            colors,
-                                        ))
+                                    .when(retired, |this| {
+                                        this.child(ai_pill("待实现", colors.muted, colors))
                                     })
-                                    .when(!mandatory, |this| {
+                                    .when(mandatory, |this| {
+                                        this.child(ai_pill("常驻能力", colors.info, colors))
+                                    })
+                                    .when(!mandatory && !retired, |this| {
                                         this.child(ai_status_pill(enabled, colors))
                                     })
                                     .when(is_jev, |this| {
@@ -580,7 +575,7 @@ fn ai_status_pill(enabled: bool, colors: UiColors) -> impl IntoElement {
 
 /// Jev 状态标签（设计 §18 的状态表）：状态而不是错误条。
 ///
-/// Jev 是内置可选能力，永远不是内核约束，开关始终可用。
+/// Jev 是内置可选能力，永远不是常驻能力，开关始终可用。
 fn ai_jev_status_pill(status: &fluxdb_app::JevStatus, colors: UiColors) -> impl IntoElement {
     use fluxdb_app::JevStatusKind as K;
     let (label, color) = match status.kind {

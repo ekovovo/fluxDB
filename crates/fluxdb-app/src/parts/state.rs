@@ -25,11 +25,11 @@ pub struct AiModelItem {
     pub enabled: bool,
     /// 数据出站许可：false 表示该模型不再接收会话数据（设计 §29/§31.1）。
     pub egress: bool,
-    /// 能力标签（经济/免费/高能力/长上下文）：由价格与窗口推导，不按模型名硬编码。
+    /// 能力标签（当前为长上下文）：由真实上下文窗口推导，不按模型名或价格硬编码。
     pub capability_labels: Vec<String>,
     pub context_window_tokens: Option<i64>,
     pub max_output_tokens: Option<i64>,
-    /// 计价：micro-USD / 百万 Token。
+    /// 计价：micro-USD / 百万 Token；只用于编辑弹框回填，不参与列表展示、标签或计量。
     pub input_price_micros: Option<i64>,
     pub output_price_micros: Option<i64>,
     pub cached_input_price_micros: Option<i64>,
@@ -61,7 +61,7 @@ pub struct AiModelSaveInput {
     pub egress: bool,
     pub context_window_tokens: Option<i64>,
     pub max_output_tokens: Option<i64>,
-    /// 计价单位：micro-USD / 百万 Token。
+    /// 计价单位：micro-USD / 百万 Token；只做保存与再次编辑回填。
     pub input_price_micros: Option<i64>,
     pub output_price_micros: Option<i64>,
     pub cached_input_price_micros: Option<i64>,
@@ -243,9 +243,9 @@ pub struct AiPluginItem {
     /// 内置能力登记表里的「负责内容」；未知实例为空串，不猜语义。
     pub summary: String,
     pub enabled: bool,
-    /// 内核强制（安全审计/执行护栏），UI 需禁用开关并展示"内核约束"。
+    /// 内核强制（当前界面与 @ 上下文、调用前安全审计），UI 需禁用开关并展示"常驻能力"。
     pub mandatory: bool,
-    /// 已下线的目录占位行：UI 置灰整行、禁用开关，且不展示说明文字。
+    /// 没有实现或已下线的目录占位行：UI 置灰整行、禁用开关并显示"待实现"。
     pub retired: bool,
     /// 插件声明的可配置字段（协议见 [`PluginConfigDeclaration`]）。
     ///

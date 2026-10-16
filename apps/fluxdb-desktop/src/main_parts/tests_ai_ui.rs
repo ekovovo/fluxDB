@@ -1158,7 +1158,6 @@ mod ai_ui_tests {
         });
         for (head, row) in [
             ("ai-head:能力与上下文", "ai-model-capability"),
-            ("ai-head:计价（输入 / 输出）", "ai-model-price"),
             ("ai-head:凭据", "ai-model-credential"),
             ("ai-head:启用", "ai-model-enable"),
             ("ai-head:状态 / 操作", "ai-model-actions"),

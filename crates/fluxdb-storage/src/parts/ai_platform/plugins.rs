@@ -8,15 +8,11 @@ use rusqlite::{Connection, OptionalExtension, params};
 use crate::sqlite::sqlite_error;
 use fluxdb_core::{Error, ErrorKind, Result};
 
-/// 常驻插件实例：页面上下文、安全审计与执行护栏，任何调用方都不能关闭。
+/// 常驻插件实例：页面上下文与安全审计，任何调用方都不能关闭。
 ///
 /// 这是宿主固定能力而非用户偏好，因此不放在实例行里，改用固定 ID 白名单，
 /// 避免"忘记写 mandatory 列"导致可被绕过。
-pub const MANDATORY_INSTANCE_IDS: &[&str] = &[
-    "builtin.context-ui",
-    "builtin.security-audit",
-    "builtin.budget",
-];
+pub const MANDATORY_INSTANCE_IDS: &[&str] = &["builtin.context-ui", "builtin.security-audit"];
 
 /// 该实例是否为常驻能力（不可停用）。
 pub fn is_mandatory(instance_id: &str) -> bool {
@@ -163,7 +159,7 @@ pub const BUILTIN_PLUGINS: &[(&str, &str, &str, &str)] = &[
         "builtin.budget",
         "pkg.fluxdb.usage.budget",
         "fluxdb.usage.budget",
-        "Token 用量与执行保护",
+        "AI 用量统计",
     ),
     (
         "builtin.knowledge",
@@ -212,6 +208,14 @@ pub fn seed_builtin_plugins(conn: &Connection, now_ms: i64) -> Result<()> {
         "UPDATE ai_plugin_instances SET enabled=0, revision=revision+1, updated_at_ms=?1
          WHERE id='builtin.router' AND enabled=1",
         [now_ms],
+    )
+    .map_err(sqlite_error)?;
+    // 用量统计看板尚未实现，实例同样只作目录占位行：同步显示名并关闭历史遗留的启用态。
+    tx.execute(
+        "UPDATE ai_plugin_instances
+            SET display_name=?1, enabled=0, revision=revision+1, updated_at_ms=?2
+          WHERE id='builtin.budget' AND (display_name!=?1 OR enabled!=0)",
+        params!["AI 用量统计", now_ms],
     )
     .map_err(sqlite_error)?;
     tx.execute(
@@ -295,7 +299,7 @@ pub fn set_plugin_instance_enabled(
     if enabled == false && is_mandatory(id) {
         return Err(Error::new(
             ErrorKind::Internal,
-            "当前界面与 @ 上下文、安全审计与执行护栏是常驻能力，不可停用",
+            "当前界面与 @ 上下文、安全审计是常驻能力，不可停用",
         ));
     }
     let changed = conn
@@ -547,6 +551,38 @@ mod tests {
         );
         seed_builtin_plugins(&conn, 3_000).unwrap();
         assert_eq!(first, list_plugin_instances(&conn).unwrap());
+    }
+
+    #[test]
+    fn seeding_renames_usage_stats_placeholder_and_clears_legacy_enabled_state() {
+        let conn = setup();
+        // 旧库里的用量统计行还是"Token 用量与执行保护"且被当作常驻能力启用。
+        conn.execute(
+            "UPDATE ai_plugin_instances SET display_name='Token 用量与执行保护', enabled=1
+             WHERE id='builtin.budget'",
+            [],
+        )
+        .unwrap();
+
+        seed_builtin_plugins(&conn, 2_000).unwrap();
+        let budget = list_plugin_instances(&conn)
+            .unwrap()
+            .into_iter()
+            .find(|p| p.id == "builtin.budget")
+            .expect("占位实例存在");
+        assert_eq!(budget.display_name, "AI 用量统计");
+        assert!(!budget.enabled, "占位行不得停留在已启用");
+        assert!(budget.revision > 1, "改名与关闭必须递增 revision");
+
+        // 再跑一次不应继续递增 revision。
+        let revision = budget.revision;
+        seed_builtin_plugins(&conn, 3_000).unwrap();
+        let again = list_plugin_instances(&conn)
+            .unwrap()
+            .into_iter()
+            .find(|p| p.id == "builtin.budget")
+            .unwrap();
+        assert_eq!(again.revision, revision);
     }
 
     #[test]

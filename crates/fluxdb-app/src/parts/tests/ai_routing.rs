@@ -119,24 +119,25 @@ fn first_usable_with_no_valid_candidate_returns_all_reasons() {
 }
 
 #[test]
-fn capability_labels_come_from_price_and_window_not_name() {
-    let mut cheap = model("cheap", ModelKind::Generation, true, CredentialStatus::Configured);
-    cheap.display_name = "expensive-flash-name".into();
-    cheap.output_price_micros_per_million = Some(1_000);
-    cheap.context_window_tokens = Some(8_192);
-    assert_eq!(model_capability_labels(&cheap), vec!["经济"]);
-
+fn capability_labels_come_from_context_window_not_price_or_name() {
     let mut premium = model("premium", ModelKind::Generation, true, CredentialStatus::Configured);
     premium.display_name = "cheap".into();
-    premium.output_price_micros_per_million = Some(80_000);
     premium.context_window_tokens = Some(400_000);
-    let labels = model_capability_labels(&premium);
-    assert!(labels.contains(&"高能力"));
-    assert!(labels.contains(&"长上下文"));
+    assert_eq!(model_capability_labels(&premium), vec!["长上下文"]);
 
-    // 价格未知时不给任何价格标签，也不猜。
+    // 价格高低既不产生标签，也不改变窗口推导出的标签。
+    let mut expensive_small = model("small", ModelKind::Generation, true, CredentialStatus::Configured);
+    expensive_small.output_price_micros_per_million = Some(80_000);
+    expensive_small.context_window_tokens = Some(8_192);
+    assert!(model_capability_labels(&expensive_small).is_empty());
+
+    let mut free_large = model("free", ModelKind::Generation, true, CredentialStatus::Configured);
+    free_large.output_price_micros_per_million = Some(0);
+    free_large.context_window_tokens = Some(400_000);
+    assert_eq!(model_capability_labels(&free_large), vec!["长上下文"]);
+
+    // 窗口未知时不给任何标签，也不猜。
     let mut unknown = model("u", ModelKind::Generation, true, CredentialStatus::Configured);
-    unknown.output_price_micros_per_million = None;
     unknown.context_window_tokens = None;
     assert!(model_capability_labels(&unknown).is_empty());
 }

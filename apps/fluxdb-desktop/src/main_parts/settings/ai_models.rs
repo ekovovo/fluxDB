@@ -1,6 +1,6 @@
 // AI 设置职责拆分；由 ai.rs include! 引入，保持原有作用域。
 
-/// 表头：模型 / 能力与上下文 / 计价 / 凭据 / 启用 / 操作（对齐六列宽度）。
+/// 表头：模型 / 能力与上下文 / 凭据 / 启用 / 操作（对齐五列宽度）。
 fn ai_model_table_header(colors: UiColors) -> impl IntoElement {
     let head = move |label: &str, w: f32| {
         div()
@@ -28,13 +28,14 @@ fn ai_model_table_header(colors: UiColors) -> impl IntoElement {
                 .child("模型"),
         )
         .child(head("能力与上下文", 150.))
-        .child(head("计价（输入 / 输出）", 140.))
         .child(head("凭据", 80.))
         .child(head("启用", 48.))
         .child(head("状态 / 操作", 148.))
 }
 
-/// 大模型列表行：对照交互稿六列（模型 / 能力与上下文 / 计价 / 凭据 / 启用 / 操作）。
+/// 大模型列表行：对照交互稿五列（模型 / 能力与上下文 / 凭据 / 启用 / 操作）。
+///
+/// 价格只在编辑弹框里填写与回读，不参与列表展示、标签推导或任何用量统计。
 fn ai_model_row(
     model: &fluxdb_app::AiModelItem,
     testing: bool,
@@ -57,43 +58,24 @@ fn ai_model_row(
         Some(n) => n.to_string(),
         None => "—".into(),
     };
-    let money = |micros: Option<i64>| match micros {
-        Some(v) => format!("${:.2}", v as f64 / 1_000_000.0),
-        None => "—".into(),
-    };
-
     let capability_note = if decision {
         "Choice / Score · 内置 Jev".to_string()
     } else {
-        // 经济/高能力/免费/长上下文由价格与窗口推导（app 层 `model_capability_labels`），
-        // 不按模型名硬编码；原型要求等级前缀排在上下文之前，这里补齐最后一米。
-        let labels = &model.capability_labels;
-        let tier = match (
-            labels.iter().any(|l| l == "免费"),
-            labels.iter().any(|l| l == "经济"),
-            labels.iter().any(|l| l == "高能力"),
-        ) {
-            (true, _, _) => "免费 · ",
-            (_, true, _) => "经济 · ",
-            (_, _, true) => "高能力 · ",
-            _ => "",
+        // 能力标签只由模型上下文窗口推导（app 层 `model_capability_labels`），
+        // 价格不参与标签或列表展示。
+        let long_context = if model.capability_labels.iter().any(|l| l == "长上下文") {
+            " · 长上下文"
+        } else {
+            ""
         };
-        let long_context = if labels.iter().any(|l| l == "长上下文") { " · 长上下文" } else { "" };
         format!(
-            "{}{} ctx / {} out{}",
-            tier,
+            "{} ctx / {} out{}",
             tokens(model.context_window_tokens),
             tokens(model.max_output_tokens),
             long_context
         )
     };
     let egress = model.egress;
-    let price_line = format!(
-        "{} / {}",
-        money(model.input_price_micros),
-        money(model.output_price_micros)
-    );
-    let cache_line = format!("缓存读 {}", money(model.cached_input_price_micros));
 
     div()
         .border_t_1()
@@ -168,29 +150,7 @@ fn ai_model_row(
                 .child(ai_egress_pill(egress, colors)),
         )
         .child(
-            // 列 3：计价
-            div()
-                .w(px(140.))
-                .flex_shrink_0()
-                .debug_selector(|| "ai-model-price".into())
-                .flex()
-                .flex_col()
-                .gap_1()
-                .child(
-                    div()
-                        .text_size(px(12.))
-                        .text_color(colors.text)
-                        .child(price_line),
-                )
-                .child(
-                    div()
-                        .text_size(px(11.))
-                        .text_color(colors.muted)
-                        .child(cache_line),
-                ),
-        )
-        .child(
-            // 列 4：凭据
+            // 列 3：凭据
             div()
                 .w(px(80.))
                 .flex_shrink_0()
@@ -200,7 +160,7 @@ fn ai_model_row(
                 .child(ai_credential_tag(&model.credential_status, colors)),
         )
         .child(
-            // 列 5：启用
+            // 列 4：启用
             div()
                 .w(px(48.))
                 .flex_shrink_0()
@@ -222,7 +182,7 @@ fn ai_model_row(
                 ),
         )
         .child(
-            // 列 6：状态和图标操作，与表头使用同一宽度。
+            // 列 5：状态和图标操作，与表头使用同一宽度。
             div()
                 .w(px(148.))
                 .flex_shrink_0()

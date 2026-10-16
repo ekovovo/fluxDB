@@ -1,5 +1,19 @@
 use fluxdb_storage::ai_platform::usage_ledger::{self, UsageRequest, UsageTotals};
 
+/// 顶部用量标签的紧凑格式：小数值保持原样，大数值按 K/M 定标且不出现 "1000K"。
+#[test]
+fn usage_header_tokens_are_scaled_with_units() {
+    assert_eq!(ai_format_usage_tokens(0), "0");
+    assert_eq!(ai_format_usage_tokens(999), "999");
+    assert_eq!(ai_format_usage_tokens(1_000), "1K");
+    assert_eq!(ai_format_usage_tokens(15_873), "15.9K");
+    assert_eq!(ai_format_usage_tokens(999_949), "999.9K");
+    // 取整到 1000K 时进位成 M，而不是显示四位数 K。
+    assert_eq!(ai_format_usage_tokens(999_950), "1M");
+    assert_eq!(ai_format_usage_tokens(1_000_000), "1M");
+    assert_eq!(ai_format_usage_tokens(1_234_567), "1.2M");
+}
+
 fn seed_usage_history() -> Fixture {
     let fixture = Fixture::seeded();
     fixture

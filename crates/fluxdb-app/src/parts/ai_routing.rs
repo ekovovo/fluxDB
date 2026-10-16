@@ -4,7 +4,7 @@
 // **不静默回退**到其它模型，而是给出可见失败原因——固定模型不能被插件/默认规则
 // 悄悄换掉。路由只决定"用哪个已有模型"，不创建新 endpoint/凭据。
 //
-// 经济/高能力标签来自用户可编辑的价格与能力信息，不按模型名硬编码；无路由插件时
+// 能力标签只来自模型真实能力（上下文窗口），价格不参与判定或展示；无路由插件时
 // 本模块仍提供基础基线（Agent 绑定 → 全局默认）。
 
 use fluxdb_storage::ai_platform::model_secret::CredentialStatus;
@@ -167,21 +167,11 @@ pub fn first_usable<'a>(
     (None, rejections)
 }
 
-/// 经济/高能力标签：由价格与上下文窗口推导，不按模型名硬编码。
+/// 能力标签：只由模型真实上下文窗口推导，不按模型名或价格硬编码。
 ///
 /// `labels` 只用于设置页展示与用户决策，不参与安全判定。
 pub fn model_capability_labels(model: &ModelProfileView) -> Vec<&'static str> {
     let mut labels = Vec::new();
-    let output_price = model.output_price_micros_per_million;
-    if let Some(price) = output_price {
-        if price == 0 {
-            labels.push("免费");
-        } else if price <= 5_000 {
-            labels.push("经济");
-        } else if price >= 50_000 {
-            labels.push("高能力");
-        }
-    }
     if model.context_window_tokens.is_some_and(|window| window >= 200_000) {
         labels.push("长上下文");
     }

@@ -111,12 +111,22 @@ pub enum LoopEvent {
     /// 计划是**模型公开内容**，不是执行事实；步骤状态由模型显式声明，宿主不推断。
     PlanUpdated { plan: crate::PlanUpdate },
     /// 一个执行阶段的脱敏耗时/结果；供「生命周期诊断」汇总，不含正文或凭据。
+    ///
+    /// 每阶段一条、在阶段边界即时发出：进程被杀后仍留有证据，不必等轮末汇总。
     StageTiming {
         stage: loop_stage::Stage,
+        /// 主循环迭代序号（从 1 开始）。
+        iteration: usize,
+        /// 工具阶段的目标工具 ID；模型阶段为 `None`。
+        tool_id: Option<String>,
         duration_ms: u64,
+        /// 模型阶段：本次逻辑请求实际发出的供应商请求次数（含重试）。
+        attempts: u32,
         ok: bool,
         /// 失败时的受控错误码（如 `timeout`、`http_429`）；成功为 `None`。
         error_code: Option<String>,
+        /// 失败是否值得重试；只在拿得到错误对象/回执字段时有值，不按码猜。
+        retryable: Option<bool>,
     },
     /// 需要用户审批：**不执行**、不产生工具回执，等审批决定后继续（设计 §25.3）。
     ApprovalRequired {
@@ -145,8 +155,14 @@ pub enum TurnOutcome {
     },
     /// 安全暂停：达到迭代上限或无进展，需要用户介入。
     Paused { reason: String },
-    /// 基础设施失败（Provider/工具返回 Err），不是普通工具错误。
-    Failed { message: String },
+    /// 基础设施失败（Provider/工具/hook/宿主返回 Err），不是普通工具错误。
+    ///
+    /// 携带失败阶段与原始错误对象：受控错误码与可重试性只能在错误还活着时取，
+    /// 事后无法从文案重建；turn 错误码、诊断与给模型的解释都依赖它们。
+    Failed {
+        stage: FailureStage,
+        error: fluxdb_core::Error,
+    },
     Cancelled,
 }
 
@@ -218,6 +234,13 @@ fn loop_denied_receipt(
     }
 }
 
+/// 回执里显式声明的 `retryable`（工具实现自己给的判定）；没有就不猜。
+fn receipt_retryable(receipt: &fluxdb_core::ToolReceipt) -> Option<bool> {
+    serde_json::from_str::<serde_json::Value>(&receipt.result_json)
+        .ok()
+        .and_then(|value| value.get("retryable").and_then(serde_json::Value::as_bool))
+}
+
 fn loop_tool_status_label(status: fluxdb_core::ToolReceiptStatus) -> &'static str {
     match status {
         fluxdb_core::ToolReceiptStatus::Succeeded => "succeeded",
@@ -229,7 +252,10 @@ fn loop_tool_status_label(status: fluxdb_core::ToolReceiptStatus) -> &'static st
 }
 
 /// 把错误类别映射成稳定的脱敏码；不含 message 正文，避免把上游细节写进诊断。
-fn loop_stage_error_code(error: &fluxdb_core::Error) -> String {
+///
+/// 同一口径同时用于阶段事件与 Turn 终态错误码：人对齐、诊断可聚合，
+/// 而不是一处写码、一处写中文文案。
+pub(crate) fn stage_error_code(error: &fluxdb_core::Error) -> String {
     if let Some(status) = error.http_status {
         return format!("http_{status}");
     }
@@ -295,7 +321,7 @@ impl<'a> TurnRunner<'a> {
             let mut text = String::new();
             let mut tool_calls = Vec::new();
             let mut finish = None;
-            let response = retry_streamed_model_call(cancel, &mut |receive| {
+            let (response, attempts) = retry_streamed_model_call(cancel, &mut |receive| {
                 crate::ai_executor::block_on_cancellable(
                     self.provider.stream_events(request.clone(), cancel.clone(), receive), cancel,
                 ).and_then(|result| result)
@@ -328,15 +354,22 @@ impl<'a> TurnRunner<'a> {
             });
             emit(LoopEvent::StageTiming {
                 stage: loop_stage::Stage::ModelRequest,
+                iteration,
+                tool_id: None,
                 duration_ms: stage_start.elapsed().as_millis() as u64,
+                attempts,
                 ok: response.is_ok(),
-                error_code: response.as_ref().err().map(loop_stage_error_code),
+                error_code: response.as_ref().err().map(stage_error_code),
+                retryable: response.as_ref().err().map(fluxdb_core::Error::is_retryable),
             });
             if cancel.is_cancelled() || finish == Some(fluxdb_core::FinishReason::Cancelled) {
                 return TurnOutcome::Cancelled;
             }
             if let Err(error) = response {
-                return TurnOutcome::Failed { message: error.message };
+                return TurnOutcome::Failed {
+                    stage: FailureStage::ModelRequest,
+                    error,
+                };
             }
             if !text.is_empty() || !tool_calls.is_empty() {
                 last_text = text.clone();
@@ -358,7 +391,11 @@ impl<'a> TurnRunner<'a> {
             match finish {
                 Some(fluxdb_core::FinishReason::Error) => {
                     return TurnOutcome::Failed {
-                        message: "模型返回错误结束".to_string(),
+                        stage: FailureStage::ModelRequest,
+                        error: fluxdb_core::Error::new(
+                            fluxdb_core::ErrorKind::Internal,
+                            "模型返回错误结束",
+                        ),
                     };
                 }
                 Some(fluxdb_core::FinishReason::Cancelled) => return TurnOutcome::Cancelled,
@@ -453,14 +490,23 @@ impl<'a> TurnRunner<'a> {
                 let original_call_id = call.provider_call_id.clone();
                 let (call, hook_deny, hook_approval) = match self.tools.hooks.before(&call, cancel) {
                     Ok(value) => value,
-                    Err(error) => return TurnOutcome::Failed { message: error.message },
+                    Err(error) => {
+                        return TurnOutcome::Failed {
+                            stage: FailureStage::ToolCall,
+                            error,
+                        };
+                    }
                 };
                 let final_target = serde_json::from_str::<serde_json::Value>(&call.arguments_json)
                     .ok()
                     .and_then(|value| value.get("target").cloned());
                 if original_target != final_target {
                     return TurnOutcome::Failed {
-                        message: "Hook 不得改变执行目标".into(),
+                        stage: FailureStage::ToolCall,
+                        error: fluxdb_core::Error::new(
+                            fluxdb_core::ErrorKind::Internal,
+                            "Hook 不得改变执行目标",
+                        ),
                     };
                 }
                 // 无状态协议重放必须使用最终参数，否则 assistant 请求与工具事实不一致。
@@ -570,7 +616,7 @@ impl<'a> TurnRunner<'a> {
                 let decision=if let Some(security)=&self.tools.security {
                     let policy=match security.settings() {
                         Ok((p,_))=>p.tools_default,
-                        Err(error)=>return TurnOutcome::Failed{message:error.message},
+                        Err(error)=>return TurnOutcome::Failed{stage:FailureStage::ToolCall,error},
                     };
                     match security.authorize(&input,policy,||{
                         self.tools.executable(&call.tool_id).ok_or_else(||
@@ -588,10 +634,10 @@ impl<'a> TurnRunner<'a> {
                                 &serde_json::json!({"tool":spec.id,"plan_hash":hash,"policy":policy,
                                     "reason":result.reason,"automatic_approval":automatic_approval,
                                     "settings_revision":result.settings_revision}).to_string(),ai_chat_now()).map(|_|()))
-                            {return TurnOutcome::Failed{message:error.message};}
+                            {return TurnOutcome::Failed{stage:FailureStage::ToolCall,error};}
                             result.decision
                         },
-                        Err(error)=>return TurnOutcome::Failed{message:error.message},
+                        Err(error)=>return TurnOutcome::Failed{stage:FailureStage::ToolCall,error},
                     }
                 } else {authorize(&input)};
 
@@ -684,22 +730,31 @@ impl<'a> TurnRunner<'a> {
                     Ok(Ok(receipt)) => {
                         emit(LoopEvent::StageTiming {
                             stage: loop_stage::Stage::ToolCall,
+                            iteration,
+                            tool_id: Some(call.tool_id.clone()),
                             duration_ms: tool_stage_start.elapsed().as_millis() as u64,
+                            attempts: 1,
                             ok: receipt.status != fluxdb_core::ToolReceiptStatus::Failed,
                             error_code: receipt.error_code.clone(),
+                            retryable: receipt_retryable(&receipt),
                         });
                         receipt
                     }
                     Ok(Err(error)) | Err(error) => {
                         emit(LoopEvent::StageTiming {
                             stage: loop_stage::Stage::ToolCall,
+                            iteration,
+                            tool_id: Some(call.tool_id.clone()),
                             duration_ms: tool_stage_start.elapsed().as_millis() as u64,
+                            attempts: 1,
                             ok: false,
-                            error_code: Some(loop_stage_error_code(&error)),
+                            error_code: Some(stage_error_code(&error)),
+                            retryable: Some(error.is_retryable()),
                         });
                         // 基础设施失败：退出整个任务（普通工具错误走 Failed 回执分支）。
                         return TurnOutcome::Failed {
-                            message: error.message,
+                            stage: FailureStage::ToolCall,
+                            error,
                         };
                     }
                 };
@@ -719,7 +774,10 @@ impl<'a> TurnRunner<'a> {
                         },
                         audit: facts.clone(),
                     });
-                    return TurnOutcome::Failed { message: message.into() };
+                    return TurnOutcome::Failed {
+                        stage: FailureStage::ToolCall,
+                        error: fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, message),
+                    };
                 }
                 // 5) 回给模型的是**该工具有界投影**，原始回执保持不变。
                 let projection = match self.tools.project(&receipt.tool_id, &receipt, None) {
@@ -751,7 +809,7 @@ impl<'a> TurnRunner<'a> {
                     return TurnOutcome::Paused {reason:"写入结果未知，已停止后续工具调用，请人工核实；不会自动重试".into()};
                 }
                 if let Err(error)=self.tools.hooks.after(&receipt,cancel) {
-                    return TurnOutcome::Failed{message:error.message};
+                    return TurnOutcome::Failed{stage:FailureStage::ToolCall,error};
                 }
                 state.messages.push(fluxdb_core::ModelMessage::tool_result(
                     receipt.call_id.clone(),

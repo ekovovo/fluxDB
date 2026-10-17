@@ -94,6 +94,49 @@ pub fn list_for_turn(conn: &Connection, turn_id: &str) -> Result<Vec<RunEventVie
     Ok(rows)
 }
 
+/// 按 kind 白名单读取某 Turn 的事件（仍按 `seq` 升序）。
+///
+/// 白名单由调用方给出：诊断读取面只取诊断类事件，不把 `model_route`、
+/// `decision_advice`、`execution_policy` 等其它数据面的载荷带进来。空白名单
+/// 返回空列表，而不是退回"读全部"。
+pub fn list_filtered(
+    conn: &Connection,
+    turn_id: &str,
+    kinds: &[&str],
+) -> Result<Vec<RunEventView>> {
+    if kinds.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders = (2..=kinds.len() + 1)
+        .map(|index| format!("?{index}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let mut stmt = conn
+        .prepare(&format!(
+            "SELECT turn_id, seq, kind, summary_json, created_at_ms
+               FROM ai_run_events WHERE turn_id=?1 AND kind IN ({placeholders})
+              ORDER BY seq"
+        ))
+        .map_err(sqlite_error)?;
+    let params = std::iter::once(turn_id)
+        .chain(kinds.iter().copied())
+        .collect::<Vec<_>>();
+    let rows = stmt
+        .query_map(rusqlite::params_from_iter(params), |row| {
+            Ok(RunEventView {
+                turn_id: row.get(0)?,
+                seq: row.get(1)?,
+                kind: row.get(2)?,
+                summary_json: row.get(3)?,
+                created_at_ms: row.get(4)?,
+            })
+        })
+        .map_err(sqlite_error)?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(sqlite_error)?;
+    Ok(rows)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

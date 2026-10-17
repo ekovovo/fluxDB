@@ -1,5 +1,14 @@
 use fluxdb_core::FinishReason;
 
+/// 终态错误：`message` 给人/UI 看，`code` 落 `ai_turns.error_code` 供诊断聚合。
+///
+/// 两者都不允许出现凭据、密文或加密元数据；码一律取宿主映射的受控码
+/// （如 `http_429`/`timeout`），不把中文文案写进码列。
+pub struct TurnError<'a> {
+    pub message: &'a str,
+    pub code: Option<&'a str>,
+}
+
 /// 保存累计正文与公开摘要并返回数据库投影；非终态节流由执行方负责，终态必须保存。
 pub fn persist_ai_conversation_event(
     storage: &fluxdb_storage::FileStorage,
@@ -7,31 +16,33 @@ pub fn persist_ai_conversation_event(
     text: &str,
     summary: &str,
     status: Option<fluxdb_storage::ai_platform::sessions::TurnStatus>,
-    error: Option<&str>,
+    error: Option<TurnError<'_>>,
 ) -> fluxdb_core::Result<AiConversationView> {
     with_ai_storage(storage, |conn| {
-        checkpoint_ai_conversation(conn, job, text, summary, status, error)?;
+        checkpoint_ai_conversation(conn, job, text, summary, status, error.as_ref().and_then(|error| error.code))?;
         let mut view = ai_chat_project(fluxdb_storage::ai_platform::conversation::load(
             conn,
             Some(&job.session_id),
         )?);
-        view.error = error.map(str::to_owned);
+        view.error = error.map(|error| error.message.to_owned());
         Ok(view)
     })
 }
 
 /// 保存正文检查点，不重读/复制整个会话历史；流式热路径只需这个写边界。
+///
+/// `error_code` 是 Turn 行的受控错误码（不是给人看的文案）。
 fn checkpoint_ai_conversation(
     conn: &AiConn,
     job: &AiConversationJob,
     text: &str,
     summary: &str,
     status: Option<fluxdb_storage::ai_platform::sessions::TurnStatus>,
-    error: Option<&str>,
+    error_code: Option<&str>,
 ) -> fluxdb_core::Result<()> {
     fluxdb_storage::ai_platform::conversation::checkpoint(
         conn, ai_chat_now(), &job.session_id, &job.turn_id, &job.assistant_message_id,
-        text, summary, status, error,
+        text, summary, status, error_code,
     )
 }
 
@@ -79,8 +90,12 @@ pub fn run_ai_conversation_source(
     };
     let response = source(&mut emit);
     drop(emit);
+    // 失败事实在错误对象还活着时取：只有文案时码与可重试性无法事后重建。
+    let source_error = response.err();
+    let persist_failed = persist_error.is_some();
     let error = persist_error
-        .or_else(|| response.err().map(|e| e.message))
+        .clone()
+        .or_else(|| source_error.as_ref().map(|error| error.message.clone()))
         .or_else(|| {
             if finish.is_none() && !cancel.is_cancelled() {
                 Some("模型连接提前结束，未收到完整结束事件".into())
@@ -88,6 +103,20 @@ pub fn run_ai_conversation_source(
                 None
             }
         });
+    let failure_fact = match (&source_error, persist_failed) {
+        (Some(error), _) => Some(FailureFact::from_error(FailureStage::ModelRequest, error)),
+        (None, true) => Some(FailureFact {
+            stage: FailureStage::Internal,
+            code: "persist_failed".into(),
+            retryable: false,
+        }),
+        (None, false) if error.is_some() => Some(FailureFact {
+            stage: FailureStage::ModelRequest,
+            code: "incomplete_stream".into(),
+            retryable: false,
+        }),
+        _ => None,
+    };
     let status = if cancel.is_cancelled() || finish == Some(fluxdb_core::FinishReason::Cancelled) {
         fluxdb_storage::ai_platform::sessions::TurnStatus::Cancelled
     } else if error.is_some() || finish == Some(fluxdb_core::FinishReason::Error) {
@@ -114,7 +143,10 @@ pub fn run_ai_conversation_source(
         &text,
         &summary,
         Some(status),
-        error.as_deref(),
+        error.as_deref().map(|message| TurnError {
+            message,
+            code: failure_fact.as_ref().map(|fact| fact.code.as_str()),
+        }),
     ) {
         Ok(view) => {
             let _ = sender.publish_terminal(AiConversationUpdate::view(job.clone(), view, true));
@@ -479,14 +511,31 @@ fn ai_conversation_run_turn(
                     }
                 }
                 LoopEvent::IterationStarted { .. } => {}
-                // 阶段耗时：累计进本轮诊断；关闭插件时 `record` 为空操作。
+                // 阶段耗时：累计进本轮诊断并即时落一条阶段事件；关闭插件时为空操作。
                 LoopEvent::StageTiming {
                     stage,
+                    iteration,
+                    tool_id,
                     duration_ms,
+                    attempts,
                     ok,
                     error_code,
+                    retryable,
                 } => {
-                    diagnostics.record(stage, duration_ms, ok, error_code.as_deref());
+                    diagnostics.record_stage(
+                        storage,
+                        &job.turn_id,
+                        StageFact {
+                            stage,
+                            iteration,
+                            tool_id,
+                            duration_ms,
+                            attempts,
+                            ok,
+                            error_code,
+                            retryable,
+                        },
+                    );
                 }
             }
             stream.publish(sender, job, &text, &summary);
@@ -508,18 +557,18 @@ fn ai_conversation_run_turn(
         },
     );
 
-    // 生命周期诊断汇总：一轮结束后落一条，供排查看"慢在哪/错在哪"。写失败只告警。
-    diagnostics.persist(storage, &job.turn_id, ai_chat_now());
-
     let mut truncated = false;
+    // 失败事实在错误对象还活着时取；受控码与可重试性事后无法从文案重建。
+    let mut failure_fact: Option<FailureFact> = None;
     let status = match outcome {
         TurnOutcome::Completed { truncated: cut, .. } => {
             truncated = cut;
             fluxdb_storage::ai_platform::sessions::TurnStatus::Completed
         }
         TurnOutcome::Cancelled => fluxdb_storage::ai_platform::sessions::TurnStatus::Cancelled,
-        TurnOutcome::Failed { message } => {
-            persist_error.get_or_insert(message);
+        TurnOutcome::Failed { stage, error } => {
+            failure_fact = Some(FailureFact::from_error(stage, &error));
+            persist_error.get_or_insert(error.message);
             fluxdb_storage::ai_platform::sessions::TurnStatus::Failed
         }
         TurnOutcome::Paused { reason } => {
@@ -532,7 +581,29 @@ fn ai_conversation_run_turn(
             }
         }
     };
+    diagnostics.record_failure(failure_fact.clone());
+    // 轮末汇总：一轮结束后落一条，供排查看"慢在哪/错在哪"。写失败只告警。
+    diagnostics.persist(storage, &job.turn_id, ai_chat_now(), status.as_str());
+
     let error = persist_error.clone().or(part_error.clone());
+    let error_code = failure_fact.as_ref().map(|fact| fact.code.clone());
+    // 失败原因必须在会话里留下可重读的片段：只在正文为空时写进正文，会让
+    // "有正文的失败轮"在重新打开会话后看不到任何原因。正文已承载原因时不重复写。
+    if status == fluxdb_storage::ai_platform::sessions::TurnStatus::Failed
+        && !text.is_empty()
+        && let Some(message) = error.as_deref()
+    {
+        let _ = ai_conversation_save_part(
+            storage,
+            job,
+            &format!("{}-notice-failure", job.assistant_message_id),
+            fluxdb_storage::ai_platform::sessions::PartKind::Notice,
+            fluxdb_storage::ai_platform::sessions::PartStatus::Error,
+            &serde_json::json!({"text":message,"text_offset":text.len()}).to_string(),
+            None,
+            None,
+        );
+    }
     if status == fluxdb_storage::ai_platform::sessions::TurnStatus::Completed {
         // 失败的工具卡本身已写在发生位置；这里只兜底"没人再成功的那些"，
         // 且聚合为一条，避免同一失败既在内联卡上又在回答末尾重复出现。
@@ -607,7 +678,9 @@ fn ai_conversation_run_turn(
         &text,
         &summary,
         Some(status),
-        error.as_deref(),
+        error
+            .as_deref()
+            .map(|message| TurnError { message, code: error_code.as_deref() }),
     ) {
         Ok(view) => {
             let _ = sender.publish_terminal(AiConversationUpdate::view(job.clone(), view, true));
@@ -631,8 +704,11 @@ pub fn run_ai_conversation_failure(
     storage: &fluxdb_storage::FileStorage,
     job: &AiConversationJob,
     sender: &dyn ConversationEventSink,
-    message: String,
+    stage: FailureStage,
+    error: fluxdb_core::Error,
 ) {
+    let fact = FailureFact::from_error(stage, &error);
+    let message = error.message;
     let text = format!("本轮未能开始：{message}");
     match persist_ai_conversation_event(
         storage,
@@ -640,7 +716,10 @@ pub fn run_ai_conversation_failure(
         &text,
         "",
         Some(fluxdb_storage::ai_platform::sessions::TurnStatus::Failed),
-        Some(&message),
+        Some(TurnError {
+            message: &message,
+            code: Some(&fact.code),
+        }),
     ) {
         Ok(view) => {
             let _ = sender.publish_terminal(AiConversationUpdate::view(job.clone(), view, true));
@@ -676,7 +755,10 @@ fn ai_conversation_pause_for_compaction(
         &text,
         "",
         Some(fluxdb_storage::ai_platform::sessions::TurnStatus::Failed),
-        Some(&reason),
+        Some(TurnError {
+            message: &reason,
+            code: Some("compaction_paused"),
+        }),
     ) {
         Ok(view) => {
             let _ = sender.publish_terminal(AiConversationUpdate::view(job.clone(), view, true));
@@ -687,7 +769,11 @@ fn ai_conversation_pause_for_compaction(
                 storage,
                 job,
                 sender,
-                format!("{reason}（暂停状态保存也失败：{}）", error.message),
+                FailureStage::Compaction,
+                fluxdb_core::Error::new(
+                    fluxdb_core::ErrorKind::Internal,
+                    format!("{reason}（暂停状态保存也失败：{}）", error.message),
+                ),
             );
         }
     }
@@ -763,7 +849,13 @@ fn resume_ai_approved_turn(
     let (call, message_id, audit_facts) = match loaded {
         Ok(value) => value,
         Err(error) => {
-            run_ai_conversation_failure(storage, job, sender, error.message);
+            run_ai_conversation_failure(
+                storage,
+                job,
+                sender,
+                FailureStage::ApprovalResume,
+                error,
+            );
             return;
         }
     };
@@ -781,7 +873,11 @@ fn resume_ai_approved_turn(
                 storage,
                 &job,
                 sender,
-                format!("批准后的参数未通过校验：{}", error.message),
+                FailureStage::ApprovalResume,
+                fluxdb_core::Error::new(
+                    fluxdb_core::ErrorKind::Internal,
+                    format!("批准后的参数未通过校验：{}", error.message),
+                ),
             );
             return;
         }
@@ -791,7 +887,11 @@ fn resume_ai_approved_turn(
             storage,
             &job,
             sender,
-            format!("工具 {} 没有可执行实现", call.tool_id),
+            FailureStage::ApprovalResume,
+            fluxdb_core::Error::new(
+                fluxdb_core::ErrorKind::Unsupported,
+                format!("工具 {} 没有可执行实现", call.tool_id),
+            ),
         );
         return;
     };
@@ -808,7 +908,15 @@ fn resume_ai_approved_turn(
         });
         match saved {
             Ok(()) => cancel_ai_conversation(storage, &job, sender),
-            Err(error) => run_ai_conversation_failure(storage, &job, sender, error.message),
+            Err(error) => {
+                run_ai_conversation_failure(
+                    storage,
+                    &job,
+                    sender,
+                    FailureStage::ApprovalResume,
+                    error,
+                )
+            }
         }
         return;
     }
@@ -831,7 +939,11 @@ fn resume_ai_approved_turn(
                 storage,
                 &job,
                 sender,
-                format!("工具执行失败：{}", error.message),
+                FailureStage::ApprovalResume,
+                fluxdb_core::Error::new(
+                    error.kind,
+                    format!("工具执行失败：{}", error.message),
+                ),
             );
             return;
         }
@@ -862,9 +974,13 @@ fn resume_ai_approved_turn(
             storage,
             &job,
             sender,
-            format!(
-                "工具已执行但回执保存失败，已标记为结果未知：{}",
-                error.message
+            FailureStage::ApprovalResume,
+            fluxdb_core::Error::new(
+                fluxdb_core::ErrorKind::Internal,
+                format!(
+                    "工具已执行但回执保存失败，已标记为结果未知：{}",
+                    error.message
+                ),
             ),
         );
         return;
@@ -930,7 +1046,11 @@ fn cancel_ai_conversation(
             storage,
             job,
             sender,
-            format!("取消状态保存失败：{}", error.message),
+            FailureStage::Recovery,
+            fluxdb_core::Error::new(
+                fluxdb_core::ErrorKind::Internal,
+                format!("取消状态保存失败：{}", error.message),
+            ),
         ),
     }
 }

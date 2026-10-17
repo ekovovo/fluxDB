@@ -299,7 +299,11 @@ fn ai_loop_hook_patch_cannot_change_execution_target() {
     assert_eq!(
         outcome,
         crate::TurnOutcome::Failed {
-            message: "Hook 不得改变执行目标".into()
+            stage: crate::FailureStage::ToolCall,
+            error: fluxdb_core::Error::new(
+                fluxdb_core::ErrorKind::Internal,
+                "Hook 不得改变执行目标"
+            ),
         },
         "改变执行目标必须直接失败"
     );

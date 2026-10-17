@@ -165,6 +165,43 @@ pub fn finish_request(
     Ok(true)
 }
 
+/// 诊断用的模型请求摘要：只给用途、模型、尝试与计量状态，不含提示词与正文。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UsageDigest {
+    pub purpose: String,
+    pub model_profile_id: String,
+    pub attempt: i64,
+    pub measurement: String,
+    pub total_tokens: Option<i64>,
+}
+
+/// 列出某 Turn 的模型请求摘要，按 (created_at_ms, id) 升序。
+///
+/// 摘要模型/审批模型等非主模型请求同样计入：它们也属于"这一轮真实发生了什么"。
+pub fn list_digests_for_turn(conn: &Connection, turn_id: &str) -> Result<Vec<UsageDigest>> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT purpose, model_profile_id, attempt, measurement, total_tokens
+               FROM ai_usage_ledger WHERE turn_id=?1
+              ORDER BY created_at_ms, id",
+        )
+        .map_err(sqlite_error)?;
+    let rows = stmt
+        .query_map([turn_id], |row| {
+            Ok(UsageDigest {
+                purpose: row.get(0)?,
+                model_profile_id: row.get(1)?,
+                attempt: row.get(2)?,
+                measurement: row.get(3)?,
+                total_tokens: row.get(4)?,
+            })
+        })
+        .map_err(sqlite_error)?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(sqlite_error)?;
+    Ok(rows)
+}
+
 /// 汇总当前会话所有用途的已知 token；缺失部分另计请求数，不伪造零用量。
 pub fn totals(conn: &Connection, session_id: &str) -> Result<UsageTotals> {
     conn.query_row(

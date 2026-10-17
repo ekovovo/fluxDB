@@ -686,7 +686,8 @@ fn failure_is_visible_and_marks_turn_failed() {
         &fixture.storage,
         &job,
         &tx,
-        "Provider 初始化失败".to_string(),
+        fluxdb_app::FailureStage::Prepare,
+        fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, "Provider 初始化失败"),
     );
     let update = rx.recv().expect("失败也必须回桥");
     assert!(update.terminal);

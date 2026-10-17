@@ -3155,6 +3155,10 @@ fn navicat_main_new(
                             )),
                             _ai_report_task: None,
                             _ai_report_export_task: None,
+                            ai_diagnostics_modal: Rc::new(std::cell::RefCell::new(
+                                AiDiagnosticsModalData::default(),
+                            )),
+                            _ai_diagnostics_task: None,
                             ai_session_rename_input,
                             _ai_session_rename_subscription: ai_session_rename_subscription,
                             pending_ai_session_rename: None,

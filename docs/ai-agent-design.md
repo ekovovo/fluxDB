@@ -1047,7 +1047,10 @@ ScopedArtifactHost 仅提供结果分页、来源校验、受控文件创建/提
 **实现补记（2026-10-16）**：
 
 - `fluxdb.progress.plan` 落 `crates/fluxdb-app/src/parts/ai_plan.rs`：模型通过 `plan.update` 工具发布/更新公开结构化计划（标题 + 有序步骤，状态 `pending/in_progress/done/blocked/skipped`，可选 `note` 与 `tool_call_id`），严格校验后落成 `PartKind::Plan` 片段。步骤状态目前来自模型显式声明，`tool_call_id` 保留引用，不按关键词/工具名自动推进；工具卡仍以真实回执为准。工具仅在插件实例开启且当前 Agent 未禁用绑定时进入目录（`add_ai_plan_tool`），关闭后模型既发现不到也无可执行实现，但已发布的历史计划片段保留。工具执行期的实时进度由执行器在产生点经 `ToolProgressSink` 投递，UI 按 `call_id` 贴到对应工具卡。
-- `fluxdb.lifecycle.telemetry` 落 `crates/fluxdb-app/src/parts/ai_diagnostics.rs`：`TurnDiagnostics` 累计模型请求/工具调用两阶段的耗时与受控错误码（`http_<status>` / `timeout` / `cancelled` 等脱敏码），一轮结束写 `ai_run_events`（`kind = turn_diagnostics` 与 `stage_timing`）。只写计数、耗时与脱敏码，**不含**正文、参数、结果或凭据；关闭后不写诊断，但安全审计、工具回执、审批事实等关键落盘照常进行。
+- `fluxdb.lifecycle.telemetry` 落 `crates/fluxdb-app/src/parts/ai_diagnostics.rs`，分读、写两面：
+  - **写**：`TurnDiagnostics` 在**每个阶段边界即时**写一条 `ai_run_events`（`kind = stage_timing`，含阶段、迭代序号、工具 ID、耗时、供应商请求尝试次数与受控码），轮末再写一条汇总（`turn_diagnostics`，含 `turn_status`、计数、耗时、去重错误码与失败事实）。即时写入保证进程中途被杀后仍有证据；关闭插件后不写任何诊断事件，但安全审计、工具回执、审批事实等关键落盘照常进行。只写计数、耗时与脱敏码，**不含**正文、参数、结果或凭据。
+  - **读**：`diagnostics.read_turns` 工具把本会话最近 1–5 轮的失败事实投影给模型：轮终态、失败阶段与归属方（provider/tool/host）、脱敏码、是否可重试、各阶段耗时与模型请求次数、失败工具清单与用户已可见的 notice 文案。**读取工具本身不按插件开关门控**——轮终态、错误码、失败工具与模型请求次数是内核已落盘、UI 已可见的事实，藏起来只会让模型解释不了用户看到的现象；插件只决定阶段遥测是否存在（结果里显式给出 `telemetry_enabled`）。读取面是固定白名单（turn 行 + 诊断事件 + 工具调用摘要 + 模型请求摘要 + notice 文本），会话与当前轮由宿主捕获，不接受 `session_id`/`turn_id` 参数，不含 prompt、消息正文、工具参数与结果、执行目标或任何凭据。
+- 失败事实结构化：`TurnOutcome::Failed` 携带 `FailureStage` 与原始 `fluxdb_core::Error`，受控码与可重试性在错误还活着时取；`ai_turns.error_code` 只写**受控码**（不再写中文文案），人类文案同时落成可重读的 `PartKind::Notice`（有正文的失败轮重开会话后也能看到原因）。`retry_streamed_model_call` 如实回报实际尝试次数。
 
 不把“插件化”解释成能卸掉全部保护：执行保护、权限、取消、真实回执和已确认副作用是内核不变量。内置安全审计使用相同 Hook 接口便于扩展，但 该Hook的执行必经，用户只能在允许范围内收窄/增强规则。
 

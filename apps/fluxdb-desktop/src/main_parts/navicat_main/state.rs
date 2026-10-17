@@ -68,6 +68,10 @@ struct NavicatMain {
     _ai_report_task: Option<Task<()>>,
     /// 报告导出（选择路径 + 安全写文件）任务。
     _ai_report_export_task: Option<Task<()>>,
+    /// AI 面板「诊断」弹框：只读快照 + 加载/错误态 + 展开行。
+    ai_diagnostics_modal: Rc<std::cell::RefCell<AiDiagnosticsModalData>>,
+    /// 诊断读取任务；保持到完成，避免后台任务被提前丢弃。
+    _ai_diagnostics_task: Option<Task<()>>,
     /// 会话重命名弹框的输入与待保存对象。
     ai_session_rename_input: Entity<InputState>,
     _ai_session_rename_subscription: Subscription,

@@ -61,11 +61,13 @@ fn backoff_before_retry(attempt: usize, cancel: &fluxdb_core::CancelFlag) -> boo
 }
 
 /// 首个内容/工具/结束事件发出前才允许瞬时错误重试；半截回答不能被第二次响应拼接。
+///
+/// 返回 `(结果, 实际尝试次数)`：次数是给诊断/计量看的执行事实，不能靠错误码反推。
 fn retry_streamed_model_call(
     cancel: &fluxdb_core::CancelFlag,
     call: &mut dyn FnMut(&mut (dyn FnMut(&fluxdb_core::ModelEvent) + Send)) -> fluxdb_core::Result<()>,
     emit: &mut (dyn FnMut(&fluxdb_core::ModelEvent) + Send),
-) -> fluxdb_core::Result<()> {
+) -> (fluxdb_core::Result<()>, u32) {
     let mut delivered = false;
     for attempt in 1..=MAX_REQUEST_ATTEMPTS {
         let result = call(&mut |event| {
@@ -76,10 +78,13 @@ fn retry_streamed_model_call(
             };
             emit(event);
         });
-        let error = match result { Ok(()) => return Ok(()), Err(error) => error };
+        let error = match result {
+            Ok(()) => return (Ok(()), attempt as u32),
+            Err(error) => error,
+        };
         if delivered || attempt == MAX_REQUEST_ATTEMPTS || cancel.is_cancelled()
             || !error.is_retryable() || !backoff_before_retry(attempt, cancel) {
-            return Err(error);
+            return (Err(error), attempt as u32);
         }
     }
     unreachable!("至少一次请求尝试")
@@ -93,7 +98,7 @@ mod streaming_retry_tests {
     fn emitted_text_prevents_retry_of_retryable_error() {
         let mut attempts = 0;
         let mut text = String::new();
-        let result = retry_streamed_model_call(&fluxdb_core::CancelFlag::new(), &mut |emit| {
+        let (result, attempted) = retry_streamed_model_call(&fluxdb_core::CancelFlag::new(), &mut |emit| {
             attempts += 1;
             emit(&fluxdb_core::ModelEvent::TextDelta("partial".into()));
             Err(fluxdb_core::Error::new(fluxdb_core::ErrorKind::Timeout, "timeout"))
@@ -102,6 +107,7 @@ mod streaming_retry_tests {
         });
         assert!(result.is_err());
         assert_eq!(attempts, 1);
+        assert_eq!(attempted, 1, "半截回答后不再重试，尝试次数按实际计数");
         assert_eq!(text, "partial");
     }
 
@@ -109,15 +115,17 @@ mod streaming_retry_tests {
     fn retry_before_first_content_still_works() {
         let mut attempts = 0;
         let mut received = 0;
-        retry_streamed_model_call(&fluxdb_core::CancelFlag::new(), &mut |emit| {
+        let (result, attempted) = retry_streamed_model_call(&fluxdb_core::CancelFlag::new(), &mut |emit| {
             attempts += 1;
             if attempts == 1 {
                 return Err(fluxdb_core::Error::new(fluxdb_core::ErrorKind::Connection, "offline"));
             }
             emit(&fluxdb_core::ModelEvent::TextDelta("once".into()));
             Ok(())
-        }, &mut |_| received += 1).unwrap();
+        }, &mut |_| received += 1);
+        result.unwrap();
         assert_eq!(attempts, 2);
+        assert_eq!(attempted, 2, "重试成功也要如实回报尝试次数");
         assert_eq!(received, 1);
     }
 }

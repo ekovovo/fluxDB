@@ -4,6 +4,50 @@ use fluxdb_core::{Error, ErrorKind, Result};
 use rusqlite::{Connection, OptionalExtension, params};
 
 /// 记录一次工具调用（状态机由运行时推进；这里只写事实）。
+/// 诊断用的工具调用摘要：只给定位与状态，不含参数、结果正文与执行目标。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ToolCallDigest {
+    pub iteration: i64,
+    pub source_ordinal: i64,
+    pub tool_id: String,
+    pub status: String,
+    /// 受控失败码（回执 `$.code`）；成功或尚无回执时为 `None`。
+    pub error_code: Option<String>,
+    pub started_at_ms: Option<i64>,
+    pub finished_at_ms: Option<i64>,
+}
+
+/// 列出某 Turn 的工具调用摘要，按 (iteration, source_ordinal) 升序。
+///
+/// 只读诊断投影：参数、结果正文与目标不进入返回值，避免把业务数据
+/// 或凭据材料带进模型上下文。
+pub fn list_digests_for_turn(conn: &Connection, turn_id: &str) -> Result<Vec<ToolCallDigest>> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT iteration, source_ordinal, tool_id, status,
+                    json_extract(receipt_json,'$.code'), started_at_ms, finished_at_ms
+               FROM ai_tool_calls WHERE turn_id=?1
+              ORDER BY iteration, source_ordinal",
+        )
+        .map_err(sqlite_error)?;
+    let rows = stmt
+        .query_map([turn_id], |row| {
+            Ok(ToolCallDigest {
+                iteration: row.get(0)?,
+                source_ordinal: row.get(1)?,
+                tool_id: row.get(2)?,
+                status: row.get(3)?,
+                error_code: row.get(4)?,
+                started_at_ms: row.get(5)?,
+                finished_at_ms: row.get(6)?,
+            })
+        })
+        .map_err(sqlite_error)?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(sqlite_error)?;
+    Ok(rows)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn start_tool_call(
     conn: &Connection,

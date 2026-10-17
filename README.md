@@ -15,9 +15,11 @@
 
 [下载最新版本](https://github.com/fluxdb-alt/fluxDB/releases/latest) · [功能特性](#功能特性) · [安装说明](#下载安装) · [操作手册](./docs/user-guide.md) · [反馈问题](https://github.com/fluxdb-alt/fluxDB/issues)
 
-[![FluxDB SQL 编辑器：点击查看演示视频](docs/screenshots/sql_editor_adapter.png)](docs/fluxdb-demo.mp4)
+[![FluxDB SQL 编辑器：点击查看演示视频](docs/screenshots/sql_editor_adapter.png)](https://github.com/user-attachments/assets/f6075999-a87f-4644-9d14-dbda49a7981d)
 
-**[观看演示视频](docs/fluxdb-demo.mp4)** · 2 分 46 秒 · MP4，约 8.6 MB
+**演示视频** · 2 分 46 秒 · MP4，约 8.6 MB
+
+https://github.com/user-attachments/assets/f6075999-a87f-4644-9d14-dbda49a7981d
 
 > 早期版本，当前界面主要为中文，功能与兼容性尚未经过广泛的真实场景验证。建议先连接测试库；操作重要数据前，请先备份。
 
@@ -122,13 +124,24 @@ UI 行为修改还需启动应用验证主窗口及相关交互。
 
 ## 路线图
 
-- [ ] 完善尚未完整接入的设置项。
-- [ ] 扩大 Windows / Linux 的发行版与硬件兼容性验证。
-- [ ] 接入 MongoDB，支持集合浏览与文档编辑。
-- [ ] 支持界面国际化与多语言切换。
-- [ ] 探索自然语言转 SQL、补全增强与查询结果解释等 AI 功能。
+### 已完成
 
-以上为规划方向，尚未完成的功能不代表当前版本已经支持。
+- **MySQL**：连接管理（TLS/SSL、SSH 隧道、代理、超时与字符集等选项）、SQL 编辑与执行、库表与数据浏览编辑、表结构管理、结果导出，以及 mysqldump 备份与恢复、mysql 客户端工具入口。
+- **TiDB**：复用 MySQL 协议与驱动，已适配 TiDB 的 SQL 方言、补全与结构管理，与 MySQL 一同验证。
+- **PostgreSQL**：SQL 查询、Schema 与对象浏览、表结构管理、数据编辑、用户与角色权限管理，以及 psql 原生客户端工具。
+- **SQLite**：本地数据库文件连接、SQL 查询、表结构浏览与数据编辑。
+- **Redis**：连接总览、键空间浏览、键值与 TTL 编辑、工作台与内嵌命令终端。
+- **AI Agent**：对话式智能体，可编写、解释并执行 SQL，探索数据库与 Redis、读取文件、做 BI 分析并生成报表产物；提供工具权限分级与写入审批、MCP Client / Server、模型与插件配置。
+
+### 还未接入
+
+以下为规划方向，尚未完成的功能不代表当前版本已经支持。
+
+- **国际化与多语言**：界面文案目前固定为简体中文，计划抽出统一文案层并支持运行时语言切换，先覆盖简体中文与 English。
+- **MongoDB**：文档型数据源，计划支持连接管理、集合与文档浏览、文档编辑与索引查看。
+- **MariaDB**：协议兼容 MySQL，但系统表、语法与备份参数存在差异，需完成版本识别与方言适配后再作为独立数据源接入。
+- **SQL Server**：T-SQL 方言与连接协议不同，需要接入驱动，并补齐对象浏览与数据编辑能力。
+- **更多数据库**：按社区需求排序推进候选数据源（如 Oracle、ClickHouse、DuckDB、Elasticsearch / OpenSearch 等），复用现有 Connector 分层、SQL 方言与 AI 工具抽象；每个数据源需补齐连接管理、对象浏览、数据浏览与编辑、导入导出与备份恢复等能力后，才计入「已完成」。
 
 ## 支持与赞助
 

@@ -15,7 +15,6 @@
 
 [下载最新版本](https://github.com/fluxdb-alt/fluxDB/releases/latest) · [功能特性](#功能特性) · [安装说明](#下载安装) · [操作手册](./docs/user-guide.md) · [反馈问题](https://github.com/fluxdb-alt/fluxDB/issues)
 
-[![FluxDB SQL 编辑器：点击查看演示视频](docs/screenshots/sql_editor_adapter.png)](https://github.com/user-attachments/assets/f6075999-a87f-4644-9d14-dbda49a7981d)
 
 **演示视频** · 2 分 46 秒 · MP4，约 8.6 MB
 

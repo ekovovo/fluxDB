@@ -15,7 +15,7 @@ Built with Rust + GPUI, without Electron or a WebView. Available for macOS, Wind
 
 [Download the latest release](https://github.com/fluxdb-alt/fluxDB/releases/latest) · [Features](#features) · [Installation](#download-and-install) · [User Guide](./docs/user-guide.md) · [Report an issue](https://github.com/fluxdb-alt/fluxDB/issues)
 
-[![FluxDB SQL editor: click to watch the demo](docs/screenshots/sql_editor_adapter.png)](https://github.com/user-attachments/assets/f6075999-a87f-4644-9d14-dbda49a7981d)
+
 
 **Demo video** · 2 min 46 sec · MP4, approximately 8.6 MB
 

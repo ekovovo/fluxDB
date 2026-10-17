@@ -11,6 +11,11 @@ fn ai_sql_exec_block_on<F: std::future::Future>(future: F) -> F::Output {
         .block_on(future)
 }
 
+/// 工具装配用的独立结果仓库；生产路径注入会话共享仓库（`register_sql_read_tools`）。
+fn ai_sql_exec_fresh_result_store() -> std::sync::Arc<std::sync::Mutex<ResultStore>> {
+    std::sync::Arc::new(std::sync::Mutex::new(ResultStore::new(SQL_RESULT_MAX_BYTES)))
+}
+
 fn ai_sql_exec_demo_config(id: u64) -> ConnectionConfig {
     let mut options = std::collections::BTreeMap::new();
     options.insert("demo".to_string(), "true".to_string());
@@ -223,7 +228,8 @@ fn ai_sql_exec_sql_scope_rejects_cross_schema_tables_and_functions() {
 #[test]
 fn ai_sql_exec_query_tool_rejects_parameters_until_connector_bind_exists() {
     let resolver = Arc::new(MapSqlResolver::new([ai_sql_exec_demo_config(1)]));
-    let tool = AiSqlReadTool::query(resolver).expect("db.query 工具");
+    let tool = AiSqlReadTool::query_with_results(resolver, ai_sql_exec_fresh_result_store())
+        .expect("db.query 工具");
     assert_eq!(tool.descriptor().id, "db.query");
 
     let receipt = ai_sql_exec_block_on(tool.execute(
@@ -244,7 +250,8 @@ fn ai_sql_exec_query_tool_rejects_parameters_until_connector_bind_exists() {
 #[test]
 fn ai_sql_exec_query_tool_returns_bounded_rows_for_read_only_select() {
     let resolver = Arc::new(MapSqlResolver::new([ai_sql_exec_demo_config(1)]));
-    let tool = AiSqlReadTool::query(resolver).expect("db.query 工具");
+    let tool = AiSqlReadTool::query_with_results(resolver, ai_sql_exec_fresh_result_store())
+        .expect("db.query 工具");
 
     let receipt = ai_sql_exec_block_on(tool.execute(
         ai_sql_exec_ctx("call-ok", CancelFlag::new()),
@@ -265,7 +272,8 @@ fn ai_sql_exec_query_tool_returns_bounded_rows_for_read_only_select() {
 #[test]
 fn ai_sql_exec_cancel_flag_yields_cancelled_receipt() {
     let resolver = Arc::new(MapSqlResolver::new([ai_sql_exec_demo_config(1)]));
-    let tool = AiSqlReadTool::query(resolver).expect("db.query 工具");
+    let tool = AiSqlReadTool::query_with_results(resolver, ai_sql_exec_fresh_result_store())
+        .expect("db.query 工具");
     let cancel = CancelFlag::new();
     cancel.request();
 
@@ -293,7 +301,8 @@ fn ai_sql_exec_reports_progress_to_runtime_context() {
         progress: Some(events.clone() as std::sync::Arc<dyn fluxdb_core::ToolProgressSink>),
         cancel: CancelFlag::new(),
     };
-    let tool = AiSqlReadTool::query(resolver).expect("db.query 工具");
+    let tool = AiSqlReadTool::query_with_results(resolver, ai_sql_exec_fresh_result_store())
+        .expect("db.query 工具");
     let receipt = ai_sql_exec_block_on(tool.execute(
         ctx,
         r#"{"target":"conn:1","sql":"SELECT * FROM product"}"#.into(),
@@ -386,7 +395,8 @@ fn ai_sql_exec_releases_query_session_after_each_call() {
     // AI 只读读取是「每次有界独立事务」：单次调用结束即释放后端会话，
     // 不能让临时表/未提交状态长期占用显式查询会话（PostgreSQL 上有硬上限）。
     let resolver = Arc::new(MapSqlResolver::new([ai_sql_exec_demo_config(1)]));
-    let tool = AiSqlReadTool::query(resolver).expect("db.query 工具");
+    let tool = AiSqlReadTool::query_with_results(resolver, ai_sql_exec_fresh_result_store())
+        .expect("db.query 工具");
     let first = ai_sql_exec_block_on(tool.execute(
         ai_sql_exec_ctx("call-1", CancelFlag::new()),
         r#"{"target":"conn:1","sql":"SELECT * FROM product"}"#.into(),
@@ -498,7 +508,8 @@ fn ai_sql_exec_projection_is_bounded_by_bytes() {
 #[test]
 fn ai_sql_exec_explain_tool_builds_plan_and_refuses_execute_mode() {
     let resolver = Arc::new(MapSqlResolver::new([ai_sql_exec_demo_config(1)]));
-    let tool = AiSqlReadTool::explain(resolver).expect("db.explain 工具");
+    let tool = AiSqlReadTool::explain_with_results(resolver, ai_sql_exec_fresh_result_store())
+        .expect("db.explain 工具");
     assert_eq!(tool.descriptor().id, "db.explain");
 
     // 纯 SELECT 会被包成 EXPLAIN（plan），可以只读执行。
@@ -571,7 +582,11 @@ fn ai_sql_exec_param_error_code(sql: &str, parameters: serde_json::Value) -> Str
     let resolver = ai_sql_exec_demo_resolver();
     let arguments =
         serde_json::json!({ "target": "conn:1", "sql": sql, "parameters": parameters }).to_string();
-    let tool = AiSqlReadTool::query(std::sync::Arc::new(resolver)).expect("db.query 工具");
+    let tool = AiSqlReadTool::query_with_results(
+        std::sync::Arc::new(resolver),
+        ai_sql_exec_fresh_result_store(),
+    )
+    .expect("db.query 工具");
     let cancel = fluxdb_core::CancelFlag::new();
     let receipt = ai_sql_exec_block_on(tool.execute(
         ai_sql_exec_ctx("call-param", cancel),

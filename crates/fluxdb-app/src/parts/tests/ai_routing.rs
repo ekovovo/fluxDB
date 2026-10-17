@@ -82,34 +82,6 @@ fn candidate_check_rejects_denied_egress() {
 }
 
 #[test]
-fn first_usable_picks_first_valid_and_reports_rejections() {
-    let disabled = model("a", ModelKind::Generation, false, CredentialStatus::Configured);
-    let wrong = model("b", ModelKind::Decision, true, CredentialStatus::Configured);
-    let ok = model("c", ModelKind::Generation, true, CredentialStatus::Configured);
-    let candidates = vec![disabled, wrong, ok];
-    let (chosen, rejections) =
-        first_usable(candidates.iter(), CandidateRole::Main);
-    assert_eq!(chosen.map(|m| m.id.as_str()), Some("c"));
-    assert_eq!(
-        rejections,
-        vec![RouteRejection::Disabled, RouteRejection::WrongKind {
-            expected: ModelKind::Generation
-        }]
-    );
-}
-
-#[test]
-fn first_usable_with_no_valid_candidate_returns_all_reasons() {
-    let disabled = model("a", ModelKind::Generation, false, CredentialStatus::Configured);
-    let missing = model("b", ModelKind::Generation, true, CredentialStatus::Missing);
-    let candidates = vec![disabled, missing];
-    let (chosen, rejections) =
-        first_usable(candidates.iter(), CandidateRole::Main);
-    assert!(chosen.is_none());
-    assert_eq!(rejections.len(), 2, "应保留每条不合格原因，不能显示成无模型");
-}
-
-#[test]
 fn capability_labels_come_from_context_window_not_price_or_name() {
     let mut premium = model("premium", ModelKind::Generation, true, CredentialStatus::Configured);
     premium.display_name = "cheap".into();

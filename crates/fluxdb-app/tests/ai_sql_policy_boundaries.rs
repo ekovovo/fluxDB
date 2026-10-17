@@ -181,7 +181,7 @@ impl Drop for SqliteFixture {
 
 #[test]
 fn query_tool_rejects_pragma_writes_and_preserves_real_sqlite_state() {
-    use fluxdb_app::{AiSqlReadTool, MapSqlResolver};
+    use fluxdb_app::{AiSqlReadTool, MapSqlResolver, ResultStore, SQL_RESULT_MAX_BYTES};
     use fluxdb_core::{
         AiTool, CancelFlag, ConnectionConfig, ConnectionId, DatabaseKind, Endpoint,
         ToolExecutionContext, ToolReceiptStatus,
@@ -207,7 +207,13 @@ fn query_tool_rejects_pragma_writes_and_preserves_real_sqlite_state() {
         mysql_profile: None,
         postgres_profile: None,
     };
-    let tool = AiSqlReadTool::query(Arc::new(MapSqlResolver::new([config]))).unwrap();
+    let tool = AiSqlReadTool::query_with_results(
+        Arc::new(MapSqlResolver::new([config])),
+        Arc::new(std::sync::Mutex::new(ResultStore::new(
+            SQL_RESULT_MAX_BYTES,
+        ))),
+    )
+    .unwrap();
     for (pragma, sql) in [
         ("user_version", "PRAGMA user_version(42)"),
         ("application_id", "PRAGMA application_id(42)"),

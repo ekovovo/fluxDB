@@ -3,7 +3,7 @@
 // 该文件以 include! 引入 crate 根作用域，Error/Result 等已在上方导入。
 
 use fluxdb_storage::ai_platform::{
-    agents, mcp, models, plugins, settings as ai_settings, tool_settings,
+    agents, models, plugins, settings as ai_settings, tool_settings,
 };
 use fluxdb_storage::Storage as _;
 use rusqlite::Connection as AiConn;
@@ -308,7 +308,6 @@ pub fn refresh_ai_settings(
         models,
         agents_list,
         plugin_items,
-        mcp_list,
         sessions_page,
         sessions_total,
         runtime,
@@ -318,7 +317,6 @@ pub fn refresh_ai_settings(
             models::list_models_page(conn, 200, 0)?,
             agents::list_agents(conn)?,
             ai_plugin_items(conn)?,
-            mcp::list_mcp_settings(conn)?,
             fluxdb_storage::ai_platform::sessions::list_session_overviews_page(
                 conn,
                 AI_SESSION_PAGE_SIZE,
@@ -400,17 +398,7 @@ pub fn refresh_ai_settings(
         })
         .collect();
     state.ai_plugin_instances = plugin_items;
-    state.ai_mcp_settings = mcp_list
-        .into_iter()
-        .map(|m| AiMcpItem {
-            id: m.id,
-            display_name: m.display_name,
-            transport: m.transport,
-            enabled: m.enabled,
-            revision: m.revision,
-        })
-        .collect();
-    // 对外 Server 的 Profile / 数据源与 Client 设置严格分开加载。
+    // 对外 Server 的 Profile / 数据源加载。
     // 连接名称来自普通配置（config.toml），与 AI SQLite 无关，先读一次避免在闭包内再进存储。
     let connection_names = storage
         .load_connections()
@@ -510,7 +498,6 @@ pub fn merge_ai_settings(state: &mut AppState, loaded: &AppState) {
     state.ai_tool_settings = loaded.ai_tool_settings.clone();
     state.ai_agents = loaded.ai_agents.clone();
     state.ai_plugin_instances = loaded.ai_plugin_instances.clone();
-    state.ai_mcp_settings = loaded.ai_mcp_settings.clone();
     state.ai_mcp_server_profiles = loaded.ai_mcp_server_profiles.clone();
     state.ai_mcp_datasources = loaded.ai_mcp_datasources.clone();
     state.ai_audit_rows = loaded.ai_audit_rows.clone();
@@ -805,12 +792,12 @@ impl ModelProvider {
         }
     }
 
-    /// 解析落库字符串或 UI 展示名；未知值回退 OpenAI Chat（老数据兼容）。
+    /// 解析 [`Self::stored_id`] 写下的稳定标识；未知值回退 OpenAI Chat。
     pub fn from_stored(value: &str) -> Self {
         match value {
-            "openai-responses" | "OpenAI Responses" => ModelProvider::OpenAiResponses,
-            "anthropic" | "Anthropic Messages" => ModelProvider::Anthropic,
-            "decisions" | "Decisions" => ModelProvider::Decisions,
+            "openai-responses" => ModelProvider::OpenAiResponses,
+            "anthropic" => ModelProvider::Anthropic,
+            "decisions" => ModelProvider::Decisions,
             _ => ModelProvider::OpenAiChat,
         }
     }

@@ -50,7 +50,7 @@ fn ai_chat_project(
             .messages
             .into_iter()
             .map(|m| {
-                let mut parts: Vec<AiConversationPart> = data
+                let parts: Vec<AiConversationPart> = data
                     .parts
                     .iter()
                     .filter(|p| p.message_id == m.id)
@@ -72,20 +72,6 @@ fn ai_chat_project(
                         },
                     })
                     .collect();
-                // 旧会话没有 context_ref 片段时，从该消息所属 Turn 的固定快照恢复公开标签。
-                if m.role == "user" && !parts.iter().any(|part| part.kind == "context_ref") {
-                    if let Some(snapshot) = data.turns.iter().find(|turn| Some(&turn.id) == m.turn_id.as_ref())
-                        .and_then(|turn| serde_json::from_str::<serde_json::Value>(&turn.runtime_snapshot_json).ok()) {
-                        if let Some(references) = snapshot.get("context_references").and_then(|value| value.as_array()) {
-                            parts.extend(references.iter().enumerate().filter_map(|(index, reference)| {
-                                Some(AiConversationPart {
-                                    id: format!("{}-context-legacy-{index}", m.id), kind: "context_ref".into(), status: "complete".into(),
-                                    payload_json: serde_json::json!({"id":reference.get("id")?.as_str()?,"label":reference.get("label")?.as_str()?,"kind":reference.get("kind")?.as_str()?,"summary":reference.get("summary").and_then(|value| value.as_str()).unwrap_or_default()}).to_string(),
-                                })
-                            }));
-                        }
-                    }
-                }
                 AiConversationMessage { id: m.id, role: m.role, parts }
             })
             .collect(),

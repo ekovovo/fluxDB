@@ -257,11 +257,6 @@ pub fn jev_config_declaration() -> &'static PluginConfigDeclaration {
 /// 上下文压缩的压缩决策模型字段键；声明与运行期共用，改名等同协议不兼容变更。
 pub const COMPACTION_DECISION_MODEL_FIELD: &str = "compaction_decision_model";
 
-/// 调用前安全审计的规则字段键；声明、存储与求值共用，改名等同协议不兼容变更。
-///
-/// 字段键与 `ai_audit_rules.rs` 里的 `RULE_*` 常量一一对应，两侧必须同步改名。
-pub const SECURITY_AUDIT_INSTANCE: &str = "builtin.security-audit";
-
 /// 调用前安全审计的配置声明（协议见 [`PluginConfigDeclaration`]）。
 ///
 /// 规则全部是**可选项**：不填即不拦，插件的存在不改变基础授权链的行为。
@@ -507,6 +502,28 @@ impl BuiltinRegistry {
         let mut ids = std::collections::BTreeSet::new();
         let mut package_keys = std::collections::BTreeSet::new();
         for descriptor in BUILTIN_DESCRIPTORS {
+            // 能力目录与存储层的种子目录各自独立声明，这里逐行核对身份字段，
+            // 让两份清单漂移在启动时暴露，而不是让某个内置行静默缺失或改名。
+            let seeded = fluxdb_storage::ai_platform::plugins::BUILTIN_PLUGINS
+                .iter()
+                .find(|plugin| plugin.instance_id == descriptor.instance_id)
+                .ok_or_else(|| {
+                    fluxdb_core::Error::new(
+                        fluxdb_core::ErrorKind::Internal,
+                        format!("内置能力 {} 未在存储层插件注册表中登记", descriptor.instance_id),
+                    )
+                })?;
+            if seeded.package_key != descriptor.package_key
+                || seeded.display_name != descriptor.display_name
+            {
+                return Err(fluxdb_core::Error::new(
+                    fluxdb_core::ErrorKind::Internal,
+                    format!(
+                        "内置能力 {} 与存储层插件注册表不一致",
+                        descriptor.instance_id
+                    ),
+                ));
+            }
             if !ids.insert(descriptor.instance_id)
                 || !package_keys.insert(descriptor.package_key)
             {

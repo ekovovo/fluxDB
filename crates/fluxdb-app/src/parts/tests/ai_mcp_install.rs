@@ -79,9 +79,9 @@ mod mcp_install_tests {
         // 二次注册幂等：内容一致则 changed=false（覆盖为相同内容）。
         let again = register(McpClientKind::Codex, &home, &reg).unwrap();
         assert!(!again.changed, "重复注册相同内容不应重写");
-        // 状态查询。
-        let status = client_status(McpClientKind::Codex, &home, "fluxdb");
-        assert!(status.registered && status.config_exists);
+        // 状态查询：权威解析器认出同名条目。
+        let launch = client_launch(McpClientKind::Codex, &home).expect("配置可解析");
+        assert!(launch.is_some() && home.join(".codex/config.toml").is_file());
         // 卸载只删自己的条目。
         let removed = unregister(McpClientKind::Codex, &home, "fluxdb").unwrap();
         assert!(removed.changed);
@@ -171,8 +171,10 @@ mod mcp_install_tests {
     #[test]
     fn status_reports_absence_for_missing_config() {
         let home = temp_home("missing");
-        let status = client_status(McpClientKind::Codex, &home, "fluxdb");
-        assert!(!status.config_exists && !status.registered);
+        assert!(!home.join(".codex/config.toml").is_file());
+        assert!(client_launch(McpClientKind::Codex, &home)
+            .expect("配置文件缺失不算错误")
+            .is_none());
         std::fs::remove_dir_all(&home).ok();
     }
 

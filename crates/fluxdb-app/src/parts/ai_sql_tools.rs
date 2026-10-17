@@ -11,22 +11,6 @@ pub struct AiSqlReadTool<R: SqlExecutionResolver> {
 }
 
 impl<R: SqlExecutionResolver> AiSqlReadTool<R> {
-    pub fn query(resolver: Arc<R>) -> fluxdb_core::Result<Self> {
-        let results = Arc::new(Mutex::new(ResultStore::new(SQL_RESULT_MAX_BYTES)));
-        Self::from_spec(resolver, results, "db.query", DB_QUERY_INPUT_SCHEMA, false)
-    }
-
-    pub fn explain(resolver: Arc<R>) -> fluxdb_core::Result<Self> {
-        let results = Arc::new(Mutex::new(ResultStore::new(SQL_RESULT_MAX_BYTES)));
-        Self::from_spec(
-            resolver,
-            results,
-            "db.explain",
-            DB_EXPLAIN_INPUT_SCHEMA,
-            true,
-        )
-    }
-
     /// 生产装配入口：注入本次会话的结果仓库，使 `db.query` 回执带可续读的 ResultRef。
     pub fn query_with_results(
         resolver: Arc<R>,

@@ -266,8 +266,11 @@ fn t023_postgres_metadata_query_cancel_and_session_isolation() {
 
     // 4) 进度事件通道：真实 Connector summary 进入 ToolExecutionContext.progress。
     let events = std::sync::Arc::new(crate::RecordingProgressSink::new());
-    let tool = AiSqlReadTool::query(std::sync::Arc::new(AiLiveResolver::new(config.clone())))
-        .expect("db.query 工具");
+    let tool = AiSqlReadTool::query_with_results(
+        std::sync::Arc::new(AiLiveResolver::new(config.clone())),
+        std::sync::Arc::new(std::sync::Mutex::new(ResultStore::new(SQL_RESULT_MAX_BYTES))),
+    )
+    .expect("db.query 工具");
     let receipt = ai_block_on(tool.execute(
         fluxdb_core::ToolExecutionContext {
             automatic_approval: false,
@@ -442,8 +445,11 @@ fn t023_mysql_metadata_query_cancel_and_session_isolation() {
 
     let cancel = fluxdb_core::CancelFlag::new();
     cancel.request();
-    let tool = AiSqlReadTool::query(std::sync::Arc::new(AiLiveResolver::new(config.clone())))
-        .expect("db.query 工具");
+    let tool = AiSqlReadTool::query_with_results(
+        std::sync::Arc::new(AiLiveResolver::new(config.clone())),
+        std::sync::Arc::new(std::sync::Mutex::new(ResultStore::new(SQL_RESULT_MAX_BYTES))),
+    )
+    .expect("db.query 工具");
     let cancelled = ai_block_on(tool.execute(
         fluxdb_core::ToolExecutionContext {
             automatic_approval: false,
@@ -491,7 +497,7 @@ impl SqlExecutionResolver for AiLiveResolver {
 }
 
 /// 真实连接器自己会建 tokio runtime；这里不能套一层 runtime（否则嵌套 runtime panic）。
-/// 工具 future 不依赖外部 IO 反应堆，用生产同款「就绪轮询」阻塞器即可。
+/// 工具 future 不依赖外部 IO 反应堆，用生产同款阻塞器即可。
 fn ai_block_on<F: std::future::Future>(future: F) -> F::Output {
-    block_on_ready(future).expect("工具 future 应在就绪轮次内完成")
+    crate::ai_executor::block_on(future).expect("工具 future 应能完成")
 }

@@ -1,8 +1,8 @@
 //! AI 管理与运行实体的建表语句（设计文档 §42 的唯一代码来源）。
 //!
-//! 首次打开数据库时由 [`crate::sqlite::create_schema`] 幂等创建；已知旧列与面板
-//! 偏好约束由 `ensure_schema` 增量升级。`CREATE TABLE IF NOT EXISTS` 不会重建
-//! 未知结构，由 [`verify_ai_schema`] 检出并报错。
+//! 首次打开数据库时由 [`crate::sqlite::create_schema`] 幂等创建，没有增量升级
+//! 步骤：结构一旦发布即视为稳定，`CREATE TABLE IF NOT EXISTS` 不会重建未知结构，
+//! 由 [`crate::ai_platform::verify_ai_schema`] 检出并报错。
 
 /// 管理实体 DDL（模型 / Agent / 提示词 / 插件 / 绑定 / MCP / 预算 / 运行设置）。
 pub const MANAGEMENT_SQL: &str = r##"CREATE TABLE IF NOT EXISTS ai_model_profiles (
@@ -531,7 +531,7 @@ CREATE INDEX IF NOT EXISTS ai_usage_policy_status ON ai_usage_ledger(budget_poli
 CREATE INDEX IF NOT EXISTS ai_usage_session ON ai_usage_ledger(session_id, created_at_ms);
 "##;
 
-/// 面板偏好独立声明，首次建表和约束升级复用同一结构。
+/// 面板偏好独立声明，便于设置页单独读写。
 pub const PANEL_PREFERENCES_SQL: &str = r##"CREATE TABLE IF NOT EXISTS ai_panel_preferences (
     id INTEGER PRIMARY KEY CHECK (id=1),
     preferred_mode TEXT NOT NULL DEFAULT 'drawer' CHECK (preferred_mode IN ('drawer','embedded','tab')),

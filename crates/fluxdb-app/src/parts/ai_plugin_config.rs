@@ -608,13 +608,10 @@ fn scalar_to_text(kind: PluginFieldKind, value: &serde_json::Value) -> Option<St
                     .collect::<Vec<_>>()
                     .join("\n"),
             ),
-            // 手改成字符串也接受，按整段文本展示。
-            serde_json::Value::String(text) => Some(text.clone()),
             _ => Some(String::new()),
         },
         PluginFieldKind::Switch => Some(match value {
             serde_json::Value::Bool(flag) => flag.to_string(),
-            serde_json::Value::String(text) => text.clone(),
             _ => String::new(),
         }),
         _ => value.as_str().map(str::to_string),
@@ -666,7 +663,7 @@ pub fn scalar_text_to_json(field: &PluginConfigField, text: &str) -> serde_json:
                 .map(serde_json::Value::String)
                 .collect(),
         ),
-        // 开关按布尔落库：语义清晰，读取端兼容字符串形态的历史值。
+        // 开关按布尔落库：读取端只认布尔形态，其余取值一律当作"关闭"。
         PluginFieldKind::Switch => serde_json::Value::Bool(text == "true"),
         _ => serde_json::Value::String(text.to_string()),
     }

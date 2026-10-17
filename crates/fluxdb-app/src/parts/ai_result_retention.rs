@@ -27,37 +27,12 @@ fn purge_expired_result_files(storage: &fluxdb_storage::FileStorage) -> fluxdb_c
     })?;
     let root = storage.root_dir().join("ai-results");
     for (id, relative) in rows {
-        let path = std::path::Path::new(&relative);
-        let parts: Vec<_> = path.components().collect();
-        let safe_name = path
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .is_some_and(|stem| uuid::Uuid::parse_str(stem).is_ok());
-        if parts.len() != 2
-            || parts[0] != std::path::Component::Normal(std::ffi::OsStr::new("results"))
-            || !safe_name
-            || path.extension() != Some(std::ffi::OsStr::new("json"))
-        {
+        if !is_controlled_result_file(&relative) {
             tracing::warn!(result_id=%id, "拒绝清理非法结果相对路径");
             continue;
         }
-        let directory = root.join("results");
-        if directory.exists() {
-            let controlled =
-                std::fs::canonicalize(&root).map_err(result_io_error("结果根目录不可用"))?;
-            let actual =
-                std::fs::canonicalize(&directory).map_err(result_io_error("结果目录不可用"))?;
-            if !actual.starts_with(&controlled) {
-                return Err(Error::new(ErrorKind::Internal, "结果目录已越过受控根"));
-            }
-        }
-        match std::fs::remove_file(root.join(path)) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => {
-                tracing::warn!(result_id=%id, %error, "过期结果文件清理失败，留待重试");
-                continue;
-            }
+        if !remove_controlled_file(&root, &relative, "过期结果") {
+            continue;
         }
         with_ai_storage(storage, |conn| {
             conn.execute(
@@ -82,17 +57,7 @@ fn purge_session_files(
     let root = storage.root_dir();
     let results_root = root.join("ai-results");
     for relative in &plan.result_files {
-        let path = std::path::Path::new(relative);
-        let parts: Vec<_> = path.components().collect();
-        let safe_name = path
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .is_some_and(|stem| uuid::Uuid::parse_str(stem).is_ok());
-        if parts.len() != 2
-            || parts[0] != std::path::Component::Normal(std::ffi::OsStr::new("results"))
-            || !safe_name
-            || path.extension() != Some(std::ffi::OsStr::new("json"))
-        {
+        if !is_controlled_result_file(relative) {
             tracing::warn!(%relative, "拒绝清理非法会话结果相对路径");
             continue;
         }
@@ -100,14 +65,7 @@ fn purge_session_files(
     }
     let artifacts_root = root.join("ai-artifacts");
     for relative in &plan.artifact_files {
-        let path = std::path::Path::new(relative);
-        let safe_name = path
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .is_some_and(|stem| uuid::Uuid::parse_str(stem).is_ok());
-        if path.components().count() != 1 || !safe_name
-            || path.extension() != Some(std::ffi::OsStr::new("json"))
-        {
+        if !is_controlled_artifact_file(relative) {
             tracing::warn!(%relative, "拒绝清理非法会话产物相对路径");
             continue;
         }
@@ -116,15 +74,18 @@ fn purge_session_files(
 }
 
 /// 删除受控根内的单个文件；根目录若是符号链接则拒绝，缺失视为已删除。
-fn remove_controlled_file(root: &std::path::Path, relative: &str, label: &str) {
+///
+/// 返回文件是否已不在磁盘上（删除成功或本来就缺失）：`false` 表示受控根不可用、
+/// 目标越界或删除失败，调用方据此决定是否推进"已清理"状态。
+fn remove_controlled_file(root: &std::path::Path, relative: &str, label: &str) -> bool {
     if !root.exists() {
-        return;
+        return true;
     }
     let controlled = match std::fs::canonicalize(root) {
         Ok(path) => path,
         Err(error) => {
             tracing::warn!(%relative, %error, label, "受控根不可用，跳过文件清理");
-            return;
+            return false;
         }
     };
     let target = root.join(relative);
@@ -133,15 +94,18 @@ fn remove_controlled_file(root: &std::path::Path, relative: &str, label: &str) {
             Ok(parent) if parent.starts_with(&controlled) => {}
             Ok(_) => {
                 tracing::warn!(%relative, label, "目标目录越过受控根，拒绝清理");
-                return;
+                return false;
             }
-            Err(_) => return,
+            Err(_) => return false,
         }
     }
     match std::fs::remove_file(&target) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => tracing::warn!(%relative, %error, label, "文件清理失败，留待重试"),
+        Ok(()) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+        Err(error) => {
+            tracing::warn!(%relative, %error, label, "文件清理失败，留待重试");
+            false
+        }
     }
 }
 
@@ -296,6 +260,19 @@ fn purge_orphans_in(
 fn is_controlled_artifact_file(relative: &str) -> bool {
     let path = std::path::Path::new(relative);
     path.components().count() == 1
+        && path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .is_some_and(|stem| uuid::Uuid::parse_str(stem).is_ok())
+        && path.extension() == Some(std::ffi::OsStr::new("json"))
+}
+
+/// 受控结果相对路径校验：`results/<uuid>.json`，与写入侧同一约束。
+fn is_controlled_result_file(relative: &str) -> bool {
+    let path = std::path::Path::new(relative);
+    let parts: Vec<_> = path.components().collect();
+    parts.len() == 2
+        && parts[0] == std::path::Component::Normal(std::ffi::OsStr::new("results"))
         && path
             .file_stem()
             .and_then(|stem| stem.to_str())

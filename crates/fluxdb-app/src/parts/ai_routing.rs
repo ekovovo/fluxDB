@@ -45,7 +45,6 @@ impl RouteRejection {
 pub enum CandidateRole {
     Main,
     Compaction,
-    Artifact,
     Decision,
     /// 压缩决策：在压缩切点候选之间做选择的决策模型（与主决策角色用途相同，单独命名只为拒绝原因可读）。
     CompactionDecision,
@@ -86,7 +85,6 @@ impl CandidateRole {
         match self {
             CandidateRole::Main => "主模型",
             CandidateRole::Compaction => "压缩模型",
-            CandidateRole::Artifact => "产物模型",
             CandidateRole::Decision => "决策模型",
             CandidateRole::CompactionDecision => "压缩决策模型",
         }
@@ -117,23 +115,6 @@ pub fn candidate_check(model: &ModelProfileView, role: CandidateRole) -> Result<
         return Err(RouteRejection::MissingCredential);
     }
     Ok(())
-}
-
-/// 从一组候选模型里按稳定顺序挑出第一个合格者（顺序由调用方给定）。
-///
-/// 返回所有不合格原因，便于 UI 说明"有候选但都不可用"，而不是显示成"无模型"。
-pub fn first_usable<'a>(
-    models: impl IntoIterator<Item = &'a ModelProfileView>,
-    role: CandidateRole,
-) -> (Option<&'a ModelProfileView>, Vec<RouteRejection>) {
-    let mut rejections = Vec::new();
-    for model in models {
-        match candidate_check(model, role) {
-            Ok(()) => return (Some(model), rejections),
-            Err(reason) => rejections.push(reason),
-        }
-    }
-    (None, rejections)
 }
 
 /// 能力标签：只由模型真实上下文窗口推导，不按模型名或价格硬编码。

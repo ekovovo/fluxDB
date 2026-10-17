@@ -437,7 +437,7 @@ fn run_editor_tool(
         cancel: fluxdb_core::CancelFlag::new(),
         progress: None,
     };
-    block_on_ready(tool.execute(ctx, prepared.to_json_string()))
+    crate::ai_executor::block_on(tool.execute(ctx, prepared.to_json_string()))
         .expect("执行本身不应失败")
         .expect("工具应回执而非 Err")
 }

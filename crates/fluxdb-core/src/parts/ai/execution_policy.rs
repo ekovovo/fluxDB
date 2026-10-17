@@ -60,6 +60,9 @@ impl McpWritePolicy {
 /// MCP 数据源自身的“默认”取值表示跟随这里的 `mcp_default`；数据源覆盖存在
 /// `ai_mcp_server_datasources` 行上（见 storage），避免两处各存一份事实。
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+// `default` 不是为旧数据兜底：`ai_runtime_settings.execution_policy_json` 的列默认
+// 是 `'{}'`，`settings::save_runtime_settings` 建行时不写该列，读取端必须能把 `{}`
+// 解析成全套默认值。`deny_unknown_fields` 保证多出来的键仍然报错。
 #[serde(default, deny_unknown_fields)]
 pub struct ExecutionPolicySettings {
     pub tools_default: ExecutionPolicy,

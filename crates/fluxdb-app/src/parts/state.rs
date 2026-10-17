@@ -422,15 +422,6 @@ pub struct AiSessionItem {
     pub revision: i64,
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct AiMcpItem {
-    pub id: String,
-    pub display_name: String,
-    pub transport: String,
-    pub enabled: bool,
-    pub revision: i64,
-}
-
 /// 设置页「MCP Server Profile」列表行：对外服务配置，不含任何秘密。
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct AiMcpServerProfileItem {
@@ -527,8 +518,6 @@ pub struct AppState {
     /// 标准工具的全局启停；列表项缺失表示该工具从未被显式关闭（默认启用）。
     pub ai_tool_settings: Vec<AiToolSettingItem>,
     pub ai_execution_policy: fluxdb_core::ExecutionPolicySettings,
-    /// 本应用作为 Client 接入外部 MCP Server 的设置（与对外 Server 表严格区分）。
-    pub ai_mcp_settings: Vec<AiMcpItem>,
     /// 设置页「本地 MCP」页签的对外 Server Profile 列表。
     pub ai_mcp_server_profiles: Vec<AiMcpServerProfileItem>,
     /// 各 Profile 的数据源（对外可见连接 + 写入策略）；按 profile_id 归属，UI 分组展示。
@@ -584,7 +573,6 @@ impl Default for AppState {
             ai_plugin_instances: Vec::new(),
             ai_tool_settings: Vec::new(),
             ai_execution_policy: Default::default(),
-            ai_mcp_settings: Vec::new(),
             ai_mcp_server_profiles: Vec::new(),
             ai_mcp_datasources: Vec::new(),
             ai_audit_rows: Vec::new(),

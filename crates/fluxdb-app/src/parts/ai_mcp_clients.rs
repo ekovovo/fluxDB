@@ -56,7 +56,43 @@ impl McpRegistration {
     }
 }
 
+/// 把 Codex TOML 的 `[mcp_servers.<name>]` 条目转成 JSON 值，让两种配置格式
+/// 共用同一份条目校验（`url` / `type` / `command` / `args`）。
+fn codex_entry_to_json(entry: &toml_edit::Item) -> fluxdb_core::Result<serde_json::Value> {
+    let mut map = serde_json::Map::new();
+    for key in ["url", "type", "command"] {
+        if let Some(value) = entry.get(key) {
+            map.insert(
+                key.to_string(),
+                value
+                    .as_str()
+                    .map(|text| serde_json::Value::String(text.to_string()))
+                    // 非字符串值同样要留下"该键存在"的痕迹，交由共享校验拒绝。
+                    .unwrap_or(serde_json::Value::Null),
+            );
+        }
+    }
+    if let Some(args) = entry.get("args") {
+        let items = args
+            .as_array()
+            .ok_or_else(|| write_error("MCP 参数不是数组"))?
+            .iter()
+            .map(|value| {
+                value
+                    .as_str()
+                    .map(|text| serde_json::Value::String(text.to_string()))
+                    .ok_or_else(|| write_error("MCP 参数必须是字符串"))
+            })
+            .collect::<fluxdb_core::Result<Vec<_>>>()?;
+        map.insert("args".to_string(), serde_json::Value::Array(items));
+    }
+    Ok(serde_json::Value::Object(map))
+}
+
 /// 只提取非敏感的启动信息；绝不把客户端整个配置带入状态、日志或持久化记录。
+///
+/// `None` 表示没有同名条目；同名条目存在但不是合法 stdio 服务时返回错误，
+/// 由调用方展示原因而不是当作"未注册"。
 fn client_launch(
     client: McpClientKind,
     home: &Path,
@@ -84,33 +120,7 @@ fn client_launch(
             else {
                 return Ok(None);
             };
-            if entry.get("url").is_some()
-                || entry
-                    .get("type")
-                    .and_then(|v| v.as_str())
-                    .is_some_and(|v| v != "stdio")
-            {
-                return Err(write_error("同名 fluxdb 条目不是 stdio 服务，未改写"));
-            }
-            let command = entry
-                .get("command")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| write_error("同名 fluxdb 条目缺少启动程序，未改写"))?
-                .to_string();
-            let args = match entry.get("args") {
-                None => Vec::new(),
-                Some(args) => args
-                    .as_array()
-                    .ok_or_else(|| write_error("MCP 参数不是数组"))?
-                    .iter()
-                    .map(|v| {
-                        v.as_str()
-                            .map(str::to_string)
-                            .ok_or_else(|| write_error("MCP 参数必须是字符串"))
-                    })
-                    .collect::<fluxdb_core::Result<Vec<_>>>()?,
-            };
-            return Ok(Some(fluxdb_storage::McpClientLaunch { command, args }));
+            Some(codex_entry_to_json(entry)?)
         }
         McpClientKind::ClaudeCode => {
             let value: serde_json::Value = serde_json::from_str(&text)
@@ -124,7 +134,9 @@ fn client_launch(
                 .cloned()
         }
     };
-    let Some(entry) = entry else { return Ok(None) };
+    let Some(entry) = entry else {
+        return Ok(None);
+    };
     if entry.get("url").is_some()
         || entry
             .get("type")
@@ -146,6 +158,27 @@ fn client_launch(
     )
     .map_err(|_| write_error("同名 fluxdb 条目的参数不是字符串数组，未改写"))?;
     Ok(Some(fluxdb_storage::McpClientLaunch { command, args }))
+}
+
+/// 列出全部已适配客户端的展示行（不含注册判定，由调用方用权威解析结果填充）。
+fn install_client_statuses(home: &Path) -> Vec<McpInstallClientStatus> {
+    McpClientKind::all()
+        .iter()
+        .copied()
+        .map(|client| {
+            let config_path = client.config_path(home);
+            McpInstallClientStatus {
+                key: client.key().to_string(),
+                label: client.label().to_string(),
+                config_path: config_path.display().to_string(),
+                config_exists: config_path.is_file(),
+                registered: false,
+                managed: false,
+                up_to_date: false,
+                error: None,
+            }
+        })
+        .collect()
 }
 
 pub fn mcp_clients_snapshot(

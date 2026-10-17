@@ -75,15 +75,6 @@ pub const DEFAULT_MCP_SERVER_NAME: &str = "fluxdb";
 /// 默认 Server Profile ID（自动为“一键注册”创建一个只读、空授权的 Profile）。
 pub const DEFAULT_MCP_PROFILE_ID: &str = "fluxdb.local";
 
-/// 查询所有支持客户端的注册状态（供 UI 一次性渲染）。
-pub fn install_status_snapshot(home: &Path) -> Vec<ClientStatus> {
-    McpClientKind::all()
-        .iter()
-        .copied()
-        .map(|client| client_status(client, home, DEFAULT_MCP_SERVER_NAME))
-        .collect()
-}
-
 /// 解析随桌面端一起打包的 `fluxdb-mcp` 二进制路径：优先取当前可执行文件的同级目录。
 ///
 /// 未打包独立 Server 时复用桌面可执行文件的 `--mcp-server` 入口，不猜测开发机目录。
@@ -171,17 +162,6 @@ impl McpRegistration {
     }
 }
 
-/// 某个客户端当前的注册状态（供 UI 展示）。
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ClientStatus {
-    pub client: McpClientKind,
-    pub config_path: PathBuf,
-    /// 配置文件是否存在（用于判断该客户端是否可能已安装）。
-    pub config_exists: bool,
-    /// 配置里是否已有同名 server 条目。
-    pub registered: bool,
-}
-
 /// UI 展示用的客户端注册状态投影（不含 PathBuf 之外的内部类型）。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct McpInstallClientStatus {
@@ -199,46 +179,6 @@ pub struct McpInstallClientStatus {
     /// 客户端里的同名条目与本应用将写入的启动命令一致；此时「卸载」才是对应用例行的撤销。
     pub up_to_date: bool,
     pub error: Option<String>,
-}
-
-/// 一次性生成 UI 用的注册状态快照。
-pub fn install_client_statuses(home: &Path) -> Vec<McpInstallClientStatus> {
-    install_status_snapshot(home)
-        .into_iter()
-        .map(|status| McpInstallClientStatus {
-            key: status.client.key().to_string(),
-            label: status.client.label().to_string(),
-            config_path: status.config_path.display().to_string(),
-            config_exists: status.config_exists,
-            registered: status.registered,
-            managed: false,
-            up_to_date: false,
-            error: None,
-        })
-        .collect()
-}
-
-/// 查询某客户端的注册状态；读取失败按“未注册 + 文件不存在”处理，不抛错。
-pub fn client_status(client: McpClientKind, home: &Path, server_name: &str) -> ClientStatus {
-    let config_path = client.config_path(home);
-    let config_exists = config_path.is_file();
-    let registered = if config_exists {
-        std::fs::read_to_string(&config_path)
-            .ok()
-            .map(|text| match client {
-                McpClientKind::Codex => codex_has_server(&text, server_name),
-                McpClientKind::ClaudeCode => claude_has_server(&text, server_name),
-            })
-            .unwrap_or(false)
-    } else {
-        false
-    };
-    ClientStatus {
-        client,
-        config_path,
-        config_exists,
-        registered,
-    }
 }
 
 /// 写入结果事实（供 UI 展示路径与备份位置）。
@@ -300,17 +240,6 @@ fn write_error(message: impl Into<String>) -> fluxdb_core::Error {
 }
 
 // ---- Codex（TOML，保留注释/格式，只改 [mcp_servers.<name>]）----
-
-fn codex_has_server(text: &str, server_name: &str) -> bool {
-    text.parse::<toml_edit::DocumentMut>()
-        .ok()
-        .and_then(|doc| {
-            doc.get("mcp_servers")
-                .and_then(|m| m.get(server_name))
-                .map(|_| ())
-        })
-        .is_some()
-}
 
 fn register_codex(
     config_path: &Path,
@@ -410,18 +339,6 @@ fn unregister_codex(
 }
 
 // ---- Claude Code（JSON，保留其它键，只改 mcpServers.<name>）----
-
-fn claude_has_server(text: &str, server_name: &str) -> bool {
-    serde_json::from_str::<serde_json::Value>(text)
-        .ok()
-        .and_then(|value| {
-            value
-                .get("mcpServers")
-                .and_then(|servers| servers.get(server_name))
-                .map(|_| ())
-        })
-        .is_some()
-}
 
 fn register_claude(
     config_path: &Path,

@@ -95,149 +95,147 @@ pub fn seed_builtin_package(
 }
 
 /// 幂等写入内置插件实例（system 来源）。
+///
+/// `default_enabled` 只决定首次建行的启停状态；已存在的行不会被覆盖。
 pub fn seed_builtin_instance(
     conn: &Connection,
     now_ms: i64,
     id: &str,
     package_id: &str,
     display_name: &str,
+    default_enabled: bool,
 ) -> Result<()> {
     conn.execute(
         "INSERT INTO ai_plugin_instances (id, display_name, package_id, enabled,
             config_schema_version, config_json, granted_permissions_json, revision,
             created_at_ms, updated_at_ms)
-         VALUES (?1,?2,?3,1,1,'{}','[]',1,?4,?4)
+         VALUES (?1,?2,?3,?4,1,'{}','[]',1,?5,?5)
          ON CONFLICT(id) DO NOTHING",
-        params![id, display_name, package_id, now_ms],
+        params![
+            id,
+            display_name,
+            package_id,
+            i64::from(default_enabled),
+            now_ms
+        ],
     )
     .map_err(sqlite_error)?;
     Ok(())
 }
 
-/// 内置插件注册表：(instance_id, package_id, package_key, 显示名)。
+/// 内置插件注册表的一行。
+pub struct BuiltinPlugin {
+    pub instance_id: &'static str,
+    pub package_id: &'static str,
+    pub package_key: &'static str,
+    pub display_name: &'static str,
+    /// 首次建行时的启停状态。
+    ///
+    /// 只在没有实现、仅作目录占位的行上取 `false`；其余内置能力都默认启用。
+    pub default_enabled: bool,
+}
+
+/// 内置插件注册表。
 ///
 /// 与设计 §23 的内置能力一一对应；常驻能力的 instance_id 必须与
 /// [`MANDATORY_INSTANCE_IDS`] 保持一致，否则强制项会被误当作可关闭。
-pub const BUILTIN_PLUGINS: &[(&str, &str, &str, &str)] = &[
-    (
-        "builtin.context-ui",
-        "pkg.fluxdb.context.ui",
-        "fluxdb.context.ui",
-        "当前界面与 @ 上下文",
-    ),
-    (
-        "builtin.files",
-        "pkg.fluxdb.context.files",
-        "fluxdb.context.files",
-        "文件与附件",
-    ),
-    (
-        "builtin.router",
-        "pkg.fluxdb.model.router",
-        "fluxdb.model.router",
-        "模型路由",
-    ),
-    (
-        "builtin.jev",
-        "pkg.fluxdb.decision.jev",
-        "fluxdb.decision.jev",
-        "Jev 决策优化",
-    ),
-    (
-        "builtin.compaction",
-        "pkg.fluxdb.context.compaction",
-        "fluxdb.context.compaction",
-        "上下文压缩",
-    ),
-    (
-        "builtin.security-audit",
-        "pkg.fluxdb.security.audit",
-        "fluxdb.security.audit",
-        "调用前安全审计",
-    ),
-    (
-        "builtin.budget",
-        "pkg.fluxdb.usage.budget",
-        "fluxdb.usage.budget",
-        "AI 用量统计",
-    ),
-    (
-        "builtin.bi",
-        "pkg.fluxdb.output.bi",
-        "fluxdb.output.bi",
-        "BI 与报表输出",
-    ),
-    (
-        "builtin.progress",
-        "pkg.fluxdb.progress.plan",
-        "fluxdb.progress.plan",
-        "计划与执行进度",
-    ),
-    (
-        "builtin.telemetry",
-        "pkg.fluxdb.lifecycle.telemetry",
-        "fluxdb.lifecycle.telemetry",
-        "生命周期诊断",
-    ),
-];
-
-/// 已下线内置插件的 (instance_id, package_key)。
-///
-/// 能力实现与目录登记都已删除；此处只用于清理升级前数据库留下的实例与包行，
-/// 避免陈旧行继续出现在插件列表或被当作未知能力读取。
-const RETIRED_BUILTIN_PLUGINS: &[(&str, &str)] = &[
-    ("builtin.database", "fluxdb.tools.database"),
-    ("builtin.knowledge", "fluxdb.knowledge.skills"),
+pub const BUILTIN_PLUGINS: &[BuiltinPlugin] = &[
+    BuiltinPlugin {
+        instance_id: "builtin.context-ui",
+        package_id: "pkg.fluxdb.context.ui",
+        package_key: "fluxdb.context.ui",
+        display_name: "当前界面与 @ 上下文",
+        default_enabled: true,
+    },
+    BuiltinPlugin {
+        instance_id: "builtin.files",
+        package_id: "pkg.fluxdb.context.files",
+        package_key: "fluxdb.context.files",
+        display_name: "文件与附件",
+        default_enabled: true,
+    },
+    BuiltinPlugin {
+        // 模型路由能力已删除，实例只作目录占位行，不能停留在"已启用"。
+        instance_id: "builtin.router",
+        package_id: "pkg.fluxdb.model.router",
+        package_key: "fluxdb.model.router",
+        display_name: "模型路由",
+        default_enabled: false,
+    },
+    BuiltinPlugin {
+        instance_id: "builtin.jev",
+        package_id: "pkg.fluxdb.decision.jev",
+        package_key: "fluxdb.decision.jev",
+        display_name: "Jev 决策优化",
+        default_enabled: true,
+    },
+    BuiltinPlugin {
+        instance_id: "builtin.compaction",
+        package_id: "pkg.fluxdb.context.compaction",
+        package_key: "fluxdb.context.compaction",
+        display_name: "上下文压缩",
+        default_enabled: true,
+    },
+    BuiltinPlugin {
+        instance_id: "builtin.security-audit",
+        package_id: "pkg.fluxdb.security.audit",
+        package_key: "fluxdb.security.audit",
+        display_name: "调用前安全审计",
+        default_enabled: true,
+    },
+    BuiltinPlugin {
+        // 用量统计看板尚未实现，实例只作目录占位行。
+        instance_id: "builtin.budget",
+        package_id: "pkg.fluxdb.usage.budget",
+        package_key: "fluxdb.usage.budget",
+        display_name: "AI 用量统计",
+        default_enabled: false,
+    },
+    BuiltinPlugin {
+        instance_id: "builtin.bi",
+        package_id: "pkg.fluxdb.output.bi",
+        package_key: "fluxdb.output.bi",
+        display_name: "BI 与报表输出",
+        default_enabled: true,
+    },
+    BuiltinPlugin {
+        instance_id: "builtin.progress",
+        package_id: "pkg.fluxdb.progress.plan",
+        package_key: "fluxdb.progress.plan",
+        display_name: "计划与执行进度",
+        default_enabled: true,
+    },
+    BuiltinPlugin {
+        instance_id: "builtin.telemetry",
+        package_id: "pkg.fluxdb.lifecycle.telemetry",
+        package_key: "fluxdb.lifecycle.telemetry",
+        display_name: "生命周期诊断",
+        default_enabled: true,
+    },
 ];
 
 /// 幂等注册全部内置插件包与实例（随应用注册，用户无需安装）。
 ///
-/// 保留可选实例的启停状态；修正常驻上下文旧状态，并清理已下线能力的旧实例、绑定与包行。
+/// 只写入缺失的目录行：已存在的实例保留用户的启停状态与显示名，不被 seed 覆盖。
 pub fn seed_builtin_plugins(conn: &Connection, now_ms: i64) -> Result<()> {
     let tx = conn.unchecked_transaction().map_err(sqlite_error)?;
-    for (instance_id, package_id, package_key, display_name) in BUILTIN_PLUGINS {
-        seed_builtin_package(&tx, now_ms, package_id, package_key, "1", "{}")?;
-        seed_builtin_instance(&tx, now_ms, instance_id, package_id, display_name)?;
-    }
-    // 旧版允许关闭上下文；升级后恢复常驻状态，且不反复递增 revision。
-    tx.execute(
-        "UPDATE ai_plugin_instances SET enabled=1, revision=revision+1, updated_at_ms=?1
-         WHERE id='builtin.context-ui' AND enabled=0",
-        [now_ms],
-    )
-    .map_err(sqlite_error)?;
-    // 模型路由能力已删除，实例只作目录占位行；不允许停留在"已启用"。
-    tx.execute(
-        "UPDATE ai_plugin_instances SET enabled=0, revision=revision+1, updated_at_ms=?1
-         WHERE id='builtin.router' AND enabled=1",
-        [now_ms],
-    )
-    .map_err(sqlite_error)?;
-    // 用量统计看板尚未实现，实例同样只作目录占位行：同步显示名并关闭历史遗留的启用态。
-    tx.execute(
-        "UPDATE ai_plugin_instances
-            SET display_name=?1, enabled=0, revision=revision+1, updated_at_ms=?2
-          WHERE id='builtin.budget' AND (display_name!=?1 OR enabled!=0)",
-        params!["AI 用量统计", now_ms],
-    )
-    .map_err(sqlite_error)?;
-    // 能力已下线的内置插件：目录不再登记，但旧库可能仍留着实例、Agent 绑定与包行，
-    // 它们不在能力目录内又不会自动消失，会继续出现在插件列表里，这里启动时幂等清掉。
-    for (instance_id, package_key) in RETIRED_BUILTIN_PLUGINS {
-        tx.execute(
-            "DELETE FROM ai_agent_plugin_bindings WHERE plugin_instance_id=?1",
-            [instance_id],
-        )
-        .map_err(sqlite_error)?;
-        tx.execute("DELETE FROM ai_plugin_instances WHERE id=?1", [instance_id])
-            .map_err(sqlite_error)?;
-        tx.execute(
-            "DELETE FROM ai_plugin_packages
-             WHERE package_key=?1 AND runtime_kind='builtin'
-             AND NOT EXISTS (SELECT 1 FROM ai_plugin_instances WHERE package_id=ai_plugin_packages.id)",
-            [package_key],
-        )
-        .map_err(sqlite_error)?;
+    for plugin in BUILTIN_PLUGINS {
+        seed_builtin_package(
+            &tx,
+            now_ms,
+            plugin.package_id,
+            plugin.package_key,
+            "1",
+            "{}",
+        )?;
+        seed_builtin_instance(
+            &tx,
+            now_ms,
+            plugin.instance_id,
+            plugin.package_id,
+            plugin.display_name,
+            plugin.default_enabled,
+        )?;
     }
     tx.commit().map_err(sqlite_error)?;
     Ok(())
@@ -447,7 +445,8 @@ mod tests {
             "{}",
         )
         .expect("种子包");
-        seed_builtin_instance(&conn, 1_000, "inst-jev", "pkg-jev", "Jev 决策").expect("种子实例");
+        seed_builtin_instance(&conn, 1_000, "inst-jev", "pkg-jev", "Jev 决策", true)
+            .expect("种子实例");
         conn
     }
 
@@ -463,7 +462,8 @@ mod tests {
             "{}",
         )
         .expect("重复种子");
-        seed_builtin_instance(&conn, 2_000, "inst-jev", "pkg-jev", "Jev 决策").expect("重复种子");
+        seed_builtin_instance(&conn, 2_000, "inst-jev", "pkg-jev", "Jev 决策", true)
+            .expect("重复种子");
         // ensure_schema 会注册内置实例；这里只断言自定义实例没有重复。
         let list = list_plugin_instances(&conn).unwrap();
         assert_eq!(list.iter().filter(|p| p.id == "inst-jev").count(), 1);
@@ -497,96 +497,26 @@ mod tests {
     }
 
     #[test]
-    fn seeding_upgrades_legacy_catalog_without_resetting_optional_plugins() {
+    fn seeding_leaves_existing_rows_untouched() {
         let conn = setup();
-        seed_builtin_package(
-            &conn,
-            1_000,
-            "pkg.fluxdb.tools.database",
-            "fluxdb.tools.database",
-            "1",
-            "{}",
-        )
-        .unwrap();
-        seed_builtin_instance(
-            &conn,
-            1_000,
-            "builtin.database",
-            "pkg.fluxdb.tools.database",
-            "数据库与 Redis 工具",
-        )
-        .unwrap();
-        bind_plugin_system(&conn, 1_000, "legacy-binding", "a1", "builtin.database").unwrap();
-        conn.execute(
-            "UPDATE ai_plugin_instances SET enabled=0 WHERE id='builtin.context-ui'",
-            [],
-        )
-        .unwrap();
+        // seed 只补缺失目录行：用户改过的启停状态不会被重置，revision 也不递增。
         set_plugin_instance_enabled(&conn, 1_001, "builtin.files", false, 1).unwrap();
+        let before = list_plugin_instances(&conn).unwrap();
 
         seed_builtin_plugins(&conn, 2_000).unwrap();
-        let first = list_plugin_instances(&conn).unwrap();
-        let context = first.iter().find(|p| p.id == "builtin.context-ui").unwrap();
-        assert!(context.enabled);
-        assert_eq!(context.revision, 2);
-        assert!(
-            !first
+        assert_eq!(before, list_plugin_instances(&conn).unwrap());
+
+        // 无实现的占位行按注册表默认值写入，不得停留在已启用。
+        let list = list_plugin_instances(&conn).unwrap();
+        for plugin in BUILTIN_PLUGINS {
+            let row = list
                 .iter()
-                .find(|p| p.id == "builtin.files")
-                .unwrap()
-                .enabled
-        );
-        assert!(!first.iter().any(|p| p.id == "builtin.database"));
-        assert!(list_agent_plugin_bindings(&conn, "a1").unwrap().is_empty());
-        let packages: i64 = conn
-            .query_row(
-                "SELECT count(*) FROM ai_plugin_packages WHERE package_key='fluxdb.tools.database'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(packages, 0);
-        assert!(
-            !conn
-                .prepare("PRAGMA foreign_key_check")
-                .unwrap()
-                .exists([])
-                .unwrap()
-        );
-        seed_builtin_plugins(&conn, 3_000).unwrap();
-        assert_eq!(first, list_plugin_instances(&conn).unwrap());
-    }
-
-    #[test]
-    fn seeding_renames_usage_stats_placeholder_and_clears_legacy_enabled_state() {
-        let conn = setup();
-        // 旧库里的用量统计行还是"Token 用量与执行保护"且被当作常驻能力启用。
-        conn.execute(
-            "UPDATE ai_plugin_instances SET display_name='Token 用量与执行保护', enabled=1
-             WHERE id='builtin.budget'",
-            [],
-        )
-        .unwrap();
-
-        seed_builtin_plugins(&conn, 2_000).unwrap();
-        let budget = list_plugin_instances(&conn)
-            .unwrap()
-            .into_iter()
-            .find(|p| p.id == "builtin.budget")
-            .expect("占位实例存在");
-        assert_eq!(budget.display_name, "AI 用量统计");
-        assert!(!budget.enabled, "占位行不得停留在已启用");
-        assert!(budget.revision > 1, "改名与关闭必须递增 revision");
-
-        // 再跑一次不应继续递增 revision。
-        let revision = budget.revision;
-        seed_builtin_plugins(&conn, 3_000).unwrap();
-        let again = list_plugin_instances(&conn)
-            .unwrap()
-            .into_iter()
-            .find(|p| p.id == "builtin.budget")
-            .unwrap();
-        assert_eq!(again.revision, revision);
+                .find(|row| row.id == plugin.instance_id)
+                .expect("内置实例存在");
+            if !plugin.default_enabled {
+                assert!(!row.enabled, "{} 是目录占位行", plugin.instance_id);
+            }
+        }
     }
 
     #[test]

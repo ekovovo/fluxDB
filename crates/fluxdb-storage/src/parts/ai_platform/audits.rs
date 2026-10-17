@@ -233,7 +233,6 @@ fn parse_list(raw: &str, label: &str) -> Result<Vec<String>> {
         .map_err(|e| Error::new(ErrorKind::Internal, format!("{label} 解析失败: {e}")))
 }
 
-/// 追加一条审计。**没有对应的更新/删除接口**：审计是事实，只能追加。
 /// 是否已存在同一调用同一阶段的审计行（用于避免重复登记）。
 pub fn has_tool_audit(conn: &Connection, tool_call_id: &str, stage: AuditStage) -> Result<bool> {
     conn.query_row(

@@ -371,7 +371,7 @@ fn sqlite_auto_approval_commits_only_a_reverified_bounded_update() {
         cancel: CancelFlag::new(),
         progress: None,
     };
-    let receipt = block_on_ready(tool.execute(ctx.clone(), args.into()))
+    let receipt = crate::ai_executor::block_on(tool.execute(ctx.clone(), args.into()))
         .unwrap()
         .unwrap();
     assert_eq!(receipt.status, fluxdb_core::ToolReceiptStatus::Succeeded);
@@ -382,7 +382,7 @@ fn sqlite_auto_approval_commits_only_a_reverified_bounded_update() {
     );
     // 检查后增加触发器：执行时必须重新核实，不能复用刚才的证据。
     conn.execute_batch("CREATE TRIGGER unsafe AFTER UPDATE ON items BEGIN UPDATE items SET value='bad' WHERE id=2; END;").unwrap();
-    let result = block_on_ready(tool.execute(ctx, args.replace("'new'", "'unapproved'")))
+    let result = crate::ai_executor::block_on(tool.execute(ctx, args.replace("'new'", "'unapproved'")))
         .unwrap()
         .unwrap();
     assert_eq!(result.status, fluxdb_core::ToolReceiptStatus::Failed);

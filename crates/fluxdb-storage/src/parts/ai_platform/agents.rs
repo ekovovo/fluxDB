@@ -18,13 +18,6 @@ pub const DEFAULT_SYSTEM_PROMPT: &str = "你是 fluxDB 的通用智能助手。�
 
 pub fn seed_builtin_agent(conn: &Connection, now_ms: i64) -> Result<()> {
     conn.execute("INSERT INTO ai_agents (id,display_name,description,enabled,system_prompt,options_json,created_at_ms,updated_at_ms) VALUES (?1,'通用助手','默认智能助手，可修改配置，不可删除',1,?2,json_object('compression_trigger_percent',80,'max_iterations',?4),?3,?3) ON CONFLICT(id) DO NOTHING", params![BUILTIN_AGENT_ID, DEFAULT_SYSTEM_PROMPT, now_ms, BUILTIN_AGENT_MAX_ITERATIONS]).map_err(sqlite_error)?;
-    // 老库的内置行已存在时不覆盖用户编辑；仅在用户从未设置过 max_iterations 时补上内置默认值。
-    conn.execute(
-        "UPDATE ai_agents SET options_json=json_set(options_json,'$.max_iterations',?2)
-           WHERE id=?1 AND json_extract(options_json,'$.max_iterations') IS NULL",
-        params![BUILTIN_AGENT_ID, BUILTIN_AGENT_MAX_ITERATIONS],
-    )
-    .map_err(sqlite_error)?;
     Ok(())
 }
 
@@ -346,28 +339,15 @@ mod tests {
     }
 
     #[test]
-    fn builtin_agent_defaults_wider_and_backfills_legacy_rows() {
+    fn builtin_agent_defaults_wider_and_seed_is_write_once() {
         let conn = setup();
         let builtin = load_agent(&conn, BUILTIN_AGENT_ID).expect("内置行");
         assert_eq!(builtin.max_iterations, BUILTIN_AGENT_MAX_ITERATIONS);
 
-        // 模拟老库：内置行没有 max_iterations，seed 时应补上内置默认值。
-        conn.execute(
-            "UPDATE ai_agents SET options_json='{\"compression_trigger_percent\":80}' WHERE id=?1",
-            [BUILTIN_AGENT_ID],
-        )
-        .unwrap();
-        seed_builtin_agent(&conn, 2_000).expect("重跑 seed");
-        assert_eq!(
-            load_agent(&conn, BUILTIN_AGENT_ID).unwrap().max_iterations,
-            BUILTIN_AGENT_MAX_ITERATIONS
-        );
-
         // 用户改过的值不能被 seed 覆盖。
         let mut e = edit(BUILTIN_AGENT_ID);
         e.max_iterations = 256;
-        let view = load_agent(&conn, BUILTIN_AGENT_ID).unwrap();
-        save_agent(&conn, 3_000, &e, view.revision).expect("保存内置");
+        save_agent(&conn, 3_000, &e, builtin.revision).expect("保存内置");
         seed_builtin_agent(&conn, 4_000).expect("再跑 seed");
         assert_eq!(
             load_agent(&conn, BUILTIN_AGENT_ID).unwrap().max_iterations,

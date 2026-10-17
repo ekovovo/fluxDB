@@ -619,47 +619,6 @@ fn send_failure_rolls_back_reference_consumption_and_message_tags() {
 }
 
 #[test]
-fn legacy_message_tags_are_recovered_from_its_own_turn_snapshot() {
-    let fixture = Fixture::new();
-    let mut controller = fixture.controller();
-    let reference = fixture.attach(&mut controller, 17);
-    let job = controller
-        .prepare_ai_conversation("历史引用", &empty_pin())
-        .unwrap();
-    fixture
-        .storage
-        .with_ai_connection(|conn| {
-            conn.execute("DELETE FROM ai_message_parts WHERE kind='context_ref'", [])
-                .unwrap();
-            Ok(())
-        })
-        .unwrap();
-    controller.dispatch(AppCommand::AiConversation(AiConversationCommand::Load {
-        session_id: Some(job.session_id),
-    }));
-    let tags = controller
-        .state()
-        .ai_conversation
-        .messages
-        .iter()
-        .flat_map(|message| &message.parts)
-        .filter(|part| part.kind == "context_ref")
-        .collect::<Vec<_>>();
-    assert_eq!(tags.len(), 1);
-    let payload: serde_json::Value = serde_json::from_str(&tags[0].payload_json).unwrap();
-    assert_eq!(payload["id"], reference.id);
-    assert_eq!(payload["label"], reference.label);
-    assert!(payload.get("source").is_none());
-    assert!(
-        controller
-            .state()
-            .ai_conversation
-            .context_references
-            .is_empty()
-    );
-}
-
-#[test]
 fn send_consumes_only_submitted_references_and_preserves_next_draft_items() {
     let fixture = Fixture::new();
     let mut controller = fixture.controller();

@@ -1,7 +1,6 @@
 //! AI 平台持久化（设计文档 §42）：管理实体 + 运行记录。
 //!
-//! 本期仅实现首次建表与结构校验；管理实体的读写（模型/Agent/插件/MCP 等）
-//! 随对应功能任务逐步加入，见 `docs/ai-agent-tasks.md`。
+//! 建表语句集中在 [`schema`]，各实体的读写由同目录下的对应模块负责。
 
 pub mod agents;
 pub mod artifacts;

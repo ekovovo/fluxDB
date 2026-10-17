@@ -637,7 +637,6 @@ pub fn failed_artifact_paths(conn: &Connection) -> Result<Vec<(String, String)>>
         .map_err(sqlite_error)
 }
 
-/// 清空指定产物行的落点（文件删除后调用；只清落点，保留行与状态供追溯）。
 /// 启动对账：把 staged 产物推进到 ready（文件已核对）或 failed（文件缺失/不匹配）。
 ///
 /// 只允许 `staged → ready` / `staged → failed`，用当前 revision 做 CAS；
@@ -682,6 +681,7 @@ pub fn clear_staged_artifact_path(conn: &Connection, now_ms: i64, id: &str) -> R
     Ok(())
 }
 
+/// 清空指定产物行的落点（文件删除后调用；只清落点，保留行与状态供追溯）。
 pub fn clear_artifact_path(conn: &Connection, now_ms: i64, id: &str) -> Result<()> {
     conn.execute(
         "UPDATE ai_artifacts SET relative_path=NULL, byte_count=0, content_hash=NULL,

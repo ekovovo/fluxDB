@@ -44,7 +44,7 @@ fn registry_contains_all_builtin_capability_entries() {
     assert!(registry.find_by_package("fluxdb.tools.database").is_none());
     let storage_keys = fluxdb_storage::ai_platform::plugins::BUILTIN_PLUGINS
         .iter()
-        .map(|(_, _, package_key, _)| *package_key)
+        .map(|plugin| plugin.package_key)
         .collect::<BTreeSet<_>>();
     let app_keys = registry
         .descriptors()

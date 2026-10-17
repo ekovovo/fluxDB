@@ -102,7 +102,6 @@ pub use fluxdb_connectors::{
 include!("parts/ai_transport.rs");
 include!("parts/ai_retry.rs");
 include!("parts/ai_executor.rs");
-include!("parts/ai_ready_future.rs");
 include!("parts/ai_runtime.rs");
 include!("parts/ai_provider.rs");
 include!("parts/ai_loop.rs");

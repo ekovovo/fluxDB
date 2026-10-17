@@ -3,7 +3,6 @@ use crate::sqlite::sqlite_error;
 use fluxdb_core::{Error, ErrorKind, Result};
 use rusqlite::{Connection, OptionalExtension, params};
 
-/// 记录一次工具调用（状态机由运行时推进；这里只写事实）。
 /// 诊断用的工具调用摘要：只给定位与状态，不含参数、结果正文与执行目标。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ToolCallDigest {
@@ -48,6 +47,7 @@ pub fn list_digests_for_turn(conn: &Connection, turn_id: &str) -> Result<Vec<Too
     Ok(rows)
 }
 
+/// 记录一次工具调用（状态机由运行时推进；这里只写事实）。
 #[allow(clippy::too_many_arguments)]
 pub fn start_tool_call(
     conn: &Connection,

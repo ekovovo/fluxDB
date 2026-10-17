@@ -172,9 +172,13 @@ impl RedisConnection {
 
     /// 发送一条命令；集群模式下自动跟随 MOVED/ASK 重定向。
     fn command(&mut self, args: &[&str]) -> fluxdb_core::Result<RedisValue> {
+        self.command_with_budget(args, None)
+    }
+
+    fn command_with_budget(&mut self, args: &[&str], budget: Option<RedisReadBudget>) -> fluxdb_core::Result<RedisValue> {
         let mut redirects = 0;
         loop {
-            let result = self.command_once(args);
+            let result = self.command_once_with_budget(args, budget);
             let Err(error) = &result else {
                 return result;
             };
@@ -233,6 +237,10 @@ impl RedisConnection {
     }
 
     fn command_once(&mut self, args: &[&str]) -> fluxdb_core::Result<RedisValue> {
+        self.command_once_with_budget(args, None)
+    }
+
+    fn command_once_with_budget(&mut self, args: &[&str], budget: Option<RedisReadBudget>) -> fluxdb_core::Result<RedisValue> {
         let mut request = Vec::new();
         request.extend_from_slice(format!("*{}\r\n", args.len()).as_bytes());
         for arg in args {
@@ -248,7 +256,10 @@ impl RedisConnection {
                 .write_all(&request)
                 .map_err(redis_io_error)?;
             self.reader.get_mut().flush().map_err(redis_io_error)?;
-            redis_read_value(&mut self.reader)
+            match budget {
+                Some(budget) => redis_read_value_with_budget(&mut self.reader, budget),
+                None => redis_read_value(&mut self.reader),
+            }
         })();
         if result.is_err() {
             self.broken = true;

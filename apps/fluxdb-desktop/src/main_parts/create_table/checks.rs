@@ -35,11 +35,10 @@ fn create_table_checks(
                 window,
                 cx,
             ),
-            expression_editor_input: this.create_table_multiline_input(
+            expression_editor_input: this.create_table_input(
                 CreateTableInputKey::CheckExpressionEditor(tab_id, check.id),
                 "输入检查表达式...",
                 &check.expression,
-                8,
                 window,
                 cx,
             ),

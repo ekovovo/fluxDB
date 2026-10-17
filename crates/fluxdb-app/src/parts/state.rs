@@ -1,15 +1,546 @@
+/// Provider 公布的模型能力，缺失字段不伪造默认窗口。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AiDiscoveredModel {
+    pub id: String,
+    pub context_window_tokens: Option<i64>,
+    pub max_output_tokens: Option<i64>,
+}
+
 pub const HEX_EDIT_LIMIT: u64 = 64 * 1024;
 pub const BINARY_FILE_UPLOAD_LIMIT: u64 = 64 * 1024 * 1024;
 const COMPLETION_METADATA_LIMIT: u64 = 500;
 
+/// 设置页「AI」分区缓存的模型列表（公开视图，不含任何凭据）。
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AiModelItem {
+    pub id: String,
+    pub display_name: String,
+    pub provider: String,
+    pub model: String,
+    /// 自定义 API base（未配置时为 None，运行期按 Provider 默认值补全）。
+    pub endpoint: Option<String>,
+    /// 完整请求地址，不追加协议路由。
+    pub endpoint_is_full_url: bool,
+    pub kind: String,
+    pub enabled: bool,
+    /// 数据出站许可：false 表示该模型不再接收会话数据（设计 §29/§31.1）。
+    pub egress: bool,
+    /// 能力标签（当前为长上下文）：由真实上下文窗口推导，不按模型名或价格硬编码。
+    pub capability_labels: Vec<String>,
+    pub context_window_tokens: Option<i64>,
+    pub max_output_tokens: Option<i64>,
+    /// 计价：micro-USD / 百万 Token；只用于编辑弹框回填，不参与列表展示、标签或计量。
+    pub input_price_micros: Option<i64>,
+    pub output_price_micros: Option<i64>,
+    pub cached_input_price_micros: Option<i64>,
+    pub credential_status: String,
+    /// 最近一次连接探测结果：`unknown` / `ok` / `failed`。
+    pub connection_status: String,
+    /// 最近一次连接探测时间戳（毫秒）；从未探测为 `None`。
+    pub connection_checked_at_ms: Option<i64>,
+    pub revision: i64,
+}
+
+/// 模型新建/编辑的提交内容（T013）。
+///
+/// 明文 Key 只在 `api_key` 里短暂存在，经专用命令进入存储；不进 AppState、日志或事件。
+///
+/// 刻意不派生 PartialEq/Debug 之外的比较能力：命令枚举的比较不应牵扯明文凭据。
+#[derive(Clone)]
+pub struct AiModelSaveInput {
+    /// `None` 表示新建。
+    pub id: Option<String>,
+    pub display_name: String,
+    pub provider: String,
+    pub model: String,
+    pub endpoint: Option<String>,
+    /// 完整请求地址，不追加协议路由。
+    pub endpoint_is_full_url: bool,
+    pub enabled: bool,
+    /// 数据出站许可：新建默认允许；关闭后该模型不作为路由候选。
+    pub egress: bool,
+    pub context_window_tokens: Option<i64>,
+    pub max_output_tokens: Option<i64>,
+    /// 计价单位：micro-USD / 百万 Token；只做保存与再次编辑回填。
+    pub input_price_micros: Option<i64>,
+    pub output_price_micros: Option<i64>,
+    pub cached_input_price_micros: Option<i64>,
+    /// `Some` 表示替换 Key；`None` 且 `clear_key=false` 表示 Keep。
+    pub api_key: Option<String>,
+    pub clear_key: bool,
+    /// 新建为 `None`；编辑必须带上打开弹框时的 revision 做 CAS。
+    pub expected_revision: Option<i64>,
+}
+
+impl Default for AiModelSaveInput {
+    /// 显式实现而不是派生：`egress` 是"是否允许数据出站"，`bool` 的派省默认值是 `false`，
+    /// 会让"没填这个字段"变成"禁止出站"，与设计默认（配置模型即授权）相反。
+    fn default() -> Self {
+        Self {
+            id: None,
+            display_name: String::new(),
+            provider: String::new(),
+            model: String::new(),
+            endpoint: None,
+            endpoint_is_full_url: false,
+            enabled: false,
+            egress: true,
+            context_window_tokens: None,
+            max_output_tokens: None,
+            input_price_micros: None,
+            output_price_micros: None,
+            cached_input_price_micros: None,
+            api_key: None,
+            clear_key: false,
+            expected_revision: None,
+        }
+    }
+}
+
+impl std::fmt::Debug for AiModelSaveInput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AiModelSaveInput")
+            .field("id", &self.id)
+            .field("display_name", &self.display_name)
+            .field("provider", &self.provider)
+            .field("model", &self.model)
+            .field("enabled", &self.enabled)
+            .field("api_key", &self.api_key.as_ref().map(|_| "[REDACTED]"))
+            .field("clear_key", &self.clear_key)
+            .field("expected_revision", &self.expected_revision)
+            .finish_non_exhaustive()
+    }
+}
+
+impl PartialEq for AiModelSaveInput {
+    /// 比较刻意忽略 `api_key`：明文不参与相等性判断，也不应出现在断言输出里。
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+            && self.display_name == other.display_name
+            && self.provider == other.provider
+            && self.model == other.model
+            && self.endpoint == other.endpoint
+            && self.endpoint_is_full_url == other.endpoint_is_full_url
+            && self.enabled == other.enabled
+            && self.context_window_tokens == other.context_window_tokens
+            && self.max_output_tokens == other.max_output_tokens
+            && self.input_price_micros == other.input_price_micros
+            && self.output_price_micros == other.output_price_micros
+            && self.cached_input_price_micros == other.cached_input_price_micros
+            && self.api_key.is_some() == other.api_key.is_some()
+            && self.clear_key == other.clear_key
+            && self.expected_revision == other.expected_revision
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AiAgentItem {
+    pub compression_trigger_percent: u8,
+    /// 单个 Turn 内最多几次主模型迭代。
+    pub max_iterations: i64,
+    pub id: String,
+    pub display_name: String,
+    pub description: String,
+    /// 直接编辑的 Agent 提示词（随 Agent 行 CAS，不做模板/多版本）。
+    pub system_prompt: String,
+    /// 默认生成模型档案 id（`ai_agents.default_model_profile_id`）。
+    pub model_profile_id: Option<String>,
+    /// 允许的工具 ID 白名单；空表示不限制（内核默认全集）。
+    pub allowed_tools: Vec<String>,
+    pub enabled: bool,
+    pub revision: i64,
+}
+
+/// Agent 新建/编辑的提交内容（T013/T014）。
+///
+/// 提示词直接随 Agent 保存；`id` 为 `None` 表示新建，编辑用 `expected_revision` 做 CAS。
+#[derive(Clone, Debug, PartialEq)]
+pub struct AiAgentSaveInput {
+    pub compression_trigger_percent: u8,
+    /// 单个 Turn 内最多几次主模型迭代（1–1000）。
+    pub max_iterations: i64,
+    /// `None` 表示新建。
+    pub id: Option<String>,
+    pub display_name: String,
+    pub description: String,
+    pub system_prompt: String,
+    pub model_profile_id: Option<String>,
+    /// 允许的工具 ID 白名单；空 = 不限制。
+    pub allowed_tools: Vec<String>,
+    pub enabled: bool,
+    /// 新建忽略；编辑必须带上打开时的 revision 做 CAS。
+    pub expected_revision: i64,
+}
+
+impl Default for AiAgentSaveInput {
+    fn default() -> Self {
+        Self {
+            id: None,
+            display_name: String::new(),
+            description: String::new(),
+            system_prompt: String::new(),
+            model_profile_id: None,
+            allowed_tools: Vec::new(),
+            enabled: true,
+            expected_revision: 0,
+            compression_trigger_percent: 80,
+            max_iterations: 100,
+        }
+    }
+}
+
+/// 保存对外 MCP Server Profile 的输入。
+///
+/// `id` 为 `None` 时新建：存储层强制 `enabled=false`，保存配置本身不会意外对外开放服务。
+#[derive(Clone, Debug, PartialEq)]
+pub struct AiMcpServerProfileSaveInput {
+    pub id: Option<String>,
+    pub display_name: String,
+    pub enabled: bool,
+    /// 新建忽略；编辑必须带上打开时的 revision 做对象级 CAS。
+    pub expected_revision: Option<i64>,
+}
+
+impl Default for AiMcpServerProfileSaveInput {
+    fn default() -> Self {
+        Self {
+            id: None,
+            display_name: String::new(),
+            enabled: false,
+            expected_revision: None,
+        }
+    }
+}
+
+/// 保存 MCP 数据源写入策略的输入。
+///
+/// `write_policy` 为 `default`（跟随全局）/ `read_only` / `read_write`。
+#[derive(Clone, Debug, PartialEq)]
+pub struct AiMcpDatasourceSaveInput {
+    pub profile_id: String,
+    pub connection_id: i64,
+    pub write_policy: String,
+    /// 新建忽略；编辑必须带上打开时的 revision 做对象级 CAS。
+    pub expected_revision: Option<i64>,
+}
+
+impl Default for AiMcpDatasourceSaveInput {
+    fn default() -> Self {
+        Self {
+            profile_id: String::new(),
+            connection_id: 0,
+            write_policy: "default".to_string(),
+            expected_revision: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AiPluginItem {
+    pub id: String,
+    pub display_name: String,
+    pub package_key: String,
+    /// 内置能力登记表里的「负责内容」；未知实例为空串，不猜语义。
+    pub summary: String,
+    pub enabled: bool,
+    /// 内核强制（当前界面与 @ 上下文、调用前安全审计），UI 需禁用开关并展示"常驻能力"。
+    pub mandatory: bool,
+    /// 没有实现或已下线的目录占位行：UI 置灰整行、禁用开关并显示"待实现"。
+    pub retired: bool,
+    /// 插件声明的可配置字段（协议见 [`PluginConfigDeclaration`]）。
+    ///
+    /// 为空表示该插件不需要配置，UI 因此不显示「管理」入口；这也是内置与外置插件
+    /// 共用的一条判断，不按插件 id 特判。
+    pub config_fields: Vec<AiPluginConfigFieldItem>,
+    /// 声明解析失败的原因（外置插件 manifest 写错时可见，不静默当成"无配置"）。
+    pub config_error: Option<String>,
+    pub revision: i64,
+}
+
+/// 插件配置字段的种类；决定弹框渲染哪种控件与回填什么值。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AiPluginConfigFieldKind {
+    /// 资源选择（模型角色槽位）。
+    #[default]
+    Resource,
+    /// 开关。
+    Switch,
+    /// 单行文本。
+    Text,
+    /// 多行文本，一行一个条目。
+    TextList,
+    /// 枚举选择。
+    Select,
+}
+
+/// 枚举字段的一个候选项。
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AiPluginConfigOptionItem {
+    pub value: String,
+    pub label: String,
+}
+
+/// 插件配置字段的展示与候选快照；数据全部来自宿主解析，不含凭据材料。
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AiPluginConfigFieldItem {
+    /// 稳定机器键：保存时原样回传给应用层定位需求。
+    pub key: String,
+    /// 字段种类：决定控件形态与提交的值类型。
+    pub kind: AiPluginConfigFieldKind,
+    /// 可选分组名：同一分组的字段在弹框里合并成一块，缺省表示不分组。
+    pub group: Option<String>,
+    pub label: String,
+    /// 插件自己写的补充说明（可空）：只讲插件特有的后果，不描述宿主的过滤规则。
+    pub help: Option<String>,
+    /// 宿主按声明生成的候选口径说明（例如「只列出…的决策模型」）；标量字段为空。
+    pub hint: String,
+    /// 标量字段的输入提示（可空）。
+    pub placeholder: Option<String>,
+    pub required: bool,
+    /// 当前值：资源字段是资源 ID，标量字段是文本值（`text_list` 为多行文本）。
+    /// `None` 表示未配置。
+    pub selection: Option<String>,
+    /// 当前选择是否仍满足插件要求；选择失效时保留原值并提示重选。
+    /// 标量字段只要通过自身类型校验即为 `true`。
+    pub selection_usable: bool,
+    /// 资源字段的候选项；标量字段为空。
+    pub choices: Vec<AiPluginConfigChoiceItem>,
+    /// 枚举字段的候选项。
+    pub options: Vec<AiPluginConfigOptionItem>,
+    /// 没有候选项且原因与协议有关时的可见说明。
+    pub rejection: Option<String>,
+}
+
+/// 一个资源候选项（只含 ID 与公开标签）。
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AiPluginConfigChoiceItem {
+    pub id: String,
+    pub label: String,
+    pub detail: String,
+}
+
+/// 一次插件配置提交里的单个字段值。
+///
+/// 资源字段用 `resource_id`（模型档案 ID），标量字段用 `value`（文本原值，
+/// `text_list` 传多行文本，由应用层按声明规范化）；两者都为空表示清空该字段。
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AiPluginFieldSelection {
+    pub key: String,
+    pub resource_id: Option<String>,
+    pub value: Option<String>,
+}
+
+/// 审计列表的判定（与存储层 `AuditDecision` 对应，UI 只读）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AiAuditDecision {
+    Allow,
+    RequireApproval,
+    Deny,
+}
+
+impl AiAuditDecision {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Allow => "允许",
+            Self::RequireApproval => "需审批",
+            Self::Deny => "拒绝",
+        }
+    }
+
+    /// 机器键，供筛选与测试断言使用。
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Allow => "allow",
+            Self::RequireApproval => "approval",
+            Self::Deny => "deny",
+        }
+    }
+}
+
+/// 审计记录页的一行：审计事实的只读投影。
+///
+/// 不含凭据、密文或未脱敏参数；`statement` 来自入库前已脱敏的参数。
+#[derive(Clone, Debug, PartialEq)]
+pub struct AiAuditRow {
+    pub id: String,
+    pub tool_id: String,
+    /// 来源：内部 Agent 或对外 MCP。
+    pub origin: String,
+    /// 目标的可读投影（连接/库/schema）。
+    pub target: String,
+    pub decision: AiAuditDecision,
+    /// 命中的规则（机器键）；未命中为空。
+    pub rule_ids: Vec<String>,
+    /// 原因码（脱敏，只含规则标签与对象名）。
+    pub reason_codes: Vec<String>,
+    /// 已脱敏的语句/命令，供详情展示。
+    pub statement: String,
+    pub ruleset_version: String,
+    pub plan_hash: String,
+    pub created_at_ms: i64,
+    /// 执行前 / 重新校验。
+    pub stage: String,
+}
+
+/// 审计记录页的筛选统计（当前快照内）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AiAuditCounts {
+    pub all: usize,
+    pub allow: usize,
+    pub approval: usize,
+    pub deny: usize,
+}
+
+/// 设置页「工具与 MCP → 工具」的一行：标准工具的全局启停状态。
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AiToolSettingItem {
+    pub tool_id: String,
+    pub enabled: bool,
+    pub revision: i64,
+}
+
+/// 设置页「会话历史」列表行：公开的会话身份与派生统计，不含任何凭据或正文。
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AiSessionItem {
+    pub id: String,
+    pub title: String,
+    /// 该会话使用的 Agent id（UI 按 `state.ai_agents` 显示名称）。
+    pub agent_id: String,
+    /// 会话状态（`active` / `archived`）。
+    pub status: String,
+    /// 最后一个 Turn 的状态（`ai_session_turn_status` 口径）；无 Turn 时为 `None`。
+    pub last_turn_status: Option<String>,
+    /// 最后一个 Turn 的执行目标 JSON（脱敏后的公开目标）；无 Turn 时为 `None`。
+    pub last_target_json: Option<String>,
+    /// 已持久化的消息条数。
+    pub message_count: i64,
+    /// Turn 总数。
+    pub turn_count: i64,
+    /// 最近更新时间（毫秒时间戳）。
+    pub updated_at_ms: i64,
+    /// 对象级 CAS 期望 revision。
+    pub revision: i64,
+}
+
+/// 设置页「MCP Server Profile」列表行：对外服务配置，不含任何秘密。
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AiMcpServerProfileItem {
+    pub id: String,
+    pub display_name: String,
+    pub enabled: bool,
+    pub revision: i64,
+}
+
+/// 设置页「MCP 数据源」列表行：对外可见的连接 + 写入策略。
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AiMcpDatasourceItem {
+    pub profile_id: String,
+    pub connection_id: i64,
+    pub connection_name: String,
+    /// `sql` / `redis`，由连接类型决定（决定展示的资源种类）。
+    pub resource_kind: String,
+    /// `default` / `read_only` / `read_write`。
+    pub write_policy: String,
+    pub revision: i64,
+}
+
+/// 内置 Jev 的装配/可用状态（设计 §18 状态表；这是状态显示，不是一排错误 toast）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum JevStatusKind {
+    /// 没有合格决策模型：零请求、零等待。
+    #[default]
+    NotConfigured,
+    /// 内置能力被用户关闭：零请求、零等待。
+    Disabled,
+    /// 已显式选择决策模型，运行时可以发建议。
+    Available,
+    /// 有合格候选但用户还没选：等用户选，绝不擅自挑一个。
+    NeedsChoice,
+    /// 已配置但当前不可用（协议不兼容/默认模型失效/熔断中），附脱敏原因。
+    Unavailable,
+}
+
+impl JevStatusKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            JevStatusKind::NotConfigured => "not_configured",
+            JevStatusKind::Disabled => "disabled",
+            JevStatusKind::Available => "available",
+            JevStatusKind::NeedsChoice => "needs_choice",
+            JevStatusKind::Unavailable => "unavailable",
+        }
+    }
+}
+
+/// Jev 状态快照：设置页与运行期共用同一判定，避免 UI 与实际调用不一致。
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct JevStatus {
+    pub kind: JevStatusKind,
+    /// 当前生效的决策模型档案 id（`Available`/`Unavailable` 可能有值）。
+    pub model_profile_id: Option<String>,
+    /// 脱敏原因：不含 URL、响应正文或任何凭据材料。
+    pub detail: Option<String>,
+    /// 熔断截止（毫秒时间戳）；未熔断为 `None`。
+    pub circuit_until_ms: Option<i64>,
+}
+
+impl JevStatus {
+    /// 状态标签文案（插件页与大模型页共用）。
+    pub fn label(&self) -> &'static str {
+        match self.kind {
+            JevStatusKind::NotConfigured => "未配置",
+            JevStatusKind::Disabled => "已禁用",
+            JevStatusKind::Available => "可用",
+            JevStatusKind::NeedsChoice => "待选择模型",
+            JevStatusKind::Unavailable => "暂不可用",
+        }
+    }
+
+    /// 是否可以发决策请求；熔断期由调用方另行检查截止时间。
+    pub fn is_usable(&self) -> bool {
+        self.kind == JevStatusKind::Available && self.model_profile_id.is_some()
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct AppState {
+    pub ai_conversation: AiConversationView,
     pub connections: Vec<ConnectionState>,
     pub tabs: Vec<TabState>,
     pub active_tab: Option<TabId>,
     pub pending_dirty_tab_close: Option<TabId>,
     pub settings: Settings,
     pub sidebar_layout: SidebarLayout,
+    /// 设置页「AI」分区缓存（模型/Agent/插件/MCP），加载失败时保持空列表。
+    pub ai_models: Vec<AiModelItem>,
+    pub ai_agents: Vec<AiAgentItem>,
+    pub ai_plugin_instances: Vec<AiPluginItem>,
+    /// 标准工具的全局启停；列表项缺失表示该工具从未被显式关闭（默认启用）。
+    pub ai_tool_settings: Vec<AiToolSettingItem>,
+    pub ai_execution_policy: fluxdb_core::ExecutionPolicySettings,
+    /// 设置页「本地 MCP」页签的对外 Server Profile 列表。
+    pub ai_mcp_server_profiles: Vec<AiMcpServerProfileItem>,
+    /// 各 Profile 的数据源（对外可见连接 + 写入策略）；按 profile_id 归属，UI 分组展示。
+    pub ai_mcp_datasources: Vec<AiMcpDatasourceItem>,
+    /// 设置页「安全审计」列表：最近的审计事实（只读），判定统计由它推导。
+    pub ai_audit_rows: Vec<AiAuditRow>,
+    /// 审计列表是否加载失败；失败时页面给出可见原因，不伪装成"暂无记录"。
+    pub ai_audit_error: Option<String>,
+    /// 设置页「会话历史」列表（活跃 + 已归档，最近更新优先）。
+    pub ai_sessions: Vec<AiSessionItem>,
+    /// 会话历史分页：总数（分页后不能靠列表长度推断）。
+    pub ai_sessions_total: i64,
+    /// 会话历史分页：下一页游标；`None` 表示已读完。
+    pub ai_sessions_cursor: Option<fluxdb_storage::ai_platform::sessions::SessionListCursor>,
+    pub ai_sessions_has_more: bool,
+    /// 正在加载下一页（按钮 loading/disabled，拦重复请求）。
+    pub ai_sessions_loading_more: bool,
+    /// 默认主模型档案 id（`ai_runtime_settings.default_model_profile_id`）。
+    pub ai_default_model_id: Option<String>,
+    /// 内置 Jev 的装配/可用状态（设置页插件页与大模型页共用，实时反映熔断）。
+    pub ai_jev_status: JevStatus,
+    /// 运行设置行 revision（默认模型选择的 CAS 期望值）。
+    pub ai_runtime_revision: i64,
     pub tasks: Vec<TaskState>,
     pub query_history: Vec<QueryHistoryEntry>,
     /// Redis Workbench 命令历史（全量扁平，按连接 + 逻辑库过滤展示），持久化到
@@ -30,12 +561,30 @@ impl AppState {
 impl Default for AppState {
     fn default() -> Self {
         Self {
+            ai_conversation: AiConversationView::default(),
             connections: Vec::new(),
             tabs: Vec::new(),
             active_tab: None,
             pending_dirty_tab_close: None,
             settings: Settings::default(),
             sidebar_layout: SidebarLayout::default(),
+            ai_models: Vec::new(),
+            ai_agents: Vec::new(),
+            ai_plugin_instances: Vec::new(),
+            ai_tool_settings: Vec::new(),
+            ai_execution_policy: Default::default(),
+            ai_mcp_server_profiles: Vec::new(),
+            ai_mcp_datasources: Vec::new(),
+            ai_audit_rows: Vec::new(),
+            ai_audit_error: None,
+            ai_sessions: Vec::new(),
+            ai_sessions_total: 0,
+            ai_sessions_cursor: None,
+            ai_sessions_has_more: false,
+            ai_sessions_loading_more: false,
+            ai_default_model_id: None,
+            ai_jev_status: JevStatus::default(),
+            ai_runtime_revision: 0,
             tasks: Vec::new(),
             query_history: Vec::new(),
             redis_workbench_history: Vec::new(),
@@ -173,6 +722,7 @@ impl TabState {
                 database: er.database.clone(),
             }),
             TabKind::Settings(settings) => settings.workspace.clone(),
+            TabKind::AiChat { workspace } => workspace.clone(),
         }
     }
 }
@@ -190,6 +740,8 @@ pub struct SettingsTabState {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum TabKind {
+    /// 单例 AI 会话的显示宿主；会话本身仍由 ai_conversation 管理。
+    AiChat { workspace: Option<TabWorkspace> },
     ObjectList(ObjectListState),
     DataEditor(DataEditorState),
     QueryEditor(QueryEditorState),
@@ -410,11 +962,6 @@ impl PgRoleDraftUiExt for fluxdb_core::PgRoleDraft {
     }
 }
 
-#[allow(dead_code)]
-fn _assert_pg_role_draft_ui_ext_usable() {
-    // 仅为保证 trait 扩展编译可用；不参与运行时逻辑。
-}
-
 /// PG 对象权限授权目标种类（UI 选择器用；映射到 `PgObjectGrantScope`）。
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum PgGrantObjectKind {
@@ -471,7 +1018,11 @@ pub enum UserAdminDetailTab {
 }
 
 impl UserAdminState {
-    pub fn new(connection_id: ConnectionId, database: Option<String>, scope: PrivilegeScope) -> Self {
+    pub fn new(
+        connection_id: ConnectionId,
+        database: Option<String>,
+        scope: PrivilegeScope,
+    ) -> Self {
         Self {
             connection_id,
             active_detail_tab: UserAdminDetailTab::General,
@@ -680,20 +1231,36 @@ impl UserAdminState {
     /// 成员关系草稿是否已包含对该 (role, member) 的变更（避免重复条目）。
     pub fn pg_membership_edit_index(&self, role: &str, member: &str) -> Option<usize> {
         self.pg_membership_edits.iter().position(|edit| match edit {
-            PgRoleChange::GrantMembership { role: r, member: m, .. }
+            PgRoleChange::GrantMembership {
+                role: r, member: m, ..
+            }
             | PgRoleChange::RevokeMembership { role: r, member: m } => r == role && m == member,
             _ => false,
         })
     }
 
     /// 对象授权草稿定位：同 privilege + 同 scope 的既有变更条目。
-    pub fn pg_grant_edit_index(&self, privilege: &str, scope: &PgObjectGrantScope) -> Option<usize> {
+    pub fn pg_grant_edit_index(
+        &self,
+        privilege: &str,
+        scope: &PgObjectGrantScope,
+    ) -> Option<usize> {
         self.pg_grant_edits.iter().position(|edit| match edit {
-            PgRoleChange::GrantObject { privilege: p, scope: s, .. }
-            | PgRoleChange::RevokeObject { privilege: p, scope: s, .. }
-            | PgRoleChange::RevokeGrantOption { privilege: p, scope: s, .. } => {
-                p == privilege && s == scope
+            PgRoleChange::GrantObject {
+                privilege: p,
+                scope: s,
+                ..
             }
+            | PgRoleChange::RevokeObject {
+                privilege: p,
+                scope: s,
+                ..
+            }
+            | PgRoleChange::RevokeGrantOption {
+                privilege: p,
+                scope: s,
+                ..
+            } => p == privilege && s == scope,
             _ => false,
         })
     }
@@ -792,21 +1359,13 @@ impl UserAdminState {
     }
 
     pub fn set_privilege_row_database(&mut self, row_id: u64, database: String) {
-        if let Some(row) = self
-            .privilege_rows
-            .iter_mut()
-            .find(|row| row.id == row_id)
-        {
+        if let Some(row) = self.privilege_rows.iter_mut().find(|row| row.id == row_id) {
             row.database = database;
         }
     }
 
     pub fn toggle_privilege_row_privilege(&mut self, row_id: u64, privilege: String) {
-        let Some(row) = self
-            .privilege_rows
-            .iter_mut()
-            .find(|row| row.id == row_id)
-        else {
+        let Some(row) = self.privilege_rows.iter_mut().find(|row| row.id == row_id) else {
             return;
         };
         if let Some(index) = row.privileges.iter().position(|item| item == &privilege) {
@@ -817,11 +1376,7 @@ impl UserAdminState {
     }
 
     pub fn set_privilege_row_grant_option(&mut self, row_id: u64, enabled: bool) {
-        if let Some(row) = self
-            .privilege_rows
-            .iter_mut()
-            .find(|row| row.id == row_id)
-        {
+        if let Some(row) = self.privilege_rows.iter_mut().find(|row| row.id == row_id) {
             row.grant_option = enabled;
         }
     }
@@ -854,7 +1409,9 @@ impl UserAdminState {
             .effective_role_memberships()
             .into_iter()
             .find(|membership| membership.role == role);
-        let default_role = current.as_ref().is_some_and(|membership| membership.default_role);
+        let default_role = current
+            .as_ref()
+            .is_some_and(|membership| membership.default_role);
         self.set_role_membership_edit(role, granted, default_role);
     }
 
@@ -863,7 +1420,9 @@ impl UserAdminState {
             .effective_role_memberships()
             .into_iter()
             .find(|membership| membership.role == role);
-        let granted = current.as_ref().is_some_and(|membership| membership.granted);
+        let granted = current
+            .as_ref()
+            .is_some_and(|membership| membership.granted);
         self.set_role_membership_edit(role, granted, default_role);
     }
 
@@ -875,7 +1434,8 @@ impl UserAdminState {
         {
             edit.granted = granted;
         } else {
-            self.member_grant_edits.push(UserRoleMember { member, granted });
+            self.member_grant_edits
+                .push(UserRoleMember { member, granted });
         }
     }
 
@@ -944,6 +1504,9 @@ pub struct DataEditorState {
     pub cell_detail_panel: CellDetailPanelState,
     pub table_info: TableInfoState,
     pub loading: bool,
+    /// 改动正在提交到数据库：表格保持可见（与 `loading` 的整页替换不同），
+    /// 但提交类操作 disabled，避免用户在写入期间继续改动同一批数据。
+    pub submitting: bool,
     pub error: Option<UserFacingError>,
 }
 
@@ -959,6 +1522,19 @@ pub struct TableInfoState {
     pub foreign_keys: LoadState<Vec<ForeignKeyInfo>>,
     pub triggers: LoadState<Vec<TriggerInfo>>,
     pub ddl: LoadState<String>,
+}
+
+/// 后台提交数据改动的产物：`ApplyDataChanges*` 的数据库 I/O 结果 + 提交后重载的数据页。
+///
+/// 拆成独立类型是因为写入与重载都在后台线程完成，状态写回必须由 UI 线程的回桥命令负责。
+#[derive(Debug, Clone, PartialEq)]
+pub struct DataApplyResult {
+    /// 来自「查询结果」页签（与数据编辑器标签的落状态方式不同：结果区按页索引回写）。
+    pub query_result: bool,
+    /// 提交后按当前筛选/排序重新加载的数据页。
+    pub page: DataPage,
+    /// 写入回执，用于历史记录与补偿显示。
+    pub outcome: AppliedChangeOutcome,
 }
 
 impl Default for TableInfoState {
@@ -1201,1353 +1777,8 @@ pub struct TaskState {
     pub running: bool,
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub enum AppCommand {
-    PrepareBackup { request: BackupRequest, method: BackupMethod },
-    RunBackup(BackupRequest),
-    PrepareRestore(RestoreRequest),
-    ProbeRestore(RestoreRequest),
-    RunRestore { request: RestoreRequest, plan: RestorePlan },
-    LoadConnections,
-    ReplaceConnections(Vec<ConnectionConfig>),
-    ReplaceSidebarLayout(SidebarLayout),
-    CreateConnection(ConnectionDraft),
-    UpdateConnection(ConnectionConfig),
-    CreateConnectionGroup(String),
-    RenameConnectionGroup {
-        group_id: ConnectionGroupId,
-        name: String,
-    },
-    ToggleConnectionGroup(ConnectionGroupId),
-    DeleteConnectionGroup(ConnectionGroupId),
-    MoveConnectionToGroup {
-        connection_id: ConnectionId,
-        group_id: ConnectionGroupId,
-    },
-    MoveConnectionToTopLevel(ConnectionId),
-    TestConnection(ConnectionConfig),
-    /// 从「连接串 / 云资源标识」自动发现一条 Redis 连接（URI 导入 / 云自动发现统一入口）。
-    /// `provider` 为云提供商标识（`azure` / `redis-cloud` / 空表示普通连接串导入）。
-    DiscoverRedisConnection {
-        provider: String,
-        connection_string: String,
-    },
-    OpenConnection(ConnectionId),
-    ToggleConnectionExpanded(ConnectionId),
-    DisconnectConnection(ConnectionId),
-    DisconnectDatabase {
-        connection_id: ConnectionId,
-        database: String,
-    },
-    DeleteConnection(ConnectionId),
-    CreateDatabase(CreateDatabaseRequest),
-    CreateSchema {
-        connection_id: ConnectionId,
-        /// 目标数据库（PG 的 schema 属于库）；空串表示回退连接维护库。
-        database: String,
-        schema: String,
-    },
-    /// 角色管理（T26）：列表 + CRUD（PG 集群级角色）。
-    LoadPgRoles(ConnectionId),
-    CreatePgRole {
-        connection_id: ConnectionId,
-        name: String,
-        can_login: bool,
-        password: Option<String>,
-    },
-    AlterPgRolePassword {
-        connection_id: ConnectionId,
-        name: String,
-        password: String,
-    },
-    RenamePgRole {
-        connection_id: ConnectionId,
-        old_name: String,
-        new_name: String,
-    },
-    DropPgRole {
-        connection_id: ConnectionId,
-        name: String,
-    },
-    DeleteDatabase {
-        connection_id: ConnectionId,
-        database: String,
-    },
-    LoadObjectChildren(ObjectPath),
-    RefreshObject(Option<ObjectPath>),
-    /// 侧边栏「刷新连接树」：只重拉**已展开**连接的第一层对象（库 / Schema / RedisDb）。
-    /// 不写 `connected` / `expanded`，也不触碰已加载的表 / 视图行（详见 `replace_connection_level0`）。
-    RefreshConnectionTree,
-    OpenObjectList(Option<ObjectPath>),
-    OpenDataEditor(ObjectPath),
-    /// 打开某数据库的备份列表 tab（传入数据库 ObjectPath）。
-    OpenBackupList(ObjectPath),
-    /// 打开某数据库的 ER 关系图 tab（画布原型；Path 定位到库/表所在连接与 schema）。
-    OpenErDiagram(ObjectPath),
-    /// ER 逻辑关系目录操作；实际文件读写由桌面端后台任务调用 dispatch。
-    LoadErRelationships { scope_key: String },
-    CreateErRelationship { scope_key: String, relationship: ErRelationship },
-    UpdateErRelationship { scope_key: String, relationship: ErRelationship, expected_revision: u64 },
-    /// 仅结构身份机械重绑，服务层原子保留原确认；普通编辑仍走 Update 并失效确认。
-    RebindErRelationship { scope_key: String, relationship: ErRelationship, expected_revision: u64 },
-    ConfirmErRelationship { scope_key: String, id: String, expected_revision: u64, by: String },
-    RejectErRelationship { scope_key: String, id: String, expected_revision: u64 },
-    DeleteErRelationship { scope_key: String, id: String, expected_revision: u64 },
-    CopyTable {
-        object: ObjectPath,
-        new_name: String,
-        copy_data: bool,
-    },
-    DropTable {
-        object: ObjectPath,
-        foreign_key_check: ForeignKeyCheckMode,
-    },
-    TruncateTable {
-        object: ObjectPath,
-        foreign_key_check: ForeignKeyCheckMode,
-        /// PG：是否 RESTART IDENTITY（默认 false = CONTINUE IDENTITY）。
-        restart_identity: bool,
-    },
-    LoadDataPage(TabId),
-    SetDataPagePagination {
-        tab_id: TabId,
-        offset: u64,
-        limit: u64,
-    },
-    LoadDataPageWithSort {
-        tab_id: TabId,
-        sort: Vec<SortSpec>,
-        filters: Vec<FilterSpec>,
-    },
-    LoadRedisKey {
-        tab_id: TabId,
-        key: String,
-    },
-    /// 惰性补齐 Redis Key 列表元信息：给定当前可见的一批键名，批量取回类型/值/大小/TTL。
-    /// 对应 [`AppEvent::RedisKeyMetadataLoaded`]；空数组时直接成功返回空结果（不再发请求）。
-    LoadRedisKeyMetadata {
-        tab_id: TabId,
-        keys: Vec<String>,
-    },
-    /// 拉取 Redis 连接级运行概览（版本 / 内存 / CPU），刷新底栏连接状态摘要。
-    LoadRedisOverview(ConnectionId),
-    /// 拉取 Redis 服务端版本，作为字段级 TTL 编辑等能力开关。
-    /// 结果经 [`AppEvent::RedisServerVersionLoaded`] 回传；解析/命令失败统一回 `None`。
-    LoadRedisServerVersion(ConnectionId),
-    FinishRedisKeyRefresh {
-        tab_id: TabId,
-        key: String,
-        result: std::result::Result<Row, UserFacingError>,
-    },
-    ApplyRedisKeyValue {
-        tab_id: TabId,
-        key: String,
-        new_key: String,
-        ttl: Option<String>,
-        value: Option<String>,
-    },
-    AddRedisStreamEntry {
-        tab_id: TabId,
-        key: String,
-        id: String,
-        fields: Vec<(String, String)>,
-        /// 追加后按 `MAXLEN ~ n` 近似裁剪；None 表示不裁剪。
-        maxlen: Option<u64>,
-    },
-    DeleteRedisStreamEntry {
-        tab_id: TabId,
-        key: String,
-        entry_id: String,
-    },
-    DeleteRedisSetMember {
-        tab_id: TabId,
-        key: String,
-        member: String,
-    },
-    AddRedisSetMember {
-        tab_id: TabId,
-        key: String,
-        member: String,
-    },
-    LoadRedisSetMembers {
-        tab_id: TabId,
-        key: String,
-        query: String,
-        cursor: String,
-    },
-    LoadRedisHashFields {
-        tab_id: TabId,
-        key: String,
-        query: String,
-        cursor: String,
-    },
-    SetRedisHashField {
-        tab_id: TabId,
-        key: String,
-        field: String,
-        value: String,
-        /// 该字段 TTL 的处置方式：保留原值 / 清除 / 设为指定秒数。
-        ttl: RedisHashFieldTtl,
-    },
-    /// 完整值弹框保存：携带完整原始值（可能 >1MB 被截断标记），放行截断 guard。
-    /// 行内编辑走 [`AppCommand::SetRedisHashField`]（default 拒截断）。
-    SetRedisHashFieldRaw {
-        tab_id: TabId,
-        key: String,
-        field: String,
-        value: String,
-        ttl: RedisHashFieldTtl,
-    },
-    /// 仅更新 Hash 字段 TTL，不触碰字段值（纯 TTL 命令，Redis 7.4+ 字段级 TTL）。
-    /// 用于大字段（>1MB 被截断）的 TTL 编辑：行内 `SetRedisHashField` 会重写 value，
-    /// 对截断片段回写是危险的，必须走纯 TTL 路径。
-    SetRedisHashFieldTtl {
-        tab_id: TabId,
-        key: String,
-        field: String,
-        ttl: RedisHashFieldTtl,
-    },
-    /// 完整值弹框懒加载：读取 hash 字段完整原始值（不截断），
-    /// 结果经 [`AppEvent::RedisHashFieldFullValueLoaded`] 回传。
-    LoadRedisHashFieldFull {
-        tab_id: TabId,
-        key: String,
-        field: String,
-    },
-    /// String 详情值加载：`full=false` 取前 4999 字节预览（STRLEN+GETRANGE），
-    /// `full=true` 取完整值（GET）。结果经 [`AppEvent::RedisStringValueLoaded`] 回传。
-    LoadRedisStringValue {
-        tab_id: TabId,
-        key: String,
-        full: bool,
-    },
-    /// String / JSON 值下载：取原始字节供导出文件。结果经 [`AppEvent::RedisStringValueDownloaded`] 回传。
-    DownloadRedisStringValue {
-        tab_id: TabId,
-        key: String,
-    },
-    RenameRedisHashField {
-        tab_id: TabId,
-        key: String,
-        old_field: String,
-        new_field: String,
-        value: String,
-    },
-    DeleteRedisHashField {
-        tab_id: TabId,
-        key: String,
-        field: String,
-    },
-    LoadRedisZSetMembers {
-        tab_id: TabId,
-        key: String,
-        query: String,
-        cursor: String,
-    },
-    AddRedisZSetMember {
-        tab_id: TabId,
-        key: String,
-        member: String,
-        score: String,
-    },
-    UpdateRedisZSetScore {
-        tab_id: TabId,
-        key: String,
-        member: String,
-        score: String,
-    },
-    DeleteRedisZSetMember {
-        tab_id: TabId,
-        key: String,
-        member: String,
-    },
-    LoadRedisListItems {
-        tab_id: TabId,
-        key: String,
-        /// 按「包含」过滤元素；空串表示不过滤。
-        query: String,
-        cursor: String,
-    },
-    /// 分页拉取 Stream 条目：cursor 为空取最新一页，非空表示「加载更多」续页。
-    LoadRedisStreamEntries {
-        tab_id: TabId,
-        key: String,
-        /// 可选的时间范围（毫秒时间戳），下推给 XREVRANGE 由服务端过滤。
-        since_ms: Option<u64>,
-        until_ms: Option<u64>,
-        cursor: String,
-    },
-    /// 读取 Stream 的消费者组概览（只读）。
-    LoadRedisStreamGroups {
-        tab_id: TabId,
-        key: String,
-    },
-    PushRedisListItems {
-        tab_id: TabId,
-        key: String,
-        items: Vec<String>,
-        head: bool,
-    },
-    /// 新建一个 Redis Key（对齐 RedisInsight AddKey）。`request` 携带类型化字段，
-    /// 后端据类型执行 SET/HSET/SADD/ZADD/RPUSH/XADD/JSON.SET 并应用可选 TTL。
-    /// 成功后回传 [`AppEvent::RedisKeyCreated`]。
-    CreateRedisKey {
-        tab_id: TabId,
-        request: RedisAddKeyRequest,
-    },
-    SetRedisListItem {
-        tab_id: TabId,
-        key: String,
-        index: usize,
-        expected_old: Option<String>,
-        value: String,
-    },
-    DeleteRedisListItem {
-        tab_id: TabId,
-        key: String,
-        index: usize,
-        expected_old: Option<String>,
-    },
-    /// 从 List 头部/尾部按数量弹出元素（LPOP/RPOP，对齐 RedisInsight Remove elements）。
-    PopRedisListItems {
-        tab_id: TabId,
-        key: String,
-        /// true 从头弹出（LPOP），false 从尾弹出（RPOP）。
-        head: bool,
-        /// 弹出数量；1 全版本可用，>1 需 Redis ≥ 6.2。
-        count: usize,
-    },
-    FinishDataPageLoad {
-        tab_id: TabId,
-        result: std::result::Result<DataPage, UserFacingError>,
-    },
-    ToggleTableInfo {
-        tab_id: TabId,
-        tab: TableInfoTab,
-    },
-    CloseTableInfo(TabId),
-    SelectTableInfoTab {
-        tab_id: TabId,
-        tab: TableInfoTab,
-    },
-    LoadTableInfo {
-        tab_id: TabId,
-        tab: TableInfoTab,
-    },
-    FinishTableInfoLoad {
-        tab_id: TabId,
-        tab: TableInfoTab,
-        result: std::result::Result<TableInfoResult, UserFacingError>,
-    },
-    SetTableInfoSearch {
-        tab_id: TabId,
-        search: String,
-    },
-    SetTableInfoWidth {
-        tab_id: TabId,
-        width: f32,
-    },
-    ToggleDdlWrap(TabId),
-    HighlightDataColumn {
-        tab_id: TabId,
-        column: String,
-    },
-    EditDataCell {
-        tab_id: TabId,
-        row: usize,
-        column: usize,
-        value: CellValue,
-    },
-    LoadBinaryPreview {
-        tab_id: TabId,
-        row: usize,
-        column: usize,
-    },
-    DownloadBinaryCell {
-        tab_id: TabId,
-        row: usize,
-        column: usize,
-    },
-    UpdateBinaryCell {
-        tab_id: TabId,
-        row: usize,
-        column: usize,
-        payload: BinaryUpdatePayload,
-    },
-    SetBinaryCellNull {
-        tab_id: TabId,
-        row: usize,
-        column: usize,
-    },
-    ReplaceBinaryCellFromFile {
-        tab_id: TabId,
-        row: usize,
-        column: usize,
-        path: PathBuf,
-    },
-    OpenCellDetail {
-        tab_id: TabId,
-        row: usize,
-        column: usize,
-    },
-    CloseCellDetail(TabId),
-    StartCellDetailEdit(TabId),
-    UpdateCellDetailEditValue {
-        tab_id: TabId,
-        value: String,
-    },
-    CancelCellDetailEdit(TabId),
-    SaveCellDetailEdit(TabId),
-    SetCellDetailNull(TabId),
-    RestoreCellDetailOriginalValue(TabId),
-    InsertDataRow {
-        tab_id: TabId,
-        result_index: Option<usize>,
-        after_row: Option<usize>,
-    },
-    CloneDataRow {
-        tab_id: TabId,
-        result_index: Option<usize>,
-        row: usize,
-        after_row: Option<usize>,
-    },
-    DeleteDataRow {
-        tab_id: TabId,
-        result_index: Option<usize>,
-        row: usize,
-    },
-    DiscardDataChanges(TabId),
-    ApplyDataChanges(TabId),
-    ApplyDataChangesWithView {
-        tab_id: TabId,
-        sort: Vec<SortSpec>,
-        filters: Vec<FilterSpec>,
-    },
-    OpenQueryEditor(ConnectionId),
-    OpenUserAdmin(ConnectionId),
-    OpenSettings,
-    OpenQueryEditorInDatabase {
-        connection_id: ConnectionId,
-        database: Option<String>,
-        /// 编辑器初始 schema 作用域（PG）；MySQL/TiDB 恒为 None。
-        schema: Option<String>,
-    },
-    OpenRedisWorkbench {
-        connection_id: ConnectionId,
-        database: u32,
-    },
-    OpenRedisCli {
-        connection_id: ConnectionId,
-        database: u32,
-    },
-    OpenRedisPubSub {
-        connection_id: ConnectionId,
-        database: u32,
-    },
-    OpenCreateTable {
-        connection_id: ConnectionId,
-        database: Option<String>,
-        /// schema 作用域（PG）；None/空表示用连接默认 search_path。
-        schema: Option<String>,
-    },
-    OpenDesignTable(ObjectPath),
-    RenameTable {
-        object: ObjectPath,
-        new_name: String,
-    },
-    StartCreateTableApply(TabId),
-    ApplyCreateTable(TabId),
-    FinishCreateTableApply {
-        tab_id: TabId,
-        result: std::result::Result<(), UserFacingError>,
-    },
-    SetCreateTableField {
-        tab_id: TabId,
-        field: CreateTableField,
-        value: String,
-    },
-    SetCreateTableOptionField {
-        tab_id: TabId,
-        field: CreateTableOptionField,
-        value: String,
-    },
-    ToggleCreateTablePartitionEnabled(TabId),
-    SetCreateTablePartitionField {
-        tab_id: TabId,
-        field: CreateTablePartitionField,
-        value: String,
-    },
-    SelectCreateTableTab {
-        tab_id: TabId,
-        create_tab: CreateTableTab,
-    },
-    SelectCreateTableColumn {
-        tab_id: TabId,
-        column_id: u64,
-    },
-    AddCreateTableColumn(TabId),
-    MoveCreateTableColumnUp {
-        tab_id: TabId,
-        column_id: u64,
-    },
-    MoveCreateTableColumnDown {
-        tab_id: TabId,
-        column_id: u64,
-    },
-    RemoveCreateTableColumn {
-        tab_id: TabId,
-        column_id: u64,
-    },
-    SetCreateTableColumnField {
-        tab_id: TabId,
-        column_id: u64,
-        field: CreateTableColumnField,
-        value: String,
-    },
-    ToggleCreateTableColumnFlag {
-        tab_id: TabId,
-        column_id: u64,
-        flag: CreateTableColumnFlag,
-    },
-    SelectCreateTableIndex {
-        tab_id: TabId,
-        index_id: u64,
-    },
-    AddCreateTableIndex(TabId),
-    MoveCreateTableIndexUp {
-        tab_id: TabId,
-        index_id: u64,
-    },
-    MoveCreateTableIndexDown {
-        tab_id: TabId,
-        index_id: u64,
-    },
-    RemoveCreateTableIndex {
-        tab_id: TabId,
-        index_id: u64,
-    },
-    SetCreateTableIndexField {
-        tab_id: TabId,
-        index_id: u64,
-        field: CreateTableIndexField,
-        value: String,
-    },
-    AddCreateTableIndexColumn {
-        tab_id: TabId,
-        index_id: u64,
-    },
-    MoveCreateTableIndexColumnUp {
-        tab_id: TabId,
-        index_id: u64,
-        column_index: usize,
-    },
-    MoveCreateTableIndexColumnDown {
-        tab_id: TabId,
-        index_id: u64,
-        column_index: usize,
-    },
-    RemoveCreateTableIndexColumn {
-        tab_id: TabId,
-        index_id: u64,
-        column_index: usize,
-    },
-    SetCreateTableIndexColumnField {
-        tab_id: TabId,
-        index_id: u64,
-        column_index: usize,
-        field: CreateTableIndexColumnField,
-        value: String,
-    },
-    SelectCreateTableCheck {
-        tab_id: TabId,
-        check_id: u64,
-    },
-    AddCreateTableCheck(TabId),
-    MoveCreateTableCheckUp {
-        tab_id: TabId,
-        check_id: u64,
-    },
-    MoveCreateTableCheckDown {
-        tab_id: TabId,
-        check_id: u64,
-    },
-    RemoveCreateTableCheck {
-        tab_id: TabId,
-        check_id: u64,
-    },
-    SetCreateTableCheckField {
-        tab_id: TabId,
-        check_id: u64,
-        field: CreateTableCheckField,
-        value: String,
-    },
-    ToggleCreateTableCheckNotEnforced {
-        tab_id: TabId,
-        check_id: u64,
-    },
-    SelectCreateTableTrigger {
-        tab_id: TabId,
-        trigger_id: u64,
-    },
-    AddCreateTableTrigger(TabId),
-    MoveCreateTableTriggerUp {
-        tab_id: TabId,
-        trigger_id: u64,
-    },
-    MoveCreateTableTriggerDown {
-        tab_id: TabId,
-        trigger_id: u64,
-    },
-    RemoveCreateTableTrigger {
-        tab_id: TabId,
-        trigger_id: u64,
-    },
-    SetCreateTableTriggerField {
-        tab_id: TabId,
-        trigger_id: u64,
-        field: CreateTableTriggerField,
-        value: String,
-    },
-    SetCreateTableTriggerEvent {
-        tab_id: TabId,
-        trigger_id: u64,
-        event: CreateTableTriggerEvent,
-    },
-    SelectCreateTableForeignKey {
-        tab_id: TabId,
-        foreign_key_id: u64,
-    },
-    AddCreateTableForeignKey(TabId),
-    MoveCreateTableForeignKeyUp {
-        tab_id: TabId,
-        foreign_key_id: u64,
-    },
-    MoveCreateTableForeignKeyDown {
-        tab_id: TabId,
-        foreign_key_id: u64,
-    },
-    RemoveCreateTableForeignKey {
-        tab_id: TabId,
-        foreign_key_id: u64,
-    },
-    SetCreateTableForeignKeyField {
-        tab_id: TabId,
-        foreign_key_id: u64,
-        field: CreateTableForeignKeyField,
-        value: String,
-    },
-    StartCreateTableReferenceColumnsLoad {
-        tab_id: TabId,
-        foreign_key_id: u64,
-    },
-    LoadCreateTableReferenceColumns {
-        tab_id: TabId,
-        foreign_key_id: u64,
-    },
-    FinishCreateTableReferenceColumnsLoad {
-        tab_id: TabId,
-        foreign_key_id: u64,
-        result: std::result::Result<Vec<String>, UserFacingError>,
-    },
-    AddCreateTableForeignKeyColumn {
-        tab_id: TabId,
-        foreign_key_id: u64,
-    },
-    MoveCreateTableForeignKeyColumnUp {
-        tab_id: TabId,
-        foreign_key_id: u64,
-        column_index: usize,
-    },
-    MoveCreateTableForeignKeyColumnDown {
-        tab_id: TabId,
-        foreign_key_id: u64,
-        column_index: usize,
-    },
-    RemoveCreateTableForeignKeyColumn {
-        tab_id: TabId,
-        foreign_key_id: u64,
-        column_index: usize,
-    },
-    SetCreateTableForeignKeyColumn {
-        tab_id: TabId,
-        foreign_key_id: u64,
-        column_index: usize,
-        value: String,
-    },
-    AddCreateTableForeignKeyReferencedColumn {
-        tab_id: TabId,
-        foreign_key_id: u64,
-    },
-    MoveCreateTableForeignKeyReferencedColumnUp {
-        tab_id: TabId,
-        foreign_key_id: u64,
-        column_index: usize,
-    },
-    MoveCreateTableForeignKeyReferencedColumnDown {
-        tab_id: TabId,
-        foreign_key_id: u64,
-        column_index: usize,
-    },
-    RemoveCreateTableForeignKeyReferencedColumn {
-        tab_id: TabId,
-        foreign_key_id: u64,
-        column_index: usize,
-    },
-    SetCreateTableForeignKeyReferencedColumn {
-        tab_id: TabId,
-        foreign_key_id: u64,
-        column_index: usize,
-        value: String,
-    },
-
-    UpdateQueryText {
-        tab_id: TabId,
-        text: String,
-    },
-    RequestQueryCompletions {
-        tab_id: TabId,
-        request_seq: u64,
-        cursor: usize,
-        explicit: bool,
-    },
-    WarmCompletionIndex {
-        connection_id: ConnectionId,
-        database: Option<String>,
-    },
-    FormatQuerySql(TabId),
-    CompressQuerySql(TabId),
-    MarkQuerySaved {
-        tab_id: TabId,
-        title: String,
-        origin: QueryOrigin,
-    },
-    StartQueryExecution(TabId),
-    /// 请求停止当前标签正在执行的查询（工具栏「停止」）。置位该标签的取消标志，
-    /// 执行线程在下一次检查点向服务端发送取消（PG CancelToken），不会强杀执行线程。
-    CancelQueryExecution(TabId),
-    ExecuteQuery(TabId),
-    ExecuteQueryText {
-        tab_id: TabId,
-        text: String,
-    },
-    ExecuteQueryTextWithOptions {
-        tab_id: TabId,
-        text: String,
-        options: QueryExecutionOptions,
-    },
-    FinishQueryExecution {
-        tab_id: TabId,
-        result: std::result::Result<QueryExecutionResult, UserFacingError>,
-    },
-    UpdateRedisWorkbenchText {
-        tab_id: TabId,
-        text: String,
-    },
-    /// Redis Workbench 执行的准备步：只置运行态并按需清空顶部草稿，不做网络 I/O。
-    ///
-    /// `execution_id` 给定时重跑结果区该条记录（保留顶部草稿），为 None 时执行顶部草稿。
-    /// UI 紧接着在后台线程派发 [`AppCommand::RunRedisWorkbench`]，再用
-    /// [`AppCommand::FinishRedisWorkbenchExecution`] 把结果落回主线程。
-    BeginRedisWorkbenchExecution {
-        tab_id: TabId,
-        execution_id: Option<u64>,
-    },
-    /// 执行 Redis 命令：在后台线程的控制器副本上跑，只读标签页作用域，不改动任何标签页状态。
-    RunRedisWorkbench {
-        tab_id: TabId,
-        execution_id: Option<u64>,
-    },
-    FinishRedisWorkbenchExecution {
-        tab_id: TabId,
-        /// 本次实际执行的命令文本：失败入历史时要用，不能取执行期间的草稿。
-        text: String,
-        /// 一次运行按「一条命令一条记录」产出多条执行记录。
-        result: std::result::Result<Vec<CommandWorkbenchExecution>, UserFacingError>,
-    },
-    /// 删除结果区某条执行记录，只删当前一条。
-    DeleteRedisWorkbenchRecord {
-        tab_id: TabId,
-        execution_id: u64,
-    },
-    ClearRedisWorkbenchResults(TabId),
-    /// 切换结果区某条执行记录的折叠/展开（仅 UI 展示态，会话内有效）。
-    ToggleRedisWorkbenchRecordCollapse { tab_id: TabId, execution_id: u64 },
-    /// 切换结果区某条子命令的 `Text / JSON` 展示（仅 JSON 命令结果显示切换；按执行项维度记忆）。
-    ToggleRedisWorkbenchJsonView {
-        tab_id: TabId,
-        execution_id: u64,
-        command_index: usize,
-    },
-    /// 删除 Redis Workbench「历史」抽屉中指定 scope 的一条历史记录。
-    DeleteRedisWorkbenchHistory {
-        scope: WorkbenchHistoryScope,
-        id: u64,
-    },
-    /// 清空 Redis Workbench「历史」抽屉中指定 scope 的全部历史。
-    ClearRedisWorkbenchHistory { scope: WorkbenchHistoryScope },
-    FinishQueryResultPageRefresh {
-        tab_id: TabId,
-        result_index: usize,
-        page_index: usize,
-        result: std::result::Result<QueryExecutionResult, UserFacingError>,
-    },
-    ActivateQueryResultEditor {
-        tab_id: TabId,
-        page_index: Option<usize>,
-    },
-    LoadUserAdminUsers(TabId),
-    StartUserAdminUsersLoad(TabId),
-    FinishUserAdminUsersLoad {
-        tab_id: TabId,
-        result: std::result::Result<Vec<DatabaseUserIdentity>, UserFacingError>,
-    },
-    LoadUserAdminGrants {
-        tab_id: TabId,
-        user: DatabaseUserIdentity,
-    },
-    StartUserAdminGrantsLoad {
-        tab_id: TabId,
-        user: DatabaseUserIdentity,
-    },
-    FinishUserAdminGrantsLoad {
-        tab_id: TabId,
-        user: DatabaseUserIdentity,
-        result: std::result::Result<Vec<String>, UserFacingError>,
-    },
-    LoadUserAdminMemberGrants {
-        tab_id: TabId,
-        role: DatabaseUserIdentity,
-    },
-    StartUserAdminMemberGrantsLoad {
-        tab_id: TabId,
-        role: DatabaseUserIdentity,
-    },
-    FinishUserAdminMemberGrantsLoad {
-        tab_id: TabId,
-        role: DatabaseUserIdentity,
-        result: std::result::Result<Vec<UserRoleMember>, UserFacingError>,
-    },
-    SelectUserAdminUser {
-        tab_id: TabId,
-        user: DatabaseUserIdentity,
-    },
-    BeginUserAdminCreateUser(TabId),
-    /// 结束「新建」态（取消新建或提交完成），回到选中既有对象。
-    EndUserAdminCreateUser(TabId),
-    // ===== PG 用户与角色工作台（改版）=====
-    /// 切换选中 PG 角色（UI 在有草稿时先弹确认，确认后走 DiscardPgDraftAndSelect）。
-    SelectPgRole {
-        tab_id: TabId,
-        name: String,
-    },
-    /// 挂起「切换角色」等待用户确认丢弃草稿。
-    SetPgRoleSwitchPending {
-        tab_id: TabId,
-        target: String,
-    },
-    /// 取消切换（留在当前角色，草稿保留）。
-    PgCancelSwitchRole(TabId),
-    /// 丢弃当前草稿并切换到目标角色（切换确认框确认后）。
-    DiscardPgDraftAndSelect {
-        tab_id: TabId,
-        name: String,
-    },
-    /// 开始「新建角色」草稿（角色名留空待填，不自动误建）。
-    PgBeginCreateRole(TabId),
-    /// 取消/关闭当前草稿（仅清理本地草稿，不写库）。
-    PgCancelDraft(TabId),
-    SetPgDraftName {
-        tab_id: TabId,
-        name: String,
-    },
-    SetPgDraftCanLogin {
-        tab_id: TabId,
-        can_login: bool,
-    },
-    /// 布尔属性草稿切换（SUPERUSER/CREATEDB/CREATEROLE/INHERIT/REPLICATION/BYPASSRLS）。
-    SetPgDraftAttr {
-        tab_id: TabId,
-        field: PgDraftAttrField,
-        value: bool,
-    },
-    SetPgDraftConnectionLimit {
-        tab_id: TabId,
-        value: String,
-    },
-    /// 密码有效期操作：Keep/Clear(infinity)/At(绝对时间)。
-    SetPgDraftValidUntil {
-        tab_id: TabId,
-        op: PgValidUntilOp,
-    },
-    /// 密码操作：Keep/Set/Clear。
-    SetPgDraftPasswordOp {
-        tab_id: TabId,
-        op: PgPasswordOp,
-    },
-    /// 录入新密码明文（仅内存；写入 Set 操作）。
-    SetPgDraftPassword {
-        tab_id: TabId,
-        password: String,
-    },
-    /// 开始加载 PG 角色列表（权威 pg_roles 数据）。
-    StartUserAdminPgRolesLoad(TabId),
-    LoadUserAdminPgRoles(TabId),
-    FinishUserAdminPgRolesLoad {
-        tab_id: TabId,
-        result: Result<Vec<PgRole>, UserFacingError>,
-    },
-    /// 加载全量成员关系（双向展示用；同时探测服务端成员选项版本支持）。
-    StartPgMembershipsLoad(TabId),
-    LoadPgMemberships(TabId),
-    FinishPgMembershipsLoad {
-        tab_id: TabId,
-        result: Result<Vec<PgRoleMembership>, UserFacingError>,
-        member_options_supported: bool,
-    },
-    /// 成员关系草稿：授予 role → member（含 ADMIN/INHERIT/SET 选项）。
-    PgMembershipGrant {
-        tab_id: TabId,
-        role: String,
-        member: String,
-        admin: bool,
-        inherit: bool,
-        set: bool,
-    },
-    /// 成员关系草稿：撤销 role ← member。
-    PgMembershipRevoke {
-        tab_id: TabId,
-        role: String,
-        member: String,
-    },
-    /// 移除一条成员关系草稿变更。
-    PgMembershipRemoveEdit {
-        tab_id: TabId,
-        index: usize,
-    },
-    /// 权限页：切换目标数据库（一期同批只允许一个数据库）。
-    SetPgGrantDatabase {
-        tab_id: TabId,
-        database: String,
-    },
-    /// 开始加载权限页目标列表（数据库/schema/对象/函数）。
-    StartPgGrantTargetsLoad(TabId),
-    LoadPgGrantTargets {
-        tab_id: TabId,
-        database: String,
-    },
-    FinishPgGrantTargetsLoad {
-        tab_id: TabId,
-        result: Result<PgGrantTargetLists, UserFacingError>,
-    },
-    /// 对象授权草稿：授予/撤销/仅取消可再授权。
-    PgToggleGrant {
-        tab_id: TabId,
-        privilege: String,
-        scope: PgObjectGrantScope,
-        /// Grant（可带 grant_option）/ Revoke / RevokeGrantOption。
-        op: PgGrantEditOp,
-        grant_option: bool,
-    },
-    /// 移除一条对象授权草稿变更。
-    PgRemoveGrantEdit {
-        tab_id: TabId,
-        index: usize,
-    },
-    /// 生成脱敏 SQL 预览（渲染与执行共用 connector 规则）。
-    StartPgPlanPreview(TabId),
-    LoadPgPlanPreview(TabId),
-    FinishPgPlanPreview {
-        tab_id: TabId,
-        result: Result<Vec<String>, UserFacingError>,
-    },
-    /// 保存：以单事务应用全部草稿变更（App 内部构建计划并执行）。
-    StartPgPlanApply(TabId),
-    ApplyPgRolePlan(TabId),
-    FinishPgRolePlanApply {
-        tab_id: TabId,
-        plan: PgRoleSavePlan,
-        result: Result<Vec<String>, UserFacingError>,
-    },
-    /// 删除角色确认框。
-    PgBeginDeleteRole(TabId),
-    PgCancelDeleteRole(TabId),
-    /// 角色列表筛选：all / login / nologin / predefined。
-    SetPgRoleFilter {
-        tab_id: TabId,
-        filter: String,
-    },
-    /// PostgreSQL 对象权限：设置授权目标（种类/schema/对象/签名）。
-    SetUserAdminPgGrantTarget {
-        tab_id: TabId,
-        kind: PgGrantObjectKind,
-        schema: String,
-        object: String,
-        signature: String,
-    },
-    /// 读取当前授权目标的对象权限（owner/默认/显式条目 + 选中角色生效权限）。
-    LoadUserAdminPgObjectGrants(TabId),
-    /// 置对象权限面板为「加载中」。
-    StartUserAdminPgObjectGrantsLoad(TabId),
-    /// 对象权限读取完成回填（Ok 为对象读模型+生效权限；Err 为失败）。
-    FinishUserAdminPgObjectGrantsLoad {
-        tab_id: TabId,
-        target_fingerprint: String,
-        result: Result<(PgObjectGrants, Vec<PgEffectivePrivilege>), UserFacingError>,
-    },
-    SelectUserAdminDetailTab {
-        tab_id: TabId,
-        detail_tab: UserAdminDetailTab,
-    },
-    SetUserAdminSearch {
-        tab_id: TabId,
-        search: String,
-    },
-    SetUserAdminPrivilegeDatabase {
-        tab_id: TabId,
-        database: String,
-    },
-    SetUserAdminPrivilegeTable {
-        tab_id: TabId,
-        table: String,
-    },
-    ToggleUserAdminPrivilege {
-        tab_id: TabId,
-        privilege: String,
-    },
-    SetUserAdminGrantOption {
-        tab_id: TabId,
-        enabled: bool,
-    },
-    AddUserAdminPrivilegeRow {
-        tab_id: TabId,
-        database: String,
-    },
-    SetUserAdminPrivilegeRowDatabase {
-        tab_id: TabId,
-        row_id: u64,
-        database: String,
-    },
-    ToggleUserAdminPrivilegeRowPrivilege {
-        tab_id: TabId,
-        row_id: u64,
-        privilege: String,
-    },
-    SetUserAdminPrivilegeRowGrantOption {
-        tab_id: TabId,
-        row_id: u64,
-        enabled: bool,
-    },
-    SetUserAdminCreateUser {
-        tab_id: TabId,
-        user: String,
-    },
-    SetUserAdminCreateHost {
-        tab_id: TabId,
-        host: String,
-    },
-    SetUserAdminAuthPlugin {
-        tab_id: TabId,
-        plugin: String,
-    },
-    SetUserAdminPasswordExpiryPolicy {
-        tab_id: TabId,
-        policy: String,
-    },
-    SetUserAdminCreatePassword {
-        tab_id: TabId,
-        password: String,
-    },
-    SetUserAdminNewPassword {
-        tab_id: TabId,
-        password: String,
-    },
-    SetUserAdminMaxQueriesPerHour {
-        tab_id: TabId,
-        value: String,
-    },
-    SetUserAdminMaxUpdatesPerHour {
-        tab_id: TabId,
-        value: String,
-    },
-    SetUserAdminMaxConnectionsPerHour {
-        tab_id: TabId,
-        value: String,
-    },
-    SetUserAdminMaxUserConnections {
-        tab_id: TabId,
-        value: String,
-    },
-    SetUserAdminSslType {
-        tab_id: TabId,
-        ssl_type: String,
-    },
-    SetUserAdminSslCipher {
-        tab_id: TabId,
-        value: String,
-    },
-    SetUserAdminSslIssuer {
-        tab_id: TabId,
-        value: String,
-    },
-    SetUserAdminSslSubject {
-        tab_id: TabId,
-        value: String,
-    },
-    SetUserAdminRoleMembershipGranted {
-        tab_id: TabId,
-        role: DatabaseUserIdentity,
-        granted: bool,
-    },
-    SetUserAdminRoleMembershipDefault {
-        tab_id: TabId,
-        role: DatabaseUserIdentity,
-        default_role: bool,
-    },
-    SetUserAdminRoleMemberGranted {
-        tab_id: TabId,
-        member: DatabaseUserIdentity,
-        granted: bool,
-    },
-    PreviewUserAdminSql {
-        tab_id: TabId,
-        sql: String,
-        danger: bool,
-    },
-    ClearUserAdminPendingSql(TabId),
-    /// MySQL：打开「删除用户」确认弹框（针对当前选中的已有用户）。
-    BeginUserAdminDeleteUser(TabId),
-    /// MySQL：关闭「删除用户」确认弹框（取消）。
-    CancelUserAdminDeleteUser(TabId),
-    StartUserAdminSqlApply(TabId),
-    ApplyUserAdminSql {
-        tab_id: TabId,
-        sql: String,
-    },
-    FinishUserAdminSqlApply {
-        tab_id: TabId,
-        result: std::result::Result<(), UserFacingError>,
-    },
-    CloseTab(TabId),
-    CloseTabs(Vec<TabId>),
-    ConfirmCloseDirtyTab(TabId),
-    CancelCloseDirtyTab(TabId),
-    ActivateTab(TabId),
-    /// 取消激活当前标签（active_tab 置空 → 显示首页/启动页）。已打开的标签保留在标签栏，
-    /// 仅取消聚焦，非破坏性；与「关闭全部标签」(CloseTabs) 语义不同。
-    DeactivateTab,
-    PinTab(TabId),
-    ReplaceQueryHistory(Vec<QueryHistoryEntry>),
-    SaveSettings(Settings),
-    SetTabDirty { tab_id: TabId, dirty: bool },
-    ClearCompletionIndexCache,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub enum AppEvent {
-    ErRelationshipsLoaded { scope_key: String, relationships: Vec<ErRelationship> },
-    ErRelationshipChanged { scope_key: String, relationship: ErRelationship },
-    ErRelationshipDeleted { scope_key: String, id: String },
-    BackupPrepared(BackupRequest),
-    BackupCompleted(BackupManifest),
-    RestorePrepared { request: RestoreRequest, plan: RestorePlan },
-    RestoreObjectsProbed(Vec<RestoreObjectProbe>),
-    RestoreCompleted(RestoreOutcome),
-    ConnectionsLoaded(Vec<ConnectionConfig>),
-    SidebarLayoutChanged(SidebarLayout),
-    ConnectionCreated(ConnectionConfig),
-    ConnectionUpdated(ConnectionConfig),
-    ConnectionGroupCreated(ConnectionGroup),
-    ConnectionGroupDeleted(ConnectionGroupId),
-    ConnectionDeleted(ConnectionId),
-    DatabaseDeleted {
-        connection_id: ConnectionId,
-        database: String,
-    },
-    ConnectionTested(ConnectionId, fluxdb_core::Result<()>),
-    /// 自动发现 / 连接串导入成功，弹框可据此预填一条 Redis 连接草稿。
-    RedisConnectionDiscovered(ConnectionDraft),
-    ObjectsLoaded(Option<ObjectPath>, Vec<ObjectSummary>),
-    /// schema 新建成功；UI 据此失效该库 schema 缓存并重取，使新 schema 出现在树。
-    SchemaCreated {
-        connection_id: ConnectionId,
-        schema: String,
-    },
-    /// PG 角色列表加载完成（T26）。
-    PgRolesLoaded(ConnectionId, Vec<fluxdb_core::PgRole>),
-    /// PG 角色变更成功（CRUD 后 UI 重取列表）。
-    PgRoleChanged(ConnectionId),
-    /// PG 对象权限读取完成（对象读模型 + 选中角色生效权限）；Err 为读取失败。
-    UserAdminPgObjectGrantsLoaded(
-        TabId,
-        Result<(PgObjectGrants, Vec<PgEffectivePrivilege>), UserFacingError>,
-    ),
-    /// PG 对象权限授予/撤销成功（UI 重新读取该对象权限）。
-    UserAdminPgGrantsChanged(TabId),
-    /// PG 角色列表加载完成回填（改版工作台）。
-    UserAdminPgRolesLoaded(TabId, Vec<PgRole>),
-    /// PG 成员关系加载完成回填（含服务端是否支持成员级 INHERIT/SET 选项）。
-    UserAdminPgMembershipsLoaded(TabId, Vec<PgRoleMembership>, bool),
-    /// PG 权限目标列表加载完成回填。
-    UserAdminPgGrantTargetsLoaded(TabId, PgGrantTargetLists),
-    /// PG 变更计划脱敏预览生成完成。
-    UserAdminPgPlanPreview(TabId, Vec<String>),
-    /// PG 变更计划应用完成（含计划本体，供 Finish 回填；Err 为失败/结果不确定）。
-    UserAdminPgRolePlanFinished(
-        TabId,
-        PgRoleSavePlan,
-        Result<Vec<String>, UserFacingError>,
-    ),
-    /// PG 变更计划应用成功（UI 刷新角色列表并清空草稿）。
-    UserAdminPgRolePlanApplied(TabId),
-    DataLoaded(TabId, DataPage),
-    /// 惰性补齐无用的事件：元信息已由控制器合并进 `editor.page`，只用于通知 UI 续补下一批可见行。
-    RedisKeyMetadataLoaded {
-        tab_id: TabId,
-    },
-    RedisSetMembersLoaded {
-        tab_id: TabId,
-        key: String,
-        query: String,
-        cursor: String,
-        members: Vec<String>,
-        next_cursor: String,
-        total: usize,
-    },
-    RedisHashFieldsLoaded {
-        tab_id: TabId,
-        key: String,
-        query: String,
-        cursor: String,
-        fields: Vec<(String, String, String)>,
-        next_cursor: String,
-        total: usize,
-    },
-    /// 完整值弹框懒加载结果：对应 [`AppCommand::LoadRedisHashFieldFull`]，返回非截断原始值。
-    RedisHashFieldFullValueLoaded {
-        tab_id: TabId,
-        field: String,
-        value: String,
-    },
-    /// String 详情值加载结果：对应 [`AppCommand::LoadRedisStringValue`]。
-    RedisStringValueLoaded {
-        tab_id: TabId,
-        key: String,
-        value: String,
-        len: u64,
-        loaded_all: bool,
-    },
-    /// String / JSON 值下载结果：对应 [`AppCommand::DownloadRedisStringValue`]，返回原始字节。
-    RedisStringValueDownloaded {
-        tab_id: TabId,
-        key: String,
-        bytes: Vec<u8>,
-    },
-    RedisZSetMembersLoaded {
-        tab_id: TabId,
-        key: String,
-        query: String,
-        cursor: String,
-        members: Vec<(String, String)>,
-        next_cursor: String,
-        total: usize,
-    },
-    RedisListItemsLoaded {
-        tab_id: TabId,
-        key: String,
-        query: String,
-        cursor: String,
-        items: Vec<(usize, String)>,
-        next_cursor: String,
-        total: usize,
-    },
-    RedisStreamGroupsLoaded {
-        tab_id: TabId,
-        key: String,
-        /// (组名, 消费者数, 未确认数, 最后投递 ID, [(消费者名, 未确认数, 空闲毫秒)])
-        groups: Vec<(String, u64, u64, String, Vec<(String, u64, u64)>)>,
-    },
-    RedisStreamEntriesLoaded {
-        tab_id: TabId,
-        key: String,
-        cursor: String,
-        /// 一页条目：(流 ID, 由 ID 推导的本地时间, 字段列表)，顺序为从新到旧。
-        entries: Vec<(String, String, Vec<(String, String)>)>,
-        next_cursor: String,
-        total: usize,
-    },
-    /// Redis 连接级运行概览拉取结果，供底栏连接状态摘要展示。
-    RedisOverviewLoaded(ConnectionId, ConnectionOverview),
-    /// Redis 服务端版本加载结果；`None` 表示非 Redis 连接 / 解析失败 / 命令失败（能力未知）。
-    RedisServerVersionLoaded(ConnectionId, Option<RedisServerVersion>),
-    /// 新建 Key 成功：`tab_id` 为目标库键列表页，`object` 为目标库（`RedisDb`）路径，
-    /// `key` 为新键名，供 UI 关闭抽屉、刷新列表并打开新键详情。
-    RedisKeyCreated {
-        tab_id: TabId,
-        object: ObjectPath,
-        key: String,
-    },
-    BinaryPreviewLoaded {
-        tab_id: TabId,
-        row: usize,
-        column: usize,
-        preview: BinaryPreviewResponse,
-    },
-    BinaryCellDownloaded {
-        tab_id: TabId,
-        row: usize,
-        column: usize,
-        bytes: Vec<u8>,
-    },
-    QueryCompletionsLoaded(TabId, u64, QueryCompletionResult),
-    CompletionIndexWarmed(ConnectionId, Option<String>),
-    QueryFinished(TabId, QueryExecutionResult),
-    /// Redis Workbench 后台执行完成：一次运行按「一条命令一条记录」产出多条结果。
-    /// 失败也用本事件回传，让实际执行的命令文本随结果一起回到主线程写历史。
-    RedisWorkbenchCommandsRan {
-        tab_id: TabId,
-        text: String,
-        result: std::result::Result<Vec<CommandWorkbenchExecution>, UserFacingError>,
-    },
-    CreateTableApplied(TabId),
-    TableRenamed {
-        object: ObjectPath,
-        new_name: String,
-    },
-    TableCopied {
-        object: ObjectPath,
-        new_name: String,
-    },
-    TableDropped(ObjectPath),
-    TableTruncated(ObjectPath),
-    CreateTableReferenceColumnsLoaded {
-        tab_id: TabId,
-        foreign_key_id: u64,
-        columns: Vec<String>,
-    },
-    QueryResultPageRefreshed {
-        tab_id: TabId,
-        result_index: usize,
-        page_index: usize,
-        page: DataPage,
-    },
-    TabOpened(TabId),
-    TabClosed(TabId),
-    /// 已置位某标签的查询取消标志（可能仍在等语句收尾）；UI 据此提示「已请求停止」。
-    QueryCancelRequested(TabId),
-    TabCloseRequested(TabId),
-    TabCloseCancelled(TabId),
-    TabActivated(TabId),
-    UserAdminUsersLoaded(TabId, Vec<DatabaseUserIdentity>),
-    UserAdminGrantsLoaded(TabId, Vec<String>),
-    UserAdminMemberGrantsLoaded(TabId, Vec<UserRoleMember>),
-    UserAdminSqlApplied(TabId),
-    TableInfoLoaded(TabId, TableInfoTab, TableInfoResult),
-    TableInfoChanged(TabId, TableInfoTab),
-    SettingsSaved,
-    /// Redis Workbench 命令历史已变化（新增/删除/清空），供桌面层做持久化 diff 与刷新。
-    RedisWorkbenchHistoryChanged,
-    Failed(UserFacingError),
-}
+include!("state_commands.rs");
+include!("state_events.rs");
 
 #[derive(Clone, Debug)]
 struct CompletionCacheEntry<T> {
@@ -2610,6 +1841,9 @@ pub struct AppController {
     completion_cache: Arc<Mutex<CompletionCache>>,
     completion_index: Arc<Mutex<CompletionIndex>>,
     completion_index_storage: Option<fluxdb_storage::FileStorage>,
+    /// AI 平台存储：设置页「大模型 / 工具与MCP」读写模型、Agent、插件与MCP 配置。
+    /// UI 只通过 AppCommand 访问，不直接持有。
+    ai_storage: Option<fluxdb_storage::FileStorage>,
     /// ER 逻辑关系服务按作用域复用；生命周期由应用层管理，UI 不直接持有文件 store。
     er_model_storage: Option<fluxdb_storage::FileStorage>,
     er_model_services: Arc<Mutex<BTreeMap<String, Arc<ErModelService>>>>,

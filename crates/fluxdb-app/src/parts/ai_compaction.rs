@@ -1,0 +1,355 @@
+// 上下文压缩决策与切点（设计 §16.1 / T069）。
+//
+// 纯函数优先：触发判定、合法切点、保护项校验、source hash 都在这里，
+// 方便单测覆盖；真正的模型摘要调用与 checkpoint 落库在 ai_conversation.rs 编排。
+//
+// 明确边界：
+// - 只压"最早的部分"，不拆未完成的工具请求/回执对；
+// - 原始消息/审计永不删除，压缩只影响下一次请求的可见上下文；
+// - 取消/失败/无进展/校验失败都不覆盖旧 checkpoint。
+
+use fluxdb_core::ModelMessage;
+
+/// token 估算：无 tokenizer 依赖，按字符近似（CJK 约 1 token/字符，ASCII 约 4 字符/token）。
+///
+/// 只用于"是否接近窗口上限"的保守估计，不用于累计用量统计（统计使用 Provider 的真实 usage）。
+pub fn estimate_tokens(text: &str) -> i64 {
+    let mut ascii = 0i64;
+    let mut wide = 0i64;
+    for ch in text.chars() {
+        if (ch as u32) < 0x80 {
+            ascii += 1;
+        } else {
+            wide += 1;
+        }
+    }
+    // 向上取整，宁可提前压缩，不要撞上下文上限。
+    (ascii + 3) / 4 + wide
+}
+
+/// 消息列表的估算 token 总量（含角色/结构开销的粗略常量）。
+pub fn estimate_messages_tokens(messages: &[ModelMessage]) -> i64 {
+    messages
+        .iter()
+        .map(|m| {
+            estimate_tokens(&m.text)
+                + 4
+                + m.tool_call_id.as_deref().map(estimate_tokens).unwrap_or(0)
+                + m.tool_name.as_deref().map(estimate_tokens).unwrap_or(0)
+                + m.tool_calls
+                    .iter()
+                    .map(|call| {
+                        estimate_tokens(&call.provider_call_id)
+                            + estimate_tokens(&call.tool_id)
+                            + estimate_tokens(&call.arguments_json)
+                            + 16
+                    })
+                    .sum::<i64>()
+        })
+        .sum()
+}
+
+/// 工具定义也占上下文；首次压缩与每次发送前必须使用同一估算，不能只计算正文。
+fn estimate_tools_tokens(tools: &[fluxdb_core::ToolDescriptor]) -> i64 {
+    tools
+        .iter()
+        .map(|tool| {
+            estimate_tokens(&tool.id)
+                + estimate_tokens(&tool.input_schema_json)
+                + estimate_tokens(&tool.description)
+                + 16
+        })
+        .sum()
+}
+
+/// 单次回复的输出 token 上限：优先用模型档案配置，未配置时按上下文窗口推导。
+///
+/// 这个值同时决定请求的 `max_output_tokens` 和压缩时的输出预留，两者必须同源，
+/// 否则会出现「预留了很多、实际只发很少」的偏差。
+///
+/// 推理模型的思考 token 与正文共用同一额度，上限过小会让模型想完就停、正文一个字都没有
+/// （协议返回 `response.incomplete`），因此未配置时给一个够用的默认值而不是极小值。
+/// 同时必须给输入留出正预算：输出上限顶满窗口时输入无处安放，请求必然被服务端拒绝，
+/// 所以显式配置也按「窗口 − 最小输入预留」收敛。
+pub fn resolve_output_token_limit(context_window: Option<i64>, configured: Option<i64>) -> i64 {
+    /// 窗口未知时的输出默认值。
+    const DEFAULT_OUTPUT: i64 = 8_192;
+    /// 输出之外必须保留的输入空间。
+    const MIN_INPUT_RESERVE: i64 = 1_024;
+    let window = context_window.filter(|window| *window > 0);
+    let derived = match window {
+        Some(window) => (window / 4).min(DEFAULT_OUTPUT),
+        None => DEFAULT_OUTPUT,
+    };
+    let requested = configured.filter(|value| *value > 0).unwrap_or(derived);
+    match window {
+        Some(window) => requested.min((window - MIN_INPUT_RESERVE).max(1)),
+        None => requested,
+    }
+}
+
+/// 压缩触发判定输入。
+#[derive(Debug, Clone, Copy)]
+pub struct CompactionTrigger {
+    /// 生成模型的上下文窗口（token）；未知时不触发。
+    pub context_window_tokens: Option<i64>,
+    /// 本轮实际最大输出（token），用于预留空间。
+    pub max_output_tokens: Option<i64>,
+    /// Agent 配置的触发百分比（10–95）。
+    pub trigger_percent: u8,
+}
+
+/// 触发原因（用于 UI 提示与测试断言）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompactionReason {
+    /// 达到百分比阈值。
+    Percent,
+    /// 输出预留空间不足（余量小于输出预算 + 安全余量）。
+    OutputReserve,
+}
+
+/// 安全余量：除输出外额外保留 5% 窗口（最少 512 tokens），避免估算误差顶到上限。
+fn safety_margin(window: i64) -> i64 {
+    (window / 20).max(512)
+}
+
+/// 可用输入预算：窗口扣除输出预留与安全余量后，还能装多少输入 token。
+///
+/// 窗口未知（未配置模型容量）时返回 `None`；此时既不能判定压缩，也不能据此暂停。
+fn usable_input_budget(window: i64, output: i64) -> i64 {
+    window - output - safety_margin(window)
+}
+
+/// 是否应触发压缩；返回原因而非 bool，便于 UI/审计区分。
+pub fn should_compact(
+    estimated_input_tokens: i64,
+    trigger: CompactionTrigger,
+) -> Option<CompactionReason> {
+    let window = trigger.context_window_tokens.filter(|w| *w > 0)?;
+    let output = trigger.max_output_tokens.unwrap_or(0).max(0);
+    let usable = usable_input_budget(window, output);
+    if usable <= 0 {
+        // 窗口连输出都装不下：必然要压缩。
+        return Some(CompactionReason::OutputReserve);
+    }
+    let percent_threshold =
+        ((window as f64) * (f64::from(trigger.trigger_percent) / 100.0)).floor() as i64;
+    if estimated_input_tokens >= percent_threshold {
+        return Some(CompactionReason::Percent);
+    }
+    if estimated_input_tokens >= usable {
+        return Some(CompactionReason::OutputReserve);
+    }
+    None
+}
+
+/// 输入是否已超出可用预算（窗口都装不下，而不是仅仅到百分比阈值）。
+///
+/// 摘要不可用或失败时用它决定：仍在预算内可以带着提示继续；超出则必须暂停并说明，
+/// 不能把注定超窗的请求硬发出去。窗口未知时返回 false —— 不知道就不能据此暂停。
+pub fn exceeds_input_budget(estimated_input_tokens: i64, trigger: CompactionTrigger) -> bool {
+    let Some(window) = trigger.context_window_tokens.filter(|w| *w > 0) else {
+        return false;
+    };
+    let output = trigger.max_output_tokens.unwrap_or(0).max(0);
+    estimated_input_tokens > usable_input_budget(window, output)
+}
+
+/// 压缩切点：`[0, cut)` 进入摘要，`[cut, len)` 保留原始消息。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CompactionCut {
+    /// 进入摘要的消息下标（不含）。
+    pub cut: usize,
+    /// 摘要覆盖的最后一条消息 seq（1 起）；无消息时为 0。
+    pub last_message_seq: i64,
+}
+
+/// 计算合法切点并保留最近完整交互。
+///
+/// 规则（对齐 Pi 的合法切点）：
+/// - 保底保留 `keep_recent_messages` 条（不足则整体保留，返回 None 表示无可压缩内容）；
+/// - 切点不能落在"assistant 请求了工具但回执还未回齐"的位置：向前回退到成对边界；
+/// - 第一条 System 永不进入摘要（它是运行约束，每轮都重新拼装）。
+pub fn compute_cut(
+    messages: &[ModelMessage],
+    keep_recent_messages: usize,
+    seq_of: impl Fn(usize) -> i64,
+) -> Option<CompactionCut> {
+    if messages.len() <= keep_recent_messages + 1 {
+        return None;
+    }
+    // 永远保留第一条 System。
+    let earliest = 1usize;
+    let latest = messages.len().saturating_sub(keep_recent_messages);
+    if latest <= earliest {
+        return None;
+    }
+    let mut cut = latest;
+    // 第一条**保留**的消息不能是孤立的 Tool 回执：那说明它的 assistant(tool_calls)
+    // 被压进了摘要、回执却留在可见上下文里，会破坏工具请求/回执配对。
+    // 出现这种情况就把切点向前回退，直到 assistant(tool_calls) 与回执一起进入保留段。
+    while cut > earliest {
+        if cut >= messages.len() {
+            cut -= 1;
+            continue;
+        }
+        let first_kept = &messages[cut];
+        if first_kept.role == fluxdb_core::ModelRole::Tool {
+            cut -= 1;
+            continue;
+        }
+        break;
+    }
+    if cut <= earliest {
+        return None;
+    }
+    Some(CompactionCut {
+        cut,
+        last_message_seq: seq_of(cut - 1),
+    })
+}
+
+/// 把确定性切点回退到成对边界的规则抽出来，供"候选切点"生成复用。
+///
+/// 与 [`compute_cut`] 用的是同一条规则：保留段的第一条不能是孤立 Tool 回执，
+/// 否则回退到工具请求/回执成对的边界。决策建议的候选必须同样合法，不能把
+/// "模型选了一个会拆散工具配对的位置"变成新的失败路径。
+fn legalize_cut(messages: &[ModelMessage], earliest: usize, mut cut: usize) -> Option<usize> {
+    while cut > earliest {
+        if cut >= messages.len() {
+            cut -= 1;
+            continue;
+        }
+        if messages[cut].role == fluxdb_core::ModelRole::Tool {
+            cut -= 1;
+            continue;
+        }
+        break;
+    }
+    (cut > earliest).then_some(cut)
+}
+
+/// 压缩决策候选：确定性切点 + 供决策模型挑选的合法切点集合。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompactionCutCandidates {
+    /// 未配置压缩决策模型或建议不可用时使用的确定性切点（等于 [`compute_cut`] 的结果）。
+    pub deterministic: CompactionCut,
+    /// 全部合法切点（含 `deterministic`），按"保留原文最多→最少"排序。
+    pub all: Vec<CompactionCut>,
+}
+
+/// 压缩决策的候选切点：宿主预先算好若干**合法**切点，决策模型只能从中选一个。
+///
+/// 切点越靠后，进入摘要的历史越多、保留原文越少。候选只在合法切点上取，因此模型
+/// 无论选哪个都不会拆散工具配对；`None` 表示当前历史没有可安全压缩的内容。
+pub fn cut_candidates(
+    messages: &[ModelMessage],
+    keep_recent_messages: usize,
+    seq_of: impl Fn(usize) -> i64,
+) -> Option<CompactionCutCandidates> {
+    let deterministic = compute_cut(messages, keep_recent_messages, &seq_of)?;
+    let earliest = 1usize;
+    let latest = messages.len().saturating_sub(1);
+    // 三个候选：确定性切点、少压一点、多压一点；都被回退规则校正到合法位置。
+    let mut cuts = vec![
+        deterministic.cut,
+        legalize_cut(messages, earliest, deterministic.cut.saturating_sub(2).max(earliest + 1))
+            .unwrap_or(deterministic.cut),
+        legalize_cut(
+            messages,
+            earliest,
+            (deterministic.cut + (latest - deterministic.cut) / 2).max(deterministic.cut),
+        )
+        .unwrap_or(deterministic.cut),
+    ];
+    cuts.sort_unstable();
+    cuts.dedup();
+    Some(CompactionCutCandidates {
+        deterministic,
+        all: cuts
+            .into_iter()
+            .map(|cut| CompactionCut {
+                cut,
+                last_message_seq: seq_of(cut - 1),
+            })
+            .collect(),
+    })
+}
+
+/// 保护项模板：这些条目缺失时摘要视为无效，不落盘。
+pub const REQUIRED_PROTECTED_ITEMS: &[&str] = &[
+    "goal",
+    "constraints",
+    "verified_facts",
+    "decisions",
+    "next_steps",
+];
+
+/// 摘要模型选择（设计 §16「摘要模型可单独配置，无配置用主模型」）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CompactionModelChoice {
+    /// 未单独配置摘要模型：摘要与主模型使用同一档案。
+    Main,
+    /// 使用独立摘要模型。
+    Model(String),
+    /// 已配置摘要模型但全部不可用：**不得静默改用主模型**，需要可见说明。
+    Unavailable {
+        model_profile_id: String,
+        reason: String,
+    },
+}
+
+/// 摘要校验：必须非空、未被截断标记、且涵盖全部保护项。
+pub fn validate_summary(summary: &str) -> Result<(), String> {
+    let trimmed = summary.trim();
+    if trimmed.is_empty() {
+        return Err("摘要为空".into());
+    }
+    if trimmed.contains("[truncated]") || trimmed.ends_with('…') {
+        return Err("摘要疑似被截断".into());
+    }
+    let value: serde_json::Value =
+        serde_json::from_str(trimmed).map_err(|_| "摘要不是合法 JSON")?;
+    let object = value.as_object().ok_or("摘要必须是 JSON 对象")?;
+    for key in REQUIRED_PROTECTED_ITEMS {
+        let item = object
+            .get(*key)
+            .ok_or_else(|| format!("摘要缺少保护项：{key}"))?;
+        if item.is_null() || item.as_str().is_some_and(|s| s.trim().is_empty()) {
+            return Err(format!("摘要保护项为空：{key}"));
+        }
+    }
+    Ok(())
+}
+
+/// 构造摘要请求的系统提示与用户内容（增量：旧摘要 + 新增旧消息）。
+pub fn build_summary_prompt(previous_summary: Option<&str>, digest: &str) -> String {
+    let mut prompt = String::new();
+    prompt.push_str(
+        "你在为数据库智能助手压缩历史上下文。请输出 JSON，且必须包含字段：\
+         goal、constraints、verified_facts、decisions、next_steps。\
+         不要臆造未验证的事实；无法确认的内容写入 next_steps 或省略。\n",
+    );
+    if let Some(previous) = previous_summary.filter(|s| !s.trim().is_empty()) {
+        prompt.push_str("\n已有摘要（增量合并，不要丢失其中仍有效的内容）：\n");
+        prompt.push_str(previous);
+        prompt.push('\n');
+    }
+    prompt.push_str("\n需要纳入摘要的新增历史：\n");
+    prompt.push_str(digest);
+    prompt
+}
+
+/// 稳定的来源 hash（不引入新依赖；用简单 FNV-1a 64 位）。
+pub fn source_hash(parts: &[&str]) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for part in parts {
+        for byte in part.as_bytes() {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        hash ^= 0xff;
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{hash:016x}")
+}

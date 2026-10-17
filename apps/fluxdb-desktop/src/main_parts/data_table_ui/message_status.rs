@@ -56,7 +56,7 @@ fn alert_tint(accent: gpui::Hsla, colors: UiColors) -> gpui::Hsla {
 
 /// 底部提示浮层：挂在窗口最上层、贴底居中；3s 后由 `NavicatMain::show_message` 的计时任务清掉。
 /// 视觉承载统一交给 gpui-component 的 `Alert`（图标与配色随变体走）。
-fn app_message_overlay(message: &AppMessage, window: &Window, cx: &App, colors: UiColors) -> Div {
+fn app_message_overlay(message: &AppMessage, window: &Window, cx: &App, colors: UiColors) -> Stateful<Div> {
     let layout = app_message_layout(window);
     let (variant, icon_name, accent) = app_message_style(message.kind, cx);
     // 同一条提示只存在一个实例；id 随消息自增，避免复用上一条的交互态。
@@ -68,6 +68,10 @@ fn app_message_overlay(message: &AppMessage, window: &Window, cx: &App, colors: 
         .line_height(px(APP_MESSAGE_LINE_HEIGHT));
 
     div()
+        .id("app-message-overlay")
+        .debug_selector(|| "app-message-overlay".into())
+        .role(gpui::Role::Status)
+        .aria_label(message.text.clone())
         .absolute()
         .bottom(px(layout.bottom))
         .left_0()
@@ -197,7 +201,9 @@ fn statusbar(
     cx: &mut Context<NavicatMain>,
 ) -> impl IntoElement {
     div()
+        .debug_selector(|| "fluxdb-statusbar".into())
         .h(px(24.))
+        .flex_none()
         .bg(colors.status_bg)
         .border_t_1()
         .border_color(colors.border)
@@ -327,6 +333,7 @@ fn statusbar_active_connection_id(state: &AppState) -> Option<ConnectionId> {
         TabKind::BackupList(list) => Some(list.connection_id),
         TabKind::ErDiagram(er) => Some(er.connection_id),
         TabKind::Settings(_) => None,
+        TabKind::AiChat { .. } => None,
     }
 }
 
@@ -407,6 +414,7 @@ fn statusbar_context(state: &AppState) -> Option<String> {
             Some("ER 关系图"),
         ),
         TabKind::Settings(_) => None,
+        TabKind::AiChat { .. } => None,
     }
 }
 

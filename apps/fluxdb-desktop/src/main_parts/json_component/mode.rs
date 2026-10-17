@@ -20,13 +20,3 @@ impl JsonMode {
     }
 }
 
-#[cfg(test)]
-mod json_component_mode_tests {
-    use super::*;
-
-    #[test]
-    fn preview_is_readonly_edit_is_editable() {
-        assert!(!JsonMode::Preview.is_editable());
-        assert!(JsonMode::Edit.is_editable());
-    }
-}

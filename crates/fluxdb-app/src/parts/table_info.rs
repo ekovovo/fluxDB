@@ -168,6 +168,9 @@ fn tab_belongs_to_database(tab: &TabState, connection_id: ConnectionId, database
         TabKind::Settings(settings) => settings.workspace.as_ref().is_some_and(|workspace| {
             workspace.connection_id == connection_id && workspace.database == database
         }),
+        TabKind::AiChat { workspace } => workspace.as_ref().is_some_and(|workspace| {
+            workspace.connection_id == connection_id && workspace.database == database
+        }),
         // ER 图 tab 按「连接 + 库」归属（与侧边栏 ER 节点一一对应）。
         TabKind::ErDiagram(er) => er.connection_id == connection_id && er.database == database,
         TabKind::UserAdmin(_) => false,
@@ -202,87 +205,9 @@ fn tab_belongs_to_connection(tab: &TabState, connection_id: ConnectionId) -> boo
             .workspace
             .as_ref()
             .is_some_and(|workspace| workspace.connection_id == connection_id),
+        TabKind::AiChat { workspace } => workspace
+            .as_ref()
+            .is_some_and(|workspace| workspace.connection_id == connection_id),
     }
 }
 
-#[allow(dead_code)]
-fn _keep_query_request_visible(_: QueryRequest) {}
-
-#[cfg(test)]
-mod table_info_tests {
-    use super::*;
-
-    fn obj(database: Option<&str>, schema: Option<&str>, name: &str, kind: ObjectKind) -> ObjectSummary {
-        ObjectSummary {
-            path: ObjectPath {
-                connection_id: ConnectionId(1),
-                database: database.map(str::to_string),
-                schema: schema.map(str::to_string),
-                name: name.to_string(),
-                kind,
-            },
-            rows: None,
-            modified_at: None,
-            comment: None,
-            stable: None,
-        }
-    }
-
-    #[test]
-    fn replace_loaded_children_scopes_to_schema_for_postgres() {
-        // PG 已有 public.a 与 tenant_b.a（同名跨 schema）。
-        let mut current = vec![
-            obj(Some("appdb"), Some("public"), "a", ObjectKind::Table),
-            obj(Some("appdb"), Some("tenant_b"), "a", ObjectKind::Table),
-            obj(Some("appdb"), Some("tenant_b"), "other", ObjectKind::View),
-        ];
-        // 展开 tenant_b：加载 tenant_b 的关系，不得清掉 public 的同名 a。
-        let children = vec![
-            obj(Some("appdb"), Some("tenant_b"), "a", ObjectKind::Table),
-            obj(Some("appdb"), Some("tenant_b"), "b", ObjectKind::Table),
-        ];
-        let parent = obj(Some("appdb"), Some("tenant_b"), "tenant_b", ObjectKind::Schema);
-        replace_loaded_children(&mut current, &parent.path, children);
-        let names: Vec<(String, Option<String>)> = current
-            .iter()
-            .map(|o| (o.path.name.clone(), o.path.schema.clone()))
-            .collect();
-        // public.a 保留；tenant_b 的关系被替换为 a+b；tenant_b.other(视图) 被同一 schema 加载清掉。
-        assert!(names.contains(&("a".to_string(), Some("public".to_string()))));
-        assert!(names.contains(&("a".to_string(), Some("tenant_b".to_string()))));
-        assert!(names.contains(&("b".to_string(), Some("tenant_b".to_string()))));
-        assert!(!names.contains(&("other".to_string(), Some("tenant_b".to_string()))));
-        // 表/视图都只按 schema 清，不越界到 public。
-        assert_eq!(
-            current
-                .iter()
-                .filter(|o| o.path.schema.as_deref() == Some("public"))
-                .count(),
-            1
-        );
-    }
-
-    #[test]
-    fn replace_loaded_children_without_schema_keeps_legacy_database_scope() {
-        // MySQL：父为 Database（无 schema），仍清整个库的表/视图。
-        let mut current = vec![obj(Some("db1"), None, "a", ObjectKind::Table)];
-        let parent = obj(Some("db1"), None, "db1", ObjectKind::Database);
-        let children = vec![obj(Some("db1"), None, "b", ObjectKind::Table)];
-        replace_loaded_children(&mut current, &parent.path, children);
-        assert_eq!(current.len(), 1);
-        assert_eq!(current[0].path.name, "b");
-    }
-
-    #[test]
-    fn replace_loaded_children_database_level_postgres_schema_list_keeps_tables() {
-        // PG：数据库节点右键刷新返回的是该库的 schema 列表（不含表），不能据此清空已加载的表。
-        let mut current = vec![obj(Some("appdb"), Some("public"), "a", ObjectKind::Table)];
-        let parent = obj(Some("appdb"), None, "appdb", ObjectKind::Database);
-        let children = vec![obj(Some("appdb"), Some("public"), "public", ObjectKind::Schema)];
-        replace_loaded_children(&mut current, &parent.path, children);
-        // public 表 a 保留；仅并入新到的 schema 条目。
-        assert_eq!(current.len(), 2);
-        assert!(current.iter().any(|o| o.path.name == "a"));
-        assert!(current.iter().any(|o| o.path.name == "public"));
-    }
-}

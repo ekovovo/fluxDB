@@ -1,5 +1,6 @@
 impl NavicatMain {
     fn dispatch(&mut self, command: AppCommand, cx: &mut Context<Self>) -> AppEvent {
+        self.capture_ai_chat_tab_source(&command);
         self.sync_settings_tab_dirty();
         if matches!(&command, AppCommand::ConfirmCloseDirtyTab(tab_id) if self.is_settings_tab(*tab_id)) {
             self.discard_settings_preview(cx);
@@ -545,7 +546,8 @@ impl NavicatMain {
         let message_id = message.id;
         self.app_message = Some(message);
         self._app_message_task = Some(cx.spawn(async move |view, cx| {
-            smol::Timer::after(APP_MESSAGE_DURATION).await;
+            // 跟随 GPUI executor，窗口销毁/测试结束时不由外部 reactor 唤醒失效 UI 任务。
+            cx.background_executor().timer(APP_MESSAGE_DURATION).await;
             view.update(cx, move |this, cx| {
                 if this
                     .app_message
@@ -743,6 +745,7 @@ impl NavicatMain {
                 }
             }
             AppEvent::TabClosed(tab_id) => {
+                self.ai_chat_tab_closed(*tab_id, cx);
                 if self.hovered_tab == Some(*tab_id) {
                     self.hovered_tab = None;
                 }

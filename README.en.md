@@ -1,8 +1,10 @@
-# FluxDB — Cross-Platform Database GUI & SQL Editor
+# FluxDB
 
-**An open-source database management tool built with Rust + GPUI for macOS, Windows, and Linux.**
+**An open-source, cross-platform native database client and SQL editor.**
 
-Connect to MySQL, TiDB, PostgreSQL, SQLite, and Redis in one native desktop app for SQL queries, data editing, table management, and key-value operations. Use FluxDB as a MySQL or PostgreSQL GUI client, a SQLite database browser, and a Redis GUI for visual key-value management.
+Connect to MySQL, TiDB, PostgreSQL, SQLite, and Redis in one desktop app to write SQL, edit data, manage table structures, and browse key-value data.
+
+Built with Rust + GPUI, without Electron or a WebView. Available for macOS, Windows, and Linux.
 
 **English | [简体中文](./README.md)**
 
@@ -11,20 +13,22 @@ Connect to MySQL, TiDB, PostgreSQL, SQLite, and Redis in one native desktop app 
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue)](./LICENSE)
 ![Platforms](https://img.shields.io/badge/Platforms-macOS%20%7C%20Windows%20%7C%20Linux-blue)
 
-[Download](#download-and-install) · [Features](#features) · [User Guide](./docs/user-guide.md) · [Contributing](#contributing) · [Support & Sponsorship](#support--sponsorship)
+[Download the latest release](https://github.com/fluxdb-alt/fluxDB/releases/latest) · [Features](#features) · [Installation](#download-and-install) · [User Guide](./docs/user-guide.md) · [Report an issue](https://github.com/fluxdb-alt/fluxDB/issues)
 
-![FluxDB main window](docs/screenshots/home_page.png)
+[![FluxDB SQL editor: click to watch the demo](docs/screenshots/sql_editor_adapter.png)](docs/fluxdb-demo.mp4)
 
-> FluxDB is in early development. Features and compatibility are still evolving, and the app has not yet been tested across a broad range of real-world scenarios. Back up important data before making changes.
+**[Watch the demo](docs/fluxdb-demo.mp4)** · 2 min 46 sec · MP4, approximately 8.6 MB
+
+> Early release. The UI is currently primarily in Chinese, and features and compatibility have not yet been tested across a broad range of real-world scenarios. Start with a test database and back up important data before making changes.
 
 ## Features
 
-- **Multiple databases**: Manage connections and browse databases, schemas, tables, and Redis keys from a shared sidebar.
 - **SQL editor**: Syntax highlighting, code folding, keyword/table/column completion, SQL formatting, and query history.
 - **Data browsing and editing**: Browse pages, filter rows, edit and write back results, export data, and execute SQL files.
 - **Table management**: Inspect columns and DDL, create tables, and modify table structures.
+- **ER diagrams**: Browse database foreign keys, manually record local logical relationships, and explore related tables from a single table. Local logical relationships do not create or modify database foreign keys.
 - **Redis workbench**: Browse and edit values, inspect key details, and run commands in an embedded terminal.
-- **Native desktop UI**: Built with Rust + GPUI, with light and dark themes and no WebView rendering dependency.
+- **Multi-connection workspace**: Manage connections and database objects in the sidebar, switch between tabs, and choose a light or dark theme.
 
 ### Database support
 
@@ -36,16 +40,6 @@ Available features vary by database. See the [user guide](./docs/user-guide.md) 
 | PostgreSQL | SQL queries, schema and object browsing, table management, data editing, user and role administration, and native client tools |
 | SQLite | Local database connections, SQL queries, table structure browsing, and data editing |
 | Redis | Connection overview, key-value browsing and editing, workbench, and command terminal |
-
-### Screenshots
-
-| SQL editor | Data browsing and editing |
-| :---: | :---: |
-| ![SQL editor](docs/screenshots/sql_editor_adapter.png) | ![Data browsing and editing](docs/screenshots/mysql_data_table_ui.png) |
-
-| Table management | Redis key details |
-| :---: | :---: |
-| ![Table management](docs/screenshots/mysql_table_info.png) | ![Redis key details](docs/screenshots/redis_detail.png) |
 
 ## Download and install
 
@@ -67,6 +61,9 @@ Release packages include `.sha256` checksum files. Windows ARM64, Linux ARM64, A
 After installation, click “添加连接” (Add connection), choose a database type, enter connection details, and test the connection. Follow the [user guide](./docs/user-guide.md) for more details; it is currently in Chinese and uses macOS screenshots and shortcuts.
 
 ## Run from source
+
+<details>
+<summary>Build dependencies, running, and packaging</summary>
 
 ### Prerequisites
 
@@ -102,6 +99,8 @@ On macOS, use the bundled script to generate an `.app` and `.dmg` with dynamic l
 
 The script supports options such as `PROFILE=debug` and `CREATE_DMG=0`; see the [packaging script](./scripts/package-macos.sh). Windows installer and Linux DEB packaging steps are in the [release workflow](./.github/workflows/release.yml).
 
+</details>
+
 ## Contributing
 
 Bug reports, feature suggestions, documentation improvements, and code contributions are welcome.
@@ -115,22 +114,9 @@ Before submitting Rust changes, run:
 ```bash
 cargo fmt --all -- --check
 cargo check --workspace --locked
-cargo test --workspace --locked
 ```
 
-Some database integration tests require running database services. Describe your test environment and any unverified areas in the PR. For UI behavior changes, also launch the app and verify the main window and affected interactions.
-
-### Project structure
-
-| Directory | Responsibility |
-| --- | --- |
-| `apps/fluxdb-desktop` | GPUI desktop UI and interactions |
-| `crates/fluxdb-app` | Application state and business orchestration |
-| `crates/fluxdb-core` | Domain models, errors, and connector interfaces |
-| `crates/fluxdb-connectors` | Database connections and operations |
-| `crates/fluxdb-storage` | Configuration and connection persistence |
-| `crates/fluxdb-editor-core` | General-purpose editor core |
-| `crates/fluxdb-editor-language` | Editor language adapter protocol |
+For UI behavior changes, also launch the app and verify the main window and affected interactions.
 
 The project's code is generated by AI. Humans define requirements and perform acceptance checks, including reviewing changes, running tests, and inspecting the UI.
 
@@ -166,3 +152,5 @@ Thanks to these open-source projects for their foundations and design references
 ## License
 
 FluxDB is licensed under the [GNU GPL v3.0 or later](./LICENSE).
+
+See [NOTICE](./NOTICE) for the project's copyright and license notice.

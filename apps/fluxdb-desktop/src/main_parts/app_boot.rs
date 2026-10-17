@@ -1,4 +1,17 @@
 fn main() {
+    let mut args = std::env::args().skip(1);
+    if args.next().as_deref() == Some("--mcp-server") {
+        // stdio 子进程不能进入桌面单实例守卫、日志初始化或 GPUI。
+        std::process::exit(fluxdb_mcp::run_cli(args));
+    }
+
+    // 实例标识最先校验：单实例守卫与数据目录解析都依赖它，非法取值必须在此明确
+    // 报错退出，否则用户只会看到后续步骤的"无法解析应用数据目录"而不知根因。
+    if let Err(err) = fluxdb_storage::instance_profile() {
+        eprintln!("FluxDB 启动终止: {err}");
+        std::process::exit(1);
+    }
+
     // 单实例守卫最先执行（方案 §12.1 方案 A）：避免第二实例与首实例并发写同一
     // SQLite/配置。第二实例明确提示并退出；锁基础设施失败时降级放行（见 single_instance.rs）。
     if !acquire_single_instance() {
@@ -15,6 +28,9 @@ fn main() {
             std::process::exit(1);
         }
     };
+    let storage = if cfg!(debug_assertions) {
+        std::env::var_os("FLUXDB_AI_TEST_ROOT").map(|p|FileStorage::new(std::path::PathBuf::from(p))).unwrap_or(storage)
+    } else {storage};
     let saved_settings = storage.load_settings().unwrap_or_default();
     // 最先初始化日志系统；guard 持有到 main 结束，保证日志 worker 线程存活。
     let _log_guard = init_logging(saved_settings.log_level, &saved_settings.log_path);
@@ -47,8 +63,12 @@ fn main() {
             // 无持久连接时保持为空（空连接不造假数据显示）。
             let mut controller = AppController::new();
             controller.set_completion_index_storage(storage.clone());
+            controller.set_ai_storage(storage.clone());
+            // 首帧后加载 AI 设置列表，避免阻塞开窗；空列表由设置页给出空状态。
+            let _ = controller.dispatch(AppCommand::RefreshAiSettings);
             controller.set_er_model_storage(storage.clone());
-            let theme_mode = theme_mode_from_app_theme(saved_settings.theme);
+            let theme_mode = debug_theme_mode_override()
+                .unwrap_or_else(|| theme_mode_from_app_theme(saved_settings.theme));
             let _ = controller.dispatch(AppCommand::SaveSettings(saved_settings));
             apply_registered_theme(&controller.state().settings, theme_mode, cx);
             apply_component_theme_colors(theme_mode, cx);
@@ -83,9 +103,169 @@ fn main() {
                     // Windows/Linux 默认正常关闭。当前只有 macOS 的隐藏/恢复行为经过验证。
                     #[cfg(target_os = "macos")]
                     install_close_to_tray(window, cx);
-                    let view = cx.new(|cx| {
+                    let view = cx.new(|cx| navicat_main_new(window, cx, controller, storage, theme_mode));
+                    // Tab 拦截已迁移到通用 Editor 的键绑定体系，不再需要全局拦截。
+                    // 首帧后异步恢复查询/工作台历史与保存的查询（不阻塞建窗；
+                    // saved_queries 经内部 notify 补显，详见 load_persisted_history_in_background）。
+                    view.update(cx, |this, cx| {
+                        this.load_persisted_history_in_background(cx);
+                        // 只维护用户明确接入的客户端，不自动接管检测到的配置。
+                        this.sync_mcp_clients(cx);
+                        // 调试入口：打开设置页的 AI 分区（仅 debug 构建，用于 UI 截图验证）。
+                        if debug_ai_settings_requested() {
+                            let _ = this.controller.dispatch(AppCommand::OpenSettings);
+                            cx.notify();
+                        }
+                        // 调试入口：直接打开模型编辑弹框（仅 debug 构建）。
+                        if debug_ai_model_dialog_requested() {
+                            let _ = this.controller.dispatch(AppCommand::OpenSettings);
+                        }
+                    });
+                    cx.new(|cx| Root::new(view, window, cx))
+                },
+            )
+            .unwrap();
+            cx.activate(true);
+        });
+}
+
+
+/// 调试用：从环境变量读取要打开的 AI 设置分区。
+///
+/// 仅 debug 构建生效，用于 UI 截图/交互验证；发布构建始终返回编辑器分区。
+/// 例：`FLUXDB_DEBUG_AI_SETTINGS=models cargo run -p fluxdb-desktop`
+/// 可用值：models / tools / agents / sessions / appearance
+fn debug_ai_settings_section() -> SettingsPanelSection {
+    if !cfg!(debug_assertions) {
+        return SettingsPanelSection::Editor;
+    }
+    match std::env::var("FLUXDB_DEBUG_AI_SETTINGS").as_deref() {
+        Ok("models") => SettingsPanelSection::AiModels,
+        Ok("tools") => SettingsPanelSection::AiToolsMcp,
+        Ok("agents") => SettingsPanelSection::AiAgents,
+        Ok("sessions") => SettingsPanelSection::AiSessions,
+        // 外观页用于明暗主题/窄窗截图核对，以及与设置相关的渲染回归定位。
+        Ok("appearance") => SettingsPanelSection::Appearance,
+        _ => SettingsPanelSection::Editor,
+    }
+}
+
+/// 调试用：从环境变量选择「工具与 MCP」初始页签（仅 debug 构建）。
+///
+/// 例：`FLUXDB_DEBUG_AI_SETTINGS=tools FLUXDB_DEBUG_AI_TAB=plugins cargo run -p fluxdb-desktop`
+fn debug_ai_tools_tab() -> AiToolsTab {
+    if !cfg!(debug_assertions) {
+        return AiToolsTab::Tools;
+    }
+    match std::env::var("FLUXDB_DEBUG_AI_TAB").as_deref() {
+        Ok("mcp") => AiToolsTab::Mcp,
+        Ok("plugins") => AiToolsTab::Plugins,
+        Ok("audit") => AiToolsTab::Audit,
+        _ => AiToolsTab::Tools,
+    }
+}
+
+/// 调试用：是否请求打开 AI 设置分区。
+fn debug_ai_settings_requested() -> bool {
+    cfg!(debug_assertions) && std::env::var("FLUXDB_DEBUG_AI_SETTINGS").is_ok()
+}
+
+/// 调试用：覆写主题（仅 debug 构建），用于明暗主题截图核对。
+///
+/// 例：`FLUXDB_DEBUG_THEME=dark cargo run -p fluxdb-desktop`
+fn debug_theme_mode_override() -> Option<ThemeMode> {
+    if !cfg!(debug_assertions) {
+        return None;
+    }
+    match std::env::var("FLUXDB_DEBUG_THEME").as_deref() {
+        Ok("dark") => Some(ThemeMode::Dark),
+        Ok("light") => Some(ThemeMode::Light),
+        _ => None,
+    }
+}
+
+/// 调试用：是否请求首帧自动测试第一个模型的连接（用于截图核对 Alert/状态标签）。
+fn debug_ai_model_test_requested() -> bool {
+    cfg!(debug_assertions)
+        && std::env::var("FLUXDB_DEBUG_AI_TEST_MODEL").is_ok_and(|v| v == "1")
+}
+
+/// 调试用：是否请求直接打开 Agent 新建草稿。
+fn debug_ai_agent_draft_requested() -> bool {
+    cfg!(debug_assertions)
+        && std::env::var("FLUXDB_DEBUG_AI_AGENT_DRAFT").is_ok_and(|v| v == "1")
+}
+
+/// 调试用：是否请求直接打开模型编辑弹框。
+fn debug_ai_model_dialog_requested() -> bool {
+    cfg!(debug_assertions)
+        && std::env::var("FLUXDB_DEBUG_AI_MODEL_DIALOG")
+            .is_ok_and(|v| v == "1" || v == "edit" || v == "invalid")
+}
+
+/// 调试用：请求直接打开某个可配置插件的「管理」弹框（截图核对用）。
+///
+/// `FLUXDB_DEBUG_AI_PLUGIN_CONFIG=1` 打开第一个可配置插件；
+/// 设为具体实例 id（如 `builtin.security-audit`）则打开该实例。
+fn debug_ai_plugin_config_target() -> Option<String> {
+    if !cfg!(debug_assertions) {
+        return None;
+    }
+    match std::env::var("FLUXDB_DEBUG_AI_PLUGIN_CONFIG").as_deref() {
+        Ok("1") => Some(String::new()),
+        Ok(id) if !id.is_empty() => Some(id.to_string()),
+        _ => None,
+    }
+}
+
+/// 构造主视图 `NavicatMain`。
+///
+/// 从 `main()` 里约 3000 行的内联结构体字面量抽出：生产启动与 `#[gpui::test]` 交互测试
+/// 走**同一条**构造路径，测试不能靠给孤立组件塞数据绕过生产装配（AGENTS.md / 设计 §39.5）。
+fn navicat_main_new(
+    window: &mut Window,
+    cx: &mut Context<NavicatMain>,
+    controller: AppController,
+    storage: FileStorage,
+    theme_mode: ThemeMode,
+) -> NavicatMain {
                         let rename_group_input =
                             cx.new(|cx| InputState::new(window, cx).placeholder("分组名称"));
+                        let ai_session_filter_input =
+                            cx.new(|cx| InputState::new(window, cx).placeholder("搜索会话"));
+                        let ai_session_filter_subscription = cx.subscribe(
+                            &ai_session_filter_input,
+                            |this: &mut NavicatMain, input, event: &InputEvent, cx| {
+                                if matches!(event, InputEvent::Change) {
+                                    this.ai_session_filter = input.read(cx).value().to_string();
+                                    cx.notify();
+                                }
+                            },
+                        );
+                        let ai_audit_filter_input =
+                            cx.new(|cx| InputState::new(window, cx).placeholder("搜索工具、目标或规则"));
+                        let ai_audit_filter_subscription = cx.subscribe(
+                            &ai_audit_filter_input,
+                            |this: &mut NavicatMain, input, event: &InputEvent, cx| {
+                                if matches!(event, InputEvent::Change) {
+                                    this.ai_audit_filter_text = input.read(cx).value().to_string();
+                                    cx.notify();
+                                }
+                            },
+                        );
+                        let ai_session_rename_input =
+                            cx.new(|cx| InputState::new(window, cx).placeholder("会话名称"));
+                        let ai_session_rename_subscription = cx.subscribe(
+                            &ai_session_rename_input,
+                            |this: &mut NavicatMain, input, event: &InputEvent, cx| {
+                                if let InputEvent::Change = event {
+                                    let value = input.read(cx).value().to_string();
+                                    if let Some(pending) = &mut this.pending_ai_session_rename {
+                                        pending.title = value;
+                                    }
+                                }
+                            },
+                        );
                         let rename_group_subscription = cx.subscribe(
                             &rename_group_input,
                             |this: &mut NavicatMain, input, event: &InputEvent, cx| {
@@ -279,6 +459,30 @@ fn main() {
                                 }
                             },
                         );
+                        let ai_model_dialog_filter_input =
+                            cx.new(|cx| InputState::new(window, cx).placeholder("搜索模型…"));
+                        let ai_model_dialog_filter_subscription = cx.subscribe(
+                            &ai_model_dialog_filter_input,
+                            |this: &mut NavicatMain, input, event: &InputEvent, cx| {
+                                if matches!(event, InputEvent::Change) {
+                                    this.ai_model_dialog_filter =
+                                        input.read(cx).value().to_string();
+                                    cx.notify();
+                                }
+                            },
+                        );
+                        let ai_model_filter_input =
+                            cx.new(|cx| InputState::new(window, cx).placeholder("搜索名称、Provider…"));
+                        let ai_model_filter_subscription = cx.subscribe(
+                            &ai_model_filter_input,
+                            |this: &mut NavicatMain, input, event: &InputEvent, cx| {
+                                if matches!(event, InputEvent::Change) {
+                                    this.ai_model_filter =
+                                        input.read(cx).value().to_string();
+                                    cx.notify();
+                                }
+                            },
+                        );
                         let field_filter_search_input =
                             cx.new(|cx| InputState::new(window, cx).placeholder("搜索字段..."));
                         let field_filter_search_subscription = cx.subscribe(
@@ -298,7 +502,6 @@ fn main() {
                             cx.new(|cx| InputState::new(window, cx).placeholder("输入筛选值"));
                         let data_filter_batch_input = cx.new(|cx| {
                             InputState::new(window, cx)
-                                .multi_line(true)
                                 .placeholder("粘贴多个值，每行一个……")
                         });
                         let local_filter_value_input =
@@ -307,7 +510,6 @@ fn main() {
                             cx.new(|cx| InputState::new(window, cx).placeholder("搜索"));
                         let data_filter_text_input = cx.new(|cx| {
                             InputState::new(window, cx)
-                                .multi_line(true)
                                 .placeholder("例如：`question` LIKE '%0.648238%'")
                         });
                         let data_sort_text_input = cx.new(|cx| {
@@ -334,9 +536,6 @@ fn main() {
                         let temporal_part_input = cx.new(|cx| InputState::new(window, cx));
                         let cell_detail_input = cx.new(|cx| {
                             InputState::new(window, cx)
-                                .code_editor("json")
-                                .line_number(false)
-                                .rows(10)
                                 .placeholder("编辑单元格值")
                         });
                         let data_search_input =
@@ -346,15 +545,10 @@ fn main() {
                         let redis_key_value_input = cx.new(|cx| {
                             InputState::new(window, cx)
                                 .placeholder("值")
-                                .multi_line(true)
-                                .rows(12)
                         });
                         let redis_json_key_value_input = cx.new(|cx| {
                             InputState::new(window, cx)
-                                .code_editor(JSON_HIGHLIGHT_LANGUAGE)
-                                .line_number(false)
                                 .placeholder("值")
-                                .rows(12)
                         });
                         let redis_key_name_input =
                             cx.new(|cx| InputState::new(window, cx).placeholder("键名称"));
@@ -426,9 +620,6 @@ fn main() {
                             cx.new(|cx| {
                                 InputState::new(window, cx)
                                     .placeholder("Value")
-                                    .multi_line(true)
-                                    .rows(3)
-                                    .legacy_soft_wrap(true)
                             });
                         let redis_hash_ttl_edit_input =
                             cx.new(|cx| InputState::new(window, cx).placeholder("TTL"));
@@ -590,9 +781,6 @@ fn main() {
                         let redis_list_value_edit_input = cx.new(|cx| {
                             InputState::new(window, cx)
                                 .placeholder("Value")
-                                .multi_line(true)
-                                .rows(3)
-                                .legacy_soft_wrap(true)
                         });
                         let redis_list_value_edit_subscription = cx.subscribe_in(
                             &redis_list_value_edit_input,
@@ -739,8 +927,6 @@ fn main() {
                         );
                         let redis_add_key_json_input = cx.new(|cx| {
                             InputState::new(window, cx)
-                                .code_editor(JSON_HIGHLIGHT_LANGUAGE)
-                                .line_number(false)
                                 .placeholder("{}")
                         });
                         let redis_add_key_json_subscription = cx.subscribe_in(
@@ -2293,6 +2479,7 @@ fn main() {
                             er_minimap_rect: BTreeMap::new(),
                         }));
                         NavicatMain {
+        ai_chat: AiChatUi::new(window,cx),
                             focus_handle: cx.focus_handle(),
                             controller,
                             storage,
@@ -2304,6 +2491,8 @@ fn main() {
                                 1,
                             ),
                             new_connection_inputs: NewConnectionInputs::new(window, cx),
+                            ai_model_dialog: None,
+                            ai_plugin_config_dialog: None,
                             new_connection_password_visible: false,
                             editing_connection_id: None,
                             rename_group_input,
@@ -2772,6 +2961,7 @@ fn main() {
                             column_choice_label_input,
                             query_save_name_input,
                             _file_picker_task: None,
+                            query_files: QueryFilesUi::default(),
                             _connection_tasks: BTreeMap::new(),
                             _tree_refresh_task: None,
                             _database_tasks: BTreeMap::new(),
@@ -2835,6 +3025,7 @@ fn main() {
                             data_row_viewer: None,
                             pending_dirty_data_action: None,
                             pending_apply_data_changes: None,
+                            data_change_apply_tasks: BTreeMap::new(),
                             pending_query_parameters: None,
                             pending_dangerous_query: None,
                             pending_dangerous_redis_command: None,
@@ -2925,7 +3116,53 @@ fn main() {
                             // 工具栏上的切换按钮只改这个运行时值，不回写设置。
                             results_placement: settings_editor_draft.results_placement,
                             query_result_display_pages: BTreeMap::new(),
-                            settings_panel_section: SettingsPanelSection::Editor,
+                            settings_panel_section: debug_ai_settings_section(),
+                            ai_model_dialog_debug_pending: debug_ai_model_dialog_requested(),
+                            ai_plugin_config_dialog_debug_pending: debug_ai_plugin_config_target(),
+                            ai_model_dialog_filter_input,
+                            _ai_model_dialog_filter_subscription:
+                                ai_model_dialog_filter_subscription,
+                            ai_model_dialog_filter: String::new(),
+                            ai_model_filter_input,
+                            _ai_model_filter_subscription: ai_model_filter_subscription,
+                            ai_model_filter: String::new(),
+                            ai_model_testing_id: None,
+                            ai_model_deleting_id: None,
+        ai_settings_loading: false,
+        ai_settings_error: None,
+                            ai_tools_tab: debug_ai_tools_tab(),
+                            ai_mcp_install_status: Vec::new(),
+                            ai_mcp_clients_busy: None,
+                            ai_mcp_clients_error: None,
+                            ai_mcp_connection_details: None,
+                            ai_mcp_connection_error: None,
+                            ai_mcp_details_open: false,
+                            ai_mcp_binary_override: None,
+                            ai_agent_editor: None,
+                            ai_agent_editor_debug_pending: debug_ai_agent_draft_requested(),
+                            ai_agent_delete_just_removed: String::new(),
+                            ai_session_filter_input,
+                            _ai_session_filter_subscription: ai_session_filter_subscription,
+                            ai_session_filter: String::new(),
+                            ai_audit_filter: None,
+                            ai_audit_filter_input,
+                            _ai_audit_filter_subscription: ai_audit_filter_subscription,
+                            ai_audit_filter_text: String::new(),
+                            ai_audit_expanded: None,
+                            ai_session_archiving_id: None,
+                            ai_report_modal: Rc::new(std::cell::RefCell::new(
+                                AiReportModalData::default(),
+                            )),
+                            _ai_report_task: None,
+                            _ai_report_export_task: None,
+                            ai_diagnostics_modal: Rc::new(std::cell::RefCell::new(
+                                AiDiagnosticsModalData::default(),
+                            )),
+                            _ai_diagnostics_task: None,
+                            ai_session_rename_input,
+                            _ai_session_rename_subscription: ai_session_rename_subscription,
+                            pending_ai_session_rename: None,
+                            ai_model_test_debug_pending: debug_ai_model_test_requested(),
                             settings_editor_draft,
                             settings_dangerous_actions_collapsed: false,
                             // 备份默认展开（常用），客户端默认折叠（标题右侧有状态摘要）。
@@ -3004,17 +3241,4 @@ fn main() {
                             connection_browser_resize_start: None,
                             table_info_resize_start: None,
                         }
-                    });
-                    // Tab 拦截已迁移到通用 Editor 的键绑定体系，不再需要全局拦截。
-                    // 首帧后异步恢复查询/工作台历史与保存的查询（不阻塞建窗；
-                    // saved_queries 经内部 notify 补显，详见 load_persisted_history_in_background）。
-                    view.update(cx, |this, cx| {
-                        this.load_persisted_history_in_background(cx);
-                    });
-                    cx.new(|cx| Root::new(view, window, cx))
-                },
-            )
-            .unwrap();
-            cx.activate(true);
-        });
 }

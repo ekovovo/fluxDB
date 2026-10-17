@@ -49,7 +49,7 @@ async fn sqlite_connect(config: &ConnectionConfig) -> fluxdb_core::Result<sqlx::
         }
         sqlx::query(&format!(
             "ATTACH DATABASE ? AS {}",
-            sqlite_quote_identifier(&database)
+            fluxdb_core::SqliteDialect.quote_identifier(&database)
         ))
         .bind(path.to_string_lossy().to_string())
         .execute(&mut connection)
@@ -66,8 +66,8 @@ fn sqlite_database_for_path(path: &ObjectPath) -> &str {
 fn sqlite_qualified_table(database: &str, table: &str) -> String {
     format!(
         "{}.{}",
-        sqlite_quote_identifier(database),
-        sqlite_quote_identifier(table)
+        fluxdb_core::SqliteDialect.quote_identifier(database),
+        fluxdb_core::SqliteDialect.quote_identifier(table)
     )
 }
 
@@ -111,7 +111,7 @@ fn sqlite_list_objects(
               AND name NOT LIKE 'sqlite_%'
             ORDER BY type, name
             "#,
-            sqlite_quote_identifier(database)
+            fluxdb_core::SqliteDialect.quote_identifier(database)
         ))
         .fetch_all(&mut connection)
         .await
@@ -247,13 +247,13 @@ fn sqlite_load_data(
             &mut builder,
             filters,
             &columns,
-            sqlite_quote_identifier,
+            |value| fluxdb_core::SqliteDialect.quote_identifier(value),
             push_sqlite_bind,
         );
         builder.push(data_order_by_clause(
             sort,
             &columns,
-            sqlite_quote_identifier,
+            |value| fluxdb_core::SqliteDialect.quote_identifier(value),
         ));
         builder.push(" LIMIT ");
         builder.push_bind((pagination.limit + 1) as i64);
@@ -304,7 +304,7 @@ fn sqlite_preview_data_export(
             &mut builder,
             filters,
             &columns,
-            sqlite_quote_identifier,
+            |value| fluxdb_core::SqliteDialect.quote_identifier(value),
             push_sqlite_bind,
         );
         let row = builder
@@ -322,7 +322,7 @@ fn sqlite_preview_data_export(
                 sort,
                 filters,
                 &columns,
-                sqlite_quote_identifier,
+                |value| fluxdb_core::SqliteDialect.quote_identifier(value),
             ),
             row_count: count.max(0) as u64,
         })
@@ -369,9 +369,9 @@ fn sqlite_completion_tables_with_cancel(
             ORDER BY type, name
             LIMIT ?
             "#,
-            sqlite_quote_identifier(database)
+            fluxdb_core::SqliteDialect.quote_identifier(database)
         ))
-        .bind(completion_fuzzy_like_filter(filter))
+        .bind(completion_fuzzy_like_pattern(filter))
         .bind(limit as i64)
         .fetch_all(&mut connection)
         , should_cancel)
@@ -535,9 +535,9 @@ fn sqlite_completion_triggers_with_cancel(
             ORDER BY name
             LIMIT ?
             "#,
-            sqlite_quote_identifier(database)
+            fluxdb_core::SqliteDialect.quote_identifier(database)
         ))
-        .bind(completion_fuzzy_like_filter(filter))
+        .bind(completion_fuzzy_like_pattern(filter))
         .bind(limit as i64)
         .fetch_all(&mut connection)
         , should_cancel)
@@ -593,7 +593,7 @@ fn sqlite_load_cell_binary(
         ensure_column_exists(column, &columns)?;
         let mut builder = QueryBuilder::<Sqlite>::new(format!(
             "SELECT {} FROM {}",
-            sqlite_quote_identifier(column),
+            fluxdb_core::SqliteDialect.quote_identifier(column),
             sqlite_qualified_table(database, &path.name)
         ));
         push_sqlite_identity_where(&mut builder, identity, &columns)?;
@@ -667,7 +667,7 @@ async fn sqlite_apply_inserts(
         }
 
         let mut builder = QueryBuilder::<Sqlite>::new(format!("INSERT INTO {table_name} ("));
-        push_insert_column_list(&mut builder, &insert_values, sqlite_quote_identifier);
+        push_insert_column_list(&mut builder, &insert_values, |value| fluxdb_core::SqliteDialect.quote_identifier(value));
         builder.push(") VALUES (");
         for (index, (_, value)) in insert_values.iter().enumerate() {
             if index > 0 {
@@ -706,7 +706,7 @@ async fn sqlite_apply_updates(
                 builder.push(", ");
             }
             builder
-                .push(sqlite_quote_identifier(&cell.column))
+                .push(fluxdb_core::SqliteDialect.quote_identifier(&cell.column))
                 .push(" = ");
             push_sqlite_bind(&mut builder, &cell.value);
         }
@@ -750,7 +750,7 @@ async fn sqlite_columns(
 ) -> fluxdb_core::Result<Vec<Column>> {
     let rows = sqlx::query(&format!(
         "PRAGMA {}.table_info({})",
-        sqlite_quote_identifier(database),
+        fluxdb_core::SqliteDialect.quote_identifier(database),
         sqlite_quote_string(table)
     ))
         .fetch_all(connection)
@@ -789,7 +789,7 @@ fn sqlite_indexes(
         let database = sqlite_database_for_path(path);
         let sql = format!(
             "PRAGMA {}.index_list({})",
-            sqlite_quote_identifier(database),
+            fluxdb_core::SqliteDialect.quote_identifier(database),
             sqlite_quote_string(&path.name)
         );
         let rows = sqlx::query(&sql)
@@ -804,7 +804,7 @@ fn sqlite_indexes(
             let partial: i64 = row.try_get("partial").map_err(sqlite_error)?;
             let info_sql = format!(
                 "PRAGMA {}.index_info({})",
-                sqlite_quote_identifier(database),
+                fluxdb_core::SqliteDialect.quote_identifier(database),
                 sqlite_quote_string(&name)
             );
             let info_rows = sqlx::query(&info_sql)
@@ -853,7 +853,7 @@ fn sqlite_foreign_keys_with_cancel(
         };
         let sql = format!(
             "PRAGMA {}.foreign_key_list({})",
-            sqlite_quote_identifier(sqlite_database_for_path(path)),
+            fluxdb_core::SqliteDialect.quote_identifier(sqlite_database_for_path(path)),
             sqlite_quote_string(&path.name)
         );
         let rows = await_with_cancel(sqlx::query(&sql).fetch_all(&mut connection), should_cancel)
@@ -901,7 +901,7 @@ fn sqlite_triggers(
             WHERE type = 'trigger' AND tbl_name = ?
             ORDER BY name
             "#,
-            sqlite_quote_identifier(sqlite_database_for_path(path))
+            fluxdb_core::SqliteDialect.quote_identifier(sqlite_database_for_path(path))
         ))
         .bind(&path.name)
         .fetch_all(&mut connection)
@@ -933,7 +933,7 @@ fn sqlite_table_ddl(config: &ConnectionConfig, path: &ObjectPath) -> fluxdb_core
         let mut connection = sqlite_connect(config).await?;
         let row: Option<(String,)> = sqlx::query_as(&format!(
             "SELECT sql FROM {}.sqlite_schema WHERE type IN ('table', 'view') AND name = ?",
-            sqlite_quote_identifier(sqlite_database_for_path(path))
+            fluxdb_core::SqliteDialect.quote_identifier(sqlite_database_for_path(path))
         ))
         .bind(&path.name)
         .fetch_optional(&mut connection)

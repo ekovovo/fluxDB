@@ -87,6 +87,10 @@ fn content(
     cx: &mut Context<NavicatMain>,
 ) -> Div {
     match state.active_tab() {
+        Some(tab) if matches!(tab.kind, TabKind::AiChat { .. }) => {
+            div().size_full().min_h(px(0.)).flex().flex_col()
+                .child(ai_chat_panel(this, window, colors, cx))
+        }
         Some(tab) if matches!(tab.kind, TabKind::DataEditor(_)) => {
             let TabKind::DataEditor(editor) = &tab.kind else {
                 unreachable!();
@@ -148,6 +152,30 @@ fn content(
         Some(tab) if matches!(tab.kind, TabKind::Settings(_)) => {
             settings_content(
                 state,
+                AiSettingsPanelState {
+                    filter: this.ai_model_filter.clone(),
+                    filter_input: this.ai_model_filter_input.clone(),
+                    testing_id: this.ai_model_testing_id.clone(),
+                    deleting_id: this.ai_model_deleting_id.clone(),
+                    settings_loading: this.ai_settings_loading,
+                    settings_error: this.ai_settings_error.clone(),
+                    session_filter_input: this.ai_session_filter_input.clone(),
+                    session_filter: this.ai_session_filter.clone(),
+                    session_archiving_id: this.ai_session_archiving_id.clone(),
+                    tools_tab: this.ai_tools_tab,
+                    tool_settings: this.controller.state().ai_tool_settings.clone(),
+                    mcp_install_status: this.ai_mcp_install_status.clone(),
+                    mcp_clients_busy: this.ai_mcp_clients_busy.clone(),
+                    mcp_clients_error: this.ai_mcp_clients_error.clone(),
+                    mcp_connection_details: this.ai_mcp_connection_details.clone(),
+                    mcp_connection_error: this.ai_mcp_connection_error.clone(),
+                    mcp_details_open: this.ai_mcp_details_open,
+                    audit_filter: this.ai_audit_filter,
+                    audit_filter_input: this.ai_audit_filter_input.clone(),
+                    audit_filter_text: this.ai_audit_filter_text.clone(),
+                    expanded_audit: this.ai_audit_expanded.clone(),
+                    agent_editor: this.ai_agent_editor.clone(),
+                },
                 this.theme_mode,
                 this.settings_panel_section,
                 colors,
@@ -247,6 +275,7 @@ include!("settings/appearance.rs");
 include!("settings/system.rs");
 include!("settings/native_client.rs");
 include!("settings/rows.rs");
+include!("settings/ai.rs");
 include!("settings/preferences.rs");
 
 fn home_stat_card(label: &'static str, value: usize, hint: &'static str, colors: UiColors) -> Div {
@@ -392,14 +421,14 @@ fn common_actions_panel(
             .flex_col()
             .p_2()
             .gap_1()
-            .child(home_action_row("新建连接", "＋", colors).on_mouse_down(
+            .child(home_action_row("home-new-connection", "新建连接", "＋", colors).on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _, window, cx| {
                     this.show_new_connection(window, cx);
                     cx.stop_propagation();
                 }),
             ))
-            .child(home_action_row("新建查询", "SQL", colors).on_mouse_down(
+            .child(home_action_row("home-new-query", "新建查询", "SQL", colors).on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, _, cx| {
                     if has_connection {
@@ -408,7 +437,7 @@ fn common_actions_panel(
                     cx.stop_propagation();
                 }),
             ))
-            .child(home_action_row("刷新连接树", "⟳", colors).on_mouse_down(
+            .child(home_action_row("home-refresh-connections", "刷新连接树", "⟳", colors).on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, _, cx| {
                     this.refresh_connection_tree(cx);
@@ -480,8 +509,20 @@ fn home_icon_action_row(label: &'static str, icon: AppIcon, colors: UiColors) ->
         .child(app_icon_box(icon, 28., 15., colors.muted))
 }
 
-fn home_action_row(label: &'static str, glyph: &'static str, colors: UiColors) -> Div {
+/// 首页快捷操作行。
+///
+/// `id` 是稳定业务标识（如 `home-new-connection`），供 UI 自动化与无障碍树定位；
+/// 该行由调用方挂 `on_mouse_down`，是可交互元素，因此纳入 headless 观察。
+fn home_action_row(
+    id: &'static str,
+    label: &'static str,
+    glyph: &'static str,
+    colors: UiColors,
+) -> Stateful<Div> {
     div()
+        .id(id)
+        .aria_label(label)
+        .cursor_pointer()
         .h(px(44.))
         .rounded(colors.radius_lg)
         .px_3()
@@ -652,7 +693,12 @@ fn data_editor_content(
         .when(filter_open, |builder| builder);
 
     if editor.loading {
-        return content.child(center_loading_message("正在加载数据...", colors));
+        return content.child(
+            center_loading_message("正在加载数据...", colors)
+                .id(("data-page-loading", tab_id.0))
+                .role(Role::Status)
+                .aria_label("正在加载数据...")
+        );
     }
 
     let Some(page) = &editor.page else {
@@ -902,7 +948,7 @@ fn data_editor_content(
         .map(clamp_cell_detail_drawer_height)
         .unwrap_or(CELL_DETAIL_DRAWER_DEFAULT_HEIGHT);
     let cell_detail_drawer = editor.cell_detail_panel.open.then(|| {
-        this.sync_cell_detail_input(
+        sync_input_value(
             &cell_detail_input,
             &editor.cell_detail_panel.edit_value,
             window,
@@ -932,6 +978,7 @@ fn data_editor_content(
             change_count,
             change_sql_preview_open,
             selected_source_row,
+            editor.submitting,
             colors,
             window,
             cx,
@@ -939,8 +986,13 @@ fn data_editor_content(
     });
     let table_area = data_table_area(
         &table_state,
-        filter_applying,
-        "正在应用筛选...",
+        // 提交与筛选都会离开 UI 线程，共用同一层遮罩提示，避免用户以为界面失去响应。
+        filter_applying || editor.submitting,
+        if editor.submitting {
+            "正在提交更改..."
+        } else {
+            "正在应用筛选..."
+        },
         search_open.then(|| {
             data_search_bar(
                 tab_id,
@@ -2064,14 +2116,14 @@ fn redis_workbench_split_handle(
         // 落盘只在松手时做。`on_mouse_up` 仅在指针仍悬停手柄上时触发，
         // 而正常拖拽手势是在结果区松手，所以必须补一个 `on_mouse_up_out`
         // （非悬停时触发）才真的落盘 —— 否则分栏大小拖完一重启就丢。
-        // 两处都用 `take().is_some()` 守卫，天然幂等，重复触发无副作用。
+        // 仅消费已开始的拖拽；外部松手回调在捕获阶段运行，无拖拽时不得拦截其他控件的点击。
         .on_mouse_up(
             MouseButton::Left,
             cx.listener(move |this, _: &MouseUpEvent, _, cx| {
                 if this.redis_workbench_panel_resize_start.take().is_some() {
                     let _ = this.storage.save_settings(&this.controller.state().settings);
+                    cx.stop_propagation();
                 }
-                cx.stop_propagation();
             }),
         )
         .on_mouse_up_out(
@@ -2079,8 +2131,8 @@ fn redis_workbench_split_handle(
             cx.listener(move |this, _: &MouseUpEvent, _, cx| {
                 if this.redis_workbench_panel_resize_start.take().is_some() {
                     let _ = this.storage.save_settings(&this.controller.state().settings);
+                    cx.stop_propagation();
                 }
-                cx.stop_propagation();
             }),
         )
 }
@@ -3764,7 +3816,7 @@ fn query_result_view(
         .filter(|editor| editor.cell_detail_panel.open)
         .map(|editor| {
             let input = this.cell_detail_input.clone();
-            this.sync_cell_detail_input(&input, &editor.cell_detail_panel.edit_value, window, cx);
+            sync_input_value(&input, &editor.cell_detail_panel.edit_value, window, cx);
             cell_detail_panel(
                 tab_id,
                 editor,
@@ -3862,7 +3914,14 @@ fn query_result_view(
         })
         .when_some(change_count, |this, count| {
             this.child(
-                query_result_change_footer(tab_id, count, change_sql_preview_open, colors, cx)
+                query_result_change_footer(
+                    tab_id,
+                    count,
+                    change_sql_preview_open,
+                    editor.running,
+                    colors,
+                    cx,
+                )
                     .absolute()
                     .right_0()
                     .bottom(px(detail_height))
@@ -4162,6 +4221,7 @@ fn query_result_change_footer(
     tab_id: TabId,
     change_count: usize,
     change_sql_preview_open: bool,
+    submitting: bool,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
@@ -4178,7 +4238,7 @@ fn query_result_change_footer(
         .items_center()
         .gap_1()
         .child(
-            data_editor_footer_icon_button(AppIcon::Check, "提交更改", true, colors)
+            data_editor_footer_icon_button(AppIcon::Check, "提交更改", !submitting, colors)
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, _, _, cx| {
@@ -4188,7 +4248,7 @@ fn query_result_change_footer(
                 ),
         )
         .child(
-            data_editor_footer_icon_button(AppIcon::Close, "取消更改", true, colors)
+            data_editor_footer_icon_button(AppIcon::Close, "取消更改", !submitting, colors)
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, _, _, cx| {
@@ -4203,6 +4263,7 @@ fn query_result_change_footer(
             tab_id,
             change_count,
             change_sql_preview_open,
+            submitting,
             colors,
             cx,
         ))
@@ -4590,334 +4651,7 @@ fn single_line_summary_text(text: String) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-fn query_toolbar(
-    this: &mut NavicatMain,
-    tab_id: TabId,
-    editor: &QueryEditorState,
-    sql_editor: Entity<editor_component::Editor>,
-    connection: String,
-    database: String,
-    accent: gpui::Rgba,
-    output_placement: ResultsPlacement,
-    colors: UiColors,
-    cx: &mut Context<NavicatMain>,
-) -> Div {
-    let has_text = !editor.text.trim().is_empty();
-    let soft_wrap = sql_editor.read(cx).soft_wrap();
-    let can_explain = !editor.running && this.selected_explain_sql_text(tab_id, cx).is_some();
-    div()
-        .h(px(40.))
-        .border_b_1()
-        .border_color(colors.border)
-        .flex()
-        .items_center()
-        .gap_2()
-        .px_3()
-        .bg(colors.panel_alt)
-        .child(query_context_box(connection, accent, colors))
-        .child(query_context_box(database, accent, colors))
-        .child(
-            query_toolbar_icon_button(
-                if editor.running { "执行中" } else { "运行" },
-                AppIcon::Play,
-                has_text && !editor.running,
-                editor.running,
-                rgb(0x20c76a),
-                colors,
-            )
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener({
-                        let sql_editor = sql_editor.clone();
-                        move |this, _, window, cx| {
-                            let text = sql_editor.read(cx).text();
-                            if !text.trim().is_empty() {
-                                this.dispatch(AppCommand::UpdateQueryText { tab_id, text }, cx);
-                                this.start_query_execution(tab_id, window, cx);
-                                cx.stop_propagation();
-                            }
-                        }
-                    }),
-                ),
-        )
-        .child(
-            query_toolbar_icon_button(
-                "美化 SQL",
-                AppIcon::AlignLeft,
-                has_text,
-                false,
-                rgb(0xa45cff),
-                colors,
-            )
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener({
-                    let sql_editor = sql_editor.clone();
-                    move |this, _, _, cx| {
-                        if has_text && this.format_query_editor_sql(tab_id, sql_editor.clone(), cx)
-                        {
-                            cx.stop_propagation();
-                        }
-                    }
-                }),
-            ),
-        )
-        .child(
-            query_toolbar_icon_button(
-                "压缩 SQL",
-                AppIcon::List,
-                has_text,
-                false,
-                rgb(0x38bdf8),
-                colors,
-            )
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener({
-                        let sql_editor = sql_editor.clone();
-                        move |this, _, _, cx| {
-                            if has_text
-                                && this.compress_query_editor_sql(tab_id, sql_editor.clone(), cx)
-                            {
-                                cx.stop_propagation();
-                            }
-                        }
-                    }),
-                ),
-        )
-        .child(
-            query_toolbar_icon_button(
-                "停止",
-                AppIcon::Square,
-                editor.running,
-                false,
-                rgb(0xff5c5c),
-                colors,
-            )
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |this, _, _, cx| {
-                    this.request_query_cancel(tab_id, cx);
-                    cx.stop_propagation();
-                }),
-            ),
-        )
-        .child(query_toolbar_icon_button(
-            "解释",
-            AppIcon::FileSearch,
-            can_explain,
-            false,
-            rgb(0x45a3ff),
-            colors,
-        )
-        .on_mouse_down(
-            MouseButton::Left,
-            cx.listener({
-                let sql_editor = sql_editor.clone();
-                move |this, _, window, cx| {
-                    if this.start_query_explain_execution(tab_id, sql_editor.clone(), window, cx) {
-                        cx.stop_propagation();
-                    }
-                }
-            }),
-        ))
-        .child(div().flex_1())
-        .child(query_toolbar_icon_button(
-            "保存",
-            AppIcon::Save,
-            true,
-            false,
-            rgb(0x4b8dff),
-            colors,
-        )
-        .on_mouse_down(
-            MouseButton::Left,
-            cx.listener(move |this, _, window, cx| {
-                this.save_active_query(window, cx);
-                cx.stop_propagation();
-            }),
-        ))
-        .child(query_toolbar_icon_button(
-            "查询创建工具",
-            AppIcon::Workflow,
-            false,
-            false,
-            rgb(0xf0b400),
-            colors,
-        ))
-        .child(query_toolbar_icon_button(
-            "代码段",
-            AppIcon::FileSql,
-            false,
-            false,
-            rgb(0x28c7d7),
-            colors,
-        ))
-        .child(
-            query_toolbar_icon_button(
-                "历史记录",
-                AppIcon::CalendarClock,
-                true,
-                false,
-                rgb(0xf59e0b),
-                colors,
-            )
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |this, _, window, cx| {
-                    this.show_query_history_quick_search(window, cx);
-                    cx.stop_propagation();
-                }),
-            ),
-        )
-        .child(
-            query_toolbar_icon_button(
-                query_editor_wrap_toggle_label(soft_wrap),
-                query_editor_wrap_toggle_icon(soft_wrap),
-                true,
-                false,
-                rgb(0x5f8ff7),
-                colors,
-            )
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener({
-                    let sql_editor = sql_editor.clone();
-                    move |this, _, _, cx| {
-                        let mut settings = this.controller.state().settings.clone();
-                        settings.editor_word_wrap = !soft_wrap;
-                        save_settings_from_ui(this, settings, "已更新自动换行", cx);
-                        let line_height = this.controller.state().settings.editor_line_height.clamp(13, 28) as f32;
-                        sql_editor.update(cx, |editor, _editor_cx| {
-                            editor.apply_settings(editor.font_size, line_height, !soft_wrap, 0);
-                        });
-                        cx.stop_propagation();
-                    }
-                }),
-            ),
-        )
-        .child(
-            query_toolbar_icon_button(
-                query_output_layout_toggle_label(output_placement),
-                query_output_layout_toggle_icon(output_placement),
-                true,
-                false,
-                rgb(0x45a3ff),
-                colors,
-            )
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |this, _, _, cx| {
-                    this.results_placement = this.results_placement.toggled();
-                    this.query_output_resize_start = None;
-                    cx.notify();
-                    cx.stop_propagation();
-                }),
-            ),
-        )
-}
-
-fn query_editor_wrap_toggle_icon(soft_wrap: bool) -> AppIcon {
-    if soft_wrap {
-        AppIcon::Text
-    } else {
-        AppIcon::WrapText
-    }
-}
-
-fn query_editor_wrap_toggle_label(soft_wrap: bool) -> &'static str {
-    if soft_wrap {
-        "不换行"
-    } else {
-        "自动换行"
-    }
-}
-
-fn query_output_layout_toggle_icon(placement: ResultsPlacement) -> AppIcon {
-    match placement {
-        ResultsPlacement::Bottom => AppIcon::PanelBottom,
-        ResultsPlacement::Right => AppIcon::PanelRight,
-    }
-}
-
-fn query_output_layout_toggle_label(placement: ResultsPlacement) -> &'static str {
-    match placement {
-        ResultsPlacement::Bottom => "结果在下方",
-        ResultsPlacement::Right => "结果在右侧",
-    }
-}
-
-fn query_toolbar_icon_button(
-    label: &'static str,
-    icon: AppIcon,
-    enabled: bool,
-    loading: bool,
-    accent: gpui::Rgba,
-    colors: UiColors,
-) -> Stateful<Div> {
-    let bg = colors.panel_bg;
-    let icon_color = if enabled { accent } else { colors.muted };
-    div()
-        .id(label)
-        .size(px(30.))
-        .rounded(colors.radius)
-        .border_1()
-        .border_color(if enabled {
-            if colors.is_dark {
-                rgb(0x3a414d)
-            } else {
-                rgb(0xd7dde8)
-            }
-        } else {
-            colors.border
-        })
-        .bg(if enabled { bg } else { colors.panel_alt })
-        .flex()
-        .items_center()
-        .justify_center()
-        .tooltip(move |window, cx| Tooltip::new(label).build(window, cx))
-        .when(enabled, |this| {
-            this.cursor_pointer().hover(move |style| {
-                style.bg(if colors.is_dark {
-                    rgb(0x2a3039)
-                } else {
-                    rgb(0xf4f7fb)
-                })
-            })
-        })
-        .child(if loading {
-            loading_spinner_with_color(17., icon_color).into_any_element()
-        } else {
-            app_icon_box(icon, 20., 17., icon_color).into_any_element()
-        })
-}
-
-fn query_context_box(label: String, accent: gpui::Rgba, colors: UiColors) -> Div {
-    div()
-        .h(px(30.))
-        .min_w(px(118.))
-        .max_w(px(220.))
-        .rounded(colors.radius)
-        .border_1()
-        .border_color(colors.border)
-        .bg(colors.input_bg)
-        .flex()
-        .items_center()
-        .overflow_hidden()
-        .child(div().w(px(4.)).h_full().bg(accent))
-        .child(
-            div()
-                .flex_1()
-                .min_w(px(0.))
-                .px_2()
-                .overflow_hidden()
-                .whitespace_nowrap()
-                .text_ellipsis()
-                .text_size(px(13.))
-                .text_color(colors.text)
-                .child(label),
-        )
-}
+include!("query_toolbar.rs");
 
 fn object_toolbar(colors: UiColors) -> impl IntoElement {
     div()
@@ -5553,7 +5287,9 @@ fn data_editor_toolbar(
                 ))
                 .when(show_table_tools, |this| this.when_some(table_info_open, |this, active| {
                     this.child(
-                        data_editor_action_state("表属性", active, colors).on_mouse_down(
+                        data_editor_action_state("表属性", active, colors)
+                            .id(("table-info-toggle", tab_id.0))
+                            .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(move |this, _, _, cx| {
                                 this.dispatch(
@@ -5600,51 +5336,3 @@ fn data_editor_action_state(label: &'static str, active: bool, colors: UiColors)
     })
 }
 
-#[cfg(test)]
-mod redis_workbench_reply_tests {
-    use super::*;
-
-    /// 构造一个 UTF-8 文本的 bulk 回复。
-    fn bulk(text: &str) -> CommandReply {
-        CommandReply::Bulk(CommandBulk {
-            text: Some(text.to_string()),
-            bytes_preview_hex: None,
-            byte_len: text.len() as u64,
-            binary: false,
-        })
-    }
-
-    #[test]
-    fn array_lists_each_element_on_own_line_with_index() {
-        let reply = CommandReply::Array(vec![bulk("333"), bulk("332")]);
-        assert_eq!(command_reply_display(&reply), "1) \"333\"\n2) \"332\"");
-    }
-
-    #[test]
-    fn empty_array_shows_empty_list_or_set() {
-        let reply = CommandReply::Array(vec![]);
-        assert_eq!(command_reply_display(&reply), "(empty list or set)");
-    }
-
-    #[test]
-    fn nil_shows_nil() {
-        assert_eq!(command_reply_display(&CommandReply::Nil), "(nil)");
-    }
-
-    #[test]
-    fn integer_shows_integer_prefix() {
-        assert_eq!(command_reply_display(&CommandReply::Integer(42)), "(integer) 42");
-    }
-
-    #[test]
-    fn nested_array_indents_by_level() {
-        let reply = CommandReply::Array(vec![
-            CommandReply::Array(vec![bulk("a"), bulk("b")]),
-            bulk("c"),
-        ]);
-        assert_eq!(
-            command_reply_display(&reply),
-            "1) 1) \"a\"\n   2) \"b\"\n2) \"c\""
-        );
-    }
-}

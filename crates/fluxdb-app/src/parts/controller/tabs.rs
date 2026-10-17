@@ -158,6 +158,22 @@ impl AppController {
         AppEvent::TabOpened(tab_id)
     }
 
+    fn open_ai_chat_tab(&mut self) -> AppEvent {
+        if let Some(tab) = self.state.tabs.iter().find(|tab| matches!(tab.kind, TabKind::AiChat { .. })) {
+            self.state.active_tab = Some(tab.id);
+            return AppEvent::TabActivated(tab.id);
+        }
+        let workspace = self.state.active_tab().and_then(TabState::workspace);
+        let tab_id = self.next_tab_id();
+        self.push_tab(TabState {
+            id: tab_id,
+            title: "询问 AI".into(),
+            kind: TabKind::AiChat { workspace },
+            dirty: false,
+        });
+        AppEvent::TabOpened(tab_id)
+    }
+
     fn open_user_admin(&mut self, connection_id: ConnectionId) -> AppEvent {
         if let Some(tab) = self.state.tabs.iter().find(|tab| {
             matches!(&tab.kind, TabKind::UserAdmin(admin) if admin.connection_id == connection_id)

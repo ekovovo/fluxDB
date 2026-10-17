@@ -460,6 +460,7 @@ fn table_info_table(
     });
 
     div()
+        .id(id)
         .size_full()
         .flex_1()
         .min_h(px(0.))
@@ -683,8 +684,11 @@ where
     }
 }
 
-fn table_info_loading(colors: UiColors) -> Div {
+fn table_info_loading(colors: UiColors) -> Stateful<Div> {
     div()
+        .id("table-info-loading")
+        .role(Role::Status)
+        .aria_label("加载中...")
         .flex_1()
         .flex()
         .items_center()
@@ -692,8 +696,11 @@ fn table_info_loading(colors: UiColors) -> Div {
         .child(loading_spinner_with_color(18., colors.muted))
 }
 
-fn table_info_empty(text: impl Into<String>, colors: UiColors) -> Div {
+fn table_info_empty(text: impl Into<String>, colors: UiColors) -> Stateful<Div> {
+    let text = text.into();
     div()
+        .id("table-info-message")
+        .aria_label(text.clone())
         .flex_1()
         .p_6()
         .flex()
@@ -701,7 +708,7 @@ fn table_info_empty(text: impl Into<String>, colors: UiColors) -> Div {
         .justify_center()
         .text_size(px(13.))
         .text_color(colors.muted)
-        .child(text.into())
+        .child(text)
 }
 
 /// DDL 只读预览：复用统一的 SQL / DDL 预览编辑器（见 `sql_preview.rs`），

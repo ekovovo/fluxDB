@@ -69,43 +69,12 @@ fn completion_like_filter(filter: &str) -> String {
     format!("{}%", filter.trim().to_ascii_lowercase())
 }
 
-fn completion_fuzzy_like_filter(filter: &str) -> String {
-    let filter = filter.trim().to_ascii_lowercase();
-    if filter.is_empty() {
-        return "%".to_string();
-    }
-
-    let mut pattern = String::from("%");
-    for ch in filter.chars() {
-        if matches!(ch, '%' | '_' | '\\') {
-            pattern.push('\\');
-        }
-        pattern.push(ch);
-        pattern.push('%');
-    }
-    pattern
-}
-
 fn matches_completion_filter(value: &str, filter: &str) -> bool {
     let filter = filter.trim();
     filter.is_empty()
         || value
             .to_ascii_lowercase()
             .starts_with(&filter.to_ascii_lowercase())
-}
-
-fn matches_completion_fuzzy_filter(value: &str, filter: &str) -> bool {
-    let filter = filter.trim();
-    if filter.is_empty() {
-        return true;
-    }
-
-    let value = value.to_ascii_lowercase();
-    let mut value_chars = value.chars();
-    filter
-        .to_ascii_lowercase()
-        .chars()
-        .all(|filter_char| value_chars.any(|value_char| value_char == filter_char))
 }
 
 fn columns_to_completion(
@@ -133,11 +102,11 @@ fn columns_to_completion(
 }
 
 fn mysql_select_expr(column: &Column) -> String {
-    let name = mysql_quote_identifier(&column.name);
+    let name = fluxdb_core::MySqlDialect.quote_identifier(&column.name);
     if is_binary_column(column) {
-        let is_null = mysql_quote_identifier(&binary_alias(&column.name, "is_null"));
-        let byte_length = mysql_quote_identifier(&binary_alias(&column.name, "byte_length"));
-        let preview_hex = mysql_quote_identifier(&binary_alias(&column.name, "preview_hex"));
+        let is_null = fluxdb_core::MySqlDialect.quote_identifier(&binary_alias(&column.name, "is_null"));
+        let byte_length = fluxdb_core::MySqlDialect.quote_identifier(&binary_alias(&column.name, "byte_length"));
+        let preview_hex = fluxdb_core::MySqlDialect.quote_identifier(&binary_alias(&column.name, "preview_hex"));
         return format!(
             "CAST({name} IS NULL AS UNSIGNED) AS {is_null}, COALESCE(OCTET_LENGTH({name}), 0) AS {byte_length}, UPPER(HEX(SUBSTRING({name}, 1, 64))) AS {preview_hex}"
         );
@@ -147,11 +116,11 @@ fn mysql_select_expr(column: &Column) -> String {
 }
 
 fn sqlite_select_expr(column: &Column) -> String {
-    let name = sqlite_quote_identifier(&column.name);
+    let name = fluxdb_core::SqliteDialect.quote_identifier(&column.name);
     if is_binary_column(column) {
-        let is_null = sqlite_quote_identifier(&binary_alias(&column.name, "is_null"));
-        let byte_length = sqlite_quote_identifier(&binary_alias(&column.name, "byte_length"));
-        let preview_hex = sqlite_quote_identifier(&binary_alias(&column.name, "preview_hex"));
+        let is_null = fluxdb_core::SqliteDialect.quote_identifier(&binary_alias(&column.name, "is_null"));
+        let byte_length = fluxdb_core::SqliteDialect.quote_identifier(&binary_alias(&column.name, "byte_length"));
+        let preview_hex = fluxdb_core::SqliteDialect.quote_identifier(&binary_alias(&column.name, "preview_hex"));
         return format!(
             "{name} IS NULL AS {is_null}, COALESCE(length({name}), 0) AS {byte_length}, upper(hex(substr({name}, 1, 64))) AS {preview_hex}"
         );
@@ -250,16 +219,17 @@ where
         return mysql_optional_display_cell_value(value);
     }
     if let Ok(value) = row.try_get::<Option<u64>, _>(index) {
-        return mysql_optional_display_cell_value(value);
+        return mysql_unsigned_cell_value(value);
     }
     if let Ok(value) = row.try_get::<Option<i64>, _>(index) {
-        return mysql_optional_display_cell_value(value);
+        return value.map(CellValue::I64).unwrap_or(CellValue::Null);
     }
     if let Ok(value) = row.try_get::<Option<f64>, _>(index) {
-        return mysql_optional_display_cell_value(value);
+        return mysql_float_cell_value(value);
     }
     if let Ok(value) = row.try_get::<Option<BigDecimal>, _>(index) {
-        return mysql_optional_display_cell_value(value);
+        // DECIMAL 保精：不经 f64 往返；无小数的精确整数投影为 I64，其余保留十进制文本。
+        return mysql_decimal_cell_value(value);
     }
     if let Ok(value) = row.try_get::<Option<DateTime<Utc>>, _>(index) {
         return mysql_datetime_cell_value(value.map(|value| value.naive_utc()));
@@ -283,6 +253,45 @@ where
     }
 
     CellValue::Null
+}
+
+/// MySQL 无符号整型投影：类型化数值让下游能区分真实数值与文本（产物数值列判定、
+/// 回滚字面量等）。`CellValue` 只有有符号 `I64`，超出范围的值保留十进制文本以免丢精度。
+fn mysql_unsigned_cell_value(value: Option<u64>) -> CellValue {
+    match value {
+        Some(value) => i64::try_from(value)
+            .map(CellValue::I64)
+            .unwrap_or_else(|_| CellValue::Text(value.to_string())),
+        None => CellValue::Null,
+    }
+}
+
+/// MySQL DECIMAL 投影：不经 f64 往返，保精度。
+///
+/// 无小数部分的精确整数（如 `SUM(int)`、`COUNT`、`FLOOR` 等以 DECIMAL 返回的聚合/函数结果）
+/// 在 i64 范围内投影为类型化 `I64`：这些值本就是精确整数，若统一保留文本会被下游当作非数值列，
+/// 无法作为图表/指标来源。含小数部分或超出 i64 范围（含 scale 为负的超大整数）的值仍保留真实
+/// 十进制文本，避免丢精度。
+fn mysql_decimal_cell_value(value: Option<BigDecimal>) -> CellValue {
+    let Some(value) = value else {
+        return CellValue::Null;
+    };
+    if value.fractional_digit_count() <= 0 {
+        if let Ok(integer) = value.to_string().parse::<i64>() {
+            return CellValue::I64(integer);
+        }
+    }
+    CellValue::Text(value.to_string())
+}
+
+/// MySQL 浮点投影：有限值返回类型化 `F64`；非有限值不能作为合法 JSON 数字，
+/// 保留类型化文本（与 PG 路径的处理一致）。
+fn mysql_float_cell_value(value: Option<f64>) -> CellValue {
+    match value {
+        Some(value) if value.is_finite() => CellValue::F64(value),
+        Some(value) => CellValue::Text(value.to_string()),
+        None => CellValue::Null,
+    }
 }
 
 fn mysql_optional_display_cell_value(value: Option<impl ToString>) -> CellValue {

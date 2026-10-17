@@ -45,7 +45,7 @@ async fn mysql_apply_inserts(
         }
 
         let mut builder = QueryBuilder::<MySql>::new(format!("INSERT INTO {table_name} ("));
-        push_insert_column_list(&mut builder, &insert_values, mysql_quote_identifier);
+        push_insert_column_list(&mut builder, &insert_values, |value| fluxdb_core::MySqlDialect.quote_identifier(value));
         builder.push(") VALUES (");
         for (index, (_, value)) in insert_values.iter().enumerate() {
             if index > 0 {
@@ -84,7 +84,7 @@ async fn mysql_apply_updates(
                 builder.push(", ");
             }
             builder
-                .push(mysql_quote_identifier(&cell.column))
+                .push(fluxdb_core::MySqlDialect.quote_identifier(&cell.column))
                 .push(" = ");
             push_mysql_bind(&mut builder, &cell.value);
         }

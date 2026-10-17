@@ -41,7 +41,7 @@ pub fn kill_child_tree(child: &mut std::process::Child) {
     }
     #[cfg(unix)]
     {
-        use nix::sys::signal::{kill, Signal};
+        use nix::sys::signal::{Signal, kill};
         use nix::unistd::Pid;
         // 进程组 id 等于组长（子进程）pid；负 pid 表示对整组发信号。
         let group = Pid::from_raw(-(child.id() as i32));

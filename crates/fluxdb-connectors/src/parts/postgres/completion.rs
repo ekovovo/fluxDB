@@ -89,26 +89,6 @@ async fn pg_completion_schemas_async(
         .unwrap_or_else(|| PG_COMPLETION_FALLBACK_SCHEMA.to_string())]
 }
 
-/// 构造 LIKE 过滤的 PG 通配符（ESCAPE 反斜杠写法与 completion_fuzzy_like_filter 一致）。
-///
-/// 未加引号的 SQL 标识符按 PG 语义折叠为小写，模糊匹配统一折小写；
-/// catalog 返回名称仍按原样持有，不做大小写合并。
-fn pg_completion_like_pattern(filter: &str) -> String {
-    let filter = filter.trim().to_ascii_lowercase();
-    if filter.is_empty() {
-        return "%".to_string();
-    }
-    let mut pattern = String::from("%");
-    for ch in filter.chars() {
-        if matches!(ch, '%' | '_' | '\\') {
-            pattern.push('\\');
-        }
-        pattern.push(ch);
-        pattern.push('%');
-    }
-    pattern
-}
-
 /// 按 schema 优先级保留每个表名首个（search_path 最靠前）schema 的行。
 ///
 /// PG 未限定 `t.col` 按 search_path 顺序解析，故同表名跨 schema 时只有首个可见；
@@ -144,7 +124,7 @@ async fn pg_list_completion_tables_async(
     filter: &str,
     limit: u64,
 ) -> fluxdb_core::Result<Vec<CompletionTable>> {
-    let pattern = pg_completion_like_pattern(filter);
+    let pattern = completion_fuzzy_like_pattern(filter);
     // ORDER BY array_position：search_path 靠前的 schema 先出，符合 PG 可见性优先级。
     let sql = format!(
         "SELECT c.relname, c.relkind::text, n.nspname, \
@@ -262,7 +242,7 @@ async fn pg_list_completion_routines_async(
     filter: &str,
     limit: u64,
 ) -> fluxdb_core::Result<Vec<CompletionRoutine>> {
-    let pattern = pg_completion_like_pattern(filter);
+    let pattern = completion_fuzzy_like_pattern(filter);
     // 签名（identity arguments）区分同 schema 同名重载，补全/索引按签名分条（§8.4）。
     let sql = format!(
         "SELECT p.proname, p.prokind::text, n.nspname, \
@@ -307,7 +287,7 @@ async fn pg_list_completion_triggers_async(
     filter: &str,
     limit: u64,
 ) -> fluxdb_core::Result<Vec<CompletionTrigger>> {
-    let pattern = pg_completion_like_pattern(filter);
+    let pattern = completion_fuzzy_like_pattern(filter);
     let sql = format!(
         "SELECT t.tgname, c.relname, n.nspname \
          FROM pg_catalog.pg_trigger t \

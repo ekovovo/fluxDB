@@ -4,8 +4,6 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-#[cfg(test)]
-use fluxdb_connectors::{PostgresConnector, SqliteConnector};
 use fluxdb_connectors::{RedisConnector, RedisStreamRange, connector_for};
 // 对外再导出建 Key 相关的连接器类型，供桌面端（fluxdb-desktop）匹配/构造 AppCommand 使用。
 pub use fluxdb_connectors::{
@@ -27,20 +25,22 @@ use fluxdb_core::{
     ConnectionId, ConnectionOverview, Connector, CreateDatabaseRequest, DataChangeSet,
     DataExportPreview, DataPage, DatabaseKind, DatabasePrivilegeGrant, DatabaseUserIdentity,
     Endpoint, ErColumn, ErForeignKeyEdge, ErGraphData, ErLoadStatus, ErRelationship, ErTableNode,
-    ErTableRef, Error, ErrorKind, FilterSpec, ForeignKeyInfo, IndexInfo, InsertTextFormat,
-    ObjectKind, ObjectPath, ObjectSummary, Pagination, PgEffectivePrivilege, PgGrantTargetLists,
-    PgObjectGrantScope, PgObjectGrants, PgPasswordOp, PgRelationKind, PgRole, PgRoleChange,
-    PgRoleDraft, PgRoleMembership, PgRoleSavePlan, PgValidUntilOp, PrivilegeScope,
-    QueryCompletionItem, QueryCompletionKind, QueryCompletionResult, QueryDeleteRollbackSnapshot,
-    QueryExecutionOptions, QueryExecutionResult, QueryExecutionSummary,
-    QueryInsertRollbackSnapshot, QueryRequest, QueryRollbackRowSnapshot, QueryRollbackSnapshot,
-    QueryStatementKind, QueryUpdateRollbackSnapshot, RedisConnectionProfile, RedisHashFieldTtl,
-    RedisServerVersion, RoutineRef, Row, RowIdentity, RowUpdate, Settings, SidebarLayout, SortSpec,
+    ErTableRef, Error, ErrorKind, ExecutionPolicy, ExecutionPolicySettings, FilterSpec,
+    ForeignKeyInfo, IndexInfo, InsertTextFormat, ModelRisk, ObjectKind, ObjectPath, ObjectSummary,
+    Pagination, PgEffectivePrivilege, PgGrantTargetLists, PgObjectGrantScope, PgObjectGrants,
+    PgPasswordOp, PgRelationKind, PgRole, PgRoleChange, PgRoleDraft, PgRoleMembership,
+    PgRoleSavePlan, PgValidUntilOp, PrivilegeScope, QueryCompletionItem, QueryCompletionKind,
+    QueryCompletionResult, QueryDeleteRollbackSnapshot, QueryExecutionOptions,
+    QueryExecutionResult, QueryExecutionSummary, QueryInsertRollbackSnapshot, QueryRequest,
+    QueryRollbackRowSnapshot, QueryRollbackSnapshot, QueryStatementKind,
+    QueryUpdateRollbackSnapshot, RedisConnectionProfile, RedisHashFieldTtl, RedisServerVersion,
+    RoutineRef, Row, RowIdentity, RowUpdate, Settings, SidebarLayout, SortSpec, SqlDialect as _,
     TableFingerprint, TableRef, TriggerInfo, TriggerRef, UserFacingError, UserRoleMember,
     UserRoleMembership, WorkbenchHistoryItem, WorkbenchHistoryScope, WorkbenchHistoryStore,
+    WriteCommit, WriteReviewOutcome, WriteRiskDecision, WriteRiskFacts,
     database_user_admin_provider, grants_from_query_result, infer_cloud_from_host,
-    redact_uri_password, role_memberships_from_grants, set_sqlite_attached_database,
-    sqlite_attached_database_path,
+    matches_completion_fuzzy, redact_uri_password, role_memberships_from_grants,
+    set_sqlite_attached_database, sqlite_attached_database_path,
 };
 use sqlformat::{Dialect, FormatOptions, Indent, QueryParams};
 use sqlparser::{
@@ -54,6 +54,7 @@ use sqlparser::{
 };
 
 // First-pass source split: included files remain in crate-root scope while module boundaries are refined.
+include!("parts/ai_conversation_state.rs");
 include!("parts/state.rs");
 include!("parts/create_table_model.rs");
 include!("parts/create_table_state.rs");
@@ -85,7 +86,6 @@ pub use mysql_client_tools::*;
 include!("parts/query_history.rs");
 include!("parts/workbench_history.rs");
 include!("parts/query_result_edit.rs");
-include!("parts/tests.rs");
 include!("parts/er_service.rs");
 include!("parts/er_catalog.rs");
 include!("parts/er_layout.rs");
@@ -96,4 +96,66 @@ pub use fluxdb_connectors::{
     mysql_dump_invocation,
 };
 
+include!("parts/ai_transport.rs");
+include!("parts/ai_retry.rs");
+include!("parts/ai_executor.rs");
+include!("parts/ai_runtime.rs");
+include!("parts/ai_provider.rs");
+include!("parts/ai_loop.rs");
+include!("parts/ai_compaction.rs");
+include!("parts/ai_routing.rs");
+include!("parts/ai_decision_provider.rs");
+include!("parts/ai_jev.rs");
+include!("parts/ai_usage.rs");
+include!("parts/ai_tool_registry.rs");
+include!("parts/ai_tool_output.rs");
+include!("parts/ai_plugins.rs");
+include!("parts/ai_plugin_config.rs");
+include!("parts/ai_plan.rs");
+include!("parts/ai_diagnostics.rs");
+include!("parts/ai_artifact_renderer.rs");
+include!("parts/ai_bi_artifacts.rs");
+include!("parts/ai_artifact_snapshot.rs");
+include!("parts/ai_artifact_tools.rs");
+include!("parts/ai_artifact_report.rs");
+include!("parts/ai_report_html.rs");
+include!("parts/ai_results.rs");
+include!("parts/ai_result_retention.rs");
+include!("parts/ai_result_pages.rs");
+include!("parts/ai_hooks.rs");
+include!("parts/ai_audit_rules.rs");
+include!("parts/ai_permission.rs");
+include!("parts/ai_write_risk_sql.rs");
+include!("parts/ai_write_risk_redis.rs");
+include!("parts/ai_write_review.rs");
+include!("parts/ai_execution_policy.rs");
+include!("parts/ai_context.rs");
+include!("parts/ai_page_context.rs");
+include!("parts/ai_content_search.rs");
+include!("parts/ai_editor_read.rs");
+include!("parts/sql_files.rs");
+include!("parts/ai_references.rs");
+include!("parts/ai_file_tools.rs");
+include!("parts/ai_file_content.rs");
+include!("parts/ai_reference_details.rs");
+include!("parts/ai_database_context.rs");
+include!("parts/ai_connection_tools.rs");
+include!("parts/ai_sql_policy.rs");
+include!("parts/ai_sql_exec.rs");
+include!("parts/ai_sql_receipt.rs");
+include!("parts/ai_sql_tools.rs");
+include!("parts/ai_redis_policy.rs");
+include!("parts/ai_redis_keys.rs");
+include!("parts/ai_redis_read.rs");
+include!("parts/ai_redis_exec.rs");
+include!("parts/ai_mcp_server.rs");
+include!("parts/ai_mcp_install.rs");
+include!("parts/ai_mcp_clients.rs");
+include!("parts/ai_scripted.rs");
 include!("parts/backup_restore.rs");
+
+include!("parts/ai_conversation.rs");
+include!("parts/ai_conversation_provider.rs");
+include!("parts/ai_conversation_records.rs");
+include!("parts/ai_recovery.rs");
+include!("parts/ai_session_title.rs");

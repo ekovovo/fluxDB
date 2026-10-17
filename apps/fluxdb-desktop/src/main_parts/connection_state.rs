@@ -88,7 +88,6 @@ impl Render for RedisWorkbenchPanelResizeDrag {
     }
 }
 
-
 #[derive(Clone)]
 struct TableInfoResizeDrag;
 
@@ -458,6 +457,9 @@ struct NewConnectionForm {
     test_status: Option<ConnectionTestStatus>,
 }
 
+// AI 配置草稿独立职责，仍保持 include! 的原有作用域。
+include!("settings/ai_state.rs");
+
 struct NewConnectionInputs {
     name: Entity<InputState>,
     host: Entity<InputState>,
@@ -669,10 +671,11 @@ impl NewConnectionForm {
 
         // Redis 档案回填：优先结构化档案；缺省时用历史扁平参数迁移（兼容旧连接）。
         if config.kind == DatabaseKind::Redis {
-            let profile = config
-                .redis_profile
-                .clone()
-                .or_else(|| Some(fluxdb_core::RedisConnectionProfile::from_options(&config.options)));
+            let profile = config.redis_profile.clone().or_else(|| {
+                Some(fluxdb_core::RedisConnectionProfile::from_options(
+                    &config.options,
+                ))
+            });
             if let Some(profile) = profile {
                 form.apply_profile(&profile);
                 // 档案是事实来源，其派生的 host/port/账号覆盖上面的扁平 endpoint 值。
@@ -685,10 +688,11 @@ impl NewConnectionForm {
 
         // MySQL / TiDB 档案回填：同样优先结构化档案，缺省时用历史扁平参数迁移。
         if matches!(config.kind, DatabaseKind::MySql | DatabaseKind::TiDb) {
-            let profile = config
-                .mysql_profile
-                .clone()
-                .or_else(|| Some(fluxdb_core::MysqlConnectionProfile::from_options(&config.options)));
+            let profile = config.mysql_profile.clone().or_else(|| {
+                Some(fluxdb_core::MysqlConnectionProfile::from_options(
+                    &config.options,
+                ))
+            });
             if let Some(profile) = profile {
                 form.apply_mysql_profile(&profile);
             }
@@ -883,7 +887,7 @@ impl NewConnectionForm {
     /// - 证书/私钥文件：以文件路径作 `key`、`inline` 为 None（非密码语义，不落 SQLite 加密凭据表）。
     fn build_redis_profile(&self) -> fluxdb_core::RedisConnectionProfile {
         use fluxdb_core::{
-            RedisBasicOptions, RedisClusterOptions, RedisCloudOptions, RedisConnectionProfile,
+            RedisBasicOptions, RedisCloudOptions, RedisClusterOptions, RedisConnectionProfile,
             RedisSentinelOptions, RedisSshAuth, RedisSshOptions, RedisTlsOptions, RedisTopology,
             RedisTopologyKind, SecretRef,
         };
@@ -924,7 +928,8 @@ impl NewConnectionForm {
         let sentinel_endpoints = split_endpoints(&self.sentinel_endpoints);
         let cluster_start_nodes = split_endpoints(&self.cluster_start_nodes);
         // 依据已填写的字段推断拓扑类型：优先 Sentinel，其次 Cluster，否则单点。
-        let kind = if !self.sentinel_master_name.trim().is_empty() || !sentinel_endpoints.is_empty() {
+        let kind = if !self.sentinel_master_name.trim().is_empty() || !sentinel_endpoints.is_empty()
+        {
             RedisTopologyKind::Sentinel
         } else if !cluster_start_nodes.is_empty() {
             RedisTopologyKind::Cluster
@@ -1055,11 +1060,7 @@ impl NewConnectionForm {
             tls,
             transport,
             advanced: MysqlAdvancedOptions {
-                connect_timeout_secs: self
-                    .mysql_connect_timeout_secs
-                    .trim()
-                    .parse()
-                    .unwrap_or(5),
+                connect_timeout_secs: self.mysql_connect_timeout_secs.trim().parse().unwrap_or(5),
                 query_timeout_secs: self.mysql_query_timeout_secs.trim().parse().unwrap_or(0),
                 idle_ttl_secs: self.mysql_idle_ttl_secs.trim().parse().unwrap_or(0),
                 tcp_keepalive: self.mysql_tcp_keepalive,
@@ -1074,9 +1075,8 @@ impl NewConnectionForm {
     fn build_postgres_profile(&self) -> fluxdb_core::PostgresConnectionProfile {
         use fluxdb_core::{
             PostgresAdvancedOptions, PostgresBasicOptions, PostgresProxy, PostgresProxyType,
-            PostgresScopeOptions, PostgresSshAuth,
-            PostgresSshOptions, PostgresSslMode, PostgresTlsOptions, PostgresTransportLayer,
-            SecretRef,
+            PostgresScopeOptions, PostgresSshAuth, PostgresSshOptions, PostgresSslMode,
+            PostgresTlsOptions, PostgresTransportLayer, SecretRef,
         };
         let file_ref = |path: &str| SecretRef::ref_key(path.trim().to_string());
         let inline_secret = |value: &str| SecretRef::inline(value.trim().to_string());
@@ -1222,9 +1222,12 @@ impl NewConnectionInputs {
             input_state(ConnectionField::TlsClientCert, false, window, cx);
         let (tls_client_key, tls_client_key_subscription) =
             input_state(ConnectionField::TlsClientKey, false, window, cx);
-        let (tls_sni, tls_sni_subscription) = input_state(ConnectionField::TlsSni, false, window, cx);
-        let (ssh_host, ssh_host_subscription) = input_state(ConnectionField::SshHost, false, window, cx);
-        let (ssh_port, ssh_port_subscription) = input_state(ConnectionField::SshPort, false, window, cx);
+        let (tls_sni, tls_sni_subscription) =
+            input_state(ConnectionField::TlsSni, false, window, cx);
+        let (ssh_host, ssh_host_subscription) =
+            input_state(ConnectionField::SshHost, false, window, cx);
+        let (ssh_port, ssh_port_subscription) =
+            input_state(ConnectionField::SshPort, false, window, cx);
         let (ssh_username, ssh_username_subscription) =
             input_state(ConnectionField::SshUsername, false, window, cx);
         let (ssh_password, ssh_password_subscription) =
@@ -1552,17 +1555,42 @@ impl NewConnectionInputs {
         );
         // —— Redis 专用 ——
         self.set_value(ConnectionField::TlsCa, &form.tls_ca, window, cx);
-        self.set_value(ConnectionField::TlsClientCert, &form.tls_client_cert, window, cx);
-        self.set_value(ConnectionField::TlsClientKey, &form.tls_client_key, window, cx);
+        self.set_value(
+            ConnectionField::TlsClientCert,
+            &form.tls_client_cert,
+            window,
+            cx,
+        );
+        self.set_value(
+            ConnectionField::TlsClientKey,
+            &form.tls_client_key,
+            window,
+            cx,
+        );
         self.set_value(ConnectionField::TlsSni, &form.tls_sni, window, cx);
         self.set_value(ConnectionField::SshHost, &form.ssh_host, window, cx);
         self.set_value(ConnectionField::SshPort, &form.ssh_port, window, cx);
         self.set_value(ConnectionField::SshUsername, &form.ssh_username, window, cx);
         self.set_value(ConnectionField::SshPassword, &form.ssh_password, window, cx);
-        self.set_value(ConnectionField::SshPrivateKey, &form.ssh_private_key, window, cx);
-        self.set_value(ConnectionField::SshPassphrase, &form.ssh_passphrase, window, cx);
+        self.set_value(
+            ConnectionField::SshPrivateKey,
+            &form.ssh_private_key,
+            window,
+            cx,
+        );
+        self.set_value(
+            ConnectionField::SshPassphrase,
+            &form.ssh_passphrase,
+            window,
+            cx,
+        );
         // —— MySQL / TiDB 专用 ——
-        self.set_value(ConnectionField::MysqlCharset, &form.mysql_charset, window, cx);
+        self.set_value(
+            ConnectionField::MysqlCharset,
+            &form.mysql_charset,
+            window,
+            cx,
+        );
         self.set_value(
             ConnectionField::MysqlProxyType,
             &form.mysql_proxy_type,
@@ -1581,8 +1609,18 @@ impl NewConnectionInputs {
             window,
             cx,
         );
-        self.set_value(ConnectionField::MysqlProxyHost, &form.mysql_proxy_host, window, cx);
-        self.set_value(ConnectionField::MysqlProxyPort, &form.mysql_proxy_port, window, cx);
+        self.set_value(
+            ConnectionField::MysqlProxyHost,
+            &form.mysql_proxy_host,
+            window,
+            cx,
+        );
+        self.set_value(
+            ConnectionField::MysqlProxyPort,
+            &form.mysql_proxy_port,
+            window,
+            cx,
+        );
         self.set_value(
             ConnectionField::MysqlProxyUsername,
             &form.mysql_proxy_username,
@@ -1607,7 +1645,12 @@ impl NewConnectionInputs {
             window,
             cx,
         );
-        self.set_value(ConnectionField::MysqlIdleTtl, &form.mysql_idle_ttl_secs, window, cx);
+        self.set_value(
+            ConnectionField::MysqlIdleTtl,
+            &form.mysql_idle_ttl_secs,
+            window,
+            cx,
+        );
         self.set_value(
             ConnectionField::SentinelMasterName,
             &form.sentinel_master_name,
@@ -1632,10 +1675,19 @@ impl NewConnectionInputs {
             window,
             cx,
         );
-        self.set_value(ConnectionField::CloudResource, &form.cloud_resource, window, cx);
-        self.set_value(ConnectionField::DiscoveryUri, &form.discovery_uri, window, cx);
+        self.set_value(
+            ConnectionField::CloudResource,
+            &form.cloud_resource,
+            window,
+            cx,
+        );
+        self.set_value(
+            ConnectionField::DiscoveryUri,
+            &form.discovery_uri,
+            window,
+            cx,
+        );
     }
-
 
     fn set_value(
         &self,

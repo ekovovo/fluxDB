@@ -873,6 +873,7 @@ fn connection_tree(
 
     div()
         .id(("connection-tree", connection_id.0))
+        .debug_selector(move || format!("connection-row:{}", connection_id.0))
         .w_full()
         .h(px(30.))
         .mx_1()
@@ -1514,34 +1515,44 @@ fn cell_with_icon(text: impl Into<String>, width: f32, colors: UiColors) -> impl
 
 #[cfg(target_os = "macos")]
 fn set_dock_icon() {
-    use std::ffi::c_void;
-
-    use cocoa::{
-        appkit::{NSApp, NSApplication, NSImage},
-        base::{id, nil},
-        foundation::{NSData, NSUInteger},
-    };
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::{NSApp, NSImage};
+    use objc2_foundation::NSData;
 
     const APP_ICON: &[u8] = include_bytes!("../../assets/app-icon.icns");
 
-    unsafe {
-        let data = NSData::dataWithBytes_length_(
-            nil,
-            APP_ICON.as_ptr() as *const c_void,
-            APP_ICON.len() as NSUInteger,
-        );
-        let image: id = NSImage::initWithData_(NSImage::alloc(nil), data);
+    // Dock 图标只能在主线程设置；其他线程（如启动前被调度的场景）跳过即可。
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    let data = NSData::with_bytes(APP_ICON);
+    let Some(image) = NSImage::initWithData(mtm.alloc(), &data) else {
+        return;
+    };
 
-        if image != nil {
-            NSApp().setApplicationIconImage_(image);
-        }
+    unsafe {
+        NSApp(mtm).setApplicationIconImage(Some(&image));
     }
 }
 
 #[cfg(not(target_os = "macos"))]
 fn set_dock_icon() {}
 
+/// 调试用：从 `FLUXDB_DEBUG_WINDOW=WxH` 解析启动窗口尺寸（仅 debug 构建）。
+fn debug_window_size_override() -> Option<Size<Pixels>> {
+    if !cfg!(debug_assertions) {
+        return None;
+    }
+    let raw = std::env::var("FLUXDB_DEBUG_WINDOW").ok()?;
+    let (w, h) = raw.split_once('x')?;
+    Some(size(px(w.trim().parse().ok()?), px(h.trim().parse().ok()?)))
+}
+
 fn startup_window_bounds(cx: &App) -> Bounds<Pixels> {
+    // 调试用（仅 debug）：`FLUXDB_DEBUG_WINDOW=900x700` 覆写启动尺寸，用于窄窗口还原度核对。
+    if let Some(size_override) = debug_window_size_override() {
+        return Bounds::centered(None, size_override, cx);
+    }
     let desired_size = size(px(2048.), px(1024.));
     let Some(display) = cx.primary_display() else {
         return Bounds::centered(None, desired_size, cx);

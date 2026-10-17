@@ -30,9 +30,6 @@ impl NavicatMain {
 
         let bulk_input = cx.new(|cx| {
             InputState::new(window, cx)
-                .code_editor("json")
-                .line_number(false)
-                .rows(8)
         });
 
         if let Some(first) = parameters.first() {

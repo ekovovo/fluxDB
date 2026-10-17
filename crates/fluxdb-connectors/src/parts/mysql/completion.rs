@@ -46,7 +46,7 @@ fn mysql_completion_tables_with_cancel(
             "#,
         )
         .bind(&database)
-        .bind(completion_fuzzy_like_filter(filter))
+        .bind(completion_fuzzy_like_pattern(filter))
         .bind(limit as i64)
         .fetch_all(&mut connection)
         , should_cancel)

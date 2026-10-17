@@ -36,11 +36,6 @@ const PG_CLIENT_KEPT_BINARIES: &[&str] = &["pg_dump", "pg_dumpall", "pg_restore"
 /// 安装完成标记：只有完整通过校验的托管安装目录才会有它（见 `pg_client_managed_dirs`）。
 const PG_CLIENT_INSTALL_MARKER: &str = ".fluxdb-install-complete";
 
-/// 探测 `--version` 的等待上限。客户端工具在依赖库缺失等异常情况下可能长时间不退出，
-/// 无上限等待会把客户端发现和下载校验一起拖死。
-#[cfg(test)]
-const PG_CLIENT_VERSION_TIMEOUT: std::time::Duration = NATIVE_CLIENT_VERSION_TIMEOUT;
-
 /// 客户端运行时依赖库的文件名前缀白名单（精简安装只取这些）。
 ///
 /// 来自对官方包里 `pg_dump` 的实际链接闭包：libpq → OpenSSL / krb5 / gettext / iconv，
@@ -135,6 +130,8 @@ pub struct PgClientToolPath {
 }
 
 /// 应用托管的客户端安装根目录：`<应用数据目录>/clients/postgresql`。
+/// 应用数据目录受实例标识影响，因此并行实例默认各自下载客户端，互不争抢版本目录。
+/// 设置里显式配置了客户端目录时以配置为准，不受此默认值影响。
 pub fn pg_client_managed_root() -> PathBuf {
     fluxdb_storage::FileStorage::default_root()
         .unwrap_or_else(|_| PathBuf::from(".fluxdb"))
@@ -643,19 +640,3 @@ fn install_pg_client_files(
     )
 }
 
-#[cfg(test)]
-fn extract_pg_client_archive<R: Read + std::io::Seek>(
-    reader: R,
-    install_dir: &Path,
-    include_optional: bool,
-    cancel: &AtomicBool,
-    progress: &mut dyn FnMut(&'static str, u64, u64),
-) -> fluxdb_core::Result<()> {
-    extract_native_client_archive(
-        reader,
-        install_dir,
-        &|name| pg_client_archive_target(name, include_optional),
-        cancel,
-        progress,
-    )
-}

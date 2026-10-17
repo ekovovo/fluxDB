@@ -1,5 +1,6 @@
 fn settings_content(
     state: &AppState,
+    ai_settings_panel: AiSettingsPanelState,
     theme_mode: ThemeMode,
     active_section: SettingsPanelSection,
     colors: UiColors,
@@ -52,6 +53,7 @@ fn settings_content(
                                 .py_3()
                                 .child(settings_panel_body(
                                     state,
+                                    ai_settings_panel,
                                     theme_mode,
                                     active_section,
                                     colors,
@@ -74,7 +76,7 @@ fn settings_sidebar(
     active_section: SettingsPanelSection,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
-) -> Sidebar<SidebarMenu> {
+) -> Sidebar<SidebarGroup<SidebarMenuItem>> {
     Sidebar::new("settings-sidebar")
         .w(px(176.))
         .flex_none()
@@ -86,29 +88,52 @@ fn settings_sidebar(
         .py_2()
         .collapsible(false)
         .collapsed(false)
-        .child(
-            SidebarMenu::new().children(settings_panel_sections().into_iter().map(|section| {
-                SidebarMenuItem::new(settings_section_label(section))
-                    .active(section == active_section)
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.settings_panel_section = section;
-                        cx.stop_propagation();
-                        cx.notify();
-                    }))
-            })),
-        )
+        .children(settings_sidebar_groups(active_section, cx))
 }
 
-fn settings_panel_sections() -> [SettingsPanelSection; 8] {
-    [
-        SettingsPanelSection::Editor,
-        SettingsPanelSection::Shortcuts,
-        SettingsPanelSection::Appearance,
-        SettingsPanelSection::System,
-        SettingsPanelSection::Data,
-        SettingsPanelSection::ConnectionSecurity,
-        SettingsPanelSection::DatabaseSupport,
-        SettingsPanelSection::About,
+/// 设置菜单分组：通用 / 数据与连接 / AI 助手 / 应用。
+fn settings_sidebar_groups(
+    active_section: SettingsPanelSection,
+    cx: &mut Context<NavicatMain>,
+) -> Vec<SidebarGroup<SidebarMenuItem>> {
+    let item = |section: SettingsPanelSection| {
+        SidebarMenuItem::new(settings_section_label(section))
+            .active(section == active_section)
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.settings_panel_section = section;
+                if section == SettingsPanelSection::AiAgents
+                    && this.ai_agent_editor.is_none()
+                    && !this.controller.state().ai_agents.is_empty()
+                {
+                    let first = this.controller.state().ai_agents[0].id.clone();
+                    this.open_ai_agent_editor(Some(first), window, cx);
+                }
+                cx.stop_propagation();
+                cx.notify();
+            }))
+    };
+
+    vec![
+        SidebarGroup::new("通用").children([
+            item(SettingsPanelSection::Editor),
+            item(SettingsPanelSection::Shortcuts),
+            item(SettingsPanelSection::Appearance),
+        ]),
+        SidebarGroup::new("数据与连接").children([
+            item(SettingsPanelSection::Data),
+            item(SettingsPanelSection::ConnectionSecurity),
+            item(SettingsPanelSection::DatabaseSupport),
+        ]),
+        SidebarGroup::new("AI 助手").children([
+            item(SettingsPanelSection::AiModels),
+            item(SettingsPanelSection::AiToolsMcp),
+            item(SettingsPanelSection::AiAgents),
+            item(SettingsPanelSection::AiSessions),
+        ]),
+        SidebarGroup::new("应用").children([
+            item(SettingsPanelSection::System),
+            item(SettingsPanelSection::About),
+        ]),
     ]
 }
 
@@ -165,19 +190,17 @@ fn settings_panel_header(
                             .small()
                             .rounded(colors.radius)
                             .on_click(cx.listener(move |this, _, window, cx| {
-                                this.settings_editor_draft =
-                                    settings_default_editor_draft(&this.controller.state().settings);
+                                this.settings_editor_draft = settings_default_editor_draft(
+                                    &this.controller.state().settings,
+                                );
                                 let font_size = this.settings_editor_draft.editor_font_size;
                                 reset_font_size_slider.update(cx, |slider, cx| {
                                     slider.set_value(font_size as f32, window, cx)
                                 });
-                                let value = this
-                                    .settings_editor_draft
-                                    .editor_line_height
-                                    .to_string();
-                                reset_line_height_input.update(cx, |input, cx| {
-                                    input.set_value(value, window, cx)
-                                });
+                                let value =
+                                    this.settings_editor_draft.editor_line_height.to_string();
+                                reset_line_height_input
+                                    .update(cx, |input, cx| input.set_value(value, window, cx));
                                 this.show_message(
                                     "已恢复默认设置，点击保存后生效",
                                     AppMessageKind::Info,
@@ -257,7 +280,8 @@ fn settings_panel_header(
 }
 
 fn settings_panel_body(
-    _state: &AppState,
+    state: &AppState,
+    ai_settings_panel: AiSettingsPanelState,
     theme_mode: ThemeMode,
     active_section: SettingsPanelSection,
     colors: UiColors,
@@ -272,33 +296,22 @@ fn settings_panel_body(
     cx: &mut Context<NavicatMain>,
 ) -> Div {
     match active_section {
-        SettingsPanelSection::Editor => {
-            settings_editor_panel(
-                editor_draft,
-                font_size_slider,
-                colors,
-                line_height_input,
-                dangerous_actions_collapsed,
-                window,
-                cx,
-            )
-        }
+        SettingsPanelSection::Editor => settings_editor_panel(
+            editor_draft,
+            font_size_slider,
+            colors,
+            line_height_input,
+            dangerous_actions_collapsed,
+            window,
+            cx,
+        ),
         SettingsPanelSection::Shortcuts => {
             settings_shortcuts_panel(&editor_draft, colors, window, cx)
         }
         SettingsPanelSection::Appearance => {
-            settings_appearance_panel(
-                &editor_draft,
-                theme_mode,
-                colors,
-                radius_input,
-                window,
-                cx,
-            )
+            settings_appearance_panel(&editor_draft, theme_mode, colors, radius_input, window, cx)
         }
-        SettingsPanelSection::System => {
-            settings_system_panel(&editor_draft, colors, cx)
-        }
+        SettingsPanelSection::System => settings_system_panel(&editor_draft, colors, cx),
         SettingsPanelSection::Data => {
             settings_data_panel(&editor_draft, clients, data_groups, colors, window, cx)
         }
@@ -306,7 +319,18 @@ fn settings_panel_body(
         SettingsPanelSection::DatabaseSupport => {
             div().child(settings_database_support_panel(colors))
         }
+        SettingsPanelSection::AiModels => {
+            settings_ai_models_panel(state, ai_settings_panel, colors, cx)
+        }
+        SettingsPanelSection::AiToolsMcp => {
+            settings_ai_tools_mcp_panel(state, &ai_settings_panel, colors, cx)
+        }
+        SettingsPanelSection::AiAgents => {
+            settings_ai_agents_panel(state, &ai_settings_panel, colors, cx)
+        }
+        SettingsPanelSection::AiSessions => {
+            settings_ai_sessions_panel(state, &ai_settings_panel, colors, window, cx)
+        }
         SettingsPanelSection::About => settings_about_panel(colors),
     }
 }
-

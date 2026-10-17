@@ -36,11 +36,6 @@ pub struct ConnectionConfig {
 }
 
 impl ConnectionConfig {
-    /// 是否存在 Redis 结构化档案。
-    pub fn has_redis_profile(&self) -> bool {
-        self.redis_profile.is_some()
-    }
-
     /// 若携带 Redis 档案，则把档案归一化进扁平的 `endpoint` / `options`，
     /// 产出一份可直接拨号的配置；无档案时原样返回（兼容历史连接）。
     ///
@@ -63,11 +58,6 @@ impl ConnectionConfig {
         config
     }
 
-    /// 是否存在 MySQL/TiDB 结构化档案。
-    pub fn has_mysql_profile(&self) -> bool {
-        self.mysql_profile.is_some()
-    }
-
     /// 若携带 MySQL 档案，则把档案归一化进扁平的 `endpoint` / `options`，
     /// 产出一份可直接拨号的配置；无档案时原样返回（兼容历史连接）。
     ///
@@ -88,11 +78,6 @@ impl ConnectionConfig {
             config.options.insert(key, value);
         }
         config
-    }
-
-    /// 是否存在 PostgreSQL 结构化档案。
-    pub fn has_postgres_profile(&self) -> bool {
-        self.postgres_profile.is_some()
     }
 
     /// 若携带 PostgreSQL 档案，则把档案归一化进扁平的 `endpoint` / `options`，
@@ -472,3 +457,11 @@ pub struct ConnectionOverview {
     /// 最近一次 CPU 采样（`INFO cpu` + `INFO server`），用于 app 层推导使用率。
     pub cpu: Option<CpuStats>,
 }
+
+/// 解析连接选项中的布尔开关；缺失值与未识别文本均视为关闭。
+fn connection_option_is_true(value: Option<&String>) -> bool {
+    value
+        .map(|v| v.trim().to_ascii_lowercase())
+        .is_some_and(|v| matches!(v.as_str(), "true" | "y" | "yes" | "1" | "on"))
+}
+

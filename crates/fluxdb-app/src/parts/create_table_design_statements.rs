@@ -11,11 +11,11 @@ fn create_table_mysql_design_statements(create: &CreateTableState) -> Result<Vec
     if !old_table_name.eq_ignore_ascii_case(new_table_name) {
         statements.push(format!(
             "ALTER TABLE {} RENAME TO {};",
-            quote_mysql_identifier(old_table_name),
-            quote_mysql_identifier(new_table_name)
+            fluxdb_core::MySqlDialect.quote_identifier(old_table_name),
+            fluxdb_core::MySqlDialect.quote_identifier(new_table_name)
         ));
     }
-    let table_name = quote_mysql_identifier(new_table_name);
+    let table_name = fluxdb_core::MySqlDialect.quote_identifier(new_table_name);
     let old_primary_key = create_table_primary_key_names(&original.columns);
     let new_primary_key = create_table_primary_key_names(&create.columns);
     if old_primary_key != new_primary_key && !old_primary_key.is_empty() {
@@ -25,7 +25,7 @@ fn create_table_mysql_design_statements(create: &CreateTableState) -> Result<Vec
         if !create.columns.iter().any(|current| current.id == column.id) {
             statements.push(format!(
                 "ALTER TABLE {table_name} DROP COLUMN {};",
-                quote_mysql_identifier(column.name.trim())
+                fluxdb_core::MySqlDialect.quote_identifier(column.name.trim())
             ));
         }
     }
@@ -36,7 +36,7 @@ fn create_table_mysql_design_statements(create: &CreateTableState) -> Result<Vec
         match original.columns.iter().find(|original| original.id == column.id) {
             Some(original) if original != column => statements.push(format!(
                 "ALTER TABLE {table_name} CHANGE COLUMN {} {line};",
-                quote_mysql_identifier(original.name.trim())
+                fluxdb_core::MySqlDialect.quote_identifier(original.name.trim())
             )),
             None => statements.push(format!("ALTER TABLE {table_name} ADD COLUMN {line};")),
             _ => {}
@@ -67,7 +67,7 @@ fn create_table_mysql_design_statements(create: &CreateTableState) -> Result<Vec
         {
             statements.push(format!(
                 "ALTER TABLE {table_name} DROP FOREIGN KEY {};",
-                quote_mysql_identifier(foreign_key.name.trim())
+                fluxdb_core::MySqlDialect.quote_identifier(foreign_key.name.trim())
             ));
         }
     }
@@ -91,7 +91,7 @@ fn create_table_mysql_design_statements(create: &CreateTableState) -> Result<Vec
         {
             statements.push(format!(
                 "ALTER TABLE {table_name} DROP CHECK {};",
-                quote_mysql_identifier(check.name.trim())
+                fluxdb_core::MySqlDialect.quote_identifier(check.name.trim())
             ));
         }
     }
@@ -114,7 +114,7 @@ fn create_table_mysql_design_statements(create: &CreateTableState) -> Result<Vec
         {
             statements.push(format!(
                 "DROP TRIGGER {};",
-                quote_mysql_identifier(trigger.name.trim())
+                fluxdb_core::MySqlDialect.quote_identifier(trigger.name.trim())
             ));
         }
     }
@@ -162,16 +162,16 @@ fn create_table_sqlite_design_statements(create: &CreateTableState) -> Result<Ve
     if !old_table_name.eq_ignore_ascii_case(new_table_name) {
         statements.push(format!(
             "ALTER TABLE {} RENAME TO {};",
-            quote_sqlite_identifier(old_table_name),
-            quote_sqlite_identifier(new_table_name)
+            fluxdb_core::SqliteDialect.quote_identifier(old_table_name),
+            fluxdb_core::SqliteDialect.quote_identifier(new_table_name)
         ));
     }
-    let table_name = quote_sqlite_identifier(new_table_name);
+    let table_name = fluxdb_core::SqliteDialect.quote_identifier(new_table_name);
     for column in &original.columns {
         if !create.columns.iter().any(|current| current.id == column.id) {
             statements.push(format!(
                 "ALTER TABLE {table_name} DROP COLUMN {};",
-                quote_sqlite_identifier(column.name.trim())
+                fluxdb_core::SqliteDialect.quote_identifier(column.name.trim())
             ));
         }
     }
@@ -181,8 +181,8 @@ fn create_table_sqlite_design_statements(create: &CreateTableState) -> Result<Ve
                 if create_table_columns_equal_except_name(original, column) {
                     statements.push(format!(
                         "ALTER TABLE {table_name} RENAME COLUMN {} TO {};",
-                        quote_sqlite_identifier(original.name.trim()),
-                        quote_sqlite_identifier(column.name.trim())
+                        fluxdb_core::SqliteDialect.quote_identifier(original.name.trim()),
+                        fluxdb_core::SqliteDialect.quote_identifier(column.name.trim())
                     ));
                 } else {
                     return Err("SQLite 暂不支持通过设计表修改已有字段类型或约束".to_string());
@@ -204,7 +204,7 @@ fn create_table_sqlite_design_statements(create: &CreateTableState) -> Result<Ve
         {
             statements.push(format!(
                 "DROP INDEX {};",
-                quote_sqlite_identifier(index.name.trim())
+                fluxdb_core::SqliteDialect.quote_identifier(index.name.trim())
             ));
         }
     }
@@ -222,7 +222,7 @@ fn create_table_sqlite_design_statements(create: &CreateTableState) -> Result<Ve
         {
             statements.push(format!(
                 "DROP TRIGGER {};",
-                quote_sqlite_identifier(trigger.name.trim())
+                fluxdb_core::SqliteDialect.quote_identifier(trigger.name.trim())
             ));
         }
     }
@@ -284,8 +284,8 @@ fn create_table_sqlite_rebuild_design_statements(
         "BEGIN TRANSACTION;".to_string(),
         format!(
             "ALTER TABLE {} RENAME TO {};",
-            quote_sqlite_identifier(old_table_name),
-            quote_sqlite_identifier(&temp_table_name)
+            fluxdb_core::SqliteDialect.quote_identifier(old_table_name),
+            fluxdb_core::SqliteDialect.quote_identifier(&temp_table_name)
         ),
         create_table_sqlite_create_table_statement(create, new_table_name)?,
     ];
@@ -294,24 +294,24 @@ fn create_table_sqlite_rebuild_design_statements(
     if !copy_columns.is_empty() {
         let target_columns = copy_columns
             .iter()
-            .map(|(_, current)| quote_sqlite_identifier(current.name.trim()))
+            .map(|(_, current)| fluxdb_core::SqliteDialect.quote_identifier(current.name.trim()))
             .collect::<Vec<_>>()
             .join(", ");
         let source_columns = copy_columns
             .iter()
-            .map(|(original, _)| quote_sqlite_identifier(original.name.trim()))
+            .map(|(original, _)| fluxdb_core::SqliteDialect.quote_identifier(original.name.trim()))
             .collect::<Vec<_>>()
             .join(", ");
         statements.push(format!(
             "INSERT INTO {} ({target_columns}) SELECT {source_columns} FROM {};",
-            quote_sqlite_identifier(new_table_name),
-            quote_sqlite_identifier(&temp_table_name)
+            fluxdb_core::SqliteDialect.quote_identifier(new_table_name),
+            fluxdb_core::SqliteDialect.quote_identifier(&temp_table_name)
         ));
     }
 
     statements.push(format!(
         "DROP TABLE {};",
-        quote_sqlite_identifier(&temp_table_name)
+        fluxdb_core::SqliteDialect.quote_identifier(&temp_table_name)
     ));
     statements.extend(create_table_sqlite_index_statements(create)?);
     statements.extend(create_table_sqlite_trigger_statements(create)?);
@@ -426,7 +426,7 @@ fn create_table_mysql_drop_missing_indexes(
         .map(|index| {
             format!(
                 "ALTER TABLE {table_name} DROP INDEX {};",
-                quote_mysql_identifier(index.name.trim())
+                fluxdb_core::MySqlDialect.quote_identifier(index.name.trim())
             )
         })
         .collect()
@@ -484,7 +484,7 @@ fn create_table_sqlite_index_statements(create: &CreateTableState) -> Result<Vec
             if !column_names.insert(column_name.to_ascii_lowercase()) {
                 return Err(format!("Index {name} has duplicate field: {column_name}."));
             }
-            let mut part = quote_sqlite_identifier(column_name);
+            let mut part = fluxdb_core::SqliteDialect.quote_identifier(column_name);
             let sort_order = create_table_normalized_sort_order(&column.sort_order);
             if !sort_order.is_empty() {
                 part.push(' ');
@@ -499,8 +499,8 @@ fn create_table_sqlite_index_statements(create: &CreateTableState) -> Result<Vec
         let unique = if index_type == "UNIQUE" { "UNIQUE " } else { "" };
         statements.push(format!(
             "CREATE {unique}INDEX {} ON {} ({});",
-            quote_sqlite_identifier(name),
-            quote_sqlite_identifier(create.table_name.trim()),
+            fluxdb_core::SqliteDialect.quote_identifier(name),
+            fluxdb_core::SqliteDialect.quote_identifier(create.table_name.trim()),
             parts.join(", ")
         ));
     }
@@ -665,19 +665,19 @@ fn create_table_check_lines(
                 CreateTableSqlDialect::MySql => {
                     format!(
                         "CONSTRAINT {} CHECK ({expression})",
-                        quote_mysql_identifier(name)
+                        fluxdb_core::MySqlDialect.quote_identifier(name)
                     )
                 }
                 CreateTableSqlDialect::Sqlite => {
                     format!(
                         "CONSTRAINT {} CHECK ({expression})",
-                        quote_sqlite_identifier(name)
+                        fluxdb_core::SqliteDialect.quote_identifier(name)
                     )
                 }
                 CreateTableSqlDialect::Postgres => {
                     format!(
                         "CONSTRAINT {} CHECK ({expression})",
-                        quote_postgres_identifier(name)
+                        fluxdb_core::PostgresDialect.quote_identifier(name)
                     )
                 }
             }
@@ -744,10 +744,10 @@ fn create_table_trigger_statements(
     dialect: CreateTableSqlDialect,
 ) -> Result<Vec<String>, String> {
     let table_name = match dialect {
-        CreateTableSqlDialect::MySql => quote_mysql_identifier(create.table_name.trim()),
-        CreateTableSqlDialect::Sqlite => quote_sqlite_identifier(create.table_name.trim()),
+        CreateTableSqlDialect::MySql => fluxdb_core::MySqlDialect.quote_identifier(create.table_name.trim()),
+        CreateTableSqlDialect::Sqlite => fluxdb_core::SqliteDialect.quote_identifier(create.table_name.trim()),
         // PG 触发器走 create_table_postgres.rs 的专用生成（引用已存在函数），不走此路径。
-        CreateTableSqlDialect::Postgres => quote_postgres_identifier(create.table_name.trim()),
+        CreateTableSqlDialect::Postgres => fluxdb_core::PostgresDialect.quote_identifier(create.table_name.trim()),
     };
     create
         .triggers
@@ -762,9 +762,9 @@ fn create_table_trigger_statements(
                 return Err("触发器定义不能为空".to_string());
             }
             let trigger_name = match dialect {
-                CreateTableSqlDialect::MySql => quote_mysql_identifier(name),
-                CreateTableSqlDialect::Sqlite => quote_sqlite_identifier(name),
-                CreateTableSqlDialect::Postgres => quote_postgres_identifier(name),
+                CreateTableSqlDialect::MySql => fluxdb_core::MySqlDialect.quote_identifier(name),
+                CreateTableSqlDialect::Sqlite => fluxdb_core::SqliteDialect.quote_identifier(name),
+                CreateTableSqlDialect::Postgres => fluxdb_core::PostgresDialect.quote_identifier(name),
             };
             Ok(format!(
                 "CREATE TRIGGER {trigger_name}\n{} {} ON {table_name}\nFOR EACH ROW\n{body};",
@@ -780,7 +780,7 @@ fn create_table_primary_key_line(columns: &[CreateTableColumn]) -> Option<String
         .iter()
         .filter(|column| column.primary_key && !column.name.trim().is_empty())
         .map(|column| {
-            let mut part = quote_mysql_identifier(column.name.trim());
+            let mut part = fluxdb_core::MySqlDialect.quote_identifier(column.name.trim());
             if column.supports_primary_key_prefix_length() && !column.key_length.trim().is_empty() {
                 part.push('(');
                 part.push_str(column.key_length.trim());
@@ -805,7 +805,7 @@ fn create_table_mysql_table_options(create: &CreateTableState) -> Vec<String> {
     if !create.tablespace.trim().is_empty() {
         options.push(format!(
             "TABLESPACE {}",
-            quote_mysql_identifier(create.tablespace.trim())
+            fluxdb_core::MySqlDialect.quote_identifier(create.tablespace.trim())
         ));
     }
     if !create.charset.trim().is_empty() {
@@ -949,7 +949,7 @@ fn create_table_index_lines(create: &CreateTableState) -> Result<Vec<String>, St
             if !column.sub_part.trim().chars().all(|ch| ch.is_ascii_digit()) {
                 return Err(format!("Index {name} field {column_name} has invalid sub part."));
             }
-            let mut part = quote_mysql_identifier(column_name);
+            let mut part = fluxdb_core::MySqlDialect.quote_identifier(column_name);
             if !column.sub_part.trim().is_empty() {
                 part.push('(');
                 part.push_str(column.sub_part.trim());
@@ -969,7 +969,7 @@ fn create_table_index_lines(create: &CreateTableState) -> Result<Vec<String>, St
             "SPATIAL" => "SPATIAL KEY",
             _ => "KEY",
         };
-        let mut line = format!("{keyword} {}", quote_mysql_identifier(name));
+        let mut line = format!("{keyword} {}", fluxdb_core::MySqlDialect.quote_identifier(name));
         let method = create_table_normalized_index_method(&index.index_method);
         if !method.is_empty() && matches!(keyword, "KEY" | "UNIQUE KEY") {
             line.push_str(" USING ");
@@ -1188,16 +1188,8 @@ fn create_table_is_auto_update_time_type(data_type: &str) -> bool {
     data_type.contains("datetime") || data_type.contains("timestamp")
 }
 
-fn quote_mysql_identifier(value: &str) -> String {
-    format!("`{}`", value.replace('`', "``"))
-}
-
 fn quote_mysql_string(value: &str) -> String {
     format!("'{}'", value.replace('\\', "\\\\").replace('\'', "''"))
-}
-
-fn quote_sqlite_identifier(value: &str) -> String {
-    format!("\"{}\"", value.replace('"', "\"\""))
 }
 
 fn create_table_mysql_supports_length(data_type: &str) -> bool {

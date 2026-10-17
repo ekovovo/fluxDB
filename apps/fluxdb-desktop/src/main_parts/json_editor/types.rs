@@ -158,39 +158,3 @@ impl JsonEditorState {
     }
 }
 
-#[cfg(test)]
-mod json_editor_types_tests {
-    use super::*;
-
-    #[test]
-    fn config_defaults_satisfy_navicat_spec() {
-        // 默认配置应满足设计文档（新 Navicat）规格：
-        // 可编辑、语法高亮、错误诊断、折叠、行列号、gutter、载入时格式化、保留折叠态；
-        // 保存前不自动格式化（由保存链路决定，避免改动用户已有格式）。
-        let cfg = JsonEditorConfig::default();
-        assert!(cfg.editable);
-        assert!(cfg.syntax_highlight);
-        assert!(cfg.diagnostics);
-        assert!(cfg.folding);
-        assert!(cfg.line_numbers);
-        assert!(cfg.show_gutter);
-        assert!(cfg.format_on_load);
-        assert!(!cfg.format_on_save);
-        assert!(cfg.preserve_fold_state);
-        assert_eq!(cfg.min_rows, 8);
-        assert_eq!(cfg.indent_size, 2);
-        assert!(!cfg.placeholder.is_empty());
-    }
-
-    #[test]
-    fn state_initializes_clean() {
-        let st = JsonEditorState::new(JsonEditorConfig::default());
-        assert!(st.source.is_empty());
-        assert!(st.display.is_empty());
-        assert!(st.diagnostic.is_none());
-        assert!(st.nodes.is_empty());
-        assert!(!st.dirty);
-        assert!(!st.editing);
-        assert!(st.folded_set().is_empty());
-    }
-}

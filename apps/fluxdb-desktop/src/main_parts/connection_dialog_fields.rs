@@ -191,14 +191,19 @@ fn color_swatch_light(
         )
 }
 
-fn connection_test_status(status: &ConnectionTestStatus) -> Div {
+fn connection_test_status(status: &ConnectionTestStatus) -> Stateful<Div> {
     let (text, fg) = match status {
         ConnectionTestStatus::Success(text) => (text.clone(), rgb(0x16a34a)),
         ConnectionTestStatus::Error(text) => (text.clone(), rgb(0xff0000)),
         ConnectionTestStatus::Pending(text) => (text.clone(), rgb(0x667085)),
     };
 
+    // 测试连接结果按 status 语义暴露给辅助功能与 UI 自动化：
+    // 文案作为可访问名称，Role::Status 让读屏与断言都能区分进行中/成功/失败。
     div()
+        .id("new-connection-test-status")
+        .role(Role::Status)
+        .aria_label(text.clone())
         .h(px(36.))
         .flex()
         .items_center()
@@ -218,7 +223,11 @@ fn input_box_light(
     cx: &mut Context<NavicatMain>,
 ) -> Div {
     let focused = inputs.for_field(field).focus_handle(cx).is_focused(window);
+    // 稳定 ElementId 按字段业务身份派生：同一字段在不同页签/数据库类型下仍是同一个控件，
+    // UI 自动化与无障碍树都不必依赖 placeholder 文案或列表下标。
     let input = Input::new(inputs.for_field(field))
+        .id(connection_field_element_id(field))
+        .aria_label(connection_field_label(field))
         .small()
         .appearance(false)
         .focus_bordered(false);
@@ -407,6 +416,105 @@ fn connection_fields(kind: DatabaseKind) -> &'static [ConnectionField] {
     }
 }
 
+/// 文本字段输入框的稳定 `ElementId`，按字段业务身份命名（如 `connection-name`）。
+///
+/// 与 placeholder 文案解耦：文案面向用户可随时调整，ID 面向控件定位必须稳定。
+fn connection_field_element_id(field: ConnectionField) -> &'static str {
+    match field {
+        ConnectionField::Name => "connection-name",
+        ConnectionField::Host => "connection-host",
+        ConnectionField::Port => "connection-port",
+        ConnectionField::Username => "connection-username",
+        ConnectionField::Password => "connection-password",
+        ConnectionField::Database => "connection-database",
+        ConnectionField::UrlParams => "connection-url-params",
+        ConnectionField::SqlitePath => "connection-sqlite-path",
+        ConnectionField::MongoDefaultDb => "connection-mongo-default-db",
+        ConnectionField::MongoAuthDb => "connection-mongo-auth-db",
+        ConnectionField::TlsCa => "connection-tls-ca",
+        ConnectionField::TlsClientCert => "connection-tls-client-cert",
+        ConnectionField::TlsClientKey => "connection-tls-client-key",
+        ConnectionField::TlsSni => "connection-tls-sni",
+        ConnectionField::SshHost => "connection-ssh-host",
+        ConnectionField::SshPort => "connection-ssh-port",
+        ConnectionField::SshUsername => "connection-ssh-username",
+        ConnectionField::SshPassword => "connection-ssh-password",
+        ConnectionField::SshPrivateKey => "connection-ssh-private-key",
+        ConnectionField::SshPassphrase => "connection-ssh-passphrase",
+        ConnectionField::SentinelMasterName => "connection-sentinel-master-name",
+        ConnectionField::SentinelEndpoints => "connection-sentinel-endpoints",
+        ConnectionField::ClusterStartNodes => "connection-cluster-start-nodes",
+        ConnectionField::CloudSubscription => "connection-cloud-subscription",
+        ConnectionField::CloudResource => "connection-cloud-resource",
+        ConnectionField::DiscoveryUri => "connection-discovery-uri",
+        ConnectionField::PgDefaultSchema => "connection-pg-default-schema",
+        ConnectionField::PgApplicationName => "connection-pg-application-name",
+        ConnectionField::PgConnectTimeoutSecs => "connection-pg-connect-timeout-secs",
+        ConnectionField::PgQueryTimeoutSecs => "connection-pg-query-timeout-secs",
+        ConnectionField::MysqlCharset => "connection-mysql-charset",
+        ConnectionField::MysqlProxyType => "connection-mysql-proxy-type",
+        ConnectionField::MysqlSshConnectTimeout => "connection-mysql-ssh-connect-timeout",
+        ConnectionField::MysqlSshKeepalive => "connection-mysql-ssh-keepalive",
+        ConnectionField::MysqlProxyHost => "connection-mysql-proxy-host",
+        ConnectionField::MysqlProxyPort => "connection-mysql-proxy-port",
+        ConnectionField::MysqlProxyUsername => "connection-mysql-proxy-username",
+        ConnectionField::MysqlProxyPassword => "connection-mysql-proxy-password",
+        ConnectionField::MysqlConnectTimeout => "connection-mysql-connect-timeout",
+        ConnectionField::MysqlQueryTimeout => "connection-mysql-query-timeout",
+        ConnectionField::MysqlIdleTtl => "connection-mysql-idle-ttl",
+    }
+}
+
+/// 文本字段输入框的可访问名称。
+///
+/// 密码类字段不暴露标签以外的信息，`Input` 的 masked 语义已保证取值不进无障碍树；
+/// 这里只给字段名，不拼接当前值。
+fn connection_field_label(field: ConnectionField) -> &'static str {
+    match field {
+        ConnectionField::Name => "连接名称",
+        ConnectionField::Host => "主机",
+        ConnectionField::Port => "端口",
+        ConnectionField::Username => "用户名",
+        ConnectionField::Password => "密码",
+        ConnectionField::Database => "数据库名",
+        ConnectionField::UrlParams => "连接参数",
+        ConnectionField::SqlitePath => "SQLite 文件路径",
+        ConnectionField::MongoDefaultDb => "默认数据库",
+        ConnectionField::MongoAuthDb => "认证数据库",
+        ConnectionField::TlsCa => "CA 证书文件路径",
+        ConnectionField::TlsClientCert => "客户端证书文件路径",
+        ConnectionField::TlsClientKey => "客户端私钥文件路径",
+        ConnectionField::TlsSni => "SNI",
+        ConnectionField::SshHost => "SSH 主机",
+        ConnectionField::SshPort => "SSH 端口",
+        ConnectionField::SshUsername => "SSH 用户名",
+        ConnectionField::SshPassword => "SSH 密码",
+        ConnectionField::SshPrivateKey => "SSH 私钥文件路径",
+        ConnectionField::SshPassphrase => "SSH 私钥口令",
+        ConnectionField::SentinelMasterName => "Sentinel 主库名",
+        ConnectionField::SentinelEndpoints => "Sentinel 节点列表",
+        ConnectionField::ClusterStartNodes => "Cluster 起始节点列表",
+        ConnectionField::CloudSubscription => "云订阅 / 账号 ID",
+        ConnectionField::CloudResource => "云资源 / 数据库标识",
+        ConnectionField::DiscoveryUri => "连接串导入",
+        ConnectionField::PgDefaultSchema => "默认 schema",
+        ConnectionField::PgApplicationName => "应用名",
+        ConnectionField::PgConnectTimeoutSecs => "建连超时（秒）",
+        ConnectionField::PgQueryTimeoutSecs => "查询超时（秒）",
+        ConnectionField::MysqlCharset => "连接字符集",
+        ConnectionField::MysqlProxyType => "代理类型",
+        ConnectionField::MysqlSshConnectTimeout => "SSH 连接超时（秒）",
+        ConnectionField::MysqlSshKeepalive => "SSH 心跳间隔（秒）",
+        ConnectionField::MysqlProxyHost => "代理主机",
+        ConnectionField::MysqlProxyPort => "代理端口",
+        ConnectionField::MysqlProxyUsername => "代理用户名",
+        ConnectionField::MysqlProxyPassword => "代理密码",
+        ConnectionField::MysqlConnectTimeout => "建连超时（秒）",
+        ConnectionField::MysqlQueryTimeout => "查询超时（秒）",
+        ConnectionField::MysqlIdleTtl => "连接空闲 TTL（秒）",
+    }
+}
+
 fn connection_field_placeholder(field: ConnectionField) -> &'static str {
     match field {
         ConnectionField::Name => "连接名称",
@@ -416,7 +524,9 @@ fn connection_field_placeholder(field: ConnectionField) -> &'static str {
         ConnectionField::Password => "可选",
         ConnectionField::Database => "数据库名",
         ConnectionField::MongoDefaultDb => "可选",
-        ConnectionField::UrlParams => "key=value&key2=value2（Redis: tls=true&sentinel_master=mymaster）",
+        ConnectionField::UrlParams => {
+            "key=value&key2=value2（Redis: tls=true&ai_key_prefixes=app:,cache:）"
+        }
         ConnectionField::SqlitePath => "/path/to/database.db or :memory:",
         ConnectionField::MongoAuthDb => "可选，通常为 admin",
         ConnectionField::TlsCa => "CA 证书文件路径",

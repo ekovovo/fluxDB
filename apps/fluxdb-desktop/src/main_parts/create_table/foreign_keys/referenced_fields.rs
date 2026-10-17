@@ -316,7 +316,7 @@ fn create_table_foreign_key_referenced_fields_table(
         .overflow_hidden()
         .flex()
         .flex_col()
-        .child(create_table_foreign_key_referenced_fields_header(colors));
+        .child(field_selection_header(colors));
 
     let mut list = div()
         .flex_1()
@@ -345,7 +345,7 @@ fn create_table_foreign_key_referenced_fields_table(
                 list = list.child(create_table_foreign_key_fields_empty("目标表暂无字段", colors));
             }
             LoadState::Loaded(_) => {
-                for field in create_table_ordered_referenced_field_options(&draft.columns, options)
+                for field in ordered_unique_field_options(&draft.columns, options)
                 {
                     list = list.child(create_table_foreign_key_referenced_field_option(
                         view.clone(),
@@ -362,37 +362,6 @@ fn create_table_foreign_key_referenced_fields_table(
 
     table = table.child(list);
     table
-}
-
-fn create_table_foreign_key_referenced_fields_header(colors: UiColors) -> Div {
-    div()
-        .h(px(30.))
-        .flex_none()
-        .bg(colors.panel_alt)
-        .border_b_1()
-        .border_color(colors.border_soft)
-        .flex()
-        .items_center()
-        .text_size(px(13.))
-        .font_weight(gpui::FontWeight::SEMIBOLD)
-        .text_color(colors.muted)
-        .child(
-            div()
-                .w(px(42.))
-                .h_full()
-                .border_r_1()
-                .border_color(colors.border_soft),
-        )
-        .child(
-            div()
-                .flex_1()
-                .min_w(px(0.))
-                .h_full()
-                .px_2()
-                .flex()
-                .items_center()
-                .child("名称"),
-        )
 }
 
 fn create_table_foreign_key_referenced_field_option(
@@ -518,24 +487,6 @@ fn create_table_foreign_key_referenced_fields_draft(
             columns: foreign_key.referenced_columns.clone(),
             selected_field: foreign_key.referenced_columns.first().cloned(),
         })
-}
-
-fn create_table_ordered_referenced_field_options(
-    selected_columns: &[String],
-    options: Vec<String>,
-) -> Vec<String> {
-    let mut ordered = Vec::new();
-    for column in selected_columns {
-        if !ordered.iter().any(|field| field == column) {
-            ordered.push(column.clone());
-        }
-    }
-    for option in options {
-        if !ordered.iter().any(|field| field == &option) {
-            ordered.push(option);
-        }
-    }
-    ordered
 }
 
 fn create_table_apply_foreign_key_referenced_fields_draft(

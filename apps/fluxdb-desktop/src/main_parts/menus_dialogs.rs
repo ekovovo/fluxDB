@@ -1,7 +1,7 @@
 // Included in crate-root scope by ../main.rs; grouped by menu and dialog responsibility.
 
 include!("menus_dialogs/context_menus.rs");
-include!("menus_dialogs/table_rename.rs");
+include!("menus_dialogs/table_name_form.rs");
 include!("menus_dialogs/table_copy.rs");
 include!("menus_dialogs/table_danger.rs");
 include!("menus_dialogs/row_viewer.rs");
@@ -18,7 +18,6 @@ include!("menus_dialogs/sql_file_execution.rs");
 include!("menus_dialogs/data_export.rs");
 include!("menus_dialogs/database_backup.rs");
 include!("menus_dialogs/database_backup/ui.rs");
-include!("menus_dialogs/subprocess.rs");
 include!("menus_dialogs/menu_items.rs");
 
 include!("menus_dialogs/native_sql_transport.rs");

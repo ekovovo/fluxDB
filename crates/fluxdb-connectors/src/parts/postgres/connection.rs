@@ -245,7 +245,7 @@ async fn pg_connect_session(config: &ConnectionConfig, database: &str, limited: 
 /// 按需设置会话 search_path，返回实际生效的 schema 串（None = 未设置，保留服务器默认）。
 ///
 /// SET 是 utility 语句，不接受 `$n` 参数（服务端会报 syntax error at or near "$1"），
-/// 故按标识符转义后拼装；schema 名一律经 `pg_quote_identifier`，不裸拼用户输入。
+/// 故按标识符转义后拼装；schema 名一律经 `SqlDialect::quote_identifier`，不裸拼用户输入。
 /// 支持逗号分隔的多段顺序（如 `a,public`）。
 async fn pg_apply_search_path(
     client: &tokio_postgres::Client,
@@ -255,7 +255,7 @@ async fn pg_apply_search_path(
         .split(',')
         .map(str::trim)
         .filter(|schema| !schema.is_empty())
-        .map(pg_quote_identifier)
+        .map(|value| fluxdb_core::PostgresDialect.quote_identifier(value))
         .collect::<Vec<_>>()
         .join(", ");
     if path.is_empty() {

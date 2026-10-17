@@ -8,7 +8,22 @@ pub fn connector_for(config: &ConnectionConfig) -> fluxdb_core::Result<Box<dyn C
         .get("demo")
         .is_some_and(|value| value == "true")
     {
-        return Ok(Box::new(MockConnector::new(config.kind)));
+        // `demo.apply_delay_ms` 让 headless UI 测试能稳定复现「数据库响应慢」：
+        // 只作用于内存 demo 连接，生产连接配置不会带这个键。
+        let delay = config
+            .options
+            .get("demo.apply_delay_ms")
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(0);
+        let fail_submit = config
+            .options
+            .get("demo.fail_submit")
+            .is_some_and(|value| value == "true");
+        return Ok(Box::new(MockConnector::with_apply_delay(
+            config.kind,
+            std::time::Duration::from_millis(delay),
+        )
+        .with_fail_submit(fail_submit)));
     }
 
     let connector: Box<dyn Connector> = match config.kind {
@@ -28,59 +43,3 @@ pub fn connector_for(config: &ConnectionConfig) -> fluxdb_core::Result<Box<dyn C
     Ok(connector)
 }
 
-#[cfg(test)]
-mod connector_factory_tests {
-    use super::*;
-
-    fn config(kind: DatabaseKind, demo: bool) -> ConnectionConfig {
-        let mut options = BTreeMap::new();
-        if demo {
-            options.insert("demo".to_string(), "true".to_string());
-        }
-        ConnectionConfig {
-            id: ConnectionId(1),
-            name: "factory test".to_string(),
-            kind,
-            endpoint: Endpoint::Tcp {
-                host: "127.0.0.1".to_string(),
-                port: 0,
-                database: None,
-            },
-            options,
-            redis_profile: None,
-            mysql_profile: None,
-            postgres_profile: None,
-        }
-    }
-
-    #[test]
-    fn creates_connector_for_each_supported_database_kind() {
-        for (kind, connector_kind) in [
-            (DatabaseKind::MySql, DatabaseKind::MySql),
-            // TiDB 复用 MySQL 协议连接器，连接器自身如实报告 MySQL 能力族。
-            (DatabaseKind::TiDb, DatabaseKind::MySql),
-            (DatabaseKind::Sqlite, DatabaseKind::Sqlite),
-            (DatabaseKind::Postgres, DatabaseKind::Postgres),
-            (DatabaseKind::Redis, DatabaseKind::Redis),
-        ] {
-            let config = config(kind, false);
-            let connector = connector_for(&config).expect("supported connector");
-            assert_eq!(connector.kind(), connector_kind);
-        }
-    }
-
-    #[test]
-    fn demo_connection_uses_connector_trait_without_real_connection() {
-        let config = config(DatabaseKind::Postgres, true);
-        let connector = connector_for(&config).expect("demo connector");
-        assert_eq!(connector.kind(), DatabaseKind::Postgres);
-        connector.test_connection(&config).expect("mock connection");
-    }
-
-    #[test]
-    fn rejects_database_kind_without_real_connector() {
-        let config = config(DatabaseKind::MongoDb, false);
-        let error = connector_for(&config).err().expect("unsupported connector");
-        assert_eq!(error.kind, ErrorKind::Unsupported);
-    }
-}

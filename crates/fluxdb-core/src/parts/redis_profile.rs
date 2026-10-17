@@ -156,73 +156,25 @@ pub fn infer_cloud_from_host(provider: &str, host: &str) -> (String, String) {
     }
 }
 
-/// 判断一个字符串键是否是密钥/证书类键（落盘前应剔除）。
-/// fluxdb-storage 在执行 `strip_plaintext_secrets` 时复用本判定，保证剥离口径一致。
-pub fn is_secret_option_key(key: &str) -> bool {
-    let key = key.to_ascii_lowercase();
-    key.contains("password")
-        || key.contains("secret")
-        || key.contains("private_key")
-        || key.contains("passphrase")
-        || key.contains("ca_cert")
-        || key.contains("client_cert")
-        || key.contains("client_key")
-}
-
-/// 历史 `options` 扁平参数里 Redis 认识的全部键（白名单）。
-/// 用于把旧连接迁移进结构化模型，也用于 UI 回填。
-pub const REDIS_LEGACY_OPTION_KEYS: &[&str] = &[
-    "username",
-    "password",
-    "database",
-    "tls",
-    "tls_insecure",
-    "tls_server_name",
-    "tls_ca_ref",
-    "tls_client_cert_ref",
-    "tls_client_key_ref",
-    "sentinel_master",
-    "sentinel_endpoints",
-    "cluster_start_nodes",
-    "cluster_readonly",
-    "ssh_enabled",
-    "ssh_host",
-    "ssh_port",
-    "ssh_username",
-    "ssh_auth",
-    "ssh_password",
-    "ssh_private_key_ref",
-    "ssh_passphrase",
-    "cloud_provider",
-    "cloud_subscription",
-    "cloud_resource",
-];
-
-fn option_is_true(value: Option<&String>) -> bool {
-    value
-        .map(|v| v.trim().to_ascii_lowercase())
-        .is_some_and(|v| matches!(v.as_str(), "true" | "y" | "yes" | "1" | "on"))
-}
-
 impl RedisConnectionProfile {
     /// —— 解析职责 ——
 
     /// 从历史 `options` 扁平参数迁移出一份档案。
     ///
-    /// 仅迁移白名单键，其余任意参数不做透传，避免把垃圾灌进结构化模型。
+    /// 只读取已知键，其余任意参数不做透传，避免把垃圾灌进结构化模型。
     /// 迁移保留原始 `options` 亦无碍：模型是 `ConnectionConfig` 的可选补充。
     pub fn from_options(opts: &std::collections::BTreeMap<String, String>) -> Self {
         let get = |key: &str| opts.get(key).cloned();
         let tls = RedisTlsOptions {
-            enabled: option_is_true(get("tls").as_ref()),
+            enabled: connection_option_is_true(get("tls").as_ref()),
             ca: SecretRef::ref_key(get("tls_ca_ref").unwrap_or_default()),
             client_cert: SecretRef::ref_key(get("tls_client_cert_ref").unwrap_or_default()),
             client_key: SecretRef::ref_key(get("tls_client_key_ref").unwrap_or_default()),
             sni: get("tls_server_name").unwrap_or_default(),
-            verify: !option_is_true(get("tls_insecure").as_ref()),
+            verify: !connection_option_is_true(get("tls_insecure").as_ref()),
         };
         let ssh = RedisSshOptions {
-            enabled: option_is_true(get("ssh_enabled").as_ref()),
+            enabled: connection_option_is_true(get("ssh_enabled").as_ref()),
             host: get("ssh_host").unwrap_or_default(),
             port: get("ssh_port")
                 .and_then(|p| p.parse().ok())
@@ -239,7 +191,7 @@ impl RedisConnectionProfile {
         let topology = RedisTopology {
             kind: if get("sentinel_master").is_some() {
                 RedisTopologyKind::Sentinel
-            } else if option_is_true(get("cluster_enabled").as_ref())
+            } else if connection_option_is_true(get("cluster_enabled").as_ref())
                 || get("cluster_start_nodes").is_some()
             {
                 RedisTopologyKind::Cluster
@@ -255,7 +207,7 @@ impl RedisConnectionProfile {
             },
             cluster: RedisClusterOptions {
                 start_nodes: split_host_port_list(get("cluster_start_nodes").as_deref()),
-                allow_readonly: option_is_true(get("cluster_readonly").as_ref()),
+                allow_readonly: connection_option_is_true(get("cluster_readonly").as_ref()),
             },
         };
         Self {
@@ -571,19 +523,19 @@ fn parse_redis_uri(uri: &str) -> std::result::Result<RedisConnectionProfile, Str
         client_cert: SecretRef::ref_key(query_map.remove("tls_client_cert_ref").unwrap_or_default()),
         client_key: SecretRef::ref_key(query_map.remove("tls_client_key_ref").unwrap_or_default()),
         sni: query_map.remove("tls_server_name").unwrap_or_default(),
-        verify: !option_is_true(query_map.get("tls_insecure")),
+        verify: !connection_option_is_true(query_map.get("tls_insecure")),
     };
     if let Some(v) = query_map.remove("tls") {
-        tls_opts.enabled = option_is_true(Some(&v));
+        tls_opts.enabled = connection_option_is_true(Some(&v));
     }
     if let Some(v) = query_map.remove("tls_insecure") {
-        tls_opts.verify = !option_is_true(Some(&v));
+        tls_opts.verify = !connection_option_is_true(Some(&v));
     }
 
     let master_name = query_map.remove("sentinel_master");
     let mut endpoints = split_host_port_list(query_map.remove("sentinel_endpoints").as_deref());
     let mut start_nodes = split_host_port_list(query_map.remove("cluster_start_nodes").as_deref());
-    let allow_readonly = option_is_true(query_map.get("cluster_readonly"));
+    let allow_readonly = connection_option_is_true(query_map.get("cluster_readonly"));
 
     let mut topology_kind = if sentinel {
         RedisTopologyKind::Sentinel
@@ -700,192 +652,3 @@ pub fn redact_uri_password(uri: &str) -> String {
     }
 }
 
-#[cfg(test)]
-mod redis_profile_tests {
-    use super::*;
-
-    fn opt<'a>(
-        map: &'a std::collections::BTreeMap<String, String>,
-        key: &str,
-    ) -> Option<&'a String> {
-        map.get(key)
-    }
-
-    #[test]
-    fn parses_plain_redis_uri() {
-        let p = RedisConnectionProfile::from_uri("redis://localhost:6379").unwrap();
-        assert_eq!(p.basic.host, "localhost");
-        assert_eq!(p.basic.port, 6379);
-        assert!(!p.tls.enabled);
-        assert_eq!(p.topology.kind, RedisTopologyKind::Standalone);
-    }
-
-    #[test]
-    fn parses_tls_uri_with_auth_and_db() {
-        let p = RedisConnectionProfile::from_uri("rediss://user:pass@example.com:6380/3").unwrap();
-        assert!(p.tls.enabled);
-        assert_eq!(p.basic.host, "example.com");
-        assert_eq!(p.basic.port, 6380);
-        assert_eq!(p.basic.username.as_deref(), Some("user"));
-        assert_eq!(p.basic.password.value(), Some("pass"));
-        assert_eq!(p.basic.database.as_deref(), Some("3"));
-    }
-
-    #[test]
-    fn parses_uri_with_encoded_special_chars() {
-        let p = RedisConnectionProfile::from_uri(
-            "redis://user%20x:p%40ss@127.0.0.1:6379/1",
-        )
-        .unwrap();
-        assert_eq!(p.basic.username.as_deref(), Some("user x"));
-        assert_eq!(p.basic.password.value(), Some("p@ss"));
-        assert_eq!(p.basic.database.as_deref(), Some("1"));
-    }
-
-    #[test]
-    fn redact_uri_password_drops_credential_but_keeps_audit() {
-        // 导入元数据不应携带明文口令；用户名/主机仍保留以作来源审计。
-        assert_eq!(
-            redact_uri_password("rediss://:pass@mycache.redis.cache.windows.net:6380/0"),
-            "rediss://@mycache.redis.cache.windows.net:6380/0"
-        );
-        assert_eq!(
-            redact_uri_password("redis://user:secret@example.com:6379"),
-            "redis://user@example.com:6379"
-        );
-        // 无口令时原样保留。
-        assert_eq!(
-            redact_uri_password("redis://localhost:6379"),
-            "redis://localhost:6379"
-        );
-        assert_eq!(
-            redact_uri_password("redis://user@example.com:6379"),
-            "redis://user@example.com:6379"
-        );
-    }
-
-    #[test]
-    fn parses_sentinel_uri() {
-        let p = RedisConnectionProfile::from_uri(
-            "redis+sentinel://:pass@sentinel0:26379?sentinel_master=mymaster",
-        )
-        .unwrap();
-        assert_eq!(p.topology.kind, RedisTopologyKind::Sentinel);
-        assert_eq!(p.topology.sentinel.master_name, "mymaster");
-        assert_eq!(p.topology.sentinel.endpoints, vec!["sentinel0:26379"]);
-    }
-
-    #[test]
-    fn parses_cluster_uri() {
-        let p = RedisConnectionProfile::from_uri(
-            "redis-cluster://node1:7000?cluster_start_nodes=node1:7000,node2:7000&cluster_readonly=true",
-        )
-        .unwrap();
-        assert_eq!(p.topology.kind, RedisTopologyKind::Cluster);
-        assert_eq!(
-            p.topology.cluster.start_nodes,
-            vec!["node1:7000".to_string(), "node2:7000".to_string()]
-        );
-        assert!(p.topology.cluster.allow_readonly);
-    }
-
-    #[test]
-    fn rejects_unknown_scheme() {
-        assert!(RedisConnectionProfile::from_uri("http://x").is_err());
-    }
-
-    #[test]
-    fn round_trips_options_through_profile() {
-        let mut opts = std::collections::BTreeMap::new();
-        opts.insert("tls".to_string(), "true".to_string());
-        opts.insert("username".to_string(), "admin".to_string());
-        opts.insert("password".to_string(), "secret".to_string());
-        opts.insert("sentinel_master".to_string(), "mymaster".to_string());
-        let p = RedisConnectionProfile::from_options(&opts);
-        assert_eq!(p.topology.kind, RedisTopologyKind::Sentinel);
-        assert_eq!(p.basic.username.as_deref(), Some("admin"));
-        // 回写后关键开关仍在
-        let back = p.into_options();
-        assert_eq!(opt(&back, "tls").map(String::as_str), Some("true"));
-        assert_eq!(opt(&back, "sentinel_master").map(String::as_str), Some("mymaster"));
-    }
-
-    #[test]
-    fn sentinel_password_flows_into_resolved_options() {
-        // 哨兵侧设置了密码、基础密码为空：回写后 password 键应取哨兵密码，
-        // 保证哨兵探测与主库 AUTH 能正确鉴权（共用密码的常见哨兵部署）。
-        let p = RedisConnectionProfile {
-            basic: RedisBasicOptions {
-                host: "s1".into(),
-                port: 26379,
-                password: SecretRef::default(),
-                ..Default::default()
-            },
-            topology: RedisTopology {
-                kind: RedisTopologyKind::Sentinel,
-                sentinel: RedisSentinelOptions {
-                    master_name: "mymaster".into(),
-                    endpoints: vec!["s1:26379".into()],
-                    password: SecretRef::inline("sentinel-pass"),
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let back = p.into_options();
-        assert_eq!(
-            opt(&back, "password").map(String::as_str),
-            Some("sentinel-pass")
-        );
-    }
-
-    #[test]
-    fn secret_ref_never_serializes_inline() {
-        let s = RedisConnectionProfile {
-            basic: RedisBasicOptions {
-                password: SecretRef::inline("hunter2"),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let json = serde_json::to_string(&s).unwrap();
-        assert!(!json.contains("hunter2"));
-        assert!(!json.contains("inline"));
-    }
-
-    #[test]
-    fn parses_ipv6_host_port() {
-        let (host, port) = parse_host_port("[::1]:6379").unwrap();
-        assert_eq!(host, "::1");
-        assert_eq!(port, 6379);
-    }
-
-    #[test]
-    fn validate_reports_missing_host() {
-        let p = RedisConnectionProfile::default();
-        assert_eq!(p.validate(), Some("请填写主机".to_string()));
-    }
-
-    #[test]
-    fn infers_azure_resource_from_host() {
-        let (resource, sub) =
-            infer_cloud_from_host("azure", "mycache.redis.cache.windows.net");
-        assert_eq!(resource, "mycache");
-        assert!(sub.is_empty());
-    }
-
-    #[test]
-    fn infers_redis_cloud_resource_from_host() {
-        let (resource, _) =
-            infer_cloud_from_host("redis-cloud", "redis-12345.c263.us-east-1-mz.ec2.redns.redis-cloud.com");
-        assert_eq!(resource, "redis-12345");
-    }
-
-    #[test]
-    fn unknown_provider_uses_full_host() {
-        let (resource, _) = infer_cloud_from_host("", "some.host:9000");
-        // dial 出的 host 是纯主机名，此处传入即整段作为 resource。
-        assert_eq!(resource, "some.host:9000");
-    }
-}

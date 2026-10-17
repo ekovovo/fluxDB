@@ -16,6 +16,103 @@
 // Mutex 已由 lib.rs / 其它 redis 子模块导入，此处仅补充 Arc（crate-root 未导入）。
 use std::sync::Arc;
 
+/// 有界订阅的收集上限（供 AI 工具等一次性调用场景使用）。
+///
+/// 与 `RedisPubSubSession` 的交互式长订阅不同，本收集**在返回前必然收工**：到达任一
+/// 上限就主动退订并断开连接，不会把 socket 挂成长会话。
+#[derive(Clone, Copy, Debug)]
+pub struct RedisSubscriptionLimits {
+    /// 最长订阅时长；到期即退订返回。
+    pub max_duration: Duration,
+    /// 最多收集多少条消息。
+    pub max_messages: usize,
+    /// 最多收集多少字节消息载荷。
+    pub max_payload_bytes: usize,
+    /// 单条消息的读回预算（防止一条巨型消息在分配时就超限）。
+    pub read_budget: RedisReadBudget,
+}
+
+impl Default for RedisSubscriptionLimits {
+    fn default() -> Self {
+        Self {
+            max_duration: Duration::from_secs(10),
+            max_messages: 100,
+            max_payload_bytes: 64 * 1024,
+            read_budget: RedisReadBudget::default(),
+        }
+    }
+}
+
+/// 有界订阅的收工原因。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RedisSubscriptionStop {
+    /// 到达消息数上限。
+    MessageLimit,
+    /// 到达载荷字节上限。
+    ByteLimit,
+    /// 到达订阅时限（未收满）。
+    TimeLimit,
+    /// 调用方请求停止；只表示客户端停止接收，不宣称服务端已撤销。
+    Canceled,
+}
+
+impl RedisSubscriptionStop {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RedisSubscriptionStop::MessageLimit => "message_limit",
+            RedisSubscriptionStop::ByteLimit => "byte_limit",
+            RedisSubscriptionStop::TimeLimit => "time_limit",
+            RedisSubscriptionStop::Canceled => "canceled",
+        }
+    }
+}
+
+/// 有界订阅收集结果。
+#[derive(Clone, Debug, Default)]
+pub struct RedisSubscriptionCollect {
+    /// 订阅成功的通道/pattern（按请求顺序）。
+    pub channels: Vec<String>,
+    /// 收到的消息（已受条数与字节上限约束）。
+    pub messages: Vec<PubSubMessage>,
+    /// 服务端协议层错误（不终止收集；连接已不可信时会在读取阶段返回 Err）。
+    pub errors: Vec<String>,
+    /// 收工原因；None 表示全部订阅自然结束（收到过 unsubscribe 确认）。
+    pub stop: Option<RedisSubscriptionStop>,
+    /// 实际收工耗时。
+    pub elapsed: Duration,
+}
+
+/// 一次订阅请求：一个通道名，配合 `pattern` 决定走 PSUBSCRIBE 还是 SUBSCRIBE。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RedisSubscriptionRequest {
+    pub pattern: bool,
+    pub channel: String,
+}
+
+impl RedisSubscriptionRequest {
+    pub fn new(channel: impl Into<String>) -> Self {
+        Self {
+            pattern: false,
+            channel: channel.into(),
+        }
+    }
+
+    pub fn pattern(channel: impl Into<String>) -> Self {
+        Self {
+            pattern: true,
+            channel: channel.into(),
+        }
+    }
+
+    fn command(&self) -> &'static str {
+        if self.pattern {
+            "PSUBSCRIBE"
+        } else {
+            "SUBSCRIBE"
+        }
+    }
+}
+
 /// Pub/Sub 命令入队：从多线程（UI 线程）把待发命令写进共享队列，
 /// 由 `poll` 所在的读取线程统一写出，避免 socket 读写竞态。
 type CommandQueue = Arc<Mutex<Vec<String>>>;
@@ -227,56 +324,16 @@ impl RedisPubSubSession {
 
     /// 把一条 RESP 值分类为订阅事件 / 消息 / 发布结果 / 错误。
     fn classify(&self, value: RedisValue, outcome: &mut PubSubPollOutcome) {
-        let RedisValue::Array(items) = value else {
-            self.classify_scalar(value, outcome);
-            return;
-        };
-        let mut iter = items.into_iter();
-        let Some(RedisValue::Bulk(Some(kind_bytes))) = iter.next() else {
-            return;
-        };
-        let kind = String::from_utf8_lossy(&kind_bytes).to_string();
-        match kind.as_str() {
-            "subscribe" | "psubscribe" | "unsubscribe" | "punsubscribe" => {
-                let pattern = kind.starts_with('p');
-                let subscribed = kind.starts_with("sub");
-                let channel = next_text(&mut iter).unwrap_or_default();
-                let count = next_int(&mut iter);
-                outcome.subscriptions.push(PubSubSubscriptionEvent {
-                    pattern,
-                    subscribed,
-                    channel,
-                    count,
-                });
-            }
-            "message" => {
-                let Some(channel) = next_text(&mut iter) else { return };
-                let Some(payload) = next_bulk(&mut iter) else { return };
-                outcome.messages.push(PubSubMessage {
-                    pattern: None,
-                    channel,
-                    payload,
-                });
-            }
-            "pmessage" => {
-                let Some(pattern) = next_text(&mut iter) else { return };
-                let Some(channel) = next_text(&mut iter) else { return };
-                let Some(payload) = next_bulk(&mut iter) else { return };
-                outcome.messages.push(PubSubMessage {
-                    pattern: Some(pattern),
-                    channel,
-                    payload,
-                });
-            }
-            _ => {
-                // 其它未知回包：保留原始文本以便排查，但不打断会话。
-                outcome.errors.push(format!("未知 Pub/Sub 回包类型: {kind}"));
-            }
-        }
+        redis_classify_pubsub_value(value, outcome);
     }
+}
 
-    /// 处理单个标量值（主要承载 `PUBLISH` 的整数回包）。
-    fn classify_scalar(&self, value: RedisValue, outcome: &mut PubSubPollOutcome) {
+/// 把一条 RESP 值分类为订阅事件 / 消息 / 发布结果 / 错误。
+///
+/// 交互式会话（`RedisPubSubSession`）与一次性有界收集共用同一套解析，避免两条路径
+/// 对同一种 push 回包产生不同理解。
+fn redis_classify_pubsub_value(value: RedisValue, outcome: &mut PubSubPollOutcome) {
+    let RedisValue::Array(items) = value else {
         match value {
             RedisValue::Int(count) => {
                 // PUBLISH 回包：数量本身即「订阅者数」，通道名在命令端已知（UI 层回填）。
@@ -290,7 +347,157 @@ impl RedisPubSubSession {
             }
             _ => {}
         }
+        return;
+    };
+    let mut iter = items.into_iter();
+    let Some(RedisValue::Bulk(Some(kind_bytes))) = iter.next() else {
+        return;
+    };
+    let kind = String::from_utf8_lossy(&kind_bytes).to_string();
+    match kind.as_str() {
+        "subscribe" | "psubscribe" | "unsubscribe" | "punsubscribe" | "ssubscribe"
+        | "sunsubscribe" => {
+            let pattern = kind.starts_with('p');
+            let subscribed = kind.starts_with("sub");
+            let channel = next_text(&mut iter).unwrap_or_default();
+            let count = next_int(&mut iter);
+            outcome.subscriptions.push(PubSubSubscriptionEvent {
+                pattern,
+                subscribed,
+                channel,
+                count,
+            });
+        }
+        "message" => {
+            let Some(channel) = next_text(&mut iter) else { return };
+            let Some(payload) = next_bulk(&mut iter) else { return };
+            outcome.messages.push(PubSubMessage {
+                pattern: None,
+                channel,
+                payload,
+            });
+        }
+        "pmessage" => {
+            let Some(pattern) = next_text(&mut iter) else { return };
+            let Some(channel) = next_text(&mut iter) else { return };
+            let Some(payload) = next_bulk(&mut iter) else { return };
+            outcome.messages.push(PubSubMessage {
+                pattern: Some(pattern),
+                channel,
+                payload,
+            });
+        }
+        _ => {
+            // 其它未知回包：保留原始文本以便排查，但不打断会话。
+            outcome.errors.push(format!("未知 Pub/Sub 回包类型: {kind}"));
+        }
     }
+}
+
+/// 有界订阅：在返回前必然收工的一次性订阅收集（AI 工具用）。
+///
+/// 与 `RedisPubSubSession` 的交互式长订阅不同，这里不允许把 socket 挂成长会话：
+/// 发完 `SUBSCRIBE` 后持续读 push 消息，命中任一上限（条数 / 字节 / 时限）或调用方
+/// 取消就退订并断开连接。连接专用、不入池——订阅态连接不能被普通命令复用。
+///
+/// `should_stop` 由调用方提供（AI 工具传 `ctx.cancel.is_cancelled()`）。
+///
+/// 读超时策略：单次读用 `poll_timeout` 判定"暂无消息"，让取消响应粒度等于一次轮询；
+/// 临近时限时不再发起新一轮读，避免超出 `max_duration` 太多。
+fn redis_collect_subscription(
+    config: &ConnectionConfig,
+    database: u32,
+    requests: &[RedisSubscriptionRequest],
+    limits: RedisSubscriptionLimits,
+    should_stop: &dyn Fn() -> bool,
+) -> fluxdb_core::Result<RedisSubscriptionCollect> {
+    if requests.is_empty() {
+        return Err(Error::new(
+            ErrorKind::Query,
+            "订阅至少需要一个通道或 pattern",
+        ));
+    }
+    for request in requests {
+        if request.channel.is_empty() {
+            return Err(Error::new(ErrorKind::Query, "订阅通道名不能为空"));
+        }
+    }
+    let started_at = Instant::now();
+    // 订阅连接专用：不经连接池，随本函数结束 drop 关闭。
+    let mut connection = redis_new_connection(config)?;
+    redis_select(&mut connection, database)?;
+
+    let mut collected = RedisSubscriptionCollect::default();
+    // 一次性写出全部订阅命令，后续只读回包。
+    for request in requests {
+        write_command_args(
+            &mut connection,
+            &[request.command(), request.channel.as_str()],
+        )?;
+    }
+
+    const POLL_INTERVAL: Duration = Duration::from_millis(100);
+    let mut payload_bytes = 0usize;
+    loop {
+        // Plain 直连可改底层读超时，用短超时把「暂无消息」与「还在收」区分开。
+        connection
+            .reader
+            .get_mut()
+            .set_read_timeout(Some(POLL_INTERVAL))
+            .map_err(redis_io_error)?;
+        loop {
+            match redis_read_value_with_budget(&mut connection.reader, limits.read_budget) {
+                Ok(value) => {
+                    let mut outcome = PubSubPollOutcome::default();
+                    redis_classify_pubsub_value(value, &mut outcome);
+                    // 订阅确认按到达顺序登记通道（含退订确认的负向变化）。
+                    for event in &outcome.subscriptions {
+                        if event.subscribed {
+                            collected.channels.push(event.channel.clone());
+                        }
+                    }
+                    for message in outcome.messages {
+                        if payload_bytes >= limits.max_payload_bytes {
+                            collected.stop = Some(RedisSubscriptionStop::ByteLimit);
+                            break;
+                        }
+                        payload_bytes += message.payload.len();
+                        collected.messages.push(message);
+                    }
+                    collected.errors.extend(outcome.errors);
+                    if collected.stop.is_some()
+                        || collected.messages.len() >= limits.max_messages
+                    {
+                        break;
+                    }
+                }
+                Err(error) if is_read_timeout(&error) => break,
+                Err(error) => return Err(error),
+            }
+        }
+        if collected.stop.is_some() {
+            break;
+        }
+        if collected.messages.len() >= limits.max_messages {
+            collected.stop = Some(RedisSubscriptionStop::MessageLimit);
+            break;
+        }
+        if payload_bytes >= limits.max_payload_bytes {
+            collected.stop = Some(RedisSubscriptionStop::ByteLimit);
+            break;
+        }
+        if should_stop() {
+            collected.stop = Some(RedisSubscriptionStop::Canceled);
+            break;
+        }
+        // 临近时限不再发起新一轮读，避免收工时间明显超出 max_duration。
+        if started_at.elapsed() + POLL_INTERVAL >= limits.max_duration {
+            collected.stop = Some(RedisSubscriptionStop::TimeLimit);
+            break;
+        }
+    }
+    collected.elapsed = started_at.elapsed();
+    Ok(collected)
 }
 
 /// 下一项按文本解码。

@@ -207,6 +207,26 @@ impl Connector for MySqlConnector {
         mysql_execute_query_with_progress(config, request, on_summary, should_cancel)
     }
 
+    fn execute_parameterized(
+        &self,
+        request: &fluxdb_core::ParameterizedQueryRequest,
+    ) -> fluxdb_core::Result<QueryExecutionResult> {
+        let Some(config) = self.config.as_ref() else {
+            return Err(Error::new(
+                ErrorKind::Connection,
+                "MySQL SQL 执行需要连接配置上下文",
+            ));
+        };
+        tracing::info!(
+            target: "fluxdb_connectors",
+            connection_id = ?request.request.connection_id,
+            bind_count = request.parameters.len(),
+            sql = %truncate_sql_for_log(&request.request.text),
+            "MySQL 参数化执行开始"
+        );
+        mysql_execute_parameterized(config, &request.request, &request.parameters)
+    }
+
     fn list_completion_tables(
         &self,
         database: Option<&str>,

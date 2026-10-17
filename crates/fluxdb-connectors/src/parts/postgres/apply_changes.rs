@@ -3,7 +3,7 @@
 // 对齐 mysql/sqlite：删 → 更新 → 插入，单事务内执行，任何一步失败整体回滚。
 // `pg_connect` 每次拨一条全新连接（非注册表复用），因此在本会话上 `BEGIN…COMMIT`
 // 不会与其它请求串事务；语句经 `&Client` 顺序执行，错误时 `ROLLBACK` 兜底。
-// PG 不经过 sqlx QueryBuilder：SQL 自行拼接，值一律 `$n` 参数化绑定，标识符 `pg_quote_identifier`。
+// PG 不经过 sqlx QueryBuilder：SQL 自行拼接，值一律 `$n` 参数化绑定，标识符 `SqlDialect::quote_identifier`。
 // 二进制（bytea）写入以 `Vec<u8>` 直接绑定；Hex 编辑回写前由 app 转成 `CellValue::Bytes`。
 
 /// 把 tokio-postgres/PG 服务端错误转成可读文本。
@@ -179,7 +179,7 @@ async fn pg_apply_inserts(
         }
         let returning = primary_keys
             .iter()
-            .map(|(name, _)| format!("{}::text", pg_quote_identifier(name)))
+            .map(|(name, _)| format!("{}::text", fluxdb_core::PostgresDialect.quote_identifier(name)))
             .collect::<Vec<_>>()
             .join(", ");
         let sql = format!("{sql} RETURNING {returning}");
@@ -283,7 +283,7 @@ fn pg_insert_sql(
     let mut params: Vec<Box<dyn ToSql + Sync>> = Vec::new();
     let column_list = values
         .iter()
-        .map(|(column, _)| pg_quote_identifier(&column.name))
+        .map(|(column, _)| fluxdb_core::PostgresDialect.quote_identifier(&column.name))
         .collect::<Vec<_>>()
         .join(", ");
     let placeholders = values
@@ -313,7 +313,7 @@ fn pg_update_sql(
                 .ok_or_else(|| Error::new(ErrorKind::Query, "更新引用了不存在的列"))?;
             Ok(format!(
                 "{} = {}",
-                pg_quote_identifier(&cell.column),
+                fluxdb_core::PostgresDialect.quote_identifier(&cell.column),
                 pg_bind_sql(&mut params, col, &cell.value)
             ))
         })
@@ -338,7 +338,7 @@ fn pg_identity_where(
         if !columns.iter().any(|col| &col.name == column) {
             return Err(Error::new(ErrorKind::Query, "行身份引用了不存在的列"));
         }
-        let quoted = pg_quote_identifier(column);
+        let quoted = fluxdb_core::PostgresDialect.quote_identifier(column);
         if matches!(value, CellValue::Null) {
             clauses.push(format!("{quoted} IS NULL"));
         } else {

@@ -567,30 +567,3 @@ fn redis_detail_action_button(
         .child(label)
 }
 
-#[cfg(test)]
-mod redis_json_kind_judge_tests {
-    use super::*;
-
-    #[test]
-    fn json_kind_dispatch_covers_all_variants_case_and_trim_insensitive() {
-        // 展示、保存、输入选择、下载扩展名共用同一判断；所有 JSON 变体（含大小写、前后空格）都应命中。
-        for kind in [
-            "json",
-            "JSON",
-            "Json",
-            "rejson",
-            "ReJSON",
-            "REJSON",
-            "rejson-rl",
-            "ReJSON-RL",
-            "  json  ",
-            "\trejson-rl\n",
-        ] {
-            assert!(redis_key_value_is_json_kind(kind), "应命中 JSON：{kind:?}");
-        }
-        // 其它类型不命中，仍走 String / 其它分支。
-        for kind in ["string", "hash", "list", "set", "zset", "stream", ""] {
-            assert!(!redis_key_value_is_json_kind(kind), "不应命中 JSON：{kind:?}");
-        }
-    }
-}

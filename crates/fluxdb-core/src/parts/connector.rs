@@ -225,6 +225,38 @@ pub trait Connector {
     }
     fn apply_changes(&self, changes: &DataChangeSet) -> Result<AppliedChangeOutcome>;
     fn execute(&self, request: &QueryRequest) -> Result<QueryExecutionResult>;
+
+    /// 是否具备有界写入能力：执行时能在事务内复核对象与真实影响，超限即回滚。
+    ///
+    /// 这是**连接能力**声明，与 SQL 形状无关；写入风险评审据此决定自动放行时
+    /// 走有界提交还是普通写入。默认 false，只有真正实现的连接器覆盖。
+    fn supports_bounded_write(&self) -> bool {
+        false
+    }
+
+    /// 独立事务内重新验证并提交有界 UPDATE；任何无法证明或超限都回滚。
+    ///
+    /// 复核在提交前完成，因此不提供单独的"预检"入口：预检结果不可信，
+    /// 评分阶段只用 [`Self::supports_bounded_write`] 声明连接能力。
+    fn execute_bounded_update(
+        &self,
+        _request: &ParameterizedQueryRequest,
+        _should_cancel: &dyn Fn() -> bool,
+    ) -> Result<QueryExecutionResult> {
+        Err(Error::new(ErrorKind::Unsupported, "该连接尚不支持有界写入提交"))
+    }
+    /// 参数化执行：**必须**由驱动真实 bind（如 MySQL/SQLite 的 `?`、PostgreSQL 的 `$n`）。
+    ///
+    /// 默认明确拒绝：不支持绑定的连接器绝不能把参数拼进 SQL（字符串插值＝注入面）。
+    fn execute_parameterized(
+        &self,
+        _request: &ParameterizedQueryRequest,
+    ) -> Result<QueryExecutionResult> {
+        Err(Error::new(
+            ErrorKind::Unsupported,
+            "该连接暂不支持参数绑定；请改用内联字面量",
+        ))
+    }
     fn execute_command_workbench(
         &self,
         request: &CommandWorkbenchRequest,

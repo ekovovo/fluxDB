@@ -11,8 +11,8 @@ impl TableActionSqlProvider for MySqlTableActionSqlProvider {
     ) -> Result<String, String> {
         Ok(format!(
             "ALTER TABLE {} RENAME TO {};",
-            quote_mysql_identifier(old_name),
-            quote_mysql_identifier(new_name)
+            fluxdb_core::MySqlDialect.quote_identifier(old_name),
+            fluxdb_core::MySqlDialect.quote_identifier(new_name)
         ))
     }
 
@@ -24,8 +24,8 @@ impl TableActionSqlProvider for MySqlTableActionSqlProvider {
         copy_data: bool,
         _: Option<&str>,
     ) -> Result<String, String> {
-        let source = quote_mysql_identifier(source_name);
-        let target = quote_mysql_identifier(target_name);
+        let source = fluxdb_core::MySqlDialect.quote_identifier(source_name);
+        let target = fluxdb_core::MySqlDialect.quote_identifier(target_name);
         let mut statements = vec![format!("CREATE TABLE {target} LIKE {source};")];
         if copy_data {
             statements.push(format!("INSERT INTO {target} SELECT * FROM {source};"));
@@ -39,7 +39,7 @@ impl TableActionSqlProvider for MySqlTableActionSqlProvider {
         _: Option<&str>,
         table_name: &str,
     ) -> Result<String, String> {
-        Ok(format!("DROP TABLE {};", quote_mysql_identifier(table_name)))
+        Ok(format!("DROP TABLE {};", fluxdb_core::MySqlDialect.quote_identifier(table_name)))
     }
 
     fn truncate_table_sql(
@@ -50,7 +50,7 @@ impl TableActionSqlProvider for MySqlTableActionSqlProvider {
     ) -> Result<String, String> {
         Ok(format!(
             "TRUNCATE TABLE {};",
-            quote_mysql_identifier(table_name)
+            fluxdb_core::MySqlDialect.quote_identifier(table_name)
         ))
     }
 
@@ -75,8 +75,8 @@ impl TableActionSqlProvider for SqliteTableActionSqlProvider {
     ) -> Result<String, String> {
         Ok(format!(
             "ALTER TABLE {} RENAME TO {};",
-            quote_sqlite_identifier(old_name),
-            quote_sqlite_identifier(new_name)
+            fluxdb_core::SqliteDialect.quote_identifier(old_name),
+            fluxdb_core::SqliteDialect.quote_identifier(new_name)
         ))
     }
 
@@ -88,8 +88,8 @@ impl TableActionSqlProvider for SqliteTableActionSqlProvider {
         copy_data: bool,
         source_ddl: Option<&str>,
     ) -> Result<String, String> {
-        let source = quote_sqlite_identifier(source_name);
-        let target = quote_sqlite_identifier(target_name);
+        let source = fluxdb_core::SqliteDialect.quote_identifier(source_name);
+        let target = fluxdb_core::SqliteDialect.quote_identifier(target_name);
         let mut statements = vec![if let Some(source_ddl) = source_ddl {
             sqlite_copy_table_structure_sql(source_ddl, target_name)?
         } else {
@@ -107,7 +107,7 @@ impl TableActionSqlProvider for SqliteTableActionSqlProvider {
         _: Option<&str>,
         table_name: &str,
     ) -> Result<String, String> {
-        Ok(format!("DROP TABLE {};", quote_sqlite_identifier(table_name)))
+        Ok(format!("DROP TABLE {};", fluxdb_core::SqliteDialect.quote_identifier(table_name)))
     }
 
     fn truncate_table_sql(
@@ -116,7 +116,7 @@ impl TableActionSqlProvider for SqliteTableActionSqlProvider {
         table_name: &str,
         _: bool,
     ) -> Result<String, String> {
-        Ok(format!("DELETE FROM {};", quote_sqlite_identifier(table_name)))
+        Ok(format!("DELETE FROM {};", fluxdb_core::SqliteDialect.quote_identifier(table_name)))
     }
 }
 
@@ -174,7 +174,7 @@ fn sqlite_copy_table_structure_sql(source_ddl: &str, target_name: &str) -> Resul
     let name_end = sqlite_create_table_name_end(ddl, name_start)?;
     let mut sql = String::with_capacity(ddl.len() + target_name.len() + 4);
     sql.push_str(&ddl[..name_start]);
-    sql.push_str(&quote_sqlite_identifier(target_name));
+    sql.push_str(&fluxdb_core::SqliteDialect.quote_identifier(target_name));
     sql.push_str(ddl[name_end..].trim_end());
     sql.push(';');
     Ok(sql)

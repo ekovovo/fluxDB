@@ -67,7 +67,7 @@ impl NavicatMain {
 
     /// 打开（或刷新）「执行 SQL 文件」gpui-component Dialog。
     ///
-    /// 已打开时只 `cx.notify()`：`Root::render_dialog_layer` 每帧重跑 builder，内容自然更新。
+    /// 已打开时只 `cx.notify()`：`Root` 插件层的 dialog layer 每帧重跑 builder，内容自然更新。
     /// 主题色在打开时捕获；打开期间切换主题的弹框内颜色不会即时刷新（下一次打开生效）。
     fn open_sql_file_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         {
@@ -795,7 +795,7 @@ impl NavicatMain {
 const SQL_FILE_DIALOG_WIDTH: Pixels = px(600.);
 const SQL_FILE_DIALOG_HEIGHT: Pixels = px(480.);
 
-/// 构建「执行 SQL 文件」Dialog。builder 每帧被 `Root::render_dialog_layer` 重放，
+/// 构建「执行 SQL 文件」Dialog。builder 每帧被 `Root` 插件层的 dialog layer 重放，
 /// 内容快照（form/task）从 Rc 克隆，保证与 NavicatMain 渲染 lease 隔离。
 fn sql_file_build_dialog(
     dialog: Dialog,
@@ -1613,7 +1613,7 @@ fn run_pg_native_psql(
     for (key, value) in &invocation.env {
         cmd.env(key, value);
     }
-    prepare_tree_kill_command(&mut cmd);
+    fluxdb_core::prepare_tree_kill_command(&mut cmd);
     // Windows 下隐藏子进程控制台窗口（SQL 文件执行调用 psql 时避免弹黑框）。
     let mut child = fluxdb_core::no_console(cmd)
         .stdout(Stdio::piped())
@@ -1635,7 +1635,7 @@ fn run_pg_native_psql(
     // 等待期间定期检测取消并 kill；kill 后仍要 wait 回收避免僵尸进程。
     let status = loop {
         if cancel_flag.load(std::sync::atomic::Ordering::Relaxed) {
-            kill_child_tree(&mut child);
+            fluxdb_core::kill_child_tree(&mut child);
             anyhow::bail!("已取消");
         }
         match child.try_wait()? {

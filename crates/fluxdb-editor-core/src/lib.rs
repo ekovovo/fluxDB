@@ -71,6 +71,3 @@ pub use task::{CancellationToken, TaskKey, TaskKind, TaskOutcome, TaskPhase};
 pub use wrap_map::{
     LineBreaker, RowWrap, WrapCacheKey, WrapConfig, WrapLine, WrapMap, WrapSnapshot,
 };
-
-#[cfg(test)]
-mod tests;

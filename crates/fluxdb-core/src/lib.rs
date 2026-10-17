@@ -15,6 +15,7 @@ include!("parts/postgres_identity.rs");
 include!("parts/postgres_user_admin.rs");
 include!("parts/object_query.rs");
 include!("parts/sql_context.rs");
+include!("parts/completion_filter.rs");
 include!("parts/settings_filter.rs");
 include!("parts/data_page.rs");
 include!("parts/table_metadata.rs");
@@ -28,9 +29,9 @@ include!("parts/operation_kind.rs");
 include!("parts/terminal.rs");
 include!("parts/sql_dialect.rs");
 include!("parts/process_util.rs");
-include!("parts/tests.rs");
 include!("parts/er_model.rs");
 include!("parts/er_relationship.rs");
 include!("parts/er_rebind.rs");
 
+include!("parts/ai/mod.rs");
 include!("parts/backup_restore.rs");

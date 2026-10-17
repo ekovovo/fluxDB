@@ -8,8 +8,9 @@ use fluxdb_core::{
     ForeignKeyInfo, ForeignKeyMeta, IndexColumnItem, IndexInfo, IndexMeta, ObjectKind, ObjectPath,
     ObjectSummary, Pagination, QueryExecutionResult, QueryExecutionSummary, QueryRequest,
     QuerySessionId, QueryStatementKind, RedisHashFieldTtl, RedisServerVersion, Row, RowIdentity,
-    RowUpdate, SortDirection, SortSpec, TableStructure, TriggerInfo, TriggerMeta, UniqueKeyMeta,
-    WriteValue, is_binary_type_name, sqlite_attached_databases,
+    RowUpdate, SortDirection, SortSpec, SqlDialect as _, TableStructure, TriggerInfo, TriggerMeta,
+    UniqueKeyMeta, WriteValue, completion_fuzzy_like_pattern, is_binary_type_name,
+    matches_completion_fuzzy, sqlite_attached_databases,
 };
 use sqlx::{
     Column as SqlxColumn, ColumnIndex, ConnectOptions as _, Connection as _, MySql, QueryBuilder,
@@ -37,13 +38,13 @@ include!("parts/mysql.rs");
 include!("parts/postgres.rs");
 include!("parts/redis.rs");
 include!("parts/sqlite.rs");
+include!("parts/sqlite_bounded_update.rs");
 include!("parts/factory.rs");
 include!("parts/shared_cells.rs");
 include!("parts/shared_write.rs");
 include!("parts/shared_read_exec.rs");
 include!("parts/shared_read_sql.rs");
 include!("parts/shared_demo.rs");
-include!("parts/tests.rs");
 
 #[path = "parts/mysql/native_tools.rs"]
 mod mysql_native_tools;

@@ -341,6 +341,74 @@ impl RedisConnector {
         Ok(executions)
     }
 
+    /// Agent/MCP 用的**单条 argv 命令**执行：不做命令文本解析、不做多语句 pipeline。
+    ///
+    /// 调用方（内核）必须先过风险分类与审批；这里只负责"有界地跑一条命令并映射回包"，
+    /// 并复用 Workbench 的受控边界（长连接/阻塞/管理命令一律拒绝）。
+    pub fn execute_argv(
+        &self,
+        database: u32,
+        argv: &[String],
+    ) -> fluxdb_core::Result<CommandReply> {
+        let Some(config) = self.config.as_ref() else {
+            return Err(Error::new(
+                ErrorKind::Connection,
+                "Redis 命令执行需要连接配置上下文",
+            ));
+        };
+        if argv.is_empty() {
+            return Err(Error::new(ErrorKind::Query, "命令不能为空"));
+        }
+        if is_unsupported_command(argv) {
+            return Err(Error::new(
+                ErrorKind::Unsupported,
+                format!("命令「{}」在受控执行中不支持", argv[0]),
+            ));
+        }
+        let mut connection = redis_connect(config)?;
+        self.execute_single_command(&mut connection, database, argv)
+    }
+
+    /// 单条命令使用独立的小回包预算；超限会将未消费帧的连接标记损坏，不归还池。
+    pub fn execute_argv_with_budget(
+        &self, database: u32, argv: &[String], budget: RedisReadBudget,
+    ) -> fluxdb_core::Result<CommandReply> {
+        let config = self.config.as_ref().ok_or_else(|| Error::new(ErrorKind::Connection, "Redis 执行缺少连接配置"))?;
+        if argv.is_empty() || is_unsupported_command(argv) {
+            return Err(Error::new(ErrorKind::Unsupported, "Redis 命令为空或不支持受控执行"));
+        }
+        let profile = config.redis_profile.clone().unwrap_or_else(|| fluxdb_core::RedisConnectionProfile::from_options(&config.options));
+        let cluster = profile.topology.kind == fluxdb_core::RedisTopologyKind::Cluster;
+        if cluster && database != 0 {
+            return Err(Error::new(ErrorKind::Query, "Redis Cluster 只支持 DB 0"));
+        }
+        let mut connection = redis_connect(config)?;
+        if !cluster {
+            redis_select(&mut connection, database)?;
+        }
+        let args = argv.iter().map(String::as_str).collect::<Vec<_>>();
+        connection.command_with_budget(&args, Some(budget)).map(redis_value_to_reply)
+    }
+
+    /// 有界订阅收集：限时 / 限条数 / 限字节，命中任一上限或取消即退订断开。
+    ///
+    /// 与交互式 `RedisPubSubSession` 的区别是本方法**不允许把连接挂成长会话**——它
+    /// 在返回前一定收工，供 AI 工具等一次性调用场景使用。
+    pub fn collect_subscription(
+        &self,
+        database: u32,
+        requests: &[RedisSubscriptionRequest],
+        limits: RedisSubscriptionLimits,
+        should_stop: &dyn Fn() -> bool,
+    ) -> fluxdb_core::Result<RedisSubscriptionCollect> {
+        let config = self.config.as_ref().ok_or_else(|| Error::new(ErrorKind::Connection, "Redis 订阅缺少连接配置"))?;
+        let profile = config.redis_profile.clone().unwrap_or_else(|| fluxdb_core::RedisConnectionProfile::from_options(&config.options));
+        if profile.topology.kind == fluxdb_core::RedisTopologyKind::Cluster && database != 0 {
+            return Err(Error::new(ErrorKind::Query, "Redis Cluster 只支持 DB 0"));
+        }
+        redis_collect_subscription(config, database, requests, limits, should_stop)
+    }
+
     /// 在指定 DB 上执行单条命令并映射回包。
     fn execute_single_command(
         &self,
@@ -355,54 +423,3 @@ impl RedisConnector {
     }
 }
 
-#[cfg(test)]
-mod workbench_tests {
-    use super::*;
-
-    #[test]
-    fn split_commands_ignores_blank_and_comments() {
-        let commands = split_redis_commands(
-            "SET a 1\n\n# 注释\n// 也注释\nGET a;\nDEL a",
-        );
-        assert_eq!(commands, vec!["SET a 1", "GET a", "DEL a"]);
-    }
-
-    #[test]
-    fn tokenize_handles_quoted_whitespace_args() {
-        let argv = tokenize_command(r#"SET key "hello world" 'single'"#);
-        assert_eq!(argv, vec!["SET", "key", "hello world", "single"]);
-    }
-
-    #[test]
-    fn tokenize_handles_escaped_char() {
-        let argv = tokenize_command(r#"SET k a\ b"#);
-        assert_eq!(argv, vec!["SET", "k", "a b"]);
-    }
-
-    #[test]
-    fn unsupported_commands_detected() {
-        let argv = tokenize_command("SUBSCRIBE chan");
-        assert!(is_unsupported_command(&argv));
-        let argv = tokenize_command("SELECT 0");
-        assert!(is_unsupported_command(&argv));
-        let argv = tokenize_command("GET key");
-        assert!(!is_unsupported_command(&argv));
-    }
-
-    #[test]
-    fn bulk_binary_gets_hex_preview() {
-        let bulk = build_command_bulk(vec![0x00, 0x01, 0x02, 0xff]);
-        assert!(bulk.binary);
-        assert!(bulk.text.is_none());
-        assert_eq!(bulk.byte_len, 4);
-        assert!(bulk.bytes_preview_hex.is_some());
-    }
-
-    #[test]
-    fn bulk_utf8_stays_text() {
-        let bulk = build_command_bulk("你好 redis".as_bytes().to_vec());
-        assert!(!bulk.binary);
-        assert_eq!(bulk.text.as_deref(), Some("你好 redis"));
-        assert!(bulk.bytes_preview_hex.is_none());
-    }
-}

@@ -565,4 +565,15 @@ impl Connector for PostgresConnector {
             .ok_or_else(|| Error::new(ErrorKind::Connection, "PostgreSQL SQL 执行需要连接配置上下文"))?;
         pg_execute_query_with_progress(config, request, on_summary, should_cancel)
     }
+
+    fn execute_parameterized(
+        &self,
+        request: &fluxdb_core::ParameterizedQueryRequest,
+    ) -> fluxdb_core::Result<QueryExecutionResult> {
+        let config = self
+            .config
+            .as_ref()
+            .ok_or_else(|| Error::new(ErrorKind::Connection, "PostgreSQL SQL 执行需要连接配置上下文"))?;
+        pg_execute_parameterized(config, &request.request, &request.parameters)
+    }
 }

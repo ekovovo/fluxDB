@@ -120,7 +120,7 @@ fn create_table_foreign_key_fields_summary(foreign_key: &CreateTableForeignKey) 
         .columns
         .iter()
         .filter(|column| !column.trim().is_empty())
-        .map(|column| create_table_quote_identifier(column.trim()))
+        .map(|column| fluxdb_core::MySqlDialect.quote_identifier(column.trim()))
         .collect::<Vec<_>>()
         .join(", ")
 }
@@ -132,7 +132,7 @@ fn create_table_foreign_key_referenced_fields_summary(
         .referenced_columns
         .iter()
         .filter(|column| !column.trim().is_empty())
-        .map(|column| create_table_quote_identifier(column.trim()))
+        .map(|column| fluxdb_core::MySqlDialect.quote_identifier(column.trim()))
         .collect::<Vec<_>>()
         .join(", ")
 }

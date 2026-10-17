@@ -1,0 +1,336 @@
+fn query_toolbar(
+    this: &mut NavicatMain,
+    tab_id: TabId,
+    editor: &QueryEditorState,
+    sql_editor: Entity<editor_component::Editor>,
+    connection: String,
+    database: String,
+    accent: gpui::Rgba,
+    output_placement: ResultsPlacement,
+    colors: UiColors,
+    cx: &mut Context<NavicatMain>,
+) -> Div {
+    let has_text = !editor.text.trim().is_empty();
+    let soft_wrap = sql_editor.read(cx).soft_wrap();
+    let can_explain = !editor.running && this.selected_explain_sql_text(tab_id, cx).is_some();
+    div()
+        .h(px(40.))
+        .border_b_1()
+        .border_color(colors.border)
+        .flex()
+        .items_center()
+        .gap_2()
+        .px_3()
+        .bg(colors.panel_alt)
+        .child(query_context_box(connection, accent, colors))
+        .child(query_context_box(database, accent, colors))
+        .child(
+            query_toolbar_icon_button(
+                if editor.running { "执行中" } else { "运行" },
+                AppIcon::Play,
+                has_text && !editor.running,
+                editor.running,
+                rgb(0x20c76a),
+                colors,
+            )
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener({
+                        let sql_editor = sql_editor.clone();
+                        move |this, _, window, cx| {
+                            let text = sql_editor.read(cx).text();
+                            if !text.trim().is_empty() {
+                                this.dispatch(AppCommand::UpdateQueryText { tab_id, text }, cx);
+                                this.start_query_execution(tab_id, window, cx);
+                                cx.stop_propagation();
+                            }
+                        }
+                    }),
+                ),
+        )
+        .child(
+            query_toolbar_icon_button(
+                "美化 SQL",
+                AppIcon::AlignLeft,
+                has_text,
+                false,
+                rgb(0xa45cff),
+                colors,
+            )
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener({
+                    let sql_editor = sql_editor.clone();
+                    move |this, _, _, cx| {
+                        if has_text && this.format_query_editor_sql(tab_id, sql_editor.clone(), cx)
+                        {
+                            cx.stop_propagation();
+                        }
+                    }
+                }),
+            ),
+        )
+        .child(
+            query_toolbar_icon_button(
+                "压缩 SQL",
+                AppIcon::List,
+                has_text,
+                false,
+                rgb(0x38bdf8),
+                colors,
+            )
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener({
+                        let sql_editor = sql_editor.clone();
+                        move |this, _, _, cx| {
+                            if has_text
+                                && this.compress_query_editor_sql(tab_id, sql_editor.clone(), cx)
+                            {
+                                cx.stop_propagation();
+                            }
+                        }
+                    }),
+                ),
+        )
+        .child(
+            query_toolbar_icon_button(
+                "停止",
+                AppIcon::Square,
+                editor.running,
+                false,
+                rgb(0xff5c5c),
+                colors,
+            )
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _, _, cx| {
+                    this.request_query_cancel(tab_id, cx);
+                    cx.stop_propagation();
+                }),
+            ),
+        )
+        .child(query_toolbar_icon_button(
+            "解释",
+            AppIcon::FileSearch,
+            can_explain,
+            false,
+            rgb(0x45a3ff),
+            colors,
+        )
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener({
+                let sql_editor = sql_editor.clone();
+                move |this, _, window, cx| {
+                    if this.start_query_explain_execution(tab_id, sql_editor.clone(), window, cx) {
+                        cx.stop_propagation();
+                    }
+                }
+            }),
+        ))
+        .child(div().flex_1())
+        .child(Button::new("query-open-file")
+            .debug_selector(||"query-open-file".into())
+            .small().ghost().cursor_pointer().disabled(this.query_files.loading)
+            .loading(this.query_files.loading)
+            .child(app_icon(AppIcon::Folder,16.,colors.muted))
+            .tooltip("打开本地 SQL 文件（新页签，不执行）")
+            .on_click(cx.listener(move|this,_,_,cx|this.choose_local_sql_file(tab_id,cx))))
+        .child(query_toolbar_icon_button(
+            "保存",
+            AppIcon::Save,
+            true,
+            false,
+            rgb(0x4b8dff),
+            colors,
+        )
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |this, _, window, cx| {
+                this.save_active_query(window, cx);
+                cx.stop_propagation();
+            }),
+        ))
+        .child(query_toolbar_icon_button(
+            "查询创建工具",
+            AppIcon::Workflow,
+            false,
+            false,
+            rgb(0xf0b400),
+            colors,
+        ))
+        .child(query_toolbar_icon_button(
+            "代码段",
+            AppIcon::FileSql,
+            false,
+            false,
+            rgb(0x28c7d7),
+            colors,
+        ))
+        .child(
+            query_toolbar_icon_button(
+                "历史记录",
+                AppIcon::CalendarClock,
+                true,
+                false,
+                rgb(0xf59e0b),
+                colors,
+            )
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _, window, cx| {
+                    this.show_query_history_quick_search(window, cx);
+                    cx.stop_propagation();
+                }),
+            ),
+        )
+        .child(
+            query_toolbar_icon_button(
+                query_editor_wrap_toggle_label(soft_wrap),
+                query_editor_wrap_toggle_icon(soft_wrap),
+                true,
+                false,
+                rgb(0x5f8ff7),
+                colors,
+            )
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener({
+                    let sql_editor = sql_editor.clone();
+                    move |this, _, _, cx| {
+                        let mut settings = this.controller.state().settings.clone();
+                        settings.editor_word_wrap = !soft_wrap;
+                        save_settings_from_ui(this, settings, "已更新自动换行", cx);
+                        let line_height = this.controller.state().settings.editor_line_height.clamp(13, 28) as f32;
+                        sql_editor.update(cx, |editor, _editor_cx| {
+                            editor.apply_settings(editor.font_size, line_height, !soft_wrap, 0);
+                        });
+                        cx.stop_propagation();
+                    }
+                }),
+            ),
+        )
+        .child(
+            query_toolbar_icon_button(
+                query_output_layout_toggle_label(output_placement),
+                query_output_layout_toggle_icon(output_placement),
+                true,
+                false,
+                rgb(0x45a3ff),
+                colors,
+            )
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _, _, cx| {
+                    this.results_placement = this.results_placement.toggled();
+                    this.query_output_resize_start = None;
+                    cx.notify();
+                    cx.stop_propagation();
+                }),
+            ),
+        )
+}
+
+fn query_editor_wrap_toggle_icon(soft_wrap: bool) -> AppIcon {
+    if soft_wrap {
+        AppIcon::Text
+    } else {
+        AppIcon::WrapText
+    }
+}
+
+fn query_editor_wrap_toggle_label(soft_wrap: bool) -> &'static str {
+    if soft_wrap {
+        "不换行"
+    } else {
+        "自动换行"
+    }
+}
+
+fn query_output_layout_toggle_icon(placement: ResultsPlacement) -> AppIcon {
+    match placement {
+        ResultsPlacement::Bottom => AppIcon::PanelBottom,
+        ResultsPlacement::Right => AppIcon::PanelRight,
+    }
+}
+
+fn query_output_layout_toggle_label(placement: ResultsPlacement) -> &'static str {
+    match placement {
+        ResultsPlacement::Bottom => "结果在下方",
+        ResultsPlacement::Right => "结果在右侧",
+    }
+}
+
+fn query_toolbar_icon_button(
+    label: &'static str,
+    icon: AppIcon,
+    enabled: bool,
+    loading: bool,
+    accent: gpui::Rgba,
+    colors: UiColors,
+) -> Stateful<Div> {
+    let bg = colors.panel_bg;
+    let icon_color = if enabled { accent } else { colors.muted };
+    div()
+        .id(label)
+        .size(px(30.))
+        .rounded(colors.radius)
+        .border_1()
+        .border_color(if enabled {
+            if colors.is_dark {
+                rgb(0x3a414d)
+            } else {
+                rgb(0xd7dde8)
+            }
+        } else {
+            colors.border
+        })
+        .bg(if enabled { bg } else { colors.panel_alt })
+        .flex()
+        .items_center()
+        .justify_center()
+        .tooltip(move |window, cx| Tooltip::new(label).build(window, cx))
+        .when(enabled, |this| {
+            this.cursor_pointer().hover(move |style| {
+                style.bg(if colors.is_dark {
+                    rgb(0x2a3039)
+                } else {
+                    rgb(0xf4f7fb)
+                })
+            })
+        })
+        .child(if loading {
+            loading_spinner_with_color(17., icon_color).into_any_element()
+        } else {
+            app_icon_box(icon, 20., 17., icon_color).into_any_element()
+        })
+}
+
+fn query_context_box(label: String, accent: gpui::Rgba, colors: UiColors) -> Div {
+    div()
+        .h(px(30.))
+        .min_w(px(118.))
+        .max_w(px(220.))
+        .rounded(colors.radius)
+        .border_1()
+        .border_color(colors.border)
+        .bg(colors.input_bg)
+        .flex()
+        .items_center()
+        .overflow_hidden()
+        .child(div().w(px(4.)).h_full().bg(accent))
+        .child(
+            div()
+                .flex_1()
+                .min_w(px(0.))
+                .px_2()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .text_size(px(13.))
+                .text_color(colors.text)
+                .child(label),
+        )
+}
+

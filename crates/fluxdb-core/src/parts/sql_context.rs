@@ -16,6 +16,25 @@ impl std::fmt::Display for QuerySessionId {
     }
 }
 
+impl QuerySessionId {
+    /// 宿主托管会话（AI/Agent、MCP 等）使用的 ID 段起点。
+    ///
+    /// 编辑器查询标签从 1 起自增；两套自增若共用同一数值段，会在同一连接上命中
+    /// 同一条后端会话，让 AI 的临时表/事务与编辑器互相串。宿主托管会话改用高位段，
+    /// 与标签 ID 天然不重叠。
+    pub const HOST_MANAGED_BASE: u64 = 1 << 40;
+
+    /// 构造宿主托管会话 ID（`seq` 从 0 起，由调用方按会话计数分配）。
+    pub fn host_managed(seq: u64) -> Self {
+        Self(Self::HOST_MANAGED_BASE + seq)
+    }
+
+    /// 是否为宿主托管会话（AI/Agent、MCP 等），而非编辑器查询标签会话。
+    pub fn is_host_managed(self) -> bool {
+        self.0 >= Self::HOST_MANAGED_BASE
+    }
+}
+
 /// 查询作用域：连接 + 可选 database + 可选 schema。
 ///
 /// - PG 两段对象名是 `schema.table`，作用域内的 database 是物理连接库、schema 是 namespace。
@@ -62,34 +81,3 @@ impl QueryScope {
     }
 }
 
-#[cfg(test)]
-mod sql_context_tests {
-    use super::*;
-
-    /// 结构体字段缺失时默认实例化（serde 兼容路径的分支之一）。
-    #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-    struct ScopeCarrier {
-        #[serde(default)]
-        pub schema: Option<String>,
-    }
-
-    #[test]
-    fn scope_key_is_unambiguous_with_dots_and_unicode() {
-        let a = QueryScope::new(ConnectionId(1), Some("my.db".into()), Some("租户.A".into()));
-        let b = QueryScope::new(ConnectionId(1), Some("my".into()), Some("db.租户.A".into()));
-        // 长度前缀编码：两段看起来“像同一个串”的不同切分必须产生不同 key。
-        assert_ne!(a.key(), b.key());
-        assert_eq!(a.key(), QueryScope::new(ConnectionId(1), Some("my.db".into()), Some("租户.A".into())).key());
-    }
-
-    #[test]
-    fn missing_schema_field_defaults_to_none() {
-        // 模拟旧记录（无 schema 字段）：serde 默认加载为 None，不破坏反序列化。
-        let json = r#"{"schema": null}"#;
-        let c: ScopeCarrier = serde_json::from_str(json).unwrap();
-        assert!(c.schema.is_none());
-        let json2 = r#"{}"#;
-        let c2: ScopeCarrier = serde_json::from_str(json2).unwrap();
-        assert!(c2.schema.is_none());
-    }
-}

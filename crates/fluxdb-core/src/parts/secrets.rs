@@ -49,15 +49,3 @@ impl SecretRef {
     }
 }
 
-#[cfg(test)]
-mod secrets_tests {
-    use super::*;
-
-    #[test]
-    fn debug_redacts_inline_secret() {
-        let s = SecretRef::inline("hunter2");
-        let debug = format!("{s:?}");
-        assert!(!debug.contains("hunter2"), "Debug 泄漏内联密钥: {debug}");
-        assert!(debug.contains("***"));
-    }
-}

@@ -3,10 +3,6 @@ name = "fluxdb-storage"
 version = "0.1.0"
 edition = "2024"
 
-[features]
-# 供外部集成测试复用隔离的测试凭据/配置注入点；默认不启用（生产不含 override 代码路径的生效分支）。
-test-util = []
-
 [dependencies]
 fluxdb-core = { path = "../fluxdb-core" }
 # 跨平台系统目录解析（Known Folder / XDG）。6.0.0 已在 Cargo.lock（gpui 栈间接引入），无新增版本。

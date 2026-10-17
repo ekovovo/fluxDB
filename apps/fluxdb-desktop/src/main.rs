@@ -45,8 +45,8 @@ use fluxdb_core::{
     PgRoleMembership, PgValidUntilOp, PostgresSslMode, QueryExecutionOptions,
     QueryExecutionSummary, RedisHashFieldTtl, RedisServerVersion, ResultsPlacement, Row,
     RowIdentity, SavedQuery, ScrollbarMode, Settings, SidebarOrderEntry, SortDirection, SortSpec,
-    Theme as AppTheme, TriggerInfo, UiDensity, UserResourceLimits, WorkbenchHistoryItem,
-    WorkbenchHistoryScope, WorkbenchHistoryStore, data_table_page_size_max,
+    SqlDialect as _, Theme as AppTheme, TriggerInfo, UiDensity, UserResourceLimits,
+    WorkbenchHistoryItem, WorkbenchHistoryScope, WorkbenchHistoryStore, data_table_page_size_max,
     database_user_admin_provider, role_memberships_from_grants, sql_dialect,
     sqlite_attached_database_path, supports_database_user_admin,
 };
@@ -60,11 +60,11 @@ use gpui::{
     Anchor, Animation, AnimationExt as _, AnyElement, App, AssetSource, Bounds, ClipboardItem,
     Context, Div, DragMoveEvent, Empty, Entity, FocusHandle, Focusable, Hsla, IntoElement,
     KeyBinding, KeyDownEvent, Keystroke, Menu, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, NoAction, PathPromptOptions, Pixels, Point, Render, ScrollHandle, ScrollStrategy,
-    SharedString, Size, Stateful, StatefulInteractiveElement, Subscription, Task, TitlebarOptions,
-    Transformation, UniformListScrollHandle, WeakEntity, Window, WindowBounds, WindowOptions,
-    actions, anchored, canvas, deferred, div, ease_in_out, hsla, img, opaque_grey, percentage,
-    point, px, rgb, size, svg, uniform_list,
+    MouseUpEvent, NoAction, PathPromptOptions, Pixels, Point, Render, Role, ScrollHandle,
+    ScrollStrategy, SharedString, Size, Stateful, StatefulInteractiveElement, Subscription, Task,
+    TitlebarOptions, Transformation, UniformListScrollHandle, WeakEntity, Window, WindowBounds,
+    WindowOptions, actions, anchored, canvas, deferred, div, ease_in_out, hsla, img, opaque_grey,
+    percentage, point, px, rgb, size, svg, uniform_list,
 };
 use gpui_component::{
     ActiveTheme as _, Colorize as _, Disableable as _, IconName, IndexPath, Root, Sizable as _,
@@ -72,19 +72,20 @@ use gpui_component::{
     WindowExt,
     alert::{Alert, AlertVariant},
     box_shadow,
-    button::{Button, ButtonVariants as _},
+    button::{Button, ButtonCustomVariant, ButtonVariants as _},
     checkbox::Checkbox,
     dialog::Dialog,
     form::{Field, field, h_form},
     group_box::{GroupBox, GroupBoxVariant, GroupBoxVariants as _},
     h_flex,
     highlighter::{LanguageConfig, LanguageRegistry},
-    input::{Input, InputEvent, InputState},
+    input::{Input, InputEvent, InputState, Textarea, TextareaState},
     popover::{Popover, PopoverState},
     progress::Progress,
+    radio::Radio,
     scroll::{ScrollableElement, Scrollbar},
     select::{SearchableVec, Select, SelectEvent, SelectItem, SelectState},
-    sidebar::{Sidebar, SidebarMenu, SidebarMenuItem},
+    sidebar::{Sidebar, SidebarGroup, SidebarMenuItem},
     slider::{Slider, SliderEvent, SliderState},
     switch::Switch,
     tab::{Tab, TabBar},
@@ -96,38 +97,6 @@ use gpui_component::{
 use gpui_fps::fps_monitor;
 use lsp_types::Position;
 use serde::{Deserialize, Serialize};
-
-// gpui-component 0.6 fixes input mode at the state type level. Keep the old
-// builder calls source-compatible while the existing state fields migrate.
-trait LegacyInputStateExt {
-    fn code_editor(self, _: impl Into<SharedString>) -> Self;
-    fn multi_line(self, _: bool) -> Self;
-    fn line_number(self, _: bool) -> Self;
-    fn rows(self, _: usize) -> Self;
-    fn legacy_soft_wrap(self, _: bool) -> Self;
-}
-
-impl LegacyInputStateExt for InputState {
-    fn code_editor(self, _: impl Into<SharedString>) -> Self {
-        self
-    }
-
-    fn multi_line(self, _: bool) -> Self {
-        self
-    }
-
-    fn line_number(self, _: bool) -> Self {
-        self
-    }
-
-    fn rows(self, _: usize) -> Self {
-        self
-    }
-
-    fn legacy_soft_wrap(self, _: bool) -> Self {
-        self
-    }
-}
 
 // 平台等宽字体仅指定通用首选项；具体 CJK/emoji 回退仍由系统字体栈处理。
 #[cfg(target_os = "macos")]
@@ -193,6 +162,21 @@ include!("main_parts/single_instance.rs");
 // Linux 首版不启用系统托盘（tray-icon 在 Linux 会无条件链接 GTK），托盘实现仅限 macOS/Windows。
 #[cfg(not(target_os = "linux"))]
 include!("main_parts/tray_icon.rs");
+include!("main_parts/ai/stream.rs");
+include!("main_parts/ai/state.rs");
+include!("main_parts/ai/model_selection.rs");
+include!("main_parts/ai/references.rs");
+include!("main_parts/ai/message.rs");
+include!("main_parts/ai/approval.rs");
+include!("main_parts/ai/timeline.rs");
+include!("main_parts/ai/report.rs");
+include!("main_parts/ai/diagnostics.rs");
+include!("main_parts/ai/report_charts.rs");
+include!("main_parts/ai/actions.rs");
+include!("main_parts/ai/current_page.rs");
+include!("main_parts/ai/display.rs");
+include!("main_parts/ai/stream_actions.rs");
+include!("main_parts/ai/composer.rs");
+include!("main_parts/ai/panel.rs");
 include!("main_parts/app_boot.rs");
 include!("main_parts/app_boot_helpers.rs");
-include!("main_parts/tests.rs");

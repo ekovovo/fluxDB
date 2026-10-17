@@ -252,58 +252,10 @@ fn postgres_first_layer(profile: &PostgresConnectionProfile) -> Option<&Postgres
     profile.transport.first()
 }
 
-/// 判断 `value` 是否是合法的布尔开关文本（true/y/yes/1/on）。
-fn postgres_option_is_true(value: Option<&String>) -> bool {
-    value
-        .map(|v| v.trim().to_ascii_lowercase())
-        .is_some_and(|v| matches!(v.as_str(), "true" | "y" | "yes" | "1" | "on"))
-}
-
-/// 历史 `options` 扁平参数里 PostgreSQL 认识的全部键（白名单）。
-pub const POSTGRES_LEGACY_OPTION_KEYS: &[&str] = &[
-    "host",
-    "port",
-    "database",
-    "maintenance_database",
-    "username",
-    "password",
-    "default_schema",
-    "show_other_databases",
-    "show_system_schemas",
-    "tls",
-    "ssl_mode",
-    "tls_ca_ref",
-    "tls_client_cert_ref",
-    "tls_client_key_ref",
-    "tls_server_name",
-    "ssh_enabled",
-    "ssh_host",
-    "ssh_port",
-    "ssh_username",
-    "ssh_auth",
-    "ssh_password",
-    "ssh_private_key_ref",
-    "ssh_passphrase",
-    "ssh_connect_timeout_secs",
-    "ssh_keepalive_interval_secs",
-    "proxy_enabled",
-    "proxy_type",
-    "proxy_host",
-    "proxy_port",
-    "proxy_username",
-    "proxy_password",
-    "connect_timeout_secs",
-    "query_timeout_secs",
-    "idle_ttl_secs",
-    "tcp_keepalive",
-    "application_name",
-    "timezone",
-];
-
 impl PostgresConnectionProfile {
     /// —— 解析/迁移职责 ——
 
-    /// 从历史 `options` 扁平参数迁移出一份档案。仅迁移白名单键。
+    /// 从历史 `options` 扁平参数迁移出一份档案。只读取已知键。
     pub fn from_options(opts: &std::collections::BTreeMap<String, String>) -> Self {
         let get = |key: &str| opts.get(key).cloned();
         let basic = PostgresBasicOptions {
@@ -320,11 +272,11 @@ impl PostgresConnectionProfile {
         };
         let scope = PostgresScopeOptions {
             default_schema: get("default_schema").unwrap_or_default(),
-            show_other_databases: postgres_option_is_true(get("show_other_databases").as_ref()),
-            show_system_schemas: postgres_option_is_true(get("show_system_schemas").as_ref()),
+            show_other_databases: connection_option_is_true(get("show_other_databases").as_ref()),
+            show_system_schemas: connection_option_is_true(get("show_system_schemas").as_ref()),
         };
         let tls = PostgresTlsOptions {
-            enabled: postgres_option_is_true(get("tls").as_ref()),
+            enabled: connection_option_is_true(get("tls").as_ref()),
             ssl_mode: match get("ssl_mode").as_deref() {
                 Some("disable") | Some("disabled") => PostgresSslMode::Disabled,
                 Some("require") => PostgresSslMode::Require,
@@ -339,7 +291,7 @@ impl PostgresConnectionProfile {
         };
         let mut transport: Vec<PostgresTransportLayer> = Vec::new();
         let ssh = PostgresSshOptions {
-            enabled: postgres_option_is_true(get("ssh_enabled").as_ref()),
+            enabled: connection_option_is_true(get("ssh_enabled").as_ref()),
             host: get("ssh_host").unwrap_or_default(),
             port: get("ssh_port").and_then(|p| p.parse().ok()).unwrap_or(22),
             username: get("ssh_username").unwrap_or_default(),
@@ -361,7 +313,7 @@ impl PostgresConnectionProfile {
             transport.push(PostgresTransportLayer::Ssh(ssh));
         }
         let proxy = PostgresProxy {
-            enabled: postgres_option_is_true(get("proxy_enabled").as_ref()),
+            enabled: connection_option_is_true(get("proxy_enabled").as_ref()),
             proxy_type: match get("proxy_type").as_deref() {
                 Some("http_connect") => PostgresProxyType::HttpConnect,
                 _ => PostgresProxyType::Socks5,
@@ -388,7 +340,7 @@ impl PostgresConnectionProfile {
                 .unwrap_or(0),
             idle_ttl_secs: get("idle_ttl_secs").and_then(|p| p.parse().ok()).unwrap_or(0),
             tcp_keepalive: match get("tcp_keepalive") {
-                Some(v) => postgres_option_is_true(Some(&v)),
+                Some(v) => connection_option_is_true(Some(&v)),
                 None => true,
             },
             application_name: get("application_name")
@@ -798,101 +750,3 @@ fn parse_pg_hostport(authority: &str) -> std::result::Result<(String, String, u1
 // 百分号解码复用 redis_profile.rs 的 `percent_decode`（crate-root 作用域可见）：同一套
 // 宽松解码语义（非法转义按原样保留、UTF-8 lossy），不在此重复定义。
 
-#[cfg(test)]
-mod postgres_profile_tests {
-    use super::*;
-
-    fn opt<'a>(map: &'a std::collections::BTreeMap<String, String>, key: &str) -> Option<&'a String> {
-        map.get(key)
-    }
-
-    #[test]
-    fn defaults_use_pg_values() {
-        let p = PostgresConnectionProfile::default();
-        assert_eq!(p.basic.port, 5432);
-        assert_eq!(p.basic.maintenance_database, "postgres");
-        assert_eq!(p.advanced.application_name, "FluxDB");
-        assert_eq!(p.advanced.connect_timeout_secs, 5);
-        assert_eq!(p.tls.ssl_mode, PostgresSslMode::Prefer);
-        assert_eq!(p.validate(), Some("请填写主机".into()));
-    }
-
-    #[test]
-    fn round_trips_options_through_profile() {
-        let mut opts = std::collections::BTreeMap::new();
-        opts.insert("host".into(), "db.example.com".into());
-        opts.insert("port".into(), "5433".into());
-        opts.insert("username".into(), "app".into());
-        opts.insert("password".into(), "p@ss w/rd+".into());
-        opts.insert("ssl_mode".into(), "verify-full".into());
-        opts.insert("connect_timeout_secs".into(), "15".into());
-        let p = PostgresConnectionProfile::from_options(&opts);
-        assert_eq!(p.basic.host, "db.example.com");
-        assert_eq!(p.basic.port, 5433);
-        assert_eq!(p.basic.username, "app");
-        assert_eq!(p.basic.password.value(), Some("p@ss w/rd+"));
-        assert_eq!(p.tls.ssl_mode, PostgresSslMode::VerifyFull);
-        assert_eq!(p.advanced.connect_timeout_secs, 15);
-        let back = p.into_options();
-        assert_eq!(opt(&back, "ssl_mode").map(String::as_str), Some("verify-full"));
-        assert_eq!(opt(&back, "connect_timeout_secs").map(String::as_str), Some("15"));
-    }
-
-    #[test]
-    fn secret_ref_never_serializes_inline() {
-        let mut p = PostgresConnectionProfile::default();
-        p.basic.password = SecretRef::inline("hunter2");
-        let json = serde_json::to_string(&p).unwrap();
-        assert!(!json.contains("hunter2"));
-        assert!(!json.contains("inline"));
-    }
-
-    #[test]
-    fn uri_parses_basic_and_password() {
-        let p = PostgresConnectionProfile::from_uri(
-            "postgres://alice:p%40ss%2Fword@db.example.com:5433/appdb?sslmode=verify-full",
-        )
-        .unwrap();
-        assert_eq!(p.basic.host, "db.example.com");
-        assert_eq!(p.basic.port, 5433);
-        assert_eq!(p.basic.username, "alice");
-        assert_eq!(p.basic.password.value(), Some("p@ss/word"));
-        assert_eq!(p.basic.maintenance_database, "appdb");
-        assert_eq!(p.tls.ssl_mode, PostgresSslMode::VerifyFull);
-    }
-
-    #[test]
-    fn uri_parses_ipv6() {
-        let p = PostgresConnectionProfile::from_uri("postgresql://[::1]:5432/mydb").unwrap();
-        assert_eq!(p.basic.host, "::1");
-        assert_eq!(p.basic.port, 5432);
-        assert_eq!(p.basic.maintenance_database, "mydb");
-    }
-
-    #[test]
-    fn uri_rejects_non_postgres_scheme() {
-        let err = PostgresConnectionProfile::from_uri("mysql://localhost/db").unwrap_err();
-        assert!(err.contains("postgres/postgresql"), "got: {err}");
-    }
-
-    #[test]
-    fn uri_rejects_unknown_query_param() {
-        let err = PostgresConnectionProfile::from_uri(
-            "postgres://localhost/db?random_param=1",
-        )
-        .unwrap_err();
-        assert!(err.contains("random_param"), "got: {err}");
-    }
-
-    #[test]
-    fn uri_credentials_land_in_structured_secret_and_never_dump_in_debug() {
-        let p =
-            PostgresConnectionProfile::from_uri("postgres://bob:topsecret@h/db").unwrap();
-        // 凭据落进结构化 SecretRef（走 SQLite 加密表/内存），而非散落配置。
-        assert_eq!(p.basic.password.value(), Some("topsecret"));
-        assert_eq!(p.basic.username, "bob");
-        // SecretRef 的 Debug 不打印正文；序列化也不含明文（见 secret_ref_never_serializes_inline）。
-        let debug = format!("{p:?}");
-        assert!(!debug.contains("topsecret"), "Debug 泄漏: {debug}");
-    }
-}

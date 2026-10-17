@@ -5,6 +5,18 @@ use std::path::PathBuf;
 mod credential;
 mod sqlite;
 
+/// 共享数据密钥加载（AES-256-GCM）：连接凭据与模型 Key 共用一把密钥。
+#[path = "parts/secret_crypto.rs"]
+pub(crate) mod secret_crypto;
+
+/// AI 平台持久化：管理实体与运行记录的建表与结构校验（设计文档 §42）。
+#[path = "parts/ai_platform/mod.rs"]
+pub mod ai_platform;
+
+/// SQLite 连接类型再导出：供不直接依赖 rusqlite 的适配层（如 fluxdb-mcp）
+/// 在 `with_ai_connection` 闭包外显式标注连接参数。
+pub use rusqlite::Connection as AiConnection;
+
 #[path = "parts/connection_secrets.rs"]
 mod connection_secrets;
 
@@ -16,9 +28,18 @@ mod connection_store;
 #[path = "parts/history_store.rs"]
 mod history_store;
 
+/// 进程实例标识（`FLUXDB_PROFILE`）：并行多开时隔离数据目录与单实例锁。
+#[path = "parts/instance_profile.rs"]
+mod instance_profile;
+
+#[path = "parts/mcp_clients.rs"]
+mod mcp_clients;
+pub use mcp_clients::McpClientLaunch;
+
 pub use history_store::{
     QueryHistoryRecord, RedisKeySearchHistoryRecord, RedisWorkbenchHistoryRecord,
 };
+pub use instance_profile::{PROFILE_ENV, instance_profile};
 
 use fluxdb_core::{
     ColumnRef, CompletionIndexMeta, CompletionIndexSnapshot, ConnectionConfig, ConnectionId,
@@ -74,11 +95,37 @@ impl FileStorage {
         Self { root: root.into() }
     }
 
+    /// 存储根目录（密钥加载需要；UI 不直接使用）。
+    pub fn root_dir(&self) -> &std::path::Path {
+        &self.root
+    }
+
+    /// 在 AI 平台连接上执行一次操作（连接在本方法内打开并关闭）。
+    pub fn with_ai_connection<T>(
+        &self,
+        f: impl FnOnce(&rusqlite::Connection) -> Result<T>,
+    ) -> Result<T> {
+        let conn = self.open_ai_connection()?;
+        f(&conn)
+    }
+
+    /// 打开 AI 平台使用的 SQLite 连接（已建好全部 AI 表）。
+    ///
+    /// 每次调用新开连接，与其他存储入口保持一致；UI 不直接持有该连接。
+    pub fn open_ai_connection(&self) -> Result<rusqlite::Connection> {
+        let conn = sqlite::open(&self.root)?;
+        sqlite::create_schema(&conn)?;
+        Ok(conn)
+    }
+
     /// 解析默认持久化根目录（目录策略统一在此定义，见方案 §4.1）：
     /// - macOS：`~/Library/Application Support/fluxdb`（与历史版本一致，旧数据不受影响）
     /// - Windows：Known Folder LocalAppData 下的 `FluxDB`（即 `%LOCALAPPDATA%/FluxDB`）。
     ///   注意 dirs::data_dir() 在 Windows 是 Roaming，必须用 data_local_dir()。
     /// - Linux：`$XDG_DATA_HOME/fluxdb`，缺省 `~/.local/share/fluxdb`
+    ///
+    /// 设置了实例标识（`FLUXDB_PROFILE`）时目录追加 `-标识` 后缀，使同一台机器上的
+    /// 多个实例各自持有独立配置、连接、历史与凭据，可并行运行；未设置时布局不变。
     ///
     /// 解析失败（系统目录不存在等极端环境）返回 Err，由调用方给出可见错误；
     /// 不再静默回退到当前目录/安装目录。
@@ -93,12 +140,12 @@ impl FileStorage {
         let base =
             base.ok_or_else(|| Error::new(ErrorKind::Internal, "无法解析系统应用数据目录"))?;
         // Windows 产品目录名用大写 FluxDB（计划 §4.1）；macOS/Linux 保持小写以兼容旧目录。
-        let app_dir = if cfg!(target_os = "windows") {
+        let default_name = if cfg!(target_os = "windows") {
             "FluxDB"
         } else {
             "fluxdb"
         };
-        Ok(base.join(app_dir))
+        Ok(base.join(instance_profile::app_dir_name(default_name)?))
     }
 
     /// `default_root` 的显式失败版本，供启动路径使用：
@@ -111,6 +158,8 @@ impl FileStorage {
     /// - Linux：`$XDG_STATE_HOME/fluxdb/logs`，缺省 `~/.local/state/fluxdb/logs`
     /// - macOS/Windows：持久化根目录下 `logs/`（与历史布局一致）
     ///
+    /// 与 `default_root` 同样受实例标识影响，保证并行实例的日志互不混淆。
+    ///
     /// 日志目录解析失败不阻断启动，回退系统临时目录（调用方应记录该降级）。
     pub fn default_log_dir() -> PathBuf {
         let fallback = || std::env::temp_dir().join("fluxdb").join("logs");
@@ -120,8 +169,12 @@ impl FileStorage {
                 .map(PathBuf::from)
                 .filter(|p| p.is_absolute())
                 .or_else(|| dirs::home_dir().map(|h| h.join(".local/state")));
+            // 标识非法时不阻断启动：退回默认目录名，真正的报错由 `default_root`
+            // （启动路径必经）给出，避免日志系统未初始化时无处输出诊断。
+            let app_dir =
+                instance_profile::app_dir_name("fluxdb").unwrap_or_else(|_| "fluxdb".to_string());
             return state
-                .map(|s| s.join("fluxdb").join("logs"))
+                .map(|s| s.join(app_dir).join("logs"))
                 .unwrap_or_else(fallback);
         }
         #[cfg(not(target_os = "linux"))]
@@ -199,16 +252,6 @@ impl FileStorage {
             .join(database_hash(database, schema))
     }
 
-    fn legacy_completion_index_path(
-        &self,
-        connection: &ConnectionConfig,
-        database: Option<&str>,
-        schema: Option<&str>,
-    ) -> PathBuf {
-        self.completion_index_dir(connection, database, schema)
-            .join("index.toml")
-    }
-
     pub fn load_completion_index(
         &self,
         connection: &ConnectionConfig,
@@ -237,12 +280,7 @@ impl FileStorage {
                 meta: header.meta,
             }));
         }
-
-        let legacy_path = self.legacy_completion_index_path(connection, database, schema);
-        if !legacy_path.exists() {
-            return Ok(None);
-        }
-        read_toml_file::<CompletionIndexSnapshot>(&legacy_path).map(Some)
+        Ok(None)
     }
 
     pub fn save_completion_index(
@@ -497,15 +535,15 @@ impl Storage for FileStorage {
     fn save_settings(&self, settings: &Settings) -> Result<()> {
         ensure_private_dir(&self.root)?;
         let mut document = toml::Value::try_from(settings).map_err(storage_error)?;
-        // connection_secret_key 只允许直接编辑 config.toml；设置 UI 的保存不得擦除密钥。
+        // 数据密钥只允许直接编辑 config.toml；设置 UI 的保存不得擦除密钥。
         match fs::read_to_string(self.config_path()) {
             Ok(current) => {
                 let current: toml::Value = toml::from_str(&current).map_err(storage_error)?;
-                if let Some(key) = current.get("connection_secret_key") {
+                if let Some(key) = current.get(secret_crypto::CONFIG_KEY) {
                     document
                         .as_table_mut()
                         .ok_or_else(|| storage_error("Settings TOML 不是表"))?
-                        .insert("connection_secret_key".into(), key.clone());
+                        .insert(secret_crypto::CONFIG_KEY.into(), key.clone());
                 }
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -761,13 +799,6 @@ impl FileStorage {
         connections: &[ConnectionConfig],
         layout: &SidebarLayout,
     ) -> Result<()> {
-        // 测试注入：模拟"凭据已写但配置提交失败"。仅测试/ test-util 下有效，生产恒 false。
-        if crate::credential::consume_commit_failure() {
-            return Err(Error::new(
-                ErrorKind::Internal,
-                "注入：配置提交失败（测试）",
-            ));
-        }
         let stripped: Vec<ConnectionConfig> =
             connections.iter().map(strip_plaintext_secrets).collect();
         let tx = conn.unchecked_transaction().map_err(storage_error)?;
@@ -794,6 +825,10 @@ fn storage_error(error: impl ToString) -> Error {
 /// 单实例锁文件路径（方案 §12.1，方案 A）：
 /// - Linux：优先 `$XDG_RUNTIME_DIR/fluxdb.lock`（tmpfs 运行时目录）
 /// - macOS/Windows：持久化根目录下 `fluxdb.lock`
+///
+/// 设置实例标识（`FLUXDB_PROFILE`）时锁文件带 `-标识` 后缀，与数据目录一致：
+/// 不同标识的实例互不阻塞，同一标识仍保持单实例保护。
+///
 /// 锁本体由 flock（Unix）/ 命名互斥量（Windows）持有，文件只是锚点；
 /// 进程退出（含强杀）时锁自动释放，不存在"崩溃后无法启动"的陈旧锁问题。
 pub fn runtime_lock_file() -> PathBuf {
@@ -803,7 +838,13 @@ pub fn runtime_lock_file() -> PathBuf {
             .map(PathBuf::from)
             .filter(|p| p.is_absolute())
         {
-            return runtime_dir.join("fluxdb.lock");
+            // 标识非法时退回默认锁名：至少保住单实例保护，非法标识本身由
+            // `default_root`（启动路径必经）在解析数据目录时报错退出。
+            let name = match instance_profile() {
+                Ok(Some(profile)) => format!("fluxdb-{profile}.lock"),
+                Ok(None) | Err(_) => "fluxdb.lock".to_string(),
+            };
+            return runtime_dir.join(name);
         }
     }
     FileStorage::default_root()
@@ -1131,1479 +1172,4 @@ fn postgres_profile_secret_slots_mut(
         }
     }
     slots
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::collections::BTreeMap;
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    use fluxdb_core::{
-        COMPLETION_INDEX_VERSION, ColumnRef, CompletionIndexMeta, CompletionIndexSnapshot,
-        ConnectionGroup, ConnectionGroupId, ConnectionId, DatabaseKind, Endpoint, LogLevel,
-        ObjectKind, OperationKind, SavedQuery, SidebarOrderEntry, TableFingerprint, TableRef,
-        Theme,
-    };
-
-    static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-    // ---- 线程隔离的 InMemoryBackend 驱动异常分支，不访问真实用户数据 ----
-
-    use crate::credential::{
-        InMemoryBackend, UnavailableBackend, clear_test_backend, set_test_backend,
-    };
-    use std::sync::Arc;
-
-    /// 构造带扁平密码的 MySQL 连接。
-    fn conn_with_password(id: u64, password: &str) -> ConnectionConfig {
-        ConnectionConfig {
-            id: ConnectionId(id),
-            name: format!("conn-{id}"),
-            kind: DatabaseKind::MySql,
-            endpoint: Endpoint::Tcp {
-                host: "127.0.0.1".to_string(),
-                port: 3306,
-                database: Some("app".to_string()),
-            },
-            options: BTreeMap::from([(
-                PLAINTEXT_PASSWORD_OPTION.to_string(),
-                password.to_string(),
-            )]),
-            redis_profile: None,
-            mysql_profile: None,
-            postgres_profile: None,
-        }
-    }
-
-    // ① 移除假成功：后端写失败时 save_connections 必须返回 Err（不得 Ok(())=假装保存成功）。
-    #[test]
-    fn save_connection_secret_propagates_write_failure() {
-        let backend = Arc::new(InMemoryBackend::new());
-        backend.fail_writes_with_prefix("1:__staging__:");
-        set_test_backend(backend.clone());
-        let storage = FileStorage::new(unique_temp_dir());
-
-        let conn = conn_with_password(1, "s3cret");
-        let err = storage.save_connections(&[conn]).unwrap_err();
-        assert!(!err.to_string().is_empty(), "写失败应返回非空错误");
-        // 正式键不应被写入（失败发生在暂存阶段）。
-        assert!(
-            backend
-                .peek(1, connection_secrets::DATABASE_PASSWORD)
-                .is_none()
-        );
-        clear_test_backend();
-    }
-
-    // ② 配置提交失败：凭据已暂存、但 SQLite 提交失败 → 返回 Err，且正式凭据与配置均保持旧值。
-    #[test]
-    fn save_connections_rolls_back_credentials_when_config_commit_fails() {
-        let backend = Arc::new(InMemoryBackend::new());
-        set_test_backend(backend.clone());
-        let storage = FileStorage::new(unique_temp_dir());
-
-        // 先保存成功（写入正式凭据 + 配置）。
-        let v1 = conn_with_password(1, "old-pw");
-        storage.save_connections(&[v1.clone()]).unwrap();
-
-        // 注入：下一次配置提交失败；再保存新密码。
-        crate::credential::fail_next_commit();
-        let v2 = conn_with_password(1, "new-pw");
-        assert!(storage.save_connections(&[v2.clone()]).is_err());
-
-        // 正式凭据仍是旧值（新值未被写入）。
-        assert_eq!(
-            backend
-                .peek(1, connection_secrets::DATABASE_PASSWORD)
-                .as_deref(),
-            Some("old-pw")
-        );
-        // 暂存键无残留。
-        assert!(backend.peek(1, "__staging__:database_password").is_none());
-        // 配置仍为旧连接（静默失效被阻止，连接资料保留）。
-        let loaded = storage.load_connections().unwrap();
-        assert_eq!(loaded.len(), 1);
-        clear_test_backend();
-    }
-
-    // ③ 多个密码槽位跨连接部分失败：第二连接暂存失败时，第一连接已写的暂存被清理，正式键均未写。
-    #[test]
-    fn save_connections_cleans_staging_on_multi_slot_failure() {
-        let backend = Arc::new(InMemoryBackend::new());
-        // 第二个连接的暂存写失败。
-        backend.fail_writes_with_prefix("2:__staging__:");
-        set_test_backend(backend.clone());
-        let storage = FileStorage::new(unique_temp_dir());
-
-        let c1 = conn_with_password(1, "pw1");
-        let c2 = conn_with_password(2, "pw2");
-        assert!(storage.save_connections(&[c1, c2]).is_err());
-
-        // 两连接的正式键都未写；第一连接的暂存被清理。
-        assert!(
-            backend
-                .peek(1, connection_secrets::DATABASE_PASSWORD)
-                .is_none()
-        );
-        assert!(
-            backend
-                .peek(2, connection_secrets::DATABASE_PASSWORD)
-                .is_none()
-        );
-        assert!(backend.peek(1, "__staging__:database_password").is_none());
-        clear_test_backend();
-    }
-
-    // ④ 正式键切换中途失败：已覆盖的键恢复旧值，配置保持旧版本，staging 无残留。
-    #[test]
-    fn save_connections_restores_formal_credentials_when_switch_fails() {
-        let backend = Arc::new(InMemoryBackend::new());
-        set_test_backend(backend.clone());
-        let storage = FileStorage::new(unique_temp_dir());
-
-        let old1 = conn_with_password(1, "old-1");
-        let old2 = conn_with_password(2, "old-2");
-        storage
-            .save_connections(&[old1.clone(), old2.clone()])
-            .unwrap();
-
-        // 第一项先写成新值，第二项失败一次；恢复阶段不再失败。
-        backend.fail_next_write("2:database_password");
-        let new1 = conn_with_password(1, "new-1");
-        let new2 = conn_with_password(2, "new-2");
-        assert!(storage.save_connections(&[new1, new2]).is_err());
-
-        assert_eq!(
-            backend
-                .peek(1, connection_secrets::DATABASE_PASSWORD)
-                .as_deref(),
-            Some("old-1")
-        );
-        assert_eq!(
-            backend
-                .peek(2, connection_secrets::DATABASE_PASSWORD)
-                .as_deref(),
-            Some("old-2")
-        );
-        assert!(backend.peek(1, "__staging__:database_password").is_none());
-        assert!(backend.peek(2, "__staging__:database_password").is_none());
-        let loaded = storage.load_connections().unwrap();
-        assert_eq!(loaded.len(), 2);
-        assert_eq!(
-            loaded[0]
-                .options
-                .get(PLAINTEXT_PASSWORD_OPTION)
-                .map(String::as_str),
-            Some("old-1")
-        );
-        clear_test_backend();
-    }
-
-    // ⑤ 读失败降级：凭据服务不可用（Unavailable）时，连接资料保留、不等于"没有连接"，
-    //    密码不回填（可重输）；失败不被吞成假成功，也不覆盖原配置。
-    #[test]
-    fn load_connections_preserves_connections_when_credential_unavailable() {
-        // 先写一条连接（含凭据写入）。
-        set_test_backend(Arc::new(InMemoryBackend::new()));
-        let storage = FileStorage::new(unique_temp_dir());
-        storage
-            .save_connections(&[conn_with_password(1, "pw")])
-            .unwrap();
-
-        // 切换为不可用后端，验证读仍返回该连接、且密码未回填。
-        set_test_backend(Arc::new(UnavailableBackend));
-        let loaded = storage.load_connections().unwrap();
-        assert_eq!(loaded.len(), 1, "凭据服务不可用不应导致连接列表为空");
-        assert!(
-            loaded[0].options.get(PLAINTEXT_PASSWORD_OPTION).is_none()
-                || loaded[0]
-                    .options
-                    .get(PLAINTEXT_PASSWORD_OPTION)
-                    .map(String::as_str)
-                    == Some(""),
-            "凭据不可用时密码不应被回填"
-        );
-        clear_test_backend();
-    }
-
-    // 平台目录解析：三平台 CI 各自原生运行，验证本平台分支（AI-01，方案 §4.1）。
-    #[test]
-    fn default_root_resolves_platform_data_dir() {
-        let root = FileStorage::default_root().expect("default_root 应能解析");
-        #[cfg(target_os = "macos")]
-        assert!(
-            root.ends_with("Library/Application Support/fluxdb"),
-            "macOS 根目录不符: {root:?}"
-        );
-        #[cfg(target_os = "windows")]
-        assert!(
-            root.ends_with("FluxDB") && root.to_string_lossy().contains("Local"),
-            "Windows 根目录应为 %LOCALAPPDATA%/FluxDB: {root:?}"
-        );
-        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-        assert!(
-            root.ends_with("fluxdb") && root.to_string_lossy().contains(".local/share"),
-            "Linux 根目录应为 XDG data/fluxdb: {root:?}"
-        );
-    }
-
-    #[test]
-    fn default_log_dir_is_absolute() {
-        let dir = FileStorage::default_log_dir();
-        assert!(dir.is_absolute(), "日志目录应为绝对路径: {dir:?}");
-        assert!(dir.ends_with("logs"), "日志目录应以 logs 结尾: {dir:?}");
-    }
-
-    #[test]
-    fn default_download_dir_is_absolute() {
-        assert!(FileStorage::default_download_dir().is_absolute());
-    }
-
-    // 权限收敛（方案 §12.2）：root 0o700、config/db 0o600，存量宽松权限文件也必须被收紧。
-    #[cfg(unix)]
-    #[test]
-    fn perms_are_tightened_for_root_config_and_db() {
-        use std::os::unix::fs::PermissionsExt;
-        let storage = FileStorage::new(unique_temp_dir());
-        storage.save_settings(&Settings::default()).unwrap();
-
-        let mode = |p: &std::path::Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode(&storage.root), 0o700, "root 应为 0o700");
-        assert_eq!(mode(&storage.config_path()), 0o600, "config 应为 0o600");
-
-        // 预置一个宽松权限的存量 config，再次保存应被收紧。
-        fs::set_permissions(storage.config_path(), fs::Permissions::from_mode(0o644)).unwrap();
-        storage.save_settings(&Settings::default()).unwrap();
-        assert_eq!(mode(&storage.config_path()), 0o600, "存量 config 应被收紧");
-
-        let conn = storage.open_sqlite().unwrap();
-        drop(conn);
-        assert_eq!(
-            mode(&sqlite::db_path(&storage.root)),
-            0o600,
-            "db 应为 0o600"
-        );
-    }
-
-    #[test]
-    fn missing_settings_returns_default() {
-        let storage = FileStorage::new(unique_temp_dir());
-
-        assert_eq!(storage.load_settings().unwrap(), Settings::default());
-    }
-
-    /// 迁移守卫：缺少后加字段的旧配置文件必须仍能加载。
-    ///
-    /// 这条测的是**新增字段是否带了 `#[serde(default...)]`**。漏了的话
-    /// `toml::from_str` 会整体失败，而 `app_boot` 处是
-    /// `load_settings().unwrap_or_default()` —— 结果就是**用户全部设置被静默重置**。
-    /// 这是唯一会破坏用户数据的失败模式，且平时跑不出来。
-    ///
-    /// 旧文件不是手写常量，而是从真实序列化产物里**删掉**这些字段得到：
-    /// 这样它永远等于「上个版本写出的文件」，也不会因无关必填字段增减而失效。
-    #[test]
-    fn settings_toml_missing_newer_fields_still_loads() {
-        const NEWER_FIELDS: [&str; 3] = [
-            "data_table_page_size",
-            "results_placement",
-            "redis_workbench_editor_width",
-        ];
-        let full = toml::to_string_pretty(&Settings::default()).unwrap();
-        let legacy: String = full
-            .lines()
-            .filter(|line| {
-                !NEWER_FIELDS
-                    .iter()
-                    .any(|field| line.trim_start().starts_with(field))
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        // 先确认真的删干净了，否则这条测试会退化成一个假绿。
-        for field in NEWER_FIELDS {
-            assert!(!legacy.contains(field), "{field} 应从旧配置文件里被删掉");
-        }
-
-        let parsed: Settings = toml::from_str(&legacy)
-            .expect("缺少后加字段的旧配置必须仍能加载，否则用户设置会被重置");
-        assert_eq!(parsed, Settings::default());
-    }
-
-    #[test]
-    fn secret_kinds_are_stable_and_delete_is_idempotent() {
-        assert_eq!(connection_secrets::DATABASE_PASSWORD, "database_password");
-        assert_eq!(connection_secrets::SSH_PASSWORD, "ssh_password");
-        let connection = conn_with_password(9, "secret");
-        let storage = FileStorage::new(unique_temp_dir());
-        storage.save_connections(&[connection.clone()]).unwrap();
-        storage.delete_connection_secrets(&connection);
-        storage.delete_connection_secrets(&connection);
-        assert!(
-            storage.load_connections().unwrap()[0]
-                .options
-                .get("password")
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn saves_and_loads_settings() {
-        let storage = FileStorage::new(unique_temp_dir());
-        let settings = Settings {
-            theme: Theme::Dark,
-            log_level: LogLevel::Debug,
-            log_path: "/tmp/gdb-test-logs".to_string(),
-            button_radius: 8,
-            large_radius: 12,
-            show_shadows: false,
-            focus_ring: false,
-            scrollbar_mode: fluxdb_core::ScrollbarMode::Always,
-            ui_density: fluxdb_core::UiDensity::Compact,
-            show_status_bar: false,
-            reduce_motion: true,
-            performance_diagnostics: true,
-            global_font_family: "Inter".to_string(),
-            light_theme: "Default Light".to_string(),
-            dark_theme: "Default Dark".to_string(),
-            page_size: 250,
-            data_table_page_size: 500,
-            show_sidebar: false,
-            show_inspector: true,
-            editor_font_size: 13,
-            editor_line_height: 18,
-            editor_tab_width: 2,
-            editor_word_wrap: true,
-            confirm_dangerous_sql: false,
-            confirm_dangerous_redis: false,
-            dangerous_sql_actions: std::collections::BTreeSet::from(["truncate".to_string()]),
-            enable_completion_index: true,
-            redis_workbench_editor_ratio: 63,
-            results_placement: fluxdb_core::ResultsPlacement::Right,
-            redis_workbench_editor_width: 900,
-            custom_keybindings: BTreeMap::from([(
-                "app.refresh".to_string(),
-                "ctrl-shift-r".to_string(),
-            )]),
-            backup_dir: String::new(),
-            mysqldump_path: String::new(),
-            mysql_client_dir: String::new(),
-            mysql_client_download_source: String::new(),
-            sqlite3_path: String::new(),
-            pg_dump_path: String::new(),
-            pg_client_dir: String::new(),
-            pg_client_download_source: String::new(),
-        };
-
-        storage.save_settings(&settings).unwrap();
-
-        assert_eq!(storage.load_settings().unwrap(), settings);
-    }
-
-    #[test]
-    fn saves_and_loads_saved_queries() {
-        let storage = FileStorage::new(unique_temp_dir());
-        let queries = vec![SavedQuery {
-            id: 1,
-            connection_id: ConnectionId(7),
-            database: Some("shop".to_string()),
-            schema: None,
-            name: "orders.sql".to_string(),
-            text: "select * from orders".to_string(),
-        }];
-
-        storage.save_saved_queries(&queries).unwrap();
-
-        assert_eq!(storage.load_saved_queries().unwrap(), queries);
-    }
-
-    #[test]
-    fn er_view_states_roundtrip_across_instances() {
-        let dir = unique_temp_dir();
-        let storage = FileStorage::new(&dir);
-        let scope = "1:demo:customers".to_string();
-        let mut states = std::collections::BTreeMap::new();
-        states.insert(
-            scope.clone(),
-            ErViewScopeState {
-                group: Some("public".to_string()),
-                custom_groups: std::collections::BTreeMap::from([(
-                    "核心业务".to_string(),
-                    vec!["orders".to_string()],
-                )]),
-                pinned: vec!["orders".to_string()],
-                positions: vec![
-                    ("customers".to_string(), 10.0, 20.0),
-                    ("orders".to_string(), 300.0, 20.0),
-                ],
-                view_port: Some(ErViewportState {
-                    pan_x: -123.5,
-                    pan_y: 88.25,
-                    scale: 0.65,
-                }),
-            },
-        );
-        storage.save_er_view_states(&states).unwrap();
-
-        // 新实例（模拟重启）读回一致。
-        let reloaded = FileStorage::new(&dir).load_er_view_states().unwrap();
-        assert_eq!(reloaded.get(&scope), states.get(&scope));
-    }
-
-    #[test]
-    fn er_view_state_legacy_without_custom_groups_still_loads() {
-        let legacy = r#"{"group":"public","pinned":[],"positions":[],"view_port":null}"#;
-        let state: ErViewScopeState = serde_json::from_str(legacy).unwrap();
-        assert!(state.custom_groups.is_empty());
-        assert_eq!(state.group.as_deref(), Some("public"));
-    }
-
-    #[test]
-    fn er_relationships_roundtrip_per_scope() {
-        use fluxdb_core::{
-            ErCardinality, ErCardinalityBasis, ErCardinalityBound, ErColumnPair, ErEnforcementKind,
-            ErFilterOp, ErLiteral, ErMatchCardinality, ErRelationSide, ErRelationship,
-            ErRelationshipEnforcement, ErRelationshipOrigin, ErRelationshipReview,
-            ErRequiredFilter, ErReviewState, ErValidity, ErValidityState,
-        };
-        let dir = unique_temp_dir();
-        let storage = FileStorage::new(&dir);
-        let rel = ErRelationship {
-            id: "r1".into(),
-            revision: 1,
-            left_entity: "e-orders".into(),
-            right_entity: "e-customers".into(),
-            role: "order_customer".into(),
-            column_pairs: vec![ErColumnPair {
-                left_column: "orders-customer_id".into(),
-                right_column: "customers-id".into(),
-            }],
-            required_filters: vec![ErRequiredFilter {
-                side: ErRelationSide::Right,
-                column_id: "customers-is_deleted".into(),
-                op: ErFilterOp::Eq,
-                literal: ErLiteral::Int(0),
-            }],
-            match_cardinality: ErMatchCardinality {
-                left_to_right: ErCardinality {
-                    min: ErCardinalityBound::Zero,
-                    max: ErCardinalityBound::One,
-                },
-                right_to_left: ErCardinality {
-                    min: ErCardinalityBound::Zero,
-                    max: ErCardinalityBound::Many,
-                },
-                basis: ErCardinalityBasis::UserAssertion,
-            },
-            origin: ErRelationshipOrigin::User,
-            review: ErRelationshipReview {
-                state: ErReviewState::Confirmed,
-                confirmed_revision: Some(1),
-                confirmed_by: Some("alice".into()),
-            },
-            enforcement: ErRelationshipEnforcement {
-                kind: ErEnforcementKind::None,
-                constraint_ref: None,
-                enforced: None,
-            },
-            validity: ErValidity {
-                state: ErValidityState::Current,
-                reason: None,
-            },
-            description: Some("订单归属于客户".into()),
-            evidence_refs: vec!["ev1".into()],
-        };
-        storage
-            .save_er_relationships("conn:db:", &[rel.clone()])
-            .unwrap();
-        // 同一作用域读回一致；跨作用域不串数据。
-        let loaded = storage.load_er_relationships("conn:db:").unwrap();
-        assert_eq!(loaded, vec![rel]);
-        assert!(
-            storage
-                .load_er_relationships("conn:other:")
-                .unwrap()
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn structure_snapshot_roundtrip_per_scope() {
-        use fluxdb_core::ErRebindColumn;
-        let storage = FileStorage::new(unique_temp_dir());
-        let entities = vec![
-            fluxdb_core::ErRebindEntity {
-                entity_id: "db:pub:orders".into(),
-                qualified_name: "public.orders".into(),
-                stable_id: None, // 无稳定对象标识，只按限定名/列名重绑（§5.2 第2/3/4步）。
-                columns: vec![ErRebindColumn {
-                    column_id: "db:pub:orders::id".into(),
-                    name: "id".into(),
-                    stable_id: None,
-                }],
-            },
-            fluxdb_core::ErRebindEntity {
-                entity_id: "db:pub:customers".into(),
-                qualified_name: "public.customers".into(),
-                stable_id: None,
-                columns: vec![
-                    ErRebindColumn {
-                        column_id: "db:pub:customers::id".into(),
-                        name: "id".into(),
-                        stable_id: None,
-                    },
-                    ErRebindColumn {
-                        column_id: "db:pub:customers::is_deleted".into(),
-                        name: "is_deleted".into(),
-                        stable_id: None,
-                    },
-                ],
-            },
-        ];
-        // 同一作用域读回一致；跨作用域不串。
-        storage
-            .save_er_structure_snapshot("conn:db:", &entities)
-            .unwrap();
-        assert_eq!(
-            storage.load_er_structure_snapshot("conn:db:").unwrap(),
-            entities
-        );
-        assert!(
-            storage
-                .load_er_structure_snapshot("conn:other:")
-                .unwrap()
-                .is_empty()
-        );
-    }
-
-    /// 构造一条 SQL 查询历史记录（默认只读查询）。
-    fn query_record(connection_id: u64, database: Option<&str>, text: &str) -> QueryHistoryRecord {
-        QueryHistoryRecord {
-            connection_id: ConnectionId(connection_id),
-            database: database.map(str::to_string),
-            schema: None,
-            text: text.to_string(),
-            tables: vec!["orders".to_string()],
-            operation_kind: OperationKind::Query,
-            success: true,
-            executed_at_unix_secs: 1_700_000_000,
-            object: None,
-            rollback_sql: None,
-            rollback_snapshot: None,
-            transaction_state: None,
-            message: None,
-            returned_rows: 0,
-            affected_rows: 0,
-            elapsed_ms: 0,
-        }
-    }
-
-    /// 构造一条不含凭据的连接（不触发本机凭据库写入）。
-    fn plain_connection(id: u64, kind: DatabaseKind, endpoint: Endpoint) -> ConnectionConfig {
-        ConnectionConfig {
-            id: ConnectionId(id),
-            name: format!("conn-{id}"),
-            kind,
-            endpoint,
-            options: BTreeMap::new(),
-            redis_profile: None,
-            mysql_profile: None,
-            postgres_profile: None,
-        }
-    }
-
-    #[test]
-    fn saves_loads_and_limits_query_history_per_scope() {
-        let storage = FileStorage::new(unique_temp_dir());
-        // 连接 7 超限 2 条，连接 8 只有 3 条：裁剪按作用域独立，互不影响。
-        let mut entries = (0..1002)
-            .map(|index| query_record(7, Some("shop"), &format!("select {index}")))
-            .collect::<Vec<_>>();
-        entries
-            .extend((0..3).map(|index| query_record(8, Some("shop"), &format!("select {index}"))));
-
-        storage.save_query_history(&entries).unwrap();
-
-        let loaded = storage.load_query_history().unwrap();
-        assert_eq!(
-            loaded.len(),
-            1003,
-            "连接 7 裁剪到 1000 条，连接 8 的 3 条不受影响"
-        );
-        assert_eq!(loaded[0].text, "select 2", "丢弃连接 7 最早的两条");
-        assert_eq!(loaded[999].text, "select 1001");
-        assert_eq!(loaded[1000].text, "select 0", "连接 8 的记录完整保留");
-    }
-
-    #[test]
-    fn query_history_round_trips_extra_fields_and_operation_kind() {
-        let storage = FileStorage::new(unique_temp_dir());
-        let mut record = query_record(7, Some("shop"), "update t set a=1");
-        record.operation_kind = OperationKind::Write;
-        record.schema = Some("public".to_string());
-        record.tables = vec!["orders".to_string(), "items".to_string()];
-        record.object = Some("orders".to_string());
-        record.transaction_state = Some("committed".to_string());
-        record.message = Some("1 行受影响".to_string());
-        record.affected_rows = 1;
-
-        storage.save_query_history(&[record.clone()]).unwrap();
-
-        assert_eq!(storage.load_query_history().unwrap(), vec![record]);
-    }
-
-    /// 新版本写入的未知操作类别取值，旧版本读回按 `unknown` 兜底（不报错）。
-    #[test]
-    fn unknown_operation_kind_value_falls_back_to_unknown() {
-        let storage = FileStorage::new(unique_temp_dir());
-        storage
-            .save_query_history(&[query_record(7, Some("shop"), "select 1")])
-            .unwrap();
-        let conn = crate::sqlite::open(&storage.root).unwrap();
-        conn.execute("UPDATE history SET operation_kind = 'mystery'", [])
-            .unwrap();
-
-        let loaded = storage.load_query_history().unwrap();
-        assert_eq!(loaded[0].operation_kind, OperationKind::Unknown);
-    }
-
-    /// 历史行的 `kind` 按连接解析成数据库类型；连接删除时其历史级联清理。
-    #[test]
-    fn history_kind_follows_connection_and_cascades_on_delete() {
-        let storage = FileStorage::new(unique_temp_dir());
-        let mysql = plain_connection(
-            1,
-            DatabaseKind::MySql,
-            Endpoint::Tcp {
-                host: "127.0.0.1".to_string(),
-                port: 3306,
-                database: Some("app".to_string()),
-            },
-        );
-        let sqlite = plain_connection(
-            2,
-            DatabaseKind::Sqlite,
-            Endpoint::SqliteFile {
-                path: "demo.db".into(),
-                read_only: false,
-            },
-        );
-        storage.save_connections(&[mysql, sqlite.clone()]).unwrap();
-        storage
-            .save_query_history(&[
-                query_record(1, Some("app"), "select mysql"),
-                query_record(2, None, "select sqlite"),
-            ])
-            .unwrap();
-
-        assert_eq!(stored_history_kinds(&storage), vec!["mysql", "sqlite"]);
-
-        // 连接 1 被删除（保存剩下的连接列表）→ 它的历史同事务清理。
-        storage.save_connections(&[sqlite]).unwrap();
-
-        let loaded = storage.load_query_history().unwrap();
-        assert_eq!(loaded.len(), 1);
-        assert_eq!(loaded[0].connection_id, ConnectionId(2));
-    }
-
-    /// 连接表的定位列/通用列是结构体的投影：tcp / file / uri 三种定位等值往返。
-    #[test]
-    fn connections_round_trip_endpoint_columns_and_extra() {
-        let storage = FileStorage::new(unique_temp_dir());
-        let mut mysql = plain_connection(
-            1,
-            DatabaseKind::MySql,
-            Endpoint::Tcp {
-                host: "db.internal".to_string(),
-                port: 3307,
-                database: Some("app".to_string()),
-            },
-        );
-        mysql.options.insert("ssl".to_string(), "true".to_string());
-        let sqlite = plain_connection(
-            2,
-            DatabaseKind::Sqlite,
-            Endpoint::SqliteFile {
-                path: "/tmp/demo.db".into(),
-                read_only: true,
-            },
-        );
-        let mongo = plain_connection(
-            3,
-            DatabaseKind::MongoDb,
-            Endpoint::Uri {
-                uri: "mongodb://localhost:27017".to_string(),
-            },
-        );
-
-        storage
-            .save_connections(&[mysql.clone(), sqlite.clone(), mongo.clone()])
-            .unwrap();
-
-        assert_eq!(
-            storage.load_connections().unwrap(),
-            vec![mysql, sqlite, mongo]
-        );
-    }
-
-    /// 读取 history 表里按写入顺序排列的数据库类型列。
-    fn stored_history_kinds(storage: &FileStorage) -> Vec<String> {
-        let conn = crate::sqlite::open(&storage.root).unwrap();
-        let mut stmt = conn
-            .prepare("SELECT kind FROM history ORDER BY id")
-            .unwrap();
-        let kinds = stmt
-            .query_map([], |row| row.get::<_, String>(0))
-            .unwrap()
-            .map(|row| row.unwrap())
-            .collect();
-        kinds
-    }
-
-    #[test]
-    fn saves_and_loads_backup_records() {
-        let storage = FileStorage::new(unique_temp_dir());
-        let records = vec![
-            BackupRecord {
-                manifest: None,
-                id: "bk-1".to_string(),
-                connection_id: ConnectionId(4),
-                database: "shop".to_string(),
-                output_path: "/tmp/fluxdb/shop/shop_20260917.sql".to_string(),
-                created_unix: 1_700_000_000,
-                size: 2048,
-                tables: Some(vec!["orders".to_string()]),
-                include_views: false,
-                note: "周备份".to_string(),
-            },
-            BackupRecord {
-                manifest: None,
-                id: "bk-2".to_string(),
-                connection_id: ConnectionId(4),
-                database: "shop".to_string(),
-                output_path: "/tmp/fluxdb/shop/shop_20260910.sql".to_string(),
-                created_unix: 1_690_000_000,
-                size: 1024,
-                tables: None,
-                include_views: true,
-                note: String::new(),
-            },
-        ];
-
-        storage.save_backup_records(&records).unwrap();
-
-        let loaded = storage.load_backup_records().unwrap();
-        assert_eq!(loaded, records);
-    }
-
-    /// Key 搜索历史不携带时间：整表替换时沿用同键旧行的时间，避免每次落盘刷新时间。
-    #[test]
-    fn redis_key_search_history_keeps_first_seen_time_across_replaces() {
-        let storage = FileStorage::new(unique_temp_dir());
-        let entry = |text: &str| RedisKeySearchHistoryRecord {
-            connection_id: ConnectionId(4),
-            database: Some("0".to_string()),
-            text: text.to_string(),
-        };
-        storage
-            .save_redis_key_search_history(&[entry("user:*")])
-            .unwrap();
-        let first_seen = stored_key_search_time(&storage, "user:*");
-
-        storage
-            .save_redis_key_search_history(&[entry("user:*"), entry("order:*")])
-            .unwrap();
-
-        assert_eq!(
-            stored_key_search_time(&storage, "user:*"),
-            first_seen,
-            "已有词应沿用首次落盘时间"
-        );
-        assert!(
-            stored_key_search_time(&storage, "order:*") >= first_seen,
-            "新词应记当前时间"
-        );
-    }
-
-    /// 读取 Key 搜索历史某条文本的落盘时间（该类别通过接口读不到时间，测试直接查表）。
-    fn stored_key_search_time(storage: &FileStorage, text: &str) -> u64 {
-        let conn = crate::sqlite::open(&storage.root).unwrap();
-        conn.query_row(
-            "SELECT executed_at_unix_secs FROM history
-              WHERE category = ?1 AND text = ?2",
-            rusqlite::params![crate::history_store::CATEGORY_REDIS_KEY_SEARCH, text],
-            |row| row.get::<_, i64>(0),
-        )
-        .unwrap() as u64
-    }
-
-    #[test]
-    fn saves_and_loads_redis_key_search_history() {
-        let storage = FileStorage::new(unique_temp_dir());
-        let entries = vec![
-            RedisKeySearchHistoryRecord {
-                connection_id: ConnectionId(4),
-                database: Some("0".to_string()),
-                text: "user:*".to_string(),
-            },
-            RedisKeySearchHistoryRecord {
-                connection_id: ConnectionId(4),
-                database: Some("1".to_string()),
-                text: "order:*".to_string(),
-            },
-        ];
-
-        storage.save_redis_key_search_history(&entries).unwrap();
-
-        assert_eq!(storage.load_redis_key_search_history().unwrap(), entries);
-    }
-
-    #[test]
-    fn missing_redis_key_search_history_returns_empty() {
-        let storage = FileStorage::new(unique_temp_dir());
-
-        assert_eq!(storage.load_redis_key_search_history().unwrap(), Vec::new());
-    }
-
-    #[test]
-    fn saves_loads_and_clears_completion_index_without_plaintext_path() {
-        let storage = FileStorage::new(unique_temp_dir());
-        let connection = sample_connections()[0].clone();
-        let snapshot = sample_completion_snapshot(connection.id);
-
-        storage
-            .save_completion_index(&connection, Some("production"), None, &snapshot)
-            .unwrap();
-
-        assert_eq!(
-            storage
-                .load_completion_index(&connection, Some("production"), None)
-                .unwrap(),
-            Some(snapshot)
-        );
-        let index_root = storage.completion_index_root();
-        let paths = fs::read_dir(index_root.join("connections"))
-            .unwrap()
-            .map(|entry| entry.unwrap().path().display().to_string())
-            .collect::<Vec<_>>();
-        assert!(paths.iter().all(|path| !path.contains("production")));
-        let database_dir = storage.completion_index_dir(&connection, Some("production"), None);
-        assert!(database_dir.join("meta.toml").exists());
-        assert!(database_dir.join("tables.toml").exists());
-        assert!(database_dir.join("columns.toml").exists());
-        assert!(!database_dir.join("index.toml").exists());
-
-        storage
-            .delete_completion_index_for_connection(&connection)
-            .unwrap();
-        assert!(
-            storage
-                .load_completion_index(&connection, Some("production"), None)
-                .unwrap()
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn completion_index_save_skips_unchanged_split_files() {
-        let storage = FileStorage::new(unique_temp_dir());
-        let connection = sample_connections()[0].clone();
-        let snapshot = sample_completion_snapshot(connection.id);
-
-        storage
-            .save_completion_index(&connection, Some("production"), None, &snapshot)
-            .unwrap();
-        let columns_path = storage
-            .completion_index_dir(&connection, Some("production"), None)
-            .join("columns.toml");
-        let first_modified = fs::metadata(&columns_path).unwrap().modified().unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(20));
-
-        storage
-            .save_completion_index(&connection, Some("production"), None, &snapshot)
-            .unwrap();
-
-        assert_eq!(
-            fs::metadata(columns_path).unwrap().modified().unwrap(),
-            first_modified
-        );
-    }
-
-    #[test]
-    fn completion_index_loads_legacy_single_file_snapshot() {
-        let storage = FileStorage::new(unique_temp_dir());
-        let connection = sample_connections()[0].clone();
-        let snapshot = sample_completion_snapshot(connection.id);
-        let legacy_path =
-            storage.legacy_completion_index_path(&connection, Some("production"), None);
-        fs::create_dir_all(legacy_path.parent().unwrap()).unwrap();
-        fs::write(&legacy_path, toml::to_string_pretty(&snapshot).unwrap()).unwrap();
-
-        assert_eq!(
-            storage
-                .load_completion_index(&connection, Some("production"), None)
-                .unwrap(),
-            Some(snapshot)
-        );
-    }
-
-    /// 表指纹是 64 位哈希，取值范围可能超出 TOML 的 i64 整数上限：必须能落盘并原值读回。
-    ///
-    /// 回归：指纹曾按整数写入，哈希最高位为 1 时整份快照序列化即失败（错误一度被调用方
-    /// 吞掉，表现为「补全索引从不落盘、每次冷启动重查目录」）。
-    #[test]
-    fn completion_index_round_trips_table_fingerprints_beyond_i64() {
-        let storage = FileStorage::new(unique_temp_dir());
-        let connection = sample_connections()[0].clone();
-        let mut snapshot = sample_completion_snapshot(connection.id);
-        snapshot.meta.table_fingerprints = vec![TableFingerprint {
-            database: Some("production".to_string()),
-            schema: None,
-            table: "Product".to_string(),
-            fingerprint: u64::MAX,
-        }];
-
-        storage
-            .save_completion_index(&connection, Some("production"), None, &snapshot)
-            .expect("溢出 i64 的指纹也必须能落盘");
-
-        assert_eq!(
-            storage
-                .load_completion_index(&connection, Some("production"), None)
-                .unwrap(),
-            Some(snapshot)
-        );
-    }
-
-    #[test]
-    fn settings_save_preserves_config_only_secret_key() {
-        let storage = FileStorage::new(unique_temp_dir());
-        let key = "ab".repeat(32);
-        fs::create_dir_all(&storage.root).unwrap();
-        fs::write(
-            storage.config_path(),
-            format!("connection_secret_key = \"{key}\"\n"),
-        )
-        .unwrap();
-        let settings = Settings::default();
-        storage.save_settings(&settings).unwrap();
-        assert_eq!(storage.load_settings().unwrap(), settings);
-        let document: toml::Value = fs::read_to_string(storage.config_path())
-            .unwrap()
-            .parse()
-            .unwrap();
-        assert_eq!(
-            document
-                .get("connection_secret_key")
-                .and_then(toml::Value::as_str),
-            Some(key.as_str())
-        );
-    }
-
-    #[test]
-    fn missing_connections_returns_empty_list() {
-        let storage = FileStorage::new(unique_temp_dir());
-
-        assert_eq!(storage.load_connections().unwrap(), Vec::new());
-    }
-
-    #[test]
-    fn saves_and_loads_connections_without_plaintext_password() {
-        let storage = FileStorage::new(unique_temp_dir());
-        let connections = sample_connections();
-
-        storage.save_connections(&connections).unwrap();
-
-        let loaded = storage.load_connections().unwrap();
-        // 临时目录也使用加密凭据表，读取后完整回填内存。
-        assert_eq!(loaded[0], connections[0]);
-        assert_eq!(loaded[1], connections[1]);
-        assert_eq!(loaded[2], connections[2]);
-        // Redis 档案的非密钥字段应保留。
-        let redis = loaded[3].redis_profile.as_ref().expect("redis profile");
-        assert_eq!(redis.basic.host, "127.0.0.1");
-        assert_eq!(redis.ssh.host, "bastion");
-        assert_eq!(redis.basic.password.inline.as_deref(), Some("topsecret"));
-
-        // sqlite 是二进制 WAL 文件，按字节读取断言明文密钥不入库。
-        let bytes = fs::read(sqlite::db_path(&storage.root)).unwrap();
-        for forbidden in ["topsecret", "sshpass", "do-not-save-this"] {
-            assert!(
-                !bytes
-                    .windows(forbidden.len())
-                    .any(|w| w == forbidden.as_bytes()),
-                "明文密钥不应落入 sqlite: {forbidden}"
-            );
-        }
-    }
-
-    #[test]
-    fn import_connections_if_empty_keeps_existing_connections() {
-        let storage = FileStorage::new(unique_temp_dir());
-        let defaults = sample_connections();
-
-        assert_eq!(
-            storage.import_connections_if_empty(&defaults).unwrap(),
-            defaults
-        );
-
-        let existing = vec![defaults[0].clone()];
-        storage.save_connections(&existing).unwrap();
-
-        assert_eq!(
-            storage.import_connections_if_empty(&defaults).unwrap(),
-            existing
-        );
-    }
-
-    #[test]
-    fn uri_credentials_are_encrypted_and_recovered_by_connection_id() {
-        let storage = FileStorage::new(unique_temp_dir());
-        let uri = "mongodb://alice:uri-secret@host/db?password=query-secret";
-        let connection = ConnectionConfig {
-            id: ConnectionId(31),
-            name: "uri".into(),
-            kind: DatabaseKind::MongoDb,
-            endpoint: Endpoint::Uri { uri: uri.into() },
-            options: BTreeMap::new(),
-            redis_profile: None,
-            mysql_profile: None,
-            postgres_profile: None,
-        };
-        storage.save_connections(&[connection.clone()]).unwrap();
-        let conn = storage.open_sqlite().unwrap();
-        let disk_uri: String = conn
-            .query_row("SELECT uri FROM connections WHERE id = 31", [], |r| {
-                r.get(0)
-            })
-            .unwrap();
-        assert!(disk_uri.is_empty());
-        assert_eq!(
-            storage.load_connections().unwrap(),
-            vec![connection.clone()]
-        );
-        storage.delete_connection_secrets(&connection);
-        assert_eq!(
-            storage.load_connections().unwrap()[0].endpoint,
-            Endpoint::Uri { uri: String::new() }
-        );
-    }
-
-    #[test]
-    fn url_params_are_encrypted_and_restored() {
-        let storage = FileStorage::new(unique_temp_dir());
-        let mut connection = sample_connections()[0].clone();
-        connection
-            .options
-            .insert("url_params".into(), "?password=very-sensitive".into());
-        storage.save_connections(&[connection.clone()]).unwrap();
-        let db = storage.open_sqlite().unwrap();
-        let extra: String = db
-            .query_row(
-                "SELECT extra_json FROM connections WHERE id = ?1",
-                [connection.id.0],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert!(!extra.contains("very-sensitive"));
-        assert_eq!(storage.load_connections().unwrap(), vec![connection]);
-    }
-
-    #[test]
-    fn drops_plaintext_secret_options_when_saving_connections() {
-        let storage = FileStorage::new(unique_temp_dir());
-        let mut connections = sample_connections();
-        connections[0]
-            .options
-            .insert("password".to_string(), "do-not-save-this".to_string());
-
-        storage.save_connections(&connections).unwrap();
-
-        // sqlite 是二进制文件，按字节读取断言明文密钥值不入库；
-        // profile 里字段名含 password 属正常结构，不在校验范围。
-        let bytes = fs::read(sqlite::db_path(&storage.root)).unwrap();
-        assert!(
-            !bytes
-                .windows("do-not-save-this".len())
-                .any(|w| w == "do-not-save-this".as_bytes()),
-            "明文密钥值不应落入 sqlite"
-        );
-        assert_eq!(
-            storage.load_connections().unwrap()[0]
-                .options
-                .get("password")
-                .map(String::as_str),
-            Some("do-not-save-this")
-        );
-    }
-
-    #[test]
-    fn mysql_profile_strips_secret_inlines_and_enumerates_slots() {
-        use fluxdb_core::{
-            MysqlBasicOptions, MysqlConnectionProfile, MysqlProxy, MysqlProxyType, MysqlSshOptions,
-            MysqlTransportLayer,
-        };
-        let mut profile = MysqlConnectionProfile {
-            basic: MysqlBasicOptions {
-                host: "db".into(),
-                port: 3306,
-                password: SecretRef::inline("mysql-secret"),
-                ..Default::default()
-            },
-            transport: vec![
-                MysqlTransportLayer::Ssh(MysqlSshOptions {
-                    enabled: true,
-                    host: "jump".into(),
-                    port: 22,
-                    username: "bob".into(),
-                    password: SecretRef::inline("ssh-secret"),
-                    passphrase: SecretRef::inline("ssh-pass"),
-                    ..Default::default()
-                }),
-                MysqlTransportLayer::Proxy(MysqlProxy {
-                    enabled: true,
-                    proxy_type: MysqlProxyType::Socks5,
-                    host: "proxy".into(),
-                    port: 1080,
-                    password: SecretRef::inline("proxy-secret"),
-                    ..Default::default()
-                }),
-            ],
-            ..Default::default()
-        };
-
-        // 槽位枚举：基础密码 + SSH 密码 + SSH 口令 + 代理密码。
-        let suffixes: Vec<_> = mysql_profile_secret_slots(&profile)
-            .into_iter()
-            .map(|(s, _)| s)
-            .collect();
-        assert_eq!(
-            suffixes,
-            vec![
-                connection_secrets::DATABASE_PASSWORD,
-                connection_secrets::SSH_PASSWORD,
-                connection_secrets::SSH_PASSPHRASE,
-                connection_secrets::PROXY_PASSWORD
-            ]
-        );
-
-        // 剥离后所有内联密钥清空。
-        for (_, slot) in mysql_profile_secret_slots_mut(&mut profile) {
-            slot.inline = None;
-        }
-        assert!(profile.basic.password.inline.is_none());
-        let ssh = &profile.transport[0];
-        let MysqlTransportLayer::Ssh(ssh) = ssh else {
-            panic!("expected ssh")
-        };
-        assert!(ssh.password.inline.is_none());
-        assert!(ssh.passphrase.inline.is_none());
-        let proxy = &profile.transport[1];
-        let MysqlTransportLayer::Proxy(proxy) = proxy else {
-            panic!("expected proxy")
-        };
-        assert!(proxy.password.inline.is_none());
-    }
-
-    #[test]
-    fn postgres_profile_strips_secret_inlines_and_enumerates_slots() {
-        use fluxdb_core::{
-            PostgresBasicOptions, PostgresConnectionProfile, PostgresProxy, PostgresProxyType,
-            PostgresSshOptions, PostgresTransportLayer,
-        };
-        let mut profile = PostgresConnectionProfile {
-            basic: PostgresBasicOptions {
-                host: "db".into(),
-                port: 5432,
-                username: "postgres".into(),
-                password: SecretRef::inline("pg-secret"),
-                ..Default::default()
-            },
-            transport: vec![
-                PostgresTransportLayer::Ssh(PostgresSshOptions {
-                    enabled: true,
-                    host: "jump".into(),
-                    port: 22,
-                    username: "bob".into(),
-                    password: SecretRef::inline("ssh-secret"),
-                    passphrase: SecretRef::inline("ssh-pass"),
-                    ..Default::default()
-                }),
-                PostgresTransportLayer::Proxy(PostgresProxy {
-                    enabled: true,
-                    proxy_type: PostgresProxyType::Socks5,
-                    host: "proxy".into(),
-                    port: 1080,
-                    password: SecretRef::inline("proxy-secret"),
-                    ..Default::default()
-                }),
-            ],
-            ..Default::default()
-        };
-
-        // 槽位枚举：基础密码 + SSH 密码 + SSH 口令 + 代理密码。
-        let suffixes: Vec<_> = postgres_profile_secret_slots(&profile)
-            .into_iter()
-            .map(|(s, _)| s)
-            .collect();
-        assert_eq!(
-            suffixes,
-            vec![
-                connection_secrets::DATABASE_PASSWORD,
-                connection_secrets::SSH_PASSWORD,
-                connection_secrets::SSH_PASSPHRASE,
-                connection_secrets::PROXY_PASSWORD
-            ]
-        );
-
-        // 剥离后所有内联密钥清空。
-        for (_, slot) in postgres_profile_secret_slots_mut(&mut profile) {
-            slot.inline = None;
-        }
-        assert!(profile.basic.password.inline.is_none());
-        let ssh = &profile.transport[0];
-        let PostgresTransportLayer::Ssh(ssh) = ssh else {
-            panic!("expected ssh")
-        };
-        assert!(ssh.password.inline.is_none());
-        assert!(ssh.passphrase.inline.is_none());
-        let proxy = &profile.transport[1];
-        let PostgresTransportLayer::Proxy(proxy) = proxy else {
-            panic!("expected proxy")
-        };
-        assert!(proxy.password.inline.is_none());
-    }
-
-    #[test]
-    fn saves_and_loads_sidebar_layout() {
-        let storage = FileStorage::new(unique_temp_dir());
-        let connections = sample_connections();
-        storage.save_connections(&connections).unwrap();
-
-        let layout = SidebarLayout {
-            groups: vec![ConnectionGroup {
-                id: ConnectionGroupId(1),
-                name: "开发".to_string(),
-                collapsed: true,
-            }],
-            order: vec![
-                SidebarOrderEntry::Group {
-                    id: ConnectionGroupId(1),
-                    connection_ids: vec![ConnectionId(1)],
-                },
-                SidebarOrderEntry::Connection {
-                    id: ConnectionId(2),
-                },
-            ],
-            table_folders: BTreeMap::from([(
-                "1:main:tables".to_string(),
-                vec!["业务".to_string(), "日志".to_string()],
-            )]),
-            table_folder_assignments: BTreeMap::from([(
-                "1:main::orders".to_string(),
-                ("1:main:tables".to_string(), "业务".to_string()),
-            )]),
-        };
-
-        storage.save_sidebar_layout(&connections, &layout).unwrap();
-
-        let mut expected = layout;
-        expected.repair(&connections);
-        assert_eq!(storage.load_sidebar_layout(&connections).unwrap(), expected);
-    }
-
-    fn unique_temp_dir() -> PathBuf {
-        let counter = TEMP_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
-        std::env::temp_dir().join(format!(
-            "fluxdb-storage-test-{}-{}-{}",
-            std::process::id(),
-            counter,
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ))
-    }
-
-    fn sample_completion_snapshot(connection_id: ConnectionId) -> CompletionIndexSnapshot {
-        CompletionIndexSnapshot {
-            connection_id,
-            database: Some("production".to_string()),
-            schema: None,
-            tables: vec![TableRef {
-                database: Some("production".to_string()),
-                schema: None,
-                name: "Product".to_string(),
-                kind: ObjectKind::Table,
-                rows: None,
-                comment: None,
-            }],
-            columns: vec![ColumnRef {
-                database: Some("production".to_string()),
-                schema: None,
-                table: "Product".to_string(),
-                column: "name".to_string(),
-                type_name: Some("varchar(255)".to_string()),
-                nullable: false,
-                primary_key: false,
-                ordinal_position: Some(2),
-                comment: None,
-            }],
-            routines: Vec::new(),
-            triggers: Vec::new(),
-            meta: CompletionIndexMeta {
-                app_index_version: COMPLETION_INDEX_VERSION,
-                db_kind: DatabaseKind::MySql,
-                last_indexed_at: 1,
-                last_verified_at: 1,
-                ttl_seconds: 1800,
-                dirty: false,
-                table_count: 1,
-                table_fingerprints: Vec::new(),
-            },
-        }
-    }
-
-    fn sample_connections() -> Vec<ConnectionConfig> {
-        vec![
-            ConnectionConfig {
-                id: ConnectionId(1),
-                name: "MySQL Local".to_string(),
-                kind: DatabaseKind::MySql,
-                endpoint: Endpoint::Tcp {
-                    host: "127.0.0.1".to_string(),
-                    port: 3306,
-                    database: Some("app".to_string()),
-                },
-                options: BTreeMap::new(),
-                redis_profile: None,
-                mysql_profile: None,
-                postgres_profile: None,
-            },
-            ConnectionConfig {
-                id: ConnectionId(2),
-                name: "SQLite Demo".to_string(),
-                kind: DatabaseKind::Sqlite,
-                endpoint: Endpoint::SqliteFile {
-                    path: "demo.db".into(),
-                    read_only: false,
-                },
-                options: BTreeMap::new(),
-                redis_profile: None,
-                mysql_profile: None,
-                postgres_profile: None,
-            },
-            ConnectionConfig {
-                id: ConnectionId(3),
-                name: "Mongo Dev".to_string(),
-                kind: DatabaseKind::MongoDb,
-                endpoint: Endpoint::Uri {
-                    uri: "mongodb://localhost:27017".to_string(),
-                },
-                options: BTreeMap::new(),
-                redis_profile: None,
-                mysql_profile: None,
-                postgres_profile: None,
-            },
-            ConnectionConfig {
-                id: ConnectionId(4),
-                name: "Redis Cache".to_string(),
-                kind: DatabaseKind::Redis,
-                endpoint: Endpoint::Tcp {
-                    host: "127.0.0.1".to_string(),
-                    port: 6379,
-                    database: Some("0".to_string()),
-                },
-                options: BTreeMap::new(),
-                redis_profile: Some(RedisConnectionProfile {
-                    basic: fluxdb_core::RedisBasicOptions {
-                        host: "127.0.0.1".to_string(),
-                        port: 6379,
-                        database: Some("0".to_string()),
-                        username: Some("default".to_string()),
-                        password: SecretRef::inline("topsecret"),
-                    },
-                    ssh: fluxdb_core::RedisSshOptions {
-                        enabled: true,
-                        host: "bastion".to_string(),
-                        port: 22,
-                        username: "suv".to_string(),
-                        password: SecretRef::inline("sshpass"),
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                }),
-                mysql_profile: None,
-                postgres_profile: None,
-            },
-        ]
-    }
-
-    fn redis_record(
-        id: u64,
-        connection_id: u64,
-        database: u32,
-        text: &str,
-    ) -> RedisWorkbenchHistoryRecord {
-        RedisWorkbenchHistoryRecord {
-            id,
-            connection_id: ConnectionId(connection_id),
-            database,
-            text: text.to_string(),
-            success: true,
-            executed_at_unix_secs: 1000 + id,
-            summary: "1 个命令 · 成功 1".to_string(),
-            source: "workbench".to_string(),
-        }
-    }
-
-    #[test]
-    fn saves_and_loads_redis_workbench_history_round_trip() {
-        let storage = FileStorage::new(unique_temp_dir());
-        let entries = vec![
-            redis_record(0, 1, 0, "GET a"),
-            redis_record(0, 1, 1, "GET b"),
-            redis_record(0, 2, 0, "SET k v"),
-        ];
-
-        storage.save_redis_workbench_history(&entries).unwrap();
-
-        // 记录 ID 由数据库按 rowid 分配（写入时忽略传入 id），其余字段等值往返。
-        let loaded = storage.load_redis_workbench_history().unwrap();
-        assert_eq!(
-            loaded.iter().map(|record| record.id).collect::<Vec<_>>(),
-            vec![1, 2, 3],
-            "ID 按写入顺序由 rowid 分配"
-        );
-        let normalized = loaded
-            .into_iter()
-            .map(|mut record| {
-                record.id = 0;
-                record
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(normalized, entries);
-    }
-
-    #[test]
-    fn missing_redis_workbench_history_returns_empty() {
-        let storage = FileStorage::new(unique_temp_dir());
-        assert!(storage.load_redis_workbench_history().unwrap().is_empty());
-    }
-
-    #[test]
-    fn save_redis_workbench_history_truncates_to_per_scope_limit() {
-        let storage = FileStorage::new(unique_temp_dir());
-        // 同一作用域写入 1005 条，只保留最近 1000 条（丢弃最早 5 条）。
-        let entries: Vec<_> = (0..1005)
-            .map(|i| redis_record(0, 1, 0, &format!("CMD {i}")))
-            .collect();
-
-        storage.save_redis_workbench_history(&entries).unwrap();
-
-        let loaded = storage.load_redis_workbench_history().unwrap();
-        assert_eq!(loaded.len(), 1000, "应裁剪到最近 1000 条");
-        assert_eq!(loaded[0].text, "CMD 5", "最早的 5 条应被丢弃");
-        assert_eq!(loaded[999].text, "CMD 1004", "最新一条应保留");
-    }
 }

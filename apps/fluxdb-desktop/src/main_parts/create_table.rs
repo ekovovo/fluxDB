@@ -42,48 +42,11 @@ impl NavicatMain {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Entity<InputState> {
-        self.create_table_input_with_rows(key, placeholder, value, None, window, cx)
-    }
-
-    fn create_table_multiline_input(
-        &mut self,
-        key: CreateTableInputKey,
-        placeholder: &'static str,
-        value: &str,
-        rows: usize,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Entity<InputState> {
-        self.create_table_input_with_rows(key, placeholder, value, Some(rows), window, cx)
-    }
-
-    fn create_table_input_with_rows(
-        &mut self,
-        key: CreateTableInputKey,
-        placeholder: &'static str,
-        value: &str,
-        rows: Option<usize>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Entity<InputState> {
         if !self.create_table_inputs.contains_key(&key) {
             let input = cx.new(|cx| {
-                let mut input = InputState::new(window, cx)
+                InputState::new(window, cx)
                     .placeholder(placeholder)
-                    .default_value(value.to_string());
-                if let Some(rows) = rows {
-                    input = input.multi_line(true).rows(rows);
-                }
-                if matches!(
-                    key,
-                    CreateTableInputKey::TriggerBody(_, _) | CreateTableInputKey::TablePartitionSql(_)
-                ) {
-                    input = input
-                        .code_editor(SQL_HIGHLIGHT_LANGUAGE)
-                        .line_number(true)
-                        .legacy_soft_wrap(false);
-                }
-                input
+                    .default_value(value.to_string())
             });
             let subscription = cx.subscribe(&input, move |this, input, event: &InputEvent, cx| {
                 if matches!(event, InputEvent::Change) {
@@ -1291,11 +1254,10 @@ fn create_table_fields(
                 window,
                 cx,
             ),
-            comment_editor_input: this.create_table_multiline_input(
+            comment_editor_input: this.create_table_input(
                 CreateTableInputKey::ColumnCommentEditor(tab_id, column.id),
                 "输入字段注释...",
                 &column.comment,
-                8,
                 window,
                 cx,
             ),
@@ -1525,7 +1487,7 @@ fn create_table_primary_index_fields(create: &CreateTableState) -> Option<String
         .iter()
         .filter(|column| column.primary_key && !column.name.trim().is_empty())
         .map(|column| {
-            let mut part = create_table_quote_identifier(column.name.trim());
+            let mut part = fluxdb_core::MySqlDialect.quote_identifier(column.name.trim());
             if column.primary_key && !column.key_length.trim().is_empty() {
                 part.push('(');
                 part.push_str(column.key_length.trim());
@@ -2450,7 +2412,7 @@ fn create_table_index_fields_summary(index: &CreateTableIndex) -> String {
         .iter()
         .filter(|column| !column.name.trim().is_empty())
         .map(|column| {
-            let mut part = create_table_quote_identifier(column.name.trim());
+            let mut part = fluxdb_core::MySqlDialect.quote_identifier(column.name.trim());
             if !column.sub_part.trim().is_empty() {
                 part.push('(');
                 part.push_str(column.sub_part.trim());
@@ -2468,10 +2430,6 @@ fn create_table_index_fields_summary(index: &CreateTableIndex) -> String {
         })
         .collect::<Vec<_>>()
         .join(", ")
-}
-
-fn create_table_quote_identifier(value: &str) -> String {
-    format!("`{}`", value.replace('`', "``"))
 }
 
 fn create_table_labeled_input(

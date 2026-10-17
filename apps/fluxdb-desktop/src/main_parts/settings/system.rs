@@ -486,6 +486,10 @@ fn settings_section_label(section: SettingsPanelSection) -> &'static str {
         SettingsPanelSection::Data => "数据",
         SettingsPanelSection::ConnectionSecurity => "连接与安全",
         SettingsPanelSection::DatabaseSupport => "数据库支持",
+        SettingsPanelSection::AiModels => "大模型",
+        SettingsPanelSection::AiToolsMcp => "工具与 MCP",
+        SettingsPanelSection::AiAgents => "Agent 配置",
+        SettingsPanelSection::AiSessions => "会话历史",
         SettingsPanelSection::About => "关于",
     }
 }
@@ -498,6 +502,10 @@ fn settings_section_description(section: SettingsPanelSection) -> &'static str {
         SettingsPanelSection::System => "启动、诊断、本地数据和高级选项",
         SettingsPanelSection::Data => "数据表、备份目录和数据库客户端配置",
         SettingsPanelSection::ConnectionSecurity => "连接行为和敏感信息策略",
+        SettingsPanelSection::AiModels => "生成模型与决策模型档案，凭据加密保存",
+        SettingsPanelSection::AiToolsMcp => "内置能力与 MCP 配置",
+        SettingsPanelSection::AiAgents => "每个 Agent 直接配置提示词、模型与插件能力",
+        SettingsPanelSection::AiSessions => "普通打开恢复上次查看的会话，新建才开始新的草稿",
         SettingsPanelSection::DatabaseSupport => "当前内置连接器和数据库能力状态",
         SettingsPanelSection::About => "应用信息和配置说明",
     }

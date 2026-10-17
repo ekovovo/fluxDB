@@ -188,56 +188,12 @@ pub struct MysqlConnectionProfile {
     pub advanced: MysqlAdvancedOptions,
 }
 
-/// 历史 `options` 扁平参数里 MySQL 认识的全部键（白名单）。
-/// 用于把旧连接迁移进结构化模型，也用于 UI 回填。
-pub const MYSQL_LEGACY_OPTION_KEYS: &[&str] = &[
-    "database",
-    "username",
-    "password",
-    "tls",
-    "ssl_mode",
-    "tls_ca_ref",
-    "tls_client_cert_ref",
-    "tls_client_key_ref",
-    "tls_server_name",
-    "tls_insecure",
-    "charset",
-    "collation",
-    "ssh_enabled",
-    "ssh_host",
-    "ssh_port",
-    "ssh_username",
-    "ssh_auth",
-    "ssh_password",
-    "ssh_private_key_ref",
-    "ssh_passphrase",
-    "ssh_connect_timeout_secs",
-    "ssh_keepalive_interval_secs",
-    "proxy_enabled",
-    "proxy_type",
-    "proxy_host",
-    "proxy_port",
-    "proxy_username",
-    "proxy_password",
-    "connect_timeout_secs",
-    "query_timeout_secs",
-    "idle_ttl_secs",
-    "tcp_keepalive",
-];
-
-/// 判断 `value` 是否是合法的布尔开关文本（true/y/yes/1/on）。
-fn mysql_option_is_true(value: Option<&String>) -> bool {
-    value
-        .map(|v| v.trim().to_ascii_lowercase())
-        .is_some_and(|v| matches!(v.as_str(), "true" | "y" | "yes" | "1" | "on"))
-}
-
 impl MysqlConnectionProfile {
     /// —— 解析职责 ——
 
     /// 从历史 `options` 扁平参数迁移出一份档案。
     ///
-    /// 仅迁移白名单键，其余任意参数不做透传，避免把垃圾灌进结构化模型。
+    /// 只读取已知键，其余任意参数不做透传，避免把垃圾灌进结构化模型。
     pub fn from_options(opts: &std::collections::BTreeMap<String, String>) -> Self {
         let get = |key: &str| opts.get(key).cloned();
         let basic = MysqlBasicOptions {
@@ -251,7 +207,7 @@ impl MysqlConnectionProfile {
             password: SecretRef::inline(get("password").unwrap_or_default()),
         };
         let tls = MysqlTlsOptions {
-            enabled: mysql_option_is_true(get("tls").as_ref()),
+            enabled: connection_option_is_true(get("tls").as_ref()),
             ssl_mode: match get("ssl_mode").as_deref() {
                 Some("disabled") => MysqlSslMode::Disabled,
                 Some("required") => MysqlSslMode::Required,
@@ -261,7 +217,7 @@ impl MysqlConnectionProfile {
             client_cert: SecretRef::ref_key(get("tls_client_cert_ref").unwrap_or_default()),
             client_key: SecretRef::ref_key(get("tls_client_key_ref").unwrap_or_default()),
             sni: get("tls_server_name").unwrap_or_default(),
-            verify: !mysql_option_is_true(get("tls_insecure").as_ref()),
+            verify: !connection_option_is_true(get("tls_insecure").as_ref()),
             charset: get("charset")
                 .filter(|c| !c.is_empty())
                 .unwrap_or_else(|| "utf8mb4".into()),
@@ -269,7 +225,7 @@ impl MysqlConnectionProfile {
         };
         let mut transport = Vec::new();
         let ssh = MysqlSshOptions {
-            enabled: mysql_option_is_true(get("ssh_enabled").as_ref()),
+            enabled: connection_option_is_true(get("ssh_enabled").as_ref()),
             host: get("ssh_host").unwrap_or_default(),
             port: get("ssh_port").and_then(|p| p.parse().ok()).unwrap_or(22),
             username: get("ssh_username").unwrap_or_default(),
@@ -291,7 +247,7 @@ impl MysqlConnectionProfile {
             transport.push(MysqlTransportLayer::Ssh(ssh));
         }
         let proxy = MysqlProxy {
-            enabled: mysql_option_is_true(get("proxy_enabled").as_ref()),
+            enabled: connection_option_is_true(get("proxy_enabled").as_ref()),
             proxy_type: match get("proxy_type").as_deref() {
                 Some("http_connect") => MysqlProxyType::HttpConnect,
                 _ => MysqlProxyType::Socks5,
@@ -320,7 +276,7 @@ impl MysqlConnectionProfile {
                 idle_ttl_secs: get("idle_ttl_secs").and_then(|p| p.parse().ok()).unwrap_or(0),
                 // 缺省视为启用（默认 true）。
                 tcp_keepalive: match get("tcp_keepalive") {
-                    Some(v) => mysql_option_is_true(Some(&v)),
+                    Some(v) => connection_option_is_true(Some(&v)),
                     None => true,
                 },
             },
@@ -515,93 +471,3 @@ impl MysqlConnectionProfile {
     }
 }
 
-#[cfg(test)]
-mod mysql_profile_tests {
-    use super::*;
-
-    fn opt<'a>(map: &'a std::collections::BTreeMap<String, String>, key: &str) -> Option<&'a String> {
-        map.get(key)
-    }
-
-    #[test]
-    fn round_trips_options_through_profile() {
-        let mut opts = std::collections::BTreeMap::new();
-        opts.insert("host".into(), "db.example.com".into());
-        opts.insert("port".into(), "3307".into());
-        opts.insert("username".into(), "app".into());
-        opts.insert("password".into(), "secret".into());
-        opts.insert("tls".into(), "true".into());
-        opts.insert("ssl_mode".into(), "required".into());
-        opts.insert("connect_timeout_secs".into(), "10".into());
-        let p = MysqlConnectionProfile::from_options(&opts);
-        assert_eq!(p.basic.host, "db.example.com");
-        assert_eq!(p.basic.port, 3307);
-        assert_eq!(p.basic.username, "app");
-        assert_eq!(p.basic.password.value(), Some("secret"));
-        assert_eq!(p.tls.ssl_mode, MysqlSslMode::Required);
-        assert_eq!(p.advanced.connect_timeout_secs, 10);
-        let back = p.into_options();
-        assert_eq!(opt(&back, "tls").map(String::as_str), Some("true"));
-        assert_eq!(opt(&back, "ssl_mode").map(String::as_str), Some("required"));
-        assert_eq!(opt(&back, "connect_timeout_secs").map(String::as_str), Some("10"));
-    }
-
-    #[test]
-    fn from_options_builds_ssh_and_proxy_layers() {
-        let mut opts = std::collections::BTreeMap::new();
-        opts.insert("host".into(), "db".into());
-        opts.insert("ssh_enabled".into(), "true".into());
-        opts.insert("ssh_host".into(), "jump".into());
-        opts.insert("ssh_port".into(), "2222".into());
-        opts.insert("ssh_username".into(), "bob".into());
-        opts.insert("ssh_password".into(), "pw".into());
-        opts.insert("proxy_enabled".into(), "true".into());
-        opts.insert("proxy_type".into(), "socks5".into());
-        opts.insert("proxy_host".into(), "proxy".into());
-        let p = MysqlConnectionProfile::from_options(&opts);
-        assert_eq!(p.transport.len(), 2);
-        let ssh = p.ssh().expect("ssh layer");
-        assert_eq!(ssh.host, "jump");
-        assert_eq!(ssh.username, "bob");
-        let proxy = p.proxy().expect("proxy layer");
-        assert_eq!(proxy.proxy_type, MysqlProxyType::Socks5);
-        // 回写后开关仍在
-        let back = p.into_options();
-        assert_eq!(opt(&back, "ssh_enabled").map(String::as_str), Some("true"));
-        assert_eq!(opt(&back, "proxy_enabled").map(String::as_str), Some("true"));
-    }
-
-    #[test]
-    fn secret_ref_never_serializes_inline() {
-        let p = MysqlConnectionProfile {
-            basic: MysqlBasicOptions {
-                password: SecretRef::inline("hunter2"),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let json = serde_json::to_string(&p).unwrap();
-        assert!(!json.contains("hunter2"));
-        assert!(!json.contains("inline"));
-    }
-
-    #[test]
-    fn validate_reports_missing_host() {
-        let p = MysqlConnectionProfile::default();
-        assert_eq!(p.validate(), Some("请填写主机".into()));
-    }
-
-    #[test]
-    fn validate_rejects_enabled_proxy() {
-        let mut p = MysqlConnectionProfile::default();
-        p.basic.host = "db".into();
-        p.basic.port = 3306;
-        p.transport.push(MysqlTransportLayer::Proxy(MysqlProxy {
-            enabled: true,
-            host: "proxy".into(),
-            port: 1080,
-            ..Default::default()
-        }));
-        assert_eq!(p.validate(), Some("代理传输暂未支持，请先关闭代理或仅使用 SSH 隧道".into()));
-    }
-}

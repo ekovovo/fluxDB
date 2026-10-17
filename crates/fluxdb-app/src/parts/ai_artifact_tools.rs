@@ -1,0 +1,555 @@
+// ---- 工具 ----
+
+/// 一个产物块的 schema：三种块形状互斥。
+///
+/// 校验器只实现受支持子集，`oneOf` 由 Rust 侧严格解析兜底（serde 拒绝未知字段与
+/// 缺少必填字段），因此这里的枚举仍是给模型看的**准确契约**而不是唯一校验点。
+fn artifact_block_schema() -> serde_json::Value {
+    serde_json::json!({
+        "description": "产物内容块，三种形状互斥：chart 图表、table 表格、note 说明",
+        "oneOf": [
+            {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["type", "result_ref", "chart", "x", "y"],
+                "properties": {
+                    "type": {"type": "string", "enum": ["chart"]},
+                    "result_ref": {"type": "string", "minLength": 1, "maxLength": 128,
+                        "description": "数据来源的结果句柄 ID，须已在 sources 中声明"},
+                    "chart": {"type": "string",
+                        "enum": ["line", "bar", "bar_horizontal", "area", "pie"],
+                        "description": "图表类型，按 x 的语义选：x 是时间/有序连续量→line（看趋势）或 area（强调量级）；x 是分类→bar（标签较短、分类较少）；分类名长或要按值排名→bar_horizontal；分类不超过 8 个且看占比构成→pie。分类超过 8 个不要用 pie。"},
+                    "x": {"type": "string", "minLength": 1, "maxLength": 200,
+                        "description": "横轴字段名（来源结果里的列名，不是数据值）"},
+                    "y": {"type": "string", "minLength": 1, "maxLength": 200,
+                        "description": "纵轴字段名（来源结果里的数值列）"}
+                }
+            },
+            {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["type", "result_ref", "columns"],
+                "properties": {
+                    "type": {"type": "string", "enum": ["table"]},
+                    "result_ref": {"type": "string", "minLength": 1, "maxLength": 128,
+                        "description": "数据来源的结果句柄 ID，须已在 sources 中声明"},
+                    "columns": {
+                        "type": "array", "minItems": 1, "maxItems": 64,
+                        "description": "要展示的列名（来源结果里的列名）",
+                        "items": {"type": "string", "minLength": 1, "maxLength": 200}
+                    }
+                }
+            },
+            {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["type", "text"],
+                "properties": {
+                    "type": {"type": "string", "enum": ["note"]},
+                    "text": {"type": "string", "minLength": 1, "maxLength": 2000,
+                        "description": "说明文字：数据范围、限制或假设；不要填入未查询到的数字"}
+                }
+            }
+        ]
+    })
+}
+
+fn artifact_create_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "title", "renderer", "sources"],
+        "properties": {
+            "schema_version": {"type":"integer","enum":[1]},
+            "kind": {"type": "string", "enum": ["report", "chart", "table"],
+                "description":"产物类型：report 报告、chart 图表、table 表格"},
+            "title": {"type": "string", "minLength": 1, "maxLength": 200},
+            "renderer": {"type": "string", "minLength": 1, "maxLength": 128,
+                "description":"渲染器 ID，取本工具描述里列出的可用 renderer"},
+            "metric": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["name", "timezone"],
+                "description":"指标名称、时区与未确认的统计假设；不声明指标时可省略 metric",
+                "properties": {
+                    "name": {"type": "string", "minLength": 1, "maxLength": 200},
+                    "timezone": {"type": "string", "minLength": 1, "maxLength": 64,
+                        "description":"指标时区：UTC 或 +/-HH:MM 固定偏移；不支持 IANA 名称"},
+                    "assumption": {"type":"string","minLength":1,"maxLength":2000,
+                        "description":"对指标含义和统计范围的假设说明"}
+                }
+            },
+            "sources": {
+                "type": "array", "minItems": 1, "maxItems": 32,
+                "description":"产物数据来源，取自本轮已执行工具返回的结果句柄",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["result_ref"],
+                    "properties": {
+                        "result_ref": {"type": "string", "minLength": 1, "maxLength": 128,
+                            "description":"本轮工具返回的结果句柄 ID"},
+                        "tool_call_ref": {"type": "string", "minLength": 1, "maxLength": 128,
+                            "description":"产出该结果的工具调用 ID；可选，填了须与结果来源一致，只用 result_ref 引用时可省略"}
+                    }
+                }
+            },
+            "blocks": {"type": "array", "maxItems": 64,
+                "description":"产物内容块，按顺序展示；首选在这里一次性声明全部块，遗漏时再用 artifact.add_block 追加",
+                "items": artifact_block_schema()},
+            "time_range": {
+                "type":"object","additionalProperties":false,"required":["start","end"],
+                "description":"数据时间范围",
+                "properties": {
+                    "start":{"type":"string","minLength":1,"maxLength":64,
+                        "description":"起始时间，RFC3339"},
+                    "end":{"type":"string","minLength":1,"maxLength":64,
+                        "description":"结束时间，RFC3339"}
+                }
+            },
+            "filters":{"type":"array","maxItems":32,
+                "description":"生效的过滤条件说明，仅用于展示口径",
+                "items":{"type":"string","maxLength":2000}},
+            "refresh":{"type":"string","enum":["snapshot"]},
+            "template_version":{"type":"string","minLength":1,"maxLength":64},
+            "accessibility_description":{"type":"string","maxLength":2000,
+                "description":"图表不可读时替代的文字说明（可选）"}
+        }
+    })
+}
+
+fn artifact_add_block_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["artifact_id", "block"],
+        "properties": {
+            "artifact_id": {"type": "string", "minLength": 1, "maxLength": 128,
+                "description": "目标产物草稿 ID"},
+            "block": artifact_block_schema()
+        }
+    })
+}
+
+fn artifact_finalize_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["artifact_id"],
+        "properties": {
+            "artifact_id": {"type": "string", "minLength": 1, "maxLength": 128,
+                "description": "要完成的产物 ID"}
+        }
+    })
+}
+
+fn artifact_tool_descriptor(
+    id: &str,
+    description: &str,
+    schema: String,
+) -> fluxdb_core::ToolDescriptor {
+    fluxdb_core::ToolDescriptor {
+        id: id.into(),
+        version: 1,
+        description: description.into(),
+        // 产物操作只写会话内的声明与受控快照，不碰用户数据库，因此是只读风险。
+        risk: fluxdb_core::ToolRisk::Read,
+        input_schema_json: schema,
+    }
+}
+
+/// 已声明块的定位摘要：回执用它让模型确认草稿里已有哪些块，避免重复 add_block。
+/// 只含类型与字段/列名/说明截断，不复制业务数据行。
+fn artifact_block_summary(block: &fluxdb_core::ArtifactBlock) -> serde_json::Value {
+    match block {
+        fluxdb_core::ArtifactBlock::Chart {
+            result_ref,
+            chart,
+            x,
+            y,
+        } => serde_json::json!({
+            "type": "chart",
+            "result_ref": result_ref,
+            "chart": match chart {
+                fluxdb_core::ArtifactChart::Line => "line",
+                fluxdb_core::ArtifactChart::Bar => "bar",
+                fluxdb_core::ArtifactChart::BarHorizontal => "bar_horizontal",
+                fluxdb_core::ArtifactChart::Area => "area",
+                fluxdb_core::ArtifactChart::Pie => "pie",
+            },
+            "x": x,
+            "y": y,
+        }),
+        fluxdb_core::ArtifactBlock::Table {
+            result_ref,
+            columns,
+        } => serde_json::json!({
+            "type": "table",
+            "result_ref": result_ref,
+            "columns": columns,
+        }),
+        fluxdb_core::ArtifactBlock::Note { text } => {
+            let bounded: String = text.chars().take(120).collect();
+            serde_json::json!({
+                "type": "note",
+                "text": bounded,
+            })
+        }
+    }
+}
+
+/// 回执公共部分：产物事实 + 真实数据点；错误用受控 code，不伪造成功。
+fn artifact_receipt(
+    descriptor: &fluxdb_core::ToolDescriptor,
+    call_id: &str,
+    started_at_ms: i64,
+    result: Result<ArtifactOutcome, ArtifactError>,
+    max_points: usize,
+) -> fluxdb_core::ToolReceipt {
+    let finished_at_ms = ai_chat_now();
+    match result {
+        Ok(outcome) => {
+            let mut points = outcome.points.clone();
+            let points_truncated = points.len() > max_points;
+            points.truncate(max_points);
+            fluxdb_core::ToolReceipt {
+                call_id: call_id.to_string(),
+                tool_id: descriptor.id.clone(),
+                status: fluxdb_core::ToolReceiptStatus::Succeeded,
+                result_json: serde_json::json!({
+                    "ok": true,
+                    "artifact_id": outcome.artifact_id,
+                    "status": outcome.status,
+                    "revision": outcome.revision,
+                    "kind": outcome.kind,
+                    "title": outcome.title,
+                    "renderer": outcome.renderer,
+                    "metric": outcome.metric,
+                    "truncated": outcome.truncated || points_truncated,
+                    "points_truncated": points_truncated,
+                    "sources": outcome.sources.iter().map(|source| serde_json::json!({
+                        "result_ref": source.declared_ref,
+                        "result_id": source.result_id,
+                        "tool_call_id": source.tool_call_id,
+                        "snapshot_at_ms": source.snapshot_at_ms,
+                        "rows": source.rows,
+                        "truncated": source.truncated,
+                    })).collect::<Vec<_>>(),
+                    "points": points,
+                    "blocks": outcome.blocks.iter().map(artifact_block_summary).collect::<Vec<_>>(),
+                    "file": outcome.file.map(|file| serde_json::json!({
+                        "relative_path": file.relative_path,
+                        "byte_count": file.byte_count,
+                        "content_hash": file.content_hash,
+                    })),
+                })
+                .to_string(),
+                error_code: None,
+                affected_rows: None,
+                started_at_ms,
+                finished_at_ms,
+            }
+        }
+        Err(error) => fluxdb_core::ToolReceipt {
+            call_id: call_id.to_string(),
+            tool_id: descriptor.id.clone(),
+            status: if error.code == "cancelled" {
+                fluxdb_core::ToolReceiptStatus::Cancelled
+            } else {
+                fluxdb_core::ToolReceiptStatus::Failed
+            },
+            result_json: serde_json::json!({
+                "ok": false,
+                "code": error.code,
+                "message": error.message,
+                "retryable": matches!(error.code, "invalid_arguments" | "invalid_spec"
+                    | "unknown_field" | "non_numeric_field" | "empty_artifact"),
+            })
+            .to_string(),
+            error_code: Some(error.code.to_string()),
+            affected_rows: None,
+            started_at_ms,
+            finished_at_ms,
+        },
+    }
+}
+
+struct ArtifactCreateTool {
+    descriptor: fluxdb_core::ToolDescriptor,
+    producer: std::sync::Arc<dyn ArtifactProducer>,
+}
+
+impl ArtifactCreateTool {
+    fn new(producer: std::sync::Arc<dyn ArtifactProducer>) -> fluxdb_core::Result<Self> {
+        let renderers = if producer.descriptor().renderers.is_empty() {
+            "无可用 renderer，请启用相应产物插件".to_string()
+        } else {
+            producer.descriptor().renderers.join(", ")
+        };
+        let description = format!(
+            "创建报告/图表/表格产物草稿：sources/blocks.result_ref 是结果句柄；metric 仅声明指标名称、时区及假设，不代表已核实的业务事实。数字从真实结果取，不执行 SQL。可用 renderer：{}。内置图表与报告来源必须来自同一任务的 SQL 查询结果，不支持 Redis 输出。首选在本次调用里一次声明全部 blocks（图表/表格/说明）；只有确实遗漏时再用 artifact.add_block 追加。同一来源同一组字段的块只需声明一次，完全相同的块会被拒绝。回执的 blocks 列出草稿当前已有的块。",
+            renderers
+        );
+        Ok(Self {
+            descriptor: artifact_tool_descriptor(
+                "artifact.create",
+                &description,
+                artifact_create_schema().to_string(),
+            ),
+            producer,
+        })
+    }
+}
+
+impl fluxdb_core::AiTool for ArtifactCreateTool {
+    fn descriptor(&self) -> &fluxdb_core::ToolDescriptor {
+        &self.descriptor
+    }
+
+    fn execute(
+        &self,
+        ctx: fluxdb_core::ToolExecutionContext,
+        arguments_json: String,
+    ) -> fluxdb_core::AiFuture<'_, fluxdb_core::ToolReceipt> {
+        let started_at_ms = ai_chat_now();
+        let producer = std::sync::Arc::clone(&self.producer);
+        let descriptor = self.descriptor.clone();
+        let cancel = ctx.cancel.clone();
+        Box::pin(async move {
+            if cancel.is_cancelled() {
+                return Ok(artifact_cancelled(&descriptor, &ctx.call_id, started_at_ms));
+            }
+            let result = parse_artifact_spec(&arguments_json)
+                .map_err(|message| ArtifactError::new("invalid_arguments", message))
+                .and_then(|spec| producer.create(spec, &cancel));
+            Ok(artifact_receipt(
+                &descriptor,
+                &ctx.call_id,
+                started_at_ms,
+                result,
+                BI_RECEIPT_MAX_POINTS,
+            ))
+        })
+    }
+}
+
+struct ArtifactAddBlockTool {
+    descriptor: fluxdb_core::ToolDescriptor,
+    producer: std::sync::Arc<dyn ArtifactProducer>,
+}
+
+impl ArtifactAddBlockTool {
+    fn new(producer: std::sync::Arc<dyn ArtifactProducer>) -> fluxdb_core::Result<Self> {
+        Ok(Self {
+            descriptor: artifact_tool_descriptor(
+                "artifact.add_block",
+                "给已存在的产物草稿追加一个图表/表格/说明块，用于补齐 create 时未声明的块；不能新增来源，块只引用已声明来源的字段，字段必须真实存在。追加前先核对 create/上一次回执的 blocks，避免重复添加完全相同的块（重复会被拒绝）。",
+                artifact_add_block_schema().to_string(),
+            ),
+            producer,
+        })
+    }
+}
+
+impl fluxdb_core::AiTool for ArtifactAddBlockTool {
+    fn descriptor(&self) -> &fluxdb_core::ToolDescriptor {
+        &self.descriptor
+    }
+
+    fn execute(
+        &self,
+        ctx: fluxdb_core::ToolExecutionContext,
+        arguments_json: String,
+    ) -> fluxdb_core::AiFuture<'_, fluxdb_core::ToolReceipt> {
+        let started_at_ms = ai_chat_now();
+        let producer = std::sync::Arc::clone(&self.producer);
+        let descriptor = self.descriptor.clone();
+        let cancel = ctx.cancel.clone();
+        Box::pin(async move {
+            if cancel.is_cancelled() {
+                return Ok(artifact_cancelled(&descriptor, &ctx.call_id, started_at_ms));
+            }
+            let result = parse_add_block(&arguments_json)
+                .map_err(|message| ArtifactError::new("invalid_arguments", message))
+                .and_then(|(artifact_id, block)| producer.add_block(&artifact_id, block, &cancel));
+            Ok(artifact_receipt(
+                &descriptor,
+                &ctx.call_id,
+                started_at_ms,
+                result,
+                BI_RECEIPT_MAX_POINTS,
+            ))
+        })
+    }
+}
+
+struct ArtifactFinalizeTool {
+    descriptor: fluxdb_core::ToolDescriptor,
+    producer: std::sync::Arc<dyn ArtifactProducer>,
+}
+
+impl ArtifactFinalizeTool {
+    fn new(producer: std::sync::Arc<dyn ArtifactProducer>) -> fluxdb_core::Result<Self> {
+        Ok(Self {
+            descriptor: artifact_tool_descriptor(
+                "artifact.finalize",
+                "完成产物：复核来源仍可解析、字段与数值一致后渲染快照并提交；renderer 失败时产物标记失败且不改写来源结果",
+                artifact_finalize_schema().to_string(),
+            ),
+            producer,
+        })
+    }
+}
+
+impl fluxdb_core::AiTool for ArtifactFinalizeTool {
+    fn descriptor(&self) -> &fluxdb_core::ToolDescriptor {
+        &self.descriptor
+    }
+
+    fn execute(
+        &self,
+        ctx: fluxdb_core::ToolExecutionContext,
+        arguments_json: String,
+    ) -> fluxdb_core::AiFuture<'_, fluxdb_core::ToolReceipt> {
+        let started_at_ms = ai_chat_now();
+        let producer = std::sync::Arc::clone(&self.producer);
+        let descriptor = self.descriptor.clone();
+        let cancel = ctx.cancel.clone();
+        Box::pin(async move {
+            if cancel.is_cancelled() {
+                return Ok(artifact_cancelled(&descriptor, &ctx.call_id, started_at_ms));
+            }
+            let result = parse_finalize(&arguments_json)
+                .map_err(|message| ArtifactError::new("invalid_arguments", message))
+                .and_then(|artifact_id| producer.finalize(&artifact_id, &cancel));
+            Ok(artifact_receipt(
+                &descriptor,
+                &ctx.call_id,
+                started_at_ms,
+                result,
+                BI_RECEIPT_MAX_POINTS,
+            ))
+        })
+    }
+}
+
+fn artifact_cancelled(
+    descriptor: &fluxdb_core::ToolDescriptor,
+    call_id: &str,
+    started_at_ms: i64,
+) -> fluxdb_core::ToolReceipt {
+    fluxdb_core::ToolReceipt {
+        call_id: call_id.to_string(),
+        tool_id: descriptor.id.clone(),
+        status: fluxdb_core::ToolReceiptStatus::Cancelled,
+        result_json: serde_json::json!({
+            "ok": false,
+            "code": "cancelled",
+            "message": "产物操作已取消",
+            "retryable": false,
+        })
+        .to_string(),
+        error_code: Some("cancelled".into()),
+        affected_rows: None,
+        started_at_ms,
+        finished_at_ms: ai_chat_now(),
+    }
+}
+
+/// 解析 `artifact.create` 入参：schema 只做粗筛，这里做严格构造并补 schema 版本。
+fn parse_artifact_spec(arguments_json: &str) -> Result<fluxdb_core::ArtifactSpec, String> {
+    let mut value: serde_json::Value =
+        serde_json::from_str(arguments_json).map_err(|_| "工具入参不是合法 JSON".to_string())?;
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| "产物声明必须是对象".to_string())?;
+    object
+        .entry("schema_version")
+        .or_insert(serde_json::json!(fluxdb_core::ARTIFACT_SCHEMA_VERSION));
+    let mut spec: fluxdb_core::ArtifactSpec =
+        serde_json::from_value(value).map_err(|error| format!("产物声明不合法: {error}"))?;
+    // 时区等可归一化写法在入口统一收敛，落库 spec 与报告显示因此一致。
+    spec.normalize().map_err(|error| error.message)?;
+    if spec.accessibility_description.trim().is_empty() {
+        spec.accessibility_description = spec.title.clone();
+    }
+    Ok(spec)
+}
+
+fn parse_add_block(arguments_json: &str) -> Result<(String, fluxdb_core::ArtifactBlock), String> {
+    let value: serde_json::Value =
+        serde_json::from_str(arguments_json).map_err(|_| "工具入参不是合法 JSON".to_string())?;
+    let artifact_id = string_field(&value, "artifact_id")?;
+    let block = value
+        .get("block")
+        .ok_or_else(|| "缺少 block".to_string())
+        .and_then(|raw| {
+            serde_json::from_value::<fluxdb_core::ArtifactBlock>(raw.clone())
+                .map_err(|error| format!("产物块不合法: {error}"))
+        })?;
+    Ok((artifact_id, block))
+}
+
+fn parse_finalize(arguments_json: &str) -> Result<String, String> {
+    let value: serde_json::Value =
+        serde_json::from_str(arguments_json).map_err(|_| "工具入参不是合法 JSON".to_string())?;
+    string_field(&value, "artifact_id")
+}
+
+fn string_field(value: &serde_json::Value, key: &str) -> Result<String, String> {
+    value
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .filter(|text| !text.trim().is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| format!("缺少字段 {key}"))
+}
+
+/// 内置产物工具独立注册；插件状态只影响可用 renderer 与实际产物操作。
+pub fn add_ai_artifact_tools(
+    catalog: &mut ToolCatalog,
+    storage: &fluxdb_storage::FileStorage,
+    job: &AiConversationJob,
+    results: std::sync::Arc<std::sync::Mutex<ResultStore>>,
+) -> fluxdb_core::Result<()> {
+    let mut producer = BuiltinBiProducer::new(
+        storage.clone(),
+        job.session_id.clone(),
+        job.turn_id.clone(),
+        job.assistant_message_id.clone(),
+        results,
+    );
+    if !with_ai_storage(storage, |conn| builtin_bi_enabled(conn, &job.session_id))? {
+        // 目录只声明当前可用能力；实现仍保留，以便调用时重新校验最新启停状态。
+        producer.descriptor.renderers.clear();
+    }
+    add_ai_artifact_tools_with_producer(catalog, std::sync::Arc::new(producer))
+}
+
+/// 用指定 producer 装配产物工具（能力可替换：换 producer 即换掉整套产物规则）。
+pub fn add_ai_artifact_tools_with_producer(
+    catalog: &mut ToolCatalog,
+    producer: std::sync::Arc<dyn ArtifactProducer>,
+) -> fluxdb_core::Result<()> {
+    let shape = ToolOutputShape::Sample {
+        omit_field: "points".into(),
+        rows_omitted_field: None,
+    };
+    let tools: [Box<dyn fluxdb_core::AiTool>; 3] = [
+        Box::new(ArtifactCreateTool::new(producer.clone())?),
+        Box::new(ArtifactAddBlockTool::new(producer.clone())?),
+        Box::new(ArtifactFinalizeTool::new(producer)?),
+    ];
+    for tool in tools {
+        let mut spec = ToolSpec::from_descriptor(tool.descriptor())?;
+        // 不修改目标数据库，但会修改本会话产物，不能声明成 PureRead。
+        spec.effect = EffectClass::Mutating;
+        spec.output_shape = shape.clone();
+        if catalog.describe(&spec.id).is_some() {
+            return Err(Error::new(ErrorKind::Internal, "产物工具 ID 重复"));
+        }
+        catalog.specs.push(spec);
+        catalog.register(tool)?;
+    }
+    Ok(())
+}

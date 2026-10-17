@@ -24,7 +24,7 @@ fn create_table_mysql_sql_preview(create: &CreateTableState) -> Result<String, S
 
     let mut sql = format!(
         "CREATE TABLE {} (\n{}\n)",
-        quote_mysql_identifier(table_name),
+        fluxdb_core::MySqlDialect.quote_identifier(table_name),
         lines
             .into_iter()
             .map(|line| format!("  {line}"))
@@ -99,7 +99,7 @@ fn create_table_sqlite_create_table_statement(
     if !inline_auto_increment_id {
         let primary_key = primary_key_columns
             .iter()
-            .map(|column| quote_sqlite_identifier(column.name.trim()))
+            .map(|column| fluxdb_core::SqliteDialect.quote_identifier(column.name.trim()))
             .collect::<Vec<_>>();
         if !primary_key.is_empty() {
             lines.push(format!("PRIMARY KEY ({})", primary_key.join(", ")));
@@ -121,7 +121,7 @@ fn create_table_sqlite_create_table_statement(
             .map(|line| format!("  {line}"))
             .collect::<Vec<_>>()
             .join(",\n"),
-        table_name = quote_sqlite_identifier(table_name)
+        table_name = fluxdb_core::SqliteDialect.quote_identifier(table_name)
     ))
 }
 
@@ -136,7 +136,7 @@ fn create_table_sqlite_column_line(
 
     let mut sql = format!(
         "{} {}",
-        quote_sqlite_identifier(name),
+        fluxdb_core::SqliteDialect.quote_identifier(name),
         create_table_sqlite_column_type(&column.data_type)
     );
     if inline_auto_increment_id && column.auto_increment {

@@ -7,6 +7,7 @@ fn data_editor_footer(
     change_count: Option<usize>,
     change_sql_preview_open: bool,
     selected_source_row: Option<usize>,
+    submitting: bool,
     colors: UiColors,
     window: &mut Window,
     cx: &mut Context<NavicatMain>,
@@ -20,6 +21,8 @@ fn data_editor_footer(
     let next_offset = page.offset.saturating_add(page_size);
     let last_offset = data_page_offset_for_supported_page(DATA_EDITOR_MAX_PAGE, page_size);
     let has_changes = change_count.is_some_and(|count| count > 0);
+    // 提交在后台进行时禁用写操作：避免用户在同一批数据上继续改动或重复提交。
+    let can_edit = !submitting;
 
     div()
         .relative()
@@ -43,7 +46,7 @@ fn data_editor_footer(
                 .items_center()
                 .flex_none()
                 .child(
-                    data_editor_footer_icon_button(AppIcon::Plus, "新增行", true, colors)
+                    data_editor_footer_icon_button(AppIcon::Plus, "新增行", can_edit, colors)
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(move |this, _, _, cx| {
@@ -64,7 +67,7 @@ fn data_editor_footer(
                     data_editor_footer_icon_button(
                         AppIcon::Minus,
                         "删除行",
-                        selected_source_row.is_some(),
+                        can_edit && selected_source_row.is_some(),
                         colors,
                     )
                     .on_mouse_down(
@@ -98,7 +101,7 @@ fn data_editor_footer(
                         ),
                 )
                 .child(
-                    data_editor_footer_icon_button(AppIcon::Close, "取消更改", has_changes, colors)
+                    data_editor_footer_icon_button(AppIcon::Close, "取消更改", can_edit && has_changes, colors)
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(move |this, _, _, cx| {
@@ -115,7 +118,7 @@ fn data_editor_footer(
                         ),
                 )
                 .child(
-                    data_editor_footer_icon_button(AppIcon::Refresh, "刷新", true, colors)
+                    data_editor_footer_icon_button(AppIcon::Refresh, "刷新", can_edit, colors)
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(move |this, _, _, cx| {
@@ -132,7 +135,14 @@ fn data_editor_footer(
                 )),
         )
         .child(if let Some(count) = change_count {
-            data_editor_change_status(tab_id, count, change_sql_preview_open, colors, cx)
+            data_editor_change_status(
+                tab_id,
+                count,
+                change_sql_preview_open,
+                submitting,
+                colors,
+                cx,
+            )
         } else {
             data_editor_sql_strip(sql, selection, colors, cx)
         })
@@ -283,6 +293,7 @@ fn data_editor_change_status(
     tab_id: TabId,
     count: usize,
     open: bool,
+    submitting: bool,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
@@ -327,7 +338,11 @@ fn data_editor_change_status(
             div()
                 .whitespace_nowrap()
                 .text_ellipsis()
-                .child(format!("待提交 {count} 处修改")),
+                .child(if submitting {
+                    format!("正在提交 {count} 处修改…")
+                } else {
+                    format!("待提交 {count} 处修改")
+                }),
         )
         .child(
             div()

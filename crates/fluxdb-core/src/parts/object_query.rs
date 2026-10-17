@@ -52,6 +52,11 @@ pub struct QueryExecutionOptions {
     pub split_statements: bool,
     pub page_offset: u64,
     pub page_size: u64,
+    /// 只读执行（AI/受限只读入口）。置位时驱动以数据库级只读方式执行
+    /// （PG 只读事务、MySQL `SET SESSION TRANSACTION READ ONLY`、SQLite `PRAGMA query_only`），
+    /// 作为客户端 AST 策略之外的纵深防线：即使某个未在 denylist 里的函数/语法带副作用，
+    /// 服务端也会拒绝写入。默认 `false`，普通编辑器路径不受影响。
+    pub read_only: bool,
 }
 
 impl Default for QueryExecutionOptions {
@@ -61,6 +66,7 @@ impl Default for QueryExecutionOptions {
             split_statements: true,
             page_offset: 0,
             page_size: Pagination::DEFAULT_LIMIT,
+            read_only: false,
         }
     }
 }
@@ -156,6 +162,35 @@ pub struct SavedQuery {
 pub enum QueryStatementKind {
     ResultSet,
     Command,
+}
+
+/// 精确的 SQL 参数值（设计 §20.2 的 tagged wire 值；**绝不**做字符串插值）。
+///
+/// i64/u64/decimal 用十进制文本保存，避免经过 f64 丢精度；bytes 已由应用层做 base64 解码与体积校验。
+#[derive(Clone, Debug, PartialEq)]
+pub enum SqlParameter {
+    Null,
+    Bool(bool),
+    /// i64：精确十进制文本。
+    I64(String),
+    /// u64：精确十进制文本。
+    U64(String),
+    /// decimal：精确文本（尺度与范围由应用层校验）。
+    Decimal(String),
+    /// 浮点：仅当调用方明确用 f64 时才走这里；必须 finite。
+    F64(f64),
+    Text(String),
+    Bytes(Vec<u8>),
+}
+
+/// 参数化执行请求：在既有 `QueryRequest` 之上附加精确参数。
+///
+/// 独立类型是为了不改动既有 `QueryRequest` 的所有构造点；连接器对它必须**真 bind**，
+/// 不支持就明确报错（默认实现即如此），不允许退化成把参数拼进 SQL。
+#[derive(Clone, Debug, PartialEq)]
+pub struct ParameterizedQueryRequest {
+    pub request: QueryRequest,
+    pub parameters: Vec<SqlParameter>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

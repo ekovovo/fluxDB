@@ -2540,11 +2540,6 @@ fn keyword_completion_items_for(
     items
 }
 
-#[allow(dead_code)]
-fn function_completion_items(prefix: &str) -> Vec<QueryCompletionItem> {
-    function_completion_items_for(SQL_COMPLETION_FUNCTIONS, prefix)
-}
-
 fn function_completion_items_for(
     functions: &[&str],
     prefix: &str,
@@ -2847,17 +2842,10 @@ pub fn quote_identifier(
     if !identifier_needs_quote(name, kind, &reserved) {
         return name.to_string();
     }
-    let (open, close) = match kind {
-        DatabaseKind::MySql | DatabaseKind::TiDb => ('`', '`'),
-        _ => ('"', '"'),
-    };
-    // 方言内转义引号：MySQL 双反引号，标准 SQL 双引号。
-    let escaped = if open == '`' {
-        name.replace('`', "``")
-    } else {
-        name.replace('"', "\"\"")
-    };
-    format!("{open}{escaped}{close}")
+    match kind {
+        DatabaseKind::MySql | DatabaseKind::TiDb => fluxdb_core::MySqlDialect.quote_identifier(name),
+        _ => fluxdb_core::PostgresDialect.quote_identifier(name),
+    }
 }
 
 /// 生成 schema（库/模式）候选，apply 文本为 `schema.`，便于继续输入表名（P1.5）。
@@ -2893,48 +2881,6 @@ fn schema_completion_items(
             })
     });
     items
-}
-
-#[allow(dead_code)]
-fn column_completion_items(
-    columns: Vec<CompletionColumn>,
-    prefix: &str,
-) -> Vec<QueryCompletionItem> {
-    let mut columns = columns
-        .into_iter()
-        .filter(|column| matches_completion_fuzzy(&column.name, prefix))
-        .collect::<Vec<_>>();
-    columns.sort_by(|left, right| {
-        completion_match_rank(&left.name, prefix)
-            .cmp(&completion_match_rank(&right.name, prefix))
-            .then_with(|| {
-                left.name
-                    .to_ascii_lowercase()
-                    .cmp(&right.name.to_ascii_lowercase())
-            })
-            .then_with(|| {
-                left.table
-                    .to_ascii_lowercase()
-                    .cmp(&right.table.to_ascii_lowercase())
-            })
-    });
-
-    columns
-        .into_iter()
-        .map(|column| {
-            let detail = column_completion_detail(&column);
-            QueryCompletionItem {
-                label: column.name.clone(),
-                insert_text: column.name,
-                kind: QueryCompletionKind::Column,
-                detail,
-                documentation: None,
-                filter_text: None,
-                sort_text: None,
-                            ..Default::default()
-}
-        })
-        .collect()
 }
 
 fn cte_column_completion_items(
@@ -3018,21 +2964,6 @@ pub fn column_completion_documentation(column: &CompletionColumn) -> Option<Stri
         lines.push(format!("注释：{}", comment.trim()));
     }
     (!lines.is_empty()).then(|| lines.join("\n"))
-}
-
-fn column_completion_detail(column: &CompletionColumn) -> Option<String> {
-    let mut parts = Vec::new();
-    if let Some(type_name) = column.type_name.as_ref().filter(|value| !value.is_empty()) {
-        parts.push(type_name.clone());
-    }
-    if column.primary_key {
-        parts.push("PK".to_string());
-    }
-    if parts.is_empty() {
-        None
-    } else {
-        Some(parts.join(" "))
-    }
 }
 
 fn sql_ddl_impact(sql: &str) -> Option<SqlDdlImpact> {
@@ -3143,20 +3074,6 @@ fn matches_completion_prefix(value: &str, prefix: &str) -> bool {
         || value
             .to_ascii_lowercase()
             .starts_with(&prefix.to_ascii_lowercase())
-}
-
-fn matches_completion_fuzzy(value: &str, filter: &str) -> bool {
-    let filter = filter.trim();
-    if filter.is_empty() {
-        return true;
-    }
-
-    let value = value.to_ascii_lowercase();
-    let mut value_chars = value.chars();
-    filter
-        .to_ascii_lowercase()
-        .chars()
-        .all(|filter_char| value_chars.any(|value_char| value_char == filter_char))
 }
 
 fn completion_match_rank(value: &str, filter: &str) -> (u8, usize, usize, usize) {

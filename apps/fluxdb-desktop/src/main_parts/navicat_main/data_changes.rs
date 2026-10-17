@@ -53,45 +53,96 @@ impl NavicatMain {
         }
     }
 
-    fn confirm_apply_data_changes(&mut self, cx: &mut Context<Self>) {
-        let Some(tab_id) = self.pending_apply_data_changes.take() else {
+    fn confirm_apply_data_changes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(tab_id) = self.pending_apply_data_changes else {
             return;
         };
+        if self.data_change_apply_tasks.contains_key(&tab_id.0) {
+            self.show_message("改动正在提交", AppMessageKind::Warning, cx);
+            return;
+        }
         let query_refresh = self.active_query_result_refresh_request(tab_id);
-        let is_query_editor = self
-            .controller
-            .state()
-            .tabs
-            .iter()
-            .find(|tab| tab.id == tab_id)
-            .is_some_and(|tab| matches!(tab.kind, TabKind::QueryEditor(_)));
-        let event = self.dispatch(
-            if is_query_editor {
-                AppCommand::ApplyDataChanges(tab_id)
-            } else {
-                AppCommand::ApplyDataChangesWithView {
-                    tab_id,
-                    sort: self.data_sort_specs_for_tab(tab_id),
-                    filters: self.data_filter_specs_for_tab(tab_id),
-                }
-            },
-            cx,
-        );
-        // 保存/提交失败用底部 toast 提示（与页面其它操作一致），失败不静默。
-        if let AppEvent::Failed(error) = &event {
-            let text = if error.title.is_empty() {
-                error.message.clone()
-            } else {
-                format!("{}：{}", error.title, error.message)
+        // 写入与提交后的重载都要访问数据库，放在后台线程执行：数据库响应慢时
+        // 界面保持可交互，确认框转为「提交中…」而不是卡住整个前端。
+        // `pending_apply_data_changes` 保留到回桥，保证提交期间确认框持续可见。
+        self.dispatch(AppCommand::StartApplyDataChanges(tab_id), cx);
+        cx.notify();
+        let sort = self.data_sort_specs_for_tab(tab_id);
+        let filters = self.data_filter_specs_for_tab(tab_id);
+        let mut controller = self.controller.clone();
+        let task = cx.spawn_in(window, async move |view, cx| {
+            // 后台只做数据库 I/O：状态写回必须由 UI 线程的回桥命令完成，
+            // 因为 `AppController` 的 state 在克隆之间是隔离的。
+            let result = cx
+                .background_spawn(async move {
+                    controller.run_apply_data_changes_command(tab_id, sort, filters)
+                })
+                .await;
+            // 失败 Alert 需要真实 Window；`spawn_in` 让回桥拿到 `update_in`。
+            let Some(view) = view.upgrade() else {
+                return;
             };
-            self.show_message(text, AppMessageKind::Error, cx);
+            let _ = view.update_in(cx, |this, window, cx| {
+                this.data_change_apply_tasks.remove(&tab_id.0);
+                if this.pending_apply_data_changes == Some(tab_id) {
+                    this.pending_apply_data_changes = None;
+                }
+                let event = this.dispatch(
+                    AppCommand::FinishApplyDataChanges { tab_id, result },
+                    cx,
+                );
+                this.finish_apply_data_changes(tab_id, event, query_refresh, window, cx);
+                cx.notify();
+            });
+        });
+        self.data_change_apply_tasks.insert(tab_id.0, task);
+    }
+
+    /// 后台提交完成后的收尾：落应用事件、提示失败、按需刷新查询结果区。
+    fn finish_apply_data_changes(
+        &mut self,
+        tab_id: TabId,
+        event: AppEvent,
+        query_refresh: Option<QueryResultRefreshRequest>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.apply_app_event(&event, cx);
+        self.refresh_active_data_table(tab_id, cx);
+        // 提交失败用 Alert 弹框而不是轻量 toast：写入失败意味着改动仍留在编辑器里，
+        // 需要用户明确知晓并处理，不能像轻量反馈一样几秒后自动消失。
+        if let AppEvent::Failed(error) = &event {
+            let title = if error.title.is_empty() {
+                "提交失败".to_string()
+            } else {
+                error.title.clone()
+            };
+            let description = match error.detail.clone() {
+                Some(detail) if !detail.trim().is_empty() => {
+                    format!("{}\n{}", error.message, detail)
+                }
+                _ => error.message.clone(),
+            };
+            window.open_alert_dialog(cx, move |alert, _, _| {
+                alert
+                    .title(title.clone())
+                    .description(description.clone())
+                    .ok_text("知道了")
+                    .show_cancel(false)
+                    .close_button(true)
+                    .keyboard(true)
+            });
         }
         if !matches!(event, AppEvent::Failed(_))
             && let Some(request) = query_refresh
         {
             self.start_query_result_page_refresh(request, cx);
         }
-        cx.notify();
+    }
+
+    /// 该标签是否有改动正在提交（用于提交按钮 loading/disabled 与重复提交拦截）。
+    fn data_change_apply_in_flight(&self, tab_id: TabId) -> bool {
+        self.data_change_apply_tasks.contains_key(&tab_id.0)
     }
 
     fn active_query_result_refresh_request(

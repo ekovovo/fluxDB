@@ -1219,9 +1219,9 @@ fn sql_history_row_identity_for_rollback_in(
 /// 按方言给标识符加引号（PG 用双引号，MySQL/TiDB/SQLite 用反引号）。
 fn sql_history_quote_ident_for(value: &str, kind: DatabaseKind) -> String {
     if kind == DatabaseKind::Postgres {
-        format!("\"{}\"", value.replace('"', "\"\""))
+        fluxdb_core::PostgresDialect.quote_identifier(value)
     } else {
-        format!("`{}`", value.replace('`', "``"))
+        fluxdb_core::MySqlDialect.quote_identifier(value)
     }
 }
 

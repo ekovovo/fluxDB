@@ -924,6 +924,7 @@ fn dirty_tab_close_modal(
 
 fn apply_data_changes_modal(
     preview: (TabId, usize, usize, String),
+    submitting: bool,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> impl IntoElement {
@@ -1077,8 +1078,10 @@ fn apply_data_changes_modal(
                                 .gap_2()
                                 .child(
                                     Button::new("apply-data-changes-cancel")
+                                        .debug_selector(|| "apply-data-changes-cancel".into())
                                         .label("取消")
                                         .w(px(78.))
+                                        .disabled(submitting)
                                         .on_click(cx.listener(|this, _, _, cx| {
                                             this.cancel_apply_data_changes(cx);
                                             cx.stop_propagation();
@@ -1086,12 +1089,17 @@ fn apply_data_changes_modal(
                                 )
                                 .child(
                                     Button::new("apply-data-changes-confirm")
-                                        .label("提交")
+                                        .debug_selector(|| "apply-data-changes-confirm".into())
+                                        .label(if submitting { "提交中…" } else { "提交" })
+                                        .loading(submitting)
                                         .primary()
                                         .w(px(78.))
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            if this.pending_apply_data_changes == Some(tab_id) {
-                                                this.confirm_apply_data_changes(cx);
+                                        .disabled(submitting)
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            if this.pending_apply_data_changes == Some(tab_id)
+                                                && !this.data_change_apply_in_flight(tab_id)
+                                            {
+                                                this.confirm_apply_data_changes(window, cx);
                                             }
                                             cx.stop_propagation();
                                         })),
@@ -1101,256 +1109,4 @@ fn apply_data_changes_modal(
         )
 }
 
-fn dangerous_query_modal(
-    pending: PendingDangerousQuery,
-    focus_handle: FocusHandle,
-    colors: UiColors,
-    cx: &mut Context<NavicatMain>,
-) -> impl IntoElement {
-    let preview = single_line_summary_text(pending.text);
-    div()
-        .absolute()
-        .top_0()
-        .left_0()
-        .size_full()
-        .occlude()
-        .bg(if colors.is_dark {
-            hsla(220. / 360., 0.12, 0.08, 0.54)
-        } else {
-            hsla(210. / 360., 0.20, 0.20, 0.16)
-        })
-        .flex()
-        .items_center()
-        .justify_center()
-        .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
-            this.cancel_dangerous_query(cx);
-            cx.stop_propagation();
-        }))
-        .child(
-            div()
-                .w(px(460.))
-                .rounded(colors.radius_lg)
-                .border_1()
-                .border_color(colors.border)
-                .bg(colors.panel_bg)
-                .shadow(vec![box_shadow(
-                    px(0.),
-                    px(18.),
-                    px(42.),
-                    px(0.),
-                    hsla(0., 0., 0., if colors.is_dark { 0.42 } else { 0.18 }),
-                )])
-                .overflow_hidden()
-                .text_color(colors.text)
-                .track_focus(&focus_handle)
-                .key_context("DangerousQueryModal")
-                .on_action(cx.listener(|this, _: &CancelDialog, _, cx| {
-                    this.cancel_dangerous_query(cx);
-                    cx.stop_propagation();
-                }))
-                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .child(
-                    div()
-                        .px_5()
-                        .pt_4()
-                        .pb_3()
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .child(
-                            div()
-                                .text_size(px(17.))
-                                .font_weight(gpui::FontWeight::SEMIBOLD)
-                                .child("确认执行危险 SQL"),
-                        )
-                        .child(
-                            div()
-                                .size(px(28.))
-                                .rounded(colors.radius)
-                                .cursor_pointer()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .hover(move |style| style.bg(colors.hover))
-                                .child(app_icon(AppIcon::Close, 15., colors.muted))
-                                .on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(|this, _, _, cx| {
-                                        this.cancel_dangerous_query(cx);
-                                        cx.stop_propagation();
-                                    }),
-                                ),
-                        ),
-                )
-                .child(
-                    div()
-                        .px_5()
-                        .pb_4()
-                        .flex()
-                        .flex_col()
-                        .gap_2()
-                        .text_size(px(13.))
-                        .text_color(colors.muted)
-                        .child("该语句可能修改或删除大量数据。")
-                        .child(preview),
-                )
-                .child(div().h(px(1.)).bg(colors.border_soft))
-                .child(
-                    div()
-                        .h(px(58.))
-                        .px_5()
-                        .flex()
-                        .items_center()
-                        .justify_end()
-                        .gap_2()
-                        .child(
-                            Button::new("dangerous-query-cancel")
-                                .label("取消")
-                                .w(px(78.))
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.cancel_dangerous_query(cx);
-                                    cx.stop_propagation();
-                                })),
-                        )
-                        .child(
-                            Button::new("dangerous-query-confirm")
-                                .label("执行")
-                                .danger()
-                                .w(px(78.))
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.confirm_dangerous_query(cx);
-                                    cx.stop_propagation();
-                                })),
-                        ),
-                ),
-        )
-}
-
-/// Redis Workbench 危险命令二次确认弹框。
-///
-/// 交互语义对齐沿用的 modal 规范：遮罩点击或 Esc 取消（关闭），
-/// 弹框内部点击用 stop_propagation 阻止穿透到遮罩。
-fn dangerous_redis_command_modal(
-    pending: PendingDangerousRedisCommand,
-    focus_handle: FocusHandle,
-    colors: UiColors,
-    cx: &mut Context<NavicatMain>,
-) -> impl IntoElement {
-    let preview = single_line_summary_text(pending.text);
-    div()
-        .absolute()
-        .top_0()
-        .left_0()
-        .size_full()
-        .occlude()
-        .bg(if colors.is_dark {
-            hsla(220. / 360., 0.12, 0.08, 0.54)
-        } else {
-            hsla(210. / 360., 0.20, 0.20, 0.16)
-        })
-        .flex()
-        .items_center()
-        .justify_center()
-        .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
-            this.cancel_dangerous_redis_command(cx);
-            cx.stop_propagation();
-        }))
-        .child(
-            div()
-                .w(px(460.))
-                .rounded(colors.radius_lg)
-                .border_1()
-                .border_color(colors.border)
-                .bg(colors.panel_bg)
-                .shadow(vec![box_shadow(
-                    px(0.),
-                    px(18.),
-                    px(42.),
-                    px(0.),
-                    hsla(0., 0., 0., if colors.is_dark { 0.42 } else { 0.18 }),
-                )])
-                .overflow_hidden()
-                .text_color(colors.text)
-                .track_focus(&focus_handle)
-                .key_context("DangerousRedisCommandModal")
-                .on_action(cx.listener(|this, _: &CancelDialog, _, cx| {
-                    this.cancel_dangerous_redis_command(cx);
-                    cx.stop_propagation();
-                }))
-                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .child(
-                    div()
-                        .px_5()
-                        .pt_4()
-                        .pb_3()
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .child(
-                            div()
-                                .text_size(px(17.))
-                                .font_weight(gpui::FontWeight::SEMIBOLD)
-                                .child("确认执行危险 Redis 命令"),
-                        )
-                        .child(
-                            div()
-                                .size(px(28.))
-                                .rounded(colors.radius)
-                                .cursor_pointer()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .hover(move |style| style.bg(colors.hover))
-                                .child(app_icon(AppIcon::Close, 15., colors.muted))
-                                .on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(|this, _, _, cx| {
-                                        this.cancel_dangerous_redis_command(cx);
-                                        cx.stop_propagation();
-                                    }),
-                                ),
-                        ),
-                )
-                .child(
-                    div()
-                        .px_5()
-                        .pb_4()
-                        .flex()
-                        .flex_col()
-                        .gap_2()
-                        .text_size(px(13.))
-                        .text_color(colors.muted)
-                        .child("该命令可能清空或破坏数据，请确认是否继续执行。")
-                        .child(preview),
-                )
-                .child(div().h(px(1.)).bg(colors.border_soft))
-                .child(
-                    div()
-                        .h(px(58.))
-                        .px_5()
-                        .flex()
-                        .items_center()
-                        .justify_end()
-                        .gap_2()
-                        .child(
-                            Button::new("dangerous-redis-command-cancel")
-                                .label("取消")
-                                .w(px(78.))
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.cancel_dangerous_redis_command(cx);
-                                    cx.stop_propagation();
-                                })),
-                        )
-                        .child(
-                            Button::new("dangerous-redis-command-confirm")
-                                .label("执行")
-                                .danger()
-                                .w(px(78.))
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.confirm_dangerous_redis_command(cx);
-                                    cx.stop_propagation();
-                                })),
-                        ),
-                ),
-        )
-}
+include!("dangerous_confirmation.rs");

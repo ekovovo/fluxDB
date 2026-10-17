@@ -1603,9 +1603,6 @@ fn data_export_sql_preview_box(
         let sql = sql.clone();
         move |window, cx| {
             InputState::new(window, cx)
-                .code_editor(SQL_HIGHLIGHT_LANGUAGE)
-                .line_number(false)
-                .legacy_soft_wrap(false)
                 .default_value(sql)
         }
     });

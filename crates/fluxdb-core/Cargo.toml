@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+chrono = { version = "0.4", default-features = false, features = ["std"] }
 serde = { version = "1", features = ["derive"] }
 tracing = "0.1"
 vte = "0.14"
@@ -12,5 +13,3 @@ vte = "0.14"
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.28", default-features = false, features = ["signal"] }
 
-[dev-dependencies]
-serde_json = "1"

@@ -3,9 +3,12 @@
 // 单实例守卫（方案 §12.1，选定方案 A）：
 // - Unix（macOS/Linux）：对锁文件 flock 独占；锁随进程退出（含强杀）自动释放，
 //   不存在"崩溃后无法再启动"的陈旧锁。
-// - Windows：命名互斥量 `Global\FluxDBSingleInstance`，生命周期由 OS 管理，语义相同。
+// - Windows：命名互斥量 `Global\FluxDBSingleInstance[-<标识>]`，生命周期由 OS 管理。
 // 第二实例：明确提示并退出，不静默失败。锁基础设施失败时降级放行（单实例是并发
 // 保护而非安全边界），并输出诊断日志。
+//
+// 实例标识（`FLUXDB_PROFILE`）参与锁的命名：不同标识的实例允许同时运行，同一标识
+// 仍受单实例保护。锁的归属与持久化数据目录保持一致，见 fluxdb-storage。
 
 /// 尝试成为唯一实例。返回 true 表示本进程持有单实例锁（或基础设施降级放行）；
 /// 返回 false 表示已有实例在运行。
@@ -67,7 +70,12 @@ fn acquire_single_instance_windows() -> bool {
     use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
     use windows::Win32::System::Threading::CreateMutexW;
 
-    let mutex_name: Vec<u16> = "Global\\FluxDBSingleInstance\0"
+    // 标识非法时退回默认互斥量名：保住单实例保护，非法标识由数据目录解析处报错退出。
+    let mutex_name_str = match fluxdb_storage::instance_profile() {
+        Ok(Some(profile)) => format!("Global\\FluxDBSingleInstance-{profile}"),
+        _ => "Global\\FluxDBSingleInstance".to_string(),
+    };
+    let mutex_name: Vec<u16> = format!("{mutex_name_str}\0")
         .encode_utf16()
         .collect();
     // 命名互斥量：持有句柄存活期间锁有效，进程退出（含强杀）由 OS 释放。
@@ -104,7 +112,13 @@ pub fn notify_second_instance_and_exit() -> ! {
             MessageBoxW, MB_ICONINFORMATION, MB_OK,
         };
         let title = HSTRING::from("FluxDB");
-        let text = HSTRING::from("FluxDB 已经在运行。\n请使用已打开的 FluxDB 窗口。");
+        // 提示带上标识：多标识并行时用户能分辨是哪一个实例已占用。
+        let text = HSTRING::from(match fluxdb_storage::instance_profile() {
+            Ok(Some(profile)) => {
+                format!("FluxDB（{profile}）已经在运行。\n请使用已打开的 FluxDB 窗口。")
+            }
+            _ => "FluxDB 已经在运行。\n请使用已打开的 FluxDB 窗口。".to_string(),
+        });
         unsafe {
             let _ = MessageBoxW(
                 None,
@@ -114,6 +128,9 @@ pub fn notify_second_instance_and_exit() -> ! {
             );
         }
     }
-    eprintln!("FluxDB 已在运行，本次启动退出。");
+    match fluxdb_storage::instance_profile() {
+        Ok(Some(profile)) => eprintln!("FluxDB（{profile}）已在运行，本次启动退出。"),
+        _ => eprintln!("FluxDB 已在运行，本次启动退出。"),
+    }
     std::process::exit(1);
 }

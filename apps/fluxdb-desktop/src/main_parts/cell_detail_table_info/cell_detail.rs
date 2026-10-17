@@ -1,20 +1,3 @@
-impl NavicatMain {
-    fn sync_cell_detail_input(
-        &mut self,
-        input: &Entity<InputState>,
-        value: &str,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if input.read(cx).value().as_ref() == value {
-            return;
-        }
-        input.update(cx, |input, cx| {
-            input.set_value(value.to_string(), window, cx);
-        });
-    }
-}
-
 fn cell_detail_panel(
     tab_id: TabId,
     editor: &DataEditorState,
@@ -54,7 +37,7 @@ fn cell_detail_panel(
     let temporal_kind = data_cell_temporal_kind(&type_name);
 
     if mode == CellDetailMode::Edit {
-        sync_cell_detail_input_for_panel(&input, &detail_value, window, cx);
+        sync_input_value(&input, &detail_value, window, cx);
     }
 
     let drawer_bg = if colors.is_dark {
@@ -197,20 +180,6 @@ fn cell_detail_panel(
         .when(mode == CellDetailMode::Edit, |this| {
             this.child(cell_detail_footer(tab_id, is_binary, colors, cx))
         })
-}
-
-fn sync_cell_detail_input_for_panel(
-    input: &Entity<InputState>,
-    value: &str,
-    window: &mut Window,
-    cx: &mut Context<NavicatMain>,
-) {
-    if input.read(cx).value().as_ref() == value {
-        return;
-    }
-    input.update(cx, |input, cx| {
-        input.set_value(value.to_string(), window, cx);
-    });
 }
 
 fn cell_detail_drawer_resize_handle(

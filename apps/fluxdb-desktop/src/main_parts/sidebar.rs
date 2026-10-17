@@ -211,6 +211,7 @@ fn tab_view_with_context(
 
     div()
         .id(("tab-view", tab_id.0))
+        .debug_selector(move || format!("workspace-tab:{}", tab_id.0))
         .h(px(if active { 28. } else { 26. }))
         .w(px(tab_width(tab, compact)))
         .flex_none()
@@ -428,6 +429,7 @@ fn tab_width(tab: &TabState, compact: bool) -> f32 {
         TabKind::CreateTable(_) => 210.,
         TabKind::UserAdmin(_) => 180.,
         TabKind::Settings(_) => 160.,
+        TabKind::AiChat { .. } => 180.,
         TabKind::BackupList(_) => 210.,
         TabKind::ErDiagram(_) => 210.,
     };
@@ -478,6 +480,7 @@ fn tab_icon(tab: &TabState, colors: UiColors) -> impl IntoElement {
         ),
         TabKind::UserAdmin(_) => (rgb(0x2563eb), None, rgb(0xffffff), AppIcon::Users, 12.),
         TabKind::Settings(_) => (rgb(0xc8ccd2), None, rgb(0x4f5661), AppIcon::Settings, 12.),
+        TabKind::AiChat { .. } => (colors.success, None, colors.text, AppIcon::Bot, 12.),
         // 备份列表 tab：与侧边栏备份节点一致的保存图标，配色用墨绿区分数据表。
         TabKind::BackupList(_) => (rgb(0x0f9d78), None, rgb(0xffffff), AppIcon::Save, 12.),
         // ER 关系图 tab：Schema 图标 + 紫色，与侧边栏 ER 节点一致。
@@ -651,6 +654,7 @@ fn sidebar(
     .track_scroll(&sidebar_scroll);
 
     let tree_rows = div()
+        .debug_selector(|| "connection-tree-viewport".into())
         .flex_1()
         .min_h(px(0.))
         .overflow_hidden()
@@ -664,6 +668,7 @@ fn sidebar(
         .vertical_scrollbar(&sidebar_scroll);
 
     div()
+        .debug_selector(|| "connection-browser".into())
         .relative()
         .w(px(if compact {
             connection_browser_width.min(260.)

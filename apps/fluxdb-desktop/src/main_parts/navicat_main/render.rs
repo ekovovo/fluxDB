@@ -1,5 +1,78 @@
 impl Render for NavicatMain {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // 调试入口：首帧后打开模型弹框（需要 window 创建 Input 实体；仅 debug 构建会置位）。
+        if self.ai_model_dialog_debug_pending && self.ai_model_dialog.is_none() {
+            self.ai_model_dialog_debug_pending = false;
+            // `FLUXDB_DEBUG_AI_MODEL_DIALOG=edit` 打开第一个已有模型的编辑态（验证字段回填）。
+            let edit_first = cfg!(debug_assertions)
+                && std::env::var("FLUXDB_DEBUG_AI_MODEL_DIALOG").is_ok_and(|v| v == "edit");
+            let first_id = edit_first
+                .then(|| {
+                    self.controller
+                        .state()
+                        .ai_models
+                        .first()
+                        .map(|m| m.id.clone())
+                })
+                .flatten();
+            // `FLUXDB_DEBUG_AI_MODEL_DIALOG=invalid` 额外预置内联校验错误，便于截图核对错误态。
+            let show_invalid = cfg!(debug_assertions)
+                && std::env::var("FLUXDB_DEBUG_AI_MODEL_DIALOG").is_ok_and(|v| v == "invalid");
+            self.open_ai_model_dialog(first_id, window, cx);
+            if show_invalid {
+                self.set_ai_model_dialog_error("请填写显示名称与模型标识", cx);
+            }
+        }
+        // 调试入口：首帧后打开第一个可配置插件的管理弹框（截图核对用）。
+        if let Some(target) = self.ai_plugin_config_dialog_debug_pending.clone()
+            && self.ai_plugin_config_dialog.is_none()
+        {
+            self.ai_plugin_config_dialog_debug_pending = None;
+            let id = if target.is_empty() {
+                // 空串：第一个可配置插件。
+                self.controller
+                    .state()
+                    .ai_plugin_instances
+                    .iter()
+                    .find(|plugin| !plugin.config_fields.is_empty())
+                    .map(|plugin| plugin.id.clone())
+            } else {
+                Some(target)
+            };
+            if let Some(id) = id {
+                self.open_ai_plugin_config_dialog(&id, window, cx);
+            }
+        }
+        // 调试入口：首帧后自动对第一个模型跑一次测试连接（截图核对 Alert 与状态标签）。
+        if self.ai_model_test_debug_pending {
+            self.ai_model_test_debug_pending = false;
+            if let Some(id) = self.controller.state().ai_models.first().map(|m| m.id.clone()) {
+                self.start_ai_model_test(id, cx);
+            }
+        }
+        // 调试入口：首帧后打开 Agent 新建草稿（同样需要 window 创建 Input 实体）。
+        if self.ai_agent_editor_debug_pending && self.ai_agent_editor.is_none() {
+            self.ai_agent_editor_debug_pending = false;
+            self.open_ai_agent_editor(None, window, cx);
+        }
+        // Agent 删除后自动选中剩余列表的第一项，避免右侧空白。
+        if self.ai_agent_editor.is_none()
+            && self.settings_panel_section == SettingsPanelSection::AiAgents
+            && !self.ai_agent_delete_just_removed.is_empty()
+        {
+            let first = self.controller.state().ai_agents.first().map(|a| a.id.clone());
+            self.ai_agent_delete_just_removed.clear();
+            if let Some(id) = first {
+                self.open_ai_agent_editor(Some(id), window, cx);
+            }
+        }
+        // 首帧异步启动恢复；命令与后续 Load/Save 共用串行队列，不在 UI 线程扫描 SQLite。
+        if self.ai_chat.recovery_pending {
+            self.ai_chat.recovery_pending=false;
+            self.ai_chat_request(fluxdb_app::AiConversationCommand::RecoverOnStartup,window,cx);
+        }
+        if self.ai_chat.debug_open_pending {self.ai_chat.debug_open_pending=false;self.open_ai_chat(window,cx);}
+        self.ai_chat_process(window, cx);
         let width = window.viewport_size().width;
         let compact = width < px(760.);
         let app_state = self.controller.state();
@@ -64,6 +137,9 @@ impl Render for NavicatMain {
                     )
                 })
         });
+        let pending_apply_submitting = self
+            .pending_apply_data_changes
+            .is_some_and(|tab_id| self.data_change_apply_in_flight(tab_id));
         // 提示浮层在这里先构造好：它的配色要读主题（`cx`），放进 `.when_some` 闭包里会和
         // 同一表达式链上其它对 `cx` 的借用打架。
         let app_message_element = self
@@ -88,6 +164,7 @@ impl Render for NavicatMain {
         };
 
         div()
+            .debug_selector(|| "fluxdb-main".into())
             .size_full()
             .relative()
             .bg(colors.app_bg)
@@ -162,10 +239,21 @@ impl Render for NavicatMain {
                 }),
             )
             .child(topbar(&state, self.show_connection_browser, window, colors, cx))
-            .child(
+            // 工作区只分配工具栏与状态栏之间的剩余高度，内容不得反向撑大窗口布局。
+            .child(div()
+                .id("main-workspace")
+                .debug_selector(|| "main-workspace".into())
+                .flex_1()
+                .min_h(px(0.))
+                .flex()
+                .flex_col()
+                .overflow_hidden()
+                .child(ai_chat_workspace(
                 div()
+                    .debug_selector(|| "database-workspace".into())
                     .flex()
                     .flex_1()
+                    .min_h(px(0.))
                     .overflow_hidden()
                     .when(self.show_connection_browser, |this| {
                         this.child(sidebar(
@@ -194,7 +282,7 @@ impl Render for NavicatMain {
                             .flex()
                             .flex_col()
                             .child(tabs(compact, &state, self, window, colors, cx))
-                            .child(content(&state, self, window, colors, cx))
+                            .child(content(&state, self, window, colors, cx).debug_selector(|| "workspace-page".into()))
                             .when_some(self.tab_switcher, |this, kind| {
                                 this.child(tab_switcher_popup(
                                     kind,
@@ -210,8 +298,8 @@ impl Render for NavicatMain {
                                     cx,
                                 ))
                             }),
-                    ),
-            )
+                    )
+                .into_any_element(), self, window, colors, cx)))
             .when(show_status_bar, |this| {
                 this.child(statusbar(
                     &state,
@@ -333,6 +421,24 @@ impl Render for NavicatMain {
             .when_some(self.pending_delete_data_row.clone(), |this, menu| {
                 this.child(delete_data_row_modal(menu, colors, cx))
             })
+            .when_some(
+                ai_model_dialog(
+                    self.ai_model_dialog.clone(),
+                    self.ai_model_dialog_filter_input.clone(),
+                    self.ai_model_dialog_filter.clone(),
+                    colors,
+                    cx,
+                ),
+                |this, dialog| this.child(dialog),
+            )
+            .when_some(
+                ai_plugin_config_dialog(
+                    self.ai_plugin_config_dialog.clone(),
+                    colors,
+                    cx,
+                ),
+                |this, dialog| this.child(dialog),
+            )
             .when_some(self.data_row_viewer.clone(), |this, viewer| {
                 this.child(data_row_viewer_modal(
                     viewer,
@@ -350,7 +456,12 @@ impl Render for NavicatMain {
                 this.child(dirty_tab_close_modal(tab_id, &state, colors, cx))
             })
             .when_some(pending_apply_preview, |this, preview| {
-                this.child(apply_data_changes_modal(preview, colors, cx))
+                this.child(apply_data_changes_modal(
+                    preview,
+                    pending_apply_submitting,
+                    colors,
+                    cx,
+                ))
             })
             .when_some(self.pending_query_parameters.clone(), |this, pending| {
                 this.child(query_parameter_prompt_modal(
@@ -361,8 +472,9 @@ impl Render for NavicatMain {
                 ))
             })
             .when_some(self.pending_dangerous_query.clone(), |this, pending| {
-                this.child(dangerous_query_modal(
-                    pending,
+                this.child(dangerous_command_modal(
+                    DangerousCommandKind::Sql,
+                    pending.text,
                     self.focus_handle.clone(),
                     colors,
                     cx,
@@ -371,8 +483,9 @@ impl Render for NavicatMain {
             .when_some(
                 self.pending_dangerous_redis_command.clone(),
                 |this, pending| {
-                    this.child(dangerous_redis_command_modal(
-                        pending,
+                    this.child(dangerous_command_modal(
+                        DangerousCommandKind::Redis,
+                        pending.text,
                         self.focus_handle.clone(),
                         colors,
                         cx,
@@ -380,7 +493,7 @@ impl Render for NavicatMain {
                 },
             )
             // 「执行 SQL 文件」弹框已迁移到 gpui-component Dialog（window.open_dialog），
-            // 由下方 Root::render_dialog_layer 统一渲染，不再在此条件挂载自绘弹层
+            // 由 `Root` 插件层统一渲染，不再在此条件挂载自绘弹层
             .when_some(self.pending_backup_modal.clone(), |this, form| {
                 this.child(database_backup_modal(
                     form,
@@ -488,8 +601,8 @@ impl Render for NavicatMain {
                 ))
             })
             .when_some(self.pending_rename_table.clone(), |this, form| {
-                this.child(rename_table_modal(
-                    form.clone(),
+                this.child(table_name_form_modal(
+                    TableNameForm::Rename(form.clone()),
                     self.rename_table_sql_for_form(&form),
                     self.rename_table_input.clone(),
                     self._rename_table_task.is_some(),
@@ -500,8 +613,8 @@ impl Render for NavicatMain {
                 ))
             })
             .when_some(self.pending_copy_table.clone(), |this, form| {
-                this.child(copy_table_modal(
-                    form.clone(),
+                this.child(table_name_form_modal(
+                    TableNameForm::Copy(form.clone()),
                     self.copy_table_sql_for_form(&form),
                     self.copy_table_input.clone(),
                     self._copy_table_task.is_some(),
@@ -657,14 +770,10 @@ impl Render for NavicatMain {
             .when(self.query_history_quick_open, |this| {
                 this.child(query_history_quick_search_modal(&state, self, colors, cx))
             })
-            // gpui-component 的 Dialog 层：应用自身渲染 dialog layer，
-            // 否则 `window.open_dialog` 推入的弹框（除 Redis hash 完整值外）永远不会显示。
-            // 注意：dialog builder 会在 NavicatMain::render 期间被同步执行，builder 内禁止
-            // re-enter `view.read(cx)`，必须读取与视图共享的状态。
+            // gpui-component 的 Dialog 层不再由应用自绘：`gpui_component::init` 会把
+            // `WindowState` 注册为 `Root` 插件，sheet / dialog / notification 层由 `Root`
+            // 在应用内容之上统一挂载，重复手动渲染会导致弹框叠加两份。
             // Redis hash 大字段完整值已改为 Hash Data 表格区域内嵌面板，不再走弹框。
-            .when_some(Root::render_dialog_layer(window, cx), |this, layer| {
-                this.child(layer)
-            })
             // 性能诊断 HUD：设置开启时在窗口右上角悬浮显示 FPS / 帧耗时 / CPU / GPU / 内存。
             // 挂在根容器（`relative`）最上层，fps_monitor 首次调用会懒建每窗口单例并复用。
             .when(state.settings.performance_diagnostics, |this| {
@@ -675,6 +784,24 @@ impl Render for NavicatMain {
 
 fn render_state_snapshot(state: &AppState) -> AppState {
     AppState {
+        ai_conversation:state.ai_conversation.clone(),
+        ai_models: state.ai_models.clone(),
+        ai_agents: state.ai_agents.clone(),
+        ai_plugin_instances: state.ai_plugin_instances.clone(),
+        ai_tool_settings: state.ai_tool_settings.clone(),
+        ai_execution_policy: state.ai_execution_policy.clone(),
+        ai_mcp_server_profiles: state.ai_mcp_server_profiles.clone(),
+        ai_mcp_datasources: state.ai_mcp_datasources.clone(),
+        ai_audit_rows: state.ai_audit_rows.clone(),
+        ai_audit_error: state.ai_audit_error.clone(),
+        ai_sessions: state.ai_sessions.clone(),
+        ai_sessions_total: state.ai_sessions_total,
+        ai_sessions_cursor: state.ai_sessions_cursor.clone(),
+        ai_sessions_has_more: state.ai_sessions_has_more,
+        ai_sessions_loading_more: state.ai_sessions_loading_more,
+        ai_default_model_id: state.ai_default_model_id.clone(),
+        ai_jev_status: state.ai_jev_status.clone(),
+        ai_runtime_revision: state.ai_runtime_revision,
         connections: state.connections.clone(),
         tabs: state
             .tabs
@@ -708,6 +835,7 @@ fn render_tab_snapshot(tab: &TabState, keep_content: bool) -> TabState {
 
 fn render_tab_kind_snapshot(kind: &TabKind) -> TabKind {
     match kind {
+        TabKind::AiChat { workspace } => TabKind::AiChat { workspace: workspace.clone() },
         TabKind::ObjectList(editor) => TabKind::ObjectList(ObjectListState {
             parent: editor.parent.clone(),
             objects: Vec::new(),
@@ -724,6 +852,7 @@ fn render_tab_kind_snapshot(kind: &TabKind) -> TabKind {
             cell_detail_panel: CellDetailPanelState::default(),
             table_info: TableInfoState::default(),
             loading: editor.loading,
+            submitting: false,
             error: editor.error.clone(),
         }),
         TabKind::QueryEditor(editor) => TabKind::QueryEditor(QueryEditorState {

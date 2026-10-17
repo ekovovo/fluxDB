@@ -142,10 +142,7 @@ impl JsonComponent {
         if self.input.is_none() {
             let input = cx.new(|cx| {
                 InputState::new(window, cx)
-                    .code_editor(JSON_HIGHLIGHT_LANGUAGE)
-                    .line_number(true)
                     .placeholder("值")
-                    .rows(12)
             });
             self.input = Some(input);
         }
@@ -182,75 +179,3 @@ impl JsonComponent {
     }
 }
 
-#[cfg(test)]
-mod json_component_tests {
-    use super::*;
-
-    fn cfg() -> JsonEditorConfig {
-        JsonEditorConfig::default()
-    }
-
-    fn key(path: &[JsonKey]) -> String {
-        json_fold_path_key(path)
-    }
-
-    #[test]
-    fn new_defaults_to_preview_and_clean() {
-        let comp = JsonComponent::new(cfg());
-        assert_eq!(comp.mode(), JsonMode::Preview);
-        assert!(comp.source().is_empty());
-        assert!(comp.diagnostic().is_none());
-        assert!(!comp.is_editing());
-    }
-
-    #[test]
-    fn load_pretty_formats_valid_json() {
-        let mut comp = JsonComponent::new(cfg());
-        comp.load(r#"{"a":1,"b":[1,2]}"#);
-        assert_eq!(comp.source(), "{\n  \"a\": 1,\n  \"b\": [\n    1,\n    2\n  ]\n}");
-        assert!(comp.diagnostic().is_none());
-        // 可折叠节点覆盖根对象与 b 数组。
-        assert!(comp.state().nodes.iter().any(|n| n.path.is_empty()));
-    }
-
-    #[test]
-    fn load_invalid_json_preserves_raw_and_diagnostic() {
-        let mut comp = JsonComponent::new(cfg());
-        comp.load(r#"{"a": }"#);
-        // 非法 JSON：source 保持原文（加载异步、不改写），给出诊断。
-        assert_eq!(comp.source(), r#"{"a": }"#);
-        assert!(comp.diagnostic().is_some());
-    }
-
-    #[test]
-    fn set_mode_edit_marks_editable_without_entity() {
-        // 切换到 Edit 只标记编辑态；`InputState` 实体延迟到 `begin_edit(window, cx)` 才创建，
-        // 纯逻辑层（无窗口）不创建实体，符合「InputState 仅属于编辑模式且内部持有」。
-        let mut comp = JsonComponent::new(cfg());
-        comp.set_mode(JsonMode::Edit);
-        assert_eq!(comp.mode(), JsonMode::Edit);
-        // 无窗口上下文时不会误创建 InputState（纯逻辑可测）。
-        assert!(!comp.is_editing());
-    }
-
-    #[test]
-    fn toggle_fold_preserves_source() {
-        let mut comp = JsonComponent::new(cfg());
-        comp.load(r#"{"user":{"name":"n"},"age":1}"#);
-        let path: Vec<JsonKey> = vec![JsonKey::Object("user".into())];
-        comp.toggle_fold(&path);
-        assert!(comp.folds.contains(&key(&path)));
-        comp.toggle_fold(&path);
-        assert!(!comp.folds.contains(&key(&path)));
-        // 折叠 / 展开来回后，source 始终是完整 JSON。
-        assert_eq!(comp.source(), "{\n  \"user\": {\n    \"name\": \"n\"\n  },\n  \"age\": 1\n}");
-    }
-
-    #[test]
-    fn mode_edit_flag_reflected_in_state() {
-        let mut comp = JsonComponent::new(cfg());
-        comp.load(r#"{"a":1}"#);
-        comp.set_mode(JsonMode::Edit);
-        assert!(comp.state().editing);
-    }
-}

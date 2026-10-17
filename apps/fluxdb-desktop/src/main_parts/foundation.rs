@@ -82,6 +82,10 @@ struct UiColors {
     // 圆角风格：跟随 gpui-component theme.radius / radius_lg，按钮/输入框/面板共用。
     radius: gpui::Pixels,
     radius_lg: gpui::Pixels,
+    success: gpui::Rgba,
+    warning: gpui::Rgba,
+    danger: gpui::Rgba,
+    info: gpui::Rgba,
 }
 
 fn ui_colors_from_theme(mode: ThemeMode, cx: &App) -> UiColors {
@@ -281,6 +285,10 @@ fn ui_colors(mode: ThemeMode) -> UiColors {
             input_bg: rgb(0x111418),
             status_bg: rgb(0x15181c),
             canvas_bg: rgb(0x0e1013),
+            success: rgb(0x6fca9b),
+            warning: rgb(0xd9b27b),
+            danger: rgb(0xe08179),
+            info: rgb(0x8fb2f0),
             radius: px(6.),
             radius_lg: px(8.),
         }
@@ -302,6 +310,10 @@ fn ui_colors(mode: ThemeMode) -> UiColors {
             input_bg: rgb(0xffffff),
             status_bg: rgb(0xf0f0f0),
             canvas_bg: rgb(0xf0f1f4),
+            success: rgb(0x1f7a4d),
+            warning: rgb(0x9a6a15),
+            danger: rgb(0xb53b3b),
+            info: rgb(0x3a63b8),
             radius: px(6.),
             radius_lg: px(8.),
         }
@@ -325,6 +337,8 @@ enum AppIcon {
     ChevronUp,
     ChevronsLeft,
     ChevronsRight,
+    Circle,
+    CircleCheck,
     CircleSlash,
     Close,
     Copy,
@@ -340,15 +354,19 @@ enum AppIcon {
     FolderUp,
     Github,
     Home,
+    Info,
     Key,
     Link,
     List,
+    Layout,
+    Loader,
     Maximize,
     Minus,
     PanelBottom,
     PanelLeftClose,
     PanelLeftOpen,
     PanelRight,
+    PanelTop,
     Pin,
     Play,
     Plug,
@@ -370,6 +388,7 @@ enum AppIcon {
     Wand,
     Workflow,
     Text,
+    TriangleAlert,
     WrapText,
 }
 
@@ -390,6 +409,8 @@ fn app_icon_path(icon: AppIcon) -> &'static str {
         AppIcon::ChevronUp => "icons/chevron-up.svg",
         AppIcon::ChevronsLeft => "icons/chevrons-left.svg",
         AppIcon::ChevronsRight => "icons/chevrons-right.svg",
+        AppIcon::Circle => "icons/circle.svg",
+        AppIcon::CircleCheck => "icons/circle-check.svg",
         AppIcon::CircleSlash => "icons/circle-slash.svg",
         AppIcon::Close => "icons/x.svg",
         AppIcon::Copy => "icons/copy-plus.svg",
@@ -405,15 +426,19 @@ fn app_icon_path(icon: AppIcon) -> &'static str {
         AppIcon::FolderUp => "icons/folder-up.svg",
         AppIcon::Github => "icons/github.svg",
         AppIcon::Home => "icons/home.svg",
+        AppIcon::Info => "icons/info.svg",
         AppIcon::Key => "icons/key.svg",
         AppIcon::Link => "icons/link.svg",
         AppIcon::List => "icons/list.svg",
+        AppIcon::Loader => "icons/loader.svg",
+        AppIcon::Layout => "icons/panels-top-left.svg",
         AppIcon::Maximize => "icons/maximize-2.svg",
         AppIcon::Minus => "icons/minus.svg",
         AppIcon::PanelBottom => "icons/panel-bottom.svg",
         AppIcon::PanelLeftClose => "icons/panel-left-close.svg",
         AppIcon::PanelLeftOpen => "icons/panel-left-open.svg",
         AppIcon::PanelRight => "icons/panel-right.svg",
+        AppIcon::PanelTop => "icons/panel-top.svg",
         AppIcon::Pin => "icons/pin.svg",
         AppIcon::Play => "icons/play.svg",
         AppIcon::Plug => "icons/plug.svg",
@@ -435,6 +460,7 @@ fn app_icon_path(icon: AppIcon) -> &'static str {
         AppIcon::Wand => "icons/wand-sparkles.svg",
         AppIcon::Workflow => "icons/workflow.svg",
         AppIcon::Text => "icons/text.svg",
+        AppIcon::TriangleAlert => "icons/triangle-alert.svg",
         AppIcon::WrapText => "icons/wrap-text.svg",
     }
 }
@@ -509,8 +535,16 @@ struct Assets {
 }
 
 impl AssetSource for Assets {
+    /// 读取不到资源按 GPUI 约定返回 `Ok(None)`，只有真实读取故障才是错误：
+    /// 上层会周期性请求可选资源（如组件库的空图标占位、自带字体探测），
+    /// 报错误会让这些探测每次绘制都刷一条 ERROR。是否为普通文件用 `is_file`
+    /// 判断而非匹配 `ErrorKind`，因为空路径拼出的是资源目录，各平台对其读取
+    /// 的报错并不一致（macOS/Linux 为 IsADirectory，Windows 为 PermissionDenied）。
     fn load(&self, path: &str) -> anyhow::Result<Option<Cow<'static, [u8]>>> {
         let asset_path = self.base.join(path);
+        if !asset_path.is_file() {
+            return Ok(None);
+        }
         fs::read(&asset_path)
             .map(Cow::Owned)
             .map(Some)

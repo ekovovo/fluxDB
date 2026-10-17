@@ -1386,6 +1386,28 @@ pub fn upsert_streaming_part(
     }
 }
 
+/// 某 Turn 的 `notice` 片段公开文本（按消息与片段顺序）。
+///
+/// 只取 `payload_json.text`：notice 是"为什么暂停/为什么停在这里"的公开说明，
+/// 本身已展示给用户；模型历史里只有 text 片段，因此诊断读取面单独投影它。
+pub fn list_notice_texts_for_turn(conn: &Connection, turn_id: &str) -> Result<Vec<String>> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT json_extract(p.payload_json,'$.text')
+               FROM ai_message_parts p JOIN ai_messages m ON m.id=p.message_id
+              WHERE m.turn_id=?1 AND p.kind='notice'
+                AND json_extract(p.payload_json,'$.text') IS NOT NULL
+              ORDER BY m.seq, p.ordinal, p.id",
+        )
+        .map_err(sqlite_error)?;
+    let rows = stmt
+        .query_map([turn_id], |row| row.get::<_, String>(0))
+        .map_err(sqlite_error)?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(sqlite_error)?;
+    Ok(rows)
+}
+
 // ---- 运行事件 ----
 
 /// 追加运行事件（`seq` 由 Turn 原子分配）。

@@ -174,6 +174,7 @@ include!("main_parts/ai/message.rs");
 include!("main_parts/ai/approval.rs");
 include!("main_parts/ai/timeline.rs");
 include!("main_parts/ai/report.rs");
+include!("main_parts/ai/diagnostics.rs");
 include!("main_parts/ai/report_charts.rs");
 include!("main_parts/ai/actions.rs");
 include!("main_parts/ai/current_page.rs");

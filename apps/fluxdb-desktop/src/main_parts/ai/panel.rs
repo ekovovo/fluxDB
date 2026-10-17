@@ -701,6 +701,14 @@ fn ai_chat_panel(
                     })),
                 )
                 .child(
+                    ai_chat_small_button("ai-chat-diagnostics", AppIcon::Activity, "诊断", colors)
+                        .debug_selector(|| "ai-chat-diagnostics".into())
+                        .disabled(!ready)
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.open_ai_diagnostics_dialog(window, cx)
+                        })),
+                )
+                .child(
                     ai_chat_small_button("ai-chat-close", AppIcon::Close, "关闭", colors)
                         .debug_selector(|| "ai-chat-close".into())
                         .on_click(

@@ -96,6 +96,9 @@ impl AiRuntimeHandle {
                     // 「计划与执行进度」插件：仅在实例开启且当前 Agent 未禁用绑定时
                     // 暴露 `plan.update`；关闭后工具不进入目录，模型发现不到。
                     add_ai_plan_tool(&mut tools, storage, &job.session_id)?;
+                    // 诊断读取：解释"刚才为什么失败"。不受遥测插件开关门控，
+                    // 仍受全局工具停用与 Agent 白名单收窄（见 ai_diagnostics.rs 文件头）。
+                    add_ai_diagnostics_tool(&mut tools, storage, job)?;
                     if tools.results().is_none() {
                         let spec = result_read_page_spec()?;
                         tools = tools.with_results(std::sync::Arc::clone(&results));
@@ -152,7 +155,13 @@ impl AiRuntimeHandle {
                             ),
                         }
                     }
-                    Err(error) => run_ai_conversation_failure(storage, job, sender, error.message),
+                    Err(error) => run_ai_conversation_failure(
+                        storage,
+                        job,
+                        sender,
+                        FailureStage::Prepare,
+                        error,
+                    ),
                 }
             },
         )
@@ -217,7 +226,11 @@ impl AiRuntimeHandle {
                         &storage,
                         &job,
                         &sender,
-                        "AI 任务异常结束，请核对工具执行状态".into(),
+                        FailureStage::Internal,
+                        fluxdb_core::Error::new(
+                            fluxdb_core::ErrorKind::Internal,
+                            "AI 任务异常结束，请核对工具执行状态",
+                        ),
                     );
                 }
             }),

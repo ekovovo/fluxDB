@@ -33,6 +33,12 @@ const AI_AGENT_TOOL_CATALOG: &[(&str, &str, &str, bool)] = &[
     ),
     ("redis.server_info", "Redis", "受限版本与诊断摘要", false),
     ("result.read_page", "公共", "读取已取得的结果快照", false),
+    (
+        "diagnostics.read_turns",
+        "公共",
+        "读取本会话最近几轮的脱敏失败事实（终态/阶段/错误码/耗时/失败工具）",
+        false,
+    ),
     ("artifact.create", "产物", "创建报告草稿；内置渲染需启用 BI 插件", true),
     ("artifact.add_block", "产物", "为报告追加图表、表格或说明，不修改数据库", true),
     ("artifact.finalize", "产物", "校验来源并生成报告快照，不修改数据库", true),

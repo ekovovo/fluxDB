@@ -397,7 +397,13 @@ impl NavicatMain {
         self.ai_chat._pump = Some(cx.spawn(async move |view, cx| {
             let update = cx.background_spawn(async move {
                 let (sender, receiver) = std::sync::mpsc::sync_channel(1);
-                fluxdb_app::run_ai_conversation_failure(&storage, &job, &sender, message);
+                fluxdb_app::run_ai_conversation_failure(
+                    &storage,
+                    &job,
+                    &sender,
+                    fluxdb_app::FailureStage::Prepare,
+                    fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, message),
+                );
                 receiver.try_recv().ok()
             }).await;
             if let Some(update) = update {

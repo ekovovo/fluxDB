@@ -52,7 +52,7 @@ fn execute_sql_with_parameters_and_progress(
     read_only: bool,
     should_cancel: &dyn Fn() -> bool,
     on_progress: &mut dyn FnMut(fluxdb_core::ToolProgressEvent),
-    automatic_approval: bool,
+    bounded_write: bool,
 ) -> Result<SqlExecutionOutcome, SqlExecError> {
     let config = resolver
         .connection_config(target.connection_id)
@@ -116,7 +116,8 @@ fn execute_sql_with_parameters_and_progress(
     let started = Instant::now();
     let mut first_error: Option<String> = None;
     let mut progress = Vec::new();
-    let execution = if automatic_approval {
+    // 走有界提交只在连接器确实具备该能力时发生；自动放行的普通写入按原语句执行。
+    let execution = if bounded_write {
         connector
             .execute_bounded_update(
                 &fluxdb_core::ParameterizedQueryRequest {

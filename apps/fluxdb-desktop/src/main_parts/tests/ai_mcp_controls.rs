@@ -118,3 +118,47 @@ fn ai_ui_mcp_datasource_policy_persists(cx: &mut TestAppContext) {
     assert_eq!(stored.revision, 2, "策略更新后 revision 递增");
     let _ = std::fs::remove_dir_all(root);
 }
+
+/// 「工具」页签：写入风险阈值与评审权重下拉真实落库，并在 AppState 上同步。
+#[gpui::test]
+fn ai_ui_write_risk_threshold_and_weight_persist(cx: &mut TestAppContext) {
+    use gpui_kit::test::TestWindowExt as _;
+    let root = isolated_root("write-risk-policy");
+    let storage = FileStorage::new(&root);
+    let mut controller = AppController::new();
+    controller.set_ai_storage(storage.clone());
+    let _ = controller.dispatch(AppCommand::OpenSettings);
+    let (view, cx) = open_main(
+        cx,
+        controller.clone(),
+        storage.clone(),
+        SettingsPanelSection::AiToolsMcp,
+    );
+    cx.simulate_resize(size(px(1600.), px(1800.)));
+    cx.update(|window, cx| {
+        window.render_frame(cx);
+        window.click("ai-tools-tab:工具", cx);
+        window.render_frame(cx);
+        assert!(window.try_find("execution-policy-threshold").is_some());
+        assert!(window.try_find("execution-policy-weight").is_some());
+    });
+    // 默认阈值 0.35，切到 0.50。
+    click_selector(cx, "execution-policy-threshold");
+    click_selector(cx, "execution-policy-threshold-option:0.5");
+    assert_eq!(
+        view.read_with(cx, |main, _| {
+            main.controller.state().ai_execution_policy.write_risk_threshold
+        }),
+        0.5
+    );
+    // 评审权重默认 0.5，切到 0.25。
+    click_selector(cx, "execution-policy-weight");
+    click_selector(cx, "execution-policy-weight-option:0.25");
+    let stored = storage
+        .with_ai_connection(fluxdb_storage::ai_platform::execution_policy::load)
+        .unwrap()
+        .0;
+    assert_eq!(stored.write_risk_threshold, 0.5);
+    assert_eq!(stored.write_review_weight, 0.25);
+    let _ = std::fs::remove_dir_all(root);
+}

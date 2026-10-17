@@ -178,6 +178,7 @@ fn ai_contract_traits_are_object_safe_for_runtime_heterogeneity() {
     let tool_receipt = ai_contract_block_on(tool.execute(
         fluxdb_core::ToolExecutionContext {
             automatic_approval: false,
+            bounded_write: false,
             session_id: "s-contract".into(),
             turn_id: "t-contract".into(),
             iteration: 1,
@@ -259,6 +260,7 @@ fn ai_contract_recording_tool_receipt_is_failed_and_not_skipped() {
         .with_status(fluxdb_core::ToolReceiptStatus::Failed);
     let ctx = fluxdb_core::ToolExecutionContext {
         automatic_approval: false,
+        bounded_write: false,
         session_id: "s-tool".into(),
         turn_id: "t-tool".into(),
         iteration: 2,
@@ -363,6 +365,7 @@ fn ai_contract_model_tool_receipt_rereasoning_loop_has_no_production_deps() {
     let receipt = ai_contract_block_on(tool.execute(
         fluxdb_core::ToolExecutionContext {
             automatic_approval: false,
+            bounded_write: false,
             session_id: "s-loop".into(),
             turn_id: "t-loop".into(),
             iteration: 1,

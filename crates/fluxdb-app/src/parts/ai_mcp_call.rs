@@ -289,6 +289,7 @@ impl McpExecutionService {
         };
         let ctx = fluxdb_core::ToolExecutionContext {
             automatic_approval: false,
+            bounded_write: false,
             session_id: identity.session_id.clone(),
             turn_id: identity.request_id.clone(),
             iteration: 1,

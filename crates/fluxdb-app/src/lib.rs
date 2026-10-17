@@ -27,20 +27,22 @@ use fluxdb_core::{
     ConnectionId, ConnectionOverview, Connector, CreateDatabaseRequest, DataChangeSet,
     DataExportPreview, DataPage, DatabaseKind, DatabasePrivilegeGrant, DatabaseUserIdentity,
     Endpoint, ErColumn, ErForeignKeyEdge, ErGraphData, ErLoadStatus, ErRelationship, ErTableNode,
-    ErTableRef, Error, ErrorKind, FilterSpec, ForeignKeyInfo, IndexInfo, InsertTextFormat,
-    ObjectKind, ObjectPath, ObjectSummary, Pagination, PgEffectivePrivilege, PgGrantTargetLists,
-    PgObjectGrantScope, PgObjectGrants, PgPasswordOp, PgRelationKind, PgRole, PgRoleChange,
-    PgRoleDraft, PgRoleMembership, PgRoleSavePlan, PgValidUntilOp, PrivilegeScope,
-    QueryCompletionItem, QueryCompletionKind, QueryCompletionResult, QueryDeleteRollbackSnapshot,
-    QueryExecutionOptions, QueryExecutionResult, QueryExecutionSummary,
-    QueryInsertRollbackSnapshot, QueryRequest, QueryRollbackRowSnapshot, QueryRollbackSnapshot,
-    QueryStatementKind, QueryUpdateRollbackSnapshot, RedisConnectionProfile, RedisHashFieldTtl,
-    RedisServerVersion, RoutineRef, Row, RowIdentity, RowUpdate, Settings, SidebarLayout, SortSpec,
-    SqlDialect as _, TableFingerprint, TableRef, TriggerInfo, TriggerRef, UserFacingError,
-    UserRoleMember, UserRoleMembership, WorkbenchHistoryItem, WorkbenchHistoryScope,
-    WorkbenchHistoryStore, database_user_admin_provider, grants_from_query_result,
-    infer_cloud_from_host, matches_completion_fuzzy, redact_uri_password,
-    role_memberships_from_grants, set_sqlite_attached_database, sqlite_attached_database_path,
+    ErTableRef, Error, ErrorKind, ExecutionPolicy, ExecutionPolicySettings, FilterSpec,
+    ForeignKeyInfo, IndexInfo, InsertTextFormat, ModelRisk, ObjectKind, ObjectPath, ObjectSummary,
+    Pagination, PgEffectivePrivilege, PgGrantTargetLists, PgObjectGrantScope, PgObjectGrants,
+    PgPasswordOp, PgRelationKind, PgRole, PgRoleChange, PgRoleDraft, PgRoleMembership,
+    PgRoleSavePlan, PgValidUntilOp, PrivilegeScope, QueryCompletionItem, QueryCompletionKind,
+    QueryCompletionResult, QueryDeleteRollbackSnapshot, QueryExecutionOptions,
+    QueryExecutionResult, QueryExecutionSummary, QueryInsertRollbackSnapshot, QueryRequest,
+    QueryRollbackRowSnapshot, QueryRollbackSnapshot, QueryStatementKind,
+    QueryUpdateRollbackSnapshot, RedisConnectionProfile, RedisHashFieldTtl, RedisServerVersion,
+    RoutineRef, Row, RowIdentity, RowUpdate, Settings, SidebarLayout, SortSpec, SqlDialect as _,
+    TableFingerprint, TableRef, TriggerInfo, TriggerRef, UserFacingError, UserRoleMember,
+    UserRoleMembership, WorkbenchHistoryItem, WorkbenchHistoryScope, WorkbenchHistoryStore,
+    WriteCommit, WriteReviewOutcome, WriteRiskDecision, WriteRiskFacts,
+    database_user_admin_provider, grants_from_query_result, infer_cloud_from_host,
+    matches_completion_fuzzy, redact_uri_password, role_memberships_from_grants,
+    set_sqlite_attached_database, sqlite_attached_database_path,
 };
 use sqlformat::{Dialect, FormatOptions, Indent, QueryParams};
 use sqlparser::{
@@ -127,6 +129,9 @@ include!("parts/ai_result_pages.rs");
 include!("parts/ai_hooks.rs");
 include!("parts/ai_audit_rules.rs");
 include!("parts/ai_permission.rs");
+include!("parts/ai_write_risk_sql.rs");
+include!("parts/ai_write_risk_redis.rs");
+include!("parts/ai_write_review.rs");
 include!("parts/ai_execution_policy.rs");
 include!("parts/ai_context.rs");
 include!("parts/ai_page_context.rs");

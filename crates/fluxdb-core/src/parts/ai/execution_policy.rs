@@ -59,11 +59,19 @@ impl McpWritePolicy {
 ///
 /// MCP 数据源自身的“默认”取值表示跟随这里的 `mcp_default`；数据源覆盖存在
 /// `ai_mcp_server_datasources` 行上（见 storage），避免两处各存一份事实。
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ExecutionPolicySettings {
     pub tools_default: ExecutionPolicy,
     pub mcp_default: McpWritePolicy,
+    /// 写入风险评审的自动放行阈值：综合风险分不高于它才自动执行。
+    ///
+    /// 阈值不是风险等级：调高等于把更多写入交给评审模型，调低等于把更多写入交给人。
+    pub write_risk_threshold: f64,
+    /// 评审模型在综合分里的权重（0–[`MAX_WRITE_REVIEW_WEIGHT`]）。
+    ///
+    /// 上限固定为 0.5：评审模型与代码规则平权，但不能单方面压倒规则分。
+    pub write_review_weight: f64,
 }
 
 impl Default for ExecutionPolicySettings {
@@ -71,6 +79,27 @@ impl Default for ExecutionPolicySettings {
         Self {
             tools_default: ExecutionPolicy::WriteApproval,
             mcp_default: McpWritePolicy::ReadOnly,
+            write_risk_threshold: DEFAULT_WRITE_RISK_THRESHOLD,
+            write_review_weight: DEFAULT_WRITE_REVIEW_WEIGHT,
         }
+    }
+}
+
+impl ExecutionPolicySettings {
+    /// 清洗越界取值：阈值与权重都必须在有效区间内，否则拒绝保存而不是悄悄裁剪。
+    pub fn validate(&self) -> crate::Result<()> {
+        if !(0.0..=1.0).contains(&self.write_risk_threshold) {
+            return Err(crate::Error::new(
+                crate::ErrorKind::Internal,
+                "自动放行阈值必须在 0–1 之间",
+            ));
+        }
+        if !(0.0..=MAX_WRITE_REVIEW_WEIGHT).contains(&self.write_review_weight) {
+            return Err(crate::Error::new(
+                crate::ErrorKind::Internal,
+                format!("评审模型权重必须在 0–{MAX_WRITE_REVIEW_WEIGHT} 之间"),
+            ));
+        }
+        Ok(())
     }
 }

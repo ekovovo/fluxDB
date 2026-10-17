@@ -974,11 +974,6 @@ impl PgRoleDraftUiExt for fluxdb_core::PgRoleDraft {
     }
 }
 
-#[allow(dead_code)]
-fn _assert_pg_role_draft_ui_ext_usable() {
-    // 仅为保证 trait 扩展编译可用；不参与运行时逻辑。
-}
-
 /// PG 对象权限授权目标种类（UI 选择器用；映射到 `PgObjectGrantScope`）。
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum PgGrantObjectKind {

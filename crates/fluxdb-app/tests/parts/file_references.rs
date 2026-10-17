@@ -146,6 +146,7 @@ fn execute(
         .block_on(tools.executable(tool_id).unwrap().execute(
             ToolExecutionContext {
                 automatic_approval: false,
+                bounded_write: false,
                 session_id: job.session_id.clone(),
                 turn_id: job.turn_id.clone(),
                 iteration: 1,

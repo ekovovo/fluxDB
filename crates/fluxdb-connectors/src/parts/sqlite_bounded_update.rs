@@ -137,12 +137,15 @@ async fn verify_bounded_sqlite_update(
     Ok(r#"{"operation":"update","database_kind":"sqlite","predicate":"integer_primary_key_equals_value","max_affected_rows":1,"assignments":"literal_or_bound_values","triggers":false,"foreign_keys":false,"rollback_verified":true,"business_values":"omitted","object_names":"omitted"}"#.into())
 }
 
+/// 在独立 BEGIN IMMEDIATE 事务内复核并提交有界 UPDATE。
+///
+/// 只有这一个入口：复核与提交在同一个事务里完成，"先预检、后另起事务执行"的两次
+/// 检查之间状态会变，等于没检查。因此不需要预检标志位。
 fn sqlite_bounded_update(
     config: &ConnectionConfig,
     request: &fluxdb_core::ParameterizedQueryRequest,
-    execute: bool,
     should_cancel: &dyn Fn() -> bool,
-) -> fluxdb_core::Result<(String, QueryExecutionResult)> {
+) -> fluxdb_core::Result<QueryExecutionResult> {
     if matches!(
         &config.endpoint,
         Endpoint::SqliteFile {
@@ -171,56 +174,53 @@ fn sqlite_bounded_update(
             if should_cancel() {
                 return Err(Error::new(ErrorKind::Query, "已取消"));
             }
-            let facts =
-                verify_bounded_sqlite_update(&mut connection, &request.request.text).await?;
+            // 提交前复核对象、主键与间接副作用；复核不通过就整体回滚。
+            verify_bounded_sqlite_update(&mut connection, &request.request.text).await?;
             let mut result = QueryExecutionResult {
                 summaries: vec![],
                 results: vec![],
                 rollback_snapshots: vec![],
             };
-            if execute {
-                let mut query = sqlx::query(&request.request.text);
-                for value in &request.parameters {
-                    query = sqlite_bind_parameter(query, value)?;
-                }
-                let affected = query
-                    .execute(&mut connection)
-                    .await
-                    .map_err(sqlite_error)?
-                    .rows_affected();
-                if affected > 1 || should_cancel() {
-                    return Err(Error::new(
-                        ErrorKind::Query,
-                        "自动审批写入超限或已取消，事务已回滚",
-                    ));
-                }
-                result.summaries.push(QueryExecutionSummary {
-                    sql: request.request.text.clone(),
-                    kind: QueryStatementKind::Command,
-                    success: true,
-                    message: format!("有界提交，影响 {affected} 行"),
-                    returned_rows: 0,
-                    affected_rows: affected,
-                    elapsed_ms: 0,
-                });
-                sqlx::query("COMMIT")
-                    .execute(&mut connection)
-                    .await
-                    .map_err(|_| {
-                        Error::new(ErrorKind::Internal, "有界写入提交结果未知，禁止自动重试")
-                    })?;
-            } else {
-                sqlx::query("ROLLBACK")
-                    .execute(&mut connection)
-                    .await
-                    .map_err(sqlite_error)?;
+            let mut query = sqlx::query(&request.request.text);
+            for value in &request.parameters {
+                query = sqlite_bind_parameter(query, value)?;
             }
-            Ok((facts, result))
+            let affected = query
+                .execute(&mut connection)
+                .await
+                .map_err(sqlite_error)?
+                .rows_affected();
+            if affected > 1 || should_cancel() {
+                return Err(Error::new(
+                    ErrorKind::Query,
+                    "自动审批写入超限或已取消，事务已回滚",
+                ));
+            }
+            result.summaries.push(QueryExecutionSummary {
+                sql: request.request.text.clone(),
+                kind: QueryStatementKind::Command,
+                success: true,
+                message: format!("有界提交，影响 {affected} 行"),
+                returned_rows: 0,
+                affected_rows: affected,
+                elapsed_ms: 0,
+            });
+            sqlx::query("COMMIT")
+                .execute(&mut connection)
+                .await
+                .map_err(|_| {
+                    Error::new(ErrorKind::Internal, "有界写入提交结果未知，禁止自动重试")
+                })?;
+            Ok(result)
         }
         .await;
         if outcome.is_err() {
-            let rollback = sqlx::query("ROLLBACK").execute(&mut connection).await;
-            if execute && rollback.is_err() {
+            // 回滚失败意味着提交状态未知：不能被当成"没执行"继续放行。
+            if sqlx::query("ROLLBACK")
+                .execute(&mut connection)
+                .await
+                .is_err()
+            {
                 return Err(Error::new(
                     ErrorKind::Internal,
                     "有界写入回滚结果无法核实，禁止自动重试",

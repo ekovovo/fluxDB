@@ -567,6 +567,7 @@ impl<'a> TurnRunner<'a> {
                     audit: Some(audit),
                 };
                 let mut automatic_approval=false;
+                let mut bounded_write=false;
                 let decision=if let Some(security)=&self.tools.security {
                     let policy=match security.settings() {
                         Ok((p,_))=>p.tools_default,
@@ -575,18 +576,31 @@ impl<'a> TurnRunner<'a> {
                     match security.authorize(&input,policy,||{
                         self.tools.executable(&call.tool_id).ok_or_else(||
                             fluxdb_core::Error::new(fluxdb_core::ErrorKind::Unsupported,"工具不可用")
-                        )?.automatic_approval_facts(&prepared.to_json_string())
+                        )?.write_risk_facts(&prepared.to_json_string())
                     },cancel) {
                         Ok(result)=>{
                             automatic_approval=result.automatic_approval;
+                            bounded_write=result.write_commit==fluxdb_core::WriteCommit::Bounded;
                             if spec.risk!=fluxdb_core::ToolRisk::Read {
                                 emit(LoopEvent::Notice(result.reason.clone()));
                             }
-                            // 审批事实先落盘，失败时不得发出写入。
+                            // 评审事实先落盘，失败时不得发出写入；拆解与阈值一起进审计，
+                            // 事后能回答"这条为什么被自动放行"。
+                            let risk_json=result.risk.as_ref().map(|risk|serde_json::json!({
+                                "score":risk.final_score,"threshold":risk.threshold,
+                                "rule_score":risk.rule_score,"hard_floor":risk.hard_floor,
+                                "model_score":risk.model_score,"model_source":risk.model_source,
+                                "signals":risk.signals.iter().map(|signal|serde_json::json!({
+                                    "code":signal.code,"score":signal.score,
+                                    "class":match signal.class{fluxdb_core::WriteRiskClass::Hard=>"hard",fluxdb_core::WriteRiskClass::Soft=>"soft"},
+                                })).collect::<Vec<_>>(),
+                            }));
                             if let Err(error)=with_ai_storage(&security.storage,|conn|
                                 fluxdb_storage::ai_platform::run_events::append(conn,&state.turn_id,"execution_policy",
                                 &serde_json::json!({"tool":spec.id,"plan_hash":hash,"policy":policy,
                                     "reason":result.reason,"automatic_approval":automatic_approval,
+                                    "write_commit":match result.write_commit{fluxdb_core::WriteCommit::Bounded=>"bounded",fluxdb_core::WriteCommit::Ordinary=>"ordinary"},
+                                    "risk":risk_json,
                                     "settings_revision":result.settings_revision}).to_string(),ai_chat_now()).map(|_|()))
                             {return TurnOutcome::Failed{message:error.message};}
                             result.decision
@@ -664,6 +678,7 @@ impl<'a> TurnRunner<'a> {
                 });
                 let ctx = fluxdb_core::ToolExecutionContext {
                     automatic_approval,
+                    bounded_write,
                     session_id: state.session_id.clone(),
                     turn_id: state.turn_id.clone(),
                     iteration: iteration as i64,

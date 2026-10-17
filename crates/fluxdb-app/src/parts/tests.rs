@@ -8,7 +8,6 @@ mod tests {
     include!("tests/helpers.rs");
     include!("tests/system_sqlite.rs");
     include!("tests/system_ast.rs");
-    include!("tests/fixture.rs");
     include!("tests/tabs_and_connections.rs");
     include!("tests/ai_chat_tab.rs");
     include!("tests/connection_tree_refresh.rs");
@@ -49,6 +48,7 @@ mod tests {
     include!("tests/ai_audit_rules.rs");
     include!("tests/ai_context.rs");
     include!("tests/ai_page_context.rs");
+    include!("tests/ai_write_risk.rs");
     include!("tests/ai_sql_policy.rs");
     include!("tests/ai_sql_exec.rs");
     include!("tests/ai_connection_tools.rs");

@@ -3314,7 +3314,7 @@
 
     #[test]
     fn function_completion_supports_fuzzy_matching() {
-        let items = function_completion_items("coa");
+        let items = function_completion_items_for(SQL_COMPLETION_FUNCTIONS, "coa");
 
         assert!(items.iter().any(|item| item.label == "COALESCE"));
     }
@@ -4942,50 +4942,6 @@
         assert!(result.items.iter().all(|item| item.insert_text != "refresh_product"));
     }
 
-    #[test]
-    fn column_completion_orders_better_matches_first() {
-        let items = column_completion_items(
-            vec![
-                CompletionColumn {
-                    table: "Product".to_string(),
-                    database: None,
-                    schema: None,
-                    name: "product_name".to_string(),
-                    type_name: Some("TEXT".to_string()),
-                    nullable: true,
-                    primary_key: false,
-                    comment: None,
-                    stable: None,
-                },
-                CompletionColumn {
-                    table: "Product".to_string(),
-                    database: None,
-                    schema: None,
-                    name: "name".to_string(),
-                    type_name: Some("TEXT".to_string()),
-                    nullable: false,
-                    primary_key: false,
-                    comment: None,
-                    stable: None,
-                },
-                CompletionColumn {
-                    table: "Product".to_string(),
-                    database: None,
-                    schema: None,
-                    name: "display_name".to_string(),
-                    type_name: Some("TEXT".to_string()),
-                    nullable: true,
-                    primary_key: false,
-                    comment: None,
-                    stable: None,
-                },
-            ],
-            "name",
-        );
-
-        assert_eq!(items[0].insert_text, "name");
-        assert_eq!(items[1].insert_text, "display_name");
-    }
     #[test]
     fn completion_cache_clears_for_object_refresh_commands() {
         assert!(should_clear_completion_cache(&AppCommand::OpenConnection(ConnectionId(1))));

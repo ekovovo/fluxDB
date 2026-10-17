@@ -89,6 +89,7 @@ impl Fixture {
         block_on(self.catalog.executable(name).unwrap().execute(
             ToolExecutionContext {
                 automatic_approval: false,
+                bounded_write: false,
                 session_id: "isolated".into(),
                 turn_id: "isolated".into(),
                 iteration: 1,

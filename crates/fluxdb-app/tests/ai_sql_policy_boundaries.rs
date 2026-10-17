@@ -220,6 +220,7 @@ fn query_tool_rejects_pragma_writes_and_preserves_real_sqlite_state() {
         let mut future = tool.execute(
             ToolExecutionContext {
                 automatic_approval: false,
+                bounded_write: false,
                 session_id: "isolated-session".into(),
                 turn_id: "isolated-turn".into(),
                 iteration: 1,

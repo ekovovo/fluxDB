@@ -271,6 +271,7 @@ fn t023_postgres_metadata_query_cancel_and_session_isolation() {
     let receipt = ai_block_on(tool.execute(
         fluxdb_core::ToolExecutionContext {
             automatic_approval: false,
+            bounded_write: false,
             session_id: "t023-live".into(),
             turn_id: "t023-live-turn".into(),
             iteration: 1,
@@ -307,6 +308,7 @@ fn t023_postgres_metadata_query_cancel_and_session_isolation() {
     let cancelled = ai_block_on(tool.execute(
         fluxdb_core::ToolExecutionContext {
             automatic_approval: false,
+            bounded_write: false,
             session_id: "t023-live".into(),
             turn_id: "t023-live-turn".into(),
             iteration: 2,
@@ -445,6 +447,7 @@ fn t023_mysql_metadata_query_cancel_and_session_isolation() {
     let cancelled = ai_block_on(tool.execute(
         fluxdb_core::ToolExecutionContext {
             automatic_approval: false,
+            bounded_write: false,
             session_id: "t023-live".into(),
             turn_id: "t023-live-turn".into(),
             iteration: 2,

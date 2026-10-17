@@ -7,7 +7,6 @@ pub(crate) mod sql_editor_adapter {
     include!("sql_editor_adapter/syntax.rs");
     include!("sql_editor_adapter/completion.rs");
     include!("sql_editor_adapter/semantic.rs");
-    include!("sql_editor_adapter/decorations.rs");
     include!("sql_editor_adapter/execution.rs");
     include!("sql_editor_adapter/statements.rs");
     include!("sql_editor_adapter/execute_shortcuts.rs");

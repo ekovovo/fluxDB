@@ -2189,7 +2189,6 @@ dependencies = [
  "fluxdb-app",
  "fluxdb-core",
  "fluxdb-editor-core",
- "fluxdb-editor-language",
  "fluxdb-mcp",
  "fluxdb-storage",
  "futures",
@@ -2225,13 +2224,6 @@ dependencies = [
 [[package]]
 name = "fluxdb-editor-core"
 version = "0.1.0"
-
-[[package]]
-name = "fluxdb-editor-language"
-version = "0.1.0"
-dependencies = [
- "fluxdb-editor-core",
-]
 
 [[package]]
 name = "fluxdb-mcp"

@@ -32,6 +32,7 @@ fn ai_sql_exec_demo_config(id: u64) -> ConnectionConfig {
 fn ai_sql_exec_ctx(call_id: &str, cancel: CancelFlag) -> ToolExecutionContext {
     ToolExecutionContext {
         automatic_approval: false,
+        bounded_write: false,
         session_id: "s-sql".into(),
         turn_id: "t-sql".into(),
         iteration: 1,
@@ -284,6 +285,7 @@ fn ai_sql_exec_reports_progress_to_runtime_context() {
     let events = Arc::new(crate::RecordingProgressSink::new());
     let ctx = ToolExecutionContext {
         automatic_approval: false,
+        bounded_write: false,
         session_id: "s-sql".into(),
         turn_id: "t-sql".into(),
         iteration: 1,

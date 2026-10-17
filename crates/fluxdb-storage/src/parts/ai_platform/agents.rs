@@ -10,7 +10,6 @@ use fluxdb_core::{Error, ErrorKind, Result};
 
 /// 内置身份固定；配置持久化且允许编辑，初始化不得覆盖用户变更。
 pub const BUILTIN_AGENT_ID: &str = "fluxdb.agent.default";
-pub const DEFAULT_COMPRESSION_TRIGGER_PERCENT: u8 = 80;
 /// 单个 Turn 内最多几次主模型迭代；沿用主循环默认值，上限对齐外部 Agent 的运行保护量级。
 pub const DEFAULT_MAX_ITERATIONS: i64 = 100;
 /// 内置通用助手的默认迭代上限：比普通默认更宽，减少复杂任务被提前暂停。

@@ -591,14 +591,38 @@ impl<R: SqlExecutionResolver + 'static> fluxdb_core::AiTool for AiRedisExecuteTo
     }
 
     fn approval_details(&self, arguments_json: &str) -> fluxdb_core::ApprovalDetails {
-        let argv = serde_json::from_str::<serde_json::Value>(arguments_json)
+        crate::redis_approval_details(&redis_argv_from_arguments(arguments_json))
+    }
+
+    fn write_risk_facts(
+        &self,
+        arguments_json: &str,
+    ) -> fluxdb_core::Result<fluxdb_core::WriteRiskFacts> {
+        let argv = redis_argv_from_arguments(arguments_json);
+        if argv.is_empty() {
+            return Err(fluxdb_core::Error::new(
+                fluxdb_core::ErrorKind::Unsupported,
+                "Redis 命令参数无效",
+            ));
+        }
+        // 作用域越界在策略层直接拒绝，不进入评分；这里只判断"Key 是否已被范围约束"。
+        let target = serde_json::from_str::<serde_json::Value>(arguments_json)
             .ok()
-            .and_then(|value| value["argv"].as_array().cloned())
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|item| item.as_str().map(str::to_owned))
-            .collect::<Vec<_>>();
-        crate::redis_approval_details(&argv)
+            .and_then(|value| {
+                value
+                    .get("target")
+                    .and_then(|target| target.as_str())
+                    .and_then(|handle| AiRedisTarget::parse(handle).ok())
+            });
+        let key_scope_bounded = target
+            .map(|target| {
+                let scope = self
+                    .resolver
+                    .redis_key_scope(target.connection_id, target.database);
+                check_redis_command_scope(&argv, target.database, &scope).is_ok()
+            })
+            .unwrap_or(false);
+        Ok(crate::redis_write_risk_facts(&argv, key_scope_bounded))
     }
 
     fn execute(
@@ -685,6 +709,17 @@ impl<R: SqlExecutionResolver + 'static> fluxdb_core::AiTool for AiRedisExecuteTo
             Ok(receipt_from(&descriptor, &ctx.call_id, started_at_ms, outcome))
         })
     }
+}
+
+/// 从工具入参提取 argv：只接受字符串元素，非字符串一律忽略（schema 已先行校验）。
+fn redis_argv_from_arguments(arguments_json: &str) -> Vec<String> {
+    serde_json::from_str::<serde_json::Value>(arguments_json)
+        .ok()
+        .and_then(|value| value["argv"].as_array().cloned())
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|item| item.as_str().map(str::to_owned))
+        .collect()
 }
 
 fn redis_descriptor(tool_id: &str) -> fluxdb_core::Result<fluxdb_core::ToolDescriptor> {

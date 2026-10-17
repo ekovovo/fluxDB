@@ -83,7 +83,7 @@ impl AiConversationProvider {
         })
     }
 
-    /// 供测试/离线夹具构造（不含凭据）。
+    /// 供集成测试 / 离线夹具构造（不含凭据）。
     pub fn for_test(
         protocol: ChatProtocol,
         endpoint: String,

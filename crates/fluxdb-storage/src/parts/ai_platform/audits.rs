@@ -543,21 +543,6 @@ pub fn invalidate_approval(
     load_approval(conn, id)
 }
 
-/// 标记过期（超过 expires_at_ms 的审批按 expired 处理）。
-pub fn expire_approval(conn: &Connection, now_ms: i64, id: &str) -> Result<ApprovalView> {
-    let changed = conn
-        .execute(
-            "UPDATE ai_approvals SET status='expired', decided_at_ms=?2, revision=revision+1
-              WHERE id=?1 AND status='pending'",
-            params![id, now_ms],
-        )
-        .map_err(sqlite_error)?;
-    if changed == 0 {
-        return Err(Error::new(ErrorKind::Internal, "只有待审批项可以过期"));
-    }
-    load_approval(conn, id)
-}
-
 /// 查找仍然可用的批准：必须是 approved、未过期、且 **plan_hash 完全一致**。
 ///
 /// 参数/目标/插件摘要变化会改变 plan_hash，因此旧批准查不到（自然失效）。

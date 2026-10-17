@@ -253,8 +253,10 @@ pub trait ToolProgressSink: Send + Sync + std::fmt::Debug {
 /// 工具执行上下文（由运行时提供；工具自身不接触 UI/SQLite 锁）。
 #[derive(Clone, Debug)]
 pub struct ToolExecutionContext {
-    /// AI 自动批准的写入必须走工具的有界提交路径，不能退回普通写执行。
+    /// 宿主已按写入风险评审自动批准本次写入（不再逐次人工确认）。
     pub automatic_approval: bool,
+    /// 自动批准时是否走连接器的有界提交路径；连接器给不出有界证明时按普通写入执行。
+    pub bounded_write: bool,
     pub session_id: String,
     pub turn_id: String,
     pub iteration: i64,
@@ -371,9 +373,9 @@ pub struct ApprovalDetails {
 
 /// 工具能力。
 pub trait AiTool: Send + Sync {
-    /// 可自动审批的确定性证据；仅包含脱敏结构，不包含业务值。
-    /// 不支持影响验证/有界提交时返回 Unsupported，宿主必须转人工。
-    fn automatic_approval_facts(&self, _arguments_json: &str) -> Result<String> {
+    /// 写入风险评估的证据：脱敏结构信号 + 允许出站的结构事实（不含 SQL 原文与参数值）。
+    /// 默认实现明确不可用，宿主按最高风险处理并转人工；只有真正能评估的写入工具覆写它。
+    fn write_risk_facts(&self, _arguments_json: &str) -> Result<WriteRiskFacts> {
         Err(Error::new(ErrorKind::Unsupported, "影响范围或回滚能力无法核实，需要人工审核"))
     }
     fn descriptor(&self) -> &ToolDescriptor;
@@ -409,3 +411,4 @@ impl std::fmt::Display for ToolRisk {
 
 include!("artifact.rs");
 include!("execution_policy.rs");
+include!("write_risk.rs");

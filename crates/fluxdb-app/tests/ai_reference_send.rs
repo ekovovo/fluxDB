@@ -825,6 +825,7 @@ fn saved_query_and_captured_reference_details_are_bounded_and_scoped() {
             .block_on(tool.execute(
                 fluxdb_core::ToolExecutionContext {
                     automatic_approval: false,
+                    bounded_write: false,
                     session_id: job.session_id.clone(),
                     turn_id: job.turn_id.clone(),
                     iteration: 1,
@@ -850,6 +851,7 @@ fn saved_query_and_captured_reference_details_are_bounded_and_scoped() {
         .block_on(tool.execute(
             fluxdb_core::ToolExecutionContext {
                 automatic_approval: false,
+                bounded_write: false,
                 session_id: job.session_id.clone(),
                 turn_id: job.turn_id.clone(),
                 iteration: 1,

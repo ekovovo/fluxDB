@@ -152,15 +152,6 @@ fn statement_id(ordinal: usize, sql: &str) -> SqlStatementId {
     SqlStatementId(std::hash::Hasher::finish(&hasher))
 }
 
-/// 计算字节偏移 `offset` 所在的 0 起始行号（统计其前的换行数）。
-#[allow(dead_code)] // 保留给按偏移查询行号的备用调用与单测。
-pub fn row_for_offset(text: &str, offset: usize) -> usize {
-    text[..offset.min(text.len())]
-        .chars()
-        .filter(|ch| *ch == '\n')
-        .count()
-}
-
 /// 执行状态映射：以语句 id 为键保存 Run/Select/Explain 的执行状态。
 ///
 /// 由于 `SqlStatementId` 由「序号 + 语句文本」哈希生成，当某条语句被编辑后其
@@ -322,15 +313,6 @@ mod statements_tests {
         assert_eq!(runs.len(), 2);
         assert_eq!(text_at(text, &runs[0]), "insert into t values(';')");
         assert_eq!(text_at(text, &runs[1]), "select 1");
-    }
-
-    #[test]
-    fn row_for_offset_counts_newlines() {
-        assert_eq!(row_for_offset("a\nb\nc", 0), 0);
-        assert_eq!(row_for_offset("a\nb\nc", 2), 1);
-        assert_eq!(row_for_offset("a\nb\nc", 4), 2);
-        // 越界安全。
-        assert_eq!(row_for_offset("", 5), 0);
     }
 
     #[test]

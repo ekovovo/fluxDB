@@ -12,6 +12,7 @@ fn ai_result_pages_tool(
 fn ai_result_pages_ctx(call_id: &str) -> fluxdb_core::ToolExecutionContext {
     fluxdb_core::ToolExecutionContext {
         automatic_approval: false,
+        bounded_write: false,
         session_id: "s-1".into(),
         turn_id: "t-1".into(),
         iteration: 1,

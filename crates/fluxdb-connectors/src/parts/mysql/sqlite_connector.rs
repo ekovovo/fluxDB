@@ -164,14 +164,13 @@ impl Connector for SqliteConnector {
         sqlite_execute_parameterized(config, &request.request, &request.parameters)
     }
 
-    fn inspect_bounded_update(&self, request: &fluxdb_core::ParameterizedQueryRequest) -> fluxdb_core::Result<String> {
-        let config=self.config.as_ref().ok_or_else(|| Error::new(ErrorKind::Connection,"缺少 SQLite 配置"))?;
-        sqlite_bounded_update(config,request,false,&||false).map(|(facts,_)|facts)
+    fn supports_bounded_write(&self) -> bool {
+        true
     }
 
     fn execute_bounded_update(&self, request: &fluxdb_core::ParameterizedQueryRequest, should_cancel: &dyn Fn()->bool) -> fluxdb_core::Result<QueryExecutionResult> {
         let config=self.config.as_ref().ok_or_else(|| Error::new(ErrorKind::Connection,"缺少 SQLite 配置"))?;
-        sqlite_bounded_update(config,request,true,should_cancel).map(|(_,result)|result)
+        sqlite_bounded_update(config,request,should_cancel)
     }
 
     fn execute_with_progress(

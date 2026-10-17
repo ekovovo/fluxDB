@@ -23,17 +23,19 @@ impl Drop for PolicyFixture {
         let _ = std::fs::remove_dir_all(&self.root);
     }
 }
+
+/// 固定评分器：记录是否被问到，并回放固定分数/不可用。
 struct FakeReviewer {
-    choice: ReviewChoice,
+    outcome: WriteReviewOutcome,
     calls: Arc<AtomicUsize>,
 }
-impl WriteReviewer for FakeReviewer {
-    fn review(&self, facts: &str, _: &CancelFlag) -> (ReviewChoice, &'static str) {
-        assert_eq!(facts, r#"{"verified":true}"#);
+impl WriteRiskReviewer for FakeReviewer {
+    fn review(&self, _: &WriteRiskFacts, _: &CancelFlag) -> WriteReviewOutcome {
         self.calls.fetch_add(1, Ordering::SeqCst);
-        (self.choice, "mock")
+        self.outcome.clone()
     }
 }
+
 fn write_input() -> AuthorizeInput {
     AuthorizeInput {
         tool_id: "db.execute".into(),
@@ -52,27 +54,47 @@ fn write_input() -> AuthorizeInput {
         audit: Some(AuditOutcome::Allow),
     }
 }
+
+/// 只有软信号的事实：形状确定但不确定度可被评审模型背书。
+fn soft_facts(score: f64) -> WriteRiskFacts {
+    let mut facts = WriteRiskFacts::new(r#"{"operation":"update"}"#);
+    facts.soft("determined_shape", score, "形状确定");
+    facts
+}
+
+/// 带硬信号的事实：模型无权下穿硬下界。
+fn hard_facts(soft: f64, hard: f64) -> WriteRiskFacts {
+    let mut facts = WriteRiskFacts::new(r#"{"operation":"update"}"#);
+    facts.soft("determined_shape", soft, "形状确定");
+    facts.hard("no_predicate", hard, "无谓词的整表更新");
+    facts
+}
+
+fn security_with(fixture: &PolicyFixture, outcome: WriteReviewOutcome) -> (ExecutionSecurity, Arc<AtomicUsize>) {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let reviewer = Arc::new(FakeReviewer {
+        outcome,
+        calls: calls.clone(),
+    });
+    let security = ExecutionSecurity {
+        storage: fixture.storage.clone(),
+        connections: fixture.storage.load_connections().unwrap_or_default(),
+        revalidate_from_storage: true,
+        reviewer,
+    };
+    (security, calls)
+}
+
 #[test]
 fn four_modes_preserve_hard_denials_and_manual_unknowns() {
     let fixture = PolicyFixture::new();
     for mode in ExecutionPolicy::ALL {
-        let calls = Arc::new(AtomicUsize::new(0));
-        let security = ExecutionSecurity {
-            storage: fixture.storage.clone(),
-            connections: fixture.storage.load_connections().unwrap_or_default(),
-            revalidate_from_storage: true,
-            reviewer: Arc::new(FakeReviewer {
-                choice: ReviewChoice::Approve,
-                calls: calls.clone(),
-            }),
-        };
+        let (security, calls) = security_with(
+            &fixture,
+            WriteReviewOutcome::Scored(ModelRisk::new(0.05, "mock")),
+        );
         let result = security
-            .authorize(
-                &write_input(),
-                mode,
-                || Ok(r#"{"verified":true}"#.into()),
-                &CancelFlag::new(),
-            )
+            .authorize(&write_input(), mode, || Ok(soft_facts(0.10)), &CancelFlag::new())
             .unwrap();
         match mode {
             ExecutionPolicy::ReadOnly => {
@@ -82,99 +104,208 @@ fn four_modes_preserve_hard_denials_and_manual_unknowns() {
                 result.decision,
                 PermissionDecision::RequireApproval { .. }
             )),
+            // 低风险 + 模型背书 → 自动放行；自动执行本来就不评审。
             _ => assert!(matches!(result.decision, PermissionDecision::Allow { .. })),
         }
+        // 「写审批」与「只读」不评审；「自动执行」也不问模型（语义是不逐次确认）。
         assert_eq!(
             calls.load(Ordering::SeqCst),
             usize::from(mode == ExecutionPolicy::AiApproval)
         );
-        for audit in [
-            None,
-            Some(AuditOutcome::RequireApproval),
-            Some(AuditOutcome::Deny),
-        ] {
-            let mut input = write_input();
-            input.audit = audit;
-            let result = security
-                .authorize(
-                    &input,
-                    mode,
-                    || panic!("审计未放行不得请求 AI"),
-                    &CancelFlag::new(),
-                )
-                .unwrap();
-            assert!(!result.decision.is_allow());
-        }
-        let mut input = write_input();
-        input.policy.write_allowed = false;
-        assert!(matches!(
-            security
-                .authorize(
-                    &input,
-                    mode,
-                    || panic!("只读连接不得请求 AI"),
-                    &CancelFlag::new()
-                )
-                .unwrap()
-                .decision,
-            PermissionDecision::Deny { .. }
-        ));
-        let result = security
+        // 阈值以上的形状：即使模型给极低分、即使策略是自动执行之外的任何模式，都不放行。
+        let high = security
             .authorize(
                 &write_input(),
                 ExecutionPolicy::AiApproval,
-                || Err(Error::new(ErrorKind::Unsupported, "无法验证回滚或影响范围")),
+                || Ok(soft_facts(0.80)),
                 &CancelFlag::new(),
             )
             .unwrap();
-        assert!(matches!(
-            result.decision,
-            PermissionDecision::RequireApproval { .. }
-        ));
+        assert!(!high.decision.is_allow());
     }
 }
+
 #[test]
-fn ai_manual_and_deny_are_not_treated_as_approval() {
+fn audit_and_connection_boundaries_never_reach_the_reviewer() {
     let fixture = PolicyFixture::new();
-    for choice in [ReviewChoice::Manual, ReviewChoice::Deny] {
-        let security = ExecutionSecurity {
-            storage: fixture.storage.clone(),
-            connections: fixture.storage.load_connections().unwrap_or_default(),
-            revalidate_from_storage: true,
-            reviewer: Arc::new(FakeReviewer {
-                choice,
-                calls: Arc::new(AtomicUsize::new(0)),
-            }),
-        };
+    let (security, calls) = security_with(
+        &fixture,
+        WriteReviewOutcome::Scored(ModelRisk::new(0.0, "mock")),
+    );
+    for audit in [
+        None,
+        Some(AuditOutcome::RequireApproval),
+        Some(AuditOutcome::Deny),
+    ] {
+        let mut input = write_input();
+        input.audit = audit;
         let result = security
             .authorize(
-                &write_input(),
+                &input,
                 ExecutionPolicy::AiApproval,
-                || Ok(r#"{"verified":true}"#.into()),
+                || panic!("审计未放行不得请求评审"),
                 &CancelFlag::new(),
             )
             .unwrap();
         assert!(!result.decision.is_allow());
-        assert!(!result.automatic_approval);
     }
-    let security = ExecutionSecurity::new(fixture.storage.clone());
+    let mut input = write_input();
+    input.policy.write_allowed = false;
+    assert!(matches!(
+        security
+            .authorize(
+                &input,
+                ExecutionPolicy::AiApproval,
+                || panic!("只读连接不得请求评审"),
+                &CancelFlag::new()
+            )
+            .unwrap()
+            .decision,
+        PermissionDecision::Deny { .. }
+    ));
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn unscoreable_write_stays_manual_instead_of_guessing() {
+    let fixture = PolicyFixture::new();
+    let (security, calls) = security_with(
+        &fixture,
+        WriteReviewOutcome::Scored(ModelRisk::new(0.0, "mock")),
+    );
     let result = security
         .authorize(
             &write_input(),
             ExecutionPolicy::AiApproval,
-            || Ok(r#"{"verified":true}"#.into()),
+            || Err(Error::new(ErrorKind::Unsupported, "无法核实影响范围")),
             &CancelFlag::new(),
         )
         .unwrap();
     assert!(
         matches!(result.decision, PermissionDecision::RequireApproval { .. }),
-        "没有模型时必须转人工"
+        "拿不到证据时必须转人工"
     );
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
 }
+
+#[test]
+fn reviewer_approval_cannot_push_risk_below_the_hard_floor() {
+    let fixture = PolicyFixture::new();
+    // 形状分 0.45、硬信号 0.60：模型给 0.0 也不放行。
+    let (security, calls) = security_with(
+        &fixture,
+        WriteReviewOutcome::Scored(ModelRisk::new(0.0, "mock")),
+    );
+    let result = security
+        .authorize(
+            &write_input(),
+            ExecutionPolicy::AiApproval,
+            || Ok(hard_facts(0.45, 0.60)),
+            &CancelFlag::new(),
+        )
+        .unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 1, "模型应被问到");
+    assert!(
+        !result.decision.is_allow(),
+        "评审模型不能下穿确定性边界"
+    );
+    let risk = result.risk.expect("写入应有合成结果");
+    assert!((risk.hard_floor - 0.60).abs() < 1e-9);
+    assert!(risk.final_score >= 0.60);
+}
+
+#[test]
+fn reviewer_can_lower_soft_uncertainty_below_the_threshold() {
+    let fixture = PolicyFixture::new();
+    let (security, _) = security_with(
+        &fixture,
+        WriteReviewOutcome::Scored(ModelRisk::new(0.10, "mock")),
+    );
+    // 软信号 0.40 高于默认阈值 0.35；权重 0.5 → 0.5*0.40+0.5*0.10 = 0.25 ≤ 0.35。
+    let result = security
+        .authorize(
+            &write_input(),
+            ExecutionPolicy::AiApproval,
+            || Ok(soft_facts(0.40)),
+            &CancelFlag::new(),
+        )
+        .unwrap();
+    assert!(result.decision.is_allow(), "软不确定度应能被评审背书降下来");
+    assert!(result.automatic_approval);
+}
+
+#[test]
+fn unavailable_reviewer_falls_back_to_rule_score_only() {
+    let fixture = PolicyFixture::new();
+    let (security, calls) = security_with(
+        &fixture,
+        WriteReviewOutcome::Unavailable {
+            reason: "no_model".into(),
+        },
+    );
+    // 规则分 0.10 本身在阈值下：没有模型也放行。
+    let allow = security
+        .authorize(
+            &write_input(),
+            ExecutionPolicy::AiApproval,
+            || Ok(soft_facts(0.10)),
+            &CancelFlag::new(),
+        )
+        .unwrap();
+    assert!(allow.decision.is_allow());
+    // 规则分 0.40 在阈值上：没有模型时停在人工，不把"没有评审"当作低风险。
+    let manual = security
+        .authorize(
+            &write_input(),
+            ExecutionPolicy::AiApproval,
+            || Ok(soft_facts(0.40)),
+            &CancelFlag::new(),
+        )
+        .unwrap();
+    assert!(matches!(
+        manual.decision,
+        PermissionDecision::RequireApproval { .. }
+    ));
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn bounded_commit_is_used_only_when_the_connector_declares_it() {
+    let fixture = PolicyFixture::new();
+    let (security, _) = security_with(
+        &fixture,
+        WriteReviewOutcome::Scored(ModelRisk::new(0.0, "mock")),
+    );
+    let mut facts = soft_facts(0.10);
+    facts.bounded_capable = true;
+    let result = security
+        .authorize(
+            &write_input(),
+            ExecutionPolicy::AiApproval,
+            || Ok(facts),
+            &CancelFlag::new(),
+        )
+        .unwrap();
+    assert_eq!(result.write_commit, WriteCommit::Bounded);
+
+    let plain = security
+        .authorize(
+            &write_input(),
+            ExecutionPolicy::AiApproval,
+            || Ok(soft_facts(0.10)),
+            &CancelFlag::new(),
+        )
+        .unwrap();
+    assert_eq!(plain.write_commit, WriteCommit::Ordinary);
+}
+
 #[test]
 fn disabled_tools_are_reloaded_at_each_boundary() {
     let fixture = PolicyFixture::new();
-    let security = ExecutionSecurity::new(fixture.storage.clone());
+    let (security, calls) = security_with(
+        &fixture,
+        WriteReviewOutcome::Scored(ModelRisk::new(0.0, "mock")),
+    );
     fixture
         .storage
         .with_ai_connection(|conn| {
@@ -186,13 +317,14 @@ fn disabled_tools_are_reloaded_at_each_boundary() {
             .authorize(
                 &write_input(),
                 ExecutionPolicy::Automatic,
-                || panic!("已关闭工具不得请求AI"),
+                || panic!("已关闭工具不得请求评审"),
                 &CancelFlag::new()
             )
             .unwrap()
             .decision,
         PermissionDecision::Deny { .. }
     ));
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
 }
 
 fn sqlite_config(path: &std::path::Path) -> fluxdb_core::ConnectionConfig {
@@ -220,12 +352,18 @@ fn sqlite_auto_approval_commits_only_a_reverified_bounded_update() {
     let resolver = Arc::new(MapSqlResolver::new([config]));
     let tool = AiSqlExecuteTool::new(resolver).unwrap();
     let args = r#"{"target":"conn:1","sql":"UPDATE items SET value='new' WHERE id=1"}"#;
-    let facts = tool.automatic_approval_facts(args).unwrap();
-    assert!(facts.contains("\"max_affected_rows\":1"));
-    assert!(!facts.contains("items"));
-    assert!(!facts.contains("new"));
+    let facts = tool.write_risk_facts(args).unwrap();
+    assert!(facts.bounded_capable, "SQLite 声明了有界提交");
+    assert_eq!(tool.descriptor().risk, fluxdb_core::ToolRisk::Write);
+    // 结构事实不含对象名与业务值。
+    assert!(!facts.evidence_json.contains("items"));
+    assert!(!facts.evidence_json.contains("new"));
+    // 唯一键等值 + 有界提交：规则分在默认阈值下，没有模型也能自动放行。
+    assert!(facts.rule_score() <= fluxdb_core::DEFAULT_WRITE_RISK_THRESHOLD);
     let ctx = fluxdb_core::ToolExecutionContext {
         automatic_approval: true,
+        // 有界提交路径：执行时必须在事务内重新复核影响。
+        bounded_write: true,
         session_id: "s".into(),
         turn_id: "t".into(),
         iteration: 1,
@@ -253,19 +391,32 @@ fn sqlite_auto_approval_commits_only_a_reverified_bounded_update() {
             .unwrap(),
         "old"
     );
+    // 形状评分：无谓词整表更新、表达式赋值、无谓词删除都必须落在硬信号上，
+    // 有界提交也不再是"自动放行"的理由——执行时会重新核实并拒绝。
     for sql in [
-        "DELETE FROM items WHERE id=1",
         "UPDATE items SET value='x'",
         "UPDATE items SET value=lower(value) WHERE id=1",
-        "UPDATE items SET value='x' WHERE id>0",
     ] {
+        let facts = tool
+            .write_risk_facts(&serde_json::json!({"target":"conn:1","sql":sql}).to_string())
+            .unwrap();
+        assert!(facts.rule_score() > fluxdb_core::DEFAULT_WRITE_RISK_THRESHOLD, "{sql}");
         assert!(
-            tool.automatic_approval_facts(
-                &serde_json::json!({"target":"conn:1","sql":sql}).to_string()
-            )
-            .is_err()
+            facts.codes().iter().any(|code| {
+                facts
+                    .signals
+                    .iter()
+                    .any(|signal| signal.code == *code && signal.class == fluxdb_core::WriteRiskClass::Hard)
+            }),
+            "无谓词/表达式赋值必须是硬信号：{sql}"
         );
     }
+    // DELETE 不走有界提交（该能力只覆盖 UPDATE），即使连接声明了能力也按不确定处理。
+    let delete_facts = tool
+        .write_risk_facts(&serde_json::json!({"target":"conn:1","sql":"DELETE FROM items WHERE id=1"}).to_string())
+        .unwrap();
+    assert!(!delete_facts.bounded_capable);
+    assert!(delete_facts.rule_score() > fluxdb_core::DEFAULT_WRITE_RISK_THRESHOLD);
 }
 
 fn mcp_service(fixture: &PolicyFixture, allows_write: bool) -> (McpExecutionService, McpCallIdentity) {
@@ -518,58 +669,65 @@ fn set_global_default_model(fixture: &PolicyFixture, id: &str) {
 }
 
 #[test]
-fn generation_reviewer_is_used_without_jev_and_invalid_output_requires_human() {
-    for output in [
-        r#"{"decision":"approve"}"#,
-        r#"{"decision":"deny"}"#,
-        "approve please",
-    ] {
+fn generation_reviewer_is_used_without_jev_and_invalid_output_is_unavailable() {
+    for output in [r#"{"risk":0.05}"#, r#"{"risk":0.9}"#, "approve please"] {
         let fixture = PolicyFixture::new();
         let mock = spawn_review_mock(output, 1);
         let expected = output.to_string();
-        let id = save_mock_generation_model(&fixture, "审批 Mock", mock.endpoint());
+        let id = save_mock_generation_model(&fixture, "评审 Mock", mock.endpoint());
         // 无 Jev 时回退到全局默认生成模型（对外 MCP 没有 Agent 概念）。
         set_global_default_model(&fixture, &id);
-        let result = StorageWriteReviewer {
-            storage: fixture.storage.clone(),
-            turn_model_profile_id: None,
-        }
-        .review(
-            r#"{"max_affected_rows":1,"business_values":"omitted"}"#,
+        let result = StorageWriteRiskReviewer::new(fixture.storage.clone(), None).review(
+            &soft_facts(0.40),
             &CancelFlag::new(),
         );
         mock.assert_asked_and_join();
         match expected.as_str() {
-            r#"{"decision":"approve"}"# => {
-                assert_eq!(result, (ReviewChoice::Approve, "generation_model"))
-            }
-            r#"{"decision":"deny"}"# => {
-                assert_eq!(result, (ReviewChoice::Deny, "generation_model"))
-            }
-            _ => assert_eq!(result.0, ReviewChoice::Manual),
+            r#"{"risk":0.05}"# => assert_eq!(
+                result,
+                WriteReviewOutcome::Scored(ModelRisk::new(0.05, SOURCE_TURN_MODEL))
+            ),
+            r#"{"risk":0.9}"# => assert_eq!(
+                result,
+                WriteReviewOutcome::Scored(ModelRisk::new(0.9, SOURCE_TURN_MODEL))
+            ),
+            // 非法输出不是 0 分：明确不可用，调用方退回代码规则分。
+            _ => assert!(matches!(result, WriteReviewOutcome::Unavailable { .. })),
         }
     }
 }
 
-/// 无 Jev 时审批必须问"当前 Agent 正在用的那个模型"，而不是全局默认主模型。
+#[test]
+fn generation_risk_parser_rejects_sloppy_shapes() {
+    for (text, expected) in [
+        (r#"{"risk":0.42}"#, Some(0.42)),
+        ("```json\n{\"risk\":0.5}\n```", Some(0.5)),
+        (r#"{"risk":2.0}"#, Some(1.0)),
+        (r#"{"risk":-1}"#, Some(0.0)),
+        (r#"{"risk":"high"}"#, None),
+        (r#"{"risk":0.2,"note":"x"}"#, None),
+        (r#"{"decision":"approve"}"#, None),
+        ("", None),
+    ] {
+        assert_eq!(parse_generation_risk(text), expected, "{text}");
+    }
+}
+
+/// 无 Jev 时评审必须问"当前 Agent 正在用的那个模型"，而不是全局默认主模型。
 ///
-/// 两个 Mock 给出相反结论：全局默认说 deny、本轮模型说 approve。全局默认那个 Mock
+/// 两个 Mock 给出相反结论：全局默认给高风险、本轮模型给低风险。全局默认那个 Mock
 /// 期望 0 次请求，因此"它没被问到"和"结论来自本轮模型"是同一次请求的两个面。
 #[test]
 fn generation_reviewer_falls_back_to_the_turn_model_not_the_global_default() {
     let fixture = PolicyFixture::new();
-    let default_mock = spawn_review_mock(r#"{"decision":"deny"}"#, 0);
-    let turn_mock = spawn_review_mock(r#"{"decision":"approve"}"#, 1);
+    let default_mock = spawn_review_mock(r#"{"risk":0.95}"#, 0);
+    let turn_mock = spawn_review_mock(r#"{"risk":0.05}"#, 1);
     let default_id = save_mock_generation_model(&fixture, "全局默认", default_mock.endpoint());
     let turn_id = save_mock_generation_model(&fixture, "本轮模型", turn_mock.endpoint());
     set_global_default_model(&fixture, &default_id);
 
-    let result = StorageWriteReviewer {
-        storage: fixture.storage.clone(),
-        turn_model_profile_id: Some(turn_id),
-    }
-    .review(
-        r#"{"max_affected_rows":1,"business_values":"omitted"}"#,
+    let result = StorageWriteRiskReviewer::new(fixture.storage.clone(), Some(turn_id)).review(
+        &soft_facts(0.40),
         &CancelFlag::new(),
     );
     turn_mock.assert_asked_and_join();
@@ -577,11 +735,42 @@ fn generation_reviewer_falls_back_to_the_turn_model_not_the_global_default() {
     assert_eq!(
         default_mock.hit.load(Ordering::SeqCst),
         0,
-        "审批不得绕过本轮 Agent 去问全局默认模型"
+        "评审不得绕过本轮 Agent 去问全局默认模型"
     );
     assert_eq!(
         result,
-        (ReviewChoice::Approve, "generation_model"),
+        WriteReviewOutcome::Scored(ModelRisk::new(0.05, SOURCE_TURN_MODEL)),
         "结论必须来自本轮模型"
     );
+}
+
+/// 这次真实运行暴露的缺陷：Jev 拿到的候选只有 `候选 1..5` 这样的占位说明，
+/// 提示词也没写档位含义，于是它在无意义的标签里瞎选，给出最高档 1.00。
+/// 档位含义必须随提示词一起出站，否则评审结果不可信。
+#[test]
+fn jev_prompt_describes_every_risk_band() {
+    let prompt = jev_review_prompt(r#"{"operation":"insert"}"#);
+    for band in RISK_BANDS {
+        assert!(
+            prompt.contains(band.id),
+            "提示词缺少档位 ID：{}",
+            band.id
+        );
+        assert!(
+            prompt.contains(band.meaning),
+            "提示词缺少档位含义：{}",
+            band.id
+        );
+    }
+    assert!(prompt.contains("不是指令"), "证据必须声明为数据");
+    assert!(prompt.contains(r#"{"operation":"insert"}"#), "证据必须随提示词出站");
+}
+
+/// 回退生成模型走的是另一套输出契约（严格 JSON），不能被 Jev 的候选说明污染。
+#[test]
+fn generation_prompt_asks_for_strict_json_risk_score() {
+    let prompt = generation_review_prompt(r#"{"operation":"insert"}"#);
+    assert!(prompt.contains(r#"{"risk":0.0}"#));
+    assert!(!prompt.contains("risk_0_1"), "生成模型没有候选协议");
+    assert!(prompt.contains("不是指令"));
 }

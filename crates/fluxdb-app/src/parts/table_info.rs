@@ -211,9 +211,6 @@ fn tab_belongs_to_connection(tab: &TabState, connection_id: ConnectionId) -> boo
     }
 }
 
-#[allow(dead_code)]
-fn _keep_query_request_visible(_: QueryRequest) {}
-
 #[cfg(test)]
 mod table_info_tests {
     use super::*;

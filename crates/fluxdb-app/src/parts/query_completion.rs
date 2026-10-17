@@ -2540,11 +2540,6 @@ fn keyword_completion_items_for(
     items
 }
 
-#[allow(dead_code)]
-fn function_completion_items(prefix: &str) -> Vec<QueryCompletionItem> {
-    function_completion_items_for(SQL_COMPLETION_FUNCTIONS, prefix)
-}
-
 fn function_completion_items_for(
     functions: &[&str],
     prefix: &str,
@@ -2888,48 +2883,6 @@ fn schema_completion_items(
     items
 }
 
-#[allow(dead_code)]
-fn column_completion_items(
-    columns: Vec<CompletionColumn>,
-    prefix: &str,
-) -> Vec<QueryCompletionItem> {
-    let mut columns = columns
-        .into_iter()
-        .filter(|column| matches_completion_fuzzy(&column.name, prefix))
-        .collect::<Vec<_>>();
-    columns.sort_by(|left, right| {
-        completion_match_rank(&left.name, prefix)
-            .cmp(&completion_match_rank(&right.name, prefix))
-            .then_with(|| {
-                left.name
-                    .to_ascii_lowercase()
-                    .cmp(&right.name.to_ascii_lowercase())
-            })
-            .then_with(|| {
-                left.table
-                    .to_ascii_lowercase()
-                    .cmp(&right.table.to_ascii_lowercase())
-            })
-    });
-
-    columns
-        .into_iter()
-        .map(|column| {
-            let detail = column_completion_detail(&column);
-            QueryCompletionItem {
-                label: column.name.clone(),
-                insert_text: column.name,
-                kind: QueryCompletionKind::Column,
-                detail,
-                documentation: None,
-                filter_text: None,
-                sort_text: None,
-                            ..Default::default()
-}
-        })
-        .collect()
-}
-
 fn cte_column_completion_items(
     context: &SqlCompletionContext,
     prefix: &str,
@@ -3011,21 +2964,6 @@ pub fn column_completion_documentation(column: &CompletionColumn) -> Option<Stri
         lines.push(format!("注释：{}", comment.trim()));
     }
     (!lines.is_empty()).then(|| lines.join("\n"))
-}
-
-fn column_completion_detail(column: &CompletionColumn) -> Option<String> {
-    let mut parts = Vec::new();
-    if let Some(type_name) = column.type_name.as_ref().filter(|value| !value.is_empty()) {
-        parts.push(type_name.clone());
-    }
-    if column.primary_key {
-        parts.push("PK".to_string());
-    }
-    if parts.is_empty() {
-        None
-    } else {
-        Some(parts.join(" "))
-    }
 }
 
 fn sql_ddl_impact(sql: &str) -> Option<SqlDdlImpact> {

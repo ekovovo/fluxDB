@@ -226,13 +226,18 @@ pub trait Connector {
     fn apply_changes(&self, changes: &DataChangeSet) -> Result<AppliedChangeOutcome>;
     fn execute(&self, request: &QueryRequest) -> Result<QueryExecutionResult>;
 
-    /// 检查单行 UPDATE 的对象、主键与间接副作用，返回不含值的结构摘要。
-    /// 默认不具备此证明能力，不能被 AI 的判断替代。
-    fn inspect_bounded_update(&self, _request: &ParameterizedQueryRequest) -> Result<String> {
-        Err(Error::new(ErrorKind::Unsupported, "该连接尚不支持自动审批所需的影响验证"))
+    /// 是否具备有界写入能力：执行时能在事务内复核对象与真实影响，超限即回滚。
+    ///
+    /// 这是**连接能力**声明，与 SQL 形状无关；写入风险评审据此决定自动放行时
+    /// 走有界提交还是普通写入。默认 false，只有真正实现的连接器覆盖。
+    fn supports_bounded_write(&self) -> bool {
+        false
     }
 
-    /// 独立事务内重新验证并提交最多一行 UPDATE；任何无法证明或超限都回滚。
+    /// 独立事务内重新验证并提交有界 UPDATE；任何无法证明或超限都回滚。
+    ///
+    /// 复核在提交前完成，因此不提供单独的"预检"入口：预检结果不可信，
+    /// 评分阶段只用 [`Self::supports_bounded_write`] 声明连接能力。
     fn execute_bounded_update(
         &self,
         _request: &ParameterizedQueryRequest,

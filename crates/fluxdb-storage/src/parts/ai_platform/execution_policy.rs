@@ -33,6 +33,8 @@ pub fn save(
     policy: &ExecutionPolicySettings,
     expected_revision: i64,
 ) -> Result<i64> {
+    // 阈值与权重必须先通过区间校验：越界配置会让自动放行范围失真。
+    policy.validate()?;
     let json = serde_json::to_string(policy)
         .map_err(|_| Error::new(ErrorKind::Internal, "执行策略序列化失败"))?;
     let tx = conn.unchecked_transaction().map_err(sqlite_error)?;
@@ -85,6 +87,18 @@ mod tests {
         policy.tools_default = fluxdb_core::ExecutionPolicy::ReadOnly;
         assert_eq!(save(&conn, 3, &policy, 1).unwrap(), 2);
         assert!(save(&conn, 4, &policy, 1).is_err());
+    }
+
+    #[test]
+    fn out_of_range_threshold_and_weight_are_rejected() {
+        let conn = Connection::open_in_memory().unwrap();
+        super::super::ensure_schema(&conn).unwrap();
+        let mut policy = ExecutionPolicySettings::default();
+        policy.write_risk_threshold = 1.5;
+        assert!(save(&conn, 1, &policy, 0).is_err());
+        let mut policy = ExecutionPolicySettings::default();
+        policy.write_review_weight = 0.9;
+        assert!(save(&conn, 1, &policy, 0).is_err());
     }
 
     #[test]

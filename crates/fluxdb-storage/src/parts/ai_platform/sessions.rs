@@ -1079,24 +1079,6 @@ pub fn update_turn_status(
     Ok(expected_revision + 1)
 }
 
-/// 递增 iteration 计数（一次主模型推理 +1）。
-pub fn bump_iteration(conn: &Connection, turn_id: &str, expected_revision: i64) -> Result<i64> {
-    let changed = conn
-        .execute(
-            "UPDATE ai_turns SET iteration_count=iteration_count+1, revision=revision+1
-              WHERE id=?1 AND revision=?2",
-            params![turn_id, expected_revision],
-        )
-        .map_err(sqlite_error)?;
-    if changed == 0 {
-        return Err(Error::new(
-            ErrorKind::Internal,
-            "Turn 已被其他执行者修改，请重新加载",
-        ));
-    }
-    Ok(expected_revision + 1)
-}
-
 // ---- 消息与片段 ----
 
 /// 追加消息；`seq` 由会话的 `next_message_seq` 原子分配。

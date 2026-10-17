@@ -1113,32 +1113,6 @@ fn highlight_normalized_statements_snapshot(
     Some((highlights, statement_ranges))
 }
 
-/// 在局部高亮路径同步更新增量语法树，保留跨 statement 的上下文。
-///
-/// MySQL 的 `COLLATE=` 归一化会改变 parser 输入，无法直接使用 Rope chunk；该方言
-/// 继续走安全 fallback。其它方言直接从 snapshot 提供 Tree-sitter 输入，不复制全文。
-#[allow(dead_code)]
-fn highlight_sql_tree_sitter_cached(
-    text: &str,
-    dialect: SqlDialect,
-    changed: &InputEdit,
-    version: u64,
-    cache: &Arc<Mutex<Option<SqlSyntaxCache>>>,
-    latest_request: &AtomicU64,
-    request_id: u64,
-) -> (Vec<Highlight>, &'static str) {
-    let snapshot = fluxdb_editor_core::EditorBuffer::new_from(text).snapshot();
-    highlight_sql_tree_sitter_cached_snapshot(
-        &snapshot,
-        dialect,
-        changed,
-        version,
-        cache,
-        latest_request,
-        request_id,
-    )
-}
-
 fn highlight_sql_tree_sitter_cached_snapshot(
     snapshot: &BufferSnapshot,
     dialect: SqlDialect,
@@ -2298,49 +2272,6 @@ fn normalize_mysql_collate_equals(text: &str) -> String {
     out
 }
 
-/// 把一次编辑的脏区间扩展到所在行边界（含新增文本带来的行）。
-///
-/// 返回覆盖「编辑起点所在行首 → 编辑终点所在行末」的区间，供前端只重绘受影响行。
-/// 若文本被整段替换（行数变化较大），保守起见返回整文档区间。
-#[allow(dead_code)]
-pub fn dirty_ranges_for_edit(
-    text: &str,
-    old_range: &Range,
-    new_text: &str,
-) -> Vec<Range> {
-    let len = text.len();
-    let added_newlines = new_text.bytes().filter(|&b| b == b'\n').count();
-    let edit_start = floor_char_boundary(text, old_range.start.min(len));
-    let edit_end = floor_char_boundary(
-        text,
-        old_range.end.saturating_add(added_newlines).min(len),
-    );
-    // 起点：编辑起点所在行的行首。
-    let line_start = text[..edit_start]
-        .rfind('\n')
-        .map_or(0, |i| i + 1);
-    // 终点：按旧区间尾部加上新增换行数定位到当前快照中的安全边界，再取行尾。
-    let line_end = text[edit_end..]
-        .find('\n')
-        .map_or(len, |i| edit_end + i);
-    // 极端替换（大量新增行 / 替换量覆盖文档过半）时退化为整文档脏区间，
-    // 避免脏区间覆盖不足导致漏高亮；常规单行/多行编辑保持在受影响行范围内。
-    let replaced_len = old_range.end.saturating_sub(old_range.start);
-    if added_newlines > 256 || replaced_len.max(new_text.len()) * 4 > len {
-        return vec![Range::new(0, len)];
-    }
-    vec![Range::new(line_start, line_end)]
-}
-
-#[allow(dead_code)]
-fn floor_char_boundary(text: &str, offset: usize) -> usize {
-    let mut offset = offset.min(text.len());
-    while offset > 0 && !text.is_char_boundary(offset) {
-        offset -= 1;
-    }
-    offset
-}
-
 /// 对 SQL 文本做一次简单词法高亮。
 ///
 /// 逐字节扫描，识别：
@@ -2699,6 +2630,29 @@ pub fn sql_language(dialect: SqlDialect) -> SqlLanguage {
 #[cfg(test)]
 mod syntax_tests {
     use super::*;
+
+    /// 测试便捷包装：从纯文本构造快照再走增量高亮缓存路径。
+    /// 生产路径直接传入真实 `BufferSnapshot`，不做这次文本→快照转换。
+    fn highlight_sql_tree_sitter_cached(
+        text: &str,
+        dialect: SqlDialect,
+        changed: &InputEdit,
+        version: u64,
+        cache: &Arc<Mutex<Option<SqlSyntaxCache>>>,
+        latest_request: &AtomicU64,
+        request_id: u64,
+    ) -> (Vec<Highlight>, &'static str) {
+        let snapshot = fluxdb_editor_core::EditorBuffer::new_from(text).snapshot();
+        highlight_sql_tree_sitter_cached_snapshot(
+            &snapshot,
+            dialect,
+            changed,
+            version,
+            cache,
+            latest_request,
+            request_id,
+        )
+    }
 
     fn kinds(text: &str, dialect: SqlDialect) -> Vec<(String, Range)> {
         tokenize_sql(text, dialect)
@@ -3591,26 +3545,6 @@ mod syntax_tests {
             clamp_range_to_char_boundaries(text, 1..1),
             Some(Range::new(0, 3))
         );
-    }
-
-    #[test]
-    fn dirty_ranges_span_edited_line() {
-        let text = "SELECT 1;\nSELECT 2;\nSELECT 3;\n";
-        // 编辑第一行中间（替换 "1" 为 "999"）-> 脏区间应覆盖第一行整行。
-        let dr = dirty_ranges_for_edit(text, &Range::new(7, 8), "999");
-        assert_eq!(dr.len(), 1);
-        assert_eq!(&text[dr[0].start..dr[0].end], "SELECT 1;");
-        // 整文档替换 -> 保守退化为整文档脏区间。
-        let dr_full = dirty_ranges_for_edit(text, &Range::new(0, 0), "SELECT 9;\nSELECT 8;\n");
-        assert_eq!(dr_full, vec![Range::new(0, text.len())]);
-    }
-
-    #[test]
-    fn dirty_ranges_handle_chinese_byte_offsets() {
-        let text = "搜索到的订单\nSELECT 1;";
-        // 8 落在“环”的 UTF-8 字节中间；计算脏区间时应自动回退到字符边界。
-        let ranges = dirty_ranges_for_edit(text, &Range::new(8, 8), "环");
-        assert_eq!(ranges, vec![Range::new(0, "搜索到的订单".len())]);
     }
 
     #[test]

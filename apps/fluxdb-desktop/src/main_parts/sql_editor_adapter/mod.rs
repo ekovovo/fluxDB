@@ -5,7 +5,7 @@
 // 通过注入的 schema / 补全源提供表、列等业务信息。该模块只做「能力定义」，
 // 不直接连接数据库：连接/连接信息一律由构造参数注入。
 //
-// 由于本文件与 dialect.rs / syntax.rs / completion.rs / decorations.rs / execution.rs
+// 由于本文件与 dialect.rs / syntax.rs / completion.rs / semantic.rs / execution.rs
 // 通过 include! 合并进同一个 `sql_editor_adapter` 模块，所有用于整个模块的共享
 // `use` 统一放在本文件顶部，其余文件直接引用同一模块作用域下的类型，不重复 `use`。
 

@@ -63,6 +63,7 @@ fn scripted_round_trip_executes_real_tool_and_feeds_receipt_back() {
     let receipt = block_on(tool.execute(
         ToolExecutionContext {
             automatic_approval: false,
+            bounded_write: false,
             session_id: "s-1".into(),
             turn_id: "t-1".into(),
             iteration: 1,

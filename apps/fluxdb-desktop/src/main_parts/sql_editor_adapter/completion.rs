@@ -293,67 +293,6 @@ fn masked_range_at(text: &str, pos: usize) -> Option<(usize, usize)> {
     None
 }
 
-/// 一次线性收集字符串和注释区间，供需要扫描多个 token 的调用方复用。
-/// `masked_range_at` 适合单点判断；批量诊断/高亮不能对每个点重复扫描全文。
-#[allow(dead_code)]
-fn masked_ranges(text: &str) -> Vec<(usize, usize)> {
-    let bytes = text.as_bytes();
-    let n = bytes.len();
-    let mut ranges = Vec::new();
-    let mut i = 0usize;
-    while i < n {
-        let start = i;
-        match bytes[i] {
-            b'\'' | b'"' | b'`' => {
-                let quote = bytes[i];
-                i += 1;
-                while i < n {
-                    if bytes[i] == quote {
-                        if i + 1 < n && bytes[i + 1] == quote {
-                            i += 2;
-                            continue;
-                        }
-                        i += 1;
-                        break;
-                    }
-                    i += 1;
-                }
-            }
-            b'-' if i + 1 < n && bytes[i + 1] == b'-' => {
-                i += 2;
-                while i < n && bytes[i] != b'\n' {
-                    i += 1;
-                }
-            }
-            b'#' => {
-                i += 1;
-                while i < n && bytes[i] != b'\n' {
-                    i += 1;
-                }
-            }
-            b'/' if i + 1 < n && bytes[i + 1] == b'*' => {
-                i += 2;
-                while i + 1 < n && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
-                    i += 1;
-                }
-                i = (i + 2).min(n);
-            }
-            _ => {
-                i += 1;
-            }
-        }
-        let quoted_or_hash = i > start && matches!(bytes[start], b'\'' | b'"' | b'`' | b'#');
-        let line_or_block_comment = i > start + 1
-            && ((bytes[start] == b'-' && bytes.get(start + 1) == Some(&b'-'))
-                || (bytes[start] == b'/'
-                    && matches!(bytes.get(start + 1), Some(&b'*') | Some(&b'/'))));
-        if quoted_or_hash || line_or_block_comment {
-            ranges.push((start, i));
-        }
-    }
-    ranges
-}
-
 /// 判断字节区间 `[start, end)` 是否存在任何被字符串/注释屏蔽的子区间。
 fn segment_is_masked(text: &str, start: usize, end: usize) -> bool {
     let mut i = start;
@@ -454,16 +393,5 @@ mod completion_tests {
     fn decimal_and_dot_after_non_dot_do_not_trigger() {
         assert!(!trailing_ident_qualifier("SELECT 3.14"));
         assert!(!trailing_ident_qualifier("price 1.5"));
-    }
-
-    #[test]
-    fn masked_ranges_collect_all_comment_and_string_spans_once() {
-        let text = "SELECT 'a.b', x /* c.d */ FROM t -- e.f\nWHERE t.id = 1";
-        let ranges = masked_ranges(text);
-        assert_eq!(ranges.len(), 3);
-        assert!(ranges.iter().all(|(start, end)| *start < *end));
-        assert!(ranges.iter().any(|(start, end)| &text[*start..*end] == "'a.b'"));
-        assert!(ranges.iter().any(|(start, end)| text[*start..*end].starts_with("/*")));
-        assert!(ranges.iter().any(|(start, end)| text[*start..*end].starts_with("--")));
     }
 }

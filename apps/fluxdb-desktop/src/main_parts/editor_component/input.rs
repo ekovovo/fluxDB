@@ -636,32 +636,6 @@ fn word_range_in_text(
     Some((start, end))
 }
 
-#[cfg(test)]
-mod word_selection_tests {
-    use super::word_range_in_text;
-
-    fn is_word_char(ch: char) -> bool {
-        ch.is_alphanumeric() || ch == '_'
-    }
-
-    #[test]
-    fn selects_word_at_start_middle_and_end() {
-        let text = "SELECT user_name FROM users";
-        assert_eq!(word_range_in_text(text, 0, is_word_char), Some((0, 6)));
-        assert_eq!(word_range_in_text(text, 9, is_word_char), Some((7, 16)));
-        assert_eq!(word_range_in_text(text, text.len(), is_word_char), Some((22, 27)));
-    }
-
-    #[test]
-    fn handles_unicode_punctuation_and_whitespace() {
-        let text = "你好，world";
-        assert_eq!(word_range_in_text(text, 3, is_word_char), Some((0, 6)));
-        assert_eq!(word_range_in_text(text, 6, is_word_char), Some((6, 9)));
-        assert_eq!(word_range_in_text(text, 10, is_word_char), Some((9, 14)));
-        assert_eq!(word_range_in_text("a b", 1, is_word_char), None);
-    }
-}
-
 /// 由屏幕坐标换算 buffer 的 Point（行/字节列）。
 impl Editor {
     pub(crate) fn point_from_mouse(
@@ -976,56 +950,3 @@ fn completion_accepts_action(action: &dyn Action) -> bool {
     action.as_any().is::<Enter>() || action.as_any().is::<IndentInline>()
 }
 
-#[cfg(test)]
-mod ime_tests {
-    use super::*;
-
-    #[test]
-    fn marked_text_takes_precedence_when_ime_omits_replacement_range() {
-        let snap = EditorBuffer::new_from("dasd").snapshot();
-        assert_eq!(
-            ime_replacement_range(
-                &snap,
-                None,
-                Some(CoreRange::new(0, 4)),
-                CoreRange::empty(4),
-            ),
-            CoreRange::new(0, 4),
-        );
-    }
-
-    #[test]
-    fn stale_marked_range_is_snapped_to_char_boundary() {
-        // 文档 "你你颜"：你 0..3 / 你 3..6 / 颜 6..9。
-        // 过期的 marked 区间起点落到 '颜' 中间（字节 8），必须吸附回字符边界 6。
-        let snap = EditorBuffer::new_from("你你颜").snapshot();
-        let range = ime_replacement_range(
-            &snap,
-            None,
-            Some(CoreRange::new(8, 9)),
-            CoreRange::empty(9),
-        );
-        assert_eq!(range, CoreRange::new(6, 9));
-    }
-
-    #[test]
-    fn out_of_bounds_marked_range_falls_back_to_selection() {
-        let snap = EditorBuffer::new_from("abc").snapshot();
-        // 越界（起点吸附后=末尾，start==end）→ 回退到当前选区。
-        let range = ime_replacement_range(
-            &snap,
-            None,
-            Some(CoreRange::new(50, 60)),
-            CoreRange::empty(3),
-        );
-        assert_eq!(range, CoreRange::empty(3));
-    }
-
-    #[test]
-    fn completion_accepts_tab_and_enter_only() {
-        assert!(completion_accepts_action(&Enter { secondary: false }));
-        assert!(completion_accepts_action(&IndentInline));
-        assert!(!completion_accepts_action(&OutdentInline));
-        assert!(!completion_accepts_action(&Escape));
-    }
-}

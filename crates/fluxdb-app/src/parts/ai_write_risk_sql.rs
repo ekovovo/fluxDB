@@ -312,23 +312,3 @@ fn sql_write_operation_name(statement: &sqlparser::ast::Statement) -> &'static s
     }
 }
 
-/// 供测试与审计使用：一条语句的规则分。
-#[cfg(test)]
-pub(crate) fn sql_write_rule_score(
-    sql: &str,
-    dialect: SqlDialectKind,
-    bounded_capable: bool,
-) -> f64 {
-    sql_write_risk_facts(sql, dialect, bounded_capable).rule_score()
-}
-
-/// 供测试使用：一条语句的信号代码。
-#[cfg(test)]
-pub(crate) fn sql_write_signal_codes(
-    sql: &str,
-    dialect: SqlDialectKind,
-    bounded_capable: bool,
-) -> Vec<String> {
-    let facts = sql_write_risk_facts(sql, dialect, bounded_capable);
-    facts.codes().into_iter().map(str::to_string).collect()
-}

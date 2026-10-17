@@ -41,7 +41,6 @@ fn ai_tools_policy_button(
                                 move || id.clone()
                             })
                             .child(mode.label())
-                            .test_support()
                     })
                     .checked(selected == mode)
                     .on_click(move |_, window, cx| {
@@ -160,7 +159,6 @@ fn ai_write_risk_threshold_control(
                                 move || id.clone()
                             })
                             .child(format!("{step:.2}"))
-                            .test_support()
                     })
                     .checked((selected - step).abs() < 1e-9)
                     .on_click(move |_, _, cx| {
@@ -215,7 +213,6 @@ fn ai_write_review_weight_control(
                                 move || id.clone()
                             })
                             .child(format!("{step:.2}"))
-                            .test_support()
                     })
                     .checked((selected - step).abs() < 1e-9)
                     .on_click(move |_, _, cx| {

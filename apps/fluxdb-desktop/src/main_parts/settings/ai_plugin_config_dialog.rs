@@ -658,7 +658,6 @@ fn ai_plugin_config_switch_field(
                         let selector = format!("{selector}:wrap");
                         move || selector.clone()
                     })
-                    .test_support()
                     .child(
                         Switch::new(SharedString::from(selector))
                             .checked(checked)
@@ -703,7 +702,6 @@ fn ai_plugin_config_text_field(
                         let selector = selector.clone();
                         move || selector.clone()
                     })
-                    .test_support()
                     .child(gpui_component::input::Textarea::new(input).h(px(88.))),
             );
         if !parsed.is_empty() {
@@ -744,7 +742,6 @@ fn ai_plugin_config_text_field(
                         let parsed_selector = parsed_selector.clone();
                         move || parsed_selector.clone()
                     })
-                    .test_support()
                     .child(chips),
             );
         }
@@ -759,7 +756,6 @@ fn ai_plugin_config_text_field(
                 let selector = selector.clone();
                 move || selector.clone()
             })
-            .test_support()
             .child(Input::new(input).text_size(px(13.)))
             .into_any_element()
     };
@@ -854,7 +850,6 @@ fn ai_plugin_config_select_field(
                                         move || option_id.clone()
                                     })
                                     .child(label.clone())
-                                    .test_support()
                             })
                             .on_click(move |_, _, cx| {
                                 let _ = owner.update(cx, |this, cx| {
@@ -955,7 +950,6 @@ fn ai_plugin_config_resource_field(
                                     .text_color(colors.muted)
                                     .child(detail.clone()),
                             )
-                            .test_support()
                     })
                     .checked(checked)
                     .on_click(move |_, _, cx| {
@@ -978,7 +972,6 @@ fn ai_plugin_config_resource_field(
                         })
                         .text_color(colors.muted)
                         .child("未配置（不使用）")
-                        .test_support()
                 })
                 .on_click(move |_, _, cx| {
                     let _ = owner.update(cx, |this, cx| {

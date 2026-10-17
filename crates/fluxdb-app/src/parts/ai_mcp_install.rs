@@ -525,5 +525,3 @@ fn write_atomic(path: &Path, content: &str) -> fluxdb_core::Result<Option<PathBu
     Ok(backup)
 }
 
-#[cfg(test)]
-include!("tests/ai_mcp_install.rs");

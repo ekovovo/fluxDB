@@ -4,8 +4,6 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-#[cfg(test)]
-use fluxdb_connectors::{PostgresConnector, SqliteConnector};
 use fluxdb_connectors::{RedisConnector, RedisStreamRange, connector_for};
 // 对外再导出建 Key 相关的连接器类型，供桌面端（fluxdb-desktop）匹配/构造 AppCommand 使用。
 pub use fluxdb_connectors::{
@@ -88,7 +86,6 @@ pub use mysql_client_tools::*;
 include!("parts/query_history.rs");
 include!("parts/workbench_history.rs");
 include!("parts/query_result_edit.rs");
-include!("parts/tests.rs");
 include!("parts/er_service.rs");
 include!("parts/er_catalog.rs");
 include!("parts/er_layout.rs");

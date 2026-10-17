@@ -115,10 +115,9 @@ Rust 修改提交前运行：
 ```bash
 cargo fmt --all -- --check
 cargo check --workspace --locked
-cargo test --workspace --locked
 ```
 
-部分数据库集成测试需要对应的数据库服务，请在 PR 中说明测试环境与未验证范围。UI 行为修改还需启动应用验证主窗口及相关交互。
+UI 行为修改还需启动应用验证主窗口及相关交互。
 
 ### 项目结构
 

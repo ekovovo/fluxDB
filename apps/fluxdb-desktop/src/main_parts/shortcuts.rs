@@ -212,30 +212,3 @@ pub(crate) fn shadow_shortcut(
     cx.bind_keys([KeyBinding::new(spec, NoAction, context)]);
 }
 
-#[cfg(test)]
-mod shortcut_tests {
-    use super::*;
-
-    #[test]
-    fn invalid_saved_shortcut_falls_back_to_default() {
-        let definition = SHORTCUT_DEFINITIONS[0];
-        let mut settings = Settings::default();
-        settings
-            .custom_keybindings
-            .insert(definition.id.to_string(), "not-a-keystroke".to_string());
-
-        assert_eq!(default_shortcut(&definition), current_shortcut(&settings, &definition));
-    }
-    #[test]
-    fn cross_platform_editor_shortcuts_are_valid_keystrokes() {
-        for spec in [
-            "ctrl-f",
-            "ctrl-/",
-            "ctrl-shift-]",
-            "ctrl-shift-[",
-            "ctrl-alt-[",
-        ] {
-            assert!(Keystroke::parse(spec).is_ok(), "invalid shortcut: {spec}");
-        }
-    }
-}

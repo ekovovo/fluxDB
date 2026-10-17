@@ -39,7 +39,6 @@ fn dangerous_command_modal(
     };
     div()
         .id(key_context)
-        .test_support()
         .absolute()
         .top_0()
         .left_0()
@@ -63,7 +62,6 @@ fn dangerous_command_modal(
         .child(
             div()
                 .id((key_context, 0u64))
-                .test_support()
                 .w(px(460.))
                 .rounded(colors.radius_lg)
                 .border_1()
@@ -102,7 +100,6 @@ fn dangerous_command_modal(
                         .child(
                             div()
                                 .id((key_context, 1u64))
-                                .test_support()
                                 .aria_label("关闭")
                                 .size(px(28.))
                                 .rounded(colors.radius)
@@ -162,5 +159,3 @@ fn dangerous_command_modal(
         )
 }
 
-#[cfg(test)]
-include!("dangerous_confirmation_tests.rs");

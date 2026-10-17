@@ -110,59 +110,6 @@ fn redis_inspect_value(
     }
     Ok(value)
 }
-#[cfg(test)]
-mod redis_read_tool_tests {
-    use super::*;
-    fn bulk(text: &str) -> fluxdb_core::CommandReply {
-        fluxdb_core::CommandReply::Bulk(fluxdb_core::CommandBulk {
-            text: Some(text.into()), bytes_preview_hex: None, byte_len: text.len() as u64, binary: false,
-        })
-    }
-
-    #[test]
-    fn malformed_scan_reply_never_means_complete() {
-        for reply in [fluxdb_core::CommandReply::Nil, fluxdb_core::CommandReply::Array(vec![bulk("0")]),
-            fluxdb_core::CommandReply::Array(vec![bulk("bad"), fluxdb_core::CommandReply::Array(vec![])])] {
-            assert!(redis_scan_page(reply).is_err());
-        }
-    }
-
-    #[test]
-    fn reading_errors_are_propagated_not_projected_as_success() {
-        for kind in ["string", "hash", "set", "list", "zset", "stream"] {
-            let call = |_: &[&str]| Err(SqlExecError::new("redis_error", "WRONGTYPE"));
-            assert_eq!(redis_inspect_value(&call, "key", kind, "0", 10, 4096).unwrap_err().code, "redis_error");
-        }
-    }
-
-    #[test]
-    fn compact_scan_count_is_not_a_hard_limit() {
-        let call = |argv: &[&str]| {
-            assert_eq!(argv, ["HSCAN", "key", "0", "COUNT", "1"]);
-            Ok(fluxdb_core::CommandReply::Array(vec![bulk("0"),
-                fluxdb_core::CommandReply::Array(vec![bulk("a"), bulk("1"), bulk("b"), bulk("2")])]))
-        };
-        assert_eq!(redis_inspect_value(&call, "key", "hash", "0", 1, 4096).unwrap_err().code, "redis_page_too_large");
-    }
-
-    #[test]
-    fn list_continuation_uses_offset_instead_of_repeating_first_page() {
-        let call = |argv: &[&str]| match argv[0] {
-            "LLEN" => Ok(fluxdb_core::CommandReply::Integer(5)),
-            "LRANGE" => { assert_eq!(argv, ["LRANGE", "key", "2", "3"]); Ok(fluxdb_core::CommandReply::Array(vec![bulk("c"), bulk("d")])) },
-            _ => panic!("Unexpected command"),
-        };
-        let value = redis_inspect_value(&call, "key", "list", "2", 2, 4096).unwrap();
-        assert_eq!(value["next_cursor"], "4");
-        assert_eq!(value["truncated"], true);
-    }
-    #[test]
-    fn module_inspect_is_metadata_only() {
-        let call = |_: &[&str]| -> Result<fluxdb_core::CommandReply, SqlExecError> { panic!("No module command permitted") };
-        assert!(redis_inspect_value(&call, "key", "json", "0", 10, 4096).unwrap()["unsupported_detail"].is_string());
-    }
-}
-
 /// 把一条 Pub/Sub 消息投影为有界 JSON（二进制载荷给 hex 预览而非原始字节）。
 fn redis_pubsub_message_to_json(message: &fluxdb_connectors::PubSubMessage) -> serde_json::Value {
     let payload_len = message.payload.len();

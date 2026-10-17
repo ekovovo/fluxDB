@@ -82,23 +82,6 @@ impl AiConversationProvider {
             },
         })
     }
-
-    /// 供集成测试 / 离线夹具构造（不含凭据）。
-    pub fn for_test(
-        protocol: ChatProtocol,
-        endpoint: String,
-        model: String,
-        capabilities: fluxdb_core::ModelCapabilities,
-    ) -> Self {
-        Self {
-            protocol,
-            endpoint,
-            auth: TransportAuth::None,
-            model,
-            max_output_tokens: Some(1024),
-            capabilities,
-        }
-    }
 }
 
 impl fluxdb_core::GenerationProvider for AiConversationProvider {

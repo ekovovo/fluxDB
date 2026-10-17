@@ -150,7 +150,3 @@ fn redis_evidence_json(
     .to_string()
 }
 
-#[cfg(test)]
-pub(crate) fn redis_write_rule_score(argv: &[String], key_scope_bounded: bool) -> f64 {
-    redis_write_risk_facts(argv, key_scope_bounded).rule_score()
-}

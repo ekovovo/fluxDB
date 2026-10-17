@@ -63,12 +63,6 @@ impl AppController {
         }
     }
 
-    pub fn with_mock_data() -> Self {
-        let mut controller = Self::new();
-        let _ = controller.dispatch(AppCommand::LoadConnections);
-        controller
-    }
-
     /// 注入 AI 平台存储（模型/Agent/插件/MCP 管理页使用）。
     pub fn set_ai_storage(&mut self, storage: fluxdb_storage::FileStorage) {
         self.ai_storage = Some(storage);

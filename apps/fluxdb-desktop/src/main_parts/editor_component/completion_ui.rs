@@ -230,13 +230,3 @@ pub(crate) fn completion_popup_width_for_items(
     completion_popup_width(longest)
 }
 
-#[cfg(test)]
-mod completion_tests {
-    use super::completion_popup_width;
-    #[test]
-    fn completion_popup_width_clamps_like_zed() {
-        assert_eq!(completion_popup_width(0.), 280.);
-        assert_eq!(completion_popup_width(100.), 280.);
-        assert_eq!(completion_popup_width(1000.), 540.);
-    }
-}

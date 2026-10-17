@@ -68,7 +68,6 @@ fn ai_mcp_global_policy_button(
                                 move || id.clone()
                             })
                             .child(mode.label())
-                            .test_support()
                     })
                     .checked(selected == mode)
                     .on_click(move |_, _, cx| {
@@ -207,7 +206,6 @@ fn ai_mcp_datasource_add_button(
                             .items_center()
                             .gap_2()
                             .child(label.clone())
-                            .test_support()
                     })
                     .on_click(move |_, _, cx| {
                         let _ = owner.update(cx, |this, cx| {

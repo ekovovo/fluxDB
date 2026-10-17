@@ -101,12 +101,6 @@ impl AiChatStream {
         self.revealed < self.buffer.len()
     }
 
-    /// 已揭示的正文字节数（等于揭示实体正文长度）；UI 回归据此确认逐帧吐字。
-    #[cfg(test)]
-    pub(crate) fn revealed_len(&self) -> usize {
-        self.revealed.min(self.buffer.len())
-    }
-
     /// 推进一步揭示，返回本次新增、应追加到 entity 的文本块。
     pub(crate) fn reveal_next(&mut self) -> Option<String> {
         let pending = self.buffer.len().saturating_sub(self.revealed);

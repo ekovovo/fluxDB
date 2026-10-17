@@ -513,16 +513,6 @@ fn pg_triggers_from_structure(structure: &TableStructure) -> Vec<TriggerInfo> {
         .collect()
 }
 
-/// 逗号分隔的引号标识符列表（仅测试用）。
-#[cfg(test)]
-fn pg_quote_csv(columns: &[String]) -> String {
-    columns
-        .iter()
-        .map(|c| fluxdb_core::PostgresDialect.quote_identifier(c))
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
 /// schema 限定关系名（双引号逐段）。
 fn pg_qualified_relation(schema: &str, relation: &str) -> String {
     format!(

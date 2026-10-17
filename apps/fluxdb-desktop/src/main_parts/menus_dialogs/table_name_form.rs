@@ -76,7 +76,6 @@ fn table_name_form_modal(
 
     div()
         .id(key_context)
-        .test_support()
         .absolute()
         .top_0()
         .left_0()
@@ -100,7 +99,6 @@ fn table_name_form_modal(
         .child(
             div()
                 .id((key_context, 0u64))
-                .test_support()
                 .w(px(560.))
                 .rounded(colors.radius_lg)
                 .border_1()
@@ -145,7 +143,6 @@ fn table_name_form_modal(
                         .child(
                             user_admin_icon_button(AppIcon::Close, colors)
                                 .id((key_context, 1u64))
-                                .test_support()
                                 .aria_label("关闭")
                                 .on_mouse_down(
                                     MouseButton::Left,
@@ -181,7 +178,6 @@ fn table_name_form_modal(
                                 div()
                                     .id((key_context, 2u64))
                                     .aria_label(error.clone())
-                                    .test_support()
                                     .text_size(px(12.))
                                     .text_color(colors.danger)
                                     .child(error),

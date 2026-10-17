@@ -118,7 +118,6 @@ fn ai_chat_composer(
                         .bg(colors.input_bg)
                         .p_2()
                         .id("ai-chat-input")
-                        .test_support()
                         .debug_selector(|| "ai-chat-input".into())
                         .key_context("AiChatComposer")
                         .capture_action(cx.listener(|this, _: &SendAiMessage, window, cx| {
@@ -170,7 +169,7 @@ fn ai_chat_composer(
                                                     let upload_owner = owner.clone();
                                                     let context_owner = owner.clone();
                                                     menu.item(PopupMenuItem::element(|_, _| div()
-                                                        .id("ai-chat-upload").test_support().child("从电脑上传"))
+                                                        .id("ai-chat-upload").child("从电脑上传"))
                                                         .disabled(upload_disabled)
                                                         .on_click(move |_, window, cx| {
                                                             let _ = upload_owner.update(cx, |this, cx| {
@@ -178,7 +177,7 @@ fn ai_chat_composer(
                                                             });
                                                         }))
                                                         .item(PopupMenuItem::element(|_, _| div()
-                                                            .id("ai-chat-add-context").test_support().child("添加上下文"))
+                                                            .id("ai-chat-add-context").child("添加上下文"))
                                                             .on_click(move |_, window, cx| {
                                                                 let _ = context_owner.update(cx, |this, cx| {
                                                                     this.open_ai_reference_menu(window, cx);

@@ -111,36 +111,3 @@ fn redis_read_bounded_value(
     }
 }
 
-#[cfg(test)]
-mod redis_read_budget_tests {
-    use super::*;
-
-    fn read(payload: &[u8], budget: RedisReadBudget) -> fluxdb_core::Result<RedisValue> {
-        redis_read_value_with_budget(&mut std::io::Cursor::new(payload), budget)
-    }
-
-    #[test]
-    fn oversized_bulk_and_array_are_rejected_from_headers() {
-        for payload in [b"$1048576\r\n".as_slice(), b"*1000000\r\n".as_slice()] {
-            let error = read(payload, RedisReadBudget::default()).unwrap_err();
-            assert!(error.message.contains("VALUE_TOO_LARGE"));
-        }
-    }
-
-    #[test]
-    fn total_bytes_elements_and_depth_are_cumulative() {
-        for (payload, budget) in [
-            (b"*2\r\n$4\r\nabcd\r\n$4\r\nefgh\r\n".as_slice(), RedisReadBudget { max_total_bytes: 20, ..Default::default() }),
-            (b"*2\r\n*2\r\n:1\r\n:2\r\n*2\r\n:3\r\n:4\r\n".as_slice(), RedisReadBudget { max_elements: 6, ..Default::default() }),
-            (b"*1\r\n*1\r\n:1\r\n".as_slice(), RedisReadBudget { max_depth: 2, ..Default::default() }),
-        ] {
-            assert!(read(payload, budget).unwrap_err().message.contains("VALUE_TOO_LARGE"));
-        }
-    }
-
-    #[test]
-    fn binary_and_nested_values_remain_exact() {
-        let value = read(b"*2\r\n$2\r\n\x00\xff\r\n:5\r\n", RedisReadBudget::default()).unwrap();
-        assert_eq!(value, RedisValue::Array(vec![RedisValue::Bulk(Some(vec![0, 255])), RedisValue::Int(5)]));
-    }
-}

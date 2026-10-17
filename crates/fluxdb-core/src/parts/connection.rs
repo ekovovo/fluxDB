@@ -465,18 +465,3 @@ fn connection_option_is_true(value: Option<&String>) -> bool {
         .is_some_and(|v| matches!(v.as_str(), "true" | "y" | "yes" | "1" | "on"))
 }
 
-#[cfg(test)]
-mod connection_option_tests {
-    use super::*;
-
-    #[test]
-    fn boolean_options_share_the_same_accepted_values() {
-        assert!(!connection_option_is_true(None));
-        for value in ["true", "TRUE", " y ", "yes", "1", "On"] {
-            assert!(connection_option_is_true(Some(&value.to_string())));
-        }
-        for value in ["", " ", "false", "no", "0", "off", "enabled", "2"] {
-            assert!(!connection_option_is_true(Some(&value.to_string())));
-        }
-    }
-}

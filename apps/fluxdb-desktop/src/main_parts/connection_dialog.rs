@@ -652,7 +652,7 @@ fn kind_tile(
     locked: bool,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
-) -> ObservedElement<Stateful<Div>> {
+) -> Stateful<Div> {
     let selected = kind == selected;
     let disabled = locked && !selected;
 
@@ -660,7 +660,6 @@ fn kind_tile(
     // 磁贴可点击切换，纳入 headless 观察。
     div()
         .id(format!("new-connection-kind-{}", database_kind_element_suffix(kind)))
-        .test_support()
         .aria_label(label)
         .role(Role::RadioButton)
         .aria_selected(selected)

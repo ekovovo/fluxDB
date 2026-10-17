@@ -21,11 +21,10 @@ fluxdb-mcp = { path = "../fluxdb-mcp" }
 fluxdb-storage = { path = "../../crates/fluxdb-storage" }
 gpui = { package = "gpui-pre", version = "=0.3.8" }
 # gpui-component / gpui-base 0.7.1 的过程宏（`actions!`、`#[derive(Action)]` 等）用
-# proc_macro_crate 解析调用方 crate：优先 `gpui-kit`，其次回退 `gpui-pre`。把
-# gpui-kit 只放在 dev-dependencies 时，普通构建里宏展开成 `::gpui_kit::…` 无法解析，
-# 而 gpui-kit 在 0.7.x 中是应用应当直接依赖的 facade（`gpui_kit::*` 即 GPUI），
-# 它重导出的正是同一份 gpui-pre 0.3.8 / gpui-component 0.7.1，类型完全一致。
-# 因此生产依赖在此声明 gpui-kit；`test-support` 仍只在 dev-dependencies 启用。
+# proc_macro_crate 解析调用方 crate：优先 `gpui-kit`，其次回退 `gpui-pre`。宏在
+# 普通构建里同样要展开出可解析的 `::gpui_kit::…`，而 gpui-kit 在 0.7.x 中是应用应当
+# 直接依赖的 facade（`gpui_kit::*` 即 GPUI），它重导出的正是同一份 gpui-pre 0.3.8 /
+# gpui-component 0.7.1，类型完全一致。因此 gpui-kit 声明在普通依赖中。
 gpui-kit = "=0.7.1"
 # gpui-base 0.6.0 曾在其非 wasm 依赖中固定开启 gpui-platform 的 runtime_shaders；
 # 0.7.1 改为由使用方显式选择。不开启时 gpui-pre-apple 的 build.rs 会调用
@@ -98,13 +97,3 @@ icon = ["assets/app-icon.icns"]
 resources = ["assets"]
 category = "Developer Tool"
 short_description = "Desktop database client"
-
-[dev-dependencies]
-# §39.3 第 2 步：UI 交互回归需要 gpui 的测试接口（simulate_click / simulate_input /
-# simulate_keystrokes / VisualTestContext）。仅在测试依赖中启用，发布构建不受影响。
-# proptest 等传递依赖已在本地 registry 缓存，使用 --offline 可避免新增下载。
-gpui = { package = "gpui-pre", version = "=0.3.8", features = ["test-support"] }
-gpui-kit = { version = "=0.7.1", features = ["test-support"] }
-# ER 画布布局回归测试：复用 gpui 已锁定并编译的同一 taffy 0.13 引擎，模拟真实 div 树
-# 计算画布非零剩余高度（见 tests.rs::er_canvas_layout_fills_below_toolbar）。无需新增下载。
-taffy = "0.13"

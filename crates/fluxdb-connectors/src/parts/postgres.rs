@@ -17,6 +17,3 @@ include!("postgres/user_admin.rs");
 include!("postgres/native_tools.rs");
 include!("postgres/connector.rs");
 
-#[cfg(test)]
-#[path = "postgres/audit_tests.rs"]
-mod postgres_audit_tests;

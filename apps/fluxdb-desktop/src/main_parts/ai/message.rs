@@ -92,7 +92,6 @@ fn ai_reference_chip(
     };
     div()
         .id(SharedString::from(format!("ai-reference-chip:{id}")))
-        .test_support()
         .tooltip(move |window, cx| Tooltip::new(note.clone()).build(window, cx))
         .debug_selector({
             let id = id.clone();
@@ -457,7 +456,6 @@ fn ai_chat_part(
                         let id = part.id.clone();
                         move || format!("ai-part-audit:{id}")
                     })
-                    .test_support()
                     .flex()
                     .items_center()
                     .gap_1()
@@ -491,7 +489,6 @@ fn ai_chat_part(
                         let id = part.id.clone();
                         move || format!("ai-part-progress:{id}")
                     })
-                    .test_support()
                     .flex()
                     .items_center()
                     .gap_1()
@@ -579,7 +576,6 @@ fn ai_chat_plan_card(
                     let id = part.id.clone();
                     move || format!("ai-plan-step:{id}:{index}")
                 })
-                .test_support()
                 .flex()
                 .items_start()
                 .gap_2()
@@ -621,7 +617,6 @@ fn ai_chat_plan_card(
             let id = part.id.clone();
             move || format!("ai-plan:{id}")
         })
-        .test_support()
         .w_full()
         .flex()
         .flex_col()

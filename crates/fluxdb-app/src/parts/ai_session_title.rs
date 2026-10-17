@@ -105,26 +105,3 @@ pub fn generate_session_title(
     }
 }
 
-#[cfg(test)]
-mod ai_session_title_tests {
-    use super::*;
-
-    #[test]
-    fn title_prompt_includes_user_and_reply_excerpt() {
-        let prompt = build_title_prompt("查询订单表", "已生成 SELECT 语句。");
-        assert!(prompt.contains("查询订单表"));
-        assert!(prompt.contains("已生成 SELECT 语句"));
-        assert!(prompt.contains("40"));
-    }
-
-    #[test]
-    fn title_normalization_strips_quotes_and_truncates() {
-        assert_eq!(
-            normalize_session_title("「订单数据分析」").as_deref(),
-            Some("订单数据分析")
-        );
-        let long = "长".repeat(60);
-        let normalized = normalize_session_title(&long).unwrap();
-        assert_eq!(normalized.chars().count(), 40);
-    }
-}

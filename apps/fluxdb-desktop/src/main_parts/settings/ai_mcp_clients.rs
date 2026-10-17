@@ -132,7 +132,6 @@ fn ai_mcp_clients_panel(
                         div()
                             .id(SharedString::from(id.clone()))
                             .child(label)
-                            .test_support()
                     })
                     .on_click(move |_, _, cx| {
                         let _ =
@@ -194,7 +193,6 @@ fn ai_mcp_clients_panel(
                 .text_size(px(11.))
                 .text_color(colors.muted)
                 .child("正在更新配置…")
-                .test_support(),
         );
     }
     if let Some(error) = &panel.mcp_clients_error {
@@ -206,7 +204,6 @@ fn ai_mcp_clients_panel(
                 .text_size(px(12.))
                 .text_color(colors.danger)
                 .child(error.clone())
-                .test_support(),
         );
     }
     let mut count = 0;
@@ -287,10 +284,10 @@ fn ai_mcp_manual_connection(
                     .child(div().id("ai-mcp-config-preview").max_h(px(180.)).overflow_scroll()
                         .rounded_md().border_1().border_color(colors.border_soft).bg(colors.input_bg)
                         .p_3().font_family(PLATFORM_MONOSPACE_FONT).text_size(px(11.))
-                        .text_color(colors.text).child(details.json_example).test_support())
+                        .text_color(colors.text).child(details.json_example))
                     .child(div().id("ai-mcp-connection-command").min_w_0().text_ellipsis()
                         .text_size(px(11.)).text_color(colors.muted).child(details.command_line)
-                        .test_support())))
+                        )))
         })
 }
 
@@ -420,6 +417,5 @@ fn client_registration_row(
                 cx.listener(move |this, _, _, cx| this.set_mcp_client(key.clone(), !remove, cx)),
             ),
         )
-        .test_support()
         .into_any_element()
 }

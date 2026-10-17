@@ -33,7 +33,6 @@ fn query_toolbar(
                 rgb(0x20c76a),
                 colors,
             )
-                .test_support()
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener({

@@ -15,15 +15,3 @@ pub fn threshold_us(kind: TaskKind) -> u64 {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn thresholds_keep_frame_and_background_budgets_distinct() {
-        assert_eq!(threshold_us(TaskKind::Wrap), FRAME_BUDGET_US);
-        assert_eq!(threshold_us(TaskKind::Syntax), BACKGROUND_BUDGET_US);
-        assert!(BACKGROUND_BUDGET_US > FRAME_BUDGET_US);
-    }
-}

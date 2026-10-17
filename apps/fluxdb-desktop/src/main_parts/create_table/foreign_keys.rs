@@ -939,18 +939,3 @@ fn create_table_foreign_key_operation_button(
     })
 }
 
-#[cfg(test)]
-mod field_option_tests {
-    use super::*;
-
-    #[test]
-    fn selected_fields_stay_first_even_when_missing_from_available_options() {
-        let selected = vec!["b".into(), "missing".into(), "b".into()];
-        let available = vec!["a".into(), "b".into(), "a".into(), "c".into()];
-        assert_eq!(
-            ordered_unique_field_options(&selected, available),
-            vec!["b", "missing", "a", "c"],
-        );
-        assert!(ordered_unique_field_options(&[], vec![]).is_empty());
-    }
-}

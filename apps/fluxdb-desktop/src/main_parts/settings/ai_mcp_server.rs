@@ -126,7 +126,6 @@ fn ai_mcp_datasource_row(
                                                 move || id.clone()
                                             })
                                             .child(label)
-                                            .test_support()
                                     })
                                     .checked(selected)
                                     .on_click(move |_, _, cx| {

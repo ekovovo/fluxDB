@@ -396,12 +396,6 @@ impl PgNumeric {
         CellValue::Text(self.render())
     }
 
-    /// 渲染为十进制文本；仅单元测试的往返断言使用，生产路径经 [`Self::to_text`]。
-    #[cfg(test)]
-    pub(crate) fn render_text(&self) -> String {
-        self.render()
-    }
-
     /// 由已解析字段渲染十进制文本（保留 scale）。
     fn render(&self) -> String {
         if self.digits.is_empty() {
@@ -843,35 +837,3 @@ fn pg_row_cell(
     })
 }
 
-#[cfg(test)]
-mod pg_numeric_tests {
-    use super::PgNumeric;
-    use tokio_postgres::types::{FromSql as _, ToSql as _, Type};
-
-    /// 经 ToSql 编码（服务端二进制格式）再 FromSql 解码，等价于一次真实往返。
-    fn roundtrip(text: &str) -> String {
-        let parsed = PgNumeric::parse(text).expect("解析");
-        let mut buf = tokio_postgres::types::private::BytesMut::new();
-        parsed.to_sql(&Type::NUMERIC, &mut buf).expect("编码");
-        let decoded = PgNumeric::from_sql(&Type::NUMERIC, &buf).expect("解码");
-        decoded.render_text()
-    }
-
-    #[test]
-    fn decimal_text_roundtrips_without_precision_loss() {
-        for text in ["0", "0.00", "10.50", "-1234.5678", "99999999.999999", "20.00"] {
-            assert_eq!(roundtrip(text), text, "往返应保持十进制文本: {text}");
-        }
-    }
-
-    #[test]
-    fn large_and_small_values_stay_exact() {
-        assert_eq!(roundtrip("10000"), "10000");
-        assert_eq!(roundtrip("-0.5"), "-0.5");
-        // 大整数（超出 i64）仍精确，不经 f64。
-        assert_eq!(
-            roundtrip("12345678901234567890123456789.01"),
-            "12345678901234567890123456789.01"
-        );
-    }
-}

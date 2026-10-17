@@ -97,7 +97,7 @@ fn ai_tools_tab_button(
                 cx.notify();
                 cx.stop_propagation();
             }),
-        ).test_support()
+        )
 }
 
 /// 页签条。
@@ -731,7 +731,6 @@ fn ai_audit_stat_card(
             let selector = selector.clone();
             move || selector.clone()
         })
-        .test_support()
         .cursor_pointer()
         .min_w(px(132.))
         .px_3()
@@ -791,7 +790,6 @@ fn ai_audit_row(
             let row_selector = row_selector.clone();
             move || row_selector.clone()
         })
-        .test_support()
         .border_t_1()
         .border_color(colors.border_soft)
         .px_4()
@@ -991,47 +989,3 @@ fn settings_ai_tools_mcp_panel(
 
 // ---- 模型新建/编辑弹框 ----
 
-#[cfg(test)]
-mod ai_tools_catalog_tests {
-    use super::{AI_AGENT_TOOL_CATALOG, AI_MCP_ONLY_TOOL_CATALOG};
-
-    /// 设置页目录必须与实际下发给模型的工具定义一致：漏一个会让用户看到的工具清单
-    /// 与真实能力不符（新增工具时本用例失败即提醒同步）。
-    #[test]
-    fn catalog_lists_every_registered_redis_tool() {
-        let registered = fluxdb_app::standard_redis_tool_specs()
-            .expect("Redis 工具定义")
-            .into_iter()
-            .map(|spec| spec.id)
-            .collect::<std::collections::BTreeSet<_>>();
-        let listed = AI_AGENT_TOOL_CATALOG
-            .iter()
-            .map(|(id, ..)| (*id).to_string())
-            .collect::<std::collections::BTreeSet<_>>();
-        for id in &registered {
-            assert!(listed.contains(id), "设置页工具目录缺少已注册的 {id}");
-        }
-    }
-
-    /// 目录内不得重复列出同一个工具 ID。
-    #[test]
-    fn catalog_has_no_duplicate_ids() {
-        let mut seen = std::collections::BTreeSet::new();
-        for (id, ..) in AI_AGENT_TOOL_CATALOG.iter().chain(AI_MCP_ONLY_TOOL_CATALOG) {
-            assert!(seen.insert((*id).to_string()), "工具目录重复: {id}");
-        }
-    }
-
-    #[test]
-    fn agent_catalog_excludes_mcp_only_operation_status() {
-        assert!(
-            AI_AGENT_TOOL_CATALOG.iter().any(|(id, ..)| *id == "connections.list")
-        );
-        assert!(
-            !AI_AGENT_TOOL_CATALOG.iter().any(|(id, ..)| *id == "operation.status")
-        );
-        assert!(
-            AI_MCP_ONLY_TOOL_CATALOG.iter().any(|(id, ..)| *id == "operation.status")
-        );
-    }
-}

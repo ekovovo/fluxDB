@@ -115,10 +115,9 @@ Before submitting Rust changes, run:
 ```bash
 cargo fmt --all -- --check
 cargo check --workspace --locked
-cargo test --workspace --locked
 ```
 
-Some database integration tests require running database services. Describe your test environment and any unverified areas in the PR. For UI behavior changes, also launch the app and verify the main window and affected interactions.
+For UI behavior changes, also launch the app and verify the main window and affected interactions.
 
 ### Project structure
 

@@ -621,7 +621,7 @@ fn table_menu_item(
     menu: &TableContextMenu,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
-) -> ObservedElement<Stateful<Div>> {
+) -> Stateful<Div> {
     let object_path = menu.object_path.clone();
     let action_path = menu.object_path.clone();
     table_inert_menu_item(label, icon, destructive, colors)
@@ -638,7 +638,6 @@ fn table_menu_item(
                 }),
             )
         })
-        .test_support()
 }
 
 fn table_menu_submenu_item(

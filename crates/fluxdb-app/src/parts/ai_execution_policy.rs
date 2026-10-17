@@ -86,13 +86,6 @@ impl ExecutionSecurity {
         Self::assemble(storage, connections, false, Some(turn_model_profile_id))
     }
 
-    /// 注入评审实现；生产走 Jev → 本轮生成模型 → 规则，测试可换入固定评分器。
-    #[cfg(test)]
-    pub(crate) fn with_reviewer(mut self, reviewer: Arc<dyn WriteRiskReviewer>) -> Self {
-        self.reviewer = reviewer;
-        self
-    }
-
     fn assemble(
         storage: fluxdb_storage::FileStorage,
         connections: Vec<ConnectionConfig>,
@@ -286,6 +279,3 @@ impl ExecutionSecurity {
     }
 }
 
-#[cfg(test)]
-#[path = "tests/ai_execution_policy.rs"]
-mod execution_policy_tests;

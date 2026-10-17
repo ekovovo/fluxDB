@@ -9,84 +9,6 @@ fn pg_table_ddl(config: &ConnectionConfig, path: &ObjectPath) -> fluxdb_core::Re
     })
 }
 
-/// 由 TableStructure 组装普通表完整 DDL（含列/约束/索引/注释，顺序可重建）。
-#[cfg(test)]
-fn build_table_ddl(structure: &TableStructure) -> String {
-    let schema = structure.schema.as_deref().unwrap_or("public");
-    let relation = pg_qualified_relation(schema, &structure.name);
-    let mut lines: Vec<String> = Vec::new();
-
-    // 表体：列 + 主键 + 唯一 + CHECK + 外键。
-    let mut table_parts: Vec<String> = Vec::new();
-    for col in &structure.columns {
-        table_parts.push(pg_column_line(col));
-    }
-    if !structure.primary_key.is_empty() {
-        table_parts.push(format!(
-            "PRIMARY KEY ({})",
-            pg_quote_csv(&structure.primary_key)
-        ));
-    }
-    for unique in &structure.unique_keys {
-        table_parts.push(format!(
-            "CONSTRAINT {} {}",
-            fluxdb_core::PostgresDialect.quote_identifier(&unique.name),
-            unique.definition
-        ));
-    }
-    for check in &structure.checks {
-        table_parts.push(format!(
-            "CONSTRAINT {} {}",
-            fluxdb_core::PostgresDialect.quote_identifier(&check.name),
-            check.definition
-        ));
-    }
-    for fk in &structure.foreign_keys {
-        table_parts.push(pg_fk_line(fk));
-    }
-    lines.push(format!(
-        "CREATE TABLE {relation} (\n  {}\n);",
-        table_parts.join(",\n  ")
-    ));
-
-    // 独立索引：跳过主键索引与唯一约束的背衬索引（其名与约束同名），避免重复。
-    let constraint_index_names: std::collections::HashSet<&str> = structure
-        .unique_keys
-        .iter()
-        .map(|u| u.name.as_str())
-        .collect();
-    for index in &structure.indexes {
-        if index.is_primary || constraint_index_names.contains(index.name.as_str()) {
-            continue;
-        }
-        lines.push(format!("{};", index.definition.trim_end_matches(';')));
-    }
-
-    // 注释：表 + 列。
-    if let Some(comment) = structure.comment.as_deref().filter(|c| !c.trim().is_empty()) {
-        lines.push(format!(
-            "COMMENT ON TABLE {} IS {};",
-            relation,
-            pg_sql_string_literal(comment)
-        ));
-    }
-    for col in &structure.columns {
-        if let Some(comment) = col.comment.as_deref().filter(|c| !c.trim().is_empty()) {
-            lines.push(format!(
-                "COMMENT ON COLUMN {}.{} IS {};",
-                relation,
-                fluxdb_core::PostgresDialect.quote_identifier(&col.name),
-                pg_sql_string_literal(comment)
-            ));
-        }
-    }
-
-    for trigger in &structure.triggers {
-        lines.push(format!("{};", trigger.definition.trim_end_matches(';')));
-    }
-    lines.join("\n\n")
-}
-
 /// 单列定义行：`"name" type [DEFAULT x] [ident/generated] [NOT NULL]`。
 fn pg_column_line(col: &ColumnMeta) -> String {
     let mut line = format!(
@@ -115,47 +37,6 @@ fn pg_column_line(col: &ColumnMeta) -> String {
     }
     line
 }
-
-/// 外键约束行完整重建（含动作/match/延迟属性；无默认值动作）。
-#[cfg(test)]
-fn pg_fk_line(fk: &ForeignKeyMeta) -> String {
-    let ref_schema = fk.ref_schema.as_deref().unwrap_or("public");
-    let mut line = format!(
-        "CONSTRAINT {} FOREIGN KEY ({}) REFERENCES {}.{} ({})",
-        fluxdb_core::PostgresDialect.quote_identifier(&fk.name),
-        pg_quote_csv(&fk.columns),
-        fluxdb_core::PostgresDialect.quote_identifier(ref_schema),
-        fluxdb_core::PostgresDialect.quote_identifier(&fk.ref_table),
-        pg_quote_csv(&fk.ref_columns)
-    );
-    if let Some(m) = &fk.match_type {
-        if matches!(m.as_str(), "f" | "p" | "s") && m != "s" {
-            line.push_str(&format!(
-                " MATCH {}",
-                match m.as_str() {
-                    "f" => "FULL",
-                    "p" => "PARTIAL",
-                    _ => "SIMPLE",
-                }
-            ));
-        }
-    }
-    if let Some(action) = &fk.on_delete {
-        line.push_str(&format!(" ON DELETE {action}"));
-    }
-    if let Some(action) = &fk.on_update {
-        line.push_str(&format!(" ON UPDATE {action}"));
-    }
-    if fk.deferrable {
-        line.push_str(if fk.initially_deferred {
-            " DEFERRABLE INITIALLY DEFERRED"
-        } else {
-            " DEFERRABLE"
-        });
-    }
-    line
-}
-
 
 /// 保留 pg_catalog 的完整定义；图形编辑器不能表达的约束/种类也不能在 DDL 中消失。
 async fn pg_catalog_table_ddl(client: &tokio_postgres::Client, database: &str, schema: &str, name: &str) -> fluxdb_core::Result<String> {

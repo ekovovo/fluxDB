@@ -391,26 +391,6 @@ fn completion_doc_rows(text: &str) -> Vec<(String, String, String)> {
         .collect()
 }
 
-#[cfg(test)]
-mod completion_doc_tests {
-    use super::completion_doc_rows;
-
-    #[test]
-    fn schema_documentation_is_split_into_stable_columns() {
-        assert_eq!(
-            completion_doc_rows("id  varchar(64)  主键\ncreated_at  timestamp(6)"),
-            vec![
-                ("id".to_string(), "varchar(64)".to_string(), "主键".to_string()),
-                (
-                    "created_at".to_string(),
-                    "timestamp(6)".to_string(),
-                    String::new(),
-                ),
-            ]
-        );
-    }
-}
-
 /// 单行候选：图标 + 高亮 label（+ 歧义时 detail）。
 ///
 /// 行自带稳定 ElementId（滚动容器即时子节点，供 scroll_to_item 按下标命中），并

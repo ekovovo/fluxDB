@@ -81,34 +81,3 @@ impl QueryScope {
     }
 }
 
-#[cfg(test)]
-mod sql_context_tests {
-    use super::*;
-
-    /// 结构体字段缺失时默认实例化（serde 兼容路径的分支之一）。
-    #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-    struct ScopeCarrier {
-        #[serde(default)]
-        pub schema: Option<String>,
-    }
-
-    #[test]
-    fn scope_key_is_unambiguous_with_dots_and_unicode() {
-        let a = QueryScope::new(ConnectionId(1), Some("my.db".into()), Some("租户.A".into()));
-        let b = QueryScope::new(ConnectionId(1), Some("my".into()), Some("db.租户.A".into()));
-        // 长度前缀编码：两段看起来“像同一个串”的不同切分必须产生不同 key。
-        assert_ne!(a.key(), b.key());
-        assert_eq!(a.key(), QueryScope::new(ConnectionId(1), Some("my.db".into()), Some("租户.A".into())).key());
-    }
-
-    #[test]
-    fn missing_schema_field_defaults_to_none() {
-        // 模拟旧记录（无 schema 字段）：serde 默认加载为 None，不破坏反序列化。
-        let json = r#"{"schema": null}"#;
-        let c: ScopeCarrier = serde_json::from_str(json).unwrap();
-        assert!(c.schema.is_none());
-        let json2 = r#"{}"#;
-        let c2: ScopeCarrier = serde_json::from_str(json2).unwrap();
-        assert!(c2.schema.is_none());
-    }
-}

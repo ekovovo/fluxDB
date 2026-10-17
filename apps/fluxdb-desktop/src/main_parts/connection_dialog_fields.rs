@@ -191,7 +191,7 @@ fn color_swatch_light(
         )
 }
 
-fn connection_test_status(status: &ConnectionTestStatus) -> ObservedElement<Stateful<Div>> {
+fn connection_test_status(status: &ConnectionTestStatus) -> Stateful<Div> {
     let (text, fg) = match status {
         ConnectionTestStatus::Success(text) => (text.clone(), rgb(0x16a34a)),
         ConnectionTestStatus::Error(text) => (text.clone(), rgb(0xff0000)),
@@ -202,7 +202,6 @@ fn connection_test_status(status: &ConnectionTestStatus) -> ObservedElement<Stat
     // 文案作为可访问名称，Role::Status 让读屏与断言都能区分进行中/成功/失败。
     div()
         .id("new-connection-test-status")
-        .test_support()
         .role(Role::Status)
         .aria_label(text.clone())
         .h(px(36.))

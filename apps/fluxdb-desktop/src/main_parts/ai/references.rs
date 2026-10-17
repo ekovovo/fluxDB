@@ -421,7 +421,6 @@ impl NavicatMain {
             list = list.child(
                 div()
                     .id("ai-reference-search-loading")
-                    .test_support()
                     .px_2()
                     .py_2()
                     .text_size(px(11.))

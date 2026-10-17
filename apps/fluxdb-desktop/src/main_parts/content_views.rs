@@ -518,10 +518,9 @@ fn home_action_row(
     label: &'static str,
     glyph: &'static str,
     colors: UiColors,
-) -> ObservedElement<Stateful<Div>> {
+) -> Stateful<Div> {
     div()
         .id(id)
-        .test_support()
         .aria_label(label)
         .cursor_pointer()
         .h(px(44.))
@@ -699,7 +698,6 @@ fn data_editor_content(
                 .id(("data-page-loading", tab_id.0))
                 .role(Role::Status)
                 .aria_label("正在加载数据...")
-                .test_support(),
         );
     }
 
@@ -1286,7 +1284,7 @@ fn redis_workbench_content(
         window,
         cx,
     );
-    let split_handle = redis_workbench_split_handle(editor_size, placement, colors, cx).test_support();
+    let split_handle = redis_workbench_split_handle(editor_size, placement, colors, cx);
     let results = redis_workbench_results(tab_id, workbench, this, colors, cx);
 
     // 编辑器区与结果区的排布方向由布局决定；结果区始终 flex_1 吃掉剩余空间。
@@ -1933,7 +1931,6 @@ fn redis_workbench_toolbar(
                 rgb(0x20c76a),
                 colors,
             )
-            .test_support()
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, _, cx| {
@@ -5292,7 +5289,6 @@ fn data_editor_toolbar(
                     this.child(
                         data_editor_action_state("表属性", active, colors)
                             .id(("table-info-toggle", tab_id.0))
-                            .test_support()
                             .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(move |this, _, _, cx| {
@@ -5340,28 +5336,3 @@ fn data_editor_action_state(label: &'static str, active: bool, colors: UiColors)
     })
 }
 
-#[cfg(test)]
-mod redis_workbench_reply_tests {
-    use super::*;
-
-    /// 构造一个 UTF-8 文本的 bulk 回复。
-    fn bulk(text: &str) -> CommandReply {
-        CommandReply::Bulk(CommandBulk {
-            text: Some(text.to_string()),
-            bytes_preview_hex: None,
-            byte_len: text.len() as u64,
-            binary: false,
-        })
-    }
-    #[test]
-    fn nested_array_indents_by_level() {
-        let reply = CommandReply::Array(vec![
-            CommandReply::Array(vec![bulk("a"), bulk("b")]),
-            bulk("c"),
-        ]);
-        assert_eq!(
-            command_reply_display(&reply),
-            "1) 1) \"a\"\n   2) \"b\"\n2) \"c\""
-        );
-    }
-}

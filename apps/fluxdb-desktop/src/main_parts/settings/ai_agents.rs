@@ -552,7 +552,6 @@ fn settings_ai_agents_panel(
                             cx.stop_propagation();
                         }),
                     )
-                    .test_support()
                     .into_any_element()
             })
             .collect()

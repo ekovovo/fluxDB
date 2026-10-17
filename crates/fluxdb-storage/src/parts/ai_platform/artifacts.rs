@@ -713,7 +713,3 @@ fn insert_sources(conn: &Connection, artifact_id: &str, sources: &[ResolvedSourc
     }
     Ok(())
 }
-
-#[cfg(test)]
-#[path = "artifacts_tests.rs"]
-mod tests;

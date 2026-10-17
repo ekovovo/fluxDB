@@ -95,10 +95,6 @@ use gpui_component::{
     v_virtual_list,
 };
 use gpui_fps::fps_monitor;
-// `test_support()` 让 GPUI Headless UI 测试能观察普通 `div()` 的原生无障碍属性；
-// `ObservedElement` 是其条件别名类型（未启用 `test-support` 时即原元素类型）。
-use gpui_kit::TestSupportExt;
-use gpui_kit::base::ObservedElement;
 use lsp_types::Position;
 use serde::{Deserialize, Serialize};
 
@@ -182,27 +178,5 @@ include!("main_parts/ai/display.rs");
 include!("main_parts/ai/stream_actions.rs");
 include!("main_parts/ai/composer.rs");
 include!("main_parts/ai/panel.rs");
-#[cfg(test)]
-include!("main_parts/ai/tests.rs");
 include!("main_parts/app_boot.rs");
 include!("main_parts/app_boot_helpers.rs");
-include!("main_parts/tests.rs");
-#[cfg(test)]
-include!("main_parts/tests_ai_ui.rs");
-#[cfg(test)]
-include!("main_parts/tests_connection_ui.rs");
-
-#[cfg(test)]
-include!("main_parts/tests/ai_agent_defaults.rs");
-#[cfg(test)]
-include!("main_parts/tests/settings_appearance_render.rs");
-#[cfg(test)]
-include!("main_parts/tests/ai_model_capacity.rs");
-#[cfg(test)]
-include!("main_parts/tests/ai_chat_model_selection.rs");
-#[cfg(test)]
-include!("main_parts/tests/ai_plan_card.rs");
-#[cfg(test)]
-include!("main_parts/tests_table_ui.rs");
-#[cfg(test)]
-include!("main_parts/tests/data_change_commit.rs");

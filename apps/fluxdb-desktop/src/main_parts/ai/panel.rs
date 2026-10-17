@@ -464,7 +464,6 @@ fn ai_chat_panel(
                                 let id = message.id.clone();
                                 move || format!("ai-message-content:{id}")
                             })
-                            .test_support()
                             .when(user, |row| {
                                 row.self_end()
                                     .min_w(px(0.))
@@ -673,7 +672,7 @@ fn ai_chat_panel(
                 )
                 .child(
                     div().id("ai-chat-tokens").debug_selector(|| "ai-chat-tokens".into())
-                        .aria_label(token_label.clone()).test_support().flex_none()
+                        .aria_label(token_label.clone()).flex_none()
                         .text_size(px(10.)).text_color(colors.muted)
                         .child(token_label),
                 )

@@ -118,10 +118,10 @@ pub(crate) struct JsonFoldNode {
     pub folded: bool,
 }
 
-/// 运行态：绑定一个 `InputState`（编辑 + 高亮），并持有权威全文与折叠/诊断状态。
+/// 运行态：由 `JsonComponent` 持有多行编辑框（编辑），并维护权威全文与折叠/诊断状态。
 pub(crate) struct JsonEditorState {
     pub config: JsonEditorConfig,
-    /// 权威全文（未折叠的完整 JSON；保存以它或 InputState 当前文本为准）。
+    /// 权威全文（未折叠的完整 JSON；保存以它或编辑框当前文本为准）。
     pub source: String,
     /// 当前展示文本（pretty + 折叠占位；未折叠时与 source 的 pretty 形式一致）。
     pub display: String,

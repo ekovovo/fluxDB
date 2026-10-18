@@ -546,10 +546,17 @@ fn navicat_main_new(
                             InputState::new(window, cx)
                                 .placeholder("值")
                         });
-                        let redis_json_key_value_input = cx.new(|cx| {
-                            InputState::new(window, cx)
-                                .placeholder("值")
-                        });
+                        // Redis JSON 值组件：Edit 模式使用组件内部的多行编辑框。
+                        let redis_json_editor = JsonComponent::new_with_mode(
+                            JsonEditorConfig::default(),
+                            JsonMode::Preview,
+                            window,
+                            cx,
+                        );
+                        let redis_json_key_value_input = redis_json_editor
+                            .input()
+                            .expect("JSON 组件应持有编辑框")
+                            .clone();
                         let redis_key_name_input =
                             cx.new(|cx| InputState::new(window, cx).placeholder("键名称"));
                         let redis_key_ttl_input =
@@ -2641,9 +2648,8 @@ fn navicat_main_new(
                             redis_list_table_state,
                             redis_key_value_input,
                             _redis_key_value_subscription: redis_key_value_subscription,
-                            redis_json_key_value_input,
                             _redis_json_key_value_subscription: redis_json_key_value_subscription,
-                            redis_json_editor: JsonEditorState::new(JsonEditorConfig::default()),
+                            redis_json_editor,
                             redis_json_editor_active: None,
                             redis_json_editor_busy: false,
                             redis_key_value_active: None,

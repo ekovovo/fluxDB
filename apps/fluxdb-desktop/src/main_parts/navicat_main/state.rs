@@ -305,10 +305,9 @@ struct NavicatMain {
     redis_list_table_state: Entity<TableState<RedisListTableDelegate>>,
     redis_key_value_input: Entity<InputState>,
     _redis_key_value_subscription: Subscription,
-    redis_json_key_value_input: Entity<InputState>,
     _redis_json_key_value_subscription: Subscription,
-    // Redis JSON 值编辑器运行态：绑定 `redis_json_key_value_input`，维护权威全文、诊断与折叠状态。
-    redis_json_editor: JsonEditorState,
+    // Redis JSON 值组件：内部持有多行编辑框，维护权威全文、诊断与折叠状态。
+    redis_json_editor: JsonComponent,
     // JSON 编辑器当前归属的 (tab, key)；切换 key 或关闭抽屉时据此清理并重置折叠/诊断。
     redis_json_editor_active: Option<(TabId, String)>,
     // JSON 编辑器是否为「保存中/加载中」，期间禁用编辑、保存、格式化等修改文本的操作。

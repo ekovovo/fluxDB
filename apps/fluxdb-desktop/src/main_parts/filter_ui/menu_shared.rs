@@ -219,30 +219,126 @@ fn data_filter_dialog_button(label: &'static str, primary: bool, colors: UiColor
         .child(label)
 }
 
+/// 建议值：取当前页该列的去重值，按列的数值语义排序。
+///
+/// 排序不能只看显示文本：int 列的 "10" 排在 "2" 前面（文本序）会误导用户。
+/// 数值列按大小排、其余按文本序、NULL 恒排最后。
 fn data_filter_recommended_values(
     page: &DataPage,
     field_name: &str,
     value_search: &str,
 ) -> Vec<String> {
-    let Some(column_index) = page
+    let Some((column_index, column)) = page
         .columns
         .iter()
-        .position(|column| column.name == field_name)
+        .enumerate()
+        .find(|(_, column)| column.name == field_name)
     else {
         return Vec::new();
     };
     let search = value_search.trim().to_ascii_lowercase();
+    // MySQL / SQLite 的数据页把所有列都投影成文本（见 connectors 的 select 表达式），
+    // 数值列拿到的也是 CellValue::Text，因此数值与否以列声明类型为准。
+    let numeric_column = is_numeric_column_type(column.type_name.as_deref());
+    let mut seen = BTreeSet::new();
     let mut values = page
         .rows
         .iter()
         .filter_map(|row| row.values.get(column_index))
-        .map(cell_value_label)
-        .filter(|value| search.is_empty() || value.to_ascii_lowercase().contains(search.as_str()))
-        .collect::<BTreeSet<_>>()
-        .into_iter()
+        .filter(|value| {
+            search.is_empty()
+                || cell_value_label(value)
+                    .to_ascii_lowercase()
+                    .contains(search.as_str())
+        })
+        // 按显示值去重：同一列在页内可能以不同 CellValue 变体表示同一值。
+        .filter(|value| seen.insert(cell_value_label(value)))
+        .cloned()
         .collect::<Vec<_>>();
-    values.truncate(200);
+    values.sort_by(|left, right| recommended_cell_value_order(left, right, numeric_column));
     values
+        .into_iter()
+        .map(|value| cell_value_label(&value))
+        .take(200)
+        .collect()
+}
+
+/// 建议值的跨类型比较：NULL 最后，数值列按数值大小，其余按文本序。
+fn recommended_cell_value_order(
+    left: &CellValue,
+    right: &CellValue,
+    numeric_column: bool,
+) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    match (left, right) {
+        (CellValue::Null, CellValue::Null) => return Ordering::Equal,
+        // NULL 是「没有值」而不是可比较的值，恒排最后，避免混在数值中间。
+        (CellValue::Null, _) => return Ordering::Greater,
+        (_, CellValue::Null) => return Ordering::Less,
+        (CellValue::Bool(left), CellValue::Bool(right)) => return left.cmp(right),
+        _ => {}
+    }
+    if let (Some(left), Some(right)) = (
+        recommended_value_number(left, numeric_column),
+        recommended_value_number(right, numeric_column),
+    ) {
+        // total_cmp：非有限值也有确定次序，不会让排序结果依赖输入顺序。
+        return left.total_cmp(&right);
+    }
+    let left_label = cell_value_label(left).to_ascii_lowercase();
+    let right_label = cell_value_label(right).to_ascii_lowercase();
+    left_label
+        .cmp(&right_label)
+        .then_with(|| left_label.cmp(&right_label))
+}
+
+/// 取参与比较的数值：类型化数值直接取；文本投影的数值列按标签解析。
+///
+/// 文本列不解析——否则 varchar 代码列（"007"、"8"）会被错误地按数字重排。
+fn recommended_value_number(value: &CellValue, numeric_column: bool) -> Option<f64> {
+    match value {
+        CellValue::I64(value) => Some(*value as f64),
+        CellValue::F64(value) => Some(*value),
+        _ if numeric_column => cell_value_label(value).trim().parse::<f64>().ok(),
+        _ => None,
+    }
+}
+
+/// 列声明类型是否按数值比较（覆盖 MySQL / PostgreSQL / SQLite 的常用类型名）。
+///
+/// `money` 等按服务端 locale 格式化的文本类型不在此列：标签不是纯数字，解析会失败。
+fn is_numeric_column_type(type_name: Option<&str>) -> bool {
+    let Some(type_name) = type_name else {
+        return false;
+    };
+    // 去掉 (12,2) 之类的精度后缀与可能的 schema 前缀。
+    let base = type_name.trim().to_ascii_lowercase();
+    let base = base.split('(').next().unwrap_or(base.as_str()).trim();
+    matches!(
+        base,
+        "int"
+            | "integer"
+            | "tinyint"
+            | "smallint"
+            | "mediumint"
+            | "bigint"
+            | "int2"
+            | "int4"
+            | "int8"
+            | "serial"
+            | "smallserial"
+            | "bigserial"
+            | "year"
+            | "numeric"
+            | "decimal"
+            | "dec"
+            | "float"
+            | "float4"
+            | "float8"
+            | "double"
+            | "double precision"
+            | "real"
+    )
 }
 
 fn data_filter_check(checked: bool, colors: UiColors) -> Div {

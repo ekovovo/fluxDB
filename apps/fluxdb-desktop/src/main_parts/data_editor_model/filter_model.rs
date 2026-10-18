@@ -81,16 +81,10 @@ fn split_filter_batch_text(text: &str, separator: BatchSeparator) -> Vec<&str> {
 
 /// 运算符还能否再加入一个值。
 ///
-/// BETWEEN / NOT BETWEEN 语义上是区间，只允许两个值（下限、上限）；
-/// 其余运算符（含 IN / NOT IN 列表）不限制数量。
+/// 上限由值形态决定：无值 0、单值 1、区间 2（介于的上下限），
+/// 列表（IN / NOT IN）不限数量。
 fn data_filter_rule_can_add_more_value(operator: DataFilterOperator, current_len: usize) -> bool {
-    if matches!(
-        operator,
-        DataFilterOperator::Between | DataFilterOperator::NotBetween
-    ) {
-        return current_len < 2;
-    }
-    true
+    operator.max_values().is_none_or(|max| current_len < max)
 }
 
 /// 从批量片段解析出的待添加值：trim、忽略空行，纯逻辑便于单测。
@@ -127,19 +121,24 @@ fn data_filter_rule_after_field_switch(
     (rule, had_values)
 }
 
-/// IN ↔ NOT IN 可保留已有列表；切到单值/区间/无值运算符时清空旧列表，
-/// 以免旧列表以错误的 OR 组合参与查询。
+/// 按目标运算符的值形态收敛已有值：列表保留全部，单值/区间只保留前 1/2 个，
+/// 无值运算符清空——旧值会以错误的 OR 组合或多余的 BETWEEN 参数参与查询。
+/// 单值之间互切（`=` 改 `!=`）保留同一个值，避免改运算符就丢输入。
+fn data_filter_values_for_arity(
+    values: &BTreeSet<String>,
+    operator: DataFilterOperator,
+) -> BTreeSet<String> {
+    match operator.max_values() {
+        Some(max) => values.iter().take(max).cloned().collect(),
+        None => values.clone(),
+    }
+}
+
 fn data_filter_rule_after_operator_switch(
     operator: DataFilterOperator,
     mut rule: DataFilterRule,
 ) -> DataFilterRule {
-    let is_list = matches!(
-        operator,
-        DataFilterOperator::InList | DataFilterOperator::NotInList
-    );
-    if !is_list {
-        rule.values.clear();
-    }
+    rule.values = data_filter_values_for_arity(&rule.values, operator);
     rule.operator = operator;
     rule
 }
@@ -199,6 +198,18 @@ impl Default for DataFilterRule {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DataFilterValueArity {
+    /// 不需要值（是 null / 是空的…），不显示值槽。
+    None,
+    /// 恰好一个值（=、!=、<、包含…）：值槽就地输入，不用多值弹层。
+    Single,
+    /// 两个值构成区间（介于 / 不介于），用值弹层但最多两个值。
+    Range,
+    /// 任意多个值（在列表 / 不在列表），用多选值弹层。
+    Many,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum DataFilterOperator {
     Eq,
     Ne,
@@ -248,11 +259,41 @@ impl DataFilterOperator {
         }
     }
 
+    /// 运算符要求的值形态，决定值槽用哪种编辑器。
+    fn value_arity(self) -> DataFilterValueArity {
+        match self {
+            Self::IsNull | Self::IsNotNull | Self::IsEmpty | Self::IsNotEmpty => {
+                DataFilterValueArity::None
+            }
+            Self::Between | Self::NotBetween => DataFilterValueArity::Range,
+            Self::InList | Self::NotInList => DataFilterValueArity::Many,
+            Self::Eq
+            | Self::Ne
+            | Self::Lt
+            | Self::Le
+            | Self::Gt
+            | Self::Ge
+            | Self::Contains
+            | Self::NotContains
+            | Self::StartsWith
+            | Self::NotStartsWith
+            | Self::EndsWith
+            | Self::NotEndsWith => DataFilterValueArity::Single,
+        }
+    }
+
     fn requires_values(self) -> bool {
-        !matches!(
-            self,
-            Self::IsNull | Self::IsNotNull | Self::IsEmpty | Self::IsNotEmpty
-        )
+        self.value_arity() != DataFilterValueArity::None
+    }
+
+    /// 最多允许的值个数；`None` 表示不限（列表）。
+    fn max_values(self) -> Option<usize> {
+        match self.value_arity() {
+            DataFilterValueArity::None => Some(0),
+            DataFilterValueArity::Single => Some(1),
+            DataFilterValueArity::Range => Some(2),
+            DataFilterValueArity::Many => None,
+        }
     }
 
     fn all() -> &'static [Self] {

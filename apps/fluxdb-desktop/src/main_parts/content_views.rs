@@ -3786,7 +3786,7 @@ fn query_result_view(
     };
     let table_state = this.query_result_table_state_from_sorted_page(
         tab_id,
-        &sorted_page.page,
+        sorted_page.page.clone(),
         page_index,
         &sort_rules,
         &sorted_page.source_row_indexes,
@@ -4399,8 +4399,10 @@ fn query_result_cell_detail_value_header(value_text: String, colors: UiColors) -
 
 #[derive(Clone)]
 struct SortedQueryResultPage {
-    page: DataPage,
-    source_row_indexes: Vec<usize>,
+    /// 与表格委托共享，避免每次刷新再复制一份完整结果页。
+    page: Arc<DataPage>,
+    /// 同样共享：渲染时克隆缓存页不再按行数复制索引表。
+    source_row_indexes: Arc<[usize]>,
 }
 
 fn sorted_query_result_page(page: &DataPage, rules: &[DataSortRule]) -> SortedQueryResultPage {
@@ -4416,7 +4418,7 @@ fn sorted_query_result_page(page: &DataPage, rules: &[DataSortRule]) -> SortedQu
         .collect::<Vec<_>>();
     if active.is_empty() {
         return SortedQueryResultPage {
-            page: page.clone(),
+            page: Arc::new(page.clone()),
             source_row_indexes: (0..page.rows.len()).collect(),
         };
     }
@@ -4439,11 +4441,11 @@ fn sorted_query_result_page(page: &DataPage, rules: &[DataSortRule]) -> SortedQu
     });
     let (source_row_indexes, rows): (Vec<_>, Vec<_>) = rows.into_iter().unzip();
     SortedQueryResultPage {
-        page: DataPage {
+        page: Arc::new(DataPage {
             rows,
             ..page.clone()
-        },
-        source_row_indexes,
+        }),
+        source_row_indexes: source_row_indexes.into(),
     }
 }
 

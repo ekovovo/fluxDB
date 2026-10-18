@@ -671,7 +671,7 @@ impl NavicatMain {
         let mut delegate = DataPageTableDelegate::from_page_with_rule(
             cx.entity().downgrade(),
             tab_id,
-            page,
+            Arc::new(page.clone()),
             self.data_sort_rules.get(&tab_id).map(Vec::as_slice),
             self.visible_table_fields.get(&tab_id),
             &column_choices,

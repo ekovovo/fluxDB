@@ -182,7 +182,10 @@ impl NavicatMain {
         };
         let redis_table_width = table_state.read(cx).delegate().redis_table_width();
         let display_page = self.data_page_for_display(tab_id, page);
-        let page = display_page.as_ref();
+        let page = match display_page {
+            Cow::Borrowed(page) => Arc::new(page.clone()),
+            Cow::Owned(page) => Arc::new(page),
+        };
         let changes = self.data_changes_for_tab(tab_id);
         let column_choices = self.column_choices_for_tab(tab_id);
         let mut delegate = DataPageTableDelegate::from_page_with_rule(
@@ -274,9 +277,9 @@ fn selected_redis_key(
 ) -> Option<String> {
     selected_row
         .or_else(|| selected_cell.map(|(row, _)| row))
-        .and_then(|visible_row| old.rows.get(visible_row))
-        .and_then(|row| row.first())
-        .map(ToString::to_string)
+        .and_then(|visible_row| old.page.rows.get(visible_row))
+        .and_then(|row| row.values.first())
+        .map(|value| value.display_label())
 }
 
 /// 在新委托的可见行里按键名查找目标行下标；找不到（键已被删除/列表刷新）返回 None。
@@ -285,7 +288,12 @@ fn redis_delegate_row_for_key(
     key: &str,
 ) -> Option<usize> {
     delegate
+        .page
         .rows
         .iter()
-        .position(|row| row.first().is_some_and(|first| first.as_ref() == key))
+        .position(|row| {
+            row.values
+                .first()
+                .is_some_and(|value| value.display_label() == key)
+        })
 }

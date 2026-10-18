@@ -2,7 +2,7 @@ impl DataPageTableDelegate {
     fn from_page_with_rule(
         view: WeakEntity<NavicatMain>,
         tab_id: TabId,
-        page: &DataPage,
+        page: Arc<DataPage>,
         sort_rules: Option<&[DataSortRule]>,
         visible_fields: Option<&BTreeSet<String>>,
         column_choices: &BTreeMap<String, Vec<ColumnChoice>>,
@@ -144,8 +144,8 @@ impl DataPageTableDelegate {
             })
             .collect::<Vec<_>>();
         let source_row_indexes = rows.iter().map(|(index, _)| *index).collect::<Vec<_>>();
-        let dirty_cells = data_change_dirty_cells(page, changes);
-        let deleted_rows = data_change_deleted_rows(page, changes);
+        let dirty_cells = data_change_dirty_cells(page.as_ref(), changes);
+        let deleted_rows = data_change_deleted_rows(page.as_ref(), changes);
         let null_cells = rows
             .iter()
             .flat_map(|(row_index, row)| {
@@ -158,19 +158,11 @@ impl DataPageTableDelegate {
                     .collect::<Vec<_>>()
             })
             .collect::<BTreeSet<_>>();
-        let rows: Vec<Vec<SharedString>> = rows
-            .into_iter()
-            .map(|(_, row)| {
-                visible_column_indexes
-                    .iter()
-                    .filter_map(|index| row.values.get(*index))
-                    .map(|value| {
-                        SharedString::from(cell_value_label(value).replace('\r', " ").replace('\n', " "))
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .collect();
-        let search_matches = data_search_matches(rows.as_slice(), search_query.unwrap_or_default());
+        let search_matches = data_search_matches(
+            &page,
+            visible_column_indexes.as_slice(),
+            search_query.unwrap_or_default(),
+        );
         let active_search_match = active_search_match.filter(|active| {
             search_matches
                 .iter()
@@ -184,7 +176,7 @@ impl DataPageTableDelegate {
             source_column_indexes,
             column_types,
             column_meta,
-            rows,
+            page,
             source_row_indexes,
             null_cells,
             dirty_cells,
@@ -240,6 +232,81 @@ impl DataPageTableDelegate {
     }
 }
 
+/// 单元格显示文本：把换行折成空格，避免撑破单行网格。
+/// 只在可见格渲染/搜索/导出时调用，不预生成整页文本副本。
+fn data_cell_display_text(value: &CellValue) -> String {
+    let text = cell_value_label(value);
+    if text.contains(['\r', '\n']) {
+        text.replace(['\r', '\n'], " ")
+    } else {
+        text
+    }
+}
+
+/// 单元格可见文本上限，单位是字符而不是字节。
+/// 列宽通常几百像素，再多也画不出来；与 dbdelve 的 `CELL_DISPLAY_LIMIT` 一致。
+/// 完整值不丢，编辑/右键/复制走 `data_cell_full_text()` 再取。
+const DATA_CELL_DISPLAY_LIMIT: usize = 300;
+
+/// 可见格文本：按字符截断并折叠换行，超长 TEXT/JSON 不再每帧复制整串。
+/// 截断后补 `…`，让“还有内容”在视觉上成立；多余内容仍可通过交互读取。
+fn data_cell_clipped_text(value: &CellValue) -> String {
+    match value {
+        CellValue::Text(text) | CellValue::Json(text) => clip_cell_text(text),
+        _ => data_cell_display_text(value),
+    }
+}
+
+/// 只扫描前 `DATA_CELL_DISPLAY_LIMIT` 个字符：按 `char` 迭代保证不会切在多字节
+/// 字符中间，扫描量也因此有界，不受字段总长度影响。
+fn clip_cell_text(text: &str) -> String {
+    let mut shown = String::new();
+    for (count, ch) in text.chars().enumerate() {
+        if count == DATA_CELL_DISPLAY_LIMIT {
+            shown.push('…');
+            return shown;
+        }
+        shown.push(if matches!(ch, '\r' | '\n') { ' ' } else { ch });
+    }
+    shown
+}
+
+/// 选项值比较：不复制完整单元格文本（枚举/布尔列的选项匹配）。
+fn cell_value_equals(value: &CellValue, expected: &str) -> bool {
+    match value {
+        CellValue::Null | CellValue::Bytes(_) | CellValue::BinarySummary(_) => false,
+        CellValue::Bool(value) => value.to_string() == expected,
+        CellValue::I64(value) => value.to_string() == expected,
+        CellValue::F64(value) => value.to_string() == expected,
+        CellValue::Text(value) | CellValue::Json(value) => value == expected,
+    }
+}
+
+impl DataPageTableDelegate {
+    /// 单元格完整显示文本（换行折叠）。只在编辑/右键/复制等交互时调用。
+    fn data_cell_full_text(&self, row_ix: usize, col_ix: usize) -> String {
+        if self.show_row_index && col_ix == 0 {
+            return (row_ix + 1).to_string();
+        }
+        let fallback = if self.show_row_index {
+            col_ix.saturating_sub(1)
+        } else {
+            col_ix
+        };
+        let source_col = self
+            .source_column_indexes
+            .get(col_ix)
+            .and_then(|index| *index)
+            .unwrap_or(fallback);
+        self.page
+            .rows
+            .get(row_ix)
+            .and_then(|row| row.values.get(source_col))
+            .map(data_cell_display_text)
+            .unwrap_or_default()
+    }
+}
+
 fn redis_table_column_width(name: &str, table_width: Pixels) -> Pixels {
     let weight = match name {
         "键" => 0.12,
@@ -287,7 +354,7 @@ fn apply_data_table_source_row_indexes(
     delegate: &mut DataPageTableDelegate,
     source_row_indexes: &[usize],
 ) {
-    if source_row_indexes.len() != delegate.rows.len() {
+    if source_row_indexes.len() != delegate.page.rows.len() {
         return;
     }
 
@@ -774,4 +841,37 @@ fn data_cell_text_value_for_type(
     }
 
     Ok(CellValue::Text(text.to_string()))
+}
+
+#[cfg(test)]
+mod data_cell_clip_tests {
+    use super::*;
+
+    #[test]
+    fn clip_flattens_newlines_and_keeps_short_text() {
+        assert_eq!(clip_cell_text("a\r\nb"), "a  b");
+        assert_eq!(clip_cell_text("short"), "short");
+    }
+
+    #[test]
+    fn clip_keeps_limit_and_marks_truncation() {
+        let exact = "x".repeat(DATA_CELL_DISPLAY_LIMIT);
+        assert_eq!(clip_cell_text(&exact), exact);
+
+        let over = "x".repeat(DATA_CELL_DISPLAY_LIMIT + 1);
+        let clipped = clip_cell_text(&over);
+        assert_eq!(clipped.chars().count(), DATA_CELL_DISPLAY_LIMIT + 1);
+        assert!(clipped.ends_with('…'));
+    }
+
+    #[test]
+    fn clip_never_splits_multibyte_chars() {
+        let value = "🌍".repeat(DATA_CELL_DISPLAY_LIMIT + 10);
+        let clipped = clip_cell_text(&value);
+        assert_eq!(
+            clipped.chars().filter(|ch| *ch == '🌍').count(),
+            DATA_CELL_DISPLAY_LIMIT
+        );
+        assert!(clipped.ends_with('…'));
+    }
 }

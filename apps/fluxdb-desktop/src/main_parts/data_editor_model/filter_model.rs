@@ -390,27 +390,34 @@ fn local_filter_manager_condition_entries(
     entries
 }
 
-fn data_search_matches(rows: &[Vec<SharedString>], query: &str) -> Vec<DataSearchMatch> {
+fn data_search_matches(
+    page: &DataPage,
+    visible_column_indexes: &[usize],
+    query: &str,
+) -> Vec<DataSearchMatch> {
     let query = query.trim().to_ascii_lowercase();
     if query.is_empty() {
         return Vec::new();
     }
 
-    rows.iter()
-        .enumerate()
-        .flat_map(|(row_ix, row)| {
-            let query = query.clone();
-            row.iter().enumerate().filter_map(move |(col_ix, value)| {
-                value
-                    .to_ascii_lowercase()
-                    .contains(query.as_str())
-                    .then_some(DataSearchMatch {
-                        row_ix,
-                        col_ix: col_ix + 1,
-                    })
-            })
-        })
-        .collect()
+    let mut matches = Vec::new();
+    for (row_ix, row) in page.rows.iter().enumerate() {
+        for (visible_col, source_col) in visible_column_indexes.iter().enumerate() {
+            let Some(value) = row.values.get(*source_col) else {
+                continue;
+            };
+            if data_cell_display_text(value)
+                .to_ascii_lowercase()
+                .contains(query.as_str())
+            {
+                matches.push(DataSearchMatch {
+                    row_ix,
+                    col_ix: visible_col + 1,
+                });
+            }
+        }
+    }
+    matches
 }
 
 fn next_data_search_match(

@@ -1,16 +1,15 @@
 name: CI
 
-# AI-00：三平台原生构建、测试与内部候选产物。
-# 本工作流只生成内部候选产物，不创建 tag、不公开发布 Release。
-# 各平台使用原生 runner；macOS 上的交叉 cargo check 不作为 Windows/Linux 验证通过依据。
+# 三平台原生构建、测试与内部候选产物（手动预检）。
+#
+# 只提供 workflow_dispatch：不在合并时自动触发，日常质量由本地门禁保证
+# （见 scripts/check.sh 与 AGENTS.md「测试与验收」）。三平台编译差异
+# （Windows fxc/HLSL、Linux xkbcommon/OpenSSL 等）在 Mac 本地 cargo check 中看不到，
+# 因此发布前的跨平台验证靠「打 tag 前手动跑一次本工作流，全绿后再打 tag」这条纪律。
+#
+# 本工作流只生成内部候选产物，不创建 tag、不公开发布 Release；
+# 正式发布由 release.yml 在 push v* tag 时完成。
 on:
-  # 适配分支自身 push + 面向 main 的 PR 触发；另提供 workflow_dispatch 手动复跑。
-  # 不修改 main 版本 workflow（不动 release.yml），仅在当前适配分支配置。
-  push:
-    branches:
-      - main
-      - adapt/win-linux
-  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -18,7 +17,8 @@ permissions:
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  # 手动预检必须跑完：被后来一次运行取消掉等于没验证。
+  cancel-in-progress: false
 
 jobs:
   socket-probe:

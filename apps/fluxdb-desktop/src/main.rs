@@ -79,7 +79,7 @@ use gpui_component::{
     group_box::{GroupBox, GroupBoxVariant, GroupBoxVariants as _},
     h_flex,
     highlighter::{LanguageConfig, LanguageRegistry},
-    input::{Input, InputEvent, InputState, Textarea, TextareaState},
+    input::{Editor, EditorState, Input, InputEvent, InputState, Textarea, TextareaState},
     popover::{Popover, PopoverState},
     progress::Progress,
     radio::Radio,

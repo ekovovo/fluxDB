@@ -1,5 +1,5 @@
 // json_editor/render.rs —— JSON 编辑器主体渲染：查看态结构化行（折叠/层级线/错误高亮）
-// 与编辑态（复用 `InputState::code_editor` 全文编辑 + 错误横幅）。
+// 与编辑态（复用 `JsonComponent` 的多行编辑框全文编辑）。
 //
 // 该面板只负责「选择 JSON 分支并渲染」，不直接连接 Redis；保存走 `request_redis_key_value_apply`。
 
@@ -211,8 +211,9 @@ fn redis_json_value_panel(
             .redis_string_loading
             .as_ref()
             .is_some_and(|loading| loading.0 == tab_id && loading.1 == key);
-    let editing = this.redis_json_editor.editing && this.redis_json_editor_is_active(tab_id, &key);
-    let active_editable = this.redis_json_editor.config.editable
+    let editing = this.redis_json_editor.state().editing
+        && this.redis_json_editor_is_active(tab_id, &key);
+    let active_editable = this.redis_json_editor.state().config.editable
         && loaded_all
         && !applying
         && !editing
@@ -245,7 +246,7 @@ fn redis_json_value_panel(
                         .child(redis_string_copy_button(
                             tab_id,
                             key.clone(),
-                            this.redis_json_editor.source.clone(),
+                            this.redis_json_editor.state().source.clone(),
                             loaded_all && !redis_value_is_binary(&detail.value),
                             redis_string_copy_disabled_tooltip(
                                 redis_value_is_binary(&detail.value),
@@ -361,7 +362,7 @@ fn redis_json_value_body(
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
-    let placeholder = this.redis_json_editor.config.placeholder.clone();
+    let placeholder = this.redis_json_editor.state().config.placeholder.clone();
     let body = div().flex_1().min_h(px(0.)).overflow_hidden();
     if loading {
         return body.child(
@@ -387,7 +388,7 @@ fn redis_json_value_body(
 
     if !loaded_all {
         // 未完整加载：展示 preview + 省略号 + 「加载全部」，避免把截断预览当完整值编辑/保存。
-        let preview = this.redis_json_editor.source.clone();
+        let preview = this.redis_json_editor.state().source.clone();
         return body.child(
             div()
                 .h_full()
@@ -448,8 +449,8 @@ fn redis_json_value_body(
     body.child(redis_json_view_rows(tab_id, this, colors, cx))
 }
 
-/// 编辑态主体：InputState::code_editor 全文编辑（内建红波浪下划线 + 悬停气泡）+ 取消/保存。
-/// 错误提示仅依赖编辑器内下划线 + 悬停气泡，底部不渲染任何提示行。
+/// 编辑态主体：复用 `JsonComponent` 的 Edit 模式（多行编辑框；单行 `InputState`
+/// 会删除换行，导致 pretty 后的 JSON 被压回一行）+ 取消/保存。
 fn redis_json_edit_body(
     tab_id: TabId,
     detail: RedisKeyDetail,
@@ -458,11 +459,10 @@ fn redis_json_edit_body(
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
-    let input = this.redis_json_key_value_input.clone();
-    let theme = JsonEditorTheme::from_colors(colors);
-    let diagnostic = this.redis_json_editor.diagnostic.clone();
+    let diagnostic = this.redis_json_editor.state().diagnostic.clone();
     // `min_rows`：编辑器最小可见行数（px），编辑区低于此高度也保持可读。
-    let min_rows_px = (this.redis_json_editor.config.min_rows.max(4) as f32) * JSON_ROW_HEIGHT;
+    let min_rows_px =
+        (this.redis_json_editor.state().config.min_rows.max(4) as f32) * JSON_ROW_HEIGHT;
     // 两个 `move` 闭包各自持有 detail 副本（取消 / 保存）。
     let detail_cancel = detail.clone();
     let detail_save = detail.clone();
@@ -485,28 +485,7 @@ fn redis_json_edit_body(
                         .w_full()
                         .h_full()
                         .min_h(px(min_rows_px))
-                        .rounded(colors.radius)
-                        .border_1()
-                        .border_color(if diagnostic.is_some() {
-                            theme.error_border
-                        } else {
-                            colors.border
-                        })
-                        .bg(colors.input_bg)
-                        .overflow_hidden()
-                        .child(
-                            Input::new(&input)
-                                .appearance(false)
-                                .focus_bordered(false)
-                                .disabled(applying)
-                                .w_full()
-                                .h_full()
-                                .px_2()
-                                .py_2()
-                                .font_family(crate::PLATFORM_MONOSPACE_FONT)
-                                .text_size(px(13.))
-                                .line_height(px(19.)),
-                        ),
+                        .child(this.redis_json_editor.render_edit_body(colors, applying)),
                 ),
         )
         // 错误提示完全位于编辑器内：错误 token 处的红波浪下划线 + 悬停气泡，
@@ -580,9 +559,10 @@ fn redis_json_view_rows(
     cx: &Context<NavicatMain>,
 ) -> gpui::Stateful<Div> {
     let theme = JsonEditorTheme::from_colors(colors);
-    let cfg = &this.redis_json_editor.config;
+    let state = this.redis_json_editor.state();
+    let cfg = &state.config;
     let indent_size = cfg.indent_size.max(1);
-    let rows = json_editor_rows(&this.redis_json_editor);
+    let rows = json_editor_rows(state);
     let show_gutter = cfg.show_gutter && cfg.folding;
     let enable_fold = cfg.folding;
     let highlight = cfg.syntax_highlight;
@@ -725,10 +705,9 @@ fn redis_json_gutter_row(
 
 /// 正文行：层级竖线 + 语法高亮 token 渲染。`highlight` 为 false 时统一正文色（关闭语法高亮）。
 ///
-/// `config.syntax_highlight` 仅作用于**查看态**的 token 配色（本函数）。**编辑态**复用
-/// `InputState::code_editor` 全文编辑，而项目当前对其未配置任何语言（`Input::new` 普通文本渲染，
-/// 未调用 `.code_editor(language)`），因此编辑态无 token 高亮可开关——`syntax_highlight=false`
-/// 无法在组件局部关闭编辑态高亮，属 gpui-component 层限制，非本项目缺口，不做大重构。
+/// `config.syntax_highlight` 仅作用于**查看态**的 token 配色（本函数）。**编辑态**由
+/// `JsonComponent` 内部的 `EditorState` 提供 JSON 语法高亮，配色来自主题而非该开关，
+/// 因此 `syntax_highlight=false` 只影响查看态。
 ///
 /// 用单个 `StyledText` 按 token 字节范围上色：空白段不设高亮、继承默认文字色，
 /// 从而完整保留 pretty 输出中的空格（如 `"name": "付苏维"`），避免多余 div 吃空格。

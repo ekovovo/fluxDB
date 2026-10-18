@@ -273,6 +273,8 @@ fn ai_tool_row(
     div()
         .border_t_1()
         .border_color(colors.border_soft)
+        // 与表头同内边距，保证工具名列不贴面板左边缘。
+        .px_4()
         .py_2()
         .min_h(px(46.))
         .flex()

@@ -2333,13 +2333,12 @@ fn navicat_main_new(
                                         cx,
                                     );
                                 }
-                                // Enter 提交当前输入值（连续输入）。中文输入法组合确认阶段的
-                                // Enter 由 Input 内部消费为标记文本提交，不会触发 PressEnter，
-                                // 因此不会在组合输入时误添加。
+                                // Enter：单值弹层直接确定写回；多值弹层把输入内容追加为新值，继续连续输入。
+                                // 中文输入法组合确认阶段的 Enter 由 Input 内部消费为标记
+                                // 文本提交，不会触发 PressEnter，因此不会在组合输入时误添加。
                                 if matches!(event, InputEvent::PressEnter { .. }) {
                                     let value = input.read(cx).value().to_string();
-                                    this.update_data_filter_manual_value(value, cx);
-                                    this.add_data_filter_manual_value(TabId(0), cx);
+                                    this.commit_data_filter_value_input(value, cx);
                                     cx.stop_propagation();
                                 }
                             },

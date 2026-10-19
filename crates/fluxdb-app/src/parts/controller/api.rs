@@ -78,7 +78,10 @@ impl AppController {
         self.er_model_services.lock().unwrap().clear();
     }
 
-    pub fn er_model_service(&mut self, scope_key: impl Into<String>) -> Option<Arc<ErModelService>> {
+    /// 按作用域复用关系服务实例。取 `&self`：AI 关系工具在后台线程经
+    /// [`AppController::er_relationship_source`] 拿到的共享句柄同样要能取到服务，
+    /// 不能要求独占可变借用。
+    pub fn er_model_service(&self, scope_key: impl Into<String>) -> Option<Arc<ErModelService>> {
         let scope_key = scope_key.into();
         let mut services = self.er_model_services.lock().unwrap();
         if let Some(service) = services.get(&scope_key) {

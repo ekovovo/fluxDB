@@ -1,10 +1,14 @@
 impl AiRuntimeHandle {
     /// 提交已持久化的会话任务；配置、凭据与工具目录只在 actor 线程读取/装配。
+    ///
+    /// `relationships` 是 ER 关系能力来源（桌面传 `AppController` 的共享句柄）。
+    /// 为 `None` 时关系工具不进入目录：模型既发现不到，也无法绕过发现直接调用。
     pub fn submit_conversation(
         &self,
         storage: fluxdb_storage::FileStorage,
         job: AiConversationJob,
         connections: Vec<fluxdb_core::ConnectionConfig>,
+        relationships: Option<Arc<dyn ErRelationshipSource>>,
         resume_approval: Option<String>,
         cancel: CancelFlag,
     ) -> Result<ConversationEventReceiver, RuntimeError> {
@@ -54,6 +58,8 @@ impl AiRuntimeHandle {
                         .as_ref()
                         .is_some_and(|config| !connection_is_read_only(config));
                     let resolver = Arc::new(MapSqlResolver::new(pinned.iter().cloned()));
+                    // 关系工具复用同一 resolver（连接授权与对象白名单口径一致）。
+                    let relationship_resolver = Arc::clone(&resolver);
                     // 结果仓库按 Turn 绑定归属：ResultRef 只能被本 session/turn 读取；
                     // spill 写在存储根的受控子目录，重启后由恢复流程按保留策略处理。
                     let results = Arc::new(Mutex::new(ResultStore::for_turn(
@@ -66,14 +72,32 @@ impl AiRuntimeHandle {
                         .as_ref()
                         .is_some_and(|config| config.kind == fluxdb_core::DatabaseKind::Redis)
                     {
-                        standard_redis_catalog(resolver, include_write)?
+                        standard_redis_catalog(Arc::clone(&resolver), include_write)?
                     } else {
                         standard_sql_catalog_with_results(
-                            resolver,
+                            Arc::clone(&resolver),
                             std::sync::Arc::clone(&results),
                             include_write,
                         )?
                     };
+                    // 关系与路径工具（只读）与建议提交（写本地目录）：仅关系型连接可用，
+                    // 且只在宿主已接入 ER 模型存储时进入目录。
+                    if let Some(relationships) = relationships
+                        && !pinned
+                            .as_ref()
+                            .is_some_and(|config| config.kind == fluxdb_core::DatabaseKind::Redis)
+                    {
+                        add_er_relationship_read_tools(
+                            &mut tools,
+                            std::sync::Arc::clone(&relationship_resolver),
+                            std::sync::Arc::clone(&relationships),
+                        )?;
+                        add_er_relationship_propose_tool(
+                            &mut tools,
+                            std::sync::Arc::clone(&relationship_resolver),
+                            relationships,
+                        )?;
+                    }
                     tools.add_tool(Box::new(AiConnectionsListTool::new(
                         &connections,
                         pinned.as_ref().map(|config| config.id),

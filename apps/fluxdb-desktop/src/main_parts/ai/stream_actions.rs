@@ -88,6 +88,8 @@ impl NavicatMain {
             self.ai_chat.new_reply |= !self.ai_chat.follow_reply;
         }
         if terminal {
+            // AI 可能在轮内提交了关系建议：刷新已打开 ER 标签的目录，保证可发现/确认/拒绝。
+            self.refresh_open_er_relationships(cx);
             self.ai_chat.stream.finish();
             // 结束/失败立即冲刷最新尾片，不让 Markdown 节流留下额外的“打字动画”。
             if let Some(chunk) = self.ai_chat.stream.reveal_next()

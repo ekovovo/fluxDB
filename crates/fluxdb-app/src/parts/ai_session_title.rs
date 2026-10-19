@@ -19,15 +19,34 @@ pub fn build_title_prompt(prompt: &str, reply: &str) -> String {
 
 /// 校验并归一化模型输出为可入库标题；空串或超长截断后仍可作为默认标题。
 pub fn normalize_session_title(raw: &str) -> Option<String> {
-    let title: String = raw
+    let raw = raw
         .trim()
         .trim_start_matches(['"', '\'', '「', '《'])
-        .trim_end_matches(['"', '\'', '」', '》', '。', '，', ','])
-        .chars()
-        .take(MAX_TITLE_CHARS)
-        .collect();
-    let title = title.trim().to_string();
+        .trim_end_matches(['"', '\'', '」', '》', '。', '，', ',']);
+    let title = fluxdb_storage::ai_platform::sessions::session_title_preview(
+        raw,
+        MAX_TITLE_CHARS,
+    );
     (!title.is_empty()).then_some(title)
+}
+
+#[cfg(test)]
+mod ai_session_title_tests {
+    use super::normalize_session_title;
+
+    #[test]
+    fn normalize_session_title_collapses_line_breaks() {
+        let title = normalize_session_title(
+            "下面这条 SQL 执行失败，请帮我修复。\n\n错误信息：\nerror return",
+        )
+        .expect("multiline title is valid");
+
+        assert_eq!(
+            title,
+            "下面这条 SQL 执行失败，请帮我修复。 错误信息： error return"
+        );
+        assert!(!title.contains(['\n', '\r']));
+    }
 }
 
 /// 首轮完成后生成标题；尽力而为，任何失败静默保留原截断标题。

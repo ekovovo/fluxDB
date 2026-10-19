@@ -70,10 +70,11 @@ impl AiConversationProvider {
             endpoint,
             auth,
             model: model.model.clone(),
-            max_output_tokens: Some(resolve_output_token_limit(
+            max_output_tokens: resolve_output_token_limit(
+                &model.api_protocol,
                 model.context_window_tokens,
                 model.max_output_tokens,
-            )),
+            ),
             capabilities: fluxdb_core::ModelCapabilities {
                 streaming: true,
                 // 工具交给模型前仍要经过内核授权；这里只声明协议能力。
@@ -120,7 +121,7 @@ impl fluxdb_core::GenerationProvider for AiConversationProvider {
             };
             let mut mapping_error = None;
             let result = stream_chat_events(
-                TransportLimits { max_total_bytes: 512 * 1024, ..Default::default() },
+                TransportLimits { max_total_bytes: 16 * 1024 * 1024, ..Default::default() },
                 self.protocol, &self.endpoint, &self.auth, &body.to_string(), headers, &cancel,
                 &mut |event| {
                     if mapping_error.is_none() {

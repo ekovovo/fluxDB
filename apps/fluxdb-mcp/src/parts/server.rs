@@ -100,6 +100,11 @@ impl ServeTarget {
         let service = Arc::new(
             service
                 .with_request_host(host)
+                // 关系/路径只读工具复用同一份本地 ER 关系目录；MCP 进程没有 UI 会话，
+                // 自建一份缓存即可（本地 kv 仍是唯一事实来源）。
+                .with_relationship_source(std::sync::Arc::new(
+                    fluxdb_app::ErRelationshipAccess::standalone(storage.clone()),
+                ))
                 .with_execution_security(storage.clone()),
         );
         Ok(Self {

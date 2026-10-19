@@ -271,6 +271,93 @@ impl NavicatMain {
                     }
                 }
             }
+            TabKind::ErDiagram(er) => {
+                // ER 页只给定位 + 选中对象的有界结构摘要 + 加载状态与版本：
+                // 不发送全库关系、业务行数据、连接凭据，也不因画布隐藏节点就判定关系不存在。
+                page.kind = PageContextKind::ErDiagram;
+                page.snapshot.target = TargetRef {
+                    connection_id: Some(er.connection_id.0 as i64),
+                    database: Some(er.database.clone()),
+                    schema: er.schema.clone(),
+                    object: er
+                        .center_table
+                        .as_ref()
+                        .map(|table| table.display()),
+                    ..Default::default()
+                };
+                let canvas = self.er_canvas.borrow();
+                let selected = canvas
+                    .er_selected_table
+                    .get(&tab.id)
+                    .cloned()
+                    .flatten();
+                let tables = self.er_full_tables.get(&tab.id);
+                let selected_table = tables
+                    .as_ref()
+                    .and_then(|list| {
+                        list.iter()
+                            .find(|table| selected.as_ref().is_some_and(|name| &table.name == name))
+                    });
+                let selected_columns: Vec<fluxdb_core::ErColumn> = selected_table
+                    .map(|table| table.columns.clone())
+                    .unwrap_or_default();
+                drop(canvas);
+                let relationship = selected_table.as_ref().and_then(|_| {
+                    self.er_relationship_panel_selected
+                        .get(&tab.id)
+                        .cloned()
+                        .flatten()
+                        .and_then(|id| {
+                            self.er_relationships
+                                .get(&tab.id)
+                                .and_then(|list| list.iter().find(|rel| rel.id == id).cloned())
+                        })
+                });
+                page.details = serde_json::json!({
+                    "scope":{"connection_id":er.connection_id.0,"database":er.database,"schema":er.schema,
+                        "relationship_scope_key":fluxdb_core::er_relationship_scope_key(
+                            er.connection_id,&er.database,er.schema.as_deref())},
+                    "center_table":er.center_table.as_ref().map(|table|table.display()),
+                    "selected_table":selected_table.as_ref().map(|table| serde_json::json!({
+                        "name":table.name,
+                        "column_count":table.columns.len(),
+                        "load_status":format!("{:?}",table.status),
+                        "columns":selected_columns.iter().take(16).map(|column|serde_json::json!({
+                            "name":column.name.chars().take(128).collect::<String>(),
+                            "type":column.type_name.as_ref().map(|s|s.chars().take(128).collect::<String>()),
+                            "nullable":column.nullable,"primary_key":column.primary_key,
+                        })).collect::<Vec<_>>(),
+                        "columns_truncated":selected_columns.len()>16,
+                    })),
+                    "selected_relationship":relationship.as_ref().map(|rel| serde_json::json!({
+                        "relationship_id":rel.id,"revision":rel.revision,"role":rel.role,
+                        "left_entity":rel.left_entity,"right_entity":rel.right_entity,
+                        "review":format!("{:?}",rel.review.state),
+                        "origin":format!("{:?}",rel.origin),
+                        "validity":format!("{:?}",rel.validity.state),
+                        "column_pairs":rel.column_pairs.iter().map(|pair|serde_json::json!({
+                            "left_column":fluxdb_core::er_column_id_name(&pair.left_column),
+                            "right_column":fluxdb_core::er_column_id_name(&pair.right_column),
+                        })).collect::<Vec<_>>(),
+                        "required_filters":rel.required_filters.iter().map(|filter|serde_json::json!({
+                            "side":format!("{:?}",filter.side),
+                            "column":fluxdb_core::er_column_id_name(&filter.column_id),
+                            "op":format!("{:?}",filter.op),
+                        })).collect::<Vec<_>>(),
+                        "description":rel.description.as_ref().map(|text|text.chars().take(512).collect::<String>()),
+                    })),
+                    "load_status":{
+                        "table_count":tables.as_ref().map(|list|list.len()),
+                        "foreign_keys":self.er_graphs.get(&tab.id).map(|graph|format!("{:?}",graph.relation_status)),
+                        "logical_relationships":if self.er_relationship_loading.contains(&tab.id) {"loading"} else {"loaded"},
+                        "pending_rebind":self.er_rebind_pending.get(&tab.id).map(|items|items.len()),
+                    },
+                    "version":self.er_generation.get(&tab.id).copied().unwrap_or(0),
+                    "read_scope":"只含定位与选中对象摘要；关系详情用 db.get_relationships 按需读取，\
+                                 本页引用不构成额外数据库授权，也不代表画布外没有其它关系",
+                });
+                page.snapshot.notes = vec!["关系目录与画布可见范围无关；未画出的表也可能有关系".into()];
+            }
             TabKind::RedisWorkbench(workbench) => {
                 page.kind = PageContextKind::RedisWorkbench;
                 page.snapshot.target = TargetRef {

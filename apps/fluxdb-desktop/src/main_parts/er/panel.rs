@@ -411,7 +411,13 @@ fn er_relationship_panel(
                         div()
                             .text_size(px(11.))
                             .text_color(colors.muted)
-                            .child(format!("修订 {} · {}", relationship.revision, relationship.id)),
+                            .child(format!(
+                                "修订 {} · {} · 来源 {}",
+                                relationship.revision,
+                                relationship.id,
+                                // 来源必须与状态一起可见：AI 建议与用户自建关系不能混为一谈。
+                                fluxdb_core::er_relationship_origin_label(relationship.origin),
+                            )),
                     )
                     .child(
                         div()

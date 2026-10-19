@@ -416,19 +416,15 @@ fn rebase_endpoint(
     }
 }
 
-/// 由结构化表身份生成实体稳定 ID（与 desktop `er_entity_id` 同规则，供快照/重绑身份对齐）。
+/// 由结构化表身份生成实体稳定 ID。与 core `er_entity_id` 同规则（关系端点/列引用的
+/// 唯一生成规则），避免桌面 ER、应用层查询与结构重绑各算一套身份。
 fn er_snapshot_entity_id(reference: &fluxdb_core::ErTableRef) -> String {
-    format!(
-        "{}:{}:{}",
-        reference.database,
-        reference.schema.as_deref().unwrap_or_default(),
-        reference.name
-    )
+    fluxdb_core::er_entity_id(reference)
 }
 
 /// 由列身份生成列 ID（`实体ID::列名`）。
 fn er_snapshot_column_id(reference: &fluxdb_core::ErTableRef, column: &str) -> String {
-    format!("{}::{column}", er_snapshot_entity_id(reference))
+    fluxdb_core::er_column_id(reference, column)
 }
 
 /// 由已加载的表节点（含字段，如字段按需加载后的 `ErTableNode`）构建结构快照

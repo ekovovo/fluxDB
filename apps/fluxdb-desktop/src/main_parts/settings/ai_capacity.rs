@@ -1,4 +1,4 @@
-// 模型容量单位及自动填充：token 不是字节，K/M 使用十进制，无浮点舍入。
+// 模型容量单位及自动填充：只接受整数；显示值按 K/M 向下取整。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AiTokenUnit {
     K,
@@ -27,52 +27,24 @@ fn ai_parse_token_count(raw: &str, unit: AiTokenUnit) -> Result<Option<i64>, Str
     if raw.is_empty() {
         return Ok(None);
     }
-    let (whole, fraction) = raw.split_once('.').unwrap_or((raw, ""));
-    if whole.is_empty()
-        || !whole.bytes().all(|c| c.is_ascii_digit())
-        || !fraction.bytes().all(|c| c.is_ascii_digit())
-    {
-        return Err("容量必须是正数，可输入小数 K/M tokens".into());
+    if !raw.bytes().all(|c| c.is_ascii_digit()) {
+        return Err("容量必须是整数，可输入整数 K/M".into());
     }
-    let precision = match unit {
-        AiTokenUnit::K => 3,
-        AiTokenUnit::M => 6,
-    };
-    if fraction.len() > precision && fraction.as_bytes()[precision..].iter().any(|c| *c != b'0') {
-        return Err("换算后必须是整数 tokens".into());
-    }
-    let part = &fraction[..fraction.len().min(precision)];
-    let whole = whole
+    let whole = raw
         .parse::<i64>()
         .map_err(|_| "容量超出范围".to_string())?;
-    let frac = if part.is_empty() {
-        0
-    } else {
-        part.parse::<i64>()
-            .map_err(|_| "容量格式无效".to_string())?
-    } * 10i64.pow((precision - part.len()) as u32);
     let value = whole
         .checked_mul(unit.scale())
-        .and_then(|n| n.checked_add(frac))
         .filter(|v| (1..=1_000_000_000).contains(v))
         .ok_or_else(|| "容量必须为 1–1,000,000,000 tokens".to_string())?;
     Ok(Some(value))
 }
 
 fn ai_format_token_count(tokens: i64, unit: AiTokenUnit) -> String {
-    let scale = unit.scale();
-    let whole = tokens / scale;
-    let remainder = tokens % scale;
-    if remainder == 0 {
-        return whole.to_string();
-    }
-    let digits = if unit == AiTokenUnit::K { 3 } else { 6 };
-    format!("{whole}.{:0digits$}", remainder)
-        .trim_end_matches('0')
-        .to_string()
+    (tokens / unit.scale()).to_string()
 }
 
-/// 回填容量字段时展示的单位：按数量级推导（≥1M 用 M，否则用 K）。
+/// 回填容量字段时展示的单位：≥1M 用 M，否则用 K，显示值向下取整。
 ///
 /// 单位只是展示单位、不落库，因此必须由 token 数推导 —— 否则会出现「存的是 1M、
 /// 重开却显示 1000 K」这种数字与单位不一致的假象。切单位的换算行为保持不变。
@@ -220,14 +192,65 @@ impl NavicatMain {
                     m.max_output_tokens
                 }
             });
+            let kind = tokens.map(ai_capacity_unit_for);
             let text = tokens
-                .map(|n| ai_format_token_count(n, dialog.capacity_units[index]))
+                .map(|n| ai_format_token_count(n, kind.unwrap_or(AiTokenUnit::K)))
                 .unwrap_or_default();
+            if let Some(kind) = kind {
+                let select = if index == 0 {
+                    &dialog.inputs.context_unit
+                } else {
+                    &dialog.inputs.output_unit
+                };
+                select.update(cx, |select, cx| {
+                    select.set_selected_value(&kind.label().to_string(), window, cx)
+                });
+                dialog.capacity_units[index] = kind;
+            }
             if current != text {
                 input.update(cx, |state, cx| state.set_value(text.clone(), window, cx));
             }
             dialog.capacity_autofill[index] = tokens.map(|_| text);
         }
         cx.notify();
+    }
+}
+
+#[cfg(test)]
+mod ai_capacity_tests {
+    use super::*;
+
+    #[test]
+    fn formatting_never_produces_decimals() {
+        let cases = [
+            (131_072, AiTokenUnit::K, "131"),
+            (128_000, AiTokenUnit::K, "128"),
+            (1_000_000, AiTokenUnit::M, "1"),
+            (8_192, AiTokenUnit::K, "8"),
+        ];
+        for (tokens, unit, expected) in cases {
+            assert_eq!(ai_format_token_count(tokens, unit), expected);
+        }
+        assert_eq!(ai_format_token_count(131_999, AiTokenUnit::K), "131");
+    }
+
+    #[test]
+    fn integer_units_multiply_by_their_scale() {
+        assert_eq!(
+            ai_parse_token_count("131", AiTokenUnit::K),
+            Ok(Some(131_000)),
+        );
+        assert_eq!(
+            ai_parse_token_count("128", AiTokenUnit::K),
+            Ok(Some(128_000)),
+        );
+        assert!(ai_parse_token_count("1.5", AiTokenUnit::M).is_err());
+    }
+
+    #[test]
+    fn auto_unit_uses_m_for_million_scale_and_k_below_it() {
+        assert_eq!(ai_capacity_unit_for(1_000_000), AiTokenUnit::M);
+        assert_eq!(ai_capacity_unit_for(200_000), AiTokenUnit::K);
+        assert_eq!(ai_capacity_unit_for(131_072), AiTokenUnit::K);
     }
 }

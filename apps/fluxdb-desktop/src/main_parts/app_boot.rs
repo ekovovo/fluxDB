@@ -2938,7 +2938,7 @@ fn navicat_main_new(
                             tab_order: Vec::new(),
                             workspace_tab_order: Vec::new(),
                             hovered_tab: None,
-                            hovered_database_tab: None,
+                            hovered_first_level_tab: None,
                             display_database_search_input,
                             _display_database_search_subscription:
                                 display_database_search_subscription,

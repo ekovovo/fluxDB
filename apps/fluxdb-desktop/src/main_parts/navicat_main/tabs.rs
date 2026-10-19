@@ -96,13 +96,13 @@ impl NavicatMain {
 
     fn drop_workspace_tab_after(
         &mut self,
-        dragged_scope: WorkspaceScope,
-        target_scope: WorkspaceScope,
+        dragged_scope: FirstLevelScope,
+        target_scope: FirstLevelScope,
         cx: &mut Context<Self>,
     ) {
-        let scopes = workspace_tab_groups(self.controller.state())
+        let scopes = first_level_tab_groups(self.controller.state())
             .into_iter()
-            .map(|group| group.scope)
+            .map(|group| group.scope())
             .collect::<Vec<_>>();
         self.workspace_tab_order = workspace_tab_order_after_drop(
             &scopes,
@@ -115,7 +115,7 @@ impl NavicatMain {
 
     fn request_close_workspace_scope(
         &mut self,
-        scope: WorkspaceScope,
+        scope: FirstLevelScope,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -129,14 +129,14 @@ impl NavicatMain {
         cx.notify();
     }
 
-    fn close_workspace_warning(&self, scope: WorkspaceScope) -> PendingCloseWorkspace {
+    fn close_workspace_warning(&self, scope: FirstLevelScope) -> PendingCloseWorkspace {
         let mut pending = PendingCloseWorkspace {
             scope,
             unsaved_queries: 0,
             running_queries: 0,
         };
         for tab in &self.controller.state().tabs {
-            if tab_workspace_scope(tab).as_ref() != Some(&pending.scope) {
+            if tab_first_level_scope(tab).as_ref() != Some(&pending.scope) {
                 continue;
             }
             let TabKind::QueryEditor(editor) = &tab.kind else {
@@ -164,20 +164,20 @@ impl NavicatMain {
         self.close_workspace_scope(pending.scope, cx);
     }
 
-    fn close_workspace_scope(&mut self, scope: WorkspaceScope, cx: &mut Context<Self>) {
+    fn close_workspace_scope(&mut self, scope: FirstLevelScope, cx: &mut Context<Self>) {
         let tab_ids = self
             .controller
             .state()
             .tabs
             .iter()
-            .filter(|tab| tab_workspace_scope(tab).as_ref() == Some(&scope))
+            .filter(|tab| tab_first_level_scope(tab).as_ref() == Some(&scope))
             .map(|tab| tab.id)
             .collect::<Vec<_>>();
         if tab_ids.is_empty() {
             return;
         }
         self.workspace_tab_order.retain(|item| item != &scope);
-        self.hovered_database_tab = None;
+        self.hovered_first_level_tab = None;
         self.dispatch(AppCommand::CloseTabs(tab_ids), cx);
     }
 

@@ -146,13 +146,12 @@ impl AppController {
             return AppEvent::TabActivated(tab_id);
         }
 
-        // 设置内容是全局单例；首次打开时固定归属到当前活动库，后续只激活该标签。
-        let workspace = self.state.active_tab().and_then(TabState::workspace);
+        // 设置内容是全局单例，不归属任何连接或数据库。
         let tab_id = self.next_tab_id();
         self.push_tab(TabState {
             id: tab_id,
             title: "设置".to_string(),
-            kind: TabKind::Settings(SettingsTabState { workspace }),
+            kind: TabKind::Settings(SettingsTabState),
             dirty: false,
         });
         AppEvent::TabOpened(tab_id)

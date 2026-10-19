@@ -612,10 +612,10 @@ struct NavicatMain {
     user_admin_password_visible: bool,
     pinned_tabs: BTreeSet<TabId>,
     tab_order: Vec<TabId>,
-    workspace_tab_order: Vec<WorkspaceScope>,
+    workspace_tab_order: Vec<FirstLevelScope>,
     // 当前鼠标悬停的标签页：仅用于浮现标签操作按钮，不持久化。
     hovered_tab: Option<TabId>,
-    hovered_database_tab: Option<WorkspaceScope>,
+    hovered_first_level_tab: Option<FirstLevelScope>,
     display_database_search_input: Entity<InputState>,
     _display_database_search_subscription: Subscription,
     create_database_name_input: Entity<InputState>,

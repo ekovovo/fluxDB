@@ -1335,7 +1335,7 @@ struct PendingDisconnectConnection {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct PendingCloseWorkspace {
-    scope: WorkspaceScope,
+    scope: FirstLevelScope,
     unsaved_queries: usize,
     running_queries: usize,
 }
@@ -1446,7 +1446,7 @@ struct DraggedTab {
 
 #[derive(Clone, Debug)]
 struct DraggedWorkspaceTab {
-    scope: WorkspaceScope,
+    scope: FirstLevelScope,
     title: String,
 }
 

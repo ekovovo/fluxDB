@@ -665,7 +665,7 @@ pub struct TabState {
 }
 
 impl TabState {
-    /// 返回标签页所属的「连接 + 库」工作区；首页打开的全局标签没有归属。
+    /// 返回标签页所属的「连接 + 库」工作区；设置页与首页全局标签没有归属。
     pub fn workspace(&self) -> Option<TabWorkspace> {
         match &self.kind {
             TabKind::DataEditor(editor) => Some(TabWorkspace {
@@ -721,7 +721,7 @@ impl TabState {
                 connection_id: er.connection_id,
                 database: er.database.clone(),
             }),
-            TabKind::Settings(settings) => settings.workspace.clone(),
+            TabKind::Settings(_) => None,
             TabKind::AiChat { workspace } => workspace.clone(),
         }
     }
@@ -734,9 +734,7 @@ pub struct TabWorkspace {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct SettingsTabState {
-    pub workspace: Option<TabWorkspace>,
-}
+pub struct SettingsTabState;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum TabKind {

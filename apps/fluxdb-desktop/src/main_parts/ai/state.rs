@@ -59,6 +59,8 @@ struct AiChatUi {
     recovery_pending: bool,
     recovery_failed: bool,
     epoch: u64,
+    /// 「用 AI 修复」在会话尚未加载时待填入并发送的提示词。
+    pending_fix_prompt: Option<String>,
     debug_open_pending: bool,
     follow_reply: bool,
     new_reply: bool,
@@ -160,6 +162,7 @@ impl AiChatUi {
             recovery_pending: true,
             recovery_failed: false,
             epoch: 0,
+            pending_fix_prompt: None,
             follow_reply: true,
             new_reply: false,
             scripted_fixture: cfg!(debug_assertions)

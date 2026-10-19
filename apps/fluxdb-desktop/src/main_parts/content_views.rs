@@ -1463,8 +1463,9 @@ fn redis_pubsub_content(
         .gap_2()
         .px_3()
         .bg(colors.panel_alt)
-        .child(query_context_box(
-            format!("{connection} · DB {}", pubsub.database),
+        .child(query_context_group(
+            connection,
+            format!("DB {}", pubsub.database),
             accent,
             colors,
         ))
@@ -1974,8 +1975,7 @@ fn redis_workbench_toolbar(
         .gap_2()
         .px_3()
         .bg(colors.panel_alt)
-        .child(query_context_box(connection, accent, colors))
-        .child(query_context_box(database, accent, colors))
+        .child(query_context_group(connection, database, accent, colors))
         .child(
             query_toolbar_icon_button(
                 if running {
@@ -3108,7 +3108,8 @@ fn query_output_panel(
             )
             .into_any_element(),
             QueryOutputTab::Summary => {
-                query_execution_summary_view(&editor.summaries, colors, cx).into_any_element()
+                query_execution_summary_view(tab_id, &editor.summaries, colors, cx)
+                    .into_any_element()
             }
         }
     };
@@ -3126,6 +3127,8 @@ fn query_output_panel(
                 .flex_1()
                 .min_h(px(0.))
                 .overflow_hidden()
+                .flex()
+                .flex_col()
                 .child(body)
                 .when(editor.running, |this| this.child(query_output_loading_overlay(colors))),
         );
@@ -3345,7 +3348,7 @@ fn query_output_tabs(
     let refresh_sql = selected
         .result_index()
         .and_then(|index| query_result_sql(editor, index));
-    let mut tabs = div()
+    let tabs = div()
         .h(px(34.))
         .flex_none()
         .border_b_1()
@@ -3356,51 +3359,61 @@ fn query_output_tabs(
         .gap_2()
         .px_3();
 
+    // 结果页签可能很多：页签区单独横向滚动，右侧操作按钮固定可见。
+    let mut tab_strip = div()
+        .id(("query-output-tab-strip", tab_id.0))
+        .h_full()
+        .flex_1()
+        .min_w(px(0.))
+        .flex()
+        .items_center()
+        .gap_2()
+        .overflow_x_scroll();
+
     for index in 0..query_result_entry_count(editor) {
-        tabs = tabs.child(query_output_tab_button(
-            tab_id,
-            QueryOutputTab::Result(index),
-            tr("app.query.result_tab").replace("%{index}", &(index + 1).to_string()),
-            None,
-            selected == QueryOutputTab::Result(index),
-            colors,
-            cx,
-        ));
+        tab_strip = tab_strip.child(
+            query_output_tab_button(
+                tab_id,
+                QueryOutputTab::Result(index),
+                tr("app.query.result_tab").replace("%{index}", &(index + 1).to_string()),
+                None,
+                selected == QueryOutputTab::Result(index),
+                colors,
+                cx,
+            )
+            .flex_none(),
+        );
     }
 
-    tabs = tabs.child(query_output_tab_button(
-        tab_id,
-        QueryOutputTab::Summary,
-        tr("app.query.summary_tab").to_string(),
-        Some(AppIcon::List),
-        selected == QueryOutputTab::Summary,
-        colors,
-        cx,
-    ));
-
-    tabs.child(div().flex_1())
-        .when(
-            selected
-                .result_index()
-                .and_then(|index| query_result_page_index(editor, index))
-                .is_some_and(|page_index| editor.result_editors.contains_key(&page_index)),
-            |this| this.child(query_result_editable_badge(colors)),
-        )
-        .child(query_output_toolbar_button(
+    tab_strip = tab_strip.child(
+        query_output_tab_button(
             tab_id,
-            tr("app.common.refresh"),
-            AppIcon::Refresh,
+            QueryOutputTab::Summary,
+            tr("app.query.summary_tab").to_string(),
+            Some(AppIcon::List),
+            selected == QueryOutputTab::Summary,
             colors,
             cx,
-            move |this, tab_id, window, cx| {
-                if let Some(sql) = refresh_sql.clone() {
-                    this.start_query_text_execution(tab_id, sql, window, cx);
-                } else {
-                    this.start_query_execution(tab_id, window, cx);
-                }
-            },
-        ))
-    .child(query_output_toolbar_button(
+        )
+        .flex_none(),
+    );
+
+    let refresh = query_output_toolbar_button(
+        tab_id,
+        tr("app.common.refresh"),
+        AppIcon::Refresh,
+        colors,
+        cx,
+        move |this, tab_id, window, cx| {
+            if let Some(sql) = refresh_sql.clone() {
+                this.start_query_text_execution(tab_id, sql, window, cx);
+            } else {
+                this.start_query_execution(tab_id, window, cx);
+            }
+        },
+    )
+    .flex_none();
+    let collapse = query_output_toolbar_button(
         tab_id,
         tr("app.query.collapse_results"),
         AppIcon::ChevronDown,
@@ -3410,7 +3423,19 @@ fn query_output_tabs(
             this.collapsed_query_outputs.insert(tab_id);
             cx.notify();
         },
-    ))
+    )
+    .flex_none();
+
+    tabs.child(tab_strip)
+        .when(
+            selected
+                .result_index()
+                .and_then(|index| query_result_page_index(editor, index))
+                .is_some_and(|page_index| editor.result_editors.contains_key(&page_index)),
+            |this| this.child(div().flex_none().child(query_result_editable_badge(colors))),
+        )
+        .child(refresh)
+        .child(collapse)
 }
 
 fn query_result_editable_badge(colors: UiColors) -> Div {
@@ -3464,6 +3489,7 @@ fn query_output_tab_button(
             div()
                 .text_size(px(13.))
                 .font_weight(gpui::FontWeight::SEMIBOLD)
+                .whitespace_nowrap()
                 .child(label),
         )
         .on_mouse_down(
@@ -3864,7 +3890,7 @@ fn query_result_view(
     };
     let table_state = this.query_result_table_state_from_sorted_page(
         tab_id,
-        &sorted_page.page,
+        sorted_page.page.clone(),
         page_index,
         &sort_rules,
         &sorted_page.source_row_indexes,
@@ -4202,109 +4228,139 @@ fn query_result_error_state(
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
-    let error_color = rgb(0xff5c5c);
     let copy_text = query_result_error_copy_text(summary);
-    let sql_line = single_line_summary_text(summary.sql.clone());
+    let summary_for_ai = summary.clone();
+    let (variant, icon_name, accent) = app_message_style(AppMessageKind::Error, cx);
+    let alert = Alert::new(
+        gpui::ElementId::Name(
+            format!("query-result-error-{}-{}", tab_id.0, result_index).into(),
+        ),
+        localize_backend_error_text(&summary.message),
+    )
+    .with_variant(variant)
+    .icon(alert_icon(icon_name, cx, PAGE_ERROR_LINE_HEIGHT))
+    .title(tr("app.query.error_title"))
+    .bg(alert_tint(accent, colors))
+    .line_height(px(PAGE_ERROR_LINE_HEIGHT));
 
-    // 操作区：重试（复用工具栏「运行」入口重跑整条查询）+ 复制错误 + 用 AI 修复（暂未开放）。
+    let sql_block = div()
+        .w_full()
+        .rounded(colors.radius)
+        .border_1()
+        .border_color(colors.border)
+        .bg(colors.panel_alt)
+        .overflow_hidden()
+        .flex()
+        .flex_col()
+        .child(
+            div()
+                .h(px(30.))
+                .px_3()
+                .border_b_1()
+                .border_color(colors.border)
+                .flex()
+                .items_center()
+                .text_size(px(12.))
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .text_color(colors.muted)
+                .child(tr("app.query.failed_sql")),
+        )
+        .child(
+            div()
+                .p_3()
+                .font_family(crate::PLATFORM_MONOSPACE_FONT)
+                .text_size(px(12.))
+                .line_height(px(18.))
+                .text_color(colors.text)
+                .whitespace_normal()
+                .child(summary.sql.clone()),
+        );
+
     let actions = div()
         .flex()
         .items_center()
         .gap_2()
         .child(
-            Button::new(("retry-query-result", tab_id.0))
-                .label(tr("app.common.retry"))
-                .small()
-                .outline()
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.start_query_execution(tab_id, window, cx);
-                })),
-        )
-        .child(
-            div()
-                .id(gpui::ElementId::Name(
-                    format!(
-                        "copy-query-result-error-{}-{}",
-                        tab_id.0, result_index
-                    )
-                    .into(),
-                ))
-                .h(px(30.))
-                .px_3()
-                .rounded(colors.radius_lg)
-                .border_1()
-                .border_color(colors.border)
-                .cursor_pointer()
-                .flex()
-                .items_center()
-                .gap_2()
-                .text_color(colors.text)
-                .hover(move |style| style.bg(colors.hover))
-                .child(app_icon(AppIcon::Copy, 14., colors.muted))
-                .child(
-                    div()
-                        .text_size(px(13.))
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .child(tr("app.query.copy_error")),
-                )
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |this, _, _, cx| {
-                        cx.write_to_clipboard(ClipboardItem::new_string(copy_text.clone()));
-                        this.show_message(
-                            tr("app.query.error_copied"),
-                            AppMessageKind::Success,
-                            cx,
-                        );
-                        cx.stop_propagation();
-                    }),
+            query_error_action_button(
+                gpui::ElementId::Name(
+                    format!("retry-query-result-{}-{}", tab_id.0, result_index).into(),
                 ),
+                tr("app.common.retry"),
+                AppIcon::Refresh,
+                colors,
+            )
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.start_query_execution(tab_id, window, cx);
+            })),
         )
         .child(
-            div()
-                .id(gpui::ElementId::Name(
-                    format!(
-                        "ai-fix-query-result-error-{}-{}",
-                        tab_id.0, result_index
-                    )
-                    .into(),
-                ))
-                .h(px(30.))
-                .px_3()
-                .rounded(colors.radius_lg)
-                .border_1()
-                .border_color(colors.border)
-                .cursor_default()
-                .opacity(0.5)
-                .flex()
-                .items_center()
-                .gap_2()
-                .text_color(error_color)
-                .child(app_icon(AppIcon::Bot, 14., error_color))
-                .child(
-                    div()
-                        .text_size(px(13.))
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .child(tr("app.query.fix_with_ai")),
-                )
-                .tooltip(|window, cx| {
-                    Tooltip::new(tr("app.query.ai_fix_unavailable")).build(window, cx)
-                }),
+            query_error_action_button(
+                gpui::ElementId::Name(
+                    format!("copy-query-result-error-{}-{}", tab_id.0, result_index).into(),
+                ),
+                tr("app.query.copy_error"),
+                AppIcon::Copy,
+                colors,
+            )
+            .on_click(cx.listener(move |this, _, _, cx| {
+                cx.write_to_clipboard(ClipboardItem::new_string(copy_text.clone()));
+                this.show_message(
+                    tr("app.query.error_copied"),
+                    AppMessageKind::Success,
+                    cx,
+                );
+            })),
+        )
+        .child(
+            query_error_action_button(
+                gpui::ElementId::Name(
+                    format!("ai-fix-query-result-error-{}-{}", tab_id.0, result_index).into(),
+                ),
+                tr("app.query.fix_with_ai"),
+                AppIcon::Bot,
+                colors,
+            )
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.ai_fix_query_error(summary_for_ai.clone(), window, cx);
+            })),
         );
 
     div().flex_1().min_h(px(0.)).child(
-        div().overflow_y_scrollbar().p_6().child(page_error_alert(
-            gpui::ElementId::Name(
-                format!("query-result-error-{}-{}", tab_id.0, result_index).into(),
-            ),
-            &tr("app.query.error_title"),
-            &summary.message,
-            Some(sql_line.as_str()),
-            Some(actions.into_any_element()),
-            cx,
-            colors,
-        )),
+        div().overflow_y_scrollbar().child(
+            div()
+                .w_full()
+                .flex()
+                .justify_center()
+                .p_6()
+                .child(
+                    div()
+                        .w_full()
+                        .max_w(px(880.))
+                        .flex()
+                        .flex_col()
+                        .gap_3()
+                        .child(alert)
+                        .child(sql_block)
+                        .child(actions),
+                ),
+        ),
     )
+}
+
+fn query_error_action_button(
+    id: gpui::ElementId,
+    label: impl Into<SharedString>,
+    icon: AppIcon,
+    colors: UiColors,
+) -> Button {
+    let label = label.into();
+    Button::new(id)
+        .small()
+        .outline()
+        .cursor_pointer()
+        .w(px(108.))
+        .child(app_icon(icon, 13., colors.muted))
+        .child(label)
 }
 
 fn query_result_error_copy_text(summary: &QueryExecutionSummary) -> String {
@@ -4532,8 +4588,10 @@ fn query_result_cell_detail_value_header(value_text: String, colors: UiColors) -
 
 #[derive(Clone)]
 struct SortedQueryResultPage {
-    page: DataPage,
-    source_row_indexes: Vec<usize>,
+    /// 与表格委托共享，避免每次刷新再复制一份完整结果页。
+    page: Arc<DataPage>,
+    /// 同样共享：渲染时克隆缓存页不再按行数复制索引表。
+    source_row_indexes: Arc<[usize]>,
 }
 
 fn sorted_query_result_page(page: &DataPage, rules: &[DataSortRule]) -> SortedQueryResultPage {
@@ -4549,7 +4607,7 @@ fn sorted_query_result_page(page: &DataPage, rules: &[DataSortRule]) -> SortedQu
         .collect::<Vec<_>>();
     if active.is_empty() {
         return SortedQueryResultPage {
-            page: page.clone(),
+            page: Arc::new(page.clone()),
             source_row_indexes: (0..page.rows.len()).collect(),
         };
     }
@@ -4572,11 +4630,11 @@ fn sorted_query_result_page(page: &DataPage, rules: &[DataSortRule]) -> SortedQu
     });
     let (source_row_indexes, rows): (Vec<_>, Vec<_>) = rows.into_iter().unzip();
     SortedQueryResultPage {
-        page: DataPage {
+        page: Arc::new(DataPage {
             rows,
             ..page.clone()
-        },
-        source_row_indexes,
+        }),
+        source_row_indexes: source_row_indexes.into(),
     }
 }
 
@@ -4600,11 +4658,12 @@ fn compare_query_result_cells(
 }
 
 fn query_execution_summary_view(
+    tab_id: TabId,
     summaries: &[QueryExecutionSummary],
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
-    let mut table = div().min_w(px(900.)).flex().flex_col();
+    let mut table = div().w_full().flex().flex_col();
     table = table.child(query_summary_header(colors));
     for (row_index, summary) in summaries.iter().enumerate() {
         table = table.child(query_summary_row(row_index, summary, colors, cx));
@@ -4622,9 +4681,20 @@ fn query_execution_summary_view(
         );
     }
     div()
-        .size_full()
-        .overflow_hidden()
-        .child(div().size_full().overflow_scrollbar().child(table))
+        .flex_1()
+        .min_h(px(0.))
+        .min_w(px(0.))
+        .flex()
+        .flex_col()
+        .child(
+            div()
+                .flex_1()
+                .min_h(px(0.))
+                .min_w(px(0.))
+                .id(("query-execution-summary-scroll", tab_id.0))
+                .overflow_y_scrollbar()
+                .child(table),
+        )
 }
 
 fn query_summary_header(colors: UiColors) -> Div {
@@ -4650,7 +4720,6 @@ fn query_summary_row(
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
-    let sql = summary.sql.clone();
     div()
         .h(px(40.))
         .flex_none()
@@ -4659,49 +4728,111 @@ fn query_summary_row(
         .border_b_1()
         .border_color(colors.border_soft)
         .text_color(colors.text)
-        .child(query_summary_cell(summary.sql.clone(), 1., false, colors))
-        .child(query_summary_type_cell(summary, colors))
+        .child(query_summary_sql_cell(row_index, summary, colors, cx))
+        .child(query_summary_type_cell(row_index, summary, colors, cx))
         .child(query_summary_cell(summary.returned_rows.to_string(), 0.22, false, colors))
         .child(query_summary_cell(summary.affected_rows.to_string(), 0.22, false, colors))
         .child(query_summary_cell(format!("{}ms", summary.elapsed_ms), 0.2, false, colors))
+}
+
+fn query_summary_sql_cell(
+    row_index: usize,
+    summary: &QueryExecutionSummary,
+    colors: UiColors,
+    cx: &mut Context<NavicatMain>,
+) -> Div {
+    let sql_text = single_line_summary_text(summary.sql.clone());
+    div()
+        .flex_1()
+        .flex_basis(px(0.))
+        .min_w(px(0.))
+        .h_full()
+        .pl_2()
+        .pr_1()
+        .flex()
+        .items_center()
+        .gap_1()
         .child(
             div()
-                .w(px(42.))
-                .flex_none()
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(
-                    div()
-                        .id(("copy-query-summary-sql", row_index))
-                        .size(px(26.))
-                        .rounded(colors.radius)
-                        .cursor_pointer()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .hover(move |style| style.bg(colors.hover))
-                        .tooltip(|window, cx| {
-                            Tooltip::new(tr("app.query.copy_sql")).build(window, cx)
-                        })
-                        .child(app_icon(AppIcon::Copy, 14., colors.muted))
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |this, _, _, cx| {
-                                cx.write_to_clipboard(ClipboardItem::new_string(sql.clone()));
-                                this.show_message(
-                                    tr("app.query.sql_copied"),
-                                    AppMessageKind::Success,
-                                    cx,
-                                );
-                                cx.stop_propagation();
-                            }),
-                        ),
-                ),
+                .id(("query-summary-sql", row_index))
+                .flex_1()
+                .min_w(px(0.))
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .text_size(px(12.))
+                .text_color(colors.text)
+                .tooltip(query_summary_full_text_tooltip(summary.sql.clone(), true))
+                .child(sql_text),
+        )
+        .child(query_summary_copy_button(
+            ("copy-query-summary-sql", row_index),
+            tr("app.query.copy_sql"),
+            summary.sql.clone(),
+            tr("app.query.sql_copied"),
+            colors,
+            cx,
+        ))
+}
+
+fn query_summary_copy_button(
+    id: (&'static str, usize),
+    tooltip: impl Into<SharedString>,
+    copy_text: String,
+    success_text: impl Into<SharedString>,
+    colors: UiColors,
+    cx: &mut Context<NavicatMain>,
+) -> impl IntoElement {
+    let tooltip = tooltip.into();
+    let success_text = success_text.into();
+    div()
+        .id(id)
+        .size(px(26.))
+        .rounded(colors.radius)
+        .cursor_pointer()
+        .flex()
+        .items_center()
+        .justify_center()
+        .hover(move |style| style.bg(colors.hover))
+        .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
+        .child(app_icon(AppIcon::Copy, 14., colors.muted))
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |this, _, _, cx| {
+                cx.write_to_clipboard(ClipboardItem::new_string(copy_text.clone()));
+                this.show_message(success_text.clone(), AppMessageKind::Success, cx);
+                cx.stop_propagation();
+            }),
         )
 }
 
-fn query_summary_type_cell(summary: &QueryExecutionSummary, colors: UiColors) -> Div {
+/// 悬停展示完整文本；SQL 用等宽字体，错误报文按普通文本自动换行。
+fn query_summary_full_text_tooltip(
+    text: String,
+    monospace: bool,
+) -> impl Fn(&mut Window, &mut App) -> gpui::AnyView + 'static {
+    move |window, cx| {
+        let text = text.clone();
+        Tooltip::element(move |_, _| {
+            div()
+                .max_w(px(560.))
+                .whitespace_normal()
+                .text_size(px(12.))
+                .when(monospace, |this| {
+                    this.font_family(crate::PLATFORM_MONOSPACE_FONT)
+                })
+                .child(text.clone())
+        })
+        .build(window, cx)
+    }
+}
+
+fn query_summary_type_cell(
+    row_index: usize,
+    summary: &QueryExecutionSummary,
+    colors: UiColors,
+    cx: &mut Context<NavicatMain>,
+) -> Div {
     let badge_bg = if summary.success {
         if colors.is_dark {
             rgb(0x053f31)
@@ -4746,6 +4877,7 @@ fn query_summary_type_cell(summary: &QueryExecutionSummary, colors: UiColors) ->
         )
         .child(
             div()
+                .id(("query-summary-message", row_index))
                 .flex_1()
                 .min_w(px(0.))
                 .overflow_hidden()
@@ -4753,8 +4885,19 @@ fn query_summary_type_cell(summary: &QueryExecutionSummary, colors: UiColors) ->
                 .text_ellipsis()
                 .text_size(px(12.))
                 .text_color(colors.text)
+                .tooltip(query_summary_full_text_tooltip(summary.message.clone(), false))
                 .child(localize_backend_error_text(&summary.message)),
         )
+        .when(!summary.success, |this| {
+            this.child(query_summary_copy_button(
+                ("copy-query-summary-error", row_index),
+                tr("app.query.copy_error"),
+                summary.message.clone(),
+                tr("app.query.error_copied"),
+                colors,
+                cx,
+            ))
+        })
 }
 
 fn query_summary_cell(text: impl Into<String>, flex: f32, header: bool, colors: UiColors) -> Div {
@@ -5504,4 +5647,3 @@ fn data_editor_action_state(
         })
     })
 }
-

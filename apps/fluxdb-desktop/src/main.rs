@@ -79,7 +79,7 @@ use gpui_component::{
     group_box::{GroupBox, GroupBoxVariant, GroupBoxVariants as _},
     h_flex,
     highlighter::{LanguageConfig, LanguageRegistry},
-    input::{Input, InputEvent, InputState, Textarea, TextareaState},
+    input::{Editor, EditorState, Input, InputEvent, InputState, Textarea, TextareaState},
     popover::{Popover, PopoverState},
     progress::Progress,
     radio::Radio,
@@ -174,6 +174,8 @@ include!("main_parts/ai/model_selection.rs");
 include!("main_parts/ai/references.rs");
 include!("main_parts/ai/message.rs");
 include!("main_parts/ai/approval.rs");
+include!("main_parts/ai/relationship_review.rs");
+include!("main_parts/ai/relationship_review_dialog.rs");
 include!("main_parts/ai/timeline.rs");
 include!("main_parts/ai/report.rs");
 include!("main_parts/ai/diagnostics.rs");

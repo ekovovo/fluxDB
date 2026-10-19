@@ -13,7 +13,9 @@ impl DataPageTableDelegate {
             cells.insert(cell);
         }
         cells.retain(|(row, col)| {
-            *col > 0 && *row < self.rows.len() && *col <= self.rows.get(*row).map_or(0, Vec::len)
+            *col > 0
+                && *row < self.page.rows.len()
+                && self.source_column_indexes.get(*col).is_some_and(Option::is_some)
         });
         cells
     }
@@ -23,7 +25,7 @@ impl DataPageTableDelegate {
         if let Some(row) = self.selected_row {
             rows.insert(row);
         }
-        rows.retain(|row| *row < self.rows.len());
+        rows.retain(|row| *row < self.page.rows.len());
         rows
     }
 
@@ -172,9 +174,14 @@ impl DataPageTableDelegate {
         if !rows.is_empty() {
             return Some(DataTableSelectionExport {
                 kind: DataTableSelectionKind::Rows,
-                text: data_table_rows_tsv(self.rows.as_slice(), &rows),
+                text: data_table_rows_tsv(&self.page, &self.source_column_indexes, &rows),
                 rows: rows.len(),
-                cells: rows.len() * self.rows.first().map_or(0, Vec::len),
+                cells: rows.len()
+                    * self
+                        .source_column_indexes
+                        .iter()
+                        .filter(|index| index.is_some())
+                        .count(),
             });
         }
 
@@ -185,7 +192,7 @@ impl DataPageTableDelegate {
 
         Some(DataTableSelectionExport {
             kind: DataTableSelectionKind::Cells,
-            text: data_table_cells_tsv(self.rows.as_slice(), &cells),
+            text: data_table_cells_tsv(&self.page, &self.source_column_indexes, &cells),
             rows: cells
                 .iter()
                 .map(|(row, _)| *row)
@@ -196,13 +203,19 @@ impl DataPageTableDelegate {
     }
 }
 
-fn data_table_rows_tsv(rows: &[Vec<SharedString>], selected_rows: &BTreeSet<usize>) -> String {
-    rows.iter()
-        .enumerate()
-        .filter(|(row_ix, _)| selected_rows.contains(row_ix))
-        .map(|(_, row)| {
-            row.iter()
-                .map(|cell| data_table_tsv_cell(cell.as_ref()))
+fn data_table_rows_tsv(
+    page: &DataPage,
+    source_column_indexes: &[Option<usize>],
+    selected_rows: &BTreeSet<usize>,
+) -> String {
+    selected_rows
+        .iter()
+        .filter_map(|row_ix| page.rows.get(*row_ix))
+        .map(|row| {
+            source_column_indexes
+                .iter()
+                .filter_map(|index| index.and_then(|source| row.values.get(source)))
+                .map(|value| data_table_tsv_cell(data_cell_display_text(value).as_str()))
                 .collect::<Vec<_>>()
                 .join("\t")
         })
@@ -211,22 +224,18 @@ fn data_table_rows_tsv(rows: &[Vec<SharedString>], selected_rows: &BTreeSet<usiz
 }
 
 fn data_table_cells_tsv(
-    rows: &[Vec<SharedString>],
+    page: &DataPage,
+    source_column_indexes: &[Option<usize>],
     selected_cells: &BTreeSet<(usize, usize)>,
 ) -> String {
-    let selected_rows = rows
+    let selected_rows = selected_cells
         .iter()
-        .enumerate()
-        .filter_map(|(row_ix, _)| {
-            selected_cells
-                .iter()
-                .any(|(row, _)| *row == row_ix)
-                .then_some(row_ix)
-        })
-        .collect::<Vec<_>>();
-    let selected_cols = (1..=rows.first().map_or(0, Vec::len))
-        .filter(|col_ix| selected_cells.iter().any(|(_, col)| col == col_ix))
-        .collect::<Vec<_>>();
+        .map(|(row, _)| *row)
+        .collect::<BTreeSet<_>>();
+    let selected_cols = selected_cells
+        .iter()
+        .map(|(_, col)| *col)
+        .collect::<BTreeSet<_>>();
 
     selected_rows
         .iter()
@@ -234,14 +243,16 @@ fn data_table_cells_tsv(
             selected_cols
                 .iter()
                 .map(|col_ix| {
-                    if selected_cells.contains(&(*row_ix, *col_ix)) {
-                        rows.get(*row_ix)
-                            .and_then(|row| row.get(col_ix.saturating_sub(1)))
-                            .map(|cell| data_table_tsv_cell(cell.as_ref()))
-                            .unwrap_or_default()
-                    } else {
-                        String::new()
+                    if !selected_cells.contains(&(*row_ix, *col_ix)) {
+                        return String::new();
                     }
+                    source_column_indexes
+                        .get(*col_ix)
+                        .copied()
+                        .flatten()
+                        .and_then(|source| page.rows.get(*row_ix)?.values.get(source))
+                        .map(|value| data_table_tsv_cell(data_cell_display_text(value).as_str()))
+                        .unwrap_or_default()
                 })
                 .collect::<Vec<_>>()
                 .join("\t")

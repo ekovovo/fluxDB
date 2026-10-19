@@ -1352,7 +1352,7 @@ struct PendingDisconnectConnection {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct PendingCloseWorkspace {
-    scope: WorkspaceScope,
+    scope: FirstLevelScope,
     unsaved_queries: usize,
     running_queries: usize,
 }
@@ -1463,7 +1463,7 @@ struct DraggedTab {
 
 #[derive(Clone, Debug)]
 struct DraggedWorkspaceTab {
-    scope: WorkspaceScope,
+    scope: FirstLevelScope,
     title: String,
 }
 
@@ -1593,7 +1593,9 @@ struct DataPageTableDelegate {
     source_column_indexes: Vec<Option<usize>>,
     column_types: Vec<String>,
     column_meta: Vec<DataTableColumnMeta>,
-    rows: Vec<Vec<SharedString>>,
+    /// 当前显示页数据，与结果页缓存共享同一份 `DataPage`；单元格文本在渲染时按需格式化，
+    /// 不再为整页预生成第二份文本拷贝（宽结果集下这是与数据同量级的内存开销）。
+    page: Arc<DataPage>,
     source_row_indexes: Vec<usize>,
     null_cells: BTreeSet<(usize, usize)>,
     dirty_cells: BTreeSet<(usize, usize)>,

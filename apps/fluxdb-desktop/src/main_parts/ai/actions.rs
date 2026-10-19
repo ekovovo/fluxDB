@@ -58,6 +58,29 @@ impl NavicatMain {
         self.ai_chat.epoch += 1;
         self.ai_chat_request(fluxdb_app::AiConversationCommand::New, window, cx);
     }
+    /// 「用 AI 修复」：把失败 SQL 与错误报文交给 AI；会话未加载时待加载完成后自动发送。
+    fn ai_fix_query_error(
+        &mut self,
+        summary: QueryExecutionSummary,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let prompt = format!(
+            "下面这条 SQL 执行失败，请帮我修复。\n\n错误信息：\n{}\n\n失败的 SQL：\n```sql\n{}\n```\n\n请只给出修复后的完整 SQL 和简短原因，不要调用数据库执行工具。",
+            summary.message.trim(),
+            summary.sql.trim()
+        );
+        if self.ai_chat.loaded {
+            self.ai_chat
+                .input
+                .update(cx, |input, cx| input.set_value(prompt, window, cx));
+            self.open_ai_chat(window, cx);
+            self.send_ai_chat(window, cx);
+        } else {
+            self.ai_chat.pending_fix_prompt = Some(prompt);
+            self.open_ai_chat(window, cx);
+        }
+    }
     fn ai_chat_request(
         &mut self,
         command: fluxdb_app::AiConversationCommand,
@@ -131,6 +154,13 @@ impl NavicatMain {
                                 this.ai_chat.dirty = false;
                                 if this.ai_chat.open {
                                     this.mount_ai_chat_tab(cx);
+                                }
+                                if let Some(prompt) = this.ai_chat.pending_fix_prompt.take() {
+                                    this.ai_chat.input.update(cx, |input, cx| {
+                                        input.set_value(prompt, window, cx)
+                                    });
+                                    this.ai_chat.dirty = false;
+                                    this.send_ai_chat(window, cx);
                                 }
                             }
                             if !recovering {
@@ -291,6 +321,8 @@ impl NavicatMain {
             .iter()
             .map(|c| c.config.clone())
             .collect();
+        // ER 关系能力与 ER 页面共用同一份缓存与目录服务：AI 建议与用户确认看到的是同一处。
+        let relationships = self.controller.er_relationship_source();
         let runtime = self.ai_chat.runtime.as_ref().expect("runtime 已创建");
         let submitted = if debug_scripted {
                 runtime.submit_conversation_source(storage.clone(), job.clone(), cancel.clone(), move |cancel, emit| {
@@ -334,7 +366,7 @@ impl NavicatMain {
                     Ok(vec![e])
                 })
         } else {
-            runtime.submit_conversation(storage.clone(), job.clone(), connection_configs, resume_approval, cancel)
+            runtime.submit_conversation(storage.clone(), job.clone(), connection_configs, relationships, resume_approval, cancel)
         };
         let rx = match submitted {
             Ok(receiver) => receiver,

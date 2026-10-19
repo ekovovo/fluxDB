@@ -24,6 +24,8 @@ pub const MCP_TOOL_MAPPINGS: &[(&str, &str)] = &[
     ("fluxdb_connections_list", ""),
     ("fluxdb_search_objects", "db.search_objects"),
     ("fluxdb_describe_object", "db.describe_object"),
+    ("fluxdb_get_relationships", "db.get_relationships"),
+    ("fluxdb_find_join_paths", "db.find_join_paths"),
     ("fluxdb_query", "db.query"),
     ("fluxdb_explain", "db.explain"),
     ("fluxdb_execute", "db.execute"),
@@ -276,6 +278,7 @@ pub struct McpToolView {
 pub fn visible_tools(
     handles: &[McpDatasourceHandle],
     globally_disabled: &BTreeSet<String>,
+    relationships_available: bool,
 ) -> fluxdb_core::Result<Vec<McpToolView>> {
     let has_relational = handles
         .iter()
@@ -296,6 +299,16 @@ pub fn visible_tools(
             }
             if let Some(view) = tool_view_from_spec(&spec)? {
                 views.push(view);
+            }
+        }
+        // 关系/路径只读工具：与内部会话共用实现与 schema。`er.propose_relationships`
+        // 不在此列——本地 ER 审阅流程不属于对外数据源的授权范围，MCP 目录里也没有它的实现。
+        // 未接入关系目录时不列出：列出却调不动，会被当成「没有关系」而不是「工具不可用」。
+        if relationships_available {
+            for spec in crate::er_relationship_tool_specs()? {
+                if let Some(view) = tool_view_from_spec(&spec)? {
+                    views.push(view);
+                }
             }
         }
     }
@@ -407,6 +420,8 @@ pub struct McpExecutionService {
     host: Option<Arc<dyn McpRequestHost>>,
     /// 全局停用的工具 id（调用时与可见性一致地再判定一次）。
     globally_disabled: BTreeSet<String>,
+    /// ER 关系能力来源；未注入时关系/路径工具不装配，调用会落到「不可用」而不是空结果。
+    relationships: Option<Arc<dyn ErRelationshipSource>>,
 }
 
 impl McpExecutionService {
@@ -449,7 +464,17 @@ impl McpExecutionService {
             audit: Arc::new(KernelAuditHook),
             host: None,
             globally_disabled,
+            relationships: None,
         })
+    }
+
+    /// 注入 ER 关系能力来源（独立 MCP 进程自建缓存目录）。
+    pub fn with_relationship_source(
+        mut self,
+        relationships: Arc<dyn ErRelationshipSource>,
+    ) -> Self {
+        self.relationships = Some(relationships);
+        self
     }
 
     /// 注入宿主 request 仓储（`operation.status` 用）。
@@ -601,7 +626,7 @@ impl McpExecutionService {
     ) -> std::result::Result<ToolCatalog, McpCallError> {
         // 复用标准目录装配（读写工具都注册，授权由下方 kernel policy 逐次判定），
         // 再收窄到本次调用的单个工具，避免把未授权工具的实现带进来。
-        let full = if internal_id.starts_with("redis.") {
+        let mut full = if internal_id.starts_with("redis.") {
             crate::standard_redis_catalog(Arc::clone(&self.resolver), true)
                 .map_err(|error| McpCallError::new("catalog_error", error.message, false))?
         } else {
@@ -612,6 +637,23 @@ impl McpExecutionService {
             )
             .map_err(|error| McpCallError::new("catalog_error", error.message, false))?
         };
+        // 关系/路径只读工具与内部会话共用实现；未注入来源时不装配，调用会明确落到
+        // 「工具不可用」，不会返回一份空关系列表冒充「没有关系」。
+        if matches!(internal_id, "db.get_relationships" | "db.find_join_paths") {
+            let relationships = self.relationships.as_ref().cloned().ok_or_else(|| {
+                McpCallError::new(
+                    "tool_unavailable",
+                    "ER 关系目录未接入，关系工具不可用",
+                    false,
+                )
+            })?;
+            crate::add_er_relationship_read_tools(
+                &mut full,
+                Arc::clone(&self.resolver),
+                relationships,
+            )
+            .map_err(|error| McpCallError::new("catalog_error", error.message, false))?;
+        }
         let disabled: BTreeSet<String> = full
             .specs()
             .iter()
@@ -625,7 +667,11 @@ impl McpExecutionService {
 
     /// 当前可见工具（`tools/list` 与 `tools/call` 前置检查共用）。
     pub fn tool_views(&self) -> fluxdb_core::Result<Vec<McpToolView>> {
-        visible_tools(self.datasources.handles(), &self.globally_disabled)
+        visible_tools(
+            self.datasources.handles(),
+            &self.globally_disabled,
+            self.relationships.is_some(),
+        )
     }
 }
 

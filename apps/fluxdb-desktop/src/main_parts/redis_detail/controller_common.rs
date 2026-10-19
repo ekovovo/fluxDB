@@ -28,12 +28,9 @@ impl NavicatMain {
         }));
     }
 
-    fn redis_key_value_input_for_kind(&self, kind: &str) -> Entity<InputState> {
-        if redis_key_value_is_json_kind(kind) {
-            self.redis_json_key_value_input.clone()
-        } else {
-            self.redis_key_value_input.clone()
-        }
+    /// 通用字符串值输入框。JSON 键的编辑框由 `JsonComponent` 持有，不经过这里。
+    fn redis_key_value_input_for_kind(&self, _kind: &str) -> Entity<InputState> {
+        self.redis_key_value_input.clone()
     }
 
     fn redis_key_name_display(&self, tab_id: TabId, detail: &RedisKeyDetail) -> String {
@@ -166,6 +163,10 @@ impl NavicatMain {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // JSON 键的编辑框与全文同步由 `JsonComponent` 负责，通用字符串输入框不参与。
+        if redis_key_value_is_json_kind(&detail.kind) {
+            return;
+        }
         let active = (tab_id, detail.key.clone());
         // 输入框基线：编辑草稿 > 已加载值 > 列表 preview，避免把 200 字符 preview 写回输入框。
         let expected = self
@@ -252,9 +253,11 @@ impl NavicatMain {
         // 与展示分支共用同一套 JSON 类型判断，保证 rejson / rejson-rl 也走 JSON 专用保存准备逻辑。
         let mut json_save_value: Option<Option<String>> = None; // None = 非 JSON 键
         if redis_key_value_is_json_kind(&detail.kind) {
-            let source = self.redis_json_editor.source.clone();
-            let dirty = self.redis_json_editor.dirty;
-            if self.redis_json_editor.editing && self.redis_json_editor_is_active(tab_id, &key) {
+            let source = self.redis_json_editor.state().source.clone();
+            let dirty = self.redis_json_editor.state().dirty;
+            if self.redis_json_editor.state().editing
+                && self.redis_json_editor_is_active(tab_id, &key)
+            {
                 if let Some(dia) = self.redis_json_validate() {
                     self.show_message(dia.summary(), AppMessageKind::Error, cx);
                     return;
@@ -275,8 +278,8 @@ impl NavicatMain {
                 source,
                 base,
                 dirty,
-                self.redis_json_editor.config.format_on_save,
-                self.redis_json_editor.config.indent_size,
+                self.redis_json_editor.state().config.format_on_save,
+                self.redis_json_editor.state().config.indent_size,
             ) {
                 Ok(v) => json_save_value = Some(v),
                 Err(msg) => {

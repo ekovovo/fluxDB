@@ -431,9 +431,13 @@ fn er_relationship_panel(
                             .text_size(px(11.))
                             .text_color(colors.muted)
                             .child(
-                                tr("app.er_relationship.revision")
+                                tr("app.er_relationship.revision_origin")
                                     .replace("%{revision}", &relationship.revision.to_string())
-                                    .replace("%{id}", &relationship.id),
+                                    .replace("%{id}", &relationship.id)
+                                    .replace(
+                                        "%{origin}",
+                                        &er_relationship_origin_display(relationship.origin),
+                                    ),
                             ),
                     )
                     .child(
@@ -720,6 +724,20 @@ fn er_relationship_pair_label(
         .map(|table| table.reference.display())
         .unwrap_or_else(|| relationship.right_entity.clone());
     format!("{left_name}.{left_column} ↔ {right_name}.{right_column}")
+}
+
+/// ER 关系来源由 core 稳定枚举投影；展示文案由桌面语言包决定。
+fn er_relationship_origin_display(origin: fluxdb_core::ErRelationshipOrigin) -> SharedString {
+    match origin {
+        fluxdb_core::ErRelationshipOrigin::DatabaseConstraint => {
+            tr("app.er_relationship.origin_database_constraint")
+        }
+        fluxdb_core::ErRelationshipOrigin::User => tr("app.er_relationship.origin_user"),
+        fluxdb_core::ErRelationshipOrigin::SqlObservation => {
+            tr("app.er_relationship.origin_sql_observation")
+        }
+        fluxdb_core::ErRelationshipOrigin::Agent => tr("app.er_relationship.origin_agent"),
+    }
 }
 
 /// 结构刷新待处理项内部使用稳定中文标记做判定；展示时转换为当前界面语言。

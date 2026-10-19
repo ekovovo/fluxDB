@@ -657,7 +657,7 @@ mod i18n_e2e_tests {
             localized_tab_title(&tab(
                 1,
                 "设置",
-                TabKind::Settings(SettingsTabState { workspace: None })
+                TabKind::Settings(SettingsTabState)
             )),
             "Settings"
         );
@@ -706,7 +706,7 @@ mod i18n_e2e_tests {
             localized_tab_title(&tab(
                 1,
                 "设置",
-                TabKind::Settings(SettingsTabState { workspace: None })
+                TabKind::Settings(SettingsTabState)
             )),
             "设置"
         );

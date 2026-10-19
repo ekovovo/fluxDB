@@ -15,6 +15,24 @@ const AI_AGENT_TOOL_CATALOG: &[(&str, &str, &str, bool)] = &[
     ("connections.list", "common", "List authorized connection resources", false),
     ("db.search_objects", "sql", "Incrementally search tables, views, and columns", false),
     ("db.describe_object", "sql", "Read real columns, indexes, and relationships", false),
+    (
+        "db.get_relationships",
+        "relationship",
+        "Read registered relationships (physical foreign keys plus confirmed logical relationships), with availability and required filters",
+        false,
+    ),
+    (
+        "db.find_join_paths",
+        "relationship",
+        "Find join paths over available relationships and return a structured plan (without generating SQL)",
+        false,
+    ),
+    (
+        "er.propose_relationships",
+        "relationship",
+        "Generate relationship candidates for individual review; adoption requires user confirmation and does not execute database DDL",
+        false,
+    ),
     ("db.query", "sql", "Single bounded read-only query with bound parameters", false),
     ("db.explain", "sql", "Query plan without executing the statement", false),
     ("db.execute", "sql", "Dedicated write entry with scope authorization and approval", true),
@@ -46,6 +64,9 @@ const AI_AGENT_TOOL_CATALOG: &[(&str, &str, &str, bool)] = &[
 ];
 
 /// 仅 MCP 提供的工具仍受全局开关控制，不进入内置 Agent 的配置。
+///
+/// 关系/路径工具对外复用同名内部 ID（`db.get_relationships` / `db.find_join_paths`），
+/// 因此它们的全局开关与内置 AI 是同一份，无需在此重复列出。
 const AI_MCP_ONLY_TOOL_CATALOG: &[(&str, &str, &str, bool)] = &[
     (
         "operation.status",
@@ -60,6 +81,7 @@ fn ai_tool_text(id: &str, group: &str, desc: &str) -> (SharedString, SharedStrin
         "common" => tr("app.ai.tools.group.common"),
         "sql" => "SQL".into(),
         "redis" => "Redis".into(),
+        "relationship" => tr("app.ai.tools.group.relationship"),
         "artifact" => tr("app.ai.tools.group.artifact"),
         _ => group.into(),
     };
@@ -67,6 +89,9 @@ fn ai_tool_text(id: &str, group: &str, desc: &str) -> (SharedString, SharedStrin
         "connections.list" => tr("app.ai.tools.desc.connections_list"),
         "db.search_objects" => tr("app.ai.tools.desc.db_search_objects"),
         "db.describe_object" => tr("app.ai.tools.desc.db_describe_object"),
+        "db.get_relationships" => tr("app.ai.tools.desc.db_get_relationships"),
+        "db.find_join_paths" => tr("app.ai.tools.desc.db_find_join_paths"),
+        "er.propose_relationships" => tr("app.ai.tools.desc.er_propose_relationships"),
         "db.query" => tr("app.ai.tools.desc.db_query"),
         "db.explain" => tr("app.ai.tools.desc.db_explain"),
         "db.execute" => tr("app.ai.tools.desc.db_execute"),
@@ -318,6 +343,8 @@ fn ai_tool_row(
     div()
         .border_t_1()
         .border_color(colors.border_soft)
+        // 与表头同内边距，保证工具名列不贴面板左边缘。
+        .px_4()
         .py_2()
         .min_h(px(46.))
         .flex()

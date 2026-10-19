@@ -68,7 +68,10 @@ impl NavicatMain {
         }
 
         let display_page = self.data_page_for_display(tab_id, page);
-        let page = display_page.as_ref();
+        let page = match display_page {
+            Cow::Borrowed(page) => Arc::new(page.clone()),
+            Cow::Owned(page) => Arc::new(page),
+        };
         let changes = self.data_changes_for_tab(tab_id);
         let column_choices = self.column_choices_for_tab(tab_id);
         // 这里只在首次创建 table_state 时做 Redis 展示过滤，render 命中已有状态时不再重复算。
@@ -111,7 +114,7 @@ impl NavicatMain {
     fn query_result_table_state_from_sorted_page(
         &mut self,
         tab_id: TabId,
-        page: &DataPage,
+        page: Arc<DataPage>,
         page_index: usize,
         sort_rules: &[DataSortRule],
         source_row_indexes: &[usize],
@@ -161,9 +164,9 @@ impl NavicatMain {
                 let old = table.delegate();
                 let columns_changed = !data_table_columns_match(&old.columns, &delegate.columns);
                 let content_changed = data_table_rows_or_sorts_changed(
-                    &old.rows,
+                    &old.page,
                     &old.sorts,
-                    &delegate.rows,
+                    &delegate.page,
                     &delegate.sorts,
                 );
                 let search_changed = old.search_matches != delegate.search_matches
@@ -236,7 +239,7 @@ impl NavicatMain {
         let mut delegate = DataPageTableDelegate::from_page_with_rule(
             cx.entity().downgrade(),
             tab_id,
-            &sorted_page.page,
+            sorted_page.page.clone(),
             Some(&sort_rules),
             None,
             &column_choices,
@@ -267,9 +270,9 @@ impl NavicatMain {
             let old = table.delegate();
             let columns_changed = !data_table_columns_match(&old.columns, &delegate.columns);
             let content_changed = data_table_rows_or_sorts_changed(
-                &old.rows,
+                &old.page,
                 &old.sorts,
-                &delegate.rows,
+                &delegate.page,
                 &delegate.sorts,
             );
             let search_changed = old.search_matches != delegate.search_matches
@@ -897,12 +900,14 @@ fn data_table_columns_match(left: &[TableColumn], right: &[TableColumn]) -> bool
 }
 
 fn data_table_rows_or_sorts_changed(
-    left_rows: &[Vec<SharedString>],
+    left_page: &Arc<DataPage>,
     left_sorts: &[DataTableSort],
-    right_rows: &[Vec<SharedString>],
+    right_page: &Arc<DataPage>,
     right_sorts: &[DataTableSort],
 ) -> bool {
-    left_rows != right_rows || left_sorts != right_sorts
+    // 同一份显示页（缓存共享）只比排序；不同页才逐行比较。
+    left_sorts != right_sorts
+        || (!Arc::ptr_eq(left_page, right_page) && left_page.rows != right_page.rows)
 }
 
 fn query_result_cells_editable(has_result_editor: bool, sort_rules: &[DataSortRule]) -> bool {

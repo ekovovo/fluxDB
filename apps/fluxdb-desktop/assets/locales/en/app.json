@@ -200,7 +200,8 @@
     "dangerous_redis": {
       "title": "Confirm dangerous Redis command",
       "message": "This command may clear or destroy data. Continue?"
-    }
+    },
+    "close_settings_message": "Closing Settings will close the settings page, %{details}."
   },
   "history": {
     "ai_analyze": "Analyze with AI",
@@ -616,7 +617,12 @@
     "state_rebuild": "Needs review (same-name rebuild)",
     "state_rejected": "Rejected",
     "state_unresolved": "Unresolved (missing table or column)",
-    "title": "Local logical relationships"
+    "title": "Local logical relationships",
+    "revision_origin": "Revision %{revision} · %{id} · Source %{origin}",
+    "origin_database_constraint": "Database constraint",
+    "origin_user": "User",
+    "origin_sql_observation": "JOIN observation",
+    "origin_agent": "AI suggestion"
   },
   "er_form": {
     "add_condition": "Add condition",
@@ -1071,7 +1077,8 @@
       },
       "group": {
         "common": "Common",
-        "artifact": "Artifacts"
+        "artifact": "Artifacts",
+        "relationship": "Relationships"
       },
       "risk": {
         "artifact": "Artifact / local",
@@ -1108,7 +1115,10 @@
         "artifact_create": "Create a report draft; built-in rendering requires the BI plugin",
         "artifact_add_block": "Append charts, tables, or notes to a report without modifying the database",
         "artifact_finalize": "Validate sources and create a report snapshot without modifying the database",
-        "operation_status": "Query the current caller's operation status, including unknown results after interruption"
+        "operation_status": "Query the current caller's operation status, including unknown results after interruption",
+        "db_get_relationships": "Read registered relationships (physical foreign keys plus confirmed logical relationships), with availability and required filters",
+        "db_find_join_paths": "Find join paths over available relationships and return a structured plan (without generating SQL)",
+        "er_propose_relationships": "Generate relationship candidates for individual review; adoption requires user confirmation and does not execute database DDL"
       }
     },
     "jev": {
@@ -1608,6 +1618,51 @@
       "redis_unknown_command": "The command is not on the kernel allowlist; impact has not been verified",
       "bounded_commit_unsupported": "This connection does not support bounded commits; indirect impact and actual row count have not been verified",
       "impact_unverified": "Operation impact has not been verified"
+    },
+    "er_proposal": {
+      "title": "Relationship suggestions",
+      "unavailable": "Relationship suggestions are unavailable",
+      "title_count": "Relationship suggestions · %{count}",
+      "selection_summary": "Selected %{selected} · %{ready} adoptable · %{invalid} unavailable",
+      "later": "Later",
+      "adopting": "Adopting…",
+      "adopt_selected": "Adopt selected (%{count})",
+      "select_hint": "Select relationships to adopt; unselected items are not written",
+      "select_item_hint": "Select a relationship on the left to view details",
+      "source_status": "%{role} · Source: Agent suggestion · %{status}",
+      "not_written": "Not written",
+      "column_pairs": "Column pairs",
+      "cardinality": "Cardinality",
+      "required_filters": "Required filters",
+      "rationale": "Rationale",
+      "warning": "Warning: %{items}",
+      "adopt_note": "Adopted items become confirmed logical relationships; they are not database foreign keys and do not execute DDL.",
+      "card_unreadable": "Relationship suggestion card content cannot be read",
+      "adopted_count": "Adopted %{count} relationships",
+      "adopt_failed": "Failed to adopt relationship suggestions: %{error}",
+      "unknown_result": "Adopting relationship suggestions returned an unknown result",
+      "view_adopted": "View adopted suggestions",
+      "continue_review": "Continue review · %{count} pending",
+      "review_count": "Review %{count} one by one",
+      "card_title": "AI relationship suggestions",
+      "target_not_written": "%{target} · not yet written to the relationship catalog",
+      "adopted": "Adopted %{count}",
+      "ready": "%{count} adoptable",
+      "more_items": "… %{count} more; open to review one by one",
+      "status": {
+        "ready": "Adoptable",
+        "adopted": "Adopted",
+        "duplicate": "Already exists",
+        "rejected": "Rejected",
+        "invalid": "Unavailable",
+        "pending": "Pending"
+      },
+      "basis": {
+        "database_constraint": "Database constraint",
+        "user_assertion": "User assertion",
+        "profile_observation": "Observed inference",
+        "unknown": "Unknown"
+      }
     }
   },
   "topbar": {
@@ -2042,7 +2097,8 @@
       "wrap_auto": "Wrap",
       "results_bottom": "Results at bottom",
       "results_right": "Results at right"
-    }
+    },
+    "failed_sql": "Failed SQL"
   },
   "data_export": {
     "title": "Export data",
@@ -3575,7 +3631,8 @@
     "er": "%{database} · ER",
     "er_related": "%{table} · Related ER",
     "design_table_named": "Design table: %{table}",
-    "redis_pubsub": "Redis Pub/Sub - DB %{database}"
+    "redis_pubsub": "Redis Pub/Sub - DB %{database}",
+    "global": "Global"
   },
   "backend_error": {
     "user_admin_tab_missing": "User & permissions tab no longer exists",

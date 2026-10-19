@@ -627,10 +627,17 @@ fn navicat_main_new(
                             InputState::new(window, cx)
                                 .placeholder(tr("app.placeholder.value"))
                         });
-                        let redis_json_key_value_input = cx.new(|cx| {
-                            InputState::new(window, cx)
-                                .placeholder(tr("app.placeholder.value"))
-                        });
+                        // Redis JSON 值组件：Edit 模式使用组件内部的多行编辑框。
+                        let redis_json_editor = JsonComponent::new_with_mode(
+                            JsonEditorConfig::default(),
+                            JsonMode::Preview,
+                            window,
+                            cx,
+                        );
+                        let redis_json_key_value_input = redis_json_editor
+                            .input()
+                            .expect("JSON 组件应持有编辑框")
+                            .clone();
                         let redis_key_name_input = cx.new(|cx| {
                             InputState::new(window, cx)
                                 .placeholder(tr("app.placeholder.key_name"))
@@ -2488,13 +2495,12 @@ fn navicat_main_new(
                                         cx,
                                     );
                                 }
-                                // Enter 提交当前输入值（连续输入）。中文输入法组合确认阶段的
-                                // Enter 由 Input 内部消费为标记文本提交，不会触发 PressEnter，
-                                // 因此不会在组合输入时误添加。
+                                // Enter：单值弹层直接确定写回；多值弹层把输入内容追加为新值，继续连续输入。
+                                // 中文输入法组合确认阶段的 Enter 由 Input 内部消费为标记
+                                // 文本提交，不会触发 PressEnter，因此不会在组合输入时误添加。
                                 if matches!(event, InputEvent::PressEnter { .. }) {
                                     let value = input.read(cx).value().to_string();
-                                    this.update_data_filter_manual_value(value, cx);
-                                    this.add_data_filter_manual_value(TabId(0), cx);
+                                    this.commit_data_filter_value_input(value, cx);
                                     cx.stop_propagation();
                                 }
                             },
@@ -2797,9 +2803,8 @@ fn navicat_main_new(
                             redis_list_table_state,
                             redis_key_value_input,
                             _redis_key_value_subscription: redis_key_value_subscription,
-                            redis_json_key_value_input,
                             _redis_json_key_value_subscription: redis_json_key_value_subscription,
-                            redis_json_editor: JsonEditorState::new(JsonEditorConfig::default()),
+                            redis_json_editor,
                             redis_json_editor_active: None,
                             redis_json_editor_busy: false,
                             redis_key_value_active: None,
@@ -3090,7 +3095,7 @@ fn navicat_main_new(
                             tab_order: Vec::new(),
                             workspace_tab_order: Vec::new(),
                             hovered_tab: None,
-                            hovered_database_tab: None,
+                            hovered_first_level_tab: None,
                             display_database_search_input,
                             _display_database_search_subscription:
                                 display_database_search_subscription,
@@ -3316,6 +3321,10 @@ fn navicat_main_new(
                                 AiDiagnosticsModalData::default(),
                             )),
                             _ai_diagnostics_task: None,
+                            er_proposal_modal: Rc::new(std::cell::RefCell::new(
+                                ErProposalModalData::default(),
+                            )),
+                            _er_proposal_task: None,
                             ai_session_rename_input,
                             _ai_session_rename_subscription: ai_session_rename_subscription,
                             pending_ai_session_rename: None,

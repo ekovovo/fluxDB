@@ -200,7 +200,8 @@
     "dangerous_redis": {
       "title": "确认执行危险 Redis 命令",
       "message": "该命令可能清空或破坏数据，请确认是否继续执行。"
-    }
+    },
+    "close_settings_message": "关闭「设置」会关闭设置页，%{details}。"
   },
   "history": {
     "ai_analyze": "AI 分析",
@@ -616,7 +617,12 @@
     "state_rebuild": "需确认（同名重建）",
     "state_rejected": "已拒绝",
     "state_unresolved": "未解析（缺表或缺列）",
-    "title": "本地逻辑关系"
+    "title": "本地逻辑关系",
+    "revision_origin": "修订 %{revision} · %{id} · 来源 %{origin}",
+    "origin_database_constraint": "数据库约束",
+    "origin_user": "用户",
+    "origin_sql_observation": "JOIN 观察",
+    "origin_agent": "AI 建议"
   },
   "er_form": {
     "add_condition": "添加条件",
@@ -1071,7 +1077,8 @@
       },
       "group": {
         "common": "公共",
-        "artifact": "产物"
+        "artifact": "产物",
+        "relationship": "关系"
       },
       "risk": {
         "artifact": "产物 / 本地",
@@ -1108,7 +1115,10 @@
         "artifact_create": "创建报告草稿；内置渲染需启用 BI 插件",
         "artifact_add_block": "为报告追加图表、表格或说明，不修改数据库",
         "artifact_finalize": "校验来源并生成报告快照，不修改数据库",
-        "operation_status": "查询当前 caller 的操作状态（含中断后的未知结果）"
+        "operation_status": "查询当前 caller 的操作状态（含中断后的未知结果）",
+        "db_get_relationships": "查已登记关系（物理外键 + 已确认逻辑关系），含可用性与必要过滤",
+        "db_find_join_paths": "在可用关系上找连接路径，返回结构化计划（不生成 SQL）",
+        "er_propose_relationships": "生成可逐条审阅的关系候选；采纳需用户确认，不执行数据库 DDL"
       }
     },
     "jev": {
@@ -1608,6 +1618,51 @@
       "redis_unknown_command": "命令未在内核白名单内，影响面未核实",
       "bounded_commit_unsupported": "该连接不支持有界提交，间接影响与真实行数未核实",
       "impact_unverified": "操作影响尚未核实"
+    },
+    "er_proposal": {
+      "title": "关系建议",
+      "unavailable": "关系建议不可用",
+      "title_count": "关系建议 · %{count} 条",
+      "selection_summary": "已选 %{selected} 条 · %{ready} 条可采纳 · %{invalid} 条不可采纳",
+      "later": "稍后处理",
+      "adopting": "正在采纳…",
+      "adopt_selected": "采纳所选（%{count}）",
+      "select_hint": "勾选要采纳的关系；未勾选不会写入",
+      "select_item_hint": "选择左侧一条关系查看详情",
+      "source_status": "%{role} · 来源：Agent 建议 · %{status}",
+      "not_written": "尚未写入",
+      "column_pairs": "字段配对",
+      "cardinality": "基数",
+      "required_filters": "必要过滤",
+      "rationale": "推断依据",
+      "warning": "注意：%{items}",
+      "adopt_note": "采纳后会标记为已确认逻辑关系；不是数据库物理外键，也不会执行 DDL。",
+      "card_unreadable": "关系建议卡片内容不可读取",
+      "adopted_count": "已采纳 %{count} 条关系",
+      "adopt_failed": "关系建议采纳失败：%{error}",
+      "unknown_result": "关系建议采纳返回未知结果",
+      "view_adopted": "查看已采纳建议",
+      "continue_review": "继续审阅 · %{count} 条待处理",
+      "review_count": "逐条审阅 %{count} 条",
+      "card_title": "AI 关系建议",
+      "target_not_written": "%{target} · 尚未写入关系目录",
+      "adopted": "已采纳 %{count}",
+      "ready": "%{count} 可采纳",
+      "more_items": "… 还有 %{count} 条，打开后逐条查看",
+      "status": {
+        "ready": "可采纳",
+        "adopted": "已采纳",
+        "duplicate": "已存在",
+        "rejected": "已拒绝",
+        "invalid": "不可采纳",
+        "pending": "未处理"
+      },
+      "basis": {
+        "database_constraint": "数据库约束",
+        "user_assertion": "用户断言",
+        "profile_observation": "观测推断",
+        "unknown": "未知"
+      }
     }
   },
   "topbar": {
@@ -2042,7 +2097,8 @@
       "wrap_auto": "自动换行",
       "results_bottom": "结果在下方",
       "results_right": "结果在右侧"
-    }
+    },
+    "failed_sql": "失败的 SQL"
   },
   "data_export": {
     "title": "导出数据",
@@ -3575,7 +3631,8 @@
     "er": "%{database} · ER",
     "er_related": "%{table} · 关联 ER",
     "design_table_named": "设计表: %{table}",
-    "redis_pubsub": "Redis Pub/Sub - DB %{database}"
+    "redis_pubsub": "Redis Pub/Sub - DB %{database}",
+    "global": "全局"
   },
   "backend_error": {
     "user_admin_tab_missing": "用户与权限标签页不存在",

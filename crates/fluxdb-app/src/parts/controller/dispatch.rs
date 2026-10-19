@@ -986,6 +986,161 @@ impl AppController {
                     Err(error) => AppEvent::Failed(error),
                 }
             }
+            AppCommand::AdoptErRelationshipProposals {
+                scope_key,
+                connection_id,
+                database,
+                schema,
+                proposals,
+                message_part_id,
+                batch_id,
+            } => {
+                let result = (|| {
+                    let expected_scope = fluxdb_core::er_relationship_scope_key(
+                        connection_id,
+                        &database,
+                        schema.as_deref(),
+                    );
+                    if expected_scope != scope_key {
+                        return Err(UserFacingError {
+                            title: "关系建议采纳失败".into(),
+                            message: "建议作用域与当前数据库不一致".into(),
+                            detail: None,
+                            retryable: false,
+                        });
+                    }
+                    let config = self
+                        .state
+                        .connections
+                        .iter()
+                        .find(|connection| connection.config.id == connection_id)
+                        .map(|connection| connection.config.clone())
+                        .ok_or_else(|| UserFacingError {
+                            title: "关系建议采纳失败".into(),
+                            message: "连接已不存在，无法核实建议作用域".into(),
+                            detail: None,
+                            retryable: false,
+                        })?;
+                    let source = self.er_relationship_source().ok_or_else(|| {
+                        UserFacingError {
+                            title: "关系建议采纳失败".into(),
+                            message: "ER 存储尚未初始化".into(),
+                            detail: None,
+                            retryable: true,
+                        }
+                    })?;
+                    er_validate_proposals_for_adoption(
+                        &config,
+                        &scope_key,
+                        source.as_ref(),
+                        &proposals,
+                    )
+                    .map_err(|error| UserFacingError {
+                        title: "关系建议采纳失败".into(),
+                        message: error.message,
+                        detail: Some(error.code.into()),
+                        retryable: false,
+                    })?;
+                    let service = self
+                        .er_model_service(scope_key.clone())
+                        .ok_or_else(|| UserFacingError {
+                            title: "关系建议采纳失败".into(),
+                            message: "ER 存储尚未初始化".into(),
+                            detail: None,
+                            retryable: true,
+                        })?;
+                    let adopted = service
+                        .create_confirmed_batch(proposals.clone(), "user")
+                        .map_err(|error| UserFacingError {
+                            title: "关系建议采纳失败".into(),
+                            message: error.to_string(),
+                            detail: None,
+                            retryable: false,
+                        })?;
+                    // 批次卡是用户唯一能看到“还剩下什么”的地方；采纳后同步更新，
+                    // 避免再次打开仍把已写入项当作待审阅。
+                    if let Ok(storage) = self.ai_storage() {
+                        let adopted_ids = proposals
+                            .iter()
+                            .map(|relationship| relationship.id.clone())
+                            .collect::<BTreeSet<_>>();
+                        let now = ai_chat_now();
+                        let _ = with_ai_storage(&storage, |conn| {
+                            let part = fluxdb_storage::ai_platform::sessions::load_part(
+                                conn,
+                                &message_part_id,
+                            )?;
+                            let mut payload: serde_json::Value =
+                                serde_json::from_str(&part.payload_json).map_err(|_| {
+                                    Error::new(
+                                        ErrorKind::Internal,
+                                        "关系建议卡片内容损坏，无法记录采纳结果",
+                                    )
+                                })?;
+                            if payload
+                                .get("batch_id")
+                                .and_then(serde_json::Value::as_str)
+                                != Some(batch_id.as_str())
+                            {
+                                return Err(Error::new(
+                                    ErrorKind::Internal,
+                                    "关系建议批次已变化，未更新卡片状态",
+                                ));
+                            }
+                            let mut ready = 0usize;
+                            if let Some(items) =
+                                payload.get_mut("items").and_then(serde_json::Value::as_array_mut)
+                            {
+                                for item in items {
+                                    let item_id = item
+                                        .get("item_id")
+                                        .and_then(serde_json::Value::as_str)
+                                        .map(str::to_string);
+                                    if item_id
+                                        .as_ref()
+                                        .is_some_and(|id| adopted_ids.contains(id))
+                                    {
+                                        item["status"] = serde_json::json!("adopted");
+                                        item["relationship"] = serde_json::Value::Null;
+                                    }
+                                    if item.get("status").and_then(serde_json::Value::as_str)
+                                        == Some("ready")
+                                    {
+                                        ready += 1;
+                                    }
+                                }
+                            }
+                            payload["counts"]["ready"] = serde_json::json!(ready);
+                            let previously_adopted = payload
+                                .get("review")
+                                .and_then(|review| review.get("adopted"))
+                                .and_then(serde_json::Value::as_u64)
+                                .unwrap_or(0) as usize;
+                            payload["review"] = serde_json::json!({
+                                "status": if ready == 0 { "complete" } else { "partial" },
+                                "adopted": previously_adopted + adopted.len(),
+                            });
+                            fluxdb_storage::ai_platform::sessions::update_part(
+                                conn,
+                                now,
+                                &message_part_id,
+                                fluxdb_storage::ai_platform::sessions::PartStatus::Complete,
+                                &payload.to_string(),
+                                part.revision,
+                            )?;
+                            Ok(())
+                        });
+                    }
+                    Ok(AppEvent::ErRelationshipProposalsAdopted {
+                        scope_key,
+                        relationships: adopted,
+                    })
+                })();
+                match result {
+                    Ok(event) => event,
+                    Err(error) => AppEvent::Failed(error),
+                }
+            }
             AppCommand::DeleteErRelationship {
                 scope_key,
                 id,
@@ -2132,80 +2287,14 @@ impl AppController {
                 }
             }
             AppCommand::ExecuteQueryText { tab_id, text } => {
-                let command = AppCommand::ExecuteQueryTextWithOptions {
-                    tab_id,
-                    text,
-                    options: self.default_query_execution_options(),
-                };
-                return self.dispatch(command);
+                let options = self.default_query_execution_options();
+                self.execute_query_text_with_options(tab_id, text, options)
             }
             AppCommand::ExecuteQueryTextWithOptions {
                 tab_id,
                 text,
                 options,
-            } => {
-                let request = self.find_tab(tab_id).and_then(|tab| match &tab.kind {
-                    TabKind::QueryEditor(editor) => Some(QueryRequest {
-                        connection_id: editor.connection_id,
-                        database: editor.database.clone(),
-                        // 查询编辑器标签 = 一个独占 PG 会话（设计 §3.3）：事务/临时表/SET 跨多次执行保持。
-                        session_id: Some(fluxdb_core::QuerySessionId(tab_id.0)),
-                        schema: editor.schema.clone(),
-                        text: sql_text_for_execution(
-                            &text,
-                            options.page_size,
-                            self.connection_kind(editor.connection_id)
-                                .unwrap_or(DatabaseKind::MySql),
-                        ),
-                        mode: fluxdb_core::QueryMode::Selection,
-                        options,
-                    }),
-                    _ => None,
-                });
-
-                let Some(request) = request else {
-                    return self.fail(Error::new(ErrorKind::Internal, "查询编辑器标签页不存在"));
-                };
-
-                let cancel_flag = self.query_cancel_flag(tab_id);
-                let result = self
-                    .execute_query_with_cancel(&request, &|| query_cancel_requested(&cancel_flag));
-                self.clear_query_cancel_flag(tab_id);
-                match result {
-                    Ok(execution) => {
-                        let result_editors = query_result_editors(self, &request, &execution);
-                        let active_result_editor = result_editors.keys().next().copied();
-                        if let Some(tab) = self.find_tab_mut(tab_id)
-                            && let TabKind::QueryEditor(editor) = &mut tab.kind
-                        {
-                            editor.running = false;
-                            editor.results = execution.results.clone();
-                            editor.result_editors = result_editors;
-                            editor.active_result_editor = active_result_editor;
-                            editor.summaries = execution.summaries.clone();
-                            editor.error = None;
-                            tab.dirty = false;
-                        }
-                        self.record_query_execution_history(&request, &execution);
-                        AppEvent::QueryFinished(tab_id, execution)
-                    }
-                    Err(error) => {
-                        self.record_failed_query_history(&request);
-                        let user_error = UserFacingError::from(error);
-                        if let Some(tab) = self.find_tab_mut(tab_id)
-                            && let TabKind::QueryEditor(editor) = &mut tab.kind
-                        {
-                            editor.running = false;
-                            editor.summaries = Vec::new();
-                            editor.result_editors.clear();
-                            editor.active_result_editor = None;
-                            editor.error = Some(user_error.clone());
-                        }
-                        self.state.last_error = Some(user_error.clone());
-                        AppEvent::Failed(user_error)
-                    }
-                }
-            }
+            } => self.execute_query_text_with_options(tab_id, text, options),
             AppCommand::FinishQueryExecution { tab_id, result } => match result {
                 Ok(execution) => {
                     self.clear_query_cancel_flag(tab_id);

@@ -264,6 +264,12 @@ fn ai_chat_part(
     if part.kind == "artifact_ref" {
         return ai_chat_artifact_card(part, &payload, &text, colors, cx);
     }
+    if part.kind == "notice"
+        && payload.get("kind").and_then(serde_json::Value::as_str)
+            == Some("er_relationship_proposals")
+    {
+        return ai_chat_er_proposal_card(part, &payload, colors, cx);
+    }
     if part.kind == "plan" {
         return ai_chat_plan_card(part, &payload, colors);
     }

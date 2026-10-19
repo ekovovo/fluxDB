@@ -168,7 +168,14 @@ impl NavicatMain {
                     batch_text: String::new(),
                     batch_separator: BatchSeparator::Newline,
                 };
-                (draft, String::new())
+                // 单值弹层的输入框就是那一个值，打开时直接带上当前值；
+                // 多值弹层的输入框是「新增一个值」的入口，必须为空。
+                let input_text = if rule.operator.value_arity() == DataFilterValueArity::Single {
+                    rule.values.iter().next().cloned().unwrap_or_default()
+                } else {
+                    String::new()
+                };
+                (draft, input_text)
             })
             .unwrap_or_else(|| {
                 (
@@ -187,7 +194,7 @@ impl NavicatMain {
                 )
             });
         self.data_filter_value_draft = Some(draft);
-        self.data_filter_value_input_text = String::new();
+        self.data_filter_value_input_text = input_text.clone();
         self.data_filter_value_input.update(cx, |input, cx| {
             input.set_value(input_text, window, cx);
         });
@@ -337,18 +344,53 @@ impl NavicatMain {
                 && draft.rule_index == rule_index
             {
                 draft.operator = operator;
-                let is_list = matches!(
-                    operator,
-                    DataFilterOperator::InList | DataFilterOperator::NotInList
-                );
-                if !is_list {
-                    draft.values.clear();
-                }
+                draft.values = data_filter_values_for_arity(&draft.values, operator);
             }
         }
         self.data_filter_popover = None;
         self.sync_table_hover_overlay_block(cx);
         cx.notify();
+    }
+
+    /// 单值弹层勾选建议值：把该值填进输入框；再点同一项取消勾选（清空输入）。
+    ///
+    /// 单值形态下「勾选」不是多选，而是指定那一个值，因此直接改草稿输入，
+    /// 由「确定」统一写回条件。
+    fn pick_data_filter_single_value(
+        &mut self,
+        value: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(draft) = self.data_filter_value_draft.as_mut() else {
+            return;
+        };
+        let next = if draft.input == value {
+            String::new()
+        } else {
+            value
+        };
+        draft.input = next.clone();
+        self.data_filter_value_input_text = next.clone();
+        self.data_filter_value_input.update(cx, |input, cx| {
+            input.set_value(next, window, cx);
+        });
+        cx.notify();
+    }
+
+    /// 值弹层输入框回车：单值形态直接「确定」写回条件；多值形态追加为新值，保持连续输入。
+    fn commit_data_filter_value_input(&mut self, value: String, cx: &mut Context<Self>) {
+        self.update_data_filter_manual_value(value, cx);
+        let draft = self.data_filter_value_draft.as_ref();
+        let single = draft.is_some_and(|draft| {
+            draft.operator.value_arity() == DataFilterValueArity::Single
+        });
+        let tab_id = draft.map(|draft| draft.tab_id);
+        if single && let Some(tab_id) = tab_id {
+            self.apply_data_filter_value_draft(tab_id, cx);
+        } else {
+            self.add_data_filter_manual_value(TabId(0), cx);
+        }
     }
 
     /// 建议值勾选：切换草稿中的某个值（已选→取消，未选→加入），不直接改条件。
@@ -527,46 +569,57 @@ impl NavicatMain {
             return;
         }
 
-        // 未提交的单值输入先纳入草稿（沿用与手动添加相同的去空/去重规则）。
-        let pending = std::mem::take(&mut draft.input);
-        if !pending.trim().is_empty()
-            && data_filter_rule_can_add_more_value(draft.operator, draft.values.len())
-        {
-            draft.values.insert(pending.trim().to_string());
-        } else if !pending.trim().is_empty() {
-            // 介于/不介于已满两个值：未提交的单值无法加入，明确提示而非静默丢弃。
-            self.show_message(
-                tr("app.filter.error.between_max").to_string(),
-                AppMessageKind::Warning,
-                cx,
-            );
-        }
-        // 批量区若有未处理内容，提示后返回，不静默丢失。
-        if !draft.batch_text.trim().is_empty() {
-            self.show_message(
-                tr("app.filter.error.pending_batch").to_string(),
-                AppMessageKind::Warning,
-                cx,
-            );
-            self.data_filter_value_draft = Some(draft);
-            cx.notify();
-            return;
-        }
+        // 单值形态：输入框内容就是那一个值（空输入即清空该值），
+        // 没有已选列表/批量区的中间态需要校验。
+        if draft.operator.value_arity() == DataFilterValueArity::Single {
+            let value = std::mem::take(&mut draft.input).trim().to_string();
+            draft.values = if value.is_empty() {
+                BTreeSet::new()
+            } else {
+                BTreeSet::from([value])
+            };
+        } else {
+            // 未提交的单值输入先纳入草稿（沿用与手动添加相同的去空/去重规则）。
+            let pending = std::mem::take(&mut draft.input);
+            if !pending.trim().is_empty()
+                && data_filter_rule_can_add_more_value(draft.operator, draft.values.len())
+            {
+                draft.values.insert(pending.trim().to_string());
+            } else if !pending.trim().is_empty() {
+                // 介于/不介于已满两个值：未提交的单值无法加入，明确提示而非静默丢弃。
+                self.show_message(
+                    tr("app.filter.error.between_max").to_string(),
+                    AppMessageKind::Warning,
+                    cx,
+                );
+            }
+            // 批量区若有未处理内容，提示后返回，不静默丢失。
+            if !draft.batch_text.trim().is_empty() {
+                self.show_message(
+                    tr("app.filter.error.pending_batch").to_string(),
+                    AppMessageKind::Warning,
+                    cx,
+                );
+                self.data_filter_value_draft = Some(draft);
+                cx.notify();
+                return;
+            }
 
-        // 空列表校验：IN / NOT IN 不允许空列表，避免静默退化为无条件查询。
-        if matches!(
-            draft.operator,
-            DataFilterOperator::InList | DataFilterOperator::NotInList
-        ) && draft.values.is_empty()
-        {
-            self.show_message(
-                tr("app.filter.error.list_empty").to_string(),
-                AppMessageKind::Warning,
-                cx,
-            );
-            self.data_filter_value_draft = Some(draft);
-            cx.notify();
-            return;
+            // 空列表校验：IN / NOT IN 不允许空列表，避免静默退化为无条件查询。
+            if matches!(
+                draft.operator,
+                DataFilterOperator::InList | DataFilterOperator::NotInList
+            ) && draft.values.is_empty()
+            {
+                self.show_message(
+                    tr("app.filter.error.list_empty").to_string(),
+                    AppMessageKind::Warning,
+                    cx,
+                );
+                self.data_filter_value_draft = Some(draft);
+                cx.notify();
+                return;
+            }
         }
 
         // 只更新当前条件，不触发查询；仍由「应用筛选 & 排序」执行查询。

@@ -50,20 +50,39 @@ fn data_filter_popover_layer(
             colors,
             cx,
         ),
-        DataFilterPopoverKind::Value => data_filter_value_menu(
-            tab_id,
-            rule_index,
-            recommended_values,
-            value_draft,
-            value_input,
-            search_input,
-            batch_input,
-            value_search,
-            value_search_loading,
-            DATA_FILTER_POPOVER_TOP,
-            colors,
-            cx,
-        ),
+        // 单值形态用 Navicat 式单值弹层（输入框 + 建议值 + 确定/取消）；
+        // 区间/列表才用带「已选 N 个值 / 批量粘贴」的多值弹层。
+        DataFilterPopoverKind::Value => {
+            if selected_operator.value_arity() == DataFilterValueArity::Single {
+                data_filter_single_value_menu(
+                    tab_id,
+                    rule_index,
+                    recommended_values,
+                    value_draft,
+                    value_input,
+                    search_input,
+                    value_search,
+                    value_search_loading,
+                    colors,
+                    cx,
+                )
+            } else {
+                data_filter_value_menu(
+                    tab_id,
+                    rule_index,
+                    recommended_values,
+                    value_draft,
+                    value_input,
+                    search_input,
+                    batch_input,
+                    value_search,
+                    value_search_loading,
+                    DATA_FILTER_POPOVER_TOP,
+                    colors,
+                    cx,
+                )
+            }
+        }
         DataFilterPopoverKind::SortField => data_sort_field_menu(
             tab_id,
             popover.sort_index.unwrap_or(0),
@@ -368,8 +387,12 @@ fn data_filter_rule_row(
     let indent = if nested { 40. } else { 12. };
     let add_grouped = nested;
     let group_button_grouped = true;
-    let show_value = rule.operator.requires_values();
-    let selected_values = show_value.then(|| rule.values.iter().cloned().collect::<Vec<_>>());
+    // 值形态决定值槽文案与弹层形态：单值只显示那一个值，区间/列表显示值个数。
+    let arity = rule.operator.value_arity();
+    let selected_values = rule
+        .operator
+        .requires_values()
+        .then(|| rule.values.iter().cloned().collect::<Vec<_>>());
     let value_label = selected_values
         .as_deref()
         .map(data_filter_value_label);
@@ -419,8 +442,10 @@ fn data_filter_rule_row(
                 }),
             ),
         )
-        .when(show_value, |this| {
-            this.child(
+        .when(arity != DataFilterValueArity::None, |this| {
+            this.child(if arity == DataFilterValueArity::Single {
+                data_filter_single_value_slot(tab_id, rule_index, rule, colors, cx)
+            } else {
                 data_filter_clickable_text(
                     value_label.clone().unwrap_or_else(|| "<?>".to_string()),
                     colors,
@@ -437,8 +462,8 @@ fn data_filter_rule_row(
                         );
                         cx.stop_propagation();
                     }),
-                ),
-            )
+                )
+            })
         })
         .when(show_and, |this| {
             this.child(
@@ -495,6 +520,36 @@ fn data_filter_value_label(selected_values: &[String]) -> String {
     } else {
         tr("app.filter.value_count").replace("%{count}", &selected_values.len().to_string())
     }
+}
+
+/// 单值运算符的值槽：点开 Navicat 式的单值弹层（输入框 + 建议值 + 确定/取消），
+/// 与区间/列表的多选弹层区分开——单值没有「已选 N 个值」这回事。
+fn data_filter_single_value_slot(
+    tab_id: TabId,
+    rule_index: usize,
+    rule: &DataFilterRule,
+    colors: UiColors,
+    cx: &mut Context<NavicatMain>,
+) -> Div {
+    let label = rule
+        .values
+        .iter()
+        .next()
+        .cloned()
+        .unwrap_or_else(|| "<?>".to_string());
+    data_filter_clickable_text(label, colors).on_mouse_down(
+        MouseButton::Left,
+        cx.listener(move |this, _, window, cx| {
+            this.toggle_data_filter_popover(
+                tab_id,
+                Some(rule_index),
+                DataFilterPopoverKind::Value,
+                window,
+                cx,
+            );
+            cx.stop_propagation();
+        }),
+    )
 }
 
 fn data_sort_empty_rule(
@@ -1030,6 +1085,204 @@ fn data_sort_menu_separator(colors: UiColors) -> Div {
         .flex()
         .items_center()
         .child(div().h(px(1.)).w_full().bg(colors.border_soft))
+}
+
+/// 单值形态的值弹层：输入框 + 建议值 + 搜索 + 确定/取消（对齐 Navicat 的单值编辑）。
+///
+/// 与多值弹层的区别只在「只有一个值」：没有已选标签区、清空、批量粘贴，
+/// 建议值勾选即把该值填进输入框，再点同一项取消勾选（清空输入）。
+fn data_filter_single_value_menu(
+    tab_id: TabId,
+    rule_index: usize,
+    recommended_values: Vec<String>,
+    draft: Option<&DataFilterValueDraft>,
+    value_input: Entity<InputState>,
+    search_input: Entity<InputState>,
+    search: &str,
+    search_loading: bool,
+    colors: UiColors,
+    cx: &mut Context<NavicatMain>,
+) -> Div {
+    let draft = draft.filter(|d| d.tab_id == tab_id && d.rule_index == rule_index);
+    let field_label = draft
+        .map(|draft| draft.field.clone())
+        .filter(|field| !field.is_empty())
+        .unwrap_or_else(|| "筛选值".to_string());
+    let current_value = draft.map(|draft| draft.input.clone()).unwrap_or_default();
+
+    div()
+        .absolute()
+        .w(px(520.))
+        .max_h(px(560.))
+        .rounded(colors.radius_lg)
+        .border_1()
+        .border_color(colors.border)
+        .bg(colors.panel_bg)
+        .shadow(vec![box_shadow(
+            0.,
+            8.,
+            20.,
+            0.,
+            hsla(0., 0., 0., if colors.is_dark { 0.45 } else { 0.18 }),
+        )])
+        .top(px(DATA_FILTER_POPOVER_TOP))
+        .left(px(150.))
+        .flex()
+        .flex_col()
+        .occlude()
+        .on_mouse_move(|_, _, cx| cx.stop_propagation())
+        .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .key_context("DataFilterSingleValueMenu")
+        .on_action(cx.listener(|this, _: &CancelDialog, _, cx| {
+            this.cancel_data_filter_value(cx);
+            cx.stop_propagation();
+        }))
+        .child(data_filter_value_header(field_label, colors, cx)
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _, _, cx| {
+                    this.cancel_data_filter_value(cx);
+                    cx.stop_propagation();
+                }),
+            ))
+        // 输入值：单值就是输入框本身，回车或「确定」写回条件。
+        .child(
+            div()
+                .px_2()
+                .pt_2()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(
+                    div()
+                        .px_1()
+                        .text_size(px(12.))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(colors.text)
+                        .child("输入值"),
+                )
+                .child(
+                    div()
+                        .h(px(28.))
+                        .rounded(colors.radius)
+                        .border_1()
+                        .border_color(colors.border)
+                        .bg(colors.input_bg)
+                        .px_2()
+                        .flex()
+                        .items_center()
+                        .child(
+                            Input::new(&value_input)
+                                .appearance(false)
+                                .focus_bordered(false)
+                                .w_full()
+                                .h_full()
+                                .text_size(px(13.)),
+                        ),
+                ),
+        )
+        // 建议值：勾选即设为该值，搜索只过滤建议值。
+        .child(
+            div()
+                .px_2()
+                .pt_2()
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .px_1()
+                        .pb_1()
+                        .text_size(px(12.))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(colors.text)
+                        .child("建议值"),
+                )
+                .child(data_filter_single_suggested_values_list(
+                    recommended_values,
+                    &current_value,
+                    search,
+                    search_loading,
+                    &colors,
+                    cx,
+                )),
+        )
+        .child(data_filter_menu_search_footer(search_input, colors))
+        // 底部按钮
+        .child(
+            div()
+                .h(px(44.))
+                .border_t_1()
+                .border_color(colors.border_soft)
+                .px_2()
+                .flex()
+                .items_center()
+                .justify_end()
+                .gap_2()
+                .child(data_filter_dialog_button("取消", false, colors).on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, _, _, cx| {
+                        this.cancel_data_filter_value(cx);
+                        cx.stop_propagation();
+                    }),
+                ))
+                .child(data_filter_dialog_button("确定", true, colors).on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, _, _, cx| {
+                        this.apply_data_filter_value_draft(tab_id, cx);
+                        cx.stop_propagation();
+                    }),
+                )),
+        )
+}
+
+/// 单值建议值列表：勾选状态 = 输入框当前值；点击切换（选中→清空，空→填入）。
+fn data_filter_single_suggested_values_list(
+    values: Vec<String>,
+    current_value: &str,
+    search: &str,
+    search_loading: bool,
+    colors: &UiColors,
+    cx: &mut Context<NavicatMain>,
+) -> Div {
+    let mut list = div()
+        .max_h(px(240.))
+        .overflow_y_scrollbar()
+        .flex()
+        .flex_col();
+
+    if values.is_empty() {
+        list = list.child(data_filter_menu_empty_item(
+            if search.trim().is_empty() && !search_loading {
+                "没有建议值"
+            } else {
+                "没有匹配值"
+            },
+            *colors,
+        ));
+    } else {
+        for value in values {
+            let checked = value == current_value;
+            let value_for_click = value.clone();
+            let item_id = format!("single:{value}");
+            list = list.child(
+                data_filter_value_item(value, checked, *colors)
+                    .id(item_id)
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _, window, cx| {
+                            this.pick_data_filter_single_value(
+                                value_for_click.clone(),
+                                window,
+                                cx,
+                            );
+                            cx.stop_propagation();
+                        }),
+                    ),
+            );
+        }
+    }
+    div().child(list)
 }
 
 fn data_filter_value_menu(

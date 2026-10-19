@@ -31,6 +31,9 @@ include!("parts/sql_dialect.rs");
 include!("parts/process_util.rs");
 include!("parts/er_model.rs");
 include!("parts/er_relationship.rs");
+include!("parts/er_relationship_identity.rs");
+include!("parts/er_relationship_value.rs");
+include!("parts/er_relationship_path.rs");
 include!("parts/er_rebind.rs");
 
 include!("parts/ai/mod.rs");

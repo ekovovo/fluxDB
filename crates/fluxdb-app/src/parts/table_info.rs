@@ -165,9 +165,7 @@ fn tab_belongs_to_database(tab: &TabState, connection_id: ConnectionId, database
         TabKind::BackupList(list) => {
             list.connection_id == connection_id && list.database == database
         }
-        TabKind::Settings(settings) => settings.workspace.as_ref().is_some_and(|workspace| {
-            workspace.connection_id == connection_id && workspace.database == database
-        }),
+        TabKind::Settings(_) => false,
         TabKind::AiChat { workspace } => workspace.as_ref().is_some_and(|workspace| {
             workspace.connection_id == connection_id && workspace.database == database
         }),
@@ -201,10 +199,7 @@ fn tab_belongs_to_connection(tab: &TabState, connection_id: ConnectionId) -> boo
         TabKind::UserAdmin(admin) => admin.connection_id == connection_id,
         TabKind::BackupList(list) => list.connection_id == connection_id,
         TabKind::ErDiagram(er) => er.connection_id == connection_id,
-        TabKind::Settings(settings) => settings
-            .workspace
-            .as_ref()
-            .is_some_and(|workspace| workspace.connection_id == connection_id),
+        TabKind::Settings(_) => false,
         TabKind::AiChat { workspace } => workspace
             .as_ref()
             .is_some_and(|workspace| workspace.connection_id == connection_id),

@@ -368,6 +368,28 @@ fn ai_conversation_record_tool_result(
                 part.revision,
             )?;
         }
+        // 关系候选需要用户逐条决定：把已校验批次投影成可持久化的 notice 卡，
+        // 让聊天、重启后的历史都能重新打开审阅弹框。它不进入审批流程，也不触发写入。
+        if let Some(proposal_payload) = er_proposal_notice_payload(receipt) {
+            let part_id = format!(
+                "{}-er-proposals-{}",
+                job.assistant_message_id, receipt.call_id
+            );
+            if fluxdb_storage::ai_platform::sessions::load_part(conn, &part_id).is_err() {
+                fluxdb_storage::ai_platform::sessions::append_part(
+                    conn,
+                    ai_chat_now(),
+                    &part_id,
+                    &job.assistant_message_id,
+                    fluxdb_storage::ai_platform::sessions::PartKind::Notice,
+                    fluxdb_storage::ai_platform::sessions::PartStatus::Complete,
+                    &proposal_payload,
+                    None,
+                    None,
+                    None,
+                )?;
+            }
+        }
         fluxdb_storage::ai_platform::conversation::upsert_event_part(
             conn,
             ai_chat_now(),
@@ -382,6 +404,37 @@ fn ai_conversation_record_tool_result(
             result_ref.as_deref(),
         )
     })
+}
+
+/// 只投影关系建议结果中的公开候选，不把工具回执原文塞进会话片段。
+fn er_proposal_notice_payload(receipt: &fluxdb_core::ToolReceipt) -> Option<String> {
+    if receipt.tool_id != "er.propose_relationships"
+        || receipt.status != fluxdb_core::ToolReceiptStatus::Succeeded
+    {
+        return None;
+    }
+    let result: serde_json::Value = serde_json::from_str(&receipt.result_json).ok()?;
+    if result.get("kind").and_then(serde_json::Value::as_str) != Some("er_relationship_proposals") {
+        return None;
+    }
+    let total = result
+        .get("counts")
+        .and_then(|counts| counts.get("total"))
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    Some(
+        serde_json::json!({
+            "kind": "er_relationship_proposals",
+            "batch_id": result.get("batch_id"),
+            "target": result.get("target"),
+            "items": result.get("items"),
+            "counts": result.get("counts"),
+            "written": false,
+            "tool_call_id": receipt.call_id,
+            "text": format!("AI 生成 {total} 条关系建议，等待逐条审阅"),
+        })
+        .to_string(),
+    )
 }
 
 /// 记录"等待审批"：工具调用事实行（waiting_approval）+ 审批行（pending）+ 可见审批片段。
@@ -476,4 +529,56 @@ fn ai_conversation_record_approval(
         tx.commit().map_err(|error| fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, error.to_string()))
     })?;
     Ok(approval_id)
+}
+
+#[cfg(test)]
+mod er_proposal_notice_tests {
+    use super::*;
+
+    fn receipt(tool_id: &str, status: fluxdb_core::ToolReceiptStatus, result: serde_json::Value) -> fluxdb_core::ToolReceipt {
+        fluxdb_core::ToolReceipt {
+            call_id: "call-1".into(),
+            tool_id: tool_id.into(),
+            status,
+            result_json: result.to_string(),
+            error_code: None,
+            affected_rows: None,
+            started_at_ms: 0,
+            finished_at_ms: 1,
+        }
+    }
+
+    #[test]
+    fn proposal_notice_keeps_only_successful_candidate_payload() {
+        let result = serde_json::json!({
+            "kind": "er_relationship_proposals",
+            "batch_id": "batch-1",
+            "target": {"connection_id": 1, "database": "sales", "schema": null},
+            "items": [],
+            "counts": {"total": 2, "ready": 1, "unavailable": 1, "invalid": 0}
+        });
+        let payload = er_proposal_notice_payload(&receipt(
+            "er.propose_relationships",
+            fluxdb_core::ToolReceiptStatus::Succeeded,
+            result.clone(),
+        ))
+        .and_then(|payload| serde_json::from_str::<serde_json::Value>(&payload).ok())
+        .expect("proposal notice");
+
+        assert_eq!(payload["kind"], "er_relationship_proposals");
+        assert_eq!(payload["written"], false);
+        assert_eq!(payload["text"], "AI 生成 2 条关系建议，等待逐条审阅");
+        assert!(er_proposal_notice_payload(&receipt(
+            "er.propose_relationships",
+            fluxdb_core::ToolReceiptStatus::Failed,
+            result.clone(),
+        ))
+        .is_none());
+        assert!(er_proposal_notice_payload(&receipt(
+            "db.get_relationships",
+            fluxdb_core::ToolReceiptStatus::Succeeded,
+            result,
+        ))
+        .is_none());
+    }
 }

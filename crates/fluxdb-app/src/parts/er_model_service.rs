@@ -167,6 +167,87 @@ impl ErModelService {
         Ok(rel)
     }
 
+    /// 原子采纳一批由宿主校验过的 Agent 建议。
+    ///
+    /// 用户已在逐条审阅弹框中明确选择，因此这里直接写入 `Confirmed`，不再留下
+    /// `Proposed` 中间态。模型不能调用此方法；review/identity/revision 均由宿主重写，
+    /// 且任一条冲突都会整批失败，避免部分采纳后用户无法判断批内剩余状态。
+    pub fn create_confirmed_batch(
+        &self,
+        mut relationships: Vec<ErRelationship>,
+        by: &str,
+    ) -> Result<Vec<ErRelationship>, ErModelError> {
+        if relationships.is_empty() {
+            return Err(ErModelError::InvalidDefinition("没有可采纳的关系".into()));
+        }
+        if relationships.len() > 50 {
+            return Err(ErModelError::InvalidDefinition(
+                "单次最多采纳 50 条关系".into(),
+            ));
+        }
+        if by.trim().is_empty() {
+            return Err(ErModelError::InvalidDefinition(
+                "确认人不能为空".into(),
+            ));
+        }
+        let _guard = self.lock.lock().unwrap();
+        let mut all = self.load_all()?;
+        let mut identity_keys = std::collections::BTreeSet::new();
+        for index in 0..relationships.len() {
+            let (left_entity, right_entity, role) = {
+                let rel = &relationships[index];
+                (
+                    rel.left_entity.clone(),
+                    rel.right_entity.clone(),
+                    rel.role.clone(),
+                )
+            };
+            let rel = &relationships[index];
+            if rel.origin != fluxdb_core::ErRelationshipOrigin::Agent
+                || rel.enforcement.kind != fluxdb_core::ErEnforcementKind::None
+                || rel.enforcement.constraint_ref.is_some()
+                || rel.enforcement.enforced.is_some()
+                || rel.validity.state != fluxdb_core::ErValidityState::Current
+            {
+                return Err(ErModelError::InvalidDefinition(
+                    "AI 建议只能由宿主按 Agent/无约束/当前结构写入".into(),
+                ));
+            }
+            validate_definition(rel)?;
+            let key = fluxdb_core::er_relationship_identity_key(rel);
+            if !identity_keys.insert(key.clone())
+                || all.iter().any(|current| {
+                    fluxdb_core::er_relationship_identity_key(current) == key
+                })
+            {
+                return Err(ErModelError::InvalidDefinition(
+                    "关系已存在或批次内重复".into(),
+                ));
+            }
+            let duplicate_role = all.iter().chain(relationships[..index].iter()).any(|current| {
+                ((current.left_entity == left_entity && current.right_entity == right_entity)
+                    || (current.left_entity == right_entity
+                        && current.right_entity == left_entity))
+                    && current.role == role
+            });
+            if duplicate_role {
+                return Err(ErModelError::DuplicateRole);
+            }
+            let rel = &mut relationships[index];
+            rel.id = format!("agent-{}", uuid::Uuid::new_v4());
+            rel.revision = 1;
+            rel.review = ErRelationshipReview {
+                state: ErReviewState::Confirmed,
+                confirmed_revision: Some(1),
+                confirmed_by: Some(by.to_string()),
+            };
+        }
+        all.extend(relationships.iter().cloned());
+        self.save_all(&all)
+            .map_err(|_| ErModelError::InvalidDefinition("保存失败".into()))?;
+        Ok(relationships)
+    }
+
     /// 按 id 找（可变借用以构造 next revision）。
     fn index_of(all: &[ErRelationship], id: &str) -> Option<usize> {
         all.iter().position(|r| r.id == id)
@@ -416,19 +497,15 @@ fn rebase_endpoint(
     }
 }
 
-/// 由结构化表身份生成实体稳定 ID（与 desktop `er_entity_id` 同规则，供快照/重绑身份对齐）。
+/// 由结构化表身份生成实体稳定 ID。与 core `er_entity_id` 同规则（关系端点/列引用的
+/// 唯一生成规则），避免桌面 ER、应用层查询与结构重绑各算一套身份。
 fn er_snapshot_entity_id(reference: &fluxdb_core::ErTableRef) -> String {
-    format!(
-        "{}:{}:{}",
-        reference.database,
-        reference.schema.as_deref().unwrap_or_default(),
-        reference.name
-    )
+    fluxdb_core::er_entity_id(reference)
 }
 
 /// 由列身份生成列 ID（`实体ID::列名`）。
 fn er_snapshot_column_id(reference: &fluxdb_core::ErTableRef, column: &str) -> String {
-    format!("{}::{column}", er_snapshot_entity_id(reference))
+    fluxdb_core::er_column_id(reference, column)
 }
 
 /// 由已加载的表节点（含字段，如字段按需加载后的 `ErTableNode`）构建结构快照

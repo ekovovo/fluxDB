@@ -92,7 +92,7 @@ pub fn send(
     }
     let tx = conn.unchecked_transaction().map_err(sqlite_error)?;
     if new_session {
-        let title: String = text.trim().chars().take(40).collect();
+        let title = sessions::session_title_preview(text, 40);
         sessions::create_session(&tx, now, session_id, agent_id, &title)?;
         super::model_selection::transfer_draft(&tx, session_id)?;
         super::context_references::transfer(&tx, session_id)?;

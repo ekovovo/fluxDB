@@ -102,25 +102,29 @@ fn ai_execution_policy_panel(
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> GroupBox {
-    settings_panel_group(tr("app.ai.policy.title"), colors)
-        .child(ai_policy_row(
-            &tr("app.ai.policy.tools_default"),
-            &tr("app.ai.policy.tools_default_detail"),
-            ai_tools_policy_button(state, colors, cx),
-            colors,
-        ))
-        .child(ai_policy_row(
-            &tr("app.ai.policy.risk_threshold"),
-            &tr("app.ai.policy.risk_threshold_detail"),
-            ai_write_risk_threshold_control(state, colors, cx),
-            colors,
-        ))
-        .child(ai_policy_row(
-            &tr("app.ai.policy.review_weight"),
-            &tr("app.ai.policy.review_weight_detail"),
-            ai_write_review_weight_control(state, colors, cx),
-            colors,
-        ))
+    let mut panel = settings_panel_group(tr("app.ai.policy.title"), colors).child(ai_policy_row(
+        &tr("app.ai.policy.tools_default"),
+        &tr("app.ai.policy.tools_default_detail"),
+        ai_tools_policy_button(state, colors, cx),
+        colors,
+    ));
+    // 阈值与权重只参与“帮我审批”的写入风险评分；其他策略下不参与判定，不展示以免误导。
+    if state.ai_execution_policy.tools_default == fluxdb_core::ExecutionPolicy::AiApproval {
+        panel = panel
+            .child(ai_policy_row(
+                &tr("app.ai.policy.risk_threshold"),
+                &tr("app.ai.policy.risk_threshold_detail"),
+                ai_write_risk_threshold_control(state, colors, cx),
+                colors,
+            ))
+            .child(ai_policy_row(
+                &tr("app.ai.policy.review_weight"),
+                &tr("app.ai.policy.review_weight_detail"),
+                ai_write_review_weight_control(state, colors, cx),
+                colors,
+            ));
+    }
+    panel
 }
 
 /// 阈值档位：按钮 + 下拉菜单，与页面其它策略控件保持同一种交互，避免引入新的数字控件。

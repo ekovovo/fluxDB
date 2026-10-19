@@ -229,7 +229,7 @@ impl TableDelegate for DataPageTableDelegate {
     }
 
     fn rows_count(&self, _: &App) -> usize {
-        self.rows.len()
+        self.page.rows.len()
     }
 
     fn column(&self, col_ix: usize, _: &App) -> TableColumn {
@@ -390,15 +390,6 @@ impl TableDelegate for DataPageTableDelegate {
         } else {
             col_ix
         };
-        let text: SharedString = if is_row_index_col {
-            SharedString::from((row_ix + 1).to_string())
-        } else {
-            self.rows
-                .get(row_ix)
-                .and_then(|row| row.get(row_value_col_ix))
-                .cloned()
-                .unwrap_or_default()
-        };
         let source_row_ix = self
             .source_row_indexes
             .get(row_ix)
@@ -409,6 +400,21 @@ impl TableDelegate for DataPageTableDelegate {
             .get(col_ix)
             .and_then(|index| *index)
             .unwrap_or(row_value_col_ix);
+        let cell_value = if is_row_index_col {
+            None
+        } else {
+            self.page
+                .rows
+                .get(row_ix)
+                .and_then(|row| row.values.get(source_col_ix))
+        };
+        let text: SharedString = if is_row_index_col {
+            SharedString::from((row_ix + 1).to_string())
+        } else {
+            cell_value
+                .map(|value| SharedString::from(data_cell_clipped_text(value)))
+                .unwrap_or_default()
+        };
         let null_cell =
             !is_row_index_col && self.null_cells.contains(&(source_row_ix, source_col_ix));
         let dirty_cell =
@@ -477,11 +483,6 @@ impl TableDelegate for DataPageTableDelegate {
         let view_for_edit = self.view.clone();
         let view_for_menu = self.view.clone();
         let view_for_info = self.view.clone();
-        let edit_value = if null_cell {
-            String::new()
-        } else {
-            text.to_string()
-        };
         let meta_for_menu =
             self.column_meta
                 .get(col_ix)
@@ -497,15 +498,14 @@ impl TableDelegate for DataPageTableDelegate {
         let temporal_kind = data_cell_temporal_kind(&meta_for_menu.type_name);
         let editor_kind = data_cell_editor_kind(&meta_for_menu.type_name);
         let choice_picker = !data_cell_choice_options(editor_kind, &meta_for_menu).is_empty();
-        let choice_label = (!null_cell)
-            .then(|| {
+        let choice_label = cell_value
+            .and_then(|value| {
                 meta_for_menu
                     .choices
                     .iter()
-                    .find(|choice| choice.value == text.as_ref())
-                    .map(|choice| choice.label.trim().to_string())
+                    .find(|choice| cell_value_equals(value, choice.value.as_str()))
             })
-            .flatten()
+            .map(|choice| choice.label.trim().to_string())
             .filter(|label| !label.is_empty());
         let redis_type_cell = !is_row_index_col
             && meta_for_menu.type_name == "redis"
@@ -539,7 +539,8 @@ impl TableDelegate for DataPageTableDelegate {
             column_name: meta_for_menu.name.clone(),
             type_name: meta_for_menu.type_name.clone(),
             nullable: meta_for_menu.nullable,
-            value: text.to_string(),
+            // 完整值在右键打开菜单时再取，避免渲染期复制大 TEXT。
+            value: String::new(),
             submenu: None,
             selection_row_count: 0,
             selection_copy_label: None,
@@ -849,10 +850,16 @@ impl TableDelegate for DataPageTableDelegate {
                         if redis_cell {
                             // Redis 列暂不提供单元格详情/编辑入口，只保留操作列删除。
                         } else if editable_cell {
+                            // 双击才取完整值，渲染期不再为每格复制一份编辑文本。
+                            let edit_value = if null_cell {
+                                String::new()
+                            } else {
+                                table.delegate().data_cell_full_text(row_ix, col_ix)
+                            };
                             let _ = view_for_edit.update(cx, |this, cx| {
                                 this.begin_data_cell_edit(
                                     edit_state.clone(),
-                                    edit_value.clone(),
+                                    edit_value,
                                     window,
                                     cx,
                                 );
@@ -939,6 +946,7 @@ impl TableDelegate for DataPageTableDelegate {
                         }
                         let mut menu = context_menu.clone();
                         menu.position = event.position;
+                        menu.value = delegate.data_cell_full_text(row_ix, col_ix);
                         menu.selection_row_count = delegate.selected_row_count();
                         menu.selection_copy_label = delegate.selection_copy_label();
                         menu.selection_export_label = delegate.selection_export_label();

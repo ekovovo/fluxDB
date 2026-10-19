@@ -72,6 +72,10 @@ struct NavicatMain {
     ai_diagnostics_modal: Rc<std::cell::RefCell<AiDiagnosticsModalData>>,
     /// 诊断读取任务；保持到完成，避免后台任务被提前丢弃。
     _ai_diagnostics_task: Option<Task<()>>,
+    /// AI 关系建议逐条审阅弹框。
+    er_proposal_modal: Rc<std::cell::RefCell<ErProposalModalData>>,
+    /// 关系建议采纳任务；保持到完成，避免后台任务被提前丢弃。
+    _er_proposal_task: Option<Task<()>>,
     /// 会话重命名弹框的输入与待保存对象。
     ai_session_rename_input: Entity<InputState>,
     _ai_session_rename_subscription: Subscription,
@@ -305,10 +309,9 @@ struct NavicatMain {
     redis_list_table_state: Entity<TableState<RedisListTableDelegate>>,
     redis_key_value_input: Entity<InputState>,
     _redis_key_value_subscription: Subscription,
-    redis_json_key_value_input: Entity<InputState>,
     _redis_json_key_value_subscription: Subscription,
-    // Redis JSON 值编辑器运行态：绑定 `redis_json_key_value_input`，维护权威全文、诊断与折叠状态。
-    redis_json_editor: JsonEditorState,
+    // Redis JSON 值组件：内部持有多行编辑框，维护权威全文、诊断与折叠状态。
+    redis_json_editor: JsonComponent,
     // JSON 编辑器当前归属的 (tab, key)；切换 key 或关闭抽屉时据此清理并重置折叠/诊断。
     redis_json_editor_active: Option<(TabId, String)>,
     // JSON 编辑器是否为「保存中/加载中」，期间禁用编辑、保存、格式化等修改文本的操作。
@@ -609,10 +612,10 @@ struct NavicatMain {
     user_admin_password_visible: bool,
     pinned_tabs: BTreeSet<TabId>,
     tab_order: Vec<TabId>,
-    workspace_tab_order: Vec<WorkspaceScope>,
+    workspace_tab_order: Vec<FirstLevelScope>,
     // 当前鼠标悬停的标签页：仅用于浮现标签操作按钮，不持久化。
     hovered_tab: Option<TabId>,
-    hovered_database_tab: Option<WorkspaceScope>,
+    hovered_first_level_tab: Option<FirstLevelScope>,
     display_database_search_input: Entity<InputState>,
     _display_database_search_subscription: Subscription,
     create_database_name_input: Entity<InputState>,

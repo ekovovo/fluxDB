@@ -430,9 +430,13 @@ fn close_workspace_modal(
                 .replace("%{count}", &pending.running_queries.to_string()),
         );
     }
-    let message = tr("app.confirm.close_workspace_message")
-        .replace("%{database}", &pending.scope.database)
-        .replace("%{details}", &details.join(", "));
+    let message = match &pending.scope {
+        FirstLevelScope::Database(workspace) => tr("app.confirm.close_workspace_message")
+            .replace("%{database}", &workspace.database)
+            .replace("%{details}", &details.join(", ")),
+        FirstLevelScope::Settings => tr("app.confirm.close_settings_message")
+            .replace("%{details}", &details.join(", ")),
+    };
 
     div()
         .absolute()

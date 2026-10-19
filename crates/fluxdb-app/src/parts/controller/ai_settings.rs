@@ -784,6 +784,9 @@ impl ModelProvider {
     }
 
     /// 解析 [`Self::stored_id`] 写下的稳定标识；未知值回退 OpenAI Chat。
+    ///
+    /// 只用于**读取**历史数据（行里存的就是稳定标识）。写入路径必须先校验标识已知，
+    /// 否则同样的兜底会把用户选的类型静默换回 OpenAI Chat。
     pub fn from_stored(value: &str) -> Self {
         match value {
             "openai-responses" => ModelProvider::OpenAiResponses,
@@ -791,6 +794,16 @@ impl ModelProvider {
             "decisions" => ModelProvider::Decisions,
             _ => ModelProvider::OpenAiChat,
         }
+    }
+
+    /// 解析 UI 展示名（Provider 下拉的值就是它）；未知值返回 `None`。
+    ///
+    /// 展示名与稳定标识是两套取值空间，不能混在一个解析器里，否则下拉里改了
+    /// Provider 会被按存储标识解析后静默回落成默认项。
+    pub fn from_label(value: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|provider| provider.label() == value)
     }
 
     /// 数据库中的稳定 Provider 标识；UI 改名不能改变历史值语义。
@@ -882,6 +895,17 @@ pub fn save_ai_model(
         return Err(fluxdb_core::Error::new(
             fluxdb_core::ErrorKind::Internal,
             "完整 URL 模式必须填写请求地址",
+        ));
+    }
+    // 写入路径必须校验 Provider 已知：`from_stored` 的兜底分支会把未知值静默当成
+    // OpenAI Chat，那会让用户在下拉里选的 Provider 存不进去（协议也随之被换掉）。
+    if !ModelProvider::ALL
+        .iter()
+        .any(|provider| provider.stored_id() == input.provider)
+    {
+        return Err(fluxdb_core::Error::new(
+            fluxdb_core::ErrorKind::Internal,
+            format!("Provider 取值无效：{}", input.provider),
         ));
     }
     let provider = ModelProvider::from_stored(&input.provider);
@@ -1257,3 +1281,44 @@ pub fn delete_ai_mcp_datasource(
 }
 
 include!("ai_model_network.rs");
+
+#[cfg(test)]
+mod model_provider_tests {
+    use super::*;
+
+    #[test]
+    fn every_provider_label_round_trips_to_its_stored_id() {
+        for provider in ModelProvider::ALL {
+            let label = provider.label();
+            assert_eq!(
+                ModelProvider::from_label(label),
+                Some(provider),
+                "下拉展示名必须能唯一解析回 Provider（{label}）"
+            );
+            assert_eq!(
+                ModelProvider::from_stored(provider.stored_id()),
+                provider,
+                "存储标识必须能解析回 Provider（{label}）"
+            );
+        }
+    }
+
+    #[test]
+    fn a_label_is_not_a_stored_id() {
+        // 回归：UI 传的是展示名，若按存储标识解析会被兜底成 OpenAI Chat，
+        // 用户在下拉里换 Provider 就存不进去。
+        let label = ModelProvider::Anthropic.label();
+
+        assert_eq!(ModelProvider::from_label(label), Some(ModelProvider::Anthropic));
+        assert_eq!(
+            ModelProvider::from_stored(label),
+            ModelProvider::OpenAiChat,
+            "读取路径的兜底行为保持不变（历史行兼容）"
+        );
+    }
+
+    #[test]
+    fn unknown_label_is_rejected_instead_of_defaulting() {
+        assert_eq!(ModelProvider::from_label("不存在的 Provider"), None);
+    }
+}

@@ -126,8 +126,12 @@ impl Render for NavicatMain {
         }
         let connection_browser_width =
             clamp_connection_browser_width(self.connection_browser_width);
-        let workspace_groups = workspace_tab_groups(&state);
-        let two_level_tabs = !workspace_groups.is_empty();
+        let first_level_groups = first_level_tab_groups(&state);
+        let settings_active = matches!(
+            active_first_level_scope(&state),
+            Some(FirstLevelScope::Settings)
+        );
+        let two_level_tabs = !first_level_groups.is_empty() && !settings_active;
         let query_history_detail = self.query_history_detail.clone();
         let pending_apply_preview = self.pending_apply_data_changes.and_then(|tab_id| {
             self.data_change_preview_for_tab(tab_id)
@@ -291,7 +295,7 @@ impl Render for NavicatMain {
                                 this.child(tab_switcher_popup(
                                     kind,
                                     &state,
-                                    active_workspace_scope(&state).as_ref(),
+                                    active_first_level_scope(&state).as_ref(),
                                     self.tab_switcher_search_input.clone(),
                                     &self.tab_switcher_search,
                                     two_level_tabs,

@@ -93,7 +93,7 @@ impl RedisListTableDelegate {
                 .resizable(false)
                 .movable(false)
                 .selectable(false),
-            TableColumn::new("value", "Value")
+            TableColumn::new("value", tr("app.redis.form.value"))
                 .width(redis_list_table_column_width("value", width))
                 .resizable(false)
                 .movable(false)

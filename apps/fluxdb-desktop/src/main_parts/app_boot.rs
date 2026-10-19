@@ -488,7 +488,10 @@ fn navicat_main_new(
                             },
                         );
                         let column_choice_value_input =
-                            cx.new(|cx| InputState::new(window, cx).placeholder("success"));
+                            cx.new(|cx| {
+                                InputState::new(window, cx)
+                                    .placeholder(tr("app.placeholder.choice_value"))
+                            });
                         let column_choice_label_input =
                             cx.new(|cx| {
                                 InputState::new(window, cx)
@@ -588,14 +591,14 @@ fn navicat_main_new(
                                 .placeholder(tr("app.placeholder.filter_expression"))
                         });
                         let data_sort_text_input = cx.new(|cx| {
-                            InputState::new(window, cx).placeholder("<Field> ASC, <Field> DESC")
+                            InputState::new(window, cx).placeholder(tr("app.placeholder.sort_fields"))
                         });
                         let data_sql_panel_input = cx.new(|cx| InputState::new(window, cx));
                         let data_page_input = cx.new(|cx| InputState::new(window, cx));
                         let settings_line_height_input =
-                            cx.new(|cx| InputState::new(window, cx).placeholder("14"));
+                            cx.new(|cx| InputState::new(window, cx).placeholder(tr("app.placeholder.line_height_example")));
                         let settings_radius_input =
-                            cx.new(|cx| InputState::new(window, cx).placeholder("6"));
+                            cx.new(|cx| InputState::new(window, cx).placeholder(tr("app.placeholder.radius_example")));
                         // 留空即使用内置官方源，占位符直接展示默认模板，便于用户改成内网镜像。
                         let settings_pg_client_source_input = cx.new(|cx| {
                             InputState::new(window, cx)
@@ -643,7 +646,7 @@ fn navicat_main_new(
                                 .placeholder(tr("app.placeholder.key_name"))
                         });
                         let redis_key_ttl_input =
-                            cx.new(|cx| InputState::new(window, cx).placeholder("TTL"));
+                            cx.new(|cx| InputState::new(window, cx).placeholder(tr("app.redis.form.ttl")));
                         let redis_stream_entry_id_input =
                             cx.new(|cx| InputState::new(window, cx).placeholder("*"));
                         let redis_stream_entry_field_rows =
@@ -713,10 +716,10 @@ fn navicat_main_new(
                         let redis_hash_value_edit_input =
                             cx.new(|cx| {
                                 InputState::new(window, cx)
-                                    .placeholder("Value")
+                                    .placeholder(tr("app.redis.form.value"))
                             });
                         let redis_hash_ttl_edit_input =
-                            cx.new(|cx| InputState::new(window, cx).placeholder("TTL"));
+                            cx.new(|cx| InputState::new(window, cx).placeholder(tr("app.redis.form.ttl")));
                         let redis_hash_field_search_subscription = cx.subscribe_in(
                             &redis_hash_field_search_input,
                             window,
@@ -878,7 +881,7 @@ fn navicat_main_new(
                         );
                         let redis_list_value_edit_input = cx.new(|cx| {
                             InputState::new(window, cx)
-                                .placeholder("Value")
+                                .placeholder(tr("app.redis.form.value"))
                         });
                         let redis_list_value_edit_subscription = cx.subscribe_in(
                             &redis_list_value_edit_input,
@@ -1032,7 +1035,7 @@ fn navicat_main_new(
                         );
                         let redis_add_key_json_input = cx.new(|cx| {
                             InputState::new(window, cx)
-                                .placeholder("{}")
+                                .placeholder(tr("app.placeholder.json_object"))
                         });
                         let redis_add_key_json_subscription = cx.subscribe_in(
                             &redis_add_key_json_input,
@@ -1286,7 +1289,10 @@ fn navicat_main_new(
                                 .placeholder(tr("app.placeholder.username"))
                         });
                         let user_admin_create_host_input =
-                            cx.new(|cx| InputState::new(window, cx).placeholder("Host"));
+                            cx.new(|cx| {
+                                InputState::new(window, cx)
+                                    .placeholder(tr("app.user_admin.advanced.host"))
+                            });
                         let user_admin_auth_plugin_select = cx.new(|cx| {
                             SelectState::new(
                                 SearchableVec::new(user_admin_auth_plugin_options()),
@@ -1404,7 +1410,10 @@ fn navicat_main_new(
                             )
                         });
                         let user_admin_ssl_cipher_input =
-                            cx.new(|cx| InputState::new(window, cx).placeholder("Cipher"));
+                            cx.new(|cx| {
+                                InputState::new(window, cx)
+                                    .placeholder(tr("app.user_admin.advanced.cipher"))
+                            });
                         let user_admin_ssl_issuer_input = cx.new(|cx| {
                             InputState::new(window, cx)
                                 .placeholder(tr("app.placeholder.cert_issuer"))
@@ -2910,7 +2919,7 @@ fn navicat_main_new(
                             }),
                             redis_stream_ranges: BTreeMap::new(),
                             redis_stream_maxlen_input: cx
-                                .new(|cx| InputState::new(window, cx).placeholder("MAXLEN")),
+                                .new(|cx| InputState::new(window, cx).placeholder(tr("app.placeholder.maxlen"))),
                             redis_stream_groups: BTreeMap::new(),
                             redis_stream_groups_loading: None,
                             redis_stream_groups_expanded: false,

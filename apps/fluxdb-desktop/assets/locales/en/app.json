@@ -77,7 +77,13 @@
     "ttl": "TTL (seconds, optional)",
     "username": "Username",
     "valid_until_example": "For example 2026-12-31 23:59:59+08",
-    "value": "Value"
+    "value": "Value",
+    "choice_value": "Value",
+    "sort_fields": "<Field> ASC, <Field> DESC",
+    "line_height_example": "14",
+    "radius_example": "6",
+    "json_object": "{}",
+    "maxlen": "MAXLEN"
   },
   "context": {
     "backup": "Backup",
@@ -378,7 +384,9 @@
     "add_condition": "Add condition",
     "reset_conditions": "Reset conditions",
     "apply": "Apply filters",
-    "no_pending_sql_comment": "-- No pending SQL"
+    "no_pending_sql_comment": "-- No pending SQL",
+    "filter_value": "Filter value",
+    "input_value": "Input value"
   },
   "connection_action": {
     "connection_busy_delete": "This connection has unsaved or running queries. Save, close, or disconnect it before deleting.",
@@ -611,7 +619,6 @@
     "reason_rebuild_review": "same-name rebuild needs review",
     "reject": "Reject",
     "restore_deleted": "Restore last deleted relationship (needs confirmation)",
-    "revision": "Revision %{revision} · %{id}",
     "state_confirmed": "Confirmed",
     "state_proposed": "Needs confirmation",
     "state_rebuild": "Needs review (same-name rebuild)",
@@ -1014,7 +1021,9 @@
       "placeholder_price_output": "Output price $/1M tokens",
       "placeholder_price_cache": "Cache read $/1M tokens",
       "name_and_id_required": "Enter a display name and model identifier",
-      "api_key_required": "Enter an API key before fetching model capabilities"
+      "api_key_required": "Enter an API key before fetching model capabilities",
+      "provider_invalid_with_value": "Invalid provider value: %{value}",
+      "provider_invalid_retry": "Invalid provider value; select it again"
     },
     "agents": {
       "placeholder_name": "For example, general database agent",
@@ -1131,9 +1140,7 @@
     },
     "capacity": {
       "positive": "Capacity must be positive; decimals with K/M tokens are supported",
-      "integer_tokens": "Converted capacity must be an integer token count",
       "out_of_range": "Capacity is out of range",
-      "invalid_format": "Capacity format is invalid",
       "bounds": "Capacity must be between 1 and 1,000,000,000 tokens"
     },
     "audit": {
@@ -2016,7 +2023,6 @@
     "copy_error": "Copy error",
     "error_copied": "Error copied",
     "fix_with_ai": "Fix with AI",
-    "ai_fix_unavailable": "AI fix is not available yet",
     "error_title": "Query error",
     "sql_label": "SQL:",
     "error_label": "Error:",
@@ -2501,7 +2507,9 @@
       "select_ssl_type": "Select SSL type",
       "ssl_cipher": "SSL Cipher:",
       "ssl_issuer": "Certificate issuer:",
-      "ssl_subject": "Certificate subject:"
+      "ssl_subject": "Certificate subject:",
+      "host": "Host",
+      "cipher": "Cipher"
     },
     "field": {
       "username": "Username:",
@@ -3388,6 +3396,16 @@
       "type": "Type",
       "value": "Value",
       "size": "Size"
+    },
+    "form": {
+      "field": "Field",
+      "value": "Value",
+      "member": "Member",
+      "score": "Score",
+      "enter_member": "Enter member",
+      "ttl": "TTL",
+      "scan_more": "Scan more",
+      "element": "Element"
     }
   },
   "table": {

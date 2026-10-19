@@ -113,7 +113,12 @@ fn redis_key_detail_set_panel(
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .text_color(colors.muted)
                         .child(div().w(px(42.)).flex_none().child("#"))
-                        .child(div().flex_1().min_w(px(0.)).child("Member"))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .child(tr("app.redis.form.member")),
+                        )
                         .child(div().w(px(40.)).flex_none()),
                 )
                 .child(

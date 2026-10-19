@@ -30,7 +30,7 @@
     "backup_filename_default": "默认：库名_时间戳.sql",
     "cert_issuer": "证书发行者",
     "cert_subject": "证书主旨",
-    "choice_label": "成功",
+    "choice_label": "标签",
     "choose_sql_file": "选择 SQL 文件",
     "confirm_new_password": "确认新密码",
     "confirm_password": "确认密码",
@@ -77,7 +77,13 @@
     "ttl": "TTL（秒，可选）",
     "username": "用户名",
     "valid_until_example": "如 2026-12-31 23:59:59+08",
-    "value": "值"
+    "value": "值",
+    "choice_value": "值",
+    "sort_fields": "<Field> ASC, <Field> DESC",
+    "line_height_example": "14",
+    "radius_example": "6",
+    "json_object": "{}",
+    "maxlen": "MAXLEN"
   },
   "context": {
     "backup": "备份",
@@ -378,7 +384,9 @@
     "add_condition": "新增条件",
     "reset_conditions": "重置条件",
     "apply": "应用筛选",
-    "no_pending_sql_comment": "-- 暂无待提交 SQL"
+    "no_pending_sql_comment": "-- 暂无待提交 SQL",
+    "filter_value": "筛选值",
+    "input_value": "输入值"
   },
   "connection_action": {
     "connection_busy_delete": "该连接存在未保存或运行中的查询，请先保存/关闭或先断开连接再删除",
@@ -611,7 +619,6 @@
     "reason_rebuild_review": "同名重建需确认",
     "reject": "拒绝",
     "restore_deleted": "恢复最近删除的关系（待确认）",
-    "revision": "修订 %{revision} · %{id}",
     "state_confirmed": "已确认",
     "state_proposed": "待确认",
     "state_rebuild": "需确认（同名重建）",
@@ -1014,7 +1021,9 @@
       "placeholder_price_output": "输出计价 $/1M Token",
       "placeholder_price_cache": "缓存读取 $/1M Token",
       "name_and_id_required": "请填写显示名称与模型标识",
-      "api_key_required": "请先填写 API Key 再获取模型能力"
+      "api_key_required": "请先填写 API Key 再获取模型能力",
+      "provider_invalid_with_value": "Provider 取值无效：%{value}",
+      "provider_invalid_retry": "Provider 取值无效，请重新选择"
     },
     "agents": {
       "placeholder_name": "例如 通用数据库 Agent",
@@ -1131,9 +1140,7 @@
     },
     "capacity": {
       "positive": "容量必须是正数，可输入小数 K/M tokens",
-      "integer_tokens": "换算后必须是整数 tokens",
       "out_of_range": "容量超出范围",
-      "invalid_format": "容量格式无效",
       "bounds": "容量必须为 1–1,000,000,000 tokens"
     },
     "audit": {
@@ -2016,7 +2023,6 @@
     "copy_error": "复制错误",
     "error_copied": "已复制错误信息",
     "fix_with_ai": "用 AI 修复",
-    "ai_fix_unavailable": "暂不支持 AI 修复",
     "error_title": "查询出错",
     "sql_label": "SQL:",
     "error_label": "错误:",
@@ -2501,7 +2507,9 @@
       "select_ssl_type": "选择 SSL 类型",
       "ssl_cipher": "SSL Cipher:",
       "ssl_issuer": "证书发行者:",
-      "ssl_subject": "证书主旨:"
+      "ssl_subject": "证书主旨:",
+      "host": "主机",
+      "cipher": "加密套件"
     },
     "field": {
       "username": "用户名:",
@@ -3388,6 +3396,16 @@
       "type": "类型",
       "value": "值",
       "size": "大小"
+    },
+    "form": {
+      "field": "字段",
+      "value": "值",
+      "member": "成员",
+      "score": "分值",
+      "enter_member": "输入成员",
+      "ttl": "TTL",
+      "scan_more": "继续扫描",
+      "element": "元素"
     }
   },
   "table": {

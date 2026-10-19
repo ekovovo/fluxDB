@@ -1107,7 +1107,7 @@ fn data_filter_single_value_menu(
     let field_label = draft
         .map(|draft| draft.field.clone())
         .filter(|field| !field.is_empty())
-        .unwrap_or_else(|| "筛选值".to_string());
+        .unwrap_or_else(|| tr("app.filter.filter_value").to_string());
     let current_value = draft.map(|draft| draft.input.clone()).unwrap_or_default();
 
     div()
@@ -1160,7 +1160,7 @@ fn data_filter_single_value_menu(
                         .text_size(px(12.))
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .text_color(colors.text)
-                        .child("输入值"),
+                        .child(tr("app.filter.input_value")),
                 )
                 .child(
                     div()
@@ -1196,7 +1196,7 @@ fn data_filter_single_value_menu(
                         .text_size(px(12.))
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .text_color(colors.text)
-                        .child("建议值"),
+                        .child(tr("app.filter.suggested_values")),
                 )
                 .child(data_filter_single_suggested_values_list(
                     recommended_values,
@@ -1219,14 +1219,14 @@ fn data_filter_single_value_menu(
                 .items_center()
                 .justify_end()
                 .gap_2()
-                .child(data_filter_dialog_button("取消", false, colors).on_mouse_down(
+                .child(data_filter_dialog_button(tr("app.common.cancel"), false, colors).on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, _, _, cx| {
                         this.cancel_data_filter_value(cx);
                         cx.stop_propagation();
                     }),
                 ))
-                .child(data_filter_dialog_button("确定", true, colors).on_mouse_down(
+                .child(data_filter_dialog_button(tr("app.filter.ok"), true, colors).on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, _, _, cx| {
                         this.apply_data_filter_value_draft(tab_id, cx);
@@ -1254,9 +1254,9 @@ fn data_filter_single_suggested_values_list(
     if values.is_empty() {
         list = list.child(data_filter_menu_empty_item(
             if search.trim().is_empty() && !search_loading {
-                "没有建议值"
+                tr("app.filter.no_suggestions")
             } else {
-                "没有匹配值"
+                tr("app.filter.no_matching_values")
             },
             *colors,
         ));

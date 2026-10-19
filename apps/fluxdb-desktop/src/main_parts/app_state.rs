@@ -197,8 +197,8 @@ fn new_redis_stream_entry_field_inputs(
     cx: &mut Context<NavicatMain>,
 ) -> RedisStreamEntryFieldInputs {
     RedisStreamEntryFieldInputs {
-        field_input: cx.new(|cx| InputState::new(window, cx).placeholder("Field")),
-        value_input: cx.new(|cx| InputState::new(window, cx).placeholder("Value")),
+        field_input: cx.new(|cx| InputState::new(window, cx).placeholder(tr("app.redis.form.field"))),
+        value_input: cx.new(|cx| InputState::new(window, cx).placeholder(tr("app.redis.form.value"))),
     }
 }
 
@@ -393,7 +393,8 @@ fn new_redis_set_member_input(
     value: Option<String>,
 ) -> Entity<InputState> {
     cx.new(|cx| {
-        let mut input = InputState::new(window, cx).placeholder("Enter Member");
+        let mut input =
+            InputState::new(window, cx).placeholder(tr("app.redis.form.enter_member"));
         if let Some(value) = value {
             input = input.default_value(value);
         }
@@ -407,7 +408,7 @@ fn new_redis_hash_field_input(
     value: Option<String>,
 ) -> Entity<InputState> {
     cx.new(|cx| {
-        let mut input = InputState::new(window, cx).placeholder("Field");
+        let mut input = InputState::new(window, cx).placeholder(tr("app.redis.form.field"));
         if let Some(value) = value {
             input = input.default_value(value);
         }
@@ -421,7 +422,7 @@ fn new_redis_hash_value_input(
     value: Option<String>,
 ) -> Entity<InputState> {
     cx.new(|cx| {
-        let mut input = InputState::new(window, cx).placeholder("Value");
+        let mut input = InputState::new(window, cx).placeholder(tr("app.redis.form.value"));
         if let Some(value) = value {
             input = input.default_value(value);
         }
@@ -435,7 +436,7 @@ fn new_redis_hash_ttl_input(
     value: Option<String>,
 ) -> Entity<InputState> {
     cx.new(|cx| {
-        let mut input = InputState::new(window, cx).placeholder("TTL");
+        let mut input = InputState::new(window, cx).placeholder(tr("app.redis.form.ttl"));
         if let Some(value) = value {
             input = input.default_value(value);
         }
@@ -447,7 +448,7 @@ fn new_redis_hash_ttl_input(
 fn new_redis_add_key_name_input(
     window: &mut Window,
     cx: &mut Context<NavicatMain>,
-    placeholder: &'static str,
+    placeholder: impl Into<SharedString>,
 ) -> Entity<InputState> {
     cx.new(|cx| InputState::new(window, cx).placeholder(placeholder))
 }
@@ -456,7 +457,7 @@ fn new_redis_add_key_name_input(
 fn new_redis_add_key_pair_value_input(
     window: &mut Window,
     cx: &mut Context<NavicatMain>,
-    placeholder: &'static str,
+    placeholder: impl Into<SharedString>,
 ) -> Entity<InputState> {
     cx.new(|cx| InputState::new(window, cx).placeholder(placeholder))
 }
@@ -465,7 +466,7 @@ fn new_redis_add_key_pair_value_input(
 fn new_redis_add_key_single_input(
     window: &mut Window,
     cx: &mut Context<NavicatMain>,
-    placeholder: &'static str,
+    placeholder: impl Into<SharedString>,
 ) -> Entity<InputState> {
     cx.new(|cx| InputState::new(window, cx).placeholder(placeholder))
 }
@@ -476,7 +477,7 @@ fn new_redis_zset_member_input(
     value: Option<String>,
 ) -> Entity<InputState> {
     cx.new(|cx| {
-        let mut input = InputState::new(window, cx).placeholder("Member");
+        let mut input = InputState::new(window, cx).placeholder(tr("app.redis.form.member"));
         if let Some(value) = value {
             input = input.default_value(value);
         }
@@ -490,7 +491,7 @@ fn new_redis_zset_score_input(
     value: Option<String>,
 ) -> Entity<InputState> {
     cx.new(|cx| {
-        let mut input = InputState::new(window, cx).placeholder("Score");
+        let mut input = InputState::new(window, cx).placeholder(tr("app.redis.form.score"));
         if let Some(value) = value {
             input = input.default_value(value);
         }
@@ -504,7 +505,7 @@ fn new_redis_list_item_input(
     value: Option<String>,
 ) -> Entity<InputState> {
     cx.new(|cx| {
-        let mut input = InputState::new(window, cx).placeholder("Value");
+        let mut input = InputState::new(window, cx).placeholder(tr("app.redis.form.value"));
         if let Some(value) = value {
             input = input.default_value(value);
         }

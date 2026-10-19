@@ -584,7 +584,11 @@ impl NavicatMain {
             Some(label) => match fluxdb_app::ModelProvider::from_label(&label) {
                 Some(provider) => provider,
                 None => {
-                    return self.set_ai_model_dialog_error(format!("Provider 取值无效：{label}"), cx);
+                    return self.set_ai_model_dialog_error(
+                        tr("app.ai.model_dialog.provider_invalid_with_value")
+                            .replace("%{value}", &label),
+                        cx,
+                    );
                 }
             },
             None => fluxdb_app::ModelProvider::OpenAiChat,

@@ -120,17 +120,17 @@ impl RedisHashTableDelegate {
                 .resizable(false)
                 .movable(false)
                 .selectable(false),
-            TableColumn::new("field", "Field")
+            TableColumn::new("field", tr("app.redis.form.field"))
                 .width(redis_hash_table_column_width("field", width))
                 .resizable(false)
                 .movable(false)
                 .selectable(false),
-            TableColumn::new("value", "Value")
+            TableColumn::new("value", tr("app.redis.form.value"))
                 .width(redis_hash_table_column_width("value", width))
                 .resizable(false)
                 .movable(false)
                 .selectable(false),
-            TableColumn::new("ttl", "TTL")
+            TableColumn::new("ttl", tr("app.redis.form.ttl"))
                 .width(redis_hash_table_column_width("ttl", width))
                 .resizable(false)
                 .movable(false)

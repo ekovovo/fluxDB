@@ -1111,7 +1111,7 @@ fn redis_key_list_status_bar(
                             cx.stop_propagation();
                         }),
                     )
-                    .child("Scan more"),
+                    .child(tr("app.redis.form.scan_more")),
             )
         })
 }

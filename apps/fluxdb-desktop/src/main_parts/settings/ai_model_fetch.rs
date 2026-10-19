@@ -45,7 +45,7 @@ impl NavicatMain {
                 Some(provider) => provider.stored_id().to_string(),
                 None => {
                     self.show_message(
-                        "Provider 取值无效，请重新选择",
+                        tr("app.ai.model_dialog.provider_invalid_retry"),
                         AppMessageKind::Warning,
                         cx,
                     );

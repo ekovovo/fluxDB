@@ -13,11 +13,11 @@ fn tabs(
     let show_second_level =
         show_first_level && !matches!(active_scope, Some(FirstLevelScope::Settings));
     let height = if !show_first_level {
-        30.
+        34.
     } else if show_second_level {
-        66.
+        70.
     } else {
-        32.
+        34.
     };
     let available_width = tab_workspace_available_width(app, window);
 
@@ -639,6 +639,15 @@ fn tab_connection_color_hex<'a>(state: &'a AppState, tab: &TabState) -> Option<&
         .map(|connection| connection_config_color_hex(&connection.config.options))
 }
 
+/// 连接色只用于页签身份标记；近黑色在暗色主题里改用中性前景，避免细线消失。
+fn tab_identity_color(hex: &str, colors: UiColors) -> gpui::Rgba {
+    if colors.is_dark && hex == DEFAULT_CONNECTION_COLOR {
+        colors.muted
+    } else {
+        connection_color_rgba(hex)
+    }
+}
+
 fn first_level_tab_row(
     groups: &[WorkspaceTabGroup],
     active_scope: Option<&FirstLevelScope>,
@@ -660,6 +669,7 @@ fn first_level_tab_row(
         .min_w(px(0.))
         .px_1()
         .pt(px(3.))
+        .gap_1()
         .flex()
         .items_end()
         .overflow_x_scroll();
@@ -678,15 +688,11 @@ fn first_level_tab_row(
     }
 
     div()
-        .h(px(32.))
+        .h(px(34.))
         .min_w(px(0.))
         .border_b_1()
         .border_color(colors.border)
-        .bg(if colors.is_dark {
-            rgb(0x171a1f)
-        } else {
-            rgb(0xf2f4f7)
-        })
+        .bg(colors.status_bg)
         .flex()
         .overflow_hidden()
         .child(tab_strip.child(div().flex_1()))
@@ -711,17 +717,6 @@ fn table_tab_row(
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
-    let active_color_hex = active_scope
-        .and_then(|scope| {
-            let workspace = database_scope(Some(scope))?;
-            state
-                .connections
-                .iter()
-                .find(|connection| connection.config.id == workspace.connection_id)
-                .map(|connection| connection_config_color_hex(&connection.config.options))
-        })
-        .unwrap_or(DEFAULT_CONNECTION_COLOR);
-    let accent = connection_color_rgba(active_color_hex);
     let table_count =
         table_tab_entries(state, active_scope, "", tab_order, pinned_tabs).len();
     let show_switcher = tab_row_overflows(
@@ -734,7 +729,7 @@ fn table_tab_row(
         .flex_1()
         .min_h(px(0.))
         .min_w(px(0.))
-        .bg(colors.status_bg)
+        .bg(colors.panel_bg)
         .flex()
         .items_center()
         .gap_1()
@@ -762,11 +757,10 @@ fn table_tab_row(
     }
 
     div()
-        .h(px(34.))
+        .h(px(36.))
         .min_w(px(0.))
-        .bg(colors.status_bg)
+        .bg(colors.panel_bg)
         .flex()
-        .flex_col()
         .overflow_hidden()
         .child(
             div()
@@ -787,7 +781,6 @@ fn table_tab_row(
                     ))
                 }),
         )
-        .child(div().h(px(4.)).w_full().bg(accent))
 }
 
 fn query_tab_blank_area(scope: Option<WorkspaceScope>, cx: &mut Context<NavicatMain>) -> Div {
@@ -817,7 +810,7 @@ fn tab_switcher_button(
         .bg(if active {
             colors.panel_alt
         } else {
-            colors.status_bg
+            rgba_with_alpha(colors.panel_bg, 0.)
         })
         .cursor_pointer()
         .flex()
@@ -911,9 +904,9 @@ fn tab_switcher_popup(
 
 fn tab_switcher_popup_top(kind: TabSwitcherKind, two_level: bool) -> f32 {
     match kind {
-        TabSwitcherKind::Databases => 32.,
-        TabSwitcherKind::Tables if two_level => 66.,
-        TabSwitcherKind::Tables => 30.,
+        TabSwitcherKind::Databases => 34.,
+        TabSwitcherKind::Tables if two_level => 70.,
+        TabSwitcherKind::Tables => 34.,
     }
 }
 
@@ -997,22 +990,15 @@ fn first_level_tab_view(
         WorkspaceTabGroup::Database { connection_name, .. } => connection_name.clone(),
         WorkspaceTabGroup::Settings { .. } => "全局".to_string(),
     };
-    let (icon, icon_color, accent, active_bg) = match group {
+    let (icon, accent) = match group {
         WorkspaceTabGroup::Database {
             connection_color_hex,
             ..
         } => (
             AppIcon::Database,
-            rgb(0xf0b400),
-            connection_color_rgba(connection_color_hex),
-            connection_color_row_bg(connection_color_hex, colors),
+            tab_identity_color(connection_color_hex, colors),
         ),
-        WorkspaceTabGroup::Settings { .. } => (
-            AppIcon::Settings,
-            colors.info,
-            colors.info,
-            colors.tree_selected,
-        ),
+        WorkspaceTabGroup::Settings { .. } => (AppIcon::Settings, colors.info),
     };
     let dragged_workspace_tab = DraggedWorkspaceTab {
         scope: group.scope(),
@@ -1022,30 +1008,34 @@ fn first_level_tab_view(
     div()
         .id(("first-level-tab", tab_id.0))
         .debug_selector(move || format!("first-level-tab:{}", tab_id.0))
-        .h(px(29.))
+        .relative()
+        .h(px(30.))
         .w(px(if compact { 172. } else { 224. }))
         .flex_none()
         .min_w(px(0.))
         .border_1()
-        .border_color(if active { accent } else { colors.border })
+        .border_color(if active {
+            colors.border
+        } else {
+            colors.border_soft
+        })
         .rounded(colors.radius_lg)
         .bg(if active {
-            active_bg
-        } else if colors.is_dark {
-            rgb(0x1a1e24)
+            colors.panel_bg
         } else {
-            rgb(0xffffff)
+            colors.panel_alt
         })
         .flex()
-        .flex_col()
+        .items_center()
         .overflow_hidden()
         .cursor_move()
         .hover(move |style| {
-            style.bg(if colors.is_dark {
-                rgb(0x232934)
+            style.bg(if active {
+                colors.panel_bg
             } else {
-                rgb(0xf8fafc)
+                colors.hover
             })
+            .border_color(colors.border)
         })
         .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
             if *hovered {
@@ -1066,7 +1056,7 @@ fn first_level_tab_view(
             cx.new(|_| drag.clone())
         })
         .drag_over::<DraggedWorkspaceTab>(move |style, _, _, _| {
-            style.border_color(rgb(0xf5a400)).bg(colors.hover)
+            style.border_color(colors.info).bg(colors.hover)
         })
         .on_drop(cx.listener(move |this, drag: &DraggedWorkspaceTab, _, cx| {
             this.drop_workspace_tab_after(drag.scope.clone(), drop_scope.clone(), cx);
@@ -1081,8 +1071,20 @@ fn first_level_tab_view(
                 .whitespace_nowrap()
                 .flex()
                 .items_center()
-                .gap_2()
-                .child(app_icon_box(icon, 20., 16., icon_color))
+                .gap_1p5()
+                .child(
+                    div()
+                        .size(px(6.))
+                        .flex_none()
+                        .rounded_full()
+                        .bg(if active { accent } else { colors.muted }),
+                )
+                .child(app_icon_box(
+                    icon,
+                    18.,
+                    15.,
+                    if active { colors.text } else { colors.muted },
+                ))
                 .child(
                     div()
                         .min_w(px(0.))
@@ -1096,7 +1098,9 @@ fn first_level_tab_view(
                                 .overflow_hidden()
                                 .text_ellipsis()
                                 .text_size(px(13.))
-                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .when(active, |this| {
+                                    this.font_weight(gpui::FontWeight::SEMIBOLD)
+                                })
                                 .text_color(colors.text)
                                 .child(title),
                         )
@@ -1108,14 +1112,30 @@ fn first_level_tab_view(
                                 .text_color(colors.muted)
                                 .child(subtitle),
                         ),
-                )
-                .when(hovered, |this| {
-                    this.child(first_level_tab_close_button(
-                        tab_id, close_scope, colors, cx,
-                    ))
-                }),
+                ),
         )
-        .child(div().h(px(if active { 4. } else { 3. })).w_full().bg(accent))
+        .when(hovered, |this| {
+            this.child(
+                div()
+                    .absolute()
+                    .right_1()
+                    .top(px(2.))
+                    .bottom(px(2.))
+                    .w(px(24.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(colors.radius)
+                    .bg(if active {
+                        colors.panel_bg
+                    } else {
+                        colors.hover
+                    })
+                    .child(first_level_tab_close_button(
+                        tab_id, close_scope, colors, cx,
+                    )),
+            )
+        })
 }
 
 fn first_level_tab_close_button(

@@ -191,12 +191,11 @@ fn tab_view_with_context(
     cx: &mut Context<NavicatMain>,
 ) -> impl IntoElement {
     let tab_id = tab.id;
-    let active_bg = connection_color_hex
-        .map(|hex| connection_color_row_bg(hex, colors))
-        .unwrap_or(colors.panel_bg);
-    let active_border = connection_color_hex
-        .map(connection_color_rgba)
-        .unwrap_or(colors.border);
+    let active_bg = colors.panel_bg;
+    let inactive_bg = colors.panel_alt;
+    let identity_color = connection_color_hex
+        .map(|hex| tab_identity_color(hex, colors))
+        .unwrap_or(colors.info);
     let table_name = match &tab.kind {
         TabKind::DataEditor(editor) => Some(editor.object.name.clone()),
         _ => None,
@@ -212,19 +211,22 @@ fn tab_view_with_context(
     div()
         .id(("tab-view", tab_id.0))
         .debug_selector(move || format!("workspace-tab:{}", tab_id.0))
-        .h(px(if active { 28. } else { 26. }))
+        .relative()
+        .h(px(30.))
         .w(px(tab_width(tab, compact)))
         .flex_none()
         .min_w(px(0.))
         .bg(if active {
             active_bg
-        } else if colors.is_dark {
-            rgb(0x171a1f)
         } else {
-            rgb(0xf7f8fa)
+            inactive_bg
         })
         .border_1()
-        .border_color(if active { active_border } else { colors.border })
+        .border_color(if active {
+            identity_color
+        } else {
+            colors.border_soft
+        })
         .rounded(colors.radius_lg)
         .flex()
         .items_center()
@@ -235,10 +237,13 @@ fn tab_view_with_context(
         .hover(move |style| {
             style.bg(if active {
                 active_bg
-            } else if colors.is_dark {
-                rgb(0x232934)
             } else {
-                rgb(0xffffff)
+                colors.hover
+            })
+            .border_color(if active {
+                identity_color
+            } else {
+                colors.border
             })
         })
         .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
@@ -260,7 +265,7 @@ fn tab_view_with_context(
             cx.new(|_| drag.clone())
         })
         .drag_over::<DraggedTab>(move |style, _, _, _| {
-            style.border_color(rgb(0xf5a400)).bg(colors.hover)
+            style.border_color(colors.info).bg(colors.hover)
         })
         .on_drop(cx.listener(move |this, drag: &DraggedTab, _, cx| {
             this.drop_tab_after(drag.tab_id, tab_id, cx);
@@ -275,7 +280,7 @@ fn tab_view_with_context(
                 }),
             )
         })
-        .child(tab_icon(tab, colors))
+        .child(tab_icon(tab, active, colors))
         .child(
             div()
                 .id(("tab-title", tab_id.0))
@@ -285,18 +290,27 @@ fn tab_view_with_context(
                 .whitespace_nowrap()
                 .text_ellipsis()
                 .text_size(px(12.))
-                .text_color(colors.text)
+                .text_color(if active { colors.text } else { colors.muted })
+                .when(active, |this| this.font_weight(gpui::FontWeight::SEMIBOLD))
                 .tooltip(move |window, cx| Tooltip::new(title_tooltip.clone()).build(window, cx))
                 .child(title),
         )
         .when(hovered, move |this| {
-            let action_width = if table_name.is_some() { 62. } else { 40. };
+            let action_width = if table_name.is_some() { 62. } else { 42. };
             this.child(
                 div()
-                    .h_full()
+                    .absolute()
+                    .top_1()
+                    .right_1()
+                    .bottom_1()
+                    .w(px(action_width))
                     .flex()
                     .items_center()
+                    .justify_end()
                     .gap_1()
+                    .pr_1()
+                    .rounded(colors.radius)
+                    .bg(if active { active_bg } else { colors.hover })
                     .overflow_hidden()
                     .flex_none()
                     .child(tab_pin_button(tab_id, pinned, colors, cx))
@@ -308,9 +322,9 @@ fn tab_view_with_context(
                     .child(tab_close_button(tab_id, colors, cx))
                     .with_animation(
                         ("tab-actions", tab_id.0),
-                        Animation::new(Duration::from_millis(140)).with_easing(ease_in_out),
+                        Animation::new(Duration::from_millis(120)).with_easing(ease_in_out),
                         move |this, progress| {
-                            this.w(px(action_width * progress)).opacity(progress)
+                            this.opacity(progress)
                         },
                     ),
             )
@@ -323,7 +337,7 @@ fn tab_pin_button(
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> impl IntoElement {
-    let color = if pinned { rgb(0x1677ff) } else { colors.muted };
+    let color = if pinned { colors.info } else { colors.muted };
     let tooltip = if pinned { "取消置顶" } else { "置顶" };
     div()
         .id(("pin-tab", tab_id.0))
@@ -449,55 +463,33 @@ fn tab_title(tab: &TabState, show_database_context: bool) -> String {
     }
 }
 
-fn tab_icon(tab: &TabState, colors: UiColors) -> impl IntoElement {
-    let (bg, border, color, icon, size) = match tab.kind {
-        TabKind::DataEditor(_) | TabKind::ObjectList(_) => (
-            rgb(0xa8ddfb),
-            Some(rgb(0x118ee9)),
-            rgb(0xeaf7ff),
-            AppIcon::Table,
-            12.,
-        ),
-        TabKind::CreateTable(_) => (
-            rgb(0xa8ddfb),
-            Some(rgb(0x118ee9)),
-            rgb(0xeaf7ff),
-            AppIcon::Plus,
-            12.,
-        ),
-        TabKind::QueryEditor(_) => (rgb(0xff7252), None, rgb(0xffffff), AppIcon::Query, 12.),
-        // Redis 命令执行器沿用 Query 图标，配色偏 Redis 经典红。
-        TabKind::RedisWorkbench(_) => (rgb(0xea4a1f), None, rgb(0xffffff), AppIcon::Query, 12.),
-        // Redis CLI 终端沿用 Redis 经典红 + Query 图标，与 Workbench 保持一致。
-        TabKind::RedisCli(_) => (rgb(0xea4a1f), None, rgb(0xffffff), AppIcon::Query, 12.),
-        // Redis Pub/Sub 沿用 Redis 经典红 + 广播图标，与 Workbench / CLI 视觉统一。
-        TabKind::RedisPubSub(_) => (
-            rgb(0xea4a1f),
-            None,
-            rgb(0xffffff),
-            AppIcon::Broadcast,
-            12.,
-        ),
-        TabKind::UserAdmin(_) => (rgb(0x2563eb), None, rgb(0xffffff), AppIcon::Users, 12.),
-        TabKind::Settings(_) => (rgb(0xc8ccd2), None, rgb(0x4f5661), AppIcon::Settings, 12.),
-        TabKind::AiChat { .. } => (colors.success, None, colors.text, AppIcon::Bot, 12.),
-        // 备份列表 tab：与侧边栏备份节点一致的保存图标，配色用墨绿区分数据表。
-        TabKind::BackupList(_) => (rgb(0x0f9d78), None, rgb(0xffffff), AppIcon::Save, 12.),
-        // ER 关系图 tab：Schema 图标 + 紫色，与侧边栏 ER 节点一致。
-        TabKind::ErDiagram(_) => (rgb(0x8b5cf6), None, rgb(0xffffff), AppIcon::Schema, 12.),
+fn tab_icon(
+    tab: &TabState,
+    active: bool,
+    colors: UiColors,
+) -> impl IntoElement {
+    let icon = match tab.kind {
+        TabKind::DataEditor(_) | TabKind::ObjectList(_) => AppIcon::Table,
+        TabKind::CreateTable(_) => AppIcon::Plus,
+        TabKind::QueryEditor(_) | TabKind::RedisWorkbench(_) | TabKind::RedisCli(_) => {
+            AppIcon::Query
+        }
+        TabKind::RedisPubSub(_) => AppIcon::Broadcast,
+        TabKind::UserAdmin(_) => AppIcon::Users,
+        TabKind::Settings(_) => AppIcon::Settings,
+        TabKind::AiChat { .. } => AppIcon::Bot,
+        TabKind::BackupList(_) => AppIcon::Save,
+        TabKind::ErDiagram(_) => AppIcon::Schema,
     };
+    let color = if active { colors.text } else { colors.muted };
 
     div()
         .size(px(18.))
-        .rounded(colors.radius_lg)
-        .bg(bg)
-        .when_some(border, |this, border| {
-            this.border_t_8().border_color(border)
-        })
+        .rounded(colors.radius)
         .flex()
         .items_center()
         .justify_center()
-        .child(app_icon(icon, size, color))
+        .child(app_icon(icon, 13., color))
 }
 
 impl SidebarTreeCacheKey {

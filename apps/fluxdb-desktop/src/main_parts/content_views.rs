@@ -1441,8 +1441,9 @@ fn redis_pubsub_content(
         .gap_2()
         .px_3()
         .bg(colors.panel_alt)
-        .child(query_context_box(
-            format!("{connection} · DB {}", pubsub.database),
+        .child(query_context_group(
+            connection,
+            format!("DB {}", pubsub.database),
             accent,
             colors,
         ))
@@ -1920,8 +1921,7 @@ fn redis_workbench_toolbar(
         .gap_2()
         .px_3()
         .bg(colors.panel_alt)
-        .child(query_context_box(connection, accent, colors))
-        .child(query_context_box(database, accent, colors))
+        .child(query_context_group(connection, database, accent, colors))
         .child(
             query_toolbar_icon_button(
                 if running { "执行中" } else { "运行" },

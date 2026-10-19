@@ -56,6 +56,7 @@ use sqlparser::{
 // First-pass source split: included files remain in crate-root scope while module boundaries are refined.
 include!("parts/ai_conversation_state.rs");
 include!("parts/state.rs");
+include!("parts/ai_model_catalog.rs");
 include!("parts/create_table_model.rs");
 include!("parts/create_table_state.rs");
 include!("parts/create_table_metadata.rs");
@@ -90,6 +91,7 @@ include!("parts/er_service.rs");
 include!("parts/er_catalog.rs");
 include!("parts/er_layout.rs");
 include!("parts/er_model_service.rs");
+include!("parts/er_relationship_source.rs");
 
 pub use fluxdb_connectors::{
     MySqlClientVersion, MySqlDumpInvocation, MySqlDumpOptions, mysql_client_version,
@@ -144,6 +146,10 @@ include!("parts/ai_sql_policy.rs");
 include!("parts/ai_sql_exec.rs");
 include!("parts/ai_sql_receipt.rs");
 include!("parts/ai_sql_tools.rs");
+include!("parts/ai_relationship_query.rs");
+include!("parts/ai_relationship_tools.rs");
+#[cfg(test)]
+include!("parts/ai_relationship_test_support.rs");
 include!("parts/ai_redis_policy.rs");
 include!("parts/ai_redis_keys.rs");
 include!("parts/ai_redis_read.rs");

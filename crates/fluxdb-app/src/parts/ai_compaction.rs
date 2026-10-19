@@ -62,30 +62,30 @@ fn estimate_tools_tokens(tools: &[fluxdb_core::ToolDescriptor]) -> i64 {
         .sum()
 }
 
-/// 单次回复的输出 token 上限：优先用模型档案配置，未配置时按上下文窗口推导。
+/// 单次回复的输出 token 上限；允许省略的协议在未配置时交给服务端决定。
 ///
-/// 这个值同时决定请求的 `max_output_tokens` 和压缩时的输出预留，两者必须同源，
-/// 否则会出现「预留了很多、实际只发很少」的偏差。
-///
-/// 推理模型的思考 token 与正文共用同一额度，上限过小会让模型想完就停、正文一个字都没有
-/// （协议返回 `response.incomplete`），因此未配置时给一个够用的默认值而不是极小值。
-/// 同时必须给输入留出正预算：输出上限顶满窗口时输入无处安放，请求必然被服务端拒绝，
-/// 所以显式配置也按「窗口 − 最小输入预留」收敛。
-pub fn resolve_output_token_limit(context_window: Option<i64>, configured: Option<i64>) -> i64 {
-    /// 窗口未知时的输出默认值。
-    const DEFAULT_OUTPUT: i64 = 8_192;
+/// Anthropic 必须提供 max_tokens，保留原有默认值；显式配置仍按窗口收敛，
+/// 避免输出顶满窗口而没有输入空间。未知输出的本地预算估算不作为请求上限发送。
+pub fn resolve_output_token_limit(
+    api_protocol: &str,
+    context_window: Option<i64>,
+    configured: Option<i64>,
+) -> Option<i64> {
+    const ANTHROPIC_DEFAULT_OUTPUT: i64 = 8_192;
     /// 输出之外必须保留的输入空间。
     const MIN_INPUT_RESERVE: i64 = 1_024;
     let window = context_window.filter(|window| *window > 0);
-    let derived = match window {
-        Some(window) => (window / 4).min(DEFAULT_OUTPUT),
-        None => DEFAULT_OUTPUT,
+    let requested = match configured.filter(|value| *value > 0) {
+        Some(value) => value,
+        None if api_protocol == "anthropic-messages" => window
+            .map(|window| (window / 4).clamp(1, ANTHROPIC_DEFAULT_OUTPUT))
+            .unwrap_or(ANTHROPIC_DEFAULT_OUTPUT),
+        None => return None,
     };
-    let requested = configured.filter(|value| *value > 0).unwrap_or(derived);
-    match window {
+    Some(match window {
         Some(window) => requested.min((window - MIN_INPUT_RESERVE).max(1)),
         None => requested,
-    }
+    })
 }
 
 /// 压缩触发判定输入。
@@ -93,7 +93,7 @@ pub fn resolve_output_token_limit(context_window: Option<i64>, configured: Optio
 pub struct CompactionTrigger {
     /// 生成模型的上下文窗口（token）；未知时不触发。
     pub context_window_tokens: Option<i64>,
-    /// 本轮实际最大输出（token），用于预留空间。
+    /// 本轮请求的输出上限；None 表示服务端默认，本地预算仍需估算输出预留。
     pub max_output_tokens: Option<i64>,
     /// Agent 配置的触发百分比（10–95）。
     pub trigger_percent: u8,
@@ -115,9 +115,15 @@ fn safety_margin(window: i64) -> i64 {
 
 /// 可用输入预算：窗口扣除输出预留与安全余量后，还能装多少输入 token。
 ///
-/// 窗口未知（未配置模型容量）时返回 `None`；此时既不能判定压缩，也不能据此暂停。
-fn usable_input_budget(window: i64, output: i64) -> i64 {
-    window - output - safety_margin(window)
+/// 未指定输出上限时按窗口的 1/4 预留；只是本地估算，不代表服务端的真实输出上限。
+/// 压缩判定与每次请求前的检查复用此规则，不能把省略输出字段当作无需预留。
+fn usable_input_budget(window: i64, max_output_tokens: Option<i64>) -> i64 {
+    let output = max_output_tokens
+        .filter(|value| *value > 0)
+        .unwrap_or((window / 4).max(1));
+    window
+        .saturating_sub(output)
+        .saturating_sub(safety_margin(window))
 }
 
 /// 是否应触发压缩；返回原因而非 bool，便于 UI/审计区分。
@@ -126,8 +132,7 @@ pub fn should_compact(
     trigger: CompactionTrigger,
 ) -> Option<CompactionReason> {
     let window = trigger.context_window_tokens.filter(|w| *w > 0)?;
-    let output = trigger.max_output_tokens.unwrap_or(0).max(0);
-    let usable = usable_input_budget(window, output);
+    let usable = usable_input_budget(window, trigger.max_output_tokens);
     if usable <= 0 {
         // 窗口连输出都装不下：必然要压缩。
         return Some(CompactionReason::OutputReserve);
@@ -151,8 +156,7 @@ pub fn exceeds_input_budget(estimated_input_tokens: i64, trigger: CompactionTrig
     let Some(window) = trigger.context_window_tokens.filter(|w| *w > 0) else {
         return false;
     };
-    let output = trigger.max_output_tokens.unwrap_or(0).max(0);
-    estimated_input_tokens > usable_input_budget(window, output)
+    estimated_input_tokens > usable_input_budget(window, trigger.max_output_tokens)
 }
 
 /// 压缩切点：`[0, cut)` 进入摘要，`[cut, len)` 保留原始消息。
@@ -352,4 +356,118 @@ pub fn source_hash(parts: &[&str]) -> String {
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
     format!("{hash:016x}")
+}
+
+#[cfg(test)]
+mod output_token_budget_tests {
+    use super::*;
+
+    #[test]
+    fn unconfigured_output_only_sends_protocol_required_limit() {
+        let mapper = ToolNameMapper::new(&[]).expect("empty tool catalog");
+        for (api, protocol, field) in [
+            ("openai-compatible", ChatProtocol::OpenAiCompatible, "max_tokens"),
+            ("openai-responses", ChatProtocol::OpenAiResponses, "max_output_tokens"),
+            ("anthropic-messages", ChatProtocol::AnthropicMessages, "max_tokens"),
+        ] {
+            for (window, anthropic_limit) in [
+                (None, 8192),
+                (Some(1_000_000), 8192),
+                (Some(8192), 2048),
+            ] {
+                let limit = resolve_output_token_limit(api, window, None);
+                let expected = (protocol == ChatProtocol::AnthropicMessages)
+                    .then_some(anthropic_limit);
+                assert_eq!(limit, expected, "api={api}, window={window:?}");
+                let request = fluxdb_core::ModelRequest {
+                    model: "test".into(),
+                    messages: vec![ModelMessage::new(fluxdb_core::ModelRole::User, "hello")],
+                    tools: Vec::new(),
+                    max_output_tokens: limit,
+                };
+                let body = build_chat_body(
+                    protocol, "test", &request, &mapper,
+                    fluxdb_core::ModelCapabilities::default(), limit,
+                );
+                assert_eq!(body.get(field).and_then(serde_json::Value::as_i64), expected);
+                assert!(body.get("max_completion_tokens").is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn explicit_output_preserves_large_limits_and_window_guard() {
+        for api in ["openai-compatible", "openai-responses", "anthropic-messages"] {
+            for (window, configured, expected) in [
+                (None, 65_536, 65_536),
+                (Some(1_000_000), 65_536, 65_536),
+                (Some(32_768), 65_536, 31_744),
+                (Some(1), 65_536, 1),
+            ] {
+                assert_eq!(
+                    resolve_output_token_limit(api, window, Some(configured)),
+                    Some(expected),
+                    "api={api}, window={window:?}",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn request_output_override_takes_precedence_over_profile_limit() {
+        let mapper = ToolNameMapper::new(&[]).expect("empty tool catalog");
+        let mut request = fluxdb_core::ModelRequest {
+            model: "test".into(),
+            messages: Vec::new(),
+            tools: Vec::new(),
+            max_output_tokens: None,
+        };
+        for (protocol, field) in [
+            (ChatProtocol::OpenAiCompatible, "max_tokens"),
+            (ChatProtocol::OpenAiResponses, "max_output_tokens"),
+            (ChatProtocol::AnthropicMessages, "max_tokens"),
+        ] {
+            for limit in [None, Some(1024)] {
+                request.max_output_tokens = limit;
+                let body = build_chat_body(
+                    protocol, "test", &request, &mapper,
+                    fluxdb_core::ModelCapabilities::default(), Some(65_536),
+                );
+                assert_eq!(body[field], limit.unwrap_or(65_536));
+            }
+        }
+    }
+
+    #[test]
+    fn server_default_output_still_reserves_context_budget() {
+        for (max_output_tokens, budget) in [(None, 70_000), (Some(8192), 86_808)] {
+            let trigger = CompactionTrigger {
+                context_window_tokens: Some(100_000),
+                max_output_tokens,
+                trigger_percent: 95,
+            };
+            assert_eq!(should_compact(budget - 1, trigger), None);
+            assert_eq!(
+                should_compact(budget, trigger),
+                Some(CompactionReason::OutputReserve),
+            );
+            assert!(!exceeds_input_budget(budget, trigger));
+            assert!(exceeds_input_budget(budget + 1, trigger));
+        }
+    }
+
+    #[test]
+    fn input_budget_handles_unknown_windows_and_excessive_output() {
+        let mut trigger = CompactionTrigger {
+            context_window_tokens: None,
+            max_output_tokens: None,
+            trigger_percent: 80,
+        };
+        assert_eq!(should_compact(i64::MAX, trigger), None);
+        assert!(!exceeds_input_budget(i64::MAX, trigger));
+        trigger.context_window_tokens = Some(1024);
+        trigger.max_output_tokens = Some(i64::MAX);
+        assert_eq!(should_compact(1, trigger), Some(CompactionReason::OutputReserve));
+        assert!(exceeds_input_budget(1, trigger));
+    }
 }

@@ -2132,80 +2132,14 @@ impl AppController {
                 }
             }
             AppCommand::ExecuteQueryText { tab_id, text } => {
-                let command = AppCommand::ExecuteQueryTextWithOptions {
-                    tab_id,
-                    text,
-                    options: self.default_query_execution_options(),
-                };
-                return self.dispatch(command);
+                let options = self.default_query_execution_options();
+                self.execute_query_text_with_options(tab_id, text, options)
             }
             AppCommand::ExecuteQueryTextWithOptions {
                 tab_id,
                 text,
                 options,
-            } => {
-                let request = self.find_tab(tab_id).and_then(|tab| match &tab.kind {
-                    TabKind::QueryEditor(editor) => Some(QueryRequest {
-                        connection_id: editor.connection_id,
-                        database: editor.database.clone(),
-                        // 查询编辑器标签 = 一个独占 PG 会话（设计 §3.3）：事务/临时表/SET 跨多次执行保持。
-                        session_id: Some(fluxdb_core::QuerySessionId(tab_id.0)),
-                        schema: editor.schema.clone(),
-                        text: sql_text_for_execution(
-                            &text,
-                            options.page_size,
-                            self.connection_kind(editor.connection_id)
-                                .unwrap_or(DatabaseKind::MySql),
-                        ),
-                        mode: fluxdb_core::QueryMode::Selection,
-                        options,
-                    }),
-                    _ => None,
-                });
-
-                let Some(request) = request else {
-                    return self.fail(Error::new(ErrorKind::Internal, "查询编辑器标签页不存在"));
-                };
-
-                let cancel_flag = self.query_cancel_flag(tab_id);
-                let result = self
-                    .execute_query_with_cancel(&request, &|| query_cancel_requested(&cancel_flag));
-                self.clear_query_cancel_flag(tab_id);
-                match result {
-                    Ok(execution) => {
-                        let result_editors = query_result_editors(self, &request, &execution);
-                        let active_result_editor = result_editors.keys().next().copied();
-                        if let Some(tab) = self.find_tab_mut(tab_id)
-                            && let TabKind::QueryEditor(editor) = &mut tab.kind
-                        {
-                            editor.running = false;
-                            editor.results = execution.results.clone();
-                            editor.result_editors = result_editors;
-                            editor.active_result_editor = active_result_editor;
-                            editor.summaries = execution.summaries.clone();
-                            editor.error = None;
-                            tab.dirty = false;
-                        }
-                        self.record_query_execution_history(&request, &execution);
-                        AppEvent::QueryFinished(tab_id, execution)
-                    }
-                    Err(error) => {
-                        self.record_failed_query_history(&request);
-                        let user_error = UserFacingError::from(error);
-                        if let Some(tab) = self.find_tab_mut(tab_id)
-                            && let TabKind::QueryEditor(editor) = &mut tab.kind
-                        {
-                            editor.running = false;
-                            editor.summaries = Vec::new();
-                            editor.result_editors.clear();
-                            editor.active_result_editor = None;
-                            editor.error = Some(user_error.clone());
-                        }
-                        self.state.last_error = Some(user_error.clone());
-                        AppEvent::Failed(user_error)
-                    }
-                }
-            }
+            } => self.execute_query_text_with_options(tab_id, text, options),
             AppCommand::FinishQueryExecution { tab_id, result } => match result {
                 Ok(execution) => {
                     self.clear_query_cancel_flag(tab_id);

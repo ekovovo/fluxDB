@@ -38,13 +38,22 @@ impl NavicatMain {
         if dialog.fetching_models || dialog.endpoint_is_full_url {
             return;
         }
-        let provider = dialog
-            .inputs
-            .provider
-            .read(cx)
-            .selected_value()
-            .cloned()
-            .unwrap_or_else(|| "openai".into());
+        // 与保存同理：下拉的值是展示名，取列表前必须换算成稳定标识，
+// 否则会用 OpenAI Chat 的协议去打 Anthropic/Responses 地址。
+        let provider = match dialog.inputs.provider.read(cx).selected_value().cloned() {
+            Some(label) => match fluxdb_app::ModelProvider::from_label(&label) {
+                Some(provider) => provider.stored_id().to_string(),
+                None => {
+                    self.show_message(
+                        "Provider 取值无效，请重新选择",
+                        AppMessageKind::Warning,
+                        cx,
+                    );
+                    return;
+                }
+            },
+            None => fluxdb_app::ModelProvider::OpenAiChat.stored_id().to_string(),
+        };
         let endpoint = ai_input_text(&dialog.inputs.endpoint, cx);
         let api_key = dialog.inputs.api_key.read(cx).value().to_string();
         if api_key.trim().is_empty() {

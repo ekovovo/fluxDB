@@ -7,6 +7,8 @@ pub enum PageContextKind {
     RedisKey,
     RedisBrowser,
     RedisWorkbench,
+    /// ER 关系图：只提供目标定位、选中表/关系的有界摘要、加载状态与版本。
+    ErDiagram,
     Other,
 }
 
@@ -19,6 +21,7 @@ impl PageContextKind {
             Self::RedisKey => "redis_key",
             Self::RedisBrowser => "redis_browser",
             Self::RedisWorkbench => "redis_workbench",
+            Self::ErDiagram => "er_diagram",
             Self::Other => "unsupported_page",
         }
     }
@@ -352,4 +355,72 @@ pub fn add_ai_page_tools(
             },"required":["reference_id"],"additionalProperties":false}).to_string(),
         }, grant, session_id:job.session_id.clone(), turn_id:job.turn_id.clone(),
     }), ToolOutputShape::Read)
+}
+
+#[cfg(test)]
+mod er_page_context_tests {
+    use super::*;
+
+    fn er_page_context() -> CurrentPageContext {
+        CurrentPageContext {
+            kind: PageContextKind::ErDiagram,
+            label: "ER-销售库".into(),
+            snapshot: UiContextSnapshot {
+                tab_id: Some(7),
+                tab_revision: 3,
+                target: TargetRef {
+                    connection_id: Some(1),
+                    database: Some("sales".into()),
+                    schema: None,
+                    object: Some("orders".into()),
+                    redis_db: None,
+                },
+                selected_text: None,
+                excerpt: None,
+                statement_at_cursor: None,
+                summary: None,
+                last_error: None,
+                result_ref: None,
+                notes: vec!["关系目录与画布可见范围无关".into()],
+            },
+            details: serde_json::json!({
+                "scope": { "connection_id": 1, "database": "sales", "schema": null },
+                "selected_table": { "name": "orders", "column_count": 2 },
+                "load_status": { "table_count": 12, "foreign_keys": "Loaded" },
+                "version": 3,
+            }),
+            editor_grant: None,
+            data_grant: None,
+        }
+    }
+
+    #[test]
+    fn er_page_is_addressable_but_grants_no_data_capability() {
+        let value = er_page_context().public_json();
+
+        assert_eq!(value["kind"], "current_page");
+        assert_eq!(value["page_kind"], "er_diagram");
+        assert_eq!(value["target"]["database"], "sales");
+        assert_eq!(value["revision"], 3);
+        assert_eq!(value["details"]["version"], 3);
+        assert_eq!(value["details"]["selected_table"]["name"], "orders");
+        assert_eq!(
+            value["capabilities"],
+            serde_json::json!([]),
+            "ER 页面不授予任何数据读取能力：关系详情只经授权的关系工具按需读取"
+        );
+        assert_eq!(value["untrusted"], true);
+    }
+
+    #[test]
+    fn oversized_details_are_trimmed_instead_of_sending_everything() {
+        let mut page = er_page_context();
+        page.details["value"] = serde_json::json!("x".repeat(64 * 1024));
+
+        let value = page.public_json();
+
+        assert_eq!(value["truncated"], true);
+        assert!(value["details"].get("value").is_none());
+        assert_eq!(value["omitted_details"], serde_json::json!(["value"]));
+    }
 }

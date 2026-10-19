@@ -14,6 +14,24 @@ const AI_AGENT_TOOL_CATALOG: &[(&str, &str, &str, bool)] = &[
     ("connections.list", "公共", "列出已授权连接资源", false),
     ("db.search_objects", "SQL", "渐进搜索表、视图与字段", false),
     ("db.describe_object", "SQL", "读取真实列、索引和关系", false),
+    (
+        "db.get_relationships",
+        "关系",
+        "查已登记关系（物理外键 + 已确认逻辑关系），含可用性与必要过滤",
+        false,
+    ),
+    (
+        "db.find_join_paths",
+        "关系",
+        "在可用关系上找连接路径，返回结构化计划（不生成 SQL）",
+        false,
+    ),
+    (
+        "er.propose_relationships",
+        "关系",
+        "提交本地逻辑关系建议；强制待确认，不执行数据库 DDL",
+        true,
+    ),
     ("db.query", "SQL", "单条有界只读查询，驱动绑定参数", false),
     ("db.explain", "SQL", "不执行式查询计划", false),
     ("db.execute", "SQL", "修改专用入口，范围授权与审批", true),
@@ -45,6 +63,9 @@ const AI_AGENT_TOOL_CATALOG: &[(&str, &str, &str, bool)] = &[
 ];
 
 /// 仅 MCP 提供的工具仍受全局开关控制，不进入内置 Agent 的配置。
+///
+/// 关系/路径工具对外复用同名内部 ID（`db.get_relationships` / `db.find_join_paths`），
+/// 因此它们的全局开关与内置 AI 是同一份，无需在此重复列出。
 const AI_MCP_ONLY_TOOL_CATALOG: &[(&str, &str, &str, bool)] = &[
     (
         "operation.status",

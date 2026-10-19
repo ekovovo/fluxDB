@@ -246,6 +246,22 @@ pub struct SessionOverview {
     pub last_target_json: Option<String>,
 }
 
+/// 折叠标题中的换行与连续空白：会话列表和标题栏都按单行渲染，换行会撑破固定高度卡片。
+fn collapse_title_whitespace(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// 首条消息生成的默认标题：折叠空白后按字符数截断。
+pub fn session_title_preview(text: &str, max_chars: usize) -> String {
+    let mut title = collapse_title_whitespace(text);
+    let end = title
+        .char_indices()
+        .nth(max_chars)
+        .map_or(title.len(), |(end, _)| end);
+    title.truncate(end);
+    title
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TurnView {
     pub id: String,
@@ -422,7 +438,7 @@ pub fn load_session(conn: &Connection, id: &str) -> Result<SessionView> {
         Ok(SessionView {
             id,
             agent_id,
-            title,
+            title: collapse_title_whitespace(&title),
             status: SessionStatus::parse(&status)?,
             next_message_seq,
             revision,
@@ -558,7 +574,7 @@ pub fn list_session_overviews_page(
         sessions.push(SessionOverview {
             id,
             agent_id,
-            title,
+            title: collapse_title_whitespace(&title),
             status: SessionStatus::parse(&status_raw)?,
             revision,
             created_at_ms,
@@ -642,7 +658,7 @@ pub fn list_session_overviews(conn: &Connection, limit: i64) -> Result<Vec<Sessi
                 Ok(SessionOverview {
                     id,
                     agent_id,
-                    title,
+                    title: collapse_title_whitespace(&title),
                     status: SessionStatus::parse(&status)?,
                     revision,
                     created_at_ms,

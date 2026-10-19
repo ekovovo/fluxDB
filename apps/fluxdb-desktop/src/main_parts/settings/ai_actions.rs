@@ -555,17 +555,22 @@ impl NavicatMain {
         };
         let api_key =
             (!keep_existing_key && !api_key_value.is_empty()).then_some(api_key_value.clone());
+        // Provider 下拉的值是展示名，保存路径按稳定标识解析：这里必须显式换算，
+        // 否则下拉里换 Provider 会被存储标识解析的兜底分支静默吞掉，保存后仍是原值。
+        let provider = match dialog.inputs.provider.read(cx).selected_value().cloned() {
+            Some(label) => match fluxdb_app::ModelProvider::from_label(&label) {
+                Some(provider) => provider,
+                None => {
+                    return self.set_ai_model_dialog_error(format!("Provider 取值无效：{label}"), cx);
+                }
+            },
+            None => fluxdb_app::ModelProvider::OpenAiChat,
+        };
         let input = AiModelSaveInput {
             id: dialog.model_id.clone(),
             display_name,
             // Provider 是模型类型与协议的唯一来源（不再单独选「模型用途」）。
-            provider: dialog
-                .inputs
-                .provider
-                .read(cx)
-                .selected_value()
-                .cloned()
-                .unwrap_or_else(|| fluxdb_app::ModelProvider::OpenAiChat.label().to_string()),
+            provider: provider.stored_id().to_string(),
             model,
             endpoint: (!endpoint.is_empty()).then_some(endpoint),
             endpoint_is_full_url: dialog.endpoint_is_full_url,

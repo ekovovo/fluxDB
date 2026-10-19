@@ -259,7 +259,8 @@ pub fn fetch_ai_model_capabilities(
         let parsed: serde_json::Value = serde_json::from_str(&body).map_err(|_| {
             fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, "响应不是合法 JSON")
         })?;
-        let models = parse_ai_model_capabilities(&parsed)?;
+        let mut models = parse_ai_model_capabilities(&parsed)?;
+        enrich_model_capacities(base, &mut models);
         return Ok(models);
     }
     Err(fluxdb_core::Error::new(

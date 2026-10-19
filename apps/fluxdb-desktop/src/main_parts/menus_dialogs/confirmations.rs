@@ -426,11 +426,17 @@ fn close_workspace_modal(
     if pending.running_queries > 0 {
         details.push(format!("{} 个查询正在执行", pending.running_queries));
     }
-    let message = format!(
-        "关闭「{}」会关闭下面的表和查询标签页，{}。",
-        pending.scope.database,
-        details.join("，")
-    );
+    let scope_name = match &pending.scope {
+        FirstLevelScope::Database(workspace) => workspace.database.as_str(),
+        FirstLevelScope::Settings => "设置",
+    };
+    let details = details.join("，");
+    let message = match &pending.scope {
+        FirstLevelScope::Database(_) => format!(
+            "关闭「{scope_name}」会关闭下面的表和查询标签页，{details}。"
+        ),
+        FirstLevelScope::Settings => format!("关闭「设置」会关闭设置页，{details}。"),
+    };
 
     div()
         .absolute()

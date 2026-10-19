@@ -168,6 +168,8 @@ include!("main_parts/ai/model_selection.rs");
 include!("main_parts/ai/references.rs");
 include!("main_parts/ai/message.rs");
 include!("main_parts/ai/approval.rs");
+include!("main_parts/ai/relationship_review.rs");
+include!("main_parts/ai/relationship_review_dialog.rs");
 include!("main_parts/ai/timeline.rs");
 include!("main_parts/ai/report.rs");
 include!("main_parts/ai/diagnostics.rs");

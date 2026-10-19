@@ -22,8 +22,7 @@ fn query_toolbar(
         .gap_2()
         .px_3()
         .bg(colors.panel_alt)
-        .child(query_context_box(connection, accent, colors))
-        .child(query_context_box(database, accent, colors))
+        .child(query_context_group(connection, database, accent, colors))
         .child(
             query_toolbar_icon_button(
                 if editor.running { "执行中" } else { "运行" },
@@ -307,28 +306,58 @@ fn query_toolbar_icon_button(
         })
 }
 
-fn query_context_box(label: String, accent: gpui::Rgba, colors: UiColors) -> Div {
+fn query_context_group(
+    connection: String,
+    database: String,
+    accent: gpui::Rgba,
+    colors: UiColors,
+) -> Div {
     div()
         .h(px(30.))
-        .min_w(px(118.))
-        .max_w(px(220.))
+        .min_w(px(0.))
+        .max_w(px(360.))
         .rounded(colors.radius)
         .border_1()
-        .border_color(colors.border)
-        .bg(colors.input_bg)
+        .border_color(colors.border_soft)
+        .bg(colors.panel_bg)
         .flex()
         .items_center()
         .overflow_hidden()
-        .child(div().w(px(4.)).h_full().bg(accent))
+        .child(query_context_item(connection, Some(accent), colors))
+        .child(div().w(px(1.)).h(px(14.)).flex_none().bg(colors.border_soft))
+        .child(query_context_item(database, None, colors))
+}
+
+fn query_context_item(
+    label: String,
+    identity_color: Option<gpui::Rgba>,
+    colors: UiColors,
+) -> Div {
+    let leading: gpui::AnyElement = match identity_color {
+        Some(color) => div()
+            .size(px(6.))
+            .flex_none()
+            .rounded_full()
+            .bg(color)
+            .into_any_element(),
+        None => app_icon(AppIcon::Database, 13., colors.muted).into_any_element(),
+    };
+    div()
+        .h_full()
+        .min_w(px(0.))
+        .max_w(px(170.))
+        .px_2()
+        .flex()
+        .items_center()
+        .gap_1p5()
+        .child(leading)
         .child(
             div()
-                .flex_1()
                 .min_w(px(0.))
-                .px_2()
                 .overflow_hidden()
                 .whitespace_nowrap()
                 .text_ellipsis()
-                .text_size(px(13.))
+                .text_size(px(12.))
                 .text_color(colors.text)
                 .child(label),
         )

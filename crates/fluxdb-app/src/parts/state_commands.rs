@@ -118,6 +118,16 @@ pub enum AppCommand {
         id: String,
         expected_revision: u64,
     },
+    /// 用户在 AI 关系建议弹框中明确选择后采纳：宿主重新校验结构并原子写入已确认关系。
+    AdoptErRelationshipProposals {
+        scope_key: String,
+        connection_id: ConnectionId,
+        database: String,
+        schema: Option<String>,
+        proposals: Vec<ErRelationship>,
+        message_part_id: String,
+        batch_id: String,
+    },
     DeleteErRelationship {
         scope_key: String,
         id: String,

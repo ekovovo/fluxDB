@@ -116,6 +116,10 @@ pub enum AppEvent {
         scope_key: String,
         id: String,
     },
+    ErRelationshipProposalsAdopted {
+        scope_key: String,
+        relationships: Vec<ErRelationship>,
+    },
     BackupPrepared(BackupRequest),
     BackupCompleted(BackupManifest),
     RestorePrepared {

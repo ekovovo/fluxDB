@@ -6,10 +6,19 @@ fn tabs(
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> impl IntoElement {
-    let groups = order_workspace_tab_groups(workspace_tab_groups(state), &app.workspace_tab_order);
-    let active_scope = active_workspace_scope(state);
-    let two_level = !groups.is_empty();
-    let height = if two_level { 66. } else { 30. };
+    let groups =
+        order_first_level_tab_groups(first_level_tab_groups(state), &app.workspace_tab_order);
+    let active_scope = active_first_level_scope(state);
+    let show_first_level = !groups.is_empty();
+    let show_second_level =
+        show_first_level && !matches!(active_scope, Some(FirstLevelScope::Settings));
+    let height = if !show_first_level {
+        34.
+    } else if show_second_level {
+        70.
+    } else {
+        34.
+    };
     let available_width = tab_workspace_available_width(app, window);
 
     let root = div()
@@ -22,19 +31,19 @@ fn tabs(
 
     let mut workspace = div().flex_1().min_w(px(0.)).h_full().flex().flex_col();
 
-    if two_level {
+    if show_first_level {
         workspace = workspace
-            .child(database_tab_row(
+            .child(first_level_tab_row(
                 &groups,
                 active_scope.as_ref(),
-                app.hovered_database_tab.as_ref(),
+                app.hovered_first_level_tab.as_ref(),
                 compact,
                 available_width,
-                &app.workspace_tab_order,
                 colors,
                 cx,
-            ))
-            .child(table_tab_row(
+            ));
+        if show_second_level {
+            workspace = workspace.child(table_tab_row(
                 state,
                 active_scope.as_ref(),
                 compact,
@@ -45,6 +54,7 @@ fn tabs(
                 colors,
                 cx,
             ));
+        }
     } else {
         let show_switcher = tab_row_overflows(
             state.tabs.len(),
@@ -81,7 +91,10 @@ fn tabs(
                 .h_full()
                 .min_w(px(0.))
                 .flex()
-                .child(row.child(query_tab_blank_area(active_scope.clone(), cx)))
+                .child(row.child(query_tab_blank_area(
+                    database_scope(active_scope.as_ref()).cloned(),
+                    cx,
+                )))
                 .when(show_switcher, |this| {
                     this.child(tab_switcher_button(
                         TabSwitcherKind::Tables,
@@ -98,50 +111,92 @@ fn tabs(
 
 type WorkspaceScope = TabWorkspace;
 
-#[derive(Clone, Debug)]
-struct WorkspaceTabGroup {
-    scope: WorkspaceScope,
-    connection_name: String,
-    connection_color_hex: String,
-    database: String,
-    first_tab_id: TabId,
+/// 一级标签的作用域：数据库工作区或全局设置。
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum FirstLevelScope {
+    Database(WorkspaceScope),
+    Settings,
 }
 
-fn workspace_tab_groups(state: &AppState) -> Vec<WorkspaceTabGroup> {
-    let mut groups = Vec::new();
-    for tab in &state.tabs {
-        let Some(scope) = tab_workspace_scope(tab) else {
-            continue;
-        };
-        if groups
-            .iter()
-            .any(|group: &WorkspaceTabGroup| group.scope == scope)
-        {
-            continue;
+#[derive(Clone, Debug)]
+enum WorkspaceTabGroup {
+    Database {
+        scope: WorkspaceScope,
+        connection_name: String,
+        connection_color_hex: String,
+        database: String,
+        first_tab_id: TabId,
+    },
+    Settings {
+        first_tab_id: TabId,
+    },
+}
+
+impl WorkspaceTabGroup {
+    fn scope(&self) -> FirstLevelScope {
+        match self {
+            Self::Database { scope, .. } => FirstLevelScope::Database(scope.clone()),
+            Self::Settings { .. } => FirstLevelScope::Settings,
         }
-        let connection_color_hex = state
-            .connections
-            .iter()
-            .find(|connection| connection.config.id == scope.connection_id)
-            .map(|connection| connection_config_color_hex(&connection.config.options).to_string())
-            .unwrap_or_else(|| DEFAULT_CONNECTION_COLOR.to_string());
-        groups.push(WorkspaceTabGroup {
-            connection_name: connection_name(state, scope.connection_id),
-            connection_color_hex,
-            database: scope.database.clone(),
-            scope,
-            first_tab_id: tab.id,
-        });
+    }
+
+    fn first_tab_id(&self) -> TabId {
+        match self {
+            Self::Database { first_tab_id, .. } | Self::Settings { first_tab_id } => *first_tab_id,
+        }
+    }
+}
+
+fn first_level_tab_groups(state: &AppState) -> Vec<WorkspaceTabGroup> {
+    let mut groups = Vec::new();
+    let mut settings_tab_id = None;
+    for tab in &state.tabs {
+        match tab_first_level_scope(tab) {
+            Some(FirstLevelScope::Database(scope)) => {
+                let exists = groups.iter().any(|group| {
+                    matches!(
+                        group,
+                        WorkspaceTabGroup::Database {
+                            scope: group_scope,
+                            ..
+                        } if *group_scope == scope
+                    )
+                });
+                if exists {
+                    continue;
+                }
+                let connection_color_hex = state
+                    .connections
+                    .iter()
+                    .find(|connection| connection.config.id == scope.connection_id)
+                    .map(|connection| connection_config_color_hex(&connection.config.options).to_string())
+                    .unwrap_or_else(|| DEFAULT_CONNECTION_COLOR.to_string());
+                groups.push(WorkspaceTabGroup::Database {
+                    connection_name: connection_name(state, scope.connection_id),
+                    connection_color_hex,
+                    database: scope.database.clone(),
+                    scope,
+                    first_tab_id: tab.id,
+                });
+            }
+            Some(FirstLevelScope::Settings) if settings_tab_id.is_none() => {
+                settings_tab_id = Some(tab.id);
+            }
+            Some(FirstLevelScope::Settings) => {}
+            None => {}
+        }
+    }
+    if let Some(first_tab_id) = settings_tab_id {
+        groups.push(WorkspaceTabGroup::Settings { first_tab_id });
     }
     groups
 }
 
-fn active_workspace_scope(state: &AppState) -> Option<WorkspaceScope> {
+fn active_first_level_scope(state: &AppState) -> Option<FirstLevelScope> {
     match state.active_tab() {
-        // 从首页打开的全局标签没有数据库归属；激活它们时不能回退到第一个库，
-        // 否则仍会被误画进某个库的二级标签栏。
-        Some(tab) => tab_workspace_scope(tab),
-        None => state.tabs.iter().find_map(tab_workspace_scope),
+        // 首页打开的全局标签没有一级归属；设置页是全局单例，但有独立的 Settings 作用域。
+        Some(tab) => tab_first_level_scope(tab),
+        None => state.tabs.iter().find_map(tab_first_level_scope),
     }
 }
 
@@ -342,9 +397,9 @@ fn drag_moves_towards_end<T: PartialEq>(order: &[T], dragged: T, target: T) -> b
 }
 
 fn normalized_workspace_tab_order(
-    scopes: &[WorkspaceScope],
-    current_order: &[WorkspaceScope],
-) -> Vec<WorkspaceScope> {
+    scopes: &[FirstLevelScope],
+    current_order: &[FirstLevelScope],
+) -> Vec<FirstLevelScope> {
     let mut order = current_order
         .iter()
         .filter(|scope| scopes.contains(scope))
@@ -359,11 +414,11 @@ fn normalized_workspace_tab_order(
 }
 
 fn workspace_tab_order_after_drop(
-    scopes: &[WorkspaceScope],
-    current_order: &[WorkspaceScope],
-    dragged_scope: &WorkspaceScope,
-    target_scope: &WorkspaceScope,
-) -> Vec<WorkspaceScope> {
+    scopes: &[FirstLevelScope],
+    current_order: &[FirstLevelScope],
+    dragged_scope: &FirstLevelScope,
+    target_scope: &FirstLevelScope,
+) -> Vec<FirstLevelScope> {
     let order = normalized_workspace_tab_order(scopes, current_order);
     if dragged_scope == target_scope
         || !scopes.contains(dragged_scope)
@@ -392,18 +447,18 @@ fn workspace_tab_order_after_drop(
     next_order
 }
 
-fn order_workspace_tab_groups(
+fn order_first_level_tab_groups(
     groups: Vec<WorkspaceTabGroup>,
-    workspace_tab_order: &[WorkspaceScope],
+    workspace_tab_order: &[FirstLevelScope],
 ) -> Vec<WorkspaceTabGroup> {
     let scopes = groups
         .iter()
-        .map(|group| group.scope.clone())
+        .map(WorkspaceTabGroup::scope)
         .collect::<Vec<_>>();
     let order = normalized_workspace_tab_order(&scopes, workspace_tab_order);
     order
         .into_iter()
-        .filter_map(|scope| groups.iter().find(|group| group.scope == scope).cloned())
+        .filter_map(|scope| groups.iter().find(|group| group.scope() == scope).cloned())
         .collect()
 }
 
@@ -420,31 +475,56 @@ fn order_tab_refs<'a>(
         .collect()
 }
 
-fn database_tab_entries(
+fn first_level_tab_entries(
     groups: &[WorkspaceTabGroup],
-    active_scope: Option<&WorkspaceScope>,
+    active_scope: Option<&FirstLevelScope>,
     search: &str,
 ) -> Vec<TabSwitcherEntry> {
     let query = normalized_sidebar_search(search);
     groups
         .iter()
-        .filter(|group| {
-            query.is_empty()
-                || search_matches_text(&group.database, &query)
-                || search_matches_text(&group.connection_name, &query)
-        })
-        .map(|group| TabSwitcherEntry {
-            id: group.first_tab_id,
-            title: format!("{} {}", group.database, group.connection_name),
-            active: active_scope == Some(&group.scope),
-            icon: AppIcon::Database,
+        .filter_map(|group| match group {
+            WorkspaceTabGroup::Database {
+                scope,
+                connection_name,
+                database,
+                first_tab_id,
+                ..
+            } => {
+                if !query.is_empty()
+                    && !search_matches_text(database, &query)
+                    && !search_matches_text(connection_name, &query)
+                {
+                    return None;
+                }
+                Some(TabSwitcherEntry {
+                    id: *first_tab_id,
+                    title: format!("{database} {connection_name}"),
+                    active: matches!(
+                        active_scope,
+                        Some(FirstLevelScope::Database(active)) if active == scope
+                    ),
+                    icon: AppIcon::Database,
+                })
+            }
+            WorkspaceTabGroup::Settings { first_tab_id } => {
+                if !query.is_empty() && !search_matches_text("设置", &query) {
+                    return None;
+                }
+                Some(TabSwitcherEntry {
+                    id: *first_tab_id,
+                    title: "设置".to_string(),
+                    active: matches!(active_scope, Some(FirstLevelScope::Settings)),
+                    icon: AppIcon::Settings,
+                })
+            }
         })
         .collect()
 }
 
 fn table_tab_entries(
     state: &AppState,
-    active_scope: Option<&WorkspaceScope>,
+    active_scope: Option<&FirstLevelScope>,
     search: &str,
     tab_order: &[TabId],
     pinned_tabs: &BTreeSet<TabId>,
@@ -467,9 +547,12 @@ fn table_tab_entries(
         .collect()
 }
 
-fn tab_matches_workspace_scope(tab: &TabState, active_scope: Option<&WorkspaceScope>) -> bool {
-    match (active_scope, tab_workspace_scope(tab)) {
-        (Some(active_scope), Some(tab_scope)) => tab_scope == *active_scope,
+fn tab_matches_workspace_scope(tab: &TabState, active_scope: Option<&FirstLevelScope>) -> bool {
+    match (active_scope, tab_first_level_scope(tab)) {
+        (
+            Some(FirstLevelScope::Database(active_scope)),
+            Some(FirstLevelScope::Database(tab_scope)),
+        ) => &tab_scope == active_scope,
         (None, None) => true,
         _ => false,
     }
@@ -477,6 +560,20 @@ fn tab_matches_workspace_scope(tab: &TabState, active_scope: Option<&WorkspaceSc
 
 fn tab_workspace_scope(tab: &TabState) -> Option<WorkspaceScope> {
     tab.workspace()
+}
+
+fn tab_first_level_scope(tab: &TabState) -> Option<FirstLevelScope> {
+    match &tab.kind {
+        TabKind::Settings(_) => Some(FirstLevelScope::Settings),
+        _ => tab_workspace_scope(tab).map(FirstLevelScope::Database),
+    }
+}
+
+fn database_scope(scope: Option<&FirstLevelScope>) -> Option<&WorkspaceScope> {
+    match scope? {
+        FirstLevelScope::Database(workspace) => Some(workspace),
+        FirstLevelScope::Settings => None,
+    }
 }
 
 fn tab_context_menu_close_targets<I>(scopes: I, tab_id: TabId, include_current: bool) -> Vec<TabId>
@@ -542,13 +639,21 @@ fn tab_connection_color_hex<'a>(state: &'a AppState, tab: &TabState) -> Option<&
         .map(|connection| connection_config_color_hex(&connection.config.options))
 }
 
-fn database_tab_row(
+/// 连接色只用于页签身份标记；近黑色在暗色主题里改用中性前景，避免细线消失。
+fn tab_identity_color(hex: &str, colors: UiColors) -> gpui::Rgba {
+    if colors.is_dark && hex == DEFAULT_CONNECTION_COLOR {
+        colors.muted
+    } else {
+        connection_color_rgba(hex)
+    }
+}
+
+fn first_level_tab_row(
     groups: &[WorkspaceTabGroup],
-    active_scope: Option<&WorkspaceScope>,
-    hovered_database_tab: Option<&WorkspaceScope>,
+    active_scope: Option<&FirstLevelScope>,
+    hovered_scope: Option<&FirstLevelScope>,
     compact: bool,
     available_width: f32,
-    _workspace_tab_order: &[WorkspaceScope],
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
@@ -558,38 +663,36 @@ fn database_tab_row(
         available_width,
     );
     let mut tab_strip = div()
-        .id("database-tab-scroll-row")
+        .id("first-level-tab-scroll-row")
         .h_full()
         .flex_1()
         .min_w(px(0.))
         .px_1()
         .pt(px(3.))
+        .gap_1()
         .flex()
         .items_end()
         .overflow_x_scroll();
 
     for group in groups {
-        let active = active_scope == Some(&group.scope);
-        tab_strip = tab_strip.child(database_tab_view(
+        let group_scope = group.scope();
+        let active = active_scope == Some(&group_scope);
+        tab_strip = tab_strip.child(first_level_tab_view(
             group,
             active,
             compact,
-            hovered_database_tab == Some(&group.scope),
+            hovered_scope == Some(&group_scope),
             colors,
             cx,
         ));
     }
 
     div()
-        .h(px(32.))
+        .h(px(34.))
         .min_w(px(0.))
         .border_b_1()
         .border_color(colors.border)
-        .bg(if colors.is_dark {
-            rgb(0x171a1f)
-        } else {
-            rgb(0xf2f4f7)
-        })
+        .bg(colors.status_bg)
         .flex()
         .overflow_hidden()
         .child(tab_strip.child(div().flex_1()))
@@ -605,7 +708,7 @@ fn database_tab_row(
 
 fn table_tab_row(
     state: &AppState,
-    active_scope: Option<&WorkspaceScope>,
+    active_scope: Option<&FirstLevelScope>,
     compact: bool,
     available_width: f32,
     tab_order: &[TabId],
@@ -614,19 +717,8 @@ fn table_tab_row(
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
-    let active_color_hex = active_scope
-        .and_then(|scope| {
-            state
-                .connections
-                .iter()
-                .find(|connection| connection.config.id == scope.connection_id)
-                .map(|connection| connection_config_color_hex(&connection.config.options))
-        })
-        .unwrap_or(DEFAULT_CONNECTION_COLOR);
-    let accent = connection_color_rgba(active_color_hex);
-    let table_count = table_tab_entries(state, active_scope, "", tab_order, pinned_tabs)
-        .into_iter()
-        .count();
+    let table_count =
+        table_tab_entries(state, active_scope, "", tab_order, pinned_tabs).len();
     let show_switcher = tab_row_overflows(
         table_count,
         tab_width_for_kind(Some(TabKindDiscriminant::DataEditor), compact),
@@ -637,7 +729,7 @@ fn table_tab_row(
         .flex_1()
         .min_h(px(0.))
         .min_w(px(0.))
-        .bg(colors.status_bg)
+        .bg(colors.panel_bg)
         .flex()
         .items_center()
         .gap_1()
@@ -665,11 +757,10 @@ fn table_tab_row(
     }
 
     div()
-        .h(px(34.))
+        .h(px(36.))
         .min_w(px(0.))
-        .bg(colors.status_bg)
+        .bg(colors.panel_bg)
         .flex()
-        .flex_col()
         .overflow_hidden()
         .child(
             div()
@@ -677,7 +768,10 @@ fn table_tab_row(
                 .min_h(px(0.))
                 .min_w(px(0.))
                 .flex()
-                .child(tab_strip.child(query_tab_blank_area(active_scope.cloned(), cx)))
+                .child(tab_strip.child(query_tab_blank_area(
+                    database_scope(active_scope).cloned(),
+                    cx,
+                )))
                 .when(show_switcher, |this| {
                     this.child(tab_switcher_button(
                         TabSwitcherKind::Tables,
@@ -687,7 +781,6 @@ fn table_tab_row(
                     ))
                 }),
         )
-        .child(div().h(px(4.)).w_full().bg(accent))
 }
 
 fn query_tab_blank_area(scope: Option<WorkspaceScope>, cx: &mut Context<NavicatMain>) -> Div {
@@ -717,7 +810,7 @@ fn tab_switcher_button(
         .bg(if active {
             colors.panel_alt
         } else {
-            colors.status_bg
+            rgba_with_alpha(colors.panel_bg, 0.)
         })
         .cursor_pointer()
         .flex()
@@ -737,19 +830,19 @@ fn tab_switcher_button(
 fn tab_switcher_popup(
     kind: TabSwitcherKind,
     state: &AppState,
-    active_scope: Option<&WorkspaceScope>,
+    active_scope: Option<&FirstLevelScope>,
     search_input: Entity<InputState>,
     search: &str,
     two_level: bool,
-    workspace_tab_order: &[WorkspaceScope],
+    workspace_tab_order: &[FirstLevelScope],
     tab_order: &[TabId],
     pinned_tabs: &BTreeSet<TabId>,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
     let entries = match kind {
-        TabSwitcherKind::Databases => database_tab_entries(
-            &order_workspace_tab_groups(workspace_tab_groups(state), workspace_tab_order),
+        TabSwitcherKind::Databases => first_level_tab_entries(
+            &order_first_level_tab_groups(first_level_tab_groups(state), workspace_tab_order),
             active_scope,
             search,
         ),
@@ -811,9 +904,9 @@ fn tab_switcher_popup(
 
 fn tab_switcher_popup_top(kind: TabSwitcherKind, two_level: bool) -> f32 {
     match kind {
-        TabSwitcherKind::Databases => 32.,
-        TabSwitcherKind::Tables if two_level => 66.,
-        TabSwitcherKind::Tables => 30.,
+        TabSwitcherKind::Databases => 34.,
+        TabSwitcherKind::Tables if two_level => 70.,
+        TabSwitcherKind::Tables => 34.,
     }
 }
 
@@ -873,11 +966,12 @@ fn tab_switcher_icon_color(icon: AppIcon, colors: UiColors) -> gpui::Rgba {
     match icon {
         AppIcon::Database => rgb(0xf0b400),
         AppIcon::Table => rgb(0x00c985),
+        AppIcon::Settings => colors.info,
         _ => colors.text,
     }
 }
 
-fn database_tab_view(
+fn first_level_tab_view(
     group: &WorkspaceTabGroup,
     active: bool,
     compact: bool,
@@ -885,48 +979,69 @@ fn database_tab_view(
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> impl IntoElement {
-    let tab_id = group.first_tab_id;
-    let drop_scope = group.scope.clone();
-    let close_scope = group.scope.clone();
-    let dragged_workspace_tab = DraggedWorkspaceTab {
-        scope: group.scope.clone(),
-        title: group.database.clone(),
+    let tab_id = group.first_tab_id();
+    let drop_scope = group.scope();
+    let close_scope = group.scope();
+    let title = match group {
+        WorkspaceTabGroup::Database { database, .. } => database.clone(),
+        WorkspaceTabGroup::Settings { .. } => "设置".to_string(),
     };
-    let accent = connection_color_rgba(&group.connection_color_hex);
-    let active_bg = connection_color_row_bg(&group.connection_color_hex, colors);
-    let hover_scope = group.scope.clone();
+    let subtitle = match group {
+        WorkspaceTabGroup::Database { connection_name, .. } => connection_name.clone(),
+        WorkspaceTabGroup::Settings { .. } => "全局".to_string(),
+    };
+    let (icon, accent) = match group {
+        WorkspaceTabGroup::Database {
+            connection_color_hex,
+            ..
+        } => (
+            AppIcon::Database,
+            tab_identity_color(connection_color_hex, colors),
+        ),
+        WorkspaceTabGroup::Settings { .. } => (AppIcon::Settings, colors.info),
+    };
+    let dragged_workspace_tab = DraggedWorkspaceTab {
+        scope: group.scope(),
+        title: title.clone(),
+    };
+    let hover_scope = group.scope();
     div()
-        .id(("database-tab", tab_id.0))
-        .h(px(29.))
+        .id(("first-level-tab", tab_id.0))
+        .debug_selector(move || format!("first-level-tab:{}", tab_id.0))
+        .relative()
+        .h(px(30.))
         .w(px(if compact { 172. } else { 224. }))
         .flex_none()
         .min_w(px(0.))
         .border_1()
-        .border_color(if active { accent } else { colors.border })
+        .border_color(if active {
+            colors.border
+        } else {
+            colors.border_soft
+        })
         .rounded(colors.radius_lg)
         .bg(if active {
-            active_bg
-        } else if colors.is_dark {
-            rgb(0x1a1e24)
+            colors.panel_bg
         } else {
-            rgb(0xffffff)
+            colors.panel_alt
         })
         .flex()
-        .flex_col()
+        .items_center()
         .overflow_hidden()
         .cursor_move()
         .hover(move |style| {
-            style.bg(if colors.is_dark {
-                rgb(0x232934)
+            style.bg(if active {
+                colors.panel_bg
             } else {
-                rgb(0xf8fafc)
+                colors.hover
             })
+            .border_color(colors.border)
         })
         .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
             if *hovered {
-                this.hovered_database_tab = Some(hover_scope.clone());
-            } else if this.hovered_database_tab.as_ref() == Some(&hover_scope) {
-                this.hovered_database_tab = None;
+                this.hovered_first_level_tab = Some(hover_scope.clone());
+            } else if this.hovered_first_level_tab.as_ref() == Some(&hover_scope) {
+                this.hovered_first_level_tab = None;
             }
             cx.notify();
         }))
@@ -941,7 +1056,7 @@ fn database_tab_view(
             cx.new(|_| drag.clone())
         })
         .drag_over::<DraggedWorkspaceTab>(move |style, _, _, _| {
-            style.border_color(rgb(0xf5a400)).bg(colors.hover)
+            style.border_color(colors.info).bg(colors.hover)
         })
         .on_drop(cx.listener(move |this, drag: &DraggedWorkspaceTab, _, cx| {
             this.drop_workspace_tab_after(drag.scope.clone(), drop_scope.clone(), cx);
@@ -956,8 +1071,20 @@ fn database_tab_view(
                 .whitespace_nowrap()
                 .flex()
                 .items_center()
-                .gap_2()
-                .child(app_icon_box(AppIcon::Database, 20., 16., rgb(0xf0b400)))
+                .gap_1p5()
+                .child(
+                    div()
+                        .size(px(6.))
+                        .flex_none()
+                        .rounded_full()
+                        .bg(if active { accent } else { colors.muted }),
+                )
+                .child(app_icon_box(
+                    icon,
+                    18.,
+                    15.,
+                    if active { colors.text } else { colors.muted },
+                ))
                 .child(
                     div()
                         .min_w(px(0.))
@@ -971,9 +1098,11 @@ fn database_tab_view(
                                 .overflow_hidden()
                                 .text_ellipsis()
                                 .text_size(px(13.))
-                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .when(active, |this| {
+                                    this.font_weight(gpui::FontWeight::SEMIBOLD)
+                                })
                                 .text_color(colors.text)
-                                .child(group.database.clone()),
+                                .child(title),
                         )
                         .child(
                             div()
@@ -981,24 +1110,42 @@ fn database_tab_view(
                                 .text_ellipsis()
                                 .text_size(px(11.))
                                 .text_color(colors.muted)
-                                .child(group.connection_name.clone()),
+                                .child(subtitle),
                         ),
-                )
-                .when(hovered, |this| {
-                    this.child(database_tab_close_button(tab_id, close_scope, colors, cx))
-                }),
+                ),
         )
-        .child(div().h(px(if active { 4. } else { 3. })).w_full().bg(accent))
+        .when(hovered, |this| {
+            this.child(
+                div()
+                    .absolute()
+                    .right_1()
+                    .top(px(2.))
+                    .bottom(px(2.))
+                    .w(px(24.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(colors.radius)
+                    .bg(if active {
+                        colors.panel_bg
+                    } else {
+                        colors.hover
+                    })
+                    .child(first_level_tab_close_button(
+                        tab_id, close_scope, colors, cx,
+                    )),
+            )
+        })
 }
 
-fn database_tab_close_button(
+fn first_level_tab_close_button(
     tab_id: TabId,
-    scope: WorkspaceScope,
+    scope: FirstLevelScope,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> impl IntoElement {
     div()
-        .id(("close-database-tab", tab_id.0))
+        .id(("close-first-level-tab", tab_id.0))
         .size(px(20.))
         .flex_none()
         .rounded(colors.radius)

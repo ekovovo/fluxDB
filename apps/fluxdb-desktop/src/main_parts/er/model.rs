@@ -475,8 +475,8 @@ impl NavicatMain {
 
     /// 重新加载所有已打开 ER 标签的本地关系目录。
     ///
-    /// AI 通过 `er.propose_relationships` 写入的建议落在同一目录里；面板列表是每标签
-    /// 一次性加载的内存副本，不刷新就看不到新建议，用户也就无法确认或拒绝。
+    /// 用户在 AI 建议弹框中采纳关系后写入同一目录；面板列表是每标签一次性加载的
+    /// 内存副本，不刷新就看不到新关系。
     /// 读取是本地 kv + 后台加载，不在 UI 线程做 IO。
     pub(crate) fn refresh_open_er_relationships(&mut self, cx: &mut Context<Self>) {
         let tabs: Vec<TabId> = self.er_relationship_scope_keys.keys().copied().collect();

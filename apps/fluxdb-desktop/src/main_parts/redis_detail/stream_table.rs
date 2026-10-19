@@ -55,7 +55,7 @@ impl RedisStreamTableDelegate {
         self.entries = entries;
         self.field_columns = field_columns.clone();
         self.columns = std::iter::once(
-            TableColumn::new("entry_id", "Entry ID")
+            TableColumn::new("entry_id", tr("app.redis.stream.entry_id"))
                 .width(px(240.))
                 .fixed_left()
                 .resizable(false)
@@ -333,7 +333,7 @@ fn redis_stream_table_delete_button(
                 .when(shown, |this| {
                     this.cursor_pointer()
                         .hover(move |style| style.bg(colors.hover))
-                        .tooltip(|window, cx| Tooltip::new("删除").build(window, cx))
+                        .tooltip(|window, cx| Tooltip::new(tr("app.redis.delete")).build(window, cx))
                         .on_mouse_down(
                             MouseButton::Left,
                             // cx.listener 的回调本身就运行在 TableState 的 lease 内，
@@ -392,7 +392,7 @@ fn redis_stream_table_delete_confirm_overlay(
                 .text_size(px(12.))
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .text_color(colors.text)
-                .child("确认删除该 Entry？"),
+                .child(tr("app.redis.stream.delete_confirm")),
         )
         .child(
             div()
@@ -409,7 +409,7 @@ fn redis_stream_table_delete_confirm_overlay(
                 .justify_end()
                 .gap_2()
                 .child(
-                    redis_detail_action_button("取消", false, !applying, colors).on_mouse_down(
+                    redis_detail_action_button(tr("app.redis.cancel"), false, !applying, colors).on_mouse_down(
                         MouseButton::Left,
                         cx.listener(|this, _, _, cx| {
                             this.pending_redis_stream_entry_delete = None;
@@ -419,7 +419,7 @@ fn redis_stream_table_delete_confirm_overlay(
                     ),
                 )
                 .child(
-                    redis_detail_action_button("删除", false, !applying, colors).on_mouse_down(
+                    redis_detail_action_button(tr("app.redis.delete"), false, !applying, colors).on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, _, _, cx| {
                             if !applying {

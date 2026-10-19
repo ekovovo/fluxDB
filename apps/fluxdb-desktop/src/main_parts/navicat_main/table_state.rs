@@ -823,7 +823,7 @@ impl NavicatMain {
         let find = if let Some(find) = self.query_find_inputs.get(&tab_id).cloned() {
             find
         } else {
-            let input = cx.new(|cx| InputState::new(window, cx).placeholder("查找"));
+            let input = cx.new(|cx| InputState::new(window, cx).placeholder(tr("app.data.placeholder.find")));
             let sub = cx.subscribe(&input, {
                 move |this, input, event: &InputEvent, cx| {
                     if matches!(event, InputEvent::Change) {
@@ -839,7 +839,7 @@ impl NavicatMain {
         let replace = if let Some(replace) = self.query_replace_inputs.get(&tab_id).cloned() {
             replace
         } else {
-            let input = cx.new(|cx| InputState::new(window, cx).placeholder("替换"));
+            let input = cx.new(|cx| InputState::new(window, cx).placeholder(tr("app.data.placeholder.replace")));
             let sub = cx.subscribe(&input, {
                 move |this, input, event: &InputEvent, cx| {
                     if matches!(event, InputEvent::Change) {

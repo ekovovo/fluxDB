@@ -2,10 +2,10 @@
 struct CreateTableForeignKeyRow {
     foreign_key: CreateTableForeignKey,
     name_input: Entity<InputState>,
-    referenced_database_select: Entity<SelectState<SearchableVec<String>>>,
-    referenced_table_select: Entity<SelectState<SearchableVec<String>>>,
-    on_delete_select: Entity<SelectState<SearchableVec<String>>>,
-    on_update_select: Entity<SelectState<SearchableVec<String>>>,
+    referenced_database_select: Entity<SelectState<SearchableVec<CreateTableSelectOption>>>,
+    referenced_table_select: Entity<SelectState<SearchableVec<CreateTableSelectOption>>>,
+    on_delete_select: Entity<SelectState<SearchableVec<CreateTableSelectOption>>>,
+    on_update_select: Entity<SelectState<SearchableVec<CreateTableSelectOption>>>,
 }
 
 include!("foreign_keys/options.rs");
@@ -40,7 +40,7 @@ fn create_table_foreign_keys(
             foreign_key: foreign_key.clone(),
             name_input: this.create_table_input(
                 CreateTableInputKey::ForeignKeyName(tab_id, foreign_key.id),
-                "外键名",
+                tr("app.create_table.foreign_key.name_placeholder"),
                 &foreign_key.name,
                 window,
                 cx,
@@ -116,15 +116,15 @@ fn create_table_foreign_key_header_row(colors: UiColors) -> Div {
         .text_color(colors.muted)
         .flex()
         .items_center()
-        .child(create_table_field_header_cell("名称", 170., colors))
-        .child(create_table_field_header_cell("字段", 230., colors))
-        .child(create_table_field_header_cell("目标数据库", 150., colors))
-        .child(create_table_field_header_cell("目标表", 160., colors))
-        .child(create_table_field_header_cell("目标字段", 160., colors))
-        .child(create_table_field_header_cell("删除时", 110., colors))
-        .child(create_table_field_header_cell("更新时", 110., colors))
+        .child(create_table_field_header_cell(tr("app.create_table.header.name"), 170., colors))
+        .child(create_table_field_header_cell(tr("app.create_table.index.field"), 230., colors))
+        .child(create_table_field_header_cell(tr("app.create_table.header.target_database"), 150., colors))
+        .child(create_table_field_header_cell(tr("app.create_table.header.target_table"), 160., colors))
+        .child(create_table_field_header_cell(tr("app.create_table.header.target_field"), 160., colors))
+        .child(create_table_field_header_cell(tr("app.create_table.header.on_delete"), 110., colors))
+        .child(create_table_field_header_cell(tr("app.create_table.header.on_update"), 110., colors))
         .child(create_table_field_header_cell(
-            "操作",
+            tr("app.create_table.field.operations"),
             CREATE_TABLE_OPERATIONS_WIDTH,
             colors,
         ))
@@ -215,7 +215,7 @@ fn create_table_foreign_key_row(
         .child(create_table_select_cell_with_placeholder(
             row.referenced_database_select,
             150.,
-            "当前库",
+            tr("app.create_table.foreign_key.current_database"),
             window,
             colors,
             cx,
@@ -224,9 +224,9 @@ fn create_table_foreign_key_row(
             row.referenced_table_select,
             160.,
             if table_options_loading {
-                "加载中"
+                tr("app.create_table.foreign_key.loading")
             } else {
-                "选择表"
+                tr("app.create_table.foreign_key.select_table")
             },
             table_options_loading,
             window,
@@ -347,7 +347,7 @@ fn create_table_foreign_key_fields_cell(
                                 .whitespace_nowrap()
                                 .text_ellipsis()
                                 .child(if summary.is_empty() {
-                                    "选择字段".to_string()
+                                    tr("app.create_table.foreign_key.select_fields").to_string()
                                 } else {
                                     summary
                                 }),
@@ -432,13 +432,13 @@ fn create_table_foreign_key_fields_popover(
                         .text_size(px(13.))
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .text_color(colors.text)
-                        .child("选择字段"),
+                        .child(tr("app.create_table.foreign_key.select_fields")),
                 )
                 .child(
                     div()
                         .text_size(px(12.))
                         .text_color(colors.muted)
-                        .child(format!("已选 {} 个", draft.columns.len())),
+                        .child(tr("app.create_table.foreign_key.selected_count").replace("%{count}", &draft.columns.len().to_string())),
                 ),
         )
         .child(create_table_foreign_key_fields_table(
@@ -466,7 +466,7 @@ fn create_table_foreign_key_fields_popover(
                         .gap_1()
                         .child(create_table_index_field_icon_button(
                             AppIcon::ChevronUp,
-                            "上移字段",
+                            tr("app.create_table.popover.move_up"),
                             can_move_up,
                             colors,
                         )
@@ -495,7 +495,7 @@ fn create_table_foreign_key_fields_popover(
                         }))
                         .child(create_table_index_field_icon_button(
                             AppIcon::ChevronDown,
-                            "下移字段",
+                            tr("app.create_table.popover.move_down"),
                             can_move_down,
                             colors,
                         )
@@ -527,7 +527,7 @@ fn create_table_foreign_key_fields_popover(
                         .flex()
                         .items_center()
                         .gap_2()
-                        .child(create_table_popover_text_button("取消", colors).on_mouse_down(
+                        .child(create_table_popover_text_button(tr("app.create_table.popover.cancel"), colors).on_mouse_down(
                             MouseButton::Left,
                             {
                                 let cancel_view = view.clone();
@@ -543,7 +543,7 @@ fn create_table_foreign_key_fields_popover(
                                 }
                             },
                         ))
-                        .child(create_table_popover_text_button("确定", colors).on_mouse_down(
+                        .child(create_table_popover_text_button(tr("app.create_table.popover.confirm"), colors).on_mouse_down(
                             MouseButton::Left,
                             {
                                 let confirm_view = view.clone();
@@ -595,7 +595,7 @@ fn create_table_foreign_key_fields_table(
 
     if available_fields.is_empty() {
         list = list.child(create_table_foreign_key_fields_empty(
-            "请先填写字段名",
+            tr("app.create_table.foreign_key.enter_field_name"),
             colors,
         ));
     } else {
@@ -643,7 +643,7 @@ fn field_selection_header(colors: UiColors) -> Div {
                 .px_2()
                 .flex()
                 .items_center()
-                .child("名称"),
+                .child(tr("app.create_table.header.name")),
         )
 }
 

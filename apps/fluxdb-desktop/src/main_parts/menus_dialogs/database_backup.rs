@@ -30,7 +30,11 @@ impl NavicatMain {
             })
             .or_else(|| self.first_connection_id())
         else {
-            self.show_message("请先创建连接", AppMessageKind::Warning, cx);
+            self.show_message(
+                tr("app.database_backup.create_connection_first"),
+                AppMessageKind::Warning,
+                cx,
+            );
             return;
         };
         let database = database
@@ -201,7 +205,7 @@ impl NavicatMain {
             files: false,
             directories: true,
             multiple: false,
-            prompt: Some("选择备份目录".into()),
+            prompt: Some(tr("app.database_backup.choose_dir")),
         });
         let input = self.backup_target_dir_input.clone();
         self._file_picker_task = Some(cx.spawn_in(window, async move |view, cx| {
@@ -225,12 +229,12 @@ impl NavicatMain {
                     }
                     Ok(Ok(None)) => {}
                     Ok(Err(error)) => this.show_message(
-                        format!("选择备份目录失败：{error}"),
+                        format!("{}: {error}", tr("app.database_backup.choose_dir_failed")),
                         AppMessageKind::Error,
                         cx,
                     ),
                     Err(error) => this.show_message(
-                        format!("选择备份目录失败：{error}"),
+                        format!("{}: {error}", tr("app.database_backup.choose_dir_failed")),
                         AppMessageKind::Error,
                         cx,
                     ),
@@ -248,11 +252,19 @@ impl NavicatMain {
             form.target_dir = self.controller.state().settings.backup_dir.trim().to_string();
         }
         if form.target_dir.trim().is_empty() {
-            self.show_message("请先在设置中配置备份目录", AppMessageKind::Warning, cx);
+            self.show_message(
+                tr("app.backup.configure_dir"),
+                AppMessageKind::Warning,
+                cx,
+            );
             return;
         }
         if !form.include_schema && !form.include_data {
-            self.show_message("表结构和数据至少需要包含一项", AppMessageKind::Warning, cx);
+            self.show_message(
+                tr("app.database_backup.content_required"),
+                AppMessageKind::Warning,
+                cx,
+            );
             return;
         }
         let task_id = self.create_backup_task(&form);
@@ -283,7 +295,7 @@ impl NavicatMain {
             database: form.database.clone(),
             mode: form.mode,
             output_path: PathBuf::new(),
-            stage: "准备中".to_string(),
+            stage: tr("app.database_backup.stage.preparing").to_string(),
             started_at: Instant::now(),
             finished_at: None,
             logs: Vec::new(),
@@ -361,9 +373,12 @@ impl NavicatMain {
                         } else if let Some(s) = payload.downcast_ref::<String>() {
                             s.clone()
                         } else {
-                            "未知内部错误".to_string()
+                            tr("app.database_backup.unknown_error").to_string()
                         };
-                        Err(anyhow::anyhow!("备份过程内部错误：{message}"))
+                        Err(anyhow::anyhow!(
+                            "{}: {message}",
+                            tr("app.database_backup.internal_error")
+                        ))
                     })
                 })
                 .fuse();
@@ -423,7 +438,11 @@ impl NavicatMain {
             .iter()
             .any(|task| task.id == task_id && task.running())
         {
-            self.show_message("任务执行中，暂不能清除", AppMessageKind::Warning, cx);
+            self.show_message(
+                tr("app.database_backup.running_no_clear"),
+                AppMessageKind::Warning,
+                cx,
+            );
             return;
         }
         self.backup_tasks.retain(|task| task.id != task_id);
@@ -466,11 +485,11 @@ impl NavicatMain {
             task.canceled = canceled;
             task.error = error.clone();
             if error.is_some() {
-                task.stage = "失败".to_string();
+                task.stage = tr("app.database_backup.status.failed").to_string();
             } else if canceled {
-                task.stage = "已取消".to_string();
+                task.stage = tr("app.backup.status.canceled").to_string();
             } else {
-                task.stage = "完成".to_string();
+                task.stage = tr("app.database_backup.status.completed").to_string();
             }
         }
         // 成功则写旁挂元数据 {文件}.sql.meta.json；失败/取消丢弃，避免残留误导。
@@ -496,11 +515,15 @@ impl NavicatMain {
             AppMessageKind::Success
         };
         let message = if canceled {
-            format!("备份已取消：{database}")
+            tr("app.database_backup.message.canceled").replace("%{database}", &database)
         } else if let Some(error) = error {
-            format!("备份失败：{database}：{error}")
+            tr("app.database_backup.message.failed")
+                .replace("%{database}", &database)
+                .replace("%{error}", &error.to_string())
         } else {
-            format!("备份完成：{database} → {}", output_path.display())
+            tr("app.database_backup.message.completed")
+                .replace("%{database}", &database)
+                .replace("%{path}", &output_path.display().to_string())
         };
         self.show_message(message, kind, cx);
         cx.notify();
@@ -612,17 +635,22 @@ fn backup_statusbar_area(
     let running_count = tasks.iter().filter(|task| task.running()).count();
     let db = task.database.clone().unwrap_or_default();
     let label = if running_count > 1 {
-        format!("{running_count} 个备份任务运行中")
+        tr("app.database_backup.statusbar.running_count")
+            .replace("%{count}", &running_count.to_string())
     } else if task.cancel_requested {
-        format!("{db} 正在停止 · {}", task.stage)
+        tr("app.database_backup.statusbar.stopping")
+            .replace("%{database}", &db)
+            .replace("%{stage}", &task.stage)
     } else if task.running() {
-        format!("{db} 备份中 · {}", task.stage)
+        tr("app.database_backup.statusbar.running")
+            .replace("%{database}", &db)
+            .replace("%{stage}", &task.stage)
     } else if task.canceled {
-        format!("{db} 已取消")
+        tr("app.database_backup.statusbar.canceled").replace("%{database}", &db)
     } else if task.error.is_some() {
-        format!("{db} 备份失败")
+        tr("app.database_backup.statusbar.failed").replace("%{database}", &db)
     } else {
-        format!("{db} 备份完成")
+        tr("app.database_backup.statusbar.completed").replace("%{database}", &db)
     };
     let has_error = task.error.is_some();
     let task_id = task.id;

@@ -11,7 +11,7 @@ fn create_table_triggers(
     for (position, trigger) in create.triggers.iter().enumerate() {
         let name_input = this.create_table_input(
             CreateTableInputKey::TriggerName(tab_id, trigger.id),
-            "触发器名",
+            tr("app.create_table.trigger.name_placeholder"),
             &trigger.name,
             window,
             cx,
@@ -68,16 +68,25 @@ fn create_table_trigger_header_row(colors: UiColors) -> Div {
         .text_color(colors.muted)
         .flex()
         .items_center()
-        .child(create_table_trigger_header_cell("名称", 240., colors))
-        .child(create_table_trigger_header_cell("触发", 120., colors))
-        .child(create_table_trigger_header_cell("插入", 80., colors))
-        .child(create_table_trigger_header_cell("更新", 80., colors))
-        .child(create_table_trigger_header_cell("删除", 80., colors))
-        .child(create_table_trigger_header_cell("操作", CREATE_TABLE_OPERATIONS_WIDTH, colors))
+        .child(create_table_trigger_header_cell(tr("app.create_table.header.name"), 240., colors))
+        .child(create_table_trigger_header_cell(tr("app.create_table.header.trigger_timing"), 120., colors))
+        .child(create_table_trigger_header_cell(tr("app.create_table.header.insert"), 80., colors))
+        .child(create_table_trigger_header_cell(tr("app.create_table.header.update"), 80., colors))
+        .child(create_table_trigger_header_cell(tr("app.create_table.header.delete"), 80., colors))
+        .child(create_table_trigger_header_cell(tr("app.create_table.field.operations"), CREATE_TABLE_OPERATIONS_WIDTH, colors))
 }
 
-fn create_table_trigger_header_cell(label: &'static str, width: f32, colors: UiColors) -> Div {
+fn create_table_trigger_header_cell(
+    label: impl Into<SharedString>,
+    width: f32,
+    colors: UiColors,
+) -> Div {
+    let label: SharedString = label.into();
     div()
+        .debug_selector({
+            let label = label.clone();
+            move || format!("create-table-heading:{label}")
+        })
         .w(px(width))
         .flex_shrink_0()
         .h_full()
@@ -94,7 +103,7 @@ fn create_table_trigger_row(
     tab_id: TabId,
     trigger: &CreateTableTrigger,
     name_input: Entity<InputState>,
-    timing_select: Entity<SelectState<SearchableVec<String>>>,
+    timing_select: Entity<SelectState<SearchableVec<CreateTableSelectOption>>>,
     position: usize,
     trigger_count: usize,
     selected: bool,
@@ -225,7 +234,7 @@ fn create_table_trigger_body_editor(
             .justify_center()
             .text_size(px(13.))
             .text_color(colors.muted)
-            .child("添加触发器后填写定义");
+            .child(tr("app.create_table.trigger.add_definition"));
     };
     let body_input = this.create_table_input(
         CreateTableInputKey::TriggerBody(tab_id, trigger.id),
@@ -255,7 +264,7 @@ fn create_table_trigger_body_editor(
                 .text_size(px(13.))
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .text_color(colors.text)
-                .child("定义")
+                .child(tr("app.create_table.definition"))
                 // PG 触发器体指引用已存在函数，不是行内 SQL（后端 postgres 渲染 EXECUTE FUNCTION）。
                 .when(create.database_kind == DatabaseKind::Postgres, |this| {
                     this.child(
@@ -263,7 +272,7 @@ fn create_table_trigger_body_editor(
                             .text_size(px(11.))
                             .font_weight(gpui::FontWeight::NORMAL)
                             .text_color(colors.muted)
-                            .child("PG 需引用已存在函数：函数名()"),
+                            .child(tr("app.create_table.trigger.postgres_function_hint")),
                     )
                 }),
         )

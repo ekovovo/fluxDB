@@ -235,7 +235,7 @@ impl TerminalComponent {
                 eprintln!("[terminal] 启动子进程失败: {err}");
                 self.state = TerminalSessionState::Failed;
                 self.failure_reason = Some(err.to_string());
-                self.record_transcript(TerminalTranscriptKind::Error, format!("启动失败: {err}"));
+                self.record_transcript(TerminalTranscriptKind::Error, tr("app.terminal.transcript.start_failed").replace("%{error}", &err.to_string()));
             }
         }
         cx.notify();
@@ -281,13 +281,13 @@ impl TerminalComponent {
                             self.failure_reason = status
                                 .signal
                                 .clone()
-                                .map(|s| format!("进程被信号终止: {s}"))
-                                .or_else(|| status.code.map(|c| format!("进程退出码: {c}")))
-                                .or_else(|| Some("进程异常退出".to_string()));
+                                .map(|s| tr("app.terminal.transcript.killed_by_signal").replace("%{signal}", &s))
+                                .or_else(|| status.code.map(|c| tr("app.terminal.transcript.exit_code").replace("%{code}", &c.to_string())))
+                                .or_else(|| Some(tr("app.terminal.transcript.abnormal_exit").to_string()));
                         }
                         self.adapter.on_exit(status, &mut self.state);
                         pending_transcript
-                            .push((TerminalTranscriptKind::System, "会话已退出".to_string()));
+                            .push((TerminalTranscriptKind::System, tr("app.terminal.transcript.session_exited").to_string()));
                         changed = true;
                         exited = true;
                     }
@@ -315,7 +315,7 @@ impl TerminalComponent {
         self.transport = None;
         self.pending_dangerous = None;
         self.state = TerminalSessionState::Exited;
-        self.record_transcript(TerminalTranscriptKind::System, "会话已关闭".to_string());
+        self.record_transcript(TerminalTranscriptKind::System, tr("app.terminal.transcript.session_closed").to_string());
         cx.notify();
     }
 
@@ -494,7 +494,7 @@ impl TerminalComponent {
             self.state = TerminalSessionState::Busy;
             self.record_transcript(
                 TerminalTranscriptKind::Notice,
-                "危险命令已确认执行".to_string(),
+                tr("app.terminal.transcript.danger_confirmed").to_string(),
             );
             self.send_bytes(b"\r", cx);
             return;
@@ -505,7 +505,7 @@ impl TerminalComponent {
             self.state = TerminalSessionState::AwaitingConfirmation;
             self.record_transcript(
                 TerminalTranscriptKind::Notice,
-                format!("危险命令待确认: {line}"),
+                tr("app.terminal.transcript.danger_pending").replace("%{line}", &line),
             );
             cx.notify();
             return;

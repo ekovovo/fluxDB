@@ -100,15 +100,57 @@ fn ai_chat_workspace(
 fn ai_chat_small_button(
     id: &'static str,
     icon: AppIcon,
-    title: &'static str,
+    title: impl Into<SharedString>,
     colors: UiColors,
 ) -> gpui_component::button::Button {
+    let title = title.into();
     Button::new(id)
         .small()
         .ghost()
         .cursor_pointer()
         .tooltip(title)
         .child(app_icon(icon, 14., colors.muted))
+}
+
+/// 本轮目标条上的权限档位：颜色、图标与文案都从同一个稳定枚举派生，
+/// 避免翻译后的标签反过来参与业务判断。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum AiScopePermission {
+    ReadOnly,
+    WriteNeedsApproval,
+    ExplainAndPlan,
+}
+
+impl AiScopePermission {
+    fn from_target(target: Option<&serde_json::Value>, read_only: bool) -> Self {
+        match target {
+            None => Self::ExplainAndPlan,
+            Some(_) if read_only => Self::ReadOnly,
+            Some(_) => Self::WriteNeedsApproval,
+        }
+    }
+
+    fn label(self) -> SharedString {
+        match self {
+            Self::ReadOnly => tr("app.ai.chat.permission.read_only"),
+            Self::WriteNeedsApproval => tr("app.ai.chat.permission.write_approval"),
+            Self::ExplainAndPlan => tr("app.ai.chat.permission.explain_plan"),
+        }
+    }
+
+    fn tone(self, colors: UiColors) -> gpui::Rgba {
+        match self {
+            Self::WriteNeedsApproval => colors.warning,
+            _ => colors.success,
+        }
+    }
+
+    fn icon(self) -> AppIcon {
+        match self {
+            Self::WriteNeedsApproval => AppIcon::Edit,
+            _ => AppIcon::Check,
+        }
+    }
 }
 
 /// 顶部会话用量标签的紧凑数字：千位以上按一位小数定标为 K/M。
@@ -174,7 +216,10 @@ fn ai_chat_panel(
         .map(|connection| connection.config.name.clone())
         .or_else(|| {
             target_connection_id
-                .map(|connection_id| format!("连接 {connection_id}"))
+                .map(|connection_id| {
+                    tr("app.ai.chat.connection_label")
+                        .replace("%{id}", &connection_id.to_string())
+                })
         })
         .or_else(|| {
             target
@@ -183,23 +228,14 @@ fn ai_chat_panel(
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_owned)
         });
-    let scope_permission = if target.is_some() {
-        let read_only = target_connection
+    let scope_permission = AiScopePermission::from_target(
+        target.as_ref(),
+        target_connection
             .map(|connection| fluxdb_app::connection_is_read_only(&connection.config))
-            .unwrap_or(true);
-        if read_only {
-            "只读"
-        } else {
-            "修改需审批"
-        }
-    } else {
-        "可解释与规划"
-    };
-    let scope_permission_color = if scope_permission == "修改需审批" {
-        colors.warning
-    } else {
-        colors.success
-    };
+            .unwrap_or(true),
+    );
+    let scope_permission_label = scope_permission.label();
+    let scope_permission_color = scope_permission.tone(colors);
     let loading = this.ai_chat.loading;
     let history = this.ai_chat.history;
     let running = this.ai_chat.session_running(chat.session_id.as_deref());
@@ -237,7 +273,7 @@ fn ai_chat_panel(
             div()
                 .text_color(colors.muted)
                 .text_size(px(12.))
-                .child("正在加载会话…"),
+                .child(tr("app.ai.chat.loading")),
         );
     } else if history {
         let agent_name = |agent_id: &str| -> String {
@@ -261,13 +297,16 @@ fn ai_chat_panel(
                         .text_size(px(12.))
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .text_color(colors.text)
-                        .child(format!("{} 个会话", chat.sessions.len())),
+                        .child(
+                            tr("app.ai.chat.session_count")
+                                .replace("%{count}", &chat.sessions.len().to_string()),
+                        ),
                 )
                 .child(
                     div()
                         .text_size(px(10.))
                         .text_color(colors.muted)
-                        .child("按最近更新排序 · 点击恢复该会话"),
+                        .child(tr("app.ai.chat.history_hint")),
                 ),
         );
         if chat.sessions.is_empty() {
@@ -276,7 +315,7 @@ fn ai_chat_panel(
                     .py_4()
                     .text_color(colors.muted)
                     .text_size(px(12.))
-                    .child("暂无会话历史"),
+                    .child(tr("app.ai.chat.empty")),
             );
         }
         for session in &chat.sessions {
@@ -284,12 +323,10 @@ fn ai_chat_panel(
             let current = chat.session_id.as_deref() == Some(session.id.as_str());
             let (status_label, status_color) =
                 ai_session_status_label(session.last_turn_status.as_deref().unwrap_or_default(), colors);
-            let meta = format!(
-                "{} · {} 条消息 · {}",
-                agent_name(&session.agent_id),
-                session.message_count,
-                ai_session_timestamp(session.updated_at_ms),
-            );
+            let meta = tr("app.ai.chat.session_meta")
+                .replace("%{agent}", &agent_name(&session.agent_id))
+                .replace("%{messages}", &session.message_count.to_string())
+                .replace("%{time}", &ai_session_timestamp(session.updated_at_ms));
             // 会话卡片：整卡就是一个 Button，视觉是卡片、交互语义是按钮，避免叠一个透明浮层。
             let id_for_debug = id.clone();
             timeline = timeline.child(
@@ -336,7 +373,11 @@ fn ai_chat_panel(
                                             .items_center()
                                             .gap_1()
                                             .when(current, |this| {
-                                                this.child(ai_pill("当前", colors.info, colors))
+                                                this.child(ai_pill(
+                                                    tr("app.ai.chat.current"),
+                                                    colors.info,
+                                                    colors,
+                                                ))
                                             })
                                             .child(ai_pill(status_label, status_color, colors)),
                                     ),
@@ -379,13 +420,13 @@ fn ai_chat_panel(
                         div()
                             .text_size(px(14.))
                             .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .child("有什么可以帮你？"),
+                            .child(tr("app.ai.chat.empty_title")),
                     )
                     .child(
                         div()
                             .text_size(px(11.))
                             .text_color(colors.muted)
-                            .child("解释 SQL · 数据分析 · Redis 排障"),
+                            .child(tr("app.ai.chat.empty_subtitle")),
                     )
                     .child(
                         div()
@@ -401,10 +442,14 @@ fn ai_chat_panel(
                                     .small()
                                     .outline()
                                     .cursor_pointer()
-                                    .child("解释当前表结构")
+                                    .child(tr("app.ai.chat.suggest_schema"))
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.ai_chat.input.update(cx, |input, cx| {
-                                            input.set_value("解释当前表结构和关键字段。", window, cx);
+                                            input.set_value(
+                                                tr("app.ai.chat.suggest_schema_prompt").to_string(),
+                                                window,
+                                                cx,
+                                            );
                                         });
                                         this.ai_chat.dirty = true;
                                         cx.notify();
@@ -416,10 +461,14 @@ fn ai_chat_panel(
                                     .small()
                                     .outline()
                                     .cursor_pointer()
-                                    .child("分析这组数据")
+                                    .child(tr("app.ai.chat.suggest_analysis"))
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.ai_chat.input.update(cx, |input, cx| {
-                                            input.set_value("分析当前数据并总结关键结论。", window, cx);
+                                            input.set_value(
+                                                tr("app.ai.chat.suggest_analysis_prompt").to_string(),
+                                                window,
+                                                cx,
+                                            );
                                         });
                                         this.ai_chat.dirty = true;
                                         cx.notify();
@@ -454,7 +503,7 @@ fn ai_chat_panel(
                                 .font_weight(gpui::FontWeight::MEDIUM)
                                 .text_color(colors.muted)
                                 .child(app_icon(AppIcon::Users, 13., colors.muted))
-                                .child("你"),
+                                .child(tr("app.ai.chat.role_user")),
                         )
                     })
                     .child(
@@ -532,16 +581,22 @@ fn ai_chat_panel(
                 div()
                     .text_size(px(11.))
                     .text_color(colors.muted)
-                    .child(if this.ai_chat.stream.is_finished() { "正在显示回复…" } else { "正在生成…" }),
+                    .child(if this.ai_chat.stream.is_finished() {
+                        tr("app.ai.chat.streaming_reply")
+                    } else {
+                        tr("app.ai.chat.streaming_generate")
+                    }),
             );
         }
     }
     let token_label = if chat.usage.requests > 0 && chat.usage.unknown_requests == chat.usage.requests {
-        "Token 用量未知".to_string()
+        tr("app.ai.chat.usage_unknown").to_string()
     } else if chat.usage.unknown_requests > 0 {
-        format!("{} tokens（部分未知）", ai_format_usage_tokens(chat.usage.total_tokens))
+        tr("app.ai.chat.usage_partial")
+            .replace("%{tokens}", &ai_format_usage_tokens(chat.usage.total_tokens))
     } else {
-        format!("{} tokens", ai_format_usage_tokens(chat.usage.total_tokens))
+        tr("app.ai.chat.usage_total")
+            .replace("%{tokens}", &ai_format_usage_tokens(chat.usage.total_tokens))
     };
     // 恢复记录已解释暂停原因时，不再叠加重复的全宽警告。
     let has_recovery_notice = chat.messages.iter().flat_map(|message| &message.parts).any(|part| {
@@ -556,18 +611,24 @@ fn ai_chat_panel(
             div().id("ai-chat-unfinished").py_1().flex().items_center().gap_1p5()
                 .text_size(px(10.)).text_color(colors.muted)
                 .child(app_icon(AppIcon::CircleSlash, 12., colors.warning))
-                .child("任务已暂停 · 请核对待审批项；不会自动重放工具"),
+                .child(tr("app.ai.chat.paused_notice")),
         );
     }
     if let Some(error) = error {
         timeline = timeline
-            .child(gpui_component::alert::Alert::error("ai-chat-error", error).small())
+            .child(
+                gpui_component::alert::Alert::error(
+                    "ai-chat-error",
+                    localize_backend_error_text(&error),
+                )
+                .small(),
+            )
             .child(
                 Button::new("ai-chat-retry")
                     .debug_selector(|| "ai-chat-retry".into())
                     .small()
                     .ghost()
-                    .child("重新加载会话")
+                    .child(tr("app.ai.chat.retry"))
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.ai_chat.loaded = false;
                         this.open_ai_chat(window, cx);
@@ -665,9 +726,9 @@ fn ai_chat_panel(
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .truncate()
                         .child(if history {
-                            "会话历史".into()
+                            tr("app.ai.chat.title")
                         } else {
-                            chat.title.clone()
+                            chat.title.clone().into()
                         }),
                 )
                 .child(
@@ -677,7 +738,12 @@ fn ai_chat_panel(
                         .child(token_label),
                 )
                 .child(
-                    ai_chat_small_button("ai-chat-new", AppIcon::Plus, "新建会话", colors)
+                    ai_chat_small_button(
+                        "ai-chat-new",
+                        AppIcon::Plus,
+                        tr("app.ai.chat.new_session"),
+                        colors,
+                    )
                         .debug_selector(|| "ai-chat-new".into())
                         .disabled(!ready)
                         .on_click(cx.listener(|this, _, window, cx| this.new_ai_chat(window, cx))),
@@ -689,7 +755,7 @@ fn ai_chat_panel(
                     ai_chat_small_button(
                         "ai-chat-history",
                         AppIcon::CalendarClock,
-                        "会话历史",
+                        tr("app.ai.chat.title"),
                         colors,
                     )
                     .debug_selector(|| "ai-chat-history".into())
@@ -700,7 +766,12 @@ fn ai_chat_panel(
                     })),
                 )
                 .child(
-                    ai_chat_small_button("ai-chat-diagnostics", AppIcon::Activity, "诊断", colors)
+                    ai_chat_small_button(
+                        "ai-chat-diagnostics",
+                        AppIcon::Activity,
+                        tr("app.ai.chat.diagnostics.title"),
+                        colors,
+                    )
                         .debug_selector(|| "ai-chat-diagnostics".into())
                         .disabled(!ready)
                         .on_click(cx.listener(|this, _, window, cx| {
@@ -708,7 +779,12 @@ fn ai_chat_panel(
                         })),
                 )
                 .child(
-                    ai_chat_small_button("ai-chat-close", AppIcon::Close, "关闭", colors)
+                    ai_chat_small_button(
+                        "ai-chat-close",
+                        AppIcon::Close,
+                        tr("app.ai.chat.close"),
+                        colors,
+                    )
                         .debug_selector(|| "ai-chat-close".into())
                         .on_click(
                             cx.listener(|this, _, window, cx| this.close_ai_chat(window, cx)),
@@ -732,9 +808,9 @@ fn ai_chat_panel(
                         .text_size(px(10.))
                         .text_color(colors.muted)
                         .child(if scope_primary.is_some() {
-                            "本轮目标"
+                            tr("app.ai.chat.turn_target")
                         } else {
-                            "无执行目标"
+                            tr("app.ai.chat.no_target")
                         }),
                 )
                 .when_some(scope_primary, |row, scope_primary| {
@@ -746,12 +822,8 @@ fn ai_chat_panel(
                     ))
                 })
                 .child(ai_scope_tag(
-                    if scope_permission == "修改需审批" {
-                        AppIcon::Edit
-                    } else {
-                        AppIcon::Check
-                    },
-                    scope_permission,
+                    scope_permission.icon(),
+                    &scope_permission_label,
                     scope_permission_color,
                     colors,
                 ))
@@ -762,7 +834,7 @@ fn ai_chat_panel(
                 Button::new("ai-chat-new-reply")
                     .small()
                     .ghost()
-                    .child("查看新回复")
+                    .child(tr("app.ai.chat.new_reply"))
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.ai_chat.scroll.scroll_to_bottom();
                         this.ai_chat.follow_reply = true;

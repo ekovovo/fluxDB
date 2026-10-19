@@ -86,7 +86,7 @@ pub fn scope_to_items(scope: &SqlScope) -> Vec<CompletionItem> {
         for col in &cte.columns {
             let mut item = CompletionItem::new(col, CompletionKind::Column);
             item.priority = 61;
-            item.detail = format!("CTE 列：{}", cte.name);
+            item.detail = tr("app.completion.cte_column").replace("%{name}", &cte.name);
             items.push(item);
         }
     }
@@ -94,15 +94,15 @@ pub fn scope_to_items(scope: &SqlScope) -> Vec<CompletionItem> {
         let mut item = CompletionItem::new(&alias.name, CompletionKind::Table);
         item.priority = 60;
         item.detail = if alias.derived {
-            "派生表别名".to_string()
+            tr("app.completion.derived_alias").to_string()
         } else {
-            "表别名".to_string()
+            tr("app.completion.table_alias").to_string()
         };
         items.push(item);
         for col in &alias.columns {
             let mut item = CompletionItem::new(col, CompletionKind::Column);
             item.priority = 61;
-            item.detail = format!("派生表列：{}", alias.name);
+            item.detail = tr("app.completion.derived_column").replace("%{name}", &alias.name);
             items.push(item);
         }
     }
@@ -113,16 +113,16 @@ pub fn scope_to_items(scope: &SqlScope) -> Vec<CompletionItem> {
 ///
 /// 不建通用类型代数，只对常用聚合/标量函数给出结果类型，用于函数补全项的
 /// detail 增强。未知函数返回 None（保守）。键为小写函数名。
-pub fn function_result_type(fn_name: &str) -> Option<&'static str> {
+pub fn function_result_type(fn_name: &str) -> Option<SharedString> {
     Some(match fn_name.to_ascii_lowercase().as_str() {
-        "count" | "sum" | "count_big" | "if" | "ifnull" | "coalesce" => "数值",
-        "avg" | "max" | "min" => "数值/日期/字符串",
+        "count" | "sum" | "count_big" | "if" | "ifnull" | "coalesce" => tr("app.completion.type.numeric"),
+        "avg" | "max" | "min" => tr("app.completion.type.numeric_date_text"),
         "concat" | "substring" | "substr" | "lower" | "lcase" | "upper" | "ucase"
         | "trim" | "ltrim" | "rtrim" | "replace" | "cast" | "convert" | "now"
-        | "current_date" | "current_timestamp" => "字符串/日期",
+        | "current_date" | "current_timestamp" => tr("app.completion.type.text_date"),
         "len" | "length" | "char_length" | "round" | "floor" | "ceil" | "abs"
-        | "mod" | "rand" => "数值",
-        "date" | "year" | "month" | "day" | "hour" | "minute" | "second" => "日期/数值",
+        | "mod" | "rand" => tr("app.completion.type.numeric"),
+        "date" | "year" | "month" | "day" | "hour" | "minute" | "second" => tr("app.completion.type.date_numeric"),
         _ => return None,
     })
 }

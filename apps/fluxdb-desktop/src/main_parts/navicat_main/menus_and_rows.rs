@@ -322,7 +322,7 @@ impl NavicatMain {
             }
             TableMenuAction::CopyName => {
                 cx.write_to_clipboard(ClipboardItem::new_string(object_path.name));
-                self.show_message("已复制表名", AppMessageKind::Success, cx);
+                self.show_message(tr("app.table.toast.name_copied").as_ref(), AppMessageKind::Success, cx);
             }
             TableMenuAction::ViewData => {
                 self.dispatch(AppCommand::OpenDataEditor(object_path), cx);
@@ -539,7 +539,7 @@ impl NavicatMain {
             .any(|folder| folder != &pending.original_name && folder == name)
         {
             self.pending_rename_table_folder = Some(pending);
-            self.show_message("分组名称已存在", AppMessageKind::Warning, cx);
+            self.show_message(tr("app.group.error.duplicate").as_ref(), AppMessageKind::Warning, cx);
             return;
         }
         if let Some(folder) = folders
@@ -629,7 +629,7 @@ impl NavicatMain {
                         object: editable.map(|editor| editor.object.clone()),
                         display_name: editable
                             .map(|editor| editor.object.name.clone())
-                            .unwrap_or_else(|| format!("查询结果 {}", page_index + 1)),
+                            .unwrap_or_else(|| tr("app.query.result_fallback").replace("%{index}", &(page_index + 1).to_string())),
                         fields,
                     })
                 }
@@ -726,7 +726,7 @@ impl NavicatMain {
             DataRowCopyKind::Json => row_json_text(row_snapshots[0].fields.as_slice()),
             DataRowCopyKind::Insert => {
                 let Some(object) = object.as_ref() else {
-                    self.show_message("当前结果没有表对象信息，无法复制 SQL", AppMessageKind::Warning, cx);
+                    self.show_message(tr("app.query.error.no_table_info_copy").as_ref(), AppMessageKind::Warning, cx);
                     return;
                 };
                 row_snapshots
@@ -737,7 +737,7 @@ impl NavicatMain {
             }
             DataRowCopyKind::InsertWithoutPrimaryKey => {
                 let Some(object) = object.as_ref() else {
-                    self.show_message("当前结果没有表对象信息，无法复制 SQL", AppMessageKind::Warning, cx);
+                    self.show_message(tr("app.query.error.no_table_info_copy").as_ref(), AppMessageKind::Warning, cx);
                     return;
                 };
                 row_snapshots
@@ -748,7 +748,7 @@ impl NavicatMain {
             }
             DataRowCopyKind::Update => {
                 let Some(object) = object.as_ref() else {
-                    self.show_message("当前结果没有表对象信息，无法复制 SQL", AppMessageKind::Warning, cx);
+                    self.show_message(tr("app.query.error.no_table_info_copy").as_ref(), AppMessageKind::Warning, cx);
                     return;
                 };
                 row_snapshots
@@ -770,12 +770,12 @@ impl NavicatMain {
         self.data_row_context_menu = None;
         if row_snapshots.len() > 1 {
             self.show_message(
-                format!("已复制 {} 行", row_snapshots.len()),
+                tr("app.data.toast.rows_copied").replace("%{count}", &row_snapshots.len().to_string()),
                 AppMessageKind::Success,
                 cx,
             );
         } else {
-            self.show_message("已复制", AppMessageKind::Success, cx);
+            self.show_message(tr("app.data.toast.copied").as_ref(), AppMessageKind::Success, cx);
         }
     }
 
@@ -797,8 +797,8 @@ impl NavicatMain {
         self.data_cell_context_menu = None;
         self.data_row_context_menu = None;
         let message = match export.kind {
-            DataTableSelectionKind::Rows => format!("已复制 {} 行", export.rows),
-            DataTableSelectionKind::Cells => format!("已复制 {} 个单元格", export.cells),
+            DataTableSelectionKind::Rows => tr("app.data.toast.rows_copied").replace("%{count}", &export.rows.to_string()),
+            DataTableSelectionKind::Cells => tr("app.data.toast.cells_copied").replace("%{count}", &export.cells.to_string()),
         };
         self.show_message(message, AppMessageKind::Success, cx);
         true
@@ -839,7 +839,7 @@ impl NavicatMain {
 
         let object = row_snapshots[0].object.clone();
         if format == DataRowExportFormat::SqlInsert && object.is_none() {
-            self.show_message("当前结果没有表对象信息，无法导出 SQL", AppMessageKind::Warning, cx);
+            self.show_message(tr("app.query.error.no_table_info_export").as_ref(), AppMessageKind::Warning, cx);
             return false;
         }
         let suggested_name = object
@@ -885,7 +885,7 @@ impl NavicatMain {
             .map(|object| self.connection_database_kind(object.connection_id))
             .unwrap_or(DatabaseKind::MySql);
         self.show_message(
-            format!("选择保存位置后导出 {} 行", row_count),
+            tr("app.data_export.choose_location_rows").replace("%{count}", &row_count.to_string()),
             AppMessageKind::Success,
             cx,
         );
@@ -901,7 +901,7 @@ impl NavicatMain {
                         };
                         view.update(cx, |this, cx| {
                             this.show_message(
-                                format!("选择保存位置失败：{error}"),
+                                tr("app.data_export.error.choose_location").replace("%{error}", &error.to_string()),
                                 AppMessageKind::Error,
                                 cx,
                             );
@@ -918,7 +918,7 @@ impl NavicatMain {
                         };
                         view.update(cx, |this, cx| {
                             this.show_message(
-                                format!("选择保存位置失败：{error}"),
+                                tr("app.data_export.error.choose_location").replace("%{error}", &error.to_string()),
                                 AppMessageKind::Error,
                                 cx,
                             );
@@ -968,18 +968,16 @@ impl NavicatMain {
                     match result {
                         Ok(path) => {
                             this.show_message(
-                                format!(
-                                    "已导出 {} 行为 {}：{}",
-                                    row_count,
-                                    format.label(),
-                                    path.display()
-                                ),
+                                tr("app.data_export.toast.exported_rows")
+                                    .replace("%{count}", &row_count.to_string())
+                                    .replace("%{format}", &format.label())
+                                    .replace("%{path}", &path.display().to_string()),
                                 AppMessageKind::Success,
                                 cx,
                             );
                         }
                         Err(error) => {
-                            this.show_message(format!("导出失败：{error}"), AppMessageKind::Error, cx);
+                            this.show_message(tr("app.data_export.error.failed").replace("%{error}", &error.to_string()), AppMessageKind::Error, cx);
                         }
                     }
                     cx.notify();
@@ -998,11 +996,11 @@ impl NavicatMain {
     ) {
         let task_id = self.next_data_export_task_id();
         let label = match export.kind {
-            DataTableSelectionKind::Rows => format!("{} 行", export.rows),
-            DataTableSelectionKind::Cells => format!("{} 个单元格", export.cells),
+            DataTableSelectionKind::Rows => tr("app.data.count.rows").replace("%{count}", &export.rows.to_string()),
+            DataTableSelectionKind::Cells => tr("app.data.count.cells").replace("%{count}", &export.cells.to_string()),
         };
         self.show_message(
-            format!("选择保存位置后导出 {label}"),
+            tr("app.data_export.choose_location").replace("%{label}", &label),
             AppMessageKind::Success,
             cx,
         );
@@ -1018,7 +1016,7 @@ impl NavicatMain {
                         };
                         view.update(cx, |this, cx| {
                             this.show_message(
-                                format!("选择保存位置失败：{error}"),
+                                tr("app.data_export.error.choose_location").replace("%{error}", &error.to_string()),
                                 AppMessageKind::Error,
                                 cx,
                             );
@@ -1035,7 +1033,7 @@ impl NavicatMain {
                         };
                         view.update(cx, |this, cx| {
                             this.show_message(
-                                format!("选择保存位置失败：{error}"),
+                                tr("app.data_export.error.choose_location").replace("%{error}", &error.to_string()),
                                 AppMessageKind::Error,
                                 cx,
                             );
@@ -1075,13 +1073,13 @@ impl NavicatMain {
                     match result {
                         Ok(path) => {
                             this.show_message(
-                                format!("已导出 TSV：{}", path.display()),
+                                tr("app.data_export.toast.tsv").replace("%{path}", &path.display().to_string()),
                                 AppMessageKind::Success,
                                 cx,
                             );
                         }
                         Err(error) => {
-                            this.show_message(format!("导出失败：{error}"), AppMessageKind::Error, cx);
+                            this.show_message(tr("app.data_export.error.failed").replace("%{error}", &error.to_string()), AppMessageKind::Error, cx);
                         }
                     }
                     cx.notify();
@@ -1176,7 +1174,7 @@ impl NavicatMain {
     ) {
         if data_type_is_binary(menu.type_name.as_str()) {
             self.data_cell_context_menu = None;
-            self.show_message("二进制字段不能修改", AppMessageKind::Warning, cx);
+            self.show_message(tr("app.data.error.binary_readonly").as_ref(), AppMessageKind::Warning, cx);
             return;
         }
         self.dispatch(

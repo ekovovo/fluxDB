@@ -58,7 +58,9 @@ fn er_diagram_content(
 ) -> Div {
     // 表搜索输入框（§五.6）：首次渲染本 tab 时惰性创建输入实体 + 订阅（查询变化更新字符串并重绘）。
     if !this.er_search_input.contains_key(&tab_id) {
-        let search_input = cx.new(|cx| InputState::new(window, cx).placeholder("搜索表…"));
+        let search_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(tr("app.er.search_table_placeholder"))
+        });
         let sub_tab = tab_id;
         let sub = cx.subscribe(&search_input, move |this, input, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change) {
@@ -120,7 +122,14 @@ fn er_diagram_content(
                 er_loading_state(colors).into_any_element()
             } else if this.er_full_tables.get(&tab_id).is_some_and(|t| t.is_empty()) {
                 // 库内无表：明确反馈，不能被当成空白画布（§3.5 空库）。
-                er_empty_state("该数据库暂无表", er, tab_id, colors, cx).into_any_element()
+                er_empty_state(
+                    tr("app.er.empty_database"),
+                    er,
+                    tab_id,
+                    colors,
+                    cx,
+                )
+                .into_any_element()
             } else {
                 // Render 属 GPUI「cannot unwind」路径：所有「读」用一次 borrow()（不可变借用）
                 // 且借用到物化结束即释放，绝不与后续 borrow_mut 嵌套 → 杜绝 RefCell 双重借用 abort。

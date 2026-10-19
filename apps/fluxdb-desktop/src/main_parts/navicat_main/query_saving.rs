@@ -4,7 +4,7 @@ impl NavicatMain {
             return;
         };
         if text.trim().is_empty() {
-            self.show_message("没有可保存的 SQL", AppMessageKind::Warning, cx);
+            self.show_message(tr("app.query.error.no_sql_to_save").as_ref(), AppMessageKind::Warning, cx);
             return;
         }
 
@@ -47,7 +47,7 @@ impl NavicatMain {
                         };
                         view.update(cx, |this, cx| {
                             this.show_message(
-                                format!("选择保存位置失败：{error}"),
+                                tr("app.data_export.error.choose_location").replace("%{error}", &error.to_string()),
                                 AppMessageKind::Error,
                                 cx,
                             );
@@ -62,7 +62,7 @@ impl NavicatMain {
                         };
                         view.update(cx, |this, cx| {
                             this.show_message(
-                                format!("选择保存位置失败：{error}"),
+                                tr("app.data_export.error.choose_location").replace("%{error}", &error.to_string()),
                                 AppMessageKind::Error,
                                 cx,
                             );
@@ -91,10 +91,10 @@ impl NavicatMain {
                             QueryOrigin::File { path },
                             cx,
                         );
-                        this.show_message("SQL 已保存到本地", AppMessageKind::Success, cx);
+                        this.show_message(tr("app.query.toast.saved_local").as_ref(), AppMessageKind::Success, cx);
                     }
                     Err(error) => {
-                        this.show_message(format!("保存失败：{error}"), AppMessageKind::Error, cx);
+                        this.show_message(tr("app.query.error.save_failed").replace("%{error}", &error.to_string()), AppMessageKind::Error, cx);
                     }
                 });
             });
@@ -118,7 +118,7 @@ impl NavicatMain {
     fn confirm_query_save_connection(&mut self, tab_id: TabId, cx: &mut Context<Self>) {
         let name = self.query_save_name_input.read(cx).value().trim().to_string();
         if name.is_empty() {
-            self.show_message("请输入查询名称", AppMessageKind::Warning, cx);
+            self.show_message(tr("app.query.error.name_required").as_ref(), AppMessageKind::Warning, cx);
             return;
         }
         let Some((_, connection_id, database, schema, text)) = self.active_query_snapshot(cx) else {
@@ -173,11 +173,11 @@ impl NavicatMain {
                     QueryOrigin::Connection { query_id: id },
                     cx,
                 );
-                self.show_message("SQL 已保存到连接中", AppMessageKind::Success, cx);
+                self.show_message(tr("app.query.toast.saved_to_connection").as_ref(), AppMessageKind::Success, cx);
                 cx.notify();
             }
             Err(error) => {
-                self.show_message(format!("保存失败：{error}"), AppMessageKind::Error, cx);
+                self.show_message(tr("app.query.error.save_failed").replace("%{error}", &error.to_string()), AppMessageKind::Error, cx);
             }
         }
     }
@@ -251,11 +251,11 @@ impl NavicatMain {
                                     QueryOrigin::File { path },
                                     cx,
                                 );
-                                this.show_message("SQL 已保存", AppMessageKind::Success, cx);
+                                this.show_message(tr("app.query.toast.saved").as_ref(), AppMessageKind::Success, cx);
                             }
                             Err(error) => {
                                 this.show_message(
-                                    format!("保存失败：{error}"),
+                                    tr("app.query.error.save_failed").replace("%{error}", &error.to_string()),
                                     AppMessageKind::Error,
                                     cx,
                                 );
@@ -282,11 +282,11 @@ impl NavicatMain {
                                 QueryOrigin::Connection { query_id: id },
                                 cx,
                             );
-                            self.show_message("SQL 已保存", AppMessageKind::Success, cx);
+                            self.show_message(tr("app.query.toast.saved").as_ref(), AppMessageKind::Success, cx);
                         }
                         Err(error) => {
                             self.show_message(
-                                format!("保存失败：{error}"),
+                                tr("app.query.error.save_failed").replace("%{error}", &error.to_string()),
                                 AppMessageKind::Error,
                                 cx,
                             );

@@ -12,7 +12,7 @@ fn redis_add_key_hash_form(
         .flex()
         .flex_col()
         .gap_2()
-        .child(redis_add_key_form_label("添加字段", colors))
+        .child(redis_add_key_form_label(tr("app.redis.add_key.form.add_fields"), colors))
         .child(redis_add_key_hash_rows_panel(
             rows,
             applying,

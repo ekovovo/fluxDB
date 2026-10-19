@@ -7,7 +7,48 @@ const CREATE_TABLE_COMMENT_EDITOR_DEFAULT_WIDTH: f32 = 420.;
 const CREATE_TABLE_COMMENT_EDITOR_DEFAULT_HEIGHT: f32 = 220.;
 const CREATE_TABLE_COMMENT_EDITOR_MIN_WIDTH: f32 = 320.;
 const CREATE_TABLE_COMMENT_EDITOR_MIN_HEIGHT: f32 = 170.;
-const CREATE_TABLE_INHERIT_DATABASE_DEFAULT_OPTION: &str = "继承数据库默认";
+/// 选项始终保存 SQL 值；支持继承的字段以空串表示继承，其他字段保留空白语义。
+#[derive(Clone)]
+struct CreateTableSelectOption {
+    value: String,
+    inherit_default: bool,
+}
+
+impl SelectItem for CreateTableSelectOption {
+    type Value = String;
+
+    fn title(&self) -> SharedString {
+        if self.value.is_empty() && self.inherit_default {
+            tr("app.create_table.inherit_database_default")
+        } else {
+            self.value.clone().into()
+        }
+    }
+
+    fn value(&self) -> &String {
+        &self.value
+    }
+
+    fn display_title(&self) -> Option<gpui::AnyElement> {
+        let label = self.title();
+        Some(
+            div()
+                .debug_selector({
+                    let label = label.clone();
+                    move || format!("create-table-selected:{label}")
+                })
+                .child(label)
+                .into_any_element(),
+        )
+    }
+
+    fn render(&self, _: &mut Window, _: &mut App) -> impl IntoElement {
+        let value = self.value.clone();
+        div()
+            .debug_selector(move || format!("create-table-option:{value}"))
+            .child(self.title())
+    }
+}
 const CREATE_TABLE_INDEX_FIELDS_POPOVER_WIDTH: f32 = 388.;
 const CREATE_TABLE_INDEX_FIELD_NAME_WIDTH: f32 = 178.;
 const CREATE_TABLE_INDEX_FIELD_SUB_PART_WIDTH: f32 = 82.;
@@ -37,15 +78,16 @@ impl NavicatMain {
     fn create_table_input(
         &mut self,
         key: CreateTableInputKey,
-        placeholder: &'static str,
+        placeholder: impl Into<SharedString>,
         value: &str,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Entity<InputState> {
+        let placeholder = placeholder.into();
         if !self.create_table_inputs.contains_key(&key) {
             let input = cx.new(|cx| {
                 InputState::new(window, cx)
-                    .placeholder(placeholder)
+                    .placeholder(placeholder.clone())
                     .default_value(value.to_string())
             });
             let subscription = cx.subscribe(&input, move |this, input, event: &InputEvent, cx| {
@@ -60,7 +102,7 @@ impl NavicatMain {
 
         let input = self.create_table_inputs.get(&key).cloned().unwrap();
         input.update(cx, |input, cx| {
-            input.set_placeholder(placeholder, window, cx);
+            input.set_placeholder(placeholder.clone(), window, cx);
         });
         let focused = input.read(cx).focus_handle(cx).is_focused(window);
         let should_clear_stale_disabled_value = value.is_empty() && placeholder.is_empty();
@@ -336,7 +378,11 @@ impl NavicatMain {
 
     fn start_create_table_apply(&mut self, tab_id: TabId, cx: &mut Context<Self>) {
         if self._create_table_apply_tasks.contains_key(&tab_id) {
-            self.show_message("正在保存表", AppMessageKind::Warning, cx);
+            self.show_message(
+                tr("app.create_table.saving").as_ref(),
+                AppMessageKind::Warning,
+                cx,
+            );
             return;
         }
 
@@ -350,7 +396,11 @@ impl NavicatMain {
                 _ => None,
             })
         else {
-            self.show_message("新建表标签页不存在", AppMessageKind::Error, cx);
+            self.show_message(
+                tr("app.create_table.error.tab_missing").as_ref(),
+                AppMessageKind::Error,
+                cx,
+            );
             return;
         };
         if let Some(message) = create.validation_error() {
@@ -375,8 +425,8 @@ impl NavicatMain {
                         AppEvent::CreateTableApplied(_) => Ok(()),
                         AppEvent::Failed(error) => Err(error),
                         _ => Err(fluxdb_core::UserFacingError {
-                            title: "保存失败".to_string(),
-                            message: "保存表没有返回结果".to_string(),
+                            title: tr("app.common.save_failed").to_string(),
+                            message: tr("app.create_table.error.save_no_result").to_string(),
                             detail: None,
                             retryable: true,
                         }),
@@ -400,8 +450,13 @@ impl NavicatMain {
                     );
                     match result {
                         Ok(()) => {
+                            let message = if is_design {
+                                tr("app.create_table.toast.design_saved")
+                            } else {
+                                tr("app.create_table.toast.created")
+                            };
                             this.show_message(
-                                if is_design { "表设计已保存" } else { "表已创建" },
+                                message.as_ref(),
                                 AppMessageKind::Success,
                                 cx,
                             );
@@ -513,8 +568,9 @@ impl NavicatMain {
                         AppEvent::CreateTableReferenceColumnsLoaded { columns, .. } => Ok(columns),
                         AppEvent::Failed(error) => Err(error),
                         _ => Err(fluxdb_core::UserFacingError {
-                            title: "加载失败".to_string(),
-                            message: "目标字段加载没有返回结果".to_string(),
+                            title: tr("app.create_table.error.load_failed").to_string(),
+                            message: tr("app.create_table.error.load_field_no_result")
+                                .to_string(),
                             detail: None,
                             retryable: true,
                         }),
@@ -615,32 +671,46 @@ impl NavicatMain {
         value: &str,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> Entity<SelectState<SearchableVec<String>>> {
+    ) -> Entity<SelectState<SearchableVec<CreateTableSelectOption>>> {
+        let inherit_default = matches!(
+            key,
+            CreateTableSelectKey::ColumnCharset(..)
+                | CreateTableSelectKey::ColumnCollation(..)
+                | CreateTableSelectKey::TableEngine(..)
+                | CreateTableSelectKey::TableCharset(..)
+                | CreateTableSelectKey::TableCollation(..)
+                | CreateTableSelectKey::TableRowFormat(..)
+        );
         if !self.create_table_selects.contains_key(&key) {
             let selected_index = create_table_select_index(&options, value);
             let select_options = options.clone();
             let select = cx.new(|cx| {
                 SelectState::new(
-                    SearchableVec::new(select_options.clone()),
+                    SearchableVec::new(
+                        select_options
+                            .iter()
+                            .cloned()
+                            .map(|value| CreateTableSelectOption {
+                                value,
+                                inherit_default,
+                            })
+                            .collect::<Vec<_>>(),
+                    ),
                     selected_index,
                     window,
                     cx,
                 )
-
             });
             let subscription = cx.subscribe_in(
                 &select,
                 window,
                 move |this: &mut NavicatMain,
                       _select,
-                      event: &SelectEvent<SearchableVec<String>>,
+                      event: &SelectEvent<SearchableVec<CreateTableSelectOption>>,
                       _window,
                       cx| {
                     let SelectEvent::Confirm(value) = event;
-                    let value = value
-                        .as_ref()
-                        .map(|value| create_table_select_value(value))
-                        .unwrap_or_default();
+                    let value = value.as_ref().cloned().unwrap_or_default();
                     match key {
                         CreateTableSelectKey::ColumnCharset(tab_id, column_id) => {
                             this.set_create_table_column_input(
@@ -668,7 +738,9 @@ impl NavicatMain {
                                 .unwrap_or_default();
                             if !selected_charset.is_empty()
                                 && !current_collation.trim().is_empty()
-                                && !collations.iter().any(|item| item == current_collation.trim())
+                                && !collations
+                                    .iter()
+                                    .any(|item| item == current_collation.trim())
                             {
                                 this.set_create_table_column_input(
                                     tab_id,
@@ -739,10 +811,7 @@ impl NavicatMain {
                                 }
                             }
                         }
-                        CreateTableSelectKey::ForeignKeyReferencedTable(
-                            tab_id,
-                            foreign_key_id,
-                        ) => {
+                        CreateTableSelectKey::ForeignKeyReferencedTable(tab_id, foreign_key_id) => {
                             this.dispatch(
                                 AppCommand::SetCreateTableForeignKeyField {
                                     tab_id,
@@ -822,7 +891,9 @@ impl NavicatMain {
                                 .unwrap_or_default();
                             if !selected_charset.is_empty()
                                 && !current_collation.trim().is_empty()
-                                && !collations.iter().any(|item| item == current_collation.trim())
+                                && !collations
+                                    .iter()
+                                    .any(|item| item == current_collation.trim())
                             {
                                 this.set_create_table_option_input(
                                     tab_id,
@@ -869,7 +940,19 @@ impl NavicatMain {
         let select = self.create_table_selects.get(&key).cloned().unwrap();
         let selected_index = create_table_select_index(&options, value);
         select.update(cx, |select, cx| {
-            select.set_items(SearchableVec::new(options), window, cx);
+            select.set_items(
+                SearchableVec::new(
+                    options
+                        .into_iter()
+                        .map(|value| CreateTableSelectOption {
+                            value,
+                            inherit_default,
+                        })
+                        .collect::<Vec<_>>(),
+                ),
+                window,
+                cx,
+            );
             select.set_selected_index(selected_index, window, cx);
         });
         select
@@ -905,14 +988,14 @@ fn create_table_header(
 ) -> Div {
     let name_input = this.create_table_input(
         CreateTableInputKey::TableName(tab_id),
-        "新表名",
+        tr("app.create_table.placeholder.table_name"),
         &create.table_name,
         window,
         cx,
     );
     let comment_input = this.create_table_input(
         CreateTableInputKey::TableComment(tab_id),
-        "输入表注释...",
+        tr("app.create_table.placeholder.table_comment"),
         &create.comment,
         window,
         cx,
@@ -931,9 +1014,9 @@ fn create_table_header(
                 .flex()
                 .flex_col()
                 .gap_2()
-                .child(create_table_labeled_input("表名", name_input, 360., window, colors, cx))
+                .child(create_table_labeled_input(tr("app.create_table.table_name"), name_input, 360., window, colors, cx))
                 .child(create_table_labeled_input(
-                    "注释",
+                    tr("app.create_table.comment"),
                     comment_input,
                     520.,
                     window,
@@ -952,11 +1035,15 @@ fn create_table_header_actions(
     let validation_error = create.validation_error();
     let save_disabled = validation_error.is_some() || create.applying;
     let save_tooltip = if create.applying {
-        "正在保存表"
+        tr("app.create_table.saving").to_string()
     } else if create.is_design() {
-        validation_error.unwrap_or("保存表设计")
+        validation_error
+            .map(str::to_string)
+            .unwrap_or_else(|| tr("app.create_table.save_design").to_string())
     } else {
-        validation_error.unwrap_or("保存并创建表")
+        validation_error
+            .map(str::to_string)
+            .unwrap_or_else(|| tr("app.create_table.save_and_create").to_string())
     };
     div()
         .flex_none()
@@ -965,7 +1052,7 @@ fn create_table_header_actions(
         .gap_2()
         .child(
             Button::new("create-table-cancel")
-                .label("取消")
+                .label(tr("app.common.cancel"))
                 .small()
                 .outline()
                 .disabled(create.applying)
@@ -975,7 +1062,11 @@ fn create_table_header_actions(
         )
         .child(
             Button::new("create-table-save")
-                .label(if create.applying { "保存中" } else { "保存" })
+                .label(if create.applying {
+                    tr("app.create_table.saving_short")
+                } else {
+                    tr("app.common.save")
+                })
                 .small()
                 .primary()
                 .disabled(save_disabled)
@@ -1043,14 +1134,14 @@ fn create_table_tab_bar(
     let active_tab = create.active_tab;
     let mut tabs = div().flex().items_center().gap_1();
     for (tab, label) in [
-        (CreateTableTab::Fields, "字段"),
-        (CreateTableTab::Indexes, "索引"),
-        (CreateTableTab::ForeignKeys, "外键"),
-        (CreateTableTab::Checks, "检查"),
-        (CreateTableTab::Triggers, "触发器"),
-        (CreateTableTab::Options, "选项"),
-        (CreateTableTab::Partitions, "分区"),
-        (CreateTableTab::SqlPreview, "SQL 预览"),
+        (CreateTableTab::Fields, tr("app.create_table.tab.fields")),
+        (CreateTableTab::Indexes, tr("app.create_table.tab.indexes")),
+        (CreateTableTab::ForeignKeys, tr("app.create_table.tab.foreign_keys")),
+        (CreateTableTab::Checks, tr("app.create_table.tab.checks")),
+        (CreateTableTab::Triggers, tr("app.create_table.tab.triggers")),
+        (CreateTableTab::Options, tr("app.create_table.tab.options")),
+        (CreateTableTab::Partitions, tr("app.create_table.tab.partitions")),
+        (CreateTableTab::SqlPreview, tr("app.create_table.tab.sql_preview")),
     ] {
         tabs = tabs.child(create_table_tab_button(tab_id, tab, label, active_tab == tab, colors, cx));
     }
@@ -1076,7 +1167,7 @@ fn create_table_tab_bar(
         .child(tabs)
         .when(active_tab == CreateTableTab::Fields, |this| {
             this.child(create_table_tab_action(
-                "新增字段",
+                tr("app.create_table.add_field"),
                 AppCommand::AddCreateTableColumn(tab_id),
                 colors,
                 cx,
@@ -1084,7 +1175,7 @@ fn create_table_tab_bar(
         })
         .when(active_tab == CreateTableTab::Indexes, |this| {
             this.child(create_table_tab_action(
-                "新增索引",
+                tr("app.create_table.add_index"),
                 AppCommand::AddCreateTableIndex(tab_id),
                 colors,
                 cx,
@@ -1092,7 +1183,7 @@ fn create_table_tab_bar(
         })
         .when(active_tab == CreateTableTab::ForeignKeys, |this| {
             this.child(create_table_tab_action(
-                "新增外键",
+                tr("app.create_table.add_foreign_key"),
                 AppCommand::AddCreateTableForeignKey(tab_id),
                 colors,
                 cx,
@@ -1100,7 +1191,7 @@ fn create_table_tab_bar(
         })
         .when(active_tab == CreateTableTab::Checks, |this| {
             this.child(create_table_tab_action(
-                "新增检查",
+                tr("app.create_table.add_check"),
                 AppCommand::AddCreateTableCheck(tab_id),
                 colors,
                 cx,
@@ -1108,7 +1199,7 @@ fn create_table_tab_bar(
         })
         .when(active_tab == CreateTableTab::Triggers, |this| {
             this.child(create_table_tab_action(
-                "添加触发器",
+                tr("app.create_table.add_trigger"),
                 AppCommand::AddCreateTableTrigger(tab_id),
                 colors,
                 cx,
@@ -1117,12 +1208,17 @@ fn create_table_tab_bar(
 }
 
 fn create_table_tab_action(
-    label: &'static str,
+    label: impl Into<SharedString>,
     command: AppCommand,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
+    let label = label.into();
     div()
+        .debug_selector({
+            let label = label.clone();
+            move || format!("create-table-add:{label}")
+        })
         .h(px(28.))
         .px_3()
         .rounded(colors.radius_lg)
@@ -1168,12 +1264,13 @@ fn create_table_add_row_command(tab_id: TabId, active_tab: CreateTableTab) -> Op
 fn create_table_tab_button(
     tab_id: TabId,
     create_tab: CreateTableTab,
-    label: &'static str,
+    label: impl Into<SharedString>,
     active: bool,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
-    div()
+    let label = label.into();
+    div().debug_selector(move || format!("create-table-tab:{create_tab:?}"))
         .h(px(28.))
         .px_3()
         .rounded(colors.radius_lg)
@@ -1197,7 +1294,7 @@ fn create_table_tab_button(
             }),
         )
         .child(
-            div()
+            div().debug_selector(move || format!("create-table-tab:{create_tab:?}"))
                 .text_size(px(13.))
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .child(label),
@@ -1220,7 +1317,7 @@ fn create_table_fields(
             column: column.clone(),
             name_input: this.create_table_input(
                 CreateTableInputKey::ColumnName(tab_id, column.id),
-                "字段名",
+                tr("app.create_table.field.name"),
                 &column.name,
                 window,
                 cx,
@@ -1242,21 +1339,21 @@ fn create_table_fields(
             ),
             default_input: this.create_table_input(
                 CreateTableInputKey::ColumnDefault(tab_id, column.id),
-                "默认值",
+                tr("app.create_table.field.default"),
                 &column.default_value,
                 window,
                 cx,
             ),
             comment_input: this.create_table_input(
                 CreateTableInputKey::ColumnComment(tab_id, column.id),
-                "注释",
+                tr("app.create_table.field.comment"),
                 &column.comment,
                 window,
                 cx,
             ),
             comment_editor_input: this.create_table_input(
                 CreateTableInputKey::ColumnCommentEditor(tab_id, column.id),
-                "输入字段注释...",
+                tr("app.create_table.field_placeholder"),
                 &column.comment,
                 window,
                 cx,
@@ -1332,22 +1429,59 @@ fn create_table_field_header_row(colors: UiColors) -> Div {
         .flex()
         .items_center()
         .child(create_table_field_header_cell("#", 46., colors))
-        .child(create_table_field_header_cell("字段名", 190., colors))
-        .child(create_table_field_header_cell("类型", 150., colors))
-        .child(create_table_field_header_cell("长度", 100., colors))
-        .child(create_table_field_header_cell("可为空", 86., colors))
-        .child(create_table_field_header_cell("主键", 68., colors))
-        .child(create_table_field_header_cell("默认值", 160., colors))
-        .child(create_table_field_header_cell("注释", 180., colors))
         .child(create_table_field_header_cell(
-            "操作",
+            tr("app.create_table.field.name"),
+            190.,
+            colors,
+        ))
+        .child(create_table_field_header_cell(
+            tr("app.create_table.field.type"),
+            150.,
+            colors,
+        ))
+        .child(create_table_field_header_cell(
+            tr("app.create_table.field.length"),
+            100.,
+            colors,
+        ))
+        .child(create_table_field_header_cell(
+            tr("app.create_table.field.nullable"),
+            86.,
+            colors,
+        ))
+        .child(create_table_field_header_cell(
+            tr("app.create_table.field.primary_key"),
+            68.,
+            colors,
+        ))
+        .child(create_table_field_header_cell(
+            tr("app.create_table.field.default"),
+            160.,
+            colors,
+        ))
+        .child(create_table_field_header_cell(
+            tr("app.create_table.field.comment"),
+            180.,
+            colors,
+        ))
+        .child(create_table_field_header_cell(
+            tr("app.create_table.field.operations"),
             CREATE_TABLE_OPERATIONS_WIDTH,
             colors,
         ))
 }
 
-fn create_table_field_header_cell(label: &'static str, width: f32, colors: UiColors) -> Div {
+fn create_table_field_header_cell(
+    label: impl Into<SharedString>,
+    width: f32,
+    colors: UiColors,
+) -> Div {
+    let label = label.into();
     div()
+        .debug_selector({
+            let label = label.clone();
+            move || format!("create-table-heading:{label}")
+        })
         .w(px(width))
         .flex_shrink_0()
         .h_full()
@@ -1422,7 +1556,7 @@ fn create_table_field_row(
             view.clone(),
             tab_id,
             column_id,
-            "是",
+            tr("app.create_table.boolean_yes"),
             row.column.nullable,
             CreateTableColumnFlag::Nullable,
             86.,
@@ -1613,7 +1747,7 @@ fn create_table_index_fields_cell(
                             .whitespace_nowrap()
                             .text_ellipsis()
                             .child(if summary.is_empty() {
-                                "选择字段".to_string()
+                                tr("app.create_table.error.select_field").to_string()
                             } else {
                                 summary
                             }),
@@ -1708,7 +1842,7 @@ fn create_table_index_fields_popover(
                 .items_center()
                 .text_size(px(13.))
                 .text_color(colors.muted)
-                .child("请添加字段"),
+                .child(tr("app.create_table.error.add_field")),
         );
     } else {
         for row in field_rows.clone() {
@@ -1753,7 +1887,7 @@ fn create_table_index_fields_popover(
                         .gap_1()
                         .child(create_table_index_field_icon_button(
                             AppIcon::ChevronUp,
-                            "上移字段",
+                            tr("app.create_table.popover.move_up"),
                             can_move_up,
                             colors,
                         )
@@ -1785,7 +1919,7 @@ fn create_table_index_fields_popover(
                         ))
                         .child(create_table_index_field_icon_button(
                             AppIcon::ChevronDown,
-                            "下移字段",
+                            tr("app.create_table.popover.move_down"),
                             can_move_down,
                             colors,
                         )
@@ -1817,7 +1951,7 @@ fn create_table_index_fields_popover(
                         ))
                         .child(create_table_index_field_icon_button(
                             AppIcon::Plus,
-                            "新增字段",
+                            tr("app.create_table.popover.add_field"),
                             can_add,
                             colors,
                         )
@@ -1848,7 +1982,7 @@ fn create_table_index_fields_popover(
                         ))
                         .child(create_table_index_field_icon_button(
                             AppIcon::Minus,
-                            "删除末尾字段",
+                            tr("app.create_table.popover.remove_last_field"),
                             can_remove,
                             colors,
                         )
@@ -1887,7 +2021,7 @@ fn create_table_index_fields_popover(
                         .flex()
                         .items_center()
                         .gap_2()
-                        .child(create_table_popover_text_button("确定", colors).on_mouse_down(
+                        .child(create_table_popover_text_button(tr("app.create_table.popover.confirm"), colors).on_mouse_down(
                             MouseButton::Left,
                             {
                                 let popover = popover.clone();
@@ -1897,7 +2031,7 @@ fn create_table_index_fields_popover(
                                 }
                             },
                         ))
-                        .child(create_table_popover_text_button("取消", colors).on_mouse_down(
+                        .child(create_table_popover_text_button(tr("app.create_table.popover.cancel"), colors).on_mouse_down(
                             MouseButton::Left,
                             move |_, window, cx| {
                                 popover.update(cx, |state, cx| state.dismiss(window, cx));
@@ -1917,14 +2051,14 @@ fn create_table_index_fields_popover(
         });
 
     if let Some((key, name, sort_order)) = active_menu {
-        let (field, value, options, disabled_options, width, empty_label) = match key.kind {
+        let (field, value, options, disabled_options, width, kind) = match key.kind {
             CreateTableIndexFieldDropdownKind::Name => (
                 CreateTableIndexColumnField::Name,
                 name,
                 create_table_index_field_name_options(available_fields),
                 create_table_used_index_field_names(&field_rows, key.column_index),
                 CREATE_TABLE_INDEX_FIELD_NAME_WIDTH,
-                "字段",
+                CreateTableIndexFieldDropdownKind::Name,
             ),
             CreateTableIndexFieldDropdownKind::SortOrder => (
                 CreateTableIndexColumnField::SortOrder,
@@ -1932,7 +2066,7 @@ fn create_table_index_fields_popover(
                 create_table_sort_order_options(),
                 BTreeSet::new(),
                 CREATE_TABLE_INDEX_FIELD_SORT_ORDER_WIDTH,
-                "排序",
+                CreateTableIndexFieldDropdownKind::SortOrder,
             ),
         };
         content.child(create_table_index_field_floating_menu(
@@ -1943,7 +2077,7 @@ fn create_table_index_fields_popover(
             options,
             disabled_options,
             width,
-            empty_label,
+            kind,
             colors,
         ))
     } else {
@@ -1961,23 +2095,28 @@ fn create_table_index_fields_header(colors: UiColors) -> Div {
         .font_weight(gpui::FontWeight::SEMIBOLD)
         .text_color(colors.muted)
         .child(create_table_index_field_header_cell(
-            "字段",
+            tr("app.create_table.index.field"),
             CREATE_TABLE_INDEX_FIELD_NAME_WIDTH,
             colors,
         ))
         .child(create_table_index_field_header_cell(
-            "子部分",
+            tr("app.create_table.index.sub_part"),
             CREATE_TABLE_INDEX_FIELD_SUB_PART_WIDTH,
             colors,
         ))
         .child(create_table_index_field_header_cell(
-            "排序顺序",
+            tr("app.create_table.index.sort_order"),
             CREATE_TABLE_INDEX_FIELD_SORT_ORDER_WIDTH,
             colors,
         ))
 }
 
-fn create_table_index_field_header_cell(label: &'static str, width: f32, colors: UiColors) -> Div {
+fn create_table_index_field_header_cell(
+    label: impl Into<SharedString>,
+    width: f32,
+    colors: UiColors,
+) -> Div {
+    let label = label.into();
     div()
         .w(px(width))
         .flex_shrink_0()
@@ -2037,7 +2176,7 @@ fn create_table_index_field_editor_row(
             name_key,
             row.name.clone(),
             CREATE_TABLE_INDEX_FIELD_NAME_WIDTH,
-            "字段",
+            CreateTableIndexFieldDropdownKind::Name,
             active_dropdown == Some(name_key),
             colors,
         ))
@@ -2053,7 +2192,7 @@ fn create_table_index_field_editor_row(
             sort_key,
             row.sort_order.clone(),
             CREATE_TABLE_INDEX_FIELD_SORT_ORDER_WIDTH,
-            "排序",
+            CreateTableIndexFieldDropdownKind::SortOrder,
             active_dropdown == Some(sort_key),
             colors,
         ))
@@ -2104,11 +2243,11 @@ fn create_table_index_field_dropdown_cell(
     key: CreateTableIndexFieldDropdownKey,
     value: String,
     width: f32,
-    empty_label: &'static str,
+    kind: CreateTableIndexFieldDropdownKind,
     open: bool,
     colors: UiColors,
 ) -> Div {
-    let label = create_table_index_field_option_label(&value, empty_label);
+    let label = create_table_index_field_option_label(&value, kind);
     let menu_width = width - 2.;
 
     div()
@@ -2149,12 +2288,16 @@ fn create_table_index_field_dropdown_cell(
         )
 }
 
-fn create_table_index_field_option_label(value: &str, empty_label: &'static str) -> String {
+fn create_table_index_field_option_label(
+    value: &str,
+    kind: CreateTableIndexFieldDropdownKind,
+) -> String {
     if value.trim().is_empty() {
-        match empty_label {
-            "字段" => String::new(),
-            "排序" => "未排序".to_string(),
-            _ => String::new(),
+        match kind {
+            CreateTableIndexFieldDropdownKind::Name => String::new(),
+            CreateTableIndexFieldDropdownKind::SortOrder => {
+                tr("app.create_table.index.unsorted").to_string()
+            }
         }
     } else {
         value.to_string()
@@ -2255,7 +2398,7 @@ fn create_table_index_field_floating_menu(
     options: Vec<String>,
     disabled_options: BTreeSet<String>,
     width: f32,
-    empty_label: &'static str,
+    kind: CreateTableIndexFieldDropdownKind,
     colors: UiColors,
 ) -> Div {
     let mut list = div()
@@ -2268,7 +2411,7 @@ fn create_table_index_field_floating_menu(
     for option in options {
         let selected = option == value;
         let disabled = disabled_options.contains(&option.trim().to_ascii_lowercase());
-        let label = create_table_index_field_option_label(&option, empty_label);
+        let label = create_table_index_field_option_label(&option, kind);
         let option_value = option.clone();
         let view = view.clone();
         list = list.child(
@@ -2370,7 +2513,7 @@ fn create_table_index_field_floating_menu(
 
 fn create_table_index_field_icon_button(
     icon: AppIcon,
-    _tooltip: &'static str,
+    _tooltip: impl Into<SharedString>,
     enabled: bool,
     colors: UiColors,
 ) -> Div {
@@ -2386,7 +2529,8 @@ fn create_table_index_field_icon_button(
         .child(app_icon(icon, 14., if enabled { colors.text } else { colors.muted }))
 }
 
-fn create_table_popover_text_button(label: &'static str, colors: UiColors) -> Div {
+fn create_table_popover_text_button(label: impl Into<SharedString>, colors: UiColors) -> Div {
+    let label = label.into();
     div()
         .h(px(28.))
         .min_w(px(58.))
@@ -2433,13 +2577,14 @@ fn create_table_index_fields_summary(index: &CreateTableIndex) -> String {
 }
 
 fn create_table_labeled_input(
-    label: &'static str,
+    label: impl Into<SharedString>,
     input: Entity<InputState>,
     width: f32,
     window: &mut Window,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
+    let label = label.into();
     div()
         .flex()
         .items_center()
@@ -2640,7 +2785,7 @@ fn create_table_comment_popover(
                         .text_size(px(13.))
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .text_color(colors.text)
-                        .child("编辑注释"),
+                        .child(tr("app.create_table.popover.edit_comment")),
                 )
                 .child(
                     div()
@@ -2838,7 +2983,7 @@ fn create_table_operations_cell(
             tab_id,
             column_id,
             AppIcon::Close,
-            Some("移除"),
+            Some(tr("app.create_table.remove")),
             true,
             CreateTableColumnAction::Remove,
             view,
@@ -2851,7 +2996,7 @@ fn create_table_operation_button(
     tab_id: TabId,
     column_id: u64,
     icon: AppIcon,
-    label: Option<&'static str>,
+    label: Option<SharedString>,
     enabled: bool,
     action: CreateTableColumnAction,
     view: WeakEntity<NavicatMain>,
@@ -2919,10 +3064,10 @@ fn create_table_type_select_cell<T: 'static>(
     create_table_select_cell_with_placeholder(select, width, "varchar", window, colors, cx)
 }
 
-fn create_table_select_cell_with_placeholder<T: 'static>(
-    select: Entity<SelectState<SearchableVec<String>>>,
+fn create_table_select_cell_with_placeholder<T: 'static, I: SelectItem + 'static>(
+    select: Entity<SelectState<SearchableVec<I>>>,
     width: f32,
-    placeholder: &'static str,
+    placeholder: impl Into<SharedString>,
     window: &mut Window,
     colors: UiColors,
     cx: &mut Context<T>,
@@ -2938,10 +3083,10 @@ fn create_table_select_cell_with_placeholder<T: 'static>(
     )
 }
 
-fn create_table_select_cell_with_placeholder_enabled<T: 'static>(
-    select: Entity<SelectState<SearchableVec<String>>>,
+fn create_table_select_cell_with_placeholder_enabled<T: 'static, I: SelectItem + 'static>(
+    select: Entity<SelectState<SearchableVec<I>>>,
     width: f32,
-    placeholder: &'static str,
+    placeholder: impl Into<SharedString>,
     enabled: bool,
     window: &mut Window,
     colors: UiColors,
@@ -2968,10 +3113,10 @@ fn create_table_select_cell_with_placeholder_enabled<T: 'static>(
         ))
 }
 
-fn create_table_select_cell_with_loading<T: 'static>(
-    select: Entity<SelectState<SearchableVec<String>>>,
+fn create_table_select_cell_with_loading<T: 'static, I: SelectItem + 'static>(
+    select: Entity<SelectState<SearchableVec<I>>>,
     width: f32,
-    placeholder: &'static str,
+    placeholder: impl Into<SharedString>,
     loading: bool,
     window: &mut Window,
     colors: UiColors,
@@ -2998,10 +3143,10 @@ fn create_table_select_cell_with_loading<T: 'static>(
         ))
 }
 
-fn create_table_type_select_box<T: 'static>(
-    select: Entity<SelectState<SearchableVec<String>>>,
+fn create_table_type_select_box<T: 'static, I: SelectItem + 'static>(
+    select: Entity<SelectState<SearchableVec<I>>>,
     width: f32,
-    placeholder: &'static str,
+    placeholder: impl Into<SharedString>,
     enabled: bool,
     loading: bool,
     window: &mut Window,
@@ -3043,7 +3188,7 @@ fn create_table_type_select_box<T: 'static>(
                 .small()
                 .disabled(!interactive)
                 .placeholder(placeholder)
-                .search_placeholder("选择或输入...")
+                .search_placeholder(tr("app.create_table.search_placeholder_select_or_type"))
                 .w_full()
                 .h_full()
                 .menu_width(px(220.)),
@@ -3191,9 +3336,12 @@ fn create_table_default_popover(
                         .shadow_md()
                         .overflow_hidden();
                     for (label, default_value) in [
-                        ("无默认值", ""),
-                        ("NULL", "NULL"),
-                        ("空字符串", "''"),
+                        (tr("app.create_table.index_default_value.none"), ""),
+                        (tr("app.create_table.index_default_value.null"), "NULL"),
+                        (
+                            tr("app.create_table.index_default_value.empty_string"),
+                            "''",
+                        ),
                     ] {
                         menu = menu.child(create_table_default_menu_item(
                             view.clone(),
@@ -3218,7 +3366,7 @@ fn create_table_default_menu_item(
     tab_id: TabId,
     column_id: u64,
     input: Entity<InputState>,
-    label: &'static str,
+    label: SharedString,
     value: &'static str,
     active: bool,
     colors: UiColors,
@@ -3262,12 +3410,13 @@ fn create_table_flag_cell(
     view: WeakEntity<NavicatMain>,
     tab_id: TabId,
     column_id: u64,
-    label: &'static str,
+    label: impl Into<SharedString>,
     checked: bool,
     flag: CreateTableColumnFlag,
     width: f32,
     colors: UiColors,
 ) -> Div {
+    let label = label.into();
     div()
         .w(px(width))
         .flex_shrink_0()
@@ -3319,7 +3468,7 @@ fn create_table_column_options(
             .px_3()
             .text_size(px(13.))
             .text_color(colors.muted)
-            .child("请选择字段");
+            .child(tr("app.create_table.error.select_field"));
     };
     let id = column.id;
     let data_type = column.data_type.to_lowercase();
@@ -3352,19 +3501,19 @@ fn create_table_column_options(
         );
         options = options
             .child(create_table_option_select(
-                "字符集",
+                tr("app.create_table.column.charset"),
                 charset_select,
                 180.,
-                "字符集",
+                tr("app.create_table.column.charset"),
                 window,
                 colors,
                 cx,
             ))
             .child(create_table_option_select(
-                "排序规则",
+                tr("app.create_table.column.collation"),
                 collation_select,
                 220.,
-                "排序规则",
+                tr("app.create_table.column.collation"),
                 window,
                 colors,
                 cx,
@@ -3372,7 +3521,7 @@ fn create_table_column_options(
             .child(create_table_option_flag(
                 tab_id,
                 id,
-                "二进制",
+                tr("app.create_table.column.binary"),
                 column.binary,
                 CreateTableColumnFlag::Binary,
                 colors,
@@ -3382,10 +3531,10 @@ fn create_table_column_options(
 
     if column.primary_key && capabilities.key_length {
         options = options.child(create_table_option_input(
-            "前缀长度",
+            tr("app.create_table.column.prefix_length"),
             this.create_table_input(
                 CreateTableInputKey::ColumnKeyLength(tab_id, id),
-                "前缀长度",
+                tr("app.create_table.column.prefix_length"),
                 &column.key_length,
                 window,
                 cx,
@@ -3400,10 +3549,10 @@ fn create_table_column_options(
     if capabilities.number_options || capabilities.auto_increment {
         if capabilities.scale {
             options = options.child(create_table_option_input(
-                "小数点",
+                tr("app.create_table.column.decimal"),
                 this.create_table_input(
                     CreateTableInputKey::ColumnScale(tab_id, id),
-                    "小数点",
+                    tr("app.create_table.column.decimal"),
                     &column.scale,
                     window,
                     cx,
@@ -3419,7 +3568,7 @@ fn create_table_column_options(
             options = options.child(create_table_option_flag(
                 tab_id,
                 id,
-                "无符号",
+                tr("app.create_table.column.unsigned"),
                 column.unsigned,
                 CreateTableColumnFlag::Unsigned,
                 colors,
@@ -3430,7 +3579,7 @@ fn create_table_column_options(
             options = options.child(create_table_option_flag(
                 tab_id,
                 id,
-                "填充零",
+                tr("app.create_table.column.zero_fill"),
                 column.zerofill,
                 CreateTableColumnFlag::Zerofill,
                 colors,
@@ -3441,7 +3590,7 @@ fn create_table_column_options(
             options = options.child(create_table_option_flag(
                 tab_id,
                 id,
-                "自增",
+                tr("app.create_table.column.auto_increment"),
                 column.auto_increment,
                 CreateTableColumnFlag::AutoIncrement,
                 colors,
@@ -3454,7 +3603,7 @@ fn create_table_column_options(
         options = options.child(create_table_option_flag(
             tab_id,
             id,
-            "自动更新时间",
+            tr("app.create_table.column.auto_update_timestamp"),
             column.auto_update_time,
             CreateTableColumnFlag::AutoUpdateTime,
             colors,
@@ -3475,13 +3624,14 @@ fn create_table_column_options(
 }
 
 fn create_table_option_input(
-    label: &'static str,
+    label: impl Into<SharedString>,
     input: Entity<InputState>,
     width: f32,
     window: &mut Window,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
+    let label = label.into();
     div()
         .flex()
         .items_center()
@@ -3498,14 +3648,16 @@ fn create_table_option_input(
 }
 
 fn create_table_option_select(
-    label: &'static str,
-    select: Entity<SelectState<SearchableVec<String>>>,
+    label: impl Into<SharedString>,
+    select: Entity<SelectState<SearchableVec<CreateTableSelectOption>>>,
     width: f32,
-    placeholder: &'static str,
+    placeholder: impl Into<SharedString>,
     window: &mut Window,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
+    let label = label.into();
+    let placeholder = placeholder.into();
     div()
         .flex()
         .items_center()
@@ -3528,14 +3680,15 @@ fn create_table_option_select(
         ))
 }
 
-fn create_table_option_select_box<T: 'static>(
-    select: Entity<SelectState<SearchableVec<String>>>,
+fn create_table_option_select_box<T: 'static, I: SelectItem + 'static>(
+    select: Entity<SelectState<SearchableVec<I>>>,
     width: f32,
-    placeholder: &'static str,
+    placeholder: impl Into<SharedString>,
     window: &mut Window,
     colors: UiColors,
     cx: &mut Context<T>,
 ) -> Div {
+    let placeholder = placeholder.into();
     let focused = select.read(cx).focus_handle(cx).is_focused(window);
     div()
         .w(px(width))
@@ -3553,7 +3706,7 @@ fn create_table_option_select_box<T: 'static>(
                 .appearance(false)
                 .small()
                 .placeholder(placeholder)
-                .search_placeholder("选择...")
+                .search_placeholder(tr("app.create_table.search_placeholder_select"))
                 .w_full()
                 .h_full()
                 .menu_width(px(width.max(220.))),
@@ -3563,12 +3716,13 @@ fn create_table_option_select_box<T: 'static>(
 fn create_table_option_flag(
     tab_id: TabId,
     column_id: u64,
-    label: &'static str,
+    label: impl Into<SharedString>,
     checked: bool,
     flag: CreateTableColumnFlag,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
+    let label = label.into();
     div()
         .h(px(26.))
         .flex()
@@ -3613,32 +3767,14 @@ fn create_table_length_placeholder(database_kind: DatabaseKind, data_type: &str)
 }
 
 fn create_table_inherit_select_options(mut options: Vec<String>) -> Vec<String> {
-    if !options
-        .iter()
-        .any(|item| item == CREATE_TABLE_INHERIT_DATABASE_DEFAULT_OPTION)
-    {
-        options.insert(0, CREATE_TABLE_INHERIT_DATABASE_DEFAULT_OPTION.to_string());
+    if !options.iter().any(String::is_empty) {
+        options.insert(0, String::new());
     }
     options
 }
 
-fn create_table_select_value(value: &str) -> String {
-    if value == CREATE_TABLE_INHERIT_DATABASE_DEFAULT_OPTION {
-        String::new()
-    } else {
-        value.to_string()
-    }
-}
-
 fn create_table_select_index(options: &[String], value: &str) -> Option<IndexPath> {
     let value = value.trim();
-    if value.is_empty() {
-        return options
-            .iter()
-            .position(|item| item == CREATE_TABLE_INHERIT_DATABASE_DEFAULT_OPTION)
-            .map(IndexPath::new);
-    }
-
     options
         .iter()
         .position(|item| item.eq_ignore_ascii_case(value))
@@ -3680,7 +3816,8 @@ fn create_table_checkbox_id(
     )
 }
 
-fn create_table_empty_state(message: &'static str, colors: UiColors) -> Div {
+fn create_table_empty_state(message: impl Into<SharedString>, colors: UiColors) -> Div {
+    let message: SharedString = message.into();
     div()
         .flex_1()
         .min_h(px(0.))
@@ -3734,7 +3871,7 @@ fn create_table_sql_preview(
                         .text_size(px(13.))
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .text_color(colors.text)
-                        .child("SQL 预览"),
+                        .child(tr("app.create_table.tab.sql_preview")),
                 )
                 .child(
                     div()

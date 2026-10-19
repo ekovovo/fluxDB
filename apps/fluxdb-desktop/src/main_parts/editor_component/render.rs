@@ -241,13 +241,13 @@ fn find_bar(
                 .flex()
                 .gap_1()
                 .child(Input::new(&find_input).small())
-                .child(find_bar_button("上一个", theme, move |app| {
+                .child(find_bar_button(tr("app.editor.find.previous"), theme, move |app| {
                     previous_editor.update(app, |editor, cx| editor.find_previous(cx));
                 }))
-                .child(find_bar_button("下一个", theme, move |app| {
+                .child(find_bar_button(tr("app.editor.find.next"), theme, move |app| {
                     next_editor.update(app, |editor, cx| editor.find_next(cx));
                 }))
-                .child(find_bar_button("关闭", theme, move |app| {
+                .child(find_bar_button(tr("app.editor.find.close"), theme, move |app| {
                     close_editor.update(app, |editor, cx| editor.close_find(cx));
                 })),
         )
@@ -256,20 +256,21 @@ fn find_bar(
                 .flex()
                 .gap_1()
                 .child(Input::new(&replace_input).small())
-                .child(find_bar_button("替换", theme, move |app| {
+                .child(find_bar_button(tr("app.editor.find.replace"), theme, move |app| {
                     replace_editor.update(app, |editor, cx| editor.find_replace_current(cx));
                 }))
-                .child(find_bar_button("全部替换", theme, move |app| {
+                .child(find_bar_button(tr("app.editor.find.replace_all"), theme, move |app| {
                     replace_all_editor.update(app, |editor, cx| editor.find_replace_all(cx));
                 })),
         )
 }
 
 fn find_bar_button(
-    label: &'static str,
+    label: impl Into<SharedString>,
     theme: EditorTheme,
     on_click: impl Fn(&mut App) + 'static,
 ) -> impl IntoElement {
+    let label: SharedString = label.into();
     div()
         .h(px(26.))
         .px_2()

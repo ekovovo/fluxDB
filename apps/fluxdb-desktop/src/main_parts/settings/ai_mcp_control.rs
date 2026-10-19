@@ -9,16 +9,16 @@ fn ai_mcp_control_panel(
         .checked(enabled)
         .on_click(cx.listener(|this, checked, _, cx| this.set_mcp_profile_enabled(*checked, cx)))
         .into_any_element();
-    settings_panel_group("MCP 控制", colors)
+    settings_panel_group(tr("app.ai.mcp.control_title"), colors)
         .child(ai_policy_row(
-            "启用 MCP Server",
-            "供外部客户端按需启动本地 stdio 服务，不绑定端口",
+            &tr("app.ai.mcp.enable_server"),
+            &tr("app.ai.mcp.enable_server_detail"),
             enabled_control,
             colors,
         ))
         .child(ai_policy_row(
-            "全局默认策略",
-            "只读 / 允许读写。数据源可选“默认”跟随此策略；不增加连接授权",
+            &tr("app.ai.mcp.default_policy"),
+            &tr("app.ai.mcp.default_policy_detail"),
             ai_mcp_global_policy_button(state, colors, cx),
             colors,
         ))
@@ -51,7 +51,7 @@ fn ai_mcp_global_policy_button(
                 .items_center()
                 .justify_between()
                 .gap_3()
-                .child(selected.label())
+                .child(mcp_write_policy_label(selected))
                 .child(app_icon(AppIcon::ChevronDown, 12., colors.muted)),
         )
         .dropdown_menu_with_anchor(gpui::Anchor::TopRight, move |menu, _, _| {
@@ -67,7 +67,7 @@ fn ai_mcp_global_policy_button(
                                 let id = option_id.clone();
                                 move || id.clone()
                             })
-                            .child(mode.label())
+                            .child(mcp_write_policy_label(mode))
                     })
                     .checked(selected == mode)
                     .on_click(move |_, _, cx| {
@@ -94,7 +94,7 @@ fn ai_mcp_datasources_panel(
         .iter()
         .filter(|d| d.profile_id == fluxdb_app::DEFAULT_MCP_PROFILE_ID)
         .collect::<Vec<_>>();
-    let mut panel = settings_panel_group("数据源", colors).child(
+    let mut panel = settings_panel_group(tr("app.ai.mcp.datasources"), colors).child(
         div()
             .px_4()
             .py_2()
@@ -106,7 +106,7 @@ fn ai_mcp_datasources_panel(
                 div()
                     .text_size(px(11.))
                     .text_color(colors.muted)
-                    .child("只有加入的连接对外可见；写入策略从只读 / 允许读写 / 默认中选择。"),
+                    .child(tr("app.ai.mcp.datasource_help")),
             )
             .child(ai_mcp_datasource_add_button(
                 state,
@@ -122,7 +122,7 @@ fn ai_mcp_datasources_panel(
                 .py_3()
                 .text_size(px(12.))
                 .text_color(colors.muted)
-                .child("尚未加入任何数据源，外部客户端不会看到连接。"),
+                .child(tr("app.ai.mcp.no_datasource")),
         );
     }
     for datasource in datasources {
@@ -172,7 +172,7 @@ fn ai_mcp_datasource_add_button(
                 .items_center()
                 .gap_2()
                 .child(app_icon(AppIcon::Plus, 12., colors.muted))
-                .child("新增数据源"),
+                .child(tr("app.ai.mcp.add_datasource")),
         )
         .dropdown_menu_with_anchor(gpui::Anchor::TopRight, move |menu, _, _| {
             if candidates.is_empty() {
@@ -182,7 +182,7 @@ fn ai_mcp_datasource_add_button(
                             .px_3()
                             .py_2()
                             .text_size(px(11.))
-                            .child("没有可加入的连接")
+                            .child(tr("app.ai.mcp.no_candidate"))
                     })
                     .disabled(true),
                 );
@@ -223,6 +223,13 @@ fn ai_mcp_datasource_add_button(
             menu
         })
         .into_any_element()
+}
+
+fn mcp_write_policy_label(policy: fluxdb_core::McpWritePolicy) -> SharedString {
+    match policy {
+        fluxdb_core::McpWritePolicy::ReadOnly => tr("app.ai.mcp.policy.read_only"),
+        fluxdb_core::McpWritePolicy::ReadWrite => tr("app.ai.mcp.policy.read_write"),
+    }
 }
 
 fn ai_mcp_panel(

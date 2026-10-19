@@ -269,7 +269,7 @@ _canvas_size: Option<(f32, f32)>,
                                     }
                                     _ => {
                                         this.show_message(
-                                            String::from("拖到目标字段上松开可创建关系"),
+                                            tr("app.er_interaction.drop_hint").to_string(),
                                             AppMessageKind::Info,
                                             cx,
                                         );
@@ -438,9 +438,11 @@ _canvas_size: Option<(f32, f32)>,
                 .children(badges.into_iter().map(|(bx, by, table, is_top, count)| {
                     let badge_tab = tab_id;
                     let tip = if is_top {
-                        format!("上方隐藏 {count} 个关联字段，点击滚到顶部")
+                        tr("app.er_interaction.hidden_above")
+                            .replace("%{count}", &count.to_string())
                     } else {
-                        format!("下方隐藏 {count} 个关联字段，点击滚到底部")
+                        tr("app.er_interaction.hidden_below")
+                            .replace("%{count}", &count.to_string())
                     };
                     div()
                         .absolute()
@@ -541,7 +543,9 @@ fn er_port_overlay(
             let active = is_source || is_target;
             let dragging_this = mouse_down_side == Some(side) && is_source;
             let dot_c = if active { er_accent_color(cx) } else { colors.muted };
-            let tip_text = format!("拖出连线：{table}.{column}");
+            let tip_text = tr("app.er_interaction.drag_link_tip")
+                .replace("%{table}", &table)
+                .replace("%{column}", &column);
             let hov_table = table.clone();
             let hov_col = column.clone();
             let down_table = table.clone();

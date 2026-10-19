@@ -88,11 +88,11 @@ impl NavicatMain {
             .ghost()
             .cursor_pointer()
             .disabled(disabled)
-            .tooltip("切换显示方式")
+            .tooltip(tr("app.ai.chat.display.switch_tooltip"))
             .child(
                 div()
                     .id("ai-chat-mode-label")
-                    .aria_label("切换显示方式")
+                    .aria_label(tr("app.ai.chat.display.switch_tooltip"))
                     .flex()
                     .items_center()
                     .gap_1()
@@ -102,9 +102,21 @@ impl NavicatMain {
             .dropdown_menu_with_anchor(gpui::Anchor::TopRight, move |menu, _, _| {
                 let mut menu = menu.check_side(gpui_component::Side::Right).min_w(px(190.));
                 for (mode, label, icon) in [
-                    (PanelMode::Drawer, "侧边抽屉", AppIcon::PanelRight),
-                    (PanelMode::Embedded, "内嵌面板", AppIcon::Layout),
-                    (PanelMode::Tab, "独立标签页", AppIcon::PanelTop),
+                    (
+                        PanelMode::Drawer,
+                        tr("app.ai.chat.display.mode.drawer"),
+                        AppIcon::PanelRight,
+                    ),
+                    (
+                        PanelMode::Embedded,
+                        tr("app.ai.chat.display.mode.embedded"),
+                        AppIcon::Layout,
+                    ),
+                    (
+                        PanelMode::Tab,
+                        tr("app.ai.chat.display.mode.tab"),
+                        AppIcon::PanelTop,
+                    ),
                 ] {
                     let owner = menu_owner.clone();
                     menu = menu.item(
@@ -114,7 +126,7 @@ impl NavicatMain {
                                     "ai-chat-mode-label:{}",
                                     mode.as_str()
                                 )))
-                                .aria_label(label)
+                                .aria_label(label.clone())
                                 .debug_selector(move || {
                                     format!("ai-chat-mode-option:{}", mode.as_str())
                                 })
@@ -124,7 +136,7 @@ impl NavicatMain {
                                 .text_size(px(12.))
                                 .font_weight(gpui::FontWeight::MEDIUM)
                                 .child(app_icon(icon, 14., colors.muted))
-                                .child(label)
+                                .child(label.clone())
                         })
                         .checked(mode == selected)
                         .on_click(move |_, window, cx| {

@@ -3,7 +3,8 @@
 // 保持行内交互（删除/追加）与 RedisInsight AddKey 一致的形态。
 
 /// 子表单区块标题（如 Key Name / TTL 的输入标签），小号普通字重。
-fn redis_add_key_form_label(label: &'static str, colors: UiColors) -> Div {
+fn redis_add_key_form_label(label: impl Into<SharedString>, colors: UiColors) -> Div {
+    let label: SharedString = label.into();
     div()
         .flex_none()
         .text_size(px(11.))
@@ -48,12 +49,13 @@ fn redis_add_key_remove_row_button(
 
 /// 「+ 添加」行按钮：追加一行新输入并聚焦新行，阻止冒泡避免误关抽屉。
 fn redis_add_key_add_row_button(
-    label: &'static str,
+    label: impl Into<SharedString>,
     applying: bool,
     colors: UiColors,
     add: impl Fn(&mut NavicatMain, &mut Window, &mut Context<NavicatMain>) + 'static,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
+    let label: SharedString = label.into();
     div()
         .h(px(30.))
         .px_2()

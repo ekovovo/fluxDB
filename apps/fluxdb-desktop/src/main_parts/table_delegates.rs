@@ -98,7 +98,7 @@ impl DataPageTableDelegate {
         }
         if redis_page {
             columns.push(
-                TableColumn::new("__redis_actions", "操作")
+                TableColumn::new("__redis_actions", tr("app.data.header.actions"))
                     .width(redis_table_column_width(
                         "__redis_actions",
                         redis_table_width.unwrap_or(px(1000.)),
@@ -109,7 +109,7 @@ impl DataPageTableDelegate {
             source_column_indexes.push(None);
             column_types.push(String::new());
             column_meta.push(DataTableColumnMeta {
-                name: "操作".to_string(),
+                name: tr("app.data.header.actions").to_string(),
                 type_name: "redis_action".to_string(),
                 comment: None,
                 nullable: false,
@@ -683,7 +683,7 @@ fn data_cell_choice_options(kind: DataCellEditorKind, meta: &DataTableColumnMeta
 
 fn data_cell_value_from_text(meta: &DataTableColumnMeta, text: &str) -> Result<CellValue, String> {
     if data_type_is_binary(meta.type_name.as_str()) {
-        return Err(format!("字段 {} 是二进制类型，不能修改", meta.name));
+        return Err(tr("app.data.error.binary_edit").replace("%{field}", &meta.name));
     }
 
     let trimmed = text.trim();
@@ -691,21 +691,21 @@ fn data_cell_value_from_text(meta: &DataTableColumnMeta, text: &str) -> Result<C
         return Ok(CellValue::Null);
     }
     if !meta.nullable && trimmed.eq_ignore_ascii_case("null") {
-        return Err(format!("字段 {} 不允许 NULL", meta.name));
+        return Err(tr("app.data.error.not_null").replace("%{field}", &meta.name));
     }
 
     match data_cell_editor_kind(meta.type_name.as_str()) {
         DataCellEditorKind::Boolean => match trimmed.to_ascii_lowercase().as_str() {
             "1" | "true" | "yes" | "y" | "on" => Ok(CellValue::Bool(true)),
             "0" | "false" | "no" | "n" | "off" => Ok(CellValue::Bool(false)),
-            _ => Err(format!("字段 {} 需要布尔值", meta.name)),
+            _ => Err(tr("app.data.error.boolean").replace("%{field}", &meta.name)),
         },
         DataCellEditorKind::Enum => {
             let options = data_cell_enum_set_options(meta.type_name.as_str());
             if options.iter().any(|option| option == trimmed) {
                 Ok(CellValue::Text(trimmed.to_string()))
             } else {
-                Err(format!("字段 {} 不支持该枚举值", meta.name))
+                Err(tr("app.data.error.enum").replace("%{field}", &meta.name))
             }
         }
         DataCellEditorKind::Set => {
@@ -721,7 +721,7 @@ fn data_cell_value_from_text(meta: &DataTableColumnMeta, text: &str) -> Result<C
             {
                 Ok(CellValue::Text(selected.join(",")))
             } else {
-                Err(format!("字段 {} 不支持该 SET 值", meta.name))
+                Err(tr("app.data.error.set").replace("%{field}", &meta.name))
             }
         }
         DataCellEditorKind::Text => data_cell_text_value_for_type(meta, trimmed),
@@ -752,13 +752,13 @@ fn data_cell_text_value_for_type(
         return text
             .parse::<i64>()
             .map(CellValue::I64)
-            .map_err(|_| format!("字段 {} 需要整数", meta.name));
+            .map_err(|_| tr("app.data.error.integer").replace("%{field}", &meta.name));
     }
     if matches!(base, "decimal" | "numeric" | "float" | "double" | "real") {
         return text
             .parse::<f64>()
             .map(CellValue::F64)
-            .map_err(|_| format!("字段 {} 需要数字", meta.name));
+            .map_err(|_| tr("app.data.error.number").replace("%{field}", &meta.name));
     }
     if let Some(kind) = data_cell_temporal_kind(meta.type_name.as_str()) {
         let valid = match kind {
@@ -769,7 +769,7 @@ fn data_cell_text_value_for_type(
             }
         };
         if !valid {
-            return Err(format!("字段 {} 的时间格式不正确", meta.name));
+            return Err(tr("app.data.error.time_format").replace("%{field}", &meta.name));
         }
     }
 

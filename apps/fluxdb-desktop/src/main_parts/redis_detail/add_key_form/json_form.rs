@@ -19,7 +19,7 @@ fn redis_add_key_json_form(
                 .flex()
                 .items_center()
                 .justify_between()
-                .child(redis_add_key_form_label("JSON 值", colors))
+                .child(redis_add_key_form_label(tr("app.redis.add_key.form.json_value"), colors))
                 .child(redis_add_key_json_format_button(applying, colors, cx)),
         )
         .child(
@@ -48,7 +48,7 @@ fn redis_add_key_json_form(
             div()
                 .text_size(px(11.))
                 .text_color(colors.muted)
-                .child("支持直接粘贴 JSON；点击上方「格式化/校验」可美化与校验内容。"),
+                .child(tr("app.redis.add_key.form.json_hint")),
         )
 }
 
@@ -82,5 +82,5 @@ fn redis_add_key_json_format_button(
             }),
         )
         .child(app_icon(AppIcon::Wand, 12., rgb(0x1677ff)))
-        .child("格式化/校验")
+        .child(tr("app.redis.add_key.form.format_validate"))
 }

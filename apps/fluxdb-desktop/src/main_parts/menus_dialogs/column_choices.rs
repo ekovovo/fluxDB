@@ -11,7 +11,7 @@ impl NavicatMain {
         cx: &mut Context<Self>,
     ) {
         let Some((object_path, type_name)) = self.data_editor_column_for_choices(tab_id, &column_name) else {
-            self.show_message("当前字段不支持设置枚举值", AppMessageKind::Warning, cx);
+            self.show_message(tr("app.column.error.enum_unsupported").as_ref(), AppMessageKind::Warning, cx);
             return;
         };
         let choices = self.column_choices_for_object_column(&object_path, &column_name);
@@ -47,7 +47,7 @@ impl NavicatMain {
             .iter()
             .find(|connection| connection.config.id == pending.object_path.connection_id)
         else {
-            self.show_message("找不到当前连接，无法保存枚举值", AppMessageKind::Error, cx);
+            self.show_message(tr("app.column.error.connection_missing").as_ref(), AppMessageKind::Error, cx);
             return;
         };
 
@@ -70,7 +70,7 @@ impl NavicatMain {
             .storage
             .save_connections(&self.controller.connection_configs());
         self.refresh_active_data_table(pending.tab_id, cx);
-        self.show_message("枚举值已保存", AppMessageKind::Success, cx);
+        self.show_message(tr("app.column.toast.enum_saved").as_ref(), AppMessageKind::Success, cx);
         cx.notify();
     }
 
@@ -82,7 +82,7 @@ impl NavicatMain {
             .trim()
             .to_string();
         if value.is_empty() {
-            self.show_message("请先输入枚举值", AppMessageKind::Warning, cx);
+            self.show_message(tr("app.column.error.enum_required").as_ref(), AppMessageKind::Warning, cx);
             return;
         }
         let label = self
@@ -314,7 +314,7 @@ fn column_choices_modal(
                         .justify_between()
                         .child(
                             Button::new("column-choices-cancel")
-                                .label("取消")
+                                .label(tr("app.common.cancel"))
                                 .w(px(78.))
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.cancel_column_choices_modal(cx);
@@ -323,7 +323,7 @@ fn column_choices_modal(
                         )
                         .child(
                             Button::new("column-choices-save")
-                                .label("保存")
+                                .label(tr("app.common.save"))
                                 .primary()
                                 .w(px(78.))
                                 .on_click(cx.listener(|this, _, _, cx| {
@@ -347,7 +347,7 @@ fn column_choices_header(colors: UiColors, cx: &mut Context<NavicatMain>) -> imp
             div()
                 .text_size(px(17.))
                 .font_weight(gpui::FontWeight::SEMIBOLD)
-                .child("字段枚举"),
+                .child(tr("app.column.enum.title")),
         )
         .child(
             div()
@@ -499,7 +499,7 @@ fn column_choices_row(
                 .min_w(px(24.))
                 .p_0()
                 .child(app_icon(AppIcon::Close, 13., colors.muted))
-                .tooltip("删除")
+                .tooltip(tr("app.redis.delete"))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.remove_column_choice(&value, cx);
                     cx.stop_propagation();
@@ -520,7 +520,7 @@ fn column_choices_add_row(colors: UiColors, cx: &mut Context<NavicatMain>) -> im
         .text_color(rgb(0x1677ff))
         .hover(move |style| style.bg(colors.hover))
         .child(app_icon(AppIcon::Plus, 13., rgb(0x1677ff)))
-        .child("添加枚举值")
+        .child(tr("app.column.enum.add"))
         .on_mouse_down(
             MouseButton::Left,
             cx.listener(|this, _, window, cx| {
@@ -543,7 +543,7 @@ fn column_choices_empty_state(colors: UiColors, cx: &mut Context<NavicatMain>) -
             div()
                 .text_size(px(13.))
                 .text_color(colors.muted)
-                .child("尚未添加枚举值"),
+                .child(tr("app.column.enum.empty")),
         )
         .child(
             div()
@@ -560,7 +560,7 @@ fn column_choices_empty_state(colors: UiColors, cx: &mut Context<NavicatMain>) -
                 .text_color(colors.text)
                 .hover(move |style| style.bg(colors.hover))
                 .child(app_icon(AppIcon::Plus, 13., colors.muted))
-                .child("添加枚举值")
+                .child(tr("app.column.enum.add"))
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|this, _, window, cx| {
@@ -594,7 +594,7 @@ fn column_choices_add_editor(
                 .min_w(px(28.))
                 .p_0()
                 .child(app_icon(AppIcon::Check, 14., colors.text))
-                .tooltip("添加")
+                .tooltip(tr("app.common.add"))
                 .on_click(cx.listener(|this, _, window, cx| {
                     this.add_column_choice(window, cx);
                     cx.stop_propagation();

@@ -10,6 +10,22 @@ pub const HEX_EDIT_LIMIT: u64 = 64 * 1024;
 pub const BINARY_FILE_UPLOAD_LIMIT: u64 = 64 * 1024 * 1024;
 const COMPLETION_METADATA_LIMIT: u64 = 500;
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AiModelKind {
+    #[default]
+    Generation,
+    Decision,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AiCredentialStatus {
+    #[default]
+    NotRequired,
+    Missing,
+    Configured,
+    Unavailable,
+}
+
 /// 设置页「AI」分区缓存的模型列表（公开视图，不含任何凭据）。
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct AiModelItem {
@@ -21,7 +37,7 @@ pub struct AiModelItem {
     pub endpoint: Option<String>,
     /// 完整请求地址，不追加协议路由。
     pub endpoint_is_full_url: bool,
-    pub kind: String,
+    pub kind: AiModelKind,
     pub enabled: bool,
     /// 数据出站许可：false 表示该模型不再接收会话数据（设计 §29/§31.1）。
     pub egress: bool,
@@ -33,7 +49,7 @@ pub struct AiModelItem {
     pub input_price_micros: Option<i64>,
     pub output_price_micros: Option<i64>,
     pub cached_input_price_micros: Option<i64>,
-    pub credential_status: String,
+    pub credential_status: AiCredentialStatus,
     /// 最近一次连接探测结果：`unknown` / `ok` / `failed`。
     pub connection_status: String,
     /// 最近一次连接探测时间戳（毫秒）；从未探测为 `None`。

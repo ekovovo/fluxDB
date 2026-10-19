@@ -107,6 +107,12 @@ pub(crate) const PLATFORM_MONOSPACE_FONT: &str = "Consolas";
 pub(crate) const PLATFORM_MONOSPACE_FONT: &str = "monospace";
 
 // First-pass source split: these files are included at crate-root scope to keep behavior unchanged.
+include!("main_parts/i18n.rs");
+include!("main_parts/backend_errors.rs");
+include!("main_parts/backend_errors_external.rs");
+include!("main_parts/backend_errors_connectors.rs");
+include!("main_parts/backend_errors_storage.rs");
+include!("main_parts/backend_errors_templates.rs");
 include!("main_parts/foundation.rs");
 include!("main_parts/theme_registry.rs");
 include!("main_parts/shortcuts.rs");
@@ -180,3 +186,6 @@ include!("main_parts/ai/composer.rs");
 include!("main_parts/ai/panel.rs");
 include!("main_parts/app_boot.rs");
 include!("main_parts/app_boot_helpers.rs");
+
+#[cfg(test)]
+include!("main_parts/i18n_tests.rs");

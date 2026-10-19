@@ -11,8 +11,10 @@ fn data_row_viewer_modal(
         return div();
     };
     let row_number = page_offset + viewer.source_row as u64 + 1;
-    let title = format!("第 {row_number} 行详情");
-    let subtitle = format!("{} · {} 列", table_name, fields.len());
+    let title = tr("app.row.title").replace("%{row}", &row_number.to_string());
+    let subtitle = tr("app.row.subtitle")
+        .replace("%{table}", &table_name)
+        .replace("%{columns}", &fields.len().to_string());
 
     div()
         .absolute()
@@ -97,7 +99,10 @@ fn data_row_viewer_snapshot(
                 let fields = row_fields_for_page(page, viewer.source_row)?;
                 let name = editable
                     .map(|editor| editor.object.name.clone())
-                    .unwrap_or_else(|| format!("查询结果 {}", page_index + 1));
+                    .unwrap_or_else(|| {
+                        tr("app.row.query_result")
+                            .replace("%{index}", &(page_index + 1).to_string())
+                    });
                 Some((name, page.offset, fields))
             }
             _ => None,
@@ -141,7 +146,7 @@ fn data_row_viewer_header(
                 ),
         )
         .child(
-            cell_detail_icon_button(AppIcon::Close, "关闭", colors).on_mouse_down(
+            cell_detail_icon_button(AppIcon::Close, tr("app.common.close"), colors).on_mouse_down(
                 MouseButton::Left,
                 move |_, _, cx| {
                     view.update(cx, |this, cx| this.close_data_row_viewer(cx));
@@ -244,7 +249,7 @@ fn data_row_detail_viewer_body(
                 .justify_end()
                 .gap_2()
                 .child(
-                    cell_detail_action_button("复制 JSON", colors).on_mouse_down(
+                    cell_detail_action_button(tr("app.row.copy_json"), colors).on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, _, _, cx| {
                             this.copy_data_row_text(
@@ -258,7 +263,7 @@ fn data_row_detail_viewer_body(
                         }),
                     ),
                 )
-                .child(cell_detail_action_button("复制 TSV", colors).on_mouse_down(
+                .child(cell_detail_action_button(tr("app.row.copy_tsv"), colors).on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, _, _, cx| {
                         this.copy_data_row_text(
@@ -348,7 +353,7 @@ fn data_row_detail_field(
                                     } else {
                                         rgb(0x1757bd)
                                     })
-                                    .child("主键"),
+                                    .child(tr("app.row.primary_key")),
                             )
                         }),
                 )
@@ -377,8 +382,10 @@ fn data_row_detail_field(
                         .justify_between()
                         .text_size(px(11.))
                         .text_color(colors.muted)
-                        .child("值")
-                        .child(format!("{length} 字符")),
+                        .child(tr("app.placeholder.value"))
+                        .child(
+                            tr("app.row.characters").replace("%{count}", &length.to_string()),
+                        ),
                 )
                 .child(
                     div()
@@ -396,11 +403,15 @@ fn data_row_detail_field(
                 ),
         )
         .child(
-            cell_detail_icon_button(AppIcon::Copy, "复制值", colors).on_mouse_down(
+            cell_detail_icon_button(AppIcon::Copy, tr("app.row.copy_value"), colors).on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, _, cx| {
                     cx.write_to_clipboard(ClipboardItem::new_string(copy_value.clone()));
-                    this.show_message("已复制值", AppMessageKind::Success, cx);
+                    this.show_message(
+                        tr("app.row.copied_value"),
+                        AppMessageKind::Success,
+                        cx,
+                    );
                     cx.stop_propagation();
                 }),
             ),
@@ -414,23 +425,31 @@ fn data_row_copy_submenu(
     cx: &mut Context<NavicatMain>,
 ) -> Div {
     let selected_rows = (menu.selection_row_count > 1).then_some(menu.selection_row_count);
-    let json_label = row_copy_label(selected_rows, "复制行 (JSON)", "复制选中 {count} 行 (JSON)");
+    let json_label = row_copy_label(
+        selected_rows,
+        tr("app.row.copy_json_single").as_str(),
+        tr("app.row.copy_json_multiple").as_str(),
+    );
     let insert_label = row_copy_label(
         selected_rows,
-        "复制为 INSERT 语句",
-        "复制选中 {count} 行为 INSERT 语句",
+        tr("app.row.copy_insert_single").as_str(),
+        tr("app.row.copy_insert_multiple").as_str(),
     );
     let insert_without_pk_label = row_copy_label(
         selected_rows,
-        "复制为 INSERT 语句（不含主键）",
-        "复制选中 {count} 行为 INSERT 语句（不含主键）",
+        tr("app.row.copy_insert_no_pk_single").as_str(),
+        tr("app.row.copy_insert_no_pk_multiple").as_str(),
     );
     let update_label = row_copy_label(
         selected_rows,
-        "复制为 UPDATE 语句",
-        "复制选中 {count} 行为 UPDATE 语句",
+        tr("app.row.copy_update_single").as_str(),
+        tr("app.row.copy_update_multiple").as_str(),
     );
-    let tsv_label = row_copy_label(selected_rows, "复制全部 (TSV)", "复制选中 {count} 行 (TSV)");
+    let tsv_label = row_copy_label(
+        selected_rows,
+        tr("app.row.copy_tsv_single").as_str(),
+        tr("app.row.copy_tsv_multiple").as_str(),
+    );
     let width = if menu.row_object_available {
         data_row_copy_submenu_width([
             json_label.as_str(),
@@ -497,18 +516,25 @@ fn data_row_export_submenu(
     cx: &mut Context<NavicatMain>,
 ) -> Div {
     let selected_rows = (menu.selection_row_count > 1).then_some(menu.selection_row_count);
-    let csv_label = row_export_label(selected_rows, "导出当前行为 CSV", "导出选中 {count} 行为 CSV");
-    let json_label =
-        row_export_label(selected_rows, "导出当前行为 JSON", "导出选中 {count} 行为 JSON");
+    let csv_label = row_export_label(
+        selected_rows,
+        tr("app.row.export_csv_single").as_str(),
+        tr("app.row.export_csv_multiple").as_str(),
+    );
+    let json_label = row_export_label(
+        selected_rows,
+        tr("app.row.export_json_single").as_str(),
+        tr("app.row.export_json_multiple").as_str(),
+    );
     let markdown_label = row_export_label(
         selected_rows,
-        "导出当前行为 Markdown",
-        "导出选中 {count} 行为 Markdown",
+        tr("app.row.export_markdown_single").as_str(),
+        tr("app.row.export_markdown_multiple").as_str(),
     );
     let insert_label = row_export_label(
         selected_rows,
-        "导出当前行为 SQL INSERT",
-        "导出选中 {count} 行为 SQL INSERT",
+        tr("app.row.export_insert_single").as_str(),
+        tr("app.row.export_insert_multiple").as_str(),
     );
     let width = if menu.row_object_available {
         data_row_copy_submenu_width([
@@ -618,7 +644,7 @@ fn data_row_submenu_shell(top: Pixels, left: Pixels, width: Pixels, colors: UiCo
 }
 
 fn data_row_menu_item(
-    label: &'static str,
+    label: impl Into<String>,
     icon: AppIcon,
     tab_id: TabId,
     colors: UiColors,
@@ -705,13 +731,14 @@ fn data_row_copy_label_width_unit(ch: char) -> f32 {
 }
 
 fn data_row_menu_submenu_item(
-    label: &'static str,
+    label: impl Into<String>,
     icon: AppIcon,
     tab_id: TabId,
     submenu: DataRowContextSubmenu,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> impl IntoElement {
+    let label = label.into();
     div()
         .id((
             "data-row-submenu-item",

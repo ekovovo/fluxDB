@@ -4,8 +4,10 @@
 
 fn er_relation_status_banner(status: ErLoadStatus, colors: UiColors) -> Div {
     let (text, tone) = match status {
-        ErLoadStatus::NotLoaded | ErLoadStatus::Loading => ("关系加载中，完成后可按关系排列…", colors.muted),
-        ErLoadStatus::Failed => ("关系加载失败，部分连线可能缺失", rgb(0xef4444)),
+        ErLoadStatus::NotLoaded | ErLoadStatus::Loading => {
+            (tr("app.er_loading.relations_loading"), colors.muted)
+        }
+        ErLoadStatus::Failed => (tr("app.er_loading.relations_failed"), rgb(0xef4444)),
         ErLoadStatus::Loaded => unreachable!("Loaded 状态不显示 banner"),
     };
     div()
@@ -121,7 +123,10 @@ fn ensure_er_graph_loaded(
         .find(|c| c.id == er.connection_id)
     else {
         this.er_errors
-            .insert(tab_id, "连接配置不存在，请重新连接后重试".to_string());
+            .insert(
+                tab_id,
+                tr("app.er_loading.connection_missing").to_string(),
+            );
         return;
     };
     let database = er.database.clone();

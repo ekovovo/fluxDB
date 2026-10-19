@@ -50,13 +50,17 @@ fn restore_general_page(
     cx: &mut Context<NavicatMain>,
 ) -> impl IntoElement {
     let target_label = if modal.kind == DatabaseKind::Sqlite {
-        "目标新文件"
+        tr("app.database_restore.target.new_file")
     } else {
-        "目标数据库名称"
+        tr("app.database_restore.target.database_name")
     };
     // 「现有库」模式：目标库走下拉（目标连接下的已存在库），不新建。
     let existing_mode = modal.kind != DatabaseKind::Sqlite
-        && modal.mode.read(cx).selected_value().is_some_and(|v| v == "现有库");
+        && modal
+            .mode
+            .read(cx)
+            .selected_value()
+            .is_some_and(|v| *v == RestoreTargetMode::ExistingDatabase);
     div()
         .flex_1()
         .min_h(px(0.))
@@ -74,7 +78,7 @@ fn restore_general_page(
                 .items_center()
                 .gap_3()
                 .child(div().w(px(120.)).flex_none().child(sql_file_section_label(
-                    "目标连接",
+                    tr("app.database_restore.field.target_connection"),
                     colors,
                 )))
                 .child(Select::new(&modal.connection).disabled(locked).w_full()),
@@ -87,7 +91,7 @@ fn restore_general_page(
                 .items_center()
                 .gap_3()
                 .child(div().w(px(120.)).flex_none().child(sql_file_section_label(
-                    "备份文件",
+                    tr("app.database_restore.field.backup_file"),
                     colors,
                 )))
                 .child(
@@ -100,7 +104,7 @@ fn restore_general_page(
                         .child(restore_input_frame(modal.source_input.clone(), colors))
                         .child(
                             Button::new("restore-pick-backup-file")
-                                .label("选择")
+                                .label(tr("app.common.choose"))
                                 .small()
                                 .rounded(colors.radius)
                                 .disabled(locked)
@@ -115,12 +119,12 @@ fn restore_general_page(
                 .pl(px(132.))
                 .text_size(px(11.))
                 .text_color(colors.muted)
-                .child("按文件内容识别格式；SQLite 备份恢复为 .db 新文件。"),
+                .child(tr("app.database_restore.hint.format_detect")),
         )
         // 目标库名称/文件：「现有库」-> 下拉；「新数据库」/Sqlite -> 文本框。
         .child({
             let label = if existing_mode {
-                "目标数据库"
+                tr("app.database_restore.target.existing")
             } else {
                 target_label
             };
@@ -150,7 +154,7 @@ fn restore_general_page(
                 .items_center()
                 .gap_3()
                 .child(div().w(px(120.)).flex_none().child(sql_file_section_label(
-                    "恢复方式",
+                    tr("app.database_restore.field.mode"),
                     colors,
                 )))
                 .child(Select::new(&modal.mode).disabled(locked).w_full()),
@@ -160,7 +164,7 @@ fn restore_general_page(
                 .pl(px(132.))
                 .text_size(px(11.))
                 .text_color(colors.muted)
-                .child("先「预检查」生成恢复计划并确认，才能「确认恢复」；非空目标禁止覆盖。"),
+                .child(tr("app.database_restore.hint.preflight")),
         )
         .child(div().flex_1())
 }
@@ -176,23 +180,28 @@ fn restore_objects_page(
     cx: &mut Context<NavicatMain>,
 ) -> Div {
     let is_sqlite = modal.kind == DatabaseKind::Sqlite;
-    let existing_mode =
-        !is_sqlite && modal.mode.read(cx).selected_value().is_some_and(|v| v == "现有库");
+    let existing_mode = !is_sqlite
+        && modal
+            .mode
+            .read(cx)
+            .selected_value()
+            .is_some_and(|v| *v == RestoreTargetMode::ExistingDatabase);
     let count = modal.table_grid.len();
 
     // 单元格文案：备份内容与目标状态直接取探测事实。
     let body = if modal.table_grid.is_empty() {
         let note: Option<String> = if is_sqlite {
-            Some("SQLite 恢复为完整数据库快照（新文件），无需逐对象设置。".to_string())
+            Some(tr("app.database_restore.objects.sqlite_note").to_string())
         } else if !existing_mode {
-            Some(
-                "整库恢复到新数据库：将还原备份内全部对象。切换到「现有库」可逐对象设置还原动作。"
-                    .to_string(),
-            )
+            Some(tr("app.database_restore.objects.whole_db_note").to_string())
         } else if modal.probe_running {
             None // 探测中：单独渲染 loading。
         } else if let Some(err) = &modal.probe_error {
-            Some(format!("目标检查失败：{err}。请调整备份文件或目标库后自动重试。"))
+            Some(
+                tr("app.database_restore.objects.probe_failed")
+                    .replace("%{error}", err)
+                    .to_string(),
+            )
         } else if modal
             .source_input
             .read(cx)
@@ -201,9 +210,9 @@ fn restore_objects_page(
             .is_empty()
             || modal.target_db.read(cx).selected_value().is_none_or(|s| s.is_empty())
         {
-            Some("先选择备份文件与目标数据库，将自动检查对象存在性与备份内容。".to_string())
+            Some(tr("app.database_restore.objects.need_source_target").to_string())
         } else {
-            Some("备份文件中未解析到可逐对象处理的表。".to_string())
+            Some(tr("app.database_restore.objects.no_tables").to_string())
         };
         if note.is_none() {
             // 探测中状态。
@@ -220,7 +229,7 @@ fn restore_objects_page(
                     div()
                         .text_size(px(12.))
                         .text_color(colors.muted)
-                        .child("正在检查目标对象与备份内容…"),
+                        .child(tr("app.database_restore.objects.checking")),
                 )
                 .into_any_element()
         } else {
@@ -248,12 +257,16 @@ fn restore_objects_page(
         }
     } else {
         let rows = modal.table_grid.iter().map(|row| {
-            let status = if row.exists { "已存在" } else { "不存在" };
+            let status = if row.exists {
+                tr("app.database_restore.objects.status.exists")
+            } else {
+                tr("app.database_restore.objects.status.missing")
+            };
             let content = match (row.has_ddl, row.has_data) {
-                (true, true) => "结构＋数据",
-                (true, false) => "仅结构",
-                (false, true) => "仅数据",
-                (false, false) => "空对象",
+                (true, true) => tr("app.database_restore.objects.content.structure_data"),
+                (true, false) => tr("app.database_restore.objects.content.structure_only"),
+                (false, true) => tr("app.database_restore.objects.content.data_only"),
+                (false, false) => tr("app.database_restore.objects.content.empty"),
             };
             div()
                 .w_full()
@@ -325,7 +338,7 @@ fn restore_objects_page(
                             .min_w(px(0.))
                             .text_size(px(11.))
                             .text_color(colors.muted)
-                            .child("对象"),
+                            .child(tr("app.database_restore.objects.column.object")),
                     )
                     .child(
                         div()
@@ -333,7 +346,7 @@ fn restore_objects_page(
                             .flex_none()
                             .text_size(px(11.))
                             .text_color(colors.muted)
-                            .child("备份内容"),
+                            .child(tr("app.database_restore.objects.column.content")),
                     )
                     .child(
                         div()
@@ -341,7 +354,7 @@ fn restore_objects_page(
                             .flex_none()
                             .text_size(px(11.))
                             .text_color(colors.muted)
-                            .child("目标状态"),
+                            .child(tr("app.database_restore.objects.column.target_state")),
                     )
                     .child(
                         div()
@@ -349,7 +362,7 @@ fn restore_objects_page(
                             .flex_none()
                             .text_size(px(11.))
                             .text_color(colors.muted)
-                            .child("还原动作"),
+                            .child(tr("app.database_restore.objects.column.action")),
                     ),
             )
             .children(rows)
@@ -370,15 +383,19 @@ fn restore_objects_page(
                 .flex()
                 .items_center()
                 .justify_between()
-                .child(sql_file_section_label("对象与还原动作", colors))
+                .child(sql_file_section_label(
+                    tr("app.database_restore.objects.title"),
+                    colors,
+                ))
                 .child(
                     div()
                         .text_size(px(11.))
                         .text_color(colors.muted)
                         .child(if count == 0 && existing_mode && modal.probe_running {
-                            "检查中…".to_string()
+                            tr("app.database_restore.objects.checking_short").to_string()
                         } else {
-                            format!("共 {count} 个对象")
+                            tr("app.database_restore.objects.count")
+                                .replace("%{count}", &count.to_string())
                         }),
                 ),
         )
@@ -418,19 +435,25 @@ fn restore_advanced_page(
                 .flex()
                 .flex_col()
                 .gap_1()
-                .child(sql_file_section_label("执行选项", colors))
+                .child(sql_file_section_label(
+                    tr("app.database_restore.advanced.options_title"),
+                    colors,
+                ))
                 .child(
                     div()
                         .text_size(px(12.))
                         .text_color(colors.muted)
-                        .child("SQLite 为整库文件快照恢复，无事务范围与逐表行数选项。"),
+                        .child(tr("app.database_restore.advanced.sqlite_note")),
                 )
         } else {
             div()
                 .flex()
                 .flex_col()
                 .gap_2()
-                .child(sql_file_section_label("执行选项", colors))
+                .child(sql_file_section_label(
+                    tr("app.database_restore.advanced.options_title"),
+                    colors,
+                ))
                 .child(
                     div()
                         .w_full()
@@ -441,7 +464,10 @@ fn restore_advanced_page(
                             div()
                                 .w(px(120.))
                                 .flex_none()
-                                .child(sql_file_section_label("事务范围", colors)),
+                                .child(sql_file_section_label(
+                                    tr("app.database_restore.advanced.transaction"),
+                                    colors,
+                                )),
                         )
                         .child(Select::new(&modal.transaction).disabled(locked).w_full()),
                 )
@@ -455,7 +481,10 @@ fn restore_advanced_page(
                             div()
                                 .w(px(120.))
                                 .flex_none()
-                                .child(sql_file_section_label("完成验证", colors)),
+                                .child(sql_file_section_label(
+                                    tr("app.database_restore.advanced.validation"),
+                                    colors,
+                                )),
                         )
                         .child(Select::new(&modal.validation).disabled(locked).w_full()),
                 )
@@ -463,14 +492,14 @@ fn restore_advanced_page(
                     div()
                         .text_size(px(11.))
                         .text_color(colors.muted)
-                        .child("选项在「预检查」时生效；实际兑现范围由引擎能力决定，无法原子回滚时会在计划中说明。修改后需重新预检查。"),
+                        .child(tr("app.database_restore.advanced.options_hint")),
                 )
         })
         .child(match &runtime.prepared {
             None => div()
                 .text_size(px(12.))
                 .text_color(colors.muted)
-                .child("先在底栏「预检查」生成计划；此处展示实际执行策略、影响范围与风险。"),
+                .child(tr("app.database_restore.advanced.need_plan")),
             Some((_, plan)) => restore_plan_preview(plan, txn, val, colors),
         })
 }
@@ -498,7 +527,11 @@ fn restore_plan_preview(
         .tables
         .iter()
         .filter(|t| t.default_action.destroys_target_data())
-        .map(|t| format!("{}（{}）", t.name, t.default_action.label()))
+        .map(|t| {
+            tr("app.database_restore.plan.object_with_action")
+                .replace("%{name}", &t.name)
+                .replace("%{action}", restore_action_label(t.default_action).as_str())
+        })
         .collect();
     let modified = plan
         .source_modified
@@ -506,7 +539,7 @@ fn restore_plan_preview(
             let dt: chrono::DateTime<chrono::Local> = t.into();
             dt.format("%Y-%m-%d %H:%M:%S").to_string()
         })
-        .unwrap_or_else(|| "未知".to_string());
+        .unwrap_or_else(|| tr("app.database_restore.plan.unknown").to_string());
 
     div()
         .flex()
@@ -518,19 +551,30 @@ fn restore_plan_preview(
                 .flex()
                 .flex_col()
                 .gap_1()
-                .child(sql_file_section_label("来源", colors))
-                .child(restore_kv(
-                    "格式",
-                    plan.format.label(),
+                .child(sql_file_section_label(
+                    tr("app.database_restore.plan.source"),
                     colors,
                 ))
                 .child(restore_kv(
-                    "大小",
+                    tr("app.database_restore.plan.format"),
+                    restore_format_label(plan.format).as_str(),
+                    colors,
+                ))
+                .child(restore_kv(
+                    tr("app.database_restore.plan.size"),
                     &format_backup_size(plan.source_size),
                     colors,
                 ))
-                .child(restore_kv("修改时间", &modified, colors))
-                .child(restore_kv("范围", &plan.summary, colors)),
+                .child(restore_kv(
+                    tr("app.database_restore.plan.modified"),
+                    &modified,
+                    colors,
+                ))
+                .child(restore_kv(
+                    tr("app.database_restore.plan.scope"),
+                    &plan.summary,
+                    colors,
+                )),
         )
         // 动作统计
         .when(!plan.tables.is_empty(), |this| {
@@ -539,14 +583,22 @@ fn restore_plan_preview(
                     .flex()
                     .flex_col()
                     .gap_1()
-                    .child(sql_file_section_label("按动作统计", colors))
+                    .child(sql_file_section_label(
+                        tr("app.database_restore.plan.by_action"),
+                        colors,
+                    ))
                     .child(
                         div()
                             .text_size(px(12.))
                             .text_color(colors.text)
-                            .child(format!(
-                                "新建 {create} · 重建 {recreate} · 清空后导入 {truncate} · 追加 {append} · 不处理 {skip}"
-                            )),
+                            .child(
+                                tr("app.database_restore.plan.action_counts")
+                                    .replace("%{create}", &create.to_string())
+                                    .replace("%{recreate}", &recreate.to_string())
+                                    .replace("%{truncate}", &truncate.to_string())
+                                    .replace("%{append}", &append.to_string())
+                                    .replace("%{skip}", &skip.to_string()),
+                            ),
                     ),
             )
         })
@@ -557,7 +609,10 @@ fn restore_plan_preview(
                     .flex()
                     .flex_col()
                     .gap_1()
-                    .child(sql_file_section_label("将删除原数据", colors))
+                    .child(sql_file_section_label(
+                        tr("app.database_restore.plan.destructive_title"),
+                        colors,
+                    ))
                     .children(destructive.iter().map(|item| {
                         div()
                             .flex()
@@ -580,13 +635,20 @@ fn restore_plan_preview(
                     .flex()
                     .flex_col()
                     .gap_1()
-                    .child(sql_file_section_label("风险", colors))
+                    .child(sql_file_section_label(
+                        tr("app.database_restore.plan.risks"),
+                        colors,
+                    ))
                     .children(plan.tables.iter().flat_map(|t| {
                         t.risks.iter().map(move |r| {
                             div()
                                 .text_size(px(12.))
                                 .text_color(colors.muted)
-                                .child(format!("· {}：{}", t.name, r))
+                                .child(
+                                    tr("app.database_restore.plan.risk_line")
+                                        .replace("%{name}", &t.name)
+                                        .replace("%{risk}", r),
+                                )
                         })
                     })),
             )
@@ -598,12 +660,18 @@ fn restore_plan_preview(
                     .flex()
                     .flex_col()
                     .gap_1()
-                    .child(sql_file_section_label("警告", colors))
+                    .child(sql_file_section_label(
+                        tr("app.database_restore.plan.warnings"),
+                        colors,
+                    ))
                     .children(plan.warnings.iter().map(|w| {
                         div()
                             .text_size(px(12.))
                             .text_color(colors.muted)
-                            .child(format!("· {w}"))
+                                .child(
+                                    tr("app.database_restore.plan.warning_line")
+                                        .replace("%{warning}", w),
+                                )
                     })),
             )
         })
@@ -613,24 +681,36 @@ fn restore_plan_preview(
                 .flex()
                 .flex_col()
                 .gap_1()
-                .child(sql_file_section_label("执行策略", colors))
-                .child(restore_kv("错误处理", "遇错停止，保留已完成结果清单", colors))
-                .child(restore_kv(
-                    "事务",
-                    txn.label(),
+                .child(sql_file_section_label(
+                    tr("app.database_restore.plan.strategy"),
                     colors,
                 ))
                 .child(restore_kv(
-                    "清空实现",
-                    "由执行器决定：MySQL DELETE（临时关闭外键检查）/ PostgreSQL TRUNCATE RESTART IDENTITY",
+                    tr("app.database_restore.plan.error_handling"),
+                    tr("app.database_restore.plan.error_handling_value").as_str(),
                     colors,
                 ))
-                .child(restore_kv("完成验证", val.label(), colors)),
+                .child(restore_kv(
+                    tr("app.database_restore.plan.transaction"),
+                    restore_transaction_label(txn).as_str(),
+                    colors,
+                ))
+                .child(restore_kv(
+                    tr("app.database_restore.plan.truncate_impl"),
+                    tr("app.database_restore.plan.truncate_impl_value").as_str(),
+                    colors,
+                ))
+                .child(restore_kv(
+                    tr("app.database_restore.plan.validation"),
+                    restore_validation_label(val).as_str(),
+                    colors,
+                )),
         )
 }
 
 /// 只读键值行：120px 标签列 + 弹性值列，与常规页对齐。
-fn restore_kv(key: &'static str, value: &str, colors: UiColors) -> Div {
+fn restore_kv(key: impl Into<SharedString>, value: &str, colors: UiColors) -> Div {
+    let key = key.into();
     div()
         .w_full()
         .flex()
@@ -665,7 +745,10 @@ fn restore_log_page(runtime: &RestoreRuntime, colors: UiColors) -> Div {
         .flex()
         .flex_col()
         .gap_2()
-        .child(sql_file_section_label("消息日志", colors))
+        .child(sql_file_section_label(
+            tr("app.database_restore.log.title"),
+            colors,
+        ))
         .child(
             div()
                 .flex_1()

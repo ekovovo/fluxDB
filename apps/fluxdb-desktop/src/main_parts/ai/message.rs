@@ -19,7 +19,10 @@ fn ai_target_summary(target_json: &str) -> Option<String> {
         value
             .get("connection_id")
             .and_then(serde_json::Value::as_i64)
-            .map(|connection_id| format!("连接 {connection_id}"))
+            .map(|connection_id| {
+                tr("app.ai.chat.connection_label")
+                    .replace("%{id}", &connection_id.to_string())
+            })
     } else {
         Some(parts.join(" / "))
     }
@@ -132,7 +135,7 @@ fn ai_reference_chip(
                         div()
                             .text_size(px(9.))
                             .text_color(colors.danger)
-                            .child("失效"),
+                            .child(tr("app.ai.chat.part.expired")),
                     ),
             )
         })
@@ -242,6 +245,11 @@ fn ai_chat_part(
         .and_then(|s| s.as_str())
         .unwrap_or("")
         .to_string();
+    let text = if part.kind == "notice" {
+        localize_backend_error_text(&text)
+    } else {
+        text
+    };
     let recovery_status = payload.get("recovery_status").and_then(|value| value.as_str());
     let approval_decision = (part.kind == "notice" && payload.get("approval_id").is_some())
         .then(|| payload.get("decision").and_then(serde_json::Value::as_str))
@@ -286,24 +294,28 @@ fn ai_chat_part(
         }
     }
     let (icon, label) = match part.kind.as_str() {
-        "reasoning_summary" => (AppIcon::Workflow, "公开思考摘要"),
-        "plan" => (AppIcon::List, "计划"),
-        "tool_call_ref" => (AppIcon::Database, "工具调用"),
-        "tool_result_ref" => (AppIcon::Table, "结果引用"),
-        "artifact_ref" => (AppIcon::Activity, "任务产物"),
-        "context_ref" => (AppIcon::FileSearch, "上下文"),
-        _ => (AppIcon::Info, "任务说明"),
+        "reasoning_summary" => (AppIcon::Workflow, tr("app.ai.chat.part.reasoning_summary")),
+        "plan" => (AppIcon::List, tr("app.ai.chat.part.plan")),
+        "tool_call_ref" => (AppIcon::Database, tr("app.ai.chat.part.tool_call_ref")),
+        "tool_result_ref" => (AppIcon::Table, tr("app.ai.chat.part.tool_result_ref")),
+        "artifact_ref" => (AppIcon::Activity, tr("app.ai.chat.part.artifact_ref")),
+        "context_ref" => (AppIcon::FileSearch, tr("app.ai.chat.part.context_ref")),
+        _ => (AppIcon::Info, tr("app.ai.chat.part.fallback")),
     };
     // 工具卡直接展示真实 tool_id；目标/参数仍在展开区，不凭空拼标签。
     let label = if approval_decision.is_some() {
-        "审批决定".to_string()
+        tr("app.ai.chat.part.approval_decision").to_string()
     } else if let Some(recovery_status) = recovery_status {
-        if recovery_status == "resolved" { "恢复状态已更新" } else { "任务已暂停 · 未自动重放工具" }.to_string()
+        if recovery_status == "resolved" {
+            tr("app.ai.chat.part.recovery_resolved").to_string()
+        } else {
+            tr("app.ai.chat.part.recovery_paused").to_string()
+        }
     } else if part.kind == "tool_call_ref" {
         payload
             .get("tool")
             .and_then(serde_json::Value::as_str)
-            .unwrap_or(label)
+            .unwrap_or(&label)
             .to_string()
     } else if part.kind == "notice" && !text.is_empty() {
         text.clone()
@@ -329,41 +341,57 @@ fn ai_chat_part(
     // 审计判定行：只在工具调用/结果卡上显示，文案与颜色与审计页一致（绿/黄/红）。
     let audit_line: Option<(String, gpui::Rgba)> =
         match payload.get("audit_decision").and_then(|v| v.as_str()) {
-            Some("allow") => Some(("安全审计：允许".to_string(), colors.success)),
+            Some("allow") => Some((
+                tr("app.ai.chat.audit.allow").to_string(),
+                colors.success,
+            )),
             Some("require_approval") => {
-                Some(("安全审计：等待批准".to_string(), colors.warning))
+                Some((
+                    tr("app.ai.chat.audit.require_approval").to_string(),
+                    colors.warning,
+                ))
             }
-            Some("deny") => Some(("安全审计：拒绝".to_string(), colors.danger)),
+            Some("deny") => Some((tr("app.ai.chat.audit.deny").to_string(), colors.danger)),
             _ => None,
         };
-    let (status, status_color) = if let Some(decision) = approval_decision {
+    // 状态用稳定 tag 决定，tag 既选文案也选颜色；文案本身不参与任何判断。
+    let (status_tag, status) = if let Some(decision) = approval_decision {
         // 批准只是提交决定，不能把仍待复核或恢复失败的工具称为“已完成”。
         match decision {
-            "approved" => ("已批准一次", colors.success),
-            "denied" => ("已拒绝 · 未执行", colors.muted),
-            _ => ("审批已失效", colors.warning),
+            "approved" => ("approved", tr("app.ai.chat.status.approved")),
+            "denied" => ("denied", tr("app.ai.chat.status.denied")),
+            _ => (
+                "approval_invalid",
+                tr("app.ai.chat.status.approval_invalid"),
+            ),
         }
     } else if execution_unknown {
-        ("结果未知", colors.danger)
+        ("unknown_result", tr("app.ai.chat.status.unknown_result"))
     } else {
         match part.status.as_str() {
-            "streaming" => ("进行中", colors.info),
-            "interrupted" => ("已停止", colors.warning),
-            "error" => ("失败", colors.danger),
-            "pending" => ("准备中", colors.muted),
+            "streaming" => ("streaming", tr("app.ai.chat.status.streaming")),
+            "interrupted" => ("interrupted", tr("app.ai.chat.status.interrupted")),
+            "error" => ("failed", tr("app.ai.chat.status.failed")),
+            "pending" => ("pending", tr("app.ai.chat.status.pending")),
             _ if part.kind == "tool_call_ref" || part.kind == "tool_result_ref" => {
-                ("完成", colors.success)
+                ("tool_done", tr("app.ai.chat.status.tool_done"))
             }
-            _ => ("已完成", colors.success),
+            _ => ("done", tr("app.ai.chat.status.done")),
         }
+    };
+    let status_color = match status_tag {
+        "approved" | "done" | "tool_done" => colors.success,
+        "denied" | "pending" => colors.muted,
+        "approval_invalid" | "interrupted" => colors.warning,
+        "unknown_result" | "failed" => colors.danger,
+        _ => colors.info,
     };
     // 失败的工具行直接带上受控错误码：内联行自己就能说明原因，不必展开或再看末尾汇总。
     // 状态位限宽截断，错误码再长也不会把整行标题挤出面板。
-    let status_text = match (
-        status,
-        payload.get("error_code").and_then(|value| value.as_str()),
-    ) {
-        ("失败", Some(code)) if !code.is_empty() => format!("{status} · {code}"),
+    let status_text = match payload.get("error_code").and_then(|value| value.as_str()) {
+        Some(code) if status_tag == "failed" && !code.is_empty() => {
+            format!("{status} · {code}")
+        }
         _ => status.to_string(),
     };
     div()
@@ -472,15 +500,13 @@ fn ai_chat_part(
         // 执行中的实时进度：只有尚未收到回执的调用才有值，展示已返回/影响行数与耗时。
         .when_some(live_progress, |this, progress| {
             let detail = if progress.affected_rows > 0 {
-                format!(
-                    "进行中 · 已影响 {} 行 · {}ms",
-                    progress.affected_rows, progress.elapsed_ms
-                )
+                tr("app.ai.chat.progress.affected")
+                    .replace("%{rows}", &progress.affected_rows.to_string())
+                    .replace("%{ms}", &progress.elapsed_ms.to_string())
             } else {
-                format!(
-                    "进行中 · 已返回 {} 行 · {}ms",
-                    progress.returned_rows, progress.elapsed_ms
-                )
+                tr("app.ai.chat.progress.returned")
+                    .replace("%{rows}", &progress.returned_rows.to_string())
+                    .replace("%{ms}", &progress.elapsed_ms.to_string())
             };
             this.child(
                 div()
@@ -535,7 +561,8 @@ fn ai_chat_plan_card(
     let title = payload
         .get("title")
         .and_then(serde_json::Value::as_str)
-        .unwrap_or("任务计划");
+        .map(str::to_owned)
+        .unwrap_or_else(|| tr("app.ai.chat.plan.default_title").to_string());
     let steps = payload
         .get("steps")
         .and_then(serde_json::Value::as_array)
@@ -559,11 +586,31 @@ fn ai_chat_plan_card(
             .unwrap_or("pending");
         // 状态 → (图标, 文案, 颜色)：颜色/图标都要与审计卡一致的明暗语义。
         let (icon, status_text, tone) = match status {
-            "done" => (AppIcon::CircleCheck, "已完成", colors.success),
-            "in_progress" => (AppIcon::Loader, "进行中", colors.info),
-            "blocked" => (AppIcon::TriangleAlert, "受阻", colors.warning),
-            "skipped" => (AppIcon::CircleSlash, "已跳过", colors.muted),
-            _ => (AppIcon::Circle, "待开始", colors.muted),
+            "done" => (
+                AppIcon::CircleCheck,
+                tr("app.ai.chat.plan.step_done"),
+                colors.success,
+            ),
+            "in_progress" => (
+                AppIcon::Loader,
+                tr("app.ai.chat.plan.step_in_progress"),
+                colors.info,
+            ),
+            "blocked" => (
+                AppIcon::TriangleAlert,
+                tr("app.ai.chat.plan.step_blocked"),
+                colors.warning,
+            ),
+            "skipped" => (
+                AppIcon::CircleSlash,
+                tr("app.ai.chat.plan.step_skipped"),
+                colors.muted,
+            ),
+            _ => (
+                AppIcon::Circle,
+                tr("app.ai.chat.plan.step_pending"),
+                colors.muted,
+            ),
         };
         let note = step
             .get("note")
@@ -771,7 +818,7 @@ fn ai_chat_message_parts(
                     .xsmall().ghost().rounded_md().self_start().cursor_pointer()
                     .child(div().flex().items_center().gap_1p5().text_size(px(10.)).text_color(colors.muted)
                         .child(app_icon(AppIcon::Check, 11., colors.muted))
-                        .child(format!("已完成 {} 项操作", tools.len()))
+                        .child(tr("app.ai.chat.plan.summary").replace("%{count}", &tools.len().to_string()))
                         .child(app_icon(if open { AppIcon::ChevronDown } else { AppIcon::ChevronRight }, 10., colors.muted)))
                     .on_click(cx.listener(move |this, _, window, cx| {
                         let mut view = this.controller.state().ai_conversation.clone();

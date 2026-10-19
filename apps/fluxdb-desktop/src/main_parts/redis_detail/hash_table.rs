@@ -115,7 +115,7 @@ impl RedisHashTableDelegate {
     fn rebuild_columns(&mut self) {
         let width = self.table_width;
         self.columns = vec![
-            TableColumn::new("seq", "序列")
+            TableColumn::new("seq", tr("app.redis.hash.header.seq"))
                 .width(redis_hash_table_column_width("seq", width))
                 .resizable(false)
                 .movable(false)
@@ -326,7 +326,7 @@ impl TableDelegate for RedisHashTableDelegate {
             .justify_center()
             .text_size(px(12.))
             .text_color(self.colors.muted)
-            .child("暂无字段")
+            .child(tr("app.redis.hash.empty"))
     }
 
     fn render_td(
@@ -471,7 +471,7 @@ fn redis_hash_table_value_cell(
     let click_key = key.clone();
     // value 可能很长，截断时 hover 显示查看/编辑完整值入口提示（对齐 Redis Insight FormattedValue）。
     let value_tooltip = if truncated {
-        "值超过 1MB 已被截断；点击查看/编辑完整值".to_string()
+        tr("app.redis.hash.truncated_hint").to_string()
     } else {
         row.value.clone()
     };
@@ -532,14 +532,14 @@ fn redis_hash_table_value_cell(
         )
         // 非截断行：hover 显示编辑图标（行内编辑，拒截断值回写）。
         .when(hovered && !applying && !truncated, |this| {
-            this.child(redis_hash_field_edit_icon(AppIcon::Edit, "编辑", colors))
+            this.child(redis_hash_field_edit_icon(AppIcon::Edit, tr("app.redis.edit"), colors))
         })
         // 截断行：hover 显示查看完整值图标（打开弹框，懒加载完整值后可编辑写回）。
         .when(hovered && !applying && truncated, |this| {
             this.child(
                 redis_hash_field_view_icon(
                     AppIcon::Eye,
-                    "查看完整值",
+                    tr("app.redis.hash.view_full_value"),
                     colors,
                     view,
                     tab_id,
@@ -908,7 +908,7 @@ fn redis_hash_table_delete_button(
         .items_center()
         .justify_center()
         .cursor_pointer()
-        .tooltip(move |window, cx| Tooltip::new("删除").build(window, cx))
+        .tooltip(move |window, cx| Tooltip::new(tr("app.redis.delete")).build(window, cx))
         .hover(move |style| style.bg(colors.hover))
         .on_mouse_down(
             MouseButton::Left,
@@ -939,7 +939,7 @@ fn redis_hash_field_delete_confirm_popover(
 ) -> impl IntoElement {
     // 面板行删除会随保存落库，删除不可撤销，提示字段内容
     let title = target.field.clone();
-    let message = "将被删除，此操作不可撤销。";
+    let message = tr("app.redis.hash.delete_irreversible");
     let cancel_view = view.clone();
     let confirm_view = view.clone();
     let confirm_target = target.clone();
@@ -1000,7 +1000,7 @@ fn redis_hash_field_delete_confirm_popover(
                                     .justify_end()
                                     .gap_2()
                                     .child(
-                                        redis_key_delete_confirm_button("取消", false, colors)
+                                        redis_key_delete_confirm_button(tr("app.redis.cancel"), false, colors)
                                             .on_mouse_down(
                                                 MouseButton::Left,
                                                 move |_, _, cx| {
@@ -1013,7 +1013,7 @@ fn redis_hash_field_delete_confirm_popover(
                                             ),
                                     )
                                     .child(
-                                        redis_key_delete_confirm_button("确认删除", true, colors)
+                                        redis_key_delete_confirm_button(tr("app.redis.confirm_delete"), true, colors)
                                             .on_mouse_down(
                                                 MouseButton::Left,
                                                 move |_, _, cx| {

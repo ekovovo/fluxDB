@@ -145,7 +145,7 @@ fn redis_key_detail_list_panel(
                         .justify_between()
                         .text_size(px(11.))
                         .text_color(colors.muted)
-                        .child(format!("显示 {} / 共 {} 个条目", shown, total))
+                        .child(tr("app.redis.list.items_count").replace("%{shown}", &shown.to_string()).replace("%{total}", &total.to_string()))
                         .child(
                             div()
                                 .flex()
@@ -157,7 +157,7 @@ fn redis_key_detail_list_panel(
                                             .into_any_element()
                                     } else {
                                         redis_detail_toolbar_button(
-                                            "加载更多",
+                                            tr("app.redis.load_more"),
                                             AppIcon::ChevronDown,
                                             true,
                                             colors,
@@ -335,7 +335,7 @@ fn redis_list_item_add_drawer(
                         .flex()
                         .items_center()
                         .justify_between()
-                        .child(div().text_size(px(17.)).font_weight(gpui::FontWeight::SEMIBOLD).child("新增条目")),
+                        .child(div().text_size(px(17.)).font_weight(gpui::FontWeight::SEMIBOLD).child(tr("app.redis.list.add_item"))),
                 )
                 .child(
                     div()
@@ -402,7 +402,7 @@ fn redis_list_item_add_drawer(
                         .justify_end()
                         .gap_2()
                         .child(
-                            redis_detail_action_button("取消", false, !applying, colors).on_mouse_down(
+                            redis_detail_action_button(tr("app.redis.cancel"), false, !applying, colors).on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(|this, _, _, cx| {
                                     this.cancel_redis_list_item_drawer(cx);
@@ -411,7 +411,7 @@ fn redis_list_item_add_drawer(
                             ),
                         )
                         .child(
-                            redis_detail_action_button("尾部添加", true, !applying, colors)
+                            redis_detail_action_button(tr("app.redis.list.append"), true, !applying, colors)
                                 .on_mouse_down(
                                     MouseButton::Left,
                                     cx.listener({
@@ -432,7 +432,7 @@ fn redis_list_item_add_drawer(
                                 ),
                         )
                         .child(
-                            redis_detail_action_button("头部添加", true, !applying, colors)
+                            redis_detail_action_button(tr("app.redis.list.prepend"), true, !applying, colors)
                                 .on_mouse_down(
                                     MouseButton::Left,
                                     cx.listener({
@@ -464,7 +464,7 @@ fn redis_list_item_add_drawer(
 fn redis_list_item_remove_drawer(
     tab_id: TabId,
     key: String,
-    select: &Entity<SelectState<SearchableVec<String>>>,
+    select: &Entity<SelectState<SearchableVec<RedisListRemovePositionOption>>>,
     count_input: Entity<InputState>,
     applying: bool,
     total: usize,
@@ -526,7 +526,7 @@ fn redis_list_item_remove_drawer(
                         .flex()
                         .items_center()
                         .justify_between()
-                        .child(div().text_size(px(17.)).font_weight(gpui::FontWeight::SEMIBOLD).child("删除元素")),
+                        .child(div().text_size(px(17.)).font_weight(gpui::FontWeight::SEMIBOLD).child(tr("app.redis.list.delete_item"))),
                 )
                 // 表单区（RedisInsight 风格）：位置下拉 + 数量输入 靠左一行，占满剩余高度
                 .child(
@@ -572,7 +572,7 @@ fn redis_list_item_remove_drawer(
                                                 .small()
                                                 .w_full()
                                                 .h_full()
-                                                .placeholder("选择删除位置")
+                                                .placeholder(tr("app.redis.list.select_position"))
                                                 .menu_width(px(240.)),
                                         ),
                                 )
@@ -613,7 +613,7 @@ fn redis_list_item_remove_drawer(
                         .gap_2()
                         // 取消：描边样式（白底、浅灰边框、深色文字）
                         .child(
-                            redis_detail_action_button("取消", false, !applying, colors).on_mouse_down(
+                            redis_detail_action_button(tr("app.redis.cancel"), false, !applying, colors).on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(|this, _, _, cx| {
                                     this.cancel_redis_list_item_remove_drawer(cx);
@@ -623,7 +623,7 @@ fn redis_list_item_remove_drawer(
                         )
                         // 删除：实心主色，点击先弹二次确认浮层
                         .child(
-                            redis_detail_action_button("删除", true, !applying, colors)
+                            redis_detail_action_button(tr("app.redis.delete"), true, !applying, colors)
                                 .on_mouse_down(
                                     MouseButton::Left,
                                     cx.listener({
@@ -668,7 +668,11 @@ fn redis_list_item_remove_confirm_popover(
 ) -> impl IntoElement {
     // 删除数量 ≥ 当前长度时，本次删除将清空整个列表，给出与 RedisInsight 一致的警示。
     let will_delete_all = total > 0 && target.count >= total;
-    let direction = if target.head { "头部" } else { "尾部" };
+    let direction = if target.head {
+        tr("app.redis.list.side.head")
+    } else {
+        tr("app.redis.list.side.tail")
+    };
     let cancel_view = cx.entity().downgrade();
     let confirm_view = cx.entity().downgrade();
     let confirm_target = target.clone();
@@ -696,14 +700,14 @@ fn redis_list_item_remove_confirm_popover(
                 .text_size(px(13.))
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .text_color(colors.text)
-                .child(format!("删除 {} 个元素", target.count)),
+                .child(tr("app.redis.list.remove_title").replace("%{count}", &target.count.to_string())),
         )
         // 简洁描述：从哪个方向移除 + 不可撤销，合并为一行，减少浮层高度
         .child(
             div()
                 .text_size(px(12.))
                 .text_color(colors.muted)
-                .child(format!("从「{}」移除 {} 个，不可撤销。", direction, target.count)),
+                .child(tr("app.redis.list.remove_detail").replace("%{side}", &direction).replace("%{count}", &target.count.to_string())),
         )
         .when(will_delete_all, |this| {
             this.child(
@@ -711,7 +715,7 @@ fn redis_list_item_remove_confirm_popover(
                     .text_size(px(12.))
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .text_color(if colors.is_dark { rgb(0xffb4a1) } else { rgb(0xb3402a) })
-                    .child("删除后清空整个列表。"),
+                    .child(tr("app.redis.list.remove_all_warning")),
             )
         })
         .child(
@@ -720,7 +724,7 @@ fn redis_list_item_remove_confirm_popover(
                 .justify_end()
                 .gap_2()
                 .child(
-                    redis_key_delete_confirm_button("取消", false, colors).on_mouse_down(
+                    redis_key_delete_confirm_button(tr("app.redis.cancel"), false, colors).on_mouse_down(
                         MouseButton::Left,
                         move |_, _, cx| {
                             let _ = cancel_view.clone().update(cx, |this, cx| {
@@ -732,7 +736,7 @@ fn redis_list_item_remove_confirm_popover(
                     ),
                 )
                 .child(
-                    redis_key_delete_confirm_button("确认删除", true, colors).on_mouse_down(
+                    redis_key_delete_confirm_button(tr("app.redis.confirm_delete"), true, colors).on_mouse_down(
                         MouseButton::Left,
                         move |_, _, cx| {
                             let _ = confirm_view.clone().update(cx, |this, cx| {
@@ -851,7 +855,7 @@ fn redis_list_remove_button(enabled: bool, colors: UiColors) -> Div {
             13.,
             if enabled { rgb(0xe5484d) } else { colors.border },
         ))
-        .child("删除")
+        .child(tr("app.redis.delete"))
 }
 
 // Set 类型「新增成员」底部抽屉：达到最大高度后内容区滚动，底部按钮固定不动

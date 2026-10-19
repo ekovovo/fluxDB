@@ -34,8 +34,11 @@ fn er_toolbar(
         .bg(colors.panel_bg);
 
     let title = match &er.center_table {
-        Some(table) => format!("{} · ER（{} · {} 跳）", er.database, table.display(), current_depth),
-        None => format!("{} · ER", er.database),
+        Some(table) => tr("app.er.title_centered")
+            .replace("%{database}", &er.database)
+            .replace("%{table}", &table.display())
+            .replace("%{depth}", &current_depth.to_string()),
+        None => tr("app.er.title").replace("%{database}", &er.database),
     };
     base = base.child(
         div()
@@ -51,16 +54,34 @@ fn er_toolbar(
             graph.tables.iter().filter(|t| t.status == ErLoadStatus::Failed).count(),
             graph.edges.len(),
         )).unwrap_or((0, 0, 0));
-    let range = total_tables.map(|total| format!("{table_count}/{total} 张表"))
-        .unwrap_or_else(|| "读取表目录中…".to_string());
+    let range = total_tables
+        .map(|total| {
+            tr("app.er.table_range")
+                .replace("%{loaded}", &table_count.to_string())
+                .replace("%{total}", &total.to_string())
+        })
+        .unwrap_or_else(|| tr("app.er.reading_tables").to_string());
     base = base.child(
         div().text_size(px(12.)).text_color(colors.muted).child(range),
     );
     if table_count > 0 {
         base = base.child(
             div().text_size(px(11.)).text_color(if failed > 0 { rgb(0xef4444) } else { colors.muted })
-                .child(format!("字段 {loaded}/{table_count}（按需）· 关系 {edge_count}{}",
-                    if failed > 0 { format!(" · {failed} 失败") } else { String::new() })),
+                .child(
+                    tr("app.er.field_relation")
+                        .replace("%{loaded}", &loaded.to_string())
+                        .replace("%{total}", &table_count.to_string())
+                        .replace("%{edges}", &edge_count.to_string())
+                        .replace(
+                            "%{failed}",
+                            &if failed > 0 {
+                                tr("app.er.failed_suffix")
+                                    .replace("%{count}", &failed.to_string())
+                            } else {
+                                String::new()
+                            },
+                        ),
+                ),
         );
     }
     if er.center_table.is_some() {
@@ -75,7 +96,7 @@ fn er_toolbar(
             Button::new(("er-back-full", tab_id.0))
                 .ghost().xsmall().h(px(28.))
                 .child(app_icon(AppIcon::ChevronLeft, 14., colors.muted))
-                .label("返回全库")
+                .label(tr("app.er.back_full_database"))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.dispatch(AppCommand::OpenErDiagram(back_path.clone()), cx);
                 })),
@@ -83,8 +104,10 @@ fn er_toolbar(
     }
     if relation_status != ErLoadStatus::Loaded {
         let (label, tone) = match relation_status {
-            ErLoadStatus::NotLoaded | ErLoadStatus::Loading => ("关系加载中…", colors.muted),
-            ErLoadStatus::Failed => ("关系不完整", rgb(0xef4444)),
+            ErLoadStatus::NotLoaded | ErLoadStatus::Loading => {
+                (tr("app.er.relations_loading"), colors.muted)
+            }
+            ErLoadStatus::Failed => (tr("app.er.relations_incomplete"), rgb(0xef4444)),
             _ => unreachable!(),
         };
         base = base.child(div().text_size(px(12.)).text_color(tone).child(label));
@@ -99,7 +122,7 @@ fn er_toolbar(
                     .ghost()
                     .xsmall()
                     .h(px(24.))
-                    .label("重试关系")
+                    .label(tr("app.er.retry_relations"))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if let Some(config) = this
                             .controller
@@ -129,7 +152,7 @@ fn er_toolbar(
             div()
                 .text_size(px(12.))
                 .text_color(colors.muted)
-                .child("关系已就绪，可按关系排列"),
+                .child(tr("app.er.relations_ready")),
         );
     }
     base = base.child(div().flex_1());
@@ -140,7 +163,7 @@ fn er_toolbar(
             .ghost()
             .xsmall()
             .h(px(28.))
-            .tooltip("本地逻辑关系")
+            .tooltip(tr("app.er.relationships_tooltip"))
             .child(app_icon(AppIcon::PanelRight, 15., colors.muted))
             .on_click(cx.listener(move |this, _, window, cx| {
                 if this.er_relationship_panel_open.contains(&rel_panel_tab) {
@@ -162,7 +185,7 @@ fn er_toolbar(
             .ghost()
             .xsmall()
             .h(px(28.))
-            .tooltip("缩小（-）")
+            .tooltip(tr("app.er.zoom_out"))
             .child(app_icon(AppIcon::Minus, 15., colors.muted))
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.zoom_er_around_center(zoom_out_tab, 1.0 / 1.25);
@@ -183,7 +206,7 @@ fn er_toolbar(
             .ghost()
             .xsmall()
             .h(px(28.))
-            .tooltip("放大（+）")
+            .tooltip(tr("app.er.zoom_in"))
             .child(app_icon(AppIcon::Plus, 15., colors.muted))
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.zoom_er_around_center(zoom_in_tab, 1.25);
@@ -196,7 +219,7 @@ fn er_toolbar(
             .ghost()
             .xsmall()
             .h(px(28.))
-            .tooltip("适配当前范围")
+            .tooltip(tr("app.er.fit_scope"))
             .child(app_icon(AppIcon::Maximize, 15., colors.muted))
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.er_fit_scope(fit_tab);
@@ -211,7 +234,7 @@ fn er_toolbar(
             .ghost()
             .xsmall()
             .h(px(28.))
-            .tooltip("导出 ER 到文件（JSON / DBML / Mermaid / SVG）")
+            .tooltip(tr("app.er.export_tooltip"))
             // 导出到文件（打开保存对话框），保留 Save 图标语义。
             .child(app_icon(AppIcon::Save, 15., colors.muted))
             .on_click(cx.listener(move |this, _, window, cx| {
@@ -245,7 +268,7 @@ fn er_toolbar(
             .ghost()
             .xsmall()
             .h(px(28.))
-            .tooltip("回到起点")
+            .tooltip(tr("app.er.back_to_start"))
             .child(app_icon(AppIcon::Home, 15., colors.muted))
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.er_restore_initial_view(back_tab);
@@ -260,7 +283,7 @@ fn er_toolbar(
             .ghost()
             .xsmall()
             .h(px(28.))
-            .tooltip("按关系排列（保留手动位置）")
+            .tooltip(tr("app.er.arrange_by_relations"))
             .child(app_icon(AppIcon::Wand, 15., colors.muted))
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.er_remember_layout(arrange_tab);
@@ -277,7 +300,7 @@ fn er_toolbar(
             .ghost()
             .xsmall()
             .h(px(28.))
-            .tooltip("重置手动位置并排列")
+            .tooltip(tr("app.er.reset_pins"))
             .child(app_icon(AppIcon::Undo, 15., colors.muted))
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.er_remember_layout(reset_tab);
@@ -293,11 +316,15 @@ fn er_toolbar(
         let undo_tab = tab_id;
         base = base.child(
             Button::new(("er-undo-layout", tab_id.0)).ghost().xsmall().h(px(28.))
-                .tooltip("恢复上次排列前的布局")
+                .tooltip(tr("app.er.undo_layout"))
                 .child(app_icon(AppIcon::Undo, 15., colors.muted))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     if !this.er_restore_previous_layout(undo_tab) {
-                        this.show_message("恢复布局失败，当前画布状态未能保存", AppMessageKind::Error, cx);
+                        this.show_message(
+                            tr("app.er.layout_restore_failed"),
+                            AppMessageKind::Error,
+                            cx,
+                        );
                     }
                     cx.notify();
                 })),
@@ -310,7 +337,7 @@ fn er_toolbar(
             div()
                 .text_size(px(11.))
                 .text_color(colors.muted)
-                .child(format!("更新于 {upd}")),
+                .child(tr("app.er.updated_at").replace("%{time}", &upd)),
         );
     }
     // 刷新进行中：轻量提示（保留当前可用图，只重读元数据，§3.3/§3.5）。
@@ -319,13 +346,13 @@ fn er_toolbar(
             div()
                 .text_size(px(11.))
                 .text_color(colors.muted)
-                .child("刷新中…"),
+                .child(tr("app.er.refreshing")),
         );
     }
     if this.er_view_save_failed.contains(&tab_id) {
         base = base.child(
             div().text_size(px(11.)).text_color(rgb(0xef4444))
-                .child("ER 布局未保存，请检查存储权限后重试"),
+                .child(tr("app.er.layout_save_failed")),
         );
     }
     // 手动刷新：重读元数据（表目录+关系），保留当前可用图、视口与人工布局（§3.3）。
@@ -336,7 +363,7 @@ fn er_toolbar(
             .ghost()
             .xsmall()
             .h(px(28.))
-            .tooltip("刷新元数据（保留布局）")
+            .tooltip(tr("app.er.refresh_metadata"))
             .disabled(this.er_refreshing.contains(&tab_id))
             .child(app_icon(AppIcon::Refresh, 15., colors.muted))
             .on_click(cx.listener(move |this, _, _, cx| {
@@ -399,7 +426,7 @@ fn er_search_bar(
     };
     let matches = this.er_search_matches(tab_id);
     let count_text = if this.er_search_query.get(&tab_id).map(|q| !q.trim().is_empty()).unwrap_or(false) {
-        format!("{} 个匹配", matches.len())
+        tr("app.er.search_matches").replace("%{count}", &matches.len().to_string())
     } else {
         String::new()
     };
@@ -541,7 +568,7 @@ fn er_export_menu(
         .into_iter()
         .find(|c| c.id == er.connection_id)
         .map(|c| c.name.clone())
-        .unwrap_or_else(|| "连接".to_string());
+        .unwrap_or_else(|| tr("app.er.connection").to_string());
     let title = format!("{} · {}", er.database, er.schema.as_deref().unwrap_or(""));
     // 导出范围子标题：连接 / 库 / schema，让用户知道导的是哪张图。
     let scope = format!("{connection_label} / {title}");
@@ -556,11 +583,27 @@ fn er_export_menu(
 
     // 导出项定义：格式 / 说明文案 / 是否「有损」。点击或 Enter 走 `er_export_start_save`
     // 生成文本并选保存路径写文件（格式为 JSON/DBML/Mermaid/SVG，内容由 export.rs 生成）。
-    let actions: [(ErExportKind, &str, bool); 4] = [
-        (ErExportKind::Json, "含 schema_version 的结构 + 坐标 + 固定", false),
-        (ErExportKind::Dbml, "Table + Ref（交换格式）", true),
-        (ErExportKind::Mermaid, "erDiagram（文档嵌入）", false),
-        (ErExportKind::Svg, "展示型（表级连线）", true),
+    let actions: [(ErExportKind, SharedString, bool); 4] = [
+        (
+            ErExportKind::Json,
+            tr("app.er.export_json_desc"),
+            false,
+        ),
+        (
+            ErExportKind::Dbml,
+            tr("app.er.export_dbml_desc"),
+            true,
+        ),
+        (
+            ErExportKind::Mermaid,
+            tr("app.er.export_mermaid_desc"),
+            false,
+        ),
+        (
+            ErExportKind::Svg,
+            tr("app.er.export_svg_desc"),
+            true,
+        ),
     ];
 
     let mut panel = div()
@@ -625,7 +668,13 @@ fn er_export_menu(
                         .flex()
                         .flex_col()
                         .justify_center()
-                        .child(div().text_size(px(15.)).font_weight(gpui::FontWeight::SEMIBOLD).text_color(colors.text).child("导出 ER"))
+                        .child(
+                            div()
+                                .text_size(px(15.))
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .text_color(colors.text)
+                                .child(tr("app.er.export_dialog_title")),
+                        )
                         .child(
                             div()
                                 .text_size(px(11.))
@@ -659,7 +708,7 @@ fn er_export_menu(
     // 导出 4 项（JSON / DBML / Mermaid / SVG），点击导出到本地文件。
     for (idx, (kind, desc, lossy)) in actions.iter().enumerate() {
         let kind = *kind;
-        let desc = *desc;
+        let desc = desc.clone();
         let lossy = *lossy;
         panel = panel.child(
             er_export_action_row(
@@ -683,10 +732,11 @@ fn er_export_menu(
     if let Some(report) = this.er_last_import.get(&tab_id) {
         let matched = report.positions.keys().filter(|name| graph.tables.iter().any(|t| t.name == **name)).count();
         let allowed = er_import_scope_matches(report, er.connection_id.0, &er.database);
-        let summary = format!(
-            "预览：匹配 {matched} 表 · 文件多 {} 表 · 当前多 {} 表 · {} 未解析边",
-            report.added_tables.len(), report.missing_tables.len(), report.unresolved_edges.len(),
-        );
+        let summary = tr("app.er.import_preview")
+            .replace("%{matched}", &matched.to_string())
+            .replace("%{added}", &report.added_tables.len().to_string())
+            .replace("%{missing}", &report.missing_tables.len().to_string())
+            .replace("%{unresolved}", &report.unresolved_edges.len().to_string());
         panel = panel.child(
             div().px_3().py(px(6.)).border_t_1().border_color(colors.border_soft)
                 .text_size(px(11.)).text_color(colors.muted).child(summary),
@@ -697,7 +747,11 @@ fn er_export_menu(
         panel = panel.child(
             Button::new(("er-import-apply-layout", tab_id.0))
                 .ghost().small().w_full()
-                .label(if allowed { "应用匹配表布局（不修改数据库）" } else { "连接不匹配：仅可预览" })
+                .label(if allowed {
+                    tr("app.er.apply_matched_layout")
+                } else {
+                    tr("app.er.connection_mismatch_preview_only")
+                })
                 .disabled(!allowed || matched == 0)
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.er_export_open.remove(&apply_tab);
@@ -806,12 +860,14 @@ fn er_export_action_row(
     tab_id: TabId,
     sel_idx: usize,
     idx: usize,
-    name: &'static str,
-    desc: &'static str,
+    name: impl Into<SharedString>,
+    desc: impl Into<SharedString>,
     lossy: bool,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
+    let name = name.into();
+    let desc = desc.into();
     let is_sel = idx == sel_idx;
     let row_tab = tab_id;
     let row_kind = match idx {
@@ -851,7 +907,7 @@ fn er_export_action_row(
                     .text_color(colors.muted)
                     .flex()
                     .items_center()
-                    .child("有损"),
+                    .child(tr("app.er.lossy")),
             )
         })
 }
@@ -883,8 +939,21 @@ fn er_export_import_row(
                 cx.stop_propagation();
             }),
         )
-        .child(div().w(px(62.)).text_size(px(12.)).font_weight(gpui::FontWeight::MEDIUM).text_color(colors.text).child("导入 JSON"))
-        .child(div().flex_1().text_size(px(11.)).text_color(colors.muted).child("解析/校验/绑定/差异预览"))
+        .child(
+            div()
+                .w(px(62.))
+                .text_size(px(12.))
+                .font_weight(gpui::FontWeight::MEDIUM)
+                .text_color(colors.text)
+                .child(tr("app.er.import_json")),
+        )
+        .child(
+            div()
+                .flex_1()
+                .text_size(px(11.))
+                .text_color(colors.muted)
+                .child(tr("app.er.import_desc")),
+        )
 }
 
 impl NavicatMain {
@@ -899,7 +968,11 @@ impl NavicatMain {
             .unwrap_or_default();
         let text = cx.read_from_clipboard().and_then(|item| item.text()).unwrap_or_default();
         if text.trim().is_empty() {
-            self.show_message("剪贴板没有可导入的 ER JSON", AppMessageKind::Warning, cx);
+            self.show_message(
+                tr("app.er.clipboard_empty"),
+                AppMessageKind::Warning,
+                cx,
+            );
             cx.notify();
             return;
         }
@@ -907,29 +980,46 @@ impl NavicatMain {
             Ok(report) => {
                 if !er_import_database_matches(&report, &database) {
                     self.show_message(
-                        format!("导入的 database「{}」与当前库「{database}」不匹配，未导入", report.database),
+                        tr("app.er.import_database_mismatch")
+                            .replace("%{imported}", &report.database)
+                            .replace("%{current}", &database),
                         AppMessageKind::Warning,
                         cx,
                     );
                 } else {
                     let mut parts = vec![
-                        format!("导入校验通过：{} 表 / {} 边", report.tables.len(), report.edges.len()),
+                        tr("app.er.import_validated")
+                            .replace("%{tables}", &report.tables.len().to_string())
+                            .replace("%{edges}", &report.edges.len().to_string()),
                     ];
                     if !report.added_tables.is_empty() {
-                        parts.push(format!("新增 {} 表", report.added_tables.len()));
+                        parts.push(
+                            tr("app.er.import_added_tables")
+                                .replace("%{count}", &report.added_tables.len().to_string()),
+                        );
                     }
                     if !report.missing_tables.is_empty() {
-                        parts.push(format!("当前多 {} 表", report.missing_tables.len()));
+                        parts.push(
+                            tr("app.er.import_missing_tables")
+                                .replace("%{count}", &report.missing_tables.len().to_string()),
+                        );
                     }
                     if !report.unresolved_edges.is_empty() {
-                        parts.push(format!("{} 条边引用未解析", report.unresolved_edges.len()));
+                        parts.push(
+                            tr("app.er.import_unresolved_edges")
+                                .replace("%{count}", &report.unresolved_edges.len().to_string()),
+                        );
                     }
                     self.show_message(parts.join("；"), AppMessageKind::Info, cx);
                 }
                 self.er_last_import.insert(tab_id, report);
             }
             Err(err) => {
-                self.show_message(format!("导入失败（未改动当前模型）：{err}"), AppMessageKind::Error, cx);
+                self.show_message(
+                    tr("app.er.import_failed").replace("%{error}", &err.to_string()),
+                    AppMessageKind::Error,
+                    cx,
+                );
             }
         }
         cx.notify();
@@ -943,7 +1033,11 @@ impl NavicatMain {
         cx: &mut Context<NavicatMain>,
     ) {
         let Some(er) = self.er_diagram_state_for_tab(tab_id) else {
-            self.show_message("未找到 ER 图数据，无法导出", AppMessageKind::Error, cx);
+            self.show_message(
+                tr("app.er.export_no_data"),
+                AppMessageKind::Error,
+                cx,
+            );
             return;
         };
         let Some(graph) = self.er_graphs.get(&tab_id).cloned() else {
@@ -957,7 +1051,7 @@ impl NavicatMain {
             .into_iter()
             .find(|c| c.id == er.connection_id)
             .map(|c| c.name.clone())
-            .unwrap_or_else(|| "连接".to_string());
+            .unwrap_or_else(|| tr("app.er.connection").to_string());
         let title = format!("{} · {}", er.database, er.schema.as_deref().unwrap_or(""));
         // 导出内容仍由 export.rs 纯函数生成（结构快照+外键+坐标），这里不改生成逻辑。
         let content = match kind {
@@ -995,14 +1089,18 @@ impl NavicatMain {
                 view.update(cx, |this, cx| match result {
                     Ok(()) => {
                         this.show_message(
-                            format!("已导出 {label} ER 到：{path_display}"),
+                            tr("app.er.exported_to")
+                                .replace("%{format}", &label)
+                                .replace("%{path}", &path_display),
                             AppMessageKind::Success,
                             cx,
                         );
                     }
                     Err(error) => {
                         this.show_message(
-                            format!("导出 {label} 失败：{error}"),
+                            tr("app.er.export_failed")
+                                .replace("%{format}", &label)
+                                .replace("%{error}", &error.to_string()),
                             AppMessageKind::Error,
                             cx,
                         );
@@ -1027,7 +1125,9 @@ fn er_group_bar(
         return div();
     }
     if !this.er_group_inputs.contains_key(&tab_id) {
-        let input = cx.new(|cx| InputState::new(window, cx).placeholder("业务组名"));
+        let input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(tr("app.er.group_placeholder"))
+        });
         this.er_group_inputs.insert(tab_id, input);
     }
     let active = this.er_group.get(&tab_id).cloned().unwrap_or(None);
@@ -1040,18 +1140,33 @@ fn er_group_bar(
         .flex()
         .items_center()
         .gap_2()
-        .child(div().text_size(px(11.)).text_color(colors.muted).child("分组"));
+        .child(
+            div()
+                .text_size(px(11.))
+                .text_color(colors.muted)
+                .child(tr("app.er.group_label")),
+        );
     // 「全部」chip。
     let all_tab = tab_id;
     row = row.child(
-        er_group_chip(&format!("全部（{}）", groups.iter().map(|(_, c)| c).sum::<usize>()), active.is_none(), all_tab, None, colors, cx),
+        er_group_chip(
+            tr("app.er.all_groups")
+                .replace("%{count}", &groups.iter().map(|(_, c)| c).sum::<usize>().to_string()),
+            active.is_none(),
+            all_tab,
+            None,
+            colors,
+            cx,
+        ),
     );
     // 各 schema chip。
     for (schema, count) in groups.iter() {
         if schema.is_none() {
             continue;
         }
-        let label = format!("{}（{}）", schema.as_deref().unwrap_or(""), count);
+        let label = tr("app.er.group_chip")
+            .replace("%{name}", schema.as_deref().unwrap_or(""))
+            .replace("%{count}", &count.to_string());
         let chip_schema = schema.clone();
         let chip_tab = tab_id;
         row = row.child(er_group_chip(&label, active.as_deref() == schema.as_deref(), chip_tab, chip_schema, colors, cx));
@@ -1060,7 +1175,10 @@ fn er_group_bar(
         for (name, members) in custom {
             let key = format!("\0custom:{name}");
             row = row.child(er_group_chip(
-                &format!("{}（{}）", name, members.len()), active.as_deref() == Some(&key),
+                tr("app.er.group_chip")
+                    .replace("%{name}", name)
+                    .replace("%{count}", &members.len().to_string()),
+                active.as_deref() == Some(&key),
                 tab_id, Some(key), colors, cx,
             ));
         }
@@ -1072,7 +1190,7 @@ fn er_group_bar(
             .child(Input::new(&input).small().w_full().h_full()),
     ).child(
         Button::new(("er-add-custom-group", tab_id.0)).ghost().xsmall()
-            .label("将选中表加入组")
+            .label(tr("app.er.add_selected_to_group"))
             .on_click(cx.listener(move |this, _, _, cx| this.er_add_selected_to_custom_group(add_tab, cx))),
     );
     if let Some(name) = active.as_deref().and_then(|group| group.strip_prefix("\0custom:")) {
@@ -1083,13 +1201,13 @@ fn er_group_bar(
         let delete_tab = tab_id;
         row = row.child(
             Button::new(("er-delete-empty-group", tab_id.0)).ghost().xsmall()
-                .label("删除空组").disabled(!can_delete)
+                .label(tr("app.er.delete_empty_group")).disabled(!can_delete)
                 .on_click(cx.listener(move |this, _, _, cx| this.er_delete_empty_custom_group(delete_tab, &delete_name, cx))),
         );
         let remove_tab = tab_id;
         row = row.child(
             Button::new(("er-remove-custom-member", tab_id.0)).ghost().xsmall()
-                .label("移出所选")
+                .label(tr("app.er.remove_selected"))
                 .on_click(cx.listener(move |this, _, _, cx| this.er_remove_selected_from_custom_group(remove_tab, &name, cx))),
         );
     }
@@ -1098,14 +1216,14 @@ fn er_group_bar(
 
 /// 单个分组 chip：active 高亮，点击进入该组（None=全部）。
 fn er_group_chip(
-    label: &str,
+    label: impl Into<SharedString>,
     active: bool,
     tab_id: TabId,
     group: Option<String>,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
-    let label = label.to_string();
+    let label = label.into();
     let group_tab = tab_id;
     div()
         .h(px(22.))
@@ -1223,7 +1341,7 @@ fn er_search_dropdown(
                 .child(div().flex_1().child(display))
                 .when_some(table_path, |row, path| row.child(
                     Button::new(format!("er-search-local-{}-{}", tab_id.0, idx))
-                        .ghost().xsmall().label("关联 ER")
+                        .ghost().xsmall().label(tr("app.er.associate_er"))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             cx.stop_propagation();
                             this.dispatch(AppCommand::OpenErDiagram(path.clone()), cx);
@@ -1252,7 +1370,12 @@ fn er_depth_selector(
         .flex()
         .items_center()
         .gap(px(4.))
-        .child(div().text_size(px(12.)).text_color(colors.muted).child("展开深度"))
+        .child(
+            div()
+                .text_size(px(12.))
+                .text_color(colors.muted)
+                .child(tr("app.er.depth_label")),
+        )
         .children((1..=3).map(|depth| {
             let active = depth == current;
             let depth_tab = tab_id;
@@ -1272,7 +1395,9 @@ fn er_depth_selector(
                 .text_color(if active { colors.text } else { colors.muted })
                 .cursor_pointer()
                 .hover(|style| style.bg(colors.hover))
-                .child(format!("{depth} 跳"))
+                .child(
+                    tr("app.er.hops").replace("%{count}", &depth.to_string()),
+                )
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, _, _, cx| {
@@ -1303,18 +1428,18 @@ fn er_loading_state(colors: UiColors) -> Div {
         .justify_center()
         .text_color(colors.muted)
         .text_size(px(13.))
-        .child("正在读取表结构…")
+        .child(tr("app.er.loading_tables"))
 }
 
 /// 空库/无关系等明确空状态：给可理解文案 + 刷新入口，不伪装成空白画布（§3.5）。
 fn er_empty_state(
-    message: &'static str,
+    message: impl Into<SharedString>,
     er: &ErDiagramState,
     tab_id: TabId,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
-    let msg = message.to_string();
+    let msg = message.into();
     let refresh_er = er.clone();
     let refresh_tab = tab_id;
     div()
@@ -1331,7 +1456,7 @@ fn er_empty_state(
             Button::new(("er-empty-refresh", tab_id.0))
                 .ghost()
                 .xsmall()
-                .label("刷新")
+                .label(tr("app.common.refresh"))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     if this.er_refreshing.contains(&refresh_tab) {
                         return;
@@ -1373,11 +1498,11 @@ fn er_error_state(
                 .text_center()
                 .text_color(colors.muted)
                 .text_size(px(13.))
-                .child(format!("读取 ER 关系图失败：{message}")),
+                .child(tr("app.er.load_failed").replace("%{error}", &message)),
         )
         .child(
             Button::new("er_retry")
-                .label("重试")
+                .label(tr("app.common.retry"))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.er_errors.remove(&retry_tab_id);
                     this.er_graphs.remove(&retry_tab_id);

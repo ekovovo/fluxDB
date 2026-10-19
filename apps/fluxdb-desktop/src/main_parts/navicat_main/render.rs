@@ -1,5 +1,9 @@
 impl Render for NavicatMain {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let window_title = tr("app.window_title");
+        if window.window_title() != window_title {
+            window.set_window_title(&window_title);
+        }
         // 调试入口：首帧后打开模型弹框（需要 window 创建 Input 实体；仅 debug 构建会置位）。
         if self.ai_model_dialog_debug_pending && self.ai_model_dialog.is_none() {
             self.ai_model_dialog_debug_pending = false;
@@ -20,7 +24,7 @@ impl Render for NavicatMain {
                 && std::env::var("FLUXDB_DEBUG_AI_MODEL_DIALOG").is_ok_and(|v| v == "invalid");
             self.open_ai_model_dialog(first_id, window, cx);
             if show_invalid {
-                self.set_ai_model_dialog_error("请填写显示名称与模型标识", cx);
+                self.set_ai_model_dialog_error(tr("app.ai.model_dialog.name_and_id_required").as_ref(), cx);
             }
         }
         // 调试入口：首帧后打开第一个可配置插件的管理弹框（截图核对用）。
@@ -85,7 +89,7 @@ impl Render for NavicatMain {
                     .mode
                     .read(cx)
                     .selected_value()
-                    .is_some_and(|v| v == "现有库");
+                    .is_some_and(|v| *v == RestoreTargetMode::ExistingDatabase);
             if !existing_mode {
                 return None;
             }
@@ -827,7 +831,7 @@ fn render_tab_snapshot(tab: &TabState, keep_content: bool) -> TabState {
 
     TabState {
         id: tab.id,
-        title: tab.title.clone(),
+        title: localized_tab_title(tab),
         kind: render_tab_kind_snapshot(&tab.kind),
         dirty: tab.dirty,
     }

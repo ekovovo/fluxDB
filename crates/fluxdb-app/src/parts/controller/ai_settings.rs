@@ -343,8 +343,12 @@ pub fn refresh_ai_settings(
             endpoint: m.endpoint,
             endpoint_is_full_url: m.endpoint_is_full_url,
             kind: match m.kind {
-                fluxdb_storage::ai_platform::models::ModelKind::Generation => "生成".into(),
-                fluxdb_storage::ai_platform::models::ModelKind::Decision => "决策".into(),
+                fluxdb_storage::ai_platform::models::ModelKind::Generation => {
+                    crate::AiModelKind::Generation
+                }
+                fluxdb_storage::ai_platform::models::ModelKind::Decision => {
+                    crate::AiModelKind::Decision
+                }
             },
             enabled: m.enabled,
             egress: m.egress == fluxdb_storage::ai_platform::models::EgressPermission::Allow,
@@ -354,20 +358,7 @@ pub fn refresh_ai_settings(
             input_price_micros: m.input_price_micros_per_million,
             output_price_micros: m.output_price_micros_per_million,
             cached_input_price_micros: m.cached_input_price_micros_per_million,
-            credential_status: match m.credential_status {
-                fluxdb_storage::ai_platform::model_secret::CredentialStatus::NotRequired => {
-                    "无需凭据".into()
-                }
-                fluxdb_storage::ai_platform::model_secret::CredentialStatus::Missing => {
-                    "缺少凭据".into()
-                }
-                fluxdb_storage::ai_platform::model_secret::CredentialStatus::Configured => {
-                    "已配置".into()
-                }
-                fluxdb_storage::ai_platform::model_secret::CredentialStatus::Unavailable => {
-                    "不可用".into()
-                }
-            },
+            credential_status: credential_status_value(m.credential_status),
             connection_status: m.connection_status,
             connection_checked_at_ms: m.connection_checked_at_ms,
             revision: m.revision,
@@ -952,9 +943,9 @@ pub fn save_ai_model(
             // Provider 变化会同时改变模型类型（decisions=决策模型），就地列表必须同步。
             existing.kind =
                 if saved.kind == fluxdb_storage::ai_platform::models::ModelKind::Decision {
-                    "决策".into()
+                    crate::AiModelKind::Decision
                 } else {
-                    "生成".into()
+                    crate::AiModelKind::Generation
                 };
             existing.context_window_tokens = saved.context_window_tokens;
             existing.max_output_tokens = saved.max_output_tokens;
@@ -963,7 +954,7 @@ pub fn save_ai_model(
             existing.cached_input_price_micros = saved.cached_input_price_micros_per_million;
             existing.revision = revision;
             existing.capability_labels = capability_labels;
-            existing.credential_status = credential_label(saved.credential_status);
+            existing.credential_status = credential_status_value(saved.credential_status);
             existing.connection_status = saved.connection_status;
             existing.connection_checked_at_ms = saved.connection_checked_at_ms;
         }
@@ -980,9 +971,9 @@ pub fn save_ai_model(
             endpoint: saved.endpoint,
             endpoint_is_full_url: saved.endpoint_is_full_url,
             kind: if saved.kind == fluxdb_storage::ai_platform::models::ModelKind::Decision {
-                "决策".into()
+                crate::AiModelKind::Decision
             } else {
-                "生成".into()
+                crate::AiModelKind::Generation
             },
             enabled: saved.enabled,
             egress: saved.egress
@@ -993,7 +984,7 @@ pub fn save_ai_model(
             input_price_micros: saved.input_price_micros_per_million,
             output_price_micros: saved.output_price_micros_per_million,
             cached_input_price_micros: saved.cached_input_price_micros_per_million,
-            credential_status: credential_label(saved.credential_status),
+            credential_status: credential_status_value(saved.credential_status),
             connection_status: saved.connection_status,
             connection_checked_at_ms: saved.connection_checked_at_ms,
             revision,
@@ -1003,13 +994,15 @@ pub fn save_ai_model(
     Ok((id, revision))
 }
 
-fn credential_label(status: fluxdb_storage::ai_platform::model_secret::CredentialStatus) -> String {
+fn credential_status_value(
+    status: fluxdb_storage::ai_platform::model_secret::CredentialStatus,
+) -> crate::AiCredentialStatus {
     use fluxdb_storage::ai_platform::model_secret::CredentialStatus as S;
     match status {
-        S::NotRequired => "无需凭据".into(),
-        S::Missing => "缺少凭据".into(),
-        S::Configured => "已配置".into(),
-        S::Unavailable => "不可用".into(),
+        S::NotRequired => crate::AiCredentialStatus::NotRequired,
+        S::Missing => crate::AiCredentialStatus::Missing,
+        S::Configured => crate::AiCredentialStatus::Configured,
+        S::Unavailable => crate::AiCredentialStatus::Unavailable,
     }
 }
 

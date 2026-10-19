@@ -10,6 +10,7 @@
 //   - 通用编辑能力（增删改、光标、选择、缩进、补全列表渲染）都在此处实现，
 //     不含任何业务类型。
 
+use crate::tr;
 use std::{
     cell::RefCell,
     collections::{BTreeSet, HashMap},
@@ -853,8 +854,8 @@ impl Editor {
         let soft_wrap = config.profile.soft_wrap == fluxdb_editor_core::SoftWrapMode::EditorWidth;
         let empty = EditorBuffer::new_from(&text);
         let perf_editor_id = NEXT_EDITOR_ID.fetch_add(1, Ordering::Relaxed);
-        let find_input = cx.new(|cx| InputState::new(_window, cx).placeholder("查找"));
-        let replace_input = cx.new(|cx| InputState::new(_window, cx).placeholder("替换"));
+        let find_input = cx.new(|cx| InputState::new(_window, cx).placeholder(tr("app.data.placeholder.find")));
+        let replace_input = cx.new(|cx| InputState::new(_window, cx).placeholder(tr("app.data.placeholder.replace")));
         let mut tool = Self {
             perf_editor_id,
             perf_edit_id: 0,

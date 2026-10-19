@@ -123,7 +123,7 @@ fn new_query_scope_modal(
                             div()
                                 .text_size(px(17.))
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
-                                .child("新建查询"),
+                                .child(tr("app.query.new")),
                         )
                         .child(
                             div()
@@ -209,7 +209,7 @@ fn new_query_database_list(
     if has_database {
         list
     } else {
-        list.child(new_query_empty_state("没有可选库", colors))
+        list.child(new_query_empty_state(tr("app.query.no_database"), colors))
     }
 }
 
@@ -238,11 +238,11 @@ fn new_query_connect_state(
     cx: &mut Context<NavicatMain>,
 ) -> impl IntoElement {
     let button_label = if connecting {
-        "加载中..."
+        tr("app.data.loading")
     } else if error.is_some() {
-        "重试"
+        tr("app.common.retry")
     } else {
-        "连接并加载库"
+        tr("app.query.connect_and_load")
     };
     div()
         .p_3()
@@ -254,9 +254,9 @@ fn new_query_connect_state(
                 .text_size(px(13.))
                 .text_color(colors.muted)
                 .child(if connecting {
-                    "正在连接"
+                    tr("app.query.connecting")
                 } else {
-                    "先连接后选择库"
+                    tr("app.query.connect_first")
                 }),
         )
         .when_some(error, |this, error| {
@@ -294,7 +294,8 @@ fn new_query_connect_state(
         )
 }
 
-fn new_query_empty_state(label: &'static str, colors: UiColors) -> impl IntoElement {
+fn new_query_empty_state(label: impl Into<SharedString>, colors: UiColors) -> impl IntoElement {
+    let label: SharedString = label.into();
     div()
         .p_3()
         .text_size(px(13.))

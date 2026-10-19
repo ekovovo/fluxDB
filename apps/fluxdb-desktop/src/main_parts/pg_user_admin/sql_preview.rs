@@ -37,7 +37,7 @@ fn pg_sql_preview_panel(
     // 预览在进入页签时自动生成，头部只保留变更摘要。
     let role_name = admin.pg_effective_grantee_name();
     let database_label = if admin.pg_grant_database.is_empty() {
-        "（无对象授权）".to_string()
+        tr("app.pg_role.preview.no_object_grants").to_string()
     } else {
         admin.pg_grant_database.clone()
     };
@@ -50,12 +50,13 @@ fn pg_sql_preview_panel(
                 div()
                     .text_size(px(12.))
                     .text_color(colors.muted)
-                    .child(format!(
-                        "影响角色：{} · 对象授权库：{} · 变更 {} 条",
-                        if role_name.is_empty() { "—" } else { &role_name },
-                        database_label,
-                        stmts.len(),
-                    )),
+                    .child(tr("app.pg_role.preview.summary")
+                        .replace(
+                            "%{role}",
+                            if role_name.is_empty() { "—" } else { &role_name },
+                        )
+                        .replace("%{databases}", &database_label)
+                        .replace("%{changes}", &stmts.len().to_string())),
             )
             .child(div().flex_1()),
     );
@@ -65,7 +66,7 @@ fn pg_sql_preview_panel(
             div()
                 .text_size(px(12.))
                 .text_color(rgb(0xff9f0a))
-                .child("脱敏预览，不能直接执行：密码语句已替换为占位符；实际执行使用内存中的草稿值。"),
+                .child(tr("app.pg_role.preview.redacted")),
         );
     }
     if let Some(error) = &admin.pg_plan_error {
@@ -73,11 +74,11 @@ fn pg_sql_preview_panel(
     }
 
     if !has_changes {
-        body = body.child(user_admin_empty_row("暂无待执行变更。", colors));
+        body = body.child(user_admin_empty_row(tr("app.pg_role.preview.no_changes"), colors));
     } else if admin.pg_preview_loading {
-        body = body.child(user_admin_empty_row("正在生成预览…", colors));
+        body = body.child(user_admin_empty_row(tr("app.pg_role.preview.generating"), colors));
     } else if sql.is_empty() {
-        body = body.child(user_admin_empty_row("未能生成预览（草稿可能尚未通过校验）。", colors));
+        body = body.child(user_admin_empty_row(tr("app.pg_role.preview.failed_hint"), colors));
     } else {
         // 复用 MySQL 页的 SQL 预览代码视图（只读、SQL 高亮）。
         body = body.child(

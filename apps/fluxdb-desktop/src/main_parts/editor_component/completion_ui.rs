@@ -29,7 +29,7 @@ impl Editor {
             return;
         };
         let Some(provider) = self.providers.completion.clone() else {
-            self.completion_doc_state = Some(DocumentationState::Error("无详情 provider".into()));
+            self.completion_doc_state = Some(DocumentationState::Error(tr("app.editor.completion.no_provider").to_string()));
             cx.notify();
             return;
         };

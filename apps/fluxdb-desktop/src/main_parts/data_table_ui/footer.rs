@@ -46,7 +46,7 @@ fn data_editor_footer(
                 .items_center()
                 .flex_none()
                 .child(
-                    data_editor_footer_icon_button(AppIcon::Plus, "新增行", can_edit, colors)
+                    data_editor_footer_icon_button(AppIcon::Plus, tr("app.data.action.add_row"), can_edit, colors)
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(move |this, _, _, cx| {
@@ -66,7 +66,7 @@ fn data_editor_footer(
                 .child(
                     data_editor_footer_icon_button(
                         AppIcon::Minus,
-                        "删除行",
+                        tr("app.data.action.delete_row"),
                         can_edit && selected_source_row.is_some(),
                         colors,
                     )
@@ -89,7 +89,7 @@ fn data_editor_footer(
                     ),
                 )
                 .child(
-                    data_editor_footer_icon_button(AppIcon::Check, "提交更改", has_changes, colors)
+                    data_editor_footer_icon_button(AppIcon::Check, tr("app.data.action.submit_changes"), has_changes, colors)
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(move |this, _, _, cx| {
@@ -101,7 +101,7 @@ fn data_editor_footer(
                         ),
                 )
                 .child(
-                    data_editor_footer_icon_button(AppIcon::Close, "取消更改", can_edit && has_changes, colors)
+                    data_editor_footer_icon_button(AppIcon::Close, tr("app.data.action.discard_changes"), can_edit && has_changes, colors)
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(move |this, _, _, cx| {
@@ -118,7 +118,7 @@ fn data_editor_footer(
                         ),
                 )
                 .child(
-                    data_editor_footer_icon_button(AppIcon::Refresh, "刷新", can_edit, colors)
+                    data_editor_footer_icon_button(AppIcon::Refresh, tr("app.data.action.refresh"), can_edit, colors)
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(move |this, _, _, cx| {
@@ -129,7 +129,7 @@ fn data_editor_footer(
                 )
                 .child(data_editor_footer_icon_button(
                     AppIcon::Square,
-                    "停止",
+                    tr("app.data.action.stop"),
                     false,
                     colors,
                 )),
@@ -339,9 +339,9 @@ fn data_editor_change_status(
                 .whitespace_nowrap()
                 .text_ellipsis()
                 .child(if submitting {
-                    format!("正在提交 {count} 处修改…")
+                    tr("app.data.pending.submitting").replace("%{count}", &count.to_string())
                 } else {
-                    format!("待提交 {count} 处修改")
+                    tr("app.data.pending.count").replace("%{count}", &count.to_string())
                 }),
         )
         .child(
@@ -349,7 +349,11 @@ fn data_editor_change_status(
                 .ml_auto()
                 .text_size(px(11.))
                 .text_color(colors.muted)
-                .child(if open { "收起" } else { "查看 SQL" }),
+                .child(if open {
+                    tr("app.data.sql.collapse")
+                } else {
+                    tr("app.data.sql.view")
+                }),
         )
         .on_mouse_down(
             MouseButton::Left,
@@ -407,24 +411,24 @@ fn data_change_sql_preview_drawer(
                 .child(
                     div()
                         .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .child("待提交 SQL"),
+                        .child(tr("app.data.sql.pending_title")),
                 )
                 .child(div().flex_1())
                 .child(
-                    data_editor_footer_icon_button(AppIcon::Copy, "复制待提交 SQL", true, colors)
+                    data_editor_footer_icon_button(AppIcon::Copy, tr("app.data.sql.copy_pending"), true, colors)
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(move |this, _, _, cx| {
                                 cx.write_to_clipboard(ClipboardItem::new_string(
                                     sql_for_copy.clone(),
                                 ));
-                                this.show_message("已复制待提交 SQL", AppMessageKind::Success, cx);
+                                this.show_message(tr("app.data.sql.pending_copied").as_ref(), AppMessageKind::Success, cx);
                                 cx.stop_propagation();
                             }),
                         ),
                 )
                 .child(
-                    data_editor_footer_icon_button(AppIcon::Close, "收起", true, colors)
+                    data_editor_footer_icon_button(AppIcon::Close, tr("app.data.sql.collapse"), true, colors)
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(move |this, _, _, cx| {
@@ -508,7 +512,7 @@ fn data_search_bar(
                     div()
                         .text_size(px(12.))
                         .text_color(colors.muted)
-                        .child("查找数据:"),
+                        .child(tr("app.data.search.label")),
                 )
                 .child(
                     Input::new(&input)
@@ -520,7 +524,7 @@ fn data_search_bar(
                 ),
         )
         .child(
-            data_search_button("下一个", match_count > 0, false, colors).on_mouse_down(
+            data_search_button(tr("app.data.search.next"), match_count > 0, false, colors).on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, _, cx| {
                     this.select_next_data_search_match(tab_id, cx);
@@ -631,13 +635,13 @@ fn data_editor_sql_input(
         .text_size(px(12.))
         .text_color(colors.muted)
         .child(
-            data_editor_footer_button("⧉", "复制 SQL", true, colors).on_mouse_down(
+            data_editor_footer_button("⧉", tr("app.data.sql.copy"), true, colors).on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, _, cx| {
                     cx.write_to_clipboard(gpui::ClipboardItem::new_string(
                         input_for_copy.read(cx).value().to_string(),
                     ));
-                    this.show_message("已复制 SQL", AppMessageKind::Success, cx);
+                    this.show_message(tr("app.data.sql.copied").as_ref(), AppMessageKind::Success, cx);
                     cx.stop_propagation();
                 }),
             ),
@@ -687,11 +691,11 @@ fn data_editor_sql_strip(
         .text_size(px(12.))
         .text_color(colors.muted)
         .child(
-            data_editor_footer_button("⧉", "复制 SQL", true, colors).on_mouse_down(
+            data_editor_footer_button("⧉", tr("app.data.sql.copy"), true, colors).on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, _, cx| {
                     cx.write_to_clipboard(gpui::ClipboardItem::new_string(sql_for_copy.clone()));
-                    this.show_message("已复制 SQL", AppMessageKind::Success, cx);
+                    this.show_message(tr("app.data.sql.copied").as_ref(), AppMessageKind::Success, cx);
                     cx.stop_propagation();
                 }),
             ),
@@ -792,13 +796,15 @@ fn data_editor_sql_strip(
 }
 
 fn data_editor_footer_button(
-    label: &'static str,
-    tooltip: &'static str,
+    label: impl Into<SharedString>,
+    tooltip: impl Into<SharedString>,
     enabled: bool,
     colors: UiColors,
 ) -> Stateful<Div> {
+    let label: SharedString = label.into();
+    let tooltip: SharedString = tooltip.into();
     div()
-        .id(tooltip)
+        .id(gpui::ElementId::Name(tooltip.clone()))
         .size(px(24.))
         .rounded(colors.radius * 0.5)
         .flex()
@@ -813,19 +819,23 @@ fn data_editor_footer_button(
                 .text_color(if enabled { colors.text } else { colors.muted })
         })
         .when(enabled, |this| this.cursor_pointer())
-        .tooltip(move |window, cx| Tooltip::new(tooltip).build(window, cx))
+        .tooltip({
+            let tooltip = tooltip.clone();
+            move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx)
+        })
         .child(label)
 }
 
 fn data_editor_footer_icon_button(
     icon: AppIcon,
-    tooltip: &'static str,
+    tooltip: impl Into<SharedString>,
     enabled: bool,
     colors: UiColors,
 ) -> Stateful<Div> {
+    let tooltip = tooltip.into();
     let icon_color = if enabled { colors.text } else { colors.muted };
     div()
-        .id(tooltip)
+        .id(tooltip.clone())
         .size(px(24.))
         .rounded(colors.radius * 0.5)
         .flex()
@@ -840,7 +850,7 @@ fn data_editor_footer_icon_button(
             }
         })
         .when(enabled, |this| this.cursor_pointer())
-        .tooltip(move |window, cx| Tooltip::new(tooltip).build(window, cx))
+        .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
         .child(app_icon(icon, 15., icon_color))
 }
 

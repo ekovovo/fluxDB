@@ -51,7 +51,7 @@ fn redis_add_key_name_value_rows_panel(
         );
     }
     body.child(redis_add_key_add_row_button(
-        "+ 添加行",
+        tr("app.redis.add_key.form.add_row"),
         applying,
         colors,
         add,
@@ -111,7 +111,7 @@ fn redis_add_key_hash_rows_panel(
         );
     }
     body.child(redis_add_key_add_row_button(
-        "+ 添加行",
+        tr("app.redis.add_key.form.add_row"),
         applying,
         colors,
         add,
@@ -162,7 +162,7 @@ fn redis_add_key_single_rows_panel(
         );
     }
     body.child(redis_add_key_add_row_button(
-        "+ 添加行",
+        tr("app.redis.add_key.form.add_row"),
         applying,
         colors,
         add,

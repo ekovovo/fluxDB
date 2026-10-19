@@ -140,7 +140,10 @@ fn ai_chat_composer(
                                 .appearance(false)
                                 .text_size(px(12.))
                                 .min_h(px(0.))
-                                .aria_label(format!("AI 消息，Enter 换行，{send_shortcut} 发送")),
+                                .aria_label(
+                                    tr("app.ai.chat.composer.input_aria")
+                                        .replace("%{shortcut}", &send_shortcut),
+                                ),
                         )
                         .child(
                             div()
@@ -157,7 +160,11 @@ fn ai_chat_composer(
                                             .small()
                                             .ghost()
                                             .cursor_pointer()
-                                            .tooltip(if this.ai_chat.attachment_loading { "附件授权中…" } else { "添加附件或上下文" })
+                                            .tooltip(if this.ai_chat.attachment_loading {
+                                                tr("app.ai.chat.composer.attachment_loading")
+                                            } else {
+                                                tr("app.ai.chat.composer.add_attachment")
+                                            })
                                             .loading(this.ai_chat.attachment_loading)
                                             .disabled(!ready)
                                             .child(app_icon(AppIcon::Plus, 16., colors.muted))
@@ -169,7 +176,8 @@ fn ai_chat_composer(
                                                     let upload_owner = owner.clone();
                                                     let context_owner = owner.clone();
                                                     menu.item(PopupMenuItem::element(|_, _| div()
-                                                        .id("ai-chat-upload").child("从电脑上传"))
+                                                        .id("ai-chat-upload")
+                                                        .child(tr("app.ai.chat.composer.upload")))
                                                         .disabled(upload_disabled)
                                                         .on_click(move |_, window, cx| {
                                                             let _ = upload_owner.update(cx, |this, cx| {
@@ -177,7 +185,8 @@ fn ai_chat_composer(
                                                             });
                                                         }))
                                                         .item(PopupMenuItem::element(|_, _| div()
-                                                            .id("ai-chat-add-context").child("添加上下文"))
+                                                            .id("ai-chat-add-context")
+                                                            .child(tr("app.ai.chat.composer.add_context")))
                                                             .on_click(move |_, window, cx| {
                                                                 let _ = context_owner.update(cx, |this, cx| {
                                                                     this.open_ai_reference_menu(window, cx);
@@ -193,10 +202,13 @@ fn ai_chat_composer(
                                                 div()
                                                     .text_size(px(10.))
                                                     .text_color(colors.muted)
-                                                    .child(format!(
-                                                        "{}项引用",
-                                                        chat.context_references.len()
-                                                    )),
+                                                    .child(
+                                                        tr("app.ai.chat.composer.reference_count")
+                                                            .replace(
+                                                                "%{count}",
+                                                                &chat.context_references.len().to_string(),
+                                                            ),
+                                                    ),
                                             )
                                         },
                                     ),
@@ -223,9 +235,9 @@ fn ai_chat_composer(
                                                     colors.danger,
                                                 ))
                                                 .child(if cancel_requested {
-                                                    "停止中…"
+                                                    tr("app.ai.chat.composer.stopping")
                                                 } else {
-                                                    "停止"
+                                                    tr("app.ai.chat.composer.stop")
                                                 }),
                                         )
                                         .on_click(cx.listener(|this, _, _, cx| {
@@ -246,7 +258,7 @@ fn ai_chat_composer(
                                 } else {
                                     Button::new("ai-chat-send")
                                         .accessibility_id("ai-chat-send")
-                                        .accessibility_label("发送 AI 消息")
+                                        .accessibility_label(tr("app.ai.chat.composer.send_aria"))
                                         .debug_selector(|| "ai-chat-send".into())
                                         .with_size(px(22.))
                                         .w(px(22.))
@@ -262,7 +274,10 @@ fn ai_chat_composer(
                                         )
                                         .rounded(px(12.))
                                         .cursor_pointer()
-                                        .tooltip(format!("发送（{send_shortcut}）"))
+                                        .tooltip(
+                                            tr("app.ai.chat.composer.send_tooltip")
+                                                .replace("%{shortcut}", &send_shortcut),
+                                        )
                                         .disabled(
                                             !ready || input.read(cx).value().trim().is_empty(),
                                         )

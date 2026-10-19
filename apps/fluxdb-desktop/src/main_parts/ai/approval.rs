@@ -75,14 +75,14 @@ fn ai_approval_context<'a>(
 /// 风险色只强调徽标；卡片统一用琥珀边框，不把待决定状态渲染成执行失败。
 fn ai_approval_risk_badge(risk: &str, colors: UiColors) -> gpui::AnyElement {
     let (label, tone) = match risk {
-        "high" => ("风险：高", colors.danger),
-        "low" => ("风险：低", colors.success),
-        "medium" => ("风险：中", colors.warning),
-        _ => ("风险：未知", colors.warning),
+        "high" => (tr("app.ai.chat.approval.risk.high"), colors.danger),
+        "low" => (tr("app.ai.chat.approval.risk.low"), colors.success),
+        "medium" => (tr("app.ai.chat.approval.risk.medium"), colors.warning),
+        _ => (tr("app.ai.chat.approval.risk.unknown"), colors.warning),
     };
     div()
         .id("risk")
-        .aria_label(label)
+        .aria_label(label.clone())
         .flex_none()
         .flex()
         .items_center()
@@ -138,13 +138,17 @@ fn ai_approval_code_block(
                 .ghost()
                 .rounded_md()
                 .accessibility_id(format!("ai-approval-copy:{copy_id}:{index}"))
-                .accessibility_label("复制内容")
+                .accessibility_label(tr("app.ai.chat.approval.copy_content"))
                 .cursor_pointer()
                 .child(app_icon(AppIcon::Copy, 10., colors.muted))
-                .child(div().text_size(px(10.)).child("复制内容"))
+                .child(div().text_size(px(10.)).child(tr("app.ai.chat.approval.copy_content")))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     cx.write_to_clipboard(gpui::ClipboardItem::new_string(copy_text.clone()));
-                    this.show_message("内容已复制", AppMessageKind::Success, cx);
+                    this.show_message(
+                        tr("app.ai.chat.approval.copied").as_ref(),
+                        AppMessageKind::Success,
+                        cx,
+                    );
                 })),
             ),
         )
@@ -222,11 +226,59 @@ fn ai_approval_context_row(
         .into_any_element()
 }
 
+/// 将内核 guardrail 的稳定中文措辞映射为当前界面语言。
+///
+/// 图标档位仍按内核原文判定，因此内核侧文案与这里的关键词必须保持一致。
+fn ai_guardrail_display_text(guardrail: &str) -> String {
+    let key = match guardrail {
+        "计划风险尚未核实" => "app.ai.guardrail.plan_risk_unverified",
+        "单语句，不含事务或会话控制" => "app.ai.guardrail.single_statement_no_tx",
+        "语句已判定为只读，不修改数据" => "app.ai.guardrail.read_only_statement",
+        "未通过只读分类，必须逐次批准" => "app.ai.guardrail.read_only_classification_failed",
+        "语句含已知副作用语法，影响面无法从文本确定" => {
+            "app.ai.guardrail.known_side_effects"
+        }
+        "按 argv 原样传参，不拼接命令文本" => "app.ai.guardrail.redis_argv_passthrough",
+        "命令在只读白名单内" => "app.ai.guardrail.redis_read_only_allowlist",
+        "写命令或脚本执行，不在只读白名单内" => "app.ai.guardrail.redis_write_command",
+        "命令未在内核白名单内，影响面未核实" => "app.ai.guardrail.redis_unknown_command",
+        "该连接不支持有界提交，间接影响与真实行数未核实" => {
+            "app.ai.guardrail.bounded_commit_unsupported"
+        }
+        "操作影响尚未核实" => "app.ai.guardrail.impact_unverified",
+        _ => {
+            if let Some(reasons) = guardrail
+                .strip_prefix("内核策略已拒绝该语句（")
+                .and_then(|value| value.strip_suffix("）"))
+            {
+                return tr("app.ai.guardrail.sql_rejected_by_kernel")
+                    .replace("%{reasons}", reasons);
+            }
+            if let Some(reasons) = guardrail
+                .strip_prefix("内核策略已拒绝该命令（")
+                .and_then(|value| value.strip_suffix("）"))
+            {
+                return tr("app.ai.guardrail.redis_rejected_by_kernel")
+                    .replace("%{reasons}", reasons);
+            }
+            return guardrail.to_string();
+        }
+    };
+    tr(key).to_string()
+}
+
 /// 高风险操作保留内核判定依据，避免精简布局掩盖未知影响面。
 fn ai_approval_guardrails(guardrails: &[String], colors: UiColors) -> gpui::AnyElement {
+    let display_guardrails = guardrails
+        .iter()
+        .map(|guardrail| ai_guardrail_display_text(guardrail))
+        .collect::<Vec<_>>();
     div()
         .id("guardrails")
-        .aria_label(format!("风险提示：{}", guardrails.join("；")))
+        .aria_label(
+            tr("app.ai.chat.approval.guardrails_aria")
+                .replace("%{items}", &display_guardrails.join("；")),
+        )
         .mx_3()
         .mb_2()
         .flex()
@@ -236,9 +288,9 @@ fn ai_approval_guardrails(guardrails: &[String], colors: UiColors) -> gpui::AnyE
             div()
                 .text_size(px(10.))
                 .text_color(colors.muted)
-                .child("风险提示"),
+                .child(tr("app.ai.chat.approval.guardrails_title")),
         )
-        .children(guardrails.iter().map(|guardrail| {
+        .children(guardrails.iter().zip(display_guardrails).map(|(guardrail, display)| {
             let (icon, tone) = if guardrail.contains("已拒绝") {
                 (AppIcon::CircleSlash, colors.danger)
             } else if guardrail.contains("未核实") || guardrail.contains("未记录") {
@@ -258,7 +310,7 @@ fn ai_approval_guardrails(guardrails: &[String], colors: UiColors) -> gpui::AnyE
                         .text_size(px(11.))
                         .line_height(px(16.))
                         .text_color(colors.text)
-                        .child(guardrail.clone()),
+                        .child(display),
                 )
         }))
         .into_any_element()
@@ -275,14 +327,26 @@ fn ai_chat_approval_result(
     cx: &mut Context<NavicatMain>,
 ) -> gpui::AnyElement {
     let (label, icon, tone) = match decision {
-        "denied" => ("已拒绝 · 未执行", AppIcon::CircleSlash, colors.muted),
-        "approved" => ("已批准一次", AppIcon::Check, colors.success),
-        _ => ("审批已失效", AppIcon::Info, colors.warning),
+        "denied" => (
+            tr("app.ai.chat.approval.decision.denied"),
+            AppIcon::CircleSlash,
+            colors.muted,
+        ),
+        "approved" => (
+            tr("app.ai.chat.approval.decision.approved"),
+            AppIcon::Check,
+            colors.success,
+        ),
+        _ => (
+            tr("app.ai.chat.approval.decision.expired"),
+            AppIcon::Info,
+            colors.warning,
+        ),
     };
     let mut target = context
         .connection
         .map(|config| format!("{} · {}", config.name, database_kind_name(config.kind)))
-        .unwrap_or_else(|| "目标连接不可用或未绑定".into());
+        .unwrap_or_else(|| tr("app.ai.chat.approval.connection_unavailable").to_string());
     if let Some(scope) = context.scope_value() {
         target.push_str(&format!(" · {scope}"));
     }
@@ -368,7 +432,7 @@ fn ai_chat_approval_result(
             let statements = payload["details"]["statements"].as_array();
             let mut detail = div()
                 .id(SharedString::from(format!("ai-part-detail:{}", part.id)))
-                .aria_label("原执行内容")
+                .aria_label(tr("app.ai.chat.approval.original_execution"))
                 .debug_selector({
                     let id = part.id.clone();
                     move || format!("ai-part-detail:{id}")
@@ -381,7 +445,7 @@ fn ai_chat_approval_result(
                         .mx_3()
                         .text_size(px(10.))
                         .text_color(colors.muted)
-                        .child("原执行内容"),
+                        .child(tr("app.ai.chat.approval.original_execution")),
                 );
             let mut count = 0;
             if let Some(statements) = statements {
@@ -403,7 +467,7 @@ fn ai_chat_approval_result(
                         .mb_2()
                         .text_size(px(11.))
                         .text_color(colors.muted)
-                        .child("该历史审批未保存执行内容。"),
+                        .child(tr("app.ai.chat.approval.original_missing")),
                 );
             }
             column.child(detail)
@@ -454,6 +518,8 @@ fn ai_chat_approval_card(
         })
         .unwrap_or_default();
     if guardrails.is_empty() {
+        // 与内核 guardrail 同词：图标档位按这些关键词判定（见 ai_approval_guardrails），
+        // 这里单独翻译会在同一列表里混语言并降级图标，因此保持内核措辞。
         guardrails.push("操作影响尚未核实".into());
     }
     let estimated_rows = details
@@ -468,7 +534,7 @@ fn ai_chat_approval_card(
 
     let connection_label = match context.connection {
         Some(config) => format!("{} · {}", config.name, database_kind_name(config.kind)),
-        None => "目标连接不可用或未绑定".to_string(),
+        None => tr("app.ai.chat.approval.connection_unavailable").to_string(),
     };
     let read_only = context
         .connection
@@ -476,7 +542,7 @@ fn ai_chat_approval_card(
     // 紧凑信息头与风险徽标分开承载，窄面板下允许换行。
     let header = div()
         .id("heading")
-        .aria_label("批准本次操作？")
+        .aria_label(tr("app.ai.chat.approval.confirm_title"))
         .flex()
         .flex_wrap()
         .items_center()
@@ -494,7 +560,7 @@ fn ai_chat_approval_card(
                 .text_size(px(12.))
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .text_color(colors.text)
-                .child("批准本次操作？"),
+                .child(tr("app.ai.chat.approval.confirm_title")),
         )
         .child(ai_approval_risk_badge(&risk, colors));
 
@@ -506,19 +572,25 @@ fn ai_chat_approval_card(
         .flex_col()
         .gap_1()
         .child(ai_approval_context_row(
-            "连接".into(),
+            tr("app.ai.chat.approval.connection").to_string(),
             Some(connection_label),
             match context.connection {
-                None => Some("无法核实可写状态".into()),
-                Some(_) if read_only => Some("只读连接".into()),
+                None => Some(tr("app.ai.chat.approval.write_state_unknown").to_string()),
+                Some(_) if read_only => {
+                    Some(tr("app.ai.chat.approval.read_only_connection").to_string())
+                }
                 Some(_) => None,
             },
             false,
             colors,
         ))
         .child(ai_approval_context_row(
-            "目标".into(),
-            Some(context.scope_value().unwrap_or_else(|| "未记录".into())),
+            tr("app.ai.chat.approval.target").to_string(),
+            Some(
+                context
+                    .scope_value()
+                    .unwrap_or_else(|| tr("app.ai.chat.approval.target_unrecorded").to_string()),
+            ),
             None,
             false,
             colors,
@@ -527,8 +599,8 @@ fn ai_chat_approval_card(
     // 未核实的行数不生成固定占位卡；高风险仍明确显示内核依据。
     let impact = estimated_rows.map(|rows| {
         ai_approval_context_row(
-            "预计影响行数".into(),
-            Some(format!("{rows} 行")),
+            tr("app.ai.chat.approval.estimated_rows").to_string(),
+            Some(tr("app.ai.chat.approval.rows_value").replace("%{rows}", &rows.to_string())),
             None,
             false,
             colors,
@@ -550,7 +622,7 @@ fn ai_chat_approval_card(
                 div()
                     .text_size(px(10.))
                     .text_color(colors.muted)
-                    .child("正在提交审批…"),
+                    .child(tr("app.ai.chat.approval.submitting")),
             )
         })
         .child(
@@ -565,7 +637,7 @@ fn ai_chat_approval_card(
                 .h(px(28.))
                 .text_size(px(11.))
                 .accessibility_id(format!("ai-deny:{approval_id}"))
-                .label("拒绝")
+                .label(tr("app.ai.chat.approval.reject"))
                 .disabled(context.busy)
                 .cursor_pointer()
                 .on_click(cx.listener(move |this, _, window, cx| {
@@ -584,7 +656,7 @@ fn ai_chat_approval_card(
                 .h(px(28.))
                 .text_size(px(11.))
                 .accessibility_id(format!("ai-approve:{approval_id}"))
-                .label("批准一次")
+                .label(tr("app.ai.chat.approval.approve_once"))
                 .disabled(context.busy)
                 .cursor_pointer()
                 .on_click(cx.listener(move |this, _, window, cx| {
@@ -615,7 +687,7 @@ fn ai_chat_approval_card(
                 .mb_1()
                 .text_size(px(10.))
                 .text_color(colors.muted)
-                .child("执行内容"),
+                .child(tr("app.ai.chat.approval.plan_preview")),
         )
         .when(!statements.is_empty(), |card| {
             card.children(statements.iter().enumerate().map(|(index, statement)| {
@@ -629,7 +701,7 @@ fn ai_chat_approval_card(
                     .mb_2()
                     .text_size(px(11.))
                     .text_color(colors.muted)
-                    .child("该历史审批未保存计划预览，请核对工具记录后再决定。"),
+                    .child(tr("app.ai.chat.approval.plan_preview_missing")),
             )
         })
         .when_some(impact, |card, impact| {

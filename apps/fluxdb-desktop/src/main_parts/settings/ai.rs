@@ -49,7 +49,12 @@ struct AiSettingsPanelState {
 }
 
 /// 通用小胶囊：浅色底 + 彩色文字。
-fn ai_pill(label: &str, color: gpui::Rgba, colors: UiColors) -> impl IntoElement {
+fn ai_pill(
+    label: impl Into<SharedString>,
+    color: gpui::Rgba,
+    colors: UiColors,
+) -> impl IntoElement {
+    let label = label.into();
     let _ = colors;
     div()
         .px_2()
@@ -58,33 +63,49 @@ fn ai_pill(label: &str, color: gpui::Rgba, colors: UiColors) -> impl IntoElement
         .bg(color.alpha(0.14))
         .text_size(px(11.))
         .text_color(color)
-        .child(label.to_string())
+        .child(label)
 }
 
 /// 凭据状态标签：四态用不同颜色区分，避免「4 态里 3 态同色」。
-fn ai_credential_tag(status: &str, colors: UiColors) -> impl IntoElement {
+fn ai_credential_tag(
+    status: &fluxdb_app::AiCredentialStatus,
+    colors: UiColors,
+) -> impl IntoElement {
+    use fluxdb_app::AiCredentialStatus as S;
     let color = match status {
-        "已配置" => colors.success,
-        "缺少凭据" => colors.warning,
-        "无需凭据" => colors.muted,
-        "不可用" => colors.danger,
-        _ => colors.muted,
+        S::Configured => colors.success,
+        S::Missing => colors.warning,
+        S::NotRequired => colors.muted,
+        S::Unavailable => colors.danger,
     };
-    ai_pill(status, color, colors)
+    let label = match status {
+        S::Configured => tr("app.ai.credential.configured"),
+        S::Missing => tr("app.ai.credential.missing"),
+        S::NotRequired => tr("app.ai.credential.not_required"),
+        S::Unavailable => tr("app.ai.credential.unavailable"),
+    };
+    ai_pill(label, color, colors)
 }
 
 /// 生成 / 决策 能力标签。
-fn ai_capability_tag(label: &str, decision: bool, colors: UiColors) -> impl IntoElement {
-    let color = if decision { colors.info } else { colors.muted };
+fn ai_capability_tag(kind: &fluxdb_app::AiModelKind, colors: UiColors) -> impl IntoElement {
+    let (label, color) = match kind {
+        fluxdb_app::AiModelKind::Decision => (tr("app.ai.capability.decision"), colors.info),
+        fluxdb_app::AiModelKind::Generation => (tr("app.ai.capability.generation"), colors.muted),
+    };
     ai_pill(label, color, colors)
 }
 
 /// 连接状态标签：连接成功(绿) / 连接失败(红) / 未连接(灰)。
 fn ai_connection_tag(status: &str, colors: UiColors) -> impl IntoElement {
     let (label, icon, color) = match status {
-        "ok" => ("连接成功", AppIcon::Check, colors.success),
-        "failed" => ("连接失败", AppIcon::CircleSlash, colors.danger),
-        _ => ("未连接", AppIcon::Plug, colors.muted),
+        "ok" => (tr("app.ai.connection.ok"), AppIcon::Check, colors.success),
+        "failed" => (
+            tr("app.ai.connection.failed"),
+            AppIcon::CircleSlash,
+            colors.danger,
+        ),
+        _ => (tr("app.ai.connection.idle"), AppIcon::Plug, colors.muted),
     };
     div()
         .id("ai-connection-status")
@@ -93,7 +114,7 @@ fn ai_connection_tag(status: &str, colors: UiColors) -> impl IntoElement {
         .items_center()
         .justify_center()
         .child(app_icon(icon, 16., color))
-        .tooltip(move |window, cx| Tooltip::new(label).build(window, cx))
+        .tooltip(move |window, cx| Tooltip::new(label.clone()).build(window, cx))
 }
 
 /// AI 设置加载失败块（红色标记 + 重试按钮）。
@@ -119,14 +140,14 @@ fn ai_settings_error_block(
                     div()
                         .text_size(px(12.))
                         .text_color(colors.danger)
-                        .child(format!("加载 AI 设置失败：{message}")),
+                        .child(format!("{}: {message}", tr("app.ai.error.load_failed"))),
                 ),
         )
         .child(
             Button::new("ai-settings-retry")
                 .small()
                 .ghost()
-                .child("重试")
+                .child(tr("app.ai.retry"))
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.reload_ai_settings(cx);
                 })),
@@ -146,6 +167,7 @@ fn ai_empty_state(text: &str, colors: UiColors) -> gpui::AnyElement {
 }
 
 include!("ai_models.rs");
+include!("ai_plugin_text.rs");
 include!("ai_tools.rs");
 include!("ai_mcp_server.rs");
 include!("ai_execution_policy.rs");

@@ -115,9 +115,9 @@ pub fn notify_second_instance_and_exit() -> ! {
         // 提示带上标识：多标识并行时用户能分辨是哪一个实例已占用。
         let text = HSTRING::from(match fluxdb_storage::instance_profile() {
             Ok(Some(profile)) => {
-                format!("FluxDB（{profile}）已经在运行。\n请使用已打开的 FluxDB 窗口。")
+                tr("app.single_instance.already_running_profile").replace("%{profile}", &profile)
             }
-            _ => "FluxDB 已经在运行。\n请使用已打开的 FluxDB 窗口。".to_string(),
+            _ => tr("app.single_instance.already_running").to_string(),
         });
         unsafe {
             let _ = MessageBoxW(

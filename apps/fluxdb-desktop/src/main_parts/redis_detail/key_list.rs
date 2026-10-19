@@ -209,8 +209,8 @@ impl NavicatMain {
                         AppEvent::RedisKeyMetadataLoaded { .. } => Ok(controller),
                         AppEvent::Failed(error) => Err(error),
                         _ => Err(fluxdb_core::UserFacingError {
-                            title: "元信息加载失败".to_string(),
-                            message: "Redis Key 元信息加载没有返回结果".to_string(),
+                            title: tr("app.redis.meta.error.load").to_string(),
+                            message: tr("app.redis.meta.error.no_result").to_string(),
                             detail: None,
                             retryable: true,
                         }),
@@ -369,7 +369,7 @@ fn redis_key_list(
                 .justify_center()
                 .text_size(px(13.))
                 .text_color(colors.muted)
-                .child("暂无 Redis Key"),
+                .child(tr("app.redis.empty")),
         )
         .when(refreshing, |this| this.child(redis_key_list_loading_overlay(colors)));
     }
@@ -654,7 +654,7 @@ fn redis_key_list_loading_overlay(colors: UiColors) -> Div {
         .font_weight(gpui::FontWeight::SEMIBOLD)
         .text_color(colors.text)
         .child(loading_spinner_with_color(18., colors.muted))
-        .child("正在刷新...")
+        .child(tr("app.redis.refreshing"))
         .on_mouse_down(MouseButton::Left, |_, _, cx| {
             cx.stop_propagation();
         })
@@ -687,7 +687,7 @@ fn redis_key_detail_loading_overlay(colors: UiColors) -> Div {
         .font_weight(gpui::FontWeight::SEMIBOLD)
         .text_color(colors.text)
         .child(loading_spinner_with_color(18., colors.muted))
-        .child("正在刷新...")
+        .child(tr("app.redis.refreshing"))
         .on_mouse_down(MouseButton::Left, |_, _, cx| {
             cx.stop_propagation();
         })
@@ -847,9 +847,12 @@ fn redis_key_list_text(text: String, mono: bool) -> Div {
 }
 
 fn redis_key_refresh_time_text(refreshed_at: Option<Instant>) -> String {
-    redis_key_refresh_label(refreshed_at)
-        .strip_prefix("上次刷新: ")
-        .unwrap_or("未刷新")
+    let label = redis_key_refresh_label(refreshed_at);
+    let prefix = tr("app.redis.refresh.prefix");
+    let unrefreshed = tr("app.redis.refresh.unrefreshed");
+    label
+        .strip_prefix(prefix.as_ref())
+        .unwrap_or(unrefreshed.as_ref())
         .to_string()
 }
 
@@ -885,7 +888,7 @@ fn redis_key_list_delete_button(
         .when(shown, |this| {
             this.cursor_pointer()
                 .hover(move |style| style.bg(colors.hover))
-                .tooltip(|window, cx| Tooltip::new("删除").build(window, cx))
+                .tooltip(|window, cx| Tooltip::new(tr("app.redis.delete")).build(window, cx))
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener({
@@ -978,7 +981,7 @@ fn redis_key_delete_confirm_popover(
                                     div()
                                         .text_size(px(12.))
                                         .text_color(colors.muted)
-                                        .child("将被删除，此操作不可撤销。"),
+                                        .child(tr("app.redis.key.delete_irreversible")),
                                 ),
                         )
                         .child(
@@ -986,7 +989,7 @@ fn redis_key_delete_confirm_popover(
                                 .flex()
                                 .justify_end()
                                 .gap_2()
-                                .child(redis_key_delete_confirm_button("取消", false, colors).on_mouse_down(
+                                .child(redis_key_delete_confirm_button(tr("app.redis.cancel"), false, colors).on_mouse_down(
                                     MouseButton::Left,
                                     cx.listener(|this, _, _, cx| {
                                         this.pending_redis_key_delete = None;
@@ -994,7 +997,7 @@ fn redis_key_delete_confirm_popover(
                                         cx.stop_propagation();
                                     }),
                                 ))
-                                .child(redis_key_delete_confirm_button("确认删除", true, colors).on_mouse_down(
+                                .child(redis_key_delete_confirm_button(tr("app.redis.confirm_delete"), true, colors).on_mouse_down(
                                     MouseButton::Left,
                                     cx.listener(move |this, _, _, cx| {
                                         this.pending_redis_key_delete = None;
@@ -1018,7 +1021,8 @@ fn redis_key_delete_confirm_popover(
         )
 }
 
-fn redis_key_delete_confirm_button(label: &'static str, danger: bool, colors: UiColors) -> Div {
+fn redis_key_delete_confirm_button(label: impl Into<SharedString>, danger: bool, colors: UiColors) -> Div {
+    let label: SharedString = label.into();
     div()
         .h(px(28.))
         .px_3()
@@ -1080,7 +1084,7 @@ fn redis_key_list_status_bar(
             div()
                 .text_size(px(12.))
                 .text_color(colors.muted)
-                .child(format!("结果 {result_count} · 已扫描 {scanned}")),
+                .child(tr("app.redis.scan.summary").replace("%{results}", &result_count.to_string()).replace("%{scanned}", &scanned.to_string())),
         )
         .when(mode.is_folder() && has_more && !refreshing, |this| {
             this.child(

@@ -10,62 +10,96 @@ enum AiToolsTab {
 }
 
 /// 内置 Agent 工具；数据库/Redis 工具同时供 MCP 使用，产物工具不对外暴露。
+/// 第二列是稳定分组码，第三列是未知工具 id 的英文兜底；已知 id 走 `ai_tool_text` 翻译。
 const AI_AGENT_TOOL_CATALOG: &[(&str, &str, &str, bool)] = &[
-    ("connections.list", "公共", "列出已授权连接资源", false),
-    ("db.search_objects", "SQL", "渐进搜索表、视图与字段", false),
-    ("db.describe_object", "SQL", "读取真实列、索引和关系", false),
-    ("db.query", "SQL", "单条有界只读查询，驱动绑定参数", false),
-    ("db.explain", "SQL", "不执行式查询计划", false),
-    ("db.execute", "SQL", "修改专用入口，范围授权与审批", true),
-    ("redis.scan", "Redis", "渐进扫描，不全量 KEYS", false),
-    ("redis.inspect", "Redis", "按类型有界预览值与 TTL", false),
+    ("connections.list", "common", "List authorized connection resources", false),
+    ("db.search_objects", "sql", "Incrementally search tables, views, and columns", false),
+    ("db.describe_object", "sql", "Read real columns, indexes, and relationships", false),
+    ("db.query", "sql", "Single bounded read-only query with bound parameters", false),
+    ("db.explain", "sql", "Query plan without executing the statement", false),
+    ("db.execute", "sql", "Dedicated write entry with scope authorization and approval", true),
+    ("redis.scan", "redis", "Incremental scan; never a full KEYS", false),
+    ("redis.inspect", "redis", "Bounded type-aware value preview and TTL", false),
     (
         "redis.execute",
-        "Redis",
-        "受控命令，检查所有 Key 与风险",
+        "redis",
+        "Controlled command that inspects all keys and risks",
         true,
     ),
     (
         "redis.subscribe",
-        "Redis",
-        "有界订阅，限时/限条数/限字节可停",
+        "redis",
+        "Bounded subscription with time, count, and byte limits; cancellable",
         false,
     ),
-    ("redis.server_info", "Redis", "受限版本与诊断摘要", false),
-    ("result.read_page", "公共", "读取已取得的结果快照", false),
+    ("redis.server_info", "redis", "Bounded version and diagnostic summary", false),
+    ("result.read_page", "common", "Read a result snapshot already obtained", false),
     (
         "diagnostics.read_turns",
-        "公共",
-        "读取本会话最近几轮的脱敏失败事实（终态/阶段/错误码/耗时/失败工具）",
+        "common",
+        "Read redacted failure facts from recent turns (terminal state, stage, error code, timing, failing tool)",
         false,
     ),
-    ("artifact.create", "产物", "创建报告草稿；内置渲染需启用 BI 插件", true),
-    ("artifact.add_block", "产物", "为报告追加图表、表格或说明，不修改数据库", true),
-    ("artifact.finalize", "产物", "校验来源并生成报告快照，不修改数据库", true),
+    ("artifact.create", "artifact", "Create a report draft; built-in rendering requires the BI plugin", true),
+    ("artifact.add_block", "artifact", "Append charts, tables, or notes to a report without modifying the database", true),
+    ("artifact.finalize", "artifact", "Validate sources and generate a report snapshot without modifying the database", true),
 ];
 
 /// 仅 MCP 提供的工具仍受全局开关控制，不进入内置 Agent 的配置。
 const AI_MCP_ONLY_TOOL_CATALOG: &[(&str, &str, &str, bool)] = &[
     (
         "operation.status",
-        "公共",
-        "查询当前 caller 的操作状态（含中断后的未知结果）",
+        "common",
+        "Query the current caller's operation status, including unknown results after interruption",
         false,
     ),
 ];
 
+fn ai_tool_text(id: &str, group: &str, desc: &str) -> (SharedString, SharedString) {
+    let group = match group {
+        "common" => tr("app.ai.tools.group.common"),
+        "sql" => "SQL".into(),
+        "redis" => "Redis".into(),
+        "artifact" => tr("app.ai.tools.group.artifact"),
+        _ => group.into(),
+    };
+    let desc = match id {
+        "connections.list" => tr("app.ai.tools.desc.connections_list"),
+        "db.search_objects" => tr("app.ai.tools.desc.db_search_objects"),
+        "db.describe_object" => tr("app.ai.tools.desc.db_describe_object"),
+        "db.query" => tr("app.ai.tools.desc.db_query"),
+        "db.explain" => tr("app.ai.tools.desc.db_explain"),
+        "db.execute" => tr("app.ai.tools.desc.db_execute"),
+        "redis.scan" => tr("app.ai.tools.desc.redis_scan"),
+        "redis.inspect" => tr("app.ai.tools.desc.redis_inspect"),
+        "redis.execute" => tr("app.ai.tools.desc.redis_execute"),
+        "redis.subscribe" => tr("app.ai.tools.desc.redis_subscribe"),
+        "redis.server_info" => tr("app.ai.tools.desc.redis_server_info"),
+        "result.read_page" => tr("app.ai.tools.desc.result_read_page"),
+        "diagnostics.read_turns" => tr("app.ai.tools.desc.diagnostics_read_turns"),
+        "artifact.create" => tr("app.ai.tools.desc.artifact_create"),
+        "artifact.add_block" => tr("app.ai.tools.desc.artifact_add_block"),
+        "artifact.finalize" => tr("app.ai.tools.desc.artifact_finalize"),
+        "operation.status" => tr("app.ai.tools.desc.operation_status"),
+        _ => desc.into(),
+    };
+    (group, desc)
+}
+
 /// 页签按钮：选中态下边框高亮。
 fn ai_tools_tab_button(
-    label: &'static str,
+    label: impl Into<SharedString>,
     value: AiToolsTab,
     active: AiToolsTab,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> impl IntoElement {
+    let label = label.into();
+    let debug_label = label.clone();
     let is_active = value == active;
     div()
         .id(SharedString::from(format!("ai-tools-tab:{label}")))
-        .debug_selector(|| format!("ai-tools-tab:{label}"))
+        .debug_selector(move || format!("ai-tools-tab:{debug_label}"))
         .px_3()
         .pt_1()
         .pb_2()
@@ -84,7 +118,7 @@ fn ai_tools_tab_button(
             gpui::FontWeight::NORMAL
         })
         .hover(move |style| style.text_color(colors.text))
-        .child(label.to_string())
+        .child(label.clone())
         .on_mouse_down(
             MouseButton::Left,
             cx.listener(move |this, _, _, cx| {
@@ -109,28 +143,28 @@ fn ai_tools_tab_bar(active: AiToolsTab, colors: UiColors, cx: &mut Context<Navic
         .items_center()
         .gap_1()
         .child(ai_tools_tab_button(
-            "工具",
+            tr("app.ai.tools.tab.tools"),
             AiToolsTab::Tools,
             active,
             colors,
             cx,
         ))
         .child(ai_tools_tab_button(
-            "本地 MCP",
+            tr("app.ai.tools.tab.mcp"),
             AiToolsTab::Mcp,
             active,
             colors,
             cx,
         ))
         .child(ai_tools_tab_button(
-            "内置插件",
+            tr("app.ai.tools.tab.plugins"),
             AiToolsTab::Plugins,
             active,
             colors,
             cx,
         ))
         .child(ai_tools_tab_button(
-            "安全审计",
+            tr("app.ai.tools.tab.audit"),
             AiToolsTab::Audit,
             active,
             colors,
@@ -142,7 +176,7 @@ fn ai_tools_tab_bar(active: AiToolsTab, colors: UiColors, cx: &mut Context<Navic
                 .debug_selector(|| "ai-refresh-tools".into())
                 .small()
                 .ghost()
-                .child("刷新")
+                .child(tr("app.common.refresh"))
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.reload_ai_settings(cx);
                 })),
@@ -150,12 +184,13 @@ fn ai_tools_tab_bar(active: AiToolsTab, colors: UiColors, cx: &mut Context<Navic
 }
 
 /// 表头单元（固定宽）。
-fn ai_table_head(label: &str, w: f32, colors: UiColors) -> Div {
+fn ai_table_head(label: impl Into<SharedString>, w: f32, colors: UiColors) -> Div {
+    let label = label.into();
     div()
         .w(px(w))
         .text_size(px(11.))
         .text_color(colors.muted)
-        .child(label.to_string())
+        .child(label)
 }
 
 /// 「工具」页签：标准工具表。
@@ -173,22 +208,24 @@ fn ai_tools_catalog_panel(
         .flex()
         .items_center()
         .gap_3()
-        .child(ai_table_head("工具", 210., colors))
-        .child(ai_table_head("职责", 320., colors))
-        .child(ai_table_head("风险", 120., colors))
-        .child(ai_table_head("分组", 80., colors))
-        .child(ai_table_head("启用", 60., colors))
+        .child(ai_table_head(tr("app.ai.tools.header.tool"), 210., colors))
+        .child(ai_table_head(tr("app.ai.tools.header.purpose"), 320., colors))
+        .child(ai_table_head(tr("app.ai.tools.header.risk"), 120., colors))
+        .child(ai_table_head(tr("app.ai.tools.header.group"), 80., colors))
+        .child(ai_table_head(tr("app.ai.tools.header.enabled"), 60., colors))
         .child(div().flex_1());
     let mut rows = div().flex().flex_col();
     for (id, group, desc, write) in AI_AGENT_TOOL_CATALOG.iter().chain(AI_MCP_ONLY_TOOL_CATALOG) {
+        let (group_label, desc) = ai_tool_text(id, group, desc);
         // 没有行 = 从未被显式关闭，按默认启用显示。
         let setting = panel.tool_settings.iter().find(|t| t.tool_id == *id);
         let enabled = setting.map(|t| t.enabled).unwrap_or(true);
         let revision = setting.map(|t| t.revision).unwrap_or(0);
         rows = rows.child(ai_tool_row(
             id,
-            group,
+            group_label,
             desc,
+            *group == "artifact",
             *write,
             enabled,
             revision,
@@ -204,7 +241,7 @@ fn ai_tools_catalog_panel(
             ai_execution_policy_panel(state,colors,cx),
         )
         .child(
-            settings_panel_group("工具目录", colors)
+            settings_panel_group(tr("app.ai.tools.catalog_title"), colors)
                 .child(
                     div()
                         .border_t_1()
@@ -219,10 +256,15 @@ fn ai_tools_catalog_panel(
                             div()
                                 .text_size(px(11.))
                                 .text_color(colors.muted)
-                                .child(format!(
-                                    "{} 个标准工具",
-                                    AI_AGENT_TOOL_CATALOG.len() + AI_MCP_ONLY_TOOL_CATALOG.len()
-                                )),
+                                .child(
+                                    tr("app.ai.tools.catalog_count")
+                                        .replace(
+                                            "%{count}",
+                                            &(AI_AGENT_TOOL_CATALOG.len()
+                                                + AI_MCP_ONLY_TOOL_CATALOG.len())
+                                            .to_string(),
+                                        ),
+                                ),
                         ),
                 )
                 .child(
@@ -231,14 +273,16 @@ fn ai_tools_catalog_panel(
                         .pb_3()
                         .text_size(px(11.))
                         .text_color(colors.muted)
-                        .child(format!(
-                            "产物工具独立启停；BI 与报表输出{}，关闭只停用内置生成能力，工具仍显示，已完成报告仍可查看和导出。",
-                            if state.ai_plugin_instances.iter().any(|plugin| plugin.id == fluxdb_app::BI_INSTANCE_ID && plugin.enabled) {
-                                "已启用"
+                        .child({
+                            let status = if state.ai_plugin_instances.iter().any(|plugin| {
+                                plugin.id == fluxdb_app::BI_INSTANCE_ID && plugin.enabled
+                            }) {
+                                tr("app.ai.status.enabled").to_string()
                             } else {
-                                "未启用"
-                            }
-                        )),
+                                tr("app.ai.status.disabled").to_string()
+                            };
+                            tr("app.ai.tools.artifact_note").replace("%{status}", &status)
+                        }),
                 )
                 // 窄窗口：工具表保持最小宽度并横向滚动，避免列被压扁/裁切。
                 .child(
@@ -261,8 +305,9 @@ fn ai_tools_catalog_panel(
 #[allow(clippy::too_many_arguments)]
 fn ai_tool_row(
     id: &str,
-    group: &str,
-    desc: &str,
+    group: SharedString,
+    desc: SharedString,
+    artifact: bool,
     write: bool,
     enabled: bool,
     revision: i64,
@@ -290,21 +335,21 @@ fn ai_tool_row(
                 .w(px(320.))
                 .text_size(px(12.))
                 .text_color(colors.muted)
-                .child(desc.to_string()),
+                .child(desc),
         )
-        .child(div().w(px(120.)).flex().items_start().child(if group == "产物" {
-            ai_pill("产物 / 本地", colors.info, colors).into_any_element()
+        .child(div().w(px(120.)).flex().items_start().child(if artifact {
+            ai_pill(tr("app.ai.tools.risk.artifact"), colors.info, colors).into_any_element()
         } else if write {
-            ai_pill("修改 / 授权", colors.warning, colors).into_any_element()
+            ai_pill(tr("app.ai.tools.risk.write"), colors.warning, colors).into_any_element()
         } else {
-            ai_pill("读取 / 有界", colors.success, colors).into_any_element()
+            ai_pill(tr("app.ai.tools.risk.read"), colors.success, colors).into_any_element()
         }))
         .child(
             div()
                 .w(px(80.))
                 .text_size(px(11.))
                 .text_color(colors.muted)
-                .child(group.to_string()),
+                .child(group),
         )
         .child(
             div()
@@ -363,7 +408,7 @@ fn ai_plugins_in_catalog_order(
 fn ai_plugins_panel(state: &AppState, colors: UiColors, cx: &mut Context<NavicatMain>) -> Div {
     let body: Vec<gpui::AnyElement> = if state.ai_plugin_instances.is_empty() {
         vec![ai_empty_state(
-            "暂无内置插件实例。",
+            &tr("app.ai.tools.plugins_empty"),
             colors,
         )]
     } else {
@@ -396,7 +441,7 @@ fn ai_plugins_panel(state: &AppState, colors: UiColors, cx: &mut Context<Navicat
                     .small()
                     .ghost()
                     .cursor_pointer()
-                    .child("管理")
+                    .child(tr("app.ai.tools.manage"))
                     .on_click(move |_, window, cx| {
                         let _ = manage_owner.update(cx, |this, cx| {
                             this.open_ai_plugin_config_dialog(&manage_click_id, window, cx);
@@ -425,14 +470,14 @@ fn ai_plugins_panel(state: &AppState, colors: UiColors, cx: &mut Context<Navicat
                                     .text_size(px(13.))
                                     .font_weight(gpui::FontWeight::SEMIBOLD)
                                     .text_color(if retired { colors.muted } else { colors.text })
-                                    .child(p.display_name.clone()),
+                                    .child(localize_ai_plugin_text(&p.display_name)),
                             )
                             .when(!p.summary.is_empty(), |this| {
                                 this.child(
                                     div()
                                         .text_size(px(11.))
                                         .text_color(colors.muted)
-                                        .child(p.summary.clone()),
+                                        .child(localize_ai_plugin_text(&p.summary)),
                                 )
                             })
                             .child(
@@ -444,13 +489,24 @@ fn ai_plugins_panel(state: &AppState, colors: UiColors, cx: &mut Context<Navicat
                                         div()
                                             .text_size(px(11.))
                                             .text_color(colors.muted)
-                                            .child(format!("{} · 内置", p.package_key)),
+                                            .child(tr("app.ai.tools.builtin").replace(
+                                                "%{package}",
+                                                &p.package_key,
+                                            )),
                                     )
                                     .when(retired, |this| {
-                                        this.child(ai_pill("待实现", colors.muted, colors))
+                                        this.child(ai_pill(
+                                            tr("app.ai.tools.unimplemented"),
+                                            colors.muted,
+                                            colors,
+                                        ))
                                     })
                                     .when(mandatory, |this| {
-                                        this.child(ai_pill("常驻能力", colors.info, colors))
+                                        this.child(ai_pill(
+                                            tr("app.ai.tools.mandatory"),
+                                            colors.info,
+                                            colors,
+                                        ))
                                     })
                                     .when(!mandatory && !retired, |this| {
                                         this.child(ai_status_pill(enabled, colors))
@@ -459,7 +515,11 @@ fn ai_plugins_panel(state: &AppState, colors: UiColors, cx: &mut Context<Navicat
                                         this.child(ai_jev_status_pill(&jev_status, colors))
                                     })
                                     .when_some(config_error.clone(), |this, message| {
-                                        this.child(ai_pill("配置不可读", colors.warning, colors))
+                                        this.child(ai_pill(
+                                            tr("app.ai.tools.config_unreadable"),
+                                            colors.warning,
+                                            colors,
+                                        ))
                                             .child(
                                                 div()
                                                     .text_size(px(11.))
@@ -513,13 +573,18 @@ fn ai_plugins_panel(state: &AppState, colors: UiColors, cx: &mut Context<Navicat
                         div()
                             .text_size(px(12.))
                             .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .child("内置能力"),
+                            .child(tr("app.ai.tools.builtin_title")),
                     )
                     .child(
                         div()
                             .text_size(px(11.))
                             .text_color(colors.muted)
-                            .child(format!("{} 项", state.ai_plugin_instances.len())),
+                            .child(
+                                tr("app.ai.tools.item_count").replace(
+                                    "%{count}",
+                                    &state.ai_plugin_instances.len().to_string(),
+                                ),
+                            ),
                     ),
             )
             .child(div().children(body)),
@@ -529,9 +594,9 @@ fn ai_plugins_panel(state: &AppState, colors: UiColors, cx: &mut Context<Navicat
 /// 启停状态标签：可选能力显示真实启停，不显示成"一排错误"。
 fn ai_status_pill(enabled: bool, colors: UiColors) -> impl IntoElement {
     if enabled {
-        ai_pill("已启用", colors.success, colors)
+        ai_pill(tr("app.ai.status.enabled"), colors.success, colors)
     } else {
-        ai_pill("已关闭", colors.muted, colors)
+        ai_pill(tr("app.ai.status.disabled"), colors.muted, colors)
     }
 }
 
@@ -541,18 +606,21 @@ fn ai_status_pill(enabled: bool, colors: UiColors) -> impl IntoElement {
 fn ai_jev_status_pill(status: &fluxdb_app::JevStatus, colors: UiColors) -> impl IntoElement {
     use fluxdb_app::JevStatusKind as K;
     let (label, color) = match status.kind {
-        K::Available => ("可用", colors.success),
-        K::NeedsChoice => ("待选择模型", colors.warning),
-        K::Unavailable => ("暂不可用", colors.warning),
-        K::NotConfigured => ("未配置", colors.muted),
-        K::Disabled => ("已禁用", colors.muted),
+        K::Available => (tr("app.ai.jev.available"), colors.success),
+        K::NeedsChoice => (tr("app.ai.jev.needs_choice"), colors.warning),
+        K::Unavailable => (tr("app.ai.jev.unavailable"), colors.warning),
+        K::NotConfigured => (tr("app.ai.jev.not_configured"), colors.muted),
+        K::Disabled => (tr("app.ai.jev.disabled"), colors.muted),
     };
     let text = match (status.detail.clone(), status.circuit_until_ms) {
-        (Some(reason), _) => format!("{label}：{reason}"),
-        (None, Some(until)) => format!("{label}：熔断至 {until}"),
+        (Some(reason), _) => format!("{label}: {}", localize_ai_plugin_text(&reason)),
+        (None, Some(until)) => format!(
+            "{}: {until}",
+            tr("app.ai.jev.circuit_until").replace("%{label}", &label)
+        ),
         (None, None) => label.to_string(),
     };
-    div().id("ai-jev-status").child(ai_pill(label, color, colors)).tooltip(move |window, cx| {
+    div().id("ai-jev-status").child(ai_pill(label.clone(), color, colors)).tooltip(move |window, cx| {
         Tooltip::new(text.clone()).build(window, cx)
     })
 }
@@ -585,7 +653,7 @@ fn ai_audit_panel(state: &AppState, panel: &AiSettingsPanelState, colors: UiColo
         .collect();
 
     let mut panel_body = div().flex().flex_col().gap_3().child(
-        settings_panel_group("安全审计", colors).child(
+        settings_panel_group(tr("app.ai.audit.title"), colors).child(
             div()
                 .px_4()
                 .py_3()
@@ -603,14 +671,14 @@ fn ai_audit_panel(state: &AppState, panel: &AiSettingsPanelState, colors: UiColo
                                 .text_size(px(12.))
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
                                 .text_color(colors.text)
-                                .child("安全审计始终开启（只读）"),
+                                .child(tr("app.ai.audit.always_on")),
                         ),
                 )
                 .child(
                     div()
                         .text_size(px(11.))
                         .text_color(colors.muted)
-                        .child("参数或目标变化会让旧审计与审批失效；审计无法执行或保存时，操作不会继续。规则在「内置插件 → 调用前安全审计 → 管理」中调整。"),
+                        .child(tr("app.ai.audit.description")),
                 ),
         ),
     );
@@ -618,10 +686,22 @@ fn ai_audit_panel(state: &AppState, panel: &AiSettingsPanelState, colors: UiColo
     // 统计卡即筛选器：点一张筛一类，再点同一张回到全部。
     let mut stats = div().flex().items_center().gap_2();
     for (decision, label, count) in [
-        (None, "全部判断", counts.all),
-        (Some(fluxdb_app::AiAuditDecision::Allow), "允许", counts.allow),
-        (Some(fluxdb_app::AiAuditDecision::RequireApproval), "需审批", counts.approval),
-        (Some(fluxdb_app::AiAuditDecision::Deny), "拒绝", counts.deny),
+        (None, tr("app.ai.audit.filter.all"), counts.all),
+        (
+            Some(fluxdb_app::AiAuditDecision::Allow),
+            tr("app.ai.audit.filter.allow"),
+            counts.allow,
+        ),
+        (
+            Some(fluxdb_app::AiAuditDecision::RequireApproval),
+            tr("app.ai.audit.filter.approval"),
+            counts.approval,
+        ),
+        (
+            Some(fluxdb_app::AiAuditDecision::Deny),
+            tr("app.ai.audit.filter.deny"),
+            counts.deny,
+        ),
     ] {
         stats = stats.child(ai_audit_stat_card(
             decision,
@@ -647,7 +727,7 @@ fn ai_audit_panel(state: &AppState, panel: &AiSettingsPanelState, colors: UiColo
                 .small()
                 .ghost()
                 .cursor_pointer()
-                .child("清除筛选")
+                .child(tr("app.ai.audit.clear_filter"))
                 .on_click(cx.listener(|this, _, window, cx| {
                     this.clear_ai_audit_filter(window, cx)
                 })),
@@ -657,10 +737,10 @@ fn ai_audit_panel(state: &AppState, panel: &AiSettingsPanelState, colors: UiColo
         div()
             .text_size(px(11.))
             .text_color(colors.muted)
-            .child(format!(
-                "保留最近 {} 条 · 仅追加，不可修改",
-                fluxdb_app::AI_AUDIT_PAGE_SIZE
-            )),
+            .child(
+                tr("app.ai.audit.retention")
+                    .replace("%{count}", &fluxdb_app::AI_AUDIT_PAGE_SIZE.to_string()),
+            ),
     );
     panel_body = panel_body.child(toolbar);
 
@@ -668,14 +748,14 @@ fn ai_audit_panel(state: &AppState, panel: &AiSettingsPanelState, colors: UiColo
     let list_body = if let Some(error) = state.ai_audit_error.clone() {
         ai_audit_error_state(&error, colors)
     } else if visible.is_empty() {
-        ai_empty_state(
-            if rows.is_empty() {
-                "暂无审计记录。"
+        {
+            let text = if rows.is_empty() {
+                tr("app.ai.audit.empty").to_string()
             } else {
-                "当前筛选下没有匹配的审计记录。"
-            },
-            colors,
-        )
+                tr("app.ai.audit.no_match").to_string()
+            };
+            ai_empty_state(&text, colors)
+        }
     } else {
         let mut list = div().flex().flex_col();
         for row in &visible {
@@ -685,7 +765,7 @@ fn ai_audit_panel(state: &AppState, panel: &AiSettingsPanelState, colors: UiColo
     };
 
     panel_body.child(
-        settings_panel_group("审计记录", colors)
+        settings_panel_group(tr("app.ai.audit.records"), colors)
             .child(
                 div()
                     .border_t_1()
@@ -695,10 +775,10 @@ fn ai_audit_panel(state: &AppState, panel: &AiSettingsPanelState, colors: UiColo
                     .flex()
                     .items_center()
                     .gap_3()
-                    .child(ai_table_head("调用 / 来源", 240., colors))
-                    .child(ai_table_head("目标", 190., colors))
-                    .child(ai_table_head("判断", 90., colors))
-                    .child(ai_table_head("匹配规则", 210., colors))
+                    .child(ai_table_head(tr("app.ai.audit.header.source"), 240., colors))
+                    .child(ai_table_head(tr("app.ai.audit.header.target"), 190., colors))
+                    .child(ai_table_head(tr("app.ai.audit.header.decision"), 90., colors))
+                    .child(ai_table_head(tr("app.ai.audit.header.rules"), 210., colors))
                     .child(div().flex_1()),
             )
             .child(list_body),
@@ -708,12 +788,13 @@ fn ai_audit_panel(state: &AppState, panel: &AiSettingsPanelState, colors: UiColo
 /// 一张统计卡：既是数字也是筛选入口。
 fn ai_audit_stat_card(
     decision: Option<fluxdb_app::AiAuditDecision>,
-    label: &str,
+    label: impl Into<SharedString>,
     count: usize,
     selected: bool,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> gpui::AnyElement {
+    let label = label.into();
     let selector = format!(
         "ai-audit-stat:{}",
         decision.map(fluxdb_app::AiAuditDecision::key).unwrap_or("all")
@@ -753,7 +834,7 @@ fn ai_audit_stat_card(
                     div()
                         .text_size(px(11.))
                         .text_color(if selected { colors.text } else { colors.muted })
-                        .child(label.to_string()),
+                        .child(label),
                 )
                 .when_some(dot, |this, color| {
                     this.child(div().size(px(6.)).rounded_full().bg(color))
@@ -832,7 +913,11 @@ fn ai_audit_row(
             div()
                 .text_size(px(11.))
                 .text_color(colors.muted)
-                .child(if expanded { "收起" } else { "详情" }),
+                .child(if expanded {
+                    tr("app.ai.audit.collapse")
+                } else {
+                    tr("app.ai.audit.details")
+                }),
         )
         .on_click(cx.listener(move |this, _, _, cx| {
             this.toggle_ai_audit_detail(&click_id, cx);
@@ -866,7 +951,7 @@ fn ai_audit_detail(row: &fluxdb_app::AiAuditRow, colors: UiColors) -> Div {
         .flex_col()
         .gap_2()
         .bg(colors.border_soft);
-    let line = |key: &str, value: gpui::AnyElement| {
+    let line = |key: SharedString, value: gpui::AnyElement| {
         div()
             .flex()
             .items_start()
@@ -877,13 +962,13 @@ fn ai_audit_detail(row: &fluxdb_app::AiAuditRow, colors: UiColors) -> Div {
                     .flex_shrink_0()
                     .text_size(px(11.))
                     .text_color(colors.muted)
-                    .child(key.to_string()),
+                    .child(key),
             )
             .child(value)
     };
     if !row.statement.is_empty() {
         detail = detail.child(line(
-            "最终计划",
+            tr("app.ai.audit.detail.final_plan"),
             div()
                 .flex_1()
                 .min_w(px(0.))
@@ -900,7 +985,7 @@ fn ai_audit_detail(row: &fluxdb_app::AiAuditRow, colors: UiColors) -> Div {
         ));
     }
     detail = detail.child(line(
-        "命中规则",
+        tr("app.ai.audit.detail.matched_rules"),
         div()
             .flex_1()
             .min_w(px(0.))
@@ -914,36 +999,46 @@ fn ai_audit_detail(row: &fluxdb_app::AiAuditRow, colors: UiColors) -> Div {
             .into_any_element(),
     ));
     detail = detail.child(line(
-        "plan hash",
+        tr("app.ai.audit.detail.plan_hash"),
         div()
             .flex_1()
             .min_w(px(0.))
             .text_size(px(11.))
             .text_color(colors.muted)
             .child(format!(
-                "{} · {} · 规则集 {}",
-                row.plan_hash, row.stage, row.ruleset_version
+                "{} · {} · {} {}",
+                row.plan_hash,
+                row.stage,
+                tr("app.ai.audit.ruleset"),
+                row.ruleset_version
             ))
             .into_any_element(),
     ));
     detail.child(line(
-        "说明",
+        tr("app.ai.audit.detail.note"),
         div()
             .flex_1()
             .min_w(px(0.))
             .text_size(px(11.))
             .text_color(colors.muted)
-            .child("审计只记录规则与对象，不含参数值之外的密钥或密文。")
+            .child(tr("app.ai.audit.detail.note_text"))
             .into_any_element(),
     ))
 }
 
 /// 判定标签：颜色与工具卡的允许/需审批/拒绝一致（绿/黄/红）。
-fn ai_audit_decision_tag(decision: fluxdb_app::AiAuditDecision, colors: UiColors) -> (&'static str, gpui::Rgba) {
+fn ai_audit_decision_tag(
+    decision: fluxdb_app::AiAuditDecision,
+    colors: UiColors,
+) -> (SharedString, gpui::Rgba) {
     match decision {
-        fluxdb_app::AiAuditDecision::Allow => (decision.label(), colors.success),
-        fluxdb_app::AiAuditDecision::RequireApproval => (decision.label(), colors.warning),
-        fluxdb_app::AiAuditDecision::Deny => (decision.label(), colors.danger),
+        fluxdb_app::AiAuditDecision::Allow => {
+            (tr("app.ai.audit.filter.allow"), colors.success)
+        }
+        fluxdb_app::AiAuditDecision::RequireApproval => {
+            (tr("app.ai.audit.filter.approval"), colors.warning)
+        }
+        fluxdb_app::AiAuditDecision::Deny => (tr("app.ai.audit.filter.deny"), colors.danger),
     }
 }
 
@@ -961,7 +1056,10 @@ fn ai_audit_error_state(message: &str, colors: UiColors) -> gpui::AnyElement {
                 .debug_selector(|| "ai-audit-error".into())
                 .text_size(px(12.))
                 .text_color(colors.danger)
-                .child(format!("审计记录加载失败：{message}")),
+                .child(format!(
+                    "{}: {message}",
+                    tr("app.ai.audit.load_failed")
+                )),
         )
         .into_any_element()
 }

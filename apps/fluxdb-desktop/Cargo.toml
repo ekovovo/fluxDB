@@ -16,6 +16,7 @@ futures = "0.3"
 fluxdb-app = { path = "../../crates/fluxdb-app" }
 fluxdb-core = { path = "../../crates/fluxdb-core" }
 fluxdb-editor-core = { path = "../../crates/fluxdb-editor-core" }
+fluxdb-i18n = { path = "../../crates/fluxdb-i18n" }
 
 fluxdb-mcp = { path = "../fluxdb-mcp" }
 fluxdb-storage = { path = "../../crates/fluxdb-storage" }
@@ -39,6 +40,7 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 lsp-types = "0.97"
 portable-pty = "0.9"
 regex = "1.13"
+rust-i18n = "=4.2.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 smol = "2"
@@ -50,6 +52,10 @@ tree-sitter-json = "=0.24.8"
 tree-sitter-sequel = "=0.3.11"
 streaming-iterator = "0.1"
 gpui-fps = "=0.7.1"
+
+[dev-dependencies]
+gpui = { package = "gpui-pre", version = "=0.3.8", features = ["test-support"] }
+tempfile = "3"
 
 # Linux 首版不启用系统托盘（见 docs/2026-09-14-windows-linux-support-plan.md §3.2/§4.3）。
 # tray-icon 在 Linux 目标上会无条件链接 GTK（libappindicator → gtk），即使 default-features=false 且不调用托盘函数也一样，

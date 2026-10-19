@@ -1137,10 +1137,10 @@ fn move_table_folder_name(folders: &mut [String], name: &str, direction: isize) 
 }
 
 fn next_table_folder_name(existing: &[String]) -> String {
-    let mut name = "新建组".to_string();
+    let mut name = tr("app.tree.new_folder").to_string();
     let mut index = 1;
     while existing.iter().any(|existing| existing == &name) {
-        name = format!("新建组 {index}");
+        name = tr("app.tree.new_folder_indexed").replace("%{index}", &index.to_string());
         index += 1;
     }
     name
@@ -1357,10 +1357,10 @@ fn table_header(colors: UiColors) -> impl IntoElement {
         .items_center()
         .text_size(px(15.))
         .text_color(colors.muted)
-        .child(cell("名称", 210., colors))
-        .child(cell("行", 55., colors))
-        .child(cell("修改日期", 150., colors))
-        .child(cell_flex("注释", colors))
+        .child(cell(tr("app.tree.header.name").to_string(), 210., colors))
+        .child(cell(tr("app.tree.header.rows").to_string(), 55., colors))
+        .child(cell(tr("app.tree.header.modified").to_string(), 150., colors))
+        .child(cell_flex(tr("app.tree.header.comment").to_string(), colors))
 }
 
 fn object_row(

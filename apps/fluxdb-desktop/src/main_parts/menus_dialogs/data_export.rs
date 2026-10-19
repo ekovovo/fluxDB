@@ -4,7 +4,11 @@ const DATA_EXPORT_VISIBLE_LOG_LIMIT: usize = 300;
 impl NavicatMain {
     fn open_table_data_export(&mut self, tab_id: TabId, cx: &mut Context<Self>) {
         let Some((object, columns)) = self.table_data_export_source(tab_id) else {
-            self.show_message("请先加载表数据", AppMessageKind::Warning, cx);
+            self.show_message(
+                tr("app.data_export.load_first"),
+                AppMessageKind::Warning,
+                cx,
+            );
             return;
         };
         let selected_fields = columns
@@ -40,7 +44,11 @@ impl NavicatMain {
             _ => self.controller.state().active_tab,
         };
         let Some(tab_id) = tab_id else {
-            self.show_message("打开表数据失败", AppMessageKind::Error, cx);
+            self.show_message(
+                tr("app.data_export.open_failed"),
+                AppMessageKind::Error,
+                cx,
+            );
             return;
         };
         if self.table_data_export_source(tab_id).is_some() {
@@ -48,7 +56,11 @@ impl NavicatMain {
             return;
         }
         self.pending_table_data_export_after_load = Some(tab_id);
-        self.show_message("正在加载表字段，加载完成后打开导出", AppMessageKind::Info, cx);
+        self.show_message(
+            tr("app.data_export.loading_fields"),
+            AppMessageKind::Info,
+            cx,
+        );
         cx.notify();
     }
 
@@ -284,7 +296,11 @@ impl NavicatMain {
             .into_iter()
             .find(|object| object.name == table_name)
         else {
-            self.show_message("未找到可导出的表", AppMessageKind::Warning, cx);
+            self.show_message(
+                tr("app.data_export.no_table"),
+                AppMessageKind::Warning,
+                cx,
+            );
             return;
         };
 
@@ -296,20 +312,28 @@ impl NavicatMain {
             _ => self.controller.state().active_tab,
         };
         let Some(tab_id) = tab_id else {
-            self.show_message("切换导出表失败", AppMessageKind::Error, cx);
+            self.show_message(
+                tr("app.data_export.switch_failed"),
+                AppMessageKind::Error,
+                cx,
+            );
             return;
         };
         if self.table_data_export_source(tab_id).is_some() {
             self.open_table_data_export(tab_id, cx);
             self.show_message(
-                format!("已切换导出表：{}", object.name),
+                tr("app.data_export.switched").replace("%{name}", &object.name),
                 AppMessageKind::Info,
                 cx,
             );
             return;
         }
         self.pending_table_data_export_after_load = Some(tab_id);
-        self.show_message("正在加载表字段，加载完成后更新导出对象", AppMessageKind::Info, cx);
+        self.show_message(
+            tr("app.data_export.loading_fields_update"),
+            AppMessageKind::Info,
+            cx,
+        );
         cx.notify();
     }
 
@@ -409,7 +433,11 @@ impl NavicatMain {
             return;
         };
         if form.selected_fields.is_empty() {
-            self.show_message("请选择至少一个字段", AppMessageKind::Warning, cx);
+            self.show_message(
+                tr("app.data_export.select_field"),
+                AppMessageKind::Warning,
+                cx,
+            );
             return;
         }
         let fields = form
@@ -424,7 +452,11 @@ impl NavicatMain {
         self.data_export_log_task = Some(task_id);
         self.cleanup_table_data_export_filter_state();
         self.pending_data_export = None;
-        self.show_message("选择保存位置后开始导出", AppMessageKind::Success, cx);
+        self.show_message(
+            tr("app.data_export.choose_path"),
+            AppMessageKind::Success,
+            cx,
+        );
         self.spawn_table_data_export_task(task_id, receiver, form, fields, cx);
         cx.notify();
     }
@@ -445,11 +477,12 @@ impl NavicatMain {
                 index: 1,
                 success: true,
                 elapsed_ms: 0,
-                message: format!(
-                    "准备导出 {} 个字段，范围：{}",
-                    field_count,
-                    table_data_export_scope_label(form.scope)
-                ),
+                message: tr("app.data_export.preparing")
+                    .replace("%{fields}", &field_count.to_string())
+                    .replace(
+                        "%{scope}",
+                        &table_data_export_scope_label(form.scope),
+                    ),
             }],
             error: None,
             cancel_requested: false,
@@ -480,7 +513,7 @@ impl NavicatMain {
                         &view,
                         cx,
                         task_id,
-                        Err(format!("选择保存位置失败：{error}")),
+                        Err(format!("{}: {error}", tr("app.data_export.choose_path_failed"))),
                         false,
                     );
                     None
@@ -490,7 +523,7 @@ impl NavicatMain {
                         &view,
                         cx,
                         task_id,
-                        Err(format!("选择保存位置失败：{error}")),
+                        Err(format!("{}: {error}", tr("app.data_export.choose_path_failed"))),
                         false,
                     );
                     None
@@ -559,7 +592,11 @@ impl NavicatMain {
         if let Some(flag) = self._data_export_cancel_flags.get(&task_id) {
             flag.store(true, Ordering::Relaxed);
         }
-        self.show_message("已请求取消，当前批次完成后停止", AppMessageKind::Warning, cx);
+        self.show_message(
+            tr("app.data_export.cancel_requested"),
+            AppMessageKind::Warning,
+            cx,
+        );
         cx.notify();
     }
 
@@ -568,7 +605,11 @@ impl NavicatMain {
             return;
         };
         cx.write_to_clipboard(ClipboardItem::new_string(table_data_export_log_text(task)));
-        self.show_message("已复制日志", AppMessageKind::Success, cx);
+        self.show_message(
+            tr("app.data_export.log_copied"),
+            AppMessageKind::Success,
+            cx,
+        );
     }
 
     fn clear_table_data_export_task(&mut self, task_id: u64, cx: &mut Context<Self>) {
@@ -577,7 +618,11 @@ impl NavicatMain {
             .iter()
             .any(|task| task.id == task_id && task.running())
         {
-            self.show_message("任务执行中，暂不能清除", AppMessageKind::Warning, cx);
+            self.show_message(
+                tr("app.data_export.running_no_clear"),
+                AppMessageKind::Warning,
+                cx,
+            );
             return;
         }
         self.data_export_tasks.retain(|task| task.id != task_id);
@@ -667,7 +712,7 @@ fn run_table_data_export(
                     let _ = sender.send(TableDataExportProgress {
                         rows: rows as u64,
                         elapsed_ms: started_at.elapsed().as_millis() as u64,
-                        message: format!("已导出 {} 行", exported),
+                        message: tr("app.data_export.toast.exported").replace("%{count}", &exported.to_string()),
                     });
                     true
                 }
@@ -679,7 +724,7 @@ fn run_table_data_export(
             Ok(()) => cancel_flag.load(Ordering::Relaxed),
             Err(error) => {
                 let _ = fs::remove_file(&temp_path);
-                return Err(anyhow::anyhow!("导出失败：{error}"));
+                return Err(anyhow::anyhow!(tr("app.data_export.error.failed").replace("%{error}", &error.to_string())));
             }
         }
     } else {
@@ -702,7 +747,7 @@ fn run_table_data_export(
             let _ = sender.send(TableDataExportProgress {
                 rows,
                 elapsed_ms: started_at.elapsed().as_millis() as u64,
-                message: format!("已导出第 {} 批，累计 {} 行", offset / DATA_EXPORT_BATCH_SIZE + 1, exported),
+                message: tr("app.data_export.toast.batch").replace("%{batch}", &(offset / DATA_EXPORT_BATCH_SIZE + 1).to_string()).replace("%{total}", &exported.to_string()),
             });
             if rows == 0 || !page.has_more {
                 break;
@@ -719,7 +764,7 @@ fn run_table_data_export(
     } else {
         // 成功：临时文件原子改名到最终路径。
         fs::rename(&temp_path, &path)
-            .map_err(|error| anyhow::anyhow!("导出文件落盘失败：{error}"))?;
+            .map_err(|error| anyhow::anyhow!(tr("app.data_export.error.write").replace("%{error}", &error.to_string())))?;
         Ok(TableDataExportResult { canceled: false })
     }
 }
@@ -806,14 +851,14 @@ fn table_data_export_finish_on_ui(
                         index: task.logs.len() + 1,
                         success: true,
                         elapsed_ms: task.started_at.elapsed().as_millis() as u64,
-                        message: "导出已取消".to_string(),
+                        message: tr("app.data_export.toast.cancelled").to_string(),
                     });
                 } else {
                     task.logs.push(TableDataExportLogEntry {
                         index: task.logs.len() + 1,
                         success: true,
                         elapsed_ms: task.started_at.elapsed().as_millis() as u64,
-                        message: format!("导出完成，共 {} 行", task.exported_rows),
+                        message: tr("app.data_export.toast.completed").replace("%{count}", &task.exported_rows.to_string()),
                     });
                 }
                 let message = table_data_export_task_message(task);
@@ -915,7 +960,7 @@ fn table_data_export_modal(
     let active_tab = form.active_tab;
     let panel = data_export_modal_panel(TableDataExportModalClose::Form, colors, cx)
         .child(data_export_modal_header(
-            "导出数据",
+            tr("app.data_export.title"),
             TableDataExportModalClose::Form,
             colors,
             cx,
@@ -978,7 +1023,7 @@ fn table_data_export_log_modal(
     let cancel_requested = task.cancel_requested;
     let panel = data_export_modal_panel(TableDataExportModalClose::Log, colors, cx)
         .child(data_export_modal_header(
-            "导出数据",
+            tr("app.data_export.title"),
             TableDataExportModalClose::Log,
             colors,
             cx,
@@ -1053,11 +1098,12 @@ fn data_export_modal_panel(
 }
 
 fn data_export_modal_header(
-    title: &'static str,
+    title: impl Into<SharedString>,
     close_action: TableDataExportModalClose,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
+    let title = title.into();
     div()
         .h(px(56.))
         .flex_none()
@@ -1112,19 +1158,20 @@ fn data_export_tabs(
         .items_center()
         .border_b_1()
         .border_color(colors.border_soft)
-        .child(data_export_tab_button("常规", active == TableDataExportTab::General || active == TableDataExportTab::Fields, TableDataExportTab::General, task_id, colors, cx))
-        .child(data_export_tab_button("条件", active == TableDataExportTab::Conditions, TableDataExportTab::Conditions, task_id, colors, cx))
-        .child(data_export_tab_button("消息日志", active == TableDataExportTab::Log, TableDataExportTab::Log, task_id, colors, cx))
+        .child(data_export_tab_button(tr("app.data_export.tab.general"), active == TableDataExportTab::General || active == TableDataExportTab::Fields, TableDataExportTab::General, task_id, colors, cx))
+        .child(data_export_tab_button(tr("app.data_export.tab.conditions"), active == TableDataExportTab::Conditions, TableDataExportTab::Conditions, task_id, colors, cx))
+        .child(data_export_tab_button(tr("app.data_export.tab.log"), active == TableDataExportTab::Log, TableDataExportTab::Log, task_id, colors, cx))
 }
 
 fn data_export_tab_button(
-    label: &'static str,
+    label: impl Into<SharedString>,
     active: bool,
     tab: TableDataExportTab,
     task_id: Option<u64>,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
+    let label = label.into();
     div()
         .h(px(34.))
         .px_3()
@@ -1189,7 +1236,7 @@ fn data_export_object_picker(
         .flex()
         .items_center()
         .gap_3()
-        .child(data_export_form_row_label("对象", colors))
+        .child(data_export_form_row_label(tr("app.data_export.object"), colors))
         .child(
             div()
                 .flex_1()
@@ -1199,7 +1246,7 @@ fn data_export_object_picker(
                 .items_center()
                 .gap_3()
                 .child(data_export_object_select_field(
-                    "库",
+                    tr("app.data_export.database"),
                     database_select,
                     true,
                     window,
@@ -1207,7 +1254,7 @@ fn data_export_object_picker(
                     cx,
                 ))
                 .child(data_export_object_select_field(
-                    "表",
+                    tr("app.data_export.table"),
                     table_select,
                     false,
                     window,
@@ -1218,13 +1265,14 @@ fn data_export_object_picker(
 }
 
 fn data_export_object_select_field(
-    label: &'static str,
+    label: impl Into<SharedString>,
     select: Entity<SelectState<SearchableVec<String>>>,
     disabled: bool,
     window: &mut Window,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
+    let label = label.into();
     div()
         .flex_1()
         .min_w(px(0.))
@@ -1273,8 +1321,8 @@ fn data_export_object_select_box(
             Select::new(&select)
                 .appearance(false)
                 .small()
-                .placeholder("选择...")
-                .search_placeholder("选择表...")
+                .placeholder(tr("app.data_export.select"))
+                .search_placeholder(tr("app.data_export.select_table"))
                 .disabled(disabled)
                 .w_full()
                 .h_full()
@@ -1291,7 +1339,7 @@ fn data_export_format_grid(
         .flex()
         .items_center()
         .gap_3()
-        .child(data_export_form_row_label("格式", colors));
+        .child(data_export_form_row_label(tr("app.data_export.format"), colors));
     let mut row = div().flex_1().min_w(px(0.)).flex().gap_2();
     for format in TableDataExportFormat::all() {
         let format_value = *format;
@@ -1333,7 +1381,7 @@ fn data_export_fields_picker(
                         .flex()
                         .items_center()
                         .gap_2()
-                        .child(data_export_section_label("字段", colors))
+                        .child(data_export_section_label(tr("app.data_export.fields"), colors))
                         .child(
                             div()
                                 .text_color(colors.muted)
@@ -1348,7 +1396,7 @@ fn data_export_fields_picker(
                         .child(
                             Button::new("data-export-select-all-fields")
                                 .xsmall()
-                                .label("全选")
+                                .label(tr("app.data_export.select_all"))
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.select_all_table_data_export_fields(cx);
                                     cx.stop_propagation();
@@ -1357,7 +1405,7 @@ fn data_export_fields_picker(
                         .child(
                             Button::new("data-export-invert-fields")
                                 .xsmall()
-                                .label("反选")
+                                .label(tr("app.data_export.invert"))
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.invert_table_data_export_fields(cx);
                                     cx.stop_propagation();
@@ -1366,7 +1414,7 @@ fn data_export_fields_picker(
                         .child(
                             Button::new("data-export-select-visible-fields")
                                 .xsmall()
-                                .label("仅当前可见字段")
+                                .label(tr("app.data_export.visible_fields"))
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.select_visible_table_data_export_fields(cx);
                                     cx.stop_propagation();
@@ -1450,7 +1498,7 @@ fn data_export_conditions_body(
         .flex()
         .flex_col()
         .gap_3()
-        .child(data_export_section_label("导出范围", colors))
+        .child(data_export_section_label(tr("app.data_export.scope"), colors))
         .child(data_export_scope_segments(form.scope, colors, cx))
         .when(form.scope == TableDataExportScope::CustomRules, |this| {
             this.child(data_export_custom_summary(&form, colors, cx))
@@ -1473,21 +1521,21 @@ fn data_export_scope_segments(
         .flex()
         .gap_1()
         .child(data_export_scope_segment(
-            "当前筛选条件",
+            tr("app.data_export.scope_current"),
             active == TableDataExportScope::CurrentConditions,
             TableDataExportScope::CurrentConditions,
             colors,
             cx,
         ))
         .child(data_export_scope_segment(
-            "导出全部",
+            tr("app.data_export.scope_all"),
             active == TableDataExportScope::AllRows,
             TableDataExportScope::AllRows,
             colors,
             cx,
         ))
         .child(data_export_scope_segment(
-            "自定义条件",
+            tr("app.data_export.scope_custom"),
             active == TableDataExportScope::CustomRules,
             TableDataExportScope::CustomRules,
             colors,
@@ -1496,12 +1544,13 @@ fn data_export_scope_segments(
 }
 
 fn data_export_scope_segment(
-    title: &'static str,
+    title: impl Into<SharedString>,
     selected: bool,
     scope: TableDataExportScope,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
+    let title = title.into();
     div()
         .flex_1()
         .h_full()
@@ -1542,11 +1591,11 @@ fn data_export_preview_card(
         .map(|preview| preview.status)
         .unwrap_or(TableDataExportPreviewStatus::Loading);
     let (count_label, sql, failed) = match status {
-        TableDataExportPreviewStatus::Loading => ("统计中...".to_string(), "正在生成 SQL 预览...".to_string(), false),
+        TableDataExportPreviewStatus::Loading => (tr("app.data_export.counting").to_string(), tr("app.data_export.generating_preview").to_string(), false),
         TableDataExportPreviewStatus::Ready { sql, row_count } => {
-            (format!("{} 行", table_data_export_format_count(row_count)), sql, false)
+            (tr("app.data.count.rows").replace("%{count}", &table_data_export_format_count(row_count)), sql, false)
         }
-        TableDataExportPreviewStatus::Failed(error) => ("未知".to_string(), error, true),
+        TableDataExportPreviewStatus::Failed(error) => (tr("app.data_export.unknown").to_string(), error, true),
     };
     div()
         .rounded(colors.radius)
@@ -1566,7 +1615,7 @@ fn data_export_preview_card(
                         .flex()
                         .items_center()
                         .gap_2()
-                        .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child("预计导出"))
+                        .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child(tr("app.data_export.estimated")))
                         .child(
                             div()
                                 .text_color(if failed { rgb(0xd64545) } else { colors.text })
@@ -1575,7 +1624,7 @@ fn data_export_preview_card(
                         .child(
                             Button::new("data-export-refresh-preview")
                                 .xsmall()
-                                .label("刷新")
+                                .label(tr("app.common.refresh"))
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.refresh_table_data_export_preview(true, cx);
                                     cx.stop_propagation();
@@ -1621,7 +1670,7 @@ fn data_export_sql_preview_box(
                 .text_size(px(11.))
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .text_color(colors.muted)
-                .child("SQL 预览"),
+                .child(tr("app.data_export.sql_preview")),
         )
         .child(
             div()
@@ -1667,15 +1716,17 @@ fn data_export_custom_summary(
                 .flex()
                 .flex_col()
                 .gap_1()
-                .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child("自定义条件"))
+                .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child(tr("app.data_export.custom_conditions")))
                 .child(
                     div()
                         .text_size(px(12.))
                         .text_color(colors.muted)
                         .child(if has_rules {
-                            format!("筛选 {filter_count} 个 · 排序 {sort_count} 个")
+                            tr("app.data_export.rules_summary")
+                                .replace("%{filters}", &filter_count.to_string())
+                                .replace("%{sorts}", &sort_count.to_string())
                         } else {
-                            "未设置筛选和排序，将按全表导出".to_string()
+                            tr("app.data_export.no_rules").to_string()
                         }),
                 ),
         )
@@ -1688,7 +1739,7 @@ fn data_export_custom_summary(
                     this.child(
                         Button::new("data-export-clear-custom")
                             .xsmall()
-                            .label("清空")
+                            .label(tr("app.data_export.clear"))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.clear_table_data_export_custom_conditions(cx);
                                 cx.stop_propagation();
@@ -1698,7 +1749,11 @@ fn data_export_custom_summary(
                 .child(
                     Button::new("data-export-edit-custom")
                         .xsmall()
-                        .label(if has_rules { "编辑条件" } else { "设置条件" })
+                        .label(if has_rules {
+                            tr("app.data_export.edit_conditions")
+                        } else {
+                            tr("app.data_export.set_conditions")
+                        })
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.open_table_data_export_custom_conditions(cx);
                             cx.stop_propagation();
@@ -1818,7 +1873,7 @@ fn data_export_custom_modal_header(colors: UiColors, cx: &mut Context<NavicatMai
             div()
                 .text_size(px(16.))
                 .font_weight(gpui::FontWeight::SEMIBOLD)
-                .child("设置导出条件"),
+                .child(tr("app.data_export.conditions_title")),
         )
         .child(
             div()
@@ -1853,7 +1908,7 @@ fn data_export_custom_modal_footer(colors: UiColors, cx: &mut Context<NavicatMai
         .gap_2()
         .child(
             Button::new("data-export-custom-cancel")
-                .label("取消")
+                .label(tr("app.common.cancel"))
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.cancel_table_data_export_custom_conditions(cx);
                     cx.stop_propagation();
@@ -1861,7 +1916,7 @@ fn data_export_custom_modal_footer(colors: UiColors, cx: &mut Context<NavicatMai
         )
         .child(
             Button::new("data-export-custom-apply")
-                .label("应用")
+                .label(tr("app.data_export.apply"))
                 .primary()
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.apply_table_data_export_custom_conditions(cx);
@@ -1889,7 +1944,7 @@ fn data_export_filter_sort_builder(
         .overflow_hidden()
         .flex()
         .flex_col()
-        .child(data_export_builder_title("筛选", colors))
+        .child(data_export_builder_title(tr("app.filter.title"), colors))
         .child(data_filter_builder_rows(
             export_filter_tab_id,
             filter_rules.as_slice(),
@@ -1907,7 +1962,8 @@ fn data_export_filter_sort_builder(
         ))
 }
 
-fn data_export_builder_title(label: &'static str, colors: UiColors) -> Div {
+fn data_export_builder_title(label: impl Into<SharedString>, colors: UiColors) -> Div {
+    let label: SharedString = label.into();
     div()
         .h(px(30.))
         .px_3()
@@ -1950,7 +2006,7 @@ fn data_export_empty_log_body(colors: UiColors) -> Div {
         .p_5()
         .text_size(px(13.))
         .text_color(colors.muted)
-        .child("开始导出后显示消息日志")
+        .child(tr("app.data_export.log_empty"))
 }
 
 fn data_export_log_body(task: TableDataExportTaskState, colors: UiColors) -> Div {
@@ -1971,7 +2027,10 @@ fn data_export_log_body(task: TableDataExportTaskState, colors: UiColors) -> Div
                 .text_size(px(12.))
                 .px_2()
                 .py_1()
-                .child(format!("已隐藏前 {hidden_count} 条日志，完整日志可复制")),
+                .child(
+                    tr("app.data_export.log_hidden")
+                        .replace("%{count}", &hidden_count.to_string()),
+                ),
         );
     }
     for entry in task.logs.iter().skip(hidden_count) {
@@ -1990,13 +2049,16 @@ fn data_export_log_body(task: TableDataExportTaskState, colors: UiColors) -> Div
                 .items_center()
                 .gap_5()
                 .text_size(px(14.))
-                .child(format!("表: {}", task.table_name))
-                .child(format!("格式: {}", task.format.label()))
-                .child(format!("字段: {}", task.field_count))
-                .child(format!("行数: {}", task.exported_rows))
-                .child(format!("批次: {}", task.batch_count))
-                .child(format!("状态: {}", table_data_export_task_status(&task)))
-                .child(format!("时间: {elapsed} ms")),
+                .child(tr("app.data_export.log.table").replace("%{name}", &task.table_name))
+                .child(tr("app.data_export.log.format").replace("%{format}", task.format.label()))
+                .child(tr("app.data_export.log.fields").replace("%{count}", &task.field_count.to_string()))
+                .child(tr("app.data_export.log.rows").replace("%{count}", &task.exported_rows.to_string()))
+                .child(tr("app.data_export.log.batches").replace("%{count}", &task.batch_count.to_string()))
+                .child(tr("app.data_export.log.status").replace(
+                    "%{status}",
+                    &table_data_export_task_status(&task),
+                ))
+                .child(tr("app.data_export.log.elapsed").replace("%{ms}", &elapsed.to_string())),
         )
         .child(
             div()
@@ -2004,7 +2066,7 @@ fn data_export_log_body(task: TableDataExportTaskState, colors: UiColors) -> Div
                 .text_color(colors.muted)
                 .overflow_hidden()
                 .child(if task.path.as_os_str().is_empty() {
-                    "等待选择保存位置".to_string()
+                    tr("app.data_export.waiting_path").to_string()
                 } else {
                     task.path.display().to_string()
                 }),
@@ -2023,7 +2085,11 @@ fn data_export_log_body(task: TableDataExportTaskState, colors: UiColors) -> Div
 }
 
 fn data_export_log_row(entry: &TableDataExportLogEntry, colors: UiColors) -> Div {
-    let status = if entry.success { "成功" } else { "失败" };
+    let status = if entry.success {
+        tr("app.data_export.success")
+    } else {
+        tr("app.data_export.failed")
+    };
     let status_color = if entry.success {
         rgb(0x22a06b)
     } else {
@@ -2068,7 +2134,7 @@ fn data_export_modal_footer(
         .when_some(task, |this, (task_id, finished, cancel_requested)| {
             this.child(
                 Button::new("data-export-copy-log")
-                    .label("复制日志")
+                    .label(tr("app.data_export.copy_log"))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.copy_table_data_export_task_log(task_id, cx);
                         cx.stop_propagation();
@@ -2077,7 +2143,11 @@ fn data_export_modal_footer(
             .when(!finished, |this| {
                 this.child(
                     Button::new("data-export-cancel-task")
-                        .label(if cancel_requested { "停止中" } else { "取消导出" })
+                        .label(if cancel_requested {
+                            tr("app.data_export.stopping")
+                        } else {
+                            tr("app.data_export.cancel_export")
+                        })
                         .disabled(cancel_requested)
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.cancel_table_data_export_task(task_id, cx);
@@ -2088,7 +2158,7 @@ fn data_export_modal_footer(
             .when(finished, |this| {
                 this.child(
                     Button::new("data-export-clear-task")
-                        .label("清除任务")
+                        .label(tr("app.data_export.clear_task"))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.clear_table_data_export_task(task_id, cx);
                             cx.stop_propagation();
@@ -2098,7 +2168,7 @@ fn data_export_modal_footer(
         })
         .child(
             Button::new("data-export-close")
-                .label("关闭")
+                .label(tr("app.common.close"))
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.cancel_table_data_export_modal(cx);
                     this.data_export_log_task = None;
@@ -2108,7 +2178,7 @@ fn data_export_modal_footer(
         .when(task.is_none(), |this| {
             this.child(
                 Button::new("data-export-confirm")
-                    .label("导出")
+                    .label(tr("app.data_export.export"))
                     .disabled(!can_export)
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.confirm_table_data_export(cx);
@@ -2118,7 +2188,8 @@ fn data_export_modal_footer(
         })
 }
 
-fn data_export_section_label(label: &'static str, colors: UiColors) -> Div {
+fn data_export_section_label(label: impl Into<SharedString>, colors: UiColors) -> Div {
+    let label = label.into();
     div()
         .text_size(px(13.))
         .font_weight(gpui::FontWeight::SEMIBOLD)
@@ -2126,7 +2197,8 @@ fn data_export_section_label(label: &'static str, colors: UiColors) -> Div {
         .child(label)
 }
 
-fn data_export_form_row_label(label: &'static str, colors: UiColors) -> Div {
+fn data_export_form_row_label(label: impl Into<SharedString>, colors: UiColors) -> Div {
+    let label = label.into();
     div()
         .w(px(42.))
         .flex_none()
@@ -2170,11 +2242,11 @@ fn data_export_badge(label: &'static str, colors: UiColors) -> Div {
         .child(label)
 }
 
-fn table_data_export_scope_label(scope: TableDataExportScope) -> &'static str {
+fn table_data_export_scope_label(scope: TableDataExportScope) -> SharedString {
     match scope {
-        TableDataExportScope::CurrentConditions => "当前筛选条件",
-        TableDataExportScope::AllRows => "全部数据",
-        TableDataExportScope::CustomRules => "自定义筛选 & 排序",
+        TableDataExportScope::CurrentConditions => tr("app.data_export.scope_current"),
+        TableDataExportScope::AllRows => tr("app.data_export.scope_all"),
+        TableDataExportScope::CustomRules => tr("app.data_export.scope_custom"),
     }
 }
 
@@ -2182,7 +2254,7 @@ fn data_export_object_database_label(object: &ObjectPath) -> String {
     object
         .database
         .clone()
-        .unwrap_or_else(|| "默认数据库".to_string())
+        .unwrap_or_else(|| tr("app.data_export.default_database").to_string())
 }
 
 fn data_export_select_index(options: &[String], value: &str) -> Option<IndexPath> {
@@ -2219,55 +2291,62 @@ fn table_data_export_sort_specs_from_rules(rules: &[DataSortRule]) -> Vec<SortSp
         .collect()
 }
 
-fn table_data_export_task_status(task: &TableDataExportTaskState) -> &'static str {
+fn table_data_export_task_status(task: &TableDataExportTaskState) -> SharedString {
     if task.running() && task.cancel_requested {
-        "停止中"
+        tr("app.data_export.status.stopping")
     } else if task.running() {
-        "导出中"
+        tr("app.data_export.status.exporting")
     } else if task.canceled {
-        "已取消"
+        tr("app.data_export.status.canceled")
     } else if task.error.is_some() {
-        "失败"
+        tr("app.data_export.status.failed")
     } else {
-        "完成"
+        tr("app.data_export.status.completed")
     }
 }
 
 fn table_data_export_task_message(task: &TableDataExportTaskState) -> String {
     if task.canceled {
-        format!("已取消导出 {}，已写入 {} 行", task.table_name, task.exported_rows)
+        tr("app.data_export.message.canceled")
+            .replace("%{table}", &task.table_name)
+            .replace("%{rows}", &task.exported_rows.to_string())
     } else if task.error.is_some() {
-        format!("导出 {} 失败", task.table_name)
+        tr("app.data_export.message.failed").replace("%{table}", &task.table_name)
     } else if task.path.as_os_str().is_empty() {
-        "已取消选择保存位置".to_string()
+        tr("app.data_export.message.path_canceled").to_string()
     } else {
-        format!(
-            "已导出 {} 行为 {}：{}",
-            task.exported_rows,
-            task.format.label(),
-            task.path.display()
-        )
+        tr("app.data_export.message.completed")
+            .replace("%{rows}", &task.exported_rows.to_string())
+            .replace("%{format}", task.format.label())
+            .replace("%{path}", &task.path.display().to_string())
     }
 }
 
 fn table_data_export_log_text(task: &TableDataExportTaskState) -> String {
     let mut lines = vec![
-        format!("任务: {}", task.id),
-        format!("表: {}", task.table_name),
-        format!("格式: {}", task.format.label()),
-        format!("文件: {}", task.path.display()),
-        format!("字段数: {}", task.field_count),
-        format!("行数: {}", task.exported_rows),
-        format!("状态: {}", table_data_export_task_status(task)),
+        tr("app.data_export.log.task").replace("%{id}", &task.id.to_string()),
+        tr("app.data_export.log.table").replace("%{name}", &task.table_name),
+        tr("app.data_export.log.format").replace("%{format}", task.format.label()),
+        tr("app.data_export.log.file").replace("%{path}", &task.path.display().to_string()),
+        tr("app.data_export.log.field_count").replace("%{count}", &task.field_count.to_string()),
+        tr("app.data_export.log.rows").replace("%{count}", &task.exported_rows.to_string()),
+        tr("app.data_export.log.status")
+            .replace("%{status}", &table_data_export_task_status(task)),
     ];
     if let Some(error) = &task.error {
-        lines.push(format!("错误: {error}"));
+        lines.push(
+            tr("app.data_export.log.error").replace("%{error}", &error.to_string()),
+        );
     }
     for entry in &task.logs {
         lines.push(format!(
             "#{} [{}] {} ms {}",
             entry.index,
-            if entry.success { "成功" } else { "失败" },
+            if entry.success {
+                tr("app.data_export.success")
+            } else {
+                tr("app.data_export.failed")
+            },
             entry.elapsed_ms,
             entry.message
         ));
@@ -2285,17 +2364,21 @@ fn table_data_export_statusbar_area(
     };
     let running_count = tasks.iter().filter(|task| task.running()).count();
     let label = if running_count > 1 {
-        format!("{running_count} 个导出任务运行中")
+        tr("app.data_export.statusbar.running_count")
+            .replace("%{count}", &running_count.to_string())
     } else if task.cancel_requested {
-        format!("导出停止中 {} 行", task.exported_rows)
+        tr("app.data_export.statusbar.stopping")
+            .replace("%{rows}", &task.exported_rows.to_string())
     } else if task.running() {
-        format!("导出中 {} 行", task.exported_rows)
+        tr("app.data_export.statusbar.exporting")
+            .replace("%{rows}", &task.exported_rows.to_string())
     } else if task.canceled {
-        format!("导出已取消 {} 行", task.exported_rows)
+        tr("app.data_export.statusbar.canceled")
+            .replace("%{rows}", &task.exported_rows.to_string())
     } else if task.error.is_some() {
-        format!("{} 导出失败", task.table_name)
+        tr("app.data_export.statusbar.failed").replace("%{table}", &task.table_name)
     } else {
-        format!("{} 导出完成", task.table_name)
+        tr("app.data_export.statusbar.completed").replace("%{table}", &task.table_name)
     };
     let task_id = task.id;
     div()

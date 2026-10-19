@@ -26,7 +26,11 @@ fn query_toolbar(
         .child(query_context_box(database, accent, colors))
         .child(
             query_toolbar_icon_button(
-                if editor.running { "执行中" } else { "运行" },
+                if editor.running {
+                    tr("app.query.toolbar.running")
+                } else {
+                    tr("app.query.toolbar.run")
+                },
                 AppIcon::Play,
                 has_text && !editor.running,
                 editor.running,
@@ -50,7 +54,7 @@ fn query_toolbar(
         )
         .child(
             query_toolbar_icon_button(
-                "美化 SQL",
+                tr("app.query.toolbar.format"),
                 AppIcon::AlignLeft,
                 has_text,
                 false,
@@ -72,7 +76,7 @@ fn query_toolbar(
         )
         .child(
             query_toolbar_icon_button(
-                "压缩 SQL",
+                tr("app.query.toolbar.compact"),
                 AppIcon::List,
                 has_text,
                 false,
@@ -95,7 +99,7 @@ fn query_toolbar(
         )
         .child(
             query_toolbar_icon_button(
-                "停止",
+                tr("app.query.toolbar.stop"),
                 AppIcon::Square,
                 editor.running,
                 false,
@@ -111,7 +115,7 @@ fn query_toolbar(
             ),
         )
         .child(query_toolbar_icon_button(
-            "解释",
+            tr("app.query.toolbar.explain"),
             AppIcon::FileSearch,
             can_explain,
             false,
@@ -135,10 +139,10 @@ fn query_toolbar(
             .small().ghost().cursor_pointer().disabled(this.query_files.loading)
             .loading(this.query_files.loading)
             .child(app_icon(AppIcon::Folder,16.,colors.muted))
-            .tooltip("打开本地 SQL 文件（新页签，不执行）")
+            .tooltip(tr("app.query.toolbar.open_file"))
             .on_click(cx.listener(move|this,_,_,cx|this.choose_local_sql_file(tab_id,cx))))
         .child(query_toolbar_icon_button(
-            "保存",
+            tr("app.common.save"),
             AppIcon::Save,
             true,
             false,
@@ -153,7 +157,7 @@ fn query_toolbar(
             }),
         ))
         .child(query_toolbar_icon_button(
-            "查询创建工具",
+            tr("app.query.toolbar.builder"),
             AppIcon::Workflow,
             false,
             false,
@@ -161,7 +165,7 @@ fn query_toolbar(
             colors,
         ))
         .child(query_toolbar_icon_button(
-            "代码段",
+            tr("app.query.toolbar.snippets"),
             AppIcon::FileSql,
             false,
             false,
@@ -170,7 +174,7 @@ fn query_toolbar(
         ))
         .child(
             query_toolbar_icon_button(
-                "历史记录",
+                tr("app.query.toolbar.history"),
                 AppIcon::CalendarClock,
                 true,
                 false,
@@ -201,7 +205,12 @@ fn query_toolbar(
                     move |this, _, _, cx| {
                         let mut settings = this.controller.state().settings.clone();
                         settings.editor_word_wrap = !soft_wrap;
-                        save_settings_from_ui(this, settings, "已更新自动换行", cx);
+                        save_settings_from_ui(
+                            this,
+                            settings,
+                            tr("app.settings.message.word_wrap_updated"),
+                            cx,
+                        );
                         let line_height = this.controller.state().settings.editor_line_height.clamp(13, 28) as f32;
                         sql_editor.update(cx, |editor, _editor_cx| {
                             editor.apply_settings(editor.font_size, line_height, !soft_wrap, 0);
@@ -240,11 +249,11 @@ fn query_editor_wrap_toggle_icon(soft_wrap: bool) -> AppIcon {
     }
 }
 
-fn query_editor_wrap_toggle_label(soft_wrap: bool) -> &'static str {
+fn query_editor_wrap_toggle_label(soft_wrap: bool) -> SharedString {
     if soft_wrap {
-        "不换行"
+        tr("app.query.toolbar.wrap_off")
     } else {
-        "自动换行"
+        tr("app.query.toolbar.wrap_auto")
     }
 }
 
@@ -255,25 +264,27 @@ fn query_output_layout_toggle_icon(placement: ResultsPlacement) -> AppIcon {
     }
 }
 
-fn query_output_layout_toggle_label(placement: ResultsPlacement) -> &'static str {
+fn query_output_layout_toggle_label(placement: ResultsPlacement) -> SharedString {
     match placement {
-        ResultsPlacement::Bottom => "结果在下方",
-        ResultsPlacement::Right => "结果在右侧",
+        ResultsPlacement::Bottom => tr("app.query.toolbar.results_bottom"),
+        ResultsPlacement::Right => tr("app.query.toolbar.results_right"),
     }
 }
 
 fn query_toolbar_icon_button(
-    label: &'static str,
+    label: impl Into<SharedString>,
     icon: AppIcon,
     enabled: bool,
     loading: bool,
     accent: gpui::Rgba,
     colors: UiColors,
 ) -> Stateful<Div> {
+    let label = label.into();
+    let label_for_id = label.clone();
     let bg = colors.panel_bg;
     let icon_color = if enabled { accent } else { colors.muted };
     div()
-        .id(label)
+        .id(label_for_id)
         .size(px(30.))
         .rounded(colors.radius)
         .border_1()
@@ -290,7 +301,7 @@ fn query_toolbar_icon_button(
         .flex()
         .items_center()
         .justify_center()
-        .tooltip(move |window, cx| Tooltip::new(label).build(window, cx))
+        .tooltip(move |window, cx| Tooltip::new(label.clone()).build(window, cx))
         .when(enabled, |this| {
             this.cursor_pointer().hover(move |style| {
                 style.bg(if colors.is_dark {

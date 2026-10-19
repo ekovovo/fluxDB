@@ -189,7 +189,7 @@ fn redis_key_detail_hash_panel(
                                 .justify_between()
                                 .text_size(px(11.))
                                 .text_color(colors.muted)
-                                .child(format!("显示 {} / 共 {} 个字段", rows.len(), total))
+                                .child(tr("app.redis.hash.fields_count").replace("%{shown}", &rows.len().to_string()).replace("%{total}", &total.to_string()))
                                 .child(
                                     div()
                                         .flex()
@@ -201,7 +201,7 @@ fn redis_key_detail_hash_panel(
                                                     .into_any_element()
                                             } else {
                                                 redis_detail_toolbar_button(
-                                                    "加载更多",
+                                                    tr("app.redis.load_more"),
                                                     AppIcon::ChevronDown,
                                                     true,
                                                     colors,
@@ -258,18 +258,22 @@ fn redis_key_detail_hash_panel(
 
 fn redis_hash_field_edit_icon(
     icon: AppIcon,
-    tooltip: &'static str,
+    tooltip: impl Into<SharedString>,
     colors: UiColors,
 ) -> Stateful<Div> {
+    let tooltip: SharedString = tooltip.into();
     div()
-        .id(tooltip)
+        .id(tooltip.clone())
         .size(px(22.))
         .rounded(colors.radius * 0.5)
         .flex()
         .items_center()
         .justify_center()
         .cursor_pointer()
-        .tooltip(move |window, cx| Tooltip::new(tooltip).build(window, cx))
+        .tooltip({
+            let tooltip = tooltip.clone();
+            move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx)
+        })
         .hover(move |style| style.bg(colors.hover))
         .child(app_icon(icon, 14., colors.muted))
 }
@@ -277,7 +281,7 @@ fn redis_hash_field_edit_icon(
 /// 截断行的「查看完整值」入口图标：点击打开完整值内嵌面板（懒加载非截断原始值）。
 fn redis_hash_field_view_icon(
     icon: AppIcon,
-    tooltip: &'static str,
+    tooltip: impl Into<SharedString>,
     colors: UiColors,
     view: WeakEntity<NavicatMain>,
     tab_id: TabId,
@@ -285,15 +289,19 @@ fn redis_hash_field_view_icon(
     field: String,
     cx: &mut Context<TableState<RedisHashTableDelegate>>,
 ) -> Stateful<Div> {
+    let tooltip: SharedString = tooltip.into();
     div()
-        .id(tooltip)
+        .id(tooltip.clone())
         .size(px(22.))
         .rounded(colors.radius * 0.5)
         .flex()
         .items_center()
         .justify_center()
         .cursor_pointer()
-        .tooltip(move |window, cx| Tooltip::new(tooltip).build(window, cx))
+        .tooltip({
+            let tooltip = tooltip.clone();
+            move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx)
+        })
         .hover(move |style| style.bg(colors.hover))
         .on_mouse_down(
             MouseButton::Left,
@@ -330,11 +338,11 @@ fn redis_hash_full_value_inline_panel(
         .unwrap_or(0);
     // 头部副标题：加载中 / 加载失败 / 字节数
     let subtitle = if viewer.loading {
-        "加载中...".to_string()
+        tr("app.redis.hash.loading").to_string()
     } else if viewer.error {
-        "加载失败".to_string()
+        tr("app.redis.hash.load_failed").to_string()
     } else {
-        format!("{} 字节", bytes)
+        tr("app.redis.hash.bytes").replace("%{bytes}", &bytes.to_string())
     };
     let body = div().flex_1().min_h(px(0.)).overflow_hidden();
     let body = if viewer.loading {
@@ -361,13 +369,13 @@ fn redis_hash_full_value_inline_panel(
                     div()
                         .text_size(px(13.))
                         .text_color(rgb(0xe5484d))
-                        .child("加载完整值失败，请重试"),
+                        .child(tr("app.redis.hash.full_value_failed")),
                 )
                 .child({
                     let retry_key = key.clone();
                     let retry_field = field.clone();
                     Button::new("redis-hash-full-value-retry")
-                        .label("重试")
+                        .label(tr("app.redis.retry"))
                         .small()
                         .outline()
                         .on_click(cx.listener(move |this, _, window, cx| {
@@ -435,7 +443,7 @@ fn redis_hash_full_value_inline_panel(
                             .gap_2()
                             .child(
                                 Button::new("redis-hash-full-value-cancel-edit")
-                                    .label("取消编辑")
+                                    .label(tr("app.redis.hash.cancel_edit"))
                                     .small()
                                     .outline()
                                     .w(px(82.))
@@ -449,7 +457,7 @@ fn redis_hash_full_value_inline_panel(
                             )
                             .child(
                                 Button::new("redis-hash-full-value-save")
-                                    .label("保存")
+                                    .label(tr("app.redis.save"))
                                     .small()
                                     .primary()
                                     .w(px(72.))
@@ -483,7 +491,7 @@ fn redis_hash_full_value_inline_panel(
                             .child(if full_value.is_empty() {
                                 div()
                                     .text_color(colors.muted)
-                                    .child("(空值)")
+                                    .child(tr("app.redis.empty_value"))
                                     .into_any_element()
                             } else {
                                 full_value.to_string().into_any_element()
@@ -499,7 +507,7 @@ fn redis_hash_full_value_inline_panel(
                 .flex()
                 .items_center()
                 .justify_center()
-                .child(div().text_color(colors.muted).child("(空值)")),
+                .child(div().text_color(colors.muted).child(tr("app.redis.empty_value"))),
         )
     };
     div()
@@ -532,7 +540,7 @@ fn redis_hash_full_value_inline_panel(
                             div()
                                 .text_size(px(13.))
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
-                                .child(format!("完整值 · {}", field)),
+                                .child(tr("app.redis.hash.full_value_title").replace("%{field}", &field)),
                         )
                         .child(
                             div()
@@ -549,7 +557,7 @@ fn redis_hash_full_value_inline_panel(
                         .gap_1()
                         .child(
                             Button::new("redis-hash-full-value-close")
-                                .label("关闭")
+                                .label(tr("app.redis.close"))
                                 .small()
                                 .outline()
                                 .w(px(72.))
@@ -560,7 +568,7 @@ fn redis_hash_full_value_inline_panel(
                         )
                         .child(
                             Button::new("redis-hash-full-value-edit")
-                                .label("编辑")
+                                .label(tr("app.redis.edit"))
                                 .small()
                                 .outline()
                                 .w(px(72.))
@@ -643,7 +651,7 @@ fn redis_hash_field_add_drawer(
                         .flex()
                         .items_center()
                         .justify_between()
-                        .child(div().text_size(px(17.)).font_weight(gpui::FontWeight::SEMIBOLD).child("新增字段")),
+                        .child(div().text_size(px(17.)).font_weight(gpui::FontWeight::SEMIBOLD).child(tr("app.redis.hash.add_field"))),
                 )
                 .child(
                     div()
@@ -710,7 +718,7 @@ fn redis_hash_field_add_drawer(
                         .justify_end()
                         .gap_2()
                         .child(
-                            redis_detail_action_button("取消", false, !applying, colors).on_mouse_down(
+                            redis_detail_action_button(tr("app.redis.cancel"), false, !applying, colors).on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(|this, _, _, cx| {
                                     this.cancel_redis_hash_field_drawer(cx);
@@ -719,7 +727,7 @@ fn redis_hash_field_add_drawer(
                             ),
                         )
                         .child(
-                            redis_detail_action_button("保存", true, !applying, colors).on_mouse_down(
+                            redis_detail_action_button(tr("app.redis.save"), true, !applying, colors).on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener({
                                     let key = key.clone();
@@ -851,18 +859,18 @@ fn redis_hash_field_ttl_disabled_tooltip(
     version: Option<&RedisServerVersion>,
 ) -> String {
     match version {
-        Some(version) => format!(
-            "当前 Redis 版本 {}.{}.{} 不支持字段级 TTL，需 7.4+",
-            version.major, version.minor, version.patch
+        Some(version) => tr("app.redis.hash.ttl_version_unsupported").replace(
+            "%{version}",
+            &format!("{}.{}.{}", version.major, version.minor, version.patch),
         ),
-        None => "值已被截断，为避免误写原始数据，TTL 编辑已禁用".to_string(),
+        None => tr("app.redis.hash.ttl_truncated").to_string(),
     }
 }
 
 fn redis_hash_field_ttl_command(
     input: &str,
     changed: bool,
-) -> std::result::Result<RedisHashFieldTtl, &'static str> {
+) -> std::result::Result<RedisHashFieldTtl, String> {
     if !changed {
         return Ok(RedisHashFieldTtl::Keep);
     }
@@ -872,7 +880,7 @@ fn redis_hash_field_ttl_command(
     }
     match input.parse::<u64>() {
         Ok(seconds) if seconds > 0 => Ok(RedisHashFieldTtl::Seconds(seconds)),
-        _ => Err("Redis TTL 必须是大于 0 的秒数，留空表示永不过期"),
+        _ => Err(tr("app.redis.hash.error.ttl").to_string()),
     }
 }
 

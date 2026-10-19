@@ -6,14 +6,14 @@ fn query_save_choice_modal(
 ) -> impl IntoElement {
     query_save_modal_backdrop(colors, cx).child(
         query_save_modal_panel(focus_handle, colors, cx)
-            .child(query_save_modal_header("保存 SQL", colors, cx))
+            .child(query_save_modal_header(tr("app.query.save.title"), colors, cx))
             .child(
                 div()
                     .px_5()
                     .pb_4()
                     .text_size(px(13.))
                     .text_color(colors.muted)
-                    .child("选择保存位置。"),
+                    .child(tr("app.query.save.location")),
             )
             .child(div().h(px(1.)).bg(colors.border_soft))
             .child(
@@ -24,7 +24,7 @@ fn query_save_choice_modal(
                     .items_center()
                     .justify_end()
                     .gap_2()
-                    .child(Button::new("query-save-local").label("保存到本地文件...").on_click(
+                    .child(Button::new("query-save-local").label(tr("app.query.save.local")).on_click(
                         cx.listener(move |this, _, _, cx| {
                             this.choose_query_save_local(tab_id, cx);
                             cx.stop_propagation();
@@ -32,7 +32,7 @@ fn query_save_choice_modal(
                     ))
                     .child(
                         Button::new("query-save-connection")
-                            .label("保存到连接中...")
+                            .label(tr("app.query.save.connection"))
                             .primary()
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.choose_query_save_connection(tab_id, window, cx);
@@ -52,7 +52,7 @@ fn query_save_connection_modal(
 ) -> impl IntoElement {
     query_save_modal_backdrop(colors, cx).child(
         query_save_modal_panel(focus_handle, colors, cx)
-            .child(query_save_modal_header("保存到连接中", colors, cx))
+            .child(query_save_modal_header(tr("app.query.save.to_connection"), colors, cx))
             .child(
                 div()
                     .px_5()
@@ -64,7 +64,7 @@ fn query_save_connection_modal(
                         div()
                             .text_size(px(13.))
                             .text_color(colors.muted)
-                            .child("查询名称"),
+                            .child(tr("app.query.save.name")),
                     )
                     .child(
                         div()
@@ -95,7 +95,7 @@ fn query_save_connection_modal(
                     .gap_2()
                     .child(
                         Button::new("query-save-connection-cancel")
-                            .label("取消")
+                            .label(tr("app.common.cancel"))
                             .w(px(78.))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.cancel_query_save_modal(cx);
@@ -104,7 +104,7 @@ fn query_save_connection_modal(
                     )
                     .child(
                         Button::new("query-save-connection-confirm")
-                            .label("保存")
+                            .label(tr("app.common.save"))
                             .primary()
                             .w(px(78.))
                             .on_click(cx.listener(move |this, _, _, cx| {
@@ -170,10 +170,11 @@ fn query_save_modal_panel(
 }
 
 fn query_save_modal_header(
-    title: &'static str,
+    title: impl Into<SharedString>,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
+    let title: SharedString = title.into();
     div()
         .px_5()
         .pt_4()

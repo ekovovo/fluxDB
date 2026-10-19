@@ -1,8 +1,83 @@
 /// 「结果布局」设置项的两个选项目标（显示文案, 下标）。顺序即面板按钮顺序。
-const RESULTS_PLACEMENT_CHOICES: &[(&str, u64)] = &[
-    ("下方", ResultsPlacement::Bottom.to_index()),
-    ("右侧", ResultsPlacement::Right.to_index()),
-];
+fn results_placement_choices() -> Vec<(SharedString, u64)> {
+    vec![
+        (
+            tr("app.settings.editor.results_bottom"),
+            ResultsPlacement::Bottom.to_index(),
+        ),
+        (
+            tr("app.settings.editor.results_right"),
+            ResultsPlacement::Right.to_index(),
+        ),
+    ]
+}
+
+fn dangerous_sql_action_text(
+    action: &fluxdb_core::DangerousSqlAction,
+) -> (SharedString, SharedString) {
+    match action.key {
+        "drop" => (
+            tr("app.settings.dangerous_sql.drop"),
+            tr("app.settings.dangerous_sql.drop_detail"),
+        ),
+        "truncate" => (
+            tr("app.settings.dangerous_sql.truncate"),
+            tr("app.settings.dangerous_sql.truncate_detail"),
+        ),
+        "update_without_where" => (
+            tr("app.settings.dangerous_sql.update_without_where"),
+            tr("app.settings.dangerous_sql.update_without_where_detail"),
+        ),
+        "delete_without_where" => (
+            tr("app.settings.dangerous_sql.delete_without_where"),
+            tr("app.settings.dangerous_sql.delete_without_where_detail"),
+        ),
+        "alter_table" => (
+            tr("app.settings.dangerous_sql.alter_table"),
+            tr("app.settings.dangerous_sql.alter_table_detail"),
+        ),
+        _ => (action.title.into(), action.description.into()),
+    }
+}
+
+fn shortcut_text(definition: &ShortcutDefinition) -> (SharedString, SharedString) {
+    match definition.id {
+        "app.new_query" => (
+            tr("app.shortcuts.new_query"),
+            tr("app.shortcuts.new_query_detail"),
+        ),
+        "app.refresh" => (tr("app.shortcuts.refresh"), tr("app.shortcuts.refresh_detail")),
+        "app.save_or_apply" => (
+            tr("app.shortcuts.save_or_apply"),
+            tr("app.shortcuts.save_or_apply_detail"),
+        ),
+        "app.close_current_tab" => (
+            tr("app.shortcuts.close_current_tab"),
+            tr("app.shortcuts.close_current_tab_detail"),
+        ),
+        "app.toggle_connection_browser" => (
+            tr("app.shortcuts.toggle_connection_browser"),
+            tr("app.shortcuts.toggle_connection_browser_detail"),
+        ),
+        "query.execute_or_apply" => (
+            tr("app.shortcuts.execute_or_apply"),
+            tr("app.shortcuts.execute_or_apply_detail"),
+        ),
+        "query.search_data" => (
+            tr("app.shortcuts.search_data"),
+            tr("app.shortcuts.search_data_detail"),
+        ),
+        "query.search_history" => (
+            tr("app.shortcuts.search_history"),
+            tr("app.shortcuts.search_history_detail"),
+        ),
+        "query.copy_data" => (
+            tr("app.shortcuts.copy_data"),
+            tr("app.shortcuts.copy_data_detail"),
+        ),
+        _ => (definition.title.into(), definition.detail.into()),
+    }
+}
 
 fn settings_editor_panel(
     settings: Settings,
@@ -18,10 +93,11 @@ fn settings_editor_panel(
         .flex_col()
         .gap_3()
         .child(
-            settings_panel_group("字体", colors)
+            settings_panel_group(tr("app.settings.editor.group.font"), colors)
                 .child(settings_font_size_slider_row(
-                    "字体大小",
-                    "控制 SQL 编辑器文字大小",
+                    "settings-editor-font-size",
+                    tr("app.settings.editor.font_size"),
+                    tr("app.settings.editor.font_size_detail"),
                     AppIcon::Text,
                     settings.editor_font_size,
                     font_size_slider,
@@ -30,8 +106,9 @@ fn settings_editor_panel(
                     cx,
                 ))
                 .child(settings_input_row(
-                    "行高",
-                    "控制 SQL 编辑器每行高度",
+                    "settings-editor-line-height",
+                    tr("app.settings.editor.line_height"),
+                    tr("app.settings.editor.line_height_detail"),
                     AppIcon::List,
                     settings.editor_line_height,
                     &line_height_input,
@@ -41,17 +118,18 @@ fn settings_editor_panel(
                 )),
         )
         .child(
-            settings_panel_group("SQL 执行", colors)
-                .child(settings_choice_row(
-                    "默认查询限制",
-                    "查询结果每页显示行数",
+            settings_panel_group(tr("app.settings.editor.group.sql_execution"), colors)
+                .child(settings_choice_row_with_id(
+                    "settings-editor-query-limit",
+                    tr("app.settings.editor.query_limit"),
+                    tr("app.settings.editor.query_limit_detail"),
                     AppIcon::Table,
                     settings.page_size,
                     &[
-                        ("不限制", 0),
-                        ("100", 100),
-                        ("500", 500),
-                        ("1000", 1000),
+                        (tr("app.settings.editor.unlimited"), 0),
+                        ("100".into(), 100),
+                        ("500".into(), 500),
+                        ("1000".into(), 1000),
                     ],
                     |settings, value| settings.page_size = value,
                     colors,
@@ -59,8 +137,8 @@ fn settings_editor_panel(
                     cx,
                 ))
                 .child(settings_checkbox_row(
-                    "执行危险 SQL 前弹出确认",
-                    "勾选下方操作后，执行命中清单的 SQL 会先确认",
+                    tr("app.settings.editor.confirm_dangerous_sql"),
+                    tr("app.settings.editor.confirm_dangerous_sql_detail"),
                     AppIcon::CircleSlash,
                     "settings-confirm-dangerous-sql",
                     settings.confirm_dangerous_sql,
@@ -79,8 +157,8 @@ fn settings_editor_panel(
                         .h(px(52.))
                         .cursor_pointer()
                         .child(settings_row_label(
-                            "危险 SQL 操作清单",
-                            "勾选哪些操作算危险（默认 DROP/TRUNCATE/无 WHERE 的 UPDATE/DELETE）",
+                            tr("app.settings.editor.dangerous_actions"),
+                            tr("app.settings.editor.dangerous_actions_detail"),
                             AppIcon::CircleSlash,
                             colors,
                         ))
@@ -106,9 +184,10 @@ fn settings_editor_panel(
                 .when(!dangerous_actions_collapsed, |this| {
                     this.children(fluxdb_core::DangerousSqlAction::ALL.iter().map(|action| {
                         let key = action.key;
+                        let (title, detail) = dangerous_sql_action_text(action);
                         settings_checkbox_row(
-                            action.title,
-                            action.description,
+                            title,
+                            detail,
                             AppIcon::CircleSlash,
                             key,
                             settings.dangerous_sql_actions.contains(key),
@@ -130,13 +209,14 @@ fn settings_editor_panel(
         .child(
             // 单独成组：该项同时作用于 SQL 查询结果面板与 Redis Workbench 结果区，
             // 塞进「SQL 执行」或「Redis」任何一边都不贴切。
-            settings_panel_group("结果布局", colors)
-                .child(settings_choice_row(
-                    "查询结果默认布局",
-                    "查询结果与 Redis Workbench 结果区默认显示在下方或右侧",
+            settings_panel_group(tr("app.settings.editor.group.results_layout"), colors)
+                .child(settings_choice_row_with_id(
+                    "settings-editor-results-placement",
+                    tr("app.settings.editor.results_placement"),
+                    tr("app.settings.editor.results_placement_detail"),
                     AppIcon::PanelBottom,
                     settings.results_placement.to_index(),
-                    RESULTS_PLACEMENT_CHOICES,
+                    &results_placement_choices(),
                     |settings, value| settings.results_placement = ResultsPlacement::from_index(value),
                     colors,
                     false,
@@ -144,10 +224,10 @@ fn settings_editor_panel(
                 )),
         )
         .child(
-            settings_panel_group("Redis", colors)
+            settings_panel_group(tr("app.settings.editor.group.redis"), colors)
                 .child(settings_checkbox_row(
-                    "执行危险命令前弹出确认",
-                    "FLUSHDB、FLUSHALL、SHUTDOWN 等破坏性命令会先确认",
+                    tr("app.settings.editor.confirm_dangerous_redis"),
+                    tr("app.settings.editor.confirm_dangerous_redis_detail"),
                     AppIcon::CircleSlash,
                     "settings-confirm-dangerous-redis",
                     settings.confirm_dangerous_redis,
@@ -163,16 +243,17 @@ fn settings_editor_panel(
                 )),
         )
         .child(
-            settings_panel_group("编辑行为", colors)
-                .child(settings_choice_row(
-                    "Tab 宽度",
-                    "按 Tab 缩进时插入的空格数",
+            settings_panel_group(tr("app.settings.editor.group.editing"), colors)
+                .child(settings_choice_row_with_id(
+                    "settings-editor-tab-width",
+                    tr("app.settings.editor.tab_width"),
+                    tr("app.settings.editor.tab_width_detail"),
                     AppIcon::AlignLeft,
                     settings.editor_tab_width as u64,
                     &[
-                        ("2", 2),
-                        ("4", 4),
-                        ("8", 8),
+                        ("2".into(), 2),
+                        ("4".into(), 4),
+                        ("8".into(), 8),
                     ],
                     |settings, value| settings.editor_tab_width = value as u32,
                     colors,
@@ -180,8 +261,8 @@ fn settings_editor_panel(
                     cx,
                 ))
                 .child(settings_checkbox_row(
-                    "自动换行",
-                    "控制 SQL 编辑器长行是否按窗口宽度换行",
+                    tr("app.settings.editor.word_wrap"),
+                    tr("app.settings.editor.word_wrap_detail"),
                     AppIcon::WrapText,
                     "settings-editor-word-wrap",
                     settings.editor_word_wrap,
@@ -213,8 +294,14 @@ fn settings_shortcuts_panel(
     });
     let mut panel = div().flex().flex_col().gap_3();
     for (title, definitions) in [
-        ("应用", &SHORTCUT_DEFINITIONS[..5]),
-        ("查询与数据", &SHORTCUT_DEFINITIONS[5..]),
+        (
+            tr("app.settings.shortcuts.group.application"),
+            &SHORTCUT_DEFINITIONS[..5],
+        ),
+        (
+            tr("app.settings.shortcuts.group.query_data"),
+            &SHORTCUT_DEFINITIONS[5..],
+        ),
     ] {
         let mut group = settings_panel_group(title, colors);
         for definition in definitions {
@@ -229,31 +316,31 @@ fn settings_shortcuts_panel(
         panel = panel.child(group);
     }
     panel.child(
-        settings_panel_group("SQL 编辑器", colors)
+        settings_panel_group(tr("app.settings.shortcuts.group.sql_editor"), colors)
             .child(settings_preference_row(
-                "撤销",
-                "撤销最近一次编辑操作",
+                tr("app.settings.shortcuts.undo"),
+                tr("app.settings.shortcuts.undo_detail"),
                 AppIcon::Undo,
                 "⌘Z / Ctrl+Z",
                 colors,
             ))
             .child(settings_preference_row(
-                "重做",
-                "恢复最近撤销的编辑操作",
+                tr("app.settings.shortcuts.redo"),
+                tr("app.settings.shortcuts.redo_detail"),
                 AppIcon::Redo,
                 "⇧⌘Z / Ctrl+Y",
                 colors,
             ))
             .child(settings_preference_row(
-                "触发补全",
-                "打开 SQL 关键字、表名和字段补全",
+                tr("app.settings.shortcuts.complete"),
+                tr("app.settings.shortcuts.complete_detail"),
                 AppIcon::Wand,
                 "Ctrl+Space",
                 colors,
             ))
             .child(settings_preference_row(
-                "切换行注释",
-                "为当前行或选中行添加 / 移除注释",
+                tr("app.settings.shortcuts.toggle_comment"),
+                tr("app.settings.shortcuts.toggle_comment_detail"),
                 AppIcon::Text,
                 "⌘/ / Ctrl+/",
                 colors,
@@ -269,6 +356,7 @@ fn settings_shortcut_row(
     cx: &mut Context<NavicatMain>,
 ) -> Stateful<Div> {
     let current = current_shortcut(settings, &definition);
+    let (title, detail) = shortcut_text(&definition);
     let editing = capture_state.read(cx).active_id == Some(definition.id);
     let focus_handle = capture_state.read(cx).focus_handle.clone();
     let value = if editing {
@@ -298,8 +386,13 @@ fn settings_shortcut_row(
                     if let Some(conflict) = SHORTCUT_DEFINITIONS.iter().find(|other| {
                         other.id != definition.id && current_shortcut(settings, other) == spec
                     }) {
+                        let (conflict_title, _) = shortcut_text(conflict);
                         this.show_message(
-                            format!("快捷键已被“{}”使用", conflict.title),
+                            format!(
+                                "{} {}",
+                                tr("app.settings.shortcuts.conflict_prefix"),
+                                conflict_title
+                            ),
                             AppMessageKind::Warning,
                             cx,
                         );
@@ -327,14 +420,14 @@ fn settings_shortcut_row(
                         colors.muted
                     })
                     .child(if capture_state.read(cx).invalid {
-                        "请按下有效快捷键"
+                        tr("app.settings.shortcuts.invalid_keystroke")
                     } else {
-                        "请按下快捷键"
+                        tr("app.settings.shortcuts.press_shortcut")
                     }),
             )
             .child(
                 Button::new(SharedString::from(format!("shortcut-cancel-{}", definition.id)))
-                    .label("取消")
+                    .label(tr("app.common.cancel"))
                     .ghost()
                     .xsmall()
                     .rounded(colors.radius)
@@ -378,7 +471,7 @@ fn settings_shortcut_row(
                     .ghost()
                     .xsmall()
                     .rounded(colors.radius)
-                    .tooltip("恢复默认快捷键")
+                    .tooltip(tr("app.settings.shortcuts.reset_default"))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         reset_shortcut(this, definition, &capture_state, cx);
                     })),
@@ -388,12 +481,7 @@ fn settings_shortcut_row(
 
     settings_row_container(definition.id, colors)
         .min_h(px(52.))
-        .child(settings_row_label(
-            definition.title,
-            definition.detail,
-            definition.icon,
-            colors,
-        ))
+        .child(settings_row_label(title, detail, definition.icon, colors))
         .child(value)
 }
 

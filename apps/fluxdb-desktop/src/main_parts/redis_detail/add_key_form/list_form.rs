@@ -13,9 +13,9 @@ fn redis_add_key_list_form(
         .flex()
         .flex_col()
         .gap_2()
-        .child(redis_add_key_form_label("插入方向", colors))
+        .child(redis_add_key_form_label(tr("app.redis.add_key.form.insert_direction"), colors))
         .child(redis_add_key_direction_control(direction, applying, colors, cx))
-        .child(redis_add_key_form_label("添加元素", colors))
+        .child(redis_add_key_form_label(tr("app.redis.add_key.form.add_items"), colors))
         .child(redis_add_key_single_rows_panel(
             RedisAddKeyKind::List,
             rows,
@@ -34,8 +34,8 @@ fn redis_add_key_direction_control(
 ) -> Div {
     let mut control = div().w_full().h(px(34.)).flex().flex_row().overflow_hidden().rounded(colors.radius).border_1().border_color(colors.border);
     for (option, label) in [
-        (RedisListDirection::Head, "头（左端）"),
-        (RedisListDirection::Tail, "尾（右端）"),
+        (RedisListDirection::Head, tr("app.redis.add_key.form.head")),
+        (RedisListDirection::Tail, tr("app.redis.add_key.form.tail")),
     ] {
         let selected = direction == option;
         control = control.child(

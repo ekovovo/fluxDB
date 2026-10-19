@@ -237,7 +237,7 @@ impl TableDelegate for RedisListTableDelegate {
             .justify_center()
             .text_size(px(12.))
             .text_color(self.colors.muted)
-            .child("暂无条目")
+            .child(tr("app.redis.list.empty"))
     }
 
     fn render_td(
@@ -370,7 +370,7 @@ fn redis_list_table_value_cell(
         )
         // hover 时在右侧显示编辑图标；点击整格进入编辑（LSET）
         .when(hovered && !applying, |this| {
-            this.child(redis_hash_field_edit_icon(AppIcon::Edit, "编辑", colors))
+            this.child(redis_hash_field_edit_icon(AppIcon::Edit, tr("app.redis.edit"), colors))
         })
         .into_any_element()
 }

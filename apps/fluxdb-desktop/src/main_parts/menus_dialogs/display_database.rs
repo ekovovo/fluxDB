@@ -15,7 +15,7 @@ fn display_database_modal(
         .find(|connection| connection.config.id == connection_id);
     let connection_name = connection
         .map(|connection| connection.config.name.clone())
-        .unwrap_or_else(|| "连接".to_string());
+        .unwrap_or_else(|| tr("app.connection.label").to_string());
     let visible_filter_enabled = connection
         .and_then(|connection| configured_visible_databases(&connection.config.options))
         .is_some();
@@ -102,13 +102,10 @@ fn display_database_modal(
                                     div()
                                         .text_size(px(22.))
                                         .font_weight(gpui::FontWeight::SEMIBOLD)
-                                        .child("显示数据库"),
+                                        .child(tr("app.database.display.title")),
                                 )
                                 .child(div().text_size(px(14.)).text_color(colors.muted).child(
-                                    format!(
-                                        "选择「{}」下要在侧边栏显示的数据库。",
-                                        connection_name
-                                    ),
+                                    tr("app.database.display.hint").replace("%{connection}", &connection_name),
                                 )),
                         )
                         .child(
@@ -162,13 +159,13 @@ fn display_database_modal(
                         .justify_between()
                         .text_size(px(14.))
                         .text_color(colors.muted)
-                        .child(format!("已选择 {selected_count}/{}", shown_databases.len()))
+                        .child(tr("app.database.display.selected").replace("%{selected}", &selected_count.to_string()).replace("%{total}", &shown_databases.len().to_string()))
                         .child(
                             div()
                                 .flex()
                                 .gap_4()
                                 .child(display_database_link(
-                                    "全选",
+                                    tr("app.database.display.all"),
                                     true,
                                     cx.listener(|this, _, _, cx| {
                                         this.select_all_display_databases(cx);
@@ -176,7 +173,7 @@ fn display_database_modal(
                                     }),
                                 ))
                                 .child(display_database_link(
-                                    "清空",
+                                    tr("app.database.display.clear"),
                                     true,
                                     cx.listener(|this, _, _, cx| {
                                         this.clear_display_databases(cx);
@@ -184,7 +181,7 @@ fn display_database_modal(
                                     }),
                                 ))
                                 .child(display_database_link(
-                                    "显示全部",
+                                    tr("app.database.display.show_all"),
                                     visible_filter_enabled,
                                     cx.listener(|this, _, _, cx| {
                                         this.show_all_display_databases(cx);
@@ -194,7 +191,7 @@ fn display_database_modal(
                         ),
                 )
                 .child(div().px_5().pb_3().child(
-                    display_database_checkbox("显示系统库", show_system, colors).on_mouse_down(
+                    display_database_checkbox(tr("app.database.display.system"), show_system, colors).on_mouse_down(
                         MouseButton::Left,
                         cx.listener(|this, _, _, cx| {
                             this.toggle_display_system_databases(cx);
@@ -229,7 +226,7 @@ fn display_database_modal(
                         .gap_3()
                         .child(
                             Button::new("display-database-cancel")
-                                .label("取消")
+                                .label(tr("app.common.cancel"))
                                 .on_click({
                                     let view = view.clone();
                                     move |_, _, cx| {
@@ -242,7 +239,7 @@ fn display_database_modal(
                         )
                         .child(
                             Button::new("display-database-save")
-                                .label("保存")
+                                .label(tr("app.common.save"))
                                 .primary()
                                 .on_click({
                                     let view = view.clone();
@@ -259,10 +256,11 @@ fn display_database_modal(
 }
 
 fn display_database_link(
-    label: &'static str,
+    label: impl Into<SharedString>,
     enabled: bool,
     listener: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
 ) -> Div {
+    let label: SharedString = label.into();
     div()
         .text_color(if enabled {
             rgb(0x8aa2c7)

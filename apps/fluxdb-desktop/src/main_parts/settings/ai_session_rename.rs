@@ -28,7 +28,7 @@ impl NavicatMain {
                 rgb(0x111111)
             };
             dialog
-                .title("重命名会话")
+                .title(tr("app.ai.sessions.rename_title"))
                 .close_button(true)
                 .overlay_closable(true)
                 .keyboard(true)
@@ -46,7 +46,7 @@ impl NavicatMain {
                         .child(
                             Input::new(&input)
                                 .id("ai-session-rename-input")
-                                .aria_label("会话标题")
+                                .aria_label(tr("app.ai.sessions.title_field"))
                                 .appearance(false)
                                 .focus_bordered(false)
                                 .w_full()
@@ -63,7 +63,7 @@ impl NavicatMain {
                             Button::new("ai-session-rename-cancel")
                                 .debug_selector(|| "ai-session-rename-cancel".into())
                                 .cursor_pointer()
-                                .child("取消")
+                                .child(tr("app.common.cancel"))
                                 .on_click(|_, window, cx| window.close_dialog(cx)),
                         )
                         .child(
@@ -71,7 +71,7 @@ impl NavicatMain {
                                 .debug_selector(|| "ai-session-rename-confirm".into())
                                 .primary()
                                 .cursor_pointer()
-                                .child("保存")
+                                .child(tr("app.common.save"))
                                 .on_click(|_, window, cx| {
                                     window.dispatch_action(
                                         Box::new(gpui_component::dialog::Confirm {
@@ -98,7 +98,11 @@ impl NavicatMain {
         };
         let title = pending.title.trim().to_string();
         if title.is_empty() {
-            self.show_message("会话名称不能为空", AppMessageKind::Warning, cx);
+            self.show_message(
+                tr("app.ai.sessions.name_required"),
+                AppMessageKind::Warning,
+                cx,
+            );
             return false;
         }
         let pending = self
@@ -131,7 +135,7 @@ impl NavicatMain {
                         let result = match event {
                             AppEvent::AiSessionRenamed { .. } => Ok(()),
                             AppEvent::AiSettingsError(message) => Err(message),
-                            _ => Err("重命名会话失败".into()),
+                            _ => Err(tr("app.ai.sessions.rename_failed").to_string()),
                         };
                         (revision, result)
                     }
@@ -152,7 +156,11 @@ impl NavicatMain {
                         });
                     match event {
                         AppEvent::AiSessionRenamed { .. } => {
-                            this.show_message("会话已重命名", AppMessageKind::Success, cx)
+                            this.show_message(
+                                tr("app.ai.sessions.renamed"),
+                                AppMessageKind::Success,
+                                cx,
+                            )
                         }
                         AppEvent::AiSettingsError(message) => {
                             this.show_message(message, AppMessageKind::Error, cx)

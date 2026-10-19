@@ -189,7 +189,7 @@ fn redis_key_empty_detail(colors: UiColors) -> Div {
         .justify_center()
         .text_size(px(13.))
         .text_color(colors.muted)
-        .child("请选择 Redis Key")
+        .child(tr("app.redis.select_key"))
 }
 
 fn redis_detail_panel(colors: UiColors) -> Div {
@@ -205,7 +205,8 @@ fn redis_detail_panel(colors: UiColors) -> Div {
         .gap_2()
 }
 
-fn redis_detail_panel_title(label: &'static str, colors: UiColors) -> Div {
+fn redis_detail_panel_title(label: impl Into<SharedString>, colors: UiColors) -> Div {
+    let label: SharedString = label.into();
     div()
         .flex_none()
         .text_size(px(12.))
@@ -214,7 +215,8 @@ fn redis_detail_panel_title(label: &'static str, colors: UiColors) -> Div {
         .child(label)
 }
 
-fn redis_detail_meta_label(label: &'static str, colors: UiColors) -> Div {
+fn redis_detail_meta_label(label: impl Into<SharedString>, colors: UiColors) -> Div {
+    let label: SharedString = label.into();
     div()
         .text_size(px(11.))
         .font_weight(gpui::FontWeight::SEMIBOLD)
@@ -223,11 +225,12 @@ fn redis_detail_meta_label(label: &'static str, colors: UiColors) -> Div {
 }
 
 fn redis_detail_meta_field_shell(
-    label: &'static str,
+    label: impl Into<SharedString>,
     key_for_copy: Option<String>,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
+    let label: SharedString = label.into();
     let mut label_row = div()
         .flex_none()
         .flex()
@@ -257,7 +260,7 @@ fn redis_detail_editable_meta_field(
     tab_id: TabId,
     detail: &RedisKeyDetail,
     field: RedisKeyMetaField,
-    label: &'static str,
+    label: impl Into<SharedString>,
     input: Entity<InputState>,
     value: String,
     mono: bool,
@@ -266,6 +269,7 @@ fn redis_detail_editable_meta_field(
     window: &mut Window,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
+    let label: SharedString = label.into();
     let focus_border = if colors.is_dark {
         rgb(0x8ab4ff)
     } else {
@@ -384,7 +388,7 @@ fn redis_detail_no_ttl_badge(colors: UiColors) -> Div {
                 .font_weight(gpui::FontWeight::MEDIUM)
                 .text_color(colors.muted)
                 .whitespace_nowrap()
-                .child("No TTL"),
+                .child(tr("app.redis.no_ttl")),
         )
 }
 
@@ -411,21 +415,22 @@ fn redis_detail_copy_key_button(
         .h(px(26.))
         .min_w(px(26.))
         .p_0()
-        .tooltip("复制键名称")
+        .tooltip(tr("app.redis.copy_key_name"))
         .child(app_icon(AppIcon::Copy, 14., colors.muted))
         .on_click(cx.listener(move |this, _, _, cx| {
             cx.write_to_clipboard(ClipboardItem::new_string(key.clone()));
-            this.show_message("键名称已复制", AppMessageKind::Success, cx);
+            this.show_message(tr("app.redis.key_name_copied").as_ref(), AppMessageKind::Success, cx);
             cx.stop_propagation();
         }))
 }
 
 fn redis_detail_toolbar_button(
-    label: &'static str,
+    label: impl Into<SharedString>,
     icon: AppIcon,
     enabled: bool,
     colors: UiColors,
 ) -> Div {
+    let label: SharedString = label.into();
     div()
         .h(px(24.))
         .px_1()
@@ -519,11 +524,12 @@ fn redis_ttl_is_none(ttl: &str) -> bool {
 }
 
 fn redis_detail_action_button(
-    label: &'static str,
+    label: impl Into<SharedString>,
     primary: bool,
     enabled: bool,
     colors: UiColors,
 ) -> Div {
+    let label: SharedString = label.into();
     div()
         .h(px(26.))
         .min_w(px(72.))
@@ -566,4 +572,3 @@ fn redis_detail_action_button(
         })
         .child(label)
 }
-

@@ -28,6 +28,7 @@ fn settings_section_changed(
         SettingsPanelSection::Shortcuts => saved.custom_keybindings != draft.custom_keybindings,
         SettingsPanelSection::Appearance => {
             saved.theme != draft.theme
+                || saved.locale != draft.locale
                 || saved.light_theme != draft.light_theme
                 || saved.dark_theme != draft.dark_theme
                 || saved.button_radius != draft.button_radius
@@ -64,6 +65,7 @@ fn settings_section_changed(
 
 fn settings_apply_appearance_fields(settings: &mut Settings, draft: &Settings) {
     settings.theme = draft.theme;
+    settings.locale = draft.locale.clone();
     settings.light_theme = draft.light_theme.clone();
     settings.dark_theme = draft.dark_theme.clone();
     settings.button_radius = draft.button_radius;
@@ -126,7 +128,11 @@ fn reset_settings_section(
     match section {
         SettingsPanelSection::Shortcuts => {
             this.settings_editor_draft.custom_keybindings.clear();
-            this.show_message("已恢复默认快捷键，点击保存后生效", AppMessageKind::Info, cx);
+            this.show_message(
+                tr("app.settings.message.shortcuts_reset"),
+                AppMessageKind::Info,
+                cx,
+            );
             cx.notify();
         }
         SettingsPanelSection::System => {
@@ -135,7 +141,11 @@ fn reset_settings_section(
             this.settings_editor_draft.log_path = defaults.log_path;
             this.settings_editor_draft.performance_diagnostics =
                 defaults.performance_diagnostics;
-            this.show_message("已恢复默认系统设置，点击保存后生效", AppMessageKind::Info, cx);
+            this.show_message(
+                tr("app.settings.message.system_reset"),
+                AppMessageKind::Info,
+                cx,
+            );
             cx.notify();
         }
         SettingsPanelSection::Appearance => this.reset_appearance_settings(cx),
@@ -152,7 +162,11 @@ fn reset_settings_section(
             this.settings_editor_draft.pg_client_dir = defaults.pg_client_dir;
             this.settings_editor_draft.pg_client_download_source =
                 defaults.pg_client_download_source;
-            this.show_message("已恢复默认数据设置，点击保存后生效", AppMessageKind::Info, cx);
+            this.show_message(
+                tr("app.settings.message.data_reset"),
+                AppMessageKind::Info,
+                cx,
+            );
             cx.notify();
         }
         _ => {}
@@ -182,12 +196,14 @@ fn save_settings_section_from_ui(
 
     let _ = this.controller.dispatch(AppCommand::SaveSettings(settings));
     let _ = this.storage.save_settings(&this.controller.state().settings);
+    let locale = fluxdb_i18n::effective_locale(&this.controller.state().settings.locale);
+    apply_ui_locale(&locale, cx);
     this.sync_settings_tab_dirty();
     this.show_message(
         match section {
-            SettingsPanelSection::Shortcuts => "快捷键已保存",
-            SettingsPanelSection::System => "系统设置已保存，重启应用后生效",
-            _ => "设置已保存",
+            SettingsPanelSection::Shortcuts => tr("app.settings.message.shortcuts_saved"),
+            SettingsPanelSection::System => tr("app.settings.message.system_saved"),
+            _ => tr("app.settings.message.saved"),
         },
         AppMessageKind::Success,
         cx,
@@ -217,7 +233,7 @@ fn settings_default_editor_draft(saved: &Settings) -> Settings {
 fn save_settings_from_ui(
     this: &mut NavicatMain,
     settings: Settings,
-    message: &'static str,
+    message: impl Into<String>,
     cx: &mut Context<NavicatMain>,
 ) {
     // 「查询结果默认布局」改了应当立刻生效，不必重启 —— 否则旁边的工具栏按钮能即时切换、
@@ -230,6 +246,8 @@ fn save_settings_from_ui(
 
     let _ = this.controller.dispatch(AppCommand::SaveSettings(settings));
     let _ = this.storage.save_settings(&this.controller.state().settings);
+    let locale = fluxdb_i18n::effective_locale(&this.controller.state().settings.locale);
+    apply_ui_locale(&locale, cx);
     // 热更新：把新设置推送到所有已打开的编辑器，无需重启。
     let new_settings = this.controller.state().settings.clone();
     let font_size = new_settings.editor_font_size.clamp(10, 24) as f32;
@@ -247,13 +265,19 @@ fn save_settings_from_ui(
 }
 
 fn settings_preference_row(
-    title: &'static str,
-    detail: &'static str,
+    title: impl Into<SharedString>,
+    detail: impl Into<SharedString>,
     icon: AppIcon,
-    status: &'static str,
+    status: impl Into<SharedString>,
     colors: UiColors,
 ) -> Stateful<Div> {
-    settings_row_container(title, colors)
+    let title = title.into();
+    let detail = detail.into();
+    let status = status.into();
+    settings_row_container_dynamic(
+        format!("settings-preference:{title}:{status}"),
+        colors,
+    )
         .h(px(52.))
         .child(
             div()
@@ -273,7 +297,7 @@ fn settings_preference_row(
                                 .text_size(px(13.))
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
                                 .text_color(colors.text)
-                                .child(title),
+                                .child(title.clone()),
                         )
                         .child(
                             div()
@@ -287,35 +311,22 @@ fn settings_preference_row(
 }
 
 fn settings_status_chip(
-    title: &'static str,
-    label: &'static str,
+    title: impl Into<SharedString>,
+    label: impl Into<SharedString>,
     colors: UiColors,
 ) -> impl IntoElement {
-    Button::new(("settings-status", settings_status_id(title, label)))
+    let title = title.into();
+    let label = label.into();
+    Button::new(SharedString::from(format!("settings-status:{title}:{label}")))
         .label(label)
         .small()
         .rounded(colors.radius)
         .disabled(true)
 }
 
-fn settings_status_id(title: &'static str, label: &'static str) -> u64 {
-    match (title, label) {
-        ("编辑器字号", "待接入") => 1,
-        ("执行模式", "待接入") => 2,
-        ("执行危险 SQL 前弹出确认", "待接入") => 3,
-        ("跟随系统外观", "待接入") => 4,
-        ("默认分页行数", "待接入") => 5,
-        ("连接超时", "待接入") => 8,
-        ("敏感信息保存", "已启用") => 10,
-        ("FluxDB Desktop", "开发中") => 11,
-        ("配置模型", "待接入") => 12,
-        ("已支持", "已支持") => 13,
-        ("待补齐", "待补齐") => 14,
-        _ => {
-            let mut hasher = DefaultHasher::new();
-            title.hash(&mut hasher);
-            label.hash(&mut hasher);
-            hasher.finish()
-        }
-    }
+fn settings_status_id(title: &str, label: &str) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    title.hash(&mut hasher);
+    label.hash(&mut hasher);
+    hasher.finish()
 }

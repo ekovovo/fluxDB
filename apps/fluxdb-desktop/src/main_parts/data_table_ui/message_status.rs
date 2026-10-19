@@ -107,6 +107,8 @@ fn page_error_alert(
     cx: &App,
     colors: UiColors,
 ) -> Div {
+    let title = localize_backend_error_text(title);
+    let message = localize_backend_error_text(message);
     let (variant, icon_name, accent) = app_message_style(AppMessageKind::Error, cx);
     let mut column = div()
         .max_w(px(880.))
@@ -115,10 +117,10 @@ fn page_error_alert(
         .flex_col()
         .gap_3()
         .child(
-            Alert::new(id, message.to_string())
+            Alert::new(id, message)
                 .with_variant(variant)
                 .icon(alert_icon(icon_name, cx, PAGE_ERROR_LINE_HEIGHT))
-                .title(title.to_string())
+                .title(title)
                 .bg(alert_tint(accent, colors))
                 .line_height(px(PAGE_ERROR_LINE_HEIGHT)),
         );
@@ -140,7 +142,12 @@ fn page_error_alert(
 fn app_event_message(event: &AppEvent) -> Option<(String, AppMessageKind)> {
     match event {
         AppEvent::Failed(error) => Some((
-            format!("{}：{}", error.title, error.message),
+            format!(
+                "{}{}{}",
+                localize_backend_error_text(&error.title),
+                tr("app.common.message_separator"),
+                localize_backend_error_text(&error.message)
+            ),
             AppMessageKind::Error,
         )),
         _ => None,
@@ -227,7 +234,7 @@ fn statusbar(
 }
 
 fn statusbar_summary(state: &AppState) -> String {
-    let summary = format!("{} 个对象", visible_objects(state).len());
+    let summary = tr("app.statusbar.objects").replace("%{count}", &visible_objects(state).len().to_string());
 
     statusbar_context(state)
         .map(|context| format!("{context} · {summary}"))
@@ -276,20 +283,20 @@ fn statusbar_metrics_element(state: &AppState, colors: UiColors) -> Option<Div> 
     if !overview.version.is_empty() {
         row = row.child(statusbar_metric(
             colors,
-            "Redis 服务端版本",
-            "版本",
+            tr("app.statusbar.redis.server_version").as_ref(),
+            tr("app.statusbar.redis.version").as_ref(),
             &overview.version,
         ));
     }
     if overview.used_memory_bytes > 0 {
         let memory = format_memory_bytes(overview.used_memory_bytes);
-        row = row.child(statusbar_metric(colors, "Redis 实例内存占用", "内存", &memory));
+        row = row.child(statusbar_metric(colors, tr("app.statusbar.redis.memory_usage").as_ref(), tr("app.statusbar.redis.memory").as_ref(), &memory));
     }
     if let Some(cpu) = overview.cpu_usage_percent {
         let cpu_text = format!("{cpu:.2}%");
         row = row.child(statusbar_metric(
             colors,
-            "Redis 进程 CPU 使用率",
+            tr("app.statusbar.redis.cpu_usage").as_ref(),
             "CPU",
             &cpu_text,
         ));
@@ -300,12 +307,13 @@ fn statusbar_metrics_element(state: &AppState, colors: UiColors) -> Option<Div> 
 /// 单个概览指标悬停提示：hover 高亮背景 + 说明 tooltip。
 fn statusbar_metric(
     colors: UiColors,
-    tooltip: &'static str,
+    tooltip: impl Into<SharedString>,
     label: &str,
     value: &str,
 ) -> Stateful<Div> {
+    let tooltip: SharedString = tooltip.into();
     div()
-        .id(tooltip)
+        .id(gpui::ElementId::Name(tooltip.clone()))
         .h(px(18.))
         .rounded(colors.radius * 0.5)
         .px_1()
@@ -314,7 +322,10 @@ fn statusbar_metric(
         .text_size(px(13.))
         .text_color(colors.text)
         .hover(move |style| style.bg(colors.hover))
-        .tooltip(move |window, cx| Tooltip::new(tooltip).build(window, cx))
+        .tooltip({
+            let tooltip = tooltip.clone();
+            move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx)
+        })
         .child(format!("{label} {value}"))
 }
 
@@ -374,7 +385,7 @@ fn statusbar_context(state: &AppState) -> Option<String> {
             state,
             workbench.connection_id,
             Some(&workbench.database.to_string()),
-            Some("Redis 命令"),
+            Some(tr("app.statusbar.redis.command").as_ref()),
         ),
         TabKind::RedisCli(cli) => connection_statusbar_context(
             state,
@@ -388,30 +399,37 @@ fn statusbar_context(state: &AppState) -> Option<String> {
             Some(&pubsub.database.to_string()),
             Some("Redis Pub/Sub"),
         ),
-        TabKind::CreateTable(create) => connection_statusbar_context(
-            state,
-            create.connection_id,
-            create.database.as_deref(),
-            Some(if create.is_design() { "设计表" } else { "新建表" }),
-        ),
+        TabKind::CreateTable(create) => {
+            let table_kind = if create.is_design() {
+                tr("app.statusbar.table.design")
+            } else {
+                tr("app.statusbar.table.create")
+            };
+            connection_statusbar_context(
+                state,
+                create.connection_id,
+                create.database.as_deref(),
+                Some(table_kind.as_ref()),
+            )
+        }
 
         TabKind::UserAdmin(admin) => connection_statusbar_context(
             state,
             admin.connection_id,
-            Some("用户与权限"),
+            Some(tr("app.user_admin.title").as_ref()),
             None,
         ),
         TabKind::BackupList(list) => connection_statusbar_context(
             state,
             list.connection_id,
             Some(&list.database),
-            Some("备份列表"),
+            Some(tr("app.statusbar.backup_list").as_ref()),
         ),
         TabKind::ErDiagram(er) => connection_statusbar_context(
             state,
             er.connection_id,
             Some(&er.database),
-            Some("ER 关系图"),
+            Some(tr("app.statusbar.er_diagram").as_ref()),
         ),
         TabKind::Settings(_) => None,
         TabKind::AiChat { .. } => None,

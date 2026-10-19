@@ -1,7 +1,7 @@
 fn danger_table_modal(
     form: PendingDangerTableAction,
     sql_preview: Result<String, String>,
-    foreign_key_check_select: Entity<SelectState<SearchableVec<String>>>,
+    foreign_key_check_select: Entity<SelectState<SearchableVec<ForeignKeyCheckOption>>>,
     running: bool,
     is_postgres: bool,
     focus_handle: FocusHandle,
@@ -121,7 +121,7 @@ fn danger_table_modal(
                         .gap_2()
                         .child(
                             Button::new("danger-table-cancel")
-                                .label("取消")
+                                .label(tr("app.common.cancel"))
                                 .w(px(78.))
                                 .disabled(running)
                                 .on_click(cx.listener(|this, _, _, cx| {
@@ -132,9 +132,9 @@ fn danger_table_modal(
                         .child(
                             Button::new("danger-table-confirm")
                                 .label(if running {
-                                    "执行中"
+                                    tr("app.common.running")
                                 } else {
-                                    form.action.confirm_label()
+                                    form.action.confirm_label().into()
                                 })
                                 .danger()
                                 .w(px(78.))
@@ -188,15 +188,16 @@ fn danger_table_prompt(form: &PendingDangerTableAction) -> impl IntoElement {
     div()
         .text_size(px(13.))
         .font_weight(gpui::FontWeight::SEMIBOLD)
-        .child(format!(
-            "{} \"{}\" 吗？",
-            form.action.prompt(),
-            form.object_path.name
-        ))
+        .child({
+            let action = form.action.prompt();
+            tr("app.table.danger.title")
+                .replace("%{action}", action.as_ref())
+                .replace("%{table}", &form.object_path.name)
+        })
 }
 
 fn danger_table_fk_row(
-    select: Entity<SelectState<SearchableVec<String>>>,
+    select: Entity<SelectState<SearchableVec<ForeignKeyCheckOption>>>,
     running: bool,
     colors: UiColors,
 ) -> impl IntoElement {
@@ -209,7 +210,7 @@ fn danger_table_fk_row(
                 .w(px(76.))
                 .text_size(px(13.))
                 .text_color(colors.muted)
-                .child("外键检查"),
+                .child(tr("app.table.danger.foreign_key_check")),
         )
         .child(
             div()
@@ -223,7 +224,7 @@ fn danger_table_fk_row(
                 .child(
                     Select::new(&select)
                         .appearance(false)
-                        .placeholder("默认")
+                        .placeholder(tr("app.table.danger.default"))
                         .disabled(running)
                         .w_full()
                         .h_full()
@@ -251,7 +252,7 @@ fn danger_table_ack_row(
         .child(
             div()
                 .text_size(px(13.))
-                .child("我了解此操作是永久性的且无法撤销"),
+                .child(tr("app.table.danger.acknowledge")),
         )
         .on_mouse_down(
             MouseButton::Left,
@@ -284,7 +285,7 @@ fn danger_table_restart_identity_row(
         .child(
             div()
                 .text_size(px(13.))
-                .child("重置自增序列（RESTART IDENTITY；默认 CONTINUE IDENTITY）"),
+                .child(tr("app.table.danger.restart_identity")),
         )
         .on_mouse_down(
             MouseButton::Left,

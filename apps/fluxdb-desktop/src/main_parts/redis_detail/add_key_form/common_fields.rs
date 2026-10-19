@@ -39,7 +39,7 @@ fn redis_add_key_common_fields(
                                 .when(applying, |this| this.opacity(0.5))
                                 .child(
                                     Select::new(type_select)
-                                        .placeholder("选择类型")
+                                        .placeholder(tr("app.redis.add_key.form.select_type"))
                                         .small()
                                         .w_full()
                                         .h_full()
@@ -54,7 +54,7 @@ fn redis_add_key_common_fields(
                         .flex()
                         .flex_col()
                         .gap_2()
-                        .child(redis_add_key_form_label("TTL（可选，留空为永不超时）", colors))
+                        .child(redis_add_key_form_label(tr("app.redis.add_key.form.ttl"), colors))
                         .child(redis_stream_add_input_box(ttl_input.clone(), colors)),
                 ),
         )

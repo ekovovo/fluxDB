@@ -164,7 +164,7 @@ impl NavicatMain {
             .filter(|item| !item.is_empty())
             .collect::<Vec<_>>();
         if items.is_empty() {
-            self.show_message("至少输入一个元素", AppMessageKind::Warning, cx);
+            self.show_message(tr("app.redis.list.error.items_required").as_ref(), AppMessageKind::Warning, cx);
             return;
         }
         self.pending_redis_list_item_drawer = None;
@@ -231,7 +231,8 @@ impl NavicatMain {
             .redis_list_item_remove_select
             .read(cx)
             .selected_value()
-            .is_some_and(|v| v.as_str() == REDIS_LIST_REMOVE_FROM_HEAD);
+            .copied()
+            .unwrap_or(false);
         let count_text = self
             .redis_list_item_remove_count_input
             .read(cx)
@@ -240,7 +241,7 @@ impl NavicatMain {
         let count = match count_text.trim().parse::<usize>() {
             Ok(count) if count > 0 => count,
             _ => {
-                self.show_message("删除数量必须是大于 0 的整数", AppMessageKind::Warning, cx);
+                self.show_message(tr("app.redis.list.error.count").as_ref(), AppMessageKind::Warning, cx);
                 return;
             }
         };
@@ -324,8 +325,8 @@ impl NavicatMain {
                         } => Ok((key, query, cursor, items, next_cursor, total)),
                         AppEvent::Failed(error) => Err(error),
                         _ => Err(fluxdb_core::UserFacingError {
-                            title: "查询失败".to_string(),
-                            message: "List 元素查询没有返回结果".to_string(),
+                            title: tr("app.redis.error.query_failed").to_string(),
+                            message: tr("app.redis.list.error.no_query_result").to_string(),
                             detail: None,
                             retryable: true,
                         }),
@@ -451,8 +452,8 @@ impl NavicatMain {
                             AppEvent::Failed(error) => last_error = Some(error),
                             _ => {
                                 return Err(fluxdb_core::UserFacingError {
-                                    title: "保存失败".to_string(),
-                                    message: "List 元素操作没有返回结果".to_string(),
+                                    title: tr("app.redis.error.save_failed").to_string(),
+                                    message: tr("app.redis.list.error.no_operation_result").to_string(),
                                     detail: None,
                                     retryable: true,
                                 })

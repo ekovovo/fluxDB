@@ -18,8 +18,8 @@ impl NavicatMain {
                         AppEvent::UserAdminUsersLoaded(_, users) => Ok(users),
                         AppEvent::Failed(error) => Err(error),
                         _ => Err(fluxdb_core::UserFacingError {
-                            title: "加载用户失败".to_string(),
-                            message: "用户列表加载没有返回结果".to_string(),
+                            title: tr("app.user_admin.load_users_failed").to_string(),
+                            message: tr("app.user_admin.load_users_empty").to_string(),
                             detail: None,
                             retryable: true,
                         }),
@@ -48,7 +48,7 @@ impl NavicatMain {
                     );
                     if let Some(load_error) = load_error {
                         this.show_message(
-                            format!("刷新用户列表失败：{load_error}"),
+                            format!("{}: {load_error}", tr("app.user_admin.refresh_users_failed")),
                             AppMessageKind::Error,
                             cx,
                         );
@@ -108,8 +108,8 @@ impl NavicatMain {
                         AppEvent::UserAdminGrantsLoaded(_, grants) => Ok(grants),
                         AppEvent::Failed(error) => Err(error),
                         _ => Err(fluxdb_core::UserFacingError {
-                            title: "加载角色归属失败".to_string(),
-                            message: "角色归属加载没有返回结果".to_string(),
+                            title: tr("app.user_admin.load_roles_failed").to_string(),
+                            message: tr("app.user_admin.load_roles_empty").to_string(),
                             detail: None,
                             retryable: true,
                         }),
@@ -165,8 +165,8 @@ impl NavicatMain {
                         AppEvent::UserAdminMemberGrantsLoaded(_, members) => Ok(members),
                         AppEvent::Failed(error) => Err(error),
                         _ => Err(fluxdb_core::UserFacingError {
-                            title: "加载成员失败".to_string(),
-                            message: "成员加载没有返回结果".to_string(),
+                            title: tr("app.user_admin.load_members_failed").to_string(),
+                            message: tr("app.user_admin.load_members_empty").to_string(),
                             detail: None,
                             retryable: true,
                         }),
@@ -196,7 +196,7 @@ impl NavicatMain {
 
     fn start_user_admin_sql_apply(&mut self, tab_id: TabId, sql: String, cx: &mut Context<Self>) {
         if self._user_admin_apply_tasks.contains_key(&tab_id) {
-            self.show_message("SQL 正在执行", AppMessageKind::Warning, cx);
+            self.show_message(tr("app.user_admin.sql_running"), AppMessageKind::Warning, cx);
             return;
         }
         self.dispatch(AppCommand::StartUserAdminSqlApply(tab_id), cx);
@@ -208,8 +208,8 @@ impl NavicatMain {
                         AppEvent::UserAdminSqlApplied(_) => Ok(()),
                         AppEvent::Failed(error) => Err(error),
                         _ => Err(fluxdb_core::UserFacingError {
-                            title: "执行失败".to_string(),
-                            message: "用户权限 SQL 执行没有返回结果".to_string(),
+                            title: tr("app.user_admin.execute_failed").to_string(),
+                            message: tr("app.user_admin.execute_empty").to_string(),
                             detail: None,
                             retryable: true,
                         }),
@@ -231,7 +231,11 @@ impl NavicatMain {
                         cx,
                     );
                     if success {
-                        this.show_message("用户权限已更新", AppMessageKind::Success, cx);
+                        this.show_message(
+                            tr("app.user_admin.permissions_updated"),
+                            AppMessageKind::Success,
+                            cx,
+                        );
                         this.start_user_admin_users_load(tab_id, cx);
                         if let Some(admin) = this.user_admin_state_for(tab_id)
                             && admin.active_detail_tab == UserAdminDetailTab::MemberOf
@@ -254,7 +258,7 @@ impl NavicatMain {
                     } else if let Some(error_msg) = error_msg {
                         // 执行失败：Alert 提示原因（如权限不足/DROP USER 被拒绝），并刷新用户与权限列表。
                         this.show_message(
-                            format!("执行失败：{error_msg}"),
+                            format!("{}: {error_msg}", tr("app.user_admin.execute_failed")),
                             AppMessageKind::Error,
                             cx,
                         );
@@ -627,7 +631,7 @@ fn user_admin_content(
     let supported = provider.is_some() || is_postgres;
     let connection_name = connection
         .map(|connection| connection.config.name.clone())
-        .unwrap_or_else(|| "连接".to_string());
+        .unwrap_or_else(|| tr("app.user_admin.connection").to_string());
 
     // PostgreSQL：角色是集群级身份，走独立 PG 角色管理面板（列表 + 成员/权限），
     // 不套 MySQL 的 SQL 预览/apply 流程（provider 为 None 时该流程无意义）。
@@ -664,7 +668,7 @@ fn user_admin_content(
                 .text_align(gpui::TextAlign::Center)
                 .text_size(px(14.))
                 .text_color(colors.muted)
-                .child("当前支持 MySQL/TiDB 兼容连接。SQLite、MongoDB、Redis 会按各自权限模型继续扩展。"),
+                .child(tr("app.user_admin.supported_note")),
         );
     }
 
@@ -841,13 +845,17 @@ fn user_admin_toolbar(
             div()
                 .text_size(px(14.))
                 .font_weight(gpui::FontWeight::SEMIBOLD)
-                .child("用户与权限"),
+                .child(tr("app.user_admin.title")),
         )
         .child(user_admin_badge(connection_name, colors))
         .child(div().flex_1())
         .child(
             user_admin_button(
-                if admin.applying { "保存中" } else { "保存" },
+                if admin.applying {
+                    tr("app.user_admin.saving")
+                } else {
+                    tr("app.common.save")
+                },
                 AppIcon::Save,
                 false,
                 !can_save,
@@ -865,7 +873,11 @@ fn user_admin_toolbar(
         )
         .child(
             user_admin_button(
-                if admin.loading_users { "加载中" } else { "刷新" },
+                if admin.loading_users {
+                    tr("app.user_admin.loading")
+                } else {
+                    tr("app.common.refresh")
+                },
                 AppIcon::Refresh,
                 false,
                 !supported || admin.loading_users,
@@ -884,7 +896,7 @@ fn user_admin_toolbar(
         // 删除当前选中的已有用户：仅非新建草稿态、已选中、且非 MySQL 系统账号（mysql. 前缀）时可用。
         .child(
             user_admin_button(
-                "删除",
+                tr("app.user_admin.delete"),
                 AppIcon::Trash,
                 true,
                 !supported
@@ -972,11 +984,11 @@ fn user_admin_user_list(
                 .is_some_and(|plugin| plugin.to_lowercase().contains(&query)));
     let mut list = div().flex_1().min_h(px(0.)).overflow_y_scrollbar();
     if admin.loading_users {
-        list = list.child(user_admin_empty_row("正在加载用户...", colors));
+        list = list.child(user_admin_empty_row(tr("app.user_admin.loading_users"), colors));
     } else if let Some(error) = &admin.users_error {
         list = list.child(user_admin_error_row(&error.message, colors));
     } else if users.is_empty() && !draft_matches {
-        list = list.child(user_admin_empty_row("暂无用户，或当前账号没有读取用户列表的权限。", colors));
+        list = list.child(user_admin_empty_row(tr("app.user_admin.empty_users"), colors));
     } else {
         for user in users {
             let active = admin.selected_user.as_ref() == Some(&user);
@@ -1029,7 +1041,7 @@ fn user_admin_user_row(
     cx: &mut Context<NavicatMain>,
 ) -> Div {
     let title = if user.user.is_empty() {
-        "匿名用户".to_string()
+        tr("app.user_admin.anonymous").to_string()
     } else {
         format!("{}@{}", user.user, user.host)
     };
@@ -1110,7 +1122,7 @@ fn user_admin_user_row(
 
 fn user_admin_draft_user_row(user: DatabaseUserIdentity, colors: UiColors) -> Div {
     let title = if user.user.trim().is_empty() {
-        "新用户@%".to_string()
+        tr("app.user_admin.new_user").to_string()
     } else {
         format!("{}@{}", user.user, user.host)
     };
@@ -1155,7 +1167,7 @@ fn user_admin_draft_user_row(user: DatabaseUserIdentity, colors: UiColors) -> Di
                         .truncate()
                         .text_size(px(11.))
                         .text_color(colors.muted)
-                        .child(format!("待创建 · {}", detail)),
+                        .child(tr("app.user_admin.pending_create").replace("%{detail}", &detail)),
                 ),
         )
 }
@@ -1181,7 +1193,7 @@ fn user_admin_detail(
             .justify_center()
             .text_size(px(13.))
             .text_color(colors.muted)
-            .child("请选择用户");
+            .child(tr("app.user_admin.select_user"));
     };
 
     div()
@@ -1218,11 +1230,11 @@ fn user_admin_tab_strip(
     cx: &mut Context<NavicatMain>,
 ) -> Div {
     let tabs = [
-        (UserAdminDetailTab::General, "常规"),
-        (UserAdminDetailTab::Advanced, "高级"),
-        (UserAdminDetailTab::MemberOf, "成员关系"),
-        (UserAdminDetailTab::Privileges, "权限"),
-        (UserAdminDetailTab::SqlPreview, "SQL 预览"),
+        (UserAdminDetailTab::General, tr("app.user_admin.tab.general")),
+        (UserAdminDetailTab::Advanced, tr("app.user_admin.tab.advanced")),
+        (UserAdminDetailTab::MemberOf, tr("app.user_admin.tab.member_of")),
+        (UserAdminDetailTab::Privileges, tr("app.user_admin.tab.privileges")),
+        (UserAdminDetailTab::SqlPreview, tr("app.user_admin.tab.sql_preview")),
     ];
     let mut strip = div()
         .h(px(28.))
@@ -1240,11 +1252,12 @@ fn user_admin_tab_strip(
 fn user_admin_detail_tab(
     tab_id: TabId,
     detail_tab: UserAdminDetailTab,
-    label: &'static str,
+    label: impl Into<SharedString>,
     active: bool,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
+    let label = label.into();
     div()
         .h(px(28.))
         .px_3()
@@ -1313,27 +1326,27 @@ fn user_admin_general_panel(
                 .flex_col()
                 .gap_3()
                 .child(user_admin_text_input_row(
-                    "用户名:",
+                    tr("app.user_admin.field.username"),
                     this.user_admin_create_user_input.clone(),
                     window,
                     colors,
                     cx,
                 ))
                 .child(user_admin_text_input_row(
-                    "主机:",
+                    tr("app.user_admin.field.host"),
                     this.user_admin_create_host_input.clone(),
                     window,
                     colors,
                     cx,
                 ))
                 .child(user_admin_select_row(
-                    "插件:",
+                    tr("app.user_admin.field.plugin"),
                     this.user_admin_auth_plugin_select.clone(),
-                    "选择认证插件",
+                    tr("app.user_admin.select_plugin"),
                     colors,
                 ))
                 .child(user_admin_password_row(
-                    "密码:",
+                    tr("app.user_admin.field.password"),
                     this.user_admin_new_password_input.clone(),
                     this.user_admin_password_visible,
                     window,
@@ -1341,7 +1354,7 @@ fn user_admin_general_panel(
                     cx,
                 ))
                 .child(user_admin_password_row(
-                    "确认密码:",
+                    tr("app.user_admin.field.confirm_password"),
                     this.user_admin_create_password_input.clone(),
                     this.user_admin_password_visible,
                     window,
@@ -1349,9 +1362,9 @@ fn user_admin_general_panel(
                     cx,
                 ))
                 .child(user_admin_select_row(
-                    "密码过期策略:",
+                    tr("app.user_admin.field.password_expiry"),
                     this.user_admin_password_expiry_select.clone(),
-                    "选择密码过期策略",
+                    tr("app.user_admin.select_password_expiry"),
                     colors,
                 ))
                 .when(password_mismatch, |this| {
@@ -1360,7 +1373,7 @@ fn user_admin_general_panel(
                             .ml(px(120.))
                             .text_size(px(12.))
                             .text_color(rgb(0xff3b45))
-                            .child("两次输入的密码不一致"),
+                            .child(tr("app.user_admin.password_mismatch")),
                     )
                 })
                 .when(account_incomplete, |this| {
@@ -1369,7 +1382,7 @@ fn user_admin_general_panel(
                             .ml(px(120.))
                             .text_size(px(12.))
                             .text_color(rgb(0xff3b45))
-                            .child("用户名和 Host 不能为空"),
+                            .child(tr("app.user_admin.username_host_required")),
                     )
                 })
         )
@@ -1420,12 +1433,13 @@ fn user_admin_detail_tab_members_load_role(
 }
 
 fn user_admin_text_input_row(
-    label: &'static str,
+    label: impl Into<SharedString>,
     input: Entity<InputState>,
     window: &mut Window,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
+    let label = label.into();
     div()
         .h(px(38.))
         .flex()
@@ -1436,11 +1450,13 @@ fn user_admin_text_input_row(
 }
 
 fn user_admin_select_row(
-    label: &'static str,
+    label: impl Into<SharedString>,
     select: Entity<SelectState<SearchableVec<String>>>,
-    placeholder: &'static str,
+    placeholder: impl Into<SharedString>,
     colors: UiColors,
 ) -> Div {
+    let label = label.into();
+    let placeholder = placeholder.into();
     div()
         .h(px(38.))
         .flex()
@@ -1452,8 +1468,9 @@ fn user_admin_select_row(
 
 fn user_admin_select_box(
     select: Entity<SelectState<SearchableVec<String>>>,
-    placeholder: &'static str,
+    placeholder: impl Into<SharedString>,
 ) -> Div {
+    let placeholder = placeholder.into();
     // 与「执行 SQL 文件」对话框 (`sql_file_select_field`) 同一用法：
     // 直接用 Select 自带外观并给定 34px 高度，触发器自身 flex + items_center
     // 保证选中值/占位文字垂直居中；不自绘外框，避免 appearance(false) 下
@@ -1492,56 +1509,56 @@ fn user_admin_advanced_panel(
                 .flex_col()
                 .gap_3()
                 .child(user_admin_text_input_row(
-                    "每小时最大查询数:",
+                    tr("app.user_admin.advanced.max_queries"),
                     this.user_admin_max_queries_input.clone(),
                     window,
                     colors,
                     cx,
                 ))
                 .child(user_admin_text_input_row(
-                    "每小时最大更新数:",
+                    tr("app.user_admin.advanced.max_updates"),
                     this.user_admin_max_updates_input.clone(),
                     window,
                     colors,
                     cx,
                 ))
                 .child(user_admin_text_input_row(
-                    "每小时最大连接数:",
+                    tr("app.user_admin.advanced.max_connections"),
                     this.user_admin_max_connections_input.clone(),
                     window,
                     colors,
                     cx,
                 ))
                 .child(user_admin_text_input_row(
-                    "最大用户连接数:",
+                    tr("app.user_admin.advanced.max_user_connections"),
                     this.user_admin_max_user_connections_input.clone(),
                     window,
                     colors,
                     cx,
                 ))
                 .child(user_admin_select_row(
-                    "SSL 类型:",
+                    tr("app.user_admin.advanced.ssl_type"),
                     this.user_admin_ssl_type_select.clone(),
-                    "选择 SSL 类型",
+                    tr("app.user_admin.advanced.select_ssl_type"),
                     colors,
                 ))
                 .when(admin.ssl_type == "SPECIFIED", |this| {
                     this.child(user_admin_text_input_row(
-                        "SSL Cipher:",
+                        tr("app.user_admin.advanced.ssl_cipher"),
                         ssl_cipher_input,
                         window,
                         colors,
                         cx,
                     ))
                     .child(user_admin_text_input_row(
-                        "证书发行者:",
+                        tr("app.user_admin.advanced.ssl_issuer"),
                         ssl_issuer_input,
                         window,
                         colors,
                         cx,
                     ))
                     .child(user_admin_text_input_row(
-                        "证书主旨:",
+                        tr("app.user_admin.advanced.ssl_subject"),
                         ssl_subject_input,
                         window,
                         colors,
@@ -1558,7 +1575,10 @@ fn user_admin_member_relationships_panel(
     cx: &mut Context<NavicatMain>,
 ) -> Div {
     if admin.creating_user {
-        return user_admin_placeholder_panel_with_text("请先保存新用户，再配置成员关系。", colors);
+        return user_admin_placeholder_panel_with_text(
+            tr("app.user_admin.save_before_member_of"),
+            colors,
+        );
     }
 
     let memberships = admin.effective_role_memberships();
@@ -1568,11 +1588,17 @@ fn user_admin_member_relationships_panel(
         .bg(colors.panel_bg)
         .overflow_y_scrollbar();
     if admin.loading_grants {
-        member_of_body = member_of_body.child(user_admin_empty_row("正在加载成员属于...", colors));
+        member_of_body = member_of_body.child(user_admin_empty_row(
+            tr("app.user_admin.loading_member_of"),
+            colors,
+        ));
     } else if let Some(error) = &admin.grants_error {
         member_of_body = member_of_body.child(user_admin_error_row(&error.message, colors));
     } else if memberships.is_empty() {
-        member_of_body = member_of_body.child(user_admin_empty_row("暂无可授予的用户或角色。", colors));
+        member_of_body = member_of_body.child(user_admin_empty_row(
+            tr("app.user_admin.no_grantable_roles"),
+            colors,
+        ));
     } else {
         for membership in memberships {
             member_of_body =
@@ -1587,11 +1613,15 @@ fn user_admin_member_relationships_panel(
         .bg(colors.panel_bg)
         .overflow_y_scrollbar();
     if admin.loading_member_grants {
-        members_body = members_body.child(user_admin_empty_row("正在加载成员...", colors));
+        members_body =
+            members_body.child(user_admin_empty_row(tr("app.user_admin.loading_members"), colors));
     } else if let Some(error) = &admin.member_grants_error {
         members_body = members_body.child(user_admin_error_row(&error.message, colors));
     } else if members.is_empty() {
-        members_body = members_body.child(user_admin_empty_row("暂无可授予的成员。", colors));
+        members_body = members_body.child(user_admin_empty_row(
+            tr("app.user_admin.no_grantable_members"),
+            colors,
+        ));
     } else {
         for member in members {
             members_body = members_body.child(user_admin_member_row(tab_id, member, colors, cx));
@@ -1610,7 +1640,7 @@ fn user_admin_member_relationships_panel(
                 .gap_3()
                 .child(
                     user_admin_member_table_shell(
-                        "成员属于",
+                        tr("app.user_admin.member_of"),
                         user_admin_member_of_header(colors),
                         member_of_body,
                         colors,
@@ -1620,7 +1650,7 @@ fn user_admin_member_relationships_panel(
                 )
                 .child(
                     user_admin_member_table_shell(
-                        "成员",
+                        tr("app.user_admin.members"),
                         user_admin_members_header(colors),
                         members_body,
                         colors,
@@ -1632,11 +1662,12 @@ fn user_admin_member_relationships_panel(
 }
 
 fn user_admin_member_table_shell(
-    title: &'static str,
+    title: impl Into<SharedString>,
     header: Div,
     body: impl IntoElement,
     colors: UiColors,
 ) -> Div {
+    let title = title.into();
     div()
         .h_full()
         .border_1()
@@ -1669,7 +1700,10 @@ fn user_admin_members_panel(
     cx: &mut Context<NavicatMain>,
 ) -> Div {
     if admin.creating_user {
-        return user_admin_placeholder_panel_with_text("请先保存新用户，再配置成员。", colors);
+        return user_admin_placeholder_panel_with_text(
+            tr("app.user_admin.save_before_members"),
+            colors,
+        );
     }
     let members = admin.effective_role_members();
     let mut body = div()
@@ -1678,11 +1712,14 @@ fn user_admin_members_panel(
         .bg(colors.panel_bg)
         .overflow_y_scrollbar();
     if admin.loading_member_grants {
-        body = body.child(user_admin_empty_row("正在加载成员...", colors));
+        body = body.child(user_admin_empty_row(tr("app.user_admin.loading_members"), colors));
     } else if let Some(error) = &admin.member_grants_error {
         body = body.child(user_admin_error_row(&error.message, colors));
     } else if members.is_empty() {
-        body = body.child(user_admin_empty_row("暂无可授予的成员。", colors));
+        body = body.child(user_admin_empty_row(
+            tr("app.user_admin.no_grantable_members"),
+            colors,
+        ));
     } else {
         for member in members {
             body = body.child(user_admin_member_row(tab_id, member, colors, cx));
@@ -1719,7 +1756,7 @@ fn user_admin_member_of_header(colors: UiColors) -> Div {
         .text_size(px(12.))
         .font_weight(gpui::FontWeight::SEMIBOLD)
         .text_color(colors.text)
-        .child(div().flex_1().min_w(px(0.)).px_3().child("用户名"))
+        .child(div().flex_1().min_w(px(0.)).px_3().child(tr("app.user_admin.field.username")))
         .child(
             div()
                 .w(px(72.))
@@ -1727,7 +1764,7 @@ fn user_admin_member_of_header(colors: UiColors) -> Div {
                 .border_color(colors.border)
                 .flex()
                 .justify_center()
-                .child("授予"),
+                .child(tr("app.user_admin.grant")),
         )
         .child(
             div()
@@ -1736,7 +1773,7 @@ fn user_admin_member_of_header(colors: UiColors) -> Div {
                 .border_color(colors.border)
                 .flex()
                 .justify_center()
-                .child("集"),
+                .child(tr("app.user_admin.default")),
         )
 }
 
@@ -1751,7 +1788,7 @@ fn user_admin_members_header(colors: UiColors) -> Div {
         .text_size(px(12.))
         .font_weight(gpui::FontWeight::SEMIBOLD)
         .text_color(colors.text)
-        .child(div().flex_1().min_w(px(0.)).px_3().child("用户名"))
+        .child(div().flex_1().min_w(px(0.)).px_3().child(tr("app.user_admin.field.username")))
         .child(
             div()
                 .w(px(72.))
@@ -1759,7 +1796,7 @@ fn user_admin_members_header(colors: UiColors) -> Div {
                 .border_color(colors.border)
                 .flex()
                 .justify_center()
-                .child("授予"),
+                .child(tr("app.user_admin.grant")),
         )
 }
 
@@ -1961,10 +1998,14 @@ fn user_admin_check_box_visual(checked: bool, colors: UiColors) -> Div {
 }
 
 fn user_admin_placeholder_panel(colors: UiColors) -> Div {
-    user_admin_placeholder_panel_with_text("后续实现", colors)
+    user_admin_placeholder_panel_with_text(tr("app.user_admin.coming_later"), colors)
 }
 
-fn user_admin_placeholder_panel_with_text(text: &'static str, colors: UiColors) -> Div {
+fn user_admin_placeholder_panel_with_text(
+    text: impl Into<SharedString>,
+    colors: UiColors,
+) -> Div {
+    let text = text.into();
     div()
         .flex_1()
         .min_h(px(0.))
@@ -1999,7 +2040,7 @@ fn user_admin_sql_preview_panel(
         .flex()
         .flex_col()
         .child(if sql.trim().is_empty() {
-            user_admin_placeholder_panel_with_text("暂无待预览 SQL", colors)
+            user_admin_placeholder_panel_with_text(tr("app.user_admin.no_sql_preview"), colors)
         } else {
             user_admin_sql_preview_code_view(
                 SharedString::from(format!("user-admin-sql-preview-tab-{}", tab_id.0)),
@@ -2081,13 +2122,14 @@ fn user_admin_form_input_box(
 }
 
 fn user_admin_password_row(
-    label: &'static str,
+    label: impl Into<SharedString>,
     input: Entity<InputState>,
     visible: bool,
     window: &mut Window,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
+    let label = label.into();
     let focused = input.read(cx).focus_handle(cx).is_focused(window);
     div()
         .h(px(38.))
@@ -2153,7 +2195,8 @@ fn user_admin_input_shadow(focused: bool) -> Vec<gpui::BoxShadow> {
     )]
 }
 
-fn user_admin_form_label(label: &'static str, colors: UiColors) -> Div {
+fn user_admin_form_label(label: impl Into<SharedString>, colors: UiColors) -> Div {
+    let label = label.into();
     div()
         .w(px(108.))
         .text_size(px(13.))
@@ -2266,7 +2309,7 @@ fn user_admin_sql_preview_modal(
                             div()
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
                                 .text_size(px(15.))
-                                .child("SQL 预览"),
+                                .child(tr("app.user_admin.tab.sql_preview")),
                         )
                         .child(div().flex_1())
                         .child(
@@ -2311,7 +2354,13 @@ fn user_admin_sql_preview_modal(
                         .justify_end()
                         .gap_2()
                         .child(
-                            user_admin_button("取消", AppIcon::Close, false, applying, colors)
+                            user_admin_button(
+                                tr("app.common.cancel"),
+                                AppIcon::Close,
+                                false,
+                                applying,
+                                colors,
+                            )
                                 .on_mouse_down(
                                     MouseButton::Left,
                                     cx.listener(move |this, _, _, cx| {
@@ -2322,7 +2371,11 @@ fn user_admin_sql_preview_modal(
                         )
                         .child(
                             user_admin_button(
-                                if applying { "执行中" } else { "执行 SQL" },
+                                if applying {
+                                    tr("app.user_admin.executing")
+                                } else {
+                                    tr("app.user_admin.execute_sql")
+                                },
                                 AppIcon::Play,
                                 pending.danger,
                                 applying,
@@ -2369,17 +2422,20 @@ fn user_admin_add_user_button(disabled: bool, colors: UiColors) -> Stateful<Div>
         .items_center()
         .justify_center()
         .id("user-admin-add-user")
-        .tooltip(|window, cx| Tooltip::new("新增用户").build(window, cx))
+        .tooltip(|window, cx| {
+            Tooltip::new(tr("app.user_admin.add_user")).build(window, cx)
+        })
         .child(app_icon(AppIcon::Plus, 16., color))
 }
 
 fn user_admin_button(
-    label: &'static str,
+    label: impl Into<SharedString>,
     icon: AppIcon,
     danger: bool,
     disabled: bool,
     colors: UiColors,
 ) -> Div {
+    let label = label.into();
     let fg = if danger {
         rgb(0xff3b45)
     } else if disabled {
@@ -2434,7 +2490,8 @@ fn user_admin_input_box(input: Entity<InputState>, colors: UiColors) -> Div {
         )
 }
 
-fn user_admin_empty_row(text: &'static str, colors: UiColors) -> Div {
+fn user_admin_empty_row(text: impl Into<SharedString>, colors: UiColors) -> Div {
+    let text = text.into();
     div()
         .p_4()
         .text_size(px(12.))
@@ -2447,7 +2504,7 @@ fn user_admin_error_row(text: &str, _colors: UiColors) -> Div {
         .p_4()
         .text_size(px(12.))
         .text_color(rgb(0xff3b45))
-        .child(text.to_string())
+        .child(localize_backend_error_text(text))
 }
 
 /// MySQL 用户与权限：删除用户确认弹框。
@@ -2463,7 +2520,7 @@ fn user_admin_delete_user_modal(
     cx: &mut Context<NavicatMain>,
 ) -> impl IntoElement {
     let title = if user.user.is_empty() {
-        "匿名用户@%".to_string()
+        tr("app.user_admin.anonymous_user").to_string()
     } else {
         format!("{}@{}", user.user, user.host)
     };
@@ -2524,7 +2581,7 @@ fn user_admin_delete_user_modal(
                             div()
                                 .text_size(px(17.))
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
-                                .child("删除用户"),
+                                .child(tr("app.user_admin.delete_user")),
                         )
                         .child(
                             div()
@@ -2554,10 +2611,10 @@ fn user_admin_delete_user_modal(
                         .pb_4()
                         .text_size(px(13.))
                         .text_color(colors.muted)
-                        .child(format!(
-                            "确定要删除用户「{}」吗？此操作不可撤销。",
-                            title
-                        )),
+                        .child(
+                            tr("app.user_admin.delete_confirm")
+                                .replace("%{name}", &title),
+                        ),
                 )
                 .child(div().h(px(1.)).bg(colors.border_soft))
                 .child(
@@ -2570,7 +2627,7 @@ fn user_admin_delete_user_modal(
                         .gap_2()
                         .child(
                             Button::new("user-admin-delete-cancel")
-                                .label("取消")
+                                .label(tr("app.common.cancel"))
                                 .w(px(78.))
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.dispatch(
@@ -2582,7 +2639,7 @@ fn user_admin_delete_user_modal(
                         )
                         .child(
                             Button::new("user-admin-delete-confirm")
-                                .label("删除用户")
+                                .label(tr("app.user_admin.delete_user"))
                                 .danger()
                                 .w(px(104.))
                                 .on_click(cx.listener(move |this, _, _, cx| {

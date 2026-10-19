@@ -251,7 +251,7 @@ fn database_backup_modal_header(
                     div()
                         .text_size(px(18.))
                         .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .child("数据库备份"),
+                        .child(tr("app.database_backup.title")),
                 ),
         )
         .child(
@@ -382,7 +382,16 @@ fn database_backup_general_body(
         .child(database_backup_dir_row(target_dir_input, colors, cx))
         .child(database_backup_mode_info(colors))
         .child(database_backup_file_name_row(file_name_input, colors))
-        .child(div().text_size(px(12.)).text_color(colors.muted).child(format!("输出文件：{}{}", resolve_backup_file_name(form), if form.database_kind == DatabaseKind::Sqlite { "（完整数据库快照，包含全部对象）" } else { "" })))
+        .child(div().text_size(px(12.)).text_color(colors.muted).child(format!(
+            "{}{}",
+            tr("app.database_backup.output_file")
+                .replace("%{name}", &resolve_backup_file_name(form)),
+            if form.database_kind == DatabaseKind::Sqlite {
+                tr("app.database_backup.sqlite_snapshot_note")
+            } else {
+                "".into()
+            }
+        )))
         .child(database_backup_note_row(note_input, colors))
         .child(div().flex_1())
 }
@@ -399,7 +408,7 @@ fn database_backup_dir_row(
         .items_center()
         .gap_3()
         .child(div().w(px(120.)).flex_none().child(sql_file_section_label(
-            "备份目录",
+            tr("app.database_backup.directory"),
             colors,
         )))
         .child(
@@ -430,7 +439,7 @@ fn database_backup_dir_row(
                 )
                 .child(
                     Button::new("backup-select-target-dir")
-                        .label("选择")
+                        .label(tr("app.common.choose"))
                         .small()
                         .rounded(colors.radius)
                         .on_click(cx.listener(|this, _, window, cx| {
@@ -448,7 +457,7 @@ fn database_backup_note_row(input: Entity<InputState>, colors: UiColors) -> Div 
         .items_center()
         .gap_3()
         .child(div().w(px(120.)).flex_none().child(sql_file_section_label(
-            "备注（可空）",
+            tr("app.database_backup.note"),
             colors,
         )))
         .child(
@@ -477,7 +486,10 @@ fn database_backup_target_input(database: String, colors: UiColors) -> Div {
         .text_size(px(13.))
         .font_weight(gpui::FontWeight::SEMIBOLD)
         .text_color(colors.muted)
-        .child(format!("备份数据库：{database}"))
+        .child(
+            tr("app.database_backup.database")
+                .replace("%{database}", &database),
+        )
 }
 
 /// 备份方式只读说明：统一自动选择（按库类型与工具自动判断原生或逻辑），不提供手动三选一。
@@ -500,8 +512,8 @@ fn database_backup_client_banner(
                         NativeClientKind::MySql => "backup-mysql-client-missing",
                     },
                     match kind {
-                        NativeClientKind::Postgres => "未找到 pg_dump：PostgreSQL 备份依赖客户端工具，请先下载或指定客户端目录。",
-                        NativeClientKind::MySql => "未找到 mysqldump / mariadb-dump：MySQL/TiDB 原生备份依赖客户端工具。",
+                        NativeClientKind::Postgres => tr("app.database_backup.pg_client_missing"),
+                        NativeClientKind::MySql => tr("app.database_backup.mysql_client_missing"),
                     },
                 )
                 .with_variant(AlertVariant::Warning)
@@ -513,7 +525,7 @@ fn database_backup_client_banner(
                 NativeClientKind::Postgres => "backup-pg-client-settings",
                 NativeClientKind::MySql => "backup-mysql-client-settings",
             })
-                .label("前往设置")
+                .label(tr("app.database_backup.go_settings"))
                 .small()
                 .rounded(colors.radius)
                 .on_click(cx.listener(move |this, _, _window, cx| {
@@ -532,7 +544,7 @@ fn database_backup_mode_info(colors: UiColors) -> Div {
         .items_center()
         .gap_3()
         .child(div().w(px(120.)).flex_none().child(sql_file_section_label(
-            "备份方式",
+            tr("app.database_backup.mode"),
             colors,
         )))
         .child(
@@ -541,7 +553,7 @@ fn database_backup_mode_info(colors: UiColors) -> Div {
                 .min_w(px(0.))
                 .text_size(px(13.))
                 .text_color(colors.text)
-                .child("自动选择"),
+                .child(tr("app.database_backup.auto_select")),
         )
 }
 
@@ -552,7 +564,7 @@ fn database_backup_file_name_row(input: Entity<InputState>, colors: UiColors) ->
         .items_center()
         .gap_3()
         .child(div().w(px(120.)).flex_none().child(sql_file_section_label(
-            "备份文件名（模板）",
+            tr("app.database_backup.filename_template"),
             colors,
         )))
         .child(
@@ -589,10 +601,10 @@ fn database_backup_advanced_body(
         .flex()
         .flex_col()
         .gap_2()
-        .child(sql_file_section_label("高级选项", colors))
+        .child(sql_file_section_label(tr("app.database_backup.advanced"), colors))
         .child(database_backup_checkbox_row(
             "backup-lock-tables",
-            "锁定所有表",
+            tr("app.database_backup.lock_tables"),
             form.lock_tables,
             BackupCheckboxField::LockTables,
             colors,
@@ -600,7 +612,7 @@ fn database_backup_advanced_body(
         ))
         .child(database_backup_checkbox_row(
             "backup-single-transaction",
-            "使用单一事务（仅 InnoDB）",
+            tr("app.database_backup.single_transaction"),
             form.single_transaction,
             BackupCheckboxField::SingleTransaction,
             colors,
@@ -608,7 +620,7 @@ fn database_backup_advanced_body(
         ))
         .child(database_backup_checkbox_row(
             "backup-include-routines",
-            "包含存储过程/函数（--routines）",
+            tr("app.database_backup.include_routines"),
             form.include_routines,
             BackupCheckboxField::IncludeRoutines,
             colors,
@@ -616,7 +628,7 @@ fn database_backup_advanced_body(
         ))
         .child(database_backup_checkbox_row(
             "backup-include-schema",
-            "包含表结构",
+            tr("app.database_backup.include_schema"),
             form.include_schema,
             BackupCheckboxField::IncludeSchema,
             colors,
@@ -624,7 +636,7 @@ fn database_backup_advanced_body(
         ))
         .child(database_backup_checkbox_row(
             "backup-include-data",
-            "包含表数据",
+            tr("app.database_backup.include_data"),
             form.include_data,
             BackupCheckboxField::IncludeData,
             colors,
@@ -632,7 +644,7 @@ fn database_backup_advanced_body(
         ))
         .child(database_backup_checkbox_row(
             "backup-pg-owner",
-            "包含属主 OWNER（PG 原生）",
+            tr("app.database_backup.include_owner"),
             form.pg_include_owner,
             BackupCheckboxField::PgIncludeOwner,
             colors,
@@ -640,7 +652,7 @@ fn database_backup_advanced_body(
         ))
         .child(database_backup_checkbox_row(
             "backup-pg-acl",
-            "包含 ACL 权限（PG 原生）",
+            tr("app.database_backup.include_acl"),
             form.pg_include_acl,
             BackupCheckboxField::PgIncludeAcl,
             colors,
@@ -651,12 +663,7 @@ fn database_backup_advanced_body(
             div()
                 .text_size(px(11.))
                 .text_color(colors.muted)
-                .child(
-                    "「锁定所有表」「单一事务」「包含存储过程/函数」仅对 MySQL/TiDB 原生 mysqldump 生效；\
-                     「包含表结构/数据」仅对逻辑备份生效。\n\
-                     若报 Couldn't execute 'SELECT LIBRARY_NAME …'（mysqldump 9.x 客户端 + 老版本服务端），\
-                     取消「包含存储过程/函数」或在设置中换用与服务端匹配的 mysqldump。",
-                ),
+                .child(tr("app.backup.native_option_hint")),
         )
 }
 
@@ -675,12 +682,13 @@ enum BackupCheckboxField {
 
 fn database_backup_checkbox_row(
     id: &'static str,
-    label: &'static str,
+    label: impl Into<SharedString>,
     checked: bool,
     field: BackupCheckboxField,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
+    let label = label.into().to_string();
     let view = cx.entity();
     div()
         .h(px(30.))
@@ -734,7 +742,7 @@ fn database_backup_log_placeholder(colors: UiColors) -> Div {
             div()
                 .text_size(px(13.))
                 .text_color(colors.muted)
-                .child("开始备份后，将在此查看执行日志。"),
+                .child(tr("app.database_backup.log_empty")),
         )
 }
 
@@ -756,15 +764,16 @@ fn database_backup_task_card(
         .map(|name| name.to_string_lossy().to_string())
         .unwrap_or_default();
     let status = if task.canceled {
-        "已取消".to_string()
+        tr("app.backup.status.canceled").to_string()
     } else if let Some(error) = &task.error {
-        format!("失败：{error}")
+        tr("app.database_backup.task.failed").replace("%{error}", &error.to_string())
     } else if task.running() {
-        format!("执行中：{}", task.stage)
+        tr("app.database_backup.task.running").replace("%{stage}", &task.stage)
     } else if task.skipped.is_empty() {
-        "完成".to_string()
+        tr("app.database_backup.status.completed").to_string()
     } else {
-        format!("完成（跳过 {} 项）", task.skipped.len())
+        tr("app.database_backup.task.completed_skipped")
+            .replace("%{count}", &task.skipped.len().to_string())
     };
     div()
         .flex_1()
@@ -839,9 +848,9 @@ fn database_backup_task_card(
                             task.mode.label()
                         ))
                         .child("·")
-                        .child(format!(
-                            "用时 {}s",
-                            elapsed_seconds(task.started_at, task.finished_at)
+                        .child(tr("app.database_backup.elapsed").replace(
+                            "%{seconds}",
+                            &elapsed_seconds(task.started_at, task.finished_at).to_string(),
                         )),
                 ),
         )
@@ -874,7 +883,7 @@ fn database_backup_log_list(
         .chain(
             task.skipped
                 .iter()
-                .map(|skipped| format_entry("跳过", skipped)),
+                .map(|skipped| format_entry(&tr("app.database_backup.skipped"), skipped)),
         )
         .collect::<Vec<_>>()
         .join("\n");
@@ -884,12 +893,12 @@ fn database_backup_log_list(
             div()
                 .text_size(px(12.))
                 .text_color(colors.muted)
-                .child("正在执行，消息日志会实时追加…"),
+                .child(tr("app.database_backup.running_log")),
         );
     } else {
         // 顶部工具行：复制全部日志（含失败原因与跳过项）。
         list = list.child(div().flex().justify_end().pb_1().child(backup_text_button(
-            "复制全部",
+            tr("app.database_backup.copy_all"),
             colors,
             {
                 let all_text = all_text.clone();
@@ -904,7 +913,10 @@ fn database_backup_log_list(
                 div()
                     .text_size(px(11.))
                     .text_color(colors.muted)
-                    .child(format!("以上 {hidden_count} 条日志已隐藏")),
+                    .child(
+                        tr("app.database_backup.log_hidden")
+                            .replace("%{count}", &hidden_count.to_string()),
+                    ),
             );
         }
         // 日志行：阶段列固定宽度、消息列弹性并允许换行、行尾复制按钮。
@@ -919,9 +931,9 @@ fn database_backup_log_list(
             ));
         }
         for skipped in &task.skipped {
-            let copy_text = format_entry("跳过", skipped);
+            let copy_text = format_entry(&tr("app.database_backup.skipped"), skipped);
             list = list.child(backup_log_row(
-                "跳过".to_string(),
+                tr("app.database_backup.skipped").to_string(),
                 skipped.clone(),
                 false,
                 copy_text,
@@ -957,7 +969,7 @@ fn backup_log_row(
         .child(
             div()
                 .flex_none()
-                .child(backup_text_button("复制", colors, move |_, _, cx| {
+                .child(backup_text_button(tr("app.database_backup.copy"), colors, move |_, _, cx| {
                     cx.write_to_clipboard(ClipboardItem::new_string(copy_text.clone()));
                 })),
         )
@@ -982,7 +994,7 @@ fn database_backup_modal_footer(
         .gap_2()
         .child(
             Button::new("backup-close")
-                .label("关闭")
+                .label(tr("app.common.close"))
                 .small()
                 .w(px(78.))
                 .on_click(cx.listener(|this, _, _, cx| {
@@ -998,9 +1010,9 @@ fn database_backup_modal_footer(
             footer = footer.child(
                 Button::new("backup-cancel-task")
                     .label(if cancel_requested {
-                        "停止中"
+                        tr("app.database_backup.stopping")
                     } else {
-                        "取消任务"
+                        tr("app.database_backup.cancel_task")
                     })
                     .small()
                     .w(px(92.))
@@ -1017,7 +1029,7 @@ fn database_backup_modal_footer(
                 let redb = task.database.clone();
                 footer = footer.child(
                     Button::new("backup-again")
-                        .label("再次备份")
+                        .label(tr("app.database_backup.again"))
                         .small()
                         .w(px(92.))
                         .primary()
@@ -1029,7 +1041,7 @@ fn database_backup_modal_footer(
             }
             footer = footer.child(
                 Button::new("backup-clear-task")
-                    .label("清除任务")
+                    .label(tr("app.database_backup.clear_task"))
                     .small()
                     .w(px(92.))
                     .on_click(cx.listener(move |this, _, _, cx| {
@@ -1042,7 +1054,7 @@ fn database_backup_modal_footer(
         let running = tasks.iter().any(|task| task.running());
         footer = footer.child(
             Button::new("backup-start")
-                .label("开始备份")
+                .label(tr("app.database_backup.start"))
                 .primary()
                 .small()
                 .w(px(96.))

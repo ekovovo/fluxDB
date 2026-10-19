@@ -216,7 +216,7 @@ impl NavicatMain {
             *rule = new_rule;
             if had_values {
                 self.show_message(
-                    "已切换字段，旧筛选值已清空".to_string(),
+                    tr("app.filter.toast.field_changed").to_string(),
                     AppMessageKind::Info,
                     cx,
                 );
@@ -302,7 +302,7 @@ impl NavicatMain {
             let max = data_table_page_size_max();
             if limit > max {
                 self.show_message(
-                    format!("LIMIT 最大支持 {max}，已自动改为 {max}"),
+                    tr("app.filter.error.limit_max").replace("%{max}", &max.to_string()),
                     AppMessageKind::Warning,
                     cx,
                 );
@@ -365,7 +365,7 @@ impl NavicatMain {
             if !draft.values.remove(&value) {
                 if !data_filter_rule_can_add_more_value(draft.operator, draft.values.len()) {
                     self.show_message(
-                        "介于/不介于最多选择两个值".to_string(),
+                        tr("app.filter.error.between_max").to_string(),
                         AppMessageKind::Warning,
                         cx,
                     );
@@ -428,15 +428,18 @@ impl NavicatMain {
                 draft.batch_text.clear();
             }
             self.show_message(
-                format!(
-                    "已添加 {} 个新值，重复跳过 {duplicated} 个{}",
-                    added_values.len(),
-                    if ignored_empty > 0 {
-                        format!("，忽略空行 {ignored_empty} 个")
-                    } else {
-                        String::new()
-                    }
-                ),
+                tr("app.filter.toast.values_added")
+                    .replace("%{added}", &added_values.len().to_string())
+                    .replace("%{duplicated}", &duplicated.to_string())
+                    .replace(
+                        "%{ignored}",
+                        &if ignored_empty > 0 {
+                            tr("app.filter.toast.ignored_empty")
+                                .replace("%{count}", &ignored_empty.to_string())
+                        } else {
+                            String::new()
+                        },
+                    ),
                 AppMessageKind::Info,
                 cx,
             );
@@ -491,10 +494,10 @@ impl NavicatMain {
         }
         let value = raw.trim().to_string();
         if draft.values.contains(&value) {
-            self.show_message("该值已选中".to_string(), AppMessageKind::Warning, cx);
+            self.show_message(tr("app.filter.error.value_selected").as_ref(), AppMessageKind::Warning, cx);
         } else if !data_filter_rule_can_add_more_value(draft.operator, draft.values.len()) {
             self.show_message(
-                "介于/不介于最多选择两个值".to_string(),
+                tr("app.filter.error.between_max").to_string(),
                 AppMessageKind::Warning,
                 cx,
             );
@@ -533,7 +536,7 @@ impl NavicatMain {
         } else if !pending.trim().is_empty() {
             // 介于/不介于已满两个值：未提交的单值无法加入，明确提示而非静默丢弃。
             self.show_message(
-                "介于/不介于最多选择两个值".to_string(),
+                tr("app.filter.error.between_max").to_string(),
                 AppMessageKind::Warning,
                 cx,
             );
@@ -541,7 +544,7 @@ impl NavicatMain {
         // 批量区若有未处理内容，提示后返回，不静默丢失。
         if !draft.batch_text.trim().is_empty() {
             self.show_message(
-                "批量粘贴区还有未添加的内容，请先添加到已选或清空".to_string(),
+                tr("app.filter.error.pending_batch").to_string(),
                 AppMessageKind::Warning,
                 cx,
             );
@@ -557,7 +560,7 @@ impl NavicatMain {
         ) && draft.values.is_empty()
         {
             self.show_message(
-                "列表值不能为空，请至少添加一个值".to_string(),
+                tr("app.filter.error.list_empty").to_string(),
                 AppMessageKind::Warning,
                 cx,
             );

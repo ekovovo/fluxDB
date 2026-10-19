@@ -575,22 +575,55 @@ impl NavicatMain {
 
 }
 
-const REDIS_TYPE_FILTER_ALL: &str = "所有";
+/// 「全部类型」的稳定筛选值；显示文案随语言变化，业务比较不依赖译文。
+const REDIS_TYPE_FILTER_ALL: &str = "__all__";
 /// 单连接 + 单 DB 的 Redis Key 搜索历史上限（保留最近 N 条）。
 const SEARCH_HISTORY_LIMIT: usize = 200;
 
-fn redis_type_filter_options() -> Vec<String> {
-    ["所有", "string", "list", "set", "zset", "hash", "stream", "json"]
+#[derive(Clone)]
+struct RedisTypeFilterOption {
+    value: String,
+}
+
+impl SelectItem for RedisTypeFilterOption {
+    type Value = String;
+
+    fn title(&self) -> SharedString {
+        if self.value == REDIS_TYPE_FILTER_ALL {
+            tr("app.redis.filter.all")
+        } else {
+            self.value.clone().into()
+        }
+    }
+
+    fn value(&self) -> &String {
+        &self.value
+    }
+}
+
+fn redis_type_filter_options() -> Vec<RedisTypeFilterOption> {
+    [
+        REDIS_TYPE_FILTER_ALL,
+        "string",
+        "list",
+        "set",
+        "zset",
+        "hash",
+        "stream",
+        "json",
+    ]
         .into_iter()
-        .map(str::to_string)
+        .map(|value| RedisTypeFilterOption {
+            value: value.to_string(),
+        })
         .collect()
 }
 
 /// 在模式搜索列表中定位选项索引；未命中时回退到首项。
-fn redis_option_index(options: &[String], value: &str) -> Option<IndexPath> {
+fn redis_option_index(options: &[RedisTypeFilterOption], value: &str) -> Option<IndexPath> {
     options
         .iter()
-        .position(|option| option == value)
+        .position(|option| option.value == value)
         .map(IndexPath::new)
         .or_else(|| Some(IndexPath::new(0)))
 }

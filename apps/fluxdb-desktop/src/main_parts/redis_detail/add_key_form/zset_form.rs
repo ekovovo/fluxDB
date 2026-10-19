@@ -12,7 +12,7 @@ fn redis_add_key_zset_form(
         .flex()
         .flex_col()
         .gap_2()
-        .child(redis_add_key_form_label("添加成员与分值", colors))
+        .child(redis_add_key_form_label(tr("app.redis.add_key.form.add_members_scores"), colors))
         .child(redis_add_key_name_value_rows_panel(
             RedisAddKeyKind::ZSet,
             rows,

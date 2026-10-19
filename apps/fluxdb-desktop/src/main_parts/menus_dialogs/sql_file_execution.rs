@@ -30,7 +30,11 @@ impl NavicatMain {
             .or_else(|| self.current_query_scope().map(|(connection_id, _)| connection_id))
             .or_else(|| self.first_connection_id())
         else {
-            self.show_message("请先创建连接", AppMessageKind::Warning, cx);
+            self.show_message(
+                tr("app.sql_file.create_connection_first"),
+                AppMessageKind::Warning,
+                cx,
+            );
             return;
         };
         let database = database
@@ -144,7 +148,7 @@ impl NavicatMain {
             files: true,
             directories: false,
             multiple: false,
-            prompt: Some("选择 SQL 文件".into()),
+        prompt: Some(tr("app.sql_file.choose_file")),
         });
         self._file_picker_task = Some(cx.spawn_in(window, async move |view, cx| {
             let selected = receiver.await;
@@ -158,7 +162,7 @@ impl NavicatMain {
                         };
                         view.update(cx, |this, cx| {
                             this.show_message(
-                                format!("选择 SQL 文件失败：{error}"),
+                                format!("{}: {error}", tr("app.sql_file.choose_file_failed")),
                                 AppMessageKind::Error,
                                 cx,
                             );
@@ -173,7 +177,7 @@ impl NavicatMain {
                         };
                         view.update(cx, |this, cx| {
                             this.show_message(
-                                format!("选择 SQL 文件失败：{error}"),
+                                format!("{}: {error}", tr("app.sql_file.choose_file_failed")),
                                 AppMessageKind::Error,
                                 cx,
                             );
@@ -238,7 +242,11 @@ impl NavicatMain {
             return;
         };
         let Some(path) = form.path.clone() else {
-            self.show_message("请选择 SQL 文件", AppMessageKind::Warning, cx);
+            self.show_message(
+                tr("app.sql_file.select_file"),
+                AppMessageKind::Warning,
+                cx,
+            );
             return;
         };
         let task_id = self.create_sql_file_task(&form, path.clone());
@@ -261,11 +269,11 @@ impl NavicatMain {
                 view.update(cx, |this, cx| match result {
                     Ok(text) => this.start_sql_file_execution(task_id, form, path, text, cx),
                     Err(error) => {
-                        let message = format!("读取 SQL 文件失败：{error}");
+                        let message = format!("{}: {error}", tr("app.sql_file.read_failed"));
                         this.finish_sql_file_task(
                             task_id,
                             Err(fluxdb_core::UserFacingError {
-                                title: "读取失败".to_string(),
+                                title: tr("app.sql_file.read_failed_title").to_string(),
                                 message: message.clone(),
                                 detail: None,
                                 retryable: false,
@@ -316,14 +324,14 @@ impl NavicatMain {
             self.finish_sql_file_task(
                 task_id,
                 Err(fluxdb_core::UserFacingError {
-                    title: "SQL 文件为空".to_string(),
-                    message: "SQL 文件为空".to_string(),
+                    title: tr("app.sql_file.empty").to_string(),
+                    message: tr("app.sql_file.empty").to_string(),
                     detail: None,
                     retryable: false,
                 }),
                 false,
             );
-            self.show_message("SQL 文件为空", AppMessageKind::Warning, cx);
+            self.show_message(tr("app.sql_file.empty"), AppMessageKind::Warning, cx);
             cx.notify();
             return;
         }
@@ -419,6 +427,7 @@ impl NavicatMain {
                 view.update(cx, |this, cx| {
                     this._sql_file_execute_tasks.remove(&task_id);
                     this._sql_file_cancel_flags.remove(&task_id);
+                    let failed = result.is_err();
                     this.finish_sql_file_task(task_id, result.clone(), canceled);
                     let message = this
                         .sql_file_modal
@@ -427,8 +436,8 @@ impl NavicatMain {
                         .iter()
                         .find(|task| task.id == task_id)
                         .map(sql_file_task_message)
-                        .unwrap_or_else(|| "SQL 文件执行完成".to_string());
-                    let kind = if message.contains("失败") {
+                        .unwrap_or_else(|| tr("app.sql_file.toast.completed").to_string());
+                    let kind = if failed {
                         AppMessageKind::Warning
                     } else {
                         AppMessageKind::Success
@@ -528,7 +537,7 @@ impl NavicatMain {
             let result = cx
                 .background_spawn(async move {
                     if cancel_for_spawn.load(Ordering::Relaxed) {
-                        anyhow::bail!("SQL 文件已取消");
+                        anyhow::bail!(tr("app.sql_file.status.cancelled").to_string());
                     }
                     // SSH 隧道（若启用）：复用连接器的 libssh2 把远端映射到本地端口，psql 经
                     // 127.0.0.1:local（PGHOSTADDR）拨号，-h 保持真实远端供 TLS 校验；保持通道至 psql 结束。
@@ -553,7 +562,7 @@ impl NavicatMain {
                                 hostaddr = Some("127.0.0.1".to_string());
                                 native_tunnel = Some(tunnel);
                             }
-                            Err(error) => return Err(anyhow::anyhow!("SSH 隧道建立失败：{error}")),
+                            Err(error) => return Err(anyhow::anyhow!(tr("app.sql_file.error.ssh_tunnel").replace("%{error}", &error.to_string()))),
                         }
                     }
                     let mut invocation = pg_psql_invocation(
@@ -581,7 +590,7 @@ impl NavicatMain {
                     }
 
                     if cancel_for_spawn.load(Ordering::Relaxed) {
-                        anyhow::bail!("SQL 文件已取消");
+                        anyhow::bail!(tr("app.sql_file.status.cancelled").to_string());
                     }
                     let result = run_pg_native_psql(invocation, &cancel_for_spawn);
                     // 保持隧道到 psql 退出；句柄 Drop 负责关闭监听并回收桥线程。
@@ -597,6 +606,7 @@ impl NavicatMain {
                     this._sql_file_execute_tasks.remove(&task_id);
                     this._sql_file_cancel_flags.remove(&task_id);
                     let canceled = cancel_for_check.load(Ordering::Relaxed);
+                    let failed = result.is_err();
                     let message = match result {
                         Ok(summary) if !canceled => {
                             this.record_sql_file_statement_summary(
@@ -613,7 +623,7 @@ impl NavicatMain {
                             );
                             summary
                         }
-                        Ok(_) => "已取消".to_string(),
+                        Ok(_) => tr("app.sql_file.status.cancelled").to_string(),
                         Err(error) => {
                             this.record_sql_file_statement_summary(
                                 task_id,
@@ -640,15 +650,15 @@ impl NavicatMain {
                         canceled,
                     );
                     let popup = if canceled {
-                        "SQL 文件已取消".to_string()
+                        tr("app.sql_file.status.cancelled").to_string()
                     } else if message.is_empty() {
-                        "SQL 文件执行完成".to_string()
+                        tr("app.sql_file.toast.completed").to_string()
                     } else {
                         message.clone()
                     };
                     this.show_message(
                         popup,
-                        if message.contains("失败") {
+                        if failed {
                             AppMessageKind::Warning
                         } else {
                             AppMessageKind::Success
@@ -740,7 +750,11 @@ impl NavicatMain {
         if let Some(flag) = self._sql_file_cancel_flags.get(&task_id) {
             flag.store(true, Ordering::Relaxed);
         }
-        self.show_message("已请求取消，当前 SQL 完成后停止", AppMessageKind::Warning, cx);
+        self.show_message(
+            tr("app.sql_file.cancel_requested"),
+            AppMessageKind::Warning,
+            cx,
+        );
         cx.notify();
     }
 
@@ -758,7 +772,11 @@ impl NavicatMain {
             return;
         };
         cx.write_to_clipboard(ClipboardItem::new_string(sql_file_task_log_text(&task)));
-        self.show_message("已复制日志", AppMessageKind::Success, cx);
+        self.show_message(
+            tr("app.sql_file.log_copied"),
+            AppMessageKind::Success,
+            cx,
+        );
     }
 
     fn clear_sql_file_task(&mut self, task_id: u64, window: &mut Window, cx: &mut Context<Self>) {
@@ -769,7 +787,11 @@ impl NavicatMain {
             .iter()
             .any(|task| task.id == task_id && task.running());
         if is_running {
-            self.show_message("任务执行中，暂不能清除", AppMessageKind::Warning, cx);
+            self.show_message(
+                tr("app.sql_file.running_no_clear"),
+                AppMessageKind::Warning,
+                cx,
+            );
             return;
         }
         let clears_current_view = {
@@ -840,7 +862,7 @@ fn sql_file_build_dialog(
                 .py_4()
                 .text_size(px(13.))
                 .text_color(colors.muted)
-                .child("执行后显示消息日志"),
+                .child(tr("app.sql_file.log_empty")),
         };
         (
             sql_file_dialog_tabs(&views, active, false).flex_none(),
@@ -875,7 +897,7 @@ fn sql_file_build_dialog(
                         .text_size(px(18.))
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .text_color(colors.text)
-                        .child("执行 SQL 文件"),
+                        .child(tr("app.sql_file.title")),
                 )
                 .child(div().flex_1())
                 .child(
@@ -929,8 +951,8 @@ fn sql_file_dialog_tabs(
         .segmented()
         .small()
         .selected_index(selected_index)
-        .child(Tab::from("常规"))
-        .child(Tab::from("消息日志"))
+        .child(Tab::from(tr("app.sql_file.tab.general")))
+        .child(Tab::from(tr("app.sql_file.tab.log")))
         .on_click(move |index, _window, cx| {
             let _ = view.update(cx, |this, cx| {
                 if let Some(form) = &mut this.sql_file_modal.borrow_mut().form {
@@ -963,22 +985,22 @@ fn sql_file_general_body(
                 .flex()
                 .gap_6()
                 .child(sql_file_select_field(
-                    "连接",
+                    tr("app.sql_file.connection"),
                     views.connection_select.clone(),
-                    "选择连接",
+                    tr("app.sql_file.select_connection"),
                     colors,
                 ))
                 .child(sql_file_select_field(
-                    "数据库",
+                    tr("app.sql_file.database"),
                     views.database_select.clone(),
-                    "选择数据库",
+                    tr("app.sql_file.select_database"),
                     colors,
                 )),
         )
         .child(sql_file_select_field(
-            "编码",
+            tr("app.sql_file.encoding"),
             views.encoding_select.clone(),
-            "选择编码",
+            tr("app.sql_file.select_encoding"),
             colors,
         ))
         .child(
@@ -986,15 +1008,15 @@ fn sql_file_general_body(
                 .flex()
                 .flex_col()
                 .gap_2()
-                .child(sql_file_section_label("选项", colors))
+                .child(sql_file_section_label(tr("app.sql_file.options"), colors))
                 .child(sql_file_check_row(
-                    "遇到错误时继续",
+                    tr("app.sql_file.continue_on_error"),
                     form.continue_on_error,
                     SqlFileOption::ContinueOnError,
                     views,
                 ))
                 .child(sql_file_check_row(
-                    "按分号拆分多个查询",
+                    tr("app.sql_file.split_statements"),
                     form.split_statements,
                     SqlFileOption::SplitStatements,
                     views,
@@ -1009,7 +1031,7 @@ fn sql_file_path_field(views: &SqlFileDialogViews, colors: UiColors) -> Div {
         .flex()
         .flex_col()
         .gap_2()
-        .child(sql_file_section_label("文件", colors))
+        .child(sql_file_section_label(tr("app.sql_file.file"), colors))
         .child(
             div()
                 .flex()
@@ -1035,7 +1057,7 @@ fn sql_file_path_field(views: &SqlFileDialogViews, colors: UiColors) -> Div {
                 )
                 .child(
                     Button::new("sql-file-browse")
-                        .label("浏览")
+                        .label(tr("app.sql_file.browse"))
                         .w(px(96.))
                         .on_click(move |_, window, cx| {
                             let _ = view.update(cx, |this, cx| {
@@ -1047,9 +1069,9 @@ fn sql_file_path_field(views: &SqlFileDialogViews, colors: UiColors) -> Div {
 }
 
 fn sql_file_select_field<D>(
-    label: &'static str,
+    label: impl Into<SharedString>,
     select: Entity<SelectState<SearchableVec<D>>>,
-    placeholder: &'static str,
+    placeholder: impl Into<SharedString>,
     colors: UiColors,
 ) -> Div
 where
@@ -1080,11 +1102,12 @@ enum SqlFileOption {
 }
 
 fn sql_file_check_row(
-    label: &'static str,
+    label: impl Into<SharedString>,
     checked: bool,
     option: SqlFileOption,
     views: &SqlFileDialogViews,
 ) -> Checkbox {
+    let label = label.into().to_string();
     let id = match option {
         SqlFileOption::ContinueOnError => "sql-file-continue-on-error",
         SqlFileOption::SplitStatements => "sql-file-split-statements",
@@ -1108,7 +1131,8 @@ fn sql_file_check_row(
         })
 }
 
-fn sql_file_section_label(label: &'static str, colors: UiColors) -> Div {
+fn sql_file_section_label(label: impl Into<SharedString>, colors: UiColors) -> Div {
+    let label = label.into();
     div()
         .text_size(px(13.))
         .font_weight(gpui::FontWeight::SEMIBOLD)
@@ -1130,7 +1154,7 @@ fn sql_file_log_body(task: SqlFileExecutionTaskState, colors: UiColors) -> Div {
             div()
                 .text_color(colors.muted)
                 .text_size(px(13.))
-                .child("正在执行，消息日志会实时追加"),
+                .child(tr("app.sql_file.running_log")),
         );
     } else {
         let hidden_count = task.logs.len().saturating_sub(SQL_FILE_VISIBLE_LOG_LIMIT);
@@ -1141,9 +1165,10 @@ fn sql_file_log_body(task: SqlFileExecutionTaskState, colors: UiColors) -> Div {
                     .text_size(px(12.))
                     .px_2()
                     .py_1()
-                    .child(format!(
-                        "已隐藏前 {hidden_count} 条日志，完整日志可复制"
-                    )),
+                    .child(
+                        tr("app.sql_file.log_hidden")
+                            .replace("%{count}", &hidden_count.to_string()),
+                    ),
             );
         }
         for entry in task.logs.iter().skip(hidden_count) {
@@ -1165,10 +1190,13 @@ fn sql_file_log_body(task: SqlFileExecutionTaskState, colors: UiColors) -> Div {
                 .gap_3()
                 .text_size(px(13.))
                 .text_color(colors.muted)
-                .child(format!("连接: {}", task.connection_id.0))
-                .child(format!(
-                    "数据库: {}",
-                    task.database.clone().unwrap_or_else(|| "默认数据库".to_string())
+                .child(tr("app.sql_file.log.connection").replace("%{id}", &task.connection_id.0.to_string()))
+                .child(tr("app.sql_file.log.database").replace(
+                    "%{name}",
+                    &task
+                        .database
+                        .clone()
+                        .unwrap_or_else(|| tr("app.sql_file.default_database").to_string()),
                 )),
         )
         .child(
@@ -1184,11 +1212,11 @@ fn sql_file_log_body(task: SqlFileExecutionTaskState, colors: UiColors) -> Div {
                 .items_center()
                 .gap_5()
                 .text_size(px(14.))
-                .child(format!("查询: {}", task.total.max(task.processed)))
-                .child(format!("已处理: {}", task.processed))
-                .child(format!("错误: {}", task.errors))
-                .child(format!("状态: {}", sql_file_task_status(&task)))
-                .child(format!("时间: {elapsed} ms")),
+                .child(tr("app.sql_file.log.queries").replace("%{count}", &task.total.max(task.processed).to_string()))
+                .child(tr("app.sql_file.log.processed").replace("%{count}", &task.processed.to_string()))
+                .child(tr("app.sql_file.log.errors").replace("%{count}", &task.errors.to_string()))
+                .child(tr("app.sql_file.log.status").replace("%{status}", &sql_file_task_status(&task)))
+                .child(tr("app.sql_file.log.elapsed").replace("%{ms}", &elapsed.to_string())),
         )
         .child(sql_file_progress(&task))
         .child(
@@ -1215,7 +1243,11 @@ fn sql_file_log_error(error: String, colors: UiColors) -> Div {
 }
 
 fn sql_file_log_row(entry: &SqlFileExecutionLogEntry, colors: UiColors) -> Div {
-    let status = if entry.success { "成功" } else { "失败" };
+    let status = if entry.success {
+        tr("app.sql_file.success")
+    } else {
+        tr("app.sql_file.failed")
+    };
     let status_color = if entry.success {
         rgb(0x22a06b)
     } else {
@@ -1290,7 +1322,7 @@ fn sql_file_dialog_footer(
         .gap_2()
         .child(
             Button::new("sql-file-close")
-                .label("关闭")
+                .label(tr("app.common.close"))
                 .small()
                 .w(px(78.))
                 .on_click({
@@ -1305,7 +1337,7 @@ fn sql_file_dialog_footer(
         .when_some(log_task, |this, (task_id, finished, cancel_requested)| {
             this.child(
                 Button::new("sql-file-copy-log")
-                    .label("复制日志")
+                    .label(tr("app.sql_file.copy_log"))
                     .small()
                     .w(px(92.))
                     .on_click({
@@ -1320,7 +1352,11 @@ fn sql_file_dialog_footer(
             .when(!finished, |this| {
                 this.child(
                     Button::new("sql-file-cancel-task")
-                        .label(if cancel_requested { "停止中" } else { "取消执行" })
+                        .label(if cancel_requested {
+                            tr("app.sql_file.stopping")
+                        } else {
+                            tr("app.sql_file.cancel_execution")
+                        })
                         .small()
                         .w(px(92.))
                         .disabled(cancel_requested)
@@ -1337,7 +1373,7 @@ fn sql_file_dialog_footer(
             .when(finished, |this| {
                 this.child(
                     Button::new("sql-file-clear-task")
-                        .label("清除任务")
+                        .label(tr("app.sql_file.clear_task"))
                         .small()
                         .w(px(92.))
                         .on_click({
@@ -1354,7 +1390,7 @@ fn sql_file_dialog_footer(
         .when(log_task.is_none(), |this| {
             this.child(
                 Button::new("sql-file-execute")
-                    .label("执行")
+                    .label(tr("app.sql_file.execute"))
                     .primary()
                     .small()
                     .w(px(86.))
@@ -1381,17 +1417,26 @@ fn sql_file_statusbar_area(
     };
     let running_count = tasks.iter().filter(|task| task.running()).count();
     let label = if running_count > 1 {
-        format!("{running_count} 个任务运行中")
+        tr("app.sql_file.statusbar.running_count")
+            .replace("%{count}", &running_count.to_string())
     } else if task.cancel_requested {
-        format!("正在停止 {}/{}", task.processed, task.total)
+        tr("app.sql_file.statusbar.stopping")
+            .replace("%{processed}", &task.processed.to_string())
+            .replace("%{total}", &task.total.to_string())
     } else if task.running() {
-        format!("执行中 {}/{}", task.processed, task.total)
+        tr("app.sql_file.statusbar.running")
+            .replace("%{processed}", &task.processed.to_string())
+            .replace("%{total}", &task.total.to_string())
     } else if task.canceled {
-        format!("已取消 {}/{}", task.processed, task.total)
+        tr("app.sql_file.statusbar.canceled")
+            .replace("%{processed}", &task.processed.to_string())
+            .replace("%{total}", &task.total.to_string())
     } else if task.errors > 0 || task.error.is_some() {
-        format!("{}  {} 失败", task.file_name, task.errors.max(1))
+        tr("app.sql_file.statusbar.failed")
+            .replace("%{file}", &task.file_name)
+            .replace("%{errors}", &task.errors.max(1).to_string())
     } else {
-        format!("{} 执行完成", task.file_name)
+        tr("app.sql_file.statusbar.completed").replace("%{file}", &task.file_name)
     };
     let task_id = task.id;
     div()
@@ -1461,7 +1506,7 @@ fn sql_file_database_items(
     connection_id: ConnectionId,
 ) -> Vec<SqlFileDatabaseItem> {
     let mut items = vec![SqlFileDatabaseItem {
-        label: "默认数据库".to_string(),
+        label: tr("app.sql_file.field.default_database").to_string(),
         value: None,
     }];
     if let Some(connection) = state
@@ -1514,18 +1559,20 @@ fn sql_file_preview(sql: &str) -> String {
 
 fn sql_file_task_message(task: &SqlFileExecutionTaskState) -> String {
     if task.canceled {
-        return format!(
-            "{} 已取消，已处理 {}/{}",
-            task.file_name, task.processed, task.total
-        );
+        return tr("app.sql_file.message.canceled")
+            .replace("%{file}", &task.file_name)
+            .replace("%{processed}", &task.processed.to_string())
+            .replace("%{total}", &task.total.to_string());
     }
     if task.error.is_some() {
-        return format!("{} 执行失败", task.file_name);
+        return tr("app.sql_file.message.failed").replace("%{file}", &task.file_name);
     }
     if task.errors > 0 {
-        format!("{} 执行完成，{} 条失败", task.file_name, task.errors)
+        tr("app.sql_file.message.completed_with_errors")
+            .replace("%{file}", &task.file_name)
+            .replace("%{errors}", &task.errors.to_string())
     } else {
-        format!("{} 执行完成", task.file_name)
+        tr("app.sql_file.message.completed").replace("%{file}", &task.file_name)
     }
 }
 
@@ -1561,25 +1608,39 @@ fn sql_file_task_log_text(task: &SqlFileExecutionTaskState) -> String {
         .saturating_duration_since(task.started_at)
         .as_millis();
     let mut text = format!(
-        "文件: {}\n路径: {}\n连接: {}\n数据库: {}\n查询: {}\n已处理: {}\n错误: {}\n时间: {elapsed} ms\n",
-        task.file_name,
-        task.path.display(),
-        task.connection_id.0,
-        task.database.clone().unwrap_or_else(|| "默认数据库".to_string()),
-        task.total.max(task.processed),
-        task.processed,
-        task.errors,
+        "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n",
+        tr("app.sql_file.log.file").replace("%{name}", &task.file_name),
+        tr("app.sql_file.log.path").replace("%{path}", &task.path.display().to_string()),
+        tr("app.sql_file.log.connection").replace("%{id}", &task.connection_id.0.to_string()),
+        tr("app.sql_file.log.database").replace(
+            "%{name}",
+            &task
+                .database
+                .clone()
+                .unwrap_or_else(|| tr("app.sql_file.default_database").to_string())
+        ),
+        tr("app.sql_file.log.queries").replace("%{count}", &task.total.max(task.processed).to_string()),
+        tr("app.sql_file.log.processed").replace("%{count}", &task.processed.to_string()),
+        tr("app.sql_file.log.errors").replace("%{count}", &task.errors.to_string()),
+        tr("app.sql_file.log.elapsed").replace("%{ms}", &elapsed.to_string()),
     );
     if let Some(error) = &task.error {
-        text.push_str(&format!("错误: {error}\n"));
+        text.push_str(&tr("app.sql_file.log.error").replace("%{error}", &error.to_string()));
+        text.push('\n');
     }
     if task.canceled {
-        text.push_str("状态: 已取消\n");
+        text.push_str(&tr("app.sql_file.log.status_canceled"));
+        text.push('\n');
     } else if task.cancel_requested {
-        text.push_str("状态: 正在停止\n");
+        text.push_str(&tr("app.sql_file.log.status_stopping"));
+        text.push('\n');
     }
     for entry in &task.logs {
-        let status = if entry.success { "成功" } else { "失败" };
+        let status = if entry.success {
+            tr("app.sql_file.success")
+        } else {
+            tr("app.sql_file.failed")
+        };
         text.push_str(&format!(
             "#{} {status} {} ms {} | {}\n",
             entry.index, entry.elapsed_ms, entry.message, entry.sql
@@ -1588,15 +1649,15 @@ fn sql_file_task_log_text(task: &SqlFileExecutionTaskState) -> String {
     text
 }
 
-fn sql_file_task_status(task: &SqlFileExecutionTaskState) -> &'static str {
+fn sql_file_task_status(task: &SqlFileExecutionTaskState) -> SharedString {
     if task.canceled {
-        "已取消"
+        tr("app.sql_file.status.canceled")
     } else if task.cancel_requested {
-        "正在停止"
+        tr("app.sql_file.status.stopping")
     } else if task.running() {
-        "执行中"
+        tr("app.sql_file.status.running")
     } else {
-        "已完成"
+        tr("app.sql_file.status.completed")
     }
 }
 
@@ -1621,8 +1682,9 @@ fn run_pg_native_psql(
         .spawn()
         .map_err(|error| {
             anyhow::anyhow!(
-                "启动 psql 失败：{error}。{}",
-                fluxdb_app::pg_client_install_hint()
+                tr("app.sql_file.error.psql_start")
+                    .replace("%{error}", &error.to_string())
+                    .replace("%{detail}", &fluxdb_app::pg_client_install_hint())
             )
         })?;
 
@@ -1636,7 +1698,7 @@ fn run_pg_native_psql(
     let status = loop {
         if cancel_flag.load(std::sync::atomic::Ordering::Relaxed) {
             fluxdb_core::kill_child_tree(&mut child);
-            anyhow::bail!("已取消");
+            anyhow::bail!(tr("app.sql_file.status.cancelled").to_string());
         }
         match child.try_wait()? {
             Some(status) => break status,
@@ -1649,7 +1711,7 @@ fn run_pg_native_psql(
     if let Some(code) = status.code()
         && code != 0
     {
-        let mut message = format!("psql 退出码 {code}");
+        let mut message = tr("app.sql_file.status.psql_exit").replace("%{code}", &code.to_string());
         if !stderr_tail.is_empty() {
             message.push_str(&format!("：{}", stderr_tail));
         } else if !stdout_tail.is_empty() {
@@ -1659,9 +1721,9 @@ fn run_pg_native_psql(
     }
     // ON_ERROR_STOP 语义下 psql 会以非零码退出；这里成功即表示文件执行完成。
     let summary = if stderr_tail.is_empty() {
-        format!("psql 原生脚本执行完成")
+        tr("app.sql_file.toast.psql_completed").to_string()
     } else {
-        format!("psql 原生脚本执行完成（{}）", stderr_tail)
+        tr("app.sql_file.toast.psql_completed_detail").replace("%{detail}", &stderr_tail)
     };
     Ok(summary)
 }

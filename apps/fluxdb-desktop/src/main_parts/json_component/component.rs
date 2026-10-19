@@ -142,7 +142,7 @@ impl JsonComponent {
         if self.input.is_none() {
             let input = cx.new(|cx| {
                 InputState::new(window, cx)
-                    .placeholder("值")
+                    .placeholder(tr("app.json.value"))
             });
             self.input = Some(input);
         }

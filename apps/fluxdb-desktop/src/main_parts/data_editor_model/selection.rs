@@ -138,29 +138,29 @@ impl DataPageTableDelegate {
     fn selection_copy_label(&self) -> Option<String> {
         let rows = self.selected_row_count();
         if rows > 1 {
-            return Some(format!("复制选中 {rows} 行 (TSV)"));
+            return Some(tr("app.data.selection.copy_rows").replace("%{rows}", &rows.to_string()));
         }
 
         let cells = self.selected_cell_count();
-        (cells > 1).then(|| format!("复制选中 {cells} 个单元格 (TSV)"))
+        (cells > 1).then(|| tr("app.data.selection.copy_cells").replace("%{cells}", &cells.to_string()))
     }
 
     fn selection_export_label(&self) -> Option<String> {
         let rows = self.selected_row_count();
         if rows > 0 {
             return Some(if rows == 1 {
-                "导出当前行 (TSV)".to_string()
+                tr("app.data.selection.export_current_row").to_string()
             } else {
-                format!("导出选中 {rows} 行 (TSV)")
+                tr("app.data.selection.export_rows").replace("%{rows}", &rows.to_string())
             });
         }
 
         let cells = self.selected_cell_count();
         if cells > 0 {
             return Some(if cells == 1 {
-                "导出当前单元格 (TSV)".to_string()
+                tr("app.data.selection.export_current_cell").to_string()
             } else {
-                format!("导出选中 {cells} 个单元格 (TSV)")
+                tr("app.data.selection.export_cells").replace("%{cells}", &cells.to_string())
             });
         }
 

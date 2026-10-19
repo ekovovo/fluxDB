@@ -74,7 +74,7 @@ fn query_history_drawer(
                                     .justify_center()
                                     .text_size(px(13.))
                                     .text_color(colors.muted)
-                                    .child("没有匹配的 SQL 历史"),
+                                    .child(tr("app.history.empty_sql")),
                             )
                         })
                         .children(entries.into_iter().map(|entry| query_history_row(entry, state, this.query_history_search.as_str(), colors, cx))),
@@ -178,9 +178,9 @@ fn redis_workbench_history_drawer(
                         .when(items.is_empty(), |this| {
                             // 无历史与「搜索无结果」两种空态文案区分。
                             let message = if loaded_total == 0 {
-                                "暂无命令历史"
+                                tr("app.history.empty_command")
                             } else {
-                                "没有匹配的命令历史"
+                                tr("app.history.empty_command_search")
                             };
                             this.child(
                                 div()
@@ -235,13 +235,13 @@ fn redis_workbench_history_header(
                         .text_size(px(15.))
                         .font_weight(gpui::FontWeight::BOLD)
                         .text_color(colors.text)
-                        .child("历史 — 命令历史"),
+                        .child(tr("app.history.title_command")),
                 )
                 .child(
                     div()
                         .text_size(px(12.))
                         .text_color(colors.muted)
-                        .child(format!("共 {} 条", count)),
+                        .child(tr("app.history.count").replace("%{count}", &count.to_string())),
                 ),
         )
         .child(
@@ -249,7 +249,11 @@ fn redis_workbench_history_header(
                 .flex()
                 .items_center()
                 .gap_2()
-                .child(redis_history_action_chip("清空".to_string(), false, colors).on_mouse_down(
+                .child(redis_history_action_chip(
+                    tr("app.history.clear").to_string(),
+                    false,
+                    colors,
+                ).on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, _, _, cx| {
                         this.dispatch(
@@ -296,7 +300,11 @@ fn redis_workbench_history_row(
     let text = item.text.clone();
     let time = query_history_time_label(item.executed_at_unix_secs);
     let summary = item.summary.clone();
-    let status = if item.success { "成功" } else { "失败" };
+    let status = if item.success {
+        tr("app.history.success")
+    } else {
+        tr("app.history.failed")
+    };
     let status_color = if item.success {
         rgb(0x20c76a)
     } else {
@@ -361,7 +369,11 @@ fn redis_workbench_history_row(
                 .flex_col()
                 .items_center()
                 .gap_1()
-                .child(redis_history_action_chip("重跑".to_string(), false, colors).on_mouse_down(
+                .child(redis_history_action_chip(
+                    tr("app.history.rerun").to_string(),
+                    false,
+                    colors,
+                ).on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, _, _, cx| {
                         let scope_ok = matches!(
@@ -388,7 +400,11 @@ fn redis_workbench_history_row(
                         cx.stop_propagation();
                     }),
                 ))
-                .child(redis_history_action_chip("删除".to_string(), true, colors).on_mouse_down(
+                .child(redis_history_action_chip(
+                    tr("app.common.delete").to_string(),
+                    true,
+                    colors,
+                ).on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, _, _, cx| {
                         this.dispatch(
@@ -575,7 +591,7 @@ fn query_history_quick_search_modal(
                                     .justify_center()
                                     .text_size(px(13.))
                                     .text_color(colors.muted)
-                                    .child("没有匹配的 SQL"),
+                                    .child(tr("app.history.empty_sql_search")),
                             )
                         })
                         .children(entries.into_iter().enumerate().map(|(index, entry)| {
@@ -611,13 +627,13 @@ fn query_history_header(count: usize, colors: UiColors, cx: &mut Context<Navicat
                         .text_size(px(15.))
                         .font_weight(gpui::FontWeight::BOLD)
                         .text_color(colors.text)
-                        .child("SQL 历史"),
+                        .child(tr("app.history.title_sql")),
                 )
                 .child(
                     div()
                         .text_size(px(12.))
                         .text_color(colors.muted)
-                        .child(format!("匹配 {}", count)),
+                        .child(tr("app.history.matches").replace("%{count}", &count.to_string())),
                 ),
         )
         .child(
@@ -785,11 +801,17 @@ fn query_history_kind_filters(
     cx: &mut Context<NavicatMain>,
 ) -> impl IntoElement {
     let filters = [
-        (QueryHistoryKindFilter::All, "全部"),
-        (QueryHistoryKindFilter::Query, "查询"),
-        (QueryHistoryKindFilter::DataChange, "数据变更"),
-        (QueryHistoryKindFilter::SchemaChange, "结构变更"),
-        (QueryHistoryKindFilter::Failed, "失败"),
+        (QueryHistoryKindFilter::All, tr("app.history.filter_all")),
+        (QueryHistoryKindFilter::Query, tr("app.history.kind_query")),
+        (
+            QueryHistoryKindFilter::DataChange,
+            tr("app.history.kind_data_change"),
+        ),
+        (
+            QueryHistoryKindFilter::SchemaChange,
+            tr("app.history.kind_schema_change"),
+        ),
+        (QueryHistoryKindFilter::Failed, tr("app.history.failed")),
     ];
     div()
         .flex()
@@ -813,11 +835,17 @@ fn query_history_quick_kind_filters(
     cx: &mut Context<NavicatMain>,
 ) -> impl IntoElement {
     let filters = [
-        (QueryHistoryKindFilter::All, "全部"),
-        (QueryHistoryKindFilter::Query, "查询"),
-        (QueryHistoryKindFilter::DataChange, "数据变更"),
-        (QueryHistoryKindFilter::SchemaChange, "结构变更"),
-        (QueryHistoryKindFilter::Failed, "失败"),
+        (QueryHistoryKindFilter::All, tr("app.history.filter_all")),
+        (QueryHistoryKindFilter::Query, tr("app.history.kind_query")),
+        (
+            QueryHistoryKindFilter::DataChange,
+            tr("app.history.kind_data_change"),
+        ),
+        (
+            QueryHistoryKindFilter::SchemaChange,
+            tr("app.history.kind_schema_change"),
+        ),
+        (QueryHistoryKindFilter::Failed, tr("app.history.failed")),
     ];
     div()
         .flex()
@@ -845,29 +873,29 @@ fn query_history_scope_filters(
         .items_center()
         .gap_2()
         .child(query_history_select_box(
-            "连接 ",
-            "全部连接",
-            "搜索连接",
+            tr("app.history.scope_connection"),
+            tr("app.history.all_connections"),
+            tr("app.history.search_connections"),
             &this.query_history_connection_select,
         ))
         .child(query_history_select_box(
-            "库 ",
-            "全部库",
-            "搜索库",
+            tr("app.history.scope_database"),
+            tr("app.history.all_databases"),
+            tr("app.history.search_databases"),
             &this.query_history_database_select,
         ))
         .child(query_history_select_box(
-            "表 ",
-            "全部表",
-            "搜索表",
+            tr("app.history.scope_table"),
+            tr("app.history.all_tables"),
+            tr("app.history.search_tables"),
             &this.query_history_table_select,
         ))
 }
 
 fn query_history_select_box<D>(
-    prefix: &'static str,
-    placeholder: &'static str,
-    search_placeholder: &'static str,
+    prefix: impl Into<SharedString>,
+    placeholder: impl Into<SharedString>,
+    search_placeholder: impl Into<SharedString>,
     select: &Entity<SelectState<SearchableVec<D>>>,
 ) -> Div
 where
@@ -924,7 +952,7 @@ fn query_history_row(
     let status = if entry.success {
         query_history_kind_label(entry.kind)
     } else {
-        "失败"
+        tr("app.history.failed")
     };
     let status_color = if entry.success { colors.muted } else { rgb(0xd64545) };
     div()
@@ -980,7 +1008,7 @@ fn query_history_row(
                 ),
         )
         .child(
-            query_history_chip("查看".to_string(), false, colors).on_mouse_down(
+            query_history_chip(tr("app.history.view").to_string(), false, colors).on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, _, cx| {
                     this.show_query_history_detail(entry.clone(), cx);
@@ -1008,10 +1036,10 @@ fn query_history_quick_row(
     let status = if entry.success {
         query_history_kind_label(entry.kind)
     } else {
-        "失败"
+        tr("app.history.failed")
     };
     subtitle.push_str(" · ");
-    subtitle.push_str(status);
+    subtitle.push_str(status.as_str());
     let selected_bg = if colors.is_dark {
         rgb(0x263244)
     } else {
@@ -1099,7 +1127,10 @@ fn query_history_line(sql: &str) -> String {
 
 fn query_history_scope(entry: &fluxdb_app::QueryHistoryEntry, state: &AppState) -> String {
     let connection = query_history_connection_name(state, entry.connection_id)
-        .unwrap_or_else(|| format!("连接 #{}", entry.connection_id.0));
+        .unwrap_or_else(|| {
+            tr("app.history.connection_fallback")
+                .replace("%{id}", &entry.connection_id.0.to_string())
+        });
     match &entry.database {
         Some(database) if !database.is_empty() => format!("{connection} / {database}"),
         _ => connection,
@@ -1118,7 +1149,7 @@ fn query_history_connection_filter_items(
     state: &AppState,
 ) -> Vec<QueryHistoryConnectionFilterItem> {
     let mut items = vec![QueryHistoryConnectionFilterItem {
-        label: "全部连接".to_string(),
+        label: tr("app.history.all_connections").to_string(),
         value: None,
     }];
     items.extend(state.connections.iter().map(|connection| {
@@ -1135,7 +1166,7 @@ fn query_history_database_filter_items(
     connection_filter: Option<ConnectionId>,
 ) -> Vec<QueryHistoryTextFilterItem> {
     let mut items = vec![QueryHistoryTextFilterItem {
-        label: "全部库".to_string(),
+        label: tr("app.history.all_databases").to_string(),
         value: None,
     }];
     items.extend(
@@ -1155,7 +1186,7 @@ fn query_history_table_filter_items(
     database_filter: Option<&str>,
 ) -> Vec<QueryHistoryTextFilterItem> {
     let mut items = vec![QueryHistoryTextFilterItem {
-        label: "全部表".to_string(),
+        label: tr("app.history.all_tables").to_string(),
         value: None,
     }];
     items.extend(
@@ -1238,11 +1269,11 @@ fn query_history_tables_for_scope(
     tables
 }
 
-fn query_history_kind_label(kind: QueryHistoryKind) -> &'static str {
+fn query_history_kind_label(kind: QueryHistoryKind) -> SharedString {
     match kind {
-        QueryHistoryKind::Query => "查询",
-        QueryHistoryKind::DataChange => "数据变更",
-        QueryHistoryKind::SchemaChange => "结构变更",
+        QueryHistoryKind::Query => tr("app.history.kind_query"),
+        QueryHistoryKind::DataChange => tr("app.history.kind_data_change"),
+        QueryHistoryKind::SchemaChange => tr("app.history.kind_schema_change"),
     }
 }
 
@@ -1306,11 +1337,15 @@ fn query_history_detail_modal(
     let scope = query_history_scope(&entry, state);
     let kind = query_history_kind_label(entry.kind);
     let tables = if entry.tables.is_empty() {
-        "无".to_string()
+        tr("app.history.none").to_string()
     } else {
         entry.tables.join(", ")
     };
-    let status = if entry.success { "成功" } else { "失败" };
+    let status = if entry.success {
+        tr("app.history.success")
+    } else {
+        tr("app.history.failed")
+    };
     let status_color = if entry.success {
         rgb(0x22a06b)
     } else {
@@ -1327,11 +1362,11 @@ fn query_history_detail_modal(
     let affected = entry.summary.affected_rows.to_string();
     let returned = entry.summary.returned_rows.to_string();
     let rollback_status = if entry.rollback_sql().is_some() {
-        "可回滚"
+        tr("app.history.rollback_available")
     } else if entry.rollback_snapshot.is_some() {
-        "有快照，无法生成 SQL"
+        tr("app.history.rollback_snapshot_only")
     } else {
-        "无原始快照"
+        tr("app.history.rollback_unavailable")
     };
     let sql_for_copy = entry.text.clone();
     let rollback_for_copy = entry.rollback_sql();
@@ -1425,43 +1460,69 @@ fn query_history_detail_modal(
                         .grid_cols(3)
                         .gap_2()
                         .text_size(px(12.))
-                        .child(query_history_detail_meta("类型", kind.to_string(), colors))
-                        .child(query_history_detail_meta("操作", operation, colors))
-                        .child(
-                            query_history_detail_meta("状态", status.to_string(), colors)
-                                .text_color(status_color),
-                        )
-                        .child(query_history_detail_meta("连接", scope, colors))
                         .child(query_history_detail_meta(
-                            "数据库",
-                            entry.database.clone().unwrap_or_else(|| "默认库".to_string()),
+                            tr("app.history.meta_type"),
+                            kind.to_string(),
                             colors,
                         ))
                         .child(query_history_detail_meta(
-                            "对象",
+                            tr("app.history.meta_operation"),
+                            operation,
+                            colors,
+                        ))
+                        .child(
+                            query_history_detail_meta(
+                                tr("app.history.meta_status"),
+                                status.to_string(),
+                                colors,
+                            )
+                                .text_color(status_color),
+                        )
+                        .child(query_history_detail_meta(
+                            tr("app.history.meta_connection"),
+                            scope,
+                            colors,
+                        ))
+                        .child(query_history_detail_meta(
+                            tr("app.history.meta_database"),
+                            entry.database.clone().unwrap_or_else(|| {
+                                tr("app.history.default_database").to_string()
+                            }),
+                            colors,
+                        ))
+                        .child(query_history_detail_meta(
+                            tr("app.history.meta_object"),
                             entry.object.clone().unwrap_or_else(|| tables.clone()),
                             colors,
                         ))
-                        .child(query_history_detail_meta("时间", executed_at, colors))
-                        .child(query_history_detail_meta("耗时", elapsed, colors))
                         .child(query_history_detail_meta(
-                            "影响/返回",
+                            tr("app.history.meta_time"),
+                            executed_at,
+                            colors,
+                        ))
+                        .child(query_history_detail_meta(
+                            tr("app.history.meta_elapsed"),
+                            elapsed,
+                            colors,
+                        ))
+                        .child(query_history_detail_meta(
+                            tr("app.history.meta_affected_returned"),
                             format!("{affected} / {returned}"),
                             colors,
                         ))
                         .child(query_history_detail_meta(
-                            "回滚",
+                            tr("app.history.meta_rollback"),
                             rollback_status.to_string(),
                             colors,
                         ))
                         .child(query_history_detail_meta(
-                            "事务",
-                            entry.transaction_state.label().to_string(),
+                            tr("app.history.meta_transaction"),
+                            query_history_transaction_label(entry.transaction_state).to_string(),
                             colors,
                         ))
                         .when(!entry.success, |this| {
                             this.child(query_history_detail_meta(
-                                "错误",
+                                tr("app.history.meta_error"),
                                 entry.summary.message.clone(),
                                 colors,
                             ))
@@ -1476,9 +1537,9 @@ fn query_history_detail_modal(
                         .flex_col()
                         .gap_3()
                         .child(query_history_sql_block(
-                            "执行 SQL",
+                            tr("app.history.executed_sql"),
                             entry.text.clone(),
-                            "复制 SQL",
+                            tr("app.history.copy_sql"),
                             colors,
                             {
                                 let sql_for_copy = sql_for_copy.clone();
@@ -1486,28 +1547,32 @@ fn query_history_detail_modal(
                                     cx.write_to_clipboard(ClipboardItem::new_string(
                                         sql_for_copy.clone(),
                                     ));
-                                    this.show_message("已复制 SQL", AppMessageKind::Success, cx);
+                                    this.show_message(
+                                        tr("app.history.copied_sql"),
+                                        AppMessageKind::Success,
+                                        cx,
+                                    );
                                 }
                             },
                             cx,
                         ))
                         .when_some(entry.rollback_snapshot_summary(), |this, snapshot| {
                             this.child(query_history_sql_block(
-                                "原始行快照",
+                                tr("app.history.original_snapshot"),
                                 snapshot,
-                                "复制快照",
+                                tr("app.history.copy_snapshot"),
                                 colors,
                                 move |this: &mut NavicatMain, cx: &mut Context<NavicatMain>| {
                                     if let Some(sql) = rollback_for_copy.clone() {
                                         cx.write_to_clipboard(ClipboardItem::new_string(sql));
                                         this.show_message(
-                                            "已复制动态回滚 SQL",
+                                            tr("app.history.copied_rollback_sql"),
                                             AppMessageKind::Success,
                                             cx,
                                         );
                                     } else {
                                         this.show_message(
-                                            "当前快照无法生成回滚 SQL",
+                                            tr("app.history.rollback_sql_unavailable"),
                                             AppMessageKind::Warning,
                                             cx,
                                         );
@@ -1527,7 +1592,7 @@ fn query_history_detail_modal(
                         .items_center()
                         .justify_between()
                         .child(query_history_detail_button(
-                            "AI 分析",
+                            tr("app.history.ai_analyze"),
                             AppIcon::Wand,
                             false,
                             colors,
@@ -1539,7 +1604,7 @@ fn query_history_detail_modal(
                                 .gap_2()
                                 .child(
                                     query_history_detail_button(
-                                        "恢复到编辑器",
+                                        tr("app.history.restore_to_editor"),
                                         AppIcon::FileSql,
                                         true,
                                         colors,
@@ -1550,7 +1615,7 @@ fn query_history_detail_modal(
                                             this.query_history_detail = None;
                                             this.open_query_history_entry(entry.clone(), cx);
                                             this.show_message(
-                                                "已恢复到编辑器",
+                                                tr("app.history.restored_to_editor"),
                                                 AppMessageKind::Success,
                                                 cx,
                                             );
@@ -1561,7 +1626,7 @@ fn query_history_detail_modal(
                                 .when_some(rollback_entry, |this, rollback_entry| {
                                     this.child(
                                         query_history_detail_button(
-                                            "回滚",
+                                            tr("app.history.rollback"),
                                             AppIcon::Undo,
                                             true,
                                             colors,
@@ -1574,7 +1639,7 @@ fn query_history_detail_modal(
                                                     cx,
                                                 );
                                                 this.show_message(
-                                                    "已打开回滚 SQL",
+                                                    tr("app.history.rollback_opened"),
                                                     AppMessageKind::Success,
                                                     cx,
                                                 );
@@ -1588,7 +1653,12 @@ fn query_history_detail_modal(
         )
 }
 
-fn query_history_detail_meta(label: &str, value: String, colors: UiColors) -> Div {
+fn query_history_detail_meta(
+    label: impl Into<SharedString>,
+    value: String,
+    colors: UiColors,
+) -> Div {
+    let label = label.into();
     div()
         .min_w(px(0.))
         .flex()
@@ -1598,7 +1668,7 @@ fn query_history_detail_meta(label: &str, value: String, colors: UiColors) -> Di
             div()
                 .text_size(px(11.))
                 .text_color(colors.muted)
-                .child(label.to_string()),
+                .child(label),
         )
         .child(
             div()
@@ -1612,9 +1682,9 @@ fn query_history_detail_meta(label: &str, value: String, colors: UiColors) -> Di
 }
 
 fn query_history_sql_block<F>(
-    title: &str,
+    title: impl Into<String>,
     sql: String,
-    copy_label: &'static str,
+    copy_label: impl Into<String>,
     colors: UiColors,
     on_copy: F,
     cx: &mut Context<NavicatMain>,
@@ -1622,6 +1692,8 @@ fn query_history_sql_block<F>(
 where
     F: Fn(&mut NavicatMain, &mut Context<NavicatMain>) + 'static,
 {
+    let title = title.into();
+    let copy_label = copy_label.into();
     div()
         .rounded(colors.radius_lg)
         .border_1()
@@ -1642,7 +1714,7 @@ where
                         .text_size(px(12.))
                         .font_weight(gpui::FontWeight::BOLD)
                         .text_color(colors.text)
-                        .child(title.to_string()),
+                        .child(title),
                 )
                 .child(
                     query_history_detail_button(copy_label, AppIcon::Copy, true, colors)
@@ -1669,11 +1741,12 @@ where
 }
 
 fn query_history_detail_button(
-    label: &'static str,
+    label: impl Into<String>,
     icon: AppIcon,
     enabled: bool,
     colors: UiColors,
 ) -> Div {
+    let label = label.into();
     div()
         .h(px(30.))
         .px_3()
@@ -1701,11 +1774,20 @@ fn query_history_operation_label(sql: &str) -> String {
 
 fn query_history_time_label(secs: u64) -> String {
     if secs == 0 {
-        return "未知".to_string();
+        return tr("app.history.unknown").to_string();
     }
     Local
         .timestamp_opt(secs as i64, 0)
         .single()
         .map(|time| time.format("%Y-%m-%d %H:%M:%S").to_string())
-        .unwrap_or_else(|| "未知".to_string())
+        .unwrap_or_else(|| tr("app.history.unknown").to_string())
+}
+
+fn query_history_transaction_label(state: QueryHistoryTransactionState) -> SharedString {
+    match state.as_str() {
+        "committed" => tr("app.history.transaction_committed"),
+        "uncommitted" => tr("app.history.transaction_uncommitted"),
+        "rolled_back" => tr("app.history.transaction_rolled_back"),
+        _ => tr("app.history.transaction_unknown"),
+    }
 }

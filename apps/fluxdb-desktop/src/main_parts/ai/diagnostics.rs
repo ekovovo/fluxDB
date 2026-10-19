@@ -46,11 +46,19 @@ impl NavicatMain {
             return;
         }
         let Some(session_id) = self.controller.state().ai_conversation.session_id.clone() else {
-            self.show_message("当前没有会话，无法查看诊断", AppMessageKind::Error, cx);
+            self.show_message(
+                tr("app.ai.chat.diagnostics.no_session").as_ref(),
+                AppMessageKind::Error,
+                cx,
+            );
             return;
         };
         let Ok(storage) = self.controller.ai_storage() else {
-            self.show_message("AI 存储尚未初始化，无法查看诊断", AppMessageKind::Error, cx);
+            self.show_message(
+                tr("app.ai.chat.diagnostics.storage_missing").as_ref(),
+                AppMessageKind::Error,
+                cx,
+            );
             return;
         };
         {
@@ -155,7 +163,7 @@ fn ai_diagnostics_build_dialog(
         .overlay_closable(true)
         .keyboard(true)
         .on_close(move |_, _, _| data_close.borrow_mut().reset())
-        .title("诊断")
+        .title(tr("app.ai.chat.diagnostics.title"))
         .child(body)
         .footer(
             div()
@@ -166,7 +174,7 @@ fn ai_diagnostics_build_dialog(
                     div()
                         .text_size(px(10.))
                         .text_color(colors.muted)
-                        .child("只读、脱敏、仅限当前会话；数字来自真实落盘事实"),
+                        .child(tr("app.ai.chat.diagnostics.scope")),
                 )
                 .child(div().flex_1())
                 .child(
@@ -175,7 +183,7 @@ fn ai_diagnostics_build_dialog(
                         .small()
                         .ghost()
                         .cursor_pointer()
-                        .child("关闭")
+                        .child(tr("app.ai.chat.diagnostics.close"))
                         .on_click(move |_, window, cx| {
                             let _ = view_close.update(cx, |this, cx| {
                                 this.close_ai_diagnostics_dialog(window, cx);
@@ -202,7 +210,7 @@ fn ai_diagnostics_body(
             .text_size(px(12.))
             .text_color(colors.muted)
             .child(app_icon(AppIcon::Activity, 14., colors.muted))
-            .child("正在读取诊断…")
+            .child(tr("app.ai.chat.diagnostics.loading"))
             .into_any_element();
     }
     if let Some(message) = error {
@@ -210,7 +218,7 @@ fn ai_diagnostics_body(
             .py_4()
             .text_size(px(12.))
             .text_color(colors.danger)
-            .child(format!("诊断读取失败：{message}"))
+            .child(tr("app.ai.chat.diagnostics.load_failed").replace("%{message}", message))
             .into_any_element();
     }
     if rows.is_empty() {
@@ -218,7 +226,7 @@ fn ai_diagnostics_body(
             .py_4()
             .text_size(px(12.))
             .text_color(colors.muted)
-            .child("当前会话还没有可诊断的执行记录。")
+            .child(tr("app.ai.chat.diagnostics.empty"))
             .into_any_element();
     }
     div()
@@ -272,7 +280,11 @@ fn ai_diagnostics_row(
             .small()
             .ghost()
             .cursor_pointer()
-            .child(if expanded { "收起" } else { "详情" })
+            .child(if expanded {
+                tr("app.ai.chat.diagnostics.collapse")
+            } else {
+                tr("app.ai.chat.diagnostics.expand")
+            })
             .on_click(move |_, _, cx| {
                 let _ = view_toggle.update(cx, |this, cx| {
                     this.toggle_ai_diagnostics_row(ordinal, cx);
@@ -311,13 +323,34 @@ fn ai_diagnostics_status(
     colors: UiColors,
 ) -> (String, gpui::Rgba) {
     match row.status.as_str() {
-        "completed" => ("已完成".to_string(), colors.success),
-        "failed" => ("失败".to_string(), colors.danger),
-        "cancelled" => ("已取消".to_string(), colors.muted),
-        "interrupted" => ("已中断".to_string(), colors.warning),
-        "outcome_unknown" => ("结果未知".to_string(), colors.warning),
-        "waiting_approval" | "waiting_user" => ("等待中".to_string(), colors.warning),
-        "cancel_requested" => ("取消中".to_string(), colors.muted),
+        "completed" => (
+            tr("app.ai.chat.diagnostics.status.completed").to_string(),
+            colors.success,
+        ),
+        "failed" => (
+            tr("app.ai.chat.diagnostics.status.failed").to_string(),
+            colors.danger,
+        ),
+        "cancelled" => (
+            tr("app.ai.chat.diagnostics.status.cancelled").to_string(),
+            colors.muted,
+        ),
+        "interrupted" => (
+            tr("app.ai.chat.diagnostics.status.interrupted").to_string(),
+            colors.warning,
+        ),
+        "outcome_unknown" => (
+            tr("app.ai.chat.diagnostics.status.outcome_unknown").to_string(),
+            colors.warning,
+        ),
+        "waiting_approval" | "waiting_user" => (
+            tr("app.ai.chat.diagnostics.status.waiting").to_string(),
+            colors.warning,
+        ),
+        "cancel_requested" => (
+            tr("app.ai.chat.diagnostics.status.cancel_requested").to_string(),
+            colors.muted,
+        ),
         other => (other.to_string(), colors.muted),
     }
 }
@@ -326,61 +359,99 @@ fn ai_diagnostics_status(
 fn ai_diagnostics_summary(row: &fluxdb_app::AiTurnDiagnostic) -> String {
     let mut parts = Vec::new();
     if let Some(code) = row.error_code.as_deref() {
-        parts.push(format!("错误码 {code}"));
+        parts.push(
+            tr("app.ai.chat.diagnostics.summary.error_code").replace("%{code}", code),
+        );
     }
     if let Some(stage) = row.failure_stage.as_deref() {
         let owner = row.failure_owner.as_deref().unwrap_or("-");
-        parts.push(format!("阶段 {stage}（{owner}）"));
+        parts.push(
+            tr("app.ai.chat.diagnostics.summary.stage")
+                .replace("%{stage}", stage)
+                .replace("%{owner}", owner),
+        );
     }
     match row.retryable {
-        Some(true) => parts.push("可重试".to_string()),
-        Some(false) => parts.push("不可重试".to_string()),
+        Some(true) => parts.push(tr("app.ai.chat.diagnostics.summary.retryable").to_string()),
+        Some(false) => parts.push(
+            tr("app.ai.chat.diagnostics.summary.not_retryable").to_string(),
+        ),
         None => {}
     }
     if let (Some(requests), Some(failures)) = (row.model_requests, row.model_failures) {
         if failures > 0 {
-            parts.push(format!("模型请求 {requests}（失败 {failures}）"));
+            parts.push(
+                tr("app.ai.chat.diagnostics.summary.model_requests_failed")
+                    .replace("%{requests}", &requests.to_string())
+                    .replace("%{failures}", &failures.to_string()),
+            );
         } else {
-            parts.push(format!("模型请求 {requests}"));
+            parts.push(
+                tr("app.ai.chat.diagnostics.summary.model_requests")
+                    .replace("%{requests}", &requests.to_string()),
+            );
         }
     }
     if let (Some(calls), Some(failures)) = (row.tool_calls, row.tool_failures) {
         if failures > 0 {
-            parts.push(format!("工具调用 {calls}（失败 {failures}）"));
+            parts.push(
+                tr("app.ai.chat.diagnostics.summary.tool_calls_failed")
+                    .replace("%{calls}", &calls.to_string())
+                    .replace("%{failures}", &failures.to_string()),
+            );
         }
     }
     if parts.is_empty() {
-        parts.push(format!("迭代 {}", row.iterations));
+        parts.push(
+            tr("app.ai.chat.diagnostics.summary.iterations")
+                .replace("%{count}", &row.iterations.to_string()),
+        );
     }
     parts.join(" · ")
 }
 
 fn ai_diagnostics_detail(row: &fluxdb_app::AiTurnDiagnostic, colors: UiColors) -> Div {
     let mut detail = div().flex().flex_col().gap_1().text_size(px(11.));
-    detail = detail.child(ai_diagnostics_kv("轮次状态", &row.status, colors));
+    detail = detail.child(ai_diagnostics_kv(
+        &tr("app.ai.chat.diagnostics.field.turn_status"),
+        &row.status,
+        colors,
+    ));
     if let Some(code) = row.error_code.as_deref() {
-        detail = detail.child(ai_diagnostics_kv("错误码", code, colors));
+        detail = detail.child(ai_diagnostics_kv(
+            &tr("app.ai.chat.diagnostics.field.error_code"),
+            code,
+            colors,
+        ));
     }
     if let Some(codes) = (!row.error_codes.is_empty()).then(|| row.error_codes.join("、")) {
-        detail = detail.child(ai_diagnostics_kv("出现过的码", &codes, colors));
+        detail = detail.child(ai_diagnostics_kv(
+            &tr("app.ai.chat.diagnostics.field.seen_codes"),
+            &codes,
+            colors,
+        ));
     }
     if let Some(requests) = row.model_requests {
         detail = detail.child(ai_diagnostics_kv(
-            "模型请求",
-            &format!("{}（失败 {}）", requests, row.model_failures.unwrap_or(0)),
+            &tr("app.ai.chat.diagnostics.field.model_requests"),
+            &tr("app.ai.chat.diagnostics.count_failed")
+                .replace("%{total}", &requests.to_string())
+                .replace("%{failures}", &row.model_failures.unwrap_or(0).to_string()),
             colors,
         ));
     } else {
         detail = detail.child(ai_diagnostics_kv(
-            "阶段遥测",
-            "未启用（不代表没有失败）",
+            &tr("app.ai.chat.diagnostics.field.stage_telemetry"),
+            &tr("app.ai.chat.diagnostics.field.stage_telemetry_off"),
             colors,
         ));
     }
     if let Some(calls) = row.tool_calls {
         detail = detail.child(ai_diagnostics_kv(
-            "工具调用",
-            &format!("{}（失败 {}）", calls, row.tool_failures.unwrap_or(0)),
+            &tr("app.ai.chat.diagnostics.field.tool_calls"),
+            &tr("app.ai.chat.diagnostics.count_failed")
+                .replace("%{total}", &calls.to_string())
+                .replace("%{failures}", &row.tool_failures.unwrap_or(0).to_string()),
             colors,
         ));
     }
@@ -391,16 +462,22 @@ fn ai_diagnostics_detail(row: &fluxdb_app::AiTurnDiagnostic, colors: UiColors) -
             .map(|ms| format!("，{ms}ms"))
             .unwrap_or_default();
         detail = detail.child(ai_diagnostics_kv(
-            "未成功的工具",
-            &format!(
-                "迭代 {} · {} · {} · {}{}",
-                tool.iteration, tool.tool_id, tool.status, code, duration
-            ),
+            &tr("app.ai.chat.diagnostics.field.failed_tools"),
+            &tr("app.ai.chat.diagnostics.failed_tool_row")
+                .replace("%{iteration}", &tool.iteration.to_string())
+                .replace("%{tool}", &tool.tool_id)
+                .replace("%{status}", &tool.status)
+                .replace("%{code}", code)
+                .replace("%{duration}", &duration),
             colors,
         ));
     }
     for notice in &row.notices {
-        detail = detail.child(ai_diagnostics_kv("说明", notice, colors));
+        detail = detail.child(ai_diagnostics_kv(
+            &tr("app.ai.chat.diagnostics.field.note"),
+            notice,
+            colors,
+        ));
     }
     detail
 }

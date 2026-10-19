@@ -138,6 +138,10 @@ impl Default for LogLevel {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Settings {
     pub theme: Theme,
+    /// UI 语言代码；空字符串表示跟随系统。取值由运行时语言包发现结果校验，
+    /// 不在核心层维护语言枚举，新增语言包无需修改设置模型。
+    #[serde(default)]
+    pub locale: String,
     #[serde(default)]
     pub log_level: LogLevel,
     #[serde(default)]
@@ -245,6 +249,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             theme: Theme::System,
+            locale: String::new(),
             log_level: LogLevel::default(),
             log_path: String::new(),
             button_radius: default_button_radius(),

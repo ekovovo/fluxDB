@@ -162,7 +162,7 @@ impl NavicatMain {
             .or_else(|| self.controller.state().connections.first())
             .map(|connection| connection.config.id);
         if self.pending_new_query_connection.is_none() {
-            self.show_message("请先创建连接", AppMessageKind::Warning, cx);
+            self.show_message(tr("app.connection.error.create_first").as_ref(), AppMessageKind::Warning, cx);
         }
         cx.notify();
     }
@@ -245,14 +245,14 @@ impl NavicatMain {
         let Some(scope) = active_history else {
             // SQL 历史入口：保留原有守卫（无记录提示，有记录再切换抽屉）。
             if self.controller.state().query_history.is_empty() {
-                self.show_message("暂无 SQL 历史", AppMessageKind::Info, cx);
+                self.show_message(tr("app.history.empty_sql").as_ref(), AppMessageKind::Info, cx);
             } else {
                 self.toggle_query_history(window, cx);
             }
             return;
         };
         if self.controller.load_history(&scope, usize::MAX).is_empty() {
-            self.show_message("暂无历史", AppMessageKind::Info, cx);
+            self.show_message(tr("app.history.empty_command").as_ref(), AppMessageKind::Info, cx);
             return;
         }
         self.redis_history_open = true;
@@ -328,7 +328,7 @@ impl NavicatMain {
 
     fn show_query_history_quick_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.controller.state().query_history.is_empty() {
-            self.show_message("暂无 SQL 历史", AppMessageKind::Info, cx);
+            self.show_message(tr("app.history.empty_sql").as_ref(), AppMessageKind::Info, cx);
             return;
         }
         self.query_history_open = false;
@@ -446,7 +446,7 @@ impl NavicatMain {
                         .map(|connection_id| (connection_id, None, None))
                 });
             let Some((connection_id, database, schema)) = target else {
-                self.show_message("请先创建连接", AppMessageKind::Warning, cx);
+                self.show_message(tr("app.connection.error.create_first").as_ref(), AppMessageKind::Warning, cx);
                 return;
             };
             self.dispatch(
@@ -581,7 +581,7 @@ impl NavicatMain {
             .is_some_and(|tab| matches!(tab.kind, TabKind::Settings(_)))
         {
             let settings = self.settings_editor_draft.clone();
-            save_settings_from_ui(self, settings, "设置已保存", cx);
+            save_settings_from_ui(self, settings, tr("app.settings.message.saved"), cx);
             return;
         }
 
@@ -634,12 +634,12 @@ impl NavicatMain {
         match tab.kind {
             TabKind::QueryEditor(editor) if !editor.text.trim().is_empty() => {
                 let Some(sql_editor) = self.query_editors.get(&tab.id).cloned() else {
-                    self.show_message("查询编辑器未就绪", AppMessageKind::Warning, cx);
+                    self.show_message(tr("app.query.error.editor_not_ready").as_ref(), AppMessageKind::Warning, cx);
                     return;
                 };
                 if !self.start_query_selected_execution(tab.id, sql_editor, window, cx) {
                     self.show_message(
-                        "请先选中 SQL 或将光标放在一条 SQL 内",
+                        tr("app.query.error.select_sql_first").as_ref(),
                         AppMessageKind::Warning,
                         cx,
                     );
@@ -680,7 +680,7 @@ impl NavicatMain {
             return;
         };
         cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
-        self.show_message("已复制 SQL", AppMessageKind::Success, cx);
+        self.show_message(tr("app.query.toast.sql_copied").as_ref(), AppMessageKind::Success, cx);
     }
 
     fn copy_data_selection(
@@ -1087,6 +1087,7 @@ impl NavicatMain {
         let mut settings = self.settings_editor_draft.clone();
         let defaults = Settings::default();
         settings.theme = app_theme_from_mode(self.theme_mode);
+        settings.locale = defaults.locale;
         settings.light_theme = defaults.light_theme;
         settings.dark_theme = defaults.dark_theme;
         settings.button_radius = defaults.button_radius;
@@ -1099,8 +1100,14 @@ impl NavicatMain {
         settings.reduce_motion = defaults.reduce_motion;
         settings.global_font_family = defaults.global_font_family;
         self.settings_editor_draft = settings;
+        let locale = fluxdb_i18n::effective_locale(&self.settings_editor_draft.locale);
+        apply_ui_locale(&locale, cx);
         self.preview_settings(cx);
-        self.show_message("已恢复默认外观，点击保存后生效", AppMessageKind::Info, cx);
+        self.show_message(
+            tr("app.settings.message.appearance_reset"),
+            AppMessageKind::Info,
+            cx,
+        );
     }
 
     fn confirm_appearance_settings_saved(&mut self, cx: &mut Context<Self>) {
@@ -1126,6 +1133,13 @@ impl NavicatMain {
             editor.update(cx, |editor, ecx| editor.set_theme(editor_theme, ecx));
         }
         cx.notify();
+    }
+
+    fn preview_locale(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let locale = fluxdb_i18n::effective_locale(&self.settings_editor_draft.locale);
+        apply_ui_locale(&locale, cx);
+        self.new_connection_inputs.refresh_placeholders(window, cx);
+        self.preview_settings(cx);
     }
 
     fn refresh_active(&mut self, window: &mut Window, cx: &mut Context<Self>) {

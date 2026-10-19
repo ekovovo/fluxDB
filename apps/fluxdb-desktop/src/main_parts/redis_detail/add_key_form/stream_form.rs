@@ -14,9 +14,9 @@ fn redis_add_key_stream_form(
         .flex_col()
         .gap_2()
         // Entry ID：可选，留空表示由服务端自动生成 `*`；格式为 `毫秒-序号`。
-        .child(redis_add_key_form_label("Entry ID（可选，留空自动生成）", colors))
+        .child(redis_add_key_form_label(tr("app.redis.add_key.form.stream_id"), colors))
         .child(redis_stream_add_input_box(stream_id_input.clone(), colors))
-        .child(redis_add_key_form_label("添加字段", colors))
+        .child(redis_add_key_form_label(tr("app.redis.add_key.form.add_fields"), colors))
         .child(redis_add_key_name_value_rows_panel(
             RedisAddKeyKind::Stream,
             rows,

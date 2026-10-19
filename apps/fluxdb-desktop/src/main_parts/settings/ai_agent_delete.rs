@@ -18,14 +18,14 @@ impl NavicatMain {
             let view = view.clone();
             let id = id.clone();
             dialog
-                .title("删除 Agent")
+                .title(tr("app.ai.agents.delete_title"))
                 .close_button(true)
                 .overlay_closable(true)
                 .keyboard(true)
                 .child(
-                    div().text_size(px(13.)).child(format!(
-                        "确认删除「{name}」？历史会话和审计记录保留；正在运行或待审批时不能删除。"
-                    )),
+                    div().text_size(px(13.)).child(
+                        tr("app.ai.agents.delete_confirm").replace("%{name}", &name),
+                    ),
                 )
                 .footer(
                     div()
@@ -36,7 +36,7 @@ impl NavicatMain {
                             Button::new("ai-agent-delete-cancel")
                                 .debug_selector(|| "ai-agent-delete-cancel".into())
                                 .cursor_pointer()
-                                .child("取消")
+                                .child(tr("app.common.cancel"))
                                 .on_click(|_, window, cx| window.close_dialog(cx)),
                         )
                         .child(
@@ -44,7 +44,7 @@ impl NavicatMain {
                                 .debug_selector(|| "ai-agent-delete-confirm".into())
                                 .danger()
                                 .cursor_pointer()
-                                .child("删除")
+                                .child(tr("app.ai.agents.delete_action"))
                                 .on_click(|_, window, cx| {
                                     window.dispatch_action(
                                         Box::new(gpui_component::dialog::Confirm {
@@ -92,7 +92,7 @@ impl NavicatMain {
                     let result = match event {
                         AppEvent::AiAgentDeleted { .. } => Ok(()),
                         AppEvent::AiSettingsError(message) => Err(message),
-                        _ => Err("删除 Agent 失败".into()),
+                        _ => Err(tr("app.ai.agents.delete_failed").to_string()),
                     };
                     let event = this.controller.dispatch(AppCommand::CompleteAiAgentDelete {
                         id: id.clone(),
@@ -112,7 +112,11 @@ impl NavicatMain {
                                 this.ai_agent_editor = None;
                                 this.ai_agent_delete_just_removed = id;
                             }
-                            this.show_message("Agent 已删除", AppMessageKind::Success, cx);
+                            this.show_message(
+                                tr("app.ai.agents.deleted"),
+                                AppMessageKind::Success,
+                                cx,
+                            );
                         }
                         AppEvent::AiSettingsError(message) => {
                             this.show_message(message, AppMessageKind::Error, cx)

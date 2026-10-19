@@ -59,7 +59,7 @@ fn redis_string_value_panel(
                 .flex()
                 .items_center()
                 .justify_between()
-                .child(redis_detail_panel_title("值", colors))
+                .child(redis_detail_panel_title(tr("app.redis.string.value"), colors))
                 .child(
                     div()
                         .flex()
@@ -192,7 +192,7 @@ fn redis_string_value_body(
                         .gap_2()
                         .child(
                             Button::new("redis-string-value-cancel-edit")
-                                .label("取消编辑")
+                                .label(tr("app.redis.string.cancel_edit"))
                                 .small()
                                 .outline()
                                 .w(px(82.))
@@ -210,7 +210,7 @@ fn redis_string_value_body(
                         )
                         .child(
                             Button::new("redis-string-value-save")
-                                .label("保存")
+                                .label(tr("app.redis.save"))
                                 .small()
                                 .primary()
                                 .w(px(72.))
@@ -251,7 +251,7 @@ fn redis_string_value_body(
                         .text_color(colors.text)
                         .child(
                             div().px_3().py_2().child(if display_value.is_empty() {
-                                div().text_color(colors.muted).child("(空值)").into_any_element()
+                                div().text_color(colors.muted).child(tr("app.redis.empty_value")).into_any_element()
                             } else {
                                 format!("{display_value}\n…").into_any_element()
                             }),
@@ -268,7 +268,7 @@ fn redis_string_value_body(
                         .gap_2()
                         .child(
                             Button::new("redis-string-value-load-all")
-                                .label("加载全部")
+                                .label(tr("app.redis.load_all"))
                                 .small()
                                 .outline()
                                 .w(px(88.))
@@ -299,7 +299,7 @@ fn redis_string_value_body(
             .text_color(colors.text)
             .child(
                 div().px_3().py_2().child(if display_value.is_empty() {
-                    div().text_color(colors.muted).child("(空值)").into_any_element()
+                    div().text_color(colors.muted).child(tr("app.redis.empty_value")).into_any_element()
                 } else {
                     display_value.into_any_element()
                 }),
@@ -341,7 +341,7 @@ fn redis_string_copy_button(
             cx.listener(move |this, _, _, cx| {
                 if enabled {
                     cx.write_to_clipboard(ClipboardItem::new_string(value.clone()));
-                    this.show_message("值已复制", AppMessageKind::Success, cx);
+                    this.show_message(tr("app.redis.string.copied").as_ref(), AppMessageKind::Success, cx);
                 }
                 cx.stop_propagation();
             }),
@@ -351,7 +351,7 @@ fn redis_string_copy_button(
             13.,
             if enabled { colors.muted } else { colors.border },
         ))
-        .child("复制")
+        .child(tr("app.redis.string.copy"))
 }
 
 /// 下载按钮：持久可点，把 String / JSON 值导出为文件（大 key 顶栏始终可用，不受完整加载限制）。
@@ -392,7 +392,7 @@ fn redis_string_download_button(
             13.,
             if enabled { colors.muted } else { colors.border },
         ))
-        .child("下载")
+        .child(tr("app.redis.string.download"))
 }
 
 /// 编辑按钮：`enabled` 决定是否进入编辑态。
@@ -429,16 +429,16 @@ fn redis_string_edit_button(
             13.,
             if enabled { colors.muted } else { colors.border },
         ))
-        .child("编辑")
+        .child(tr("app.redis.edit"))
 }
 
 /// 复制按钮禁用原因：二进制 / 未完整加载 → 提示先加载全部或改用下载。
 fn redis_string_copy_disabled_tooltip(binary: bool, loaded_all: bool) -> Option<String> {
     if binary {
-        return Some("二进制值无法复制".to_string());
+        return Some(tr("app.redis.string.binary_no_copy").to_string());
     }
     if !loaded_all {
-        return Some("请先加载全部后再复制".to_string());
+        return Some(tr("app.redis.string.load_all_first").to_string());
     }
     None
 }
@@ -478,7 +478,7 @@ fn redis_string_format_menu(
                 .text_size(px(12.))
                 .text_color(if enabled { colors.text } else { colors.muted })
                 .child(app_icon(AppIcon::AlignLeft, 13., colors.muted))
-                .child("格式转换")
+                .child(tr("app.redis.string.format"))
                 .child(app_icon(AppIcon::ChevronDown, 12., colors.muted)),
         ),
     )
@@ -558,21 +558,21 @@ fn redis_string_value_hint(
         return div()
             .text_size(px(11.))
             .text_color(colors.muted)
-            .child("加载中…");
+            .child(tr("app.redis.loading"));
     }
     match len {
         Some(len) => {
             let label = if loaded_all {
-                format!("{len} 字节")
+                tr("app.redis.bytes").replace("%{bytes}", &len.to_string())
             } else {
-                format!("{len} 字节 · 未完整加载")
+                tr("app.redis.bytes_partial").replace("%{bytes}", &len.to_string())
             };
             div().text_size(px(11.)).text_color(colors.muted).child(label)
         }
         None => div()
             .text_size(px(11.))
             .text_color(colors.muted)
-            .child("加载中…"),
+            .child(tr("app.redis.loading")),
     }
 }
 

@@ -246,7 +246,7 @@ impl NavicatMain {
                     input.set_value(pretty, window, cx);
                 });
                 self.redis_key_value_syncing = false;
-                self.show_message("JSON 已格式化", AppMessageKind::Success, cx);
+                self.show_message(tr("app.json.formatted").as_ref(), AppMessageKind::Success, cx);
             }
             Err(dia) => {
                 self.redis_json_editor.diagnostic = Some(dia.clone());

@@ -40,13 +40,13 @@ impl NavicatMain {
             return true;
         }
         let Some(meta) = self.data_cell_meta_for_edit(editing) else {
-            self.show_message("找不到当前字段，无法保存编辑", AppMessageKind::Error, cx);
+            self.show_message(tr("app.data.error.field_missing").as_ref(), AppMessageKind::Error, cx);
             self.data_cell_editing = Some(editing);
             cx.notify();
             return false;
         };
         let Ok(value) = data_cell_value_from_text(&meta, value.as_str()) else {
-            self.show_message("输入值不符合字段类型", AppMessageKind::Warning, cx);
+            self.show_message(tr("app.data.error.type_mismatch").as_ref(), AppMessageKind::Warning, cx);
             self.data_cell_editing = Some(editing);
             cx.notify();
             return false;

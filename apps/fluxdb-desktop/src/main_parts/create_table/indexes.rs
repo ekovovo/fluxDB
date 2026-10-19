@@ -33,7 +33,7 @@ fn create_table_indexes(
                 name: column.name.clone(),
                 sub_part_input: this.create_table_input(
                     CreateTableInputKey::IndexColumnSubPart(tab_id, index.id, column_index),
-                    "子部分",
+                    tr("app.create_table.index.sub_part"),
                     &column.sub_part,
                     window,
                     cx,
@@ -43,7 +43,7 @@ fn create_table_indexes(
             .collect::<Vec<_>>();
         let name_input = this.create_table_input(
             CreateTableInputKey::IndexName(tab_id, index.id),
-            "索引名",
+            tr("app.create_table.index.name_placeholder"),
             &index.name,
             window,
             cx,
@@ -64,7 +64,7 @@ fn create_table_indexes(
         );
         let comment_input = this.create_table_input(
             CreateTableInputKey::IndexComment(tab_id, index.id),
-            "注释",
+            tr("app.create_table.field.comment"),
             &index.comment,
             window,
             cx,
@@ -115,16 +115,25 @@ fn create_table_index_header_row(colors: UiColors) -> Div {
         .text_color(colors.muted)
         .flex()
         .items_center()
-        .child(create_table_index_header_cell("名称", 220., colors))
-        .child(create_table_index_header_cell("字段", 280., colors))
-        .child(create_table_index_header_cell("索引类型", 110., colors))
-        .child(create_table_index_header_cell("索引方法", 110., colors))
-        .child(create_table_index_header_cell("注释", 180., colors))
-        .child(create_table_index_header_cell("操作", CREATE_TABLE_OPERATIONS_WIDTH, colors))
+        .child(create_table_index_header_cell(tr("app.create_table.header.name"), 220., colors))
+        .child(create_table_index_header_cell(tr("app.create_table.index.field"), 280., colors))
+        .child(create_table_index_header_cell(tr("app.create_table.header.index_type"), 110., colors))
+        .child(create_table_index_header_cell(tr("app.create_table.header.index_method"), 110., colors))
+        .child(create_table_index_header_cell(tr("app.create_table.field.comment"), 180., colors))
+        .child(create_table_index_header_cell(tr("app.create_table.field.operations"), CREATE_TABLE_OPERATIONS_WIDTH, colors))
 }
 
-fn create_table_index_header_cell(label: &'static str, width: f32, colors: UiColors) -> Div {
+fn create_table_index_header_cell(
+    label: impl Into<SharedString>,
+    width: f32,
+    colors: UiColors,
+) -> Div {
+    let label: SharedString = label.into();
     div()
+        .debug_selector({
+            let label = label.clone();
+            move || format!("create-table-heading:{label}")
+        })
         .w(px(width))
         .flex_shrink_0()
         .h_full()
@@ -159,8 +168,8 @@ fn create_table_index_row(
     field_rows: Vec<CreateTableIndexFieldEditorRow>,
     available_fields: Vec<String>,
     name_input: Entity<InputState>,
-    type_select: Entity<SelectState<SearchableVec<String>>>,
-    method_select: Entity<SelectState<SearchableVec<String>>>,
+    type_select: Entity<SelectState<SearchableVec<CreateTableSelectOption>>>,
+    method_select: Entity<SelectState<SearchableVec<CreateTableSelectOption>>>,
     comment_input: Entity<InputState>,
     position: usize,
     index_count: usize,

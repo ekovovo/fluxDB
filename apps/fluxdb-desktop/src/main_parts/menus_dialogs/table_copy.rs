@@ -13,10 +13,10 @@ fn copy_table_mode_rows(
                 .text_size(px(13.))
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .text_color(colors.muted)
-                .child("复制内容"),
+                .child(tr("app.table.copy.content")),
         )
         .child(copy_table_mode_row(
-            "仅结构",
+            tr("app.table.copy.structure_only"),
             !copy_data,
             false,
             running,
@@ -24,7 +24,7 @@ fn copy_table_mode_rows(
             cx,
         ))
         .child(copy_table_mode_row(
-            "结构和数据",
+            tr("app.table.copy.structure_and_data"),
             copy_data,
             true,
             running,
@@ -34,13 +34,14 @@ fn copy_table_mode_rows(
 }
 
 fn copy_table_mode_row(
-    label: &'static str,
+    label: impl Into<SharedString>,
     checked: bool,
     copy_data: bool,
     running: bool,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> impl IntoElement {
+    let label: SharedString = label.into();
     div()
         .h(px(34.))
         .px_3()

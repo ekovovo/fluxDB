@@ -221,7 +221,11 @@ impl NavicatMain {
                 self.show_backup_modal(Some(menu.connection_id), Some(menu.database), window, cx);
             }
             DatabaseMenuAction::SetDefault => {
-                self.show_message("设置默认数据库入口已就绪", AppMessageKind::Info, cx);
+                self.show_message(
+                    tr("app.connection_action.default_database_ready"),
+                    AppMessageKind::Info,
+                    cx,
+                );
             }
             DatabaseMenuAction::NewTable => {
                 self.dispatch(
@@ -237,7 +241,11 @@ impl NavicatMain {
                 self.show_create_schema_modal(menu.database_path.clone(), window, cx);
             }
             DatabaseMenuAction::FindInDatabase => {
-                self.show_message("在数据库中查找入口已就绪", AppMessageKind::Info, cx);
+                self.show_message(
+                    tr("app.connection_action.find_in_database_ready"),
+                    AppMessageKind::Info,
+                    cx,
+                );
             }
             DatabaseMenuAction::Delete => {
                 self.request_delete_database(menu.connection_id, menu.database, window, cx);
@@ -284,7 +292,11 @@ impl NavicatMain {
                 );
             }
             SchemaMenuAction::SetDefault => {
-                self.show_message("设置默认 schema 入口已就绪", AppMessageKind::Info, cx);
+                self.show_message(
+                    tr("app.connection_action.default_schema_ready"),
+                    AppMessageKind::Info,
+                    cx,
+                );
             }
             SchemaMenuAction::Refresh => {
                 let schema_key = schema_tree_key(
@@ -314,7 +326,7 @@ impl NavicatMain {
             .iter()
             .find(|group| group.id == group_id)
             .map(|group| group.name.clone())
-            .unwrap_or_else(|| "新分组".to_string());
+            .unwrap_or_else(|| tr("app.connection_action.new_group").to_string());
         self.pending_rename_group = Some(PendingRenameGroup {
             group_id,
             name: name.clone(),
@@ -429,7 +441,7 @@ impl NavicatMain {
         let warning = self.disconnect_connection_warning(connection_id);
         if warning.unsaved_queries > 0 || warning.running_queries > 0 {
             self.show_message(
-                "该连接存在未保存或运行中的查询，请先保存/关闭或先断开连接再删除",
+                tr("app.connection_action.connection_busy_delete"),
                 AppMessageKind::Warning,
                 cx,
             );
@@ -533,7 +545,7 @@ impl NavicatMain {
         });
         if has_active_query {
             self.show_message(
-                "该数据库存在未保存或运行中的查询，请先保存/关闭相关查询再删除",
+                tr("app.connection_action.database_busy_delete"),
                 AppMessageKind::Warning,
                 cx,
             );
@@ -557,10 +569,18 @@ impl NavicatMain {
             return;
         };
         if self._delete_database_tasks.contains_key(&pending.connection_id.0) {
-            self.show_message("正在删除数据库", AppMessageKind::Warning, cx);
+            self.show_message(
+                tr("app.connection_action.deleting_database"),
+                AppMessageKind::Warning,
+                cx,
+            );
             return;
         }
-        self.show_message("正在删除数据库", AppMessageKind::Warning, cx);
+        self.show_message(
+            tr("app.connection_action.deleting_database"),
+            AppMessageKind::Warning,
+            cx,
+        );
         let mut controller = self.controller.clone();
         let connection_id = pending.connection_id;
         let database = pending.database.clone();
@@ -604,7 +624,8 @@ impl NavicatMain {
                             this.loading_databases
                                 .retain(|key| !key.starts_with(&format!("{}:", connection_id.0)));
                             this.show_message(
-                                format!("已删除数据库「{}」", database),
+                                tr("app.connection_action.database_deleted")
+                                    .replace("%{name}", &database),
                                 AppMessageKind::Success,
                                 cx,
                             );
@@ -614,7 +635,11 @@ impl NavicatMain {
                             this.show_message(error.message, AppMessageKind::Error, cx);
                         }
                         _ => {
-                            this.show_message("删除数据库没有返回结果", AppMessageKind::Error, cx);
+                            this.show_message(
+                                tr("app.connection_action.delete_database_no_result"),
+                                AppMessageKind::Error,
+                                cx,
+                            );
                         }
                     }
                     this._delete_database_tasks.remove(&connection_id.0);
@@ -785,7 +810,7 @@ impl NavicatMain {
             DatabaseKind::MySql | DatabaseKind::TiDb | DatabaseKind::Sqlite | DatabaseKind::Postgres
         ) {
             self.show_message(
-                "当前连接类型暂不支持新建数据库",
+                tr("app.connection_action.new_database_unsupported"),
                 AppMessageKind::Warning,
                 cx,
             );
@@ -862,11 +887,19 @@ impl NavicatMain {
         };
         let schema = schema.trim().to_string();
         if schema.is_empty() {
-            self.show_message("请输入 schema 名称", AppMessageKind::Warning, cx);
+            self.show_message(
+                tr("app.connection_action.enter_schema_name"),
+                AppMessageKind::Warning,
+                cx,
+            );
             return;
         }
         if self.create_schema_running {
-            self.show_message("正在新建 schema", AppMessageKind::Warning, cx);
+            self.show_message(
+                tr("app.connection_action.creating_schema"),
+                AppMessageKind::Warning,
+                cx,
+            );
             return;
         }
         self.create_schema_running = true;
@@ -901,7 +934,8 @@ impl NavicatMain {
                             // 成功后失效该库 schema 缓存并重取：清 loaded 标记，触发重载。
                             this.invalidate_database_schema_cache(&database_path_display, cx);
                             this.show_message(
-                                format!("schema `{schema_display}` 创建成功"),
+                                tr("app.connection_action.schema_created")
+                                    .replace("%{schema}", &schema_display),
                                 AppMessageKind::Success,
                                 cx,
                             );
@@ -909,13 +943,18 @@ impl NavicatMain {
                         }
                         AppEvent::Failed(error) => {
                             this.show_message(
-                                format!("新建 schema 失败：{}", error.message),
+                                tr("app.connection_action.create_schema_failed")
+                                    .replace("%{error}", &error.message),
                                 AppMessageKind::Error,
                                 cx,
                             );
                         }
                         _ => {
-                            this.show_message("新建 schema 失败", AppMessageKind::Error, cx);
+                            this.show_message(
+                                tr("app.connection_action.create_schema_failed_short"),
+                                AppMessageKind::Error,
+                                cx,
+                            );
                         }
                     }
                     cx.notify();
@@ -981,13 +1020,21 @@ impl NavicatMain {
             return;
         };
         if self.create_database_running.contains(&form.connection_id) {
-            self.show_message("正在新建数据库", AppMessageKind::Warning, cx);
+            self.show_message(
+                tr("app.connection_action.creating_database"),
+                AppMessageKind::Warning,
+                cx,
+            );
             return;
         }
 
         let database_name = form.database_name.trim().to_string();
         if database_name.is_empty() {
-            self.show_message("请输入数据库名称", AppMessageKind::Warning, cx);
+            self.show_message(
+                tr("app.connection_action.enter_database_name"),
+                AppMessageKind::Warning,
+                cx,
+            );
             return;
         }
 
@@ -999,7 +1046,11 @@ impl NavicatMain {
             .find(|connection| connection.config.id == form.connection_id)
             .map(|connection| connection.config.clone())
         else {
-            self.show_message("连接不存在", AppMessageKind::Error, cx);
+            self.show_message(
+                tr("app.connection_action.connection_missing"),
+                AppMessageKind::Error,
+                cx,
+            );
             return;
         };
         // MySQL/TiDB 需要 charset+collation；PG 需要 ENCODING+locale（复用 charset/collation 字段）。
@@ -1010,7 +1061,11 @@ impl NavicatMain {
         let charset = if requires_charset {
             let charset = form.charset.trim().to_string();
             if charset.is_empty() {
-                self.show_message("请输入编码/字符集", AppMessageKind::Warning, cx);
+                self.show_message(
+                    tr("app.connection_action.enter_charset"),
+                    AppMessageKind::Warning,
+                    cx,
+                );
                 return;
             }
             charset
@@ -1020,7 +1075,11 @@ impl NavicatMain {
         let collation = if requires_charset {
             let collation = form.collation.trim().to_string();
             if collation.is_empty() {
-                self.show_message("请输入排序规则/locale", AppMessageKind::Warning, cx);
+                self.show_message(
+                    tr("app.connection_action.enter_collation"),
+                    AppMessageKind::Warning,
+                    cx,
+                );
                 return;
             }
             collation
@@ -1052,7 +1111,11 @@ impl NavicatMain {
             path: sqlite_target.as_ref().map(|(_, path)| path.clone()),
         };
         self.create_database_running.insert(form.connection_id);
-        self.show_message("正在新建数据库", AppMessageKind::Success, cx);
+        self.show_message(
+            tr("app.connection_action.creating_database"),
+            AppMessageKind::Success,
+            cx,
+        );
 
         let mut controller = self.controller.clone();
         let connection_id = form.connection_id;
@@ -1077,7 +1140,8 @@ impl NavicatMain {
                             .save_connections(&this.controller.connection_configs());
                         this.pending_create_database = None;
                         this.show_message(
-                            format!("已创建数据库「{}」", database_name),
+                            tr("app.connection_action.database_created")
+                                .replace("%{name}", &database_name),
                             AppMessageKind::Success,
                             cx,
                         );
@@ -1108,19 +1172,19 @@ fn sqlite_create_database_target(
     database_name: &str,
 ) -> Result<(String, PathBuf), String> {
     let Endpoint::SqliteFile { path, read_only } = &config.endpoint else {
-        return Err("SQLite 连接缺少文件路径".to_string());
+        return Err(tr("app.connection_action.sqlite_missing_path").to_string());
     };
     if *read_only {
-        return Err("只读 SQLite 连接不支持新建数据库".to_string());
+        return Err(tr("app.connection_action.sqlite_read_only").to_string());
     }
     if path == Path::new(":memory:") {
-        return Err("内存 SQLite 连接不支持新建数据库".to_string());
+        return Err(tr("app.connection_action.sqlite_memory").to_string());
     }
 
     let name = database_name.trim();
     let name_path = Path::new(name);
     if name_path.components().count() != 1 || name_path.file_name().is_none() {
-        return Err("SQLite 数据库名称不能包含路径".to_string());
+        return Err(tr("app.connection_action.sqlite_name_path").to_string());
     }
 
     let mut file_name = PathBuf::from(name_path.file_name().unwrap());
@@ -1131,12 +1195,12 @@ fn sqlite_create_database_target(
         .file_stem()
         .map(|name| name.to_string_lossy().trim().to_string())
         .filter(|name| !name.is_empty())
-        .ok_or_else(|| "SQLite 数据库名称不能为空".to_string())?;
+        .ok_or_else(|| tr("app.connection_action.sqlite_name_empty").to_string())?;
     if database.eq_ignore_ascii_case("main") || database.eq_ignore_ascii_case("temp") {
-        return Err("SQLite 数据库名称不能是 main 或 temp".to_string());
+        return Err(tr("app.connection_action.sqlite_name_reserved").to_string());
     }
     if sqlite_attached_database_path(config, &database).is_some() {
-        return Err("SQLite 数据库名称已存在".to_string());
+        return Err(tr("app.connection_action.sqlite_name_exists").to_string());
     }
     Ok((
         database,

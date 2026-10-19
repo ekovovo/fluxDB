@@ -121,7 +121,8 @@ fn data_filter_menu_label(label: &str, highlight_query: Option<&str>, colors: Ui
     content
 }
 
-fn data_filter_menu_empty_item(label: &'static str, colors: UiColors) -> Div {
+fn data_filter_menu_empty_item(label: impl Into<SharedString>, colors: UiColors) -> Div {
+    let label = label.into();
     div()
         .h(px(28.))
         .px_3()
@@ -189,7 +190,12 @@ fn data_filter_value_item(label: String, checked: bool, colors: UiColors) -> Div
         .child(label)
 }
 
-fn data_filter_dialog_button(label: &'static str, primary: bool, colors: UiColors) -> Div {
+fn data_filter_dialog_button(
+    label: impl Into<SharedString>,
+    primary: bool,
+    colors: UiColors,
+) -> Div {
+    let label = label.into();
     div()
         .h(px(24.))
         .w(px(72.))

@@ -36,11 +36,11 @@ fn field_row(
         tip.push_str(" · —");
     }
     if col.primary && col.foreign_key {
-        tip.push_str(" · 主键、外键");
+        tip.push_str(&tr("app.er_node.primary_foreign_keys"));
     } else if col.primary {
-        tip.push_str(" · 主键");
+        tip.push_str(&tr("app.er_node.primary_key"));
     } else if col.foreign_key {
-        tip.push_str(" · 外键");
+        tip.push_str(&tr("app.er_node.foreign_key"));
     }
     let mut row = div()
         .h(px(NODE_FIELD_ROW))
@@ -338,7 +338,9 @@ fn node_view(
                 .cursor_pointer()
                 .hover(|s| s.bg(colors.hover))
                 .id(format!("er-expand-{}-{}", tab_id.0, name.clone()))
-                .tooltip(move |window, cx| Tooltip::new("展开关联").build(window, cx))
+                .tooltip(move |window, cx| {
+                    Tooltip::new(tr("app.er_node.expand")).build(window, cx)
+                })
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, _, _, cx| {
@@ -385,7 +387,13 @@ fn node_view(
                     .id(format!("er-edgecount-{}-{}", tab_id.0, name.clone()))
                     .text_size(px(10.))
                     .text_color(colors.muted)
-                    .tooltip(move |window, cx| Tooltip::new(format!("{edge_n} 个关联字段")).build(window, cx))
+                    .tooltip(move |window, cx| {
+                        Tooltip::new(
+                            tr("app.er_node.edge_count")
+                                .replace("%{count}", &edge_n.to_string()),
+                        )
+                        .build(window, cx)
+                    })
                     .child(app_icon(AppIcon::Link, 10., colors.muted))
                     .child(format!("{edge_n}")),
             );
@@ -410,7 +418,7 @@ fn node_view(
                         .items_center()
                         .text_size(px(11.))
                         .text_color(colors.muted)
-                        .child("暂无可见字段"),
+                        .child(tr("app.er_node.no_visible_columns")),
                 );
             } else {
                 let (area, is_long) = er_field_area(tab_id, meta, nv, highlight, card_color, colors, cx);
@@ -428,7 +436,12 @@ fn node_view(
                             .border_color(colors.border_soft)
                             .text_size(px(10.))
                             .text_color(colors.muted)
-                            .child(format!("{}–{} / {} 个字段", row0 + 1, row1 + 1, n)),
+                            .child(
+                                tr("app.er_node.field_range")
+                                    .replace("%{start}", &(row0 + 1).to_string())
+                                    .replace("%{end}", &(row1 + 1).to_string())
+                                    .replace("%{total}", &n.to_string()),
+                            ),
                     );
                 }
             }
@@ -449,7 +462,11 @@ fn node_view(
                     .px(px(10.))
                     .text_size(px(11.))
                     .text_color(colors.muted)
-                    .child(if meta.status == ErLoadStatus::Loading { "字段加载中…" } else { "待读取…" }),
+                    .child(if meta.status == ErLoadStatus::Loading {
+                        tr("app.er_node.loading_columns")
+                    } else {
+                        tr("app.er_node.pending_read")
+                    }),
             );
         }
         ErLoadStatus::Failed => {
@@ -462,7 +479,7 @@ fn node_view(
                     .gap(px(8.))
                     .text_size(px(11.))
                     .text_color(rgb(0xef4444))
-                    .child("字段加载失败")
+                    .child(tr("app.er_node.load_failed"))
                     .child(
                         div()
                             .px(px(8.))
@@ -492,7 +509,7 @@ fn node_view(
                                     cx.notify();
                                 }),
                             )
-                            .child("重试"),
+                            .child(tr("app.common.retry")),
                     ),
             );
         }

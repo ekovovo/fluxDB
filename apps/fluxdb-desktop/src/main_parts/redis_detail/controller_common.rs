@@ -234,7 +234,7 @@ impl NavicatMain {
             self.redis_key_name_display(tab_id, &detail)
         };
         if new_key.trim().is_empty() {
-            self.show_message("键名称不能为空", AppMessageKind::Warning, cx);
+            self.show_message(tr("app.redis.key.error.name_required").as_ref(), AppMessageKind::Warning, cx);
             return;
         }
         let ttl_draft = if self.redis_key_meta_editing == Some(RedisKeyMetaField::Ttl) {
@@ -264,7 +264,7 @@ impl NavicatMain {
             let loaded_all = state.map(|state| state.loaded_all).unwrap_or(false);
             if !loaded_all {
                 // 未完整加载：禁止以截断内容覆盖完整 JSON。
-                self.show_message("请先「加载全部」再保存 JSON", AppMessageKind::Warning, cx);
+                self.show_message(tr("app.redis.key.error.load_all_json").as_ref(), AppMessageKind::Warning, cx);
                 return;
             }
             let base = state
@@ -292,11 +292,11 @@ impl NavicatMain {
             let current_members = current_members.into_iter().collect::<BTreeSet<_>>();
             let rows = self.redis_set_member_rows_snapshot(cx);
             if rows.is_empty() {
-                self.show_message("至少添加一个 member", AppMessageKind::Warning, cx);
+                self.show_message(tr("app.redis.key.error.members_required").as_ref(), AppMessageKind::Warning, cx);
                 return;
             }
             if rows.iter().any(|member| member.trim().is_empty()) {
-                self.show_message("Member 不能为空", AppMessageKind::Warning, cx);
+                self.show_message(tr("app.redis.key.error.member_required").as_ref(), AppMessageKind::Warning, cx);
                 return;
             }
             let desired_members = rows.iter().cloned().collect::<BTreeSet<_>>();
@@ -335,7 +335,7 @@ impl NavicatMain {
         // 键名与值都在这里校验（制表符 / 换行 / 回车放行，不影响多行文本）。
         if let Some(ch) = redis_value_illegal_control_char(&new_key) {
             self.show_message(
-                format!("键名称包含非法控制字符（U+{:04X}），请删除后再保存", ch as u32),
+                tr("app.redis.key.error.control_char_name").replace("%{code}", &format!("{:04X}", ch as u32)),
                 AppMessageKind::Warning,
                 cx,
             );
@@ -344,7 +344,7 @@ impl NavicatMain {
         if let Some(v) = &value {
             if let Some(ch) = redis_value_illegal_control_char(v) {
                 self.show_message(
-                    format!("值包含非法控制字符（U+{:04X}），请删除后再保存", ch as u32),
+                    tr("app.redis.key.error.control_char_value").replace("%{code}", &format!("{:04X}", ch as u32)),
                     AppMessageKind::Warning,
                     cx,
                 );
@@ -352,13 +352,13 @@ impl NavicatMain {
             }
         }
         if new_key == detail.key && ttl.is_none() && value.is_none() {
-            self.show_message("当前 Key 没有修改", AppMessageKind::Warning, cx);
+            self.show_message(tr("app.redis.key.error.no_changes").as_ref(), AppMessageKind::Warning, cx);
             return;
         }
 
         let task_id = redis_key_value_apply_task_id(tab_id);
         if self._redis_key_value_apply_tasks.contains_key(&task_id) {
-            self.show_message("正在保存当前 Key", AppMessageKind::Warning, cx);
+            self.show_message(tr("app.redis.key.error.saving").as_ref(), AppMessageKind::Warning, cx);
             return;
         }
 
@@ -378,8 +378,8 @@ impl NavicatMain {
                         AppEvent::DataLoaded(_, page) => {
                             page.rows.into_iter().next().ok_or_else(|| {
                                 fluxdb_core::UserFacingError {
-                                    title: "保存失败".to_string(),
-                                    message: "Redis Key 保存后没有返回数据".to_string(),
+                                    title: tr("app.redis.error.save_failed").to_string(),
+                                    message: tr("app.redis.key.error.save_no_data").to_string(),
                                     detail: None,
                                     retryable: true,
                                 }
@@ -387,8 +387,8 @@ impl NavicatMain {
                         }
                         AppEvent::Failed(error) => Err(error),
                         _ => Err(fluxdb_core::UserFacingError {
-                            title: "保存失败".to_string(),
-                            message: "Redis Key 保存没有返回结果".to_string(),
+                            title: tr("app.redis.error.save_failed").to_string(),
+                            message: tr("app.redis.key.error.save_no_result").to_string(),
                             detail: None,
                             retryable: true,
                         }),
@@ -417,7 +417,7 @@ impl NavicatMain {
                             this.redis_string_editing = None;
                             // 值已落库，缓存失效：下次打开详情按新值重新加载 preview/完整值。
                             this.redis_string_values.remove(&(tab_id, key.clone()));
-                            this.show_message("Key 已保存", AppMessageKind::Success, cx);
+                            this.show_message(tr("app.redis.key.toast.saved").as_ref(), AppMessageKind::Success, cx);
                         }
                         AppEvent::Failed(error) => {
                             this.show_message(error.message, AppMessageKind::Error, cx);
@@ -469,8 +469,8 @@ impl NavicatMain {
                         AppEvent::DataLoaded(_, page) => {
                             page.rows.into_iter().next().ok_or_else(|| {
                                 fluxdb_core::UserFacingError {
-                                    title: "刷新失败".to_string(),
-                                    message: "Redis Key 没有返回数据".to_string(),
+                                    title: tr("app.query.error.refresh").to_string(),
+                                    message: tr("app.redis.key.error.refresh_no_data").to_string(),
                                     detail: None,
                                     retryable: true,
                                 }
@@ -478,8 +478,8 @@ impl NavicatMain {
                         }
                         AppEvent::Failed(error) => Err(error),
                         _ => Err(fluxdb_core::UserFacingError {
-                            title: "刷新失败".to_string(),
-                            message: "Redis Key 刷新没有返回结果".to_string(),
+                            title: tr("app.query.error.refresh").to_string(),
+                            message: tr("app.redis.key.error.refresh_no_result").to_string(),
                             detail: None,
                             retryable: true,
                         }),
@@ -589,7 +589,7 @@ fn redis_json_save_prepare(
     indent_size: usize,
 ) -> Result<Option<String>, String> {
     if serde_json::from_str::<serde_json::Value>(&source).is_err() {
-        return Err("JSON 格式错误，请修正后再保存".to_string());
+        return Err(tr("app.redis.key.error.json_invalid").to_string());
     }
     if !dirty || source == base {
         return Ok(None);

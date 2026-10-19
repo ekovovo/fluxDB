@@ -91,7 +91,7 @@ fn field_filter_popover_layer(
                         .text_size(px(14.))
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .text_color(colors.text)
-                        .child("字段筛选"),
+                        .child(tr("app.filter.field_filter")),
                 )
                 .child(
                     div()
@@ -134,14 +134,14 @@ fn field_filter_popover_layer(
                     div()
                         .text_size(px(13.))
                         .text_color(colors.muted)
-                        .child("至少保留一列可见。"),
+                        .child(tr("app.filter.keep_one_column")),
                 )
                 .child(
                     div()
                         .flex()
                         .items_center()
                         .gap_4()
-                        .child(field_filter_footer_action("反选", colors).on_mouse_down(
+                        .child(field_filter_footer_action(tr("app.filter.invert"), colors).on_mouse_down(
                             MouseButton::Left,
                             cx.listener({
                                 let all_fields = all_fields_vec.clone();
@@ -156,7 +156,7 @@ fn field_filter_popover_layer(
                             }),
                         ))
                         .child(
-                            field_filter_footer_action("显示全部", colors).on_mouse_down(
+                            field_filter_footer_action(tr("app.filter.show_all"), colors).on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(move |this, _, _, cx| {
                                     this.show_all_table_fields(tab_id, all_fields_vec.clone(), cx);
@@ -225,7 +225,8 @@ fn field_filter_field_row(label: String, checked: bool, search: &str, colors: Ui
         )
 }
 
-fn field_filter_footer_action(label: &'static str, colors: UiColors) -> Div {
+fn field_filter_footer_action(label: impl Into<SharedString>, colors: UiColors) -> Div {
+    let label: SharedString = label.into();
     div()
         .h(px(26.))
         .px_1()

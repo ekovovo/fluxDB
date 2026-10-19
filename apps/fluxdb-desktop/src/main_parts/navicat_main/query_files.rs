@@ -29,7 +29,7 @@ impl NavicatMain {
             files: true,
             directories: false,
             multiple: false,
-            prompt: Some("打开本地 SQL 文件（新页签）".into()),
+            prompt: Some(tr("app.query.picker.open_sql").into()),
         });
         self.query_files.task=Some(cx.spawn(async move |view,cx|{
             let selected=picker.await;
@@ -41,7 +41,7 @@ impl NavicatMain {
                     None=>None,
                 },
                 Ok(Ok(None))=>None,
-                _=>Some(Err(fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal,"文件选择失败"))),
+                _=>Some(Err(fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal,tr("app.query.error.file_picker").to_string()))),
             };
             let _=view.update(cx,|this,cx|{
                 this.query_files.loading=false;
@@ -65,7 +65,7 @@ impl NavicatMain {
                                 }
                                 this.query_save_targets.insert(id,QuerySaveTarget::Local(path.clone()));
                                 this.mark_query_saved(id,local_query_title(&path),QueryOrigin::File{path},cx);
-                                this.show_message("SQL 已打开到新页签；尚未执行",AppMessageKind::Success,cx);
+                                this.show_message(tr("app.query.toast.opened_new_tab").as_ref(),AppMessageKind::Success,cx);
                             }
                         }
                     }

@@ -174,10 +174,10 @@ impl NavicatMain {
                 self.redis_add_key_json_input.update(cx, |input, cx| {
                     input.set_value(formatted, window, cx);
                 });
-                self.show_message("JSON 已格式化", AppMessageKind::Success, cx);
+                self.show_message(tr("app.redis.add_key.toast.json_formatted").as_ref(), AppMessageKind::Success, cx);
             }
             Err(_) => {
-                self.show_message("JSON 内容不合法，无法格式化", AppMessageKind::Warning, cx);
+                self.show_message(tr("app.redis.add_key.error.json_invalid_format").as_ref(), AppMessageKind::Warning, cx);
             }
         }
         cx.notify();
@@ -247,7 +247,7 @@ impl NavicatMain {
         let kind = self.redis_add_key_kind(cx);
         let name = self.redis_add_key_name_input.read(cx).value().trim().to_string();
         if name.is_empty() {
-            self.show_message("Redis Key 名称不能为空", AppMessageKind::Warning, cx);
+            self.show_message(tr("app.redis.add_key.error.name_required").as_ref(), AppMessageKind::Warning, cx);
             return;
         }
         let ttl = self.redis_add_key_ttl_input.read(cx).value().to_string();
@@ -261,7 +261,7 @@ impl NavicatMain {
             RedisAddKeyKind::Json => {
                 let value = self.redis_add_key_json_input.read(cx).value().trim().to_string();
                 if value.is_empty() || serde_json::from_str::<serde_json::Value>(&value).is_err() {
-                    self.show_message("JSON 内容不合法，请输入合法的 JSON", AppMessageKind::Warning, cx);
+                    self.show_message(tr("app.redis.add_key.error.json_invalid").as_ref(), AppMessageKind::Warning, cx);
                     return;
                 }
                 (value, Vec::new(), None, None, None)
@@ -269,11 +269,11 @@ impl NavicatMain {
             RedisAddKeyKind::Hash => {
                 let rows = self.redis_add_key_hash_rows_snapshot(&self.redis_add_key_hash_rows, cx);
                 if rows.is_empty() {
-                    self.show_message("新建 Hash 至少需要一个字段", AppMessageKind::Warning, cx);
+                    self.show_message(tr("app.redis.add_key.error.hash_fields").as_ref(), AppMessageKind::Warning, cx);
                     return;
                 }
                 if rows.iter().any(|(field, _, _)| field.is_empty()) {
-                    self.show_message("字段名不能为空", AppMessageKind::Warning, cx);
+                    self.show_message(tr("app.redis.add_key.error.field_required").as_ref(), AppMessageKind::Warning, cx);
                     return;
                 }
                 // 字段级 TTL：留空不过期，非空必须为 >0 秒（文案对齐 Hash 详情「新增字段」抽屉）。
@@ -281,7 +281,7 @@ impl NavicatMain {
                     !ttl.is_empty() && ttl.parse::<u64>().ok().filter(|secs| *secs > 0).is_none()
                 }) {
                     self.show_message(
-                        "Redis TTL 必须是秒数，且大于 0 秒或留空",
+                        tr("app.redis.add_key.error.ttl").as_ref(),
                         AppMessageKind::Warning,
                         cx,
                     );
@@ -312,23 +312,27 @@ impl NavicatMain {
                 let pairs = self.redis_add_key_pair_rows_snapshot(rows, cx);
                 if pairs.is_empty() {
                     let what = format!("{:?}", kind);
-                    self.show_message(format!("新建 {what} 至少需要一个字段"), AppMessageKind::Warning, cx);
+                    self.show_message(
+                        tr("app.redis.add_key.error.collection_fields").replace("%{what}", &what),
+                        AppMessageKind::Warning,
+                        cx,
+                    );
                     return;
                 }
                 if pairs.iter().any(|(name, _)| name.is_empty()) {
-                    self.show_message("字段名/成员名不能为空", AppMessageKind::Warning, cx);
+                    self.show_message(tr("app.redis.add_key.error.field_or_member_required").as_ref(), AppMessageKind::Warning, cx);
                     return;
                 }
                 if kind == RedisAddKeyKind::ZSet
                     && pairs.iter().any(|(_, score)| score.trim().parse::<f64>().is_err())
                 {
-                    self.show_message("ZSet 的 score 必须是数字", AppMessageKind::Warning, cx);
+                    self.show_message(tr("app.redis.add_key.error.zset_score").as_ref(), AppMessageKind::Warning, cx);
                     return;
                 }
                 let stream_entry_id = if kind == RedisAddKeyKind::Stream {
                     let id = self.redis_add_key_stream_id_input.read(cx).value().trim().to_string();
                     if !id.is_empty() && id != "*" && !is_valid_stream_entry_id(&id) {
-                        self.show_message("Stream entry id 需为 `毫秒-序号` 或留空", AppMessageKind::Warning, cx);
+                        self.show_message(tr("app.redis.add_key.error.stream_id").as_ref(), AppMessageKind::Warning, cx);
                         return;
                     }
                     Some(id)
@@ -340,7 +344,7 @@ impl NavicatMain {
             RedisAddKeyKind::List => {
                 let members = self.redis_add_key_single_rows_snapshot(&self.redis_add_key_list_rows, cx);
                 if members.is_empty() {
-                    self.show_message("新建 List 至少需要一个元素", AppMessageKind::Warning, cx);
+                    self.show_message(tr("app.redis.add_key.error.list_items").as_ref(), AppMessageKind::Warning, cx);
                     return;
                 }
                 (
@@ -354,7 +358,7 @@ impl NavicatMain {
             RedisAddKeyKind::Set => {
                 let members = self.redis_add_key_single_rows_snapshot(&self.redis_add_key_set_rows, cx);
                 if members.is_empty() {
-                    self.show_message("新建 Set 至少需要一个成员", AppMessageKind::Warning, cx);
+                    self.show_message(tr("app.redis.add_key.error.set_members").as_ref(), AppMessageKind::Warning, cx);
                     return;
                 }
                 (members.join("\n"), Vec::new(), None, None, None)
@@ -400,8 +404,8 @@ impl NavicatMain {
                             AppEvent::RedisKeyCreated { object, key, .. } => Ok((object, key)),
                             AppEvent::Failed(error) => Err(error),
                             _ => Err(fluxdb_core::UserFacingError {
-                                title: "新建失败".to_string(),
-                                message: "新建 Key 没有返回结果".to_string(),
+                                title: tr("app.redis.add_key.error.create").to_string(),
+                                message: tr("app.redis.add_key.error.create_no_result").to_string(),
                                 detail: None,
                                 retryable: true,
                             }),
@@ -430,7 +434,7 @@ impl NavicatMain {
                             };
                             this.dispatch(AppCommand::OpenDataEditor(key_path), cx);
                             this.show_message(
-                                format!("已创建 Key「{}」", new_key),
+                                tr("app.redis.add_key.toast.created").replace("%{key}", &new_key),
                                 AppMessageKind::Info,
                                 cx,
                             );

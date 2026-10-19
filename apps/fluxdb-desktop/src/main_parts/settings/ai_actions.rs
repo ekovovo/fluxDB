@@ -85,9 +85,9 @@ impl NavicatMain {
         match event {
             AppEvent::AiToolEnabled { .. } => {
                 let message = if enabled {
-                    format!("已启用工具 {tool_id}")
+                    tr("app.ai.tools.enabled_message").replace("%{tool}", &tool_id)
                 } else {
-                    format!("已全局关闭工具 {tool_id}，各 Agent 也不再允许使用")
+                    tr("app.ai.tools.disabled_message").replace("%{tool}", &tool_id)
                 };
                 self.show_message(message, AppMessageKind::Success, cx);
             }
@@ -162,22 +162,26 @@ impl NavicatMain {
                             if let Some(message) = status.strip_prefix("failed:") {
                                 // 失败详情只在 Alert 里出现，不落在模型行上。
                                 this.show_message(
-                                    format!("连接失败：{message}"),
+                                    format!("{}: {message}", tr("app.ai.connection.failed")),
                                     AppMessageKind::Error,
                                     cx,
                                 );
                             } else {
                                 match status.as_str() {
                                     "ok" => {
-                                        this.show_message("连接成功", AppMessageKind::Success, cx)
+                                        this.show_message(
+                                            tr("app.ai.connection.ok"),
+                                            AppMessageKind::Success,
+                                            cx,
+                                        )
                                     }
                                     "missing_key" => this.show_message(
-                                        "缺少 API Key，无法测试连接",
+                                        tr("app.ai.error.missing_api_key"),
                                         AppMessageKind::Warning,
                                         cx,
                                     ),
                                     "unsupported" => this.show_message(
-                                        "该 Provider 不支持测试连接",
+                                        tr("app.ai.error.provider_test_unsupported"),
                                         AppMessageKind::Warning,
                                         cx,
                                     ),
@@ -215,7 +219,11 @@ impl NavicatMain {
                 .cloned()
         });
         if id.is_some() && existing.is_none() {
-            self.show_message("Agent 不存在，可能已被删除", AppMessageKind::Warning, cx);
+            self.show_message(
+                tr("app.ai.agents.not_found"),
+                AppMessageKind::Warning,
+                cx,
+            );
             return;
         }
         let inputs = AiAgentEditorInputs::new(window, cx);
@@ -309,7 +317,7 @@ impl NavicatMain {
         };
         let display_name = ai_input_text(&editor.inputs.display_name, cx);
         if display_name.is_empty() {
-            return self.set_ai_agent_editor_error("名称不能为空", cx);
+            return self.set_ai_agent_editor_error(tr("app.ai.agents.name_required"), cx);
         }
         // 全选时保存空列表（内核默认全集不限制）；部分选中则保存白名单。
         let all_tools: Vec<String> = AI_AGENT_TOOL_CATALOG
@@ -329,14 +337,22 @@ impl NavicatMain {
         };
         let percent = match ai_input_text(&editor.inputs.compression_percent, cx).parse::<u8>() {
             Ok(p) if (10..=95).contains(&p) => p,
-            _ => return self.set_ai_agent_editor_error("压缩触发比例必须在 10–95% 之间", cx),
+            _ => {
+                return self.set_ai_agent_editor_error(
+                    tr("app.ai.agents.compression_range"),
+                    cx,
+                );
+            }
         };
         // 不设上限，只要求为正整数。
         let max_iterations =
             match ai_input_text(&editor.inputs.max_iterations, cx).parse::<i64>() {
                 Ok(v) if v >= 1 => v,
                 _ => {
-                    return self.set_ai_agent_editor_error("最大模型迭代次数必须不小于 1", cx);
+                    return self.set_ai_agent_editor_error(
+                        tr("app.ai.agents.max_iterations_invalid"),
+                        cx,
+                    );
                 }
             };
         let input = fluxdb_app::AiAgentSaveInput {
@@ -364,7 +380,7 @@ impl NavicatMain {
                     state.expected_revision = revision;
                     state.error = None;
                 }
-                self.show_message("Agent 已保存", AppMessageKind::Success, cx);
+                self.show_message(tr("app.ai.agents.saved"), AppMessageKind::Success, cx);
             }
             // CAS 冲突等失败：保留草稿，错误内联可见（T014 验收）。
             AppEvent::AiSettingsError(message) => {
@@ -399,7 +415,11 @@ impl NavicatMain {
                 .cloned()
         });
         if id.is_some() && existing.is_none() {
-            self.show_message("模型不存在，可能已被删除", AppMessageKind::Warning, cx);
+            self.show_message(
+                tr("app.ai.models.not_found"),
+                AppMessageKind::Warning,
+                cx,
+            );
             return;
         }
         let mut dialog = AiModelDialog::new(window, cx);
@@ -419,7 +439,7 @@ impl NavicatMain {
             fill_ai_model_inputs(&mut dialog, model, window, cx);
             // 编辑态把已存 Key 预填进掩码输入框（显示黑点，点眼睛看真实值）。
             // 明文只活在这个 InputState 里：不进事件、不进快照、不落日志。
-            if model.credential_status == "已配置" {
+            if model.credential_status == fluxdb_app::AiCredentialStatus::Configured {
                 if let Ok(secret) = self.controller.reveal_ai_model_secret(&model.id) {
                     dialog.original_api_key = Some(secret.clone());
                     dialog.inputs.api_key.update(cx, |state, cx| {
@@ -519,7 +539,10 @@ impl NavicatMain {
         let model = read(&dialog.inputs.model_key);
         // 校验失败 → 弹框内联提示（不关框、保留已填草稿）。
         if display_name.is_empty() || model.is_empty() {
-            return self.set_ai_model_dialog_error("请填写显示名称与模型标识", cx);
+            return self.set_ai_model_dialog_error(
+                tr("app.ai.model_dialog.name_and_id_required"),
+                cx,
+            );
         }
         let context_window = match ai_parse_token_count(
             &ai_input_text(&dialog.inputs.context_window, cx),
@@ -703,16 +726,24 @@ impl NavicatMain {
         window.open_dialog(cx, move |dialog, _, _| {
             let view = view.clone();
             let id = id.clone();
-            dialog.title("删除模型").close_button(true).overlay_closable(true).keyboard(true)
+            dialog
+                .title(tr("app.ai.models.delete_title"))
+                .close_button(true)
+                .overlay_closable(true)
+                .keyboard(true)
                 .child(div()
                     .text_size(px(13.))
-                    .child(format!("确认删除「{name}」？模型配置及保存的 API Key 将一并删除，无法撤销。被默认设置、Agent 或历史会话引用的模型不能删除。")))
+                    .child(format!(
+                        "{} {name}? {}",
+                        tr("app.ai.models.delete_confirm_prefix"),
+                        tr("app.ai.models.delete_confirm_detail")
+                    )))
                 .footer(div().flex().justify_end().gap_2()
                     .child(Button::new("ai-delete-cancel").debug_selector(|| "ai-delete-cancel".into())
-                        .cursor_pointer().child("取消")
+                        .cursor_pointer().child(tr("app.common.cancel"))
                         .on_click(|_, window, cx| window.close_dialog(cx)))
                     .child(Button::new("ai-delete-confirm").debug_selector(|| "ai-delete-confirm".into())
-                        .danger().cursor_pointer().child("删除")
+                        .danger().cursor_pointer().child(tr("app.ai.models.delete_action"))
                         .on_click(|_, window, cx| window.dispatch_action(Box::new(gpui_component::dialog::Confirm { secondary: false }), cx))))
                 .on_ok(move |_, _, cx| {
                     let _ = view.update(cx, |this, cx| this.start_ai_model_delete(id.clone(), revision, cx));
@@ -747,14 +778,18 @@ impl NavicatMain {
                     let result = match event {
                         AppEvent::AiModelDeleted { .. } => Ok(()),
                         AppEvent::AiSettingsError(message) => Err(message),
-                        _ => Err("删除模型失败，请刷新后重试".into()),
+                        _ => Err(tr("app.ai.models.delete_failed").to_string()),
                     };
                     match this
                         .controller
                         .dispatch(AppCommand::CompleteAiModelDelete { id, result })
                     {
                         AppEvent::AiModelDeleted { .. } => {
-                            this.show_message("模型已删除", AppMessageKind::Success, cx)
+                            this.show_message(
+                                tr("app.ai.models.deleted"),
+                                AppMessageKind::Success,
+                                cx,
+                            )
                         }
                         AppEvent::AiSettingsError(message) => {
                             this.show_message(message, AppMessageKind::Error, cx)

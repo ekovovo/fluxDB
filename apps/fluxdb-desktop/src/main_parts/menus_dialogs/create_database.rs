@@ -132,21 +132,29 @@ fn create_database_modal(
                         .flex_col()
                         .gap_3()
                         .child(create_database_text_field(
-                            "数据库名称",
+                            tr("app.database.field.name"),
                             name_input,
                             running,
                             colors,
                         ))
                         .when(needs_charset, |this| {
                             this.child(create_database_select_field(
-                                if is_postgres { "编码" } else { "字符集" },
+                                if is_postgres {
+                                    tr("app.database.field.encoding")
+                                } else {
+                                    tr("app.database.field.charset")
+                                },
                                 charset_select,
                                 if is_postgres { "UTF8" } else { "utf8mb4" },
                                 running,
                                 colors,
                             ))
                             .child(create_database_select_field(
-                                if is_postgres { "Locale" } else { "排序规则" },
+                                if is_postgres {
+                                    tr("app.database.field.locale")
+                                } else {
+                                    tr("app.database.field.collation")
+                                },
                                 collation_select,
                                 if is_postgres { "C" } else { "utf8mb4_unicode_ci" },
                                 running,
@@ -154,8 +162,8 @@ fn create_database_modal(
                             ))
                         })
                         .when(is_postgres, |this| {
-                            this.child(create_database_text_field("Owner（可选）", owner_input, running, colors))
-                                .child(create_database_text_field("模板（可选）", template_input, running, colors))
+                            this.child(create_database_text_field(tr("app.database.field.owner"), owner_input, running, colors))
+                                .child(create_database_text_field(tr("app.database.field.template"), template_input, running, colors))
                         }),
                 )
                 .child(div().h(px(1.)).bg(colors.border_soft))
@@ -169,7 +177,7 @@ fn create_database_modal(
                         .gap_2()
                         .child(
                             Button::new("create-database-cancel")
-                                .label("取消")
+                                .label(tr("app.common.cancel"))
                                 .w(px(78.))
                                 .disabled(running)
                                 .on_click(cx.listener(|this, _, _, cx| {
@@ -179,7 +187,11 @@ fn create_database_modal(
                         )
                         .child(
                             Button::new("create-database-confirm")
-                                .label(if running { "执行中" } else { "执行" })
+                                .label(if running {
+                                    tr("app.common.running")
+                                } else {
+                                    tr("app.common.execute")
+                                })
                                 .primary()
                                 .w(px(78.))
                                 .disabled(!can_submit)
@@ -210,7 +222,7 @@ fn create_database_header(colors: UiColors, cx: &mut Context<NavicatMain>) -> im
                     div()
                         .text_size(px(17.))
                         .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .child("新建数据库"),
+                        .child(tr("app.database.create.title")),
                 ),
         )
         .child(
@@ -295,7 +307,7 @@ fn create_schema_modal(
                         .flex_col()
                         .gap_3()
                         .child(create_database_text_field(
-                            "schema 名称",
+                            tr("app.schema.field.name"),
                             name_input,
                             running,
                             colors,
@@ -312,7 +324,7 @@ fn create_schema_modal(
                         .gap_2()
                         .child(
                             Button::new("create-schema-cancel")
-                                .label("取消")
+                                .label(tr("app.common.cancel"))
                                 .w(px(78.))
                                 .disabled(running)
                                 .on_click(cx.listener(|this, _, _, cx| {
@@ -322,7 +334,11 @@ fn create_schema_modal(
                         )
                         .child(
                             Button::new("create-schema-confirm")
-                                .label(if running { "执行中" } else { "执行" })
+                                .label(if running {
+                                    tr("app.common.running")
+                                } else {
+                                    tr("app.common.execute")
+                                })
                                 .primary()
                                 .w(px(78.))
                                 .disabled(!can_submit)
@@ -353,7 +369,7 @@ fn create_schema_header(database_name: String, colors: UiColors, cx: &mut Contex
                     div()
                         .text_size(px(17.))
                         .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .child(format!("新建 schema · {database_name}")),
+                        .child(tr("app.schema.create.title").replace("%{database}", &database_name)),
                 ),
         )
         .child(
@@ -377,11 +393,12 @@ fn create_schema_header(database_name: String, colors: UiColors, cx: &mut Contex
 }
 
 fn create_database_text_field(
-    label: &'static str,
+    label: impl Into<SharedString>,
     input: Entity<InputState>,
     running: bool,
     colors: UiColors,
 ) -> impl IntoElement {
+    let label: SharedString = label.into();
     div()
         .flex()
         .flex_col()
@@ -397,12 +414,13 @@ fn create_database_text_field(
 }
 
 fn create_database_select_field(
-    label: &'static str,
+    label: impl Into<SharedString>,
     select: Entity<SelectState<SearchableVec<String>>>,
     placeholder: &'static str,
     running: bool,
     colors: UiColors,
 ) -> impl IntoElement {
+    let label: SharedString = label.into();
     div()
         .flex()
         .flex_col()

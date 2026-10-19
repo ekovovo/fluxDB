@@ -85,7 +85,7 @@ fn redis_add_key_drawer(
                             div()
                                 .text_size(px(17.))
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
-                                .child("新增 Key"),
+                                .child(tr("app.redis.add_key.title")),
                         )
                         .child(redis_add_key_close_button(colors, cx)),
                 )
@@ -136,7 +136,7 @@ fn redis_add_key_drawer(
                         .justify_end()
                         .gap_2()
                         .child(
-                            redis_detail_action_button("取消", false, !applying, colors).on_mouse_down(
+                            redis_detail_action_button(tr("app.redis.cancel"), false, !applying, colors).on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(|this, _, _, cx| {
                                     this.cancel_redis_add_key_drawer(cx);
@@ -145,7 +145,7 @@ fn redis_add_key_drawer(
                             ),
                         )
                         .child(
-                            redis_detail_action_button("新建", true, !applying, colors).on_mouse_down(
+                            redis_detail_action_button(tr("app.common.create"), true, !applying, colors).on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(move |this, _, window, cx| {
                                     if !applying {

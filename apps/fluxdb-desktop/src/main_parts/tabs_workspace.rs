@@ -522,7 +522,9 @@ fn connection_name(state: &AppState, connection_id: ConnectionId) -> String {
         .iter()
         .find(|connection| connection.config.id == connection_id)
         .map(|connection| connection.config.name.clone())
-        .unwrap_or_else(|| format!("连接 {}", connection_id.0))
+        .unwrap_or_else(|| {
+            tr("app.connection.fallback").replace("%{id}", &connection_id.0.to_string())
+        })
 }
 
 fn connection_default_database(config: &ConnectionConfig) -> Option<String> {
@@ -774,7 +776,7 @@ fn tab_switcher_popup(
                 .items_center()
                 .text_size(px(13.))
                 .text_color(colors.muted)
-                .child("没有匹配的标签页"),
+                .child(tr("app.tabs.no_match")),
         );
     } else {
         for entry in entries {
@@ -1008,7 +1010,7 @@ fn database_tab_close_button(
         .justify_center()
         .text_color(colors.muted)
         .hover(move |style| style.bg(colors.hover).text_color(colors.text))
-        .tooltip(|window, cx| Tooltip::new("关闭").build(window, cx))
+        .tooltip(|window, cx| Tooltip::new(tr("app.common.close")).build(window, cx))
         .on_mouse_down(
             MouseButton::Left,
             cx.listener(move |this, _, window, cx| {

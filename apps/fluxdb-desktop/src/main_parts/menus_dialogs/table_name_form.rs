@@ -27,7 +27,7 @@ fn table_name_form_modal(
     let no_change = object_path.name.trim() == new_name.trim();
     let (sql, validation_error) = if no_change {
         if is_copy {
-            (None, Some("新表名不能和原表相同".to_string()))
+            (None, Some(tr("app.table.error.same_name").to_string()))
         } else {
             (None, None)
         }
@@ -42,8 +42,8 @@ fn table_name_form_modal(
     let (title, field_label, key_context, cancel_id, confirm_id, input_id, preview_key, icon) =
         if is_copy {
             (
-                "复制表",
-                "复制后的表名",
+                tr("app.table.copy.title"),
+                tr("app.table.copy.new_name"),
                 "CopyTableModal",
                 "copy-table-cancel",
                 "copy-table-confirm",
@@ -53,8 +53,8 @@ fn table_name_form_modal(
             )
         } else {
             (
-                "重命名表",
-                "新表名",
+                tr("app.table.rename.title"),
+                tr("app.table.rename.new_name"),
                 "RenameTableModal",
                 "rename-table-cancel",
                 "rename-table-confirm",
@@ -143,7 +143,7 @@ fn table_name_form_modal(
                         .child(
                             user_admin_icon_button(AppIcon::Close, colors)
                                 .id((key_context, 1u64))
-                                .aria_label("关闭")
+                                .aria_label(tr("app.common.close"))
                                 .on_mouse_down(
                                     MouseButton::Left,
                                     cx.listener(move |this, _, _, cx| {
@@ -195,7 +195,7 @@ fn table_name_form_modal(
                         .gap_2()
                         .child(
                             Button::new(cancel_id)
-                                .label("取消")
+                                .label(tr("app.common.cancel"))
                                 .w(px(78.))
                                 .cursor_pointer()
                                 .disabled(running)
@@ -207,11 +207,11 @@ fn table_name_form_modal(
                         .child(
                             Button::new(confirm_id)
                                 .label(if running {
-                                    "执行中"
+                                    tr("app.common.running")
                                 } else if is_copy {
-                                    "确认"
+                                    tr("app.common.confirm")
                                 } else {
-                                    "执行"
+                                    tr("app.common.execute")
                                 })
                                 .primary()
                                 .w(px(78.))
@@ -228,11 +228,12 @@ fn table_name_form_modal(
 
 fn table_name_field(
     id: &'static str,
-    label: &'static str,
+    label: impl Into<SharedString>,
     input: Entity<InputState>,
     running: bool,
     colors: UiColors,
 ) -> impl IntoElement {
+    let label: SharedString = label.into();
     div()
         .flex()
         .flex_col()
@@ -242,7 +243,7 @@ fn table_name_field(
                 .text_size(px(13.))
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .text_color(colors.muted)
-                .child(label),
+                .child(label.clone()),
         )
         .child(
             div()
@@ -254,7 +255,7 @@ fn table_name_field(
                 .child(
                     Input::new(&input)
                         .id(id)
-                        .aria_label(label)
+                        .aria_label(label.clone())
                         .appearance(false)
                         .focus_bordered(false)
                         .disabled(running)

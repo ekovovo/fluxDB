@@ -99,7 +99,7 @@ fn redis_key_detail_toolbar(
                         } else {
                             app_icon(AppIcon::Refresh, 13., colors.muted).into_any_element()
                         })
-                        .child("刷新"),
+                        .child(tr("app.redis.refresh.action")),
                 )
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.request_redis_key_refresh(tab_id, key.clone(), refresh_kind, cx);
@@ -110,15 +110,15 @@ fn redis_key_detail_toolbar(
 
 fn redis_key_refresh_label(refreshed_at: Option<Instant>) -> String {
     let Some(refreshed_at) = refreshed_at else {
-        return "上次刷新: 未刷新".to_string();
+        return tr("app.redis.refresh.never").to_string();
     };
     let elapsed = refreshed_at.elapsed();
     if elapsed < Duration::from_secs(60) {
-        "上次刷新: <1m".to_string()
+        tr("app.redis.refresh.recent").to_string()
     } else if elapsed < Duration::from_secs(60 * 60) {
-        format!("上次刷新: {}m", elapsed.as_secs() / 60)
+        tr("app.redis.refresh.minutes").replace("%{m}", &(elapsed.as_secs() / 60).to_string())
     } else {
-        format!("上次刷新: {}h", elapsed.as_secs() / 3600)
+        tr("app.redis.refresh.hours").replace("%{h}", &(elapsed.as_secs() / 3600).to_string())
     }
 }
 
@@ -144,7 +144,7 @@ fn redis_key_detail_meta_panel(
                 .flex()
                 .items_center()
                 .justify_between()
-                .child(redis_detail_panel_title("基础信息", colors))
+                .child(redis_detail_panel_title(tr("app.redis.meta.base"), colors))
                 .when(show_actions, |this| {
                     this.child(
                         div()
@@ -153,7 +153,7 @@ fn redis_key_detail_meta_panel(
                             .gap_2()
                             .child(
                                 Button::new(("redis-key-detail-save", tab_id.0))
-                                    .label("保存")
+                                    .label(tr("app.redis.save"))
                                     .small()
                                     .primary()
                                     .h(px(26.))
@@ -173,7 +173,7 @@ fn redis_key_detail_meta_panel(
                             )
                             .child(
                                 Button::new(("redis-key-detail-discard", tab_id.0))
-                                    .label("放弃")
+                                    .label(tr("app.redis.meta.discard"))
                                     .small()
                                     .outline()
                                     .h(px(26.))
@@ -206,7 +206,7 @@ fn redis_key_detail_meta_panel(
                         tab_id,
                         detail,
                         RedisKeyMetaField::KeyName,
-                        "键名称",
+                        tr("app.redis.meta.key_name"),
                         this.redis_key_name_input.clone(),
                         this.redis_key_name_display(tab_id, detail),
                         true,

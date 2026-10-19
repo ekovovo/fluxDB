@@ -13,12 +13,12 @@ fn pg_membership_panel(
     cx: &mut Context<NavicatMain>,
 ) -> gpui::AnyElement {
     if admin.pg_draft.as_ref().is_some_and(|d| d.create) {
-        return pg_membership_placeholder("新角色保存后再配置成员关系（保存时先创建角色，再应用成员变更）。", colors)
+        return pg_membership_placeholder(tr("app.pg_role.member_of.save_first").as_ref(), colors)
             .into_any_element();
     }
     let selected = admin.pg_effective_grantee_name();
     if selected.is_empty() {
-        return pg_membership_placeholder("请选择角色", colors).into_any_element();
+        return pg_membership_placeholder(tr("app.pg_role.select_role").as_ref(), colors).into_any_element();
     }
     let supported = admin.pg_member_options_supported;
 
@@ -35,8 +35,8 @@ fn pg_membership_panel(
     // ===== 所属角色 =====
     body = body.child(pg_membership_section(
         tab_id,
-        "所属角色",
-        format!("「{selected}」直接所属的组角色（GRANT 组角色 TO {selected}）"),
+        tr("app.pg_role.member_of.roles"),
+        tr("app.pg_role.member_of.roles_hint").replace("%{role}", &selected),
         admin.pg_member_of_roles(),
         &selected,
         supported,
@@ -47,8 +47,8 @@ fn pg_membership_panel(
     // ===== 此角色的成员 =====
     body = body.child(pg_membership_section(
         tab_id,
-        "此角色的成员",
-        format!("「{selected}」直接授予的成员（GRANT {selected} TO 成员）"),
+        tr("app.pg_role.member_of.members"),
+        tr("app.pg_role.member_of.members_hint").replace("%{role}", &selected),
         admin.pg_members_of_role(),
         &selected,
         supported,
@@ -99,7 +99,7 @@ fn pg_membership_panel(
                                     cx.stop_propagation();
                                 }),
                             )
-                            .child("撤销此更改"),
+                            .child(tr("app.pg_role.revert_change")),
                     ),
             );
         }
@@ -117,7 +117,7 @@ fn pg_membership_panel(
                         .text_size(px(12.))
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .text_color(colors.text)
-                        .child("待保存的成员变更"),
+                        .child(tr("app.pg_role.pending_membership_changes")),
                 )
                 .child(edits),
         );
@@ -128,7 +128,7 @@ fn pg_membership_panel(
 /// 单向成员表：标题 + 列头（含版本化选项）+ 行。
 fn pg_membership_section(
     tab_id: TabId,
-    title: &'static str,
+    title: impl Into<SharedString>,
     subtitle: String,
     rows: Vec<&PgRoleMembership>,
     selected: &str,
@@ -136,6 +136,7 @@ fn pg_membership_section(
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
+    let title: SharedString = title.into();
     let mut section = div()
         .border_1()
         .border_color(colors.border)
@@ -166,7 +167,7 @@ fn pg_membership_section(
                 ),
         );
     if rows.is_empty() {
-        section = section.child(user_admin_empty_row("暂无直接成员关系。", colors));
+        section = section.child(user_admin_empty_row(tr("app.pg_role.member_of.empty"), colors));
     } else {
         section = section.child(pg_membership_header(supported, colors));
         for row in rows {
@@ -185,7 +186,7 @@ fn pg_membership_header(supported: Option<bool>, colors: UiColors) -> Div {
         .text_size(px(11.))
         .font_weight(gpui::FontWeight::SEMIBOLD)
         .text_color(colors.muted)
-        .child(div().flex_1().min_w(px(0.)).px_3().child("角色"))
+        .child(div().flex_1().min_w(px(0.)).px_3().child(tr("app.pg_role.header.role")))
         .child(div().w(px(72.)).flex().justify_center().child("ADMIN"))
         .child(if supported == Some(true) {
             div()
@@ -209,7 +210,7 @@ fn pg_membership_header(supported: Option<bool>, colors: UiColors) -> Div {
         } else {
             div().w(px(0.))
         });
-    header = header.child(div().w(px(76.)).flex().justify_center().child("操作"));
+    header = header.child(div().w(px(76.)).flex().justify_center().child(tr("app.pg_role.header.actions")));
     header
 }
 
@@ -256,7 +257,7 @@ fn pg_membership_row(
                 .w(px(72.))
                 .flex()
                 .justify_center()
-                .child(if row.admin_option { "是" } else { "否" }.to_string()),
+                .child(tr(if row.admin_option { "app.pg_role.yes" } else { "app.pg_role.no" })),
         )
         .child(if supported == Some(true) {
             div()
@@ -265,7 +266,7 @@ fn pg_membership_row(
                 .justify_center()
                 .border_l_1()
                 .border_color(colors.border)
-                .child(if row.inherit_option { "是" } else { "否" }.to_string())
+                .child(tr(if row.inherit_option { "app.pg_role.yes" } else { "app.pg_role.no" }))
         } else {
             div().w(px(0.))
         })
@@ -276,7 +277,7 @@ fn pg_membership_row(
                 .justify_center()
                 .border_l_1()
                 .border_color(colors.border)
-                .child(if row.set_option { "是" } else { "否" }.to_string())
+                .child(tr(if row.set_option { "app.pg_role.yes" } else { "app.pg_role.no" }))
         } else {
             div().w(px(0.))
         })
@@ -304,7 +305,7 @@ fn pg_membership_row(
                             cx.stop_propagation();
                         }),
                     )
-                    .child("撤销"),
+                    .child(tr("app.pg_role.revert")),
             ),
         )
 }
@@ -328,7 +329,7 @@ fn pg_membership_add_row(
             div()
                 .text_size(px(12.))
                 .text_color(colors.text)
-                .child("添加成员关系："),
+                .child(tr("app.pg_role.member_of.add")),
         )
         .child(
             div()
@@ -339,19 +340,19 @@ fn pg_membership_add_row(
             div()
                 .text_size(px(12.))
                 .text_color(colors.muted)
-                .child("把所选组角色授予当前角色"),
+                .child(tr("app.pg_role.member_of.grant_hint")),
         );
     if member_options == Some(true) {
         row = row.child(
             div()
                 .text_size(px(12.))
                 .text_color(colors.muted)
-                .child("（新授权默认 INHERIT/SET 开启，保存前可用 SQL 预览核对）"),
+                .child(tr("app.pg_role.member_of.defaults")),
         );
     }
     let selected_owned = selected.to_string();
     row = row.child(
-        user_admin_button("授予成员关系", AppIcon::Plus, false, false, colors).on_mouse_down(
+        user_admin_button(tr("app.pg_role.member_of.grant"), AppIcon::Plus, false, false, colors).on_mouse_down(
             MouseButton::Left,
             cx.listener(move |this, _, _, cx| {
                 // 语义：把所选组角色授予当前角色（GRANT 所选 TO 当前角色）。
@@ -361,11 +362,11 @@ fn pg_membership_add_row(
                     .selected_value()
                     .map(|v| v.to_string())
                 else {
-                    this.show_message("请先选择要授予的组角色", AppMessageKind::Warning, cx);
+                    this.show_message(tr("app.pg_role.member_of.error.select_group").as_ref(), AppMessageKind::Warning, cx);
                     return;
                 };
                 if choice == selected_owned {
-                    this.show_message("不能与自身建立成员关系", AppMessageKind::Warning, cx);
+                    this.show_message(tr("app.pg_role.member_of.error.self").as_ref(), AppMessageKind::Warning, cx);
                     return;
                 }
                 let inherit_default = member_options != Some(false);
@@ -389,7 +390,7 @@ fn pg_membership_add_row(
             div()
                 .text_size(px(11.))
                 .text_color(colors.muted)
-                .child("PG15 及以前：成员继承由角色 INHERIT 属性控制，无成员级 INHERIT/SET 选项。"),
+                .child(tr("app.pg_role.member_of.pg15_note")),
         );
     }
     row

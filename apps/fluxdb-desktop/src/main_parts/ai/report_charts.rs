@@ -160,26 +160,35 @@ fn ai_report_chart_block(
             div()
                 .text_size(px(12.))
                 .font_weight(gpui::FontWeight::SEMIBOLD)
-                .child(format!("{y} 按 {x}")),
+                .child(
+                    tr("app.ai_report.chart.title")
+                        .replace("%{y}", y)
+                        .replace("%{x}", x),
+                ),
         )
         .child(
             div()
                 .text_size(px(10.))
                 .text_color(colors.muted)
                 .child(match chart {
-                    fluxdb_core::ArtifactChart::Line => "折线图",
-                    fluxdb_core::ArtifactChart::Bar => "柱状图",
-                    fluxdb_core::ArtifactChart::BarHorizontal => "条形图",
-                    fluxdb_core::ArtifactChart::Area => "面积图",
-                    fluxdb_core::ArtifactChart::Pie => "饼图",
+                    fluxdb_core::ArtifactChart::Line => tr("app.ai_report.chart.kind.line"),
+                    fluxdb_core::ArtifactChart::Bar => tr("app.ai_report.chart.kind.bar"),
+                    fluxdb_core::ArtifactChart::BarHorizontal => {
+                        tr("app.ai_report.chart.kind.bar_horizontal")
+                    }
+                    fluxdb_core::ArtifactChart::Area => tr("app.ai_report.chart.kind.area"),
+                    fluxdb_core::ArtifactChart::Pie => tr("app.ai_report.chart.kind.pie"),
                 }),
         );
     let body = match ai_report_source(report, result_ref) {
-        None => ai_report_placeholder("来源不可解析，图表未渲染。", colors),
+        None => ai_report_placeholder(
+            tr("app.ai_report.chart.source_unresolved"),
+            colors,
+        ),
         Some(_) => {
             // 真实点由 App 层按声明字段读取：与指标条、导出的 HTML 图表同一口径。
             match report.chart_series(result_ref, chart, x, y) {
-                None => ai_report_placeholder("来源没有可用数值点，图表未渲染。", colors),
+                None => ai_report_placeholder(tr("app.ai_report.chart.no_points"), colors),
                 // 声明类型与真实点不匹配（如饼图分类过多或含负值）：说清原因，不画图。
                 Some(series) => match series.render_issue() {
                     Some(issue) => ai_report_placeholder(&issue, colors),

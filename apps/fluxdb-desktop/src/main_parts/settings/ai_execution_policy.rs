@@ -93,25 +93,29 @@ fn ai_execution_policy_panel(
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> GroupBox {
-    settings_panel_group("安全策略", colors)
-        .child(ai_policy_row(
-            "内部工具默认策略",
-            "只读 / 写审批 / 帮我审批 / 自动执行；不绕过连接权限和数据授权",
-            ai_tools_policy_button(state, colors, cx),
-            colors,
-        ))
-        .child(ai_policy_row(
-            "写入风险自动放行阈值",
-            "0–1；综合风险分不高于它才自动放行，高于它转人工。调高＝更多写入交给评审模型",
-            ai_write_risk_threshold_control(state, colors, cx),
-            colors,
-        ))
-        .child(ai_policy_row(
-            "评审模型权重",
-            "0–0.5；评审模型在综合分里的占比，其余来自代码规则。上限固定，模型不能压倒规则",
-            ai_write_review_weight_control(state, colors, cx),
-            colors,
-        ))
+    let mut panel = settings_panel_group("安全策略", colors).child(ai_policy_row(
+        "内部工具默认策略",
+        "只读 / 写审批 / 帮我审批 / 自动执行；不绕过连接权限和数据授权",
+        ai_tools_policy_button(state, colors, cx),
+        colors,
+    ));
+    // 阈值与权重只参与“帮我审批”的写入风险评分；其他策略下不参与判定，不展示以免误导。
+    if state.ai_execution_policy.tools_default == fluxdb_core::ExecutionPolicy::AiApproval {
+        panel = panel
+            .child(ai_policy_row(
+                "写入风险自动放行阈值",
+                "0–1；综合风险分不高于它才自动放行，高于它转人工。调高＝更多写入交给评审模型",
+                ai_write_risk_threshold_control(state, colors, cx),
+                colors,
+            ))
+            .child(ai_policy_row(
+                "评审模型权重",
+                "0–0.5；评审模型在综合分里的占比，其余来自代码规则。上限固定，模型不能压倒规则",
+                ai_write_review_weight_control(state, colors, cx),
+                colors,
+            ));
+    }
+    panel
 }
 
 /// 阈值档位：按钮 + 下拉菜单，与页面其它策略控件保持同一种交互，避免引入新的数字控件。

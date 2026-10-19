@@ -221,16 +221,16 @@ impl ObjectGroup {
         Self::ErDiagram,
     ];
 
-    fn label(self) -> &'static str {
-        match self {
-            Self::Queries => "查询",
-            Self::Tables => "表",
-            Self::Views => "视图",
-            Self::Procedures => "存储过程",
-            Self::Functions => "函数",
-            Self::Backup => "备份",
-            Self::ErDiagram => "ER 图",
-        }
+    fn label(self) -> SharedString {
+        tr(match self {
+            Self::Queries => "app.connection.kind.queries",
+            Self::Tables => "app.connection.kind.tables",
+            Self::Views => "app.connection.kind.views",
+            Self::Procedures => "app.connection.kind.procedures",
+            Self::Functions => "app.connection.kind.functions",
+            Self::Backup => "app.connection.kind.backup",
+            Self::ErDiagram => "app.connection.kind.er_diagram",
+        })
     }
 
     fn key(self) -> &'static str {
@@ -507,10 +507,28 @@ struct NewConnectionInputs {
     cloud_resource: Entity<InputState>,
     discovery_uri: Entity<InputState>,
     /// SSH 认证方式下拉（SelectState 实体，避免渲染期读 NavicatMain 触发重入 panic）。
-    ssh_auth_select: Entity<SelectState<SearchableVec<String>>>,
+    ssh_auth_select: Entity<SelectState<SearchableVec<ConnectionSelectOption>>>,
     /// 云提供方下拉（同上）。
-    cloud_provider_select: Entity<SelectState<SearchableVec<String>>>,
+    cloud_provider_select: Entity<SelectState<SearchableVec<ConnectionSelectOption>>>,
     _subscriptions: Vec<Subscription>,
+}
+
+#[derive(Clone)]
+struct ConnectionSelectOption {
+    value: String,
+    label_key: &'static str,
+}
+
+impl SelectItem for ConnectionSelectOption {
+    type Value = String;
+
+    fn title(&self) -> SharedString {
+        tr(self.label_key)
+    }
+
+    fn value(&self) -> &String {
+        &self.value
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -1180,6 +1198,73 @@ impl NewConnectionForm {
 }
 
 impl NewConnectionInputs {
+    /// 输入框 placeholder 在创建时缓存；切换语言后更新，保留已输入内容。
+    fn refresh_placeholders(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<NavicatMain>,
+    ) {
+        let inputs = [
+            (&self.name, ConnectionField::Name),
+            (&self.host, ConnectionField::Host),
+            (&self.port, ConnectionField::Port),
+            (&self.username, ConnectionField::Username),
+            (&self.password, ConnectionField::Password),
+            (&self.database, ConnectionField::Database),
+            (&self.url_params, ConnectionField::UrlParams),
+            (&self.sqlite_path, ConnectionField::SqlitePath),
+            (&self.mongo_auth_db, ConnectionField::MongoAuthDb),
+            (&self.tls_ca, ConnectionField::TlsCa),
+            (&self.tls_client_cert, ConnectionField::TlsClientCert),
+            (&self.tls_client_key, ConnectionField::TlsClientKey),
+            (&self.tls_sni, ConnectionField::TlsSni),
+            (&self.ssh_host, ConnectionField::SshHost),
+            (&self.ssh_port, ConnectionField::SshPort),
+            (&self.ssh_username, ConnectionField::SshUsername),
+            (&self.ssh_password, ConnectionField::SshPassword),
+            (&self.ssh_private_key, ConnectionField::SshPrivateKey),
+            (&self.ssh_passphrase, ConnectionField::SshPassphrase),
+            (&self.pg_default_schema, ConnectionField::PgDefaultSchema),
+            (&self.pg_application_name, ConnectionField::PgApplicationName),
+            (&self.pg_connect_timeout, ConnectionField::PgConnectTimeoutSecs),
+            (&self.pg_query_timeout, ConnectionField::PgQueryTimeoutSecs),
+            (&self.mysql_charset, ConnectionField::MysqlCharset),
+            (&self.mysql_proxy_type, ConnectionField::MysqlProxyType),
+            (
+                &self.mysql_ssh_connect_timeout,
+                ConnectionField::MysqlSshConnectTimeout,
+            ),
+            (&self.mysql_ssh_keepalive, ConnectionField::MysqlSshKeepalive),
+            (&self.mysql_proxy_host, ConnectionField::MysqlProxyHost),
+            (&self.mysql_proxy_port, ConnectionField::MysqlProxyPort),
+            (
+                &self.mysql_proxy_username,
+                ConnectionField::MysqlProxyUsername,
+            ),
+            (
+                &self.mysql_proxy_password,
+                ConnectionField::MysqlProxyPassword,
+            ),
+            (&self.mysql_connect_timeout, ConnectionField::MysqlConnectTimeout),
+            (&self.mysql_query_timeout, ConnectionField::MysqlQueryTimeout),
+            (&self.mysql_idle_ttl, ConnectionField::MysqlIdleTtl),
+            (
+                &self.sentinel_master_name,
+                ConnectionField::SentinelMasterName,
+            ),
+            (&self.sentinel_endpoints, ConnectionField::SentinelEndpoints),
+            (&self.cluster_start_nodes, ConnectionField::ClusterStartNodes),
+            (&self.cloud_subscription, ConnectionField::CloudSubscription),
+            (&self.cloud_resource, ConnectionField::CloudResource),
+            (&self.discovery_uri, ConnectionField::DiscoveryUri),
+        ];
+        for (input, field) in inputs {
+            input.update(cx, |input, cx| {
+                input.set_placeholder(connection_field_placeholder(field), window, cx);
+            });
+        }
+    }
+
     fn new(window: &mut Window, cx: &mut Context<NavicatMain>) -> Self {
         fn input_state(
             field: ConnectionField,
@@ -1284,7 +1369,16 @@ impl NewConnectionInputs {
         // SSH 认证方式下拉：选项为展示文案，订阅回调里映射回表单字段值。
         let ssh_auth_select = cx.new(|cx| {
             SelectState::new(
-                SearchableVec::new(vec!["密码".to_string(), "私钥".to_string()]),
+                SearchableVec::new(vec![
+                    ConnectionSelectOption {
+                        value: "password".into(),
+                        label_key: "app.connection.secret.password",
+                    },
+                    ConnectionSelectOption {
+                        value: "private_key".into(),
+                        label_key: "app.connection.secret.private_key",
+                    },
+                ]),
                 Some(IndexPath::new(0)),
                 window,
                 cx,
@@ -1294,13 +1388,12 @@ impl NewConnectionInputs {
             &ssh_auth_select,
             move |this: &mut NavicatMain,
                   _select,
-                  event: &SelectEvent<SearchableVec<String>>,
+                  event: &SelectEvent<SearchableVec<ConnectionSelectOption>>,
                   cx| {
                 let SelectEvent::Confirm(value) = event;
                 if let Some(value) = value {
-                    // 展示文案 → 表单字段值。
-                    this.new_connection_form.ssh_auth = match value.as_str() {
-                        "私钥" => "private_key".to_string(),
+                    this.new_connection_form.ssh_auth = match value.value().as_str() {
+                        "private_key" => "private_key".to_string(),
                         _ => "password".to_string(),
                     };
                     cx.notify();
@@ -1311,9 +1404,18 @@ impl NewConnectionInputs {
         let cloud_provider_select = cx.new(|cx| {
             SelectState::new(
                 SearchableVec::new(vec![
-                    "不使用云".to_string(),
-                    "Azure".to_string(),
-                    "Redis Cloud".to_string(),
+                    ConnectionSelectOption {
+                        value: String::new(),
+                        label_key: "app.connection.cloud.none",
+                    },
+                    ConnectionSelectOption {
+                        value: "azure".into(),
+                        label_key: "app.connection.cloud.azure",
+                    },
+                    ConnectionSelectOption {
+                        value: "redis-cloud".into(),
+                        label_key: "app.connection.cloud.redis_cloud",
+                    },
                 ]),
                 Some(IndexPath::new(0)),
                 window,
@@ -1324,14 +1426,13 @@ impl NewConnectionInputs {
             &cloud_provider_select,
             move |this: &mut NavicatMain,
                   _select,
-                  event: &SelectEvent<SearchableVec<String>>,
+                  event: &SelectEvent<SearchableVec<ConnectionSelectOption>>,
                   cx| {
                 let SelectEvent::Confirm(value) = event;
                 if let Some(value) = value {
-                    // 展示文案 → 表单字段值。
-                    this.new_connection_form.cloud_provider = match value.as_str() {
-                        "Azure" => "azure".to_string(),
-                        "Redis Cloud" => "redis-cloud".to_string(),
+                    this.new_connection_form.cloud_provider = match value.value().as_str() {
+                        "azure" => "azure".to_string(),
+                        "redis-cloud" => "redis-cloud".to_string(),
                         _ => String::new(),
                     };
                     cx.notify();
@@ -1711,5 +1812,26 @@ impl NewConnectionInputs {
         self.for_field(field).update(cx, |input, cx| {
             input.focus(window, cx);
         });
+    }
+}
+
+#[cfg(test)]
+impl NavicatMain {
+    /// 语言切换后 placeholder 属于输入框内部状态，E2E 通过该只读探针断言已刷新。
+    fn new_connection_placeholders_for_test(&self, cx: &App) -> (SharedString, SharedString) {
+        (
+            self.new_connection_inputs
+                .password
+                .read(cx)
+                .presentation()
+                .placeholder()
+                .clone(),
+            self.new_connection_inputs
+                .database
+                .read(cx)
+                .presentation()
+                .placeholder()
+                .clone(),
+        )
     }
 }

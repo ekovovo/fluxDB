@@ -359,33 +359,40 @@ pub struct ErImportReport {
 ///
 /// 校验：`format == "fluxdb-er"`、`schema_version <= ER_EXPORT_SCHEMA_VERSION`、
 /// 结构引用完整（边两端表/列都能在 tables 里找到）。不做相似名猜测、不自动补缺。
-/// 失败返回中文错误；调用方据此提示「导入失败，未改动当前模型」。
+/// 失败返回本地化错误；调用方据此提示「导入失败，未改动当前模型」。
 pub fn er_import_parse(
     json: &str,
     current_graph: &fluxdb_core::ErGraphData,
     _current_database: &str,
 ) -> Result<ErImportReport, String> {
     if json.len() > 16 * 1024 * 1024 {
-        return Err("ER JSON 超过 16 MiB 上限".into());
+        return Err(tr("app.er_export.too_large").to_string());
     }
     let value: serde_json::Value =
-        serde_json::from_str(json).map_err(|e| format!("JSON 解析失败：{e}"))?;
+        serde_json::from_str(json).map_err(|e| {
+            tr("app.er_export.parse_failed").replace("%{error}", &e.to_string())
+        })?;
     let fmt = value
         .get("format")
         .and_then(|v| v.as_str())
         .unwrap_or_default();
     if fmt != "fluxdb-er" {
-        return Err(format!("不是 FluxDB ER 导出文件（format={fmt:?}）"));
+        return Err(
+            tr("app.er_export.not_fluxdb_er")
+                .replace("%{format}", &format!("{fmt:?}")),
+        );
     }
     let version = value.get("schema_version").and_then(|v| v.as_u64()).unwrap_or(0);
     if version == 0 || version > ER_EXPORT_SCHEMA_VERSION as u64 {
-        return Err(format!(
-            "不支持的 schema_version={version}（当前支持 ≤{ER_EXPORT_SCHEMA_VERSION}）"
-        ));
+        return Err(
+            tr("app.er_export.unsupported_version")
+                .replace("%{version}", &version.to_string())
+                .replace("%{max}", &ER_EXPORT_SCHEMA_VERSION.to_string()),
+        );
     }
     let connection_id = value.get("connection_id").and_then(|v| v.as_u64());
     if version >= 2 && connection_id.is_none() {
-        return Err("ER JSON 缺少连接身份，不能安全应用".into());
+        return Err(tr("app.er_export.missing_connection_identity").to_string());
     }
     let database = value
         .get("database")
@@ -419,7 +426,9 @@ pub fn er_import_parse(
                 }
             }
             if tables.insert(name.to_string(), cols).is_some() {
-                return Err(format!("ER JSON 包含重复表名：{name}"));
+                return Err(
+                    tr("app.er_export.duplicate_table").replace("%{name}", name),
+                );
             }
         }
     }
@@ -449,10 +458,16 @@ pub fn er_import_parse(
     if let Some(arr) = value.get("tables").and_then(|v| v.as_array()) {
         for t in arr {
             let Some(name) = t.get("name").and_then(|v| v.as_str()) else { continue; };
-            let x = t.get("x").and_then(|v| v.as_f64()).ok_or_else(|| format!("表 {name} 缺少有效 x 坐标"))?;
-            let y = t.get("y").and_then(|v| v.as_f64()).ok_or_else(|| format!("表 {name} 缺少有效 y 坐标"))?;
+            let x = t.get("x").and_then(|v| v.as_f64()).ok_or_else(|| {
+                tr("app.er_export.missing_x").replace("%{name}", name)
+            })?;
+            let y = t.get("y").and_then(|v| v.as_f64()).ok_or_else(|| {
+                tr("app.er_export.missing_y").replace("%{name}", name)
+            })?;
             if !x.is_finite() || !y.is_finite() || x.abs() > 1e9 || y.abs() > 1e9 {
-                return Err(format!("表 {name} 坐标超出可用范围"));
+                return Err(
+                    tr("app.er_export.coordinate_out_of_range").replace("%{name}", name),
+                );
             }
             let (x, y) = (x as f32, y as f32);
             positions.insert(name.to_string(), (x, y));

@@ -23,21 +23,21 @@ fn create_table_checks(
             check: check.clone(),
             name_input: this.create_table_input(
                 CreateTableInputKey::CheckName(tab_id, check.id),
-                "检查名",
+                tr("app.create_table.check.name_placeholder"),
                 &check.name,
                 window,
                 cx,
             ),
             expression_input: this.create_table_input(
                 CreateTableInputKey::CheckExpression(tab_id, check.id),
-                "例如 age >= 0",
+                tr("app.create_table.check.expression_example"),
                 &check.expression,
                 window,
                 cx,
             ),
             expression_editor_input: this.create_table_input(
                 CreateTableInputKey::CheckExpressionEditor(tab_id, check.id),
-                "输入检查表达式...",
+                tr("app.create_table.check.expression_placeholder"),
                 &check.expression,
                 window,
                 cx,
@@ -91,11 +91,11 @@ fn create_table_check_header_row(colors: UiColors) -> Div {
         .text_color(colors.muted)
         .flex()
         .items_center()
-        .child(create_table_field_header_cell("名称", 220., colors))
-        .child(create_table_field_header_cell("检查", 420., colors))
-        .child(create_table_field_header_cell("不强制实施", 120., colors))
+        .child(create_table_field_header_cell(tr("app.create_table.header.name"), 220., colors))
+        .child(create_table_field_header_cell(tr("app.create_table.header.check"), 420., colors))
+        .child(create_table_field_header_cell(tr("app.create_table.header.not_enforced"), 120., colors))
         .child(create_table_field_header_cell(
-            "操作",
+            tr("app.create_table.field.operations"),
             CREATE_TABLE_OPERATIONS_WIDTH,
             colors,
         ))
@@ -260,7 +260,7 @@ fn create_table_check_expression_popover(
                         .text_size(px(13.))
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .text_color(colors.text)
-                        .child("编辑检查"),
+                        .child(tr("app.create_table.check.edit")),
                 )
                 .child(
                     div()

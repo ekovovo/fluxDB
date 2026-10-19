@@ -1187,7 +1187,7 @@ fn data_change_sql_preview(
     }
 
     if statements.is_empty() {
-        "-- 暂无待提交 SQL".to_string()
+        tr("app.filter.no_pending_sql_comment").to_string()
     } else {
         statements.join("\n")
     }

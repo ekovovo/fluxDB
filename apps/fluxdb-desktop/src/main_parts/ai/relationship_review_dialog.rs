@@ -15,13 +15,16 @@ fn er_proposal_build_dialog(
         )
     };
     let Some(batch) = batch else {
-        return dialog.title("关系建议").child("关系建议不可用");
+        return dialog
+            .title(tr("app.ai.er_proposal.title"))
+            .child(tr("app.ai.er_proposal.unavailable"));
     };
     let colors = views.colors;
     let view_close = views.view.clone();
     let view_adopt = views.view.clone();
     let data_close = views.data.clone();
-    let title = format!("关系建议 · {} 条", batch.counts.total);
+    let title = tr("app.ai.er_proposal.title_count")
+        .replace("%{count}", &batch.counts.total.to_string());
     let body = er_proposal_dialog_body(&batch, &selected, active.as_deref(), error, &views);
     dialog
         .w(px(1040.))
@@ -41,12 +44,15 @@ fn er_proposal_build_dialog(
                     div()
                         .text_size(px(11.))
                         .text_color(colors.muted)
-                        .child(format!(
-                            "已选 {} 条 · {} 条可采纳 · {} 条不可采纳",
-                            selected.len(),
-                            batch.counts.ready,
-                            batch.counts.invalid + batch.counts.unavailable
-                        )),
+                        .child(
+                            tr("app.ai.er_proposal.selection_summary")
+                                .replace("%{selected}", &selected.len().to_string())
+                                .replace("%{ready}", &batch.counts.ready.to_string())
+                                .replace(
+                                    "%{invalid}",
+                                    &(batch.counts.invalid + batch.counts.unavailable).to_string(),
+                                ),
+                        ),
                 )
                 .child(div().flex_1())
                 .child(
@@ -54,7 +60,7 @@ fn er_proposal_build_dialog(
                         .small()
                         .ghost()
                         .cursor_pointer()
-                        .child("稍后处理")
+                        .child(tr("app.ai.er_proposal.later"))
                         .on_click(move |_, window, cx| {
                             view_close.update(cx, |this, cx| {
                                 this.close_er_proposal_review(window, cx);
@@ -68,9 +74,10 @@ fn er_proposal_build_dialog(
                         .cursor_pointer()
                         .disabled(selected.is_empty() || loading)
                         .child(if loading {
-                            "正在采纳…".to_string()
+                            tr("app.ai.er_proposal.adopting").to_string()
                         } else {
-                            format!("采纳所选（{}）", selected.len())
+                            tr("app.ai.er_proposal.adopt_selected")
+                                .replace("%{count}", &selected.len().to_string())
                         })
                         .on_click(move |_, window, cx| {
                             view_adopt.update(cx, |this, cx| {
@@ -105,7 +112,7 @@ fn er_proposal_dialog_body(
                 .border_color(colors.border_soft)
                 .text_size(px(10.))
                 .text_color(colors.muted)
-                .child("勾选要采纳的关系；未勾选不会写入"),
+                .child(tr("app.ai.er_proposal.select_hint")),
         )
         .child(
             div()
@@ -127,11 +134,11 @@ fn er_proposal_dialog_body(
                     div()
                         .id(SharedString::from(format!("er-proposal-row:{item_id}")))
                         .aria_label(format!(
-                            "{} 到 {}，{}，{}",
+                            "{} → {} · {} · {}",
                             item.left,
                             item.right,
                             item.role,
-                            status_label(item).0
+                            status_label(item)
                         ))
                         .debug_selector({
                             let id = item_id.clone();
@@ -234,14 +241,14 @@ fn er_proposal_dialog_body(
                                         .text_color(colors.muted)
                                         .child(item.role.clone())
                                         .child("·")
-                                        .child(status_label(item).0),
+                                        .child(status_label(item)),
                                 ),
                         )
                         .child(
                             div()
                                 .flex_none()
                                 .text_size(px(9.))
-                                .text_color(status_label(item).1)
+                .text_color(status_color(item))
                                 .child(format!("#{}", index + 1)),
                         )
                 })),
@@ -277,14 +284,26 @@ fn er_proposal_dialog_body(
         .into_any_element()
 }
 
-fn status_label(item: &ErProposalItemView) -> (&'static str, gpui::Rgba) {
+fn status_color(item: &ErProposalItemView) -> gpui::Rgba {
     match item.status.as_str() {
-        "ready" => ("可采纳", item.warning_color()),
-        "adopted" => ("已采纳", item.good_color()),
-        "duplicate_existing" | "duplicate_batch" => ("已存在", item.muted_color()),
-        "rejected_existing" => ("已拒绝", item.muted_color()),
-        "invalid" => ("不可采纳", item.bad_color()),
-        _ => ("未处理", item.muted_color()),
+        "ready" => item.warning_color(),
+        "adopted" => item.good_color(),
+        "duplicate_existing" | "duplicate_batch" | "rejected_existing" => item.muted_color(),
+        "invalid" => item.bad_color(),
+        _ => item.muted_color(),
+    }
+}
+
+fn status_label(item: &ErProposalItemView) -> SharedString {
+    match item.status.as_str() {
+        "ready" => tr("app.ai.er_proposal.status.ready"),
+        "adopted" => tr("app.ai.er_proposal.status.adopted"),
+        "duplicate_existing" | "duplicate_batch" => {
+            tr("app.ai.er_proposal.status.duplicate")
+        }
+        "rejected_existing" => tr("app.ai.er_proposal.status.rejected"),
+        "invalid" => tr("app.ai.er_proposal.status.invalid"),
+        _ => tr("app.ai.er_proposal.status.pending"),
     }
 }
 
@@ -319,8 +338,13 @@ fn er_proposal_detail(
             .p_4()
             .text_size(px(11.))
             .text_color(colors.muted)
-            .child("选择左侧一条关系查看详情")
+            .child(tr("app.ai.er_proposal.select_item_hint"))
             .into_any_element();
+    };
+    let source_status = if item.selectable() {
+        tr("app.ai.er_proposal.not_written")
+    } else {
+        tr("app.ai.er_proposal.status.invalid")
     };
     let mut body = div()
         .flex_1()
@@ -354,23 +378,19 @@ fn er_proposal_detail(
                             colors.panel_alt
                         })
                         .text_size(px(9.))
-                        .text_color(status_label(item).1)
-                        .child(status_label(item).0),
+                        .text_color(status_color(item))
+                        .child(status_label(item).to_string()),
                 ),
         )
         .child(
             div()
                 .text_size(px(10.))
                 .text_color(colors.muted)
-                .child(format!(
-                    "{} · 来源：Agent 建议 · {}",
-                    item.role,
-                    if item.selectable() {
-                        "尚未写入"
-                    } else {
-                        "不可采纳"
-                    }
-                )),
+                .child(
+                    tr("app.ai.er_proposal.source_status")
+                        .replace("%{role}", &item.role)
+                        .replace("%{status}", source_status.as_ref()),
+                ),
         );
     if let Some(relationship) = &item.relationship {
         body = body
@@ -383,7 +403,7 @@ fn er_proposal_detail(
                         div()
                             .text_size(px(10.))
                             .text_color(colors.muted)
-                            .child("字段配对"),
+                            .child(tr("app.ai.er_proposal.column_pairs")),
                     )
                     .children(relationship.column_pairs.iter().map(|pair| {
                         div()
@@ -405,7 +425,7 @@ fn er_proposal_detail(
                         div()
                             .text_size(px(10.))
                             .text_color(colors.muted)
-                            .child("基数"),
+                            .child(tr("app.ai.er_proposal.cardinality")),
                     )
                     .child(
                         div()
@@ -435,7 +455,7 @@ fn er_proposal_detail(
                             div()
                                 .text_size(px(10.))
                                 .text_color(colors.muted)
-                                .child("必要过滤"),
+                                .child(tr("app.ai.er_proposal.required_filters")),
                         )
                         .children(relationship.required_filters.iter().map(|filter| {
                             div()
@@ -460,7 +480,7 @@ fn er_proposal_detail(
                             div()
                                 .text_size(px(10.))
                                 .text_color(colors.muted)
-                                .child("推断依据"),
+                                .child(tr("app.ai.er_proposal.rationale")),
                         )
                         .child(
                             div()
@@ -487,7 +507,10 @@ fn er_proposal_detail(
                 .py_2()
                 .text_size(px(10.))
                 .text_color(colors.warning)
-                .child(format!("注意：{}", item.warnings.join("、"))),
+                .child(
+                    tr("app.ai.er_proposal.warning")
+                        .replace("%{items}", &item.warnings.join(", ")),
+                ),
         );
     }
     body.child(
@@ -501,7 +524,7 @@ fn er_proposal_detail(
             .py_2()
             .text_size(px(9.))
             .text_color(colors.muted)
-            .child("采纳后会标记为已确认逻辑关系；不是数据库物理外键，也不会执行 DDL。"),
+            .child(tr("app.ai.er_proposal.adopt_note")),
     )
     .into_any_element()
 }
@@ -531,12 +554,18 @@ fn er_review_cardinality_label(cardinality: &fluxdb_core::ErCardinality) -> &'st
     }
 }
 
-fn er_review_cardinality_basis_label(basis: fluxdb_core::ErCardinalityBasis) -> &'static str {
+fn er_review_cardinality_basis_label(basis: fluxdb_core::ErCardinalityBasis) -> SharedString {
     match basis {
-        fluxdb_core::ErCardinalityBasis::DatabaseConstraint => "数据库约束",
-        fluxdb_core::ErCardinalityBasis::UserAssertion => "用户断言",
-        fluxdb_core::ErCardinalityBasis::ProfileObservation => "观测推断",
-        fluxdb_core::ErCardinalityBasis::Unknown => "未知",
+        fluxdb_core::ErCardinalityBasis::DatabaseConstraint => {
+            tr("app.ai.er_proposal.basis.database_constraint")
+        }
+        fluxdb_core::ErCardinalityBasis::UserAssertion => {
+            tr("app.ai.er_proposal.basis.user_assertion")
+        }
+        fluxdb_core::ErCardinalityBasis::ProfileObservation => {
+            tr("app.ai.er_proposal.basis.profile_observation")
+        }
+        fluxdb_core::ErCardinalityBasis::Unknown => tr("app.ai.er_proposal.basis.unknown"),
     }
 }
 

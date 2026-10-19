@@ -26,8 +26,8 @@ pub(crate) enum ShortcutAction {
 pub(crate) const SHORTCUT_DEFINITIONS: &[ShortcutDefinition] = &[
     ShortcutDefinition {
         id: "app.new_query",
-        title: "新建查询",
-        detail: "打开一个新的 SQL 查询标签页",
+        title: "New query",
+        detail: "Open a new SQL query tab",
         icon: AppIcon::Plus,
         macos: "cmd-y",
         other: "ctrl-y",
@@ -36,8 +36,8 @@ pub(crate) const SHORTCUT_DEFINITIONS: &[ShortcutDefinition] = &[
     },
     ShortcutDefinition {
         id: "app.refresh",
-        title: "刷新",
-        detail: "刷新当前连接、对象或数据页",
+        title: "Refresh",
+        detail: "Refresh the current connection, object, or data page",
         icon: AppIcon::Refresh,
         macos: "cmd-r",
         other: "ctrl-r",
@@ -46,8 +46,8 @@ pub(crate) const SHORTCUT_DEFINITIONS: &[ShortcutDefinition] = &[
     },
     ShortcutDefinition {
         id: "app.save_or_apply",
-        title: "保存 / 应用",
-        detail: "保存查询或应用当前数据修改",
+        title: "Save / Apply",
+        detail: "Save the query or apply current data changes",
         icon: AppIcon::Save,
         macos: "cmd-s",
         other: "ctrl-s",
@@ -56,8 +56,8 @@ pub(crate) const SHORTCUT_DEFINITIONS: &[ShortcutDefinition] = &[
     },
     ShortcutDefinition {
         id: "app.close_current_tab",
-        title: "关闭当前标签",
-        detail: "关闭当前打开的标签页",
+        title: "Close current tab",
+        detail: "Close the currently open tab",
         icon: AppIcon::Close,
         macos: "cmd-w",
         other: "ctrl-w",
@@ -66,8 +66,8 @@ pub(crate) const SHORTCUT_DEFINITIONS: &[ShortcutDefinition] = &[
     },
     ShortcutDefinition {
         id: "app.toggle_connection_browser",
-        title: "切换连接侧边栏",
-        detail: "显示或隐藏左侧连接浏览器",
+        title: "Toggle connection sidebar",
+        detail: "Show or hide the connection browser",
         icon: AppIcon::PanelRight,
         macos: "cmd-1",
         other: "ctrl-1",
@@ -76,8 +76,8 @@ pub(crate) const SHORTCUT_DEFINITIONS: &[ShortcutDefinition] = &[
     },
     ShortcutDefinition {
         id: "query.execute_or_apply",
-        title: "执行 / 应用",
-        detail: "执行查询或应用当前编辑内容",
+        title: "Execute / Apply",
+        detail: "Execute the query or apply current edits",
         icon: AppIcon::Play,
         macos: "cmd-enter",
         other: "ctrl-enter",
@@ -86,8 +86,8 @@ pub(crate) const SHORTCUT_DEFINITIONS: &[ShortcutDefinition] = &[
     },
     ShortcutDefinition {
         id: "query.search_data",
-        title: "搜索数据",
-        detail: "打开当前数据页的搜索面板",
+        title: "Search data",
+        detail: "Open the search panel for the current data page",
         icon: AppIcon::Search,
         macos: "cmd-f",
         other: "ctrl-f",
@@ -96,8 +96,8 @@ pub(crate) const SHORTCUT_DEFINITIONS: &[ShortcutDefinition] = &[
     },
     ShortcutDefinition {
         id: "query.search_history",
-        title: "SQL 历史快搜",
-        detail: "快速搜索并重用历史查询",
+        title: "SQL history quick search",
+        detail: "Quickly search and reuse past queries",
         icon: AppIcon::FileSearch,
         macos: "shift-cmd-h",
         other: "ctrl-shift-h",
@@ -106,8 +106,8 @@ pub(crate) const SHORTCUT_DEFINITIONS: &[ShortcutDefinition] = &[
     },
     ShortcutDefinition {
         id: "query.copy_data",
-        title: "复制数据",
-        detail: "复制当前选中的表格数据",
+        title: "Copy data",
+        detail: "Copy the selected table data",
         icon: AppIcon::Copy,
         macos: "cmd-c",
         other: "ctrl-c",

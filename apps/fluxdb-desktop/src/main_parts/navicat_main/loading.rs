@@ -105,7 +105,7 @@ impl NavicatMain {
         cx: &mut Context<Self>,
     ) {
         if self._query_execute_tasks.contains_key(&tab_id.0) {
-            self.show_message("SQL 正在执行", AppMessageKind::Warning, cx);
+            self.show_message(tr("app.query.error.running").as_ref(), AppMessageKind::Warning, cx);
             return;
         }
         // 按 range 还原成语句（用于状态追踪）；匹配不到则按该区间文本执行。
@@ -131,7 +131,7 @@ impl NavicatMain {
                     self.start_query_text_execution(tab_id, explain, window, cx);
                 }
                 None => {
-                    self.show_message("当前语句不支持 EXPLAIN", AppMessageKind::Warning, cx);
+                    self.show_message(tr("app.query.error.explain_unsupported").as_ref(), AppMessageKind::Warning, cx);
                 }
             }
             return;
@@ -183,7 +183,7 @@ impl NavicatMain {
         cx: &mut Context<Self>,
     ) {
         if self._query_execute_tasks.contains_key(&tab_id.0) {
-            self.show_message("SQL 正在执行", AppMessageKind::Warning, cx);
+            self.show_message(tr("app.query.error.running").as_ref(), AppMessageKind::Warning, cx);
             return;
         }
 
@@ -227,7 +227,7 @@ impl NavicatMain {
         cx: &mut Context<Self>,
     ) {
         if self._query_execute_tasks.contains_key(&tab_id.0) {
-            self.show_message("SQL 正在执行", AppMessageKind::Warning, cx);
+            self.show_message(tr("app.query.error.running").as_ref(), AppMessageKind::Warning, cx);
             return;
         }
 
@@ -242,8 +242,8 @@ impl NavicatMain {
                         AppEvent::QueryFinished(_, execution) => Ok(execution),
                         AppEvent::Failed(error) => Err(error),
                         _ => Err(fluxdb_core::UserFacingError {
-                            title: "执行失败".to_string(),
-                            message: "SQL 执行没有返回结果".to_string(),
+                            title: tr("app.query.error.execution").to_string(),
+                            message: tr("app.query.error.no_result").to_string(),
                             detail: None,
                             retryable: true,
                         }),
@@ -295,7 +295,7 @@ impl NavicatMain {
         cx: &mut Context<Self>,
     ) {
         if self._query_execute_tasks.contains_key(&tab_id.0) {
-            self.show_message("SQL 正在执行", AppMessageKind::Warning, cx);
+            self.show_message(tr("app.query.error.running").as_ref(), AppMessageKind::Warning, cx);
             return;
         }
 
@@ -323,7 +323,7 @@ impl NavicatMain {
         cx: &mut Context<Self>,
     ) {
         if self._query_execute_tasks.contains_key(&tab_id.0) {
-            self.show_message("SQL 正在执行", AppMessageKind::Warning, cx);
+            self.show_message(tr("app.query.error.running").as_ref(), AppMessageKind::Warning, cx);
             return;
         }
 
@@ -336,8 +336,8 @@ impl NavicatMain {
                         AppEvent::QueryFinished(_, execution) => Ok(execution),
                         AppEvent::Failed(error) => Err(error),
                         _ => Err(fluxdb_core::UserFacingError {
-                            title: "执行失败".to_string(),
-                            message: "SQL 执行没有返回结果".to_string(),
+                            title: tr("app.query.error.execution").to_string(),
+                            message: tr("app.query.error.no_result").to_string(),
                             detail: None,
                             retryable: true,
                         }),
@@ -372,7 +372,7 @@ impl NavicatMain {
         cx: &mut Context<Self>,
     ) {
         if self._query_execute_tasks.contains_key(&request.tab_id.0) {
-            self.show_message("SQL 正在执行", AppMessageKind::Warning, cx);
+            self.show_message(tr("app.query.error.running").as_ref(), AppMessageKind::Warning, cx);
             return;
         }
 
@@ -396,8 +396,8 @@ impl NavicatMain {
                             AppEvent::QueryFinished(_, execution) => Ok(execution),
                             AppEvent::Failed(error) => Err(error),
                             _ => Err(fluxdb_core::UserFacingError {
-                                title: "刷新失败".to_string(),
-                                message: "SQL 执行没有返回结果".to_string(),
+                                title: tr("app.query.error.refresh").to_string(),
+                                message: tr("app.query.error.no_result").to_string(),
                                 detail: None,
                                 retryable: true,
                             }),
@@ -486,12 +486,12 @@ impl NavicatMain {
             return;
         }
         self.dispatch(AppCommand::CancelQueryExecution(tab_id), cx);
-        self.show_message("已请求停止执行", AppMessageKind::Info, cx);
+        self.show_message(tr("app.query.toast.stop_requested").as_ref(), AppMessageKind::Info, cx);
     }
 
     fn start_query_execution(&mut self, tab_id: TabId, window: &mut Window, cx: &mut Context<Self>) {
         if self._query_execute_tasks.contains_key(&tab_id.0) {
-            self.show_message("SQL 正在执行", AppMessageKind::Warning, cx);
+            self.show_message(tr("app.query.error.running").as_ref(), AppMessageKind::Warning, cx);
             return;
         }
 
@@ -537,7 +537,7 @@ impl NavicatMain {
         cx: &mut Context<Self>,
     ) {
         if self._query_execute_tasks.contains_key(&tab_id.0) {
-            self.show_message("SQL 正在执行", AppMessageKind::Warning, cx);
+            self.show_message(tr("app.query.error.running").as_ref(), AppMessageKind::Warning, cx);
             return;
         }
 
@@ -559,8 +559,8 @@ impl NavicatMain {
                         AppEvent::QueryFinished(_, execution) => Ok(execution),
                         AppEvent::Failed(error) => Err(error),
                         _ => Err(fluxdb_core::UserFacingError {
-                            title: "执行失败".to_string(),
-                            message: "SQL 执行没有返回结果".to_string(),
+                            title: tr("app.query.error.execution").to_string(),
+                            message: tr("app.query.error.no_result").to_string(),
                             detail: None,
                             retryable: true,
                         }),
@@ -744,7 +744,7 @@ impl NavicatMain {
             }
             PendingQueryExecution::Statement { statement } => {
                 let Some(sql_editor) = self.query_editors.get(&pending.tab_id).cloned() else {
-                    self.show_message("查询编辑器未就绪", AppMessageKind::Warning, cx);
+                    self.show_message(tr("app.query.error.editor_not_ready").as_ref(), AppMessageKind::Warning, cx);
                     return;
                 };
                 self.start_query_statement_execution_resolved(
@@ -830,7 +830,7 @@ impl NavicatMain {
         cx: &mut Context<Self>,
     ) {
         if self._redis_workbench_tasks.contains_key(&tab_id.0) {
-            self.show_message("Redis 命令正在执行", AppMessageKind::Warning, cx);
+            self.show_message(tr("app.redis.error.command_running").as_ref(), AppMessageKind::Warning, cx);
             return;
         }
 
@@ -856,8 +856,8 @@ impl NavicatMain {
                 _ => (
                     String::new(),
                     Err(fluxdb_core::UserFacingError {
-                        title: "执行失败".to_string(),
-                        message: "Redis 命令执行没有返回结果".to_string(),
+                        title: tr("app.query.error.execution").to_string(),
+                        message: tr("app.redis.error.no_command_result").to_string(),
                         detail: None,
                         retryable: true,
                     }),

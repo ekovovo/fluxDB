@@ -10,7 +10,7 @@ fn redis_add_key_string_form(
         .flex()
         .flex_col()
         .gap_2()
-        .child(redis_add_key_form_label("Value", colors))
+        .child(redis_add_key_form_label(tr("app.redis.form.value"), colors))
         .child(
             div()
                 .w_full()

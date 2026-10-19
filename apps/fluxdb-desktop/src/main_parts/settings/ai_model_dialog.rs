@@ -11,15 +11,23 @@ fn ai_input_price_micros(input: &Entity<InputState>, cx: &App) -> Result<Option<
     if raw.is_empty() {
         return Ok(None);
     }
-    let value: f64 = raw.parse().map_err(|_| format!("`{raw}` 不是有效计价"))?;
+    let value: f64 = raw
+        .parse()
+        .map_err(|_| format!("{} {raw}", tr("app.ai.model_dialog.invalid_price")))?;
     if !value.is_finite() || value < 0.0 {
-        return Err("计价不能为负".into());
+        return Err(tr("app.ai.model_dialog.negative_price").to_string());
     }
     Ok(Some((value * 1_000_000.0).round() as i64))
 }
 
 /// 模型表单的一个「标签 + 输入」行（无说明文字，视觉以交互稿为准）。
-fn ai_field(label: &str, input: &Entity<InputState>, colors: UiColors) -> impl IntoElement {
+fn ai_field(
+    label: impl Into<SharedString>,
+    input: &Entity<InputState>,
+    colors: UiColors,
+) -> impl IntoElement {
+    let label = label.into();
+    let debug_label = label.clone();
     div()
         .flex()
         .flex_col()
@@ -29,17 +37,22 @@ fn ai_field(label: &str, input: &Entity<InputState>, colors: UiColors) -> impl I
                 .text_size(px(11.))
                 .font_weight(gpui::FontWeight::MEDIUM)
                 .text_color(colors.text)
-                .child(label.to_string()),
+                .child(label),
         )
         .child(
             div()
-                .debug_selector(|| format!("ai-field:{label}"))
+                .debug_selector(move || format!("ai-field:{debug_label}"))
                 .child(Input::new(input).text_size(px(13.))),
         )
 }
 
 /// API Key 字段：默认掩码 + 组件内置眼睛按钮。
-fn ai_secret_field(label: &str, input: &Entity<InputState>, colors: UiColors) -> impl IntoElement {
+fn ai_secret_field(
+    label: impl Into<SharedString>,
+    input: &Entity<InputState>,
+    colors: UiColors,
+) -> impl IntoElement {
+    let label = label.into();
     div()
         .flex()
         .flex_col()
@@ -49,7 +62,7 @@ fn ai_secret_field(label: &str, input: &Entity<InputState>, colors: UiColors) ->
                 .text_size(px(12.))
                 .font_weight(gpui::FontWeight::MEDIUM)
                 .text_color(colors.text)
-                .child(label.to_string()),
+                .child(label),
         )
         // mask_toggle 必须加在渲染的 Input 上（组件级开关），只设 state 不会出现眼睛。
         .child(
@@ -110,7 +123,7 @@ fn ai_model_id_field(
                         .text_size(px(11.))
                         .font_weight(gpui::FontWeight::MEDIUM)
                         .text_color(colors.text)
-                        .child("模型 ID"),
+                        .child(tr("app.ai.model_dialog.model_id")),
                 )
                 .child(
                     Button::new("ai-model-fetch")
@@ -119,9 +132,9 @@ fn ai_model_id_field(
                         .ghost()
                         .disabled(fetching || dialog.endpoint_is_full_url)
                         .child(if fetching {
-                            "拉取中…"
+                            tr("app.ai.model_dialog.fetching")
                         } else {
-                            "获取模型列表"
+                            tr("app.ai.model_dialog.fetch_models")
                         })
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.fetch_ai_model_list(window, cx);
@@ -184,7 +197,7 @@ fn ai_model_options_panel(
                 .py_2()
                 .text_size(px(12.))
                 .text_color(colors.muted)
-                .child("没有匹配的模型"),
+                .child(tr("app.ai.model_dialog.no_model_match")),
         );
     }
     // 只有存在带前缀分组时才给无前缀项加「其他」标题，避免平铺列表多一个多余标题。
@@ -199,7 +212,7 @@ fn ai_model_options_panel(
                     .text_size(px(11.))
                     .text_color(colors.muted)
                     .child(if group.is_empty() {
-                        "其他".to_string()
+                        tr("app.ai.model_dialog.other").to_string()
                     } else {
                         group.clone()
                     }),
@@ -372,9 +385,9 @@ fn ai_model_dialog(
                         .text_size(px(14.))
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .child(if is_new {
-                            "新建模型"
+                            tr("app.ai.models.new")
                         } else {
-                            "编辑模型"
+                            tr("app.ai.model_dialog.edit_title")
                         }),
                 )
                 .child(
@@ -397,7 +410,11 @@ fn ai_model_dialog(
                 .flex()
                 .flex_col()
                 .gap_3()
-                .child(ai_field("显示名称", &inputs.display_name, colors))
+                .child(ai_field(
+                    &tr("app.ai.model_dialog.display_name"),
+                    &inputs.display_name,
+                    colors,
+                ))
                 .child(ai_select_field("Provider", &inputs.provider, colors))
                 .child(
                     div()
@@ -411,16 +428,16 @@ fn ai_model_dialog(
                                 .justify_between()
                                 .child(div().text_size(px(11.)).text_color(colors.text).child(
                                     if dialog.endpoint_is_full_url {
-                                        "完整对话请求 URL"
+                                        tr("app.ai.model_dialog.full_url_label")
                                     } else {
-                                        "API Base URL"
+                                        tr("app.ai.model_dialog.base_url_label")
                                     },
                                 ))
                                 .child(
                                     div().debug_selector(|| "ai-model-full-url".into()).child(
                                         Switch::new("ai-model-full-url")
                                             .small()
-                                            .label("完整 URL")
+                                            .label(tr("app.ai.model_dialog.full_url"))
                                             .checked(dialog.endpoint_is_full_url)
                                             .disabled(dialog.fetching_models)
                                             .on_click(cx.listener(|this, checked, _, cx| {
@@ -441,9 +458,9 @@ fn ai_model_dialog(
                         )
                         .child(div().text_size(px(11.)).text_color(colors.muted).child(
                             if dialog.endpoint_is_full_url {
-                                "直接请求该地址，不追加路由；模型 ID 请手工填写"
+                                tr("app.ai.model_dialog.full_url_help")
                             } else {
-                                "自动追加协议路由；已含 /v1、/v4 等版本时不重复追加"
+                                tr("app.ai.model_dialog.base_url_help")
                             },
                         )),
                 )
@@ -473,14 +490,14 @@ fn ai_model_dialog(
                                     div()
                                         .text_size(px(12.))
                                         .text_color(colors.text)
-                                        .child("允许数据出站"),
+                                        .child(tr("app.ai.model_dialog.egress")),
                                 )
                                 .child(
                                     div()
                                         .text_size(px(11.))
                                         .text_color(colors.muted)
                                         .child(
-                                            "关闭后本模型的会话数据不再发送到该地址；询问AI 会阻止使用它。",
+                                            tr("app.ai.model_dialog.egress_help"),
                                         ),
                                 ),
                         )
@@ -503,13 +520,13 @@ fn ai_model_dialog(
                         .flex()
                         .gap_3()
                         .child(div().flex_1().min_w(px(0.)).child(ai_capacity_field(
-                            "上下文窗口（Token）",
+                            tr("app.ai.model_dialog.context_window"),
                             &inputs.context_window,
                             &inputs.context_unit,
                             colors,
                         )))
                         .child(div().flex_1().min_w(px(0.)).child(ai_capacity_field(
-                            "最大输出（Token）",
+                            tr("app.ai.model_dialog.max_output"),
                             &inputs.max_output,
                             &inputs.output_unit,
                             colors,
@@ -521,17 +538,17 @@ fn ai_model_dialog(
                         .flex()
                         .gap_3()
                         .child(div().flex_1().min_w(px(0.)).child(ai_field(
-                            "计价 · 输入 $/1M",
+                            tr("app.ai.model_dialog.price_input"),
                             &inputs.price_input,
                             colors,
                         )))
                         .child(div().flex_1().min_w(px(0.)).child(ai_field(
-                            "计价 · 输出 $/1M",
+                            tr("app.ai.model_dialog.price_output"),
                             &inputs.price_output,
                             colors,
                         )))
                         .child(div().flex_1().min_w(px(0.)).child(ai_field(
-                            "计价 · 缓存 $/1M",
+                            tr("app.ai.model_dialog.price_cache"),
                             &inputs.price_cache,
                             colors,
                         ))),
@@ -556,7 +573,7 @@ fn ai_model_dialog(
                         .debug_selector(|| "ai-model-cancel".into())
                         .small()
                         .ghost()
-                        .child("取消")
+                        .child(tr("app.common.cancel"))
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.ai_model_dialog = None;
                             cx.notify();
@@ -567,7 +584,7 @@ fn ai_model_dialog(
                         .debug_selector(|| "ai-model-save".into())
                         .small()
                         .primary()
-                        .child("保存模型")
+                        .child(tr("app.ai.model_dialog.save"))
                         .on_click(move |_, _, cx| {
                             let _ = this.update(cx, |this, cx| {
                                 this.submit_ai_model_dialog(cx);

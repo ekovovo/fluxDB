@@ -35,16 +35,34 @@ fn pg_advanced_panel(
 
     let mut form = div().flex().flex_col().gap_2();
     form = form
-        .child(pg_section_title("角色能力", colors))
-        .child(pg_attr_switch_row("创建数据库", "CREATEDB", "可以在集群中创建数据库。", draft.can_create_db, is_predefined, attr_toggle(PgDraftAttrField::CanCreateDb), colors, cx))
-        .child(pg_attr_switch_row("创建与管理角色", "CREATEROLE", "可以创建与管理角色；实际可管理范围受版本与 ADMIN 规则约束。", draft.can_create_role, is_predefined, attr_toggle(PgDraftAttrField::CanCreateRole), colors, cx))
+        .child(pg_section_title(tr("app.pg_role.advanced.capabilities"), colors))
         .child(pg_attr_switch_row(
-            "继承权限",
+            tr("app.pg_role.attr.createdb.label"),
+            "CREATEDB",
+            tr("app.pg_role.attr.createdb.hint"),
+            draft.can_create_db,
+            is_predefined,
+            attr_toggle(PgDraftAttrField::CanCreateDb),
+            colors,
+            cx,
+        ))
+        .child(pg_attr_switch_row(
+            tr("app.pg_role.attr.createrole.label"),
+            "CREATEROLE",
+            tr("app.pg_role.attr.createrole.hint"),
+            draft.can_create_role,
+            is_predefined,
+            attr_toggle(PgDraftAttrField::CanCreateRole),
+            colors,
+            cx,
+        ))
+        .child(pg_attr_switch_row(
+            tr("app.pg_role.attr.inherit.label"),
             "INHERIT",
             match member_options {
-                Some(true) => "PG16+：作为该角色新成员授权的 INHERIT 默认值，不是已有成员关系的总开关。",
-                Some(false) => "PG15 及以前：控制是否自动继承所属角色的权限。",
-                None => "控制权限继承；具体语义随服务端版本（PG15/PG16+）不同。",
+                Some(true) => tr("app.pg_role.attr.inherit.pg16"),
+                Some(false) => tr("app.pg_role.attr.inherit.pg15"),
+                None => tr("app.pg_role.attr.inherit.unknown"),
             },
             draft.inherit,
             is_predefined,
@@ -55,14 +73,14 @@ fn pg_advanced_panel(
 
     form = form
         .child(div().h(px(6.)))
-        .child(pg_section_title("敏感能力", colors))
-        .child(pg_attr_switch_row("超级用户", "SUPERUSER", "绕过除登录外的所有权限检查。请谨慎授予。", draft.is_superuser, is_predefined, attr_toggle(PgDraftAttrField::IsSuperuser), colors, cx))
-        .child(pg_attr_switch_row("复制能力", "REPLICATION", "允许流复制连接。", draft.is_replication, is_predefined, attr_toggle(PgDraftAttrField::IsReplication), colors, cx))
-        .child(pg_attr_switch_row("绕过行级安全", "BYPASSRLS", "忽略所有行级安全策略。请谨慎授予。", draft.bypass_rls, is_predefined, attr_toggle(PgDraftAttrField::BypassRls), colors, cx));
+        .child(pg_section_title(tr("app.pg_role.advanced.sensitive"), colors))
+        .child(pg_attr_switch_row(tr("app.pg_role.attr.superuser.label"), "SUPERUSER", tr("app.pg_role.attr.superuser.hint"), draft.is_superuser, is_predefined, attr_toggle(PgDraftAttrField::IsSuperuser), colors, cx))
+        .child(pg_attr_switch_row(tr("app.pg_role.attr.replication.label"), "REPLICATION", tr("app.pg_role.attr.replication.hint"), draft.is_replication, is_predefined, attr_toggle(PgDraftAttrField::IsReplication), colors, cx))
+        .child(pg_attr_switch_row(tr("app.pg_role.attr.bypassrls.label"), "BYPASSRLS", tr("app.pg_role.attr.bypassrls.hint"), draft.bypass_rls, is_predefined, attr_toggle(PgDraftAttrField::BypassRls), colors, cx));
 
     form = form
         .child(div().h(px(6.)))
-        .child(pg_section_title("连接限制", colors))
+        .child(pg_section_title(tr("app.pg_role.advanced.connection_limit"), colors))
         .child(pg_connection_limit_row(
             this.pg_connection_limit_input.clone(),
             !is_predefined,
@@ -71,7 +89,7 @@ fn pg_advanced_panel(
             cx,
         ))
         .child(pg_advanced_hint(
-            "-1 表示不限制。该限制针对普通连接，不是精确限流器；超级用户连接等场景存在例外。",
+            tr("app.pg_role.advanced.connection_limit_hint"),
             colors,
         ));
 
@@ -95,10 +113,11 @@ fn pg_advanced_empty(colors: UiColors) -> Div {
         .justify_center()
         .text_size(px(13.))
         .text_color(colors.muted)
-        .child("请选择角色")
+        .child(tr("app.pg_role.select_role"))
 }
 
-fn pg_section_title(title: &'static str, colors: UiColors) -> Div {
+fn pg_section_title(title: impl Into<SharedString>, colors: UiColors) -> Div {
+    let title: SharedString = title.into();
     div()
         .text_size(px(13.))
         .font_weight(gpui::FontWeight::SEMIBOLD)
@@ -109,15 +128,17 @@ fn pg_section_title(title: &'static str, colors: UiColors) -> Div {
 /// 属性开关行：中文名 + SQL 属性 + 一句解释。
 #[allow(clippy::too_many_arguments)]
 fn pg_attr_switch_row(
-    label: &'static str,
+    label: impl Into<SharedString>,
     attr: &'static str,
-    hint: &'static str,
+    hint: impl Into<SharedString>,
     checked: bool,
     disabled: bool,
     on_click: impl Fn(&mut NavicatMain, &bool, &mut Window, &mut Context<NavicatMain>) + 'static,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
+    let hint: SharedString = hint.into();
+    let label: SharedString = label.into();
     div()
         .h(px(48.))
         .flex()
@@ -152,7 +173,8 @@ fn pg_attr_switch_row(
         )
 }
 
-fn pg_form_label_advanced(label: &'static str, colors: UiColors) -> Div {
+fn pg_form_label_advanced(label: impl Into<SharedString>, colors: UiColors) -> Div {
+    let label: SharedString = label.into();
     div()
         .w(px(120.))
         .text_size(px(13.))
@@ -173,11 +195,12 @@ fn pg_connection_limit_row(
         .flex()
         .items_center()
         .gap_3()
-        .child(pg_form_label_advanced("连接数限制:", colors))
+        .child(pg_form_label_advanced(tr("app.pg_role.field.connection_limit"), colors))
         .child(pg_form_input_box(input, enabled, window, colors, cx))
 }
 
-fn pg_advanced_hint(text: &'static str, colors: UiColors) -> Div {
+fn pg_advanced_hint(text: impl Into<SharedString>, colors: UiColors) -> Div {
+    let text: SharedString = text.into();
     div()
         .ml(px(132.))
         .max_w(px(360.))

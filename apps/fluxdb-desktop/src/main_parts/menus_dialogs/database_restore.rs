@@ -29,7 +29,7 @@ struct RestoreModal {
     target_db: Entity<SelectState<SearchableVec<String>>>,
     /// 已为目标连接加载过库列表的连接 id，用于渲染时判断是否需要重载（连接切换）。
     target_db_loaded_for: Option<ConnectionId>,
-    mode: Entity<SelectState<SearchableVec<String>>>,
+    mode: Entity<SelectState<SearchableVec<RestoreModeOption>>>,
     /// 高级页：事务范围下拉（引擎默认/单事务）；SQLite 隐藏。
     transaction: Entity<SelectState<SearchableVec<String>>>,
     /// 高级页：完成验证下拉（基础/逐表行数）；SQLite 隐藏。
@@ -53,8 +53,141 @@ struct RestoreModal {
     runtime: std::rc::Rc<std::cell::RefCell<RestoreRuntime>>,
 }
 
-/// 已存在对象默认的动作占位：强制用户显式选择，绝不静默退化为破坏性动作。
-const PLACEHOLDER_ACTION: &str = "待选择策略";
+/// 恢复目标模式：界面文案可翻译，业务判断始终使用稳定值。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RestoreTargetMode {
+    NewFile,
+    NewDatabase,
+    ExistingDatabase,
+}
+
+impl RestoreTargetMode {
+    fn label(self) -> SharedString {
+        match self {
+            Self::NewFile => tr("app.database_restore.mode.new_file"),
+            Self::NewDatabase => tr("app.database_restore.mode.new_database"),
+            Self::ExistingDatabase => tr("app.database_restore.mode.existing_database"),
+        }
+    }
+}
+
+#[derive(Clone)]
+struct RestoreModeOption {
+    mode: RestoreTargetMode,
+    label: SharedString,
+}
+
+impl SelectItem for RestoreModeOption {
+    type Value = RestoreTargetMode;
+
+    fn title(&self) -> SharedString {
+        self.label.clone()
+    }
+
+    fn value(&self) -> &Self::Value {
+        &self.mode
+    }
+}
+
+fn restore_mode_option(mode: RestoreTargetMode) -> RestoreModeOption {
+    RestoreModeOption {
+        mode,
+        label: mode.label(),
+    }
+}
+
+/// 逐表动作选择：`Pending` 是强制用户显式选择的占位，绝不静默退化为破坏性动作。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RestoreActionChoice {
+    Pending,
+    Action(fluxdb_core::RestoreTableAction),
+}
+
+impl RestoreActionChoice {
+    fn label(self) -> SharedString {
+        match self {
+            Self::Pending => tr("app.database_restore.action.placeholder"),
+            Self::Action(action) => restore_action_label(action),
+        }
+    }
+}
+
+#[derive(Clone)]
+struct RestoreActionOption {
+    choice: RestoreActionChoice,
+    label: SharedString,
+}
+
+impl SelectItem for RestoreActionOption {
+    type Value = RestoreActionChoice;
+
+    fn title(&self) -> SharedString {
+        self.label.clone()
+    }
+
+    fn value(&self) -> &Self::Value {
+        &self.choice
+    }
+}
+
+fn restore_action_option(choice: RestoreActionChoice) -> RestoreActionOption {
+    RestoreActionOption {
+        choice,
+        label: choice.label(),
+    }
+}
+
+fn restore_action_label(action: fluxdb_core::RestoreTableAction) -> SharedString {
+    match action {
+        fluxdb_core::RestoreTableAction::Create => tr("app.database_restore.action.create"),
+        fluxdb_core::RestoreTableAction::Recreate => tr("app.database_restore.action.recreate"),
+        fluxdb_core::RestoreTableAction::TruncateAndLoad => {
+            tr("app.database_restore.action.truncate_load")
+        }
+        fluxdb_core::RestoreTableAction::Append => tr("app.database_restore.action.append"),
+        fluxdb_core::RestoreTableAction::Skip => tr("app.database_restore.action.skip"),
+    }
+}
+
+fn restore_status_label(status: fluxdb_core::RestoreObjectStatus) -> SharedString {
+    match status {
+        fluxdb_core::RestoreObjectStatus::Succeeded => {
+            tr("app.database_restore.status.succeeded")
+        }
+        fluxdb_core::RestoreObjectStatus::Warning => tr("app.database_restore.status.warning"),
+        fluxdb_core::RestoreObjectStatus::Failed => tr("app.database_restore.status.failed"),
+        fluxdb_core::RestoreObjectStatus::Skipped => tr("app.database_restore.status.skipped"),
+    }
+}
+
+fn restore_transaction_label(mode: fluxdb_app::RestoreTransactionMode) -> SharedString {
+    match mode {
+        fluxdb_app::RestoreTransactionMode::EngineDefault => {
+            tr("app.database_restore.transaction.engine_default")
+        }
+        fluxdb_app::RestoreTransactionMode::SingleTransaction => {
+            tr("app.database_restore.transaction.single_transaction")
+        }
+    }
+}
+
+fn restore_validation_label(validation: fluxdb_app::RestoreValidation) -> SharedString {
+    match validation {
+        fluxdb_app::RestoreValidation::Basic => tr("app.database_restore.validation.basic"),
+        fluxdb_app::RestoreValidation::RowCount => {
+            tr("app.database_restore.validation.row_count")
+        }
+    }
+}
+
+fn restore_format_label(format: fluxdb_core::BackupFormat) -> SharedString {
+    match format {
+        fluxdb_core::BackupFormat::Sql => tr("app.database_restore.format.sql"),
+        fluxdb_core::BackupFormat::SqliteBinary => {
+            tr("app.database_restore.format.sqlite_binary")
+        }
+    }
+}
 
 /// 逐表恢复的一行：探测得到的对象事实 + 该表的动作下拉（候选已按事实过滤）。
 #[derive(Clone)]
@@ -69,7 +202,7 @@ struct TableGridRow {
     has_ddl: bool,
     /// 备份是否含数据（决定能否清空/追加）。
     has_data: bool,
-    select: Entity<SelectState<SearchableVec<String>>>,
+    select: Entity<SelectState<SearchableVec<RestoreActionOption>>>,
 }
 
 impl NavicatMain {
@@ -92,7 +225,11 @@ impl NavicatMain {
                 | DatabaseKind::Postgres
                 | DatabaseKind::Sqlite
         ) {
-            self.show_message("此数据库尚不支持恢复", AppMessageKind::Warning, cx);
+            self.show_message(
+                tr("app.database_restore.unsupported"),
+                AppMessageKind::Warning,
+                cx,
+            );
             return;
         }
         let kind = initial.kind;
@@ -135,9 +272,12 @@ impl NavicatMain {
         };
         let target_input = cx.new(|cx| InputState::new(window, cx).default_value(target_default));
         let modes = if kind == DatabaseKind::Sqlite {
-            vec!["新文件".to_string()]
+            vec![restore_mode_option(RestoreTargetMode::NewFile)]
         } else {
-            vec!["新数据库".into(), "现有库".into()]
+            vec![
+                restore_mode_option(RestoreTargetMode::NewDatabase),
+                restore_mode_option(RestoreTargetMode::ExistingDatabase),
+            ]
         };
         let mode = cx.new(|cx| {
             SelectState::new(
@@ -156,11 +296,11 @@ impl NavicatMain {
             SelectState::new(
                 SearchableVec::new(
                     [
-                        fluxdb_app::RestoreTransactionMode::EngineDefault,
-                        fluxdb_app::RestoreTransactionMode::SingleTransaction,
+                        tr("app.database_restore.transaction.engine_default"),
+                        tr("app.database_restore.transaction.single_transaction"),
                     ]
                     .into_iter()
-                    .map(|m| m.label().to_string())
+                    .map(|label| label.to_string())
                     .collect::<Vec<String>>(),
                 ),
                 Some(IndexPath::default().row(0)),
@@ -172,11 +312,11 @@ impl NavicatMain {
             SelectState::new(
                 SearchableVec::new(
                     [
-                        fluxdb_app::RestoreValidation::Basic,
-                        fluxdb_app::RestoreValidation::RowCount,
+                        tr("app.database_restore.validation.basic"),
+                        tr("app.database_restore.validation.row_count"),
                     ]
                     .into_iter()
-                    .map(|v| v.label().to_string())
+                    .map(|label| label.to_string())
                     .collect::<Vec<String>>(),
                 ),
                 Some(IndexPath::default().row(0)),
@@ -214,7 +354,7 @@ impl NavicatMain {
             runtime: std::rc::Rc::new(std::cell::RefCell::new(RestoreRuntime {
                 running: false,
                 prepared: None,
-                logs: vec!["先检查备份和目标，确认计划后才能恢复。非空目标禁止覆盖。".into()],
+                logs: vec![tr("app.database_restore.initial_log").to_string()],
                 cancel: Arc::new(AtomicBool::new(false)),
                 backup_id: backup_record_id,
             })),
@@ -279,7 +419,11 @@ impl NavicatMain {
             return;
         };
         let existing_mode = modal.kind != DatabaseKind::Sqlite
-            && modal.mode.read(cx).selected_value().is_some_and(|v| v == "现有库");
+            && modal
+                .mode
+                .read(cx)
+                .selected_value()
+                .is_some_and(|v| *v == RestoreTargetMode::ExistingDatabase);
         if !existing_mode {
             if modal.probe_key.is_some() || modal.probe_running || !modal.table_grid.is_empty() {
                 if let Some(m) = &mut self.restore_modal {
@@ -359,7 +503,7 @@ impl NavicatMain {
                     ) {
                         AppEvent::RestoreObjectsProbed(objects) => Ok(objects),
                         AppEvent::Failed(error) => Err(error.message),
-                        _ => Err("探测返回了错误事件".to_string()),
+                        _ => Err(tr("app.database_restore.probe_error").to_string()),
                     }
                 })
                 .await;
@@ -393,7 +537,10 @@ impl NavicatMain {
                                 m.probe_error = Some(message.clone());
                             }
                             this.show_message(
-                                format!("目标检查失败：{message}"),
+                                format!(
+                                    "{}: {message}",
+                                    tr("app.database_restore.target_check_failed")
+                                ),
                                 AppMessageKind::Warning,
                                 cx,
                             );
@@ -416,11 +563,11 @@ impl NavicatMain {
         let grid = objects
             .into_iter()
             .map(|o| {
-                let (labels, default_idx) =
+                let (options, default_idx) =
                     restore_row_action_plan(o.exists_in_target, o.has_ddl, o.has_data);
                 let select = cx.new(|cx| {
                     SelectState::new(
-                        SearchableVec::new(labels),
+                        SearchableVec::new(options),
                         Some(IndexPath::default().row(default_idx)),
                         window,
                         cx,
@@ -447,23 +594,21 @@ impl NavicatMain {
         let Some(modal) = &self.restore_modal else {
             return Vec::new();
         };
-        if modal.mode.read(cx).selected_value().is_none_or(|v| v != "现有库") {
+        if modal
+            .mode
+            .read(cx)
+            .selected_value()
+            .is_none_or(|v| *v != RestoreTargetMode::ExistingDatabase)
+        {
             return Vec::new();
         }
         modal
             .table_grid
             .iter()
             .filter_map(|row| {
-                let label = row.select.read(cx).selected_value()?;
-                if label == PLACEHOLDER_ACTION {
-                    return None;
-                }
-                let act = match label.as_str() {
-                    "新建表" => fluxdb_core::RestoreTableAction::Create,
-                    "重建表" => fluxdb_core::RestoreTableAction::Recreate,
-                    "清空后导入" => fluxdb_core::RestoreTableAction::TruncateAndLoad,
-                    "追加数据" => fluxdb_core::RestoreTableAction::Append,
-                    _ => fluxdb_core::RestoreTableAction::Skip,
+                let act = match row.select.read(cx).selected_value()? {
+                    RestoreActionChoice::Pending => return None,
+                    RestoreActionChoice::Action(action) => *action,
                 };
                 Some(fluxdb_core::PerTableDecision {
                     table: row.key.clone(),
@@ -485,7 +630,7 @@ impl NavicatMain {
                 row.select
                     .read(cx)
                     .selected_value()
-                    .is_some_and(|v| v == PLACEHOLDER_ACTION)
+                    .is_some_and(|v| *v == RestoreActionChoice::Pending)
             })
             .count()
     }
@@ -502,7 +647,7 @@ impl NavicatMain {
         {
             let mut data = state.borrow_mut();
             data.running = true;
-            data.logs = vec!["正在检查文件、客户端和目标…".into()];
+            data.logs = vec![tr("app.database_restore.checking").to_string()];
             data.cancel.store(false, Ordering::Relaxed);
         }
         let controller = self.controller.clone();
@@ -532,17 +677,22 @@ impl NavicatMain {
                         for info in &plan.tables {
                             let action = info.default_action;
                             let mut line = format!(
-                                "· {} → {}{}",
-                                info.name,
-                                action.label(),
-                                if info.exists_in_target { "（目标已存在）" } else { "（目标新建）" }
+                                "{}{}",
+                                tr("app.database_restore.plan.table_line")
+                                    .replace("%{name}", &info.name)
+                                    .replace("%{action}", restore_action_label(action).as_str()),
+                                if info.exists_in_target {
+                                    tr("app.database_restore.target_exists")
+                                } else {
+                                    tr("app.database_restore.target_new")
+                                }
                             );
                             if action.destroys_target_data() {
-                                line.push_str("　⚠ 将删除目标现有数据/定义");
+                                line.push_str(&tr("app.database_restore.destructive_warning"));
                             }
                             data.logs.push(line);
                             for risk in &info.risks {
-                                data.logs.push(format!("    风险：{risk}"));
+                                data.logs.push(tr("app.database_restore.risk").replace("%{risk}", risk));
                             }
                         }
                         data.prepared = Some((request, plan));
@@ -572,7 +722,7 @@ impl NavicatMain {
             data.running = true;
             data.cancel.store(false, Ordering::Relaxed);
             data.logs
-                .push("开始恢复；关闭弹框不会取消后台任务。".into());
+                .push(tr("app.database_restore.started_log").to_string());
         }
         let controller = self.controller.clone();
         let storage = self.storage.clone();
@@ -635,38 +785,53 @@ impl NavicatMain {
                         data.prepared = None;
                         let success = result.is_ok();
                         let message = match &result {
-                            Ok(outcome) => format!("恢复完成：{}", outcome.verification),
-                            Err(e) => format!("恢复失败：{}", e.message),
+                            Ok(outcome) => tr("app.database_restore.completed")
+                                .replace("%{verification}", &outcome.verification),
+                            Err(e) => tr("app.database_restore.failed")
+                                .replace("%{error}", &e.message),
                         };
                         data.logs.push(message.clone());
                         // 逐对象结果（设计文档 §15.3）：状态 + 动作 + 明细。
                         if let Ok(outcome) = &result {
                             if outcome.total_objects > 0 {
-                                data.logs.push(format!(
-                                    "对象结果：共 {} 个",
-                                    outcome.total_objects
-                                ));
+                                data.logs.push(
+                                    tr("app.database_restore.object_results")
+                                        .replace(
+                                            "%{count}",
+                                            &outcome.total_objects.to_string(),
+                                        ),
+                                );
                             }
                             for obj in &outcome.objects {
                                 let action = obj
                                     .action
-                                    .map(|a| format!("（{}）", a.label()))
+                                    .map(|a| {
+                                        tr("app.database_restore.result.action_suffix")
+                                            .replace("%{action}", &restore_action_label(a))
+                                    })
                                     .unwrap_or_default();
                                 let detail = if obj.detail.is_empty() {
                                     String::new()
                                 } else {
-                                    format!("：{}", obj.detail)
+                                    tr("app.database_restore.result.detail_suffix")
+                                        .replace("%{detail}", &obj.detail)
                                 };
                                 data.logs.push(format!(
-                                    "· {} {} → {}{detail}",
-                                    obj.name,
+                                    "{} {}{}{}",
+                                    tr("app.database_restore.result.object")
+                                        .replace("%{name}", &obj.name),
                                     action,
-                                    obj.status.label()
+                                    tr("app.database_restore.result.status")
+                                        .replace("%{status}", &restore_status_label(obj.status)),
+                                    detail
                                 ));
                             }
                         }
                         if let Err(e) = persisted {
-                            data.logs.push(format!("恢复记录保存失败：{e}"));
+                            data.logs.push(
+                                tr("app.database_restore.record_save_failed")
+                                    .replace("%{error}", &e.to_string()),
+                            );
                         }
                         this.show_message(
                             message,
@@ -717,7 +882,11 @@ impl NavicatMain {
             .tables
             .iter()
             .filter(|t| t.default_action.destroys_target_data())
-            .map(|t| format!("{}（{}）", t.name, t.default_action.label()))
+            .map(|t| {
+                tr("app.database_restore.plan.object_with_action")
+                    .replace("%{name}", &t.name)
+                    .replace("%{action}", restore_action_label(t.default_action).as_str())
+            })
             .collect();
         // 整库覆盖（非逐表）到现有库同样具有破坏性：create_target=false 且非逐表时提示。
         let whole_overwrite = plan.tables.is_empty() && !request.create_target;
@@ -730,7 +899,7 @@ impl NavicatMain {
             m.confirm_open = true;
             m.confirm_target = request.target.clone();
             m.confirm_destructive = if destructive.is_empty() {
-                vec!["整库恢复到现有库将覆盖其中全部同名对象".to_string()]
+                vec![tr("app.database_restore.whole_db_warning").to_string()]
             } else {
                 destructive
             };
@@ -759,7 +928,8 @@ impl NavicatMain {
         let typed = modal.confirm_input.read(cx).value().trim().to_string();
         if typed != modal.confirm_target {
             self.show_message(
-                format!("请原样输入目标名称「{}」以确认", modal.confirm_target),
+                tr("app.database_restore.confirm_target")
+                    .replace("%{target}", &modal.confirm_target),
                 AppMessageKind::Warning,
                 cx,
             );
@@ -791,7 +961,7 @@ fn database_restore_modal(
             row.select
                 .read(cx)
                 .selected_value()
-                .is_some_and(|v| v == PLACEHOLDER_ACTION)
+                    .is_some_and(|v| *v == RestoreActionChoice::Pending)
         })
         .count();
     let panel = restore_modal_panel(colors, cx)
@@ -874,7 +1044,8 @@ fn restore_modal_header(
         .cloned()
         .unwrap_or_default();
     let context = if conn_label.is_empty() {
-        format!("{} · 未选择目标连接", database_kind_name(modal.kind))
+        tr("app.database_restore.no_target_connection")
+            .replace("%{kind}", database_kind_name(modal.kind))
     } else {
         format!("{conn_label} · {}", database_kind_name(modal.kind))
     };
@@ -901,7 +1072,7 @@ fn restore_modal_header(
                             div()
                                 .text_size(px(18.))
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
-                                .child("恢复数据库"),
+                                .child(tr("app.database_restore.title")),
                         ),
                 )
                 .child(
@@ -988,7 +1159,7 @@ fn restore_log_list(logs: &[String], colors: UiColors) -> Div {
             div()
                 .text_size(px(12.))
                 .text_color(colors.muted)
-                .child("暂无消息。"),
+                .child(tr("app.database_restore.no_messages")),
         );
     }
     for line in logs {
@@ -1015,13 +1186,14 @@ fn restore_modal_footer(
 ) -> Div {
     // 底栏左侧状态（设计文档 §14.1 D 区）：任务状态 / 计划摘要 / 待选择策略提示 / 草稿提示。
     let status = if busy {
-        "正在处理…".to_string()
+        tr("app.database_restore.processing").to_string()
     } else if let Some((_, plan)) = &runtime.prepared {
         plan.summary.clone()
     } else if pending > 0 {
-        format!("已有 {pending} 个对象待选择还原策略")
+        tr("app.database_restore.pending_objects")
+            .replace("%{count}", &pending.to_string())
     } else {
-        "编辑草稿 · 先「预检查」生成计划".to_string()
+        tr("app.database_restore.draft_status").to_string()
     };
     div()
         .h(px(54.))
@@ -1043,7 +1215,11 @@ fn restore_modal_footer(
         )
         .child(
             Button::new("restore-cancel-task")
-                .label(if busy { "取消任务" } else { "关闭" })
+                .label(if busy {
+                    tr("app.database_restore.cancel_task")
+                } else {
+                    tr("app.common.close")
+                })
                 .small()
                 .w(px(92.))
                 .on_click(cx.listener(|this, _, _, cx| {
@@ -1065,7 +1241,7 @@ fn restore_modal_footer(
         )
         .child(
             Button::new("restore-edit")
-                .label("修改目标")
+                .label(tr("app.database_restore.change_target"))
                 .small()
                 .w(px(92.))
                 .disabled(busy || !has_plan)
@@ -1079,7 +1255,11 @@ fn restore_modal_footer(
         )
         .child(
             Button::new("restore-check")
-                .label(if busy { "处理中…" } else { "预检查" })
+                .label(if busy {
+                    tr("app.database_restore.processing")
+                } else {
+                    tr("app.database_restore.preflight")
+                })
                 .small()
                 .w(px(92.))
                 .disabled(busy || has_plan || pending > 0)
@@ -1090,7 +1270,7 @@ fn restore_modal_footer(
         )
         .child(
             Button::new("restore-run")
-                .label("确认恢复")
+                .label(tr("app.database_restore.confirm_restore"))
                 .primary()
                 .small()
                 .w(px(92.))
@@ -1158,7 +1338,7 @@ fn restore_confirm_overlay(
                             div()
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
                                 .text_size(px(15.))
-                                .child("破坏性操作确认"),
+                                .child(tr("app.database_restore.destructive_confirm")),
                         ),
                 )
                 // 主体：说明 + 破坏性对象清单 + 原样输入目标名。
@@ -1173,7 +1353,7 @@ fn restore_confirm_overlay(
                             div()
                                 .text_size(px(12.))
                                 .text_color(colors.muted)
-                                .child("以下对象将删除目标现有数据或定义，此操作无法撤销："),
+                                .child(tr("app.database_restore.destructive_objects")),
                         )
                         .child(
                             div()
@@ -1201,9 +1381,10 @@ fn restore_confirm_overlay(
                                         )
                                 })),
                         )
-                        .child(div().text_size(px(12.)).child(format!(
-                            "请输入目标名称「{target}」以确认执行："
-                        )))
+                        .child(div().text_size(px(12.)).child(
+                            tr("app.database_restore.enter_target")
+                                .replace("%{target}", &target),
+                        ))
                         .child(
                             div()
                                 .w_full()
@@ -1225,7 +1406,7 @@ fn restore_confirm_overlay(
                         .gap_2()
                         .child(
                             Button::new("restore-confirm-cancel")
-                                .label("取消")
+                                .label(tr("app.common.cancel"))
                                 .small()
                                 .w(px(88.))
                                 .on_click(cx.listener(|this, _, _, cx| {
@@ -1235,7 +1416,7 @@ fn restore_confirm_overlay(
                         )
                         .child(
                             Button::new("restore-confirm-run")
-                                .label("确认执行")
+                                .label(tr("app.database_restore.confirm_execute"))
                                 .danger()
                                 .small()
                                 .w(px(100.))
@@ -1292,7 +1473,7 @@ impl NavicatMain {
                 files: true,
                 directories: false,
                 multiple: false,
-                prompt: Some("选择备份文件".into()),
+                prompt: Some(tr("app.database_restore.choose_backup")),
             });
             self._file_picker_task = Some(cx.spawn_in(window, async move |view, cx| {
                 let selected = match receiver.await {
@@ -1330,14 +1511,15 @@ impl NavicatMain {
         }
         let source = PathBuf::from(modal.source_input.read(cx).value().to_string());
         let kind = modal.kind;
-        let mode_value = modal
+        let mode = modal
             .mode
             .read(cx)
             .selected_value()
-            .cloned()
-            .unwrap_or_default();
+            .copied()
+            .unwrap_or(RestoreTargetMode::NewDatabase);
         // 非 Sqlite 且选「现有库」→ 目标是目标连接下的已存在库（下拉选择，不建库）。
-        let existing_mode = kind != DatabaseKind::Sqlite && mode_value == "现有库";
+        let existing_mode =
+            kind != DatabaseKind::Sqlite && mode == RestoreTargetMode::ExistingDatabase;
         let target = if existing_mode {
             modal
                 .target_db
@@ -1392,29 +1574,40 @@ impl NavicatMain {
 /// 依据探测事实（存在性 + 备份内容）给出某行的合法动作候选与默认选择索引（设计文档 §6.4）。
 /// - 目标不存在：有结构默认「新建表」；无结构无处建表，只能「不处理」。
 /// - 目标已存在：默认「待选择策略」占位强制显式选择；重建需结构，清空/追加需数据；恒含「不处理」。
-fn restore_row_action_plan(exists: bool, has_ddl: bool, has_data: bool) -> (Vec<String>, usize) {
+fn restore_row_action_plan(
+    exists: bool,
+    has_ddl: bool,
+    has_data: bool,
+) -> (Vec<RestoreActionOption>, usize) {
+    use fluxdb_core::RestoreTableAction as Action;
+    let create = || restore_action_option(RestoreActionChoice::Action(Action::Create));
+    let recreate = || restore_action_option(RestoreActionChoice::Action(Action::Recreate));
+    let truncate = || restore_action_option(RestoreActionChoice::Action(Action::TruncateAndLoad));
+    let append = || restore_action_option(RestoreActionChoice::Action(Action::Append));
+    let skip = || restore_action_option(RestoreActionChoice::Action(Action::Skip));
+    let pending = || restore_action_option(RestoreActionChoice::Pending);
     if !exists {
         if has_ddl {
-            (vec!["新建表".to_string(), "不处理".to_string()], 0)
+            (vec![create(), skip()], 0)
         } else {
-            (vec!["不处理".to_string()], 0)
+            (vec![skip()], 0)
         }
     } else {
-        let mut real: Vec<String> = Vec::new();
+        let mut real: Vec<RestoreActionOption> = Vec::new();
         if has_ddl {
-            real.push("重建表".to_string());
+            real.push(recreate());
         }
         if has_data {
-            real.push("清空后导入".to_string());
-            real.push("追加数据".to_string());
+            real.push(truncate());
+            real.push(append());
         }
         if real.is_empty() {
-            (vec!["不处理".to_string()], 0)
+            (vec![skip()], 0)
         } else {
-            let mut labels = vec![PLACEHOLDER_ACTION.to_string()];
-            labels.extend(real);
-            labels.push("不处理".to_string());
-            (labels, 0)
+            let mut options = vec![pending()];
+            options.extend(real);
+            options.push(skip());
+            (options, 0)
         }
     }
 }

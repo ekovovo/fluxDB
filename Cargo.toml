@@ -6,6 +6,7 @@ members = [
     "crates/fluxdb-connectors",
     "crates/fluxdb-core",
     "crates/fluxdb-editor-core",
+    "crates/fluxdb-i18n",
     "crates/fluxdb-storage",
 ]
 resolver = "3"

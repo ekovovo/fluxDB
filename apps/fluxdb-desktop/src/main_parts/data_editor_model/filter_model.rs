@@ -57,11 +57,11 @@ enum BatchSeparator {
 }
 
 impl BatchSeparator {
-    fn label(self) -> &'static str {
+    fn label(self) -> SharedString {
         match self {
-            Self::Newline => "每行一个值",
-            Self::Comma => "逗号分隔",
-            Self::Tab => "制表符分隔",
+            Self::Newline => tr("app.filter.separator_newline"),
+            Self::Comma => tr("app.filter.separator_comma"),
+            Self::Tab => tr("app.filter.separator_tab"),
         }
     }
 }
@@ -234,28 +234,28 @@ enum DataFilterOperator {
 }
 
 impl DataFilterOperator {
-    fn label(self) -> &'static str {
+    fn label(self) -> SharedString {
         match self {
-            Self::Eq => "=",
-            Self::Ne => "!=",
-            Self::Lt => "<",
-            Self::Le => "<=",
-            Self::Gt => ">",
-            Self::Ge => ">=",
-            Self::Contains => "包含",
-            Self::NotContains => "不包含",
-            Self::StartsWith => "开头是",
-            Self::NotStartsWith => "开头不是",
-            Self::EndsWith => "结尾是",
-            Self::NotEndsWith => "结尾不是",
-            Self::IsNull => "是 null",
-            Self::IsNotNull => "不是 null",
-            Self::IsEmpty => "是空的",
-            Self::IsNotEmpty => "是非空的",
-            Self::Between => "介于",
-            Self::NotBetween => "不介于",
-            Self::InList => "在列表",
-            Self::NotInList => "不在列表",
+            Self::Eq => tr("app.filter.op_eq"),
+            Self::Ne => tr("app.filter.op_ne"),
+            Self::Lt => tr("app.filter.op_lt"),
+            Self::Le => tr("app.filter.op_le"),
+            Self::Gt => tr("app.filter.op_gt"),
+            Self::Ge => tr("app.filter.op_ge"),
+            Self::Contains => tr("app.filter.op_contains"),
+            Self::NotContains => tr("app.filter.op_not_contains"),
+            Self::StartsWith => tr("app.filter.op_starts_with"),
+            Self::NotStartsWith => tr("app.filter.op_not_starts_with"),
+            Self::EndsWith => tr("app.filter.op_ends_with"),
+            Self::NotEndsWith => tr("app.filter.op_not_ends_with"),
+            Self::IsNull => tr("app.filter.op_is_null"),
+            Self::IsNotNull => tr("app.filter.op_is_not_null"),
+            Self::IsEmpty => tr("app.filter.op_is_empty"),
+            Self::IsNotEmpty => tr("app.filter.op_is_not_empty"),
+            Self::Between => tr("app.filter.op_between"),
+            Self::NotBetween => tr("app.filter.op_not_between"),
+            Self::InList => tr("app.filter.op_in_list"),
+            Self::NotInList => tr("app.filter.op_not_in_list"),
         }
     }
 
@@ -460,8 +460,10 @@ fn data_search_match_label(
     current: Option<DataSearchMatch>,
 ) -> String {
     match data_search_match_position(matches, current) {
-        Some(position) => format!("{position}/{} 匹配", matches.len()),
-        None => "0/0 匹配".to_string(),
+        Some(position) => tr("app.filter.matches")
+            .replace("%{position}", &position.to_string())
+            .replace("%{count}", &matches.len().to_string()),
+        None => tr("app.filter.no_matches").to_string(),
     }
 }
 

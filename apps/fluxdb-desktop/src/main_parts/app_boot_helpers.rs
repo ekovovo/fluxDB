@@ -1,30 +1,49 @@
 fn platform_titlebar_options() -> TitlebarOptions {
     TitlebarOptions {
+        title: Some(tr("app.window_title")),
         appears_transparent: true,
         #[cfg(target_os = "macos")]
         traffic_light_position: Some(point(px(17.), px(12.))),
-        ..Default::default()
     }
 }
 fn set_app_menus(cx: &mut App) {
     cx.set_menus(vec![Menu {
-        name: "FluxDB".into(),
+        name: tr("app.name"),
         disabled: true,
         items: vec![],
     }]);
 }
 
-/// List 删除元素 - 位置下拉选项（对齐 RedisInsight）。
-/// 第一个「从尾部移除」为默认选中项（head=false → RPOP）。
-const REDIS_LIST_REMOVE_FROM_TAIL: &str = "从尾部移除";
-const REDIS_LIST_REMOVE_FROM_HEAD: &str = "从头部移除";
+/// List 删除位置：布尔值稳定表示方向，显示文案随语言变化。
+#[derive(Clone)]
+struct RedisListRemovePositionOption {
+    head: bool,
+}
+
+impl SelectItem for RedisListRemovePositionOption {
+    type Value = bool;
+
+    fn title(&self) -> SharedString {
+        if self.head {
+            tr("app.redis.list.remove_from_head")
+        } else {
+            tr("app.redis.list.remove_from_tail")
+        }
+    }
+
+    fn value(&self) -> &bool {
+        &self.head
+    }
+}
 
 /// 删除位置选项列表；下标 0 对应从尾删除（默认）。
-fn redis_list_remove_position_options() -> Vec<String> {
-    [REDIS_LIST_REMOVE_FROM_TAIL, REDIS_LIST_REMOVE_FROM_HEAD]
-        .into_iter()
-        .map(str::to_string)
-        .collect()
+fn redis_list_remove_position_options() -> Vec<RedisListRemovePositionOption> {
+    [
+        RedisListRemovePositionOption { head: false },
+        RedisListRemovePositionOption { head: true },
+    ]
+    .into_iter()
+    .collect()
 }
 
 fn query_history_record_to_entry(record: QueryHistoryRecord) -> QueryHistoryEntry {
@@ -46,7 +65,13 @@ fn query_history_record_to_entry(record: QueryHistoryRecord) -> QueryHistoryEntr
             success,
             message: record
                 .message
-                .unwrap_or_else(|| if success { "OK" } else { "执行失败" }.to_string()),
+                .unwrap_or_else(|| {
+                    if success {
+                        "OK".to_string()
+                    } else {
+                        tr("app.redis.execution_failed").to_string()
+                    }
+                }),
             returned_rows: record.returned_rows,
             affected_rows: record.affected_rows,
             elapsed_ms: record.elapsed_ms,

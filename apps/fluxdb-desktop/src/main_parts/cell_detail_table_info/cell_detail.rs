@@ -88,24 +88,38 @@ fn cell_detail_panel(
                 .bg(card_bg)
                 .flex()
                 .overflow_hidden()
-                .child(cell_detail_meta_item("列名", column.name.clone(), colors))
                 .child(cell_detail_meta_item(
-                    "行号",
+                    tr("app.table_info.column_name"),
+                    column.name.clone(),
+                    colors,
+                ))
+                .child(cell_detail_meta_item(
+                    tr("app.content.row_number"),
                     row_number.to_string(),
                     colors,
                 ))
                 .child(cell_detail_meta_item_colored(
-                    "类型", type_name, type_color, colors,
+                    tr("app.history.meta_type"),
+                    type_name,
+                    type_color,
+                    colors,
                 ))
                 .child(cell_detail_meta_item(
                     "NULL",
                     matches!(value, CellValue::Null).to_string(),
                     colors,
                 ))
-                .child(cell_detail_meta_item("长度", length.to_string(), colors))
                 .child(cell_detail_meta_item(
-                    "注释",
-                    column.comment.clone().unwrap_or_else(|| "无".to_string()),
+                    tr("app.content.length"),
+                    length.to_string(),
+                    colors,
+                ))
+                .child(cell_detail_meta_item(
+                    tr("app.table_info.comment"),
+                    column
+                        .comment
+                        .clone()
+                        .unwrap_or_else(|| tr("app.history.none").to_string()),
                     colors,
                 ))
                 .child(
@@ -118,7 +132,8 @@ fn cell_detail_panel(
                         .justify_center()
                         .pt_2()
                         .child(
-                            cell_detail_icon_button(AppIcon::Close, "关闭", colors).on_mouse_down(
+                            cell_detail_icon_button(AppIcon::Close, tr("app.common.close"), colors)
+                                .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(move |this, _, _, cx| {
                                     this.dispatch(AppCommand::CloseCellDetail(tab_id), cx);
@@ -273,7 +288,7 @@ fn cell_detail_value_header(
                 .text_size(px(12.))
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .text_color(colors.muted)
-                .child("值"),
+                .child(tr("app.placeholder.value")),
         )
         .child(
             div()
@@ -283,7 +298,8 @@ fn cell_detail_value_header(
                 .when(mode == CellDetailMode::View, |this| {
                     this.when(is_json, |this| {
                         this.child(
-                            cell_detail_action_button("格式化 JSON", colors).on_mouse_down(
+                            cell_detail_action_button(tr("app.cell_detail.format_json"), colors)
+                                .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(move |this, _, _, cx| {
                                     if let Some(formatted) = format_json_text(&format_value_text) {
@@ -302,21 +318,21 @@ fn cell_detail_value_header(
                         )
                     })
                     .when(is_binary, |this| {
-                        this.child(cell_detail_action_button("下载", colors).on_mouse_down(
+                        this.child(cell_detail_action_button(tr("app.cell_detail.download"), colors).on_mouse_down(
                             MouseButton::Left,
                             cx.listener(move |this, _, _, cx| {
                                 this.download_active_cell(cx);
                                 cx.stop_propagation();
                             }),
                         ))
-                        .child(cell_detail_action_button("上传替换", colors).on_mouse_down(
+                        .child(cell_detail_action_button(tr("app.cell_detail.replace_upload"), colors).on_mouse_down(
                             MouseButton::Left,
                             cx.listener(move |this, _, window, cx| {
                                 this.upload_active_binary_cell(window, cx);
                                 cx.stop_propagation();
                             }),
                         ))
-                        .child(cell_detail_action_button("Hex 编辑", colors).on_mouse_down(
+                        .child(cell_detail_action_button(tr("app.cell_detail.edit_hex"), colors).on_mouse_down(
                             MouseButton::Left,
                             cx.listener(move |this, _, _, cx| {
                                 let event = this
@@ -335,7 +351,8 @@ fn cell_detail_value_header(
                             }),
                         ))
                         .child(
-                            cell_detail_action_button("设为 NULL", colors).on_mouse_down(
+                            cell_detail_action_button(tr("app.cell_detail.set_null"), colors)
+                                .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(move |this, _, _, cx| {
                                     this.set_active_binary_cell_null(tab_id, cx);
@@ -346,7 +363,12 @@ fn cell_detail_value_header(
                     })
                     .when(!is_binary, |this| {
                         this.child(
-                            cell_detail_icon_button(AppIcon::Edit, "编辑", colors).on_mouse_down(
+                            cell_detail_icon_button(
+                                AppIcon::Edit,
+                                tr("app.cell_detail.edit"),
+                                colors,
+                            )
+                            .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(move |this, _, _, cx| {
                                     this.dispatch(AppCommand::StartCellDetailEdit(tab_id), cx);
@@ -356,7 +378,8 @@ fn cell_detail_value_header(
                         )
                     })
                     .child(
-                        cell_detail_icon_button(AppIcon::Copy, "复制", colors).on_mouse_down(
+                        cell_detail_icon_button(AppIcon::Copy, tr("app.context.copy"), colors)
+                            .on_mouse_down(
                             MouseButton::Left,
                             move |_, _, cx| {
                                 cx.write_to_clipboard(ClipboardItem::new_string(
@@ -370,7 +393,8 @@ fn cell_detail_value_header(
                 .when(mode == CellDetailMode::Edit, |this| {
                     this.when(is_json, |this| {
                         this.child(
-                            cell_detail_action_button("格式化 JSON", colors).on_mouse_down(
+                            cell_detail_action_button(tr("app.cell_detail.format_json"), colors)
+                                .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(move |this, _, _, cx| {
                                     let Some(text) = this.active_cell_detail_edit_value(cx) else {
@@ -391,7 +415,8 @@ fn cell_detail_value_header(
                         )
                     })
                     .child(
-                        cell_detail_action_button("设为 NULL", colors).on_mouse_down(
+                        cell_detail_action_button(tr("app.cell_detail.set_null"), colors)
+                            .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(move |this, _, _, cx| {
                                 if is_binary {
@@ -416,7 +441,8 @@ fn cell_detail_value_preview(
 ) -> Div {
     let (text, text_color) = match value {
         CellValue::Bytes(bytes) => (
-            format!("二进制数据，{} bytes，可使用下载操作保存。", bytes.len()),
+            tr("app.cell_detail.binary_hint")
+                .replace("%{bytes}", &bytes.len().to_string()),
             colors.muted,
         ),
         CellValue::BinarySummary(summary) if summary.is_null => ("NULL".to_string(), colors.text),
@@ -424,8 +450,10 @@ fn cell_detail_value_preview(
             summary
                 .preview_hex
                 .as_ref()
-                .map(|preview| format!("预览 Hex: {preview}"))
-                .unwrap_or_else(|| "暂无 Hex 预览".to_string()),
+                .map(|preview| {
+                    tr("app.cell_detail.hex_preview").replace("%{preview}", preview)
+                })
+                .unwrap_or_else(|| tr("app.cell_detail.no_hex_preview").to_string()),
             colors.muted,
         ),
         _ => {
@@ -492,7 +520,7 @@ fn cell_detail_footer(
         .items_center()
         .justify_end()
         .gap_2()
-        .child(cell_detail_primary_button("保存", colors).on_mouse_down(
+        .child(cell_detail_primary_button(tr("app.common.save"), colors).on_mouse_down(
             MouseButton::Left,
             cx.listener(move |this, _, _, cx| {
                 if is_binary {
@@ -504,14 +532,14 @@ fn cell_detail_footer(
                 cx.stop_propagation();
             }),
         ))
-        .child(cell_detail_action_button("取消", colors).on_mouse_down(
+        .child(cell_detail_action_button(tr("app.common.cancel"), colors).on_mouse_down(
             MouseButton::Left,
             cx.listener(move |this, _, _, cx| {
                 this.dispatch(AppCommand::CancelCellDetailEdit(tab_id), cx);
                 cx.stop_propagation();
             }),
         ))
-        .child(cell_detail_action_button("恢复原值", colors).on_mouse_down(
+        .child(cell_detail_action_button(tr("app.cell_detail.restore_original"), colors).on_mouse_down(
             MouseButton::Left,
             cx.listener(move |this, _, _, cx| {
                 this.dispatch(AppCommand::RestoreCellDetailOriginalValue(tab_id), cx);
@@ -520,16 +548,21 @@ fn cell_detail_footer(
         ))
 }
 
-fn cell_detail_meta_item(label: &'static str, value: String, colors: UiColors) -> Div {
+fn cell_detail_meta_item(
+    label: impl Into<SharedString>,
+    value: String,
+    colors: UiColors,
+) -> Div {
     cell_detail_meta_item_colored(label, value, colors.text, colors)
 }
 
 fn cell_detail_meta_item_colored(
-    label: &'static str,
+    label: impl Into<SharedString>,
     value: String,
     value_color: gpui::Rgba,
     colors: UiColors,
 ) -> Div {
+    let label = label.into();
     div()
         .flex_1()
         .min_w(px(0.))
@@ -552,11 +585,12 @@ fn cell_detail_meta_item_colored(
 
 fn cell_detail_icon_button(
     icon: AppIcon,
-    tooltip: &'static str,
+    tooltip: impl Into<SharedString>,
     colors: UiColors,
 ) -> Stateful<Div> {
+    let tooltip = tooltip.into();
     div()
-        .id(tooltip)
+        .id(tooltip.clone())
         .size(px(22.))
         .rounded(colors.radius * 0.5)
         .flex()
@@ -564,11 +598,12 @@ fn cell_detail_icon_button(
         .justify_center()
         .cursor_pointer()
         .hover(move |style| style.bg(colors.hover))
-        .tooltip(move |window, cx| Tooltip::new(tooltip).build(window, cx))
+        .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
         .child(app_icon(icon, 15., colors.muted))
 }
 
-fn cell_detail_action_button(label: &'static str, colors: UiColors) -> Div {
+fn cell_detail_action_button(label: impl Into<SharedString>, colors: UiColors) -> Div {
+    let label = label.into();
     div()
         .h(px(24.))
         .px_2()
@@ -587,7 +622,7 @@ fn cell_detail_action_button(label: &'static str, colors: UiColors) -> Div {
         .child(label)
 }
 
-fn cell_detail_primary_button(label: &'static str, colors: UiColors) -> Div {
+fn cell_detail_primary_button(label: impl Into<SharedString>, colors: UiColors) -> Div {
     cell_detail_action_button(label, colors)
         .border_color(if colors.is_dark {
             rgb(0x2f75ff)

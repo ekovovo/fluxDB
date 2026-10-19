@@ -233,7 +233,11 @@ impl NavicatMain {
             return;
         }
         let Some(batch) = ErProposalBatchView::from_payload(part_id.clone(), &payload) else {
-            self.show_message("关系建议卡片内容不可读取", AppMessageKind::Error, cx);
+            self.show_message(
+                tr("app.ai.er_proposal.card_unreadable"),
+                AppMessageKind::Error,
+                cx,
+            );
             return;
         };
         {
@@ -353,7 +357,8 @@ impl NavicatMain {
                         }
                         this.refresh_open_er_relationships(cx);
                         this.show_message(
-                            format!("已采纳 {} 条关系", relationships.len()),
+                            tr("app.ai.er_proposal.adopted_count")
+                                .replace("%{count}", &relationships.len().to_string()),
                             AppMessageKind::Success,
                             cx,
                         );
@@ -375,7 +380,8 @@ impl NavicatMain {
                             cx.notify();
                         } else {
                             this.show_message(
-                                format!("关系建议采纳失败：{}", error.message),
+                                tr("app.ai.er_proposal.adopt_failed")
+                                    .replace("%{error}", &error.message),
                                 AppMessageKind::Error,
                                 cx,
                             );
@@ -385,11 +391,12 @@ impl NavicatMain {
                         if still_open {
                             let mut data = this.er_proposal_modal.borrow_mut();
                             data.loading = false;
-                            data.error = Some("关系建议采纳返回未知结果".into());
+                            data.error =
+                                Some(tr("app.ai.er_proposal.unknown_result").to_string());
                             cx.notify();
                         } else {
                             this.show_message(
-                                "关系建议采纳返回未知结果",
+                                tr("app.ai.er_proposal.unknown_result"),
                                 AppMessageKind::Error,
                                 cx,
                             );
@@ -418,17 +425,19 @@ fn ai_chat_er_proposal_card(
             .border_color(colors.border_soft)
             .bg(colors.panel_alt)
             .p_3()
-            .child("关系建议卡片内容不可读取")
+            .child(tr("app.ai.er_proposal.card_unreadable"))
             .into_any_element();
     };
     let ready = batch.counts.ready;
     let review_complete = batch.review_status.as_deref() == Some("complete");
     let action_label = if review_complete {
-        "查看已采纳建议".to_string()
+        tr("app.ai.er_proposal.view_adopted").to_string()
     } else if batch.adopted > 0 {
-        format!("继续审阅 · {} 条待处理", ready)
+        tr("app.ai.er_proposal.continue_review")
+            .replace("%{count}", &ready.to_string())
     } else {
-        format!("逐条审阅 {} 条", batch.counts.total)
+        tr("app.ai.er_proposal.review_count")
+            .replace("%{count}", &batch.counts.total.to_string())
     };
     let active_label = batch
         .items
@@ -471,14 +480,17 @@ fn ai_chat_er_proposal_card(
                                 .text_size(px(12.))
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
                                 .text_color(colors.text)
-                                .child("AI 关系建议"),
+                                .child(tr("app.ai.er_proposal.card_title")),
                         )
                         .child(
                             div()
                                 .text_size(px(10.))
                                 .text_color(colors.muted)
                                 .truncate()
-                                .child(format!("{} · 尚未写入关系目录", batch.target.label())),
+                                .child(
+                                    tr("app.ai.er_proposal.target_not_written")
+                                        .replace("%{target}", &batch.target.label()),
+                                ),
                         ),
                 )
                 .child(
@@ -487,9 +499,11 @@ fn ai_chat_er_proposal_card(
                         .text_size(px(10.))
                         .text_color(colors.muted)
                         .child(if review_complete {
-                            format!("已采纳 {}", batch.adopted)
+                            tr("app.ai.er_proposal.adopted")
+                                .replace("%{count}", &batch.adopted.to_string())
                         } else {
-                            format!("{} 可采纳", ready)
+                            tr("app.ai.er_proposal.ready")
+                                .replace("%{count}", &ready.to_string())
                         }),
                 ),
         )
@@ -513,7 +527,12 @@ fn ai_chat_er_proposal_card(
                         div()
                             .text_size(px(10.))
                             .text_color(colors.muted)
-                            .child(format!("… 还有 {} 条，打开后逐条查看", batch.counts.total - 2)),
+                            .child(
+                                tr("app.ai.er_proposal.more_items").replace(
+                                    "%{count}",
+                                    &(batch.counts.total - 2).to_string(),
+                                ),
+                            ),
                     )
                 }),
         )

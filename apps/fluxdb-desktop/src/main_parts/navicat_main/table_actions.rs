@@ -21,7 +21,7 @@ impl NavicatMain {
             }
         }
 
-        self.show_message("已请求刷新表", AppMessageKind::Success, cx);
+        self.show_message(tr("app.table.toast.refresh_requested").as_ref(), AppMessageKind::Success, cx);
     }
 
     fn open_rename_table_modal(
@@ -187,11 +187,11 @@ impl NavicatMain {
 
     fn copy_table_structure(&mut self, object_path: ObjectPath, cx: &mut Context<Self>) {
         if self._copy_table_structure_task.is_some() {
-            self.show_message("正在复制表结构", AppMessageKind::Warning, cx);
+            self.show_message(tr("app.table.toast.copying_structure").as_ref(), AppMessageKind::Warning, cx);
             return;
         }
 
-        self.show_message("正在复制表结构", AppMessageKind::Success, cx);
+        self.show_message(tr("app.table.toast.copying_structure").as_ref(), AppMessageKind::Success, cx);
         let controller = self.controller.clone();
         let table_name = object_path.name.clone();
         let task = cx.spawn(async move |view, cx| {
@@ -209,7 +209,7 @@ impl NavicatMain {
                         Ok(ddl) => {
                             cx.write_to_clipboard(ClipboardItem::new_string(ddl));
                             this.show_message(
-                                format!("已复制 {table_name} 表结构"),
+                                tr("app.table.toast.structure_copied").replace("%{table}", &table_name),
                                 AppMessageKind::Success,
                                 cx,
                             );
@@ -228,7 +228,7 @@ impl NavicatMain {
 
     fn rename_table_sql_for_form(&self, form: &PendingRenameTable) -> Result<String, String> {
         let Some(database_kind) = self.table_database_kind(&form.object_path) else {
-            return Err("连接不存在".to_string());
+            return Err(tr("app.error.connection_missing").to_string());
         };
         rename_table_sql_preview(
             database_kind,
@@ -240,13 +240,13 @@ impl NavicatMain {
 
     fn copy_table_sql_for_form(&self, form: &PendingCopyTable) -> Result<String, String> {
         let Some(database_kind) = self.table_database_kind(&form.object_path) else {
-            return Err("连接不存在".to_string());
+            return Err(tr("app.error.connection_missing").to_string());
         };
         let source_ddl = if database_kind == DatabaseKind::Sqlite {
             match &form.source_ddl {
                 Some(Ok(ddl)) => Some(ddl.as_str()),
                 Some(Err(message)) => return Err(message.clone()),
-                None => return Err("正在读取原表结构".to_string()),
+                None => return Err(tr("app.table.status.reading_structure").to_string()),
             }
         } else {
             None
@@ -263,7 +263,7 @@ impl NavicatMain {
 
     fn danger_table_sql_for_form(&self, form: &PendingDangerTableAction) -> Result<String, String> {
         let Some(database_kind) = self.table_database_kind(&form.object_path) else {
-            return Err("连接不存在".to_string());
+            return Err(tr("app.error.connection_missing").to_string());
         };
         match form.action {
             DangerTableAction::Drop => drop_table_sql_preview(
@@ -288,7 +288,7 @@ impl NavicatMain {
             return;
         };
         if self._rename_table_task.is_some() {
-            self.show_message("正在重命名表", AppMessageKind::Warning, cx);
+            self.show_message(tr("app.table.toast.renaming").as_ref(), AppMessageKind::Warning, cx);
             return;
         }
         let new_name = form.new_name.trim().to_string();
@@ -304,7 +304,7 @@ impl NavicatMain {
             return;
         }
 
-        self.show_message("正在重命名表", AppMessageKind::Success, cx);
+        self.show_message(tr("app.table.toast.renaming").as_ref(), AppMessageKind::Success, cx);
         let mut controller = self.controller.clone();
         let object = form.object_path.clone();
         let task = cx.spawn(async move |view, cx| {
@@ -349,7 +349,7 @@ impl NavicatMain {
                             for tab_id in tab_ids {
                                 this.start_data_page_load_if_needed(tab_id, cx);
                             }
-                            this.show_message("表已重命名", AppMessageKind::Success, cx);
+                            this.show_message(tr("app.table.toast.renamed").as_ref(), AppMessageKind::Success, cx);
                         }
                         AppEvent::Failed(error) => {
                             this.controller.merge_last_error_from(&controller);
@@ -359,7 +359,7 @@ impl NavicatMain {
                             this.show_message(error.message, AppMessageKind::Error, cx);
                         }
                         _ => {
-                            this.show_message("重命名表没有返回结果", AppMessageKind::Error, cx);
+                            this.show_message(tr("app.table.error.rename_no_result").as_ref(), AppMessageKind::Error, cx);
                         }
                     }
                     cx.notify();
@@ -375,7 +375,7 @@ impl NavicatMain {
             return;
         };
         if self._copy_table_task.is_some() {
-            self.show_message("正在复制表", AppMessageKind::Warning, cx);
+            self.show_message(tr("app.table.toast.copying").as_ref(), AppMessageKind::Warning, cx);
             return;
         }
         let new_name = form.new_name.trim().to_string();
@@ -387,7 +387,7 @@ impl NavicatMain {
             return;
         }
 
-        self.show_message("正在复制表", AppMessageKind::Success, cx);
+        self.show_message(tr("app.table.toast.copying").as_ref(), AppMessageKind::Success, cx);
         let mut controller = self.controller.clone();
         let object = form.object_path.clone();
         let copy_data = form.copy_data;
@@ -414,7 +414,7 @@ impl NavicatMain {
                             this.pending_copy_table = None;
                             this.refresh_database_children_for_table(&object, cx);
                             this.show_message(
-                                format!("表已复制为 {new_name}"),
+                                tr("app.table.toast.copied_as").replace("%{name}", &new_name),
                                 AppMessageKind::Success,
                                 cx,
                             );
@@ -427,7 +427,7 @@ impl NavicatMain {
                             this.show_message(error.message, AppMessageKind::Error, cx);
                         }
                         _ => {
-                            this.show_message("复制表没有返回结果", AppMessageKind::Error, cx);
+                            this.show_message(tr("app.table.error.copy_no_result").as_ref(), AppMessageKind::Error, cx);
                         }
                     }
                     cx.notify();
@@ -447,7 +447,7 @@ impl NavicatMain {
             return;
         }
         if !form.acknowledged {
-            form.error = Some("请先勾选确认".to_string());
+            form.error = Some(tr("app.table.error.confirm_required").to_string());
             self.pending_danger_table_action = Some(form);
             cx.notify();
             return;
@@ -502,13 +502,13 @@ impl NavicatMain {
                             this.apply_closed_tabs(previous_tabs, cx);
                             this.pending_danger_table_action = None;
                             this.refresh_database_children_for_table(&object, cx);
-                            this.show_message("表已删除", AppMessageKind::Success, cx);
+                            this.show_message(tr("app.table.toast.deleted").as_ref(), AppMessageKind::Success, cx);
                         }
                         AppEvent::TableTruncated(object) => {
                             this.pending_danger_table_action = None;
                             this.refresh_open_data_tabs_for_table(&object, cx);
                             this.refresh_database_children_for_table(&object, cx);
-                            this.show_message("表已清空", AppMessageKind::Success, cx);
+                            this.show_message(tr("app.table.toast.truncated").as_ref(), AppMessageKind::Success, cx);
                         }
                         AppEvent::Failed(error) => {
                             this.controller.merge_last_error_from(&controller);
@@ -518,7 +518,7 @@ impl NavicatMain {
                             this.show_message(error.message, AppMessageKind::Error, cx);
                         }
                         _ => {
-                            this.show_message("表操作没有返回结果", AppMessageKind::Error, cx);
+                            this.show_message(tr("app.table.error.operation_no_result").as_ref(), AppMessageKind::Error, cx);
                         }
                     }
                     cx.notify();

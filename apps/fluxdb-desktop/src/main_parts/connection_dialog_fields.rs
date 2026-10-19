@@ -1,5 +1,5 @@
 fn field_row_light(
-    label: &'static str,
+    label: impl Into<SharedString>,
     field_id: ConnectionField,
     inputs: &NewConnectionInputs,
     secure: bool,
@@ -7,19 +7,42 @@ fn field_row_light(
     window: &mut Window,
     cx: &mut Context<NavicatMain>,
 ) -> Field {
-    field().label(label).items_center().child(input_box_light(
+    let hint = connection_field_hint(field_id);
+    let mut row = field().label(label.into()).items_center();
+    if !hint.is_empty() {
+        row = row.description_fn(move |_, _| {
+            div()
+                .text_size(px(11.))
+                .text_color(colors.muted)
+                .child(hint.clone())
+        });
+    }
+    row.child(input_box_light(
         field_id, inputs, secure, colors, window, cx,
     ))
 }
 
+fn connection_field_hint(field: ConnectionField) -> SharedString {
+    match field {
+        ConnectionField::MysqlSshConnectTimeout => tr("app.connection.ssh.connect_timeout_hint"),
+        ConnectionField::MysqlSshKeepalive => tr("app.connection.ssh.keepalive_hint"),
+        ConnectionField::PgConnectTimeoutSecs => tr("app.connection.postgres.connect_timeout_hint"),
+        ConnectionField::PgQueryTimeoutSecs => tr("app.connection.postgres.query_timeout_hint"),
+        ConnectionField::MysqlConnectTimeout => tr("app.connection.mysql.connect_timeout_hint"),
+        ConnectionField::MysqlQueryTimeout => tr("app.connection.mysql.query_timeout_hint"),
+        ConnectionField::MysqlIdleTtl => tr("app.connection.mysql.idle_ttl_hint"),
+        _ => SharedString::default(),
+    }
+}
+
 fn host_port_row_light(
-    label: &'static str,
+    label: impl Into<SharedString>,
     inputs: &NewConnectionInputs,
     colors: UiColors,
     window: &mut Window,
     cx: &mut Context<NavicatMain>,
 ) -> Field {
-    field().label(label).items_center().child(
+    field().label(label.into()).items_center().child(
         div()
             .w_full()
             .flex()
@@ -44,7 +67,10 @@ fn sqlite_file_row_light(
     window: &mut Window,
     cx: &mut Context<NavicatMain>,
 ) -> Field {
-    field().label("文件路径").items_center().child(
+    field()
+        .label(tr("app.connection.field.file_path"))
+        .items_center()
+        .child(
         div()
             .w_full()
             .flex()
@@ -67,12 +93,12 @@ fn sqlite_file_row_light(
 }
 
 fn connection_method_row_light(
-    label: &'static str,
-    selected_label: &'static str,
-    secondary_label: &'static str,
+    label: impl Into<SharedString>,
+    selected_label: impl Into<SharedString>,
+    secondary_label: impl Into<SharedString>,
     colors: UiColors,
 ) -> Field {
-    field().label(label).items_center().child(
+    field().label(label.into()).items_center().child(
         div()
             .flex()
             .items_center()
@@ -82,7 +108,12 @@ fn connection_method_row_light(
     )
 }
 
-fn segment_button_light(label: &'static str, selected: bool, colors: UiColors) -> Div {
+fn segment_button_light(
+    label: impl Into<SharedString>,
+    selected: bool,
+    colors: UiColors,
+) -> Div {
+    let label = label.into();
     div()
         .h(px(28.))
         .px_3()
@@ -114,8 +145,13 @@ fn checkbox_row_light(label: &'static str, _colors: UiColors) -> Field {
         .child(Checkbox::new("new-connection-checkbox-srv").label(label))
 }
 
-fn dropdown_row_light(label: &'static str, value: &'static str, colors: UiColors) -> Field {
-    field().label(label).items_center().child(
+fn dropdown_row_light(
+    label: impl Into<SharedString>,
+    value: impl Into<SharedString>,
+    colors: UiColors,
+) -> Field {
+    let value = value.into();
+    field().label(label.into()).items_center().child(
         div()
             .w(px(112.))
             .h(px(34.))
@@ -147,7 +183,10 @@ fn color_row_light(selected_color: &str, colors: UiColors, cx: &mut Context<Navi
         ));
     }
 
-    field().label("颜色").items_center().child(swatches)
+    field()
+        .label(tr("app.connection.field.color"))
+        .items_center()
+        .child(swatches)
 }
 
 fn color_swatch_light(
@@ -360,10 +399,10 @@ fn database_default_port_u16(kind: DatabaseKind) -> u16 {
 fn parse_port(port: &str) -> Result<u16, String> {
     let port = port.trim();
     if port.is_empty() {
-        return Err("请填写端口".to_string());
+        return Err(tr("app.connection.error.port_required").to_string());
     }
     port.parse::<u16>()
-        .map_err(|_| "端口必须是 1-65535 的数字".to_string())
+        .map_err(|_| tr("app.connection.error.port_invalid").to_string())
 }
 
 fn non_empty_option(value: &str) -> Option<String> {
@@ -469,98 +508,100 @@ fn connection_field_element_id(field: ConnectionField) -> &'static str {
 ///
 /// 密码类字段不暴露标签以外的信息，`Input` 的 masked 语义已保证取值不进无障碍树；
 /// 这里只给字段名，不拼接当前值。
-fn connection_field_label(field: ConnectionField) -> &'static str {
+fn connection_field_label(field: ConnectionField) -> SharedString {
     match field {
-        ConnectionField::Name => "连接名称",
-        ConnectionField::Host => "主机",
-        ConnectionField::Port => "端口",
-        ConnectionField::Username => "用户名",
-        ConnectionField::Password => "密码",
-        ConnectionField::Database => "数据库名",
-        ConnectionField::UrlParams => "连接参数",
-        ConnectionField::SqlitePath => "SQLite 文件路径",
-        ConnectionField::MongoDefaultDb => "默认数据库",
-        ConnectionField::MongoAuthDb => "认证数据库",
-        ConnectionField::TlsCa => "CA 证书文件路径",
-        ConnectionField::TlsClientCert => "客户端证书文件路径",
-        ConnectionField::TlsClientKey => "客户端私钥文件路径",
-        ConnectionField::TlsSni => "SNI",
-        ConnectionField::SshHost => "SSH 主机",
-        ConnectionField::SshPort => "SSH 端口",
-        ConnectionField::SshUsername => "SSH 用户名",
-        ConnectionField::SshPassword => "SSH 密码",
-        ConnectionField::SshPrivateKey => "SSH 私钥文件路径",
-        ConnectionField::SshPassphrase => "SSH 私钥口令",
-        ConnectionField::SentinelMasterName => "Sentinel 主库名",
-        ConnectionField::SentinelEndpoints => "Sentinel 节点列表",
-        ConnectionField::ClusterStartNodes => "Cluster 起始节点列表",
-        ConnectionField::CloudSubscription => "云订阅 / 账号 ID",
-        ConnectionField::CloudResource => "云资源 / 数据库标识",
-        ConnectionField::DiscoveryUri => "连接串导入",
-        ConnectionField::PgDefaultSchema => "默认 schema",
-        ConnectionField::PgApplicationName => "应用名",
-        ConnectionField::PgConnectTimeoutSecs => "建连超时（秒）",
-        ConnectionField::PgQueryTimeoutSecs => "查询超时（秒）",
-        ConnectionField::MysqlCharset => "连接字符集",
-        ConnectionField::MysqlProxyType => "代理类型",
-        ConnectionField::MysqlSshConnectTimeout => "SSH 连接超时（秒）",
-        ConnectionField::MysqlSshKeepalive => "SSH 心跳间隔（秒）",
-        ConnectionField::MysqlProxyHost => "代理主机",
-        ConnectionField::MysqlProxyPort => "代理端口",
-        ConnectionField::MysqlProxyUsername => "代理用户名",
-        ConnectionField::MysqlProxyPassword => "代理密码",
-        ConnectionField::MysqlConnectTimeout => "建连超时（秒）",
-        ConnectionField::MysqlQueryTimeout => "查询超时（秒）",
-        ConnectionField::MysqlIdleTtl => "连接空闲 TTL（秒）",
+        ConnectionField::Name => tr("app.connection.field.name"),
+        ConnectionField::Host => tr("app.connection.field.host"),
+        ConnectionField::Port => tr("app.connection.field.port"),
+        ConnectionField::Username => tr("app.connection.field.username"),
+        ConnectionField::Password => tr("app.connection.optional"),
+        ConnectionField::Database => tr("app.connection.field.database"),
+        ConnectionField::UrlParams => tr("app.connection.field.url_params"),
+        ConnectionField::SqlitePath => tr("app.connection.field.file_path"),
+        ConnectionField::MongoDefaultDb => tr("app.connection.field.default_db"),
+        ConnectionField::MongoAuthDb => tr("app.connection.field.auth_db"),
+        ConnectionField::TlsCa => tr("app.connection.tls.ca"),
+        ConnectionField::TlsClientCert => tr("app.connection.tls.client_cert"),
+        ConnectionField::TlsClientKey => tr("app.connection.tls.client_key"),
+        ConnectionField::TlsSni => tr("app.connection.tls.sni"),
+        ConnectionField::SshHost => tr("app.connection.ssh.host"),
+        ConnectionField::SshPort => tr("app.connection.ssh.port"),
+        ConnectionField::SshUsername => tr("app.connection.ssh.username"),
+        ConnectionField::SshPassword => tr("app.connection.ssh.password"),
+        ConnectionField::SshPrivateKey => tr("app.connection.ssh.private_key"),
+        ConnectionField::SshPassphrase => tr("app.connection.ssh.passphrase"),
+        ConnectionField::SentinelMasterName => tr("app.connection.redis.sentinel_master"),
+        ConnectionField::SentinelEndpoints => tr("app.connection.redis.sentinel_endpoints"),
+        ConnectionField::ClusterStartNodes => tr("app.connection.redis.cluster_nodes"),
+        ConnectionField::CloudSubscription => tr("app.connection.redis.cloud_subscription"),
+        ConnectionField::CloudResource => tr("app.connection.redis.cloud_resource"),
+        ConnectionField::DiscoveryUri => tr("app.connection.redis.uri"),
+        ConnectionField::PgDefaultSchema => tr("app.connection.postgres.default_schema"),
+        ConnectionField::PgApplicationName => tr("app.connection.postgres.application_name"),
+        ConnectionField::PgConnectTimeoutSecs => tr("app.connection.postgres.connect_timeout"),
+        ConnectionField::PgQueryTimeoutSecs => tr("app.connection.postgres.query_timeout"),
+        ConnectionField::MysqlCharset => tr("app.connection.tls.charset"),
+        ConnectionField::MysqlProxyType => tr("app.connection.mysql.proxy_type"),
+        ConnectionField::MysqlSshConnectTimeout => tr("app.connection.ssh.connect_timeout"),
+        ConnectionField::MysqlSshKeepalive => tr("app.connection.ssh.keepalive"),
+        ConnectionField::MysqlProxyHost => tr("app.connection.field.host"),
+        ConnectionField::MysqlProxyPort => tr("app.connection.field.port"),
+        ConnectionField::MysqlProxyUsername => tr("app.connection.mysql.proxy_username"),
+        ConnectionField::MysqlProxyPassword => tr("app.connection.mysql.proxy_password"),
+        ConnectionField::MysqlConnectTimeout => tr("app.connection.mysql.connect_timeout"),
+        ConnectionField::MysqlQueryTimeout => tr("app.connection.mysql.query_timeout"),
+        ConnectionField::MysqlIdleTtl => tr("app.connection.mysql.idle_ttl"),
     }
 }
 
-fn connection_field_placeholder(field: ConnectionField) -> &'static str {
+fn connection_field_placeholder(field: ConnectionField) -> SharedString {
     match field {
-        ConnectionField::Name => "连接名称",
-        ConnectionField::Host => "127.0.0.1",
-        ConnectionField::Port => "端口",
-        ConnectionField::Username => "用户名",
-        ConnectionField::Password => "可选",
-        ConnectionField::Database => "数据库名",
-        ConnectionField::MongoDefaultDb => "可选",
+        ConnectionField::Name => tr("app.connection.field.name"),
+        ConnectionField::Host => "127.0.0.1".into(),
+        ConnectionField::Port => tr("app.connection.field.port"),
+        ConnectionField::Username => tr("app.connection.field.username"),
+        ConnectionField::Password => tr("app.connection.optional"),
+        ConnectionField::Database => tr("app.connection.field.database"),
+        ConnectionField::MongoDefaultDb => tr("app.connection.optional"),
         ConnectionField::UrlParams => {
-            "key=value&key2=value2（Redis: tls=true&ai_key_prefixes=app:,cache:）"
+            "key=value&key2=value2".into()
         }
-        ConnectionField::SqlitePath => "/path/to/database.db or :memory:",
-        ConnectionField::MongoAuthDb => "可选，通常为 admin",
-        ConnectionField::TlsCa => "CA 证书文件路径",
-        ConnectionField::TlsClientCert => "客户端证书文件路径",
-        ConnectionField::TlsClientKey => "客户端私钥文件路径",
-        ConnectionField::TlsSni => "服务器名指示（SNI），可选",
-        ConnectionField::SshHost => "跳板机主机",
-        ConnectionField::SshPort => "22",
-        ConnectionField::SshUsername => "SSH 用户名",
-        ConnectionField::SshPassword => "SSH 密码",
-        ConnectionField::SshPrivateKey => "私钥文件路径",
-        ConnectionField::SshPassphrase => "私钥口令，可选",
+        ConnectionField::SqlitePath => "/path/to/database.db or :memory:".into(),
+        ConnectionField::MongoAuthDb => tr("app.connection.field.auth_db_optional"),
+        ConnectionField::TlsCa => tr("app.connection.tls.ca"),
+        ConnectionField::TlsClientCert => tr("app.connection.tls.client_cert"),
+        ConnectionField::TlsClientKey => tr("app.connection.tls.client_key"),
+        ConnectionField::TlsSni => tr("app.connection.tls.sni_optional"),
+        ConnectionField::SshHost => tr("app.connection.ssh.host"),
+        ConnectionField::SshPort => "22".into(),
+        ConnectionField::SshUsername => tr("app.connection.ssh.username"),
+        ConnectionField::SshPassword => tr("app.connection.ssh.password"),
+        ConnectionField::SshPrivateKey => tr("app.connection.ssh.private_key"),
+        ConnectionField::SshPassphrase => tr("app.connection.ssh.passphrase_optional"),
         // —— PostgreSQL ——
-        ConnectionField::PgDefaultSchema => "默认 schema，可选（如 public）",
-        ConnectionField::PgApplicationName => "应用名，可选",
-        ConnectionField::PgConnectTimeoutSecs => "5",
-        ConnectionField::PgQueryTimeoutSecs => "0=不设限（statement_timeout）",
+        ConnectionField::PgDefaultSchema => tr("app.connection.postgres.default_schema_optional"),
+        ConnectionField::PgApplicationName => {
+            tr("app.connection.postgres.application_name_optional")
+        }
+        ConnectionField::PgConnectTimeoutSecs => "5".into(),
+        ConnectionField::PgQueryTimeoutSecs => tr("app.connection.postgres.query_timeout_hint"),
         // —— MySQL / TiDB ——
-        ConnectionField::MysqlCharset => "utf8mb4",
-        ConnectionField::MysqlProxyType => "socks5 (socks5/http_connect)",
-        ConnectionField::MysqlSshConnectTimeout => "0=继承全局",
-        ConnectionField::MysqlSshKeepalive => "0=不发送",
-        ConnectionField::MysqlProxyHost => "代理主机",
-        ConnectionField::MysqlProxyPort => "代理端口",
-        ConnectionField::MysqlProxyUsername => "可选",
-        ConnectionField::MysqlProxyPassword => "可选",
-        ConnectionField::MysqlConnectTimeout => "5",
-        ConnectionField::MysqlQueryTimeout => "0=不设限",
-        ConnectionField::MysqlIdleTtl => "0=不回收",
-        ConnectionField::SentinelMasterName => "Sentinel 主库名",
-        ConnectionField::SentinelEndpoints => "host:port, host:port",
-        ConnectionField::ClusterStartNodes => "host:port, host:port",
-        ConnectionField::CloudSubscription => "订阅 / 账号 ID",
-        ConnectionField::CloudResource => "资源 / 数据库名",
-        ConnectionField::DiscoveryUri => "redis:// 或 rediss:// 连接串",
+        ConnectionField::MysqlCharset => "utf8mb4".into(),
+        ConnectionField::MysqlProxyType => "socks5 (socks5/http_connect)".into(),
+        ConnectionField::MysqlSshConnectTimeout => tr("app.connection.ssh.connect_timeout_hint"),
+        ConnectionField::MysqlSshKeepalive => tr("app.connection.ssh.keepalive_hint"),
+        ConnectionField::MysqlProxyHost => tr("app.connection.field.host"),
+        ConnectionField::MysqlProxyPort => tr("app.connection.field.port"),
+        ConnectionField::MysqlProxyUsername => tr("app.connection.optional"),
+        ConnectionField::MysqlProxyPassword => tr("app.connection.optional"),
+        ConnectionField::MysqlConnectTimeout => "5".into(),
+        ConnectionField::MysqlQueryTimeout => tr("app.connection.mysql.query_timeout_hint"),
+        ConnectionField::MysqlIdleTtl => tr("app.connection.mysql.idle_ttl_hint"),
+        ConnectionField::SentinelMasterName => tr("app.connection.redis.sentinel_master"),
+        ConnectionField::SentinelEndpoints => "host:port, host:port".into(),
+        ConnectionField::ClusterStartNodes => "host:port, host:port".into(),
+        ConnectionField::CloudSubscription => tr("app.connection.redis.cloud_subscription"),
+        ConnectionField::CloudResource => tr("app.connection.redis.cloud_resource"),
+        ConnectionField::DiscoveryUri => tr("app.connection.redis.uri"),
     }
 }

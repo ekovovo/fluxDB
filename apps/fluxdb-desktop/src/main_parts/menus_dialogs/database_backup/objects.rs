@@ -39,16 +39,16 @@ fn database_backup_objects_body(
                     .text_size(px(13.))
                     .text_color(colors.muted)
                     .child(if has_tables {
-                        "未找到匹配的表"
+                        tr("app.backup.objects.no_match")
                     } else {
-                        "暂无可备份对象"
+                        tr("app.backup.objects.empty")
                     }),
             )
             .child(
                 div()
                     .text_size(px(11.))
                     .text_color(colors.muted)
-                    .when(has_tables, |d| d.child("请尝试其他关键词")),
+                    .when(has_tables, |d| d.child(tr("app.backup.objects.try_other"))),
             )
             .into_any_element()
     } else {
@@ -98,7 +98,7 @@ fn database_backup_objects_body(
                 .items_center()
                 .child(
                     Checkbox::new("backup-scope-all")
-                        .label("整库备份（全部对象）")
+                        .label(tr("app.backup.objects.all"))
                         .checked(form.scope_all)
                         .cursor_pointer()
                         .on_click({
@@ -130,13 +130,13 @@ fn database_backup_objects_body(
                         div()
                             .text_size(px(13.))
                             .text_color(colors.text)
-                            .child(format!("将备份全部对象（共 {total_objects} 个）")),
+                            .child(tr("app.backup.objects.all_summary").replace("%{count}", &total_objects.to_string())),
                     )
                     .child(
                         div()
                             .text_size(px(11.))
                             .text_color(colors.muted)
-                            .child("执行时会重新枚举数据库，包含打开弹框后新增的表"),
+                            .child(tr("app.backup.objects.reenumerate")),
                     ),
             )
         })
@@ -189,7 +189,7 @@ fn database_backup_objects_body(
                         .gap_2()
                         .child(
                             Checkbox::new("backup-select-all")
-                                .label("全选表")
+                                .label(tr("app.backup.objects.select_all"))
                                 .cursor_pointer()
                                 .disabled(filtered_tables.is_empty())
                                 .checked(
@@ -215,15 +215,16 @@ fn database_backup_objects_body(
                             div()
                                 .text_size(px(11.))
                                 .text_color(colors.muted)
-                                .child(format!(
-                                    "{} 项 · 已选 {selected_objects}/{total_objects}",
-                                    filtered_tables.len()
-                                )),
+                                .child(
+                                    tr("app.backup.objects.selected")
+                                        .replace("%{total}", &total_objects.to_string())
+                                        .replace("%{selected}", &selected_objects.to_string()),
+                                ),
                         )
                         .child(div().flex_1())
                         .child(
                             Button::new("backup-clear-btn")
-                                .label("清空")
+                                .label(tr("app.backup.objects.clear"))
                                 .small()
                                 .ghost()
                                 .rounded_md()
@@ -255,7 +256,7 @@ fn database_backup_objects_body(
             this.child(
                 div().h(px(28.)).flex_none().flex().items_center().child(
                     Checkbox::new("backup-include-views")
-                        .label(format!("包含视图（{view_tables}）"))
+                        .label(tr("app.backup.objects.include_views").replace("%{count}", &view_tables.to_string()))
                         .checked(form.include_views)
                         .cursor_pointer()
                         .on_click(move |checked, _, cx| {
@@ -276,7 +277,7 @@ fn database_backup_objects_body(
                     div()
                         .text_size(px(11.))
                         .text_color(colors.muted)
-                        .child("所选范围同时适用于原生工具（mysqldump/pg_dump）与逻辑备份。"),
+                        .child(tr("app.backup.objects.scope_note")),
                 ),
         )
 }

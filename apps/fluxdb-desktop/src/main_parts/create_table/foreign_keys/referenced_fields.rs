@@ -82,7 +82,7 @@ fn create_table_foreign_key_referenced_fields_cell(
                                 .whitespace_nowrap()
                                 .text_ellipsis()
                                 .child(if summary.is_empty() {
-                                    "选择目标字段".to_string()
+                                    tr("app.create_table.foreign_key.select_referenced_fields").to_string()
                                 } else {
                                     summary
                                 }),
@@ -166,13 +166,13 @@ fn create_table_foreign_key_referenced_fields_popover(
                         .text_size(px(13.))
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .text_color(colors.text)
-                        .child("选择目标字段"),
+                        .child(tr("app.create_table.foreign_key.select_referenced_fields")),
                 )
                 .child(
                     div()
                         .text_size(px(12.))
                         .text_color(colors.muted)
-                        .child(format!("已选 {} 个", draft.columns.len())),
+                        .child(tr("app.create_table.foreign_key.selected_count").replace("%{count}", &draft.columns.len().to_string())),
                 ),
         )
         .child(create_table_foreign_key_referenced_fields_table(
@@ -200,7 +200,7 @@ fn create_table_foreign_key_referenced_fields_popover(
                         .gap_1()
                         .child(create_table_index_field_icon_button(
                             AppIcon::ChevronUp,
-                            "上移字段",
+                            tr("app.create_table.popover.move_up"),
                             can_move_up,
                             colors,
                         )
@@ -229,7 +229,7 @@ fn create_table_foreign_key_referenced_fields_popover(
                         }))
                         .child(create_table_index_field_icon_button(
                             AppIcon::ChevronDown,
-                            "下移字段",
+                            tr("app.create_table.popover.move_down"),
                             can_move_down,
                             colors,
                         )
@@ -261,7 +261,7 @@ fn create_table_foreign_key_referenced_fields_popover(
                         .flex()
                         .items_center()
                         .gap_2()
-                        .child(create_table_popover_text_button("取消", colors).on_mouse_down(
+                        .child(create_table_popover_text_button(tr("app.create_table.popover.cancel"), colors).on_mouse_down(
                             MouseButton::Left,
                             {
                             let cancel_view = view.clone();
@@ -276,7 +276,7 @@ fn create_table_foreign_key_referenced_fields_popover(
                             }
                             },
                         ))
-                        .child(create_table_popover_text_button("确定", colors).on_mouse_down(
+                        .child(create_table_popover_text_button(tr("app.create_table.popover.confirm"), colors).on_mouse_down(
                             MouseButton::Left,
                             {
                             let confirm_view = view.clone();
@@ -327,22 +327,22 @@ fn create_table_foreign_key_referenced_fields_table(
 
     if foreign_key.referenced_table.trim().is_empty() {
         list = list.child(create_table_foreign_key_fields_empty(
-            "请先选择目标表",
+            tr("app.create_table.foreign_key.select_target_table"),
             colors,
         ));
     } else {
         match &foreign_key.referenced_column_options {
             LoadState::NotLoaded | LoadState::Loading => {
-                list = list.child(create_table_foreign_key_fields_empty("正在加载字段", colors));
+                list = list.child(create_table_foreign_key_fields_empty(tr("app.create_table.foreign_key.loading_fields"), colors));
             }
             LoadState::Failed(error) => {
                 list = list.child(create_table_foreign_key_fields_empty(
-                    format!("加载失败：{}", error.message),
+                    tr("app.create_table.foreign_key.load_failed").replace("%{error}", &error.message),
                     colors,
                 ));
             }
             LoadState::Loaded(_) if options.is_empty() => {
-                list = list.child(create_table_foreign_key_fields_empty("目标表暂无字段", colors));
+                list = list.child(create_table_foreign_key_fields_empty(tr("app.create_table.foreign_key.no_columns"), colors));
             }
             LoadState::Loaded(_) => {
                 for field in ordered_unique_field_options(&draft.columns, options)
@@ -547,7 +547,8 @@ fn create_table_apply_foreign_key_referenced_fields_draft(
     cx.notify();
 }
 
-fn create_table_foreign_key_fields_empty(text: impl Into<String>, colors: UiColors) -> Div {
+fn create_table_foreign_key_fields_empty(text: impl Into<SharedString>, colors: UiColors) -> Div {
+    let text: SharedString = text.into();
     div()
         .h(px(30.))
         .px_3()
@@ -555,5 +556,5 @@ fn create_table_foreign_key_fields_empty(text: impl Into<String>, colors: UiColo
         .items_center()
         .text_size(px(13.))
         .text_color(colors.muted)
-        .child(text.into())
+        .child(text)
 }

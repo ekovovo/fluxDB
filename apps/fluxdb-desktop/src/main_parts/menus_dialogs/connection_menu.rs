@@ -49,7 +49,7 @@ fn connection_context_menu(
         })
         .child(if connected {
             connection_menu_item(
-                "关闭连接",
+                tr("app.connection_menu.close_connection").to_string(),
                 "disconnect",
                 None,
                 false,
@@ -60,7 +60,7 @@ fn connection_context_menu(
             )
         } else {
             connection_menu_item(
-                "打开连接",
+                tr("app.connection_menu.open_connection").to_string(),
                 "connect",
                 None,
                 false,
@@ -71,7 +71,7 @@ fn connection_context_menu(
             )
         })
         .child(connection_menu_item(
-            "新建查询",
+            tr("app.connection_menu.new_query").to_string(),
             "query",
             None,
             false,
@@ -82,7 +82,7 @@ fn connection_context_menu(
         ))
         .when(!is_redis, |this| {
             this.child(connection_menu_item(
-                "用户与权限",
+                tr("app.connection_menu.user_admin").to_string(),
                 "users",
                 None,
                 false,
@@ -94,7 +94,7 @@ fn connection_context_menu(
         })
         .when(!is_redis, |this| {
             this.child(connection_menu_item(
-                "执行 SQL 文件",
+                tr("app.connection_menu.run_sql_file").to_string(),
                 "file-sql",
                 None,
                 false,
@@ -106,7 +106,7 @@ fn connection_context_menu(
         })
         .when(!is_redis, |this| {
             this.child(connection_menu_item(
-                "新建数据库",
+                tr("app.connection_menu.new_database").to_string(),
                 "plus",
                 None,
                 false,
@@ -125,7 +125,7 @@ fn connection_context_menu(
 
     if grouped {
         menu_view = menu_view.child(connection_menu_item(
-            "取消分组",
+            tr("app.connection_menu.ungroup").to_string(),
             "ungroup",
             None,
             false,
@@ -138,7 +138,7 @@ fn connection_context_menu(
 
     menu_view
         .child(connection_menu_item(
-            "刷新",
+            tr("app.connection_menu.refresh").to_string(),
             "refresh",
             Some("F5"),
             false,
@@ -149,7 +149,7 @@ fn connection_context_menu(
         ))
         .when(!is_redis, |this| {
             this.child(connection_menu_item(
-                "选择显示数据库",
+                tr("app.connection_menu.select_databases").to_string(),
                 "filter",
                 None,
                 false,
@@ -160,7 +160,7 @@ fn connection_context_menu(
             ))
         })
         .child(connection_menu_item(
-            "编辑连接",
+            tr("app.connection_menu.edit_connection").to_string(),
             "edit",
             None,
             false,
@@ -170,7 +170,7 @@ fn connection_context_menu(
             cx,
         ))
         .child(connection_menu_item(
-            "复制连接",
+            tr("app.connection_menu.copy_connection").to_string(),
             "copy",
             None,
             false,
@@ -181,7 +181,7 @@ fn connection_context_menu(
         ))
         .child(connection_menu_separator(colors))
         .child(connection_menu_item(
-            "删除连接",
+            tr("app.connection_menu.delete_connection").to_string(),
             "delete",
             Some("Del"),
             true,
@@ -202,14 +202,22 @@ fn database_context_menu(
 ) -> Div {
     let database_key = database_tree_key(menu.connection_id, &menu.database);
     let pinned = pinned_databases.contains(&database_key);
-    let pin_label = if pinned { "取消置顶" } else { "置顶" };
-    let open_label = if menu.expanded {
-        "关闭数据库"
+    let pin_label = if pinned {
+        tr("app.context.unpin").to_string()
     } else {
-        "打开数据库"
+        tr("app.context.pin").to_string()
+    };
+    let open_label = if menu.expanded {
+        tr("app.connection_menu.close_database").to_string()
+    } else {
+        tr("app.connection_menu.open_database").to_string()
     };
     // Redis 数据库使用 Workbench 命令执行器，SQL 连接使用查询编辑器。
-    let query_label = if is_redis { "Redis Workbench" } else { "新建查询" };
+    let query_label = if is_redis {
+        tr("app.connection_menu.redis_workbench").to_string()
+    } else {
+        tr("app.connection_menu.new_query").to_string()
+    };
 
     // 备份节点右键：只渲染「新建备份」一个菜单项，而非完整库菜单。
     if menu.backup_only {
@@ -236,7 +244,7 @@ fn database_context_menu(
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
             .child(database_menu_item(
-                "新建备份",
+                tr("app.connection_menu.new_backup").to_string(),
                 "save",
                 false,
                 DatabaseMenuAction::Backup,
@@ -245,7 +253,7 @@ fn database_context_menu(
                 cx,
             ))
             .child(database_menu_item(
-                "刷新",
+                tr("app.connection_menu.refresh").to_string(),
                 "refresh",
                 false,
                 DatabaseMenuAction::Refresh,
@@ -303,7 +311,7 @@ fn database_context_menu(
                 cx,
             ))
             .child(database_menu_item(
-                "设置默认数据库",
+                tr("app.connection_menu.set_default_database").to_string(),
                 "default",
                 false,
                 DatabaseMenuAction::SetDefault,
@@ -314,7 +322,7 @@ fn database_context_menu(
             .child(connection_menu_separator(colors))
             // 新建表/执行 SQL 文件仅对 SQL 型连接有意义。
             .child(database_menu_item(
-                "新建表",
+                tr("app.context.new_table").to_string(),
                 "table",
                 false,
                 DatabaseMenuAction::NewTable,
@@ -324,7 +332,7 @@ fn database_context_menu(
             ))
             .when(is_postgres, |this| {
                 this.child(database_menu_item(
-                    "新建 schema",
+                    tr("app.connection_menu.new_schema").to_string(),
                     "folder-open",
                     false,
                     DatabaseMenuAction::NewSchema,
@@ -334,7 +342,7 @@ fn database_context_menu(
                 ))
             })
             .child(database_menu_item(
-                "执行 SQL 文件",
+                tr("app.connection_menu.run_sql_file").to_string(),
                 "file-sql",
                 false,
                 DatabaseMenuAction::RunSqlFile,
@@ -344,7 +352,7 @@ fn database_context_menu(
             ))
             // 数据库备份仅对 SQL 型连接有意义（MySQL/TiDB/SQLite）。
             .child(database_menu_item(
-                "备份",
+                tr("app.context.backup").to_string(),
                 "save",
                 false,
                 DatabaseMenuAction::Backup,
@@ -377,7 +385,7 @@ fn database_context_menu(
         // Redis Pub/Sub：打开该数据库的订阅/发布实时会话页，仅在 Redis 连接下显示。
         .when(is_redis, |this| {
             this.child(database_menu_item(
-                "打开 Pub/Sub",
+                tr("app.connection_menu.open_pubsub").to_string(),
                 "broadcast",
                 false,
                 DatabaseMenuAction::PubSub,
@@ -390,7 +398,7 @@ fn database_context_menu(
         // 在数据库中查找（表级搜索）仅对 SQL 型连接有意义。
         .when(!is_redis, |this| {
             this.child(database_menu_item(
-                "在数据库中查找",
+                tr("app.connection_menu.find_in_database").to_string(),
                 "file-search",
                 false,
                 DatabaseMenuAction::FindInDatabase,
@@ -400,7 +408,7 @@ fn database_context_menu(
             ))
         })
         .child(database_menu_item(
-            "刷新",
+            tr("app.connection_menu.refresh").to_string(),
             "refresh",
             false,
             DatabaseMenuAction::Refresh,
@@ -412,7 +420,7 @@ fn database_context_menu(
         .when(!is_redis, |this| {
             this.child(connection_menu_separator(colors))
                 .child(database_menu_item(
-                    "删除数据库",
+                    tr("app.connection_menu.delete_database").to_string(),
                     "delete",
                     true,
                     DatabaseMenuAction::Delete,
@@ -452,11 +460,39 @@ fn schema_context_menu(
         .key_context("SchemaContextMenu")
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
-        .child(schema_menu_item("新建查询", "query", SchemaMenuAction::NewQuery, &menu, colors, cx))
-        .child(schema_menu_item("新建表", "table", SchemaMenuAction::NewTable, &menu, colors, cx))
+        .child(schema_menu_item(
+            &tr("app.connection_menu.new_query"),
+            "query",
+            SchemaMenuAction::NewQuery,
+            &menu,
+            colors,
+            cx,
+        ))
+        .child(schema_menu_item(
+            &tr("app.context.new_table"),
+            "table",
+            SchemaMenuAction::NewTable,
+            &menu,
+            colors,
+            cx,
+        ))
         .child(connection_menu_separator(colors))
-        .child(schema_menu_item("设置默认 schema", "default", SchemaMenuAction::SetDefault, &menu, colors, cx))
-        .child(schema_menu_item("刷新", "refresh", SchemaMenuAction::Refresh, &menu, colors, cx))
+        .child(schema_menu_item(
+            &tr("app.connection_menu.set_default_schema"),
+            "default",
+            SchemaMenuAction::SetDefault,
+            &menu,
+            colors,
+            cx,
+        ))
+        .child(schema_menu_item(
+            &tr("app.connection_menu.refresh"),
+            "refresh",
+            SchemaMenuAction::Refresh,
+            &menu,
+            colors,
+            cx,
+        ))
 }
 
 fn schema_menu_item(
@@ -563,7 +599,7 @@ fn connection_group_submenu(
     }
 
     submenu.child(connection_menu_item(
-        "新建分组...",
+        tr("app.connection_menu.new_group").to_string(),
         "folder-plus",
         None,
         false,
@@ -614,7 +650,7 @@ fn move_to_group_menu_item(
                 .overflow_hidden()
                 .whitespace_nowrap()
                 .font_weight(gpui::FontWeight::SEMIBOLD)
-                .child("移至分组"),
+                .child(tr("app.connection_menu.move_to_group")),
         )
         .child(div().text_color(colors.muted).child("›"))
 }

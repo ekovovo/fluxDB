@@ -20,7 +20,8 @@ impl NavicatMain {
     ) -> gpui::AnyElement {
         let selected = self.controller.state().ai_conversation.selected_model_id.clone().unwrap_or_default();
         let label = self.ai_chat.model_options.iter().find(|option| option.id == selected)
-            .map(|option| option.label.clone()).unwrap_or_else(|| "选择模型".into());
+            .map(|option| option.label.clone())
+            .unwrap_or_else(|| tr("app.ai.chat.model.select").into());
         let options = self.ai_chat.model_options.clone();
         let owner = cx.entity().downgrade();
         Button::new("ai-chat-model-trigger")
@@ -86,7 +87,7 @@ impl NavicatMain {
         if !options.iter().any(|option| option.id == session_agent_id) {
             options.push(AiChatModelOption {
                 id: session_agent_id.clone(),
-                label: "当前 Agent".into(),
+                label: tr("app.ai.chat.model.current_agent").into(),
                 unavailable: true,
             });
         }
@@ -109,13 +110,20 @@ impl NavicatMain {
     fn sync_ai_chat_models(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let state = self.controller.state();
         let selected = state.ai_conversation.selected_model_id.clone().unwrap_or_default();
-        let mut options = vec![AiChatModelOption {id: String::new(),label: "默认模型".into(), unavailable:false}];
-        // `AiModelItem.kind` 是本地化展示串（“生成”/“决策”），不是协议枚举；这里必须按同一口径过滤。
-        options.extend(state.ai_models.iter().filter(|m|m.enabled && m.kind=="生成").map(|m|AiChatModelOption{
+        let mut options = vec![AiChatModelOption {
+            id: String::new(),
+            label: tr("app.ai.chat.model.default").into(),
+            unavailable: false,
+        }];
+        options.extend(state.ai_models.iter().filter(|m|m.enabled && m.kind==fluxdb_app::AiModelKind::Generation).map(|m|AiChatModelOption{
             id:m.id.clone(), label:format!("{} · {}",m.display_name,m.provider),unavailable:false,
         }));
         if !selected.is_empty() && !options.iter().any(|o|o.id==selected) {
-            options.push(AiChatModelOption {id:selected.clone(),label:"所选模型不可用".into(),unavailable:true});
+            options.push(AiChatModelOption {
+                id: selected.clone(),
+                label: tr("app.ai.chat.model.unavailable").into(),
+                unavailable: true,
+            });
         }
         let items_changed = self.ai_chat.model_options != options;
         if items_changed {

@@ -108,8 +108,18 @@ fn redis_key_detail_zset_panel(
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .text_color(colors.muted)
                         .child(div().w(px(42.)).flex_none().child("#"))
-                        .child(div().flex_1().min_w(px(0.)).child("Member"))
-                        .child(div().w(px(140.)).flex_none().child("Score"))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .child(tr("app.redis.form.member")),
+                        )
+                        .child(
+                            div()
+                                .w(px(140.))
+                                .flex_none()
+                                .child(tr("app.redis.form.score")),
+                        )
                         .child(div().w(px(40.)).flex_none()),
                 )
                 .child(
@@ -143,7 +153,7 @@ fn redis_key_detail_zset_panel(
                                         .justify_center()
                                         .text_size(px(12.))
                                         .text_color(colors.muted)
-                                        .child("暂无成员")
+                                        .child(tr("app.redis.zset.empty"))
                                 } else {
                                     redis_zset_member_rows_panel(
                                         tab_id,
@@ -179,7 +189,7 @@ fn redis_key_detail_zset_panel(
                         .justify_between()
                         .text_size(px(11.))
                         .text_color(colors.muted)
-                        .child(format!("显示 {} / 共 {} 个成员", rows.len(), total))
+                        .child(tr("app.redis.zset.members_count").replace("%{shown}", &rows.len().to_string()).replace("%{total}", &total.to_string()))
                         .child(
                             div()
                                 .flex()
@@ -191,7 +201,7 @@ fn redis_key_detail_zset_panel(
                                             .into_any_element()
                                     } else {
                                         redis_detail_toolbar_button(
-                                            "加载更多",
+                                            tr("app.redis.load_more"),
                                             AppIcon::ChevronDown,
                                             true,
                                             colors,
@@ -439,7 +449,7 @@ fn redis_zset_member_delete_confirm_popover(
 ) -> impl IntoElement {
     // 面板行删除会随「保存」落库（ZREM），删除不可撤销，展示成员名以明确目标。
     let title = member;
-    let message = "将被删除，此操作不可撤销。";
+    let message = tr("app.redis.zset.delete_irreversible");
     div()
         .absolute()
         .right(px(34.))
@@ -496,7 +506,7 @@ fn redis_zset_member_delete_confirm_popover(
                                     .flex()
                                     .justify_end()
                                     .gap_2()
-                                    .child(redis_key_delete_confirm_button("取消", false, colors).on_mouse_down(
+                                    .child(redis_key_delete_confirm_button(tr("app.redis.cancel"), false, colors).on_mouse_down(
                                         MouseButton::Left,
                                         cx.listener(|this, _, _, cx| {
                                             this.pending_redis_zset_member_delete = None;
@@ -504,7 +514,7 @@ fn redis_zset_member_delete_confirm_popover(
                                             cx.stop_propagation();
                                         }),
                                     ))
-                                    .child(redis_key_delete_confirm_button("确认删除", true, colors).on_mouse_down(
+                                    .child(redis_key_delete_confirm_button(tr("app.redis.confirm_delete"), true, colors).on_mouse_down(
                                         MouseButton::Left,
                                         cx.listener(move |this, _, _, cx| {
                                             // 确认：真正执行 ZREM 删除；从面板行集合取最新 member。
@@ -574,7 +584,7 @@ fn redis_zset_member_score_display(
                     .justify_center()
                     .cursor_pointer()
                     .hover(move |style| style.bg(colors.hover))
-                    .tooltip(move |window, cx| Tooltip::new("编辑").build(window, cx))
+                    .tooltip(move |window, cx| Tooltip::new(tr("app.redis.edit")).build(window, cx))
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, _, window, cx| {
@@ -750,7 +760,7 @@ fn redis_zset_member_add_drawer(
                         .flex()
                         .items_center()
                         .justify_between()
-                        .child(div().text_size(px(17.)).font_weight(gpui::FontWeight::SEMIBOLD).child("新增成员")),
+                        .child(div().text_size(px(17.)).font_weight(gpui::FontWeight::SEMIBOLD).child(tr("app.redis.zset.add_member"))),
                 )
                 .child(
                     div()
@@ -817,7 +827,7 @@ fn redis_zset_member_add_drawer(
                         .justify_end()
                         .gap_2()
                         .child(
-                            redis_detail_action_button("取消", false, !applying, colors).on_mouse_down(
+                            redis_detail_action_button(tr("app.redis.cancel"), false, !applying, colors).on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(|this, _, _, cx| {
                                     this.cancel_redis_zset_member_drawer(cx);
@@ -826,7 +836,7 @@ fn redis_zset_member_add_drawer(
                             ),
                         )
                         .child(
-                            redis_detail_action_button("保存", true, !applying, colors).on_mouse_down(
+                            redis_detail_action_button(tr("app.redis.save"), true, !applying, colors).on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener({
                                     let key = key.clone();

@@ -15,15 +15,15 @@ fn dangerous_command_modal(
     let preview = single_line_summary_text(text);
     let (title, description, key_context, cancel_id, confirm_id) = match kind {
         DangerousCommandKind::Sql => (
-            "确认执行危险 SQL",
-            "该语句可能修改或删除大量数据。",
+            tr("app.confirm.dangerous_sql.title"),
+            tr("app.confirm.dangerous_sql.message"),
             "DangerousQueryModal",
             "dangerous-query-cancel",
             "dangerous-query-confirm",
         ),
         DangerousCommandKind::Redis => (
-            "确认执行危险 Redis 命令",
-            "该命令可能清空或破坏数据，请确认是否继续执行。",
+            tr("app.confirm.dangerous_redis.title"),
+            tr("app.confirm.dangerous_redis.message"),
             "DangerousRedisCommandModal",
             "dangerous-redis-command-cancel",
             "dangerous-redis-command-confirm",
@@ -100,7 +100,7 @@ fn dangerous_command_modal(
                         .child(
                             div()
                                 .id((key_context, 1u64))
-                                .aria_label("关闭")
+                                .aria_label(tr("app.common.close"))
                                 .size(px(28.))
                                 .rounded(colors.radius)
                                 .cursor_pointer()
@@ -139,7 +139,7 @@ fn dangerous_command_modal(
                         .items_center()
                         .justify_end()
                         .gap_2()
-                        .child(Button::new(cancel_id).label("取消").w(px(78.)).on_click(
+                        .child(Button::new(cancel_id).label(tr("app.common.cancel")).w(px(78.)).on_click(
                             cx.listener(move |this, _, _, cx| {
                                 cancel(this, cx);
                                 cx.stop_propagation();
@@ -147,7 +147,7 @@ fn dangerous_command_modal(
                         ))
                         .child(
                             Button::new(confirm_id)
-                                .label("执行")
+                                .label(tr("app.common.execute"))
                                 .danger()
                                 .w(px(78.))
                                 .on_click(cx.listener(move |this, _, _, cx| {

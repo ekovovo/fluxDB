@@ -35,8 +35,8 @@ impl NavicatMain {
                     AppEvent::DataLoaded(_, page) => Ok(page),
                     AppEvent::Failed(error) => Err(error),
                     _ => Err(fluxdb_core::UserFacingError {
-                        title: "加载失败".to_string(),
-                        message: "数据加载没有返回结果".to_string(),
+                        title: tr("app.data.error.load").to_string(),
+                        message: tr("app.data.error.no_load_result").to_string(),
                         detail: None,
                         retryable: true,
                     }),
@@ -87,8 +87,8 @@ impl NavicatMain {
                     AppEvent::TableInfoLoaded(_, _, result) => Ok(result),
                     AppEvent::Failed(error) => Err(error),
                     _ => Err(fluxdb_core::UserFacingError {
-                        title: "加载失败".to_string(),
-                        message: "表属性加载没有返回结果".to_string(),
+                        title: tr("app.data.error.load").to_string(),
+                        message: tr("app.data.error.no_table_info_result").to_string(),
                         detail: None,
                         retryable: true,
                     }),

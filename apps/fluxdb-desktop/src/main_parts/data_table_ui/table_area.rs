@@ -46,7 +46,7 @@ fn component_data_table(
 fn data_table_area(
     table_state: &Entity<TableState<DataPageTableDelegate>>,
     loading: bool,
-    loading_text: &'static str,
+    loading_text: impl Into<SharedString>,
     search_bar: Option<Div>,
     sql_drawer: Option<Div>,
     cell_detail_drawer: Option<Div>,
@@ -55,6 +55,7 @@ fn data_table_area(
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
+    let loading_text = loading_text.into();
     let footer_height = if footer.is_some() { 30. } else { 0. };
     let search_height = if search_bar.is_some() { 30. } else { 0. };
     let drawer_height = if sql_drawer.is_some() { 150. } else { 0. };

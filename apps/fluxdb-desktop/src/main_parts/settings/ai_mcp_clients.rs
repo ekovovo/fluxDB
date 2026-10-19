@@ -37,9 +37,9 @@ impl NavicatMain {
             },
             key,
             Some(if registered {
-                "已写入客户端配置；请在客户端刷新或重启 MCP"
+                tr("app.ai.mcp.client_registered").to_string()
             } else {
-                "已从客户端卸载"
+                tr("app.ai.mcp.client_uninstalled").to_string()
             }),
             cx,
         );
@@ -50,7 +50,7 @@ impl NavicatMain {
         &mut self,
         command: AppCommand,
         operation: String,
-        success: Option<&'static str>,
+        success: Option<String>,
         cx: &mut Context<Self>,
     ) {
         if self.ai_mcp_clients_busy.is_some() {
@@ -113,7 +113,7 @@ fn ai_mcp_clients_panel(
         .cursor_pointer()
         .disabled(busy || !can_configure)
         .icon(gpui_component::Icon::default().path(app_icon_path(AppIcon::Plus)))
-        .child("添加客户端")
+        .child(tr("app.ai.mcp.add_client"))
         .dropdown_menu_with_anchor(gpui::Anchor::TopRight, move |mut menu, _, _| {
             for client in fluxdb_app::McpClientKind::all() {
                 // 已有同名条目的客户端走行内安装/重新安装，菜单只提供尚未接入的客户端。
@@ -153,7 +153,7 @@ fn ai_mcp_clients_panel(
                     .text_size(px(12.))
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .text_color(colors.text)
-                    .child("客户端接入"),
+                    .child(tr("app.ai.mcp.clients_title")),
             ),
         )
         .child(
@@ -167,8 +167,8 @@ fn ai_mcp_clients_panel(
                         .small()
                         .ghost()
                         .cursor_pointer()
-                        .accessibility_label("刷新客户端配置")
-                        .tooltip("刷新客户端配置")
+                        .accessibility_label(tr("app.ai.mcp.refresh_clients"))
+                        .tooltip(tr("app.ai.mcp.refresh_clients"))
                         .disabled(busy)
                         .loading(panel.mcp_clients_busy.as_deref() == Some("refresh"))
                         .icon(gpui_component::Icon::default().path(app_icon_path(AppIcon::Refresh)))
@@ -182,7 +182,7 @@ fn ai_mcp_clients_panel(
         div()
             .text_size(px(11.))
             .text_color(colors.muted)
-            .child("「已配置」只是写入了客户端配置，不代表已连接；「卸载」删除该配置，关闭服务也会保留它。"),
+            .child(tr("app.ai.mcp.clients_help")),
     );
     if busy {
         group = group.child(
@@ -192,7 +192,7 @@ fn ai_mcp_clients_panel(
                 .py_2()
                 .text_size(px(11.))
                 .text_color(colors.muted)
-                .child("正在更新配置…")
+                .child(tr("app.ai.mcp.updating_clients")),
         );
     }
     if let Some(error) = &panel.mcp_clients_error {
@@ -227,7 +227,7 @@ fn ai_mcp_clients_panel(
                 .py_3()
                 .text_size(px(12.))
                 .text_color(colors.muted)
-                .child("暂无客户端，点击右上角添加，或使用下方手动接入。"),
+                .child(tr("app.ai.mcp.no_clients")),
         );
     }
     group.child(ai_mcp_manual_connection(panel, colors, cx))
@@ -243,28 +243,44 @@ fn ai_mcp_manual_connection(
         .child(div().flex().flex_wrap().items_center().justify_between().gap_2()
             .child(div().flex().items_center().gap_2()
                 .child(div().text_size(px(12.)).font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(colors.text).child("其他客户端"))
+                    .text_color(colors.text).child(tr("app.ai.mcp.other_clients")))
                 .child(div().text_size(px(11.)).text_color(colors.muted).child("MCP · stdio")))
             .when_some(panel.mcp_connection_details.clone(), |this, details| {
                 let command = details.command_line;
                 let json = details.json_example;
                 this.child(div().flex().flex_wrap().items_center().gap_1()
                     .child(Button::new("ai-mcp-copy-command").small().ghost().cursor_pointer()
-                        .disabled(busy).child("复制命令")
-                        .tooltip(if cfg!(windows) { "复制 PowerShell 启动命令" } else { "复制启动命令" })
+                        .disabled(busy).child(tr("app.ai.mcp.copy_command"))
+                        .tooltip(if cfg!(windows) {
+                            tr("app.ai.mcp.copy_powershell")
+                        } else {
+                            tr("app.ai.mcp.copy_start_command")
+                        })
                         .on_click(cx.listener(move |this, _, _, cx| {
                             cx.write_to_clipboard(gpui::ClipboardItem::new_string(command.clone()));
-                            this.show_message("启动命令已复制", AppMessageKind::Success, cx);
+                            this.show_message(
+                                tr("app.ai.mcp.command_copied"),
+                                AppMessageKind::Success,
+                                cx,
+                            );
                         })))
                     .child(Button::new("ai-mcp-copy-config").small().ghost().cursor_pointer()
-                        .disabled(busy).child("复制 JSON")
-                        .tooltip("复制 JSON 配置示例，请按客户端格式调整")
+                        .disabled(busy).child(tr("app.ai.mcp.copy_json"))
+                        .tooltip(tr("app.ai.mcp.copy_json_hint"))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             cx.write_to_clipboard(gpui::ClipboardItem::new_string(json.clone()));
-                            this.show_message("JSON 配置示例已复制，请按客户端格式调整", AppMessageKind::Success, cx);
+                            this.show_message(
+                                tr("app.ai.mcp.json_copied"),
+                                AppMessageKind::Success,
+                                cx,
+                            );
                         })))
                     .child(Button::new("ai-mcp-config-details").small().ghost().cursor_pointer()
-                        .child(if panel.mcp_details_open { "收起详情" } else { "配置详情" })
+                        .child(if panel.mcp_details_open {
+                            tr("app.ai.mcp.hide_details")
+                        } else {
+                            tr("app.ai.mcp.show_details")
+                        })
                         .icon(gpui_component::Icon::default().path(app_icon_path(
                             if panel.mcp_details_open { AppIcon::ChevronUp } else { AppIcon::ChevronDown }
                         )))
@@ -280,7 +296,7 @@ fn ai_mcp_manual_connection(
             this.child(gpui_component::collapsible::Collapsible::new().open(panel.mcp_details_open)
                 .content(div().flex().flex_col().gap_2().pt_1().pb_1()
                     .child(div().text_size(px(11.)).text_color(colors.muted)
-                        .child("支持 MCP stdio 的客户端可手动接入；部分工具需插件或桥接。JSON 仅为示例，格式和位置以客户端文档为准；不会写入审批规则。"))
+                        .child(tr("app.ai.mcp.manual_help")))
                     .child(div().id("ai-mcp-config-preview").max_h(px(180.)).overflow_scroll()
                         .rounded_md().border_1().border_color(colors.border_soft).bg(colors.input_bg)
                         .p_3().font_family(PLATFORM_MONOSPACE_FONT).text_size(px(11.))
@@ -302,11 +318,11 @@ fn client_registration_row(
     // 同名条目与本应用写入的一致才算已接入：此时提供卸载，否则提供安装/重新安装。
     let remove = status.up_to_date;
     let (label, color, icon) = if status.error.is_some() {
-        ("配置异常", colors.danger, AppIcon::TriangleAlert)
+        (tr("app.ai.mcp.status.error"), colors.danger, AppIcon::TriangleAlert)
     } else if status.registered {
-        ("已配置", colors.success, AppIcon::Check)
+        (tr("app.ai.mcp.status.configured"), colors.success, AppIcon::Check)
     } else {
-        ("未配置", colors.muted, AppIcon::CircleSlash)
+        (tr("app.ai.mcp.status.not_configured"), colors.muted, AppIcon::CircleSlash)
     };
     let path = status.config_path.clone();
     let file_name = std::path::Path::new(&path)
@@ -407,11 +423,11 @@ fn client_registration_row(
             .text_color(colors.muted)
             .disabled(busy || (!remove && !can_configure))
             .child(if remove {
-                "卸载"
+                tr("app.ai.mcp.uninstall")
             } else if status.registered {
-                "重新安装"
+                tr("app.ai.mcp.reinstall")
             } else {
-                "安装"
+                tr("app.ai.mcp.install")
             })
             .on_click(
                 cx.listener(move |this, _, _, cx| this.set_mcp_client(key.clone(), !remove, cx)),

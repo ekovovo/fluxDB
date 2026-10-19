@@ -46,9 +46,9 @@ fn tab_context_menu(
     );
     let close_others_action = (!other_tab_ids.is_empty()).then_some(TabMenuAction::CloseOthers);
     let pin_label = if pinned_tabs.contains(&menu.tab_id) {
-        "取消置顶"
+        tr("app.context.unpin").to_string()
     } else {
-        "置顶"
+        tr("app.context.pin").to_string()
     };
 
     div()
@@ -79,7 +79,7 @@ fn tab_context_menu(
             cx.stop_propagation();
         })
         .child(tab_menu_item(
-            "复制表名",
+            tr("app.context.copy_table_name").to_string(),
             "copy",
             false,
             Some(TabMenuAction::CopyTableName),
@@ -99,7 +99,7 @@ fn tab_context_menu(
         ))
         .child(connection_menu_separator(colors))
         .child(tab_menu_item(
-            "关闭标签页",
+            tr("app.context.close_tab").to_string(),
             "x",
             false,
             Some(TabMenuAction::Close),
@@ -108,7 +108,7 @@ fn tab_context_menu(
             cx,
         ))
         .child(tab_menu_item(
-            "关闭其他标签页",
+            tr("app.context.close_other_tabs").to_string(),
             "x",
             false,
             close_others_action,
@@ -117,7 +117,7 @@ fn tab_context_menu(
             cx,
         ))
         .child(tab_menu_item(
-            "关闭全部标签页",
+            tr("app.context.close_all_tabs").to_string(),
             "x",
             true,
             (!scoped_tab_ids.is_empty()).then_some(TabMenuAction::CloseAll),
@@ -157,7 +157,7 @@ fn table_group_context_menu(
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
         .child(table_group_menu_item(
-            "新建表",
+            tr("app.context.new_table").to_string(),
             AppIcon::Plus,
             TableGroupMenuAction::NewTable,
             menu.clone(),
@@ -165,7 +165,7 @@ fn table_group_context_menu(
             cx,
         ))
         .child(table_group_menu_item(
-            "新建组",
+            tr("app.context.new_group").to_string(),
             AppIcon::Folder,
             TableGroupMenuAction::NewGroup,
             menu.clone(),
@@ -173,7 +173,7 @@ fn table_group_context_menu(
             cx,
         ))
         .child(table_group_menu_item(
-            "刷新",
+            tr("app.context.refresh").to_string(),
             AppIcon::Refresh,
             TableGroupMenuAction::Refresh,
             menu,
@@ -183,7 +183,7 @@ fn table_group_context_menu(
 }
 
 fn table_group_menu_item(
-    label: &'static str,
+    label: impl Into<String>,
     icon: AppIcon,
     action: TableGroupMenuAction,
     menu: TableGroupContextMenu,
@@ -229,7 +229,7 @@ fn table_folder_context_menu(
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
         .child(table_folder_menu_item(
-            "上移",
+            tr("app.context.move_up").to_string(),
             AppIcon::ChevronUp,
             false,
             TableFolderMenuAction::MoveUp,
@@ -238,7 +238,7 @@ fn table_folder_context_menu(
             cx,
         ))
         .child(table_folder_menu_item(
-            "下移",
+            tr("app.context.move_down").to_string(),
             AppIcon::ChevronDown,
             false,
             TableFolderMenuAction::MoveDown,
@@ -247,7 +247,7 @@ fn table_folder_context_menu(
             cx,
         ))
         .child(table_folder_menu_item(
-            "重命名",
+            tr("app.context.rename").to_string(),
             AppIcon::Edit,
             false,
             TableFolderMenuAction::Rename,
@@ -256,7 +256,7 @@ fn table_folder_context_menu(
             cx,
         ))
         .child(table_folder_menu_item(
-            "删除分组",
+            tr("app.context.delete_group").to_string(),
             AppIcon::Trash,
             true,
             TableFolderMenuAction::Delete,
@@ -267,7 +267,7 @@ fn table_folder_context_menu(
 }
 
 fn table_folder_menu_item(
-    label: &'static str,
+    label: impl Into<String>,
     icon: AppIcon,
     destructive: bool,
     action: TableFolderMenuAction,
@@ -294,9 +294,9 @@ fn table_context_menu(
     cx: &mut Context<NavicatMain>,
 ) -> Div {
     let pin_label = if pinned_tables.contains(&table_tree_key(&menu.object_path)) {
-        "取消置顶"
+        tr("app.context.unpin")
     } else {
-        "置顶"
+        tr("app.context.pin")
     };
 
     div()
@@ -324,7 +324,7 @@ fn table_context_menu(
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
         .child(table_menu_item(
-            pin_label,
+            pin_label.to_string(),
             AppIcon::Pin,
             false,
             Some(TableMenuAction::TogglePin),
@@ -333,7 +333,7 @@ fn table_context_menu(
             cx,
         ))
         .child(table_menu_item(
-            "复制名称",
+            tr("app.context.copy_name").to_string(),
             AppIcon::Copy,
             false,
             Some(TableMenuAction::CopyName),
@@ -342,7 +342,7 @@ fn table_context_menu(
             cx,
         ))
         .child(table_menu_item(
-            "查看数据",
+            tr("app.context.view_data").to_string(),
             AppIcon::Eye,
             false,
             Some(TableMenuAction::ViewData),
@@ -351,7 +351,7 @@ fn table_context_menu(
             cx,
         ))
         .child(table_menu_item(
-            "关联 ER",
+            tr("app.context.open_er").to_string(),
             AppIcon::Schema,
             false,
             Some(TableMenuAction::OpenErDiagram),
@@ -360,7 +360,7 @@ fn table_context_menu(
             cx,
         ))
         .child(table_menu_item(
-            "设计表",
+            tr("app.context.design_table").to_string(),
             AppIcon::Settings,
             false,
             Some(TableMenuAction::Design),
@@ -369,7 +369,7 @@ fn table_context_menu(
             cx,
         ))
         .child(table_menu_item(
-            "新建表",
+            tr("app.context.new_table").to_string(),
             AppIcon::Plus,
             false,
             Some(TableMenuAction::NewTable),
@@ -379,7 +379,7 @@ fn table_context_menu(
         ))
         .child(data_cell_menu_separator(colors))
         .child(table_menu_item(
-            "刷新",
+            tr("app.context.refresh").to_string(),
             AppIcon::Refresh,
             false,
             Some(TableMenuAction::Refresh),
@@ -388,7 +388,7 @@ fn table_context_menu(
             cx,
         ))
         .child(table_menu_item(
-            "重命名",
+            tr("app.context.rename").to_string(),
             AppIcon::Edit,
             false,
             Some(TableMenuAction::Rename),
@@ -398,7 +398,7 @@ fn table_context_menu(
         ))
         .child(data_cell_menu_separator(colors))
         .child(table_menu_item(
-            "复制表",
+            tr("app.context.copy_table").to_string(),
             AppIcon::Copy,
             false,
             Some(TableMenuAction::CopyTable),
@@ -407,7 +407,7 @@ fn table_context_menu(
             cx,
         ))
         .child(table_menu_item(
-            "复制表结构",
+            tr("app.context.copy_structure").to_string(),
             AppIcon::Table,
             false,
             Some(TableMenuAction::CopyStructure),
@@ -416,7 +416,7 @@ fn table_context_menu(
             cx,
         ))
         .child(table_menu_item(
-            "备份",
+            tr("app.context.backup").to_string(),
             AppIcon::Save,
             false,
             Some(TableMenuAction::Backup),
@@ -425,7 +425,7 @@ fn table_context_menu(
             cx,
         ))
         .child(table_menu_item(
-            "导入数据",
+            tr("app.context.import_data").to_string(),
             AppIcon::FolderInput,
             false,
             None,
@@ -434,7 +434,7 @@ fn table_context_menu(
             cx,
         ))
         .child(table_menu_submenu_item(
-            "管理组",
+            tr("app.context.manage_groups").to_string(),
             AppIcon::FolderInput,
             TableContextSubmenu::ManageGroup,
             &menu,
@@ -452,7 +452,7 @@ fn table_context_menu(
             ))
         })
         .child(table_menu_submenu_item(
-            "导出",
+            tr("app.context.export").to_string(),
             AppIcon::Save,
             TableContextSubmenu::Export,
             &menu,
@@ -464,7 +464,7 @@ fn table_context_menu(
         })
         .child(data_cell_menu_separator(colors))
         .child(table_menu_item(
-            "删除表",
+            tr("app.context.drop_table").to_string(),
             AppIcon::Trash,
             true,
             Some(TableMenuAction::Drop),
@@ -473,7 +473,7 @@ fn table_context_menu(
             cx,
         ))
         .child(table_menu_item(
-            "清空表",
+            tr("app.context.truncate_table").to_string(),
             AppIcon::Trash,
             true,
             Some(TableMenuAction::Truncate),
@@ -497,13 +497,13 @@ fn table_export_submenu(
         colors,
     )
         .child(table_inert_menu_item(
-            "导出数据库",
+            tr("app.context.export_database").to_string(),
             AppIcon::Database,
             false,
             colors,
         ))
         .child(table_submenu_action_item(
-            "导出数据",
+            tr("app.context.export_data").to_string(),
             AppIcon::Save,
             TableMenuAction::ExportData,
             menu,
@@ -537,7 +537,7 @@ fn table_manage_group_submenu(
     );
     if in_group {
         submenu = submenu.child(table_submenu_action_item(
-            "移出组",
+            tr("app.context.remove_from_group").to_string(),
             AppIcon::FolderUp,
             TableMenuAction::RemoveFromGroup,
             menu,
@@ -548,7 +548,7 @@ fn table_manage_group_submenu(
     }
     if folders.is_empty() {
         return submenu.child(table_inert_menu_item(
-            "暂无分组",
+            tr("app.context.no_groups").to_string(),
             AppIcon::Folder,
             false,
             colors,
@@ -614,7 +614,7 @@ fn table_submenu_shell(top: Pixels, colors: UiColors) -> Div {
 }
 
 fn table_menu_item(
-    label: &'static str,
+    label: impl Into<String>,
     icon: AppIcon,
     destructive: bool,
     action: Option<TableMenuAction>,
@@ -641,7 +641,7 @@ fn table_menu_item(
 }
 
 fn table_menu_submenu_item(
-    label: &'static str,
+    label: impl Into<String>,
     icon: AppIcon,
     submenu: TableContextSubmenu,
     menu: &TableContextMenu,
@@ -658,7 +658,7 @@ fn table_menu_submenu_item(
 }
 
 fn table_submenu_action_item(
-    label: &'static str,
+    label: impl Into<String>,
     icon: AppIcon,
     action: TableMenuAction,
     menu: &TableContextMenu,
@@ -768,7 +768,7 @@ fn data_cell_context_menu(
         .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
         .child(
             data_cell_action_menu_item(
-                "设置为空白字符串",
+                tr("app.context.set_empty_string").to_string(),
                 AppIcon::Edit,
                 can_empty,
                 &menu,
@@ -790,7 +790,14 @@ fn data_cell_context_menu(
             ),
         )
         .child(
-            data_cell_action_menu_item("设置为 NULL", AppIcon::Square, can_null, &menu, colors, cx)
+            data_cell_action_menu_item(
+                tr("app.context.set_null").to_string(),
+                AppIcon::Square,
+                can_null,
+                &menu,
+                colors,
+                cx,
+            )
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, _, _, cx| {
@@ -849,7 +856,14 @@ fn data_cell_context_menu(
             |this| this.child(data_cell_menu_separator(colors)),
         )
         .child(
-            data_cell_action_menu_item("复制", AppIcon::Copy, true, &menu, colors, cx)
+            data_cell_action_menu_item(
+                tr("app.context.copy").to_string(),
+                AppIcon::Copy,
+                true,
+                &menu,
+                colors,
+                cx,
+            )
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, _, _, cx| {
@@ -857,13 +871,24 @@ fn data_cell_context_menu(
                             menu_for_copy.value.clone(),
                         ));
                         this.data_cell_context_menu = None;
-                        this.show_message("已复制单元格", AppMessageKind::Success, cx);
+                        this.show_message(
+                            tr("app.context.copied_cell"),
+                            AppMessageKind::Success,
+                            cx,
+                        );
                         cx.stop_propagation();
                     }),
                 ),
         )
         .child(
-            data_cell_action_menu_item("复制字段名称", AppIcon::Copy, true, &menu, colors, cx)
+            data_cell_action_menu_item(
+                tr("app.context.copy_field_name").to_string(),
+                AppIcon::Copy,
+                true,
+                &menu,
+                colors,
+                cx,
+            )
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, _, _, cx| {
@@ -871,13 +896,24 @@ fn data_cell_context_menu(
                             menu_for_copy_field.column_name.clone(),
                         ));
                         this.data_cell_context_menu = None;
-                        this.show_message("已复制字段名称", AppMessageKind::Success, cx);
+                        this.show_message(
+                            tr("app.context.copied_field_name"),
+                            AppMessageKind::Success,
+                            cx,
+                        );
                         cx.stop_propagation();
                     }),
                 ),
         )
         .child(
-            data_cell_action_menu_item("粘贴", AppIcon::Edit, can_paste, &menu, colors, cx)
+            data_cell_action_menu_item(
+                tr("app.context.paste").to_string(),
+                AppIcon::Edit,
+                can_paste,
+                &menu,
+                colors,
+                cx,
+            )
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, _, _, cx| {
@@ -903,7 +939,7 @@ fn data_cell_context_menu(
                             }
                         } else {
                             this.show_message(
-                                "剪贴板没有可粘贴的文本",
+                                tr("app.context.clipboard_empty"),
                                 AppMessageKind::Warning,
                                 cx,
                             );
@@ -914,7 +950,7 @@ fn data_cell_context_menu(
         )
         .child(data_cell_menu_separator(colors))
         .child(data_cell_menu_submenu_item(
-            "筛选",
+            tr("app.context.filter").to_string(),
             AppIcon::Filter,
             menu.tab_id,
             DataCellContextSubmenu::Filter,
@@ -939,7 +975,7 @@ fn data_cell_context_menu(
             },
         )
         .child(data_cell_menu_submenu_item(
-            "排序",
+            tr("app.context.sort").to_string(),
             AppIcon::List,
             menu.tab_id,
             DataCellContextSubmenu::Sort,
@@ -959,7 +995,7 @@ fn data_cell_context_menu(
         .child(data_cell_menu_separator(colors))
         .child(
             data_cell_action_menu_item(
-                "移除所有筛选 & 排序",
+                tr("app.context.clear_filter_sort").to_string(),
                 AppIcon::Close,
                 true,
                 &menu,
@@ -982,7 +1018,14 @@ fn data_cell_context_menu(
             ),
         )
         .child(
-            data_cell_action_menu_item("刷新", AppIcon::Refresh, true, &menu, colors, cx)
+            data_cell_action_menu_item(
+                tr("app.context.refresh").to_string(),
+                AppIcon::Refresh,
+                true,
+                &menu,
+                colors,
+                cx,
+            )
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, _, _, cx| {
@@ -994,19 +1037,19 @@ fn data_cell_context_menu(
         )
 }
 
-fn row_delete_label(selection_row_count: usize) -> &'static str {
+fn row_delete_label(selection_row_count: usize) -> String {
     if selection_row_count > 1 {
-        "删除选中行"
+        tr("app.context.delete_selected_rows").to_string()
     } else {
-        "删除行"
+        tr("app.context.delete_row").to_string()
     }
 }
 
-fn row_delete_record_label(selection_row_count: usize) -> &'static str {
+fn row_delete_record_label(selection_row_count: usize) -> String {
     if selection_row_count > 1 {
-        "删除选中行"
+        tr("app.context.delete_selected_rows").to_string()
     } else {
-        "删除记录"
+        tr("app.context.delete_record").to_string()
     }
 }
 
@@ -1049,7 +1092,14 @@ fn data_row_context_menu(
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
         .child(
-            data_row_menu_item("行详情", AppIcon::List, menu.tab_id, colors, cx).on_mouse_down(
+            data_row_menu_item(
+                tr("app.context.row_details").to_string(),
+                AppIcon::List,
+                menu.tab_id,
+                colors,
+                cx,
+            )
+            .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, window, cx| {
                     this.open_data_row_viewer(
@@ -1065,7 +1115,7 @@ fn data_row_context_menu(
         )
         .child(data_cell_menu_separator(colors))
         .child(data_row_menu_submenu_item(
-            "复制",
+            tr("app.context.copy").to_string(),
             AppIcon::Copy,
             menu.tab_id,
             DataRowContextSubmenu::Copy,
@@ -1078,7 +1128,13 @@ fn data_row_context_menu(
         .when(rows_editable, |this| {
             this.child(data_cell_menu_separator(colors))
                 .child(
-                    data_row_menu_item("新增一行", AppIcon::Plus, menu.tab_id, colors, cx)
+                    data_row_menu_item(
+                        tr("app.context.insert_row").to_string(),
+                        AppIcon::Plus,
+                        menu.tab_id,
+                        colors,
+                        cx,
+                    )
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(move |this, _, _, cx| {
@@ -1093,7 +1149,13 @@ fn data_row_context_menu(
                         ),
                 )
                 .child(
-                    data_row_menu_item("克隆为新行", AppIcon::Plus, menu.tab_id, colors, cx)
+                    data_row_menu_item(
+                        tr("app.context.clone_row").to_string(),
+                        AppIcon::Plus,
+                        menu.tab_id,
+                        colors,
+                        cx,
+                    )
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(move |this, _, _, cx| {
@@ -1131,7 +1193,7 @@ fn data_row_context_menu(
         })
         .child(data_cell_menu_separator(colors))
         .child(data_row_menu_submenu_item(
-            "导出",
+            tr("app.context.export").to_string(),
             AppIcon::Save,
             menu.tab_id,
             DataRowContextSubmenu::Export,

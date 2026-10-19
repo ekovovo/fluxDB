@@ -8,6 +8,7 @@
 // 候选用浮层下拉（`dropdown_menu_with_anchor`）：展开不改变弹框高度，选项多也不会把
 // 弹框撑成一条。
 
+
 /// 插件管理弹框的数据；`None` 表示未打开，不常驻内存。
 #[derive(Clone)]
 struct AiPluginConfigDialog {
@@ -47,7 +48,8 @@ impl AiPluginConfigDialog {
         let mut textareas = BTreeMap::new();
         for field in &item.config_fields {
             let initial = field.selection.clone().unwrap_or_default();
-            let placeholder = field.placeholder.clone().unwrap_or_default();
+            let placeholder =
+                localize_ai_plugin_text(field.placeholder.as_deref().unwrap_or_default());
             match field.kind {
                 fluxdb_app::AiPluginConfigFieldKind::Resource
                 | fluxdb_app::AiPluginConfigFieldKind::Switch
@@ -89,14 +91,14 @@ impl AiPluginConfigDialog {
     /// 草稿里某个字段的展示文案；选择已不在候选里时如实说明，不假装是选项。
     fn selection_label(&self, field: &fluxdb_app::AiPluginConfigFieldItem) -> String {
         let Some(id) = self.drafts.get(&field.key).and_then(|value| value.as_deref()) else {
-            return "未配置".to_string();
+            return tr("app.ai.plugins.not_configured").to_string();
         };
         field
             .choices
             .iter()
             .find(|choice| choice.id == id)
-            .map(|choice| choice.label.clone())
-            .unwrap_or_else(|| "已选择（当前不可用）".to_string())
+            .map(|choice| localize_ai_plugin_text(&choice.label))
+            .unwrap_or_else(|| tr("app.ai.plugins.selected_unavailable").to_string())
     }
 
     /// 该字段当前是否"生效"：标量字段有非空值，资源字段选择了可用资源。
@@ -277,14 +279,18 @@ fn ai_plugin_config_dialog(
                                 .text_size(px(12.))
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
                                 .text_color(colors.text)
-                                .child(name),
+                                .child(localize_ai_plugin_text(&name)),
                         )
                         .child(div().flex_1())
                         .child(
                             div()
                                 .text_size(px(11.))
                                 .text_color(colors.muted)
-                                .child(format!("{active}/{total} 生效")),
+                                .child(
+                                    tr("app.ai.plugins.active_count")
+                                        .replace("%{active}", &active.to_string())
+                                        .replace("%{total}", &total.to_string()),
+                                ),
                         ),
                 );
             }
@@ -332,16 +338,17 @@ fn ai_plugin_config_dialog(
                                         div()
                                             .text_size(px(12.))
                                             .text_color(colors.text)
-                                            .child(format!(
-                                                "条规则生效中 · 共 {total} 个可配置项"
-                                            )),
+                                            .child(
+                                                tr("app.ai.plugins.rules_active")
+                                                    .replace("%{total}", &total.to_string()),
+                                            ),
                                     )
                                     .child(div().flex_1())
                                     .child(
                                         div()
                                             .text_size(px(11.))
                                             .text_color(colors.muted)
-                                            .child("留空表示不拦截；规则变更在下一个工具调用边界生效。"),
+                                            .child(tr("app.ai.plugins.rules_help")),
                                     ),
                             )
                             // 生效清单：从"生效几条"变成"哪几条"，不用逐条回看长表单。
@@ -382,7 +389,7 @@ fn ai_plugin_config_dialog(
                                                     } else {
                                                         colors.muted
                                                     })
-                                                    .child(field.label.clone()),
+                                                    .child(localize_ai_plugin_text(&field.label)),
                                             ),
                                     );
                                 }
@@ -415,13 +422,16 @@ fn ai_plugin_config_dialog(
                             div()
                                 .text_size(px(14.))
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
-                                .child(format!("管理 {}", dialog.display_name)),
+                                .child(
+                                    tr("app.ai.plugins.manage_title")
+                                        .replace("%{name}", &localize_ai_plugin_text(&dialog.display_name)),
+                                ),
                         )
                         .child(
                             div()
                                 .text_size(px(11.))
                                 .text_color(colors.muted)
-                                .child("配置项由插件声明，候选项与校验由 fluxDB 解析。"),
+                                .child(tr("app.ai.plugins.config_help")),
                         ),
                 ),
         )
@@ -447,7 +457,7 @@ fn ai_plugin_config_dialog(
                 .debug_selector(|| "ai-plugin-config-cancel".into())
                 .small()
                 .ghost()
-                .child("取消")
+                .child(tr("app.common.cancel"))
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.ai_plugin_config_dialog = None;
                     cx.notify();
@@ -458,7 +468,7 @@ fn ai_plugin_config_dialog(
                 .debug_selector(|| "ai-plugin-config-save".into())
                 .small()
                 .primary()
-                .child("保存")
+                .child(tr("app.common.save"))
                 .on_click(move |_, _, cx| {
                     let _ = this.update(cx, |this, cx| this.submit_ai_plugin_config(cx));
                 }),
@@ -473,6 +483,7 @@ fn ai_plugin_config_dialog(
         .flex_col()
         .gap_2()
         .when_some(dialog.error.clone(), |this, message| {
+            let message = localize_ai_plugin_text(&localize_backend_error_text(&message));
             this.child(
                 div()
                     .debug_selector(|| "ai-plugin-config-error".into())
@@ -567,7 +578,7 @@ fn ai_plugin_config_field_shell(
     colors: UiColors,
 ) -> gpui::AnyElement {
     let mut controls = controls;
-    if let Some(help) = field.help.clone() {
+    if let Some(help) = field.help.as_deref().map(localize_ai_plugin_text) {
         controls = controls.child(
             div()
                 .flex()
@@ -620,10 +631,10 @@ fn ai_plugin_config_field_shell(
                         .text_size(px(12.))
                         .font_weight(gpui::FontWeight::MEDIUM)
                         .text_color(colors.text)
-                        .child(field.label.clone()),
+                        .child(localize_ai_plugin_text(&field.label)),
                 )
                 .when(field.required, |this| {
-                    this.child(ai_pill("必填", colors.warning, colors))
+                    this.child(ai_pill(tr("app.ai.plugins.required"), colors.warning, colors))
                 }),
         )
         .child(controls)
@@ -710,7 +721,10 @@ fn ai_plugin_config_text_field(
                 div()
                     .text_size(px(11.))
                     .text_color(colors.muted)
-                    .child(format!("解析为 {} 项", parsed.len())),
+                    .child(
+                        tr("app.ai.plugins.parsed_count")
+                            .replace("%{count}", &parsed.len().to_string()),
+                    ),
             );
             for item in parsed.iter().take(8) {
                 chips = chips.child(
@@ -731,7 +745,10 @@ fn ai_plugin_config_text_field(
                     div()
                         .text_size(px(11.))
                         .text_color(colors.muted)
-                        .child(format!("等 {} 项", parsed.len())),
+                        .child(
+                            tr("app.ai.plugins.more_items")
+                                .replace("%{count}", &parsed.len().to_string()),
+                        ),
                 );
             }
             let parsed_selector = format!("ai-plugin-config-parsed:{}", field.key);
@@ -787,14 +804,19 @@ fn ai_plugin_config_select_field(
                 .options
                 .iter()
                 .find(|option| option.value == value)
-                .map(|option| option.label.clone())
+                .map(|option| localize_ai_plugin_text(&option.label))
         })
-        .unwrap_or_else(|| "未配置".to_string());
+        .unwrap_or_else(|| tr("app.ai.plugins.not_configured").to_string());
     let unset = current.is_none();
     let options = field
         .options
         .iter()
-        .map(|option| (option.value.clone(), option.label.clone()))
+        .map(|option| {
+            (
+                option.value.clone(),
+                localize_ai_plugin_text(&option.label),
+            )
+        })
         .collect::<Vec<_>>();
     let owner = cx.entity().downgrade();
     let field_key = field.key.clone();
@@ -884,7 +906,13 @@ fn ai_plugin_config_resource_field(
     let choices = field
         .choices
         .iter()
-        .map(|choice| (choice.id.clone(), choice.label.clone(), choice.detail.clone()))
+        .map(|choice| {
+            (
+                choice.id.clone(),
+                localize_ai_plugin_text(&choice.label),
+                localize_ai_plugin_text(&choice.detail),
+            )
+        })
         .collect::<Vec<_>>();
     let key = field.key.clone();
     let current_key = field.key.clone();
@@ -971,7 +999,7 @@ fn ai_plugin_config_resource_field(
                             move || id.clone()
                         })
                         .text_color(colors.muted)
-                        .child("未配置（不使用）")
+                        .child(tr("app.ai.plugins.not_configured_unused"))
                 })
                 .on_click(move |_, _, cx| {
                     let _ = owner.update(cx, |this, cx| {

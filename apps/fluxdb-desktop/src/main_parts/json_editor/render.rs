@@ -230,7 +230,7 @@ fn redis_json_value_panel(
                 .flex()
                 .items_center()
                 .justify_between()
-                .child(redis_detail_panel_title("值", colors))
+                .child(redis_detail_panel_title(tr("app.json.value"), colors))
                 .child(
                     div()
                         .flex()
@@ -312,7 +312,7 @@ fn redis_json_toolbar_format_button(
             13.,
             if enabled { colors.muted } else { colors.border },
         ))
-        .child("格式化")
+        .child(tr("app.json.format"))
 }
 
 /// 编辑按钮：完整加载 + 非二进制 + 非保存/编辑中才可进入编辑态。
@@ -347,7 +347,7 @@ fn redis_json_edit_button(
             13.,
             if enabled { colors.muted } else { colors.border },
         ))
-        .child("编辑")
+        .child(tr("app.json.edit"))
 }
 
 /// JSON 编辑器主体：加载中 → 编辑态 → 未完整加载（预览 + 加载全部）→ 完整加载查看态（结构化行）。
@@ -427,7 +427,7 @@ fn redis_json_value_body(
                         .justify_end()
                         .child(
                             Button::new(("redis-json-value-load-all", tab_id.0))
-                                .label("加载全部")
+                                .label(tr("app.redis.load_all"))
                                 .small()
                                 .outline()
                                 .w(px(88.))
@@ -499,7 +499,7 @@ fn redis_json_edit_body(
                 .gap_2()
                 .child(
                     Button::new(("redis-json-value-cancel-edit", tab_id.0))
-                        .label("取消编辑")
+                        .label(tr("app.redis.string.cancel_edit"))
                         .small()
                         .outline()
                         .w(px(82.))
@@ -533,7 +533,7 @@ fn redis_json_save_button(
 ) -> Button {
     let invalid = diagnostic.is_some();
     let mut button = Button::new(("redis-json-value-save", tab_id.0))
-        .label("保存")
+        .label(tr("app.redis.save"))
         .small()
         .w(px(72.))
         .disabled(applying || invalid)

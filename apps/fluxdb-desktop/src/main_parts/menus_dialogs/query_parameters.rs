@@ -6,7 +6,7 @@ fn query_parameter_prompt_modal(
 ) -> impl IntoElement {
     query_parameter_modal_backdrop(colors, cx).child(
         query_parameter_modal_panel(focus_handle, colors, cx)
-            .child(query_parameter_modal_header("运行参数", colors, cx))
+            .child(query_parameter_modal_header(tr("app.query.parameters.title"), colors, cx))
             .child(query_parameter_mode_tabs(pending.active_mode, colors, cx))
             .child(query_parameter_modal_body(pending, colors))
             .child(query_parameter_modal_footer(colors, cx)),
@@ -30,14 +30,14 @@ fn query_parameter_mode_tabs(
                 .gap_5()
                 .child(query_parameter_mode_tab(
                     QueryParameterInputMode::Fields,
-                    "逐个输入",
+                    tr("app.query.parameters.individual"),
                     active_mode,
                     colors,
                     cx,
                 ))
                 .child(query_parameter_mode_tab(
                     QueryParameterInputMode::Array,
-                    "数组输入",
+                    tr("app.query.parameters.array"),
                     active_mode,
                     colors,
                     cx,
@@ -47,11 +47,12 @@ fn query_parameter_mode_tabs(
 
 fn query_parameter_mode_tab(
     mode: QueryParameterInputMode,
-    label: &'static str,
+    label: impl Into<SharedString>,
     active_mode: QueryParameterInputMode,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
+    let label: SharedString = label.into();
     let selected = mode == active_mode;
     div()
         .h_full()
@@ -187,7 +188,7 @@ fn query_parameter_modal_footer(colors: UiColors, cx: &mut Context<NavicatMain>)
         .gap_2()
         .child(
             Button::new("query-parameters-cancel")
-                .label("取消")
+                .label(tr("app.common.cancel"))
                 .w(px(78.))
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.cancel_query_parameter_prompt(cx);
@@ -196,7 +197,7 @@ fn query_parameter_modal_footer(colors: UiColors, cx: &mut Context<NavicatMain>)
         )
         .child(
             Button::new("query-parameters-apply")
-                .label("应用并运行")
+                .label(tr("app.query.parameters.apply_and_run"))
                 .primary()
                 .w(px(112.))
                 .on_click(cx.listener(|this, _, window, cx| {
@@ -263,10 +264,11 @@ fn query_parameter_modal_panel(
 }
 
 fn query_parameter_modal_header(
-    title: &'static str,
+    title: impl Into<SharedString>,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
+    let title: SharedString = title.into();
     div()
         .flex_none()
         .px_5()

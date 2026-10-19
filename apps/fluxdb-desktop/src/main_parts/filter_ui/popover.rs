@@ -20,10 +20,11 @@ fn data_filter_popover_layer(
         .collect::<Vec<_>>();
     let rule_index = popover.rule_index.unwrap_or(0);
     let rule = rules.get(rule_index);
+    let fallback_field = tr("app.filter.field");
     let selected_field = rule
         .and_then(|rule| rule.field.as_deref())
         .or_else(|| field_names.first().map(String::as_str))
-        .unwrap_or("字段");
+        .unwrap_or(fallback_field.as_str());
     let selected_operator = rule
         .map(|rule| rule.operator)
         .unwrap_or(DataFilterOperator::Contains);
@@ -361,7 +362,7 @@ fn data_filter_empty_rule_row(
             div()
                 .text_size(px(12.))
                 .text_color(colors.muted)
-                .child("点击“+”以添加筛选准则"),
+                .child(tr("app.filter.add_rule_hint")),
         )
 }
 
@@ -375,11 +376,12 @@ fn data_filter_rule_row(
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
+    let fallback_field = tr("app.filter.field");
     let selected_field = rule
         .field
         .as_deref()
         .or(default_field.as_deref())
-        .unwrap_or("字段");
+        .unwrap_or(fallback_field.as_str());
     let add_default_field = default_field.clone();
     let group_default_field = default_field.clone();
     let indent = if nested { 40. } else { 12. };
@@ -516,7 +518,7 @@ fn data_filter_value_label(selected_values: &[String]) -> String {
     } else if selected_values.len() == 1 {
         selected_values[0].clone()
     } else {
-        format!("{} 个值", selected_values.len())
+        tr("app.filter.value_count").replace("%{count}", &selected_values.len().to_string())
     }
 }
 
@@ -571,7 +573,7 @@ fn data_sort_empty_rule(
             div()
                 .text_size(px(12.))
                 .text_color(colors.muted)
-                .child("点击“+”以添加排序准则"),
+                .child(tr("app.filter.add_sort_hint")),
         )
 }
 
@@ -588,7 +590,7 @@ fn data_sort_builder_section(
         .flex()
         .items_center()
         .gap_3()
-        .child(data_filter_section_label("排序方式", colors));
+        .child(data_filter_section_label(tr("app.filter.sort_mode"), colors));
 
     if sort_rules.is_empty() {
         content = content.child(data_sort_empty_rule(tab_id, default_field, colors, cx));
@@ -612,7 +614,8 @@ fn data_sort_builder_section(
     content
 }
 
-fn data_filter_section_label(label: &'static str, colors: UiColors) -> Div {
+fn data_filter_section_label(label: impl Into<SharedString>, colors: UiColors) -> Div {
+    let label = label.into();
     div()
         .text_size(px(12.))
         .font_weight(gpui::FontWeight::SEMIBOLD)
@@ -815,7 +818,10 @@ fn data_filter_field_menu(
         );
     }
     if matched_count == 0 {
-        list = list.child(data_filter_menu_empty_item("没有匹配字段", colors));
+        list = list.child(data_filter_menu_empty_item(
+            tr("app.filter.no_matching_fields"),
+            colors,
+        ));
     }
 
     data_filter_menu_surface(200., 260., colors)
@@ -866,7 +872,10 @@ fn data_sort_field_menu(
         );
     }
     if matched_count == 0 {
-        list = list.child(data_filter_menu_empty_item("没有匹配字段", colors));
+        list = list.child(data_filter_menu_empty_item(
+            tr("app.filter.no_matching_fields"),
+            colors,
+        ));
     }
 
     data_filter_menu_surface(200., 260., colors)
@@ -926,7 +935,13 @@ fn data_sort_action_menu(
         .top(px(top))
         .left(px(116.))
         .child(
-            data_sort_menu_item("更改字段", None, false, colors).on_mouse_down(
+            data_sort_menu_item(
+                tr("app.filter.change_field").to_string(),
+                None,
+                false,
+                colors,
+            )
+            .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, _, cx| {
                     this.open_data_sort_field_menu(tab_id, sort_index, cx);
@@ -936,7 +951,13 @@ fn data_sort_action_menu(
         )
         .child(data_sort_menu_separator(colors))
         .child(
-            data_sort_menu_item("升序排序", None, ascending, colors).on_mouse_down(
+            data_sort_menu_item(
+                tr("app.context.sort_asc").to_string(),
+                None,
+                ascending,
+                colors,
+            )
+            .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, _, cx| {
                     this.set_data_sort_direction(tab_id, sort_index, true, cx);
@@ -945,7 +966,13 @@ fn data_sort_action_menu(
             ),
         )
         .child(
-            data_sort_menu_item("降序排序", None, !ascending, colors).on_mouse_down(
+            data_sort_menu_item(
+                tr("app.context.sort_desc").to_string(),
+                None,
+                !ascending,
+                colors,
+            )
+            .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, _, cx| {
                     this.set_data_sort_direction(tab_id, sort_index, false, cx);
@@ -955,20 +982,26 @@ fn data_sort_action_menu(
         )
         .child(data_sort_menu_separator(colors))
         .child(data_sort_menu_item(
-            "左移",
+            tr("app.filter.move_left").to_string(),
             Some("Ctrl+Left"),
             false,
             colors,
         ))
         .child(data_sort_menu_item(
-            "右移",
+            tr("app.filter.move_right").to_string(),
             Some("Ctrl+Right"),
             false,
             colors,
         ))
         .child(data_sort_menu_separator(colors))
         .child(
-            data_sort_menu_item("删除", None, false, colors).on_mouse_down(
+            data_sort_menu_item(
+                tr("app.common.delete").to_string(),
+                None,
+                false,
+                colors,
+            )
+            .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, _, cx| {
                     this.delete_data_sort_rule(tab_id, sort_index, cx);
@@ -977,7 +1010,13 @@ fn data_sort_action_menu(
             ),
         )
         .child(
-            data_sort_menu_item("清除所有排序", None, false, colors).on_mouse_down(
+            data_sort_menu_item(
+                tr("app.filter.clear_sorts").to_string(),
+                None,
+                false,
+                colors,
+            )
+            .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, _, cx| {
                     this.data_sort_draft_rules.remove(&tab_id);
@@ -989,7 +1028,13 @@ fn data_sort_action_menu(
             ),
         )
         .child(
-            data_sort_menu_item("清除所有筛选 & 排序", None, false, colors).on_mouse_down(
+            data_sort_menu_item(
+                tr("app.filter.clear_all").to_string(),
+                None,
+                false,
+                colors,
+            )
+            .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, _, cx| {
                     this.clear_data_filter_and_sort_rules(tab_id, cx);
@@ -1000,11 +1045,12 @@ fn data_sort_action_menu(
 }
 
 fn data_sort_menu_item(
-    label: &'static str,
+    label: impl Into<String>,
     shortcut: Option<&'static str>,
     checked: bool,
     colors: UiColors,
 ) -> Div {
+    let label = label.into();
     div()
         .h(px(24.))
         .px_2()
@@ -1061,7 +1107,7 @@ fn data_filter_single_value_menu(
     let field_label = draft
         .map(|draft| draft.field.clone())
         .filter(|field| !field.is_empty())
-        .unwrap_or_else(|| "筛选值".to_string());
+        .unwrap_or_else(|| tr("app.filter.filter_value").to_string());
     let current_value = draft.map(|draft| draft.input.clone()).unwrap_or_default();
 
     div()
@@ -1114,7 +1160,7 @@ fn data_filter_single_value_menu(
                         .text_size(px(12.))
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .text_color(colors.text)
-                        .child("输入值"),
+                        .child(tr("app.filter.input_value")),
                 )
                 .child(
                     div()
@@ -1150,7 +1196,7 @@ fn data_filter_single_value_menu(
                         .text_size(px(12.))
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .text_color(colors.text)
-                        .child("建议值"),
+                        .child(tr("app.filter.suggested_values")),
                 )
                 .child(data_filter_single_suggested_values_list(
                     recommended_values,
@@ -1173,14 +1219,14 @@ fn data_filter_single_value_menu(
                 .items_center()
                 .justify_end()
                 .gap_2()
-                .child(data_filter_dialog_button("取消", false, colors).on_mouse_down(
+                .child(data_filter_dialog_button(tr("app.common.cancel"), false, colors).on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, _, _, cx| {
                         this.cancel_data_filter_value(cx);
                         cx.stop_propagation();
                     }),
                 ))
-                .child(data_filter_dialog_button("确定", true, colors).on_mouse_down(
+                .child(data_filter_dialog_button(tr("app.filter.ok"), true, colors).on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, _, _, cx| {
                         this.apply_data_filter_value_draft(tab_id, cx);
@@ -1208,9 +1254,9 @@ fn data_filter_single_suggested_values_list(
     if values.is_empty() {
         list = list.child(data_filter_menu_empty_item(
             if search.trim().is_empty() && !search_loading {
-                "没有建议值"
+                tr("app.filter.no_suggestions")
             } else {
-                "没有匹配值"
+                tr("app.filter.no_matching_values")
             },
             *colors,
         ));
@@ -1258,7 +1304,7 @@ fn data_filter_value_menu(
     let field_label = draft
         .map(|draft| draft.field.clone())
         .filter(|field| !field.is_empty())
-        .unwrap_or_else(|| "筛选值".to_string());
+        .unwrap_or_else(|| tr("app.filter.value").to_string());
     let selected_count = selected.len();
 
     div()
@@ -1315,7 +1361,10 @@ fn data_filter_value_menu(
                                 .text_size(px(12.))
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
                                 .text_color(colors.text)
-                                .child(format!("已选 {selected_count} 个值")),
+                                .child(
+                                    tr("app.filter.selected_count")
+                                        .replace("%{count}", &selected_count.to_string()),
+                                ),
                         )
                         .child(
                             data_filter_value_clear_button(colors).on_mouse_down(
@@ -1342,7 +1391,7 @@ fn data_filter_value_menu(
                         .text_size(px(12.))
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .text_color(colors.text)
-                        .child("输入值"),
+                        .child(tr("app.placeholder.input_value")),
                 )
                 .child(
                     div()
@@ -1364,7 +1413,11 @@ fn data_filter_value_menu(
                                 .text_size(px(13.)),
                         )
                         .child(
-                            data_filter_value_small_button("添加", colors).on_mouse_down(
+                            data_filter_value_small_button(
+                                tr("app.filter.add").to_string(),
+                                colors,
+                            )
+                            .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(move |this, _, _, cx| {
                                     this.add_data_filter_manual_value(tab_id, cx);
@@ -1384,7 +1437,7 @@ fn data_filter_value_menu(
                                 .flex_1()
                                 .text_size(px(11.))
                                 .text_color(colors.muted)
-                                .child("重复值自动去重"),
+                                .child(tr("app.filter.dedupe_hint")),
                         )
                         .child(
                             data_filter_batch_toggle(&draft
@@ -1425,7 +1478,7 @@ fn data_filter_value_menu(
                         .text_size(px(12.))
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .text_color(colors.text)
-                        .child("建议值"),
+                        .child(tr("app.filter.suggested_values")),
                 )
                 .child(
                     div()
@@ -1476,7 +1529,10 @@ fn data_filter_value_menu(
                     div()
                         .text_size(px(12.))
                         .text_color(colors.muted)
-                        .child(format!("已选 {selected_count} 个值")),
+                        .child(
+                            tr("app.filter.selected_count")
+                                .replace("%{count}", &selected_count.to_string()),
+                        ),
                 )
                 .child(
                     div()
@@ -1484,7 +1540,8 @@ fn data_filter_value_menu(
                         .items_center()
                         .gap_2()
                         .child(
-                            data_filter_dialog_button("取消", false, colors).on_mouse_down(
+                            data_filter_dialog_button(tr("app.common.cancel"), false, colors)
+                                .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(move |this, _, _, cx| {
                                     this.cancel_data_filter_value(cx);
@@ -1493,7 +1550,8 @@ fn data_filter_value_menu(
                             ),
                         )
                         .child(
-                            data_filter_dialog_button("确定", true, colors).on_mouse_down(
+                            data_filter_dialog_button(tr("app.filter.ok"), true, colors)
+                                .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(move |this, _, _, cx| {
                                     this.apply_data_filter_value_draft(tab_id, cx);
@@ -1519,7 +1577,7 @@ fn data_filter_value_header(label: String, colors: UiColors, _cx: &mut Context<N
                 .text_size(px(14.))
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .text_color(colors.text)
-                .child("编辑筛选值"),
+                .child(tr("app.filter.edit_values")),
         )
         .child(
             div()
@@ -1562,10 +1620,11 @@ fn data_filter_value_clear_button(colors: UiColors) -> Div {
         .flex()
         .items_center()
         .hover(move |style| style.bg(colors.hover))
-        .child("清空")
+        .child(tr("app.filter.clear"))
 }
 
-fn data_filter_value_small_button(label: &'static str, colors: UiColors) -> Div {
+fn data_filter_value_small_button(label: impl Into<String>, colors: UiColors) -> Div {
+    let label = label.into();
     div()
         .h(px(20.))
         .px_2()
@@ -1597,7 +1656,11 @@ fn data_filter_batch_toggle(open: &bool, colors: UiColors) -> Div {
         .gap_1()
         .hover(move |style| style.bg(colors.hover))
         .child(app_icon(if open { AppIcon::ChevronUp } else { AppIcon::ChevronDown }, 12., rgb(0x006bd6)))
-        .child(if open { "收起批量粘贴" } else { "批量粘贴" })
+        .child(if open {
+            tr("app.filter.hide_batch_paste")
+        } else {
+            tr("app.filter.batch_paste")
+        })
 }
 
 /// 已选值标签区：短值横向排列自动换行，UUID 等长值截断并提示查看；数量多时限制高度滚动。
@@ -1625,7 +1688,7 @@ fn data_filter_selected_values_tags(
                 .items_center()
                 .text_size(px(12.))
                 .text_color(colors.muted)
-                .child("暂无已选值"),
+                .child(tr("app.filter.no_selected_values")),
         );
     }
 
@@ -1744,7 +1807,7 @@ fn data_filter_batch_paste_section(
                         .text_size(px(12.))
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .text_color(colors.text)
-                        .child("批量粘贴"),
+                        .child(tr("app.filter.batch_paste")),
                 )
                 .child(separators),
         )
@@ -1775,10 +1838,18 @@ fn data_filter_batch_paste_section(
                         .flex_1()
                         .text_size(px(11.))
                         .text_color(colors.muted)
-                        .child(format!("忽略空行，自动去重。待添加 {new_count} 个新值，重复 {dup_count} 个")),
+                        .child(
+                            tr("app.filter.batch_summary")
+                                .replace("%{new}", &new_count.to_string())
+                                .replace("%{duplicate}", &dup_count.to_string()),
+                        ),
                 )
                 .child(
-                    data_filter_value_small_button("添加到已选", colors).on_mouse_down(
+                    data_filter_value_small_button(
+                        tr("app.filter.add_to_selected").to_string(),
+                        colors,
+                    )
+                    .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, _, _, cx| {
                             this.add_data_filter_batch_values(tab_id, cx);
@@ -1813,9 +1884,9 @@ fn data_filter_suggested_values_list(
     if values.is_empty() {
         list = list.child(data_filter_menu_empty_item(
             if search.trim().is_empty() {
-                "没有建议值"
+                tr("app.filter.no_suggestions")
             } else {
-                "没有匹配值"
+                tr("app.filter.no_matching_values")
             },
             *colors,
         ));

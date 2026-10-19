@@ -296,7 +296,7 @@ fn write_data_row_export<W: Write>(
             let Some(object) = object else {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    "SQL INSERT 导出需要表对象信息",
+                    tr("app.data_export.error.insert_needs_table").as_ref(),
                 ));
             };
             write_data_row_insert_export(writer, object, rows, db_kind)

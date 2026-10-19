@@ -137,7 +137,10 @@ impl NavicatMain {
                     }
                     _ => {
                         this.er_relationship_errors
-                            .insert(tab_id, "关系目录返回了未知结果".into());
+                            .insert(
+                                tab_id,
+                                tr("app.er_model.relation_catalog_unknown").to_string(),
+                            );
                     }
                 }
                 cx.notify();
@@ -276,7 +279,8 @@ impl NavicatMain {
             // 整条可自动重绑（两端都无 unresolved/needs_review 且实体带稳定标识）→ 写回。
             if unresolved && rel.validity.state != fluxdb_core::ErValidityState::Unresolved {
                 rel.validity.state = fluxdb_core::ErValidityState::Unresolved;
-                rel.validity.reason = Some("关系端点或字段已不存在，请编辑后重新确认".into());
+                rel.validity.reason =
+                    Some(tr("app.er_model.endpoint_missing").to_string());
                 invalidations.push(rel.clone());
             } else if rebuilt && rel.review.state == fluxdb_core::ErReviewState::Confirmed {
                 invalidations.push(rel.clone());
@@ -547,7 +551,11 @@ impl NavicatMain {
                             this.er_relationship_delete_pending.remove(&tab_id);
                             if let Some(original) = deleted_relation.clone() {
                                 this.er_relationship_delete_undo.insert(tab_id, original);
-                                this.show_message("已删除本地关系，可在面板内恢复（需重新确认）", AppMessageKind::Info, cx);
+                                this.show_message(
+                                    tr("app.er_model.relationship_deleted"),
+                                    AppMessageKind::Info,
+                                    cx,
+                                );
                             }
                         } else if undoing_delete {
                             this.er_relationship_delete_undo.remove(&tab_id);
@@ -567,7 +575,10 @@ impl NavicatMain {
                     }
                     _ => {
                         this.er_relationship_errors
-                            .insert(tab_id, "关系操作返回了未知结果".into());
+                            .insert(
+                                tab_id,
+                                tr("app.er_model.relationship_action_unknown").to_string(),
+                            );
                     }
                 }
                 cx.notify();

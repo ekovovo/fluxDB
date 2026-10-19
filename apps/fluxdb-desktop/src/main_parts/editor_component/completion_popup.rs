@@ -108,8 +108,8 @@ pub(crate) fn completion_popup(
                         .h(px(COMPLETION_ROW_HEIGHT))
                         .text_size(font_size)
                         .child(
-                            StyledText::new("加载中…").with_runs(vec![text_run(
-                                "加载中…".len(),
+                            StyledText::new(tr("app.editor.completion.loading")).with_runs(vec![text_run(
+                                tr("app.editor.completion.loading").len(),
                                 theme.completion_detail.into(),
                                 &font,
                             )]),
@@ -200,7 +200,7 @@ fn completion_doc_panel(
             }
         }
         DocumentationState::Loading => panel.child(completion_doc_message(
-            "加载中…",
+            tr("app.editor.completion.loading"),
             theme.completion_detail,
             font,
             font_size,
@@ -284,7 +284,7 @@ fn completion_doc_schema_table(
                 .text_size((font_size * 0.9).max(px(10.)))
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .text_color(theme.completion_text)
-                .child(format!("表名：{table_name}")),
+                .child(tr("app.editor.completion.table_name").replace("%{table}", &table_name)),
         )
         .child(completion_doc_table_header(theme, font_size))
         .child(body)
@@ -299,17 +299,18 @@ fn completion_doc_table_header(theme: EditorTheme, font_size: gpui::Pixels) -> D
         .bg(theme.completion_selected_bg)
         .border_b_1()
         .border_color(theme.line_number)
-        .child(completion_doc_header_cell("列名", px(128.), font_size, theme))
-        .child(completion_doc_header_cell("数据类型", px(112.), font_size, theme))
-        .child(completion_doc_header_cell("注释", px(0.), font_size, theme))
+        .child(completion_doc_header_cell(tr("app.editor.completion.column"), px(128.), font_size, theme))
+        .child(completion_doc_header_cell(tr("app.editor.completion.data_type"), px(112.), font_size, theme))
+        .child(completion_doc_header_cell(tr("app.editor.completion.comment"), px(0.), font_size, theme))
 }
 
 fn completion_doc_header_cell(
-    text: &'static str,
+    text: impl Into<SharedString>,
     width: gpui::Pixels,
     font_size: gpui::Pixels,
     theme: EditorTheme,
 ) -> Div {
+    let text: SharedString = text.into();
     let cell = div()
         .min_w(px(0.))
         .overflow_hidden()
@@ -355,11 +356,12 @@ fn completion_doc_cell(
 }
 
 fn completion_doc_message(
-    text: &str,
+    text: impl Into<SharedString>,
     color: gpui::Rgba,
     font: &gpui::Font,
     font_size: gpui::Pixels,
 ) -> impl IntoElement {
+    let text: SharedString = text.into();
     div()
         .flex_1()
         .min_h(px(0.))

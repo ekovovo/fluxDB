@@ -30,11 +30,28 @@ impl NativeClientKind {
             Self::MySql => &settings.mysql_client_download_source,
         }
     }
-    fn install_hint(self) -> &'static str {
-        match self {
-            Self::Postgres => fluxdb_app::pg_client_install_hint(),
-            Self::MySql => fluxdb_app::mysql_client_install_hint(),
-        }
+    fn install_hint(self) -> SharedString {
+        let key = match self {
+            Self::Postgres => {
+                if cfg!(target_os = "linux") {
+                    "app.settings.native_client.hint.pg_linux"
+                } else if cfg!(target_os = "macos") {
+                    "app.settings.native_client.hint.pg_macos"
+                } else {
+                    "app.settings.native_client.hint.pg_windows"
+                }
+            }
+            Self::MySql => {
+                if cfg!(target_os = "linux") {
+                    "app.settings.native_client.hint.mysql_linux"
+                } else if cfg!(target_os = "macos") {
+                    "app.settings.native_client.hint.mysql_macos"
+                } else {
+                    "app.settings.native_client.hint.mysql_windows"
+                }
+            }
+        };
+        tr(key)
     }
     fn download_supported(self) -> bool {
         match self {
@@ -59,6 +76,7 @@ struct NativeClientState {
     source_input: Entity<InputState>,
     _source_subscription: Subscription,
     status: Option<String>,
+    status_missing: bool,
     download: Option<PgClientDownloadState>,
     detect_task: Option<Task<()>>,
     download_task: Option<Task<()>>,
@@ -70,6 +88,7 @@ struct NativeClientPanelState {
     kind: NativeClientKind,
     source_input: Entity<InputState>,
     status: Option<String>,
+    status_missing: bool,
     detecting: bool,
     download: Option<PgClientDownloadState>,
 }
@@ -80,6 +99,7 @@ impl NativeClientState {
             kind,
             source_input: self.source_input.clone(),
             status: self.status.clone(),
+            status_missing: self.status_missing,
             detecting: self.detect_task.is_some(),
             download: self.download.clone(),
         }
@@ -96,8 +116,8 @@ fn dump_path_row(
 ) -> Stateful<Div> {
     match kind {
         NativeClientKind::Postgres => settings_path_row(
-            "pg_dump 路径",
-            "单独指定 pg_dump 可执行文件（优先级最高）；一般留空，使用上方自动发现",
+            tr("app.settings.native_client.dump_pg"),
+            tr("app.settings.native_client.dump_pg_detail"),
             AppIcon::Database,
             &settings.pg_dump_path,
             "settings-backup-pg-dump",
@@ -106,8 +126,8 @@ fn dump_path_row(
             cx,
         ),
         NativeClientKind::MySql => settings_path_row(
-            "mysqldump 路径",
-            "单独指定 mysqldump 可执行文件（旧配置优先级最高）；一般留空，使用上方自动发现",
+            tr("app.settings.native_client.dump_mysql"),
+            tr("app.settings.native_client.dump_mysql_detail"),
             AppIcon::Query,
             &settings.mysqldump_path,
             "settings-backup-mysqldump",
@@ -132,26 +152,22 @@ fn settings_native_client_group(
     // 检测失败时 status 会是安装引导文案(以「未找到」开头),摘要区分开,
     // 避免没找到客户端还显示「已检测」误导。
     let status_hint = if downloading {
-        "下载中..."
+        tr("app.settings.native_client.status.downloading")
     } else if client.detecting {
-        "检测中..."
-    } else if client
-        .status
-        .as_deref()
-        .is_some_and(|s| s.starts_with("未找到"))
-    {
-        "未找到"
+        tr("app.settings.native_client.status.detecting")
+    } else if client.status_missing {
+        tr("app.settings.native_client.status.not_found")
     } else if client.status.is_some() {
-        "已检测"
+        tr("app.settings.native_client.status.detected")
     } else {
-        "未检测"
+        tr("app.settings.native_client.status.not_detected")
     };
     let group_enum = match kind {
         NativeClientKind::Postgres => SettingsDataGroup::PgClient,
         NativeClientKind::MySql => SettingsDataGroup::MySql,
     };
     let mut group =
-        settings_collapsible_group(group_enum, Some(status_hint), collapsed, colors, cx);
+        settings_collapsible_group(group_enum, Some(&status_hint), collapsed, colors, cx);
     // 折叠时不渲染内部行（含下载源输入框同步），展开时恢复。
     if collapsed {
         return group;
@@ -161,24 +177,28 @@ fn settings_native_client_group(
         .as_ref()
         .map(|download| download.message.clone())
         .or(client.status)
-        .unwrap_or_else(|| "点击「检测」查看本机客户端版本与位置".into());
+        .unwrap_or_else(|| tr("app.settings.native_client.status_hint").to_string());
     let mut actions = h_flex().gap_2();
     if let Some(download) = client.download {
         actions = actions.child(
             Button::new(kind.button_id("cancel"))
-                .label("取消下载")
+                .label(tr("app.settings.native_client.cancel_download"))
                 .small()
                 .rounded_md()
                 .cursor_pointer()
                 .on_click(cx.listener(move |this, _, _, cx| {
                     download.cancel.store(true, Ordering::Relaxed);
-                    this.show_message("正在取消下载…", AppMessageKind::Info, cx);
+                    this.show_message(
+                        tr("app.settings.native_client.canceling"),
+                        AppMessageKind::Info,
+                        cx,
+                    );
                 })),
         );
     } else {
         actions = actions.child(
             Button::new(kind.button_id("detect"))
-                .label("检测")
+                .label(tr("app.settings.native_client.detect"))
                 .small()
                 .rounded_md()
                 .cursor_pointer()
@@ -191,7 +211,7 @@ fn settings_native_client_group(
         if kind.download_supported() {
             actions = actions.child(
                 Button::new(kind.button_id("download"))
-                    .label("下载并安装")
+                    .label(tr("app.settings.native_client.download_install"))
                     .small()
                     .rounded_md()
                     .cursor_pointer()
@@ -204,9 +224,10 @@ fn settings_native_client_group(
     }
     group = group
         .child(
-            settings_action_row(
-                "客户端状态",
-                "自动发现顺序：客户端目录 → 应用下载目录 → 系统安装路径 → PATH",
+            settings_action_row_with_id(
+                "settings-native-client-status",
+                tr("app.settings.native_client.status_title"),
+                tr("app.settings.native_client.status_detail"),
                 AppIcon::Database,
                 colors,
             )
@@ -235,8 +256,8 @@ fn settings_native_client_group(
                 NativeClientKind::MySql => fluxdb_app::mysql_client_default_dirs_summary(),
             };
             settings_path_row_with_placeholder(
-                "客户端目录",
-                "可选安装根目录或 bin 目录;留空自动发现,下载也会安装到这里",
+                tr("app.settings.native_client.directory_title"),
+                tr("app.settings.native_client.directory_detail"),
                 AppIcon::Folder,
                 kind.dir(settings),
                 &placeholder,
@@ -264,9 +285,10 @@ fn settings_native_client_group(
         rgb(0x111111)
     };
     group = group.child(
-        settings_action_row(
-            "下载源",
-            "留空使用官方二进制包；支持 {version} 与 {platform}，可改为内网镜像",
+        settings_action_row_with_id(
+            "settings-native-client-source",
+            tr("app.settings.native_client.source_title"),
+            tr("app.settings.native_client.source_detail"),
             AppIcon::Query,
             colors,
         )
@@ -315,9 +337,10 @@ impl NavicatMain {
         if state.detect_task.is_some() || state.download.is_some() {
             return;
         }
-        state.status = Some("正在检测客户端…".into());
+        state.status = Some(tr("app.settings.native_client.status.detecting_text").to_string());
+        state.status_missing = false;
         state.detect_task = Some(cx.spawn(async move |view, cx| {
-            let status = cx
+            let (status, status_missing) = cx
                 .background_spawn(async move {
                     match kind {
                         NativeClientKind::Postgres => {
@@ -326,7 +349,7 @@ impl NavicatMain {
                                 .iter()
                                 .find(|location| location.major_version.is_some())
                             else {
-                                return kind.install_hint().to_string();
+                                return (kind.install_hint().to_string(), true);
                             };
                             let missing: Vec<_> = [
                                 fluxdb_app::PgClientTool::Restore,
@@ -336,34 +359,40 @@ impl NavicatMain {
                             .filter(|tool| !best.bin_dir.join(tool.binary_name()).is_file())
                             .map(|tool| tool.display_name())
                             .collect();
-                            format!(
-                                "主版本 {}：{}{}",
-                                best.major_version.unwrap_or_default(),
-                                best.bin_dir.display(),
-                                if missing.is_empty() {
-                                    String::new()
-                                } else {
-                                    format!("；缺少 {}", missing.join("、"))
-                                }
-                            )
+                            (tr("app.settings.native_client.status.version")
+                                .replace("%{version}", &best.major_version.unwrap_or_default().to_string())
+                                .replace("%{path}", &best.bin_dir.display().to_string())
+                                .replace(
+                                    "%{missing}",
+                                    &if missing.is_empty() {
+                                        String::new()
+                                    } else {
+                                        tr("app.settings.native_client.status.missing")
+                                            .replace("%{tools}", &missing.join(", "))
+                                    },
+                                ), false)
                         }
                         NativeClientKind::MySql => {
                             let Some(best) = fluxdb_app::resolve_mysql_client_tool(
                                 &settings,
                                 fluxdb_app::MySqlClientTool::Dump,
                             ) else {
-                                return kind.install_hint().to_string();
+                                return (kind.install_hint().to_string(), true);
                             };
-                            format!(
-                                "{} {}.{}：{}",
-                                if best.version.mariadb {
-                                    "MariaDB"
-                                } else {
-                                    "MySQL"
-                                },
-                                best.version.major,
-                                best.version.minor,
-                                best.program.display()
+                            (
+                                tr("app.settings.native_client.status.version_plain")
+                                    .replace(
+                                        "%{name}",
+                                        if best.version.mariadb {
+                                            "MariaDB"
+                                        } else {
+                                            "MySQL"
+                                        },
+                                    )
+                                    .replace("%{major}", &best.version.major.to_string())
+                                    .replace("%{minor}", &best.version.minor.to_string())
+                                    .replace("%{path}", &best.program.display().to_string()),
+                                false,
                             )
                         }
                     }
@@ -376,6 +405,7 @@ impl NavicatMain {
                         let state = this.native_client_state(kind);
                         state.detect_task = None;
                         state.status = Some(status);
+                        state.status_missing = status_missing;
                         cx.notify();
                     });
                 }
@@ -409,7 +439,7 @@ impl NavicatMain {
         };
         let cancel = Arc::new(AtomicBool::new(false));
         self.native_client_state(kind).download = Some(PgClientDownloadState {
-            message: "准备下载客户端…".into(),
+            message: tr("app.settings.native_client.status.preparing_download").into(),
             cancel: cancel.clone(),
         });
         let (sender, receiver) = mpsc::channel::<String>();
@@ -459,7 +489,7 @@ impl NavicatMain {
                                 }
                                 this.detect_native_client_tools(kind, cx);
                                 this.show_message(
-                                    "客户端已安装，点击保存后生效",
+                                    tr("app.settings.native_client.toast.installed").as_ref(),
                                     AppMessageKind::Success,
                                     cx,
                                 );
@@ -467,9 +497,9 @@ impl NavicatMain {
                             Err(error) => {
                                 tracing::warn!(?error, client = kind.label(), "客户端下载失败");
                                 this.native_client_state(kind).status =
-                                    Some(format!("下载失败：{error}"));
+                                    Some(tr("app.settings.native_client.error.download").replace("%{error}", &error.to_string()));
                                 this.show_message(
-                                    format!("客户端下载失败：{error}"),
+                                    tr("app.settings.native_client.error.download_client").replace("%{error}", &error.to_string()),
                                     AppMessageKind::Error,
                                     cx,
                                 );
@@ -518,9 +548,9 @@ fn pg_client_progress_text(
     match progress.stage {
         "download" => {
             if progress.total == 0 {
-                return Some(format!(
-                    "下载中（{:.1} MB）",
-                    progress.downloaded as f64 / 1024.0 / 1024.0
+                return Some(tr("app.settings.native_client.progress.downloading_mb").replace(
+                    "%{mb}",
+                    &format!("{:.1}", progress.downloaded as f64 / 1024.0 / 1024.0),
                 ));
             }
             let percent = progress.downloaded * 100 / progress.total;
@@ -528,13 +558,12 @@ fn pg_client_progress_text(
                 return None;
             }
             *last_percent = percent;
-            Some(format!(
-                "下载中 {percent}%（{:.1} MB / {:.1} MB）",
-                progress.downloaded as f64 / 1024.0 / 1024.0,
-                progress.total as f64 / 1024.0 / 1024.0
-            ))
+            Some(tr("app.settings.native_client.progress.downloading_percent")
+                .replace("%{percent}", &percent.to_string())
+                .replace("%{done}", &format!("{:.1}", progress.downloaded as f64 / 1024.0 / 1024.0))
+                .replace("%{total}", &format!("{:.1}", progress.total as f64 / 1024.0 / 1024.0)))
         }
-        "extract" => Some("正在解压客户端文件…".to_string()),
-        _ => Some("正在校验客户端…".to_string()),
+        "extract" => Some(tr("app.settings.native_client.progress.extracting").to_string()),
+        _ => Some(tr("app.settings.native_client.progress.verifying").to_string()),
     }
 }

@@ -49,11 +49,26 @@ fn er_literal_text(literal: &fluxdb_core::ErLiteral) -> String {
 /// 基数选择选项（1:1 / 1:N / N:1 / N:N / 未知）。
 fn er_cardinality_options() -> Vec<ErRelationshipSelectOption> {
     vec![
-        ErRelationshipSelectOption { id: "1_1".into(), label: "1 对 1".into() },
-        ErRelationshipSelectOption { id: "1_n".into(), label: "1 对多（1:N）".into() },
-        ErRelationshipSelectOption { id: "n_1".into(), label: "多对 1（N:1）".into() },
-        ErRelationshipSelectOption { id: "n_n".into(), label: "多对多（N:N）".into() },
-        ErRelationshipSelectOption { id: "unknown".into(), label: "未知（不声明）".into() },
+        ErRelationshipSelectOption {
+            id: "1_1".into(),
+            label: tr("app.er_form.cardinality_1_1").to_string(),
+        },
+        ErRelationshipSelectOption {
+            id: "1_n".into(),
+            label: tr("app.er_form.cardinality_1_n").to_string(),
+        },
+        ErRelationshipSelectOption {
+            id: "n_1".into(),
+            label: tr("app.er_form.cardinality_n_1").to_string(),
+        },
+        ErRelationshipSelectOption {
+            id: "n_n".into(),
+            label: tr("app.er_form.cardinality_n_n").to_string(),
+        },
+        ErRelationshipSelectOption {
+            id: "unknown".into(),
+            label: tr("app.er_form.cardinality_unknown").to_string(),
+        },
     ]
 }
 
@@ -74,13 +89,13 @@ fn er_cardinality_to_option_id(
 }
 
 /// 基数选项的中文展示（方向文案用）。
-fn er_cardinality_label(id: &str) -> &'static str {
+fn er_cardinality_label(id: &str) -> SharedString {
     match id {
-        "1_1" => "一对一",
-        "1_n" => "一对多",
-        "n_1" => "多对一",
-        "n_n" => "多对多",
-        _ => "未声明匹配数量",
+        "1_1" => tr("app.er_form.cardinality_label_1_1"),
+        "1_n" => tr("app.er_form.cardinality_label_1_n"),
+        "n_1" => tr("app.er_form.cardinality_label_n_1"),
+        "n_n" => tr("app.er_form.cardinality_label_n_n"),
+        _ => tr("app.er_form.cardinality_label_unknown"),
     }
 }
 
@@ -183,7 +198,9 @@ impl NavicatMain {
         if !self.er_relationship_form_role_inputs.contains_key(&tab_id) {
             self.er_relationship_form_role_inputs.insert(
                 tab_id,
-                cx.new(|cx| InputState::new(window, cx).placeholder("业务角色")),
+                cx.new(|cx| {
+                    InputState::new(window, cx).placeholder(tr("app.er_form.business_role"))
+                }),
             );
         }
         if !self
@@ -192,7 +209,9 @@ impl NavicatMain {
         {
             self.er_relationship_form_description_inputs.insert(
                 tab_id,
-                cx.new(|cx| InputState::new(window, cx).placeholder("说明（可选）")),
+                cx.new(|cx| {
+                    InputState::new(window, cx).placeholder(tr("app.er_form.description_optional"))
+                }),
             );
         }
         if options_changed
@@ -393,11 +412,11 @@ impl NavicatMain {
                 SearchableVec::new(vec![
                     ErRelationshipSelectOption {
                         id: "left".into(),
-                        label: "左表".into(),
+                        label: tr("app.er_form.left_table").to_string(),
                     },
                     ErRelationshipSelectOption {
                         id: "right".into(),
-                        label: "右表".into(),
+                        label: tr("app.er_form.right_table").to_string(),
                     },
                 ]),
                 Some(IndexPath::default().row(0)),
@@ -420,23 +439,23 @@ impl NavicatMain {
                 SearchableVec::new(vec![
                     ErRelationshipSelectOption {
                         id: "eq".into(),
-                        label: "等于".into(),
+                        label: tr("app.er_form.op_eq").to_string(),
                     },
                     ErRelationshipSelectOption {
                         id: "ne".into(),
-                        label: "不等于".into(),
+                        label: tr("app.er_form.op_ne").to_string(),
                     },
                     ErRelationshipSelectOption {
                         id: "is_null".into(),
-                        label: "为空".into(),
+                        label: tr("app.er_form.op_is_null").to_string(),
                     },
                     ErRelationshipSelectOption {
                         id: "is_not_null".into(),
-                        label: "不为空".into(),
+                        label: tr("app.er_form.op_is_not_null").to_string(),
                     },
                     ErRelationshipSelectOption {
                         id: "in".into(),
-                        label: "包含".into(),
+                        label: tr("app.er_form.op_in").to_string(),
                     },
                 ]),
                 Some(IndexPath::default().row(0)),
@@ -445,7 +464,9 @@ impl NavicatMain {
             )
             .searchable(false)
         });
-        let literal = cx.new(|cx| InputState::new(window, cx).placeholder("常量值"));
+        let literal = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(tr("app.er_form.literal"))
+        });
         let subscription = cx.subscribe_in(
             &side,
             window,
@@ -711,7 +732,10 @@ impl NavicatMain {
             .get(&tab_id)
             .and_then(|select| select.read(cx).selected_value().cloned())
         else {
-            self.er_relationship_errors.insert(tab_id, "请选择左表".into());
+            self.er_relationship_errors.insert(
+                tab_id,
+                tr("app.er_form.error_left_table").to_string(),
+            );
             return;
         };
         let Some(right_entity) = self
@@ -719,21 +743,33 @@ impl NavicatMain {
             .get(&tab_id)
             .and_then(|select| select.read(cx).selected_value().cloned())
         else {
-            self.er_relationship_errors.insert(tab_id, "请选择右表".into());
+            self.er_relationship_errors.insert(
+                tab_id,
+                tr("app.er_form.error_right_table").to_string(),
+            );
             return;
         };
         if role.is_empty() {
-            self.er_relationship_errors.insert(tab_id, "业务角色不能为空".into());
+            self.er_relationship_errors.insert(
+                tab_id,
+                tr("app.er_form.error_role").to_string(),
+            );
             return;
         }
         let mut column_pairs = Vec::new();
         for pair in self.er_relationship_form_pairs.get(&tab_id).into_iter().flatten() {
             let Some(left_column) = pair.left.read(cx).selected_value().cloned() else {
-                self.er_relationship_errors.insert(tab_id, "请完成全部字段配对".into());
+                self.er_relationship_errors.insert(
+                    tab_id,
+                    tr("app.er_form.error_pair_columns").to_string(),
+                );
                 return;
             };
             let Some(right_column) = pair.right.read(cx).selected_value().cloned() else {
-                self.er_relationship_errors.insert(tab_id, "请完成全部字段配对".into());
+                self.er_relationship_errors.insert(
+                    tab_id,
+                    tr("app.er_form.error_pair_columns").to_string(),
+                );
                 return;
             };
             column_pairs.push(fluxdb_core::ErColumnPair {
@@ -742,21 +778,33 @@ impl NavicatMain {
             });
         }
         if column_pairs.is_empty() {
-            self.er_relationship_errors.insert(tab_id, "至少需要一组字段配对".into());
+            self.er_relationship_errors.insert(
+                tab_id,
+                tr("app.er_form.error_pair_required").to_string(),
+            );
             return;
         }
         let mut required_filters = Vec::new();
         for filter in self.er_relationship_form_filters.get(&tab_id).into_iter().flatten() {
             let Some(side) = filter.side.read(cx).selected_value().cloned() else {
-                self.er_relationship_errors.insert(tab_id, "请选择过滤条件端点".into());
+                self.er_relationship_errors.insert(
+                    tab_id,
+                    tr("app.er_form.error_filter_endpoint").to_string(),
+                );
                 return;
             };
             let Some(column_id) = filter.column.read(cx).selected_value().cloned() else {
-                self.er_relationship_errors.insert(tab_id, "请选择过滤条件字段".into());
+                self.er_relationship_errors.insert(
+                    tab_id,
+                    tr("app.er_form.error_filter_column").to_string(),
+                );
                 return;
             };
             let Some(op_id) = filter.op.read(cx).selected_value().cloned() else {
-                self.er_relationship_errors.insert(tab_id, "请选择过滤条件操作".into());
+                self.er_relationship_errors.insert(
+                    tab_id,
+                    tr("app.er_form.error_filter_operator").to_string(),
+                );
                 return;
             };
             let op = match op_id.as_str() {
@@ -766,7 +814,10 @@ impl NavicatMain {
                 "is_not_null" => fluxdb_core::ErFilterOp::IsNotNull,
                 "in" => fluxdb_core::ErFilterOp::In,
                 _ => {
-                    self.er_relationship_errors.insert(tab_id, "未知的过滤条件操作".into());
+                    self.er_relationship_errors.insert(
+                        tab_id,
+                        tr("app.er_form.error_unknown_operator").to_string(),
+                    );
                     return;
                 }
             };
@@ -776,7 +827,10 @@ impl NavicatMain {
             } else if let Some(literal) = er_parse_literal(&literal_text) {
                 literal
             } else {
-                self.er_relationship_errors.insert(tab_id, "过滤条件字面量不能为空".into());
+                self.er_relationship_errors.insert(
+                    tab_id,
+                    tr("app.er_form.error_filter_literal").to_string(),
+                );
                 return;
             };
             required_filters.push(fluxdb_core::ErRequiredFilter {
@@ -803,7 +857,10 @@ impl NavicatMain {
                 !valid_column(entity, &filter.column_id)
             })
         {
-            self.er_relationship_errors.insert(tab_id, "关系字段已不存在，请选择当前表中的字段".into());
+            self.er_relationship_errors.insert(
+                tab_id,
+                tr("app.er_form.error_missing_column").to_string(),
+            );
             return;
         }
         let description = self
@@ -866,7 +923,10 @@ impl NavicatMain {
                 .find(|relationship| relationship.id == editing_id)
                 .cloned()
             else {
-                self.er_relationship_errors.insert(tab_id, "关系已不存在，请刷新列表".into());
+                self.er_relationship_errors.insert(
+                    tab_id,
+                    tr("app.er_form.error_missing_relationship").to_string(),
+                );
                 return;
             };
             relationship.id = current.id.clone();

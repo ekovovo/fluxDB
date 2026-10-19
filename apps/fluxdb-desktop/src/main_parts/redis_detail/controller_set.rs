@@ -55,8 +55,8 @@ impl NavicatMain {
                         } => Ok((key, query, cursor, members, next_cursor, total)),
                         AppEvent::Failed(error) => Err(error),
                         _ => Err(fluxdb_core::UserFacingError {
-                            title: "查询失败".to_string(),
-                            message: "Set 成员查询没有返回结果".to_string(),
+                            title: tr("app.redis.error.query_failed").to_string(),
+                            message: tr("app.redis.set.error.no_query_result").to_string(),
                             detail: None,
                             retryable: true,
                         }),
@@ -300,8 +300,8 @@ impl NavicatMain {
                             AppEvent::Failed(error) => last_error = Some(error),
                             _ => {
                                 return Err(fluxdb_core::UserFacingError {
-                                    title: "保存失败".to_string(),
-                                    message: "Set 成员操作没有返回结果".to_string(),
+                                    title: tr("app.redis.error.save_failed").to_string(),
+                                    message: tr("app.redis.set.error.no_operation_result").to_string(),
                                     detail: None,
                                     retryable: true,
                                 })
@@ -416,7 +416,7 @@ impl NavicatMain {
             .filter(|value| !value.is_empty())
             .collect::<BTreeSet<_>>();
         if values.is_empty() {
-            self.show_message("至少输入一个 Member", AppMessageKind::Warning, cx);
+            self.show_message(tr("app.redis.set.error.members_required").as_ref(), AppMessageKind::Warning, cx);
             return;
         }
         self.pending_redis_set_member_drawer = None;

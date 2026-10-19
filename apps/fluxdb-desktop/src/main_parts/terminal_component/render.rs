@@ -811,7 +811,7 @@ fn paint_danger_bar(
     let bar = Bounds::new(point(bounds.origin.x, top), size(bounds.size.width, h));
     window.paint_quad(fill(bar, colors.danger_bg));
 
-    let text = format!("ⓘ 危险命令待确认: {dangerous}    Enter 确认 · Esc 取消");
+    let text = tr("app.terminal.danger_banner").replace("%{command}", &dangerous);
     let run = TextRun {
         len: text.len(), // TextRun.len 为字节数（gpui 用其做 utf8 切片），不能按 chars 数。
         font: terminal_font(),

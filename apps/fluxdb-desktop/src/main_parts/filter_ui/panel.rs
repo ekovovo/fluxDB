@@ -49,7 +49,7 @@ fn data_filter_panel(
                         .text_size(px(12.))
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .text_color(colors.text)
-                        .child("筛选"),
+                        .child(tr("app.filter.title")),
                 ),
         )
         .child(data_filter_builder_rows(
@@ -132,10 +132,10 @@ fn data_filter_apply_button(colors: UiColors, applying: bool) -> Div {
                 .items_center()
                 .gap_2()
                 .child(loading_spinner_with_color(12., rgb(0xffffff)))
-                .child("正在应用..."),
+                .child(tr("app.filter.applying")),
         )
     } else {
-        button.child("应用筛选 & 排序")
+        button.child(tr("app.filter.apply_filters_sort"))
     }
 }
 

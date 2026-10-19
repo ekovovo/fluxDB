@@ -72,7 +72,7 @@ impl AiChatUi {
         let input = cx.new(|cx| {
             TextareaState::new(window, cx)
                 .auto_grow(2, 16)
-                .placeholder("随心输入")
+                .placeholder(tr("app.ai.chat.composer.placeholder"))
         });
         let sub = cx.subscribe_in(
             &input,

@@ -28,7 +28,7 @@ fn connection_browser_titlebar(
                     .text_size(px(13.))
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .text_color(colors.text)
-                    .child("连接"),
+                    .child(tr("app.sidebar.connections")),
             ),
         )
         .child(
@@ -36,14 +36,14 @@ fn connection_browser_titlebar(
                 .flex()
                 .items_center()
                 .gap_1()
-                .child(sidebar_title_button(AppIcon::Folder, "新建分组", false, colors).on_mouse_down(
+                .child(sidebar_title_button(AppIcon::Folder, tr("app.sidebar.new_group"), false, colors).on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|this, _, window, cx| {
                         this.create_connection_group_and_rename(window, cx);
                         cx.stop_propagation();
                     }),
                 ))
-                .child(sidebar_title_button(AppIcon::Refresh, "刷新", false, colors).on_mouse_down(
+                .child(sidebar_title_button(AppIcon::Refresh, tr("app.common.refresh"), false, colors).on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|this, _, _, cx| {
                         // 侧边栏刷新只刷连接树，不跟随活动标签页（详见 refresh_connection_tree）。
@@ -52,7 +52,7 @@ fn connection_browser_titlebar(
                     }),
                 ))
                 // 「添加连接」图标放在标题栏右侧（即原「收起侧边栏」位置）；收起功能由顶部栏切换按钮承担。
-                .child(sidebar_title_button(AppIcon::Plug, "添加连接", false, colors).on_mouse_down(
+                .child(sidebar_title_button(AppIcon::Plug, tr("app.sidebar.add_connection"), false, colors).on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|this, _, window, cx| {
                         this.show_new_connection(window, cx);
@@ -87,7 +87,7 @@ fn connection_browser_restore_button(
         .gap_3()
         .pt_3()
         .child(
-            sidebar_title_button(AppIcon::Home, "首页", on_home, colors).on_mouse_down(
+            sidebar_title_button(AppIcon::Home, tr("app.topbar.home"), on_home, colors).on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _, _, cx| {
                     this.dispatch(AppCommand::DeactivateTab, cx);
@@ -96,7 +96,7 @@ fn connection_browser_restore_button(
             ),
         )
         .child(
-            sidebar_title_button(AppIcon::Database, "数据库", on_database, colors)
+            sidebar_title_button(AppIcon::Database, tr("app.sidebar.databases"), on_database, colors)
                 .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
                     // 展开侧边栏并显示数据库连接及对象列表（连接浏览器）。
                     this.show_connection_browser = true;
@@ -155,10 +155,12 @@ fn connection_browser_resize_handle(
 
 fn sidebar_title_button(
     icon: AppIcon,
-    tooltip: &'static str,
+    tooltip: impl Into<SharedString>,
     active: bool,
     colors: UiColors,
 ) -> Stateful<Div> {
+    let tooltip = tooltip.into();
+    let tooltip_for_id = tooltip.clone();
     div()
         .size(px(30.))
         .rounded(colors.radius_lg)
@@ -169,8 +171,8 @@ fn sidebar_title_button(
         // 当前页面态高亮：active 时用选中背景 + 主题色图标，否则 muted 淡显。
         .when(active, |style| style.bg(colors.tree_selected))
         .hover(move |style| style.bg(colors.hover))
-        .id(tooltip)
-        .tooltip(move |window, cx| Tooltip::new(tooltip).build(window, cx))
+        .id(tooltip_for_id)
+        .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
         .child(app_icon_box(
             icon,
             30.,
@@ -338,7 +340,11 @@ fn tab_pin_button(
     cx: &mut Context<NavicatMain>,
 ) -> impl IntoElement {
     let color = if pinned { colors.info } else { colors.muted };
-    let tooltip = if pinned { "取消置顶" } else { "置顶" };
+    let tooltip = if pinned {
+        tr("app.sidebar.unpin")
+    } else {
+        tr("app.sidebar.pin")
+    };
     div()
         .id(("pin-tab", tab_id.0))
         .size(px(18.))
@@ -350,7 +356,7 @@ fn tab_pin_button(
         .justify_center()
         .text_color(color)
         .hover(move |style| style.bg(colors.hover).text_color(colors.text))
-        .tooltip(move |window, cx| Tooltip::new(tooltip).build(window, cx))
+        .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
         .on_mouse_down(
             MouseButton::Left,
             cx.listener(move |this, _, _, cx| {
@@ -377,7 +383,7 @@ fn tab_close_button(
         .justify_center()
         .text_color(colors.muted)
         .hover(move |style| style.bg(colors.hover).text_color(colors.text))
-        .tooltip(|window, cx| Tooltip::new("关闭").build(window, cx))
+        .tooltip(|window, cx| Tooltip::new(tr("app.window.close")).build(window, cx))
         .on_mouse_down(
             MouseButton::Left,
             cx.listener(move |this, _, _, cx| {
@@ -406,12 +412,16 @@ fn tab_copy_table_name_button(
         .justify_center()
         .text_color(colors.muted)
         .hover(move |style| style.bg(colors.hover).text_color(colors.text))
-        .tooltip(|window, cx| Tooltip::new("复制表名").build(window, cx))
+        .tooltip(|window, cx| Tooltip::new(tr("app.sidebar.copy_table_name")).build(window, cx))
         .on_mouse_down(
             MouseButton::Left,
             cx.listener(move |this, _, _, cx| {
                 cx.write_to_clipboard(ClipboardItem::new_string(table_name.clone()));
-                this.show_message("已复制表名", AppMessageKind::Success, cx);
+                this.show_message(
+                    tr("app.sidebar.table_name_copied"),
+                    AppMessageKind::Success,
+                    cx,
+                );
                 cx.stop_propagation();
             }),
         )
@@ -453,13 +463,53 @@ fn tab_width(tab: &TabState, compact: bool) -> f32 {
 
 fn tab_title(tab: &TabState, show_database_context: bool) -> String {
     let prefix = if tab.dirty { "* " } else { "" };
+    let title = localized_tab_title(tab);
     match &tab.kind {
         TabKind::DataEditor(editor) if show_database_context => format!(
             "{prefix}{}@{}",
-            tab.title,
+            title,
             editor.object.database.as_deref().unwrap_or("main")
         ),
-        _ => format!("{prefix}{}", tab.title),
+        _ => format!("{prefix}{title}"),
+    }
+}
+
+/// 应用层为内置标签页保存稳定中文标题；展示时按标签类型替换为当前语言。
+fn localized_tab_title(tab: &TabState) -> String {
+    match &tab.kind {
+        TabKind::Settings(_) => tr("app.tabs.settings").to_string(),
+        TabKind::AiChat { .. } => tr("app.tabs.ai_chat").to_string(),
+        TabKind::UserAdmin(_) => tr("app.tabs.user_admin").to_string(),
+        TabKind::QueryEditor(_) if tab.title == "无标题 - 查询" => {
+            tr("app.tabs.untitled_query").to_string()
+        }
+        TabKind::CreateTable(state) => {
+            let name = state.table_name.trim();
+            if name.is_empty() {
+                if state.is_design() {
+                    tr("app.tabs.design_table").to_string()
+                } else {
+                    tr("app.tabs.new_table").to_string()
+                }
+            } else if state.is_design() {
+                tr("app.tabs.design_table_named").replace("%{table}", name)
+            } else {
+                name.to_string()
+            }
+        }
+        TabKind::RedisWorkbench(workbench) => tr("app.tabs.untitled_redis_command")
+            .replace("%{database}", &workbench.database.to_string()),
+        TabKind::RedisCli(cli) => tr("app.tabs.redis_cli")
+            .replace("%{database}", &cli.database.to_string()),
+        TabKind::RedisPubSub(pubsub) => tr("app.tabs.redis_pubsub")
+            .replace("%{database}", &pubsub.database.to_string()),
+        TabKind::BackupList(list) => tr("app.tabs.backup")
+            .replace("%{database}", &list.database),
+        TabKind::ErDiagram(er) => match &er.center_table {
+            Some(table) => tr("app.tabs.er_related").replace("%{table}", &table.display()),
+            None => tr("app.tabs.er").replace("%{database}", &er.database),
+        },
+        _ => tab.title.clone(),
     }
 }
 
@@ -714,7 +764,7 @@ fn sidebar(
                         .hover(move |style| style.bg(colors.hover))
                         .id("sidebar-add-connection")
                         .tooltip(move |window, cx| {
-                            Tooltip::new("新建 MySQL 连接").build(window, cx)
+                            Tooltip::new(tr("app.sidebar.new_mysql_connection")).build(window, cx)
                         })
                         .child(app_icon_box(AppIcon::Plug, 20., 16., colors.text))
                         .child(
@@ -722,7 +772,7 @@ fn sidebar(
                                 .text_size(px(13.))
                                 .font_weight(gpui::FontWeight::MEDIUM)
                                 .text_color(colors.text)
-                                .child("添加连接"),
+                                .child(tr("app.sidebar.add_connection")),
                         ),
                 )
                 .on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| {

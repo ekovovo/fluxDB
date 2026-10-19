@@ -59,7 +59,7 @@ impl NavicatMain {
             AppEvent::AiSettingsError(message) => {
                 self.show_message(&message, AppMessageKind::Error, cx)
             }
-            _ => self.show_message("全局默认策略已保存", AppMessageKind::Success, cx),
+            _ => self.show_message(tr("app.ai.mcp.global_policy_saved").as_ref(), AppMessageKind::Success, cx),
         }
         cx.notify();
     }
@@ -84,7 +84,11 @@ impl NavicatMain {
             .dispatch(AppCommand::SaveAiMcpDatasource(input))
         {
             AppEvent::AiMcpDatasourceSaved { .. } => {
-                self.show_message("数据源策略已更新", AppMessageKind::Success, cx);
+                self.show_message(
+                    tr("app.ai.mcp.policy_updated"),
+                    AppMessageKind::Success,
+                    cx,
+                );
             }
             AppEvent::AiSettingsError(message) => {
                 self.show_message(&message, AppMessageKind::Error, cx);
@@ -108,7 +112,11 @@ impl NavicatMain {
             connection_id,
         }) {
             AppEvent::AiMcpDatasourceDeleted { .. } => {
-                self.show_message("数据源已移除", AppMessageKind::Success, cx);
+                self.show_message(
+                    tr("app.ai.mcp.datasource_removed"),
+                    AppMessageKind::Success,
+                    cx,
+                );
             }
             AppEvent::AiSettingsError(message) => {
                 self.show_message(&message, AppMessageKind::Error, cx)

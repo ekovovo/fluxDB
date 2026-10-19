@@ -46,10 +46,10 @@ fn pg_ssh_auth_from_options(ssh: &fluxdb_core::PostgresSshOptions) -> fluxdb_app
 /// 选一个本地空闲端口（绑定 127.0.0.1:0 取系统分配端口后释放，供 ssh -L 使用）。
 fn pg_pick_free_local_port() -> anyhow::Result<u16> {
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0))
-        .map_err(|error| anyhow::anyhow!("无法分配本地端口：{error}"))?;
+        .map_err(|error| anyhow::anyhow!(tr("app.sql_file.error.port_alloc").replace("%{error}", &error.to_string())))?;
     let port = listener
         .local_addr()
-        .map_err(|error| anyhow::anyhow!("读取本地端口失败：{error}"))?
+        .map_err(|error| anyhow::anyhow!(tr("app.sql_file.error.port_read").replace("%{error}", &error.to_string())))?
         .port();
     drop(listener);
     Ok(port)
@@ -124,11 +124,11 @@ pub fn pg_start_ssh_tunnel(
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .map_err(|error| anyhow::anyhow!("启动 ssh 隧道失败：{error}"))?;
+        .map_err(|error| anyhow::anyhow!(tr("app.sql_file.error.ssh_tunnel_start").replace("%{error}", &error.to_string())))?;
     if !pg_wait_tunnel_ready(local_port, &mut child, cancel_flag, 8000) {
         let _ = child.kill();
         let _ = child.wait();
-        anyhow::bail!("SSH 隧道建立失败或超时");
+        anyhow::bail!(tr("app.sql_file.error.ssh_tunnel_timeout").to_string());
     }
     Ok((child, local_port))
 }

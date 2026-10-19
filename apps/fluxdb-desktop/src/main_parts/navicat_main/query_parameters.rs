@@ -176,7 +176,7 @@ impl NavicatMain {
             }
             PendingQueryExecution::Statement { statement } => {
                 let Some(sql_editor) = self.query_editors.get(&pending.tab_id).cloned() else {
-                    self.show_message("查询编辑器未就绪", AppMessageKind::Warning, cx);
+                    self.show_message(tr("app.query.error.editor_not_ready").as_ref(), AppMessageKind::Warning, cx);
                     cx.notify();
                     return;
                 };
@@ -286,11 +286,9 @@ impl NavicatMain {
         };
         if array_values.len() != pending.parameters.len() {
             self.show_message(
-                format!(
-                    "数组参数数量不匹配，需要 {} 个，当前 {} 个",
-                    pending.parameters.len(),
-                    array_values.len()
-                ),
+                tr("app.query.error.array_count")
+                    .replace("%{expected}", &pending.parameters.len().to_string())
+                    .replace("%{actual}", &array_values.len().to_string()),
                 AppMessageKind::Warning,
                 cx,
             );
@@ -339,7 +337,7 @@ fn query_parameter_specs(sql: &str) -> Vec<QueryParameterSpec> {
 fn query_parameter_label(key: &str) -> String {
     key.strip_prefix('?')
         .filter(|index| !index.is_empty() && index.chars().all(|ch| ch.is_ascii_digit()))
-        .map(|index| format!("参数 {index}"))
+        .map(|index| tr("app.query.parameter_label").replace("%{index}", index))
         .unwrap_or_else(|| key.to_string())
 }
 
@@ -359,14 +357,14 @@ fn bind_query_parameters(sql: &str, values: &BTreeMap<String, String>) -> String
 fn parse_query_parameter_array_values(text: &str) -> Result<Vec<String>, String> {
     let trimmed = text.trim();
     if trimmed.is_empty() {
-        return Err("请输入参数数组".to_string());
+        return Err(tr("app.query.error.array_required").to_string());
     }
 
     if trimmed.starts_with('[') {
         let value = serde_json::from_str::<serde_json::Value>(trimmed)
-            .map_err(|_| "数组格式无效，请输入如 [1, \"Alice\"]".to_string())?;
+            .map_err(|_| tr("app.query.error.array_format").to_string())?;
         let Some(items) = value.as_array() else {
-            return Err("请输入 JSON 数组".to_string());
+            return Err(tr("app.query.error.json_array").to_string());
         };
         return Ok(items.iter().map(query_parameter_json_value_text).collect());
     }
@@ -378,7 +376,7 @@ fn parse_query_parameter_array_values(text: &str) -> Result<Vec<String>, String>
         .map(ToString::to_string)
         .collect::<Vec<_>>();
     if values.is_empty() {
-        Err("请输入参数数组".to_string())
+        Err(tr("app.query.error.array_required").to_string())
     } else {
         Ok(values)
     }

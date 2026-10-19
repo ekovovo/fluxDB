@@ -114,23 +114,23 @@ fn settings_sidebar_groups(
     };
 
     vec![
-        SidebarGroup::new("通用").children([
+        SidebarGroup::new(tr("app.settings.group.general")).children([
             item(SettingsPanelSection::Editor),
             item(SettingsPanelSection::Shortcuts),
             item(SettingsPanelSection::Appearance),
         ]),
-        SidebarGroup::new("数据与连接").children([
+        SidebarGroup::new(tr("app.settings.group.data_connections")).children([
             item(SettingsPanelSection::Data),
             item(SettingsPanelSection::ConnectionSecurity),
             item(SettingsPanelSection::DatabaseSupport),
         ]),
-        SidebarGroup::new("AI 助手").children([
+        SidebarGroup::new(tr("app.settings.group.ai_assistant")).children([
             item(SettingsPanelSection::AiModels),
             item(SettingsPanelSection::AiToolsMcp),
             item(SettingsPanelSection::AiAgents),
             item(SettingsPanelSection::AiSessions),
         ]),
-        SidebarGroup::new("应用").children([
+        SidebarGroup::new(tr("app.settings.group.application")).children([
             item(SettingsPanelSection::System),
             item(SettingsPanelSection::About),
         ]),
@@ -186,7 +186,7 @@ fn settings_panel_header(
                     .gap_2()
                     .child(
                         Button::new("settings-editor-reset")
-                            .label("恢复默认设置")
+                            .label(tr("app.settings.reset_defaults"))
                             .small()
                             .rounded(colors.radius)
                             .on_click(cx.listener(move |this, _, window, cx| {
@@ -202,7 +202,7 @@ fn settings_panel_header(
                                 reset_line_height_input
                                     .update(cx, |input, cx| input.set_value(value, window, cx));
                                 this.show_message(
-                                    "已恢复默认设置，点击保存后生效",
+                                    tr("app.settings.message.editor_reset"),
                                     AppMessageKind::Info,
                                     cx,
                                 );
@@ -210,7 +210,7 @@ fn settings_panel_header(
                     )
                     .child(
                         Button::new("settings-editor-save")
-                            .label("保存")
+                                    .label(tr("app.common.save"))
                             .small()
                             .rounded(colors.radius)
                             .primary()
@@ -223,7 +223,7 @@ fn settings_panel_header(
                                     .parse::<u32>()
                                 else {
                                     this.show_message(
-                                        "行高请输入 13-28 的数字",
+                                        tr("app.settings.message.invalid_line_height"),
                                         AppMessageKind::Warning,
                                         cx,
                                     );
@@ -236,7 +236,12 @@ fn settings_panel_header(
                                     &this.settings_editor_draft,
                                 );
                                 settings.editor_line_height = line_height;
-                                save_settings_from_ui(this, settings, "已保存编辑器设置", cx);
+                                save_settings_from_ui(
+                                    this,
+                                    settings,
+                                    tr("app.settings.message.editor_saved"),
+                                    cx,
+                                );
                                 save_line_height_input.update(cx, |input, cx| {
                                     input.set_value(line_height.to_string(), window, cx)
                                 });

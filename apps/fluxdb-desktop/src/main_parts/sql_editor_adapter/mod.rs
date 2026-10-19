@@ -10,6 +10,8 @@
 // `use` 统一放在本文件顶部，其余文件直接引用同一模块作用域下的类型，不重复 `use`。
 
 use std::future::Future;
+use crate::tr;
+use gpui::SharedString;
 use std::pin::Pin;
 use std::sync::{
     atomic::{AtomicU64, Ordering},
@@ -344,10 +346,10 @@ impl SqlAdapter {
         match kind {
             fluxdb_editor_core::CompletionKind::Column => match comment {
                 Some(text) if !text.is_empty() => SqlDocState::Ready(text.to_string()),
-                _ => SqlDocState::Error("无列注释".to_string()),
+                _ => SqlDocState::Error(tr("app.completion.no_column_comment").to_string()),
             },
             fluxdb_editor_core::CompletionKind::Keyword | fluxdb_editor_core::CompletionKind::Text => {
-                SqlDocState::Error("无可用文档".to_string())
+                SqlDocState::Error(tr("app.completion.no_document").to_string())
             }
             _ => SqlDocState::Ready(label.to_string()),
         }
@@ -426,19 +428,19 @@ impl SqlAdapter {
             for schema in src.schemas() {
                 let mut item = CompletionItem::new(&schema, CompletionKind::Schema);
                 item.priority = 58;
-                item.detail = "模式".to_string();
+                item.detail = tr("app.completion.kind.schema").to_string();
                 items.push(item);
             }
             for table in src.tables() {
                 let mut item = CompletionItem::new(&table, CompletionKind::Table);
                 item.priority = 60;
-                item.detail = "表".to_string();
+                item.detail = tr("app.completion.kind.table").to_string();
                 items.push(item);
             }
             for view in src.views() {
                 let mut item = CompletionItem::new(&view, CompletionKind::Table);
                 item.priority = 59;
-                item.detail = "视图".to_string();
+                item.detail = tr("app.completion.kind.view").to_string();
                 items.push(item);
             }
             for (table, column) in src.columns() {
@@ -452,15 +454,15 @@ impl SqlAdapter {
                 item.priority = 54;
                 // DM-802：已知函数补全结果类型（轻量白名单，非通用类型代数）。
                 item.detail = match function_result_type(&routine) {
-                    Some(ty) => format!("函数 → {ty}"),
-                    None => "函数/存储过程".to_string(),
+                    Some(ty) => tr("app.completion.function_return").replace("%{ty}", ty.as_ref()),
+                    None => tr("app.completion.function_or_procedure").to_string(),
                 };
                 items.push(item);
             }
             for ty in src.types() {
                 let mut item = CompletionItem::new(&ty, CompletionKind::Class);
                 item.priority = 53;
-                item.detail = "类型".to_string();
+                item.detail = tr("app.completion.kind.type").to_string();
                 items.push(item);
             }
         }
@@ -485,15 +487,15 @@ impl SqlAdapter {
     }
 
     /// 补全项类型的中文标签。
-    fn kind_label(&self, kind: CompletionKind) -> &'static str {
+    fn kind_label(&self, kind: CompletionKind) -> SharedString {
         match kind {
-            CompletionKind::Keyword => "关键字",
-            CompletionKind::Function => "函数",
-            CompletionKind::Table => "表",
-            CompletionKind::Column => "列",
-            CompletionKind::Schema => "模式",
-            CompletionKind::Class => "类型",
-            _ => "文本",
+            CompletionKind::Keyword => tr("app.completion.kind.keyword"),
+            CompletionKind::Function => tr("app.completion.kind.function"),
+            CompletionKind::Table => tr("app.completion.kind.table"),
+            CompletionKind::Column => tr("app.completion.kind.column"),
+            CompletionKind::Schema => tr("app.completion.kind.schema"),
+            CompletionKind::Class => tr("app.completion.kind.type"),
+            _ => tr("app.completion.kind.text"),
         }
     }
 }
@@ -1111,7 +1113,7 @@ impl SqlAdapter {
                 diagnostics.push(sql_metadata_diagnostic(
                     base_offset + object.start,
                     base_offset + object_end,
-                    format!("对象 `{object_name}` 不存在"),
+                    tr("app.completion.error.object_missing").replace("%{name}", &object_name),
                 ));
             }
             if !schemas.is_empty() && let Some(dot) = object_name.find('.') {
@@ -1125,7 +1127,7 @@ impl SqlAdapter {
                     diagnostics.push(sql_metadata_diagnostic(
                         base_offset + object.start,
                         base_offset + object.start + dot,
-                        format!("schema `{schema_name}` 不存在"),
+                        tr("app.completion.error.schema_missing").replace("%{name}", &schema_name),
                     ));
                 }
             }
@@ -1155,7 +1157,7 @@ impl SqlAdapter {
                     diagnostics.push(sql_metadata_diagnostic(
                         base_offset + token.start,
                         base_offset + token.end,
-                        format!("函数 `{}` 不存在", token.word),
+                        tr("app.completion.error.function_missing").replace("%{name}", &token.word),
                     ));
                 }
             }
@@ -1181,7 +1183,7 @@ impl SqlAdapter {
                     diagnostics.push(sql_metadata_diagnostic(
                         base_offset + token.start,
                         base_offset + token.end,
-                        format!("类型 `{}` 不存在", token.word),
+                        tr("app.completion.error.type_missing").replace("%{name}", &token.word),
                     ));
                 }
             }
@@ -1229,7 +1231,7 @@ impl SqlAdapter {
                     base_offset + column_token.end,
                 ),
                 severity: fluxdb_editor_core::DiagnosticSeverity::Warning,
-                message: format!("列 `{column}` 不存在于表 `{table}`"),
+                message: tr("app.completion.error.column_missing").replace("%{column}", &column).replace("%{table}", &table),
                 source: "sql-metadata".to_string(),
             });
         }
@@ -1265,7 +1267,7 @@ impl SqlAdapter {
                     diagnostics.push(sql_metadata_diagnostic(
                         base_offset + token.start,
                         base_offset + token.end,
-                        format!("列 `{}` 不存在于当前查询作用域", token.word),
+                        tr("app.completion.error.column_out_of_scope").replace("%{name}", &token.word),
                     ));
                 }
             }

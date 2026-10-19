@@ -256,7 +256,8 @@ impl NavicatMain {
         };
         if model.subscribe_input_entity.is_none() {
             let entity = cx.new(|cx| {
-                gpui_component::input::InputState::new(window, cx).placeholder("订阅通道")
+                gpui_component::input::InputState::new(window, cx)
+                    .placeholder(tr("app.pubsub.subscribe_channel"))
             });
             let sub = cx.subscribe(
                 &entity,
@@ -277,7 +278,8 @@ impl NavicatMain {
         }
         if model.publish_channel_input_entity.is_none() {
             let entity = cx.new(|cx| {
-                gpui_component::input::InputState::new(window, cx).placeholder("发布通道")
+                gpui_component::input::InputState::new(window, cx)
+                    .placeholder(tr("app.pubsub.publish_channel"))
             });
             let sub = cx.subscribe(
                 &entity,
@@ -298,7 +300,8 @@ impl NavicatMain {
         }
         if model.publish_message_input_entity.is_none() {
             let entity = cx.new(|cx| {
-                gpui_component::input::InputState::new(window, cx).placeholder("消息内容")
+                gpui_component::input::InputState::new(window, cx)
+                    .placeholder(tr("app.pubsub.message"))
             });
             let sub = cx.subscribe(
                 &entity,

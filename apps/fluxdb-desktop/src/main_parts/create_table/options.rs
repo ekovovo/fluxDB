@@ -7,7 +7,7 @@ fn create_table_options(
     cx: &mut Context<NavicatMain>,
 ) -> Div {
     if !matches!(create.database_kind, DatabaseKind::MySql | DatabaseKind::TiDb) {
-        return create_table_empty_state("当前数据库暂无表级选项", colors);
+        return create_table_empty_state(tr("app.create_table.table_options.unsupported"), colors);
     }
 
     let engine_select = this.create_table_select(
@@ -57,19 +57,19 @@ fn create_table_options(
                     .flex_col()
                     .gap_3()
                     .child(create_table_table_option_select(
-                        "引擎",
+                        tr("app.create_table.table_options.engine"),
                         engine_select,
                         300.,
-                        "引擎",
+                        tr("app.create_table.table_options.engine"),
                         window,
                         colors,
                         cx,
-                    ))
+                    ).debug_selector(|| "create-table-engine".into()))
                     .child(create_table_table_option_input(
-                        "表空间",
+                        tr("app.create_table.table_options.tablespace"),
                         this.create_table_input(
                             CreateTableInputKey::TableTablespace(tab_id),
-                            "表空间",
+                            tr("app.create_table.table_options.tablespace"),
                             &create.tablespace,
                             window,
                             cx,
@@ -80,34 +80,34 @@ fn create_table_options(
                         cx,
                     ))
                     .child(create_table_table_option_select(
-                        "字符集",
+                        tr("app.create_table.column.charset"),
                         charset_select,
                         300.,
-                        "字符集",
+                        tr("app.create_table.column.charset"),
                         window,
                         colors,
                         cx,
                     ))
                     .child(create_table_table_option_select(
-                        "排序规则",
+                        tr("app.create_table.column.collation"),
                         collation_select,
                         300.,
-                        "排序规则",
+                        tr("app.create_table.column.collation"),
                         window,
                         colors,
                         cx,
                     ))
                     .child(create_table_table_option_select(
-                        "行格式",
+                        tr("app.create_table.table_options.row_format"),
                         row_format_select,
                         276.,
-                        "行格式",
+                        tr("app.create_table.table_options.row_format"),
                         window,
                         colors,
                         cx,
                     ))
                     .child(create_table_table_option_input(
-                        "平均行长度",
+                        tr("app.create_table.table_options.avg_row_length"),
                         this.create_table_input(
                             CreateTableInputKey::TableAvgRowLength(tab_id),
                             "0",
@@ -121,7 +121,7 @@ fn create_table_options(
                         cx,
                     ))
                     .child(create_table_table_option_input(
-                        "最大行数",
+                        tr("app.create_table.table_options.max_rows"),
                         this.create_table_input(
                             CreateTableInputKey::TableMaxRows(tab_id),
                             "0",
@@ -135,7 +135,7 @@ fn create_table_options(
                         cx,
                     ))
                     .child(create_table_table_option_input(
-                        "最小行数",
+                        tr("app.create_table.table_options.min_rows"),
                         this.create_table_input(
                             CreateTableInputKey::TableMinRows(tab_id),
                             "0",
@@ -149,7 +149,7 @@ fn create_table_options(
                         cx,
                     ))
                     .child(create_table_table_option_input(
-                        "键块大小",
+                        tr("app.create_table.table_options.key_block_size"),
                         this.create_table_input(
                             CreateTableInputKey::TableKeyBlockSize(tab_id),
                             "0",
@@ -175,7 +175,7 @@ fn create_table_partitions(
     cx: &mut Context<NavicatMain>,
 ) -> Div {
     if !matches!(create.database_kind, DatabaseKind::MySql | DatabaseKind::TiDb) {
-        create_table_empty_state("当前数据库暂无分区选项", colors)
+        create_table_empty_state(tr("app.create_table.partition.unsupported"), colors)
     } else {
         let method_select = this.create_table_select(
             CreateTableSelectKey::TablePartitionMethod(tab_id),
@@ -186,7 +186,7 @@ fn create_table_partitions(
         );
         let expression_input = this.create_table_input(
             CreateTableInputKey::TablePartitionExpression(tab_id),
-            "例如 TO_DAYS(created_at)",
+            tr("app.create_table.partition.expression_example"),
             &create.partition_expression,
             window,
             cx,
@@ -240,20 +240,20 @@ fn create_table_partitions(
                                     .text_size(px(13.))
                                     .font_weight(gpui::FontWeight::SEMIBOLD)
                                     .text_color(colors.text)
-                                    .child("启用"),
+                                    .child(tr("app.create_table.partition.enable")),
                             ),
                     )
                     .child(create_table_table_option_select(
-                        "方式",
+                        tr("app.create_table.partition.method"),
                         method_select,
                         170.,
-                        "分区方式",
+                        tr("app.create_table.partition.method_placeholder"),
                         window,
                         colors,
                         cx,
                     ))
                     .child(create_table_table_option_input(
-                        "表达式",
+                        tr("app.create_table.partition.expression"),
                         expression_input,
                         420.,
                         window,
@@ -279,7 +279,7 @@ fn create_table_partitions(
                             .text_size(px(13.))
                             .font_weight(gpui::FontWeight::SEMIBOLD)
                             .text_color(colors.text)
-                            .child("定义"),
+                            .child(tr("app.create_table.definition")),
                     )
                     .child(
                         div()
@@ -308,7 +308,7 @@ fn create_table_partition_method_options() -> Vec<String> {
 }
 
 fn create_table_table_option_input(
-    label: &'static str,
+    label: impl Into<SharedString>,
     input: Entity<InputState>,
     width: f32,
     window: &mut Window,
@@ -324,10 +324,10 @@ fn create_table_table_option_input(
 }
 
 fn create_table_table_option_select(
-    label: &'static str,
-    select: Entity<SelectState<SearchableVec<String>>>,
+    label: impl Into<SharedString>,
+    select: Entity<SelectState<SearchableVec<CreateTableSelectOption>>>,
     width: f32,
-    placeholder: &'static str,
+    placeholder: impl Into<SharedString>,
     window: &mut Window,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
@@ -347,8 +347,13 @@ fn create_table_table_option_select(
         ))
 }
 
-fn create_table_table_option_label(label: &'static str, colors: UiColors) -> Div {
+fn create_table_table_option_label(label: impl Into<SharedString>, colors: UiColors) -> Div {
+    let label: SharedString = label.into();
     div()
+        .debug_selector({
+            let label = label.clone();
+            move || format!("create-table-heading:{label}")
+        })
         .w(px(84.))
         .text_size(px(13.))
         .font_weight(gpui::FontWeight::SEMIBOLD)

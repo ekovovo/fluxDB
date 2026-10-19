@@ -1,6 +1,15 @@
 /// 内部工具默认策略选择器：只读 / 写审批 / 帮我审批 / 自动执行。
 ///
 /// 这是内部 Agent 工具的审批方式，不作用于对外 MCP 数据源（数据源用写入策略）。
+fn execution_policy_label(policy: fluxdb_core::ExecutionPolicy) -> SharedString {
+    match policy {
+        fluxdb_core::ExecutionPolicy::ReadOnly => tr("app.ai.policy.mode.read_only"),
+        fluxdb_core::ExecutionPolicy::WriteApproval => tr("app.ai.policy.mode.write_approval"),
+        fluxdb_core::ExecutionPolicy::AiApproval => tr("app.ai.policy.mode.ai_approval"),
+        fluxdb_core::ExecutionPolicy::Automatic => tr("app.ai.policy.mode.automatic"),
+    }
+}
+
 fn ai_tools_policy_button(
     state: &AppState,
     colors: UiColors,
@@ -19,7 +28,7 @@ fn ai_tools_policy_button(
                 .items_center()
                 .justify_between()
                 .gap_3()
-                .child(selected.label())
+                .child(execution_policy_label(selected))
                 .child(app_icon(AppIcon::ChevronDown, 12., colors.muted)),
         )
         .dropdown_menu_with_anchor(gpui::Anchor::TopRight, move |menu, _, _| {
@@ -40,7 +49,7 @@ fn ai_tools_policy_button(
                                 let id = option_id.clone();
                                 move || id.clone()
                             })
-                            .child(mode.label())
+                            .child(execution_policy_label(mode))
                     })
                     .checked(selected == mode)
                     .on_click(move |_, window, cx| {
@@ -93,9 +102,9 @@ fn ai_execution_policy_panel(
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> GroupBox {
-    let mut panel = settings_panel_group("安全策略", colors).child(ai_policy_row(
-        "内部工具默认策略",
-        "只读 / 写审批 / 帮我审批 / 自动执行；不绕过连接权限和数据授权",
+    let mut panel = settings_panel_group(tr("app.ai.policy.title"), colors).child(ai_policy_row(
+        &tr("app.ai.policy.tools_default"),
+        &tr("app.ai.policy.tools_default_detail"),
         ai_tools_policy_button(state, colors, cx),
         colors,
     ));
@@ -103,14 +112,14 @@ fn ai_execution_policy_panel(
     if state.ai_execution_policy.tools_default == fluxdb_core::ExecutionPolicy::AiApproval {
         panel = panel
             .child(ai_policy_row(
-                "写入风险自动放行阈值",
-                "0–1；综合风险分不高于它才自动放行，高于它转人工。调高＝更多写入交给评审模型",
+                &tr("app.ai.policy.risk_threshold"),
+                &tr("app.ai.policy.risk_threshold_detail"),
                 ai_write_risk_threshold_control(state, colors, cx),
                 colors,
             ))
             .child(ai_policy_row(
-                "评审模型权重",
-                "0–0.5；评审模型在综合分里的占比，其余来自代码规则。上限固定，模型不能压倒规则",
+                &tr("app.ai.policy.review_weight"),
+                &tr("app.ai.policy.review_weight_detail"),
                 ai_write_review_weight_control(state, colors, cx),
                 colors,
             ));
@@ -250,7 +259,7 @@ impl NavicatMain {
                 self.show_message(&message, AppMessageKind::Error, cx)
             }
             _ => self.show_message(
-                "安全策略已保存；待审批计划已失效",
+                tr("app.ai.policy.saved"),
                 AppMessageKind::Success,
                 cx,
             ),
@@ -272,11 +281,11 @@ impl NavicatMain {
                 let owner = owner.clone();
                 let settings = settings.clone();
                 dialog
-                    .title("启用自动执行")
+                    .title(tr("app.ai.policy.auto_title"))
                     .close_button(true)
                     .overlay_closable(true)
                     .keyboard(true)
-                    .child("授权范围内的写入将不再逐次确认，可能造成不可逆的数据变化。只读连接、工具开关、数据范围和硬性校验仍然生效。")
+                    .child(tr("app.ai.policy.auto_detail"))
                     .footer(
                         div()
                             .flex()
@@ -285,14 +294,14 @@ impl NavicatMain {
                             .child(
                                 Button::new("execution-policy-cancel")
                                     .cursor_pointer()
-                                    .child("取消")
+                                    .child(tr("app.common.cancel"))
                                     .on_click(|_, window, cx| window.close_dialog(cx)),
                             )
                             .child(
                                 Button::new("execution-policy-confirm")
                                     .danger()
                                     .cursor_pointer()
-                                    .child("确认自动执行")
+                                    .child(tr("app.ai.policy.auto_confirm"))
                                     .on_click(|_, window, cx| {
                                         window.dispatch_action(
                                             Box::new(gpui_component::dialog::Confirm {

@@ -2099,9 +2099,9 @@ where
                 };
                 let (start, end) = (range.start, range.end);
                 let message = if node.kind() == "MISSING" {
-                    format!("缺少语法符号：{}", node.kind())
+                    tr("app.completion.syntax_missing").replace("%{kind}", node.kind())
                 } else {
-                    format!("语法错误附近：{}", node.kind())
+                    tr("app.completion.syntax_error_near").replace("%{kind}", node.kind())
                 };
                 out.push(Diagnostic::error(Range::new(start, end), message));
             }

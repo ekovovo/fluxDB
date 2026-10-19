@@ -21,7 +21,7 @@ fn pg_general_panel(
             .justify_center()
             .text_size(px(13.))
             .text_color(colors.muted)
-            .child("请选择角色，或点击左上角「+」新建角色")
+            .child(tr("app.pg_role.select_or_new"))
             .into_any_element();
     };
     let is_predefined = !draft.create && admin.pg_selected_role.as_deref().is_some_and(UserAdminState::pg_is_predefined_role);
@@ -41,7 +41,7 @@ fn pg_general_panel(
         .flex_col()
         .gap_2()
         .child(pg_text_row(
-            "角色名:",
+            tr("app.pg_role.field.name"),
             this.pg_role_name_input.clone(),
             !is_predefined,
             window,
@@ -52,7 +52,7 @@ fn pg_general_panel(
             // 预定义角色不可改 LOGIN（服务端固定属性）；普通角色可切换。
             pg_switch_row(
                 tab_id,
-                "允许登录:",
+                tr("app.pg_role.field.can_login"),
                 draft.can_login,
                 !is_predefined,
                 colors,
@@ -60,16 +60,16 @@ fn pg_general_panel(
             ),
         );
     form = form.child(pg_select_row_dynamic(
-        "密码操作:",
+        tr("app.pg_role.field.password_op"),
         this.pg_password_op_select.clone(),
         !is_predefined,
         colors,
     ));
     if password_set {
         form = form
-            .child(pg_password_row("新密码:", this.pg_password_input.clone(), this, window, colors, cx))
+            .child(pg_password_row(tr("app.pg_role.field.new_password"), this.pg_password_input.clone(), this, window, colors, cx))
             .child(pg_password_row(
-                "确认密码:",
+                tr("app.pg_role.field.confirm_password"),
                 this.pg_password_confirm_input.clone(),
                 this,
                 window,
@@ -77,18 +77,18 @@ fn pg_general_panel(
                 cx,
             ));
         if password_mismatch {
-            form = form.child(pg_form_hint("两次输入的密码不一致", true, colors));
+            form = form.child(pg_form_hint(tr("app.pg_role.error.password_mismatch").as_ref(), true, colors));
         }
     }
     form = form.child(pg_select_row_dynamic(
-        "密码有效期:",
+        tr("app.pg_role.field.valid_until"),
         this.pg_valid_until_mode_select.clone(),
         !is_predefined,
         colors,
     ));
     if custom_valid_until {
         form = form.child(pg_text_row(
-            "截止时间:",
+            tr("app.pg_role.field.until"),
             this.pg_valid_until_input.clone(),
             true,
             window,
@@ -96,24 +96,24 @@ fn pg_general_panel(
             cx,
         ));
         form = form.child(pg_form_hint(
-            "保存为服务端可解析的绝对时间；如 2026-12-31 23:59:59+08。清除已有截止时间会显式写 infinity。",
+            tr("app.pg_role.valid_until.help").as_ref(),
             false,
             colors,
         ));
     }
     if is_predefined {
-        form = form.child(pg_form_hint("预定义角色（pg_*）属性由系统管理，仅可查看。", false, colors));
+        form = form.child(pg_form_hint(tr("app.pg_role.hint.predefined").as_ref(), false, colors));
     }
     if renamed {
         form = form.child(pg_form_hint(
-            "重命名角色会使旧的 MD5 密码失效（如该角色使用 MD5 认证，需重设密码）。",
+            tr("app.pg_role.hint.rename_md5").as_ref(),
             false,
             colors,
         ));
     }
     if !draft.can_login {
         form = form.child(pg_form_hint(
-            "NOLOGIN 不终止已有会话，也不清除已有密码；密码字段可展开继续管理。",
+            tr("app.pg_role.hint.nologin").as_ref(),
             false,
             colors,
         ));
@@ -142,14 +142,18 @@ fn pg_general_panel(
                                 .text_color(colors.text)
                                 .child(if draft.create {
                                     draft.name.trim().to_string().is_empty()
-                                        .then(|| "新角色".to_string())
+                                        .then(|| tr("app.pg_role.draft_title_empty").to_string())
                                         .unwrap_or_else(|| draft.name.trim().to_string())
                                 } else {
                                     admin.pg_selected_role.clone().unwrap_or_default()
                                 }),
                         )
-                        .child(pg_role_chip(if draft.can_login { "可登录" } else { "不可登录" }, colors))
-                        .child(pg_role_chip("集群级", colors)),
+                        .child(pg_role_chip(if draft.can_login {
+                            tr("app.pg_role.identity.can_login")
+                        } else {
+                            tr("app.pg_role.identity.cannot_login")
+                        }, colors))
+                        .child(pg_role_chip(tr("app.pg_role.identity.cluster"), colors)),
                 )
                 .child(div().h(px(4.)))
                 .child(form),
@@ -157,7 +161,8 @@ fn pg_general_panel(
         .into_any_element()
 }
 
-fn pg_role_chip(label: &'static str, colors: UiColors) -> Div {
+fn pg_role_chip(label: impl Into<SharedString>, colors: UiColors) -> Div {
+    let label: SharedString = label.into();
     div()
         .px_2()
         .h(px(20.))
@@ -174,19 +179,20 @@ fn pg_role_chip(label: &'static str, colors: UiColors) -> Div {
 
 /// 标签 + 文本输入行（enabled=false 时输入禁用，用于预定义角色）。
 fn pg_text_row(
-    label: &'static str,
+    label: impl Into<SharedString>,
     input: Entity<InputState>,
     enabled: bool,
     window: &mut Window,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
+    let label: SharedString = label.into();
     div()
         .h(px(38.))
         .flex()
         .items_center()
         .gap_3()
-        .child(pg_form_label(label, colors))
+        .child(pg_form_label(label.clone(), colors))
         .child(pg_form_input_box(input, enabled, window, colors, cx))
 }
 
@@ -229,13 +235,14 @@ fn pg_form_input_box(
 /// 标签 + 密码输入行（始终脱敏显示；显隐切换只影响 MySQL 页输入，
 /// PG 密码固定掩码显示，避免误投影到共享输入实体）。
 fn pg_password_row(
-    label: &'static str,
+    label: impl Into<SharedString>,
     input: Entity<InputState>,
     _this: &NavicatMain,
     window: &mut Window,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
+    let label: SharedString = label.into();
     div()
         .h(px(38.))
         .flex()
@@ -248,18 +255,19 @@ fn pg_password_row(
 /// 标签 + 开关行（Switch 组件自持 on_click；预定义角色禁用）。
 fn pg_switch_row(
     tab_id: TabId,
-    label: &'static str,
+    label: impl Into<SharedString>,
     checked: bool,
     enabled: bool,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
+    let label: SharedString = label.into();
     div()
         .h(px(38.))
         .flex()
         .items_center()
         .gap_3()
-        .child(pg_form_label(label, colors))
+        .child(pg_form_label(label.clone(), colors))
         .child(
             h_flex()
                 .items_center()
@@ -284,7 +292,7 @@ fn pg_switch_row(
                         div()
                             .text_size(px(11.))
                             .text_color(colors.muted)
-                            .child("（预定义角色不可修改）"),
+                            .child(tr("app.pg_role.predefined_readonly")),
                     )
                 }),
         )
@@ -292,11 +300,12 @@ fn pg_switch_row(
 
 /// 标签 + 下拉行（选项与选中值由 sync_pg_inputs 统一同步；enabled=false 禁用）。
 fn pg_select_row_dynamic(
-    label: &'static str,
+    label: impl Into<SharedString>,
     select: Entity<SelectState<SearchableVec<String>>>,
     enabled: bool,
     colors: UiColors,
 ) -> Div {
+    let label: SharedString = label.into();
     div()
         .h(px(38.))
         .flex()
@@ -306,7 +315,7 @@ fn pg_select_row_dynamic(
         .child(
             div().w(px(360.)).child(
                 Select::new(&select)
-                    .placeholder("请选择")
+                    .placeholder(tr("app.pg_role.placeholder.select"))
                     .w_full()
                     .h(px(34.))
                     .menu_width(px(360.))
@@ -315,7 +324,8 @@ fn pg_select_row_dynamic(
         )
 }
 
-fn pg_form_label(label: &'static str, colors: UiColors) -> Div {
+fn pg_form_label(label: impl Into<SharedString>, colors: UiColors) -> Div {
+    let label: SharedString = label.into();
     div()
         .w(px(120.))
         .text_size(px(13.))

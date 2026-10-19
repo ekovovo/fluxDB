@@ -7,10 +7,20 @@
 
 fn pg_valid_until_mode_options() -> Vec<String> {
     vec![
-        "保持不变".to_string(),
-        "清除截止时间（永不过期）".to_string(),
-        "自定义截止时间…".to_string(),
+        pg_valid_until_label(&PgValidUntilOp::Keep).to_string(),
+        pg_valid_until_label(&PgValidUntilOp::Clear).to_string(),
+        pg_valid_until_label(&PgValidUntilOp::At(String::new())).to_string(),
     ]
+}
+
+/// 下拉选中值同时参与业务映射，因此展示与匹配都用当前语言的同一份标签，
+/// 不能一处翻译、一处硬编码。
+fn pg_valid_until_label(op: &PgValidUntilOp) -> SharedString {
+    match op {
+        PgValidUntilOp::Keep => tr("app.pg_role.valid_until.keep"),
+        PgValidUntilOp::Clear => tr("app.pg_role.valid_until.clear"),
+        PgValidUntilOp::At(_) => tr("app.pg_role.valid_until.custom"),
+    }
 }
 
 /// 只有关系/函数需要第三个“对象”选择器；schema 和数据库本身就是授权目标。
@@ -50,21 +60,38 @@ fn pg_grant_object_options(
 /// 密码操作选项：新建为「不设置密码/设置新密码」，既有角色为「保持不变/设置新密码/清除密码」。
 fn pg_password_op_options(create: bool) -> Vec<String> {
     if create {
-        vec!["不设置密码".to_string(), "设置新密码".to_string()]
+        vec![
+            pg_password_op_label(true, &PgPasswordOp::Keep).to_string(),
+            pg_password_op_label(true, &PgPasswordOp::Set(String::new())).to_string(),
+        ]
     } else {
         vec![
-            "保持不变".to_string(),
-            "设置新密码".to_string(),
-            "清除密码".to_string(),
+            pg_password_op_label(false, &PgPasswordOp::Keep).to_string(),
+            pg_password_op_label(false, &PgPasswordOp::Set(String::new())).to_string(),
+            pg_password_op_label(false, &PgPasswordOp::Clear).to_string(),
         ]
+    }
+}
+
+fn pg_password_op_label(create: bool, op: &PgPasswordOp) -> SharedString {
+    match (create, op) {
+        (_, PgPasswordOp::Set(_)) => tr("app.pg_role.password.set_new"),
+        (true, PgPasswordOp::Keep) => tr("app.pg_role.password.none"),
+        (_, PgPasswordOp::Clear) => tr("app.pg_role.password.clear"),
+        (false, PgPasswordOp::Keep) => tr("app.pg_role.password.keep"),
     }
 }
 
 /// 角色次行标识：LOGIN→可登录；NOLOGIN→不可登录；pg_* 预定义角色加「预定义」前缀。
 fn pg_role_identity_label(role: &PgRole) -> String {
-    let login_label = if role.can_login { "可登录" } else { "不可登录" };
+    let login_label = if role.can_login {
+        tr("app.pg_role.identity.can_login")
+    } else {
+        tr("app.pg_role.identity.cannot_login")
+    };
     if UserAdminState::pg_is_predefined_role(&role.name) {
-        format!("预定义 · {login_label}")
+        tr("app.pg_role.identity.predefined")
+            .replace("%{login}", login_label.as_str())
     } else {
         login_label.to_string()
     }
@@ -179,7 +206,7 @@ fn pg_user_admin_toolbar(
             div()
                 .text_size(px(14.))
                 .font_weight(gpui::FontWeight::SEMIBOLD)
-                .child("用户与角色"),
+                .child(tr("app.pg_role.title")),
         )
         .child(user_admin_badge(connection_name, colors))
         .child(user_admin_badge(kind_label.to_string(), colors))
@@ -190,14 +217,18 @@ fn pg_user_admin_toolbar(
                     div()
                         .text_size(px(11.))
                         .text_color(rgb(0xff9f0a))
-                        .child("上次提交结果待核实，请刷新确认"),
+                        .child(tr("app.pg_role.save_needs_verify")),
                 )
             },
         )
         .child(div().flex_1())
         .child(
             user_admin_button(
-                if saving { "保存中" } else { "保存" },
+                if saving {
+                    tr("app.pg_role.saving")
+                } else {
+                    tr("app.common.save")
+                },
                 AppIcon::Save,
                 false,
                 save_disabled,
@@ -213,7 +244,11 @@ fn pg_user_admin_toolbar(
         )
         .child(
             user_admin_button(
-                if admin.loading_users { "加载中" } else { "刷新" },
+                if admin.loading_users {
+                    tr("app.pg_role.loading")
+                } else {
+                    tr("app.common.refresh")
+                },
                 AppIcon::Refresh,
                 false,
                 admin.loading_users,
@@ -228,7 +263,14 @@ fn pg_user_admin_toolbar(
             ),
         )
         .child(
-            user_admin_button("删除", AppIcon::Trash, true, !deletable, colors).on_mouse_down(
+            user_admin_button(
+                tr("app.common.delete"),
+                AppIcon::Trash,
+                true,
+                !deletable,
+                colors,
+            )
+            .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, _, cx| {
                     this.dispatch(AppCommand::PgBeginDeleteRole(tab_id), cx);
@@ -264,10 +306,17 @@ fn pg_user_admin_role_list(
 
     let mut list = div().flex_1().min_h(px(0.)).overflow_y_scrollbar();
     if admin.loading_users {
-        list = list.child(user_admin_empty_row("正在加载角色...", colors));
+        list = list.child(user_admin_empty_row(tr("app.pg_role.loading_roles"), colors));
     } else if let Some(error) = &admin.pg_roles_error {
         list = list.child(user_admin_error_row(&error.message, colors)).child(
-            user_admin_button("重试", AppIcon::Refresh, false, false, colors).on_mouse_down(
+            user_admin_button(
+                tr("app.common.retry"),
+                AppIcon::Refresh,
+                false,
+                false,
+                colors,
+            )
+            .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, _, cx| {
                     this.start_user_admin_pg_roles_load(tab_id, cx);
@@ -277,7 +326,7 @@ fn pg_user_admin_role_list(
         );
     } else if roles.is_empty() && admin.pg_draft.is_none() {
         list = list.child(
-            user_admin_empty_row("没有匹配的角色。调整搜索或筛选；系统预定义角色始终包含在「全部」中。", colors),
+            user_admin_empty_row(tr("app.pg_role.empty_roles"), colors),
         );
     } else {
         for role in &roles {
@@ -346,10 +395,10 @@ fn pg_role_filter_row(
     cx: &mut Context<NavicatMain>,
 ) -> Div {
     let filters = [
-        ("all", "全部"),
-        ("login", "可登录"),
-        ("nologin", "不可登录"),
-        ("predefined", "预定义"),
+        ("all", tr("app.pg_role.filter.all")),
+        ("login", tr("app.pg_role.identity.can_login")),
+        ("nologin", tr("app.pg_role.identity.cannot_login")),
+        ("predefined", tr("app.pg_role.identity.predefined_only")),
     ];
     let mut row = h_flex().items_center().gap_1().pb_1();
     for (value, label) in filters {
@@ -452,7 +501,7 @@ fn pg_user_admin_role_row(
                                     .rounded(colors.radius * 0.5)
                                     .text_size(px(10.))
                                     .text_color(rgb(0xff9f0a))
-                                    .child("未保存"),
+                                    .child(tr("app.pg_role.unsaved")),
                             )
                         }),
                 ),
@@ -462,9 +511,10 @@ fn pg_user_admin_role_row(
 /// 新建草稿在列表中的占位行。
 fn pg_draft_role_row(draft: &PgRoleDraft, colors: UiColors) -> Div {
     let title = if draft.name.trim().is_empty() {
-        "新角色 · 待创建".to_string()
+        tr("app.pg_role.draft_title_empty").to_string()
     } else {
-        format!("{} · 待创建", draft.name.trim())
+        tr("app.pg_role.draft_title")
+            .replace("%{name}", draft.name.trim())
     };
     div()
         .h(px(56.))
@@ -499,7 +549,11 @@ fn pg_draft_role_row(draft: &PgRoleDraft, colors: UiColors) -> Div {
                         .truncate()
                         .text_size(px(11.))
                         .text_color(colors.muted)
-                        .child(if draft.can_login { "待创建 · 可登录" } else { "待创建 · 不可登录" }),
+                        .child(if draft.can_login {
+                            tr("app.pg_role.draft_can_login")
+                        } else {
+                            tr("app.pg_role.draft_cannot_login")
+                        }),
                 ),
         )
 }
@@ -513,11 +567,11 @@ fn pg_user_admin_tab_strip(
 ) -> Div {
     // PG 使用固定五页签；MySQL 的 Members 页在 PG 并入「成员关系」双向展示。
     let tabs = [
-        (UserAdminDetailTab::General, "常规"),
-        (UserAdminDetailTab::Advanced, "高级"),
-        (UserAdminDetailTab::MemberOf, "成员关系"),
-        (UserAdminDetailTab::Privileges, "权限"),
-        (UserAdminDetailTab::SqlPreview, "SQL 预览"),
+        (UserAdminDetailTab::General, tr("app.pg_role.tab.general")),
+        (UserAdminDetailTab::Advanced, tr("app.pg_role.tab.advanced")),
+        (UserAdminDetailTab::MemberOf, tr("app.pg_role.tab.member_of")),
+        (UserAdminDetailTab::Privileges, tr("app.pg_role.tab.privileges")),
+        (UserAdminDetailTab::SqlPreview, tr("app.pg_role.tab.sql_preview")),
     ];
     let mut strip = div()
         .h(px(36.))
@@ -598,7 +652,11 @@ fn pg_user_admin_status_bar(admin: &UserAdminState, colors: UiColors) -> Div {
             div()
                 .text_size(px(11.))
                 .text_color(colors.muted)
-                .child(format!("{total} 个角色 · {login_count} 个可登录")),
+                .child(
+                    tr("app.pg_role.status_counts")
+                        .replace("%{total}", &total.to_string())
+                        .replace("%{login}", &login_count.to_string()),
+                ),
         )
         .child(div().flex_1())
         .when(admin.pg_has_draft_changes(), |this| {
@@ -610,7 +668,7 @@ fn pg_user_admin_status_bar(admin: &UserAdminState, colors: UiColors) -> Div {
                     .text_size(px(11.))
                     .text_color(rgb(0xff9f0a))
                     .child(app_icon(AppIcon::Save, 12., rgb(0xff9f0a)))
-                    .child("未保存的更改"),
+                    .child(tr("app.pg_role.unsaved_changes")),
             )
         })
 }
@@ -679,7 +737,7 @@ fn pg_delete_role_modal(
                             div()
                                 .text_size(px(17.))
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
-                                .child("删除角色"),
+                                .child(tr("app.pg_role.delete_role")),
                         )
                         .child(
                             div()
@@ -707,8 +765,8 @@ fn pg_delete_role_modal(
                         .text_size(px(13.))
                         .text_color(colors.muted)
                         .child(format!(
-                            "确定要删除角色「{name}」吗？该角色是集群级身份，删除影响所有数据库。\
-                             如果它仍拥有对象或包含成员，服务器将拒绝删除并报告依赖；本工具不会自动清理对象。"
+                            "{}",
+                            tr("app.pg_role.delete_role_message").replace("%{name}", &name)
                         )),
                 )
                 .child(div().h(px(1.)).bg(colors.border_soft))
@@ -722,7 +780,7 @@ fn pg_delete_role_modal(
                         .gap_2()
                         .child(
                             Button::new("pg-delete-cancel")
-                                .label("取消")
+                                .label(tr("app.common.cancel"))
                                 .rounded_md()
                                 .w(px(78.))
                                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -732,7 +790,7 @@ fn pg_delete_role_modal(
                         )
                         .child(
                             Button::new("pg-delete-confirm")
-                                .label("删除角色")
+                                .label(tr("app.pg_role.delete_role"))
                                 .danger()
                                 .rounded_md()
                                 .w(px(104.))
@@ -810,7 +868,7 @@ fn pg_switch_role_modal(
                             div()
                                 .text_size(px(17.))
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
-                                .child("放弃未保存的更改？"),
+                                .child(tr("app.pg_role.discard_title")),
                         )
                         .child(
                             div()
@@ -838,7 +896,8 @@ fn pg_switch_role_modal(
                         .text_size(px(13.))
                         .text_color(colors.muted)
                         .child(format!(
-                            "当前角色有未保存的更改。切换到「{target}」将丢弃这些更改（仅本地草稿，数据库未改动）。"
+                            "{}",
+                            tr("app.pg_role.discard_message").replace("%{target}", &target)
                         )),
                 )
                 .child(div().h(px(1.)).bg(colors.border_soft))
@@ -852,7 +911,7 @@ fn pg_switch_role_modal(
                         .gap_2()
                         .child(
                             Button::new("pg-switch-cancel")
-                                .label("留在此页")
+                                .label(tr("app.pg_role.stay"))
                                 .rounded_md()
                                 .w(px(90.))
                                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -862,7 +921,7 @@ fn pg_switch_role_modal(
                         )
                         .child(
                             Button::new("pg-switch-confirm")
-                                .label("放弃并切换")
+                                .label(tr("app.pg_role.discard_and_switch"))
                                 .danger()
                                 .rounded_md()
                                 .w(px(110.))
@@ -923,8 +982,8 @@ impl NavicatMain {
         let fingerprint = format!(
             "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
             draft.create,
-            draft.password_label(),
-            draft.valid_until_mode_label(),
+            pg_password_op_label(draft.create, &draft.password),
+            pg_valid_until_label(&draft.valid_until),
             targets.databases.len(),
             targets.schemas.len(),
             object_options.len(),
@@ -972,10 +1031,13 @@ impl NavicatMain {
         self.pg_password_op_select.update(cx, |select, cx| {
             let items = SearchableVec::new(pg_password_op_options(draft.create));
             select.set_items(items, window, cx);
-            select.set_selected_value(&draft.password_label(), window, cx);
+            let password_label =
+                pg_password_op_label(draft.create, &draft.password).to_string();
+            select.set_selected_value(&password_label, window, cx);
         });
         self.pg_valid_until_mode_select.update(cx, |select, cx| {
-            select.set_selected_value(&draft.valid_until_mode_label(), window, cx);
+            let valid_until_label = pg_valid_until_label(&draft.valid_until).to_string();
+            select.set_selected_value(&valid_until_label, window, cx);
         });
     }
 
@@ -1030,8 +1092,8 @@ impl NavicatMain {
                         AppEvent::UserAdminPgGrantTargetsLoaded(_, lists) => Ok(lists),
                         AppEvent::Failed(error) => Err(error),
                         _ => Err(fluxdb_core::UserFacingError {
-                            title: "加载权限目标失败".to_string(),
-                            message: "权限目标列表没有返回结果".to_string(),
+                            title: tr("app.pg_role.load_targets_failed").to_string(),
+                            message: tr("app.pg_role.load_targets_empty").to_string(),
                             detail: None,
                             retryable: true,
                         }),
@@ -1097,12 +1159,17 @@ impl NavicatMain {
         );
         match event {
             AppEvent::PgRoleChanged(_) => {
-                self.show_message(format!("已删除角色 {name}"), AppMessageKind::Success, cx);
+                self.show_message(
+                    tr("app.pg_role.role_deleted").replace("%{name}", &name),
+                    AppMessageKind::Success,
+                    cx,
+                );
                 self.start_user_admin_pg_roles_load(tab_id, cx);
             }
             AppEvent::Failed(error) => {
                 self.show_message(
-                    format!("删除角色失败：{}（未自动清理其对象）", error.message),
+                    tr("app.pg_role.delete_role_failed")
+                        .replace("%{error}", &error.message),
                     AppMessageKind::Error,
                     cx,
                 );
@@ -1125,8 +1192,8 @@ impl NavicatMain {
                         AppEvent::UserAdminPgRolesLoaded(_, roles) => Ok(roles),
                         AppEvent::Failed(error) => Err(error),
                         _ => Err(fluxdb_core::UserFacingError {
-                            title: "加载角色失败".to_string(),
-                            message: "角色列表加载没有返回结果".to_string(),
+                            title: tr("app.pg_role.load_roles_failed").to_string(),
+                            message: tr("app.pg_role.load_roles_empty").to_string(),
                             detail: None,
                             retryable: true,
                         }),
@@ -1149,7 +1216,8 @@ impl NavicatMain {
                     );
                     if let Some(error_msg) = error_msg {
                         this.show_message(
-                            format!("刷新角色列表失败：{error_msg}"),
+                            tr("app.pg_role.refresh_roles_failed")
+                                .replace("%{error}", &error_msg),
                             AppMessageKind::Error,
                             cx,
                         );
@@ -1179,8 +1247,8 @@ impl NavicatMain {
                         }
                         AppEvent::Failed(error) => Err(error),
                         _ => Err(fluxdb_core::UserFacingError {
-                            title: "加载成员关系失败".to_string(),
-                            message: "成员关系加载没有返回结果".to_string(),
+                            title: tr("app.pg_role.load_memberships_failed").to_string(),
+                            message: tr("app.pg_role.load_memberships_empty").to_string(),
                             detail: None,
                             retryable: true,
                         }),
@@ -1226,7 +1294,11 @@ impl NavicatMain {
             && self.pg_password_input.read(cx).value().as_ref()
                 != self.pg_password_confirm_input.read(cx).value().as_ref();
         if password_mismatch {
-            self.show_message("两次输入的密码不一致", AppMessageKind::Warning, cx);
+            self.show_message(
+                tr("app.user_admin.password_mismatch"),
+                AppMessageKind::Warning,
+                cx,
+            );
             return;
         }
         self.dispatch(AppCommand::StartPgPlanApply(tab_id), cx);
@@ -1251,8 +1323,8 @@ impl NavicatMain {
                                 changes: Vec::new(),
                             },
                             Err(fluxdb_core::UserFacingError {
-                                title: "保存失败".to_string(),
-                                message: "角色变更提交没有返回结果".to_string(),
+                                title: tr("app.pg_role.save_failed").to_string(),
+                                message: tr("app.pg_role.save_empty").to_string(),
                                 detail: None,
                                 retryable: true,
                             }),
@@ -1274,10 +1346,15 @@ impl NavicatMain {
                         cx,
                     );
                     if success {
-                        this.show_message("已保存全部更改", AppMessageKind::Success, cx);
+                        this.show_message(
+                            tr("app.pg_role.saved_all"),
+                            AppMessageKind::Success,
+                            cx,
+                        );
                     } else if let Some(error_msg) = error_msg {
                         this.show_message(
-                            format!("保存失败（草稿已保留）：{error_msg}"),
+                            tr("app.pg_role.save_failed_draft_kept")
+                                .replace("%{error}", &error_msg),
                             AppMessageKind::Error,
                             cx,
                         );
@@ -1314,8 +1391,8 @@ impl NavicatMain {
                         other => {
                             tracing::warn!(target: "pg_user_admin", event = ?std::mem::discriminant(&other), "preview: unexpected event");
                             Err(fluxdb_core::UserFacingError {
-                                title: "生成预览失败".to_string(),
-                                message: "SQL 预览没有返回结果".to_string(),
+                                title: tr("app.pg_role.preview_failed").to_string(),
+                                message: tr("app.pg_role.preview_empty").to_string(),
                                 detail: None,
                                 retryable: true,
                             })

@@ -20,7 +20,7 @@ struct AiModelDialogInputs {
 impl AiModelDialogInputs {
     fn new(window: &mut Window, cx: &mut Context<NavicatMain>) -> Self {
         fn input_state(
-            placeholder: &'static str,
+            placeholder: impl Into<SharedString>,
             window: &mut Window,
             cx: &mut Context<NavicatMain>,
         ) -> Entity<InputState> {
@@ -36,13 +36,13 @@ impl AiModelDialogInputs {
                 SelectState::new(provider_items, Some(IndexPath::new(0)), window, cx)
                     .searchable(false)
             }),
-            display_name: input_state("例如 主模型 · 高能力", window, cx),
-            model_key: input_state("Provider 模型标识", window, cx),
-            endpoint: input_state("https://…/v1", window, cx),
+            display_name: input_state(tr("app.ai.model_dialog.placeholder_display_name"), window, cx),
+            model_key: input_state(tr("app.ai.model_dialog.placeholder_model_id"), window, cx),
+            endpoint: input_state(tr("app.ai.model_dialog.placeholder_endpoint"), window, cx),
             // Key 默认掩码；眼睛切换由组件内置，不自绘输入框。
             api_key: cx.new(|cx| {
                 InputState::new(window, cx)
-                    .placeholder("输入 API Key")
+                    .placeholder(tr("app.ai.model_dialog.placeholder_api_key"))
                     .masked(true)
             }),
             context_unit: cx.new(|cx| {
@@ -63,11 +63,11 @@ impl AiModelDialogInputs {
                 )
                 .searchable(false)
             }),
-            context_window: input_state("例如 128", window, cx),
-            max_output: input_state("例如 8", window, cx),
-            price_input: input_state("输入计价 $/1M Token", window, cx),
-            price_output: input_state("输出计价 $/1M Token", window, cx),
-            price_cache: input_state("缓存读取 $/1M Token", window, cx),
+            context_window: input_state(tr("app.ai.model_dialog.placeholder_context"), window, cx),
+            max_output: input_state(tr("app.ai.model_dialog.placeholder_output"), window, cx),
+            price_input: input_state(tr("app.ai.model_dialog.placeholder_price_input"), window, cx),
+            price_output: input_state(tr("app.ai.model_dialog.placeholder_price_output"), window, cx),
+            price_cache: input_state(tr("app.ai.model_dialog.placeholder_price_cache"), window, cx),
         }
     }
 }
@@ -116,20 +116,21 @@ struct AiAgentEditorInputs {
 
 impl AiAgentEditorInputs {
     fn new(window: &mut Window, cx: &mut Context<NavicatMain>) -> Self {
-        let input =
-            |placeholder: &'static str, window: &mut Window, cx: &mut Context<NavicatMain>| {
-                cx.new(|cx| InputState::new(window, cx).placeholder(placeholder))
-            };
+        let input = |placeholder: SharedString,
+                     window: &mut Window,
+                     cx: &mut Context<NavicatMain>| {
+            cx.new(|cx| InputState::new(window, cx).placeholder(placeholder))
+        };
         Self {
-            display_name: input("例如 通用数据库 Agent", window, cx),
-            description: input("职责描述（用于路由与用户识别）", window, cx),
+            display_name: input(tr("app.ai.agents.placeholder_name"), window, cx),
+            description: input(tr("app.ai.agents.placeholder_description"), window, cx),
             system_prompt: cx.new(|cx| {
                 gpui_component::input::TextareaState::new(window, cx)
-                    .placeholder("直接输入此 Agent 的系统提示词")
+                    .placeholder(tr("app.ai.agents.placeholder_prompt"))
                     .rows(7)
             }),
-            compression_percent: input("80", window, cx),
-            max_iterations: input("100", window, cx),
+            compression_percent: input("80".into(), window, cx),
+            max_iterations: input("100".into(), window, cx),
         }
     }
 }

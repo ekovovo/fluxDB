@@ -20,7 +20,7 @@ fn local_filter_popover_layer(
         .px_1();
 
     if values.is_empty() {
-        list = list.child(data_filter_menu_empty_item("没有匹配值", colors));
+        list = list.child(data_filter_menu_empty_item(tr("app.filter.no_matching_values"), colors));
     } else {
         for value in values {
             let checked = selected_values.contains(&value);
@@ -73,7 +73,7 @@ fn local_filter_popover_layer(
                         .text_size(px(13.))
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .text_color(colors.text)
-                        .child("值:"),
+                        .child(tr("app.filter.value_label")),
                 )
                 .child(
                     div()
@@ -102,7 +102,7 @@ fn local_filter_popover_layer(
                 .text_size(px(13.))
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .text_color(colors.text)
-                .child("建议值:"),
+                .child(tr("app.filter.suggested_values")),
         )
         .child(list)
         .child(data_filter_menu_search_footer(search_input, colors))
@@ -116,7 +116,7 @@ fn local_filter_popover_layer(
                 .items_center()
                 .justify_between()
                 .child(
-                    data_filter_dialog_button("清除筛选", false, colors).on_mouse_down(
+                    data_filter_dialog_button(tr("app.filter.clear"), false, colors).on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, _, _, cx| {
                             this.clear_local_filter(cx);
@@ -130,7 +130,7 @@ fn local_filter_popover_layer(
                         .items_center()
                         .gap_2()
                         .child(
-                            data_filter_dialog_button("确定", true, colors).on_mouse_down(
+                            data_filter_dialog_button(tr("app.common.confirm"), true, colors).on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(move |this, _, _, cx| {
                                     this.apply_local_filter(cx);
@@ -139,7 +139,7 @@ fn local_filter_popover_layer(
                             ),
                         )
                         .child(
-                            data_filter_dialog_button("取消", false, colors).on_mouse_down(
+                            data_filter_dialog_button(tr("app.common.cancel"), false, colors).on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(move |this, _, _, cx| {
                                     this.cancel_local_filter(cx);
@@ -173,7 +173,7 @@ fn local_filter_manager_layer(
         .collect::<Vec<_>>();
     let selected_field = selected_field
         .or_else(|| field_names.first().cloned())
-        .unwrap_or_else(|| "字段".to_string());
+        .unwrap_or_else(|| tr("app.filter.field").to_string());
     let selected_values = draft_filters
         .get(&selected_field)
         .cloned()
@@ -253,7 +253,7 @@ fn local_filter_manager_layer(
                                 .text_size(px(14.))
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
                                 .text_color(colors.text)
-                                .child("筛选"),
+                                .child(tr("app.filter.title")),
                         )
                         .child(
                             div()
@@ -269,7 +269,7 @@ fn local_filter_manager_layer(
                                 .text_color(colors.text)
                                 .hover(move |style| style.bg(colors.hover))
                                 .child(app_icon(AppIcon::Plus, 13., colors.text))
-                                .child("新增条件")
+                                .child(tr("app.filter.add_condition"))
                                 .on_mouse_down(
                                     MouseButton::Left,
                                     cx.listener(move |this, _, _, cx| {
@@ -310,7 +310,7 @@ fn local_filter_manager_layer(
                         .items_center()
                         .justify_between()
                         .child(
-                            data_filter_dialog_button("清除筛选", false, colors).on_mouse_down(
+                            data_filter_dialog_button(tr("app.filter.clear"), false, colors).on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(move |this, _, _, cx| {
                                     this.clear_local_filter_manager(tab_id, cx);
@@ -324,7 +324,7 @@ fn local_filter_manager_layer(
                                 .items_center()
                                 .gap_2()
                                 .child(
-                                    data_filter_dialog_button("重置条件", false, colors)
+                                    data_filter_dialog_button(tr("app.filter.reset_conditions"), false, colors)
                                         .on_mouse_down(
                                             MouseButton::Left,
                                             cx.listener(move |this, _, _, cx| {
@@ -334,7 +334,7 @@ fn local_filter_manager_layer(
                                         ),
                                 )
                                 .child(
-                                    data_filter_dialog_button("应用筛选", true, colors)
+                                    data_filter_dialog_button(tr("app.filter.apply"), true, colors)
                                         .on_mouse_down(
                                             MouseButton::Left,
                                             cx.listener(move |this, _, _, cx| {
@@ -470,12 +470,12 @@ fn local_filter_manager_condition_row(
 
 fn local_filter_value_summary(values: &BTreeSet<String>) -> String {
     if values.is_empty() {
-        return "值".to_string();
+        return tr("app.filter.value").to_string();
     }
     if values.len() == 1 {
         return values.iter().next().cloned().unwrap_or_default();
     }
-    format!("{} 个值", values.len())
+    tr("app.filter.value_count").replace("%{count}", &values.len().to_string())
 }
 
 fn local_filter_manager_static_select(label: impl Into<String>, colors: UiColors) -> Div {
@@ -545,9 +545,9 @@ fn local_filter_manager_value_button(
 ) -> Div {
     let label = if value_text.trim().is_empty() {
         if selected_count == 0 {
-            "值".to_string()
+            tr("app.filter.value").to_string()
         } else {
-            format!("{selected_count} 个值")
+            tr("app.filter.value_count").replace("%{count}", &selected_count.to_string())
         }
     } else {
         value_text.to_string()
@@ -662,7 +662,7 @@ fn local_filter_manager_values_panel(
         .flex_col();
 
     if values.is_empty() {
-        list = list.child(data_filter_menu_empty_item("没有匹配值", colors));
+        list = list.child(data_filter_menu_empty_item(tr("app.filter.no_matching_values"), colors));
     } else {
         for value in values {
             let checked = selected_values.contains(&value);

@@ -4,11 +4,11 @@
 // 按用户要求不做客户端配置导出。
 
 /// 数据源写入策略的人读标签。
-fn ai_mcp_write_policy_label(policy: &str) -> &'static str {
+fn ai_mcp_write_policy_label(policy: &str) -> SharedString {
     match policy {
-        "read_only" => "只读",
-        "read_write" => "允许读写",
-        _ => "默认",
+        "read_only" => tr("app.ai.mcp.policy.read_only"),
+        "read_write" => tr("app.ai.mcp.policy.read_write"),
+        _ => tr("app.ai.mcp.policy.default"),
     }
 }
 
@@ -26,18 +26,18 @@ fn ai_mcp_datasource_row(
     let connection_id = datasource.connection_id;
     let revision = datasource.revision;
     let effective = if selected == "read_only" {
-        "只读"
+        tr("app.ai.mcp.policy.read_only")
     } else if selected == "read_write" {
-        "允许读写"
+        tr("app.ai.mcp.policy.read_write")
     } else if global.allows_write() {
-        "默认（允许读写）"
+        tr("app.ai.mcp.policy.default_read_write")
     } else {
-        "默认（只读）"
+        tr("app.ai.mcp.policy.default_read_only")
     };
     let resource = if datasource.resource_kind == "redis" {
-        "Redis"
+        "Redis".into()
     } else {
-        "关系型"
+        tr("app.ai.mcp.resource.relational")
     };
     div()
         .border_t_1()
@@ -72,9 +72,15 @@ fn ai_mcp_datasource_row(
                         .text_color(colors.text)
                         .child(datasource.connection_name.clone()),
                 )
-                .child(div().text_size(px(11.)).text_color(colors.muted).child(format!(
-                    "{resource} · 当前：{effective}"
-                ))),
+                .child(
+                    div()
+                        .text_size(px(11.))
+                        .text_color(colors.muted)
+                        .child(tr("app.ai.mcp.current_policy").replace(
+                            "%{resource}",
+                            &resource,
+                        ).replace("%{policy}", &effective)),
+                ),
         )
         .child(
             div()
@@ -108,9 +114,9 @@ fn ai_mcp_datasource_row(
                         move |menu, _, _| {
                             let mut menu = menu.min_w(px(180.));
                             for (value, label) in [
-                                ("default", "默认（跟随全局）"),
-                                ("read_only", "只读"),
-                                ("read_write", "允许读写"),
+                                ("default", tr("app.ai.mcp.policy.default_follow")),
+                                ("read_only", tr("app.ai.mcp.policy.read_only")),
+                                ("read_write", tr("app.ai.mcp.policy.read_write")),
                             ] {
                                 let this = this.clone();
                                 let profile_id = profile_id.clone();
@@ -125,7 +131,7 @@ fn ai_mcp_datasource_row(
                                                 let id = option_id.clone();
                                                 move || id.clone()
                                             })
-                                            .child(label)
+                                            .child(label.clone())
                                     })
                                     .checked(selected)
                                     .on_click(move |_, _, cx| {
@@ -165,7 +171,7 @@ fn ai_mcp_datasource_row(
                     .small()
                     .ghost()
                     .cursor_pointer()
-                    .child("移除")
+                    .child(tr("app.ai.mcp.remove"))
                     .on_click({
                         let this = this.clone();
                         move |_, _, cx| {

@@ -139,8 +139,8 @@ impl NavicatMain {
                         AppEvent::DataLoaded(_, page) => {
                             page.rows.into_iter().next().ok_or_else(|| {
                                 fluxdb_core::UserFacingError {
-                                    title: "刷新失败".to_string(),
-                                    message: "Redis Key 保存后没有返回数据".to_string(),
+                                    title: tr("app.redis.stream.error.refresh_failed").to_string(),
+                                    message: tr("app.redis.stream.error.no_refreshed_key").to_string(),
                                     detail: None,
                                     retryable: true,
                                 }
@@ -148,8 +148,8 @@ impl NavicatMain {
                         }
                         AppEvent::Failed(error) => Err(error),
                         _ => Err(fluxdb_core::UserFacingError {
-                            title: "保存失败".to_string(),
-                            message: "Redis Stream 操作没有返回结果".to_string(),
+                            title: tr("app.redis.error.save_failed").to_string(),
+                            message: tr("app.redis.stream.error.no_operation_result").to_string(),
                             detail: None,
                             retryable: true,
                         }),
@@ -258,8 +258,8 @@ impl NavicatMain {
                         } => Ok((key, cursor, entries, next_cursor, total)),
                         AppEvent::Failed(error) => Err(error),
                         _ => Err(fluxdb_core::UserFacingError {
-                            title: "查询失败".to_string(),
-                            message: "Stream 条目查询没有返回结果".to_string(),
+                            title: tr("app.redis.error.query_failed").to_string(),
+                            message: tr("app.redis.stream.error.no_entries_result").to_string(),
                             detail: None,
                             retryable: true,
                         }),
@@ -350,21 +350,21 @@ impl NavicatMain {
         let since_ms = match redis_stream_time_from_input(&since_text) {
             Ok(value) => value,
             Err(message) => {
-                self.show_message(format!("起始{message}"), AppMessageKind::Warning, cx);
+                self.show_message(tr("app.redis.stream.error.start_time").replace("%{error}", &message), AppMessageKind::Warning, cx);
                 return;
             }
         };
         let until_ms = match redis_stream_time_from_input(&until_text) {
             Ok(value) => value,
             Err(message) => {
-                self.show_message(format!("结束{message}"), AppMessageKind::Warning, cx);
+                self.show_message(tr("app.redis.stream.error.end_time").replace("%{error}", &message), AppMessageKind::Warning, cx);
                 return;
             }
         };
         if let (Some(since), Some(until)) = (since_ms, until_ms)
             && since > until
         {
-            self.show_message("起始时间不能晚于结束时间", AppMessageKind::Warning, cx);
+            self.show_message(tr("app.redis.stream.error.range_order").as_ref(), AppMessageKind::Warning, cx);
             return;
         }
         self.redis_stream_ranges
@@ -417,8 +417,8 @@ impl NavicatMain {
                         AppEvent::RedisStreamGroupsLoaded { key, groups, .. } => Ok((key, groups)),
                         AppEvent::Failed(error) => Err(error),
                         _ => Err(fluxdb_core::UserFacingError {
-                            title: "查询失败".to_string(),
-                            message: "Stream 消费者组查询没有返回结果".to_string(),
+                            title: tr("app.redis.error.query_failed").to_string(),
+                            message: tr("app.redis.stream.error.no_groups_result").to_string(),
                             detail: None,
                             retryable: true,
                         }),

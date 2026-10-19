@@ -50,12 +50,9 @@ fn pg_privileges_panel(
         && !stale
     {
         let summary = if grants.acl_is_null {
-            format!(
-                "当前目标属主 {}；ACL 为 NULL（默认权限：属主全权、其余按对象类型默认，不等同于空授权）",
-                grants.owner
-            )
+            tr("app.pg_role.privileges.owner_acl_null").replace("%{owner}", &grants.owner)
         } else {
-            format!("当前目标属主 {}", grants.owner)
+            tr("app.pg_role.privileges.owner").replace("%{owner}", &grants.owner)
         };
         body = body.child(
             div()
@@ -67,12 +64,12 @@ fn pg_privileges_panel(
 
     // ===== 权限表 =====
     if admin.loading_pg_grants || should_load {
-        body = body.child(user_admin_empty_row("正在读取权限…", colors));
+        body = body.child(user_admin_empty_row(tr("app.pg_role.privileges.loading"), colors));
     } else if let Some(error) = &admin.pg_grants_error {
         body = body
             .child(user_admin_error_row(&error.message, colors))
             .child(
-                user_admin_button("重试", AppIcon::Refresh, false, false, colors).on_mouse_down(
+                user_admin_button(tr("app.common.retry"), AppIcon::Refresh, false, false, colors).on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, _, _, cx| {
                         this.start_pg_object_grants_load(tab_id, cx);
@@ -82,15 +79,14 @@ fn pg_privileges_panel(
             );
     } else if admin.pg_object_grants.is_none() || !target_complete {
         body = body.child(user_admin_empty_row(
-            "选择数据库、对象类型与对象后自动读取权限。",
+            tr("app.pg_role.privileges.select_hint").as_ref(),
             colors,
         ));
     } else {
         body = body.child(pg_privilege_table(tab_id, admin, colors, cx));
-        body = body.child(div().text_size(px(11.)).text_color(colors.muted).child(
-            "说明：「当前有效」包含直接授权、成员继承、PUBLIC、属主与超级用户来源；\
-                     撤销直接授权后仍可能因其他来源保持有效。函数 EXECUTE 默认授予 PUBLIC。",
-        ));
+        let note = tr("app.pg_role.privileges.note");
+        body = body
+            .child(div().text_size(px(11.)).text_color(colors.muted).child(note));
     }
 
     // ===== 待保存的授权变更 =====
@@ -169,7 +165,7 @@ fn pg_privileges_panel(
                                     cx.stop_propagation();
                                 }),
                             )
-                            .child("撤销此更改"),
+                            .child(tr("app.pg_role.revert_change")),
                     ),
             );
         }
@@ -188,7 +184,7 @@ fn pg_privileges_panel(
                         .text_size(px(12.))
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .text_color(colors.text)
-                        .child("待保存的授权变更"),
+                        .child(tr("app.pg_role.pending_grant_changes")),
                 )
                 .child(edits),
         );
@@ -274,7 +270,7 @@ fn pg_grant_target_selector(
                 div()
                     .text_size(px(12.))
                     .text_color(colors.muted)
-                    .child("数据库"),
+                    .child(tr("app.pg_role.header.database")),
             )
             .child(
                 div()
@@ -301,7 +297,7 @@ fn pg_grant_target_selector(
                     div()
                         .text_size(px(12.))
                         .text_color(colors.muted)
-                        .child("对象"),
+                        .child(tr("app.pg_role.header.object")),
                 )
                 .child(
                     div().min_w(px(220.)).flex_1().child(
@@ -316,7 +312,7 @@ fn pg_grant_target_selector(
                     div()
                         .text_size(px(12.))
                         .text_color(colors.muted)
-                        .child("加载目标列表…"),
+                        .child(tr("app.pg_role.loading_targets")),
                 )
             }),
     );
@@ -354,11 +350,11 @@ fn pg_privilege_table(
                 .text_size(px(11.))
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .text_color(colors.muted)
-                .child(div().flex_1().min_w(px(0.)).px_3().child("权限"))
-                .child(div().w(px(88.)).flex().justify_center().child("直接授予"))
-                .child(div().w(px(88.)).flex().justify_center().child("可再授权"))
-                .child(div().w(px(88.)).flex().justify_center().child("当前有效"))
-                .child(div().w(px(160.)).px_3().child("来源")),
+                .child(div().flex_1().min_w(px(0.)).px_3().child(tr("app.pg_role.header.privilege")))
+                .child(div().w(px(88.)).flex().justify_center().child(tr("app.pg_role.header.direct_grant")))
+                .child(div().w(px(88.)).flex().justify_center().child(tr("app.pg_role.header.grant_option")))
+                .child(div().w(px(88.)).flex().justify_center().child(tr("app.pg_role.header.effective")))
+                .child(div().w(px(160.)).px_3().child(tr("app.pg_role.header.source"))),
         );
     for grant in &admin.pg_effective_grants {
         let privilege = grant.privilege.clone();
@@ -395,9 +391,9 @@ fn pg_privilege_table(
         // 来源归因：直接 → 可撤销；effective 但非直接 → 其他来源（PUBLIC/继承/属主），
         // 在补齐来源查询前如实标注「其他来源，待展开核实」。
         let source = if grant.direct {
-            "直接授权".to_string()
+            tr("app.pg_role.source.direct").to_string()
         } else if grant.effective {
-            "其他来源（PUBLIC/继承/属主），待展开核实".to_string()
+            tr("app.pg_role.source.other").to_string()
         } else {
             "—".to_string()
         };
@@ -425,7 +421,7 @@ fn pg_privilege_table(
                                     .rounded(colors.radius * 0.5)
                                     .text_size(px(10.))
                                     .text_color(rgb(0xff9f0a))
-                                    .child("待保存"),
+                                    .child(tr("app.pg_role.pending")),
                             )
                         }),
                 )
@@ -456,7 +452,7 @@ fn pg_privilege_table(
                         } else {
                             colors.muted
                         })
-                        .child(if grant.effective { "是" } else { "否" }.to_string()),
+                        .child(tr(if grant.effective { "app.pg_role.yes" } else { "app.pg_role.no" })),
                 )
                 .child(
                     div()
@@ -607,8 +603,8 @@ impl NavicatMain {
                         AppEvent::UserAdminPgObjectGrantsLoaded(_, result) => result,
                         AppEvent::Failed(error) => Err(error),
                         _ => Err(fluxdb_core::UserFacingError {
-                            title: "读取对象权限失败".to_string(),
-                            message: "对象权限读取没有返回结果".to_string(),
+                            title: tr("app.pg_role.error.load_object_privileges").to_string(),
+                            message: tr("app.pg_role.error.no_object_privileges").to_string(),
                             detail: None,
                             retryable: true,
                         }),

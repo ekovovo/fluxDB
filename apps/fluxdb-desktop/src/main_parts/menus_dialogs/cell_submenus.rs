@@ -25,7 +25,13 @@ fn data_cell_filter_submenu(
         colors,
     )
         .child(
-            data_cell_menu_item("字段 = 值", AppIcon::Filter, true, colors).on_mouse_down(
+            data_cell_menu_item(
+                tr("app.context.filter_eq").to_string(),
+                AppIcon::Filter,
+                true,
+                colors,
+            )
+            .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, _, cx| {
                     this.apply_context_filter(&menu_for_eq, DataFilterOperator::Eq, cx);
@@ -34,7 +40,13 @@ fn data_cell_filter_submenu(
             ),
         )
         .child(
-            data_cell_menu_item("字段 != 值", AppIcon::Filter, true, colors).on_mouse_down(
+            data_cell_menu_item(
+                tr("app.context.filter_ne").to_string(),
+                AppIcon::Filter,
+                true,
+                colors,
+            )
+            .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, _, cx| {
                     this.apply_context_filter(&menu_for_ne, DataFilterOperator::Ne, cx);
@@ -43,7 +55,13 @@ fn data_cell_filter_submenu(
             ),
         )
         .child(
-            data_cell_menu_item("字段类似值", AppIcon::Filter, true, colors).on_mouse_down(
+            data_cell_menu_item(
+                tr("app.context.filter_like").to_string(),
+                AppIcon::Filter,
+                true,
+                colors,
+            )
+            .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, _, cx| {
                     this.apply_context_filter(&menu_for_like, DataFilterOperator::Contains, cx);
@@ -52,7 +70,13 @@ fn data_cell_filter_submenu(
             ),
         )
         .child(
-            data_cell_menu_item("字段不类似值", AppIcon::Filter, true, colors).on_mouse_down(
+            data_cell_menu_item(
+                tr("app.context.filter_not_like").to_string(),
+                AppIcon::Filter,
+                true,
+                colors,
+            )
+            .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, _, cx| {
                     this.apply_context_filter(
@@ -65,7 +89,13 @@ fn data_cell_filter_submenu(
             ),
         )
         .child(
-            data_cell_menu_item("字段 < 值", AppIcon::Filter, true, colors).on_mouse_down(
+            data_cell_menu_item(
+                tr("app.context.filter_lt").to_string(),
+                AppIcon::Filter,
+                true,
+                colors,
+            )
+            .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, _, cx| {
                     this.apply_context_filter(&menu_for_lt, DataFilterOperator::Lt, cx);
@@ -74,7 +104,13 @@ fn data_cell_filter_submenu(
             ),
         )
         .child(
-            data_cell_menu_item("字段 > 值", AppIcon::Filter, true, colors).on_mouse_down(
+            data_cell_menu_item(
+                tr("app.context.filter_gt").to_string(),
+                AppIcon::Filter,
+                true,
+                colors,
+            )
+            .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, _, cx| {
                     this.apply_context_filter(&menu_for_gt, DataFilterOperator::Gt, cx);
@@ -84,7 +120,13 @@ fn data_cell_filter_submenu(
         )
         .child(data_cell_menu_separator(colors))
         .child(
-            data_cell_menu_item("移除当前字段筛选", AppIcon::Filter, true, colors).on_mouse_down(
+            data_cell_menu_item(
+                tr("app.context.remove_field_filter").to_string(),
+                AppIcon::Filter,
+                true,
+                colors,
+            )
+            .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, _, cx| {
                     this.remove_context_filter(&menu_for_remove_filter, cx);
@@ -117,7 +159,13 @@ fn data_cell_sort_submenu(
         colors,
     )
         .child(
-            data_cell_menu_item("升序排序", AppIcon::List, true, colors).on_mouse_down(
+            data_cell_menu_item(
+                tr("app.context.sort_asc").to_string(),
+                AppIcon::List,
+                true,
+                colors,
+            )
+            .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, _, cx| {
                     this.apply_context_sort(&menu_for_asc, true, cx);
@@ -126,7 +174,13 @@ fn data_cell_sort_submenu(
             ),
         )
         .child(
-            data_cell_menu_item("降序排序", AppIcon::List, true, colors).on_mouse_down(
+            data_cell_menu_item(
+                tr("app.context.sort_desc").to_string(),
+                AppIcon::List,
+                true,
+                colors,
+            )
+            .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, _, cx| {
                     this.apply_context_sort(&menu_for_desc, false, cx);
@@ -136,7 +190,13 @@ fn data_cell_sort_submenu(
         )
         .child(data_cell_menu_separator(colors))
         .child(
-            data_cell_menu_item("移除当前字段排序", AppIcon::List, true, colors).on_mouse_down(
+            data_cell_menu_item(
+                tr("app.context.remove_field_sort").to_string(),
+                AppIcon::List,
+                true,
+                colors,
+            )
+            .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, _, cx| {
                     this.remove_context_sort(&menu_for_remove_sort, cx);
@@ -173,13 +233,14 @@ fn data_cell_submenu_shell(top: Pixels, colors: UiColors) -> Div {
 }
 
 fn data_cell_menu_submenu_item(
-    label: &'static str,
+    label: impl Into<String>,
     icon: AppIcon,
     tab_id: TabId,
     submenu: DataCellContextSubmenu,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> impl IntoElement {
+    let label = label.into();
     let submenu_id = match submenu {
         DataCellContextSubmenu::Filter => 1,
         DataCellContextSubmenu::Sort => 2,
@@ -224,7 +285,7 @@ fn data_cell_action_menu_item(
 }
 
 fn data_cell_menu_item(
-    label: &'static str,
+    label: impl Into<String>,
     icon: AppIcon,
     enabled: bool,
     colors: UiColors,

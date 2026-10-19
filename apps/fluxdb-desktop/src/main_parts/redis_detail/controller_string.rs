@@ -36,8 +36,8 @@ impl NavicatMain {
                         } => Ok(RedisStringValueState { value, len, loaded_all }),
                         AppEvent::Failed(error) => Err(error),
                         _ => Err(fluxdb_core::UserFacingError {
-                            title: "加载失败".to_string(),
-                            message: "String 值加载没有返回结果".to_string(),
+                            title: tr("app.data.error.load").to_string(),
+                            message: tr("app.redis.string.error.no_load_result").to_string(),
                             detail: None,
                             retryable: true,
                         }),
@@ -101,7 +101,7 @@ impl NavicatMain {
                         };
                         view.update(cx, |this, cx| {
                             this.show_message(
-                                format!("选择保存位置失败：{error}"),
+                                tr("app.data_export.error.choose_location").replace("%{error}", &error.to_string()),
                                 AppMessageKind::Error,
                                 cx,
                             );
@@ -116,7 +116,7 @@ impl NavicatMain {
                         };
                         view.update(cx, |this, cx| {
                             this.show_message(
-                                format!("选择保存位置失败：{error}"),
+                                tr("app.data_export.error.choose_location").replace("%{error}", &error.to_string()),
                                 AppMessageKind::Error,
                                 cx,
                             );
@@ -150,8 +150,8 @@ impl NavicatMain {
                         AppEvent::RedisStringValueDownloaded { bytes, .. } => Ok(bytes),
                         AppEvent::Failed(error) => Err(error),
                         _ => Err(fluxdb_core::UserFacingError {
-                            title: "下载失败".to_string(),
-                            message: "String 值下载没有返回结果".to_string(),
+                            title: tr("app.data.error.download").to_string(),
+                            message: tr("app.redis.string.error.no_download_result").to_string(),
                             detail: None,
                             retryable: true,
                         }),
@@ -181,7 +181,7 @@ impl NavicatMain {
                     match result {
                         Ok(()) => {
                             this.show_message(
-                                format!("已导出到 {}", path.display()),
+                                tr("app.redis.string.toast.exported").replace("%{path}", &path.display().to_string()),
                                 AppMessageKind::Success,
                                 cx,
                             );

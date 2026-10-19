@@ -93,7 +93,10 @@ fn user_admin_privileges_panel(
     cx: &mut Context<NavicatMain>,
 ) -> Div {
     if admin.creating_user {
-        return user_admin_placeholder_panel_with_text("请先保存新用户，再配置权限。", colors);
+        return user_admin_placeholder_panel_with_text(
+            tr("app.user_admin.privileges.save_user_first").as_ref(),
+            colors,
+        );
     }
     let Some(provider) = state
         .connections
@@ -111,7 +114,10 @@ fn user_admin_privileges_panel(
         .bg(colors.panel_bg)
         .overflow_y_scrollbar();
     if admin.privilege_rows.is_empty() {
-        body = body.child(user_admin_empty_row("暂无权限配置，点击添加权限开始。", colors));
+        body = body.child(user_admin_empty_row(
+            tr("app.user_admin.privileges.empty"),
+            colors,
+        ));
     } else {
         for row in &admin.privilege_rows {
             body = body.child(user_admin_privilege_row(
@@ -194,11 +200,17 @@ fn user_admin_privileges_toolbar(
                 .text_size(px(12.))
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .text_color(colors.text)
-                .child("权限列表"),
+                .child(tr("app.user_admin.privileges.list")),
         )
         .child(div().flex_1())
         .child(
-            user_admin_button("添加权限", AppIcon::Plus, false, admin.applying, colors)
+            user_admin_button(
+                tr("app.user_admin.privileges.add"),
+                AppIcon::Plus,
+                false,
+                admin.applying,
+                colors,
+            )
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, _, _, cx| {
@@ -240,7 +252,7 @@ fn user_admin_privileges_header(privileges: &[&'static str], colors: UiColors) -
                 .border_color(colors.border)
                 .flex()
                 .items_center()
-                .child("数据库"),
+                .child(tr("app.user_admin.header.database")),
         );
     for privilege in privileges {
         if *privilege == "INDEX" {

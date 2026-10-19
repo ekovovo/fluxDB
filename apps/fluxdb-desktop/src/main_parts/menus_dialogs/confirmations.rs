@@ -10,7 +10,7 @@ fn delete_connection_modal(
         .iter()
         .find(|connection| connection.config.id == connection_id)
         .map(|connection| connection.config.name.clone())
-        .unwrap_or_else(|| "该连接".to_string());
+        .unwrap_or_else(|| tr("app.confirm.unknown_connection").to_string());
 
     div()
         .absolute()
@@ -68,7 +68,7 @@ fn delete_connection_modal(
                             div()
                                 .text_size(px(17.))
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
-                                .child("删除连接"),
+                                .child(tr("app.confirm.delete_connection_title")),
                         )
                         .child(
                             div()
@@ -95,10 +95,10 @@ fn delete_connection_modal(
                         .pb_4()
                         .text_size(px(13.))
                         .text_color(colors.muted)
-                        .child(format!(
-                            "确定要删除「{}」吗？此操作不可撤销。",
-                            connection_name
-                        )),
+                        .child(
+                            tr("app.confirm.delete_connection_message")
+                                .replace("%{name}", &connection_name),
+                        ),
                 )
                 .child(div().h(px(1.)).bg(colors.border_soft))
                 .child(
@@ -111,7 +111,7 @@ fn delete_connection_modal(
                         .gap_2()
                         .child(
                             Button::new("delete-connection-cancel")
-                                .label("取消")
+                                .label(tr("app.common.cancel"))
                                 .w(px(78.))
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.cancel_delete_connection(cx);
@@ -120,7 +120,7 @@ fn delete_connection_modal(
                         )
                         .child(
                             Button::new("delete-connection-confirm")
-                                .label("删除连接")
+                                .label(tr("app.confirm.delete_connection_title"))
                                 .danger()
                                 .w(px(96.))
                                 .on_click(cx.listener(|this, _, _, cx| {
@@ -199,7 +199,7 @@ fn delete_database_modal(
                             div()
                                 .text_size(px(17.))
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
-                                .child("删除数据库"),
+                                .child(tr("app.confirm.delete_database_title")),
                         )
                         .child(
                             div()
@@ -226,10 +226,10 @@ fn delete_database_modal(
                         .pb_4()
                         .text_size(px(13.))
                         .text_color(colors.muted)
-                        .child(format!(
-                            "确定要删除数据库「{}」吗？此操作不可撤销。",
-                            pending.database
-                        )),
+                        .child(
+                            tr("app.confirm.delete_database_message")
+                                .replace("%{name}", &pending.database),
+                        ),
                 )
                 .child(div().h(px(1.)).bg(colors.border_soft))
                 .child(
@@ -242,7 +242,7 @@ fn delete_database_modal(
                         .gap_2()
                         .child(
                             Button::new("delete-database-cancel")
-                                .label("取消")
+                                .label(tr("app.common.cancel"))
                                 .w(px(78.))
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.cancel_delete_database(cx);
@@ -251,7 +251,7 @@ fn delete_database_modal(
                         )
                         .child(
                             Button::new("delete-database-confirm")
-                                .label("删除数据库")
+                                .label(tr("app.confirm.delete_database_title"))
                                 .danger()
                                 .w(px(104.))
                                 .on_click(cx.listener(|this, _, _, cx| {
@@ -275,25 +275,26 @@ fn disconnect_connection_modal(
         .iter()
         .find(|connection| connection.config.id == pending.connection_id)
         .map(|connection| connection.config.name.clone())
-        .unwrap_or_else(|| "该连接".to_string());
+        .unwrap_or_else(|| tr("app.confirm.unknown_connection").to_string());
     let mut details = Vec::new();
     if pending.unsaved_queries > 0 {
-        details.push(format!(
-            "{} 个查询有未保存或已修改的 SQL",
-            pending.unsaved_queries
-        ));
+        details.push(
+            tr("app.confirm.unsaved_queries")
+                .replace("%{count}", &pending.unsaved_queries.to_string()),
+        );
     }
     if pending.running_queries > 0 {
-        details.push(format!("{} 个查询正在执行", pending.running_queries));
+        details.push(
+            tr("app.confirm.running_queries")
+                .replace("%{count}", &pending.running_queries.to_string()),
+        );
     }
     let message = if details.is_empty() {
-        format!("确定要关闭「{}」吗？", connection_name)
+        tr("app.confirm.disconnect_message").replace("%{name}", &connection_name)
     } else {
-        format!(
-            "关闭「{}」会关闭相关标签页，{}。",
-            connection_name,
-            details.join("，")
-        )
+        tr("app.confirm.disconnect_with_tabs")
+            .replace("%{name}", &connection_name)
+            .replace("%{details}", &details.join(", "))
     };
 
     div()
@@ -350,7 +351,7 @@ fn disconnect_connection_modal(
                             div()
                                 .text_size(px(17.))
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
-                                .child("关闭连接"),
+                                .child(tr("app.confirm.close_connection_title")),
                         )
                         .child(
                             div()
@@ -390,7 +391,7 @@ fn disconnect_connection_modal(
                         .gap_2()
                         .child(
                             Button::new("disconnect-connection-cancel")
-                                .label("取消")
+                                .label(tr("app.common.cancel"))
                                 .w(px(78.))
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.cancel_disconnect_connection(cx);
@@ -399,7 +400,7 @@ fn disconnect_connection_modal(
                         )
                         .child(
                             Button::new("disconnect-connection-confirm")
-                                .label("关闭连接")
+                                .label(tr("app.confirm.close_connection_title"))
                                 .danger()
                                 .w(px(96.))
                                 .on_click(cx.listener(|this, _, _, cx| {
@@ -418,24 +419,23 @@ fn close_workspace_modal(
 ) -> impl IntoElement {
     let mut details = Vec::new();
     if pending.unsaved_queries > 0 {
-        details.push(format!(
-            "{} 个查询有未保存或已修改的 SQL",
-            pending.unsaved_queries
-        ));
+        details.push(
+            tr("app.confirm.unsaved_queries")
+                .replace("%{count}", &pending.unsaved_queries.to_string()),
+        );
     }
     if pending.running_queries > 0 {
-        details.push(format!("{} 个查询正在执行", pending.running_queries));
+        details.push(
+            tr("app.confirm.running_queries")
+                .replace("%{count}", &pending.running_queries.to_string()),
+        );
     }
-    let scope_name = match &pending.scope {
-        FirstLevelScope::Database(workspace) => workspace.database.as_str(),
-        FirstLevelScope::Settings => "设置",
-    };
-    let details = details.join("，");
     let message = match &pending.scope {
-        FirstLevelScope::Database(_) => format!(
-            "关闭「{scope_name}」会关闭下面的表和查询标签页，{details}。"
-        ),
-        FirstLevelScope::Settings => format!("关闭「设置」会关闭设置页，{details}。"),
+        FirstLevelScope::Database(workspace) => tr("app.confirm.close_workspace_message")
+            .replace("%{database}", &workspace.database)
+            .replace("%{details}", &details.join(", ")),
+        FirstLevelScope::Settings => tr("app.confirm.close_settings_message")
+            .replace("%{details}", &details.join(", ")),
     };
 
     div()
@@ -482,7 +482,7 @@ fn close_workspace_modal(
                             div()
                                 .text_size(px(17.))
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
-                                .child("关闭标签页"),
+                                .child(tr("app.context.close_tab")),
                         )
                         .child(
                             div()
@@ -522,7 +522,7 @@ fn close_workspace_modal(
                         .gap_2()
                         .child(
                             Button::new("close-workspace-cancel")
-                                .label("取消")
+                                .label(tr("app.common.cancel"))
                                 .w(px(78.))
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.cancel_close_workspace_scope(cx);
@@ -531,7 +531,7 @@ fn close_workspace_modal(
                         )
                         .child(
                             Button::new("close-workspace-confirm")
-                                .label("关闭")
+                                .label(tr("app.common.close"))
                                 .danger()
                                 .w(px(78.))
                                 .on_click(cx.listener(|this, _, _, cx| {
@@ -549,15 +549,11 @@ fn delete_data_row_modal(
     cx: &mut Context<NavicatMain>,
 ) -> impl IntoElement {
     let message = if menu.selection_row_count > 1 {
-        format!(
-            "确定要删除选中的 {} 行记录吗？删除会先进入本地修改，提交后才写入数据库。",
-            menu.selection_row_count
-        )
+        tr("app.confirm.delete_rows_message")
+            .replace("%{count}", &menu.selection_row_count.to_string())
     } else {
-        format!(
-            "确定要删除第 {} 行记录吗？删除会先进入本地修改，提交后才写入数据库。",
-            menu.source_row + 1
-        )
+        tr("app.confirm.delete_row_message")
+            .replace("%{row}", &(menu.source_row + 1).to_string())
     };
 
     div()
@@ -604,7 +600,7 @@ fn delete_data_row_modal(
                             div()
                                 .text_size(px(17.))
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
-                                .child("删除记录"),
+                                .child(tr("app.context.delete_record")),
                         )
                         .child(
                             div()
@@ -644,7 +640,7 @@ fn delete_data_row_modal(
                         .gap_2()
                         .child(
                             Button::new("delete-data-row-cancel")
-                                .label("取消")
+                                .label(tr("app.common.cancel"))
                                 .w(px(78.))
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.cancel_delete_data_cell_row(cx);
@@ -653,7 +649,7 @@ fn delete_data_row_modal(
                         )
                         .child(
                             Button::new("delete-data-row-confirm")
-                                .label("删除")
+                                .label(tr("app.common.delete"))
                                 .danger()
                                 .w(px(78.))
                                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -716,7 +712,7 @@ fn dirty_data_action_modal(
                             div()
                                 .text_size(px(17.))
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
-                                .child("未提交修改"),
+                                .child(tr("app.confirm.uncommitted_title")),
                         )
                         .child(
                             div()
@@ -743,7 +739,7 @@ fn dirty_data_action_modal(
                         .pb_4()
                         .text_size(px(13.))
                         .text_color(colors.muted)
-                        .child("当前数据有未提交修改。继续操作会丢弃这些本地修改并重新加载数据，是否继续？"),
+                        .child(tr("app.confirm.uncommitted_message")),
                 )
                 .child(div().h(px(1.)).bg(colors.border_soft))
                 .child(
@@ -756,7 +752,7 @@ fn dirty_data_action_modal(
                         .gap_2()
                         .child(
                             Button::new("dirty-refresh-cancel")
-                                .label("取消")
+                                .label(tr("app.common.cancel"))
                                 .w(px(78.))
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.cancel_dirty_data_action(cx);
@@ -765,7 +761,7 @@ fn dirty_data_action_modal(
                         )
                         .child(
                             Button::new("dirty-data-action-confirm")
-                                .label("继续")
+                                .label(tr("app.confirm.continue"))
                                 .danger()
                                 .w(px(78.))
                                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -798,8 +794,8 @@ fn dirty_tab_close_modal(
         .tabs
         .iter()
         .find(|tab| tab.id == tab_id)
-        .map(|tab| tab.title.clone())
-        .unwrap_or_else(|| "当前查询".to_string());
+        .map(localized_tab_title)
+        .unwrap_or_else(|| tr("app.confirm.current_query").to_string());
 
     div()
         .absolute()
@@ -852,9 +848,9 @@ fn dirty_tab_close_modal(
                                 .text_size(px(17.))
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
                             .child(if settings_tab {
-                                "关闭未保存设置"
+                                tr("app.confirm.close_unsaved_settings")
                             } else {
-                                "关闭未保存查询"
+                                tr("app.confirm.close_unsaved_query")
                             }),
                         )
                         .child(
@@ -886,14 +882,15 @@ fn dirty_tab_close_modal(
                         .text_size(px(13.))
                         .text_color(colors.muted)
                         .child(if settings_tab {
-                            "当前设置有未保存修改。".to_string()
+                            tr("app.confirm.settings_unsaved_message").to_string()
                         } else {
-                            format!("“{tab_title}” 有未保存修改。")
+                            tr("app.confirm.query_unsaved_message")
+                                .replace("%{title}", &tab_title)
                         })
                         .child(if settings_tab {
-                            "关闭会恢复到上次保存的设置，是否继续？"
+                            tr("app.confirm.settings_discard_message")
                         } else {
-                            "关闭会丢弃这些修改，是否继续？"
+                            tr("app.confirm.query_discard_message")
                         }),
                 )
                 .child(div().h(px(1.)).bg(colors.border_soft))
@@ -907,7 +904,7 @@ fn dirty_tab_close_modal(
                         .gap_2()
                         .child(
                             Button::new("dirty-tab-close-cancel")
-                                .label("取消")
+                                .label(tr("app.common.cancel"))
                                 .w(px(78.))
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.dispatch(AppCommand::CancelCloseDirtyTab(tab_id), cx);
@@ -916,7 +913,7 @@ fn dirty_tab_close_modal(
                         )
                         .child(
                             Button::new("dirty-tab-close-confirm")
-                                .label("关闭")
+                                .label(tr("app.common.close"))
                                 .danger()
                                 .w(px(78.))
                                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -1008,15 +1005,23 @@ fn apply_data_changes_modal(
                                     div()
                                         .text_size(px(17.))
                                         .font_weight(gpui::FontWeight::SEMIBOLD)
-                                        .child("提交更改"),
+                                        .child(tr("app.confirm.apply_changes_title")),
                                 )
                                 .child(
                                     div()
                                         .text_size(px(12.))
                                         .text_color(colors.muted)
-                                        .child(format!(
-                                            "即将提交 {change_count} 处修改，执行 {statement_count} 条 SQL。"
-                                        )),
+                                        .child(
+                                            tr("app.confirm.apply_changes_summary")
+                                                .replace(
+                                                    "%{changes}",
+                                                    &change_count.to_string(),
+                                                )
+                                                .replace(
+                                                    "%{statements}",
+                                                    &statement_count.to_string(),
+                                                ),
+                                        ),
                                 ),
                         )
                         .child(
@@ -1068,12 +1073,16 @@ fn apply_data_changes_modal(
                         .justify_between()
                         .child(
                             Button::new("apply-data-changes-copy-sql")
-                                .label("复制 SQL")
+                                .label(tr("app.confirm.copy_sql"))
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     cx.write_to_clipboard(ClipboardItem::new_string(
                                         sql_for_copy.clone(),
                                     ));
-                                    this.show_message("已复制待提交 SQL", AppMessageKind::Success, cx);
+                                    this.show_message(
+                                        tr("app.confirm.copied_pending_sql"),
+                                        AppMessageKind::Success,
+                                        cx,
+                                    );
                                     cx.stop_propagation();
                                 })),
                         )
@@ -1085,7 +1094,7 @@ fn apply_data_changes_modal(
                                 .child(
                                     Button::new("apply-data-changes-cancel")
                                         .debug_selector(|| "apply-data-changes-cancel".into())
-                                        .label("取消")
+                                        .label(tr("app.common.cancel"))
                                         .w(px(78.))
                                         .disabled(submitting)
                                         .on_click(cx.listener(|this, _, _, cx| {
@@ -1096,7 +1105,11 @@ fn apply_data_changes_modal(
                                 .child(
                                     Button::new("apply-data-changes-confirm")
                                         .debug_selector(|| "apply-data-changes-confirm".into())
-                                        .label(if submitting { "提交中…" } else { "提交" })
+                                        .label(if submitting {
+                                            tr("app.confirm.submitting")
+                                        } else {
+                                            tr("app.confirm.submit")
+                                        })
                                         .loading(submitting)
                                         .primary()
                                         .w(px(78.))

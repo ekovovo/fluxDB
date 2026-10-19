@@ -13,8 +13,8 @@ fn settings_data_panel(
     } else {
         backup_group
             .child(settings_path_row(
-                "备份目录",
-                "数据库备份文件默认保存目录，保存后生效",
+                tr("app.settings.data.backup_dir"),
+                tr("app.settings.data.backup_dir_detail"),
                 AppIcon::Folder,
                 &settings.backup_dir,
                 "settings-backup-dir",
@@ -23,8 +23,8 @@ fn settings_data_panel(
                 cx,
             ))
             .child(settings_path_row(
-                "sqlite3 路径",
-                "SQLite 原生备份工具路径，留空时使用系统 PATH 中的 sqlite3",
+                tr("app.settings.data.sqlite3_path"),
+                tr("app.settings.data.sqlite3_path_detail"),
                 AppIcon::Database,
                 &settings.sqlite3_path,
                 "settings-backup-sqlite3",
@@ -33,20 +33,25 @@ fn settings_data_panel(
                 cx,
             ))
     };
+    let page_size_choices = DATA_TABLE_PAGE_SIZE_CHOICES
+        .iter()
+        .map(|(_, value)| (value.to_string().into(), *value))
+        .collect::<Vec<_>>();
     div()
         .flex()
         .flex_col()
         .gap_3()
         .child(
-            settings_panel_group("数据表", colors)
-                .child(settings_choice_row(
-                    "默认分页行数",
-                    "新打开数据表时默认每页加载的行数",
+            settings_panel_group(tr("app.settings.data.group.tables"), colors)
+                .child(settings_choice_row_with_id(
+                    "settings-data-page-size",
+                    tr("app.settings.data.page_size"),
+                    tr("app.settings.data.page_size_detail"),
                     AppIcon::List,
                     settings.data_table_page_size,
                     // 档位与《数据页 SQL 面板的 LIMIT 封顶》同源，见
                     // `fluxdb_core::data_table_page_size_max` 的说明。
-                    &DATA_TABLE_PAGE_SIZE_CHOICES,
+                    &page_size_choices,
                     |settings, value| settings.data_table_page_size = value,
                     colors,
                     false,
@@ -81,11 +86,11 @@ enum SettingsDataGroup {
 }
 
 impl SettingsDataGroup {
-    fn title(self) -> &'static str {
+    fn title(self) -> SharedString {
         match self {
-            Self::Backup => "备份",
-            Self::PgClient => "PostgreSQL 客户端",
-            Self::MySql => "MySQL 客户端",
+            Self::Backup => tr("app.settings.data.group.backup"),
+            Self::PgClient => tr("app.settings.data.group.pg_client"),
+            Self::MySql => tr("app.settings.data.group.mysql_client"),
         }
     }
 }
@@ -155,9 +160,13 @@ fn settings_collapsible_group(
 }
 
 /// 设置面板中一条可选择的路径行（目录或文件）。选择结果写入 settings_editor_draft 对应字段。
+#[allow(
+    clippy::too_many_arguments,
+    reason = "路径行参数逐项对应 GPUI 控件契约，打包成结构体反而隐藏调用点差异"
+)]
 fn settings_path_row(
-    title: &'static str,
-    detail: &'static str,
+    title: impl Into<SharedString>,
+    detail: impl Into<SharedString>,
     icon: AppIcon,
     value: &str,
     button_id: &'static str,
@@ -165,12 +174,14 @@ fn settings_path_row(
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Stateful<Div> {
+    let title = title.into();
+    let detail = detail.into();
     settings_path_row_with_placeholder(
         title,
         detail,
         icon,
         value,
-        "(未设置)",
+        &tr("app.settings.not_set"),
         button_id,
         directory,
         colors,
@@ -181,8 +192,8 @@ fn settings_path_row(
 /// 同 `settings_path_row`,但未设置时的占位文案可自定义(如显示系统默认搜索路径)。
 #[allow(clippy::too_many_arguments)]
 fn settings_path_row_with_placeholder(
-    title: &'static str,
-    detail: &'static str,
+    title: impl Into<SharedString>,
+    detail: impl Into<SharedString>,
     icon: AppIcon,
     value: &str,
     placeholder: &str,
@@ -191,7 +202,7 @@ fn settings_path_row_with_placeholder(
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Stateful<Div> {
-    settings_action_row(title, detail, icon, colors)
+    settings_action_row_with_id(button_id, title, detail, icon, colors)
         .child(
             h_flex()
                 .min_w(px(0.))
@@ -212,7 +223,7 @@ fn settings_path_row_with_placeholder(
                 )
                 .child(
                     Button::new(button_id)
-                        .label("选择")
+                        .label(tr("app.common.choose"))
                         .small()
                         .rounded(colors.radius)
                         .on_click(cx.listener(move |this, _, window, cx| {
@@ -233,7 +244,7 @@ fn settings_choose_backup_path(
         files: !directory,
         directories: directory,
         multiple: false,
-        prompt: Some("选择路径".into()),
+        prompt: Some(tr("app.settings.choose_path")),
     });
     this._file_picker_task = Some(cx.spawn_in(window, async move |view, cx| {
         let result = receiver.await;
@@ -272,12 +283,12 @@ fn settings_choose_backup_path(
                 }
                 Ok(Ok(None)) => {}
                 Ok(Err(error)) => this.show_message(
-                    format!("选择路径失败：{error}"),
+                    format!("{}: {error}", tr("app.settings.choose_path_failed")),
                     AppMessageKind::Error,
                     cx,
                 ),
                 Err(error) => this.show_message(
-                    format!("选择路径失败：{error}"),
+                    format!("{}: {error}", tr("app.settings.choose_path_failed")),
                     AppMessageKind::Error,
                     cx,
                 ),
@@ -292,28 +303,29 @@ fn settings_connection_security_panel(colors: UiColors) -> Div {
         .flex_col()
         .gap_3()
         .child(
-            settings_panel_group("连接", colors)
+            settings_panel_group(tr("app.settings.connection_security.group.connection"), colors)
                 .child(settings_preference_row(
-                    "连接超时",
-                    "后续用于配置连接测试和数据库访问的默认超时时间",
+                    tr("app.settings.connection_security.timeout"),
+                    tr("app.settings.connection_security.timeout_detail"),
                     AppIcon::Plug,
-                    "待接入",
+                    tr("app.settings.status.pending"),
                     colors,
                 )),
         )
         .child(
-            settings_panel_group("安全", colors).child(settings_preference_row(
-                "敏感信息保存",
-                "连接密码以 AES 密文存入 SQLite，不保存明文",
+            settings_panel_group(tr("app.settings.connection_security.group.security"), colors)
+                .child(settings_preference_row(
+                tr("app.settings.connection_security.sensitive_storage"),
+                tr("app.settings.connection_security.sensitive_storage_detail"),
                 AppIcon::Check,
-                "已启用",
+                tr("app.settings.status.enabled"),
                 colors,
             )),
         )
 }
 
 fn settings_database_support_panel(colors: UiColors) -> GroupBox {
-    settings_panel_group("内置连接能力", colors).children(
+    settings_panel_group(tr("app.settings.database_support.title"), colors).children(
         database_support_entries()
             .into_iter()
             .map(|entry| settings_database_support_row(entry, colors)),
@@ -322,36 +334,36 @@ fn settings_database_support_panel(colors: UiColors) -> GroupBox {
 
 fn settings_about_panel(colors: UiColors) -> Div {
     div().flex().flex_col().gap_3().child(
-        settings_panel_group("关于", colors)
+        settings_panel_group(tr("app.settings.about.group.about"), colors)
             .child(settings_preference_row(
                 "FluxDB Desktop",
-                "本地数据库管理工具，连接能力以内置 Rust connector 为主",
+                tr("app.settings.about.app_detail"),
                 AppIcon::Database,
-                "开发中",
+                tr("app.settings.status.developing"),
                 colors,
             ))
             .child(settings_preference_row(
-                "配置模型",
-                "后续新增偏好项时会进入 fluxdb-core / fluxdb-storage 的持久化模型",
+                tr("app.settings.about.config_model"),
+                tr("app.settings.about.config_model_detail"),
                 AppIcon::Workflow,
-                "待接入",
+                tr("app.settings.status.pending"),
                 colors,
             )),
     )
     .child(
-        settings_panel_group("更新", colors)
+        settings_panel_group(tr("app.settings.about.group.updates"), colors)
             .child(settings_preference_row(
-                "自动检查更新",
-                "启动应用时检查是否有新的 FluxDB 版本",
+                tr("app.settings.about.auto_update"),
+                tr("app.settings.about.auto_update_detail"),
                 AppIcon::Refresh,
-                "待接入",
+                tr("app.settings.status.pending"),
                 colors,
             ))
             .child(settings_preference_row(
-                "检查更新",
-                "手动检查当前应用是否有可用更新",
+                tr("app.settings.about.check_updates"),
+                tr("app.settings.about.check_updates_detail"),
                 AppIcon::Refresh,
-                "待接入",
+                tr("app.settings.status.pending"),
                 colors,
             )),
     )
@@ -367,40 +379,31 @@ fn settings_system_panel(
         .flex_col()
         .gap_3()
         .child(
-            settings_panel_group("启动与窗口", colors)
+            settings_panel_group(tr("app.settings.system.group.startup"), colors)
                 .child(settings_preference_row(
-                    "恢复窗口大小和位置",
-                    "启动时恢复上次关闭应用时的窗口状态",
+                    tr("app.settings.system.restore_window"),
+                    tr("app.settings.system.restore_window_detail"),
                     AppIcon::PanelBottom,
-                    "待接入",
+                    tr("app.settings.status.pending"),
                     colors,
                 ))
                 .child(settings_preference_row(
-                    "启动时最小化",
-                    "应用启动后保持最小化状态",
+                    tr("app.settings.system.start_minimized"),
+                    tr("app.settings.system.start_minimized_detail"),
                     AppIcon::Minus,
-                    "待接入",
+                    tr("app.settings.status.pending"),
                     colors,
                 ))
                 .child(settings_preference_row(
-                    "关闭未保存内容时确认",
-                    "关闭包含未保存编辑内容的标签页前显示确认",
+                    tr("app.settings.system.confirm_unsaved"),
+                    tr("app.settings.system.confirm_unsaved_detail"),
                     AppIcon::CircleSlash,
-                    "待接入",
+                    tr("app.settings.status.pending"),
                     colors,
                 )),
         )
         .child(
-            settings_panel_group("语言", colors).child(settings_preference_row(
-                "界面语言",
-                "国际化支持完成后可切换应用显示语言",
-                AppIcon::Workflow,
-                "暂不可用",
-                colors,
-            )),
-        )
-        .child(
-            settings_panel_group("隐私与诊断", colors)
+            settings_panel_group(tr("app.settings.system.group.diagnostics"), colors)
                 .child(settings_performance_diagnostics_row(
                     settings.performance_diagnostics,
                     colors,
@@ -410,55 +413,57 @@ fn settings_system_panel(
                 .child(settings_log_path_row(&settings.log_path, colors, cx)),
         )
         .child(
-            settings_panel_group("本地数据", colors)
+            settings_panel_group(tr("app.settings.system.group.local_data"), colors)
                 .child(settings_preference_row(
-                    "查看数据目录",
-                    "打开应用配置、历史记录和缓存所在的本地目录",
+                    tr("app.settings.system.view_data_dir"),
+                    tr("app.settings.system.view_data_dir_detail"),
                     AppIcon::Folder,
-                    "待接入",
+                    tr("app.settings.status.pending"),
                     colors,
                 ))
                 .child(settings_preference_row(
-                    "清理查询历史",
-                    "删除本地保存的 SQL 查询历史记录",
+                    tr("app.settings.system.clear_query_history"),
+                    tr("app.settings.system.clear_query_history_detail"),
                     AppIcon::Trash,
-                    "待接入",
+                    tr("app.settings.status.pending"),
                     colors,
                 ))
                 .child(settings_preference_row(
-                    "清理 Redis 搜索历史",
-                    "删除本地保存的 Redis Key 搜索记录",
+                    tr("app.settings.system.clear_redis_history"),
+                    tr("app.settings.system.clear_redis_history_detail"),
                     AppIcon::Trash,
-                    "待接入",
+                    tr("app.settings.status.pending"),
                     colors,
                 ))
                 .child(settings_preference_row(
-                    "清理 SQL 补全缓存",
-                    "删除本地缓存的数据库对象补全索引",
+                    tr("app.settings.system.clear_completion_cache"),
+                    tr("app.settings.system.clear_completion_cache_detail"),
                     AppIcon::Trash,
-                    "待接入",
+                    tr("app.settings.status.pending"),
                     colors,
                 ))
                 .child(settings_preference_row(
-                    "导出诊断数据",
-                    "导出排查问题所需的日志和运行信息，不包含密码",
+                    tr("app.settings.system.export_diagnostics"),
+                    tr("app.settings.system.export_diagnostics_detail"),
                     AppIcon::Refresh,
-                    "待接入",
+                    tr("app.settings.status.pending"),
                     colors,
                 )),
         )
         .child(
-            settings_panel_group("高级", colors).child(settings_preference_row(
-                "全局代理",
-                "为需要网络访问的应用功能配置 HTTP 或 SOCKS 代理",
+            settings_panel_group(tr("app.settings.system.group.advanced"), colors)
+                .child(settings_preference_row(
+                tr("app.settings.system.proxy"),
+                tr("app.settings.system.proxy_detail"),
                 AppIcon::Plug,
-                "待接入",
+                tr("app.settings.status.pending"),
                 colors,
             )),
         )
 }
 
-fn settings_panel_group(title: &'static str, _colors: UiColors) -> GroupBox {
+fn settings_panel_group(title: impl Into<SharedString>, _colors: UiColors) -> GroupBox {
+    let title = title.into();
     settings_panel_group_el(
         div()
             .text_size(px(12.))
@@ -477,46 +482,50 @@ fn settings_panel_group_el(title: impl IntoElement) -> GroupBox {
         .content_style(gpui::StyleRefinement::default().p_0().gap_0())
 }
 
-fn settings_section_label(section: SettingsPanelSection) -> &'static str {
+fn settings_section_label(section: SettingsPanelSection) -> SharedString {
     match section {
-        SettingsPanelSection::Editor => "编辑器",
-        SettingsPanelSection::Shortcuts => "快捷键",
-        SettingsPanelSection::Appearance => "外观",
-        SettingsPanelSection::System => "系统",
-        SettingsPanelSection::Data => "数据",
-        SettingsPanelSection::ConnectionSecurity => "连接与安全",
-        SettingsPanelSection::DatabaseSupport => "数据库支持",
-        SettingsPanelSection::AiModels => "大模型",
-        SettingsPanelSection::AiToolsMcp => "工具与 MCP",
-        SettingsPanelSection::AiAgents => "Agent 配置",
-        SettingsPanelSection::AiSessions => "会话历史",
-        SettingsPanelSection::About => "关于",
+        SettingsPanelSection::Editor => tr("app.settings.section.editor"),
+        SettingsPanelSection::Shortcuts => tr("app.settings.section.shortcuts"),
+        SettingsPanelSection::Appearance => tr("app.settings.section.appearance"),
+        SettingsPanelSection::System => tr("app.settings.section.system"),
+        SettingsPanelSection::Data => tr("app.settings.section.data"),
+        SettingsPanelSection::ConnectionSecurity => tr("app.settings.section.connection_security"),
+        SettingsPanelSection::DatabaseSupport => tr("app.settings.section.database_support"),
+        SettingsPanelSection::AiModels => tr("app.settings.section.ai_models"),
+        SettingsPanelSection::AiToolsMcp => tr("app.settings.section.ai_tools_mcp"),
+        SettingsPanelSection::AiAgents => tr("app.settings.section.ai_agents"),
+        SettingsPanelSection::AiSessions => tr("app.settings.section.ai_sessions"),
+        SettingsPanelSection::About => tr("app.settings.section.about"),
     }
 }
 
-fn settings_section_description(section: SettingsPanelSection) -> &'static str {
+fn settings_section_description(section: SettingsPanelSection) -> SharedString {
     match section {
-        SettingsPanelSection::Editor => "SQL 编辑器和执行相关偏好",
-        SettingsPanelSection::Shortcuts => "查看应用和编辑器快捷键",
-        SettingsPanelSection::Appearance => "主题和应用外观偏好",
-        SettingsPanelSection::System => "启动、诊断、本地数据和高级选项",
-        SettingsPanelSection::Data => "数据表、备份目录和数据库客户端配置",
-        SettingsPanelSection::ConnectionSecurity => "连接行为和敏感信息策略",
-        SettingsPanelSection::AiModels => "生成模型与决策模型档案，凭据加密保存",
-        SettingsPanelSection::AiToolsMcp => "内置能力与 MCP 配置",
-        SettingsPanelSection::AiAgents => "每个 Agent 直接配置提示词、模型与插件能力",
-        SettingsPanelSection::AiSessions => "普通打开恢复上次查看的会话，新建才开始新的草稿",
-        SettingsPanelSection::DatabaseSupport => "当前内置连接器和数据库能力状态",
-        SettingsPanelSection::About => "应用信息和配置说明",
+        SettingsPanelSection::Editor => tr("app.settings.description.editor"),
+        SettingsPanelSection::Shortcuts => tr("app.settings.description.shortcuts"),
+        SettingsPanelSection::Appearance => tr("app.settings.description.appearance"),
+        SettingsPanelSection::System => tr("app.settings.description.system"),
+        SettingsPanelSection::Data => tr("app.settings.description.data"),
+        SettingsPanelSection::ConnectionSecurity => {
+            tr("app.settings.description.connection_security")
+        }
+        SettingsPanelSection::AiModels => tr("app.settings.description.ai_models"),
+        SettingsPanelSection::AiToolsMcp => tr("app.settings.description.ai_tools_mcp"),
+        SettingsPanelSection::AiAgents => tr("app.settings.description.ai_agents"),
+        SettingsPanelSection::AiSessions => tr("app.settings.description.ai_sessions"),
+        SettingsPanelSection::DatabaseSupport => {
+            tr("app.settings.description.database_support")
+        }
+        SettingsPanelSection::About => tr("app.settings.description.about"),
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct DatabaseSupportEntry {
     kind: DatabaseKind,
     status: DatabaseSupportStatus,
-    source: &'static str,
-    detail: &'static str,
+    source: SharedString,
+    detail: SharedString,
 }
 
 #[derive(Clone, Copy)]
@@ -530,32 +539,32 @@ fn database_support_entries() -> [DatabaseSupportEntry; 5] {
         DatabaseSupportEntry {
             kind: DatabaseKind::MySql,
             status: DatabaseSupportStatus::BuiltIn,
-            source: "内置 SQLx MySQL 连接器",
-            detail: "支持连接测试、对象浏览、数据查看、SQL 执行、表结构和用户管理",
+            source: tr("app.settings.database_support.mysql_source"),
+            detail: tr("app.settings.database_support.mysql_detail"),
         },
         DatabaseSupportEntry {
             kind: DatabaseKind::TiDb,
             status: DatabaseSupportStatus::BuiltIn,
-            source: "复用 MySQL 协议连接器",
-            detail: "支持连接测试、对象浏览、数据查看、SQL 执行和表结构能力",
+            source: tr("app.settings.database_support.tidb_source"),
+            detail: tr("app.settings.database_support.tidb_detail"),
         },
         DatabaseSupportEntry {
             kind: DatabaseKind::Sqlite,
             status: DatabaseSupportStatus::BuiltIn,
-            source: "内置 SQLx SQLite 连接器",
-            detail: "支持本地文件连接、对象浏览、数据查看、SQL 执行和表结构能力",
+            source: tr("app.settings.database_support.sqlite_source"),
+            detail: tr("app.settings.database_support.sqlite_detail"),
         },
         DatabaseSupportEntry {
             kind: DatabaseKind::MongoDb,
             status: DatabaseSupportStatus::Mock,
-            source: "配置入口已就绪",
-            detail: "当前仍使用模拟连接器，真实对象浏览和数据操作能力待补齐",
+            source: tr("app.settings.database_support.mock_source"),
+            detail: tr("app.settings.database_support.mongo_detail"),
         },
         DatabaseSupportEntry {
             kind: DatabaseKind::Redis,
             status: DatabaseSupportStatus::Mock,
-            source: "配置入口已就绪",
-            detail: "当前仍使用模拟连接器，真实键浏览和数据操作能力待补齐",
+            source: tr("app.settings.database_support.mock_source"),
+            detail: tr("app.settings.database_support.redis_detail"),
         },
     ]
 }

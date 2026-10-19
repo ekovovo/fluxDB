@@ -80,11 +80,11 @@ impl NavicatMain {
             .map(|(field, value, ttl)| (field.trim().to_string(), value, ttl.trim().to_string()))
             .collect::<Vec<_>>();
         if rows.is_empty() {
-            self.show_message("至少输入一个字段", AppMessageKind::Warning, cx);
+            self.show_message(tr("app.redis.hash.error.fields_required").as_ref(), AppMessageKind::Warning, cx);
             return;
         }
         if rows.iter().any(|(field, _, _)| field.is_empty()) {
-            self.show_message("字段名不能为空", AppMessageKind::Warning, cx);
+            self.show_message(tr("app.redis.hash.error.field_required").as_ref(), AppMessageKind::Warning, cx);
             return;
         }
         for (_, _, ttl) in &rows {
@@ -93,7 +93,7 @@ impl NavicatMain {
             }
             if ttl.parse::<u64>().ok().filter(|ttl| *ttl > 0).is_none() {
                 self.show_message(
-                    "Redis TTL 必须是秒数，且大于 0 秒或留空",
+                    tr("app.redis.hash.error.ttl_drawer").as_ref(),
                     AppMessageKind::Warning,
                     cx,
                 );
@@ -175,8 +175,8 @@ impl NavicatMain {
                         } => Ok((key, query, cursor, fields, next_cursor, total)),
                         AppEvent::Failed(error) => Err(error),
                         _ => Err(fluxdb_core::UserFacingError {
-                            title: "查询失败".to_string(),
-                            message: "Hash 字段查询没有返回结果".to_string(),
+                            title: tr("app.redis.error.query_failed").to_string(),
+                            message: tr("app.redis.hash.error.no_query_result").to_string(),
                             detail: None,
                             retryable: true,
                         }),
@@ -368,8 +368,8 @@ impl NavicatMain {
                             AppEvent::Failed(error) => last_error = Some(error),
                             _ => {
                                 return Err(fluxdb_core::UserFacingError {
-                                    title: "保存失败".to_string(),
-                                    message: "Hash 字段操作没有返回结果".to_string(),
+                                    title: tr("app.redis.error.save_failed").to_string(),
+                                    message: tr("app.redis.hash.error.no_operation_result").to_string(),
                                     detail: None,
                                     retryable: true,
                                 })
@@ -766,8 +766,8 @@ impl NavicatMain {
                             AppEvent::Failed(error) => last_error = Some(error),
                             _ => {
                                 return Err(fluxdb_core::UserFacingError {
-                                    title: "保存失败".to_string(),
-                                    message: "Hash 完整值保存没有返回结果".to_string(),
+                                    title: tr("app.redis.error.save_failed").to_string(),
+                                    message: tr("app.redis.hash.error.no_full_value_save_result").to_string(),
                                     detail: None,
                                     retryable: true,
                                 })

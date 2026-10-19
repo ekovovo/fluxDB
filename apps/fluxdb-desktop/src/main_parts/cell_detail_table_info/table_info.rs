@@ -144,7 +144,10 @@ fn table_info_header(
                         .px_2()
                         .text_size(px(11.))
                         .text_color(colors.muted)
-                        .child(format!("{column_count} 字段")),
+                        .child(
+                            tr("app.table_info.column_count")
+                                .replace("%{count}", &column_count.to_string()),
+                        ),
                 )
                 .child(
                     Button::new(("copy-table-name", tab_id.0))
@@ -154,13 +157,17 @@ fn table_info_header(
                         .h(px(22.))
                         .min_w(px(22.))
                         .p_0()
-                        .tooltip("复制表名")
+                        .tooltip(tr("app.context.copy_table_name"))
                         .child(app_icon(AppIcon::Copy, 15., colors.muted))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             cx.write_to_clipboard(ClipboardItem::new_string(
                                 table_name_for_copy.clone(),
                             ));
-                            this.show_message("已复制表名", AppMessageKind::Success, cx);
+                            this.show_message(
+                                tr("app.table_info.copied_table_name"),
+                                AppMessageKind::Success,
+                                cx,
+                            );
                         })),
                 ),
         )
@@ -171,8 +178,8 @@ fn table_info_header(
                 .h(px(24.))
                 .w(px(24.))
                 .p_0()
-                .accessibility_label("关闭表结构面板")
-                .tooltip("关闭")
+                .accessibility_label(tr("app.table_info.close_panel"))
+                .tooltip(tr("app.common.close"))
                 .child(app_icon(AppIcon::Close, 16., colors.muted))
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.dispatch(AppCommand::CloseTableInfo(tab_id), cx);
@@ -223,13 +230,13 @@ fn table_info_tabs(
         .child(tab_bar)
 }
 
-fn table_info_tab_label(tab: TableInfoTab) -> &'static str {
+fn table_info_tab_label(tab: TableInfoTab) -> SharedString {
     match tab {
-        TableInfoTab::Columns => "字段",
-        TableInfoTab::Indexes => "索引",
-        TableInfoTab::ForeignKeys => "外键",
-        TableInfoTab::Triggers => "触发器",
-        TableInfoTab::Ddl => "DDL",
+        TableInfoTab::Columns => tr("app.table_info.tab_columns"),
+        TableInfoTab::Indexes => tr("app.table_info.tab_indexes"),
+        TableInfoTab::ForeignKeys => tr("app.table_info.tab_foreign_keys"),
+        TableInfoTab::Triggers => tr("app.table_info.tab_triggers"),
+        TableInfoTab::Ddl => tr("app.table_info.tab_ddl"),
     }
 }
 
@@ -336,17 +343,17 @@ fn table_info_columns(
         ("table-info-columns", tab_id.0),
         tab_id,
         vec![
-            TableColumn::new("name", "列名")
+            TableColumn::new("name", tr("app.table_info.column_name"))
                 .width(px(name_width))
                 .min_width(px(96.)),
-            TableColumn::new("type", "类型")
+            TableColumn::new("type", tr("app.history.meta_type"))
                 .width(px(type_width))
                 .min_width(px(84.)),
-            TableColumn::new("nullable", "可空")
+            TableColumn::new("nullable", tr("app.table_info.nullable"))
                 .width(px(nullable_width))
                 .resizable(false)
                 .movable(false),
-            TableColumn::new("comment", "注释")
+            TableColumn::new("comment", tr("app.table_info.comment"))
                 .width(px(comment_width))
                 .min_width(px(88.)),
         ],
@@ -403,15 +410,15 @@ fn table_info_indexes(
             })
             .collect::<Vec<_>>();
         if rows.is_empty() {
-            table_info_empty("没有匹配的索引", colors).into_any_element()
+            table_info_empty(tr("app.table_info.no_indexes"), colors).into_any_element()
         } else {
             table_info_table(
                 ("table-info-indexes", tab_id.0),
                 tab_id,
                 vec![
-                    TableColumn::new("name", "索引名").width(px(220.)),
-                    TableColumn::new("columns", "字段").width(px(220.)),
-                    TableColumn::new("type", "类型")
+                    TableColumn::new("name", tr("app.table_info.index_name")).width(px(220.)),
+                    TableColumn::new("columns", tr("app.table_info.tab_columns")).width(px(220.)),
+                    TableColumn::new("type", tr("app.history.meta_type"))
                         .width(px(110.))
                         .resizable(false)
                         .movable(false),
@@ -523,15 +530,15 @@ fn table_info_foreign_keys(
             })
             .collect::<Vec<_>>();
         if rows.is_empty() {
-            table_info_empty("没有匹配的外键", colors).into_any_element()
+            table_info_empty(tr("app.table_info.no_foreign_keys"), colors).into_any_element()
         } else {
             table_info_table(
                 ("table-info-foreign-keys", tab_id.0),
                 tab_id,
                 vec![
-                    TableColumn::new("name", "约束名").width(px(220.)),
-                    TableColumn::new("column", "字段").width(px(160.)),
-                    TableColumn::new("reference", "引用").width(px(240.)),
+                    TableColumn::new("name", tr("app.table_info.constraint_name")).width(px(220.)),
+                    TableColumn::new("column", tr("app.table_info.tab_columns")).width(px(160.)),
+                    TableColumn::new("reference", tr("app.table_info.reference")).width(px(240.)),
                 ],
                 rows,
                 window,
@@ -575,15 +582,15 @@ fn table_info_triggers(
             })
             .collect::<Vec<_>>();
         if rows.is_empty() {
-            table_info_empty("没有匹配的触发器", colors).into_any_element()
+            table_info_empty(tr("app.table_info.no_triggers"), colors).into_any_element()
         } else {
             table_info_table(
                 ("table-info-triggers", tab_id.0),
                 tab_id,
                 vec![
-                    TableColumn::new("name", "名称").width(px(260.)),
-                    TableColumn::new("timing", "时机").width(px(120.)),
-                    TableColumn::new("event", "事件").width(px(120.)),
+                    TableColumn::new("name", tr("app.table_info.name")).width(px(260.)),
+                    TableColumn::new("timing", tr("app.table_info.timing")).width(px(120.)),
+                    TableColumn::new("event", tr("app.table_info.event")).width(px(120.)),
                 ],
                 rows,
                 window,
@@ -625,22 +632,26 @@ fn table_info_ddl(
                         .gap_2()
                         .child(
                             Button::new(("copy-table-ddl", tab_id.0))
-                                .label("复制 DDL")
+                                .label(tr("app.table_info.copy_ddl"))
                                 .small()
                                 .outline()
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     cx.write_to_clipboard(ClipboardItem::new_string(
                                         ddl_text.clone(),
                                     ));
-                                    this.show_message("已复制 DDL", AppMessageKind::Success, cx);
+                                    this.show_message(
+                                        tr("app.table_info.copied_ddl"),
+                                        AppMessageKind::Success,
+                                        cx,
+                                    );
                                 })),
                         )
                         .child(
                             Button::new(("toggle-table-ddl-wrap", tab_id.0))
                                 .label(if editor.table_info.ddl_wrap {
-                                    "取消换行"
+                                    tr("app.table_info.disable_wrap")
                                 } else {
-                                    "自动换行"
+                                    tr("app.table_info.enable_wrap")
                                 })
                                 .small()
                                 .outline()
@@ -678,7 +689,7 @@ where
                 .into_any_element()
         }
         LoadState::Loaded(items) if items.is_empty() => {
-            table_info_empty("暂无数据", colors).into_any_element()
+            table_info_empty(tr("app.table_info.no_data"), colors).into_any_element()
         }
         LoadState::Loaded(items) => render(items),
     }
@@ -688,7 +699,7 @@ fn table_info_loading(colors: UiColors) -> Stateful<Div> {
     div()
         .id("table-info-loading")
         .role(Role::Status)
-        .aria_label("加载中...")
+        .aria_label(tr("app.table_info.loading"))
         .flex_1()
         .flex()
         .items_center()
@@ -696,7 +707,7 @@ fn table_info_loading(colors: UiColors) -> Stateful<Div> {
         .child(loading_spinner_with_color(18., colors.muted))
 }
 
-fn table_info_empty(text: impl Into<String>, colors: UiColors) -> Stateful<Div> {
+fn table_info_empty(text: impl Into<SharedString>, colors: UiColors) -> Stateful<Div> {
     let text = text.into();
     div()
         .id("table-info-message")

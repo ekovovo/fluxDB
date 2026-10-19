@@ -15,10 +15,11 @@ const WINDOW_CLOSE_HOVER: gpui::Rgba = gpui::Rgba {
 /// 却不知道为什么。
 fn topbar_icon_button(
     icon: AppIcon,
-    tooltip: &'static str,
+    tooltip: impl Into<SharedString>,
     enabled: bool,
     colors: UiColors,
 ) -> Stateful<Div> {
+    let tooltip = tooltip.into();
     div()
         .size(px(30.))
         .ml(px(2.))
@@ -31,8 +32,8 @@ fn topbar_icon_button(
                 .hover(move |style| style.bg(colors.hover))
         })
         .when(!enabled, |this| this.opacity(0.45))
-        .id(tooltip)
-        .tooltip(move |window, cx| Tooltip::new(tooltip).build(window, cx))
+        .id(tooltip.clone())
+        .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
         .child(app_icon_box(icon, 30., 17., colors.muted))
 }
 
@@ -86,9 +87,9 @@ fn topbar(
                     AppIcon::PanelLeftOpen
                 },
                 if show_connection_browser {
-                    "收起侧边栏"
+                    tr("app.topbar.collapse_sidebar")
                 } else {
-                    "展开侧边栏"
+                    tr("app.topbar.expand_sidebar")
                 },
                 true,
                 colors,
@@ -99,7 +100,7 @@ fn topbar(
                 cx.notify();
             })),
         )
-        .child(topbar_icon_button(AppIcon::Home, "首页", true, colors).on_mouse_down(
+        .child(topbar_icon_button(AppIcon::Home, tr("app.topbar.home"), true, colors).on_mouse_down(
             MouseButton::Left,
             cx.listener(|this, _, _, cx| {
                 this.dispatch(AppCommand::DeactivateTab, cx);
@@ -142,7 +143,7 @@ fn topbar(
         // 「询问 AI」原先挂在 SQL 编辑器工具栏上，移到这里与其余全局入口同排；
         // 「历史」「设置」是业务按钮移除后收纳在此的既有项。
         .child(
-            topbar_icon_button(AppIcon::Github, "GitHub 仓库", true, colors).on_mouse_down(
+            topbar_icon_button(AppIcon::Github, tr("app.topbar.github"), true, colors).on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|_, _, _, cx| {
                     cx.open_url(GITHUB_REPOSITORY_URL);
@@ -151,15 +152,15 @@ fn topbar(
             ),
         )
         // 全局入口：关闭/重新打开不会重放任务。
-        .child(Button::new("ask-ai").debug_selector(||"ask-ai".into()).small().ghost().cursor_pointer().child(app_icon(AppIcon::Bot,16.,colors.muted)).tooltip("询问 AI").on_click(cx.listener(|this,_,window,cx|this.open_ai_chat(window,cx))))
-        .child(topbar_icon_button(AppIcon::CalendarClock, "历史", true, colors).on_mouse_down(
+        .child(Button::new("ask-ai").debug_selector(||"ask-ai".into()).small().ghost().cursor_pointer().child(app_icon(AppIcon::Bot,16.,colors.muted)).tooltip(tr("app.topbar.ask_ai")).on_click(cx.listener(|this,_,window,cx|this.open_ai_chat(window,cx))))
+        .child(topbar_icon_button(AppIcon::CalendarClock, tr("app.topbar.history"), true, colors).on_mouse_down(
             MouseButton::Left,
             cx.listener(|this, _, window, cx| {
                 this.toggle_history(window, cx);
                 cx.stop_propagation();
             }),
         ))
-        .child(topbar_icon_button(AppIcon::Settings, "设置", true, colors).on_mouse_down(
+        .child(topbar_icon_button(AppIcon::Settings, tr("app.topbar.settings"), true, colors).on_mouse_down(
             MouseButton::Left,
             cx.listener(|this, _, _, cx| {
                 this.dispatch(AppCommand::OpenSettings, cx);
@@ -225,7 +226,11 @@ fn window_control_buttons(
     // 最大化/还原：is_maximized 决定按钮图标，点击时按平台切换窗口状态。
     let maximized = window.is_maximized();
     let maximize_icon = if maximized { AppIcon::Square } else { AppIcon::Maximize };
-    let maximize_label = if maximized { "还原" } else { "最大化" };
+    let maximize_label = if maximized {
+        tr("app.window.restore")
+    } else {
+        tr("app.window.maximize")
+    };
     let maximize_id = if maximized { "win-btn-restore" } else { "win-btn-maximize" };
 
     div()
@@ -242,7 +247,9 @@ fn window_control_buttons(
                 .justify_center()
                 .cursor_pointer()
                 .hover(move |style| style.bg(hover_bg))
-                .tooltip(move |window, cx| Tooltip::new("最小化").build(window, cx))
+                .tooltip(move |window, cx| {
+                    Tooltip::new(tr("app.window.minimize")).build(window, cx)
+                })
                 .child(app_icon_box(AppIcon::Minus, 34., 16., muted))
                 .on_mouse_down(MouseButton::Left, |_, window, _| {
                     window.minimize_window();
@@ -258,7 +265,7 @@ fn window_control_buttons(
                 .justify_center()
                 .cursor_pointer()
                 .hover(move |style| style.bg(hover_bg))
-                .tooltip(move |window, cx| Tooltip::new(maximize_label).build(window, cx))
+                .tooltip(move |window, cx| Tooltip::new(maximize_label.clone()).build(window, cx))
                 .child(app_icon_box(maximize_icon, 34., 16., muted))
                 // 状态变化会触发窗口 resize 重绘，is_maximized 图标随之刷新。
                 .on_mouse_down(MouseButton::Left, |_, window, _| {
@@ -277,7 +284,7 @@ fn window_control_buttons(
                 .cursor_pointer()
                 // hover 变红：Windows 关闭按钮惯例。
                 .hover(move |style| style.bg(WINDOW_CLOSE_HOVER))
-                .tooltip(move |window, cx| Tooltip::new("关闭").build(window, cx))
+                .tooltip(move |window, cx| Tooltip::new(tr("app.window.close")).build(window, cx))
                 .child(app_icon_box(AppIcon::Close, 34., 16., muted))
                 .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
                     this.pending_exit_confirm = true;
@@ -343,13 +350,13 @@ fn exit_confirm_modal(colors: UiColors, cx: &mut Context<NavicatMain>) -> Div {
                         .flex()
                         .items_center()
                         .font_weight(gpui::FontWeight::BOLD)
-                        .child("退出 FluxDB"),
+                        .child(tr("app.exit.title")),
                 )
                 .child(
                     div()
                         .px_4()
                         .pb_4()
-                        .child("确定要退出吗？未保存的修改可能会丢失。"),
+                        .child(tr("app.exit.message")),
                 )
                 .child(
                     div()
@@ -364,7 +371,7 @@ fn exit_confirm_modal(colors: UiColors, cx: &mut Context<NavicatMain>) -> Div {
                         .border_color(colors.border_soft)
                         .child(
                             Button::new("exit-confirm-cancel")
-                                .label("取消")
+                                .label(tr("app.common.cancel"))
                                 .small()
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.pending_exit_confirm = false;
@@ -373,7 +380,7 @@ fn exit_confirm_modal(colors: UiColors, cx: &mut Context<NavicatMain>) -> Div {
                         )
                         .child(
                             Button::new("exit-confirm-quit")
-                                .label("退出")
+                                .label(tr("app.exit.quit"))
                                 .danger()
                                 .small()
                                 .on_click(cx.listener(|_, _, _, cx| {
@@ -399,9 +406,9 @@ fn new_connection_modal(
 ) -> impl IntoElement {
     let view = cx.entity();
     let title = if editing {
-        "编辑连接"
+        tr("app.connection.edit_title")
     } else {
-        "新建连接"
+        tr("app.connection.new_title")
     };
 
     div()
@@ -508,7 +515,7 @@ fn new_connection_modal(
                                         .text_size(px(14.))
                                         .text_color(colors.muted)
                                         .child(app_icon(AppIcon::Search, 14., colors.muted))
-                                        .child("搜索数据库类型"),
+                                        .child(tr("app.connection.search_kind")),
                                 )
                                 .child(
                                     div()
@@ -613,7 +620,7 @@ fn new_connection_modal(
                         })
                         .child(
                             Button::new("new-connection-test")
-                                .label("测试")
+                                .label(tr("app.connection.test"))
                                 .disabled(test_busy)
                                 .on_click({
                                     let view = view.clone();
@@ -627,7 +634,7 @@ fn new_connection_modal(
                         )
                         .child(
                             Button::new("new-connection-save")
-                                .label("保存并连接")
+                                .label(tr("app.connection.save_and_connect"))
                                 .primary()
                                 .w(px(116.))
                                 .disabled(saving || test_busy)
@@ -802,27 +809,28 @@ fn connection_tab_bar(
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> impl IntoElement {
-    const TABS: [(NewConnectionTab, &str); 4] = [
-        (NewConnectionTab::Connection, "连接信息"),
-        (NewConnectionTab::Tls, "TLS/SSL"),
-        (NewConnectionTab::Ssh, "SSH 隧道/代理"),
-        (NewConnectionTab::Advanced, "高级"),
+    let tabs = [
+        (NewConnectionTab::Connection, tr("app.connection.tab.connection")),
+        (NewConnectionTab::Tls, tr("app.connection.tab.tls")),
+        (NewConnectionTab::Ssh, tr("app.connection.tab.ssh")),
+        (NewConnectionTab::Advanced, tr("app.connection.tab.advanced")),
     ];
     let _ = colors;
-    let selected_index = TABS
+    let selected_index = tabs
         .iter()
         .position(|(tab, _)| *tab == active_tab)
         .unwrap_or(0);
     let view = cx.entity();
-    TABS.iter()
-        .map(|(_, label)| Tab::from(*label))
+    let tabs_for_click = tabs.clone();
+    tabs.iter()
+        .map(|(_, label)| Tab::from(label.clone()))
         .fold(
             TabBar::new("new-connection-tabs")
                 .segmented()
                 .small()
                 .selected_index(selected_index)
                 .on_click(move |index, _, cx| {
-                    if let Some((tab, _)) = TABS.get(*index) {
+                    if let Some((tab, _)) = tabs_for_click.get(*index) {
                         let _ = view.update(cx, |this, cx| {
                             this.set_new_connection_tab(*tab, cx);
                         });
@@ -890,7 +898,7 @@ fn redis_only_settings_hint(colors: UiColors) -> Div {
                 .px_4()
                 .text_size(px(13.))
                 .text_color(colors.muted)
-                .child("该设置仅对 Redis 连接可用"),
+                .child(tr("app.connection.redis_only")),
         )
 }
 
@@ -908,12 +916,12 @@ fn tls_form(
         .flex()
         .flex_col()
         .gap_4()
-        .child(redis_section_label("传输层安全 (TLS)", colors))
+        .child(redis_section_label(tr("app.connection.tls.title"), colors))
         .child(
             h_form()
                 .label_width(px(112.))
                 .child(toggle_row_light(
-                    "启用 TLS",
+                    tr("app.connection.tls.enabled"),
                     ConnectionToggleField::TlsEnabled,
                     form.tls_enabled,
                     colors,
@@ -955,34 +963,34 @@ fn tls_parameters_block(
             h_form()
                 .label_width(px(112.))
                 .child(file_field_row_light(
-                    "CA 证书",
+                    tr("app.connection.tls.ca"),
                     ConnectionField::TlsCa,
-                    "选择 TLS CA 证书文件",
+                    tr("app.connection.tls.ca_prompt"),
                     inputs,
                     colors,
                     window,
                     cx,
                 ))
                 .child(file_field_row_light(
-                    "客户端证书",
+                    tr("app.connection.tls.client_cert"),
                     ConnectionField::TlsClientCert,
-                    "选择 TLS 客户端证书文件",
+                    tr("app.connection.tls.client_cert_prompt"),
                     inputs,
                     colors,
                     window,
                     cx,
                 ))
                 .child(file_field_row_light(
-                    "客户端密钥",
+                    tr("app.connection.tls.client_key"),
                     ConnectionField::TlsClientKey,
-                    "选择 TLS 客户端私钥文件",
+                    tr("app.connection.tls.client_key_prompt"),
                     inputs,
                     colors,
                     window,
                     cx,
                 ))
                 .child(field_row_light(
-                    "SNI / 主机名",
+                    tr("app.connection.tls.sni"),
                     ConnectionField::TlsSni,
                     inputs,
                     false,
@@ -991,7 +999,7 @@ fn tls_parameters_block(
                     cx,
                 ))
                 .child(toggle_row_light(
-                    "校验服务器证书",
+                    tr("app.connection.tls.verify"),
                     ConnectionToggleField::TlsVerify,
                     form.tls_verify,
                     colors,
@@ -1015,12 +1023,12 @@ fn mysql_tls_mode_block(
             h_form()
                 .label_width(px(112.))
                 .child(connection_select_field(
-                    "SSL 模式",
+                    tr("app.connection.tls.ssl_mode"),
                     &inputs.mysql_ssl_mode_select,
                     "",
                 ))
                 .child(field_row_light(
-                    "连接字符集",
+                    tr("app.connection.tls.charset"),
                     ConnectionField::MysqlCharset,
                     inputs,
                     false,
@@ -1042,7 +1050,7 @@ fn postgres_tls_mode_block(
         h_form()
             .label_width(px(112.))
             .child(connection_select_field(
-                "SSL 模式",
+                tr("app.connection.tls.ssl_mode"),
                 &inputs.pg_ssl_mode_select,
                 "",
             )),
@@ -1065,7 +1073,7 @@ fn postgres_advanced_form(
             h_form()
                 .label_width(px(112.))
                 .child(field_row_light(
-                    "建连超时(秒)",
+                    tr("app.connection.postgres.connect_timeout"),
                     ConnectionField::PgConnectTimeoutSecs,
                     inputs,
                     false,
@@ -1074,7 +1082,7 @@ fn postgres_advanced_form(
                     cx,
                 ))
                 .child(field_row_light(
-                    "查询超时(秒)",
+                    tr("app.connection.postgres.query_timeout"),
                     ConnectionField::PgQueryTimeoutSecs,
                     inputs,
                     false,
@@ -1083,7 +1091,7 @@ fn postgres_advanced_form(
                     cx,
                 ))
                 .child(field_row_light(
-                    "应用名",
+                    tr("app.connection.postgres.application_name"),
                     ConnectionField::PgApplicationName,
                     inputs,
                     false,
@@ -1092,7 +1100,7 @@ fn postgres_advanced_form(
                     cx,
                 ))
                 .child(field_row_light(
-                    "默认 schema",
+                    tr("app.connection.postgres.default_schema"),
                     ConnectionField::PgDefaultSchema,
                     inputs,
                     false,
@@ -1105,21 +1113,21 @@ fn postgres_advanced_form(
             h_form()
                 .label_width(px(112.))
                 .child(toggle_row_light(
-                    "TCP 保活",
+                    tr("app.connection.postgres.tcp_keepalive"),
                     ConnectionToggleField::PgTcpKeepalive,
                     form.pg_tcp_keepalive,
                     colors,
                     cx,
                 ))
                 .child(toggle_row_light(
-                    "显示其他数据库",
+                    tr("app.connection.postgres.show_other_databases"),
                     ConnectionToggleField::PgShowOtherDatabases,
                     form.pg_show_other_databases,
                     colors,
                     cx,
                 ))
                 .child(toggle_row_light(
-                    "显示系统 schema",
+                    tr("app.connection.postgres.show_system_schemas"),
                     ConnectionToggleField::PgShowSystemSchemas,
                     form.pg_show_system_schemas,
                     colors,
@@ -1145,12 +1153,12 @@ fn ssh_form(
         .flex()
         .flex_col()
         .gap_4()
-        .child(redis_section_label("SSH 隧道", colors))
+        .child(redis_section_label(tr("app.connection.ssh.title"), colors))
         .child(
             h_form()
                 .label_width(px(112.))
                 .child(toggle_row_light(
-                    "启用 SSH 隧道",
+                    tr("app.connection.ssh.enabled"),
                     ConnectionToggleField::SshEnabled,
                     form.ssh_enabled,
                     colors,
@@ -1199,7 +1207,7 @@ fn ssh_tunnel_block(
             h_form()
                 .label_width(px(112.))
                 .child(field_row_light(
-                    "主机",
+                    tr("app.connection.field.host"),
                     ConnectionField::SshHost,
                     inputs,
                     false,
@@ -1208,7 +1216,7 @@ fn ssh_tunnel_block(
                     cx,
                 ))
                 .child(field_row_light(
-                    "端口",
+                    tr("app.connection.field.port"),
                     ConnectionField::SshPort,
                     inputs,
                     false,
@@ -1217,7 +1225,7 @@ fn ssh_tunnel_block(
                     cx,
                 ))
                 .child(field_row_light(
-                    "用户名",
+                    tr("app.connection.field.username"),
                     ConnectionField::SshUsername,
                     inputs,
                     false,
@@ -1226,7 +1234,7 @@ fn ssh_tunnel_block(
                     cx,
                 ))
                 .child(connection_select_field(
-                    "认证方式",
+                    tr("app.connection.ssh.auth_method"),
                     &inputs.ssh_auth_select,
                     "",
                 )),
@@ -1246,7 +1254,7 @@ fn ssh_password_block(
             h_form()
                 .label_width(px(112.))
                 .child(field_row_light(
-                    "密码",
+                    tr("app.connection.field.password"),
                     ConnectionField::SshPassword,
                     inputs,
                     true,
@@ -1270,16 +1278,16 @@ fn ssh_private_key_block(
             h_form()
                 .label_width(px(112.))
                 .child(file_field_row_light(
-                    "私钥文件",
+                    tr("app.connection.ssh.private_key"),
                     ConnectionField::SshPrivateKey,
-                    "选择 SSH 私钥文件",
+                    tr("app.connection.ssh.private_key_prompt"),
                     inputs,
                     colors,
                     window,
                     cx,
                 ))
                 .child(field_row_light(
-                    "口令 (passphrase)",
+                    tr("app.connection.ssh.passphrase"),
                     ConnectionField::SshPassphrase,
                     inputs,
                     true,
@@ -1301,12 +1309,12 @@ fn mysql_ssh_tuning_block(
         .flex()
         .flex_col()
         .gap_4()
-        .child(redis_section_label("SSH 调优", colors))
+        .child(redis_section_label(tr("app.connection.ssh.tuning"), colors))
         .child(
             h_form()
                 .label_width(px(112.))
                 .child(field_row_light(
-                    "连接超时 (秒, 0=继承)",
+                    tr("app.connection.ssh.connect_timeout"),
                     ConnectionField::MysqlSshConnectTimeout,
                     inputs,
                     false,
@@ -1315,7 +1323,7 @@ fn mysql_ssh_tuning_block(
                     cx,
                 ))
                 .child(field_row_light(
-                    "心跳间隔 (秒, 0=不发送)",
+                    tr("app.connection.ssh.keepalive"),
                     ConnectionField::MysqlSshKeepalive,
                     inputs,
                     false,
@@ -1339,12 +1347,12 @@ fn mysql_advanced_form(
         .flex()
         .flex_col()
         .gap_4()
-        .child(redis_section_label("代理", colors))
+        .child(redis_section_label(tr("app.connection.mysql.proxy"), colors))
         .child(
             h_form()
                 .label_width(px(112.))
                 .child(toggle_row_light(
-                    "启用代理",
+                    tr("app.connection.mysql.proxy_enabled"),
                     ConnectionToggleField::MysqlProxyEnabled,
                     form.mysql_proxy_enabled,
                     colors,
@@ -1358,12 +1366,12 @@ fn mysql_advanced_form(
         .when(!proxy_enabled, |this| {
             this.child(mysql_proxy_block(form, inputs, colors, window, cx).opacity(0.45))
         })
-        .child(redis_section_label("高级连接选项", colors))
+        .child(redis_section_label(tr("app.connection.mysql.advanced"), colors))
         .child(
             h_form()
                 .label_width(px(112.))
                 .child(field_row_light(
-                    "建连超时 (秒)",
+                    tr("app.connection.mysql.connect_timeout"),
                     ConnectionField::MysqlConnectTimeout,
                     inputs,
                     false,
@@ -1372,7 +1380,7 @@ fn mysql_advanced_form(
                     cx,
                 ))
                 .child(field_row_light(
-                    "查询超时 (秒, 0=不设限)",
+                    tr("app.connection.mysql.query_timeout"),
                     ConnectionField::MysqlQueryTimeout,
                     inputs,
                     false,
@@ -1381,7 +1389,7 @@ fn mysql_advanced_form(
                     cx,
                 ))
                 .child(field_row_light(
-                    "空闲 TTL (秒, 0=不回收)",
+                    tr("app.connection.mysql.idle_ttl"),
                     ConnectionField::MysqlIdleTtl,
                     inputs,
                     false,
@@ -1395,13 +1403,13 @@ fn mysql_advanced_form(
                 .pl_1()
                 .text_size(px(12.))
                 .text_color(colors.muted)
-                .child("待连接复用启用后生效"),
+                .child(tr("app.connection.mysql.reuse_note")),
         )
         .child(
             h_form()
                 .label_width(px(112.))
                 .child(toggle_row_light(
-                    "TCP 长连接保活",
+                    tr("app.connection.mysql.tcp_keepalive"),
                     ConnectionToggleField::MysqlTcpKeepalive,
                     form.mysql_tcp_keepalive,
                     colors,
@@ -1425,7 +1433,7 @@ fn mysql_proxy_block(
             h_form()
                 .label_width(px(112.))
                 .child(field_row_light(
-                    "代理类型",
+                    tr("app.connection.mysql.proxy_type"),
                     ConnectionField::MysqlProxyType,
                     inputs,
                     false,
@@ -1434,7 +1442,7 @@ fn mysql_proxy_block(
                     cx,
                 ))
                 .child(field_row_light(
-                    "主机",
+                    tr("app.connection.field.host"),
                     ConnectionField::MysqlProxyHost,
                     inputs,
                     false,
@@ -1443,7 +1451,7 @@ fn mysql_proxy_block(
                     cx,
                 ))
                 .child(field_row_light(
-                    "端口",
+                    tr("app.connection.field.port"),
                     ConnectionField::MysqlProxyPort,
                     inputs,
                     false,
@@ -1452,7 +1460,7 @@ fn mysql_proxy_block(
                     cx,
                 ))
                 .child(field_row_light(
-                    "用户名 (可选)",
+                    tr("app.connection.mysql.proxy_username"),
                     ConnectionField::MysqlProxyUsername,
                     inputs,
                     false,
@@ -1461,7 +1469,7 @@ fn mysql_proxy_block(
                     cx,
                 ))
                 .child(field_row_light(
-                    "密码 (可选)",
+                    tr("app.connection.mysql.proxy_password"),
                     ConnectionField::MysqlProxyPassword,
                     inputs,
                     true,
@@ -1484,12 +1492,12 @@ fn advanced_form(
         .flex()
         .flex_col()
         .gap_4()
-        .child(redis_section_label("Sentinel 模式", colors))
+        .child(redis_section_label(tr("app.connection.redis.sentinel"), colors))
         .child(
             h_form()
                 .label_width(px(112.))
                 .child(field_row_light(
-                    "主库名",
+                    tr("app.connection.redis.sentinel_master"),
                     ConnectionField::SentinelMasterName,
                     inputs,
                     false,
@@ -1498,7 +1506,7 @@ fn advanced_form(
                     cx,
                 ))
                 .child(field_row_light(
-                    "节点列表 (host:port, 逗号或换行分隔)",
+                    tr("app.connection.redis.sentinel_endpoints"),
                     ConnectionField::SentinelEndpoints,
                     inputs,
                     false,
@@ -1507,12 +1515,12 @@ fn advanced_form(
                     cx,
                 )),
         )
-        .child(redis_section_label("Cluster 模式", colors))
+        .child(redis_section_label(tr("app.connection.redis.cluster"), colors))
         .child(
             h_form()
                 .label_width(px(112.))
                 .child(field_row_light(
-                    "起始节点 (host:port, 逗号或换行分隔)",
+                    tr("app.connection.redis.cluster_nodes"),
                     ConnectionField::ClusterStartNodes,
                     inputs,
                     false,
@@ -1521,24 +1529,24 @@ fn advanced_form(
                     cx,
                 ))
                 .child(toggle_row_light(
-                    "允许重定向到从节点",
+                    tr("app.connection.redis.cluster_readonly"),
                     ConnectionToggleField::ClusterAllowReadonly,
                     form.cluster_allow_readonly,
                     colors,
                     cx,
                 )),
         )
-        .child(redis_section_label("云自动发现", colors))
+        .child(redis_section_label(tr("app.connection.redis.cloud"), colors))
         .child(
             h_form()
                 .label_width(px(112.))
                 .child(connection_select_field(
-                    "云提供方",
+                    tr("app.connection.redis.cloud_provider"),
                     &inputs.cloud_provider_select,
                     "",
                 ))
                 .child(field_row_light(
-                    "订阅 / 账号",
+                    tr("app.connection.redis.cloud_subscription"),
                     ConnectionField::CloudSubscription,
                     inputs,
                     false,
@@ -1547,7 +1555,7 @@ fn advanced_form(
                     cx,
                 ))
                 .child(field_row_light(
-                    "资源 / 数据库",
+                    tr("app.connection.redis.cloud_resource"),
                     ConnectionField::CloudResource,
                     inputs,
                     false,
@@ -1556,7 +1564,7 @@ fn advanced_form(
                     cx,
                 )),
         )
-        .child(redis_section_label("连接串导入", colors))
+        .child(redis_section_label(tr("app.connection.redis.import"), colors))
         .child(
             h_form()
                 .label_width(px(112.))
@@ -1571,7 +1579,10 @@ fn discovery_uri_row(
     window: &mut Window,
     cx: &mut Context<NavicatMain>,
 ) -> Field {
-    field().label("连接串 / URI").items_center().child(
+    field()
+        .label(tr("app.connection.redis.uri"))
+        .items_center()
+        .child(
         div()
             .w_full()
             .flex()
@@ -1598,7 +1609,7 @@ fn discovery_uri_row(
                     .text_color(rgb(0x1687ff))
                     .cursor_pointer()
                     .hover(move |style| style.bg(colors.hover))
-                    .child("导入 / 发现")
+                    .child(tr("app.connection.redis.import_action"))
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(|this, _, _, cx| {
@@ -1611,30 +1622,31 @@ fn discovery_uri_row(
 }
 
 /// 小节标题。
-fn redis_section_label(text: &str, colors: UiColors) -> Div {
+fn redis_section_label(text: impl Into<SharedString>, colors: UiColors) -> Div {
+    let text = text.into();
     div()
         .pt_1()
         .text_size(px(12.))
         .font_weight(gpui::FontWeight::SEMIBOLD)
         .text_color(colors.muted)
-        .child(text.to_string())
+        .child(text)
 }
 
 /// 新建连接弹框里的下拉行：用 gpui-component Select 渲染，绑定根实体上的 SelectState 光标。
-fn connection_select_field(
-    label: &'static str,
-    select: &Entity<SelectState<SearchableVec<String>>>,
-    search_placeholder: &'static str,
+fn connection_select_field<I: SelectItem + 'static>(
+    label: impl Into<SharedString>,
+    select: &Entity<SelectState<SearchableVec<I>>>,
+    search_placeholder: impl Into<SharedString>,
 ) -> Field {
     field()
-        .label(label)
+        .label(label.into())
         .items_center()
         .child(Select::new(select).small().search_placeholder(search_placeholder))
 }
 
 /// 布尔开关行：把 Checkbox 的点击写回表单对应开关字段。
 fn toggle_row_light(
-    label: &'static str,
+    label: impl Into<SharedString>,
     field_id: ConnectionToggleField,
     checked: bool,
     _colors: UiColors,
@@ -1642,7 +1654,7 @@ fn toggle_row_light(
 ) -> Field {
     let view = cx.entity();
     let id = connection_toggle_id(field_id);
-    field().label(label).items_center().child(
+    field().label(label.into()).items_center().child(
         Checkbox::new(id)
             .checked(checked)
             .on_click(move |new_checked, _, cx| {
@@ -1657,15 +1669,16 @@ fn toggle_row_light(
 
 /// 文件选择行：文件路径输入 + 「选择文件」按钮。
 fn file_field_row_light(
-    label: &'static str,
+    label: impl Into<SharedString>,
     field_id: ConnectionField,
-    prompt: &'static str,
+    prompt: impl Into<SharedString>,
     inputs: &NewConnectionInputs,
     colors: UiColors,
     window: &mut Window,
     cx: &mut Context<NavicatMain>,
 ) -> Field {
-    field().label(label).items_center().child(
+    let prompt = prompt.into().to_string();
+    field().label(label.into()).items_center().child(
         div()
             .w_full()
             .flex()
@@ -1683,7 +1696,7 @@ fn file_field_row_light(
 /// 「选择文件」按钮：调用对应字段的通用文件选择器。
 fn file_picker_button_light(
     field_id: ConnectionField,
-    prompt: &'static str,
+    prompt: String,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
@@ -1728,8 +1741,7 @@ fn file_picker_button_light(
         .on_mouse_down(
             MouseButton::Left,
             cx.listener(move |this, _, window, cx| {
-                let prompt = prompt;
-                this.choose_connection_file(field_id, prompt, window, cx);
+                this.choose_connection_file(field_id, prompt.clone(), window, cx);
                 cx.stop_propagation();
             }),
         )
@@ -1761,7 +1773,7 @@ fn connection_form(
     let base = h_form()
         .label_width(px(112.))
         .child(field_row_light(
-            "名称",
+            tr("app.connection.field.name"),
             ConnectionField::Name,
             inputs,
             false,
@@ -1773,9 +1785,15 @@ fn connection_form(
 
     let form = match kind {
         DatabaseKind::MySql | DatabaseKind::TiDb => base
-            .child(host_port_row_light("主机", inputs, colors, window, cx))
+            .child(host_port_row_light(
+                tr("app.connection.field.host"),
+                inputs,
+                colors,
+                window,
+                cx,
+            ))
             .child(field_row_light(
-                "用户名",
+                tr("app.connection.field.username"),
                 ConnectionField::Username,
                 inputs,
                 false,
@@ -1784,7 +1802,7 @@ fn connection_form(
                 cx,
             ))
             .child(field_row_light(
-                "密码",
+                tr("app.connection.field.password"),
                 ConnectionField::Password,
                 inputs,
                 true,
@@ -1793,7 +1811,7 @@ fn connection_form(
                 cx,
             ))
             .child(field_row_light(
-                "数据库",
+                tr("app.connection.field.database"),
                 ConnectionField::Database,
                 inputs,
                 false,
@@ -1802,7 +1820,7 @@ fn connection_form(
                 cx,
             ))
             .child(field_row_light(
-                "URL 参数",
+                tr("app.connection.field.url_params"),
                 ConnectionField::UrlParams,
                 inputs,
                 false,
@@ -1811,9 +1829,15 @@ fn connection_form(
                 cx,
             )),
         DatabaseKind::Postgres => base
-            .child(host_port_row_light("主机", inputs, colors, window, cx))
+            .child(host_port_row_light(
+                tr("app.connection.field.host"),
+                inputs,
+                colors,
+                window,
+                cx,
+            ))
             .child(field_row_light(
-                "用户名",
+                tr("app.connection.field.username"),
                 ConnectionField::Username,
                 inputs,
                 false,
@@ -1822,7 +1846,7 @@ fn connection_form(
                 cx,
             ))
             .child(field_row_light(
-                "密码",
+                tr("app.connection.field.password"),
                 ConnectionField::Password,
                 inputs,
                 true,
@@ -1831,7 +1855,7 @@ fn connection_form(
                 cx,
             ))
             .child(field_row_light(
-                "数据库",
+                tr("app.connection.field.database"),
                 ConnectionField::Database,
                 inputs,
                 false,
@@ -1840,7 +1864,7 @@ fn connection_form(
                 cx,
             ))
             .child(field_row_light(
-                "URL 参数",
+                tr("app.connection.field.url_params"),
                 ConnectionField::UrlParams,
                 inputs,
                 false,
@@ -1850,15 +1874,21 @@ fn connection_form(
             )),
         DatabaseKind::MongoDb => base
             .child(connection_method_row_light(
-                "连接方式",
-                "表单",
+                tr("app.connection.field.method"),
+                tr("app.connection.method.form"),
                 "URL",
                 colors,
             ))
-            .child(host_port_row_light("主机", inputs, colors, window, cx))
+            .child(host_port_row_light(
+                tr("app.connection.field.host"),
+                inputs,
+                colors,
+                window,
+                cx,
+            ))
             .child(checkbox_row_light("SRV (MongoDB Atlas)", colors))
             .child(field_row_light(
-                "用户名",
+                tr("app.connection.field.username"),
                 ConnectionField::Username,
                 inputs,
                 false,
@@ -1867,7 +1897,7 @@ fn connection_form(
                 cx,
             ))
             .child(field_row_light(
-                "密码",
+                tr("app.connection.field.password"),
                 ConnectionField::Password,
                 inputs,
                 true,
@@ -1876,7 +1906,7 @@ fn connection_form(
                 cx,
             ))
             .child(field_row_light(
-                "默认库",
+                tr("app.connection.field.default_db"),
                 ConnectionField::MongoDefaultDb,
                 inputs,
                 false,
@@ -1885,7 +1915,7 @@ fn connection_form(
                 cx,
             ))
             .child(field_row_light(
-                "认证库",
+                tr("app.connection.field.auth_db"),
                 ConnectionField::MongoAuthDb,
                 inputs,
                 false,
@@ -1893,11 +1923,21 @@ fn connection_form(
                 window,
                 cx,
             ))
-            .child(dropdown_row_light("认证机制", "默认", colors)),
+            .child(dropdown_row_light(
+                tr("app.connection.field.auth_mechanism"),
+                tr("app.connection.method.default"),
+                colors,
+            )),
         DatabaseKind::Redis => base
-            .child(host_port_row_light("主机", inputs, colors, window, cx))
+            .child(host_port_row_light(
+                tr("app.connection.field.host"),
+                inputs,
+                colors,
+                window,
+                cx,
+            ))
             .child(field_row_light(
-                "用户名",
+                tr("app.connection.field.username"),
                 ConnectionField::Username,
                 inputs,
                 false,
@@ -1906,7 +1946,7 @@ fn connection_form(
                 cx,
             ))
             .child(field_row_light(
-                "密码",
+                tr("app.connection.field.password"),
                 ConnectionField::Password,
                 inputs,
                 true,
@@ -1916,7 +1956,7 @@ fn connection_form(
             ))
             // Redis 没有连接串，TLS / Sentinel 这些开关走同一个参数输入框
             .child(field_row_light(
-                "参数",
+                tr("app.connection.field.params"),
                 ConnectionField::UrlParams,
                 inputs,
                 false,

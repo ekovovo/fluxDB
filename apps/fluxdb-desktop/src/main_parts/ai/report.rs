@@ -57,10 +57,14 @@ impl NavicatMain {
             return;
         }
         let Ok(storage) = self.controller.ai_storage() else {
-            self.show_message("AI 存储尚未初始化，无法打开报告", AppMessageKind::Error, cx);
+            self.show_message(
+                tr("app.ai_report.storage_missing"),
+                AppMessageKind::Error,
+                cx,
+            );
             return;
         };
-        self.show_message("正在读取产物快照…", AppMessageKind::Success, cx);
+        self.show_message(tr("app.ai_report.loading_snapshot"), AppMessageKind::Success, cx);
         let task = cx.spawn_in(window, async move |view, cx| {
             let loaded = cx
                 .background_spawn({
@@ -71,7 +75,7 @@ impl NavicatMain {
             let _ = view.update_in(cx, |this, window, cx| match loaded {
                 Ok(report) => this.open_ai_report_dialog(report, intent, window, cx),
                 Err(error) => this.show_message(
-                    format!("无法打开产物报告：{}", error.message),
+                    tr("app.ai_report.open_failed").replace("%{error}", &error.message),
                     AppMessageKind::Error,
                     cx,
                 ),
@@ -148,7 +152,7 @@ impl NavicatMain {
         };
         if report.metadata_only() {
             self.show_message(
-                "产物没有可导出的正文（渲染失败或快照不可读），未写出任何文件",
+                tr("app.ai_report.export_no_body"),
                 AppMessageKind::Warning,
                 cx,
             );
@@ -158,7 +162,7 @@ impl NavicatMain {
             Ok(content) => content,
             Err(error) => {
                 self.show_message(
-                    format!("无法导出报告：{}", error.message),
+                    tr("app.ai_report.export_failed").replace("%{error}", &error.message),
                     AppMessageKind::Error,
                     cx,
                 );
@@ -187,17 +191,16 @@ impl NavicatMain {
                         this.ai_report_modal.borrow_mut().exporting = false;
                         match written {
                             Ok(fact) => this.show_message(
-                                format!(
-                                    "已导出报告 {} 字节 · 指纹 {}：{}",
-                                    fact.byte_count,
-                                    fact.content_hash,
-                                    path.display()
-                                ),
+                                tr("app.ai_report.exported")
+                                    .replace("%{bytes}", &fact.byte_count.to_string())
+                                    .replace("%{hash}", &fact.content_hash)
+                                    .replace("%{path}", &path.display().to_string()),
                                 AppMessageKind::Success,
                                 cx,
                             ),
                             Err(error) => this.show_message(
-                                format!("导出失败：{}", error.message),
+                                tr("app.ai_report.export_failed")
+                                    .replace("%{error}", &error.message),
                                 AppMessageKind::Error,
                                 cx,
                             ),
@@ -215,7 +218,8 @@ impl NavicatMain {
                     let _ = view.update_in(cx, |this, _, cx| {
                         this.ai_report_modal.borrow_mut().exporting = false;
                         this.show_message(
-                            format!("选择导出位置失败：{error}"),
+                            tr("app.ai_report.pick_path_failed")
+                                .replace("%{error}", &error.to_string()),
                             AppMessageKind::Error,
                             cx,
                         );
@@ -226,7 +230,8 @@ impl NavicatMain {
                     let _ = view.update_in(cx, |this, _, cx| {
                         this.ai_report_modal.borrow_mut().exporting = false;
                         this.show_message(
-                            format!("选择导出位置失败：{error}"),
+                            tr("app.ai_report.pick_path_failed")
+                                .replace("%{error}", &error.to_string()),
                             AppMessageKind::Error,
                             cx,
                         );
@@ -269,10 +274,12 @@ fn ai_report_build_dialog(
         (data.report.clone(), data.sql_open, data.exporting)
     };
     let Some(report) = report else {
-        return dialog.title("任务产物").child("产物报告不可用");
+        return dialog
+            .title(tr("app.ai_report.artifact_title"))
+            .child(tr("app.ai_report.unavailable"));
     };
     let colors = views.colors;
-    let title = format!("{} · 报告", report.title);
+    let title = tr("app.ai_report.title_with_name").replace("%{title}", &report.title);
     let view_sql = views.view.clone();
     let view_export_html = views.view.clone();
     let view_close = views.view.clone();
@@ -303,7 +310,10 @@ fn ai_report_build_dialog(
                         .small()
                         .outline()
                         .cursor_pointer()
-                        .child(format!("来源 SQL（{}）", report.sources.len()))
+                        .child(
+                            tr("app.ai_report.source_sql_count")
+                                .replace("%{count}", &report.sources.len().to_string()),
+                        )
                         .on_click(move |_, _window, _cx| {
                             // 弹框 builder 每帧重读共享状态：翻转后请求重绘即可刷新折叠区域。
                             {
@@ -322,7 +332,7 @@ fn ai_report_build_dialog(
                         .disabled(exporting || report.metadata_only())
                         .child(app_icon(AppIcon::FolderUp, 13., colors.muted))
                         // 导出与弹框同构：自包含 HTML（含图表），不再提供 Markdown。
-                        .child("导出 HTML（含图表）")
+                        .child(tr("app.ai_report.export_html"))
                         .on_click(move |_, window, cx| {
                             let _ = view_export_html.update(cx, |this, cx| {
                                 this.begin_ai_report_export(
@@ -339,7 +349,7 @@ fn ai_report_build_dialog(
                         .small()
                         .ghost()
                         .cursor_pointer()
-                        .child("关闭")
+                        .child(tr("app.common.close"))
                         .on_click(move |_, window, cx| {
                             let _ = view_close.update(cx, |this, cx| {
                                 this.close_ai_report_dialog(window, cx);
@@ -363,7 +373,11 @@ fn ai_report_footer_meta(report: &fluxdb_app::AiReportView, colors: UiColors) ->
             report.renderer,
             report.renderer_version,
             report.revision,
-            if report.truncated { " · 抽样/截断" } else { "" }
+            if report.truncated {
+                tr("app.ai_report.sampled_suffix").to_string()
+            } else {
+                String::new()
+            }
         ))
         .into_any_element()
 }
@@ -389,7 +403,8 @@ fn ai_report_body(
             .items_center()
             .gap_1p5()
             .child(ai_report_tag(
-                format!("任务产物 · {}", report.status),
+                tr("app.ai_report.artifact_with_status")
+                    .replace("%{status}", &report.status),
                 if report.status == "ready" {
                     colors.success
                 } else {
@@ -398,11 +413,15 @@ fn ai_report_body(
                 colors,
             ))
             .child(ai_report_tag(
-                format!("renderer {}", report.renderer),
+                tr("app.ai_report.renderer_tag").replace("%{renderer}", &report.renderer),
                 colors.info,
                 colors,
             ))
-            .child(ai_report_tag("快照 · 不自动刷新".to_string(), colors.muted, colors)),
+            .child(ai_report_tag(
+                tr("app.ai_report.snapshot_tag").to_string(),
+                colors.muted,
+                colors,
+            )),
     );
     if let Some(issue) = &report.data_issue {
         column = column.child(
@@ -414,9 +433,13 @@ fn ai_report_body(
         column = column.child(metrics);
     }
     if let Some(metric) = &report.spec.metric {
-        let mut meta = format!("指标口径：{} · 时区 {}", metric.name, metric.timezone);
+        let mut meta = tr("app.ai_report.metric_meta")
+            .replace("%{name}", &metric.name)
+            .replace("%{timezone}", &metric.timezone);
         if let Some(assumption) = &metric.assumption {
-            meta.push_str(&format!(" · 未确认假设：{assumption}"));
+            meta.push_str(
+                &tr("app.ai_report.metric_assumption").replace("%{assumption}", assumption),
+            );
         }
         column = column.child(
             div()
@@ -455,7 +478,10 @@ fn ai_report_body(
                     div()
                         .text_size(px(11.))
                         .text_color(colors.muted)
-                        .child(format!("模型说明（未独立核实）：{text}")),
+                        .child(
+                            tr("app.ai_report.model_note")
+                                .replace("%{text}", text),
+                        ),
                 );
             }
         }
@@ -465,7 +491,7 @@ fn ai_report_body(
             div()
                 .text_size(px(11.))
                 .text_color(colors.muted)
-                .child("产物没有图表或表格块。"),
+                .child(tr("app.ai_report.no_blocks")),
         );
     }
 
@@ -478,7 +504,7 @@ fn ai_report_body(
             div()
                 .text_size(px(10.))
                 .text_color(colors.muted)
-                .child("正在选择导出位置并写入…"),
+                .child(tr("app.ai_report.exporting")),
         );
     }
     column.into_any_element()
@@ -530,17 +556,19 @@ fn ai_report_metrics(
             .flex()
             .gap_2()
             .child(cell(
-                &format!("{} 合计", summary.y),
+                &tr("app.ai_report.metric_sum").replace("%{value}", &summary.y),
                 number(summary.sum),
-                format!("{} 个真实数据点", summary.count),
+                tr("app.ai_report.metric_points")
+                    .replace("%{count}", &summary.count.to_string()),
             ))
             .child(cell(
-                &format!("{} 峰值", summary.y),
+                &tr("app.ai_report.metric_peak").replace("%{value}", &summary.y),
                 number(summary.max),
                 if summary.max_label.is_empty() {
-                    "来源真实值".to_string()
+                    tr("app.ai_report.metric_source_value").to_string()
                 } else {
-                    format!("最高：{}", summary.max_label)
+                    tr("app.ai_report.metric_max_label")
+                        .replace("%{label}", &summary.max_label)
                 },
             ))
             .into_any_element(),
@@ -581,11 +609,14 @@ fn ai_report_table_block(
     let header = div()
         .text_size(px(12.))
         .font_weight(gpui::FontWeight::SEMIBOLD)
-        .child(format!("表格（{} 列）", columns.len()));
+        .child(
+            tr("app.ai_report.table_header")
+                .replace("%{count}", &columns.len().to_string()),
+        );
     let body = match ai_report_source(report, result_ref) {
-        None => ai_report_placeholder("来源不可解析，表格未渲染。", colors),
+        None => ai_report_placeholder(tr("app.ai_report.table_source_unresolved"), colors),
         Some(_) if columns.is_empty() => {
-            ai_report_placeholder("表格没有声明列，未渲染。", colors)
+            ai_report_placeholder(tr("app.ai_report.table_no_columns"), colors)
         }
         Some(source) => {
             let mut head = div()
@@ -631,16 +662,23 @@ fn ai_report_table_block(
                 div()
                     .text_size(px(10.))
                     .text_color(colors.warning)
-                    .child(format!(
-                        "显示 {shown} / {} 行（来源被抽样，不代表全集）",
-                        source.rows.max(source.items.len())
-                    ))
+                    .child(
+                        tr("app.ai_report.table_sampled")
+                            .replace("%{shown}", &shown.to_string())
+                            .replace(
+                                "%{total}",
+                                &source.rows.max(source.items.len()).to_string(),
+                            )
+                    )
                     .into_any_element()
             } else {
                 div()
                     .text_size(px(10.))
                     .text_color(colors.muted)
-                    .child(format!("{shown} 行"))
+                    .child(
+                        tr("app.ai_report.table_rows")
+                            .replace("%{count}", &shown.to_string()),
+                    )
                     .into_any_element()
             };
             div()
@@ -678,12 +716,13 @@ fn ai_report_cell(text: &str, header: bool, colors: UiColors) -> gpui::AnyElemen
         .into_any_element()
 }
 
-fn ai_report_placeholder(text: &str, colors: UiColors) -> gpui::AnyElement {
+fn ai_report_placeholder(text: impl Into<SharedString>, colors: UiColors) -> gpui::AnyElement {
+    let text = text.into();
     div()
         .py_3()
         .text_size(px(11.))
         .text_color(colors.muted)
-        .child(text.to_string())
+        .child(text)
         .into_any_element()
 }
 
@@ -700,33 +739,55 @@ fn ai_report_provenance(report: &fluxdb_app::AiReportView, colors: UiColors) -> 
         .text_size(px(10.))
         .text_color(colors.muted)
         .child(if report.metadata_only() {
-            "产物元数据（无渲染正文）"
+            tr("app.ai_report.provenance_metadata_only")
         } else {
-            "来源与可追溯信息"
+            tr("app.ai_report.provenance")
         });
     for source in &report.sources {
+        let sampled = if source.truncated {
+            tr("app.ai_report.sampled_marker").to_string()
+        } else {
+            String::new()
+        };
         column = column.child(
             div()
                 .debug_selector(|| "ai-report-source".into())
-                .child(format!(
-                    "来源 {} · {} 行{}{}{}",
-                    source.declared_ref.as_deref().unwrap_or("-"),
-                    source.rows,
-                    if source.truncated { "（抽样）" } else { "" },
-                    match &source.tool_call_id {
-                        Some(call) => format!(" · 调用 {call}"),
-                        None => String::new(),
-                    },
-                    match &source.result_id {
-                        Some(id) => format!(" · 结果行 {id}"),
-                        None => String::new(),
-                    },
-                )),
+                .child(
+                    tr("app.ai_report.source_line")
+                        .replace(
+                            "%{ref}",
+                            source.declared_ref.as_deref().unwrap_or("-"),
+                        )
+                        .replace("%{rows}", &source.rows.to_string())
+                        .replace("%{sampled}", &sampled)
+                        .replace(
+                            "%{call}",
+                            &source
+                                .tool_call_id
+                                .as_ref()
+                                .map(|call| {
+                                    tr("app.ai_report.source_call")
+                                        .replace("%{call}", call)
+                                })
+                                .unwrap_or_default(),
+                        )
+                        .replace(
+                            "%{result}",
+                            &source
+                                .result_id
+                                .as_ref()
+                                .map(|id| {
+                                    tr("app.ai_report.source_result")
+                                        .replace("%{id}", id)
+                                })
+                                .unwrap_or_default(),
+                        ),
+                ),
         );
     }
     if report.metadata_only() {
         column = column
-            .child("（renderer 不可用或快照缺失时仅展示声明与来源，不展示未生成的数据）");
+            .child(tr("app.ai_report.metadata_only_note"));
     }
     column.into_any_element()
 }
@@ -754,10 +815,12 @@ fn ai_report_sql_section(report: &fluxdb_app::AiReportView, colors: UiColors) ->
                         div()
                             .text_size(px(10.))
                             .text_color(colors.muted)
-                            .child(format!(
-                                "来源 {}（只读展示，不重新执行）",
-                                source.declared_ref.as_deref().unwrap_or("-")
-                            )),
+                            .child(
+                                tr("app.ai_report.source_sql_readonly").replace(
+                                    "%{ref}",
+                                    source.declared_ref.as_deref().unwrap_or("-"),
+                                ),
+                            ),
                     )
                     .child(
                         div()
@@ -782,7 +845,7 @@ fn ai_report_sql_section(report: &fluxdb_app::AiReportView, colors: UiColors) ->
             div()
                 .text_size(px(10.))
                 .text_color(colors.muted)
-                .child("来源没有可展示的 SQL（非 SQL 工具或参数已脱敏）。"),
+                .child(tr("app.ai_report.no_sql")),
         );
     }
     column.into_any_element()
@@ -809,7 +872,7 @@ fn ai_chat_artifact_card(
         .get("title")
         .and_then(serde_json::Value::as_str)
         .map(str::to_owned)
-        .unwrap_or_else(|| "任务产物".to_string());
+        .unwrap_or_else(|| tr("app.ai_report.artifact_title").to_string());
     let status = payload
         .get("artifact_status")
         .and_then(serde_json::Value::as_str)
@@ -833,11 +896,11 @@ fn ai_chat_artifact_card(
         .and_then(serde_json::Value::as_str)
         .map(str::to_owned);
     let (status_label, status_color) = match status.as_str() {
-        "ready" => ("已完成", colors.success),
-        "failed" => ("渲染失败", colors.danger),
-        "expired" => ("已过期", colors.muted),
-        "draft" | "staged" => ("准备中", colors.muted),
-        _ => ("进行中", colors.info),
+        "ready" => (tr("app.ai_report.status_ready"), colors.success),
+        "failed" => (tr("app.ai_report.status_failed"), colors.danger),
+        "expired" => (tr("app.ai_report.status_expired"), colors.muted),
+        "draft" | "staged" => (tr("app.ai_report.status_preparing"), colors.muted),
+        _ => (tr("app.ai_report.status_running"), colors.info),
     };
     // 每个动作打开同一弹框，只是初始视图/动作不同（与原型卡片的三个按钮一致）。
     let report_id = artifact_id.clone();
@@ -879,7 +942,7 @@ fn ai_chat_artifact_card(
                     .cursor_pointer()
                     .disabled(!can_open)
                     .child(app_icon(AppIcon::FolderUp, 12., colors.muted))
-                    .child("导出")
+                    .child(tr("app.context.export"))
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.open_ai_artifact_report(
                             export_id.clone(),
@@ -900,7 +963,7 @@ fn ai_chat_artifact_card(
                     .cursor_pointer()
                     .disabled(!can_open)
                     .child(app_icon(AppIcon::FileSearch, 12., colors.muted))
-                    .child("打开报告")
+                    .child(tr("app.ai_report.open_report"))
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.open_ai_artifact_report(
                             report_id.clone(),
@@ -951,7 +1014,8 @@ fn ai_chat_artifact_card(
                         ),
                 )
                 .child(ai_report_tag(
-                    format!("任务产物 · {status_label}"),
+                    tr("app.ai_report.artifact_with_status")
+                        .replace("%{status}", status_label.as_str()),
                     status_color,
                     colors,
                 )),
@@ -969,7 +1033,11 @@ fn ai_chat_artifact_card(
                         format!("{text} · ")
                     },
                     renderer,
-                    if truncated { " · 抽样/截断" } else { "" },
+                    if truncated {
+                        tr("app.ai_report.sampled_suffix").to_string()
+                    } else {
+                        String::new()
+                    },
                 )),
         )
         .when_some(failure_code, |card, code| {
@@ -977,16 +1045,19 @@ fn ai_chat_artifact_card(
                 div()
                     .text_size(px(10.))
                     .text_color(colors.danger)
-                    .child(format!(
-                        "renderer 不可用或渲染失败（{code}）：只显示声明的来源与口径，未生成正文。"
-                    )),
+                    .child(
+                        tr("app.ai_report.renderer_failed").replace("%{code}", &code)
+                    ),
             )
         })
         .child(
             div()
                 .text_size(px(10.))
                 .text_color(colors.muted)
-                .child(format!("来源 {source_count} 项 · 打开报告不重新查询数据库")),
+                .child(
+                    tr("app.ai_report.source_count")
+                        .replace("%{count}", &source_count.to_string()),
+                ),
         )
         .child(actions)
         .into_any_element()

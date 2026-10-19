@@ -24,7 +24,7 @@ impl NavicatMain {
             .any(|plugin| plugin.id == "builtin.files" && !plugin.enabled)
         {
             self.show_message(
-                "文件与附件已停用，请先在内置插件中启用",
+                tr("app.ai.chat.reference.disabled_plugin").as_ref(),
                 AppMessageKind::Warning,
                 cx,
             );
@@ -38,7 +38,7 @@ impl NavicatMain {
             files: true,
             directories: false,
             multiple: false,
-            prompt: Some("选择 AI 文本附件".into()),
+            prompt: Some(tr("app.ai.chat.reference.picker_prompt")),
         });
         let root = self.storage.root_dir().to_path_buf();
         self._file_picker_task = Some(cx.spawn_in(window, async move |view, cx| {
@@ -59,7 +59,7 @@ impl NavicatMain {
                 Ok(Ok(None)) => None,
                 _ => Some(Err(fluxdb_core::Error::new(
                     fluxdb_core::ErrorKind::Internal,
-                    "文件选择失败",
+                    tr("app.ai.chat.reference.picker_failed").to_string(),
                 ))),
             };
             let _ = view.update_in(cx, |this, window, cx| {
@@ -68,7 +68,7 @@ impl NavicatMain {
                     || session_id != this.controller.state().ai_conversation.session_id
                 {
                     this.show_message(
-                        "会话已切换，附件未添加；请重新选择",
+                        tr("app.ai.chat.reference.session_switched").as_ref(),
                         AppMessageKind::Warning,
                         cx,
                     );
@@ -293,7 +293,7 @@ impl NavicatMain {
                     .pt_2()
                     .text_size(px(9.))
                     .text_color(colors.muted)
-                    .child("数据库候选来自已加载元数据；未找到时请先展开库或刷新"),
+                    .child(tr("app.ai.chat.reference.db_candidates_hint")),
             )
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_mouse_down_out(cx.listener(|this, event: &gpui::MouseDownEvent, _, cx| {
@@ -322,7 +322,7 @@ impl NavicatMain {
                     .pb_1()
                     .text_size(px(10.))
                     .text_color(colors.muted)
-                    .child("上下文引用")
+                    .child(tr("app.ai.chat.reference.menu_title"))
                     .child(format!(
                         "{candidate_count} / {}",
                         fluxdb_app::AI_REFERENCE_CANDIDATE_LIMIT
@@ -425,7 +425,7 @@ impl NavicatMain {
                     .py_2()
                     .text_size(px(11.))
                     .text_color(colors.muted)
-                    .child("正在检索引用…"),
+                    .child(tr("app.ai.chat.reference.searching")),
             );
         } else if let Some(error) = self.ai_chat.reference_error.as_deref() {
             list = list.child(
@@ -435,7 +435,7 @@ impl NavicatMain {
                     .py_2()
                     .text_size(px(11.))
                     .text_color(colors.danger)
-                    .child(format!("检索失败：{error}")),
+                    .child(tr("app.ai.chat.reference.search_failed").replace("%{error}", error)),
             );
         } else if self.ai_chat.reference_options.is_empty() {
             list = list.child(
@@ -444,10 +444,12 @@ impl NavicatMain {
                     .py_2()
                     .text_size(px(11.))
                     .text_color(colors.muted)
-                    .child(format!(
-                        "无匹配引用：@{}",
-                        self.ai_chat.reference_query.as_deref().unwrap_or_default()
-                    )),
+                    .child(
+                        tr("app.ai.chat.reference.no_match").replace(
+                            "%{query}",
+                            self.ai_chat.reference_query.as_deref().unwrap_or_default(),
+                        ),
+                    ),
             );
         }
         gpui::deferred(
@@ -474,19 +476,19 @@ fn ai_reference_visual(kind: &str, colors: UiColors) -> (AppIcon, gpui::Rgba) {
 
 fn ai_reference_badge(kind: &str, colors: UiColors) -> gpui::AnyElement {
     let label = match kind {
-        "connection" => "连接",
-        "database" => "数据库",
-        "schema" => "Schema",
-        "table" => "表",
-        "view" => "视图",
-        "collection" => "集合",
-        "redis_db" => "Redis DB",
-        "redis_key" => "Redis Key",
-        "file" => "文件",
-        "saved_query" => "保存查询",
-        "selection" => "选区",
-        "result_set" => "结果集",
-        _ => "引用",
+        "connection" => tr("app.ai.chat.reference.kind.connection"),
+        "database" => tr("app.ai.chat.reference.kind.database"),
+        "schema" => tr("app.ai.chat.reference.kind.schema"),
+        "table" => tr("app.ai.chat.reference.kind.table"),
+        "view" => tr("app.ai.chat.reference.kind.view"),
+        "collection" => tr("app.ai.chat.reference.kind.collection"),
+        "redis_db" => tr("app.ai.chat.reference.kind.redis_db"),
+        "redis_key" => tr("app.ai.chat.reference.kind.redis_key"),
+        "file" => tr("app.ai.chat.reference.kind.file"),
+        "saved_query" => tr("app.ai.chat.reference.kind.saved_query"),
+        "selection" => tr("app.ai.chat.reference.kind.selection"),
+        "result_set" => tr("app.ai.chat.reference.kind.result_set"),
+        _ => tr("app.ai.chat.reference.kind.fallback"),
     };
     let (_, tone) = ai_reference_visual(kind, colors);
     div()

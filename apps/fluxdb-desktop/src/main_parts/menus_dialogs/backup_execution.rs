@@ -10,7 +10,7 @@ fn run_backup_task(
         .connection_configs()
         .into_iter()
         .find(|c| c.id == form.connection_id)
-        .ok_or_else(|| anyhow::anyhow!("连接不存在"))?;
+        .ok_or_else(|| anyhow::anyhow!(tr("app.error.connection_missing").to_string()))?;
     let method = match form.mode {
         BackupMode::Auto => fluxdb_app::BackupMethod::Auto,
     };
@@ -61,7 +61,7 @@ fn run_backup_task(
         )
         .map_err(|e| anyhow::anyhow!(e.to_string()))?;
     let _ = sender.send(BackupTaskProgress {
-        stage: "文件".into(),
+        stage: tr("app.backup.stage.file").into(),
         message: format!(
             "{}：{}",
             request.execution.format().label(),

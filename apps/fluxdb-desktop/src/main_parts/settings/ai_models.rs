@@ -25,13 +25,13 @@ fn ai_model_table_header(colors: UiColors) -> impl IntoElement {
                 .min_w(px(0.))
                 .text_size(px(11.))
                 .text_color(colors.muted)
-                .child("模型"),
+                .child(tr("app.ai.models.header.model")),
         )
-        .child(head("能力与上下文", 150.))
-        .child(head("凭据", 80.))
-        .child(head("默认", 56.))
-        .child(head("启用", 48.))
-        .child(head("状态 / 操作", 148.))
+        .child(head(&tr("app.ai.models.header.capability"), 150.))
+        .child(head(&tr("app.ai.models.header.credential"), 80.))
+        .child(head(&tr("app.ai.models.header.default"), 56.))
+        .child(head(&tr("app.ai.models.header.enabled"), 48.))
+        .child(head(&tr("app.ai.models.header.actions"), 148.))
 }
 
 /// 大模型列表行：对照交互稿六列（模型 / 能力与上下文 / 凭据 / 默认 / 启用 / 操作）。
@@ -54,7 +54,7 @@ fn ai_model_row(
     let delete_name = model.display_name.clone();
     let enabled = model.enabled;
     let revision = model.revision;
-    let decision = model.kind == "决策";
+    let decision = model.kind == fluxdb_app::AiModelKind::Decision;
     // 「默认」单选在渲染闭包里派发命令，这里单独克隆一份弱引用。
     let default_owner = cx.entity().downgrade();
 
@@ -64,14 +64,18 @@ fn ai_model_row(
         None => "—".into(),
     };
     let capability_note = if decision {
-        "Choice / Score · 内置 Jev".to_string()
+        tr("app.ai.models.decision_note").to_string()
     } else {
         // 能力标签只由模型上下文窗口推导（app 层 `model_capability_labels`），
         // 价格不参与标签或列表展示。
-        let long_context = if model.capability_labels.iter().any(|l| l == "长上下文") {
-            " · 长上下文"
+        let long_context = if model
+            .capability_labels
+            .iter()
+            .any(|l| l == "long_context")
+        {
+            tr("app.ai.models.long_context_suffix").to_string()
         } else {
-            ""
+            String::new()
         };
         format!(
             "{} ctx / {} out{}",
@@ -145,7 +149,7 @@ fn ai_model_row(
                 .flex_col()
                 .items_start()
                 .gap_1()
-                .child(ai_capability_tag(&model.kind, decision, colors))
+                .child(ai_capability_tag(&model.kind, colors))
                 .child(
                     div()
                         .text_size(px(11.))
@@ -187,9 +191,9 @@ fn ai_model_row(
                             .checked(is_default)
                             .disabled(deleting)
                             .tooltip(if is_default {
-                                "当前默认主模型"
+                                tr("app.ai.models.default_current")
                             } else {
-                                "设为默认主模型"
+                                tr("app.ai.models.default_set")
                             })
                             .on_change(move |checked, _, cx| {
                                 if !*checked {
@@ -254,9 +258,9 @@ fn ai_model_row(
                             gpui_component::Icon::default().path(app_icon_path(AppIcon::Activity)),
                         )
                         .tooltip(if testing {
-                            "测试中…"
+                            tr("app.ai.models.testing")
                         } else {
-                            "测试连接"
+                            tr("app.ai.models.test_connection")
                         })
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.start_ai_model_test(test_id.clone(), cx);
@@ -270,7 +274,7 @@ fn ai_model_row(
                         .ghost()
                         .cursor_pointer()
                         .icon(gpui_component::Icon::default().path(app_icon_path(AppIcon::Edit)))
-                        .tooltip("编辑")
+                        .tooltip(tr("app.ai.models.edit"))
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.open_ai_model_dialog(Some(edit_id.clone()), window, cx);
                         })),
@@ -288,7 +292,7 @@ fn ai_model_row(
                                 .path(app_icon_path(AppIcon::Trash))
                                 .text_color(colors.danger),
                         )
-                        .tooltip("删除模型")
+                        .tooltip(tr("app.ai.models.delete"))
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.confirm_ai_model_delete(
                                 delete_id.clone(),
@@ -305,9 +309,9 @@ fn ai_model_row(
 /// 单模型数据出站许可的展示标签：关闭表示该模型不会接收会话数据（§29/§31.1）。
 fn ai_egress_pill(enabled: bool, colors: UiColors) -> impl IntoElement {
     if enabled {
-        ai_pill("允许出站", colors.success, colors)
+        ai_pill(tr("app.ai.models.egress_allowed"), colors.success, colors)
     } else {
-        ai_pill("禁止出站", colors.danger, colors)
+        ai_pill(tr("app.ai.models.egress_blocked"), colors.danger, colors)
     }
 }
 
@@ -327,22 +331,24 @@ fn settings_ai_models_panel(
                 || m.display_name.to_lowercase().contains(&filter)
                 || m.provider.to_lowercase().contains(&filter)
                 || m.model.to_lowercase().contains(&filter)
-                || m.kind.to_lowercase().contains(&filter)
+                || tr(match m.kind {
+                    fluxdb_app::AiModelKind::Generation => "app.ai.capability.generation",
+                    fluxdb_app::AiModelKind::Decision => "app.ai.capability.decision",
+                })
+                .to_lowercase()
+                .contains(&filter)
         })
         .collect();
 
     let rows: Vec<gpui::AnyElement> = if panel.settings_loading {
-        vec![ai_empty_state("正在加载模型列表…", colors)]
+        vec![ai_empty_state(&tr("app.ai.models.loading"), colors)]
     } else if let Some(message) = panel.settings_error.as_ref() {
         // 错误态必须与「空库」区分：显示原因 + 重试，而不是伪装成空列表（设计 §39.5）。
         vec![ai_settings_error_block(message, colors, cx)]
     } else if state.ai_models.is_empty() {
-        vec![ai_empty_state(
-            "尚未配置模型。点击右上角「新建模型」创建第一个模型档案。",
-            colors,
-        )]
+        vec![ai_empty_state(&tr("app.ai.models.empty"), colors)]
     } else if filtered.is_empty() {
-        vec![ai_empty_state("没有匹配的模型。", colors)]
+        vec![ai_empty_state(&tr("app.ai.models.no_match"), colors)]
     } else {
         filtered
             .iter()
@@ -362,7 +368,7 @@ fn settings_ai_models_panel(
     };
 
     div().flex().flex_col().gap_3().child(
-        settings_panel_group("模型档案", colors)
+        settings_panel_group(tr("app.ai.models.title"), colors)
                 .child(
                     div()
                         .border_t_1()
@@ -377,13 +383,13 @@ fn settings_ai_models_panel(
                             div()
                                 .text_size(px(12.))
                                 .text_color(colors.muted)
-                                .child("管理生成模型与决策模型档案"),
+                                .child(tr("app.ai.models.description")),
                         )
                         .child(
                             Button::new("ai-model-new")
                                 .small()
                                 .primary()
-                                .child("新建模型")
+                                .child(tr("app.ai.models.new"))
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     this.open_ai_model_dialog(None, window, cx);
                                 })),
@@ -412,9 +418,9 @@ fn settings_ai_models_panel(
                                         .ghost()
                                         .disabled(panel.settings_loading)
                                         .child(if panel.settings_loading {
-                                            "刷新中…"
+                                            tr("app.ai.models.refreshing")
                                         } else {
-                                            "刷新"
+                                            tr("app.common.refresh")
                                         })
                                         .on_click(cx.listener(|this, _, _, cx| {
                                             this.reload_ai_settings(cx);

@@ -58,7 +58,7 @@ impl NavicatMain {
             return;
         };
         if self.data_change_apply_tasks.contains_key(&tab_id.0) {
-            self.show_message("改动正在提交", AppMessageKind::Warning, cx);
+            self.show_message(tr("app.data.toast.submitting").as_ref(), AppMessageKind::Warning, cx);
             return;
         }
         let query_refresh = self.active_query_result_refresh_request(tab_id);
@@ -113,9 +113,9 @@ impl NavicatMain {
         // 需要用户明确知晓并处理，不能像轻量反馈一样几秒后自动消失。
         if let AppEvent::Failed(error) = &event {
             let title = if error.title.is_empty() {
-                "提交失败".to_string()
+                tr("app.query.error.submit").to_string()
             } else {
-                error.title.clone()
+                localize_backend_error_text(&error.title)
             };
             let description = match error.detail.clone() {
                 Some(detail) if !detail.trim().is_empty() => {
@@ -123,11 +123,12 @@ impl NavicatMain {
                 }
                 _ => error.message.clone(),
             };
+            let description = localize_backend_error_text(&description);
             window.open_alert_dialog(cx, move |alert, _, _| {
                 alert
                     .title(title.clone())
                     .description(description.clone())
-                    .ok_text("知道了")
+                    .ok_text(tr("app.data.action.acknowledge"))
                     .show_cancel(false)
                     .close_button(true)
                     .keyboard(true)
@@ -315,7 +316,7 @@ impl NavicatMain {
         let page_no = match value.trim().parse::<u64>() {
             Ok(page_no) if page_no > 0 => page_no,
             _ => {
-                self.show_message("页码必须是正整数", AppMessageKind::Warning, cx);
+                self.show_message(tr("app.data.error.page_positive").as_ref(), AppMessageKind::Warning, cx);
                 self.data_page_input.update(cx, |input, cx| {
                     input.set_value(current_page.to_string(), window, cx);
                 });

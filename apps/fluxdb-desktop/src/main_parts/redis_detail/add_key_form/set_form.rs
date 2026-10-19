@@ -12,7 +12,7 @@ fn redis_add_key_set_form(
         .flex()
         .flex_col()
         .gap_2()
-        .child(redis_add_key_form_label("添加成员", colors))
+        .child(redis_add_key_form_label(tr("app.redis.add_key.form.add_members"), colors))
         .child(redis_add_key_single_rows_panel(
             RedisAddKeyKind::Set,
             rows,

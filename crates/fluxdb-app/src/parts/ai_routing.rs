@@ -123,7 +123,7 @@ pub fn candidate_check(model: &ModelProfileView, role: CandidateRole) -> Result<
 pub fn model_capability_labels(model: &ModelProfileView) -> Vec<&'static str> {
     let mut labels = Vec::new();
     if model.context_window_tokens.is_some_and(|window| window >= 200_000) {
-        labels.push("长上下文");
+        labels.push("long_context");
     }
     labels
 }

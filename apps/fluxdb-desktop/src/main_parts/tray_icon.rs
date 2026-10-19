@@ -33,7 +33,7 @@ fn create_tray_icon() -> anyhow::Result<TrayIcon> {
     // macOS 分支重赋值 builder（icon_as_template），其余平台不重赋值，mut 仅 macOS 需要。
     #[allow(unused_mut)]
     let mut builder = TrayIconBuilder::new()
-        .with_tooltip("FluxDB")
+        .with_tooltip(tr("app.name"))
         .with_menu(Box::new(menu))
         .with_icon(icon);
 
@@ -47,11 +47,28 @@ fn create_tray_icon() -> anyhow::Result<TrayIcon> {
 
 fn create_tray_menu() -> anyhow::Result<TrayMenu> {
     let menu = TrayMenu::new();
-    let open = TrayMenuItem::with_id(TRAY_OPEN_ID, "打开", true, None);
-    let quit = TrayMenuItem::with_id(TRAY_QUIT_ID, "退出", true, None);
+    let open = TrayMenuItem::with_id(TRAY_OPEN_ID, tr("app.menu.open"), true, None);
+    let quit = TrayMenuItem::with_id(TRAY_QUIT_ID, tr("app.menu.quit"), true, None);
     let separator = PredefinedMenuItem::separator();
     menu.append_items(&[&open, &separator, &quit])?;
     Ok(menu)
+}
+
+fn refresh_tray_menu() {
+    TRAY_ICON.with(|slot| {
+        let slot = slot.borrow();
+        let Some(icon) = slot.as_ref() else {
+            return;
+        };
+        match create_tray_menu() {
+            Ok(menu) => icon.set_menu(Some(Box::new(menu))),
+            Err(error) => tracing::warn!(
+                target: "fluxdb_desktop",
+                %error,
+                "切换语言后重建系统托盘菜单失败"
+            ),
+        }
+    });
 }
 
 fn install_tray_menu_event_task(cx: &mut App) {

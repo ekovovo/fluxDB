@@ -10,7 +10,7 @@ fn group_context_menu(
         .iter()
         .find(|group| group.id == menu.group_id)
         .map(|group| group.name.clone())
-        .unwrap_or_else(|| "分组".to_string());
+        .unwrap_or_else(|| tr("app.group.label").to_string());
 
     div()
         .absolute()
@@ -49,7 +49,7 @@ fn group_context_menu(
         )
         .child(connection_menu_separator(colors))
         .child(group_menu_item(
-            "新建连接",
+            tr("app.connection.new"),
             "plus",
             false,
             GroupMenuAction::NewConnection,
@@ -58,7 +58,7 @@ fn group_context_menu(
             cx,
         ))
         .child(group_menu_item(
-            "重命名分组",
+            tr("app.group.rename"),
             "edit",
             false,
             GroupMenuAction::Rename,
@@ -68,7 +68,7 @@ fn group_context_menu(
         ))
         .child(connection_menu_separator(colors))
         .child(group_menu_item(
-            "删除分组",
+            tr("app.group.delete"),
             "delete",
             true,
             GroupMenuAction::Delete,
@@ -259,7 +259,7 @@ fn tab_menu_icon(
 }
 
 fn group_menu_item(
-    label: &'static str,
+    label: impl Into<SharedString>,
     icon: &'static str,
     destructive: bool,
     action: GroupMenuAction,
@@ -267,10 +267,11 @@ fn group_menu_item(
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Stateful<Div> {
+    let label: SharedString = label.into();
     div()
         .id((
             "group-menu-item",
-            menu_item_hash(ConnectionId(group_id.0), icon, label),
+            menu_item_hash(ConnectionId(group_id.0), icon, &label),
         ))
         .h(px(32.))
         .rounded(colors.radius_lg)

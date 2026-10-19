@@ -7,22 +7,22 @@ fn data_table_header_tooltip(meta: DataTableColumnMeta, type_color: gpui::Rgba) 
             .flex_col()
             .gap_2()
             .child(data_table_header_tooltip_row(
-                "列名",
-                meta.name.clone(),
+                tr("app.data.header.column"),
+                localized_column_header(&meta.name).to_string(),
                 cx.theme().popover_foreground,
             ))
             .child(data_table_header_tooltip_row(
-                "类型",
+                tr("app.data.header.type"),
                 meta.type_name.clone(),
                 type_color,
             ))
             .child(data_table_header_tooltip_row(
-                "属性",
+                tr("app.data.header.attributes"),
                 data_table_column_attr_label(&meta),
                 cx.theme().popover_foreground,
             ))
             .child(data_table_header_tooltip_row(
-                "注释",
+                tr("app.data.header.comment"),
                 data_table_column_comment_label(&meta),
                 cx.theme().popover_foreground,
             ))
@@ -30,10 +30,11 @@ fn data_table_header_tooltip(meta: DataTableColumnMeta, type_color: gpui::Rgba) 
 }
 
 fn data_table_header_tooltip_row(
-    label: &'static str,
+    label: impl Into<SharedString>,
     value: String,
     value_color: impl Into<Hsla>,
 ) -> impl IntoElement {
+    let label: SharedString = label.into();
     div()
         .flex()
         .items_center()
@@ -48,16 +49,16 @@ fn data_table_column_comment_label(meta: &DataTableColumnMeta) -> String {
         .as_deref()
         .map(str::trim)
         .filter(|comment| !comment.is_empty())
-        .unwrap_or("无")
+        .map(str::to_string).unwrap_or_else(|| tr("app.data.column.none").to_string())
         .to_string()
 }
 
 fn data_table_column_attr_label(meta: &DataTableColumnMeta) -> String {
     match (meta.primary_key, meta.nullable) {
-        (true, true) => "主键，可空".to_string(),
-        (true, false) => "主键，非空".to_string(),
-        (false, true) => "可空".to_string(),
-        (false, false) => "非空".to_string(),
+        (true, true) => tr("app.data.column.pk_nullable").to_string(),
+        (true, false) => tr("app.data.column.pk_not_null").to_string(),
+        (false, true) => tr("app.data.column.nullable").to_string(),
+        (false, false) => tr("app.data.column.not_null").to_string(),
     }
 }
 
@@ -76,7 +77,7 @@ fn data_table_header_sort_popover(
         .trigger(data_table_header_text_button(
             ("data-table-sort", col_ix),
             sort_icon,
-            "排序",
+            tr("app.data.header.sort"),
             icon_color,
         ))
         .content(move |_, _, cx| {
@@ -86,7 +87,7 @@ fn data_table_header_sort_popover(
                 .child(
                     data_table_header_menu_item(
                         "↑",
-                        "升序排序",
+                        tr("app.data.sort.ascending"),
                         active == Some(DataTableSortDirection::Ascending),
                         cx,
                     )
@@ -111,7 +112,7 @@ fn data_table_header_sort_popover(
                 .child(
                     data_table_header_menu_item(
                         "↓",
-                        "降序排序",
+                        tr("app.data.sort.descending"),
                         active == Some(DataTableSortDirection::Descending),
                         cx,
                     )
@@ -134,7 +135,7 @@ fn data_table_header_sort_popover(
                     }),
                 )
                 .child(
-                    data_table_header_menu_item("⊘", "移除排序", false, cx).on_mouse_down(
+                    data_table_header_menu_item("⊘", tr("app.data.sort.remove"), false, cx).on_mouse_down(
                         MouseButton::Left,
                         {
                             let column_name = column_name.clone();
@@ -167,7 +168,7 @@ fn data_table_header_action_popover(
         .trigger(data_table_header_text_button(
             ("data-table-actions", col_ix),
             "▾",
-            "列操作",
+            tr("app.data.header.column_actions"),
             icon_color,
         ))
         .content(move |_, _, cx| {
@@ -175,7 +176,7 @@ fn data_table_header_action_popover(
             data_table_header_menu_shell(cx)
                 .w(px(160.))
                 .child(
-                    data_table_header_menu_item("⧉", "复制列名", false, cx).on_mouse_down(
+                    data_table_header_menu_item("⧉", tr("app.data.action.copy_column_name"), false, cx).on_mouse_down(
                         MouseButton::Left,
                         {
                             let column_name = column_name.clone();
@@ -186,7 +187,7 @@ fn data_table_header_action_popover(
                                     column_name.clone(),
                                 ));
                                 let _ = view.update(cx, |this, cx| {
-                                    this.show_message("已复制", AppMessageKind::Success, cx);
+                                    this.show_message(tr("app.data.toast.copied").as_ref(), AppMessageKind::Success, cx);
                                 });
                                 popover.update(cx, |state, cx| {
                                     state.dismiss(window, cx);
@@ -197,7 +198,7 @@ fn data_table_header_action_popover(
                     ),
                 )
                 .child(
-                    data_table_header_menu_item_icon(AppIcon::List, "设置枚举值", false, cx)
+                    data_table_header_menu_item_icon(AppIcon::List, tr("app.data.action.set_enum"), false, cx)
                         .on_mouse_down(MouseButton::Left, {
                             let column_name = column_name.clone();
                             let view = view.clone();
@@ -218,16 +219,18 @@ fn data_table_header_action_popover(
                             }
                         }),
                 )
-                .child(data_table_header_menu_item("⇩", "导出", false, cx).opacity(0.45))
+                .child(data_table_header_menu_item("⇩", tr("app.data.action.export"), false, cx).opacity(0.45))
         })
 }
 
 fn data_table_header_text_button(
     id: impl Into<gpui::ElementId>,
-    label: &'static str,
-    tooltip: &'static str,
+    label: impl Into<SharedString>,
+    tooltip: impl Into<SharedString>,
     icon_color: Hsla,
 ) -> Button {
+    let label: SharedString = label.into();
+    let tooltip: SharedString = tooltip.into();
     Button::new(id)
         .ghost()
         .xsmall()
@@ -283,10 +286,11 @@ fn data_table_header_menu_shell(cx: &mut Context<gpui_component::popover::Popove
 
 fn data_table_header_menu_item(
     icon: &'static str,
-    label: &'static str,
+    label: impl Into<SharedString>,
     selected: bool,
     cx: &mut Context<gpui_component::popover::PopoverState>,
 ) -> Div {
+    let label: SharedString = label.into();
     let dark = cx.theme().is_dark();
     let text = if dark { rgb(0xe6e8ec) } else { rgb(0x20242a) };
     let muted = if dark { rgb(0x98a2b3) } else { rgb(0x6b7280) };
@@ -316,10 +320,11 @@ fn data_table_header_menu_item(
 
 fn data_table_header_menu_item_icon(
     icon: AppIcon,
-    label: &'static str,
+    label: impl Into<SharedString>,
     selected: bool,
     cx: &mut Context<gpui_component::popover::PopoverState>,
 ) -> Div {
+    let label: SharedString = label.into();
     let dark = cx.theme().is_dark();
     let text = if dark { rgb(0xe6e8ec) } else { rgb(0x20242a) };
     let row_bg = if selected {

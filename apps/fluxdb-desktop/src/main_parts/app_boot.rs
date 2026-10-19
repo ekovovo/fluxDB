@@ -40,12 +40,21 @@ fn main() {
         configured_log_dir(&saved_settings.log_path).display()
     );
 
+    let assets_base = app_assets_base_path();
+    init_i18n(
+        &assets_base.join("locales"),
+        &storage.root_dir().join("locales"),
+        &saved_settings.locale,
+    );
+
     gpui_platform::application()
         .with_assets(Assets {
-            base: app_assets_base_path(),
+            base: assets_base,
         })
         .run(move |cx: &mut App| {
             set_dock_icon();
+            // 组件库必须在首次查找组件文案前完成命名空间扩展。
+            extend_component_i18n();
             // Linux 首版无托盘；tray_icon.rs 仅在非 Linux 编译（见 main.rs include 与 Cargo.toml）。
             #[cfg(not(target_os = "linux"))]
             install_tray_icon(cx);
@@ -230,9 +239,15 @@ fn navicat_main_new(
     theme_mode: ThemeMode,
 ) -> NavicatMain {
                         let rename_group_input =
-                            cx.new(|cx| InputState::new(window, cx).placeholder("分组名称"));
+                            cx.new(|cx| {
+                                InputState::new(window, cx)
+                                    .placeholder(tr("app.placeholder.group_name"))
+                            });
                         let ai_session_filter_input =
-                            cx.new(|cx| InputState::new(window, cx).placeholder("搜索会话"));
+                            cx.new(|cx| {
+                                InputState::new(window, cx)
+                                    .placeholder(tr("app.placeholder.search_session"))
+                            });
                         let ai_session_filter_subscription = cx.subscribe(
                             &ai_session_filter_input,
                             |this: &mut NavicatMain, input, event: &InputEvent, cx| {
@@ -243,7 +258,10 @@ fn navicat_main_new(
                             },
                         );
                         let ai_audit_filter_input =
-                            cx.new(|cx| InputState::new(window, cx).placeholder("搜索工具、目标或规则"));
+                            cx.new(|cx| {
+                                InputState::new(window, cx)
+                                    .placeholder(tr("app.placeholder.search_audit"))
+                            });
                         let ai_audit_filter_subscription = cx.subscribe(
                             &ai_audit_filter_input,
                             |this: &mut NavicatMain, input, event: &InputEvent, cx| {
@@ -254,7 +272,10 @@ fn navicat_main_new(
                             },
                         );
                         let ai_session_rename_input =
-                            cx.new(|cx| InputState::new(window, cx).placeholder("会话名称"));
+                            cx.new(|cx| {
+                                InputState::new(window, cx)
+                                    .placeholder(tr("app.placeholder.session_name"))
+                            });
                         let ai_session_rename_subscription = cx.subscribe(
                             &ai_session_rename_input,
                             |this: &mut NavicatMain, input, event: &InputEvent, cx| {
@@ -284,7 +305,10 @@ fn navicat_main_new(
                             },
                         );
                         let table_folder_rename_input =
-                            cx.new(|cx| InputState::new(window, cx).placeholder("分组名称"));
+                            cx.new(|cx| {
+                                InputState::new(window, cx)
+                                    .placeholder(tr("app.placeholder.group_name"))
+                            });
                         let table_folder_rename_subscription = cx.subscribe(
                             &table_folder_rename_input,
                             |this: &mut NavicatMain, input, event: &InputEvent, cx| {
@@ -303,7 +327,10 @@ fn navicat_main_new(
                             },
                         );
                         let display_database_search_input =
-                            cx.new(|cx| InputState::new(window, cx).placeholder("搜索数据库..."));
+                            cx.new(|cx| {
+                                InputState::new(window, cx)
+                                    .placeholder(tr("app.placeholder.search_database"))
+                            });
                         let display_database_search_subscription = cx.subscribe(
                             &display_database_search_input,
                             |this: &mut NavicatMain, input, event: &InputEvent, cx| {
@@ -315,7 +342,10 @@ fn navicat_main_new(
                             },
                         );
                         let create_database_name_input =
-                            cx.new(|cx| InputState::new(window, cx).placeholder("数据库名称"));
+                            cx.new(|cx| {
+                                InputState::new(window, cx)
+                                    .placeholder(tr("app.placeholder.database_name"))
+                            });
                         let create_database_name_subscription = cx.subscribe_in(
                             &create_database_name_input,
                             window,
@@ -348,7 +378,10 @@ fn navicat_main_new(
                             )
                         });
                         let create_schema_name_input =
-                            cx.new(|cx| InputState::new(window, cx).placeholder("schema 名称"));
+                            cx.new(|cx| {
+                                InputState::new(window, cx)
+                                    .placeholder(tr("app.placeholder.schema_name"))
+                            });
                         let create_schema_name_subscription = cx.subscribe_in(
                             &create_schema_name_input,
                             window,
@@ -365,7 +398,10 @@ fn navicat_main_new(
                             },
                         );
                         let create_database_owner_input =
-                            cx.new(|cx| InputState::new(window, cx).placeholder("Owner，如 report_reader"));
+                            cx.new(|cx| {
+                                InputState::new(window, cx)
+                                    .placeholder(tr("app.placeholder.owner_example"))
+                            });
                         let create_database_owner_subscription = cx.subscribe_in(
                             &create_database_owner_input,
                             window,
@@ -382,7 +418,10 @@ fn navicat_main_new(
                             },
                         );
                         let create_database_template_input =
-                            cx.new(|cx| InputState::new(window, cx).placeholder("模板库，如 template0"));
+                            cx.new(|cx| {
+                                InputState::new(window, cx)
+                                    .placeholder(tr("app.placeholder.template_example"))
+                            });
                         let create_database_template_subscription = cx.subscribe_in(
                             &create_database_template_input,
                             window,
@@ -407,7 +446,10 @@ fn navicat_main_new(
                             )
                         });
                         let rename_table_input =
-                            cx.new(|cx| InputState::new(window, cx).placeholder("表名"));
+                            cx.new(|cx| {
+                                InputState::new(window, cx)
+                                    .placeholder(tr("app.placeholder.table_name"))
+                            });
                         let rename_table_subscription = cx.subscribe_in(
                             &rename_table_input,
                             window,
@@ -425,7 +467,10 @@ fn navicat_main_new(
                             },
                         );
                         let copy_table_input =
-                            cx.new(|cx| InputState::new(window, cx).placeholder("表名"));
+                            cx.new(|cx| {
+                                InputState::new(window, cx)
+                                    .placeholder(tr("app.placeholder.table_name"))
+                            });
                         let copy_table_subscription = cx.subscribe_in(
                             &copy_table_input,
                             window,
@@ -443,13 +488,25 @@ fn navicat_main_new(
                             },
                         );
                         let column_choice_value_input =
-                            cx.new(|cx| InputState::new(window, cx).placeholder("success"));
+                            cx.new(|cx| {
+                                InputState::new(window, cx)
+                                    .placeholder(tr("app.placeholder.choice_value"))
+                            });
                         let column_choice_label_input =
-                            cx.new(|cx| InputState::new(window, cx).placeholder("成功"));
+                            cx.new(|cx| {
+                                InputState::new(window, cx)
+                                    .placeholder(tr("app.placeholder.choice_label"))
+                            });
                         let query_save_name_input =
-                            cx.new(|cx| InputState::new(window, cx).placeholder("查询名称"));
+                            cx.new(|cx| {
+                                InputState::new(window, cx)
+                                    .placeholder(tr("app.placeholder.query_name"))
+                            });
                         let sidebar_search_input =
-                            cx.new(|cx| InputState::new(window, cx).placeholder("搜索表"));
+                            cx.new(|cx| {
+                                InputState::new(window, cx)
+                                    .placeholder(tr("app.placeholder.search_table"))
+                            });
                         let sidebar_search_subscription = cx.subscribe(
                             &sidebar_search_input,
                             |this: &mut NavicatMain, input, event: &InputEvent, cx| {
@@ -460,7 +517,10 @@ fn navicat_main_new(
                             },
                         );
                         let ai_model_dialog_filter_input =
-                            cx.new(|cx| InputState::new(window, cx).placeholder("搜索模型…"));
+                            cx.new(|cx| {
+                                InputState::new(window, cx)
+                                    .placeholder(tr("app.placeholder.search_model"))
+                            });
                         let ai_model_dialog_filter_subscription = cx.subscribe(
                             &ai_model_dialog_filter_input,
                             |this: &mut NavicatMain, input, event: &InputEvent, cx| {
@@ -472,7 +532,10 @@ fn navicat_main_new(
                             },
                         );
                         let ai_model_filter_input =
-                            cx.new(|cx| InputState::new(window, cx).placeholder("搜索名称、Provider…"));
+                            cx.new(|cx| {
+                                InputState::new(window, cx)
+                                    .placeholder(tr("app.placeholder.search_model_name"))
+                            });
                         let ai_model_filter_subscription = cx.subscribe(
                             &ai_model_filter_input,
                             |this: &mut NavicatMain, input, event: &InputEvent, cx| {
@@ -484,7 +547,10 @@ fn navicat_main_new(
                             },
                         );
                         let field_filter_search_input =
-                            cx.new(|cx| InputState::new(window, cx).placeholder("搜索字段..."));
+                            cx.new(|cx| {
+                                InputState::new(window, cx)
+                                    .placeholder(tr("app.placeholder.search_field"))
+                            });
                         let field_filter_search_subscription = cx.subscribe(
                             &field_filter_search_input,
                             |this: &mut NavicatMain, input, event: &InputEvent, cx| {
@@ -497,30 +563,42 @@ fn navicat_main_new(
                             },
                         );
                         let data_filter_search_input =
-                            cx.new(|cx| InputState::new(window, cx).placeholder("搜索"));
+                            cx.new(|cx| {
+                                InputState::new(window, cx)
+                                    .placeholder(tr("app.placeholder.search"))
+                            });
                         let data_filter_value_input =
-                            cx.new(|cx| InputState::new(window, cx).placeholder("输入筛选值"));
+                            cx.new(|cx| {
+                                InputState::new(window, cx)
+                                    .placeholder(tr("app.placeholder.filter_value"))
+                            });
                         let data_filter_batch_input = cx.new(|cx| {
                             InputState::new(window, cx)
-                                .placeholder("粘贴多个值，每行一个……")
+                                .placeholder(tr("app.placeholder.filter_batch"))
                         });
                         let local_filter_value_input =
-                            cx.new(|cx| InputState::new(window, cx).placeholder("输入筛选值"));
+                            cx.new(|cx| {
+                                InputState::new(window, cx)
+                                    .placeholder(tr("app.placeholder.filter_value"))
+                            });
                         let local_filter_search_input =
-                            cx.new(|cx| InputState::new(window, cx).placeholder("搜索"));
+                            cx.new(|cx| {
+                                InputState::new(window, cx)
+                                    .placeholder(tr("app.placeholder.search"))
+                            });
                         let data_filter_text_input = cx.new(|cx| {
                             InputState::new(window, cx)
-                                .placeholder("例如：`question` LIKE '%0.648238%'")
+                                .placeholder(tr("app.placeholder.filter_expression"))
                         });
                         let data_sort_text_input = cx.new(|cx| {
-                            InputState::new(window, cx).placeholder("<Field> ASC, <Field> DESC")
+                            InputState::new(window, cx).placeholder(tr("app.placeholder.sort_fields"))
                         });
                         let data_sql_panel_input = cx.new(|cx| InputState::new(window, cx));
                         let data_page_input = cx.new(|cx| InputState::new(window, cx));
                         let settings_line_height_input =
-                            cx.new(|cx| InputState::new(window, cx).placeholder("14"));
+                            cx.new(|cx| InputState::new(window, cx).placeholder(tr("app.placeholder.line_height_example")));
                         let settings_radius_input =
-                            cx.new(|cx| InputState::new(window, cx).placeholder("6"));
+                            cx.new(|cx| InputState::new(window, cx).placeholder(tr("app.placeholder.radius_example")));
                         // 留空即使用内置官方源，占位符直接展示默认模板，便于用户改成内网镜像。
                         let settings_pg_client_source_input = cx.new(|cx| {
                             InputState::new(window, cx)
@@ -531,20 +609,26 @@ fn navicat_main_new(
                             InputState::new(window, cx)
                                 .placeholder(fluxdb_app::MYSQL_CLIENT_DEFAULT_SOURCE)
                         });
-                        let data_cell_edit_input =
-                            cx.new(|cx| InputState::new(window, cx).placeholder("输入值"));
+                        let data_cell_edit_input = cx.new(|cx| {
+                            InputState::new(window, cx)
+                                .placeholder(tr("app.placeholder.input_value"))
+                        });
                         let temporal_part_input = cx.new(|cx| InputState::new(window, cx));
                         let cell_detail_input = cx.new(|cx| {
                             InputState::new(window, cx)
-                                .placeholder("编辑单元格值")
+                                .placeholder(tr("app.placeholder.edit_cell"))
                         });
-                        let data_search_input =
-                            cx.new(|cx| InputState::new(window, cx).placeholder("输入搜索内容"));
-                        let redis_search_input =
-                            cx.new(|cx| InputState::new(window, cx).placeholder("搜索"));
+                        let data_search_input = cx.new(|cx| {
+                            InputState::new(window, cx)
+                                .placeholder(tr("app.placeholder.search_content"))
+                        });
+                        let redis_search_input = cx.new(|cx| {
+                            InputState::new(window, cx)
+                                .placeholder(tr("app.placeholder.search"))
+                        });
                         let redis_key_value_input = cx.new(|cx| {
                             InputState::new(window, cx)
-                                .placeholder("值")
+                                .placeholder(tr("app.placeholder.value"))
                         });
                         // Redis JSON 值组件：Edit 模式使用组件内部的多行编辑框。
                         let redis_json_editor = JsonComponent::new_with_mode(
@@ -557,16 +641,20 @@ fn navicat_main_new(
                             .input()
                             .expect("JSON 组件应持有编辑框")
                             .clone();
-                        let redis_key_name_input =
-                            cx.new(|cx| InputState::new(window, cx).placeholder("键名称"));
+                        let redis_key_name_input = cx.new(|cx| {
+                            InputState::new(window, cx)
+                                .placeholder(tr("app.placeholder.key_name"))
+                        });
                         let redis_key_ttl_input =
-                            cx.new(|cx| InputState::new(window, cx).placeholder("TTL"));
+                            cx.new(|cx| InputState::new(window, cx).placeholder(tr("app.redis.form.ttl")));
                         let redis_stream_entry_id_input =
                             cx.new(|cx| InputState::new(window, cx).placeholder("*"));
                         let redis_stream_entry_field_rows =
                             vec![new_redis_stream_entry_field_inputs(window, cx)];
-                        let redis_set_member_search_input =
-                            cx.new(|cx| InputState::new(window, cx).placeholder("搜索"));
+                        let redis_set_member_search_input = cx.new(|cx| {
+                            InputState::new(window, cx)
+                                .placeholder(tr("app.placeholder.search"))
+                        });
                         let redis_set_member_search_subscription = cx.subscribe_in(
                             &redis_set_member_search_input,
                             window,
@@ -621,15 +709,17 @@ fn navicat_main_new(
                                 }
                             },
                         );
-                        let redis_hash_field_search_input =
-                            cx.new(|cx| InputState::new(window, cx).placeholder("搜索字段"));
+                        let redis_hash_field_search_input = cx.new(|cx| {
+                            InputState::new(window, cx)
+                                .placeholder(tr("app.placeholder.search_field"))
+                        });
                         let redis_hash_value_edit_input =
                             cx.new(|cx| {
                                 InputState::new(window, cx)
-                                    .placeholder("Value")
+                                    .placeholder(tr("app.redis.form.value"))
                             });
                         let redis_hash_ttl_edit_input =
-                            cx.new(|cx| InputState::new(window, cx).placeholder("TTL"));
+                            cx.new(|cx| InputState::new(window, cx).placeholder(tr("app.redis.form.ttl")));
                         let redis_hash_field_search_subscription = cx.subscribe_in(
                             &redis_hash_field_search_input,
                             window,
@@ -704,8 +794,10 @@ fn navicat_main_new(
                                 }
                             },
                         );
-                        let redis_zset_member_search_input =
-                            cx.new(|cx| InputState::new(window, cx).placeholder("搜索成员"));
+                        let redis_zset_member_search_input = cx.new(|cx| {
+                            InputState::new(window, cx)
+                                .placeholder(tr("app.placeholder.search_member"))
+                        });
                         let redis_zset_member_search_subscription = cx.subscribe_in(
                             &redis_zset_member_search_input,
                             window,
@@ -742,8 +834,10 @@ fn navicat_main_new(
                                 }
                             },
                         );
-                        let redis_list_item_search_input =
-                            cx.new(|cx| InputState::new(window, cx).placeholder("按索引搜索"));
+                        let redis_list_item_search_input = cx.new(|cx| {
+                            InputState::new(window, cx)
+                                .placeholder(tr("app.placeholder.index_search"))
+                        });
                         let redis_list_item_search_subscription = cx.subscribe_in(
                             &redis_list_item_search_input,
                             window,
@@ -787,7 +881,7 @@ fn navicat_main_new(
                         );
                         let redis_list_value_edit_input = cx.new(|cx| {
                             InputState::new(window, cx)
-                                .placeholder("Value")
+                                .placeholder(tr("app.redis.form.value"))
                         });
                         let redis_list_value_edit_subscription = cx.subscribe_in(
                             &redis_list_value_edit_input,
@@ -806,7 +900,9 @@ fn navicat_main_new(
                             },
                         );
                         let redis_list_item_remove_count_input = cx.new(|cx| {
-                            InputState::new(window, cx).placeholder("请输入数量").default_value("1")
+                            InputState::new(window, cx)
+                                .placeholder(tr("app.placeholder.quantity"))
+                                .default_value("1")
                         });
                         // List 删除位置下拉（对齐 RedisInsight）：默认选中第一个「Remove from tail」。
                         let redis_list_item_remove_select = cx.new(|cx| {
@@ -822,7 +918,7 @@ fn navicat_main_new(
                             window,
                             |this: &mut NavicatMain,
                              _select,
-                             _event: &SelectEvent<SearchableVec<String>>,
+                             _event: &SelectEvent<SearchableVec<RedisListRemovePositionOption>>,
                              _window,
                              cx| {
                                 // 位置状态由 Select 自身持有，确认时直接读取 selected_value；这里仅触发重绘。
@@ -884,8 +980,10 @@ fn navicat_main_new(
                                 }
                             },
                         );
-                        let redis_add_key_name_input = cx
-                            .new(|cx| InputState::new(window, cx).placeholder("Key 名称"));
+                        let redis_add_key_name_input = cx.new(|cx| {
+                            InputState::new(window, cx)
+                                .placeholder(tr("app.placeholder.redis_key_name"))
+                        });
                         let redis_add_key_name_subscription = cx.subscribe_in(
                             &redis_add_key_name_input,
                             window,
@@ -897,8 +995,10 @@ fn navicat_main_new(
                                 this.redis_add_key_applying = false;
                             },
                         );
-                        let redis_add_key_ttl_input = cx
-                            .new(|cx| InputState::new(window, cx).placeholder("TTL（秒，可选）"));
+                        let redis_add_key_ttl_input = cx.new(|cx| {
+                            InputState::new(window, cx)
+                                .placeholder(tr("app.placeholder.ttl"))
+                        });
                         let redis_add_key_ttl_subscription = cx.subscribe_in(
                             &redis_add_key_ttl_input,
                             window,
@@ -923,7 +1023,8 @@ fn navicat_main_new(
                         );
                         // 按类型子表单输入：String 单值 / JSON 大文本 / Stream entry id（多行成员走动态行）。
                         let redis_add_key_string_input = cx.new(|cx| {
-                            InputState::new(window, cx).placeholder("值")
+                            InputState::new(window, cx)
+                                .placeholder(tr("app.placeholder.value"))
                         });
                         let redis_add_key_string_subscription = cx.subscribe_in(
                             &redis_add_key_string_input,
@@ -934,7 +1035,7 @@ fn navicat_main_new(
                         );
                         let redis_add_key_json_input = cx.new(|cx| {
                             InputState::new(window, cx)
-                                .placeholder("{}")
+                                .placeholder(tr("app.placeholder.json_object"))
                         });
                         let redis_add_key_json_subscription = cx.subscribe_in(
                             &redis_add_key_json_input,
@@ -944,7 +1045,8 @@ fn navicat_main_new(
                             },
                         );
                         let redis_add_key_stream_id_input = cx.new(|cx| {
-                            InputState::new(window, cx).placeholder("留空自动生成")
+                            InputState::new(window, cx)
+                                .placeholder(tr("app.placeholder.auto_generate"))
                         });
                         let redis_add_key_stream_id_subscription = cx.subscribe_in(
                             &redis_add_key_stream_id_input,
@@ -1059,18 +1161,24 @@ fn navicat_main_new(
                             )
                         });
                         let row_detail_search_input = cx.new(|cx| {
-                            InputState::new(window, cx).placeholder("搜索字段名或值...")
+                            InputState::new(window, cx)
+                                .placeholder(tr("app.placeholder.search_field_value"))
                         });
-                        let tab_switcher_search_input =
-                            cx.new(|cx| InputState::new(window, cx).placeholder("搜索标签页"));
+                        let tab_switcher_search_input = cx.new(|cx| {
+                            InputState::new(window, cx)
+                                .placeholder(tr("app.placeholder.search_tab"))
+                        });
                         let query_history_search_input = cx.new(|cx| {
-                            InputState::new(window, cx).placeholder("搜索 SQL / 连接 / 库 / 表")
+                            InputState::new(window, cx)
+                                .placeholder(tr("app.placeholder.search_sql_scope"))
                         });
                         let query_history_quick_search_input = cx.new(|cx| {
-                            InputState::new(window, cx).placeholder("搜索执行过的 SQL...")
+                            InputState::new(window, cx)
+                                .placeholder(tr("app.placeholder.search_executed_sql"))
                         });
                         let redis_history_search_input = cx.new(|cx| {
-                            InputState::new(window, cx).placeholder("搜索命令 / 连接 / DB...")
+                            InputState::new(window, cx)
+                                .placeholder(tr("app.placeholder.search_command_scope"))
                         });
                         let query_history_connection_select = cx.new(|cx| {
                             SelectState::new(
@@ -1145,27 +1253,46 @@ fn navicat_main_new(
                                 cx,
                             )
                         });
-                        let sql_file_path_input =
-                            cx.new(|cx| InputState::new(window, cx).placeholder("选择 SQL 文件"));
-                        let backup_file_name_input =
-                            cx.new(|cx| InputState::new(window, cx).placeholder("默认：库名_时间戳.sql"));
+                        let sql_file_path_input = cx.new(|cx| {
+                            InputState::new(window, cx)
+                                .placeholder(tr("app.placeholder.choose_sql_file"))
+                        });
+                        let backup_file_name_input = cx.new(|cx| {
+                            InputState::new(window, cx)
+                                .placeholder(tr("app.placeholder.backup_filename_default"))
+                        });
                         // 备份目录输入：打开弹框时填入设置 backup_dir，可手动更换。
-                        let backup_target_dir_input =
-                            cx.new(|cx| InputState::new(window, cx).placeholder("默认使用设置中的备份目录"));
-                        let backup_object_search_input =
-                            cx.new(|cx| InputState::new(window, cx).placeholder("搜索表"));
+                        let backup_target_dir_input = cx.new(|cx| {
+                            InputState::new(window, cx)
+                                .placeholder(tr("app.placeholder.backup_dir_default"))
+                        });
+                        let backup_object_search_input = cx.new(|cx| {
+                            InputState::new(window, cx)
+                                .placeholder(tr("app.placeholder.search_table"))
+                        });
                         // 新建备份弹框：备注输入（成功后写入 .meta.json）。
-                        let backup_note_input =
-                            cx.new(|cx| InputState::new(window, cx).placeholder("备注（可空）"));
+                        let backup_note_input = cx.new(|cx| {
+                            InputState::new(window, cx)
+                                .placeholder(tr("app.placeholder.note_optional"))
+                        });
                         // 备份 tab：备注编辑弹框输入。
-                        let backup_note_edit_input =
-                            cx.new(|cx| InputState::new(window, cx).placeholder("备注（留空表示清除）"));
-                        let user_admin_search_input =
-                            cx.new(|cx| InputState::new(window, cx).placeholder("搜索用户或 Host"));
-                        let user_admin_create_user_input =
-                            cx.new(|cx| InputState::new(window, cx).placeholder("用户名"));
+                        let backup_note_edit_input = cx.new(|cx| {
+                            InputState::new(window, cx)
+                                .placeholder(tr("app.placeholder.note_clear"))
+                        });
+                        let user_admin_search_input = cx.new(|cx| {
+                            InputState::new(window, cx)
+                                .placeholder(tr("app.placeholder.search_user_host"))
+                        });
+                        let user_admin_create_user_input = cx.new(|cx| {
+                            InputState::new(window, cx)
+                                .placeholder(tr("app.placeholder.username"))
+                        });
                         let user_admin_create_host_input =
-                            cx.new(|cx| InputState::new(window, cx).placeholder("Host"));
+                            cx.new(|cx| {
+                                InputState::new(window, cx)
+                                    .placeholder(tr("app.user_admin.advanced.host"))
+                            });
                         let user_admin_auth_plugin_select = cx.new(|cx| {
                             SelectState::new(
                                 SearchableVec::new(user_admin_auth_plugin_options()),
@@ -1185,25 +1312,34 @@ fn navicat_main_new(
                         });
                         let user_admin_create_password_input = cx.new(|cx| {
                             InputState::new(window, cx)
-                                .placeholder("确认密码")
+                                .placeholder(tr("app.placeholder.confirm_password"))
                                 .masked(true)
                         });
-                        let user_admin_new_password_input =
-                            cx.new(|cx| InputState::new(window, cx).placeholder("密码").masked(true));
+                        let user_admin_new_password_input = cx.new(|cx| {
+                            InputState::new(window, cx)
+                                .placeholder(tr("app.placeholder.password"))
+                                .masked(true)
+                        });
                         // PG 用户与角色工作台（改版）：常规/高级/权限页输入与选择器。
-                        let pg_role_name_input =
-                            cx.new(|cx| InputState::new(window, cx).placeholder("角色名"));
-                        let pg_password_input = cx
-                            .new(|cx| InputState::new(window, cx).placeholder("新密码").masked(true));
+                        let pg_role_name_input = cx.new(|cx| {
+                            InputState::new(window, cx)
+                                .placeholder(tr("app.placeholder.role_name"))
+                        });
+                        let pg_password_input = cx.new(|cx| {
+                            InputState::new(window, cx)
+                                .placeholder(tr("app.placeholder.new_password"))
+                                .masked(true)
+                        });
                         let pg_password_confirm_input = cx.new(|cx| {
                             InputState::new(window, cx)
-                                .placeholder("确认新密码")
+                                .placeholder(tr("app.placeholder.confirm_new_password"))
                                 .masked(true)
                         });
                         let pg_connection_limit_input =
                             cx.new(|cx| InputState::new(window, cx).placeholder("-1"));
                         let pg_valid_until_input = cx.new(|cx| {
-                            InputState::new(window, cx).placeholder("如 2026-12-31 23:59:59+08")
+                            InputState::new(window, cx)
+                                .placeholder(tr("app.placeholder.valid_until_example"))
                         });
                         let pg_valid_until_mode_select = cx.new(|cx| {
                             SelectState::new(
@@ -1274,11 +1410,18 @@ fn navicat_main_new(
                             )
                         });
                         let user_admin_ssl_cipher_input =
-                            cx.new(|cx| InputState::new(window, cx).placeholder("Cipher"));
-                        let user_admin_ssl_issuer_input =
-                            cx.new(|cx| InputState::new(window, cx).placeholder("证书发行者"));
-                        let user_admin_ssl_subject_input =
-                            cx.new(|cx| InputState::new(window, cx).placeholder("证书主旨"));
+                            cx.new(|cx| {
+                                InputState::new(window, cx)
+                                    .placeholder(tr("app.user_admin.advanced.cipher"))
+                            });
+                        let user_admin_ssl_issuer_input = cx.new(|cx| {
+                            InputState::new(window, cx)
+                                .placeholder(tr("app.placeholder.cert_issuer"))
+                        });
+                        let user_admin_ssl_subject_input = cx.new(|cx| {
+                            InputState::new(window, cx)
+                                .placeholder(tr("app.placeholder.cert_subject"))
+                        });
                         let data_sql_panel_subscription = cx.subscribe(
                             &data_sql_panel_input,
                             |this: &mut NavicatMain, input, event: &InputEvent, cx| {
@@ -1640,14 +1783,14 @@ fn navicat_main_new(
                             window,
                             |this: &mut NavicatMain,
                              _select,
-                             event: &SelectEvent<SearchableVec<String>>,
+                             event: &SelectEvent<SearchableVec<RedisTypeFilterOption>>,
                              _window,
                              cx| {
                                 let SelectEvent::Confirm(value) = event;
                                 if let (Some(tab_id), Some(value)) =
                                     (this.active_redis_data_tab_id(), value)
                                 {
-                                    this.set_redis_type_filter(tab_id, value.clone(), cx);
+                                    this.set_redis_type_filter(tab_id, value.value().clone(), cx);
                                 }
                             },
                         );
@@ -2024,14 +2167,24 @@ fn navicat_main_new(
                                     (this.active_user_admin_tab_id(), value)
                                 {
                                     let op = match value.as_str() {
-                                        "清除截止时间（永不过期）" => PgValidUntilOp::Clear,
+                                        label
+                                            if pg_valid_until_label(&PgValidUntilOp::Clear)
+                                                == label =>
+                                        {
+                                            PgValidUntilOp::Clear
+                                        }
                                         // 切到自定义模式时以输入框当前文本作为截止时间。
-                                        "自定义截止时间…" => PgValidUntilOp::At(
-                                            valid_until_input_ref
-                                                .read(cx)
-                                                .value()
-                                                .to_string(),
-                                        ),
+                                        label if pg_valid_until_label(&PgValidUntilOp::At(
+                                            String::new(),
+                                        )) == label =>
+                                        {
+                                            PgValidUntilOp::At(
+                                                valid_until_input_ref
+                                                    .read(cx)
+                                                    .value()
+                                                    .to_string(),
+                                            )
+                                        }
                                         _ => PgValidUntilOp::Keep,
                                     };
                                     this.dispatch(
@@ -2053,10 +2206,22 @@ fn navicat_main_new(
                                 if let (Some(tab_id), Some(value)) =
                                     (this.active_user_admin_tab_id(), value)
                                 {
-                                    // 「不设置密码」（新建）= 不下发 PASSWORD 子句（Keep）。
                                     let op = match value.as_str() {
-                                        "设置新密码" => PgPasswordOp::Set(String::new()),
-                                        "清除密码" => PgPasswordOp::Clear,
+                                        label if pg_password_op_label(
+                                            true,
+                                            &PgPasswordOp::Set(String::new()),
+                                        ) == label =>
+                                        {
+                                            PgPasswordOp::Set(String::new())
+                                        }
+                                        label if pg_password_op_label(
+                                            false,
+                                            &PgPasswordOp::Clear,
+                                        ) == label =>
+                                        {
+                                            PgPasswordOp::Clear
+                                        }
+                                        // 「不设置密码」/「保持不变」= 不下发 PASSWORD 子句（Keep）。
                                         _ => PgPasswordOp::Keep,
                                     };
                                     this.dispatch(
@@ -2317,15 +2482,14 @@ fn navicat_main_new(
                             window,
                             |this: &mut NavicatMain,
                              _select,
-                             event: &SelectEvent<SearchableVec<String>>,
+                             event: &SelectEvent<SearchableVec<ForeignKeyCheckOption>>,
                              _window,
                              cx| {
                                 let SelectEvent::Confirm(value) = event;
                                 if let (Some(value), Some(form)) =
                                     (value, &mut this.pending_danger_table_action)
                                 {
-                                    form.foreign_key_check =
-                                        danger_table_foreign_key_check_from_label(value);
+                                    form.foreign_key_check = *value;
                                     form.error = None;
                                     cx.notify();
                                 }
@@ -2746,14 +2910,16 @@ fn navicat_main_new(
                                 redis_list_item_search_subscription,
                             redis_stream_entry_active: None,
                             redis_stream_since_input: cx.new(|cx| {
-                                InputState::new(window, cx).placeholder("起始时间 2026-08-09 12:00:00")
+                                InputState::new(window, cx)
+                                    .placeholder(tr("app.placeholder.stream_since"))
                             }),
                             redis_stream_until_input: cx.new(|cx| {
-                                InputState::new(window, cx).placeholder("结束时间")
+                                InputState::new(window, cx)
+                                    .placeholder(tr("app.placeholder.stream_until"))
                             }),
                             redis_stream_ranges: BTreeMap::new(),
                             redis_stream_maxlen_input: cx
-                                .new(|cx| InputState::new(window, cx).placeholder("MAXLEN")),
+                                .new(|cx| InputState::new(window, cx).placeholder(tr("app.placeholder.maxlen"))),
                             redis_stream_groups: BTreeMap::new(),
                             redis_stream_groups_loading: None,
                             redis_stream_groups_expanded: false,
@@ -3190,13 +3356,13 @@ fn navicat_main_new(
                             pg_client: NativeClientState {
                                 source_input: settings_pg_client_source_input,
                                 _source_subscription: settings_pg_client_source_subscription,
-                                status: None, download: None, detect_task: None,
+                                status: None, status_missing: false, download: None, detect_task: None,
                                 download_task: None, progress_task: None,
                             },
                             mysql_client: NativeClientState {
                                 source_input: settings_mysql_client_source_input,
                                 _source_subscription: settings_mysql_client_source_subscription,
-                                status: None, download: None, detect_task: None,
+                                status: None, status_missing: false, download: None, detect_task: None,
                                 download_task: None, progress_task: None,
                             },
                             backup_pg_client_missing: false,

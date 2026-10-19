@@ -113,9 +113,9 @@ fn er_relationship_panel(
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .text_color(colors.text)
                     .child(if this.er_relationship_form_open.contains(&tab_id) {
-                        "新建本地逻辑关系"
+                        tr("app.er_relationship.new_title")
                     } else {
-                        "本地逻辑关系"
+                        tr("app.er_relationship.title")
                     }),
             )
             .child(
@@ -123,9 +123,9 @@ fn er_relationship_panel(
                     .secondary()
                     .xsmall()
                     .label(if this.er_relationship_form_open.contains(&tab_id) {
-                        "关闭新建"
+                        tr("app.er_relationship.close_new")
                     } else {
-                        "新建关系"
+                        tr("app.er_relationship.new")
                     })
                     .disabled(loading || this.er_full_tables.get(&tab_id).is_none_or(Vec::is_empty))
                     .on_click(cx.listener(move |this, _, window, cx| {
@@ -142,7 +142,7 @@ fn er_relationship_panel(
                 Button::new(("er-rel-close", tab_id.0))
                     .ghost()
                     .xsmall()
-                    .tooltip("关闭关系面板")
+                    .tooltip(tr("app.er_relationship.close_panel"))
                     .child(app_icon(AppIcon::Close, 15., colors.muted))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         // 关闭面板：清理拖拽起点，避免下次打开残留旧状态。
@@ -170,14 +170,24 @@ fn er_relationship_panel(
                 .text_size(px(11.))
                 .font_weight(gpui::FontWeight::MEDIUM)
                 .text_color(if colors.is_dark { rgb(0xe6c27a) } else { rgb(0x8a5a00) })
-                .child(format!("{} 项待处理（结构刷新后需人工确认）", pending.len())),
+                .child(
+                    tr("app.er_relationship.pending_count")
+                        .replace("%{count}", &pending.len().to_string()),
+                ),
         );
         for item in pending.iter().take(4) {
+            let (side, reason) = er_rebind_pending_display(&item.endpoint);
             pending_box = pending_box.child(
                 div()
                     .text_size(px(11.))
                     .text_color(colors.muted)
-                    .child(format!("{} · {}：{}", item.endpoint, item.rel_id, item.kind)),
+                    .child(
+                        tr("app.er_relationship.pending_item")
+                            .replace("%{side}", side.as_str())
+                            .replace("%{id}", &item.rel_id)
+                            .replace("%{reason}", reason.as_str())
+                            .replace("%{kind}", &item.kind),
+                    ),
             );
         }
         if pending.len() > 4 {
@@ -185,7 +195,10 @@ fn er_relationship_panel(
                 div()
                     .text_size(px(11.))
                     .text_color(colors.muted)
-                    .child(format!("… 其余 {} 项", pending.len() - 4)),
+                .child(
+                    tr("app.er_relationship.pending_rest")
+                        .replace("%{count}", &(pending.len() - 4).to_string()),
+                ),
             );
         }
         panel = panel.child(pending_box);
@@ -212,7 +225,7 @@ fn er_relationship_panel(
         panel = panel.child(
             div().px(px(12.)).py(px(6.)).border_b_1().border_color(colors.border_soft)
                 .child(Button::new(("er-undo-delete", tab_id.0)).secondary().xsmall()
-                    .label("恢复最近删除的关系（待确认）")
+                    .label(tr("app.er_relationship.restore_deleted"))
                     .disabled(loading)
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.run_er_relationship_command(undo_tab,
@@ -228,7 +241,7 @@ fn er_relationship_panel(
                 .py(px(16.))
                 .text_size(px(12.))
                 .text_color(colors.muted)
-                .child("正在加载关系…"),
+                .child(tr("app.er_relationship.loading")),
         );
     } else if let Some(error) = error {
         let retry_tab = tab_id;
@@ -244,7 +257,7 @@ fn er_relationship_panel(
                     Button::new(("er-rel-retry-list", tab_id.0))
                         .secondary()
                         .small()
-                        .label("重试")
+                        .label(tr("app.common.retry"))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.retry_er_relationships(retry_tab, cx);
                         })),
@@ -257,7 +270,7 @@ fn er_relationship_panel(
                 .py(px(16.))
                 .text_size(px(12.))
                 .text_color(colors.muted)
-                .child("当前作用域没有本地逻辑关系"),
+                .child(tr("app.er_relationship.empty")),
         );
     } else {
         let mut list = div()
@@ -297,13 +310,13 @@ fn er_relationship_panel(
                         div()
                             .text_size(px(10.))
                             .text_color(rgb(0xef4444))
-                            .child("仅删除本地关系，不修改数据库外键"),
+                            .child(tr("app.er_relationship.delete_hint")),
                     )
                     .child(
                         Button::new(format!("er-rel-delete-cancel-{}-{}", tab_id.0, cancel_id))
                             .ghost()
                             .xsmall()
-                            .label("取消")
+                            .label(tr("app.common.cancel"))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.er_relationship_delete_pending.remove(&cancel_tab);
                                 cx.notify();
@@ -313,7 +326,7 @@ fn er_relationship_panel(
                         Button::new(format!("er-rel-delete-confirm-{}-{}", tab_id.0, confirm_id))
                             .danger()
                             .xsmall()
-                            .label("确认删除")
+                            .label(tr("app.er_relationship.confirm_delete"))
                             .disabled(busy)
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.run_er_relationship_command(
@@ -334,7 +347,7 @@ fn er_relationship_panel(
                 Button::new(format!("er-rel-delete-{}-{}", tab_id.0, pending_id))
                     .ghost()
                     .xsmall()
-                    .label("删除")
+                    .label(tr("app.common.delete"))
                     .disabled(busy)
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.er_relationship_delete_pending.insert(
@@ -351,13 +364,19 @@ fn er_relationship_panel(
                     item.rel_id == relationship_id && (item.endpoint.contains("缺列") || item.endpoint.contains("实体未找到"))
                 }));
             let state = if unresolved {
-                ("未解析（缺表或缺列）", rgb(0xef4444))
+                (tr("app.er_relationship.state_unresolved"), rgb(0xef4444))
             } else if needs_rebuild_review {
-                ("需确认（同名重建）", rgb(0x8a5a00))
+                (tr("app.er_relationship.state_rebuild"), rgb(0x8a5a00))
             } else { match relationship.review.state {
-                fluxdb_core::ErReviewState::Proposed => ("待确认", colors.muted),
-                fluxdb_core::ErReviewState::Confirmed => ("已确认", rgb(0x16a34a)),
-                fluxdb_core::ErReviewState::Rejected => ("已拒绝", rgb(0xef4444)),
+                fluxdb_core::ErReviewState::Proposed => {
+                    (tr("app.er_relationship.state_proposed"), colors.muted)
+                }
+                fluxdb_core::ErReviewState::Confirmed => {
+                    (tr("app.er_relationship.state_confirmed"), rgb(0x16a34a))
+                }
+                fluxdb_core::ErReviewState::Rejected => {
+                    (tr("app.er_relationship.state_rejected"), rgb(0xef4444))
+                }
             }};
             let pairs = relationship
                 .column_pairs
@@ -411,13 +430,15 @@ fn er_relationship_panel(
                         div()
                             .text_size(px(11.))
                             .text_color(colors.muted)
-                            .child(format!(
-                                "修订 {} · {} · 来源 {}",
-                                relationship.revision,
-                                relationship.id,
-                                // 来源必须与状态一起可见：AI 建议与用户自建关系不能混为一谈。
-                                fluxdb_core::er_relationship_origin_label(relationship.origin),
-                            )),
+                            .child(
+                                tr("app.er_relationship.revision_origin")
+                                    .replace("%{revision}", &relationship.revision.to_string())
+                                    .replace("%{id}", &relationship.id)
+                                    .replace(
+                                        "%{origin}",
+                                        &er_relationship_origin_display(relationship.origin),
+                                    ),
+                            ),
                     )
                     .child(
                         div()
@@ -448,7 +469,7 @@ fn er_relationship_panel(
                                 Button::new(format!("er-rel-edit-{}-{}", tab_id.0, relationship_id))
                                     .ghost()
                                     .xsmall()
-                                    .label("编辑")
+                                    .label(tr("app.cell_detail.edit"))
                                     .disabled(busy)
                                     .on_click(cx.listener(move |this, _, window, cx| {
                                         this.er_begin_edit_relationship(
@@ -463,7 +484,7 @@ fn er_relationship_panel(
                                 Button::new(format!("er-rel-confirm-{}-{}", tab_id.0, relationship_id))
                                     .ghost()
                                     .xsmall()
-                                    .label("确认")
+                                    .label(tr("app.er_relationship.confirm"))
                                     .disabled(busy || unresolved || relationship.review.state == fluxdb_core::ErReviewState::Confirmed)
                                     .on_click(cx.listener({
                                         let scope_key = scope_key.clone();
@@ -486,7 +507,7 @@ fn er_relationship_panel(
                                 Button::new(format!("er-rel-reject-{}-{}", tab_id.0, relationship_id))
                                     .ghost()
                                     .xsmall()
-                                    .label("拒绝")
+                                    .label(tr("app.er_relationship.reject"))
                                     .disabled(busy || relationship.review.state == fluxdb_core::ErReviewState::Rejected)
                                     .on_click(cx.listener({
                                         let scope_key = scope_key.clone();
@@ -517,11 +538,12 @@ fn er_relationship_panel(
 
 /// 表单分节：标题（右侧可放操作）+ 内容，用细分隔线（border-top）与间距组织。
 fn er_form_section(
-    title: &str,
+    title: impl Into<SharedString>,
     head_rear: Div,
     body: Div,
     colors: UiColors,
 ) -> Div {
+    let title = title.into();
     div()
         .flex()
         .flex_col()
@@ -540,7 +562,7 @@ fn er_form_section(
                         .text_size(px(12.))
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .text_color(colors.text)
-                        .child(title.to_string()),
+                        .child(title),
                 )
                 .child(head_rear),
         )
@@ -549,11 +571,12 @@ fn er_form_section(
 
 /// 表单字段：标签在控件上方（可选标「可选」），供基础信息分节使用。
 fn er_form_field(
-    label: &str,
+    label: impl Into<SharedString>,
     optional: bool,
     control: impl gpui::IntoElement,
     colors: UiColors,
 ) -> Div {
+    let label = label.into();
     div()
         .flex()
         .flex_col()
@@ -569,14 +592,14 @@ fn er_form_field(
                         .text_size(px(11.))
                         .font_weight(gpui::FontWeight::MEDIUM)
                         .text_color(colors.text)
-                        .child(label.to_string()),
+                        .child(label),
                 )
                 .when(optional, |s| {
                     s.child(
                         div()
                             .text_size(px(10.))
                             .text_color(colors.muted)
-                            .child("可选"),
+                            .child(tr("app.er_relationship.optional")),
                     )
                 }),
         )
@@ -703,6 +726,40 @@ fn er_relationship_pair_label(
     format!("{left_name}.{left_column} ↔ {right_name}.{right_column}")
 }
 
+/// ER 关系来源由 core 稳定枚举投影；展示文案由桌面语言包决定。
+fn er_relationship_origin_display(origin: fluxdb_core::ErRelationshipOrigin) -> SharedString {
+    match origin {
+        fluxdb_core::ErRelationshipOrigin::DatabaseConstraint => {
+            tr("app.er_relationship.origin_database_constraint")
+        }
+        fluxdb_core::ErRelationshipOrigin::User => tr("app.er_relationship.origin_user"),
+        fluxdb_core::ErRelationshipOrigin::SqlObservation => {
+            tr("app.er_relationship.origin_sql_observation")
+        }
+        fluxdb_core::ErRelationshipOrigin::Agent => tr("app.er_relationship.origin_agent"),
+    }
+}
+
+/// 结构刷新待处理项内部使用稳定中文标记做判定；展示时转换为当前界面语言。
+fn er_rebind_pending_display(endpoint: &str) -> (SharedString, SharedString) {
+    let (side, reason) = endpoint.split_once('：').unwrap_or(("", endpoint));
+    let side = match side {
+        "左表" => tr("app.er_form.left_table"),
+        "右表" => tr("app.er_form.right_table"),
+        _ => SharedString::from(side),
+    };
+    let reason = if reason.contains("缺列") {
+        tr("app.er_relationship.reason_missing_column")
+    } else if reason.contains("实体未找到") {
+        tr("app.er_relationship.reason_entity_missing")
+    } else if reason.contains("同名重建") {
+        tr("app.er_relationship.reason_rebuild_review")
+    } else {
+        SharedString::from(reason)
+    };
+    (side, reason)
+}
+
 fn er_relationship_form(
     tab_id: TabId,
     this: &mut NavicatMain,
@@ -789,7 +846,7 @@ fn er_relationship_form(
             .mb(px(12.))
             .text_size(px(11.))
             .text_color(colors.muted)
-            .child("连接两张表的字段，描述它们之间的业务关系。"),
+            .child(tr("app.er_form.intro")),
     );
 
     // 基础信息分节：左表/右表并排，角色/说明独占一行。
@@ -803,33 +860,58 @@ fn er_relationship_form(
                 div()
                     .flex_1()
                     .min_w(px(180.))
-                    .child(er_form_field("左表", false, Select::new(&left_table).small().placeholder("选择左表").search_placeholder("搜索表"), colors)),
+                    .child(er_form_field(
+                        tr("app.er_form.left_table"),
+                        false,
+                        Select::new(&left_table)
+                            .small()
+                            .placeholder(tr("app.er_form.choose_left_table"))
+                            .search_placeholder(tr("app.placeholder.search_table")),
+                        colors,
+                    )),
             )
             .child(
                 div()
                     .flex_1()
                     .min_w(px(180.))
-                    .child(er_form_field("右表", false, Select::new(&right_table).small().placeholder("选择右表").search_placeholder("搜索表"), colors)),
+                    .child(er_form_field(
+                        tr("app.er_form.right_table"),
+                        false,
+                        Select::new(&right_table)
+                            .small()
+                            .placeholder(tr("app.er_form.choose_right_table"))
+                            .search_placeholder(tr("app.placeholder.search_table")),
+                        colors,
+                    )),
             ),
     );
     basic = basic.child(er_form_field(
-        "业务角色",
+        tr("app.er_form.business_role"),
         false,
         Input::new(&role_input).small(),
         colors,
     ));
     basic = basic.child(er_form_field(
-        "说明",
+        tr("app.er_form.description"),
         true,
         Input::new(&description_input).small(),
         colors,
     ));
-    form = form.child(er_form_section("基础信息", div(), basic, colors));
+    form = form.child(er_form_section(
+        tr("app.er_form.basic_section"),
+        div(),
+        basic,
+        colors,
+    ));
 
     // 关联字段分节：标题 + 基数下拉 + 添加配对；方向文案 + 表头 + 每对（序号/左/等号/右/删除）。
     let mut assoc_head = div().flex().items_center().gap(px(8.));
     assoc_head = assoc_head.child(
-        div().w(px(130.)).child(Select::new(&cardinality).small().placeholder("选择基数")),
+        div().w(px(130.)).child(
+            Select::new(&cardinality)
+                .small()
+                .placeholder(tr("app.er_form.choose_cardinality")),
+        ),
     );
     let add_pair_tab = tab_id;
     assoc_head = assoc_head.child(
@@ -837,7 +919,7 @@ fn er_relationship_form(
             .ghost()
             .xsmall()
             .child(app_icon(AppIcon::Plus, 14., colors.text))
-            .label("添加配对")
+            .label(tr("app.er_form.add_pair"))
             .disabled(submitting)
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.er_add_relationship_pair(add_pair_tab, window, cx);
@@ -847,11 +929,11 @@ fn er_relationship_form(
     let mut assoc_body = div().flex().flex_col().gap(px(8.));
     // 方向与基数说明。
     let direction = match (&left_name, &right_name) {
-        (Some(l), Some(r)) => format!(
-            "{l} → {r} · {}，所有字段配对共同生效",
-            er_cardinality_label(&card_id)
-        ),
-        _ => "请先选择左右表 · 所有字段配对共同生效".to_string(),
+        (Some(l), Some(r)) => tr("app.er_form.direction")
+            .replace("%{left}", l)
+            .replace("%{right}", r)
+            .replace("%{cardinality}", er_cardinality_label(&card_id).as_str()),
+        _ => tr("app.er_form.choose_tables_hint").to_string(),
     };
     assoc_body = assoc_body.child(
         div()
@@ -872,7 +954,7 @@ fn er_relationship_form(
                     .flex_1()
                     .text_size(px(10.))
                     .text_color(colors.muted)
-                    .child("左表字段"),
+                    .child(tr("app.er_form.left_columns")),
             )
             .child(div().w(px(14.)).flex_shrink_0().child(div()))
             .child(
@@ -880,7 +962,7 @@ fn er_relationship_form(
                     .flex_1()
                     .text_size(px(10.))
                     .text_color(colors.muted)
-                    .child("右表字段"),
+                    .child(tr("app.er_form.right_columns")),
             ),
     );
     // 每对字段行。
@@ -904,23 +986,31 @@ fn er_relationship_form(
                 .child(div().flex_1().min_w_0().child(
                     Select::new(&left)
                         .small()
-                        .placeholder(if has_both_tables { "选择字段" } else { "请先选择左表" })
-                        .search_placeholder("搜索字段")
+                        .placeholder(if has_both_tables {
+                            tr("app.er_form.choose_column")
+                        } else {
+                            tr("app.er_form.choose_left_first")
+                        })
+                        .search_placeholder(tr("app.placeholder.search_field"))
                         .disabled(!has_both_tables),
                 ))
                 .child(er_equal_icon(colors))
                 .child(div().flex_1().min_w_0().child(
                     Select::new(&right)
                         .small()
-                        .placeholder(if has_both_tables { "选择字段" } else { "请先选择右表" })
-                        .search_placeholder("搜索字段")
+                        .placeholder(if has_both_tables {
+                            tr("app.er_form.choose_column")
+                        } else {
+                            tr("app.er_form.choose_right_first")
+                        })
+                        .search_placeholder(tr("app.placeholder.search_field"))
                         .disabled(!has_both_tables),
                 ))
                 .child(
                     Button::new(format!("er-rel-del-pair-{}-{}", tab_id.0, index))
                         .ghost()
                         .child(app_icon(AppIcon::Trash, 14., colors.muted))
-                        .tooltip("删除本组配对")
+                        .tooltip(tr("app.er_form.remove_pair"))
                         .disabled(submitting || pair_count <= 1)
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.er_remove_relationship_pair(remove_tab, remove_index, cx);
@@ -928,7 +1018,12 @@ fn er_relationship_form(
                 ),
         );
     }
-    form = form.child(er_form_section("关联字段", assoc_head, assoc_body, colors));
+    form = form.child(er_form_section(
+        tr("app.er_form.columns_section"),
+        assoc_head,
+        assoc_body,
+        colors,
+    ));
 
     // 附加关联条件分节：标题 + 添加条件 + 辅助文案 + 条件行 + 空态。
     let add_filter_tab = tab_id;
@@ -937,7 +1032,7 @@ fn er_relationship_form(
             .ghost()
             .xsmall()
             .child(app_icon(AppIcon::Plus, 14., colors.text))
-            .label("添加条件")
+            .label(tr("app.er_form.add_condition"))
             .disabled(submitting)
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.er_add_relationship_filter(add_filter_tab, window, cx);
@@ -949,7 +1044,7 @@ fn er_relationship_form(
         div()
             .text_size(px(11.))
             .text_color(colors.muted)
-            .child("使用这条关系生成 JOIN 时，始终附加以下条件。"),
+            .child(tr("app.er_form.conditions_intro")),
     );
     if filters.is_empty() {
         cond_body = cond_body.child(
@@ -960,7 +1055,7 @@ fn er_relationship_form(
                 .bg(colors.canvas_bg)
                 .text_size(px(11.))
                 .text_color(colors.muted)
-                .child("暂无附加条件，例如：customers.is_deleted = 0"),
+                .child(tr("app.er_form.no_conditions")),
         );
     }
     for (_index, (side, column, op, literal)) in filters.into_iter().enumerate() {
@@ -969,19 +1064,40 @@ fn er_relationship_form(
                 .flex()
                 .items_center()
                 .gap(px(6.))
-                .child(div().w(px(58.)).flex_shrink_0().child(Select::new(&side).small().placeholder("端点")))
+                .child(
+                    div().w(px(58.)).flex_shrink_0().child(
+                        Select::new(&side)
+                            .small()
+                            .placeholder(tr("app.er_form.endpoint")),
+                    ),
+                )
                 .child(div().flex_1().min_w_0().child(
                     Select::new(&column)
                         .small()
-                        .placeholder(if has_both_tables { "选择字段" } else { "请先选择表" })
-                        .search_placeholder("搜索字段")
+                        .placeholder(if has_both_tables {
+                            tr("app.er_form.choose_column")
+                        } else {
+                            tr("app.er_form.choose_table_first")
+                        })
+                        .search_placeholder(tr("app.placeholder.search_field"))
                         .disabled(!has_both_tables),
                 ))
-                .child(div().w(px(80.)).flex_shrink_0().child(Select::new(&op).small().placeholder("操作")))
+                .child(
+                    div().w(px(80.)).flex_shrink_0().child(
+                        Select::new(&op)
+                            .small()
+                            .placeholder(tr("app.er_form.operator")),
+                    ),
+                )
                 .child(div().flex_1().min_w_0().child(Input::new(&literal).small())),
         );
     }
-    form = form.child(er_form_section("附加关联条件", cond_head, cond_body, colors));
+    form = form.child(er_form_section(
+        tr("app.er_form.conditions_section"),
+        cond_head,
+        cond_body,
+        colors,
+    ));
 
     // 底部操作区：左弱化说明 + 右取消/创建。
     let submit_tab = tab_id;
@@ -1000,7 +1116,7 @@ fn er_relationship_form(
                 div()
                     .text_size(px(11.))
                     .text_color(colors.muted)
-                    .child("仅保存本地逻辑关系"),
+                    .child(tr("app.er_form.local_only")),
             )
             .child(
                 div()
@@ -1010,7 +1126,7 @@ fn er_relationship_form(
                         Button::new(("er-rel-form-cancel", tab_id.0))
                             .ghost()
                             .xsmall()
-                            .label("取消")
+                            .label(tr("app.common.cancel"))
                             .disabled(submitting)
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.er_relationship_form_open.remove(&cancel_tab);
@@ -1021,7 +1137,11 @@ fn er_relationship_form(
                         Button::new(("er-rel-submit", tab_id.0))
                             .primary()
                             .xsmall()
-                            .label(if submitting { "提交中…" } else { "创建关系" })
+                            .label(if submitting {
+                                tr("app.confirm.submitting")
+                            } else {
+                                tr("app.er_form.create")
+                            })
                             .disabled(submitting)
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.submit_er_relationship_form(submit_tab, cx);

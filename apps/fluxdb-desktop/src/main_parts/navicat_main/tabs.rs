@@ -192,7 +192,7 @@ impl NavicatMain {
             TabMenuAction::CopyTableName => {
                 if let Some(table_name) = data_editor_table_name(self.controller.state(), tab_id) {
                     cx.write_to_clipboard(ClipboardItem::new_string(table_name));
-                    self.show_message("已复制表名", AppMessageKind::Success, cx);
+                    self.show_message(tr("app.table.toast.name_copied").as_ref(), AppMessageKind::Success, cx);
                 }
             }
             TabMenuAction::Pin => {

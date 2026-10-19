@@ -45,7 +45,7 @@ impl NavicatMain {
                 Some(provider) => provider.stored_id().to_string(),
                 None => {
                     self.show_message(
-                        "Provider 取值无效，请重新选择",
+                        tr("app.ai.model_dialog.provider_invalid_retry"),
                         AppMessageKind::Warning,
                         cx,
                     );
@@ -58,7 +58,7 @@ impl NavicatMain {
         let api_key = dialog.inputs.api_key.read(cx).value().to_string();
         if api_key.trim().is_empty() {
             self.show_message(
-                "请先填写 API Key 再获取模型能力",
+                tr("app.ai.model_dialog.api_key_required"),
                 AppMessageKind::Warning,
                 cx,
             );

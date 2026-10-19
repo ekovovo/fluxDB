@@ -58,10 +58,10 @@ impl NavicatMain {
     /// 抽屉打开时重置全部类型子表单：每个可增删行集合都重建为一个空行，供各类型使用。
     fn reset_redis_add_key_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.redis_add_key_hash_rows = vec![new_add_key_hash_row(window, cx)];
-        self.redis_add_key_zset_rows = vec![new_add_key_pair_row("Member", "Score", window, cx)];
-        self.redis_add_key_set_rows = vec![new_add_key_single_row("Member", window, cx)];
-        self.redis_add_key_list_rows = vec![new_add_key_single_row("Element", window, cx)];
-        self.redis_add_key_stream_rows = vec![new_add_key_pair_row("Field", "Value", window, cx)];
+        self.redis_add_key_zset_rows = vec![new_add_key_pair_row(tr("app.redis.form.member"), tr("app.redis.form.score"), window, cx)];
+        self.redis_add_key_set_rows = vec![new_add_key_single_row(tr("app.redis.form.member"), window, cx)];
+        self.redis_add_key_list_rows = vec![new_add_key_single_row(tr("app.redis.form.element"), window, cx)];
+        self.redis_add_key_stream_rows = vec![new_add_key_pair_row(tr("app.redis.form.field"), tr("app.redis.form.value"), window, cx)];
     }
 
     /// 类型切换时重置「当前所选类型」子表单的依赖字段：清空对应单值输入或重建对应行集合。
@@ -79,19 +79,19 @@ impl NavicatMain {
                 self.redis_add_key_hash_rows = vec![new_add_key_hash_row(window, cx)];
             }
             RedisAddKeyKind::ZSet => {
-                self.redis_add_key_zset_rows = vec![new_add_key_pair_row("Member", "Score", window, cx)];
+                self.redis_add_key_zset_rows = vec![new_add_key_pair_row(tr("app.redis.form.member"), tr("app.redis.form.score"), window, cx)];
             }
             RedisAddKeyKind::Set => {
-                self.redis_add_key_set_rows = vec![new_add_key_single_row("Member", window, cx)];
+                self.redis_add_key_set_rows = vec![new_add_key_single_row(tr("app.redis.form.member"), window, cx)];
             }
             RedisAddKeyKind::List => {
-                self.redis_add_key_list_rows = vec![new_add_key_single_row("Element", window, cx)];
+                self.redis_add_key_list_rows = vec![new_add_key_single_row(tr("app.redis.form.element"), window, cx)];
                 self.redis_add_key_list_direction = RedisListDirection::Tail;
             }
             RedisAddKeyKind::Stream => {
                 self.redis_add_key_stream_id_input
                     .update(cx, |input, cx| input.set_value("", window, cx));
-                self.redis_add_key_stream_rows = vec![new_add_key_pair_row("Field", "Value", window, cx)];
+                self.redis_add_key_stream_rows = vec![new_add_key_pair_row(tr("app.redis.form.field"), tr("app.redis.form.value"), window, cx)];
             }
         }
     }
@@ -105,19 +105,19 @@ impl NavicatMain {
                 self.redis_add_key_hash_rows.push(row);
             }
             RedisAddKeyKind::ZSet => {
-                let row = new_add_key_pair_row("Member", "Score", window, cx);
+                let row = new_add_key_pair_row(tr("app.redis.form.member"), tr("app.redis.form.score"), window, cx);
                 self.redis_add_key_zset_rows.push(row);
             }
             RedisAddKeyKind::Stream => {
-                let row = new_add_key_pair_row("Field", "Value", window, cx);
+                let row = new_add_key_pair_row(tr("app.redis.form.field"), tr("app.redis.form.value"), window, cx);
                 self.redis_add_key_stream_rows.push(row);
             }
             RedisAddKeyKind::Set => {
-                let row = new_add_key_single_row("Member", window, cx);
+                let row = new_add_key_single_row(tr("app.redis.form.member"), window, cx);
                 self.redis_add_key_set_rows.push(row);
             }
             RedisAddKeyKind::List => {
-                let row = new_add_key_single_row("Element", window, cx);
+                let row = new_add_key_single_row(tr("app.redis.form.element"), window, cx);
                 self.redis_add_key_list_rows.push(row);
             }
             RedisAddKeyKind::String | RedisAddKeyKind::Json => {}
@@ -174,10 +174,10 @@ impl NavicatMain {
                 self.redis_add_key_json_input.update(cx, |input, cx| {
                     input.set_value(formatted, window, cx);
                 });
-                self.show_message("JSON 已格式化", AppMessageKind::Success, cx);
+                self.show_message(tr("app.redis.add_key.toast.json_formatted").as_ref(), AppMessageKind::Success, cx);
             }
             Err(_) => {
-                self.show_message("JSON 内容不合法，无法格式化", AppMessageKind::Warning, cx);
+                self.show_message(tr("app.redis.add_key.error.json_invalid_format").as_ref(), AppMessageKind::Warning, cx);
             }
         }
         cx.notify();
@@ -247,7 +247,7 @@ impl NavicatMain {
         let kind = self.redis_add_key_kind(cx);
         let name = self.redis_add_key_name_input.read(cx).value().trim().to_string();
         if name.is_empty() {
-            self.show_message("Redis Key 名称不能为空", AppMessageKind::Warning, cx);
+            self.show_message(tr("app.redis.add_key.error.name_required").as_ref(), AppMessageKind::Warning, cx);
             return;
         }
         let ttl = self.redis_add_key_ttl_input.read(cx).value().to_string();
@@ -261,7 +261,7 @@ impl NavicatMain {
             RedisAddKeyKind::Json => {
                 let value = self.redis_add_key_json_input.read(cx).value().trim().to_string();
                 if value.is_empty() || serde_json::from_str::<serde_json::Value>(&value).is_err() {
-                    self.show_message("JSON 内容不合法，请输入合法的 JSON", AppMessageKind::Warning, cx);
+                    self.show_message(tr("app.redis.add_key.error.json_invalid").as_ref(), AppMessageKind::Warning, cx);
                     return;
                 }
                 (value, Vec::new(), None, None, None)
@@ -269,11 +269,11 @@ impl NavicatMain {
             RedisAddKeyKind::Hash => {
                 let rows = self.redis_add_key_hash_rows_snapshot(&self.redis_add_key_hash_rows, cx);
                 if rows.is_empty() {
-                    self.show_message("新建 Hash 至少需要一个字段", AppMessageKind::Warning, cx);
+                    self.show_message(tr("app.redis.add_key.error.hash_fields").as_ref(), AppMessageKind::Warning, cx);
                     return;
                 }
                 if rows.iter().any(|(field, _, _)| field.is_empty()) {
-                    self.show_message("字段名不能为空", AppMessageKind::Warning, cx);
+                    self.show_message(tr("app.redis.add_key.error.field_required").as_ref(), AppMessageKind::Warning, cx);
                     return;
                 }
                 // 字段级 TTL：留空不过期，非空必须为 >0 秒（文案对齐 Hash 详情「新增字段」抽屉）。
@@ -281,7 +281,7 @@ impl NavicatMain {
                     !ttl.is_empty() && ttl.parse::<u64>().ok().filter(|secs| *secs > 0).is_none()
                 }) {
                     self.show_message(
-                        "Redis TTL 必须是秒数，且大于 0 秒或留空",
+                        tr("app.redis.add_key.error.ttl").as_ref(),
                         AppMessageKind::Warning,
                         cx,
                     );
@@ -312,23 +312,27 @@ impl NavicatMain {
                 let pairs = self.redis_add_key_pair_rows_snapshot(rows, cx);
                 if pairs.is_empty() {
                     let what = format!("{:?}", kind);
-                    self.show_message(format!("新建 {what} 至少需要一个字段"), AppMessageKind::Warning, cx);
+                    self.show_message(
+                        tr("app.redis.add_key.error.collection_fields").replace("%{what}", &what),
+                        AppMessageKind::Warning,
+                        cx,
+                    );
                     return;
                 }
                 if pairs.iter().any(|(name, _)| name.is_empty()) {
-                    self.show_message("字段名/成员名不能为空", AppMessageKind::Warning, cx);
+                    self.show_message(tr("app.redis.add_key.error.field_or_member_required").as_ref(), AppMessageKind::Warning, cx);
                     return;
                 }
                 if kind == RedisAddKeyKind::ZSet
                     && pairs.iter().any(|(_, score)| score.trim().parse::<f64>().is_err())
                 {
-                    self.show_message("ZSet 的 score 必须是数字", AppMessageKind::Warning, cx);
+                    self.show_message(tr("app.redis.add_key.error.zset_score").as_ref(), AppMessageKind::Warning, cx);
                     return;
                 }
                 let stream_entry_id = if kind == RedisAddKeyKind::Stream {
                     let id = self.redis_add_key_stream_id_input.read(cx).value().trim().to_string();
                     if !id.is_empty() && id != "*" && !is_valid_stream_entry_id(&id) {
-                        self.show_message("Stream entry id 需为 `毫秒-序号` 或留空", AppMessageKind::Warning, cx);
+                        self.show_message(tr("app.redis.add_key.error.stream_id").as_ref(), AppMessageKind::Warning, cx);
                         return;
                     }
                     Some(id)
@@ -340,7 +344,7 @@ impl NavicatMain {
             RedisAddKeyKind::List => {
                 let members = self.redis_add_key_single_rows_snapshot(&self.redis_add_key_list_rows, cx);
                 if members.is_empty() {
-                    self.show_message("新建 List 至少需要一个元素", AppMessageKind::Warning, cx);
+                    self.show_message(tr("app.redis.add_key.error.list_items").as_ref(), AppMessageKind::Warning, cx);
                     return;
                 }
                 (
@@ -354,7 +358,7 @@ impl NavicatMain {
             RedisAddKeyKind::Set => {
                 let members = self.redis_add_key_single_rows_snapshot(&self.redis_add_key_set_rows, cx);
                 if members.is_empty() {
-                    self.show_message("新建 Set 至少需要一个成员", AppMessageKind::Warning, cx);
+                    self.show_message(tr("app.redis.add_key.error.set_members").as_ref(), AppMessageKind::Warning, cx);
                     return;
                 }
                 (members.join("\n"), Vec::new(), None, None, None)
@@ -400,8 +404,8 @@ impl NavicatMain {
                             AppEvent::RedisKeyCreated { object, key, .. } => Ok((object, key)),
                             AppEvent::Failed(error) => Err(error),
                             _ => Err(fluxdb_core::UserFacingError {
-                                title: "新建失败".to_string(),
-                                message: "新建 Key 没有返回结果".to_string(),
+                                title: tr("app.redis.add_key.error.create").to_string(),
+                                message: tr("app.redis.add_key.error.create_no_result").to_string(),
                                 detail: None,
                                 retryable: true,
                             }),
@@ -430,7 +434,7 @@ impl NavicatMain {
                             };
                             this.dispatch(AppCommand::OpenDataEditor(key_path), cx);
                             this.show_message(
-                                format!("已创建 Key「{}」", new_key),
+                                tr("app.redis.add_key.toast.created").replace("%{key}", &new_key),
                                 AppMessageKind::Info,
                                 cx,
                             );
@@ -451,8 +455,8 @@ impl NavicatMain {
 
 /// 新建 名称=值 型行（Hash/ZSet/Stream），并聚焦首个输入框。
 fn new_add_key_pair_row(
-    name_placeholder: &'static str,
-    value_placeholder: &'static str,
+    name_placeholder: impl Into<SharedString>,
+    value_placeholder: impl Into<SharedString>,
     window: &mut Window,
     cx: &mut Context<NavicatMain>,
 ) -> RedisAddKeyNameValueRow {
@@ -467,8 +471,8 @@ fn new_add_key_pair_row(
 /// 新建 Hash 行：字段名 / 值 / 可选字段级 TTL（秒），并聚焦字段名输入框。
 fn new_add_key_hash_row(window: &mut Window, cx: &mut Context<NavicatMain>) -> RedisAddKeyHashRow {
     let row = RedisAddKeyHashRow {
-        name: new_redis_add_key_name_input(window, cx, "Field"),
-        value: new_redis_add_key_pair_value_input(window, cx, "Value"),
+        name: new_redis_add_key_name_input(window, cx, tr("app.redis.form.field")),
+        value: new_redis_add_key_pair_value_input(window, cx, tr("app.redis.form.value")),
         ttl: new_redis_hash_ttl_input(window, cx, None),
     };
     row.name.update(cx, |input, cx| input.focus(window, cx));
@@ -477,7 +481,7 @@ fn new_add_key_hash_row(window: &mut Window, cx: &mut Context<NavicatMain>) -> R
 
 /// 新建 单成员 型行（Set/List），并聚焦成员输入框。
 fn new_add_key_single_row(
-    placeholder: &'static str,
+    placeholder: impl Into<SharedString>,
     window: &mut Window,
     cx: &mut Context<NavicatMain>,
 ) -> RedisAddKeySingleRow {

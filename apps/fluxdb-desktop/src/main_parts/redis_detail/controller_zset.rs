@@ -89,11 +89,11 @@ impl NavicatMain {
             .map(|(member, score)| (member.trim().to_string(), score.trim().to_string()))
             .collect::<Vec<_>>();
         if rows.is_empty() {
-            self.show_message("至少输入一个成员", AppMessageKind::Warning, cx);
+            self.show_message(tr("app.redis.zset.error.members_required").as_ref(), AppMessageKind::Warning, cx);
             return;
         }
         if rows.iter().any(|(member, _)| member.is_empty()) {
-            self.show_message("成员不能为空", AppMessageKind::Warning, cx);
+            self.show_message(tr("app.redis.zset.error.member_required").as_ref(), AppMessageKind::Warning, cx);
             return;
         }
         self.pending_redis_zset_member_drawer = None;
@@ -160,8 +160,8 @@ impl NavicatMain {
                         } => Ok((key, query, cursor, members, next_cursor, total)),
                         AppEvent::Failed(error) => Err(error),
                         _ => Err(fluxdb_core::UserFacingError {
-                            title: "查询失败".to_string(),
-                            message: "ZSet 成员查询没有返回结果".to_string(),
+                            title: tr("app.redis.error.query_failed").to_string(),
+                            message: tr("app.redis.zset.error.no_query_result").to_string(),
                             detail: None,
                             retryable: true,
                         }),
@@ -347,8 +347,8 @@ impl NavicatMain {
                             AppEvent::Failed(error) => last_error = Some(error),
                             _ => {
                                 return Err(fluxdb_core::UserFacingError {
-                                    title: "保存失败".to_string(),
-                                    message: "ZSet 成员操作没有返回结果".to_string(),
+                                    title: tr("app.redis.error.save_failed").to_string(),
+                                    message: tr("app.redis.zset.error.no_operation_result").to_string(),
                                     detail: None,
                                     retryable: true,
                                 })
@@ -520,7 +520,7 @@ impl NavicatMain {
         let current = edit_input.read(cx).value().trim().to_string();
         // 对齐 Redis ZADD 对 score 的约束：必须是合法数字（整数或双精度浮点）。
         if current.parse::<f64>().is_err() {
-            self.show_message("Score 必须是数字", AppMessageKind::Warning, cx);
+            self.show_message(tr("app.redis.zset.error.score").as_ref(), AppMessageKind::Warning, cx);
             return false;
         }
         let Some(row) = self.redis_zset_member_rows.get(row_index).cloned() else {

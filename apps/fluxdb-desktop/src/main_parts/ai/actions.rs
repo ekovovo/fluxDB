@@ -48,7 +48,7 @@ impl NavicatMain {
             && !self.ai_chat.input.read(cx).value().is_empty()
         {
             self.show_message(
-                "新草稿尚未发送；请先发送或清空内容再新建",
+                tr("app.ai.chat.action.unsent_draft").as_ref(),
                 AppMessageKind::Warning,
                 cx,
             );
@@ -184,7 +184,7 @@ impl NavicatMain {
                         AppEvent::AiSettingsError(message) => {
                             if approval.is_some() {
                                 this.show_message(
-                                    "审批状态已变化（可能已处理或失效），请刷新后重试",
+                                    tr("app.ai.chat.action.approval_changed").as_ref(),
                                     AppMessageKind::Warning, cx,
                                 );
                             } else {
@@ -200,7 +200,9 @@ impl NavicatMain {
                         match resume {
                             Ok(job) => this.start_ai_chat_job_with(job, Some(id), cx),
                             Err(error) => this.show_message(
-                                format!("无法恢复任务：{}", error.message),
+                                tr("app.ai.chat.action.resume_failed")
+                                    .replace("%{message}", &error.message)
+                                    .as_str(),
                                 AppMessageKind::Warning, cx,
                             ),
                         }
@@ -257,8 +259,9 @@ impl NavicatMain {
                     Ok(job) => {
                         if epoch != this.ai_chat.epoch {
                             fluxdb_app::clear_current_page_grants(&job.turn_id);
-                            this.ai_chat.error =
-                                Some("会话已切换，发送准备已中断；请从历史查看任务".into());
+                            this.ai_chat.error = Some(
+                                tr("app.ai.chat.action.session_switched").to_string(),
+                            );
                             cx.notify();
                             return;
                         }
@@ -404,9 +407,15 @@ impl NavicatMain {
                 }
                 if disconnected {
                     let _ = view.update(cx, |this, cx| {
-                        this.ai_chat.error = Some("AI 事件通道已关闭，请重新加载会话核对任务状态".into());
+                        this.ai_chat.error = Some(
+                            tr("app.ai.chat.action.channel_closed_error").to_string(),
+                        );
                         this.ai_chat_finish_stream();
-                        this.show_message("AI 事件通道已关闭，请核对任务状态", AppMessageKind::Warning, cx);
+                        this.show_message(
+                            tr("app.ai.chat.action.channel_closed_warning").as_ref(),
+                            AppMessageKind::Warning,
+                            cx,
+                        );
                         cx.notify();
                     });
                     break;

@@ -197,8 +197,8 @@ fn new_redis_stream_entry_field_inputs(
     cx: &mut Context<NavicatMain>,
 ) -> RedisStreamEntryFieldInputs {
     RedisStreamEntryFieldInputs {
-        field_input: cx.new(|cx| InputState::new(window, cx).placeholder("Field")),
-        value_input: cx.new(|cx| InputState::new(window, cx).placeholder("Value")),
+        field_input: cx.new(|cx| InputState::new(window, cx).placeholder(tr("app.redis.form.field"))),
+        value_input: cx.new(|cx| InputState::new(window, cx).placeholder(tr("app.redis.form.value"))),
     }
 }
 
@@ -393,7 +393,8 @@ fn new_redis_set_member_input(
     value: Option<String>,
 ) -> Entity<InputState> {
     cx.new(|cx| {
-        let mut input = InputState::new(window, cx).placeholder("Enter Member");
+        let mut input =
+            InputState::new(window, cx).placeholder(tr("app.redis.form.enter_member"));
         if let Some(value) = value {
             input = input.default_value(value);
         }
@@ -407,7 +408,7 @@ fn new_redis_hash_field_input(
     value: Option<String>,
 ) -> Entity<InputState> {
     cx.new(|cx| {
-        let mut input = InputState::new(window, cx).placeholder("Field");
+        let mut input = InputState::new(window, cx).placeholder(tr("app.redis.form.field"));
         if let Some(value) = value {
             input = input.default_value(value);
         }
@@ -421,7 +422,7 @@ fn new_redis_hash_value_input(
     value: Option<String>,
 ) -> Entity<InputState> {
     cx.new(|cx| {
-        let mut input = InputState::new(window, cx).placeholder("Value");
+        let mut input = InputState::new(window, cx).placeholder(tr("app.redis.form.value"));
         if let Some(value) = value {
             input = input.default_value(value);
         }
@@ -435,7 +436,7 @@ fn new_redis_hash_ttl_input(
     value: Option<String>,
 ) -> Entity<InputState> {
     cx.new(|cx| {
-        let mut input = InputState::new(window, cx).placeholder("TTL");
+        let mut input = InputState::new(window, cx).placeholder(tr("app.redis.form.ttl"));
         if let Some(value) = value {
             input = input.default_value(value);
         }
@@ -447,7 +448,7 @@ fn new_redis_hash_ttl_input(
 fn new_redis_add_key_name_input(
     window: &mut Window,
     cx: &mut Context<NavicatMain>,
-    placeholder: &'static str,
+    placeholder: impl Into<SharedString>,
 ) -> Entity<InputState> {
     cx.new(|cx| InputState::new(window, cx).placeholder(placeholder))
 }
@@ -456,7 +457,7 @@ fn new_redis_add_key_name_input(
 fn new_redis_add_key_pair_value_input(
     window: &mut Window,
     cx: &mut Context<NavicatMain>,
-    placeholder: &'static str,
+    placeholder: impl Into<SharedString>,
 ) -> Entity<InputState> {
     cx.new(|cx| InputState::new(window, cx).placeholder(placeholder))
 }
@@ -465,7 +466,7 @@ fn new_redis_add_key_pair_value_input(
 fn new_redis_add_key_single_input(
     window: &mut Window,
     cx: &mut Context<NavicatMain>,
-    placeholder: &'static str,
+    placeholder: impl Into<SharedString>,
 ) -> Entity<InputState> {
     cx.new(|cx| InputState::new(window, cx).placeholder(placeholder))
 }
@@ -476,7 +477,7 @@ fn new_redis_zset_member_input(
     value: Option<String>,
 ) -> Entity<InputState> {
     cx.new(|cx| {
-        let mut input = InputState::new(window, cx).placeholder("Member");
+        let mut input = InputState::new(window, cx).placeholder(tr("app.redis.form.member"));
         if let Some(value) = value {
             input = input.default_value(value);
         }
@@ -490,7 +491,7 @@ fn new_redis_zset_score_input(
     value: Option<String>,
 ) -> Entity<InputState> {
     cx.new(|cx| {
-        let mut input = InputState::new(window, cx).placeholder("Score");
+        let mut input = InputState::new(window, cx).placeholder(tr("app.redis.form.score"));
         if let Some(value) = value {
             input = input.default_value(value);
         }
@@ -504,7 +505,7 @@ fn new_redis_list_item_input(
     value: Option<String>,
 ) -> Entity<InputState> {
     cx.new(|cx| {
-        let mut input = InputState::new(window, cx).placeholder("Value");
+        let mut input = InputState::new(window, cx).placeholder(tr("app.redis.form.value"));
         if let Some(value) = value {
             input = input.default_value(value);
         }
@@ -782,9 +783,9 @@ enum BackupMode {
 }
 
 impl BackupMode {
-    fn label(self) -> &'static str {
+    fn label(self) -> SharedString {
         match self {
-            Self::Auto => "自动选择",
+            Self::Auto => tr("app.backup.mode.auto"),
         }
     }
 }
@@ -801,12 +802,12 @@ enum BackupTab {
 impl BackupTab {
     const ALL: [Self; 4] = [Self::General, Self::Objects, Self::Advanced, Self::Log];
 
-    fn label(self) -> &'static str {
+    fn label(self) -> SharedString {
         match self {
-            Self::General => "常规",
-            Self::Objects => "对象选择",
-            Self::Advanced => "高级",
-            Self::Log => "消息日志",
+            Self::General => tr("app.database_backup.tab.general"),
+            Self::Objects => tr("app.database_backup.tab.objects"),
+            Self::Advanced => tr("app.database_backup.tab.advanced"),
+            Self::Log => tr("app.database_backup.tab.log"),
         }
     }
 }
@@ -823,12 +824,12 @@ enum RestoreTab {
 impl RestoreTab {
     const ALL: [Self; 4] = [Self::General, Self::Objects, Self::Advanced, Self::Log];
 
-    fn label(self) -> &'static str {
+    fn label(self) -> SharedString {
         match self {
-            Self::General => "常规",
-            Self::Objects => "对象选择",
-            Self::Advanced => "高级",
-            Self::Log => "消息日志",
+            Self::General => tr("app.database_restore.tab.general"),
+            Self::Objects => tr("app.database_restore.tab.objects"),
+            Self::Advanced => tr("app.database_restore.tab.advanced"),
+            Self::Log => tr("app.database_restore.tab.log"),
         }
     }
 }
@@ -1181,31 +1182,31 @@ enum DangerTableAction {
 }
 
 impl DangerTableAction {
-    fn title(self) -> &'static str {
+    fn title(self) -> SharedString {
         match self {
-            Self::Drop => "确认删除表",
-            Self::Truncate => "确认清空表",
+            Self::Drop => tr("app.table.danger.drop_title"),
+            Self::Truncate => tr("app.table.danger.truncate_title"),
         }
     }
 
-    fn prompt(self) -> &'static str {
+    fn prompt(self) -> SharedString {
         match self {
-            Self::Drop => "你确定要删除",
-            Self::Truncate => "你确定要清空",
+            Self::Drop => tr("app.table.danger.drop_prompt"),
+            Self::Truncate => tr("app.table.danger.truncate_prompt"),
         }
     }
 
-    fn confirm_label(self) -> &'static str {
+    fn confirm_label(self) -> SharedString {
         match self {
-            Self::Drop => "删除",
-            Self::Truncate => "清空",
+            Self::Drop => tr("app.redis.delete"),
+            Self::Truncate => tr("app.table.danger.truncate"),
         }
     }
 
-    fn running_message(self) -> &'static str {
+    fn running_message(self) -> SharedString {
         match self {
-            Self::Drop => "正在删除表",
-            Self::Truncate => "正在清空表",
+            Self::Drop => tr("app.table.danger.dropping"),
+            Self::Truncate => tr("app.table.danger.truncating"),
         }
     }
 
@@ -1217,11 +1218,36 @@ impl DangerTableAction {
     }
 }
 
-fn danger_table_foreign_key_check_options() -> Vec<String> {
-    ["默认", "启用", "禁用"]
-        .into_iter()
-        .map(str::to_string)
-        .collect()
+#[derive(Clone)]
+struct ForeignKeyCheckOption {
+    mode: ForeignKeyCheckMode,
+}
+
+impl SelectItem for ForeignKeyCheckOption {
+    type Value = ForeignKeyCheckMode;
+
+    fn title(&self) -> SharedString {
+        match self.mode {
+            ForeignKeyCheckMode::Default => tr("app.table.danger.fk_default"),
+            ForeignKeyCheckMode::Enable => tr("app.table.danger.fk_enable"),
+            ForeignKeyCheckMode::Disable => tr("app.table.danger.fk_disable"),
+        }
+    }
+
+    fn value(&self) -> &ForeignKeyCheckMode {
+        &self.mode
+    }
+}
+
+fn danger_table_foreign_key_check_options() -> Vec<ForeignKeyCheckOption> {
+    [
+        ForeignKeyCheckMode::Default,
+        ForeignKeyCheckMode::Enable,
+        ForeignKeyCheckMode::Disable,
+    ]
+    .into_iter()
+    .map(|mode| ForeignKeyCheckOption { mode })
+    .collect()
 }
 
 fn danger_table_foreign_key_check_index(mode: ForeignKeyCheckMode) -> Option<IndexPath> {
@@ -1231,14 +1257,6 @@ fn danger_table_foreign_key_check_index(mode: ForeignKeyCheckMode) -> Option<Ind
         ForeignKeyCheckMode::Disable => 2,
     };
     Some(IndexPath::new(index))
-}
-
-fn danger_table_foreign_key_check_from_label(label: &str) -> ForeignKeyCheckMode {
-    match label {
-        "启用" => ForeignKeyCheckMode::Enable,
-        "禁用" => ForeignKeyCheckMode::Disable,
-        _ => ForeignKeyCheckMode::Default,
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

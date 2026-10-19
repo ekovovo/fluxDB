@@ -2,8 +2,15 @@
 // Form::Field 没有整行 hover 接口，ListItem 会接管选中/hover 样式；因此保留布局容器。
 // 稳定 ID 让框架只在 hover 进出时通知重绘，行内移动不额外刷新，也不添加点击行为。
 fn settings_row_container(id: &'static str, colors: UiColors) -> Stateful<Div> {
+    settings_row_container_dynamic(format!("settings-row:{id}"), colors)
+}
+
+fn settings_row_container_dynamic(
+    id: impl Into<gpui::ElementId>,
+    colors: UiColors,
+) -> Stateful<Div> {
     div()
-        .id(SharedString::from(format!("settings-row:{id}")))
+        .id(id)
         .border_t_1()
         .border_color(colors.border_soft)
         .px_3()
@@ -77,19 +84,21 @@ fn settings_database_support_status(
     colors: UiColors,
 ) -> impl IntoElement {
     let label = match status {
-        DatabaseSupportStatus::BuiltIn => "已支持",
-        DatabaseSupportStatus::Mock => "待补齐",
+        DatabaseSupportStatus::BuiltIn => tr("app.settings.status.supported"),
+        DatabaseSupportStatus::Mock => tr("app.settings.status.needs_work"),
     };
 
-    settings_status_chip(label, label, colors)
+    settings_status_chip(label.clone(), label, colors)
 }
 
 fn settings_row_label(
-    title: &'static str,
-    detail: &'static str,
+    title: impl Into<SharedString>,
+    detail: impl Into<SharedString>,
     icon: AppIcon,
     colors: UiColors,
 ) -> Div {
+    let title = title.into();
+    let detail = detail.into();
     div()
         .flex()
         .items_center()
@@ -118,13 +127,16 @@ fn settings_row_label(
         )
 }
 
-fn settings_action_row(
-    title: &'static str,
-    detail: &'static str,
+fn settings_action_row_with_id(
+    id: &'static str,
+    title: impl Into<SharedString>,
+    detail: impl Into<SharedString>,
     icon: AppIcon,
     colors: UiColors,
 ) -> Stateful<Div> {
-    settings_row_container(title, colors)
+    let title = title.into();
+    let detail = detail.into();
+    settings_row_container(id, colors)
         .h(px(52.))
         .child(
             div()
@@ -165,9 +177,10 @@ fn settings_performance_diagnostics_row(
     // Switch 的 on_click 不带 `Context<NavicatMain>`，只能拿到 `&mut App`；
     // 因此通过 self 的弱实体在 App 上下文中更新 draft，走与其它设置一致的保存流。
     let this = cx.entity().downgrade();
-    settings_action_row(
-        "性能诊断",
-        "显示 FPS、帧耗时、CPU、GPU 和内存",
+    settings_action_row_with_id(
+        "settings-performance-diagnostics",
+        tr("app.settings.system.performance"),
+        tr("app.settings.system.performance_detail"),
         AppIcon::Activity,
         colors,
     )
@@ -189,9 +202,10 @@ fn settings_log_level_row(
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Stateful<Div> {
-    settings_action_row(
-        "日志级别",
-        "控制应用记录的日志详细程度，保存后重启应用生效",
+    settings_action_row_with_id(
+        "settings-log-level",
+        tr("app.settings.system.log_level"),
+        tr("app.settings.system.log_level_detail"),
         AppIcon::List,
         colors,
     )
@@ -230,9 +244,10 @@ fn settings_log_path_row(
     cx: &mut Context<NavicatMain>,
 ) -> Stateful<Div> {
     let display_path = configured_log_dir(log_path).display().to_string();
-    settings_action_row(
-        "日志路径",
-        "查看或修改应用日志文件保存目录，保存后重启应用生效",
+    settings_action_row_with_id(
+        "settings-log-path",
+        tr("app.settings.system.log_path"),
+        tr("app.settings.system.log_path_detail"),
         AppIcon::Folder,
         colors,
     )
@@ -252,7 +267,7 @@ fn settings_log_path_row(
             )
             .child(
                 Button::new("settings-log-path")
-                    .label("选择")
+                    .label(tr("app.common.choose"))
                     .small()
                     .rounded(colors.radius)
                     .on_click(cx.listener(|this, _, window, cx| {
@@ -271,7 +286,7 @@ fn settings_choose_log_directory(
         files: false,
         directories: true,
         multiple: false,
-        prompt: Some("选择日志目录".into()),
+        prompt: Some(tr("app.settings.system.choose_log_dir")),
     });
     this._file_picker_task = Some(cx.spawn_in(window, async move |view, cx| {
         let result = receiver.await;
@@ -288,12 +303,18 @@ fn settings_choose_log_directory(
                 }
                 Ok(Ok(None)) => {}
                 Ok(Err(error)) => this.show_message(
-                    format!("选择日志目录失败：{error}"),
+                    format!(
+                        "{}: {error}",
+                        tr("app.settings.system.choose_log_dir_failed")
+                    ),
                     AppMessageKind::Error,
                     cx,
                 ),
                 Err(error) => this.show_message(
-                    format!("选择日志目录失败：{error}"),
+                    format!(
+                        "{}: {error}",
+                        tr("app.settings.system.choose_log_dir_failed")
+                    ),
                     AppMessageKind::Error,
                     cx,
                 ),
@@ -302,18 +323,25 @@ fn settings_choose_log_directory(
     }));
 }
 
-fn settings_choice_row(
-    title: &'static str,
-    detail: &'static str,
+#[allow(
+    clippy::too_many_arguments,
+    reason = "设置行参数逐项对应 GPUI 控件契约，打包成结构体反而隐藏调用点差异"
+)]
+fn settings_choice_row_with_id(
+    id: &'static str,
+    title: impl Into<SharedString>,
+    detail: impl Into<SharedString>,
     icon: AppIcon,
     current: u64,
-    choices: &'static [(&'static str, u64)],
+    choices: &[(SharedString, u64)],
     apply: fn(&mut Settings, u64),
     colors: UiColors,
     preview: bool,
     cx: &mut Context<NavicatMain>,
 ) -> Stateful<Div> {
-    settings_row_container(title, colors)
+    let title = title.into();
+    let detail = detail.into();
+    settings_row_container(id, colors)
         .min_h(px(52.))
         .py_2()
         .child(
@@ -350,14 +378,15 @@ fn settings_choice_row(
                 .items_center()
                 .gap_1()
                 .children(choices.iter().map(move |(label, value)| {
-                    let active = current == *value;
-                    Button::new(("settings-choice", settings_status_id(title, *label)))
-                        .label(*label)
+                    let value = *value;
+                    let active = current == value;
+                    Button::new(SharedString::from(format!("settings-choice:{id}:{value}")))
+                        .label(label.clone())
                         .small()
                         .rounded(colors.radius)
                         .when(active, |button| button.primary())
                         .on_click(cx.listener(move |this, _, _, cx| {
-                            apply(&mut this.settings_editor_draft, *value);
+                            apply(&mut this.settings_editor_draft, value);
                             if preview {
                                 this.preview_settings(cx);
                             }
@@ -367,9 +396,14 @@ fn settings_choice_row(
         )
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "设置行参数逐项对应 GPUI 控件契约，打包成结构体反而隐藏调用点差异"
+)]
 fn settings_font_size_slider_row(
-    title: &'static str,
-    detail: &'static str,
+    id: &'static str,
+    title: impl Into<SharedString>,
+    detail: impl Into<SharedString>,
     icon: AppIcon,
     current: u32,
     slider: Entity<SliderState>,
@@ -377,12 +411,14 @@ fn settings_font_size_slider_row(
     window: &mut Window,
     cx: &mut Context<NavicatMain>,
 ) -> Stateful<Div> {
+    let title = title.into();
+    let detail = detail.into();
     let current = current.clamp(10, 24);
     if (slider.read(cx).value().end() - current as f32).abs() > f32::EPSILON {
         slider.update(cx, |state, cx| state.set_value(current as f32, window, cx));
     }
 
-    settings_row_container(title, colors)
+    settings_row_container(id, colors)
         .min_h(px(68.))
         .py_2()
         .child(settings_row_label(title, detail, icon, colors))
@@ -408,9 +444,14 @@ fn settings_font_size_slider_row(
         )
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "设置行参数逐项对应 GPUI 控件契约，打包成结构体反而隐藏调用点差异"
+)]
 fn settings_input_row(
-    title: &'static str,
-    detail: &'static str,
+    id: &'static str,
+    title: impl Into<SharedString>,
+    detail: impl Into<SharedString>,
     icon: AppIcon,
     current: u32,
     input: &Entity<InputState>,
@@ -418,6 +459,8 @@ fn settings_input_row(
     window: &mut Window,
     cx: &mut Context<NavicatMain>,
 ) -> Stateful<Div> {
+    let title = title.into();
+    let detail = detail.into();
     let expected = current.clamp(13, 28).to_string();
     let focused = input.read(cx).focus_handle(cx).is_focused(window);
     if !focused && input.read(cx).value().to_string() != expected {
@@ -429,7 +472,7 @@ fn settings_input_row(
         rgb(0x111111)
     };
 
-    settings_row_container(title, colors)
+    settings_row_container(id, colors)
         .min_h(px(52.))
         .py_2()
         .child(settings_row_label(title, detail, icon, colors))
@@ -459,13 +502,15 @@ fn settings_input_row(
 }
 
 fn settings_checkbox_row(
-    title: &'static str,
-    detail: &'static str,
+    title: impl Into<SharedString>,
+    detail: impl Into<SharedString>,
     icon: AppIcon,
     id: &'static str,
     checked: bool,
     colors: UiColors,
 ) -> Stateful<Div> {
+    let title = title.into();
+    let detail = detail.into();
     settings_row_container(id, colors)
         .h(px(52.))
         .cursor_pointer()

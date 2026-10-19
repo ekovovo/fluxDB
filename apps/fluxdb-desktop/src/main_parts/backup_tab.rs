@@ -113,7 +113,7 @@ impl NavicatMain {
                     .iter_mut()
                     .find(|record| record.output_path == output_path)
                 else {
-                    return Err("未找到对应备份记录".to_string());
+                    return Err(tr("app.backup.record_not_found").to_string());
                 };
                 record.note = note;
                 self.storage
@@ -123,11 +123,19 @@ impl NavicatMain {
         match result {
             Ok(()) => {
                 self.backup_note_modal_path = None;
-                self.show_message("备注已保存".to_string(), AppMessageKind::Success, cx);
+                self.show_message(
+                    tr("app.backup.note_saved"),
+                    AppMessageKind::Success,
+                    cx,
+                );
             }
             Err(error) => {
                 tracing::warn!(path = %path.display(), %error, "备份备注写入失败");
-                self.show_message(format!("备注保存失败：{error}"), AppMessageKind::Error, cx);
+                self.show_message(
+                    format!("{}: {error}", tr("app.backup.note_save_failed")),
+                    AppMessageKind::Error,
+                    cx,
+                );
             }
         }
         cx.notify();
@@ -158,7 +166,11 @@ impl NavicatMain {
         if let Err(error) = fs::remove_file(&path) {
             if error.kind() != std::io::ErrorKind::NotFound {
                 tracing::warn!(path = %path.display(), %error, "备份文件删除失败");
-                self.show_message(format!("删除失败：{error}"), AppMessageKind::Error, cx);
+                self.show_message(
+                    format!("{}: {error}", tr("app.backup.delete_failed")),
+                    AppMessageKind::Error,
+                    cx,
+                );
                 cx.notify();
                 return;
             }
@@ -169,14 +181,18 @@ impl NavicatMain {
             Ok(()) => {
                 tracing::info!(path = %path.display(), "已删除备份及其记录");
                 self.show_message(
-                    format!("已删除备份：{file_name}"),
+                    tr("app.backup.deleted").replace("%{name}", &file_name),
                     AppMessageKind::Success,
                     cx,
                 );
             }
             Err(error) => {
                 tracing::warn!(path = %path.display(), error = %error, "备份记录删除失败");
-                self.show_message(format!("记录删除失败：{error}"), AppMessageKind::Error, cx);
+                self.show_message(
+                    format!("{}: {error}", tr("app.backup.record_delete_failed")),
+                    AppMessageKind::Error,
+                    cx,
+                );
             }
         }
         cx.notify();
@@ -278,9 +294,9 @@ fn format_backup_size(bytes: u64) -> String {
 /// 「备份表」列的数量文案：Some(空)=整库；Some(n)=n 张；None=无记录。
 fn backup_tables_cell_text(meta: &Option<BackupFileMeta>) -> String {
     match meta.as_ref().and_then(|meta| meta.tables.as_ref()) {
-        Some(tables) if tables.is_empty() => "整库".to_string(),
-        Some(tables) => format!("{} 张", tables.len()),
-        None => "无记录".to_string(),
+        Some(tables) if tables.is_empty() => tr("app.backup.whole_database").to_string(),
+        Some(tables) => tr("app.backup.table_count").replace("%{count}", &tables.len().to_string()),
+        None => tr("app.backup.no_record").to_string(),
     }
 }
 
@@ -330,7 +346,10 @@ fn backup_list_content(
                     div()
                         .text_size(px(13.))
                         .font_weight(gpui::FontWeight::BOLD)
-                        .child(format!("备份 · {}", list.database)),
+                        .child(
+                            tr("app.backup.title_for_db")
+                                .replace("%{database}", &list.database),
+                        ),
                 )
                 .child(
                     div()
@@ -338,7 +357,7 @@ fn backup_list_content(
                         .items_center()
                         .gap_2()
                         .child(backup_text_button(
-                            "新建备份",
+                            tr("app.backup.new"),
                             colors,
                             cx.listener(move |this, _, window, cx| {
                                 this.show_backup_modal(
@@ -351,14 +370,14 @@ fn backup_list_content(
                             }),
                         ))
                         .child(backup_text_button(
-                            "从文件恢复",
+                            tr("app.backup.restore_from_file"),
                             colors,
                             cx.listener(move |this, _, window, cx| {
                                 this.open_restore_dialog(restore_connection, None, None, window, cx);
                             }),
                         ))
                         .child(backup_text_button(
-                            "刷新",
+                            tr("app.common.refresh"),
                             colors,
                             cx.listener(|_, _, _, cx| {
                                 cx.notify();
@@ -376,10 +395,10 @@ fn backup_list_content(
                 .flex()
                 .flex_col()
                 .when(!dir_configured && rows.is_empty(), |this| {
-                    this.child(backup_list_hint("请先在设置中配置备份目录", colors))
+                    this.child(backup_list_hint(tr("app.backup.configure_dir"), colors))
                 })
                 .when(dir_configured && rows.is_empty() && running_tasks.is_empty(), |this| {
-                    this.child(backup_list_hint("该库暂无备份", colors))
+                    this.child(backup_list_hint(tr("app.backup.empty"), colors))
                 })
                 // 运行中任务置顶，带阶段/日志/取消。
                 .children(running_tasks.into_iter().map(|task| {
@@ -389,7 +408,8 @@ fn backup_list_content(
         )
 }
 
-fn backup_list_hint(text: &'static str, colors: UiColors) -> Div {
+fn backup_list_hint(text: impl Into<SharedString>, colors: UiColors) -> Div {
+    let text = text.into();
     div()
         .py_6()
         .flex()
@@ -401,10 +421,11 @@ fn backup_list_hint(text: &'static str, colors: UiColors) -> Div {
 
 /// 通用小按钮（纯 div + App 级监听，cx.listener 负责回写实体状态）。
 fn backup_text_button(
-    label: &'static str,
+    label: impl Into<SharedString>,
     colors: UiColors,
     on_click: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
+    let label = label.into();
     div()
         .h(px(22.))
         .px_2()
@@ -442,13 +463,13 @@ fn backup_list_header_row(colors: UiColors) -> Div {
         .bg(colors.panel_alt)
         .text_size(px(12.))
         .text_color(colors.muted)
-        .child(div().flex_1().min_w_0().child("名称"))
-        .child(div().w(px(BACKUP_COL_MODIFIED)).child("备份时间"))
-        .child(div().w(px(BACKUP_COL_TABLES)).child("备份表"))
-        .child(div().w(px(BACKUP_COL_SIZE)).child("文件大小"))
-        .child(div().w(px(BACKUP_COL_PATH)).child("路径"))
-        .child(div().flex_1().min_w_0().child("备注"))
-        .child(div().w(px(BACKUP_COL_ACTION_TOTAL)).child("操作"))
+        .child(div().flex_1().min_w_0().child(tr("app.backup.header.name")))
+        .child(div().w(px(BACKUP_COL_MODIFIED)).child(tr("app.backup.header.modified")))
+        .child(div().w(px(BACKUP_COL_TABLES)).child(tr("app.backup.header.tables")))
+        .child(div().w(px(BACKUP_COL_SIZE)).child(tr("app.backup.header.size")))
+        .child(div().w(px(BACKUP_COL_PATH)).child(tr("app.backup.header.path")))
+        .child(div().flex_1().min_w_0().child(tr("app.backup.header.note")))
+        .child(div().w(px(BACKUP_COL_ACTION_TOTAL)).child(tr("app.backup.header.actions")))
 }
 
 /// 运行中任务行：名称 / 阶段 / — / — / — / 日志+取消。
@@ -461,7 +482,7 @@ fn backup_running_row(
         .output_path
         .file_name()
         .map(|name| name.to_string_lossy().to_string())
-        .unwrap_or_else(|| format!("备份 #{}", task.id));
+        .unwrap_or_else(|| tr("app.backup.task_fallback").replace("%{id}", &task.id.to_string()));
     let task_id = task.id;
     let stage = task.stage.clone();
     div()
@@ -487,7 +508,7 @@ fn backup_running_row(
             div()
                 .w(px(BACKUP_COL_MODIFIED))
                 .text_color(colors.muted)
-                .child(format!("{stage}（进行中）")),
+                .child(tr("app.backup.stage_running").replace("%{stage}", &stage)),
         )
         .child(div().w(px(BACKUP_COL_TABLES)).child("—"))
         .child(div().w(px(BACKUP_COL_SIZE)).child("—"))
@@ -500,7 +521,7 @@ fn backup_running_row(
                 .items_center()
                 .gap_2()
                 .child(backup_text_button(
-                    "日志",
+                    tr("app.backup.log"),
                     colors,
                     cx.listener(move |this, _, _, cx| {
                         this.backup_log_task = Some(task_id);
@@ -509,7 +530,7 @@ fn backup_running_row(
                     }),
                 ))
                 .child(backup_text_button(
-                    "取消",
+                    tr("app.backup.cancel"),
                     colors,
                     cx.listener(move |this, _, _, cx| {
                         this.cancel_backup_task(task_id, cx);
@@ -579,7 +600,7 @@ fn backup_file_row(row: BackupFileRow, colors: UiColors, cx: &mut Context<Navica
                 .gap_2()
                 .child(div().text_color(colors.muted).child(backup_tables_cell_text(&row.meta)))
                 .child(backup_text_button(
-                    "查看",
+                    tr("app.backup.view"),
                     colors,
                     cx.listener(move |this, _, _, cx| {
                         this.open_backup_tables_modal(file_name_for_tables.clone(), meta_for_tables.clone(), cx);
@@ -612,7 +633,7 @@ fn backup_file_row(row: BackupFileRow, colors: UiColors, cx: &mut Context<Navica
                 .items_center()
                 .gap_2()
                 .child(backup_text_button(
-                    "恢复",
+                    tr("app.backup.restore"),
                     colors,
                     cx.listener(move |this, _, window, cx| {
                         if let Some(meta) = restore_meta.clone() {
@@ -621,7 +642,7 @@ fn backup_file_row(row: BackupFileRow, colors: UiColors, cx: &mut Context<Navica
                     }),
                 ))
                 .child(backup_text_button(
-                    "记录",
+                    tr("app.backup.records"),
                     colors,
                     cx.listener(move |this, _, _, cx| {
                         this.open_restore_records_modal(
@@ -633,7 +654,7 @@ fn backup_file_row(row: BackupFileRow, colors: UiColors, cx: &mut Context<Navica
                     }),
                 ))
                 .child(backup_text_button(
-                    "编辑",
+                    tr("app.backup.edit"),
                     colors,
                     cx.listener(move |this, _, window, cx| {
                         this.open_backup_note_modal(path_for_note.clone(), note_for_edit.clone(), window, cx);
@@ -641,7 +662,7 @@ fn backup_file_row(row: BackupFileRow, colors: UiColors, cx: &mut Context<Navica
                     }),
                 ))
                 .child(backup_text_button(
-                    "删除",
+                    tr("app.common.delete"),
                     colors,
                     cx.listener(move |this, _, _, cx| {
                         this.open_backup_delete_confirm(path_for_delete.clone(), cx);
@@ -665,7 +686,7 @@ fn backup_tables_modal(
             .items_center()
             .justify_center()
             .text_color(colors.muted)
-            .child("该备份没有表清单记录（备份元数据功能上线前的老备份）"),
+            .child(tr("app.backup.no_table_manifest")),
         Some(tables) if tables.is_empty() => div()
             .flex_1()
             .min_h_0()
@@ -673,7 +694,7 @@ fn backup_tables_modal(
             .items_center()
             .justify_center()
             .text_color(colors.muted)
-            .child("整库备份（备份了当时的全部表）"),
+            .child(tr("app.backup.whole_database_note")),
         Some(tables) => div()
             .flex_1()
             .min_h_0()
@@ -758,7 +779,7 @@ fn backup_tables_modal(
                                 .items_center()
                                 .gap_2()
                                 .font_weight(gpui::FontWeight::BOLD)
-                                .child("备份表清单")
+                                .child(tr("app.backup.table_manifest"))
                                 .child(
                                     div()
                                         .text_size(px(11.))
@@ -770,7 +791,7 @@ fn backup_tables_modal(
                                 ),
                         )
                         .child(backup_text_button(
-                            "关闭",
+                            tr("app.common.close"),
                             colors,
                             cx.listener(|this, _, _, cx| {
                                 this.close_backup_tables_modal(cx);
@@ -786,7 +807,7 @@ fn backup_tables_modal(
                             .pt_2()
                             .text_size(px(11.))
                             .text_color(colors.muted)
-                            .child("包含视图"),
+                            .child(tr("app.backup.includes_views")),
                     )
                 })
                 .child(
@@ -816,7 +837,7 @@ fn restore_records_modal(
             .items_center()
             .justify_center()
             .text_color(colors.muted)
-            .child("该备份暂无恢复记录")
+            .child(tr("app.backup.no_restore_records"))
     } else {
         div()
             .flex_1()
@@ -887,7 +908,7 @@ fn restore_records_modal(
                                 .items_center()
                                 .gap_2()
                                 .font_weight(gpui::FontWeight::BOLD)
-                                .child("恢复记录")
+                                .child(tr("app.backup.restore_records"))
                                 .child(
                                     div()
                                         .text_size(px(11.))
@@ -899,7 +920,7 @@ fn restore_records_modal(
                                 ),
                         )
                         .child(backup_text_button(
-                            "关闭",
+                            tr("app.common.close"),
                             colors,
                             cx.listener(|this, _, _, cx| {
                                 this.close_restore_records_modal(cx);
@@ -932,17 +953,17 @@ fn restore_record_row(record: &fluxdb_storage::RestoreRecord, colors: UiColors) 
         "—".to_string()
     };
     let (status, status_color) = if record.canceled {
-        ("已取消", colors.muted)
+        (tr("app.backup.status.canceled"), colors.muted)
     } else if record.success {
-        ("成功", colors.text)
+        (tr("app.backup.status.success"), colors.text)
     } else {
-        ("失败", rgb(0xe5484d))
+        (tr("app.backup.status.failed"), rgb(0xe5484d))
     };
     let object_count = record
         .outcome
         .as_ref()
         .filter(|outcome| outcome.total_objects > 0)
-        .map(|outcome| format!("　共 {} 个对象", outcome.total_objects))
+        .map(|outcome| tr("app.backup.restore_summary.object_count").replace("%{count}", &outcome.total_objects.to_string()))
         .unwrap_or_default();
     div()
         .flex_none()
@@ -960,10 +981,7 @@ fn restore_record_row(record: &fluxdb_storage::RestoreRecord, colors: UiColors) 
                 .text_size(px(12.))
                 .child(div().text_color(colors.muted).child(time))
                 .child(div().font_weight(gpui::FontWeight::BOLD).text_color(status_color).child(status))
-                .child(div().overflow_hidden().text_ellipsis().child(format!(
-                    "恢复到 {}{object_count}",
-                    record.target
-                ))),
+                .child(div().overflow_hidden().text_ellipsis().child(tr("app.backup.restore_summary.to_target").replace("%{target}", &record.target).replace("%{objects}", &object_count))),
         )
         .child(
             div()
@@ -1032,7 +1050,7 @@ fn backup_delete_confirm_modal(
                         .flex()
                         .items_center()
                         .font_weight(gpui::FontWeight::BOLD)
-                        .child("删除备份"),
+                        .child(tr("app.backup.delete_title")),
                 )
                 .child(
                     div()
@@ -1045,13 +1063,16 @@ fn backup_delete_confirm_modal(
                             div()
                                 .overflow_hidden()
                                 .text_ellipsis()
-                                .child(format!("确定要删除备份「{file_name}」吗？")),
+                                .child(
+                                    tr("app.backup.delete_confirm")
+                                        .replace("%{name}", &file_name),
+                                ),
                         )
                         .child(
                             div()
                                 .text_size(px(11.))
                                 .text_color(colors.muted)
-                                .child("将同时删除备份文件与备份记录，删除后不可恢复。"),
+                                .child(tr("app.backup.delete_detail")),
                         ),
                 )
                 .child(
@@ -1067,7 +1088,7 @@ fn backup_delete_confirm_modal(
                         .border_color(colors.border_soft)
                         .child(
                             Button::new("backup-delete-cancel")
-                                .label("取消")
+                                .label(tr("app.common.cancel"))
                                 .small()
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.close_backup_delete_confirm(cx);
@@ -1075,7 +1096,7 @@ fn backup_delete_confirm_modal(
                         )
                         .child(
                             Button::new("backup-delete-confirm")
-                                .label("删除")
+                                .label(tr("app.common.delete"))
                                 .danger()
                                 .small()
                                 .on_click(cx.listener(|this, _, _, cx| {
@@ -1143,7 +1164,7 @@ fn backup_note_modal(
                         .items_center()
                         .gap_2()
                         .font_weight(gpui::FontWeight::BOLD)
-                        .child("编辑备注")
+                        .child(tr("app.backup.edit_note"))
                         .child(
                             div()
                                 .text_size(px(11.))
@@ -1182,7 +1203,7 @@ fn backup_note_modal(
                             div()
                                 .text_size(px(11.))
                                 .text_color(colors.muted)
-                                .child("备注随 {备份文件}.sql.meta.json 保存；留空表示清除备注。"),
+                                .child(tr("app.backup.note_help")),
                         ),
                 )
                 .child(
@@ -1198,7 +1219,7 @@ fn backup_note_modal(
                         .border_color(colors.border_soft)
                         .child(
                             Button::new("backup-note-cancel")
-                                .label("取消")
+                                .label(tr("app.common.cancel"))
                                 .small()
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.close_backup_note_modal(cx);
@@ -1206,7 +1227,7 @@ fn backup_note_modal(
                         )
                         .child(
                             Button::new("backup-note-save")
-                                .label("保存")
+                                .label(tr("app.common.save"))
                                 .primary()
                                 .small()
                                 .on_click(cx.listener(|this, _, _, cx| {

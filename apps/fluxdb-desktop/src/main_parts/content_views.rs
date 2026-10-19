@@ -236,21 +236,21 @@ fn workbench_home(
                             .grid_cols(stat_cols)
                             .gap_3()
                             .child(home_stat_card(
-                                "连接",
+                                tr("app.home.stat.connections"),
                                 state.connections.len(),
-                                "已保存连接",
+                                tr("app.home.stat.connections_hint"),
                                 colors,
                             ))
                             .child(home_stat_card(
-                                "已连接",
+                                tr("app.home.stat.connected"),
                                 connected_count,
-                                "当前会话",
+                                tr("app.home.stat.connected_hint"),
                                 colors,
                             ))
                             .child(home_stat_card(
-                                "数据库类型",
+                                tr("app.home.stat.database_kinds"),
                                 kind_count,
-                                "已配置类型",
+                                tr("app.home.stat.database_kinds_hint"),
                                 colors,
                             )),
                     )
@@ -278,7 +278,14 @@ include!("settings/rows.rs");
 include!("settings/ai.rs");
 include!("settings/preferences.rs");
 
-fn home_stat_card(label: &'static str, value: usize, hint: &'static str, colors: UiColors) -> Div {
+fn home_stat_card(
+    label: impl Into<SharedString>,
+    value: usize,
+    hint: impl Into<SharedString>,
+    colors: UiColors,
+) -> Div {
+    let label = label.into();
+    let hint = hint.into();
     div()
         .h(px(92.))
         .rounded(colors.radius_lg)
@@ -337,11 +344,11 @@ fn recent_connections_panel(
                 .justify_center()
                 .text_size(px(14.))
                 .text_color(colors.muted)
-                .child("还没有连接，先新建一个数据库连接"),
+                .child(tr("app.home.no_connections")),
         );
     }
 
-    home_panel("快速开始", list, colors)
+    home_panel(tr("app.home.quick_start"), list, colors)
 }
 
 fn recent_connection_row(
@@ -415,20 +422,20 @@ fn common_actions_panel(
 ) -> Div {
     let has_connection = !state.connections.is_empty();
     home_panel(
-        "常用操作",
+        tr("app.home.common_actions"),
         div()
             .flex()
             .flex_col()
             .p_2()
             .gap_1()
-            .child(home_action_row("home-new-connection", "新建连接", "＋", colors).on_mouse_down(
+            .child(home_action_row("home-new-connection", tr("app.home.new_connection"), "＋", colors).on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _, window, cx| {
                     this.show_new_connection(window, cx);
                     cx.stop_propagation();
                 }),
             ))
-            .child(home_action_row("home-new-query", "新建查询", "SQL", colors).on_mouse_down(
+            .child(home_action_row("home-new-query", tr("app.home.new_query"), "SQL", colors).on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, _, cx| {
                     if has_connection {
@@ -437,20 +444,25 @@ fn common_actions_panel(
                     cx.stop_propagation();
                 }),
             ))
-            .child(home_action_row("home-refresh-connections", "刷新连接树", "⟳", colors).on_mouse_down(
+            .child(home_action_row("home-refresh-connections", tr("app.home.refresh_connections"), "⟳", colors).on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, _, cx| {
                     this.refresh_connection_tree(cx);
                     cx.stop_propagation();
                 }),
             ))
-            .child(home_icon_action_row("设置", AppIcon::Settings, colors).on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, _, _, cx| {
-                    this.dispatch(AppCommand::OpenSettings, cx);
-                    cx.stop_propagation();
-                }),
-            ))
+            .child(
+                home_icon_action_row(tr("app.home.settings"), AppIcon::Settings, colors)
+                    .id("home-settings")
+                    .debug_selector(|| "home-settings".to_string())
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _, _, cx| {
+                            this.dispatch(AppCommand::OpenSettings, cx);
+                            cx.stop_propagation();
+                        }),
+                    ),
+            )
             .child(
                 div()
                     .mt_2()
@@ -460,13 +472,14 @@ fn common_actions_panel(
                     .py_3()
                     .text_size(px(13.))
                     .text_color(colors.muted)
-                    .child("提示：也可以在左侧展开连接，双击表进入数据编辑器。"),
+                    .child(tr("app.home.hint")),
             ),
         colors,
     )
 }
 
-fn home_panel(title: &'static str, body: Div, colors: UiColors) -> Div {
+fn home_panel(title: impl Into<SharedString>, body: Div, colors: UiColors) -> Div {
+    let title = title.into();
     div()
         .rounded(colors.radius_lg)
         .border_1()
@@ -489,7 +502,12 @@ fn home_panel(title: &'static str, body: Div, colors: UiColors) -> Div {
         .child(body)
 }
 
-fn home_icon_action_row(label: &'static str, icon: AppIcon, colors: UiColors) -> Div {
+fn home_icon_action_row(
+    label: impl Into<SharedString>,
+    icon: AppIcon,
+    colors: UiColors,
+) -> Div {
+    let label = label.into();
     div()
         .h(px(44.))
         .rounded(colors.radius)
@@ -515,13 +533,14 @@ fn home_icon_action_row(label: &'static str, icon: AppIcon, colors: UiColors) ->
 /// 该行由调用方挂 `on_mouse_down`，是可交互元素，因此纳入 headless 观察。
 fn home_action_row(
     id: &'static str,
-    label: &'static str,
+    label: impl Into<SharedString>,
     glyph: &'static str,
     colors: UiColors,
 ) -> Stateful<Div> {
+    let label = label.into();
     div()
         .id(id)
-        .aria_label(label)
+        .aria_label(label.clone())
         .cursor_pointer()
         .h(px(44.))
         .rounded(colors.radius_lg)
@@ -694,10 +713,10 @@ fn data_editor_content(
 
     if editor.loading {
         return content.child(
-            center_loading_message("正在加载数据...", colors)
+            center_loading_message(tr("app.data.loading"), colors)
                 .id(("data-page-loading", tab_id.0))
                 .role(Role::Status)
-                .aria_label("正在加载数据...")
+                .aria_label(tr("app.data.loading"))
         );
     }
 
@@ -706,7 +725,7 @@ fn data_editor_content(
             // 加载失败：常驻 Alert + 重试。重试复用工具栏「刷新」的既有入口，
             // 按当前筛选/排序在后台重新拉取，不会阻塞 UI；也不再是盖住整个表格区的居中文本。
             let retry = Button::new(("retry-data-page", tab_id.0))
-                .label("重试")
+                .label(tr("app.common.retry"))
                 .small()
                 .outline()
                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -732,7 +751,7 @@ fn data_editor_content(
                     )),
             );
         }
-        return content.child(center_message("暂无数据", colors));
+        return content.child(center_message(tr("app.data.empty"), colors));
     };
     if is_redis_editor {
         this.sync_redis_search_controls(tab_id, window, cx);
@@ -989,9 +1008,9 @@ fn data_editor_content(
         // 提交与筛选都会离开 UI 线程，共用同一层遮罩提示，避免用户以为界面失去响应。
         filter_applying || editor.submitting,
         if editor.submitting {
-            "正在提交更改..."
+            tr("app.data.submitting")
         } else {
-            "正在应用筛选..."
+            tr("app.data.applying_filter")
         },
         search_open.then(|| {
             data_search_bar(
@@ -1153,7 +1172,10 @@ fn query_editor_content(
         });
     }
     let connection = connection_name(this.controller.state(), editor.connection_id);
-    let database = editor.database.as_deref().unwrap_or("默认库").to_string();
+    let database = editor
+        .database
+        .clone()
+        .unwrap_or_else(|| tr("app.history.default_database").to_string());
     let accent = this
         .controller
         .state()
@@ -1398,18 +1420,18 @@ fn redis_pubsub_content(
             .justify_center()
             .text_color(colors.muted)
             .text_size(px(13.))
-            .child("无法打开 Pub/Sub：连接不存在或尚未连接");
+            .child(tr("app.content.pubsub_unavailable"));
     }
     this.ensure_pubsub_inputs(tab_id, window, cx);
 
     let accent = rgb(0x20c76a);
     let model = this.pubsub_sessions.get(&tab_id).expect("Pub/Sub 会话已建立");
     let status_text = if model.connected {
-        "已连接".to_string()
+        tr("app.content.pubsub_connected").to_string()
     } else if model.connecting {
-        "连接中…".to_string()
+        tr("app.content.pubsub_connecting").to_string()
     } else {
-        "连接失败".to_string()
+        tr("app.content.pubsub_failed").to_string()
     };
     let status_color = if model.connected {
         accent
@@ -1465,7 +1487,14 @@ fn redis_pubsub_content(
                 ),
         )
         .child(
-            query_toolbar_icon_button("订阅", AppIcon::Broadcast, true, false, accent, colors)
+            query_toolbar_icon_button(
+                tr("app.content.subscribe"),
+                AppIcon::Broadcast,
+                true,
+                false,
+                accent,
+                colors,
+            )
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, _, window, cx| {
@@ -1476,7 +1505,14 @@ fn redis_pubsub_content(
         )
         // 清空消息。
         .child(
-            query_toolbar_icon_button("清空", AppIcon::Trash, has_messages, false, rgb(0xff5c5c), colors)
+            query_toolbar_icon_button(
+                tr("app.history.clear"),
+                AppIcon::Trash,
+                has_messages,
+                false,
+                rgb(0xff5c5c),
+                colors,
+            )
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, _, _, cx| {
@@ -1503,7 +1539,10 @@ fn redis_pubsub_content(
                 .flex_none()
                 .text_size(px(11.))
                 .text_color(colors.muted)
-                .child(format!("已订阅 {} ·", subscribed.len())),
+                .child(
+                    tr("app.content.subscribed_count")
+                        .replace("%{count}", &subscribed.len().to_string()),
+                ),
         );
     for (index, ch) in subscribed.iter().enumerate() {
         let ch = ch.clone();
@@ -1522,7 +1561,9 @@ fn redis_pubsub_content(
                 .border_color(colors.border)
                 .bg(colors.panel_bg)
                 .hover(|style| style.bg(colors.hover))
-                .tooltip(move |window, cx| Tooltip::new("点击取消订阅").build(window, cx))
+                .tooltip(move |window, cx| {
+                    Tooltip::new(tr("app.content.unsubscribe_hint")).build(window, cx)
+                })
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, _, _, cx| {
@@ -1564,9 +1605,15 @@ fn redis_pubsub_content(
         .text_size(px(11.))
         .font_weight(gpui::FontWeight::SEMIBOLD)
         .text_color(colors.muted)
-        .child(pubsub_column_time("时间".to_string()))
-        .child(pubsub_column_channel("通道".to_string()))
-        .child(pubsub_column_message(format!("消息（{total}）")));
+        .child(pubsub_column_time(
+            tr("app.content.column_time").to_string(),
+        ))
+        .child(pubsub_column_channel(
+            tr("app.content.column_channel").to_string(),
+        ))
+        .child(pubsub_column_message(
+            tr("app.content.column_messages").replace("%{count}", &total.to_string()),
+        ));
 
     // 当前页对应的消息（倒序分页：最新消息在第一页首行）。
     let newest_first: Vec<&crate::PubSubMessageView> = messages.iter().rev().collect();
@@ -1617,7 +1664,7 @@ fn redis_pubsub_content(
                 )
                 .child(
                     pubsub_column_message(if payload.is_empty() {
-                        "（空消息）".to_string()
+                        tr("app.content.empty_message").to_string()
                     } else {
                         payload
                     })
@@ -1654,7 +1701,7 @@ fn redis_pubsub_content(
                 .flex_none()
                 .text_size(px(11.))
                 .text_color(colors.muted)
-                .child("发布"),
+                .child(tr("app.content.publish")),
         )
         .child(
             div()
@@ -1675,7 +1722,7 @@ fn redis_pubsub_content(
                 ),
         )
         .child(
-            query_toolbar_icon_button("发布", AppIcon::Play, true, false, accent, colors)
+            query_toolbar_icon_button(tr("app.content.publish"), AppIcon::Play, true, false, accent, colors)
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, _, window, cx| {
@@ -1696,7 +1743,9 @@ fn redis_pubsub_content(
             .text_size(px(12.))
             .text_color(rgb(0xff5c5c))
             .bg(rgb(0x2a1415))
-            .child(format!("Pub/Sub 错误: {message}"))
+            .child(
+                tr("app.content.pubsub_error").replace("%{error}", &message),
+            )
     });
 
     div()
@@ -1783,7 +1832,7 @@ fn pubsub_pagination_bar(
     };
 
     // 复用查询工具栏图标按钮风格构建分页小按钮。
-    let pager_button = |label: &'static str,
+    let pager_button = |label: SharedString,
                         icon: AppIcon,
                         enabled: bool,
                         action: fn(usize, usize) -> usize|
@@ -1802,22 +1851,27 @@ fn pubsub_pagination_bar(
             )
     };
 
-    let first = pager_button("首页", AppIcon::ChevronsLeft, can_prev, |_, _| 0);
+    let first = pager_button(
+        tr("app.pagination.first"),
+        AppIcon::ChevronsLeft,
+        can_prev,
+        |_, _| 0,
+    );
     // prev: 若已在边界则不动，否则减一。
     let prev = pager_button(
-        "上一页",
+        tr("app.pagination.previous"),
         AppIcon::ChevronLeft,
         can_prev,
         |page, _| page.saturating_sub(1),
     );
     let next = pager_button(
-        "下一页",
+        tr("app.pagination.next"),
         AppIcon::ChevronRight,
         can_next,
         |page, _| page + 1,
     );
     let last = pager_button(
-        "末页",
+        tr("app.pagination.last"),
         AppIcon::ChevronsRight,
         can_next,
         |_, page_count| page_count.saturating_sub(1),
@@ -1837,7 +1891,7 @@ fn pubsub_pagination_bar(
             div()
                 .text_size(px(11.))
                 .text_color(colors.muted)
-                .child("每页"),
+                .child(tr("app.pagination.page_size")),
         )
         // 每页条数分段选择。
         .children(page_sizes.iter().map(|size| {
@@ -1879,7 +1933,7 @@ fn pubsub_pagination_bar(
             div()
                 .text_size(px(11.))
                 .text_color(colors.muted)
-                .child(format!("共 {total} 条")),
+                .child(tr("app.pagination.total").replace("%{count}", &total.to_string())),
         )
         .child(div().flex_1())
         // 首页 / 上一页。
@@ -1924,7 +1978,11 @@ fn redis_workbench_toolbar(
         .child(query_context_group(connection, database, accent, colors))
         .child(
             query_toolbar_icon_button(
-                if running { "执行中" } else { "运行" },
+                if running {
+                    tr("app.content.running")
+                } else {
+                    tr("app.content.run")
+                },
                 AppIcon::Play,
                 has_text && !running,
                 running,
@@ -1948,7 +2006,7 @@ fn redis_workbench_toolbar(
         )
         .child(
             query_toolbar_icon_button(
-                "清除结果",
+                tr("app.content.clear_results"),
                 AppIcon::Trash,
                 has_results && !running,
                 false,
@@ -2154,7 +2212,7 @@ fn redis_workbench_results(
             // 重试与工具栏「运行」同路：含破坏性命令时先弹二次确认。
             let pending_text = workbench.text.clone();
             let retry = Button::new(("retry-redis-workbench", tab_id.0))
-                .label("重试")
+                .label(tr("app.common.retry"))
                 .small()
                 .outline()
                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -2236,16 +2294,19 @@ fn redis_workbench_records(
 /// 返回 `Stateful<Div>`，调用方可继续链式绑定 `on_mouse_down`（各自 stop_propagation）。
 fn redis_workbench_icon_button(
     execution_id: u64,
-    tooltip_label: &'static str,
+    tooltip_label: impl Into<SharedString>,
     icon: AppIcon,
     icon_color: gpui::Rgba,
     colors: UiColors,
     enabled: bool,
 ) -> Stateful<Div> {
+    let tooltip_label = tooltip_label.into();
     // 禁用（运行中）时图标降为 muted，且不显示手型 / tooltip。
     let icon_color = if enabled { icon_color } else { colors.muted };
     div()
-        .id((tooltip_label, execution_id))
+        .id(SharedString::from(format!(
+            "redis-workbench-icon:{execution_id}:{tooltip_label}"
+        )))
         .size(px(18.))
         .flex_none()
         .rounded(colors.radius)
@@ -2255,7 +2316,9 @@ fn redis_workbench_icon_button(
         .when(enabled, |this| {
             this.cursor_pointer()
                 .hover(move |style| style.bg(colors.hover))
-                .tooltip(move |window, cx| Tooltip::new(tooltip_label).build(window, cx))
+                .tooltip(move |window, cx| {
+                    Tooltip::new(tooltip_label.clone()).build(window, cx)
+                })
         })
         .child(app_icon(icon, 14., icon_color))
 }
@@ -2293,7 +2356,11 @@ fn redis_workbench_record_row(
     } else {
         rgb(0xff5c5c)
     };
-    let status_label = if success { "成功" } else { "失败" };
+    let status_label = if success {
+        tr("app.history.success")
+    } else {
+        tr("app.history.failed")
+    };
     // 耗时（毫秒级，RedisInsight 风格 `N msec`）与执行时刻（完整日期时间，来自 started_at_unix_secs）双展示。
     // 后端仅存整数毫秒（`elapsed_ms: u64`），如实展示整数 `msec`，不拼接假的小数精度。
     let elapsed_label = format!("{} msec", execution.elapsed_ms);
@@ -2408,7 +2475,7 @@ fn redis_workbench_record_row(
                     this.child(
                         redis_workbench_icon_button(
                             execution_id,
-                            "复制命令",
+                            tr("app.content.copy_command"),
                             AppIcon::Copy,
                             colors.muted,
                             colors,
@@ -2422,7 +2489,11 @@ fn redis_workbench_record_row(
                                     cx.write_to_clipboard(ClipboardItem::new_string(
                                         copy_command_text.clone(),
                                     ));
-                                    this.show_message("已复制命令", AppMessageKind::Success, cx);
+                                    this.show_message(
+                                        tr("app.content.copied_command"),
+                                        AppMessageKind::Success,
+                                        cx,
+                                    );
                                     cx.stop_propagation();
                                 }
                             }),
@@ -2468,12 +2539,13 @@ fn redis_workbench_record_row(
 /// 状态用成功 / 失败色突出，时间与耗时用弱化 muted；整组 `flex_none` 靠右、不抢动作区。
 /// 颜色全走 `UiColors` 与主题绿 / 红固定语义色，明暗主题均适配。
 fn redis_workbench_record_meta(
-    status_label: &'static str,
+    status_label: impl Into<SharedString>,
     status_color: gpui::Rgba,
     time_label: &str,
     elapsed_label: &str,
     colors: UiColors,
 ) -> Div {
+    let status_label = status_label.into();
     div()
         .flex_none()
         .flex()
@@ -2547,7 +2619,7 @@ fn redis_workbench_record_actions(
             icons.push(
                 redis_workbench_icon_button(
                     execution_id,
-                    "重跑",
+                    tr("app.history.rerun"),
                     AppIcon::Play,
                     colors.muted,
                     colors,
@@ -2581,7 +2653,7 @@ fn redis_workbench_record_actions(
             icons.push(
                 redis_workbench_icon_button(
                     execution_id,
-                    "删除",
+                    tr("app.common.delete"),
                     AppIcon::Trash,
                     rgb(0xff5c5c),
                     colors,
@@ -2633,7 +2705,7 @@ fn redis_workbench_empty_state(colors: UiColors) -> Div {
         // 空态提示：整句保持纯中文，避免与英文命令示例混排。
         // gpui 0.2.2 对「中文 + ASCII 命令」同一文本节点内的跨字体 run 切分存在
         // 字节越界 bug（shape_line 处 panics），故不在此行混入 GET/SET 等英文示例。
-        .child("输入命令后点击「运行」按钮执行")
+        .child(tr("app.content.command_hint"))
 }
 
 /// 执行中占位态。
@@ -2645,7 +2717,12 @@ fn redis_workbench_loading_state(colors: UiColors) -> Div {
         .justify_center()
         .gap_2()
         .child(loading_spinner_with_color(18., colors.muted))
-        .child(div().text_size(px(13.)).text_color(colors.muted).child("执行中…"))
+        .child(
+            div()
+                .text_size(px(13.))
+                .text_color(colors.muted)
+                .child(tr("app.content.executing")),
+        )
 }
 
 /// 单条命令的结果行。
@@ -2660,9 +2737,9 @@ fn redis_workbench_command_row(
         CommandExecutionStatus::Skipped => colors.muted,
     };
     let status_label = match item.status {
-        CommandExecutionStatus::Success => "OK",
-        CommandExecutionStatus::Failed => "错误",
-        CommandExecutionStatus::Skipped => "跳过",
+        CommandExecutionStatus::Success => SharedString::new_static("OK"),
+        CommandExecutionStatus::Failed => tr("app.content.command_failed"),
+        CommandExecutionStatus::Skipped => tr("app.content.command_skipped"),
     };
     // 模式切换入口已迁移到"记录头部运行图标之前"的紧凑下拉（见 `redis_workbench_json_view_dropdown`，
     // 由外层 `redis_workbench_record_row` 持有），命令行标题行不再重复展示 `Text / JSON` 切换控件。
@@ -3008,7 +3085,7 @@ fn query_output_panel(
     };
     let body = if let Some(error) = editor.error.as_ref() {
         let retry = Button::new(("retry-query-output", tab_id.0))
-            .label("重试")
+            .label(tr("app.common.retry"))
             .small()
             .outline()
             .on_click(cx.listener(move |this, _, window, cx| {
@@ -3097,7 +3174,7 @@ fn query_output_loading_overlay(colors: UiColors) -> Div {
         .font_weight(gpui::FontWeight::SEMIBOLD)
         .text_color(colors.text)
         .child(loading_spinner_with_color(18., colors.muted))
-        .child("正在执行 SQL...")
+        .child(tr("app.query.running"))
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
 }
@@ -3230,7 +3307,7 @@ fn collapsed_query_output_button(
             div()
                 .text_size(px(15.))
                 .font_weight(gpui::FontWeight::SEMIBOLD)
-                .child("显示结果"),
+                .child(tr("app.query.show_results")),
         )
         .on_mouse_down(
             MouseButton::Left,
@@ -3298,7 +3375,7 @@ fn query_output_tabs(
             query_output_tab_button(
                 tab_id,
                 QueryOutputTab::Result(index),
-                format!("结果 {}", index + 1),
+                tr("app.query.result_tab").replace("%{index}", &(index + 1).to_string()),
                 None,
                 selected == QueryOutputTab::Result(index),
                 colors,
@@ -3312,7 +3389,7 @@ fn query_output_tabs(
         query_output_tab_button(
             tab_id,
             QueryOutputTab::Summary,
-            "执行摘要".to_string(),
+            tr("app.query.summary_tab").to_string(),
             Some(AppIcon::List),
             selected == QueryOutputTab::Summary,
             colors,
@@ -3323,7 +3400,7 @@ fn query_output_tabs(
 
     let refresh = query_output_toolbar_button(
         tab_id,
-        "刷新",
+        tr("app.common.refresh"),
         AppIcon::Refresh,
         colors,
         cx,
@@ -3338,7 +3415,7 @@ fn query_output_tabs(
     .flex_none();
     let collapse = query_output_toolbar_button(
         tab_id,
-        "收起结果",
+        tr("app.query.collapse_results"),
         AppIcon::ChevronDown,
         colors,
         cx,
@@ -3374,7 +3451,7 @@ fn query_result_editable_badge(colors: UiColors) -> Div {
         } else {
             rgb(0x188038)
         })
-        .child("可编辑")
+        .child(tr("app.query.editable"))
 }
 
 fn query_output_tab_button(
@@ -3477,12 +3554,13 @@ fn query_output_tab_button(
 
 fn query_output_toolbar_button(
     tab_id: TabId,
-    label: &'static str,
+    label: impl Into<SharedString>,
     icon: AppIcon,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
     action: impl Fn(&mut NavicatMain, TabId, &mut Window, &mut Context<NavicatMain>) + Clone + 'static,
 ) -> Div {
+    let label = label.into();
     div()
         .h(px(26.))
         .px_2()
@@ -3517,7 +3595,7 @@ fn query_output_empty_state(colors: UiColors) -> Div {
         .justify_center()
         .text_size(px(13.))
         .text_color(colors.muted)
-        .child("执行 SQL 后显示结果和摘要")
+        .child(tr("app.content.empty_results_hint"))
 }
 
 /// 查询 / Redis 输出面板的错误态：常驻 gpui-component `Alert`（不参与自动消失），
@@ -3560,7 +3638,7 @@ fn query_result_empty_columns_header(
         .text_color(colors.muted)
         .children(columns.iter().enumerate().map(|(index, column)| {
             let name = if column.name.is_empty() {
-                format!("列{}", index + 1)
+                tr("app.content.column_n").replace("%{index}", &(index + 1).to_string())
             } else {
                 column.name.clone()
             };
@@ -3788,7 +3866,7 @@ fn query_result_view(
                             .px_3()
                             .text_size(px(13.))
                             .text_color(colors.muted)
-                            .child("没有返回数据"),
+                            .child(tr("app.content.no_rows")),
                     ),
             );
     }
@@ -4004,7 +4082,12 @@ fn query_result_page_footer(
         .justify_end()
         .gap_2()
         .child(
-            query_result_page_button(AppIcon::ChevronsLeft, "第一页", can_previous, colors)
+            query_result_page_button(
+                AppIcon::ChevronsLeft,
+                tr("app.pagination.first"),
+                can_previous,
+                colors,
+            )
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener({
@@ -4030,7 +4113,12 @@ fn query_result_page_footer(
                 ),
         )
         .child(
-            query_result_page_button(AppIcon::ChevronLeft, "上一页", can_previous, colors)
+            query_result_page_button(
+                AppIcon::ChevronLeft,
+                tr("app.pagination.previous"),
+                can_previous,
+                colors,
+            )
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener({
@@ -4064,7 +4152,12 @@ fn query_result_page_footer(
             page_no, page_input, colors, window, cx,
         ))
         .child(
-            query_result_page_button(AppIcon::ChevronRight, "下一页", can_next, colors)
+            query_result_page_button(
+                AppIcon::ChevronRight,
+                tr("app.pagination.next"),
+                can_next,
+                colors,
+            )
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener({
@@ -4090,19 +4183,26 @@ fn query_result_page_footer(
                 ),
         )
         .child(
-            query_result_page_button(AppIcon::ChevronsRight, "无法确定最后一页", false, colors)
+            query_result_page_button(
+                AppIcon::ChevronsRight,
+                tr("app.pagination.last_unknown"),
+                false,
+                colors,
+            )
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()),
         )
 }
 
 fn query_result_page_button(
     icon: AppIcon,
-    tooltip: &'static str,
+    tooltip: impl Into<SharedString>,
     enabled: bool,
     colors: UiColors,
 ) -> Stateful<Div> {
+    let tooltip = tooltip.into();
+    let tooltip_for_id = tooltip.clone();
     div()
-        .id(tooltip)
+        .id(tooltip_for_id)
         .size(px(24.))
         .rounded(colors.radius * 0.5)
         .flex()
@@ -4117,7 +4217,7 @@ fn query_result_page_button(
             }
         })
         .when(enabled, |this| this.cursor_pointer())
-        .tooltip(move |window, cx| Tooltip::new(tooltip).build(window, cx))
+        .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
         .child(app_icon(icon, 15., if enabled { colors.text } else { colors.muted }))
 }
 
@@ -4135,11 +4235,11 @@ fn query_result_error_state(
         gpui::ElementId::Name(
             format!("query-result-error-{}-{}", tab_id.0, result_index).into(),
         ),
-        summary.message.clone(),
+        localize_backend_error_text(&summary.message),
     )
     .with_variant(variant)
     .icon(alert_icon(icon_name, cx, PAGE_ERROR_LINE_HEIGHT))
-    .title("查询出错")
+    .title(tr("app.query.error_title"))
     .bg(alert_tint(accent, colors))
     .line_height(px(PAGE_ERROR_LINE_HEIGHT));
 
@@ -4163,7 +4263,7 @@ fn query_result_error_state(
                 .text_size(px(12.))
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .text_color(colors.muted)
-                .child("失败的 SQL"),
+                .child(tr("app.query.failed_sql")),
         )
         .child(
             div()
@@ -4185,7 +4285,7 @@ fn query_result_error_state(
                 gpui::ElementId::Name(
                     format!("retry-query-result-{}-{}", tab_id.0, result_index).into(),
                 ),
-                "重试",
+                tr("app.common.retry"),
                 AppIcon::Refresh,
                 colors,
             )
@@ -4198,13 +4298,17 @@ fn query_result_error_state(
                 gpui::ElementId::Name(
                     format!("copy-query-result-error-{}-{}", tab_id.0, result_index).into(),
                 ),
-                "复制错误",
+                tr("app.query.copy_error"),
                 AppIcon::Copy,
                 colors,
             )
             .on_click(cx.listener(move |this, _, _, cx| {
                 cx.write_to_clipboard(ClipboardItem::new_string(copy_text.clone()));
-                this.show_message("已复制错误信息", AppMessageKind::Success, cx);
+                this.show_message(
+                    tr("app.query.error_copied"),
+                    AppMessageKind::Success,
+                    cx,
+                );
             })),
         )
         .child(
@@ -4212,7 +4316,7 @@ fn query_result_error_state(
                 gpui::ElementId::Name(
                     format!("ai-fix-query-result-error-{}-{}", tab_id.0, result_index).into(),
                 ),
-                "用 AI 修复",
+                tr("app.query.fix_with_ai"),
                 AppIcon::Bot,
                 colors,
             )
@@ -4245,10 +4349,11 @@ fn query_result_error_state(
 
 fn query_error_action_button(
     id: gpui::ElementId,
-    label: &'static str,
+    label: impl Into<SharedString>,
     icon: AppIcon,
     colors: UiColors,
 ) -> Button {
+    let label = label.into();
     Button::new(id)
         .small()
         .outline()
@@ -4260,8 +4365,10 @@ fn query_error_action_button(
 
 fn query_result_error_copy_text(summary: &QueryExecutionSummary) -> String {
     format!(
-        "SQL:\n{}\n\n错误:\n{}",
+        "{}\n{}\n\n{}:\n{}",
+        tr("app.query.sql_label"),
         summary.sql.trim(),
+        tr("app.query.error_label"),
         summary.message.trim()
     )
 }
@@ -4295,7 +4402,12 @@ fn query_result_change_footer(
         .items_center()
         .gap_1()
         .child(
-            data_editor_footer_icon_button(AppIcon::Check, "提交更改", !submitting, colors)
+            data_editor_footer_icon_button(
+                AppIcon::Check,
+                tr("app.confirm.apply_changes_title"),
+                !submitting,
+                colors,
+            )
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, _, _, cx| {
@@ -4305,7 +4417,12 @@ fn query_result_change_footer(
                 ),
         )
         .child(
-            data_editor_footer_icon_button(AppIcon::Close, "取消更改", !submitting, colors)
+            data_editor_footer_icon_button(
+                AppIcon::Close,
+                tr("app.content.cancel_changes"),
+                !submitting,
+                colors,
+            )
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, _, _, cx| {
@@ -4386,21 +4503,32 @@ fn query_result_cell_detail_panel(
                     .bg(card_bg)
                     .flex()
                     .overflow_hidden()
-                    .child(cell_detail_meta_item("列名", column.name.clone(), colors))
                     .child(cell_detail_meta_item(
-                        "行号",
+                        tr("app.content.column_name"),
+                        column.name.clone(),
+                        colors,
+                    ))
+                    .child(cell_detail_meta_item(
+                        tr("app.content.row_number"),
                         (detail.row + 1).to_string(),
                         colors,
                     ))
                     .child(cell_detail_meta_item_colored(
-                        "类型", type_name, type_color, colors,
+                        tr("app.history.meta_type"),
+                        type_name,
+                        type_color,
+                        colors,
                     ))
                     .child(cell_detail_meta_item(
                         "NULL",
                         matches!(value, CellValue::Null).to_string(),
                         colors,
                     ))
-                    .child(cell_detail_meta_item("长度", cell_value_length(&value).to_string(), colors))
+                    .child(cell_detail_meta_item(
+                        tr("app.content.length"),
+                        cell_value_length(&value).to_string(),
+                        colors,
+                    ))
                     .child(
                         div()
                             .w(px(42.))
@@ -4411,7 +4539,11 @@ fn query_result_cell_detail_panel(
                             .justify_center()
                             .pt_2()
                             .child(
-                                cell_detail_icon_button(AppIcon::Close, "关闭", colors)
+                                cell_detail_icon_button(
+                                    AppIcon::Close,
+                                    tr("app.common.close"),
+                                    colors,
+                                )
                                     .on_mouse_down(
                                         MouseButton::Left,
                                         cx.listener(move |this, _, _, cx| {
@@ -4443,9 +4575,9 @@ fn query_result_cell_detail_value_header(value_text: String, colors: UiColors) -
                 .text_size(px(12.))
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .text_color(colors.muted)
-                .child("值"),
+                .child(tr("app.placeholder.value")),
         )
-        .child(cell_detail_icon_button(AppIcon::Copy, "复制", colors).on_mouse_down(
+        .child(cell_detail_icon_button(AppIcon::Copy, tr("app.context.copy"), colors).on_mouse_down(
             MouseButton::Left,
             move |_, _, cx| {
                 cx.write_to_clipboard(ClipboardItem::new_string(value_text.clone()));
@@ -4545,7 +4677,7 @@ fn query_execution_summary_view(
                 .px_3()
                 .text_size(px(13.))
                 .text_color(colors.muted)
-                .child("暂无执行摘要"),
+                .child(tr("app.query.no_summary")),
         );
     }
     div()
@@ -4574,11 +4706,12 @@ fn query_summary_header(colors: UiColors) -> Div {
         .border_b_1()
         .border_color(colors.border)
         .bg(colors.panel_alt)
-        .child(query_summary_cell("语句", 1., true, colors))
-        .child(query_summary_cell("类型", 0.42, true, colors))
-        .child(query_summary_cell("返回行", 0.22, true, colors))
-        .child(query_summary_cell("影响行", 0.22, true, colors))
-        .child(query_summary_cell("耗时", 0.2, true, colors))
+        .child(query_summary_cell(tr("app.query.header.statement"), 1., true, colors))
+        .child(query_summary_cell(tr("app.query.header.type"), 0.42, true, colors))
+        .child(query_summary_cell(tr("app.query.header.returned"), 0.22, true, colors))
+        .child(query_summary_cell(tr("app.query.header.affected"), 0.22, true, colors))
+        .child(query_summary_cell(tr("app.query.header.elapsed"), 0.2, true, colors))
+        .child(div().w(px(42.)).flex_none())
 }
 
 fn query_summary_row(
@@ -4634,9 +4767,9 @@ fn query_summary_sql_cell(
         )
         .child(query_summary_copy_button(
             ("copy-query-summary-sql", row_index),
-            "复制 SQL",
+            tr("app.query.copy_sql"),
             summary.sql.clone(),
-            "已复制 SQL",
+            tr("app.query.sql_copied"),
             colors,
             cx,
         ))
@@ -4644,12 +4777,14 @@ fn query_summary_sql_cell(
 
 fn query_summary_copy_button(
     id: (&'static str, usize),
-    tooltip: &'static str,
+    tooltip: impl Into<SharedString>,
     copy_text: String,
-    success_text: &'static str,
+    success_text: impl Into<SharedString>,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> impl IntoElement {
+    let tooltip = tooltip.into();
+    let success_text = success_text.into();
     div()
         .id(id)
         .size(px(26.))
@@ -4659,13 +4794,13 @@ fn query_summary_copy_button(
         .items_center()
         .justify_center()
         .hover(move |style| style.bg(colors.hover))
-        .tooltip(move |window, cx| Tooltip::new(tooltip).build(window, cx))
+        .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
         .child(app_icon(AppIcon::Copy, 14., colors.muted))
         .on_mouse_down(
             MouseButton::Left,
             cx.listener(move |this, _, _, cx| {
                 cx.write_to_clipboard(ClipboardItem::new_string(copy_text.clone()));
-                this.show_message(success_text, AppMessageKind::Success, cx);
+                this.show_message(success_text.clone(), AppMessageKind::Success, cx);
                 cx.stop_propagation();
             }),
         )
@@ -4734,7 +4869,11 @@ fn query_summary_type_cell(
                 .text_size(px(11.))
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .text_color(badge_text)
-                .child(if summary.success { "成功" } else { "失败" }),
+                .child(if summary.success {
+                    tr("app.history.success")
+                } else {
+                    tr("app.history.failed")
+                }),
         )
         .child(
             div()
@@ -4747,14 +4886,14 @@ fn query_summary_type_cell(
                 .text_size(px(12.))
                 .text_color(colors.text)
                 .tooltip(query_summary_full_text_tooltip(summary.message.clone(), false))
-                .child(summary.message.clone()),
+                .child(localize_backend_error_text(&summary.message)),
         )
         .when(!summary.success, |this| {
             this.child(query_summary_copy_button(
                 ("copy-query-summary-error", row_index),
-                "复制错误",
+                tr("app.query.copy_error"),
                 summary.message.clone(),
-                "已复制错误信息",
+                tr("app.query.error_copied"),
                 colors,
                 cx,
             ))
@@ -4846,7 +4985,7 @@ fn object_toolbar(colors: UiColors) -> impl IntoElement {
                         .text_size(px(13.))
                         .text_color(colors.muted)
                         .child(app_icon(AppIcon::Search, 13., colors.muted))
-                        .child("搜索"),
+                        .child(tr("app.placeholder.search")),
                 ),
         )
 }
@@ -4942,7 +5081,7 @@ fn redis_key_mode_segment(
 
 fn redis_key_search_bar(
     tab_id: TabId,
-    type_select: Entity<SelectState<SearchableVec<String>>>,
+    type_select: Entity<SelectState<SearchableVec<RedisTypeFilterOption>>>,
     input: Entity<InputState>,
     active: bool,
     refreshing: bool,
@@ -4970,7 +5109,7 @@ fn redis_key_search_bar(
                     .ml_4()
                     .text_size(px(13.))
                     .text_color(colors.text)
-                    .child("上次搜索: 现在"),
+                    .child(tr("app.content.last_search_now")),
             )
         })
         .child(div().flex_1().min_w(px(0.)))
@@ -4993,7 +5132,7 @@ fn redis_key_search_bar(
 }
 
 fn redis_search_type_select_box(
-    select: Entity<SelectState<SearchableVec<String>>>,
+    select: Entity<SelectState<SearchableVec<RedisTypeFilterOption>>>,
 ) -> Div {
     div()
         .h(px(34.))
@@ -5002,7 +5141,7 @@ fn redis_search_type_select_box(
         .child(
             Select::new(&select)
                 .small()
-                .title_prefix("类型: ")
+                .title_prefix(tr("app.content.type_prefix"))
                 .w_full()
                 .h_full()
                 .menu_width(px(132.)),
@@ -5043,7 +5182,11 @@ fn redis_search_input_frame(
                 .text_size(px(13.)),
         )
         .when(has_text, |this| {
-            this.child(redis_search_icon_button(AppIcon::Close, "清除", colors).on_mouse_down(
+            this.child(redis_search_icon_button(
+                AppIcon::Close,
+                tr("app.history.clear"),
+                colors,
+            ).on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, window, cx| {
                     this.clear_redis_search(tab_id, window, cx);
@@ -5052,7 +5195,11 @@ fn redis_search_input_frame(
             ))
         })
         .child(
-            redis_search_icon_button(AppIcon::ArrowUpDown, "搜索历史", colors).on_mouse_down(
+            redis_search_icon_button(
+                AppIcon::ArrowUpDown,
+                tr("app.content.search_history"),
+                colors,
+            ).on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, _, cx| {
                     this.toggle_redis_key_search_history(tab_id, cx);
@@ -5060,7 +5207,11 @@ fn redis_search_input_frame(
                 }),
             ),
         )
-        .child(redis_search_icon_button(AppIcon::Search, "搜索", colors).on_mouse_down(
+        .child(redis_search_icon_button(
+            AppIcon::Search,
+            tr("app.placeholder.search"),
+            colors,
+        ).on_mouse_down(
             MouseButton::Left,
             cx.listener(move |this, _, _, cx| {
                 this.apply_redis_search(tab_id, cx);
@@ -5085,7 +5236,9 @@ fn redis_refresh_key_list_button(refreshing: bool, colors: UiColors) -> Stateful
         .when(!refreshing, |this| {
             this.cursor_pointer()
                 .hover(move |style| style.bg(colors.hover))
-                .tooltip(|window, cx| Tooltip::new("刷新").build(window, cx))
+                .tooltip(|window, cx| {
+                    Tooltip::new(tr("app.common.refresh")).build(window, cx)
+                })
         })
         .text_size(px(13.))
         .font_weight(gpui::FontWeight::SEMIBOLD)
@@ -5095,7 +5248,7 @@ fn redis_refresh_key_list_button(refreshing: bool, colors: UiColors) -> Stateful
         } else {
             app_icon(AppIcon::Refresh, 14., colors.muted).into_any_element()
         })
-        .child("刷新")
+        .child(tr("app.common.refresh"))
 }
 
 fn redis_add_key_button(colors: UiColors) -> Stateful<Div> {
@@ -5116,18 +5269,21 @@ fn redis_add_key_button(colors: UiColors) -> Stateful<Div> {
         .text_size(px(13.))
         .font_weight(gpui::FontWeight::SEMIBOLD)
         .text_color(colors.text)
-        .tooltip(|window, cx| Tooltip::new("新增键").build(window, cx))
+        .tooltip(|window, cx| {
+            Tooltip::new(tr("app.content.new_key")).build(window, cx)
+        })
         .child(app_icon(AppIcon::Plus, 14., rgb(0x1687ff)))
-        .child("新增键")
+        .child(tr("app.content.new_key"))
 }
 
 fn redis_search_icon_button(
     icon: AppIcon,
-    tooltip: &'static str,
+    tooltip: impl Into<SharedString>,
     colors: UiColors,
 ) -> Stateful<Div> {
+    let tooltip = tooltip.into();
     div()
-        .id(tooltip)
+        .id(tooltip.clone())
         .size(px(26.))
         .flex_none()
         .rounded_full()
@@ -5136,7 +5292,7 @@ fn redis_search_icon_button(
         .justify_center()
         .cursor_pointer()
         .hover(move |style| style.bg(colors.hover))
-        .tooltip(move |window, cx| Tooltip::new(tooltip).build(window, cx))
+        .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
         .child(app_icon(icon, 14., colors.muted))
 }
 
@@ -5194,7 +5350,7 @@ fn redis_key_search_history_dropdown(
             .items_center()
             .text_size(px(13.))
             .text_color(colors.muted)
-            .child("暂无搜索历史")
+            .child(tr("app.content.no_search_history"))
     } else {
         let mut list = div().flex().flex_col();
         for text in history.iter() {
@@ -5264,7 +5420,7 @@ fn redis_key_search_history_dropdown(
                 .text_size(px(12.))
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .text_color(colors.text)
-                .child("搜索历史"),
+                .child(tr("app.content.search_history")),
         )
         .child(menu)
         .when(!history.is_empty(), |this| {
@@ -5283,7 +5439,7 @@ fn redis_key_search_history_dropdown(
                     .text_size(px(13.))
                     .text_color(rgb(0xe5484d))
                     .child(app_icon(AppIcon::Trash, 14., rgb(0xe5484d)))
-                    .child("清除历史")
+                    .child(tr("app.content.clear_history"))
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, _, _, cx| {
@@ -5361,7 +5517,7 @@ fn data_editor_toolbar(
                 .items_center()
                 .gap_2()
                 .when(show_table_tools, |this| this.child(
-                    data_editor_action("筛选 & 排序", colors)
+                    data_editor_action(tr("app.data.toolbar.filter_sort"), colors)
                         .when(filter_open, |this| {
                             this.border_color(rgb(0x7db4ff)).bg(if colors.is_dark {
                                 rgb(0x16345f)
@@ -5378,7 +5534,7 @@ fn data_editor_toolbar(
                         ),
                 ))
                 .when(show_table_tools, |this| this.child(
-                    data_editor_action_state("搜索", search_open, colors).on_mouse_down(
+                    data_editor_action_state(tr("app.data.toolbar.search"), search_open, colors).on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, _, window, cx| {
                             this.toggle_data_search_panel(tab_id, window, cx);
@@ -5386,16 +5542,16 @@ fn data_editor_toolbar(
                         }),
                     ),
                 ))
-                .when(show_table_tools, |this| this.child(data_editor_action("数据分析", colors)))
-                .when(show_table_tools, |this| this.child(data_editor_action("导入", colors)))
-                .when(show_table_tools, |this| this.child(data_editor_action("导出", colors).on_mouse_down(
+                .when(show_table_tools, |this| this.child(data_editor_action(tr("app.data.toolbar.analyze"), colors)))
+                .when(show_table_tools, |this| this.child(data_editor_action(tr("app.data.toolbar.import"), colors)))
+                .when(show_table_tools, |this| this.child(data_editor_action(tr("app.data.toolbar.export"), colors).on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, _, _, cx| {
                         this.open_table_data_export(tab_id, cx);
                         cx.stop_propagation();
                     }),
                 )))
-                .when(show_table_tools, |this| this.child(data_editor_action("数据生成", colors))),
+                .when(show_table_tools, |this| this.child(data_editor_action(tr("app.data.toolbar.generate"), colors))),
         )
         .child(
             div()
@@ -5409,14 +5565,18 @@ fn data_editor_toolbar(
                             .font_weight(gpui::FontWeight::SEMIBOLD)
                             .text_color(colors.muted)
                             .child(if visible == total {
-                                format!("{total} 字段")
+                                tr("app.data.field_count")
+                                    .replace("%{visible}", &total.to_string())
+                                    .replace("%{total}", &total.to_string())
                             } else {
-                                format!("{visible}/{total} 字段")
+                                tr("app.data.field_count_filtered")
+                                    .replace("%{visible}", &visible.to_string())
+                                    .replace("%{total}", &total.to_string())
                         }),
                     )
                 })
                 .when(show_table_tools, |this| this.child(
-                    data_editor_action("字段筛选", colors)
+                    data_editor_action(tr("app.data.toolbar.field_filter"), colors)
                         .when(field_filter_open, |this| {
                             this.border_color(rgb(0x7db4ff)).bg(if colors.is_dark {
                                 rgb(0x16345f)
@@ -5434,7 +5594,7 @@ fn data_editor_toolbar(
                 ))
                 .when(show_table_tools, |this| this.when_some(table_info_open, |this, active| {
                     this.child(
-                        data_editor_action_state("表属性", active, colors)
+                        data_editor_action_state(tr("app.data.toolbar.table_info"), active, colors)
                             .id(("table-info-toggle", tab_id.0))
                             .on_mouse_down(
                             MouseButton::Left,
@@ -5454,7 +5614,8 @@ fn data_editor_toolbar(
         )
 }
 
-fn data_editor_action(label: &'static str, colors: UiColors) -> Div {
+fn data_editor_action(label: impl Into<SharedString>, colors: UiColors) -> Div {
+    let label = label.into();
     div()
         .h(px(28.))
         .px_3()
@@ -5473,7 +5634,11 @@ fn data_editor_action(label: &'static str, colors: UiColors) -> Div {
         .child(label)
 }
 
-fn data_editor_action_state(label: &'static str, active: bool, colors: UiColors) -> Div {
+fn data_editor_action_state(
+    label: impl Into<SharedString>,
+    active: bool,
+    colors: UiColors,
+) -> Div {
     data_editor_action(label, colors).when(active, |this| {
         this.border_color(rgb(0x7db4ff)).bg(if colors.is_dark {
             rgb(0x16345f)

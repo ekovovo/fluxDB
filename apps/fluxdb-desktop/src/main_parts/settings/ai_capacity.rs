@@ -28,15 +28,15 @@ fn ai_parse_token_count(raw: &str, unit: AiTokenUnit) -> Result<Option<i64>, Str
         return Ok(None);
     }
     if !raw.bytes().all(|c| c.is_ascii_digit()) {
-        return Err("容量必须是整数，可输入整数 K/M".into());
+        return Err(tr("app.ai.capacity.positive").to_string());
     }
     let whole = raw
         .parse::<i64>()
-        .map_err(|_| "容量超出范围".to_string())?;
+        .map_err(|_| tr("app.ai.capacity.out_of_range").to_string())?;
     let value = whole
         .checked_mul(unit.scale())
         .filter(|v| (1..=1_000_000_000).contains(v))
-        .ok_or_else(|| "容量必须为 1–1,000,000,000 tokens".to_string())?;
+        .ok_or_else(|| tr("app.ai.capacity.bounds").to_string())?;
     Ok(Some(value))
 }
 
@@ -78,11 +78,14 @@ fn fill_ai_capacity_field(
 }
 
 fn ai_capacity_field(
-    label: &str,
+    label: impl Into<SharedString>,
     input: &Entity<InputState>,
     unit: &Entity<SelectState<SearchableVec<String>>>,
     colors: UiColors,
 ) -> impl IntoElement {
+    let label = label.into();
+    let field_label = label.clone();
+    let unit_label = label.clone();
     div()
         .flex()
         .flex_col()
@@ -92,7 +95,7 @@ fn ai_capacity_field(
             div()
                 .text_size(px(11.))
                 .text_color(colors.text)
-                .child(label.to_string()),
+                .child(label),
         )
         .child(
             div()
@@ -103,14 +106,14 @@ fn ai_capacity_field(
                     div()
                         .flex_1()
                         .min_w(px(0.))
-                        .debug_selector(|| format!("ai-field:{label}"))
+                        .debug_selector(move || format!("ai-field:{field_label}"))
                         .child(Input::new(input).text_size(px(13.))),
                 )
                 .child(
                     div()
                         .w(px(70.))
                         .flex_none()
-                        .debug_selector(|| format!("ai-capacity-unit:{label}"))
+                        .debug_selector(move || format!("ai-capacity-unit:{unit_label}"))
                         .child(Select::new(unit).w_full().h(px(32.))),
                 ),
         )

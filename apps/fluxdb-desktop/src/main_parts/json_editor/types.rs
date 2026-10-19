@@ -43,17 +43,18 @@ pub(crate) struct JsonEditorDiagnostic {
 impl JsonEditorDiagnostic {
     /// 组装成适合 `show_message` 的轻量提示文案。
     pub fn summary(&self) -> String {
-        format!(
-            "JSON 格式错误：第 {} 行第 {} 列，{}",
-            self.line + 1,
-            self.column + 1,
-            self.message
-        )
+        tr("app.json.error.format")
+            .replace("%{line}", &(self.line + 1).to_string())
+            .replace("%{column}", &(self.column + 1).to_string())
+            .replace("%{message}", &self.message)
     }
 
     /// 悬浮气泡文案：单行 `第 N 行第 M 列：错误原因`，锚定在错误 token 附近。
     pub fn bubble_text(&self) -> String {
-        format!("第 {} 行第 {} 列：{}", self.line + 1, self.column + 1, self.message)
+        tr("app.json.error.position")
+            .replace("%{line}", &(self.line + 1).to_string())
+            .replace("%{column}", &(self.column + 1).to_string())
+            .replace("%{message}", &self.message)
     }
 }
 
@@ -100,7 +101,7 @@ impl Default for JsonEditorConfig {
             preserve_fold_state: true,
             min_rows: 8,
             indent_size: 2,
-            placeholder: "(空 JSON)".to_string(),
+            placeholder: tr("app.json.placeholder.empty").to_string(),
         }
     }
 }

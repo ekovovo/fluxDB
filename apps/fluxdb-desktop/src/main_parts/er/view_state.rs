@@ -451,11 +451,19 @@ impl NavicatMain {
         let name = self.er_group_inputs.get(&tab)
             .map(|input| input.read(cx).value().trim().to_string()).unwrap_or_default();
         if name.is_empty() || name.chars().count() > 64 || name.chars().any(char::is_control) {
-            self.show_message("请输入 1–64 字符的业务组名", AppMessageKind::Warning, cx);
+            self.show_message(
+                tr("app.er_view.group_name_invalid"),
+                AppMessageKind::Warning,
+                cx,
+            );
             return;
         }
         let Some(selected) = self.er_canvas.borrow().er_selected_table.get(&tab).cloned().flatten() else {
-            self.show_message("请先在画布中选中一张表", AppMessageKind::Warning, cx);
+            self.show_message(
+                tr("app.er_view.select_table_first"),
+                AppMessageKind::Warning,
+                cx,
+            );
             return;
         };
         if !self.er_graphs.get(&tab).is_some_and(|g| g.tables.iter().any(|t| t.name == selected)) {
@@ -477,7 +485,11 @@ impl NavicatMain {
 
     fn er_remove_selected_from_custom_group(&mut self, tab: TabId, name: &str, cx: &mut Context<Self>) {
         let Some(selected) = self.er_canvas.borrow().er_selected_table.get(&tab).cloned().flatten() else {
-            self.show_message("请先选中组内表", AppMessageKind::Warning, cx);
+            self.show_message(
+                tr("app.er_view.select_group_table_first"),
+                AppMessageKind::Warning,
+                cx,
+            );
             return;
         };
         if let Some(members) = self.er_custom_groups.get_mut(&tab).and_then(|groups| groups.get_mut(name)) {
@@ -555,7 +567,11 @@ impl NavicatMain {
     fn er_apply_import_layout(&mut self, tab: TabId, connection_id: u64, database: &str, cx: &mut Context<Self>) {
         let Some(report) = self.er_last_import.get(&tab) else { return; };
         if !er_import_scope_matches(report, connection_id, database) {
-            self.show_message("导入文件连接或数据库不匹配（旧版无连接身份仅支持预览）", AppMessageKind::Warning, cx);
+            self.show_message(
+                tr("app.er_view.import_scope_mismatch"),
+                AppMessageKind::Warning,
+                cx,
+            );
             return;
         }
         let Some(graph) = self.er_graphs.get(&tab) else { return; };
@@ -569,7 +585,11 @@ impl NavicatMain {
         );
         if matched == 0 {
             drop(canvas);
-            self.show_message("导入文件没有可应用的同名表布局", AppMessageKind::Warning, cx);
+            self.show_message(
+                tr("app.er_view.import_no_matching_tables"),
+                AppMessageKind::Warning,
+                cx,
+            );
             return;
         }
         canvas.er_scene_positions.insert(tab, positions);
@@ -586,12 +606,21 @@ impl NavicatMain {
                 None => { canvas.er_pinned.remove(&tab); }
             }
             drop(canvas);
-            self.show_message("导入布局保存失败，画布已恢复原状", AppMessageKind::Error, cx);
+            self.show_message(
+                tr("app.er_view.import_save_failed"),
+                AppMessageKind::Error,
+                cx,
+            );
             return;
         }
         self.er_last_import.remove(&tab);
         self.mark_er_interacted(tab);
-        self.show_message(format!("已应用 {} 张同名表的布局；未修改数据库结构或关系", matched), AppMessageKind::Info, cx);
+        self.show_message(
+            tr("app.er_view.import_applied")
+                .replace("%{count}", &matched.to_string()),
+            AppMessageKind::Info,
+            cx,
+        );
         cx.notify();
     }
 

@@ -19,7 +19,7 @@ impl NavicatMain {
             .save_connections(&self.controller.connection_configs())
         {
             self.controller = previous;
-            self.show_message(format!("删除连接失败：{error}"), AppMessageKind::Error, cx);
+            self.show_message(tr("app.connection.error.delete_failed").replace("%{error}", &error.to_string()), AppMessageKind::Error, cx);
             cx.notify();
             return;
         }
@@ -73,8 +73,8 @@ impl NavicatMain {
             {
                 self.controller = previous;
                 self.new_connection_form.test_status =
-                    Some(ConnectionTestStatus::Error(format!("保存连接失败：{error}")));
-                self.show_message(format!("保存连接失败：{error}"), AppMessageKind::Error, cx);
+                    Some(ConnectionTestStatus::Error(tr("app.connection.error.save_failed").replace("%{error}", &error.to_string())));
+                self.show_message(tr("app.connection.error.save_failed").replace("%{error}", &error.to_string()), AppMessageKind::Error, cx);
                 self.saving_connection = false;
                 cx.notify();
                 return;
@@ -94,7 +94,7 @@ impl NavicatMain {
         // 建连测试是真实网络 I/O：交给后台线程跑，既不让弹框卡住主线程，也让驱动里可能的
         // panic 不再落进 GPUI 主线程的 C 回调栈帧（该栈不能 unwind，会 abort 整个进程）。
         self.new_connection_form.test_status =
-            Some(ConnectionTestStatus::Pending("正在测试连接...".to_string()));
+            Some(ConnectionTestStatus::Pending(tr("app.connection.status.testing").to_string()));
         let mut controller = self.controller.clone();
         self._test_connection_task = Some(cx.spawn(async move |view, cx| {
             let event = cx
@@ -146,7 +146,7 @@ impl NavicatMain {
             }
             _ => {
                 self.new_connection_form.test_status =
-                    Some(ConnectionTestStatus::Error("连接失败，未保存".to_string()));
+                    Some(ConnectionTestStatus::Error(tr("app.connection.status.failed_unsaved").to_string()));
                 self.saving_connection = false;
                 cx.notify();
                 return;
@@ -162,8 +162,8 @@ impl NavicatMain {
         {
             self.controller = previous;
             self.new_connection_form.test_status =
-                Some(ConnectionTestStatus::Error(format!("保存连接失败：{error}")));
-            self.show_message(format!("保存连接失败：{error}"), AppMessageKind::Error, cx);
+                Some(ConnectionTestStatus::Error(tr("app.connection.error.save_failed").replace("%{error}", &error.to_string())));
+            self.show_message(tr("app.connection.error.save_failed").replace("%{error}", &error.to_string()), AppMessageKind::Error, cx);
             self.saving_connection = false;
             cx.notify();
             return;
@@ -281,16 +281,9 @@ impl NavicatMain {
     /// 打开新建/编辑连接弹框时，把表单里的 SSH 认证方式 / 云提供方同步到对应 Select 光标，
     /// 保证下拉与表单字段一致（SelectState 独立维护光标）。
     fn sync_new_connection_selects(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        // 表单字段值 → 下拉展示文案。
-        let ssh_auth = match self.new_connection_form.ssh_auth.as_str() {
-            "private_key" => "私钥".to_string(),
-            _ => "密码".to_string(),
-        };
-        let cloud_provider = match self.new_connection_form.cloud_provider.as_str() {
-            "azure" => "Azure".to_string(),
-            "redis-cloud" => "Redis Cloud".to_string(),
-            _ => "不使用云".to_string(),
-        };
+        // 下拉值已与表单字段一致，不再经过展示文案转换。
+        let ssh_auth = self.new_connection_form.ssh_auth.clone();
+        let cloud_provider = self.new_connection_form.cloud_provider.clone();
         self.new_connection_inputs.ssh_auth_select.update(cx, |select, cx| {
             select.set_selected_value(&ssh_auth, window, cx);
         });
@@ -431,7 +424,7 @@ impl NavicatMain {
             files: true,
             directories: false,
             multiple: false,
-            prompt: Some("选择 SQLite 数据库文件".into()),
+            prompt: Some(tr("app.connection.picker.sqlite").into()),
         });
         self._file_picker_task = Some(cx.spawn_in(window, async move |view, cx| {
             let result = receiver.await;
@@ -454,13 +447,13 @@ impl NavicatMain {
                     Ok(Ok(None)) => {}
                     Ok(Err(error)) => {
                         this.new_connection_form.test_status = Some(ConnectionTestStatus::Error(
-                            format!("选择 SQLite 文件失败：{error}"),
+                            tr("app.connection.error.sqlite_picker").replace("%{error}", &error.to_string()),
                         ));
                         cx.notify();
                     }
                     Err(error) => {
                         this.new_connection_form.test_status = Some(ConnectionTestStatus::Error(
-                            format!("选择 SQLite 文件失败：{error}"),
+                            tr("app.connection.error.sqlite_picker").replace("%{error}", &error.to_string()),
                         ));
                         cx.notify();
                     }
@@ -474,7 +467,7 @@ impl NavicatMain {
     fn choose_connection_file(
         &mut self,
         field: ConnectionField,
-        prompt: &'static str,
+        prompt: impl Into<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -482,7 +475,7 @@ impl NavicatMain {
             files: true,
             directories: false,
             multiple: false,
-            prompt: Some(prompt.into()),
+            prompt: Some(prompt.into().into()),
         });
         self._file_picker_task = Some(cx.spawn_in(window, async move |view, cx| {
             let result = receiver.await;
@@ -505,13 +498,13 @@ impl NavicatMain {
                     Ok(Ok(None)) => {}
                     Ok(Err(error)) => {
                         this.new_connection_form.test_status = Some(ConnectionTestStatus::Error(
-                            format!("选择文件失败：{error}"),
+                            tr("app.connection.error.file_picker").replace("%{error}", &error.to_string()),
                         ));
                         cx.notify();
                     }
                     Err(error) => {
                         this.new_connection_form.test_status = Some(ConnectionTestStatus::Error(
-                            format!("选择文件失败：{error}"),
+                            tr("app.connection.error.file_picker").replace("%{error}", &error.to_string()),
                         ));
                         cx.notify();
                     }
@@ -535,7 +528,7 @@ impl NavicatMain {
                     .new_connection_draft(kind)
                     .into_config(fluxdb_core::ConnectionId(0));
                 self.new_connection_form.test_status =
-                    Some(ConnectionTestStatus::Pending("正在测试连接...".to_string()));
+                    Some(ConnectionTestStatus::Pending(tr("app.connection.status.testing").to_string()));
                 let mut controller = self.controller.clone();
                 self._test_connection_task = Some(cx.spawn(async move |view, cx| {
                     let event = cx
@@ -550,7 +543,7 @@ impl NavicatMain {
                         view.update(cx, |this, cx| {
                             this.new_connection_form.test_status = Some(match event {
                                 fluxdb_app::AppEvent::ConnectionTested(_, Ok(())) => {
-                                    ConnectionTestStatus::Success("测试连接成功".to_string())
+                                    ConnectionTestStatus::Success(tr("app.connection.status.test_success").to_string())
                                 }
                                 fluxdb_app::AppEvent::ConnectionTested(_, Err(error)) => {
                                     ConnectionTestStatus::Error(error.to_string())
@@ -558,7 +551,7 @@ impl NavicatMain {
                                 fluxdb_app::AppEvent::Failed(error) => ConnectionTestStatus::Error(
                                     format!("{}：{}", error.title, error.message),
                                 ),
-                                _ => ConnectionTestStatus::Error("测试连接失败".to_string()),
+                                _ => ConnectionTestStatus::Error(tr("app.connection.status.test_failed").to_string()),
                             });
                             this._test_connection_task = None;
                             cx.notify();
@@ -576,12 +569,12 @@ impl NavicatMain {
     fn validate_new_connection(&self, kind: DatabaseKind) -> Result<(), String> {
         let form = &self.new_connection_form;
         if form.name.trim().is_empty() {
-            return Err("请填写连接名称".to_string());
+            return Err(tr("app.connection.error.name_required").to_string());
         }
         match kind {
             DatabaseKind::Sqlite => {
                 if form.sqlite_path.trim().is_empty() {
-                    return Err("请选择或输入 SQLite 文件路径".to_string());
+                    return Err(tr("app.connection.error.sqlite_path_required").to_string());
                 }
             }
             // Redis 走结构化档案校验（Sentinel / Cluster 不强制基础主机）。
@@ -607,7 +600,7 @@ impl NavicatMain {
             }
             _ => {
                 if form.host.trim().is_empty() {
-                    return Err("请填写主机".to_string());
+                    return Err(tr("app.connection.error.host_required").to_string());
                 }
                 parse_port(&form.port)?;
             }
@@ -717,12 +710,12 @@ impl NavicatMain {
         let provider = self.new_connection_form.cloud_provider.clone();
         if connection_string.trim().is_empty() {
             self.new_connection_form.test_status =
-                Some(ConnectionTestStatus::Error("请先输入 Redis 连接串".to_string()));
+                Some(ConnectionTestStatus::Error(tr("app.connection.error.redis_uri_required").to_string()));
             cx.notify();
             return;
         }
         self.new_connection_form.test_status =
-            Some(ConnectionTestStatus::Pending("正在解析连接串...".to_string()));
+            Some(ConnectionTestStatus::Pending(tr("app.connection.status.parsing_uri").to_string()));
         let mut controller = self.controller.clone();
         self._redis_discover_task = Some(cx.spawn(async move |view, cx| {
             let event = cx
@@ -743,7 +736,7 @@ impl NavicatMain {
                             this.apply_redis_discovered_draft(&draft, cx);
                             this.new_connection_form.test_status =
                                 Some(ConnectionTestStatus::Success(
-                                    "已导入 Redis 连接串".to_string(),
+                                    tr("app.connection.toast.redis_imported").to_string(),
                                 ));
                         }
                         fluxdb_app::AppEvent::Failed(error) => {
@@ -755,7 +748,7 @@ impl NavicatMain {
                         }
                         _ => {
                             this.new_connection_form.test_status =
-                                Some(ConnectionTestStatus::Error("连接串解析失败".to_string()));
+                                Some(ConnectionTestStatus::Error(tr("app.connection.error.redis_uri_parse").to_string()));
                         }
                     }
                     this._redis_discover_task = None;

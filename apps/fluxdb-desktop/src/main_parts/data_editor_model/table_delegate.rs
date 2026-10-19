@@ -1,3 +1,14 @@
+/// Redis 列表列名是跨层协议值，展示时单独翻译，查询/排序仍用原始列名。
+fn localized_column_header(name: &str) -> SharedString {
+    match name {
+        "键" => tr("app.redis.column.key"),
+        "类型" => tr("app.redis.column.type"),
+        "值" => tr("app.redis.column.value"),
+        "大小" => tr("app.redis.column.size"),
+        _ => SharedString::from(name),
+    }
+}
+
 fn data_cell_temporal_kind(type_name: &str) -> Option<DataCellTemporalKind> {
     let normalized = type_name
         .trim()
@@ -89,9 +100,9 @@ fn redis_action_cell_buttons(
         .w_full()
         .items_center()
         .justify_between()
-        .child(redis_action_button("修改", AppIcon::Edit, false, dark, radius))
+        .child(redis_action_button(tr("app.data.action.edit"), AppIcon::Edit, false, dark, radius))
         .child(
-            redis_action_button("删除", AppIcon::Trash, !deleted, dark, radius).when(!deleted, |this| {
+            redis_action_button(tr("app.redis.delete"), AppIcon::Trash, !deleted, dark, radius).when(!deleted, |this| {
                 this.on_mouse_down(MouseButton::Left, move |_, _, cx| {
                     let _ = view.update(cx, |this, cx| {
                         this.dispatch(
@@ -111,12 +122,13 @@ fn redis_action_cell_buttons(
 }
 
 fn redis_action_button(
-    label: &'static str,
+    label: impl Into<SharedString>,
     icon: AppIcon,
     enabled: bool,
     dark: bool,
     radius: gpui::Pixels,
 ) -> Div {
+    let label: SharedString = label.into();
     let text_color = if enabled {
         rgb(0x1677ff)
     } else if dark {
@@ -307,7 +319,7 @@ impl TableDelegate for DataPageTableDelegate {
                             .text_color(cx.theme().foreground)
                             .whitespace_nowrap()
                             .text_ellipsis()
-                            .child(column.name.clone()),
+                            .child(localized_column_header(&column.name)),
                     )
                     .when(self.header_actions && !type_name.is_empty(), |this| {
                         this.child(
@@ -331,7 +343,7 @@ impl TableDelegate for DataPageTableDelegate {
                             data_table_header_text_button(
                                 ("copy-data-column", col_ix),
                                 "⧉",
-                                "复制列名",
+                                tr("app.data.action.copy_column_name"),
                                 data_table_header_icon_color(cx.theme().is_dark()),
                             )
                             .on_click(move |_, _window, cx| {
@@ -339,7 +351,7 @@ impl TableDelegate for DataPageTableDelegate {
                                     copy_column_name.clone(),
                                 ));
                                 let _ = view.update(cx, |this, cx| {
-                                    this.show_message("已复制", AppMessageKind::Success, cx);
+                                    this.show_message(tr("app.data.toast.copied").as_ref(), AppMessageKind::Success, cx);
                                 });
                                 cx.stop_propagation();
                             }),

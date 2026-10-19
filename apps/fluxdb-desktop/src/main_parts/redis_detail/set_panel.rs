@@ -39,9 +39,9 @@ fn redis_key_detail_set_panel(
     let total = page.map_or(rows.len(), |page| page.total);
     // 有搜索词时 footer 显示命中数，否则显示分页进度
     let footer_left = if search_query.is_empty() {
-        format!("显示 {visible_count} / 共 {total} 个成员")
+        tr("app.redis.set.members_count").replace("%{shown}", &visible_count.to_string()).replace("%{total}", &total.to_string())
     } else {
-        format!("找到 {visible_count} 个")
+        tr("app.redis.set.found_count").replace("%{count}", &visible_count.to_string())
     };
     redis_detail_panel(colors)
         .relative()
@@ -113,7 +113,12 @@ fn redis_key_detail_set_panel(
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .text_color(colors.muted)
                         .child(div().w(px(42.)).flex_none().child("#"))
-                        .child(div().flex_1().min_w(px(0.)).child("Member"))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .child(tr("app.redis.form.member")),
+                        )
                         .child(div().w(px(40.)).flex_none()),
                 )
                 .child(
@@ -163,9 +168,9 @@ fn redis_key_detail_set_panel(
                                             colors.muted,
                                         ))
                                         .child(if search_query.is_empty() {
-                                            "暂无成员"
+                                            tr("app.redis.set.empty")
                                         } else {
-                                            "没有匹配成员"
+                                            tr("app.redis.set.no_match")
                                         })
                                 } else {
                                     redis_set_member_rows_panel(
@@ -206,9 +211,9 @@ fn redis_key_detail_set_panel(
                                 .items_center()
                                 .gap_2()
                                 .when(!search_query.is_empty(), |this| {
-                                    this.child(format!(
-                                        "筛选: {}",
-                                        redis_ellipsis_text(&search_query, 24)
+                                    this.child(tr("app.redis.set.filter").replace(
+                                        "%{query}",
+                                        &redis_ellipsis_text(&search_query, 24),
                                     ))
                                 })
                                 .when(has_more, |this| {
@@ -218,7 +223,7 @@ fn redis_key_detail_set_panel(
                                                 .into_any_element()
                                         } else {
                                             redis_detail_toolbar_button(
-                                                "加载更多",
+                                                tr("app.redis.load_more"),
                                                 AppIcon::ChevronDown,
                                                 true,
                                                 colors,
@@ -430,7 +435,7 @@ fn redis_set_member_delete_confirm_popover(
 ) -> impl IntoElement {
     // 面板行删除会随保存落库，删除不可撤销，提示成员内容
     let title = member;
-    let message = "将被删除，此操作不可撤销。";
+    let message = tr("app.redis.set.delete_irreversible");
     div()
         .absolute()
         .right(px(34.))
@@ -486,7 +491,7 @@ fn redis_set_member_delete_confirm_popover(
                                     .flex()
                                     .justify_end()
                                     .gap_2()
-                                    .child(redis_key_delete_confirm_button("取消", false, colors).on_mouse_down(
+                                    .child(redis_key_delete_confirm_button(tr("app.redis.cancel"), false, colors).on_mouse_down(
                                         MouseButton::Left,
                                         cx.listener(|this, _, _, cx| {
                                             this.pending_redis_set_member_delete = None;
@@ -494,7 +499,7 @@ fn redis_set_member_delete_confirm_popover(
                                             cx.stop_propagation();
                                         }),
                                     ))
-                                    .child(redis_key_delete_confirm_button("确认删除", true, colors).on_mouse_down(
+                                    .child(redis_key_delete_confirm_button(tr("app.redis.confirm_delete"), true, colors).on_mouse_down(
                                         MouseButton::Left,
                                         cx.listener(move |this, _, _, cx| {
                                             let RedisSetMemberDeleteTarget::PanelRow(i) = target;
@@ -583,7 +588,7 @@ fn redis_set_member_add_button(enabled: bool, colors: UiColors) -> Div {
             13.,
             if enabled { rgb(0x1687ff) } else { colors.border },
         ))
-        .child("新增")
+        .child(tr("app.redis.add"))
 }
 
 fn redis_set_member_add_drawer(
@@ -661,7 +666,7 @@ fn redis_set_member_add_drawer(
                             div()
                                 .text_size(px(17.))
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
-                                .child("新增 Member"),
+                                .child(tr("app.redis.set.add_member")),
                         ),
                 )
                 .child(
@@ -744,7 +749,7 @@ fn redis_set_member_add_drawer(
                         .gap_2()
                         .px_5()
                         .child(
-                            redis_detail_action_button("取消", false, !applying, colors).on_mouse_down(
+                            redis_detail_action_button(tr("app.redis.cancel"), false, !applying, colors).on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(|this, _, _, cx| {
                                     this.cancel_redis_set_member_drawer(cx);
@@ -753,7 +758,7 @@ fn redis_set_member_add_drawer(
                             ),
                         )
                         .child(
-                            redis_detail_action_button("保存", true, !applying, colors).on_mouse_down(
+                            redis_detail_action_button(tr("app.redis.save"), true, !applying, colors).on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener({
                                     let key = key.clone();
@@ -901,7 +906,7 @@ fn redis_set_member_drawer_add_button(enabled: bool, colors: UiColors) -> Div {
             13.,
             if enabled { rgb(0x1677ff) } else { colors.muted },
         ))
-        .child("新增一行")
+        .child(tr("app.redis.add_row"))
 }
 
 fn redis_set_member_search_task_id(tab_id: TabId) -> u64 {

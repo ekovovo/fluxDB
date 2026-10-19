@@ -10,14 +10,14 @@ impl NavicatMain {
     }
 
     fn create_connection_group(&mut self, cx: &mut Context<Self>) -> Option<ConnectionGroupId> {
-        let base_name = "新分组";
+        let base_name = tr("app.group.default_name").to_string();
         let existing_count = self
             .controller
             .state()
             .sidebar_layout
             .groups
             .iter()
-            .filter(|group| group.name.starts_with(base_name))
+            .filter(|group| group.name.starts_with(&base_name))
             .count();
         let name = if existing_count == 0 {
             base_name.to_string()
@@ -93,7 +93,7 @@ impl NavicatMain {
             .iter()
             .map(|connection| connection.config.name.as_str())
             .collect::<BTreeSet<_>>();
-        let base = format!("{name} 副本");
+        let base = tr("app.connection.copy_name").replace("%{name}", name);
         if !names.contains(base.as_str()) {
             return base;
         }

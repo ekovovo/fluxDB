@@ -83,6 +83,9 @@ impl NavicatMain {
     fn discard_settings_preview(&mut self, cx: &mut Context<Self>) {
         self.settings_editor_draft = self.controller.state().settings.clone();
         self.theme_mode = theme_mode_from_app_theme(self.settings_editor_draft.theme);
+        let locale =
+            fluxdb_i18n::effective_locale(&self.controller.state().settings.locale);
+        apply_ui_locale(&locale, cx);
         self.preview_settings(cx);
     }
 
@@ -179,8 +182,8 @@ impl NavicatMain {
                         AppEvent::CompletionIndexWarmed(_, _) => Ok(()),
                         AppEvent::Failed(error) => Err(error),
                         _ => Err(fluxdb_core::UserFacingError {
-                            title: "补全索引失败".to_string(),
-                            message: "补全索引预热没有返回结果".to_string(),
+                            title: tr("app.table.error.index_prewarm").to_string(),
+                            message: tr("app.table.error.index_prewarm_no_result").to_string(),
                             detail: None,
                             retryable: true,
                         }),
@@ -250,13 +253,13 @@ impl NavicatMain {
 
         let key = (tab_id, row, column);
         if self._cell_binary_download_tasks.contains_key(&key) {
-            self.show_message("正在下载二进制数据", AppMessageKind::Warning, cx);
+            self.show_message(tr("app.data.toast.downloading_binary").as_ref(), AppMessageKind::Warning, cx);
             return;
         }
 
         let path = std::env::temp_dir().join(format!("gdb-cell-r{}-c{}.bin", row + 1, column + 1));
         let mut controller = self.controller.clone();
-        self.show_message("正在下载二进制数据", AppMessageKind::Success, cx);
+        self.show_message(tr("app.data.toast.downloading_binary").as_ref(), AppMessageKind::Success, cx);
         let task = cx.spawn(async move |view, cx| {
             let result = cx
                 .background_spawn(async move {
@@ -268,8 +271,8 @@ impl NavicatMain {
                         AppEvent::BinaryCellDownloaded { bytes, .. } => Ok(bytes),
                         AppEvent::Failed(error) => Err(error),
                         _ => Err(fluxdb_core::UserFacingError {
-                            title: "下载失败".to_string(),
-                            message: "二进制下载没有返回结果".to_string(),
+                            title: tr("app.data.error.download").to_string(),
+                            message: tr("app.data.error.binary_no_result").to_string(),
                             detail: None,
                             retryable: true,
                         }),
@@ -278,8 +281,8 @@ impl NavicatMain {
                     fs::write(&path, bytes)
                         .map(|_| path)
                         .map_err(|_| fluxdb_core::UserFacingError {
-                            title: "下载失败".to_string(),
-                            message: "写入临时文件失败".to_string(),
+                            title: tr("app.data.error.download").to_string(),
+                            message: tr("app.data.error.temp_file").to_string(),
                             detail: None,
                             retryable: true,
                         })
@@ -298,7 +301,7 @@ impl NavicatMain {
                                 path.display().to_string(),
                             ));
                             this.show_message(
-                                "已保存文件路径到剪贴板",
+                                tr("app.data.toast.path_copied").as_ref(),
                                 AppMessageKind::Success,
                                 cx,
                             );
@@ -366,7 +369,7 @@ impl NavicatMain {
             files: true,
             directories: false,
             multiple: false,
-            prompt: Some("选择要写入二进制字段的文件".into()),
+            prompt: Some(tr("app.data.picker.binary_file").into()),
         });
         self._file_picker_task = Some(cx.spawn_in(window, async move |view, cx| {
             let selected = receiver.await;
@@ -380,7 +383,7 @@ impl NavicatMain {
                         };
                         view.update(cx, |this, cx| {
                             this.show_message(
-                                format!("选择文件失败：{error}"),
+                                tr("app.data.error.file_picker").replace("%{error}", &error.to_string()),
                                 AppMessageKind::Error,
                                 cx,
                             );
@@ -395,7 +398,7 @@ impl NavicatMain {
                         };
                         view.update(cx, |this, cx| {
                             this.show_message(
-                                format!("选择文件失败：{error}"),
+                                tr("app.data.error.file_picker").replace("%{error}", &error.to_string()),
                                 AppMessageKind::Error,
                                 cx,
                             );
@@ -415,8 +418,8 @@ impl NavicatMain {
                 .background_spawn(async move {
                     let Some(mut controller) = controller.take() else {
                         return Err(fluxdb_core::UserFacingError {
-                            title: "替换失败".to_string(),
-                            message: "窗口已关闭".to_string(),
+                            title: tr("app.data.error.replace").to_string(),
+                            message: tr("app.data.error.window_closed").to_string(),
                             detail: None,
                             retryable: false,
                         });
@@ -431,8 +434,8 @@ impl NavicatMain {
                         AppEvent::TabActivated(_) => Ok(controller),
                         AppEvent::Failed(error) => Err(error),
                         _ => Err(fluxdb_core::UserFacingError {
-                            title: "替换失败".to_string(),
-                            message: "二进制替换没有返回结果".to_string(),
+                            title: tr("app.data.error.replace").to_string(),
+                            message: tr("app.data.error.binary_replace_no_result").to_string(),
                             detail: None,
                             retryable: true,
                         }),
@@ -455,7 +458,7 @@ impl NavicatMain {
                             cx,
                         );
                         this.refresh_active_data_table(tab_id, cx);
-                        this.show_message("已读取文件，提交后生效", AppMessageKind::Success, cx);
+                        this.show_message(tr("app.data.toast.file_read").as_ref(), AppMessageKind::Success, cx);
                     }
                     Err(error) => {
                         this.show_message(error.message, AppMessageKind::Error, cx);
@@ -542,6 +545,7 @@ impl NavicatMain {
         kind: AppMessageKind,
         cx: &mut Context<Self>,
     ) {
+        let text = localize_backend_error_text(&text.into());
         let message = next_app_message(self.app_message.as_ref(), text, kind);
         let message_id = message.id;
         self.app_message = Some(message);

@@ -60,16 +60,18 @@ fn ai_model_candidates(colors: UiColors) -> Div {
 
 /// Agent 编辑页签按钮。
 fn ai_agent_tab_button(
-    label: &'static str,
+    label: impl Into<SharedString>,
     value: AiAgentTab,
     active: AiAgentTab,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Stateful<Div> {
+    let label = label.into();
+    let debug_label = label.clone();
     let is_active = value == active;
     div()
         .id(SharedString::from(format!("ai-agent-tab:{label}")))
-        .debug_selector(|| format!("ai-agent-tab:{label}"))
+        .debug_selector(move || format!("ai-agent-tab:{debug_label}"))
         .px_3()
         .pt_1()
         .pb_2()
@@ -88,7 +90,7 @@ fn ai_agent_tab_button(
             gpui::FontWeight::NORMAL
         })
         .hover(move |style| style.text_color(colors.text))
-        .child(label.to_string())
+        .child(label)
         .on_mouse_down(
             MouseButton::Left,
             cx.listener(move |this, _, _, cx| {
@@ -103,10 +105,11 @@ fn ai_agent_tab_button(
 
 /// 多行提示词输入（保留换行）。
 fn ai_prompt_field(
-    label: &str,
+    label: impl Into<SharedString>,
     input: &Entity<gpui_component::input::TextareaState>,
     colors: UiColors,
 ) -> impl IntoElement {
+    let label = label.into();
     div()
         .flex()
         .flex_col()
@@ -117,7 +120,7 @@ fn ai_prompt_field(
                 .text_size(px(12.))
                 .font_weight(gpui::FontWeight::MEDIUM)
                 .text_color(colors.text)
-                .child(label.to_string()),
+                .child(label),
         )
         .child(
             div()
@@ -140,21 +143,21 @@ fn ai_agent_editor_form(
         .items_center()
         .gap_1()
         .child(ai_agent_tab_button(
-            "基本",
+            tr("app.ai.agents.tab.basic").to_string(),
             AiAgentTab::Basic,
             editor.tab,
             colors,
             cx,
         ))
         .child(ai_agent_tab_button(
-            "模型与提示词",
+            tr("app.ai.agents.tab.model_prompt").to_string(),
             AiAgentTab::Model,
             editor.tab,
             colors,
             cx,
         ))
         .child(ai_agent_tab_button(
-            "工具与内置能力",
+            tr("app.ai.agents.tab.tools").to_string(),
             AiAgentTab::Tools,
             editor.tab,
             colors,
@@ -168,8 +171,16 @@ fn ai_agent_editor_form(
                 .flex()
                 .flex_col()
                 .gap_3()
-                .child(ai_field("名称", &editor.inputs.display_name, colors))
-                .child(ai_field("职责描述", &editor.inputs.description, colors))
+                .child(ai_field(
+                    tr("app.ai.agents.name"),
+                    &editor.inputs.display_name,
+                    colors,
+                ))
+                .child(ai_field(
+                    tr("app.ai.agents.description"),
+                    &editor.inputs.description,
+                    colors,
+                ))
                 .child(
                     div()
                         .flex()
@@ -180,7 +191,7 @@ fn ai_agent_editor_form(
                             div()
                                 .text_size(px(12.))
                                 .text_color(colors.text)
-                                .child("启用 Agent"),
+                                .child(tr("app.ai.agents.enabled")),
                         )
                         .child(
                             Switch::new("ai-agent-enabled")
@@ -205,7 +216,7 @@ fn ai_agent_editor_form(
             let generation: Vec<(String, String)> = state
                 .ai_models
                 .iter()
-                .filter(|m| m.kind == "生成")
+                .filter(|m| m.kind == fluxdb_app::AiModelKind::Generation)
                 .map(|m| (m.id.clone(), m.display_name.clone()))
                 .collect();
             let current_label = editor
@@ -213,7 +224,7 @@ fn ai_agent_editor_form(
                 .as_ref()
                 .and_then(|id| generation.iter().find(|(i, _)| i == id))
                 .map(|(_, n)| n.clone())
-                .unwrap_or_else(|| "跟随默认主模型".to_string());
+                .unwrap_or_else(|| tr("app.ai.agents.follow_default_model").to_string());
 
             let mut col = div().flex().flex_col().gap_3().child(
                 div()
@@ -225,7 +236,7 @@ fn ai_agent_editor_form(
                             .text_size(px(12.))
                             .font_weight(gpui::FontWeight::MEDIUM)
                             .text_color(colors.text)
-                            .child("默认生成模型"),
+                            .child(tr("app.ai.agents.default_generation_model")),
                     )
                     .child(ai_agent_model_trigger(&current_label, editor.model_menu_open, colors, cx)),
             );
@@ -275,17 +286,17 @@ fn ai_agent_editor_form(
                 col = col.child(menu);
             }
             col.child(ai_field(
-                "上下文压缩触发（%）",
+                tr("app.ai.agents.compression_percent"),
                 &editor.inputs.compression_percent,
                 colors,
             ))
             .child(ai_field(
-                "最大模型迭代次数（每轮）",
+                tr("app.ai.agents.max_iterations"),
                 &editor.inputs.max_iterations,
                 colors,
             ))
             .child(ai_prompt_field(
-                "提示词 · 直接输入",
+                tr("app.ai.agents.prompt"),
                 &editor.inputs.system_prompt,
                 colors,
             ))
@@ -326,8 +337,14 @@ fn ai_agent_editor_form(
                                 .child(desc.to_string()),
                         )
                         .child(ai_pill(
-                            if *group == "产物" { "产物" } else if *write { "写入" } else { "读取" },
-                            if *group == "产物" {
+                            if *group == "artifact" {
+                                tr("app.ai.tools.group.artifact")
+                            } else if *write {
+                                tr("app.ai.agents.access.write")
+                            } else {
+                                tr("app.ai.agents.access.read")
+                            },
+                            if *group == "artifact" {
                                 colors.info
                             } else if *write {
                                 colors.warning
@@ -369,7 +386,7 @@ fn ai_agent_editor_form(
                         .text_size(px(12.))
                         .font_weight(gpui::FontWeight::SEMIBOLD)
                         .text_color(colors.text)
-                        .child("此 Agent 可用的工具与内置能力"),
+                        .child(tr("app.ai.agents.tools_available")),
                 )
                 // 被全局关闭的工具在此说明原因，避免用户以为开关坏了。
                 .when(!globally_disabled.is_empty(), |this| {
@@ -387,9 +404,9 @@ fn ai_agent_editor_form(
                                 div()
                                     .text_size(px(11.))
                                     .text_color(colors.warning)
-                                    .child(format!(
-                                        "已全局关闭 {} 个工具，需先在「工具与 MCP → 工具」中启用后才能勾选",
-                                        globally_disabled.len()
+                                    .child(tr("app.ai.agents.globally_disabled").replace(
+                                        "%{count}",
+                                        &globally_disabled.len().to_string(),
                                     )),
                             ),
                     )
@@ -437,7 +454,7 @@ fn ai_agent_editor_form(
                     Button::new("ai-agent-cancel")
                         .small()
                         .ghost()
-                        .child("取消")
+                        .child(tr("app.common.cancel"))
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.ai_agent_editor = None;
                             cx.notify();
@@ -465,7 +482,7 @@ fn ai_agent_editor_form(
                                 .danger()
                                 .cursor_pointer()
                                 .debug_selector(|| "ai-agent-delete".into())
-                                .child("删除")
+                                .child(tr("app.ai.agents.delete"))
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     this.confirm_ai_agent_delete(
                                         id.clone(),
@@ -484,9 +501,9 @@ fn ai_agent_editor_form(
                         .primary()
                         .debug_selector(|| "ai-agent-save".into())
                         .child(if is_new {
-                            "创建 Agent"
+                            tr("app.ai.agents.create")
                         } else {
-                            "保存 Agent"
+                            tr("app.ai.agents.save")
                         })
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.submit_ai_agent_editor(cx);
@@ -505,7 +522,7 @@ fn settings_ai_agents_panel(
     let selected_id = panel.agent_editor.as_ref().and_then(|e| e.agent_id.clone());
 
     let list_rows: Vec<gpui::AnyElement> = if state.ai_agents.is_empty() {
-        vec![ai_empty_state("暂无 Agent。点击「新建」创建。", colors)]
+        vec![ai_empty_state(&tr("app.ai.agents.empty"), colors)]
     } else {
         state
             .ai_agents
@@ -538,11 +555,11 @@ fn settings_ai_agents_panel(
                     )
                     .child(div().text_size(px(11.)).text_color(colors.muted).child(
                         if a.id == fluxdb_storage::ai_platform::agents::BUILTIN_AGENT_ID {
-                            "内置 · 可编辑".to_string()
+                            tr("app.ai.agents.builtin_editable").to_string()
                         } else if a.enabled {
-                            "已启用".to_string()
+                            tr("app.ai.status.enabled").to_string()
                         } else {
-                            "未启用".to_string()
+                            tr("app.ai.status.disabled").to_string()
                         },
                     ))
                     .on_mouse_down(
@@ -558,7 +575,7 @@ fn settings_ai_agents_panel(
     };
 
     let editor_body: gpui::AnyElement = match panel.agent_editor.as_ref() {
-        None => ai_empty_state("从左侧选择一个 Agent，或点击「新建」。", colors),
+        None => ai_empty_state(&tr("app.ai.agents.select_hint"), colors),
         Some(editor) => ai_agent_editor_form(state, editor, colors, cx).into_any_element(),
     };
 
@@ -585,7 +602,7 @@ fn settings_ai_agents_panel(
                     Button::new("ai-agent-new")
                         .small()
                         .primary()
-                        .child("新建")
+                        .child(tr("app.ai.agents.new"))
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.open_ai_agent_editor(None, window, cx);
                         })),
@@ -613,19 +630,19 @@ fn settings_ai_agents_panel(
 }
 
 /// 会话状态/最近 Turn 状态的中文标签与颜色（状态同时有文字，不只靠颜色区分）。
-fn ai_session_status_label(status: &str, colors: UiColors) -> (&'static str, gpui::Rgba) {
+fn ai_session_status_label(status: &str, colors: UiColors) -> (SharedString, gpui::Rgba) {
     match status {
         "queued" | "preparing" | "generating" | "executing_tools" | "cancel_requested" => {
-            ("执行中", colors.info)
+            (tr("app.ai.sessions.status.running"), colors.info)
         }
-        "waiting_approval" => ("等待批准", colors.warning),
-        "waiting_user" => ("等待输入", colors.warning),
-        "cancelled" => ("已取消", colors.muted),
-        "failed" => ("失败", colors.danger),
-        "interrupted" => ("已中断", colors.warning),
-        "outcome_unknown" => ("结果未知", colors.danger),
-        "completed" => ("已完成", colors.success),
-        _ => ("未开始", colors.muted),
+        "waiting_approval" => (tr("app.ai.sessions.status.waiting_approval"), colors.warning),
+        "waiting_user" => (tr("app.ai.sessions.status.waiting_user"), colors.warning),
+        "cancelled" => (tr("app.ai.sessions.status.cancelled"), colors.muted),
+        "failed" => (tr("app.ai.sessions.status.failed"), colors.danger),
+        "interrupted" => (tr("app.ai.sessions.status.interrupted"), colors.warning),
+        "outcome_unknown" => (tr("app.ai.sessions.status.outcome_unknown"), colors.danger),
+        "completed" => (tr("app.ai.sessions.status.completed"), colors.success),
+        _ => (tr("app.ai.sessions.status.not_started"), colors.muted),
     }
 }
 
@@ -639,10 +656,10 @@ fn ai_session_timestamp(ms: i64) -> String {
 /// 目标摘要：从 Turn 的公开 target JSON 取连接/库/对象名；无目标显示占位。
 fn ai_session_target_summary(target_json: Option<&str>) -> String {
     let Some(target_json) = target_json else {
-        return "无执行目标".to_string();
+        return tr("app.ai.sessions.no_target").to_string();
     };
     let Ok(value) = serde_json::from_str::<serde_json::Value>(target_json) else {
-        return "无执行目标".to_string();
+        return tr("app.ai.sessions.no_target").to_string();
     };
     // target_json 结构由 T021 目标快照决定：优先库/对象，其次 Redis db。
     let parts = [
@@ -655,7 +672,7 @@ fn ai_session_target_summary(target_json: Option<&str>) -> String {
     .flatten()
     .collect::<Vec<_>>();
     if parts.is_empty() {
-        "无执行目标".to_string()
+        tr("app.ai.sessions.no_target").to_string()
     } else {
         parts.join(" / ")
     }
@@ -677,16 +694,13 @@ fn settings_ai_sessions_panel(
         .collect();
 
     let rows: Vec<gpui::AnyElement> = if panel.settings_loading {
-        vec![ai_empty_state("正在加载会话列表…", colors)]
+        vec![ai_empty_state(&tr("app.ai.sessions.loading"), colors)]
     } else if let Some(message) = panel.settings_error.as_ref() {
         vec![ai_settings_error_block(message, colors, cx)]
     } else if state.ai_sessions.is_empty() {
-        vec![ai_empty_state(
-            "暂无会话记录。在询问 AI 面板发送第一条消息后，会话会出现在这里。",
-            colors,
-        )]
+        vec![ai_empty_state(&tr("app.ai.sessions.empty"), colors)]
     } else if filtered.is_empty() {
-        vec![ai_empty_state("没有匹配的会话。", colors)]
+        vec![ai_empty_state(&tr("app.ai.sessions.no_match"), colors)]
     } else {
         filtered
             .iter()
@@ -709,7 +723,7 @@ fn settings_ai_sessions_panel(
         .flex_col()
         .gap_3()
         .child(
-            settings_panel_group("会话历史", colors)
+            settings_panel_group(tr("app.ai.sessions.title"), colors)
                 .child(
                     div()
                         .border_t_1()
@@ -724,11 +738,11 @@ fn settings_ai_sessions_panel(
                             div()
                                 .text_size(px(12.))
                                 .text_color(colors.muted)
-                                .child(format!(
-                                    "共 {} 个会话 · 已加载 {} · 归档保留消息与审计事实",
-                                    state.ai_sessions_total,
-                                    state.ai_sessions.len(),
-                                )),
+                                .child(
+                                    tr("app.ai.sessions.summary")
+                                        .replace("%{total}", &state.ai_sessions_total.to_string())
+                                        .replace("%{loaded}", &state.ai_sessions.len().to_string()),
+                                ),
                         )
                         .child(
                             div()
@@ -748,9 +762,9 @@ fn settings_ai_sessions_panel(
                                         .debug_selector(|| "ai-sessions-refresh".into())
                                         .disabled(panel.settings_loading)
                                         .child(if panel.settings_loading {
-                                            "刷新中…"
+                                            tr("app.ai.models.refreshing")
                                         } else {
-                                            "刷新"
+                                            tr("app.common.refresh")
                                         })
                                         .on_click(cx.listener(|this, _, _, cx| {
                                             this.reload_ai_settings(cx);
@@ -767,9 +781,9 @@ fn settings_ai_sessions_panel(
                                             .debug_selector(|| "ai-sessions-load-more".into())
                                             .disabled(state.ai_sessions_loading_more)
                                             .child(if state.ai_sessions_loading_more {
-                                                "加载中…"
+                                                tr("app.ai.sessions.loading_more")
                                             } else {
-                                                "加载更多"
+                                                tr("app.ai.sessions.load_more")
                                             })
                                             .on_click(cx.listener(|this, _, _, cx| {
                                                 this.load_more_ai_sessions(cx);
@@ -787,9 +801,21 @@ fn settings_ai_sessions_panel(
                         .flex()
                         .items_center()
                         .gap_3()
-                        .child(ai_table_head("会话", 300., colors))
-                        .child(ai_table_head("Agent / 目标", 240., colors))
-                        .child(ai_table_head("状态", 120., colors))
+                        .child(ai_table_head(
+                            tr("app.ai.sessions.header.session"),
+                            300.,
+                            colors,
+                        ))
+                        .child(ai_table_head(
+                            tr("app.ai.sessions.header.agent_target"),
+                            240.,
+                            colors,
+                        ))
+                        .child(ai_table_head(
+                            tr("app.ai.sessions.header.status"),
+                            120.,
+                            colors,
+                        ))
                         .child(div().flex_1()),
                 )
                 // 窄窗口：四列保持最小宽度并横向滚动，避免列被压扁/裁切。
@@ -884,6 +910,11 @@ fn ai_session_row(
     let purge_revision = session.revision;
     let purge_title = session.title.clone();
     let archived = session.status == "archived";
+    let turns = if session.turn_count == 0 {
+        tr("app.ai.sessions.not_sent").to_string()
+    } else {
+        tr("app.ai.sessions.turns").replace("%{count}", &session.turn_count.to_string())
+    };
     ai_row_container(&format!("ai-session-row:{session_id}"), colors)
         .debug_selector({
             let session_id = session_id.clone();
@@ -910,16 +941,15 @@ fn ai_session_row(
                     div()
                         .text_size(px(11.))
                         .text_color(colors.muted)
-                        .child(format!(
-                            "{} 条消息 · {} · 更新于 {}",
-                            session.message_count,
-                            if session.turn_count == 0 {
-                                "尚未发送".to_string()
-                            } else {
-                                format!("{} 轮任务", session.turn_count)
-                            },
-                            ai_session_timestamp(session.updated_at_ms),
-                        )),
+                        .child(
+                            tr("app.ai.sessions.row_summary")
+                                .replace("%{messages}", &session.message_count.to_string())
+                                .replace("%{turns}", &turns)
+                                .replace(
+                                    "%{updated}",
+                                    &ai_session_timestamp(session.updated_at_ms),
+                                ),
+                        ),
                 ),
         )
         .child(
@@ -951,7 +981,11 @@ fn ai_session_row(
                 .items_center()
                 .child(ai_pill(status_label, status_color, colors))
                 .when(session.status == "archived", |this| {
-                    this.child(div().ml_1().child(ai_pill("已归档", colors.muted, colors)))
+                    this.child(div().ml_1().child(ai_pill(
+                        tr("app.ai.sessions.archived"),
+                        colors.muted,
+                        colors,
+                    )))
                 }),
         )
         .child(
@@ -970,7 +1004,7 @@ fn ai_session_row(
                             let open_id = open_id.clone();
                             move || format!("ai-session-open:{open_id}")
                         })
-                        .child("在面板打开")
+                        .child(tr("app.ai.sessions.open_panel"))
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.open_ai_session_from_settings(open_id.clone(), window, cx);
                         })),
@@ -980,7 +1014,7 @@ fn ai_session_row(
                         .small()
                         .ghost()
                         .cursor_pointer()
-                        .tooltip("重命名")
+                        .tooltip(tr("app.ai.sessions.rename"))
                         .debug_selector({
                             let rename_id = rename_id.clone();
                             move || format!("ai-session-rename:{rename_id}")
@@ -1007,7 +1041,11 @@ fn ai_session_row(
                     .small()
                     .ghost()
                     .cursor_pointer()
-                    .tooltip(if archived { "恢复到历史" } else { "归档" })
+                    .tooltip(if archived {
+                        tr("app.ai.sessions.restore")
+                    } else {
+                        tr("app.ai.sessions.archive")
+                    })
                     .debug_selector({
                         let archive_id = archive_id.clone();
                         move || {
@@ -1023,11 +1061,11 @@ fn ai_session_row(
                             .text_size(px(11.))
                             .text_color(colors.muted)
                             .child(if archiving {
-                                "处理中…"
+                                tr("app.ai.sessions.processing")
                             } else if archived {
-                                "恢复"
+                                tr("app.ai.sessions.restore")
                             } else {
-                                "归档"
+                                tr("app.ai.sessions.archive")
                             }),
                     )
                     .on_click(cx.listener(move |this, _, window, cx| {
@@ -1049,7 +1087,7 @@ fn ai_session_row(
                         .small()
                         .ghost()
                         .cursor_pointer()
-                        .tooltip("删除会话及其消息/审计/产物")
+                        .tooltip(tr("app.ai.sessions.delete_tooltip"))
                         .debug_selector({
                             let purge_id = purge_id.clone();
                             move || format!("ai-session-purge:{purge_id}")
@@ -1117,15 +1155,14 @@ impl NavicatMain {
             let view = view.clone();
             let id = id.clone();
             dialog
-                .title("删除已归档会话")
+                .title(tr("app.ai.sessions.delete_title"))
                 .close_button(true)
                 .overlay_closable(true)
                 .keyboard(true)
                 .child(
-                    div().text_size(px(13.)).child(format!(
-                        "确认删除「{name}」？将永久删除该会话的消息、任务、审批与审计事实，以及受控目录内的结果与产物快照。此操作不可撤销。",
-                        name = title
-                    )),
+                    div()
+                        .text_size(px(13.))
+                        .child(tr("app.ai.sessions.delete_confirm").replace("%{name}", &title)),
                 )
                 .footer(
                     div()
@@ -1136,7 +1173,7 @@ impl NavicatMain {
                             Button::new("ai-session-purge-cancel")
                                 .debug_selector(|| "ai-session-purge-cancel".into())
                                 .cursor_pointer()
-                                .child("取消")
+                                .child(tr("app.common.cancel"))
                                 .on_click(|_, window, cx| window.close_dialog(cx)),
                         )
                         .child(
@@ -1144,7 +1181,7 @@ impl NavicatMain {
                                 .debug_selector(|| "ai-session-purge-confirm".into())
                                 .danger()
                                 .cursor_pointer()
-                                .child("删除")
+                                .child(tr("app.ai.sessions.delete_action"))
                                 .on_click(|_, window, cx| {
                                     window.dispatch_action(
                                         Box::new(gpui_component::dialog::Confirm {
@@ -1189,7 +1226,7 @@ impl NavicatMain {
                         let result = match event {
                             AppEvent::AiSessionPurged { .. } => Ok(()),
                             AppEvent::AiSettingsError(message) => Err(message),
-                            _ => Err("删除会话失败".into()),
+                            _ => Err(tr("app.ai.sessions.delete_failed").to_string()),
                         };
                         (id, result)
                     }
@@ -1207,7 +1244,11 @@ impl NavicatMain {
                     });
                     match event {
                         AppEvent::AiSessionPurged { .. } => {
-                            this.show_message("会话已删除", AppMessageKind::Success, cx)
+                            this.show_message(
+                                tr("app.ai.sessions.deleted"),
+                                AppMessageKind::Success,
+                                cx,
+                            )
                         }
                         AppEvent::AiSettingsError(message) => {
                             this.show_message(message, AppMessageKind::Error, cx)
@@ -1264,7 +1305,7 @@ impl NavicatMain {
                             AppEvent::AiSessionArchived { .. }
                             | AppEvent::AiSessionRestored { .. } => Ok(()),
                             AppEvent::AiSettingsError(message) => Err(message),
-                            _ => Err("归档会话失败".into()),
+                            _ => Err(tr("app.ai.sessions.archive_failed").to_string()),
                         };
                         (id, revision, result)
                     }
@@ -1286,10 +1327,18 @@ impl NavicatMain {
                         });
                     match event {
                         AppEvent::AiSessionArchived { .. } => {
-                            this.show_message("会话已归档", AppMessageKind::Success, cx)
+                            this.show_message(
+                                tr("app.ai.sessions.archived_message"),
+                                AppMessageKind::Success,
+                                cx,
+                            )
                         }
                         AppEvent::AiSessionRestored { .. } => {
-                            this.show_message("会话已恢复", AppMessageKind::Success, cx)
+                            this.show_message(
+                                tr("app.ai.sessions.restored"),
+                                AppMessageKind::Success,
+                                cx,
+                            )
                         }
                         AppEvent::AiSettingsError(message) => {
                             this.show_message(message, AppMessageKind::Error, cx)

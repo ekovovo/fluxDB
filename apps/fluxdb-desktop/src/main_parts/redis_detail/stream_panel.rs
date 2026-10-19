@@ -61,7 +61,7 @@ fn redis_key_detail_stream_panel(
                 .flex()
                 .items_center()
                 .justify_between()
-                .child(redis_detail_panel_title("Stream Data", colors))
+                .child(redis_detail_panel_title(tr("app.redis.stream.title"), colors))
                 .child(
                     div()
                         .relative()
@@ -110,12 +110,16 @@ fn redis_key_detail_stream_panel(
                 .justify_between()
                 .text_size(px(11.))
                 .text_color(colors.muted)
-                .child(format!("显示 {} / 共 {} 个条目", entries.len(), total))
+                .child(
+                    tr("app.redis.stream.entries_count")
+                        .replace("%{shown}", &entries.len().to_string())
+                        .replace("%{total}", &total.to_string()),
+                )
                 .when(has_more, |footer| {
                     footer.child(if more_loading {
                         loading_spinner_with_color(13., colors.muted).into_any_element()
                     } else {
-                        redis_detail_toolbar_button("加载更多", AppIcon::ChevronDown, true, colors)
+                        redis_detail_toolbar_button(tr("app.redis.load_more"), AppIcon::ChevronDown, true, colors)
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener({
@@ -181,7 +185,7 @@ fn redis_key_detail_stream_panel(
 }
 
 fn redis_stream_add_button(enabled: bool, colors: UiColors) -> Div {
-    redis_set_member_add_button(enabled, colors)
+    redis_set_member_add_button(enabled, colors).debug_selector(|| "redis-stream-add".into())
 }
 
 // Stream「新增 Entry」底部抽屉：与 Set 新增成员抽屉同形，字段行超出后内部滚动
@@ -202,16 +206,24 @@ fn redis_stream_range_controls(
         .flex()
         .items_center()
         .gap_1()
-        .child(redis_stream_add_input_box(since_input, colors).w(px(150.)))
+        .child(
+            redis_stream_add_input_box(since_input, colors)
+                .debug_selector(|| "redis-stream-since".into())
+                .w(px(150.)),
+        )
         .child(
             div()
                 .text_size(px(11.))
                 .text_color(colors.muted)
                 .child("→"),
         )
-        .child(redis_stream_add_input_box(until_input, colors).w(px(150.)))
         .child(
-            redis_detail_toolbar_button("应用", AppIcon::Search, true, colors).on_mouse_down(
+            redis_stream_add_input_box(until_input, colors)
+                .debug_selector(|| "redis-stream-until".into())
+                .w(px(150.)),
+        )
+        .child(
+            redis_detail_toolbar_button(tr("app.redis.stream.apply_range"), AppIcon::Search, true, colors).debug_selector(|| "redis-stream-range-apply".into()).on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this: &mut NavicatMain, _, _, cx| {
                     this.apply_redis_stream_range(tab_id, apply_key.clone(), cx);
@@ -220,7 +232,7 @@ fn redis_stream_range_controls(
             ),
         )
         .child(
-            redis_detail_toolbar_button("清除", AppIcon::Close, true, colors).on_mouse_down(
+            redis_detail_toolbar_button(tr("app.redis.stream.clear_range"), AppIcon::Close, true, colors).on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this: &mut NavicatMain, _, window, cx| {
                     this.clear_redis_stream_range(tab_id, clear_key.clone(), window, cx);
@@ -266,9 +278,9 @@ fn redis_stream_groups_section(
                 .text_size(px(11.))
                 .text_color(colors.muted)
                 .child(if expanded {
-                    format!("▾ 消费者组（{}）", groups.len())
+                    tr("app.redis.stream.groups_expanded").replace("%{count}", &groups.len().to_string())
                 } else {
-                    "▸ 消费者组".to_string()
+                    tr("app.redis.stream.groups_collapsed").to_string()
                 })
                 .when(loading, |this| {
                     this.child(loading_spinner_with_color(13., colors.muted))
@@ -291,7 +303,7 @@ fn redis_stream_groups_section(
                 .pb_2()
                 .text_size(px(11.))
                 .text_color(colors.muted)
-                .child("该 Stream 没有消费者组"),
+                .child(tr("app.redis.stream.no_groups")),
         );
     }
     for group in groups {
@@ -305,10 +317,11 @@ fn redis_stream_groups_section(
                 div()
                     .text_size(px(12.))
                     .text_color(colors.text)
-                    .child(format!(
-                        "{}　消费者 {}　未确认 {}　最后投递 {}",
-                        group.name, group.consumers, group.pending, group.last_delivered_id
-                    )),
+                    .child(tr("app.redis.stream.group_summary")
+                        .replace("%{name}", &group.name)
+                        .replace("%{consumers}", &group.consumers.to_string())
+                        .replace("%{pending}", &group.pending.to_string())
+                        .replace("%{last_id}", &group.last_delivered_id)),
             );
         for (name, pending, idle_ms) in group.consumer_detail {
             rows = rows.child(
@@ -317,10 +330,10 @@ fn redis_stream_groups_section(
                     .text_size(px(11.))
                     .text_color(colors.muted)
                     .font_family(crate::PLATFORM_MONOSPACE_FONT)
-                    .child(format!(
-                        "{name}　未确认 {pending}　空闲 {}s",
-                        idle_ms / 1000
-                    )),
+                    .child(tr("app.redis.stream.consumer_summary")
+                        .replace("%{name}", &name)
+                        .replace("%{pending}", &pending.to_string())
+                        .replace("%{seconds}", &(idle_ms / 1000).to_string())),
             );
         }
         section = section.child(rows);
@@ -355,7 +368,7 @@ fn redis_stream_entry_add_drawer(
     let validation_error = id_error.clone().or(fields_error.clone());
     let save_enabled = !applying && validation_error.is_none();
     // 抽屉最大高度：视口高度减去顶部留白，超出部分交给字段区滚动
-    let max_height = (f32::from(window.viewport_size().height) - 120.).min(480.);
+    let max_height = (f32::from(window.viewport_size().height) - 120.).clamp(0., 480.);
 
     div()
         .absolute()
@@ -376,7 +389,8 @@ fn redis_stream_entry_add_drawer(
         .child(
             div()
                 .w_full()
-                .max_h(px(max_height))
+                // flex 滚动区需要确定高度；仅 max_h 会让字段区被固定 footer 挤压。
+                .h(px(max_height))
                 .overflow_hidden()
                 .rounded_t(colors.radius_lg)
                 .border_t_1()
@@ -414,7 +428,7 @@ fn redis_stream_entry_add_drawer(
                             div()
                                 .text_size(px(17.))
                                 .font_weight(gpui::FontWeight::SEMIBOLD)
-                                .child("新增 Entry"),
+                                .child(tr("app.redis.stream.add_entry")),
                         ),
                 )
                 .child(
@@ -440,7 +454,7 @@ fn redis_stream_entry_add_drawer(
                                         .gap_1()
                                         .child(
                                             redis_stream_add_input(
-                                                "Entry ID",
+                                                tr("app.redis.stream.entry_id"),
                                                 id_input.clone(),
                                                 colors,
                                             )
@@ -456,7 +470,7 @@ fn redis_stream_entry_add_drawer(
                                                 })
                                                 .child(match id_error {
                                                     Some(error) => error,
-                                                    None => "时间戳-序列号 或 *".to_string(),
+                                                    None => tr("app.redis.stream.id_hint").to_string(),
                                                 }),
                                         ),
                                 )
@@ -479,7 +493,7 @@ fn redis_stream_entry_add_drawer(
                                                 .text_size(px(11.))
                                                 .text_color(colors.muted)
                                                 .child(
-                                                    "留空不裁剪；填数字则追加后按 MAXLEN ~ n 近似裁剪",
+                                                    tr("app.redis.stream.maxlen_hint"),
                                                 ),
                                         ),
                                 ),
@@ -536,8 +550,7 @@ fn redis_stream_entry_add_drawer(
                                 )
                                 .child(
                                     div().absolute().inset_0().child(
-                                        Scrollbar::vertical(scroll)
-                                            ,
+                                        Scrollbar::vertical(scroll),
                                     ),
                                 ),
                         ),
@@ -554,7 +567,7 @@ fn redis_stream_entry_add_drawer(
                         .justify_end()
                         .gap_2()
                         .child(
-                            redis_detail_action_button("取消", false, !applying, colors).on_mouse_down(
+                            redis_detail_action_button(tr("app.redis.cancel"), false, !applying, colors).debug_selector(|| "redis-stream-cancel".into()).on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(|this, _, _, cx| {
                                     this.pending_redis_stream_entry_add = None;
@@ -564,7 +577,7 @@ fn redis_stream_entry_add_drawer(
                             ),
                         )
                         .child(
-                            redis_detail_action_button("保存", true, save_enabled, colors).on_mouse_down(
+                            redis_detail_action_button(tr("app.redis.save"), true, save_enabled, colors).debug_selector(|| "redis-stream-save".into()).on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(move |this, _, _, cx| {
                                     if save_enabled {
@@ -597,9 +610,9 @@ fn redis_stream_entry_field_row(
         .items_center()
         .gap_2()
         // 标签与输入框同行：Field [输入框] Value [输入框] 🗑
-        .child(redis_stream_add_input_label("Field", colors))
-        .child(redis_stream_add_input_box(field_input, colors).w(px(200.)).flex_none())
-        .child(redis_stream_add_input_label("Value", colors))
+        .child(redis_stream_add_input_label(tr("app.redis.stream.field"), colors))
+        .child(redis_stream_add_input_box(field_input, colors).debug_selector(move || format!("redis-stream-field:{row_index}")).w(px(200.)).flex_none())
+        .child(redis_stream_add_input_label(tr("app.redis.stream.value"), colors))
         .child(
             redis_stream_add_input_box(value_input, colors)
                 .flex_1()
@@ -655,7 +668,12 @@ fn redis_stream_entry_fields_panel(
 
 // 带标签的输入项（Entry ID 用），标签在输入框上方
 
-fn redis_stream_add_input(label: &'static str, input: Entity<InputState>, colors: UiColors) -> Div {
+fn redis_stream_add_input(
+    label: impl Into<SharedString>,
+    input: Entity<InputState>,
+    colors: UiColors,
+) -> Div {
+    let label: SharedString = label.into();
     div()
         .w_full()
         .flex()
@@ -666,14 +684,18 @@ fn redis_stream_add_input(label: &'static str, input: Entity<InputState>, colors
                 .text_size(px(11.))
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .text_color(colors.muted)
-                .child(label),
+                .child(label.clone()),
         )
-        .child(redis_stream_add_input_box(input, colors))
+        .child(
+            redis_stream_add_input_box(input, colors)
+                .debug_selector(move || format!("redis-stream-input:{label}")),
+        )
 }
 
 // 行内标签：与输入框同一行，宽度固定保证多行左对齐
 
-fn redis_stream_add_input_label(label: &'static str, colors: UiColors) -> Div {
+fn redis_stream_add_input_label(label: impl Into<SharedString>, colors: UiColors) -> Div {
+    let label: SharedString = label.into();
     div()
         .flex_none()
         .text_size(px(11.))
@@ -728,16 +750,14 @@ fn redis_stream_entry_apply_task_id(tab_id: TabId) -> u64 {
 /// 把 Hash 字段 TTL 输入框的内容翻译成写入语义。
 /// `changed` 为 false 表示用户没动这一格，必须保留原 TTL，否则 HSET 会把它清掉。
 /// 解析 MAXLEN 输入：留空 → None（不裁剪），否则必须是大于 0 的整数。
-fn redis_stream_maxlen_from_input(
-    input: &str,
-) -> std::result::Result<Option<u64>, &'static str> {
+fn redis_stream_maxlen_from_input(input: &str) -> std::result::Result<Option<u64>, String> {
     let input = input.trim();
     if input.is_empty() {
         return Ok(None);
     }
     match input.parse::<u64>() {
         Ok(maxlen) if maxlen > 0 => Ok(Some(maxlen)),
-        _ => Err("Stream MAXLEN 必须是大于 0 的整数，留空表示不裁剪"),
+        _ => Err(tr("app.redis.stream.error.maxlen").to_string()),
     }
 }
 
@@ -752,7 +772,7 @@ fn redis_stream_time_to_input(millis: u64) -> String {
 
 /// 解析时间范围输入框：留空 → None；否则按本地时间 `YYYY-MM-DD HH:MM:SS` 解析成毫秒时间戳。
 /// 也接受只写日期（按当天 00:00:00 处理）。
-fn redis_stream_time_from_input(input: &str) -> std::result::Result<Option<u64>, &'static str> {
+fn redis_stream_time_from_input(input: &str) -> std::result::Result<Option<u64>, String> {
     use chrono::{Local, NaiveDate, NaiveDateTime, TimeZone};
     let input = input.trim();
     if input.is_empty() {
@@ -764,21 +784,21 @@ fn redis_stream_time_from_input(input: &str) -> std::result::Result<Option<u64>,
             NaiveDate::parse_from_str(input, "%Y-%m-%d")
                 .map(|date| date.and_hms_opt(0, 0, 0).unwrap_or_default())
         })
-        .map_err(|_| "时间格式应为 YYYY-MM-DD HH:MM:SS")?;
+        .map_err(|_| tr("app.redis.stream.error.time_format").to_string())?;
     let millis = Local
         .from_local_datetime(&naive)
         .single()
-        .ok_or("该时间在本地时区不存在或有歧义")?
+        .ok_or_else(|| tr("app.redis.stream.error.time_ambiguous").to_string())?
         .timestamp_millis();
     u64::try_from(millis)
         .map(Some)
-        .map_err(|_| "时间超出可表示范围")
+        .map_err(|_| tr("app.redis.stream.error.time_range").to_string())
 }
 
 fn redis_stream_entry_field_pair(field: String, value: String) -> Result<(String, String), String> {
     let field = field.trim().to_string();
     if field.is_empty() {
-        return Err("字段名不能为空".to_string());
+        return Err(tr("app.redis.stream.error.field_required").to_string());
     }
     Ok((field, value))
 }
@@ -786,31 +806,31 @@ fn redis_stream_entry_field_pair(field: String, value: String) -> Result<(String
 fn redis_stream_entry_id_validation_error(id: &str) -> Option<String> {
     let id = id.trim();
     if id.is_empty() {
-        return Some("Entry ID 不能为空".to_string());
+        return Some(tr("app.redis.stream.error.id_required").to_string());
     }
     if id == "*" {
         return None;
     }
     let Some((timestamp, sequence)) = id.split_once('-') else {
-        return Some("Entry ID 必须是 timestamp-sequence 或 *".to_string());
+        return Some(tr("app.redis.stream.error.id_format").to_string());
     };
     if timestamp.is_empty()
         || sequence.is_empty()
         || timestamp.parse::<u64>().is_err()
         || sequence.parse::<u64>().is_err()
     {
-        return Some("Entry ID 必须是 timestamp-sequence 或 *".to_string());
+        return Some(tr("app.redis.stream.error.id_format").to_string());
     }
     None
 }
 
 fn redis_stream_entry_fields_validation_error(fields: &[(String, String)]) -> Option<String> {
     if fields.is_empty() {
-        return Some("至少添加一组 Field/Value".to_string());
+        return Some(tr("app.redis.stream.error.fields_required").to_string());
     }
     for (field, value) in fields {
         if redis_stream_entry_field_pair(field.clone(), value.clone()).is_err() {
-            return Some("字段名不能为空".to_string());
+            return Some(tr("app.redis.stream.error.field_required").to_string());
         }
     }
     None
@@ -820,7 +840,7 @@ fn redis_stream_entry_field_pairs_from_snapshot(
     fields: &[(String, String)],
 ) -> Result<Vec<(String, String)>, String> {
     if fields.is_empty() {
-        return Err("至少添加一组 Field/Value".to_string());
+        return Err(tr("app.redis.stream.error.fields_required").to_string());
     }
     fields
         .iter()

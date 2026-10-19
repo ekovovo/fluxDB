@@ -12,17 +12,21 @@ fn settings_appearance_panel(
         .flex_col()
         .gap_3()
         .child(
-            settings_panel_group("主题", colors)
+            settings_panel_group(tr("app.settings.appearance.group.language"), colors)
+                .child(settings_language_row(&settings.locale, colors, cx)),
+        )
+        .child(
+            settings_panel_group(tr("app.settings.appearance.group.theme"), colors)
                 .child(settings_theme_mode_row(theme_mode, colors, cx))
                 .child(settings_theme_palette(settings, theme_mode, colors, cx)),
         )
         .child(
-            settings_panel_group("形状与层次", colors)
+            settings_panel_group(tr("app.settings.appearance.group.shape"), colors)
                 .child(settings_radius_row(settings, radius_input, colors, window, cx))
                 .child(
                     settings_checkbox_row(
-                        "显示阴影",
-                        "控制按钮、输入框、弹层和通知等组件的阴影",
+                        tr("app.settings.appearance.show_shadows"),
+                        tr("app.settings.appearance.show_shadows_detail"),
                         AppIcon::Square,
                         "settings-show-shadows",
                         settings.show_shadows,
@@ -39,13 +43,18 @@ fn settings_appearance_panel(
                 ),
         )
         .child(
-            settings_panel_group("布局", colors)
-                .child(settings_choice_row(
-                    "界面密度",
-                    "调整组件文字和相对间距的紧凑程度",
+            settings_panel_group(tr("app.settings.appearance.group.layout"), colors)
+                .child(settings_choice_row_with_id(
+                    "settings-density",
+                    tr("app.settings.appearance.ui_density"),
+                    tr("app.settings.appearance.ui_density_detail"),
                     AppIcon::PanelBottom,
                     density_value(settings.ui_density),
-                    &[("Compact", 0), ("Standard", 1), ("Comfortable", 2)],
+                    &[
+                        ("Compact".into(), 0),
+                        ("Standard".into(), 1),
+                        ("Comfortable".into(), 2),
+                    ],
                     |settings, value| {
                         settings.ui_density = match value {
                             0 => UiDensity::Compact,
@@ -59,8 +68,8 @@ fn settings_appearance_panel(
                 ))
                 .child(
                     settings_checkbox_row(
-                        "显示状态栏",
-                        "控制窗口底部状态栏是否显示",
+                        tr("app.settings.appearance.show_status_bar"),
+                        tr("app.settings.appearance.show_status_bar_detail"),
                         AppIcon::PanelBottom,
                         "settings-show-status-bar",
                         settings.show_status_bar,
@@ -78,11 +87,11 @@ fn settings_appearance_panel(
                 .child(settings_scrollbar_mode_row(settings.scrollbar_mode, colors, cx)),
         )
         .child(
-            settings_panel_group("无障碍", colors)
+            settings_panel_group(tr("app.settings.appearance.group.accessibility"), colors)
                 .child(
                     settings_checkbox_row(
-                        "显示焦点环",
-                        "为键盘操作中的控件显示清晰的焦点提示",
+                        tr("app.settings.appearance.focus_ring"),
+                        tr("app.settings.appearance.focus_ring_detail"),
                         AppIcon::CircleSlash,
                         "settings-focus-ring",
                         settings.focus_ring,
@@ -99,8 +108,8 @@ fn settings_appearance_panel(
                 )
                 .child(
                     settings_checkbox_row(
-                        "减少动效",
-                        "关闭组件过渡动画，减少视觉刺激",
+                        tr("app.settings.appearance.reduce_motion"),
+                        tr("app.settings.appearance.reduce_motion_detail"),
                         AppIcon::Minus,
                         "settings-reduce-motion",
                         settings.reduce_motion,
@@ -117,7 +126,7 @@ fn settings_appearance_panel(
                 ),
         )
         .child(
-            settings_panel_group("全局字体", colors)
+            settings_panel_group(tr("app.settings.appearance.group.font"), colors)
                 .child(settings_font_family_row(
                     &settings.global_font_family,
                     colors,
@@ -143,7 +152,7 @@ fn settings_appearance_header_actions(
         .gap_2()
         .child(
             Button::new("settings-appearance-reset")
-                .label("恢复默认设置")
+                .label(tr("app.settings.reset_defaults"))
                 .small()
                 .rounded(ComponentTheme::global(cx).radius)
                 .on_click(cx.listener(|this, _, _, cx| {
@@ -152,11 +161,12 @@ fn settings_appearance_header_actions(
         )
         .child(
             Button::new("settings-appearance-save")
-                .label("保存")
+                .label(tr("app.common.save"))
                 .small()
                 .rounded(ComponentTheme::global(cx).radius)
                 .primary()
                 .disabled(!dirty)
+                .debug_selector(|| "settings-appearance-save".to_string())
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.confirm_appearance_settings_saved(cx);
                 })),
@@ -176,7 +186,7 @@ fn settings_section_header_actions(
         .gap_2()
         .child(
             Button::new(SharedString::from(format!("settings-{section:?}-reset")))
-                .label("恢复默认设置")
+                .label(tr("app.settings.reset_defaults"))
                 .small()
                 .rounded(ComponentTheme::global(cx).radius)
                 .on_click(cx.listener(move |this, _, _, cx| {
@@ -185,7 +195,7 @@ fn settings_section_header_actions(
         )
         .child(
             Button::new(SharedString::from(format!("settings-{section:?}-save")))
-                .label("保存")
+                .label(tr("app.common.save"))
                 .small()
                 .rounded(ComponentTheme::global(cx).radius)
                 .primary()
@@ -203,14 +213,14 @@ fn settings_section_header_actions_disabled(colors: UiColors) -> Div {
         .gap_2()
         .child(
             Button::new("settings-disabled-reset")
-                .label("恢复默认设置")
+                .label(tr("app.settings.appearance.restore_defaults"))
                 .small()
                 .rounded(colors.radius)
                 .disabled(true),
         )
         .child(
             Button::new("settings-disabled-save")
-                .label("保存")
+                .label(tr("app.common.save"))
                 .small()
                 .rounded(colors.radius)
                 .primary()
@@ -223,9 +233,10 @@ fn settings_theme_mode_row(
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Stateful<Div> {
-    settings_action_row(
-        "主题模式",
-        "控制当前应用使用浅色或深色外观",
+    settings_action_row_with_id(
+        "settings-theme-mode",
+        tr("app.settings.appearance.theme_mode"),
+        tr("app.settings.appearance.theme_mode_detail"),
         AppIcon::Settings,
         colors,
     )
@@ -239,14 +250,14 @@ fn settings_theme_mode_row(
             .rounded(colors.radius)
             .bg(colors.panel_alt)
             .child(settings_theme_mode_button(
-                "浅色",
+                tr("app.common.light"),
                 theme_mode == ThemeMode::Light,
                 ThemeMode::Light,
                 colors,
                 cx,
             ))
             .child(settings_theme_mode_button(
-                "深色",
+                tr("app.common.dark"),
                 theme_mode == ThemeMode::Dark,
                 ThemeMode::Dark,
                 colors,
@@ -254,12 +265,103 @@ fn settings_theme_mode_row(
             ))
             .child(
                 Button::new("settings-theme-system")
-                    .label("系统")
+                    .label(tr("app.common.system"))
                     .small()
                     .rounded(colors.radius)
                     .disabled(true),
             ),
     )
+}
+
+/// 语言列表完全来自已加载语言包；这里不维护语言枚举或固定 branch。
+fn settings_language_row(
+    current: &str,
+    colors: UiColors,
+    cx: &mut Context<NavicatMain>,
+) -> Stateful<Div> {
+    let follow_system = current.is_empty();
+    let active_locale = fluxdb_i18n::effective_locale(current);
+    let current_label = if follow_system {
+        tr("app.settings.appearance.follow_system")
+    } else {
+        fluxdb_i18n::locales()
+            .into_iter()
+            .find(|locale| locale.locale.eq_ignore_ascii_case(&active_locale))
+            .map(|locale| SharedString::from(locale.native_name))
+            .unwrap_or_else(|| SharedString::from(active_locale.clone()))
+    };
+    let owner = cx.entity().downgrade();
+    let dropdown = Button::new("settings-language-dropdown")
+        .debug_selector(|| "settings-language-dropdown".into())
+        .small()
+        .cursor_pointer()
+        .min_w(px(170.))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap_3()
+                .child(current_label)
+                .child(app_icon(AppIcon::ChevronDown, 12., colors.muted)),
+        )
+        .dropdown_menu_with_anchor(gpui::Anchor::TopRight, move |menu, _, _| {
+            let mut menu = menu
+                .check_side(gpui_component::Side::Right)
+                .min_w(px(210.));
+            let system_owner = owner.clone();
+            menu = menu.item(
+                PopupMenuItem::element(move |_, _| {
+                    div()
+                        .id("settings-language-option:system")
+                        .debug_selector(|| "settings-language-option:system".into())
+                        .child(tr("app.settings.appearance.follow_system"))
+                })
+                .checked(follow_system)
+                .on_click(move |_, window, cx| {
+                    let _ = system_owner.update(cx, |this, cx| {
+                        this.settings_editor_draft.locale.clear();
+                        this.preview_locale(window, cx);
+                    });
+                }),
+            );
+            for locale in fluxdb_i18n::locales() {
+                let option_owner = owner.clone();
+                let selected = !follow_system
+                    && active_locale.eq_ignore_ascii_case(&locale.locale);
+                let option_locale = locale.locale.clone();
+                let option_id = format!("settings-language-option:{}", option_locale);
+                let debug_id = option_id.clone();
+                let label = SharedString::from(locale.native_name);
+                menu = menu.item(
+                    PopupMenuItem::element(move |_, _| {
+                        div()
+                            .id(option_id.clone())
+                            .debug_selector({
+                                let id = debug_id.clone();
+                                move || id.clone()
+                            })
+                            .child(label.clone())
+                    })
+                    .checked(selected)
+                    .on_click(move |_, window, cx| {
+                        let _ = option_owner.update(cx, |this, cx| {
+                            this.settings_editor_draft.locale = option_locale.clone();
+                            this.preview_locale(window, cx);
+                        });
+                    }),
+                );
+            }
+            menu
+        });
+    settings_action_row_with_id(
+        "settings-language",
+        tr("app.settings.appearance.language"),
+        tr("app.settings.appearance.language_detail"),
+        AppIcon::Text,
+        colors,
+    )
+    .child(dropdown)
 }
 
 fn settings_theme_palette(
@@ -333,9 +435,10 @@ fn settings_radius_row(
     window: &mut Window,
     cx: &mut Context<NavicatMain>,
 ) -> Stateful<Div> {
-    settings_action_row(
-        "圆角风格",
-        "统一调整按钮、输入框、弹层和通知的圆角",
+    settings_action_row_with_id(
+        "settings-radius",
+        tr("app.settings.appearance.radius"),
+        tr("app.settings.appearance.radius_detail"),
         AppIcon::Square,
         colors,
     )
@@ -353,7 +456,7 @@ fn settings_radius_row(
                 ]
                     .into_iter()
                     .map(|(label, (radius, large_radius))| {
-                        Button::new(("settings-radius", settings_status_id("圆角风格", label)))
+                        Button::new(("settings-radius", settings_status_id("settings-radius", label)))
                             .label(label)
                             .small()
                             .rounded(colors.radius)
@@ -426,9 +529,10 @@ fn settings_scrollbar_mode_row(
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Stateful<Div> {
-    settings_action_row(
-        "滚动条显示",
-        "控制可滚动区域显示滚动条的时机",
+    settings_action_row_with_id(
+        "settings-scrollbar",
+        tr("app.settings.appearance.scrollbar"),
+        tr("app.settings.appearance.scrollbar_detail"),
         AppIcon::List,
         colors,
     )
@@ -441,7 +545,7 @@ fn settings_scrollbar_mode_row(
             ]
             .into_iter()
             .map(|(label, mode)| {
-                Button::new(("settings-scrollbar", settings_status_id("滚动条显示", label)))
+                Button::new(("settings-scrollbar", settings_status_id("settings-scrollbar", label)))
                     .label(label)
                     .small()
                     .rounded(colors.radius)
@@ -460,9 +564,10 @@ fn settings_font_family_row(
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Stateful<Div> {
-    settings_action_row(
-        "全局字体",
-        "应用界面文字字体，不影响 SQL 编辑器等宽字体",
+    settings_action_row_with_id(
+        "settings-font",
+        tr("app.settings.appearance.global_font"),
+        tr("app.settings.appearance.global_font_detail"),
         AppIcon::Text,
         colors,
     )
@@ -471,7 +576,7 @@ fn settings_font_family_row(
             [("System", ""), ("Inter", "Inter"), ("SF Pro", "SF Pro")]
                 .into_iter()
                 .map(|(label, family)| {
-                    Button::new(("settings-font", settings_status_id("全局字体", label)))
+                    Button::new(("settings-font", settings_status_id("settings-font", label)))
                         .label(label)
                         .small()
                         .rounded(colors.radius)
@@ -486,13 +591,16 @@ fn settings_font_family_row(
 }
 
 fn settings_theme_mode_button(
-    label: &'static str,
+    label: impl Into<SharedString>,
     active: bool,
     mode: ThemeMode,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Button {
-    Button::new(SharedString::from(format!("settings-theme-mode-{label}")))
+    let label = label.into();
+    Button::new(SharedString::from(format!(
+        "settings-theme-mode-{mode:?}"
+    )))
         .label(label)
         .small()
         .rounded(colors.radius)
@@ -501,9 +609,9 @@ fn settings_theme_mode_button(
             this.set_theme_mode(mode, cx);
             this.show_message(
                 if mode == ThemeMode::Dark {
-                    "已预览深色主题，点击保存后保留"
+                    tr("app.settings.appearance.dark_preview")
                 } else {
-                    "已预览浅色主题，点击保存后保留"
+                    tr("app.settings.appearance.light_preview")
                 },
                 AppMessageKind::Success,
                 cx,
@@ -512,7 +620,7 @@ fn settings_theme_mode_button(
 }
 
 fn settings_appearance_preview(colors: UiColors, accent: gpui::Rgba) -> GroupBox {
-    settings_panel_group("预览", colors).child(
+    settings_panel_group(tr("app.settings.appearance.group.preview"), colors).child(
         div()
             .border_t_1()
             .border_color(colors.border_soft)
@@ -536,7 +644,7 @@ fn settings_appearance_preview(colors: UiColors, accent: gpui::Rgba) -> GroupBox
                             .text_size(px(12.))
                             .font_weight(gpui::FontWeight::SEMIBOLD)
                             .text_color(colors.muted)
-                            .child("连接"),
+                            .child(tr("app.settings.appearance.preview_connections")),
                     )
                     .child(settings_preview_tree_item("Local MySQL", true, accent, colors))
                     .child(settings_preview_tree_item("orders", false, accent, colors))
@@ -582,7 +690,7 @@ fn settings_appearance_preview(colors: UiColors, accent: gpui::Rgba) -> GroupBox
                                     .text_size(px(11.))
                                     .font_weight(gpui::FontWeight::SEMIBOLD)
                                     .text_color(rgb(0xffffff))
-                                    .child("筛选"),
+                                    .child(tr("app.settings.appearance.preview_filter")),
                             ),
                     )
                     .child(settings_preview_table(colors)),

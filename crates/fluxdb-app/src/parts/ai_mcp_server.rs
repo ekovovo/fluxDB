@@ -302,7 +302,7 @@ pub fn visible_tools(
             }
         }
         // 关系/路径只读工具：与内部会话共用实现与 schema。`er.propose_relationships`
-        // 不在此列——写本地 ER 目录不属于对外数据源的授权范围，MCP 目录里也没有它的实现。
+        // 不在此列——本地 ER 审阅流程不属于对外数据源的授权范围，MCP 目录里也没有它的实现。
         // 未接入关系目录时不列出：列出却调不动，会被当成「没有关系」而不是「工具不可用」。
         if relationships_available {
             for spec in crate::er_relationship_tool_specs()? {

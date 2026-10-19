@@ -29,8 +29,8 @@ const AI_AGENT_TOOL_CATALOG: &[(&str, &str, &str, bool)] = &[
     (
         "er.propose_relationships",
         "关系",
-        "提交本地逻辑关系建议；强制待确认，不执行数据库 DDL",
-        true,
+        "生成可逐条审阅的关系候选；采纳需用户确认，不执行数据库 DDL",
+        false,
     ),
     ("db.query", "SQL", "单条有界只读查询，驱动绑定参数", false),
     ("db.explain", "SQL", "不执行式查询计划", false),

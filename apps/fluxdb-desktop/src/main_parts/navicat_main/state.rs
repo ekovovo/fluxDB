@@ -72,6 +72,10 @@ struct NavicatMain {
     ai_diagnostics_modal: Rc<std::cell::RefCell<AiDiagnosticsModalData>>,
     /// 诊断读取任务；保持到完成，避免后台任务被提前丢弃。
     _ai_diagnostics_task: Option<Task<()>>,
+    /// AI 关系建议逐条审阅弹框。
+    er_proposal_modal: Rc<std::cell::RefCell<ErProposalModalData>>,
+    /// 关系建议采纳任务；保持到完成，避免后台任务被提前丢弃。
+    _er_proposal_task: Option<Task<()>>,
     /// 会话重命名弹框的输入与待保存对象。
     ai_session_rename_input: Entity<InputState>,
     _ai_session_rename_subscription: Subscription,

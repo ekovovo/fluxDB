@@ -986,6 +986,161 @@ impl AppController {
                     Err(error) => AppEvent::Failed(error),
                 }
             }
+            AppCommand::AdoptErRelationshipProposals {
+                scope_key,
+                connection_id,
+                database,
+                schema,
+                proposals,
+                message_part_id,
+                batch_id,
+            } => {
+                let result = (|| {
+                    let expected_scope = fluxdb_core::er_relationship_scope_key(
+                        connection_id,
+                        &database,
+                        schema.as_deref(),
+                    );
+                    if expected_scope != scope_key {
+                        return Err(UserFacingError {
+                            title: "关系建议采纳失败".into(),
+                            message: "建议作用域与当前数据库不一致".into(),
+                            detail: None,
+                            retryable: false,
+                        });
+                    }
+                    let config = self
+                        .state
+                        .connections
+                        .iter()
+                        .find(|connection| connection.config.id == connection_id)
+                        .map(|connection| connection.config.clone())
+                        .ok_or_else(|| UserFacingError {
+                            title: "关系建议采纳失败".into(),
+                            message: "连接已不存在，无法核实建议作用域".into(),
+                            detail: None,
+                            retryable: false,
+                        })?;
+                    let source = self.er_relationship_source().ok_or_else(|| {
+                        UserFacingError {
+                            title: "关系建议采纳失败".into(),
+                            message: "ER 存储尚未初始化".into(),
+                            detail: None,
+                            retryable: true,
+                        }
+                    })?;
+                    er_validate_proposals_for_adoption(
+                        &config,
+                        &scope_key,
+                        source.as_ref(),
+                        &proposals,
+                    )
+                    .map_err(|error| UserFacingError {
+                        title: "关系建议采纳失败".into(),
+                        message: error.message,
+                        detail: Some(error.code.into()),
+                        retryable: false,
+                    })?;
+                    let service = self
+                        .er_model_service(scope_key.clone())
+                        .ok_or_else(|| UserFacingError {
+                            title: "关系建议采纳失败".into(),
+                            message: "ER 存储尚未初始化".into(),
+                            detail: None,
+                            retryable: true,
+                        })?;
+                    let adopted = service
+                        .create_confirmed_batch(proposals.clone(), "user")
+                        .map_err(|error| UserFacingError {
+                            title: "关系建议采纳失败".into(),
+                            message: error.to_string(),
+                            detail: None,
+                            retryable: false,
+                        })?;
+                    // 批次卡是用户唯一能看到“还剩下什么”的地方；采纳后同步更新，
+                    // 避免再次打开仍把已写入项当作待审阅。
+                    if let Ok(storage) = self.ai_storage() {
+                        let adopted_ids = proposals
+                            .iter()
+                            .map(|relationship| relationship.id.clone())
+                            .collect::<BTreeSet<_>>();
+                        let now = ai_chat_now();
+                        let _ = with_ai_storage(&storage, |conn| {
+                            let part = fluxdb_storage::ai_platform::sessions::load_part(
+                                conn,
+                                &message_part_id,
+                            )?;
+                            let mut payload: serde_json::Value =
+                                serde_json::from_str(&part.payload_json).map_err(|_| {
+                                    Error::new(
+                                        ErrorKind::Internal,
+                                        "关系建议卡片内容损坏，无法记录采纳结果",
+                                    )
+                                })?;
+                            if payload
+                                .get("batch_id")
+                                .and_then(serde_json::Value::as_str)
+                                != Some(batch_id.as_str())
+                            {
+                                return Err(Error::new(
+                                    ErrorKind::Internal,
+                                    "关系建议批次已变化，未更新卡片状态",
+                                ));
+                            }
+                            let mut ready = 0usize;
+                            if let Some(items) =
+                                payload.get_mut("items").and_then(serde_json::Value::as_array_mut)
+                            {
+                                for item in items {
+                                    let item_id = item
+                                        .get("item_id")
+                                        .and_then(serde_json::Value::as_str)
+                                        .map(str::to_string);
+                                    if item_id
+                                        .as_ref()
+                                        .is_some_and(|id| adopted_ids.contains(id))
+                                    {
+                                        item["status"] = serde_json::json!("adopted");
+                                        item["relationship"] = serde_json::Value::Null;
+                                    }
+                                    if item.get("status").and_then(serde_json::Value::as_str)
+                                        == Some("ready")
+                                    {
+                                        ready += 1;
+                                    }
+                                }
+                            }
+                            payload["counts"]["ready"] = serde_json::json!(ready);
+                            let previously_adopted = payload
+                                .get("review")
+                                .and_then(|review| review.get("adopted"))
+                                .and_then(serde_json::Value::as_u64)
+                                .unwrap_or(0) as usize;
+                            payload["review"] = serde_json::json!({
+                                "status": if ready == 0 { "complete" } else { "partial" },
+                                "adopted": previously_adopted + adopted.len(),
+                            });
+                            fluxdb_storage::ai_platform::sessions::update_part(
+                                conn,
+                                now,
+                                &message_part_id,
+                                fluxdb_storage::ai_platform::sessions::PartStatus::Complete,
+                                &payload.to_string(),
+                                part.revision,
+                            )?;
+                            Ok(())
+                        });
+                    }
+                    Ok(AppEvent::ErRelationshipProposalsAdopted {
+                        scope_key,
+                        relationships: adopted,
+                    })
+                })();
+                match result {
+                    Ok(event) => event,
+                    Err(error) => AppEvent::Failed(error),
+                }
+            }
             AppCommand::DeleteErRelationship {
                 scope_key,
                 id,

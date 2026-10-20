@@ -6,7 +6,7 @@
 //
 // 硬规则（每条都有对应测试）：
 // 1. **单条语句**：`split_statements=false`、`continue_on_error=false`，多语句由策略层拒绝；
-// 2. **只读入口只放只读**：`db.query`/`db.explain` 只执行分类为 `ReadOnly` 的语句，
+// 2. **只读入口只放只读**：内部查询执行器只执行分类为 `ReadOnly` 的语句，
 //    其余一律拒绝并给出可见原因，不"降级执行"；
 // 3. **结果有界**：`max_rows` 行 + 字节上限，超限只标记 `truncated`，不静默丢；
 // 4. **可取消**：在连接器检查点轮询 `ToolExecutionContext.cancel`，取消返回真实状态；
@@ -305,7 +305,7 @@ struct ParsedSqlArgs {
     target: AiSqlTarget,
     sql: String,
     max_rows: u64,
-    /// `db.explain` 的模式（`plan` 默认；`execute` 当前不开放）。
+    /// EXPLAIN 的模式（`plan` 默认；`execute` 当前不开放）。
     mode: Option<String>,
     /// 精确 tagged 参数（驱动真实 bind；不支持绑定的连接器会明确拒绝）。
     parameters: Vec<fluxdb_core::SqlParameter>,

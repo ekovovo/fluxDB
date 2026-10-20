@@ -144,8 +144,24 @@ impl AiRuntimeHandle {
                         )?;
                     }
                     tools.without_tools(&security.disabled_tools);
+                    mark_builtin_long_tail_tools(&mut tools)?;
                     // 审批模型与本轮 Agent 用的是同一个模型：Jev 决策不可用时由它回退审批。
                     tools=tools.with_execution_security(ExecutionSecurity::with_connections(storage.clone(),connections.clone(),job.model_profile_id.clone()));
+                    let read_only = tools
+                        .security
+                        .as_ref()
+                        .is_some_and(|security| {
+                            security
+                                .settings()
+                                .map(|(policy, _)| policy.tools_default == ExecutionPolicy::ReadOnly)
+                                .unwrap_or(true)
+                        });
+                    install_ai_toolbox(
+                        &mut tools,
+                        &security.disabled_tools,
+                        &security.agent_allowed_tools,
+                        read_only,
+                    )?;
                     let permission = TurnPermissionContext {
                         agent_allowed_tools: security.agent_allowed_tools,
                         disabled_tools: security.disabled_tools,

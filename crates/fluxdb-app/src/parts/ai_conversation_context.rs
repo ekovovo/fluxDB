@@ -59,7 +59,7 @@ fn ai_conversation_turn_messages(
         ));
         system_messages.push(fluxdb_core::ModelMessage::new(
             fluxdb_core::ModelRole::System,
-            "配置工具规则：用户要查看或修改设置、模型、Agent、工具启停、MCP 或会话时，先用 config.inspect 读取当前非敏感状态和 revision，再用 config.propose 提交变更；不要猜对象 ID 或 revision。\
+            "配置工具规则：用户要查看或修改设置、模型、Agent、工具启停、MCP 或会话时，先用 toolbox.inspect 读取当前非敏感状态和 revision，再用 toolbox.search 找操作、toolbox.load 加载选中的 1-5 个操作，下一轮调用其完整工具；不要猜对象 ID 或 revision。\
              配置提案在用户确认前不会落库；API Key、密码和 Token 永远由用户在本地弹框输入，不得作为工具参数、提案内容或回复正文。\
              新增模型时优先预填 Provider、Endpoint、模型 ID、上下文和价格；不确定的值明确标注，不伪造。",
         ));

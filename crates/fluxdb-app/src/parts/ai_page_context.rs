@@ -66,7 +66,12 @@ impl CurrentPageContext {
             capabilities.push("page.read_rows");
         }
         if self.kind == PageContextKind::Settings {
-            capabilities.extend(["page.prefill_form", "config.propose"]);
+            capabilities.extend([
+                "page.prefill_form",
+                "toolbox.search",
+                "toolbox.load",
+                "toolbox.inspect",
+            ]);
         }
         let mut value = serde_json::json!({
             "kind": "current_page",

@@ -108,6 +108,7 @@ include!("parts/ai_decision_provider.rs");
 include!("parts/ai_jev.rs");
 include!("parts/ai_usage.rs");
 include!("parts/ai_tool_registry.rs");
+include!("parts/ai_toolbox.rs");
 include!("parts/ai_tool_management.rs");
 include!("parts/ai_tool_output.rs");
 include!("parts/ai_plugins.rs");

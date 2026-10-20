@@ -24,11 +24,9 @@ pub const MCP_TOOL_MAPPINGS: &[(&str, &str)] = &[
     ("fluxdb_connections_list", ""),
     ("fluxdb_search_objects", "db.search_objects"),
     ("fluxdb_describe_object", "db.describe_object"),
+    ("fluxdb_run", "db.run"),
     ("fluxdb_get_relationships", "db.get_relationships"),
     ("fluxdb_find_join_paths", "db.find_join_paths"),
-    ("fluxdb_query", "db.query"),
-    ("fluxdb_explain", "db.explain"),
-    ("fluxdb_execute", "db.execute"),
     ("fluxdb_redis_scan", "redis.scan"),
     ("fluxdb_redis_inspect", "redis.inspect"),
     ("fluxdb_redis_execute", "redis.execute"),
@@ -294,7 +292,12 @@ pub fn visible_tools(
     let mut views = Vec::new();
     if has_relational {
         for spec in standard_sql_tool_specs()? {
-            if spec.risk == fluxdb_core::ToolRisk::Write && !relational_writable {
+            // `db.run` 在目录里按最坏情况标 Write，但真实风险由 SQL 分类；
+            // 只读数据源也要看到它，实际写语句在调用边界被拒绝。
+            if spec.id != "db.run"
+                && spec.risk == fluxdb_core::ToolRisk::Write
+                && !relational_writable
+            {
                 continue;
             }
             if let Some(view) = tool_view_from_spec(&spec)? {
@@ -630,7 +633,7 @@ impl McpExecutionService {
             crate::standard_redis_catalog(Arc::clone(&self.resolver), true)
                 .map_err(|error| McpCallError::new("catalog_error", error.message, false))?
         } else {
-            crate::standard_sql_catalog_legacy_with_results(
+            crate::standard_sql_catalog_with_results(
                 Arc::clone(&self.resolver),
                 Arc::clone(&self.results),
                 true,

@@ -1191,14 +1191,13 @@
       "disabled_message": "已全局关闭工具 %{tool}，各 Agent 也不再允许使用",
       "desc": {
         "connections_list": "列出已授权连接资源",
-        "config_inspect": "读取非敏感设置、模型、Agent、工具、MCP 和会话",
-        "config_propose": "模型/Agent 的新建编辑删除、工具/MCP 管理、会话归档删除；用户确认后执行。",
+        "toolbox_inspect": "读取实时非敏感宿主状态：设置、模型、Agent、工具、MCP 和会话",
+        "toolbox_search": "搜索长尾操作，只返回摘要，不返回参数 Schema",
+        "toolbox_load": "为当前轮加载 1–5 个选中操作的完整 Schema；不授予权限",
+        "config_propose": "允许通过 toolbox 加载的配置动作；真正落库仍需用户确认",
         "db_search_objects": "渐进搜索表、视图与字段",
         "db_describe_object": "读取真实列、索引和关系",
         "db_run": "统一 SQL 入口：只读直接返回结果，写入走审批，EXPLAIN 只看计划",
-        "db_query": "单条有界只读查询，驱动绑定参数",
-        "db_explain": "不执行式查询计划",
-        "db_execute": "修改专用入口，范围授权与审批",
         "redis_scan": "渐进扫描，不全量 KEYS",
         "redis_inspect": "按类型有界预览值与 TTL",
         "redis_execute": "受控命令，检查所有 Key 与风险",
@@ -1222,8 +1221,7 @@
         "file_read": "读取已授权附件正文",
         "context_read": "读取已授权引用",
         "plan_update": "更新公开执行计划"
-      },
-      "legacy_note": "兼容入口（MCP／只读连接／旧 Agent 授权）"
+      }
     },
     "jev": {
       "available": "可用",
@@ -3879,7 +3877,6 @@
     "missing_tool_search_objects": "缺少标准 SQL 工具定义: db.search_objects",
     "missing_tool_describe_object": "缺少标准 SQL 工具定义: db.describe_object",
     "missing_object_ref": "缺少 object_ref",
-    "missing_tool_execute": "缺少标准 SQL 工具定义: db.execute",
     "missing_tool_run": "缺少标准 SQL 工具定义: db.run",
     "plan_params_invalid": "计划参数无效",
     "connection_not_authorized": "连接未授权",

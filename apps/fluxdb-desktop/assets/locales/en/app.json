@@ -1191,14 +1191,13 @@
       "disabled_message": "Tool globally disabled: %{tool}. Agents can no longer use it.",
       "desc": {
         "connections_list": "List authorized connection resources",
-        "config_inspect": "Read non-sensitive settings, models, agents, tools, MCP, and sessions",
-        "config_propose": "Model/Agent create, edit, delete; tool/MCP changes and session archive/delete. Requires user confirmation.",
+        "toolbox_inspect": "Read live non-sensitive host state: settings, models, agents, tools, MCP, and sessions",
+        "toolbox_search": "Search long-tail operations and return summaries without parameter schemas",
+        "toolbox_load": "Load 1-5 selected operation schemas for the current turn; does not grant permission",
+        "config_propose": "Allow toolbox-loaded configuration actions; persistence still requires user confirmation",
         "db_search_objects": "Incrementally search tables, views, and columns",
         "db_describe_object": "Read actual columns, indexes, and relationships",
         "db_run": "One SQL entry: read-only statements return results, writes require approval, explain returns a plan",
-        "db_query": "One bounded read-only query with driver-bound parameters",
-        "db_explain": "Inspect a query plan without executing it",
-        "db_execute": "Dedicated write entry with scoped authorization and approval",
         "redis_scan": "Incremental scan without full KEYS",
         "redis_inspect": "Bounded type-aware value preview and TTL",
         "redis_execute": "Controlled commands with all-key and risk checks",
@@ -1222,8 +1221,7 @@
         "file_read": "Read authorized attachment content",
         "context_read": "Read an authorized reference",
         "plan_update": "Update the public execution plan"
-      },
-      "legacy_note": "Compatibility entry (MCP/read-only/old Agent permissions)"
+      }
     },
     "jev": {
       "available": "Available",
@@ -3879,7 +3877,6 @@
     "missing_tool_search_objects": "Missing standard SQL tool definition: db.search_objects",
     "missing_tool_describe_object": "Missing standard SQL tool definition: db.describe_object",
     "missing_object_ref": "Missing object_ref",
-    "missing_tool_execute": "Missing standard SQL tool definition: db.execute",
     "missing_tool_run": "Missing standard SQL tool definition: db.run",
     "plan_params_invalid": "Invalid plan parameters",
     "connection_not_authorized": "Connection not authorized",

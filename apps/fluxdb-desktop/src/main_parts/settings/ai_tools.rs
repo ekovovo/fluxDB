@@ -32,7 +32,9 @@ fn ai_tool_text(id: &str, group: &str, desc: &str) -> (SharedString, SharedStrin
         "context.read" => tr("app.ai.tools.desc.context_read"),
         "plan.update" => tr("app.ai.tools.desc.plan_update"),
 
-        "config.inspect" => tr("app.ai.tools.desc.config_inspect"),
+        "toolbox.inspect" => tr("app.ai.tools.desc.toolbox_inspect"),
+        "toolbox.search" => tr("app.ai.tools.desc.toolbox_search"),
+        "toolbox.load" => tr("app.ai.tools.desc.toolbox_load"),
         "config.propose" => tr("app.ai.tools.desc.config_propose"),
         "db.search_objects" => tr("app.ai.tools.desc.db_search_objects"),
         "db.describe_object" => tr("app.ai.tools.desc.db_describe_object"),
@@ -40,9 +42,6 @@ fn ai_tool_text(id: &str, group: &str, desc: &str) -> (SharedString, SharedStrin
         "db.find_join_paths" => tr("app.ai.tools.desc.db_find_join_paths"),
         "er.propose_relationships" => tr("app.ai.tools.desc.er_propose_relationships"),
         "db.run" => tr("app.ai.tools.desc.db_run"),
-        "db.query" => tr("app.ai.tools.desc.db_query"),
-        "db.explain" => tr("app.ai.tools.desc.db_explain"),
-        "db.execute" => tr("app.ai.tools.desc.db_execute"),
         "redis.scan" => tr("app.ai.tools.desc.redis_scan"),
         "redis.inspect" => tr("app.ai.tools.desc.redis_inspect"),
         "redis.execute" => tr("app.ai.tools.desc.redis_execute"),
@@ -56,9 +55,6 @@ fn ai_tool_text(id: &str, group: &str, desc: &str) -> (SharedString, SharedStrin
         "operation.status" => tr("app.ai.tools.desc.operation_status"),
         _ => desc.into(),
     };
-    let desc = if matches!(id, "db.query" | "db.execute" | "db.explain") {
-        format!("{} · {}", desc, tr("app.ai.tools.legacy_note")).into()
-    } else { desc };
     (group, desc)
 }
 
@@ -317,7 +313,7 @@ fn ai_tool_row(
         )
         .child(div().w(px(120.)).flex().items_start().child(if artifact {
             ai_pill(tr("app.ai.tools.risk.artifact"), colors.info, colors).into_any_element()
-        } else if id == "config.propose" || id == "page.prefill_form" {
+        } else if id == "toolbox.load" || id == "config.propose" || id == "page.prefill_form" {
             ai_pill(tr("app.ai.tools.risk.proposal"), colors.info, colors).into_any_element()
         } else if write {
             ai_pill(tr("app.ai.tools.risk.write"), colors.warning, colors).into_any_element()

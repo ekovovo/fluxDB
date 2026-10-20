@@ -412,7 +412,7 @@ mod config_proposal_apply_tests {
             &storage,
             AiAgentSaveInput {
                 display_name: "Restricted".into(),
-                allowed_tools: vec!["config.inspect".into()],
+                allowed_tools: vec!["toolbox.inspect".into()],
                 ..Default::default()
             },
             ai_chat_now(),
@@ -420,14 +420,14 @@ mod config_proposal_apply_tests {
         .expect("restricted agent");
         let proposal = proposal(
             ConfigProposalKind::ToolSetEnabled {
-                tool_id: "config.inspect".into(),
+                tool_id: "toolbox.inspect".into(),
                 enabled: false,
             },
             0,
         );
         assert!(
             storage
-                .with_ai_connection(|conn| tool_settings::load_tool_setting(conn, "config.inspect"))
+                .with_ai_connection(|conn| tool_settings::load_tool_setting(conn, "toolbox.inspect"))
                 .expect("before")
                 .is_none()
         );
@@ -436,7 +436,7 @@ mod config_proposal_apply_tests {
             .expect("apply");
         assert_eq!(result, ConfigApplyOutcome::Applied);
         let saved = storage
-            .with_ai_connection(|conn| tool_settings::load_tool_setting(conn, "config.inspect"))
+            .with_ai_connection(|conn| tool_settings::load_tool_setting(conn, "toolbox.inspect"))
             .expect("stored")
             .expect("setting");
         assert!(!saved.enabled);
@@ -444,7 +444,7 @@ mod config_proposal_apply_tests {
         let restricted = storage
             .with_ai_connection(|conn| agents::load_agent(conn, &agent_id))
             .expect("restricted agent remains restricted");
-        assert_eq!(restricted.allowed_tools, ["config.inspect"]);
+        assert_eq!(restricted.allowed_tools, ["toolbox.inspect"]);
         assert_eq!(restricted.revision, 1);
         assert_eq!(
             controller
@@ -516,7 +516,7 @@ mod config_proposal_apply_tests {
                 display_name: "Original".into(),
                 description: "Keep description".into(),
                 system_prompt: "Keep this prompt".into(),
-                allowed_tools: vec!["config.inspect".into()],
+                allowed_tools: vec!["toolbox.inspect".into()],
                 enabled: false,
                 ..Default::default()
             },
@@ -542,7 +542,7 @@ mod config_proposal_apply_tests {
         assert_eq!(agent.display_name, "Renamed");
         assert_eq!(agent.description, "Keep description");
         assert_eq!(agent.system_prompt, "Keep this prompt");
-        assert_eq!(agent.allowed_tools, ["config.inspect"]);
+        assert_eq!(agent.allowed_tools, ["toolbox.inspect"]);
         assert!(!agent.enabled);
         storage
             .with_ai_connection(|conn| {

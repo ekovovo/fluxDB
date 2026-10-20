@@ -230,38 +230,140 @@ fn settings_default_editor_draft(saved: &Settings) -> Settings {
     draft
 }
 
+impl NavicatMain {
+    /// 应用 AI 提交的设置页预填动作；只改草稿，不保存。
+    fn apply_ai_ui_action(
+        &mut self,
+        action: fluxdb_app::UiAction,
+        cx: &mut Context<NavicatMain>,
+    ) {
+        match action {
+            fluxdb_app::UiAction::PrefillSettings {
+                page_ref, prefill, ..
+            } => {
+                let tab_id = page_ref
+                    .strip_prefix("page:")
+                    .and_then(|id| id.parse::<u64>().ok())
+                    .map(TabId);
+                let Some(tab) = self
+                    .controller
+                    .state()
+                    .tabs
+                    .iter()
+                    .find(|tab| Some(tab.id) == tab_id)
+                else {
+                    self.show_message(
+                        tr("app.ai.page_action.settings_page_unavailable").as_ref(),
+                        AppMessageKind::Warning,
+                        cx,
+                    );
+                    return;
+                };
+                if !matches!(tab.kind, TabKind::Settings(_)) {
+                    self.show_message(
+                        tr("app.ai.page_action.settings_page_unavailable").as_ref(),
+                        AppMessageKind::Warning,
+                        cx,
+                    );
+                    return;
+                }
+                // 草稿有用户未保存修改时不覆盖，避免 AI 与用户同时编辑丢改动。
+                if self.settings_editor_draft != self.controller.state().settings {
+                    self.show_message(
+                        tr("app.ai.page_action.settings_draft_dirty").as_ref(),
+                        AppMessageKind::Warning,
+                        cx,
+                    );
+                    return;
+                }
+                let mut draft = self.settings_editor_draft.clone();
+                if let Err(error) = fluxdb_app::apply_settings_prefill(&mut draft, &prefill) {
+                    self.show_message(
+                        tr("app.ai.page_action.settings_prefill_failed")
+                            .replace("%{error}", &error),
+                        AppMessageKind::Error,
+                        cx,
+                    );
+                    return;
+                }
+                self.settings_editor_draft = draft;
+                self.settings_panel_section = settings_panel_section_from_ai(prefill.section);
+                self.sync_settings_tab_dirty();
+                self.show_message(
+                    tr("app.ai.page_action.settings_prefilled").as_ref(),
+                    AppMessageKind::Success,
+                    cx,
+                );
+                cx.notify();
+            }
+            fluxdb_app::UiAction::ProposeConfig(proposal) => {
+                self.pending_config_proposal = Some(proposal);
+                self.config_delete_confirmed = false;
+                self.show_message(
+                    tr("app.ai.config_proposal.pending").as_ref(),
+                    AppMessageKind::Info,
+                    cx,
+                );
+                cx.notify();
+            }
+        }
+    }
+}
+
+fn settings_panel_section_from_ai(
+    section: fluxdb_app::SettingsSection,
+) -> SettingsPanelSection {
+    match section {
+        fluxdb_app::SettingsSection::Editor => SettingsPanelSection::Editor,
+        fluxdb_app::SettingsSection::Appearance => SettingsPanelSection::Appearance,
+        fluxdb_app::SettingsSection::Data => SettingsPanelSection::Data,
+        fluxdb_app::SettingsSection::System => SettingsPanelSection::System,
+    }
+}
+
 fn save_settings_from_ui(
     this: &mut NavicatMain,
     settings: Settings,
     message: impl Into<String>,
     cx: &mut Context<NavicatMain>,
 ) {
+    let settings_before = this.controller.state().settings.clone();
     // 「查询结果默认布局」改了应当立刻生效，不必重启 —— 否则旁边的工具栏按钮能即时切换、
     // 设置项却要重启，是个 UX 陷阱。只在**该项本身变了**时才动运行时布局：
     // 工具栏切换是仅本次会话的临时覆盖，若无条件同步，用户改个字号一保存就会把布局莫名拉回。
     // 必须在 dispatch 之前比较 —— 那一步会把 state.settings 换成新值。
-    if settings.results_placement != this.controller.state().settings.results_placement {
-        this.results_placement = settings.results_placement;
-    }
-
     let _ = this.controller.dispatch(AppCommand::SaveSettings(settings));
     let _ = this.storage.save_settings(&this.controller.state().settings);
-    let locale = fluxdb_i18n::effective_locale(&this.controller.state().settings.locale);
-    apply_ui_locale(&locale, cx);
-    // 热更新：把新设置推送到所有已打开的编辑器，无需重启。
-    let new_settings = this.controller.state().settings.clone();
-    let font_size = new_settings.editor_font_size.clamp(10, 24) as f32;
-    let line_height = new_settings.editor_line_height.clamp(13, 28) as f32;
-    let soft_wrap = new_settings.editor_word_wrap;
-    for sql_editor in this.query_editors.values() {
-        sql_editor.update(cx, |editor, _cx| {
-            editor.apply_settings(font_size, line_height, soft_wrap, new_settings.editor_tab_width as usize);
-        });
-    }
     this.settings_editor_draft = this.controller.state().settings.clone();
-    this.preview_settings(cx);
-    this.sync_settings_tab_dirty();
+    this.apply_saved_settings_runtime(&settings_before, cx);
     this.show_message(message, AppMessageKind::Success, cx);
+}
+
+impl NavicatMain {
+    /// 只更新运行时投影，不写盘；持久化提案成功后复用，避免二次保存。
+    fn apply_saved_settings_runtime(&mut self, before: &Settings, cx: &mut Context<Self>) {
+        if before.results_placement != self.controller.state().settings.results_placement {
+            self.results_placement = self.controller.state().settings.results_placement;
+        }
+        let locale = fluxdb_i18n::effective_locale(&self.controller.state().settings.locale);
+        apply_ui_locale(&locale, cx);
+        let new_settings = self.controller.state().settings.clone();
+        let font_size = new_settings.editor_font_size.clamp(10, 24) as f32;
+        let line_height = new_settings.editor_line_height.clamp(13, 28) as f32;
+        let soft_wrap = new_settings.editor_word_wrap;
+        for sql_editor in self.query_editors.values() {
+            sql_editor.update(cx, |editor, _cx| {
+                editor.apply_settings(
+                    font_size,
+                    line_height,
+                    soft_wrap,
+                    new_settings.editor_tab_width as usize,
+                );
+            });
+        }
+        self.preview_settings(cx);
+        self.sync_settings_tab_dirty();
+    }
 }
 
 fn settings_preference_row(

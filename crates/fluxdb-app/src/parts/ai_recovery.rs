@@ -99,10 +99,14 @@ fn claim_ai_approved_call(
     }
     let session = fluxdb_storage::ai_platform::sessions::load_session(&tx, &call.session_id)?;
     let agent = fluxdb_storage::ai_platform::agents::load_agent(&tx, &session.agent_id)?;
-    if !agent.enabled
-        || (!agent.allowed_tools.is_empty()
-            && !agent.allowed_tools.iter().any(|id| id == &call.tool_id))
-    {
+    let allowed_by_agent = agent.allowed_tools.is_empty()
+        || agent.allowed_tools.iter().any(|id| id == &call.tool_id)
+        || (call.tool_id == "db.run"
+            && agent
+                .allowed_tools
+                .iter()
+                .any(|id| id == "db.query" || id == "db.execute"));
+    if !agent.enabled || !allowed_by_agent {
         return Err(reject("当前 Agent 已停用或不再允许该工具"));
     }
     let prepared = tools

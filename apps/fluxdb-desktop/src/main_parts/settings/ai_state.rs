@@ -90,6 +90,7 @@ impl AiModelDialog {
             model_capabilities: Vec::new(),
             capacity_units: [AiTokenUnit::K; 2],
             capacity_autofill: [None, None],
+            proposed_capacities: [None, None],
             subscriptions: std::rc::Rc::new(Vec::new()),
             validation_error: None,
         }
@@ -184,6 +185,7 @@ struct AiModelDialog {
     model_capabilities: Vec<fluxdb_app::AiDiscoveredModel>,
     capacity_units: [AiTokenUnit; 2],
     capacity_autofill: [Option<String>; 2],
+    proposed_capacities: [Option<i64>; 2],
     subscriptions: std::rc::Rc<Vec<Subscription>>,
     /// 弹框内联校验/保存失败原因（有值时保持弹框打开并保留草稿）。
     validation_error: Option<String>,

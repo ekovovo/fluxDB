@@ -7,6 +7,8 @@ pub enum PageContextKind {
     RedisKey,
     RedisBrowser,
     RedisWorkbench,
+    /// 设置页：只暴露当前分区的非敏感值与可预填字段。
+    Settings,
     /// ER 关系图：只提供目标定位、选中表/关系的有界摘要、加载状态与版本。
     ErDiagram,
     Other,
@@ -21,6 +23,7 @@ impl PageContextKind {
             Self::RedisKey => "redis_key",
             Self::RedisBrowser => "redis_browser",
             Self::RedisWorkbench => "redis_workbench",
+            Self::Settings => "settings",
             Self::ErDiagram => "er_diagram",
             Self::Other => "unsupported_page",
         }
@@ -61,6 +64,9 @@ impl CurrentPageContext {
         }
         if self.data_grant.is_some() {
             capabilities.push("page.read_rows");
+        }
+        if self.kind == PageContextKind::Settings {
+            capabilities.extend(["page.prefill_form", "config.propose"]);
         }
         let mut value = serde_json::json!({
             "kind": "current_page",

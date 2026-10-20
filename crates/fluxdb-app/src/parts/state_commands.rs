@@ -1193,6 +1193,11 @@ pub enum AppCommand {
     PinTab(TabId),
     ReplaceQueryHistory(Vec<QueryHistoryEntry>),
     SaveSettings(Settings),
+    /// 仅宿主用户确认后在后台派发；不作为 AI 工具直接开放。
+    ApplyConfirmedConfig {
+        proposal: Box<ConfigProposal>,
+        binary_path: String,
+    },
     /// 刷新设置页「大模型 / 工具与MCP / 会话历史」列表（模型、Agent、插件实例、MCP Client、会话）。
     RefreshAiSettings,
     /// 续读设置页会话历史下一页（稳定游标分页；已加载部分不重复）。

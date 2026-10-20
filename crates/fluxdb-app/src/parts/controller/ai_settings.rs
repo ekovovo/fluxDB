@@ -649,9 +649,8 @@ pub fn save_ai_plugin_config(
 
 /// 切换标准工具的全局启停。
 ///
-/// 全局关闭时，同一事务里把所有 Agent 白名单中的该工具一并移除：Agent 只能
-/// 在全局允许的工具里再收窄，不能把已全局关闭的工具重新打开（§31.1 工具启停
-/// 是全局能力开关，Agent 白名单是其子集）。
+/// 全局开关与 Agent 白名单取交集。保留白名单原意，避免删除最后一项后
+/// 变成空列表（空列表表示“不限制”），意外放开其它工具。
 pub fn set_ai_tool_enabled(
     state: &mut AppState,
     storage: &fluxdb_storage::FileStorage,
@@ -671,32 +670,13 @@ pub fn set_ai_tool_enabled(
         enabled,
         expected_revision,
     )?;
-    // 返回被收窄的 Agent id；关闭失败时整笔回滚，不留"全局关了但白名单还开着"的中间态。
+    // 返回有效能力受影响的 Agent id，但不改写其白名单或 revision。
     let mut affected = Vec::new();
     if !enabled {
         for agent in agents::list_agents(&tx)? {
             if !agent.allowed_tools.iter().any(|id| id == tool_id) {
                 continue;
             }
-            let remaining: Vec<String> = agent
-                .allowed_tools
-                .iter()
-                .filter(|id| *id != tool_id)
-                .cloned()
-                .collect();
-            let edit = agents::AgentEdit {
-                compression_trigger_percent: agent.compression_trigger_percent,
-                max_iterations: agent.max_iterations,
-                id: agent.id.clone(),
-                display_name: agent.display_name,
-                description: agent.description,
-                enabled: agent.enabled,
-                default_model_profile_id: agent.default_model_profile_id,
-                system_prompt: agent.system_prompt,
-                budget_policy_id: agent.budget_policy_id,
-                allowed_tools: remaining,
-            };
-            agents::save_agent(&tx, now_ms, &edit, agent.revision)?;
             affected.push(agent.id);
         }
     }
@@ -718,12 +698,6 @@ pub fn set_ai_tool_enabled(
             enabled,
             revision: saved.revision,
         }),
-    }
-    for agent in state.ai_agents.iter_mut() {
-        if affected.iter().any(|id| id == &agent.id) {
-            agent.allowed_tools.retain(|id| id != tool_id);
-            agent.revision += 1;
-        }
     }
     Ok(affected)
 }

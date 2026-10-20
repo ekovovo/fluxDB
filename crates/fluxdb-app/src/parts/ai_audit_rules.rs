@@ -149,7 +149,7 @@ impl AuditRules {
         }
         if matches!(
             input.tool_id.as_str(),
-            "db.query" | "db.execute" | "db.explain"
+            "db.run" | "db.query" | "db.execute" | "db.explain"
         ) {
             return self.evaluate_sql(input, &arguments);
         }

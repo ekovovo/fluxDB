@@ -188,7 +188,13 @@ fn loop_tool_descriptors(catalog: &ToolCatalog) -> Vec<fluxdb_core::ToolDescript
     catalog
         .specs()
         .iter()
-        .filter(|spec| !read_only || spec.risk==fluxdb_core::ToolRisk::Read)
+        .filter(|spec| {
+            !read_only
+                || spec.risk == fluxdb_core::ToolRisk::Read
+                // db.run 的真实风险按 SQL 分类；只读策略下仍需暴露只读查询，
+                // 写语句会在授权阶段按 effective_risk 被拒绝。
+                || spec.id == "db.run"
+        })
         .map(|spec| fluxdb_core::ToolDescriptor {
             id: spec.id.clone(),
             version: spec.version,
@@ -573,8 +579,13 @@ impl<'a> TurnRunner<'a> {
                         ruleset_version: "kernel-audit-v1".to_string(),
                     },
                 );
-                // 风险等级由工具 spec 决定，不在 Hook 里推断（Hook 只看参数与目标）。
-                facts.risk = spec.risk.to_string();
+                // 风险等级由工具按本次入参给出（静态工具直接用 spec），不在 Hook 里推断。
+                let effective_risk = self
+                    .tools
+                    .executable(&call.tool_id)
+                    .map(|tool| tool.effective_risk(&prepared.to_json_string()))
+                    .unwrap_or(spec.risk);
+                facts.risk = effective_risk.to_string();
                 // before-tool Hook 只能收紧：Deny 优先，其次 RequireApproval，反过来不行。
                 if let Some(reason) = hook_deny {
                     emit(LoopEvent::Notice(reason));
@@ -603,7 +614,7 @@ impl<'a> TurnRunner<'a> {
                 let input = AuthorizeInput {
                     tool_id: spec.id.clone(),
                     tool_version: spec.version,
-                    risk: spec.risk,
+                    risk: effective_risk,
                     target_json: state.target_json.clone(),
                     normalized_arguments_json: prepared.to_json_string(),
                     plugin_digest: self.permission.plugin_digest.clone(),
@@ -627,7 +638,7 @@ impl<'a> TurnRunner<'a> {
                         Ok(result)=>{
                             automatic_approval=result.automatic_approval;
                             bounded_write=result.write_commit==fluxdb_core::WriteCommit::Bounded;
-                            if spec.risk!=fluxdb_core::ToolRisk::Read {
+                            if effective_risk != fluxdb_core::ToolRisk::Read {
                                 emit(LoopEvent::Notice(result.reason.clone()));
                             }
                             // 评审事实先落盘，失败时不得发出写入；拆解与阈值一起进审计，

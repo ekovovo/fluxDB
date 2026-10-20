@@ -9,6 +9,7 @@ impl AiRuntimeHandle {
         job: AiConversationJob,
         connections: Vec<fluxdb_core::ConnectionConfig>,
         relationships: Option<Arc<dyn ErRelationshipSource>>,
+        ui_actions: Option<Arc<dyn UiActionSink>>,
         resume_approval: Option<String>,
         cancel: CancelFlag,
     ) -> Result<ConversationEventReceiver, RuntimeError> {
@@ -117,6 +118,17 @@ impl AiRuntimeHandle {
                     // 本轮结束后工具目录随之消失（设计 §13.2 不持久化整份内容）。
                     add_ai_editor_read_tools(&mut tools, take_editor_grant(&job.turn_id))?;
                     add_ai_page_tools(&mut tools, take_page_data_grant(&job.turn_id), job)?;
+                    // 配置读取/提案是全局能力；设置页草稿预填仍按当前页面装配。
+                    if let Some(actions) = ui_actions.as_ref() {
+                        add_ai_config_tools(
+                            &mut tools,
+                            storage.clone(),
+                            Arc::clone(actions),
+                        )?;
+                        if let Some(page_ref) = ai_turn_settings_page_ref(storage, job) {
+                            add_ai_settings_tools(&mut tools, page_ref, Arc::clone(actions))?;
+                        }
+                    }
                     // 「计划与执行进度」插件：仅在实例开启且当前 Agent 未禁用绑定时
                     // 暴露 `plan.update`；关闭后工具不进入目录，模型发现不到。
                     add_ai_plan_tool(&mut tools, storage, &job.session_id)?;
@@ -261,4 +273,25 @@ impl AiRuntimeHandle {
         )?;
         Ok(receiver)
     }
+}
+
+/// 当前轮页面引用；只有设置页才返回，避免模型在其它页面伪造 target。
+fn ai_turn_settings_page_ref(
+    storage: &fluxdb_storage::FileStorage,
+    job: &AiConversationJob,
+) -> Option<String> {
+    let raw = with_ai_storage(storage, |conn| {
+        fluxdb_storage::ai_platform::sessions::load_turn(conn, &job.turn_id)
+    })
+    .ok()?;
+    let snapshot: serde_json::Value = serde_json::from_str(&raw.runtime_snapshot_json).ok()?;
+    let page: serde_json::Value =
+        serde_json::from_str(snapshot.get("ui_context")?.as_str()?).ok()?;
+    if page.get("page_kind").and_then(|kind| kind.as_str()) != Some("settings") {
+        return None;
+    }
+    page.get("id")
+        .and_then(|id| id.as_str())
+        .filter(|id| id.starts_with("page:"))
+        .map(str::to_string)
 }

@@ -14,6 +14,7 @@ mod i18n_e2e_tests {
     };
 
     include!("i18n_tests/redis_stream.rs");
+    include!("i18n_tests/config_proposal.rs");
     include!("i18n_tests/dameng_connection.rs");
     include!("i18n_tests/dameng_completion.rs");
 

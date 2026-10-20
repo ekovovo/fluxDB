@@ -787,46 +787,55 @@ fn sqlite_indexes(
     runtime.block_on(async {
         let mut connection = sqlite_connect(config).await?;
         let database = sqlite_database_for_path(path);
-        let sql = format!(
-            "PRAGMA {}.index_list({})",
-            fluxdb_core::SqliteDialect.quote_identifier(database),
-            sqlite_quote_string(&path.name)
-        );
-        let rows = sqlx::query(&sql)
-            .fetch_all(&mut connection)
-            .await
-            .map_err(sqlite_error)?;
-        let mut indexes = Vec::with_capacity(rows.len());
-        for row in rows {
-            let name: String = row.try_get("name").map_err(sqlite_error)?;
-            let unique: i64 = row.try_get("unique").map_err(sqlite_error)?;
-            let origin: String = row.try_get("origin").map_err(sqlite_error)?;
-            let partial: i64 = row.try_get("partial").map_err(sqlite_error)?;
-            let info_sql = format!(
-                "PRAGMA {}.index_info({})",
-                fluxdb_core::SqliteDialect.quote_identifier(database),
-                sqlite_quote_string(&name)
-            );
-            let info_rows = sqlx::query(&info_sql)
-                .fetch_all(&mut connection)
-                .await
-                .map_err(sqlite_error)?;
-            let columns = info_rows
-                .into_iter()
-                .map(|row| row.try_get("name").map_err(sqlite_error))
-                .collect::<fluxdb_core::Result<Vec<String>>>()?;
-            indexes.push(IndexInfo {
-                name,
-                columns,
-                is_unique: unique != 0,
-                is_primary: origin == "pk",
-                index_type: Some(if partial != 0 { "PARTIAL" } else { &origin }.to_string()),
-                comment: None,
-            });
-        }
+        let indexes = sqlite_load_indexes(&mut connection, database, &path.name).await?;
         connection.close().await.map_err(sqlite_error)?;
         Ok(indexes)
     })
+}
+
+async fn sqlite_load_indexes(
+    connection: &mut sqlx::SqliteConnection,
+    database: &str,
+    table: &str,
+) -> fluxdb_core::Result<Vec<IndexInfo>> {
+    let sql = format!(
+        "PRAGMA {}.index_list({})",
+        fluxdb_core::SqliteDialect.quote_identifier(database),
+        sqlite_quote_string(table)
+    );
+    let rows = sqlx::query(&sql)
+        .fetch_all(&mut *connection)
+        .await
+        .map_err(sqlite_error)?;
+    let mut indexes = Vec::with_capacity(rows.len());
+    for row in rows {
+        let name: String = row.try_get("name").map_err(sqlite_error)?;
+        let unique: i64 = row.try_get("unique").map_err(sqlite_error)?;
+        let origin: String = row.try_get("origin").map_err(sqlite_error)?;
+        let partial: i64 = row.try_get("partial").map_err(sqlite_error)?;
+        let info_sql = format!(
+            "PRAGMA {}.index_info({})",
+            fluxdb_core::SqliteDialect.quote_identifier(database),
+            sqlite_quote_string(&name)
+        );
+        let info_rows = sqlx::query(&info_sql)
+            .fetch_all(&mut *connection)
+            .await
+            .map_err(sqlite_error)?;
+        let columns = info_rows
+            .into_iter()
+            .map(|row| row.try_get("name").map_err(sqlite_error))
+            .collect::<fluxdb_core::Result<Vec<String>>>()?;
+        indexes.push(IndexInfo {
+            name,
+            columns,
+            is_unique: unique != 0,
+            is_primary: origin == "pk",
+            index_type: Some(if partial != 0 { "PARTIAL" } else { &origin }.to_string()),
+            comment: None,
+        });
+    }
+    Ok(indexes)
 }
 
 fn sqlite_foreign_keys(
@@ -883,6 +892,36 @@ fn sqlite_foreign_keys_with_cancel(
     })
 }
 
+async fn sqlite_load_foreign_keys(
+    connection: &mut sqlx::SqliteConnection,
+    database: &str,
+    table: &str,
+) -> fluxdb_core::Result<Vec<ForeignKeyInfo>> {
+    let sql = format!(
+        "PRAGMA {}.foreign_key_list({})",
+        fluxdb_core::SqliteDialect.quote_identifier(database),
+        sqlite_quote_string(table)
+    );
+    let rows = sqlx::query(&sql)
+        .fetch_all(&mut *connection)
+        .await
+        .map_err(sqlite_error)?;
+    rows.into_iter()
+        .map(|row| {
+            let id: i64 = row.try_get("id").map_err(sqlite_error)?;
+            Ok(ForeignKeyInfo {
+                name: format!("fk_{id}"),
+                column: row.try_get("from").map_err(sqlite_error)?,
+                ref_schema: None,
+                ref_table: row.try_get("table").map_err(sqlite_error)?,
+                ref_column: row.try_get("to").map_err(sqlite_error)?,
+                columns: Vec::new(),
+                ref_columns: Vec::new(),
+            })
+        })
+        .collect()
+}
+
 fn sqlite_triggers(
     config: &ConnectionConfig,
     path: &ObjectPath,
@@ -894,33 +933,44 @@ fn sqlite_triggers(
 
     runtime.block_on(async {
         let mut connection = sqlite_connect(config).await?;
-        let rows = sqlx::query(&format!(
-            r#"
-            SELECT name, sql
-            FROM {}.sqlite_schema
-            WHERE type = 'trigger' AND tbl_name = ?
-            ORDER BY name
-            "#,
-            fluxdb_core::SqliteDialect.quote_identifier(sqlite_database_for_path(path))
-        ))
-        .bind(&path.name)
-        .fetch_all(&mut connection)
-        .await
-        .map_err(sqlite_error)?;
+        let triggers =
+            sqlite_load_triggers(&mut connection, sqlite_database_for_path(path), &path.name)
+                .await?;
         connection.close().await.map_err(sqlite_error)?;
-
-        rows.into_iter()
-            .map(|row| {
-                let sql: String = row.try_get("sql").map_err(sqlite_error)?;
-                Ok(TriggerInfo {
-                    name: row.try_get("name").map_err(sqlite_error)?,
-                    event: sqlite_trigger_word(&sql, &["INSERT", "UPDATE", "DELETE"]),
-                    timing: sqlite_trigger_word(&sql, &["BEFORE", "AFTER", "INSTEAD OF"]),
-                    body: sqlite_trigger_body(&sql),
-                })
-            })
-            .collect()
+        Ok(triggers)
     })
+}
+
+async fn sqlite_load_triggers(
+    connection: &mut sqlx::SqliteConnection,
+    database: &str,
+    table: &str,
+) -> fluxdb_core::Result<Vec<TriggerInfo>> {
+    let rows = sqlx::query(&format!(
+        r#"
+        SELECT name, sql
+        FROM {}.sqlite_schema
+        WHERE type = 'trigger' AND tbl_name = ?
+        ORDER BY name
+        "#,
+        fluxdb_core::SqliteDialect.quote_identifier(database)
+    ))
+    .bind(table)
+    .fetch_all(&mut *connection)
+    .await
+    .map_err(sqlite_error)?;
+
+    rows.into_iter()
+        .map(|row| {
+            let sql: String = row.try_get("sql").map_err(sqlite_error)?;
+            Ok(TriggerInfo {
+                name: row.try_get("name").map_err(sqlite_error)?,
+                event: sqlite_trigger_word(&sql, &["INSERT", "UPDATE", "DELETE"]),
+                timing: sqlite_trigger_word(&sql, &["BEFORE", "AFTER", "INSTEAD OF"]),
+                body: sqlite_trigger_body(&sql),
+            })
+        })
+        .collect()
 }
 
 fn sqlite_table_ddl(config: &ConnectionConfig, path: &ObjectPath) -> fluxdb_core::Result<String> {
@@ -931,17 +981,58 @@ fn sqlite_table_ddl(config: &ConnectionConfig, path: &ObjectPath) -> fluxdb_core
 
     runtime.block_on(async {
         let mut connection = sqlite_connect(config).await?;
-        let row: Option<(String,)> = sqlx::query_as(&format!(
-            "SELECT sql FROM {}.sqlite_schema WHERE type IN ('table', 'view') AND name = ?",
-            fluxdb_core::SqliteDialect.quote_identifier(sqlite_database_for_path(path))
-        ))
-        .bind(&path.name)
-        .fetch_optional(&mut connection)
-        .await
-        .map_err(sqlite_error)?;
+        let ddl =
+            sqlite_load_table_ddl(&mut connection, sqlite_database_for_path(path), &path.name)
+                .await?;
         connection.close().await.map_err(sqlite_error)?;
-        row.map(|row| row.0)
-            .ok_or_else(|| Error::new(ErrorKind::Query, "表 DDL 不存在"))
+        Ok(ddl)
+    })
+}
+
+async fn sqlite_load_table_ddl(
+    connection: &mut sqlx::SqliteConnection,
+    database: &str,
+    table: &str,
+) -> fluxdb_core::Result<String> {
+    let row: Option<(String,)> = sqlx::query_as(&format!(
+        "SELECT sql FROM {}.sqlite_schema WHERE type IN ('table', 'view') AND name = ?",
+        fluxdb_core::SqliteDialect.quote_identifier(database)
+    ))
+    .bind(table)
+    .fetch_optional(&mut *connection)
+    .await
+    .map_err(sqlite_error)?;
+    row.map(|row| row.0)
+        .ok_or_else(|| Error::new(ErrorKind::Query, "表 DDL 不存在"))
+}
+
+/// 设计表专用快照：SQLite 虽为本地文件，也避免重复打开与重复 PRAGMA。
+fn sqlite_load_table_design_metadata(
+    config: &ConnectionConfig,
+    path: &ObjectPath,
+) -> fluxdb_core::Result<fluxdb_core::TableDesignMetadata> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| Error::new(ErrorKind::Internal, error.to_string()))?;
+
+    runtime.block_on(async {
+        let mut connection = sqlite_connect(config).await?;
+        let database = sqlite_database_for_path(path);
+        let columns = sqlite_columns(&mut connection, database, &path.name).await?;
+        let indexes = sqlite_load_indexes(&mut connection, database, &path.name).await?;
+        let foreign_keys =
+            sqlite_load_foreign_keys(&mut connection, database, &path.name).await?;
+        let triggers = sqlite_load_triggers(&mut connection, database, &path.name).await?;
+        let ddl = sqlite_load_table_ddl(&mut connection, database, &path.name).await?;
+        connection.close().await.map_err(sqlite_error)?;
+        Ok(fluxdb_core::TableDesignMetadata {
+            columns: columns_to_completion(path.database.as_deref(), None, &path.name, columns),
+            indexes,
+            foreign_keys,
+            triggers,
+            ddl,
+        })
     })
 }
 

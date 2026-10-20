@@ -292,6 +292,19 @@ impl Connector for PostgresConnector {
         pg_list_triggers(config, path)
     }
 
+    fn load_table_design_metadata(
+        &self,
+        path: &ObjectPath,
+    ) -> fluxdb_core::Result<fluxdb_core::TableDesignMetadata> {
+        let Some(config) = self.config.as_ref() else {
+            return Err(Error::new(
+                ErrorKind::Connection,
+                "PostgreSQL 设计表元数据需要连接配置上下文",
+            ));
+        };
+        pg_load_table_design_metadata(config, path)
+    }
+
     fn list_completion_tables(
         &self,
         database: Option<&str>,

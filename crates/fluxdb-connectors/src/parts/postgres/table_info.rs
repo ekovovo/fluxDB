@@ -545,3 +545,53 @@ fn pg_list_triggers(
 ) -> fluxdb_core::Result<Vec<TriggerInfo>> {
     pg_table_metadata(config, path).map(|s| pg_triggers_from_structure(&s))
 }
+
+/// 设计表专用快照：一次 PostgreSQL 连接读取结构并生成 DDL。
+fn pg_load_table_design_metadata(
+    config: &ConnectionConfig,
+    path: &ObjectPath,
+) -> fluxdb_core::Result<fluxdb_core::TableDesignMetadata> {
+    if config.kind != DatabaseKind::Postgres {
+        return Err(Error::new(ErrorKind::Connection, "连接类型不匹配"));
+    }
+    let database = path
+        .database
+        .clone()
+        .filter(|db| !db.is_empty())
+        .unwrap_or_else(|| pg_request_database(config, None));
+    let schema = path
+        .schema
+        .as_deref()
+        .filter(|schema| !schema.is_empty())
+        .ok_or_else(|| Error::new(ErrorKind::Connection, "缺少 schema 上下文"))?;
+
+    pg_runtime().block_on(async {
+        let session = pg_connect(config, &database).await?;
+        let structure =
+            pg_load_table_structure(&session.client, &database, schema, &path.name).await?;
+        let ddl =
+            pg_catalog_table_ddl(&session.client, &database, schema, &path.name).await?;
+        let columns = structure
+            .columns
+            .iter()
+            .map(|column| fluxdb_core::CompletionColumn {
+                database: structure.database.clone(),
+                schema: structure.schema.clone(),
+                table: structure.name.clone(),
+                name: column.name.clone(),
+                type_name: Some(column.data_type.clone()),
+                nullable: column.nullable,
+                primary_key: column.primary_key,
+                comment: column.comment.clone(),
+                stable: Some(u64::from(column.ordinal)),
+            })
+            .collect();
+        Ok(fluxdb_core::TableDesignMetadata {
+            columns,
+            indexes: pg_indexes_from_structure(&structure),
+            foreign_keys: pg_foreign_keys_from_structure(&structure),
+            triggers: pg_triggers_from_structure(&structure),
+            ddl,
+        })
+    })
+}

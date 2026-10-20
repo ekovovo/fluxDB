@@ -3,6 +3,47 @@ fn copy_table_requires_source_ddl(database_kind: DatabaseKind) -> bool {
 }
 
 impl NavicatMain {
+    fn open_design_table_in_background(&mut self, object: ObjectPath, cx: &mut Context<Self>) {
+        let key = table_tree_key(&object);
+        if self._design_table_tasks.contains_key(&key) {
+            self.show_message(
+                tr("app.create_table.loading_design").as_ref(),
+                AppMessageKind::Info,
+                cx,
+            );
+            return;
+        }
+
+        self.show_message(
+            tr("app.create_table.loading_design").as_ref(),
+            AppMessageKind::Info,
+            cx,
+        );
+        let finish_key = key.clone();
+        let task = self.spawn_controller_command(
+            AppCommand::LoadDesignTable(object),
+            move |this, event, cx| {
+                this._design_table_tasks.remove(&finish_key);
+                let result = match event {
+                    AppEvent::DesignTableLoaded(result) => result,
+                    AppEvent::Failed(error) => Err(error),
+                    _ => Err(fluxdb_core::UserFacingError {
+                        title: tr("app.create_table.error.load_design_failed").to_string(),
+                        message: tr("app.create_table.error.load_field_no_result").to_string(),
+                        detail: None,
+                        retryable: true,
+                    }),
+                };
+                let event = this
+                    .controller
+                    .dispatch(AppCommand::FinishOpenDesignTable { result });
+                this.apply_app_event(&event, cx);
+            },
+            cx,
+        );
+        self._design_table_tasks.insert(key, task);
+    }
+
     fn choose_table_import_file(
         &mut self,
         object_path: ObjectPath,

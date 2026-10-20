@@ -138,6 +138,16 @@ impl Connector for DamengConnector {
         dm_triggers_for(self.config("达梦触发器元数据需要连接配置上下文")?, path)
     }
 
+    fn load_table_design_metadata(
+        &self,
+        path: &ObjectPath,
+    ) -> fluxdb_core::Result<fluxdb_core::TableDesignMetadata> {
+        dm_load_table_design_metadata(
+            self.config("达梦设计表元数据需要连接配置上下文")?,
+            path,
+        )
+    }
+
     fn list_completion_tables(
         &self,
         database: Option<&str>,

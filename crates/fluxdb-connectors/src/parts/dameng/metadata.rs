@@ -274,17 +274,26 @@ fn dm_indexes_for(
 ) -> fluxdb_core::Result<Vec<IndexInfo>> {
     let schema = dm_request_schema(config, path)?;
     let mut client = dm_connect(config)?;
+    let indexes = dm_load_indexes(&mut client, &schema, &path.name)?;
+    client.close();
+    Ok(indexes)
+}
+
+fn dm_load_indexes(
+    client: &mut DmClient,
+    schema: &str,
+    table: &str,
+) -> fluxdb_core::Result<Vec<IndexInfo>> {
     let result = dm_execute(
-        &mut client,
+        client,
         "SELECT I.INDEX_NAME, I.UNIQUENESS, I.INDEX_TYPE, IC.COLUMN_NAME, IC.COLUMN_POSITION, \
                 CASE WHEN C.CONSTRAINT_TYPE='P' THEN 1 ELSE 0 END AS IS_PK \
          FROM ALL_INDEXES I \
          LEFT JOIN ALL_IND_COLUMNS IC ON IC.INDEX_OWNER=I.OWNER AND IC.INDEX_NAME=I.INDEX_NAME \
          LEFT JOIN ALL_CONSTRAINTS C ON C.OWNER=I.OWNER AND C.INDEX_NAME=I.INDEX_NAME \
          WHERE I.OWNER=? AND I.TABLE_NAME=? ORDER BY I.INDEX_NAME, IC.COLUMN_POSITION",
-        &[Param::Str(schema), Param::Str(path.name.clone())],
+        &[Param::Str(schema.to_string()), Param::Str(table.to_string())],
     )?;
-    client.close();
     let ExecuteResult::Query { rows, .. } = result else {
         return Err(Error::new(ErrorKind::Query, "达梦索引元数据返回类型异常"));
     };
@@ -330,8 +339,18 @@ fn dm_foreign_keys_for(
 ) -> fluxdb_core::Result<Vec<ForeignKeyInfo>> {
     let schema = dm_request_schema(config, path)?;
     let mut client = dm_connect(config)?;
+    let foreign_keys = dm_load_foreign_keys(&mut client, &schema, &path.name)?;
+    client.close();
+    Ok(foreign_keys)
+}
+
+fn dm_load_foreign_keys(
+    client: &mut DmClient,
+    schema: &str,
+    table: &str,
+) -> fluxdb_core::Result<Vec<ForeignKeyInfo>> {
     let result = dm_execute(
-        &mut client,
+        client,
         "SELECT C.CONSTRAINT_NAME, CC.COLUMN_NAME, R.OWNER, R.TABLE_NAME, RCC.COLUMN_NAME, CC.POSITION \
          FROM ALL_CONSTRAINTS C \
          JOIN ALL_CONS_COLUMNS CC ON CC.OWNER=C.OWNER AND CC.CONSTRAINT_NAME=C.CONSTRAINT_NAME \
@@ -340,9 +359,8 @@ fn dm_foreign_keys_for(
                                   AND RCC.POSITION=CC.POSITION \
          WHERE C.OWNER=? AND C.TABLE_NAME=? AND C.CONSTRAINT_TYPE='R' \
          ORDER BY C.CONSTRAINT_NAME, CC.POSITION",
-        &[Param::Str(schema), Param::Str(path.name.clone())],
+        &[Param::Str(schema.to_string()), Param::Str(table.to_string())],
     )?;
-    client.close();
     let ExecuteResult::Query { rows, .. } = result else {
         return Err(Error::new(ErrorKind::Query, "达梦外键元数据返回类型异常"));
     };
@@ -379,16 +397,25 @@ fn dm_triggers_for(
 ) -> fluxdb_core::Result<Vec<TriggerInfo>> {
     let schema = dm_request_schema(config, path)?;
     let mut client = dm_connect(config)?;
+    let triggers = dm_load_triggers(&mut client, &schema, &path.name)?;
+    client.close();
+    Ok(triggers)
+}
+
+fn dm_load_triggers(
+    client: &mut DmClient,
+    schema: &str,
+    table: &str,
+) -> fluxdb_core::Result<Vec<TriggerInfo>> {
     let result = dm_execute(
-        &mut client,
+        client,
         "SELECT TRIGGER_NAME, TRIGGERING_EVENT, \
                 CASE WHEN TRIGGERING_TYPE LIKE 'BEFORE%' THEN 'BEFORE' \
                      WHEN TRIGGERING_TYPE LIKE 'AFTER%' THEN 'AFTER' \
                      ELSE TRIGGERING_TYPE END, TRIGGER_BODY \
          FROM ALL_TRIGGERS WHERE TABLE_OWNER=? AND TABLE_NAME=? ORDER BY TRIGGER_NAME",
-        &[Param::Str(schema), Param::Str(path.name.clone())],
+        &[Param::Str(schema.to_string()), Param::Str(table.to_string())],
     )?;
-    client.close();
     let ExecuteResult::Query { rows, .. } = result else {
         return Err(Error::new(ErrorKind::Query, "达梦触发器元数据返回类型异常"));
     };
@@ -417,24 +444,115 @@ fn dm_table_ddl_for(
     }
     let mut client = dm_connect(config)?;
     let columns = dm_load_column_infos(&mut client, &schema, &path.name)?;
-    let indexes = dm_indexes_for(config, path)?;
-    let foreign_keys = dm_foreign_keys_for(config, path)?;
-    let comments = dm_execute(
-        &mut client,
-        "SELECT COMMENTS FROM ALL_TAB_COMMENTS WHERE OWNER=? AND TABLE_NAME=?",
-        &[Param::Str(schema.clone()), Param::Str(path.name.clone())],
-    )?;
+    let indexes = dm_load_indexes(&mut client, &schema, &path.name)?;
+    let foreign_keys = dm_load_foreign_keys(&mut client, &schema, &path.name)?;
+    let table_comment = dm_load_table_comment(&mut client, &schema, &path.name)?;
     client.close();
-    let table_comment = match comments {
+    Ok(dm_render_table_ddl(
+        &schema,
+        &path.name,
+        &columns,
+        &indexes,
+        &foreign_keys,
+        table_comment.as_deref(),
+    ))
+}
+
+/// 设计表专用快照：一次 DM8 登录内读取全部元数据，避免 UI 打开时重复握手。
+fn dm_load_table_design_metadata(
+    config: &ConnectionConfig,
+    path: &ObjectPath,
+) -> fluxdb_core::Result<fluxdb_core::TableDesignMetadata> {
+    let schema = dm_request_schema(config, path)?;
+    if path.kind == ObjectKind::View {
+        let mut client = dm_connect(config)?;
+        let ddl = dm_view_ddl_with_client(&mut client, &schema, &path.name)?;
+        let columns = dm_load_column_infos(&mut client, &schema, &path.name)?;
+        client.close();
+        return Ok(fluxdb_core::TableDesignMetadata {
+            columns: dm_completion_columns(path, &schema, columns),
+            indexes: Vec::new(),
+            foreign_keys: Vec::new(),
+            triggers: Vec::new(),
+            ddl,
+        });
+    }
+
+    let mut client = dm_connect(config)?;
+    let columns = dm_load_column_infos(&mut client, &schema, &path.name)?;
+    let indexes = dm_load_indexes(&mut client, &schema, &path.name)?;
+    let foreign_keys = dm_load_foreign_keys(&mut client, &schema, &path.name)?;
+    let triggers = dm_load_triggers(&mut client, &schema, &path.name)?;
+    let table_comment = dm_load_table_comment(&mut client, &schema, &path.name)?;
+    client.close();
+    let ddl = dm_render_table_ddl(
+        &schema,
+        &path.name,
+        &columns,
+        &indexes,
+        &foreign_keys,
+        table_comment.as_deref(),
+    );
+    Ok(fluxdb_core::TableDesignMetadata {
+        columns: dm_completion_columns(path, &schema, columns),
+        indexes,
+        foreign_keys,
+        triggers,
+        ddl,
+    })
+}
+
+fn dm_completion_columns(
+    path: &ObjectPath,
+    schema: &str,
+    columns: Vec<DmColumnInfo>,
+) -> Vec<fluxdb_core::CompletionColumn> {
+    columns
+        .into_iter()
+        .map(|column| fluxdb_core::CompletionColumn {
+            database: path.database.clone(),
+            schema: Some(schema.to_string()),
+            table: path.name.clone(),
+            name: column.name,
+            type_name: Some(column.type_name),
+            nullable: column.nullable,
+            primary_key: column.primary_key,
+            comment: column.comment,
+            stable: None,
+        })
+        .collect()
+}
+
+fn dm_load_table_comment(
+    client: &mut DmClient,
+    schema: &str,
+    table: &str,
+) -> fluxdb_core::Result<Option<String>> {
+    let comments = dm_execute(
+        client,
+        "SELECT COMMENTS FROM ALL_TAB_COMMENTS WHERE OWNER=? AND TABLE_NAME=?",
+        &[Param::Str(schema.to_string()), Param::Str(table.to_string())],
+    )?;
+    Ok(match comments {
         ExecuteResult::Query { rows, .. } => rows
             .first()
             .and_then(|row| row.first())
             .and_then(dm_value_text),
         _ => None,
-    };
-    let table = dm_qualified_table(&schema, &path.name);
+    })
+}
+
+fn dm_render_table_ddl(
+    schema: &str,
+    table_name: &str,
+    columns: &[DmColumnInfo],
+    indexes: &[IndexInfo],
+    foreign_keys: &[ForeignKeyInfo],
+    table_comment: Option<&str>,
+) -> String {
+    let table = dm_qualified_table(schema, table_name);
     let mut lines = Vec::new();
-    for column in &columns {
+    for column in columns {
         let mut line = format!(
             "  {} {}",
             fluxdb_core::DamengDialect.quote_identifier(&column.name),
@@ -474,7 +592,7 @@ fn dm_table_ddl_for(
             pk_columns.join(", ")
         ));
     }
-    for fk in &foreign_keys {
+    for fk in foreign_keys {
         if fk.columns.len() != fk.ref_columns.len() || fk.columns.is_empty() {
             continue;
         }
@@ -491,7 +609,7 @@ fn dm_table_ddl_for(
             .collect::<Vec<_>>()
             .join(", ");
         let ref_table = dm_qualified_table(
-            fk.ref_schema.as_deref().unwrap_or(&schema),
+            fk.ref_schema.as_deref().unwrap_or(schema),
             &fk.ref_table,
         );
         lines.push(format!(
@@ -519,7 +637,7 @@ fn dm_table_ddl_for(
     if let Some(comment) = table_comment.filter(|comment| !comment.trim().is_empty()) {
         ddl.push_str(&format!(
             ";\nCOMMENT ON TABLE {table} IS {}",
-            dm_string_literal(&comment)
+            dm_string_literal(comment)
         ));
     }
     for column in columns.iter().filter(|column| column.comment.is_some()) {
@@ -529,7 +647,7 @@ fn dm_table_ddl_for(
             dm_string_literal(column.comment.as_deref().unwrap_or_default())
         ));
     }
-    Ok(format!("{ddl};"))
+    format!("{ddl};")
 }
 
 fn dm_view_ddl_for(
@@ -538,12 +656,21 @@ fn dm_view_ddl_for(
     view: &str,
 ) -> fluxdb_core::Result<String> {
     let mut client = dm_connect(config)?;
+    let ddl = dm_view_ddl_with_client(&mut client, schema, view)?;
+    client.close();
+    Ok(ddl)
+}
+
+fn dm_view_ddl_with_client(
+    client: &mut DmClient,
+    schema: &str,
+    view: &str,
+) -> fluxdb_core::Result<String> {
     let result = dm_execute(
-        &mut client,
+        client,
         "SELECT TEXT FROM ALL_VIEWS WHERE OWNER=? AND VIEW_NAME=?",
         &[Param::Str(schema.to_string()), Param::Str(view.to_string())],
     )?;
-    client.close();
     let ExecuteResult::Query { rows, .. } = result else {
         return Err(Error::new(ErrorKind::Query, "达梦视图 DDL 返回类型异常"));
     };

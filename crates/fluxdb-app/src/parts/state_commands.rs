@@ -506,6 +506,12 @@ pub enum AppCommand {
         schema: Option<String>,
     },
     OpenDesignTable(ObjectPath),
+    /// 在后台读取设计表快照；只返回结果，不改控制器状态。
+    LoadDesignTable(ObjectPath),
+    /// 把后台读取结果安装为设计表标签页。
+    FinishOpenDesignTable {
+        result: std::result::Result<CreateTableState, UserFacingError>,
+    },
     RenameTable {
         object: ObjectPath,
         new_name: String,

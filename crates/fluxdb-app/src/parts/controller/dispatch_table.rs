@@ -40,57 +40,22 @@ impl AppController {
                 AppEvent::TabOpened(tab_id)
             }
             AppCommand::OpenDesignTable(object) => {
-                let Some(config) = self.connection_config(object.connection_id) else {
-                    return self.fail(Error::new(ErrorKind::Connection, "连接不存在"));
-                };
-                let columns = match list_completion_columns_for_connection(
-                    &config,
-                    object.database.as_deref(),
-                    object.schema.as_deref(),
-                    &object.name,
-                ) {
-                    Ok(columns) => columns,
-                    Err(error) => return self.fail(error),
-                };
-                let indexes = match load_table_info_for_connection(&config, &object, TableInfoTab::Indexes) {
-                    Ok(TableInfoResult::Indexes(indexes)) => indexes,
-                    Ok(_) => Vec::new(),
-                    Err(error) => return self.fail(error),
-                };
-                let foreign_keys = match load_table_info_for_connection(&config, &object, TableInfoTab::ForeignKeys) {
-                    Ok(TableInfoResult::ForeignKeys(foreign_keys)) => foreign_keys,
-                    Ok(_) => Vec::new(),
-                    Err(error) => return self.fail(error),
-                };
-                let triggers = match load_table_info_for_connection(&config, &object, TableInfoTab::Triggers) {
-                    Ok(TableInfoResult::Triggers(triggers)) => triggers,
-                    Ok(_) => Vec::new(),
-                    Err(error) => return self.fail(error),
-                };
-                let ddl = match load_table_info_for_connection(&config, &object, TableInfoTab::Ddl) {
-                    Ok(TableInfoResult::Ddl(ddl)) => Some(ddl),
-                    Ok(_) => None,
-                    Err(error) => return self.fail(error),
-                };
-                let database_kind = config.kind;
-                let tab_id = self.next_tab_id();
-                let create = CreateTableState::design(
-                    object,
-                    database_kind,
-                    columns,
-                    indexes,
-                    foreign_keys,
-                    triggers,
-                    ddl,
-                );
-                self.push_tab(TabState {
-                    id: tab_id,
-                    title: create.tab_title(),
-                    kind: TabKind::CreateTable(create),
-                    dirty: false,
-                });
-                AppEvent::TabOpened(tab_id)
+                match self.prepare_design_table(&object) {
+                    Ok(create) => self.install_design_table(create),
+                    Err(error) => self.fail(error),
+                }
             }
+            AppCommand::LoadDesignTable(object) => match self.prepare_design_table(&object) {
+                Ok(create) => AppEvent::DesignTableLoaded(Ok(create)),
+                Err(error) => AppEvent::DesignTableLoaded(Err(UserFacingError::from(error))),
+            },
+            AppCommand::FinishOpenDesignTable { result } => match result {
+                Ok(create) => self.install_design_table(create),
+                Err(error) => {
+                    self.state.last_error = Some(error.clone());
+                    AppEvent::Failed(error)
+                }
+            },
             AppCommand::RenameTable { object, new_name } => {
                 let Some(config) = self.connection_config(object.connection_id).cloned() else {
                     return self.fail(Error::new(ErrorKind::Connection, "连接不存在"));
@@ -1135,13 +1100,45 @@ impl AppController {
         }
     }
 
-    /// PG 设计表保存成功后，用落库后的最新结构重建该 tab 的设计基线。
+    /// 读取设计表所需元数据并构造尚未安装的标签页状态。
+    ///
+    /// 该方法不修改控制器状态，可由后台控制器快照调用；尤其是同步 DM 驱动和远端
+    /// MySQL/PG 连接不能放到 GPUI 主线程执行。
+    fn prepare_design_table(&self, object: &ObjectPath) -> fluxdb_core::Result<CreateTableState> {
+        let Some(config) = self.connection_config(object.connection_id) else {
+            return Err(Error::new(ErrorKind::Connection, "连接不存在"));
+        };
+        let metadata = load_table_design_for_connection(config, object)?;
+        Ok(CreateTableState::design(
+            object.clone(),
+            config.kind,
+            metadata.columns,
+            metadata.indexes,
+            metadata.foreign_keys,
+            metadata.triggers,
+            Some(metadata.ddl),
+        ))
+    }
+
+    /// 把已加载的设计表状态安装为标签页。调用发生在主线程且不做 IO。
+    fn install_design_table(&mut self, create: CreateTableState) -> AppEvent {
+        let tab_id = self.next_tab_id();
+        self.push_tab(TabState {
+            id: tab_id,
+            title: create.tab_title(),
+            kind: TabKind::CreateTable(create),
+            dirty: false,
+        });
+        AppEvent::TabOpened(tab_id)
+    }
+
+    /// PG/达梦设计表保存成功后，用落库后的最新结构重建该 tab 的设计基线。
     ///
     /// 复用打开设计器的全部元数据加载路径（列/索引/外键/触发器/DDL），把 `original_ddl`
     /// 与 `original` 快照推进到保存后的状态；否则下次保存会把本次已落库的改动与旧基线比较，
     /// 误判为「表结构已在外部变化」而拒绝（§9.2 外部 DDL 保护）。
     fn refresh_design_table_after_apply(&mut self, tab_id: TabId) -> fluxdb_core::Result<()> {
-        let (object, database_kind) = {
+        let object = {
             let Some(tab) = self.find_tab(tab_id) else {
                 return Err(Error::new(ErrorKind::Internal, "新建表标签页不存在"));
             };
@@ -1151,43 +1148,9 @@ impl AppController {
             let CreateTableMode::Design { object, .. } = &create.mode else {
                 return Ok(());
             };
-            (object.clone(), create.database_kind)
+            object.clone()
         };
-        let Some(config) = self.connection_config(object.connection_id) else {
-            return Err(Error::new(ErrorKind::Connection, "连接不存在"));
-        };
-        let columns = list_completion_columns_for_connection(
-            &config,
-            object.database.as_deref(),
-            object.schema.as_deref(),
-            &object.name,
-        )?;
-        let indexes = match load_table_info_for_connection(&config, &object, TableInfoTab::Indexes) {
-            Ok(TableInfoResult::Indexes(indexes)) => indexes,
-            _ => Vec::new(),
-        };
-        let foreign_keys = match load_table_info_for_connection(&config, &object, TableInfoTab::ForeignKeys)
-        {
-            Ok(TableInfoResult::ForeignKeys(foreign_keys)) => foreign_keys,
-            _ => Vec::new(),
-        };
-        let triggers = match load_table_info_for_connection(&config, &object, TableInfoTab::Triggers) {
-            Ok(TableInfoResult::Triggers(triggers)) => triggers,
-            _ => Vec::new(),
-        };
-        let ddl = match load_table_info_for_connection(&config, &object, TableInfoTab::Ddl) {
-            Ok(TableInfoResult::Ddl(ddl)) => Some(ddl),
-            _ => None,
-        };
-        let fresh = CreateTableState::design(
-            object,
-            database_kind,
-            columns,
-            indexes,
-            foreign_keys,
-            triggers,
-            ddl,
-        );
+        let fresh = self.prepare_design_table(&object)?;
         if let Some(tab) = self.find_tab_mut(tab_id)
             && let TabKind::CreateTable(create) = &mut tab.kind
         {

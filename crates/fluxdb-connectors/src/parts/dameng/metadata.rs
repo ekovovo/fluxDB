@@ -150,20 +150,58 @@ fn dm_list_relations(
     Ok(objects)
 }
 
+#[derive(Clone, Debug)]
+struct DmColumnInfo {
+    name: String,
+    type_name: String,
+    nullable: bool,
+    primary_key: bool,
+    comment: Option<String>,
+    default_value: Option<String>,
+    auto_increment: bool,
+    primary_key_constraint: Option<String>,
+}
+
 fn dm_load_columns(
     client: &mut DmClient,
     schema: &str,
     table: &str,
 ) -> fluxdb_core::Result<Vec<Column>> {
+    Ok(dm_load_column_infos(client, schema, table)?
+        .into_iter()
+        .map(|column| Column {
+            name: column.name,
+            type_name: Some(column.type_name),
+            nullable: column.nullable,
+            primary_key: column.primary_key,
+            comment: column.comment,
+        })
+        .collect())
+}
+
+fn dm_load_column_infos(
+    client: &mut DmClient,
+    schema: &str,
+    table: &str,
+) -> fluxdb_core::Result<Vec<DmColumnInfo>> {
     let result = dm_execute(
         client,
         "SELECT C.COLUMN_NAME, C.DATA_TYPE, C.DATA_LENGTH, C.DATA_PRECISION, C.DATA_SCALE, \
                 C.NULLABLE, CC.COMMENTS, \
-                CASE WHEN PK.COLUMN_NAME IS NULL THEN 0 ELSE 1 END AS IS_PK \
+                CASE WHEN PK.COLUMN_NAME IS NULL THEN 0 ELSE 1 END AS IS_PK, \
+                C.DATA_DEFAULT, \
+                CASE WHEN EXISTS ( \
+                    SELECT 1 FROM SYS.SYSCOLUMNS SC \
+                    JOIN SYS.SYSOBJECTS T ON SC.ID=T.ID \
+                    JOIN SYS.SYSOBJECTS S ON T.SCHID=S.ID \
+                    WHERE S.NAME=C.OWNER AND T.NAME=C.TABLE_NAME \
+                      AND SC.NAME=C.COLUMN_NAME AND (SC.INFO2 & 0x01)=0x01 \
+                ) THEN 1 ELSE 0 END AS IS_IDENTITY, \
+                PK.CONSTRAINT_NAME \
          FROM ALL_TAB_COLUMNS C \
          LEFT JOIN ALL_COL_COMMENTS CC ON CC.OWNER=C.OWNER AND CC.TABLE_NAME=C.TABLE_NAME \
                                       AND CC.COLUMN_NAME=C.COLUMN_NAME \
-         LEFT JOIN (SELECT CC.OWNER, CC.TABLE_NAME, CC.COLUMN_NAME \
+         LEFT JOIN (SELECT CO.OWNER, CO.TABLE_NAME, CC.COLUMN_NAME, CO.CONSTRAINT_NAME \
                     FROM ALL_CONSTRAINTS CO JOIN ALL_CONS_COLUMNS CC \
                       ON CC.OWNER=CO.OWNER AND CC.CONSTRAINT_NAME=CO.CONSTRAINT_NAME \
                     WHERE CO.CONSTRAINT_TYPE='P') PK \
@@ -183,28 +221,51 @@ fn dm_load_columns(
             let length = row.get(2).and_then(dm_meta_u64).unwrap_or(0);
             let precision = row.get(3).and_then(dm_meta_u64);
             let scale = row.get(4).and_then(dm_meta_u64).unwrap_or(0);
-            let upper = data_type.to_ascii_uppercase();
-            let type_name = if matches!(upper.as_str(), "VARCHAR" | "VARCHAR2" | "CHAR") {
-                format!("{data_type}({length})")
-            } else if matches!(upper.as_str(), "DECIMAL" | "NUMERIC") {
-                precision
-                    .map(|precision| format!("{data_type}({precision},{scale})"))
-                    .unwrap_or(data_type)
-            } else {
-                data_type
-            };
-            Ok(Column {
+            let type_name = dm_column_type_name(&data_type, length, precision, scale);
+            Ok(DmColumnInfo {
                 name,
-                type_name: Some(type_name),
+                type_name,
                 nullable: row
                     .get(5)
                     .and_then(dm_value_text)
                     .is_some_and(|value| value.eq_ignore_ascii_case("Y")),
                 primary_key: row.get(7).and_then(dm_meta_i64).unwrap_or(0) != 0,
                 comment: row.get(6).and_then(dm_value_text),
+                default_value: row
+                    .get(8)
+                    .and_then(dm_value_text)
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty() && !value.eq_ignore_ascii_case("NULL")),
+                auto_increment: row.get(9).and_then(dm_meta_i64).unwrap_or(0) != 0,
+                primary_key_constraint: row.get(10).and_then(dm_value_text),
             })
         })
         .collect()
+}
+
+fn dm_column_type_name(
+    data_type: &str,
+    length: u64,
+    precision: Option<u64>,
+    scale: u64,
+) -> String {
+    let upper = data_type.to_ascii_uppercase();
+    if matches!(
+        upper.as_str(),
+        "VARCHAR" | "VARCHAR2" | "CHAR" | "NVARCHAR" | "NVARCHAR2" | "NCHAR"
+            | "BINARY" | "VARBINARY"
+    ) {
+        if length == 0 {
+            return data_type.to_string();
+        }
+        format!("{data_type}({length})")
+    } else if matches!(upper.as_str(), "DECIMAL" | "NUMERIC" | "NUMBER") {
+        precision
+            .map(|precision| format!("{data_type}({precision},{scale})"))
+            .unwrap_or_else(|| data_type.to_string())
+    } else {
+        data_type.to_string()
+    }
 }
 
 fn dm_indexes_for(
@@ -237,10 +298,18 @@ fn dm_indexes_for(
         let index_type = row.get(2).and_then(dm_value_text);
         let column = row.get(3).and_then(dm_value_text);
         let is_primary = row.get(5).and_then(dm_meta_i64).unwrap_or(0) != 0;
+        // 达梦的表组织索引（CLUSTER/HEAP 等）在 ALL_IND_COLUMNS 里没有列记录，
+        // 直接吐出去会让 DDL 生成出 `CREATE INDEX ... ()` 这种非法语句。
+        let has_columns = column.is_some();
         if let Some(index) = indexes.iter_mut().find(|index| index.name == name) {
-            if let Some(column) = column {
+            if let Some(column) = column
+                && has_columns
+            {
                 index.columns.push(column);
             }
+            continue;
+        }
+        if !has_columns && !is_primary {
             continue;
         }
         indexes.push(IndexInfo {
@@ -304,13 +373,50 @@ fn dm_foreign_keys_for(
     Ok(foreign_keys)
 }
 
+fn dm_triggers_for(
+    config: &ConnectionConfig,
+    path: &ObjectPath,
+) -> fluxdb_core::Result<Vec<TriggerInfo>> {
+    let schema = dm_request_schema(config, path)?;
+    let mut client = dm_connect(config)?;
+    let result = dm_execute(
+        &mut client,
+        "SELECT TRIGGER_NAME, TRIGGERING_EVENT, \
+                CASE WHEN TRIGGERING_TYPE LIKE 'BEFORE%' THEN 'BEFORE' \
+                     WHEN TRIGGERING_TYPE LIKE 'AFTER%' THEN 'AFTER' \
+                     ELSE TRIGGERING_TYPE END, TRIGGER_BODY \
+         FROM ALL_TRIGGERS WHERE TABLE_OWNER=? AND TABLE_NAME=? ORDER BY TRIGGER_NAME",
+        &[Param::Str(schema), Param::Str(path.name.clone())],
+    )?;
+    client.close();
+    let ExecuteResult::Query { rows, .. } = result else {
+        return Err(Error::new(ErrorKind::Query, "达梦触发器元数据返回类型异常"));
+    };
+    rows.into_iter()
+        .map(|row| {
+            let name = row.first().and_then(dm_value_text).ok_or_else(|| {
+                Error::new(ErrorKind::Query, "达梦触发器元数据缺少名称")
+            })?;
+            Ok(TriggerInfo {
+                name,
+                event: row.get(1).and_then(dm_value_text).unwrap_or_default(),
+                timing: row.get(2).and_then(dm_value_text).unwrap_or_default(),
+                body: row.get(3).and_then(dm_value_text),
+            })
+        })
+        .collect()
+}
+
 fn dm_table_ddl_for(
     config: &ConnectionConfig,
     path: &ObjectPath,
 ) -> fluxdb_core::Result<String> {
     let schema = dm_request_schema(config, path)?;
+    if path.kind == ObjectKind::View {
+        return dm_view_ddl_for(config, &schema, &path.name);
+    }
     let mut client = dm_connect(config)?;
-    let columns = dm_load_columns(&mut client, &schema, &path.name)?;
+    let columns = dm_load_column_infos(&mut client, &schema, &path.name)?;
     let indexes = dm_indexes_for(config, path)?;
     let foreign_keys = dm_foreign_keys_for(config, path)?;
     let comments = dm_execute(
@@ -332,10 +438,17 @@ fn dm_table_ddl_for(
         let mut line = format!(
             "  {} {}",
             fluxdb_core::DamengDialect.quote_identifier(&column.name),
-            column.type_name.as_deref().unwrap_or("VARCHAR(1)")
+            column.type_name
         );
+        if column.auto_increment {
+            line.push_str(" IDENTITY(1,1)");
+        }
         if !column.nullable {
             line.push_str(" NOT NULL");
+        }
+        if let Some(default_value) = column.default_value.as_deref() {
+            line.push_str(" DEFAULT ");
+            line.push_str(default_value);
         }
         lines.push(line);
     }
@@ -345,7 +458,21 @@ fn dm_table_ddl_for(
         .map(|column| fluxdb_core::DamengDialect.quote_identifier(&column.name))
         .collect::<Vec<_>>();
     if !pk_columns.is_empty() {
-        lines.push(format!("  PRIMARY KEY ({})", pk_columns.join(", ")));
+        let constraint = columns
+            .iter()
+            .find_map(|column| column.primary_key_constraint.as_deref())
+            .filter(|name| !name.trim().is_empty())
+            .map(|name| {
+                format!(
+                    "CONSTRAINT {} ",
+                    fluxdb_core::DamengDialect.quote_identifier(name)
+                )
+            })
+            .unwrap_or_default();
+        lines.push(format!(
+            "  {constraint}PRIMARY KEY ({})",
+            pk_columns.join(", ")
+        ));
     }
     for fk in &foreign_keys {
         if fk.columns.len() != fk.ref_columns.len() || fk.columns.is_empty() {
@@ -373,7 +500,10 @@ fn dm_table_ddl_for(
         ));
     }
     let mut ddl = format!("CREATE TABLE {table} (\n{}\n)", lines.join(",\n"));
-    for index in indexes.iter().filter(|index| !index.is_primary) {
+    for index in indexes
+        .iter()
+        .filter(|index| !index.is_primary && !index.columns.is_empty())
+    {
         let cols = index
             .columns
             .iter()
@@ -400,6 +530,33 @@ fn dm_table_ddl_for(
         ));
     }
     Ok(format!("{ddl};"))
+}
+
+fn dm_view_ddl_for(
+    config: &ConnectionConfig,
+    schema: &str,
+    view: &str,
+) -> fluxdb_core::Result<String> {
+    let mut client = dm_connect(config)?;
+    let result = dm_execute(
+        &mut client,
+        "SELECT TEXT FROM ALL_VIEWS WHERE OWNER=? AND VIEW_NAME=?",
+        &[Param::Str(schema.to_string()), Param::Str(view.to_string())],
+    )?;
+    client.close();
+    let ExecuteResult::Query { rows, .. } = result else {
+        return Err(Error::new(ErrorKind::Query, "达梦视图 DDL 返回类型异常"));
+    };
+    let text = rows
+        .first()
+        .and_then(|row| row.first())
+        .and_then(dm_value_text)
+        .ok_or_else(|| Error::new(ErrorKind::Query, "未读取到达梦视图定义"))?;
+    Ok(format!(
+        "CREATE OR REPLACE VIEW {} AS\n{};",
+        dm_qualified_table(schema, view),
+        text.trim().trim_end_matches(';').trim_end()
+    ))
 }
 
 fn dm_string_literal(value: &str) -> String {

@@ -3167,6 +3167,7 @@ fn navicat_main_new(
                             _copy_table_ddl_task: None,
                             _copy_table_structure_task: None,
                             _danger_table_task: None,
+                            _table_import_task: None,
                             data_export_task_seq: 0,
                             _test_connection_task: None,
                             _create_schema_task: None,

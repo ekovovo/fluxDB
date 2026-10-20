@@ -352,8 +352,20 @@ impl NavicatMain {
             TableMenuAction::CopyTable => {
                 self.open_copy_table_modal(object_path, window, cx);
             }
+            TableMenuAction::ImportData => {
+                self.choose_table_import_file(object_path, window, cx);
+            }
             TableMenuAction::ExportData => {
                 self.open_table_data_export_from_object(object_path, cx);
+            }
+            TableMenuAction::ExportDatabase => {
+                self.show_backup_modal_preselect(
+                    Some(object_path.connection_id),
+                    object_path.database.clone(),
+                    None,
+                    window,
+                    cx,
+                );
             }
             TableMenuAction::CopyStructure => {
                 self.copy_table_structure(object_path, cx);

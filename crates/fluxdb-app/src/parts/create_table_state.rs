@@ -74,8 +74,11 @@ impl CreateTableState {
         create.foreign_keys = create_table_foreign_keys_from_info(&object, foreign_keys);
         create.triggers = create_table_triggers_from_info(triggers);
         let original_ddl = ddl.clone();
-        if let Some(ddl) = ddl {
-            create_table_apply_design_ddl(&mut create, &ddl);
+        if let Some(ref ddl) = ddl {
+            create_table_apply_design_ddl(&mut create, ddl);
+        }
+        if database_kind == DatabaseKind::Dameng {
+            create_table_apply_dameng_design_ddl(&mut create, ddl.as_deref());
         }
         create.selected_column_id = create.columns.first().map(|column| column.id);
         create.selected_index_id = create.indexes.first().map(|index| index.id);

@@ -291,6 +291,10 @@ pub enum AppEvent {
     },
     TableDropped(ObjectPath),
     TableTruncated(ObjectPath),
+    TableDataImported {
+        object: ObjectPath,
+        report: fluxdb_core::TableImportReport,
+    },
     CreateTableReferenceColumnsLoaded {
         tab_id: TabId,
         foreign_key_id: u64,

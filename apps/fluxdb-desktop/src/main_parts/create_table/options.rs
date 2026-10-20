@@ -174,6 +174,10 @@ fn create_table_partitions(
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
+    if create.database_kind == DatabaseKind::Dameng {
+        return create_table_empty_state(tr("app.create_table.partition.dameng_read_only"), colors)
+            .debug_selector(|| "create-table-dameng-partitions-read-only".to_string());
+    }
     if !matches!(create.database_kind, DatabaseKind::MySql | DatabaseKind::TiDb) {
         create_table_empty_state(tr("app.create_table.partition.unsupported"), colors)
     } else {

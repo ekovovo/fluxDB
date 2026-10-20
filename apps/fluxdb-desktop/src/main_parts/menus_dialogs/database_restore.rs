@@ -58,6 +58,7 @@ struct RestoreModal {
 enum RestoreTargetMode {
     NewFile,
     NewDatabase,
+    NewSchema,
     ExistingDatabase,
 }
 
@@ -66,6 +67,7 @@ impl RestoreTargetMode {
         match self {
             Self::NewFile => tr("app.database_restore.mode.new_file"),
             Self::NewDatabase => tr("app.database_restore.mode.new_database"),
+            Self::NewSchema => tr("app.database_restore.mode.new_schema"),
             Self::ExistingDatabase => tr("app.database_restore.mode.existing_database"),
         }
     }
@@ -224,6 +226,7 @@ impl NavicatMain {
                 | DatabaseKind::TiDb
                 | DatabaseKind::Postgres
                 | DatabaseKind::Sqlite
+                | DatabaseKind::Dameng
         ) {
             self.show_message(
                 tr("app.database_restore.unsupported"),
@@ -273,6 +276,8 @@ impl NavicatMain {
         let target_input = cx.new(|cx| InputState::new(window, cx).default_value(target_default));
         let modes = if kind == DatabaseKind::Sqlite {
             vec![restore_mode_option(RestoreTargetMode::NewFile)]
+        } else if kind == DatabaseKind::Dameng {
+            vec![restore_mode_option(RestoreTargetMode::NewSchema)]
         } else {
             vec![
                 restore_mode_option(RestoreTargetMode::NewDatabase),
@@ -672,7 +677,11 @@ impl NavicatMain {
                 match result {
                     Ok((request, plan)) => {
                         data.logs = vec![plan.summary.clone()];
-                        data.logs.extend(plan.warnings.clone());
+                        data.logs.extend(
+                            plan.warnings
+                                .iter()
+                                .map(|warning| crate::localize_backend_error_text(warning)),
+                        );
                         // 逐表回显：解析后的动作 + 预检查风险；破坏性动作显式告警。
                         for info in &plan.tables {
                             let action = info.default_action;

@@ -157,7 +157,9 @@ enum TableMenuAction {
     Refresh,
     Rename,
     CopyTable,
+    ImportData,
     ExportData,
+    ExportDatabase,
     CopyStructure,
     /// 打开数据库备份面板（备份当前表所在数据库）。
     Backup,

@@ -138,6 +138,11 @@ pub enum AppCommand {
         new_name: String,
         copy_data: bool,
     },
+    /// 从 TXT/CSV/JSON/XML 文件追加导入表数据。
+    ImportTableData {
+        object: ObjectPath,
+        source: std::path::PathBuf,
+    },
     DropTable {
         object: ObjectPath,
         foreign_key_check: ForeignKeyCheckMode,

@@ -296,6 +296,47 @@ fn localize_backend_template_error(text: &str) -> Option<String> {
         ("app.backend_error.tmpl_259", "提示：{}"),
         ("app.backend_error.tmpl_226", "{} 列"),
         ("app.backend_error.tmpl_260", "{} 行"),
+        ("app.backend_error.tmpl_275", "达梦不支持 {} 索引"),
+        ("app.backend_error.tmpl_276", "索引 {} 至少需要一个字段"),
+        ("app.backend_error.tmpl_277", "备份对象在数据库中不存在：{}"),
+        (
+            "app.backend_error.tmpl_278",
+            "达梦备份对象 {} 在多个 schema 中存在，请从具体 schema 中选择",
+        ),
+        ("app.backend_error.tmpl_279", "导入表头无效：{}"),
+        ("app.backend_error.tmpl_280", "导入第 {} 行无效：{}"),
+        (
+            "app.backend_error.tmpl_281",
+            "导入第 {} 行字段数与表头不一致",
+        ),
+        ("app.backend_error.tmpl_282", "JSON 导入文件无效：{}"),
+        ("app.backend_error.tmpl_283", "JSON 第 {} 行不是对象"),
+        (
+            "app.backend_error.tmpl_284",
+            "JSON 第 {} 行字段与首行不一致",
+        ),
+        ("app.backend_error.tmpl_285", "XML 导入文件无效：{}"),
+        ("app.backend_error.tmpl_286", "XML 第 {} 行：{}"),
+        ("app.backend_error.tmpl_287", "缺少字段 {}"),
+        ("app.backend_error.tmpl_288", "导入字段名重复：{}"),
+        ("app.backend_error.tmpl_289", "目标表不存在字段：{}"),
+        (
+            "app.backend_error.tmpl_290",
+            "目标表字段名大小写不唯一：{}",
+        ),
+        ("app.backend_error.tmpl_291", "字段 {} 由数据库生成，已跳过"),
+        ("app.backend_error.tmpl_292", "读取导入文件失败：{}"),
+        ("app.backend_error.tmpl_293", "达梦目标 schema 不存在：{}"),
+        ("app.backend_error.tmpl_294", "达梦目标 schema 已存在：{}"),
+        (
+            "app.backend_error.tmpl_295",
+            "达梦目标 schema {} 非空；当前恢复只允许导入空 schema",
+        ),
+        (
+            "app.backend_error.tmpl_296",
+            "达梦恢复执行失败，可能已留下部分对象：{}",
+        ),
+        ("app.backend_error.tmpl_297", "XML 第 {} 行格式无效"),
     ];
     for (key, template) in TEMPLATES {
         if let Some(values) = match_backend_template(text, template) {

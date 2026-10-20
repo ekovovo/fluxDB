@@ -617,6 +617,7 @@ pub(crate) fn pg_execute_parameterized(
 /// 按服务端期望类型强制转换后的绑定值。
 enum PgBound {
     Null,
+    NullText,
     Bool(bool),
     I16(i16),
     I32(i32),
@@ -638,7 +639,12 @@ impl PgBound {
         use fluxdb_core::SqlParameter;
         use tokio_postgres::types::Type;
         if matches!(parameter, SqlParameter::Null) {
-            return Ok(PgBound::Null);
+            return Ok(match *ty {
+                Type::TEXT | Type::VARCHAR | Type::BPCHAR | Type::NAME | Type::UNKNOWN => {
+                    PgBound::NullText
+                }
+                _ => PgBound::Null,
+            });
         }
         let as_i64 = || -> Result<i64, String> {
             match parameter {
@@ -701,6 +707,7 @@ impl PgBound {
     fn as_tosql(&self) -> &(dyn tokio_postgres::types::ToSql + Sync) {
         match self {
             PgBound::Null => &PG_NULL,
+            PgBound::NullText => &PG_NULL_TEXT,
             PgBound::Bool(v) => v,
             PgBound::I16(v) => v,
             PgBound::I32(v) => v,
@@ -737,6 +744,7 @@ fn value_text(parameter: &fluxdb_core::SqlParameter) -> String {
 
 /// `NULL` 绑定：静态避免引用临时。
 static PG_NULL: Option<i32> = None;
+static PG_NULL_TEXT: Option<String> = None;
 
 /// 按扩展协议把 `Row` 解码为 `DataPage`；列类型取自服务端描述。
 fn pg_rows_to_page(

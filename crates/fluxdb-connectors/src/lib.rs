@@ -46,6 +46,7 @@ include!("parts/shared_write.rs");
 include!("parts/shared_read_exec.rs");
 include!("parts/shared_read_sql.rs");
 include!("parts/shared_demo.rs");
+include!("parts/table_import.rs");
 
 #[path = "parts/mysql/native_tools.rs"]
 mod mysql_native_tools;

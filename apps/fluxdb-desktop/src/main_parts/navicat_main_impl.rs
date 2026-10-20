@@ -23,3 +23,4 @@ include!("navicat_main/tabs.rs");
 include!("navicat_main/connection_groups.rs");
 include!("navicat_main/connection_forms.rs");
 include!("navicat_main/queries_shortcuts.rs");
+include!("navicat_main/update.rs");

@@ -180,6 +180,7 @@ fn settings_section_header_actions(
     cx: &mut Context<NavicatMain>,
 ) -> Div {
     let dirty = settings_section_changed(section, saved, draft);
+    let save_selector = format!("settings-{section:?}-save");
     div()
         .flex()
         .items_center()
@@ -200,6 +201,7 @@ fn settings_section_header_actions(
                 .rounded(ComponentTheme::global(cx).radius)
                 .primary()
                 .disabled(!dirty)
+                .debug_selector(move || save_selector.clone())
                 .on_click(cx.listener(move |this, _, _, cx| {
                     save_settings_section_from_ui(this, section, cx);
                 })),

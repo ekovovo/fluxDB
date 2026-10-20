@@ -80,6 +80,7 @@ include!("parts/redis_commands.rs");
 include!("parts/redis_completion.rs");
 include!("parts/terminal_redis.rs");
 include!("parts/native_client_io.rs");
+include!("parts/updater.rs");
 include!("parts/pg_client_tools.rs");
 #[path = "parts/mysql_client_tools.rs"]
 mod mysql_client_tools;

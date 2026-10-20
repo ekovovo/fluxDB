@@ -152,6 +152,7 @@ fn content(
         Some(tab) if matches!(tab.kind, TabKind::Settings(_)) => {
             settings_content(
                 state,
+                &this.update_ui,
                 AiSettingsPanelState {
                     filter: this.ai_model_filter.clone(),
                     filter_input: this.ai_model_filter_input.clone(),

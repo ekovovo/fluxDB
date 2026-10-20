@@ -1,5 +1,6 @@
 fn settings_content(
     state: &AppState,
+    update: &UpdateUiState,
     ai_settings_panel: AiSettingsPanelState,
     theme_mode: ThemeMode,
     active_section: SettingsPanelSection,
@@ -53,6 +54,7 @@ fn settings_content(
                                 .py_3()
                                 .child(settings_panel_body(
                                     state,
+                                    update,
                                     ai_settings_panel,
                                     theme_mode,
                                     active_section,
@@ -272,13 +274,20 @@ fn settings_panel_header(
                 cx,
             ))
         })
+        .when(active_section == SettingsPanelSection::About, |this| {
+            this.child(settings_section_header_actions(
+                SettingsPanelSection::About,
+                &state.settings,
+                &editor_draft,
+                cx,
+            ))
+        })
         .when(
             matches!(
                 active_section,
                 SettingsPanelSection::Data
                     | SettingsPanelSection::ConnectionSecurity
                     | SettingsPanelSection::DatabaseSupport
-                    | SettingsPanelSection::About
             ),
             |this| this.child(settings_section_header_actions_disabled(colors)),
         )
@@ -286,6 +295,7 @@ fn settings_panel_header(
 
 fn settings_panel_body(
     state: &AppState,
+    update: &UpdateUiState,
     ai_settings_panel: AiSettingsPanelState,
     theme_mode: ThemeMode,
     active_section: SettingsPanelSection,
@@ -336,6 +346,6 @@ fn settings_panel_body(
         SettingsPanelSection::AiSessions => {
             settings_ai_sessions_panel(state, &ai_settings_panel, colors, window, cx)
         }
-        SettingsPanelSection::About => settings_about_panel(colors),
+        SettingsPanelSection::About => settings_about_panel(&editor_draft, update, colors, cx),
     }
 }

@@ -2182,9 +2182,12 @@ dependencies = [
  "fluxdb-storage",
  "libc",
  "memchr",
+ "ring",
  "rusqlite",
+ "semver",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "sqlformat",
  "sqlparser",
  "toml_edit 0.22.27",
@@ -2242,7 +2245,7 @@ dependencies = [
 
 [[package]]
 name = "fluxdb-desktop"
-version = "0.1.0"
+version = "0.1.9"
 dependencies = [
  "anyhow",
  "chrono",

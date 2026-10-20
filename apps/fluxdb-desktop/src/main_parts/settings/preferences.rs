@@ -58,8 +58,8 @@ fn settings_section_changed(
         || saved.pg_client_download_source != draft.pg_client_download_source
         }
         SettingsPanelSection::ConnectionSecurity
-        | SettingsPanelSection::DatabaseSupport
-        | SettingsPanelSection::About => false,
+        | SettingsPanelSection::DatabaseSupport => false,
+        SettingsPanelSection::About => saved.auto_check_updates != draft.auto_check_updates,
     }
 }
 
@@ -102,9 +102,11 @@ fn settings_apply_section_fields(
         SettingsPanelSection::Appearance => settings_apply_appearance_fields(settings, draft),
         SettingsPanelSection::System => settings_apply_system_fields(settings, draft),
         SettingsPanelSection::Data => settings_apply_backup_fields(settings, draft),
+        SettingsPanelSection::About => {
+            settings.auto_check_updates = draft.auto_check_updates;
+        }
         SettingsPanelSection::ConnectionSecurity
-        | SettingsPanelSection::DatabaseSupport
-        | SettingsPanelSection::About => {}
+        | SettingsPanelSection::DatabaseSupport => {}
     }
 }
 
@@ -149,6 +151,15 @@ fn reset_settings_section(
             cx.notify();
         }
         SettingsPanelSection::Appearance => this.reset_appearance_settings(cx),
+        SettingsPanelSection::About => {
+            this.settings_editor_draft.auto_check_updates = Settings::default().auto_check_updates;
+            this.show_message(
+                tr("app.settings.message.update_reset"),
+                AppMessageKind::Info,
+                cx,
+            );
+            cx.notify();
+        }
         SettingsPanelSection::Data => {
             let defaults = Settings::default();
             this.settings_editor_draft.data_table_page_size = defaults.data_table_page_size;

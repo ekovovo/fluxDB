@@ -4,6 +4,10 @@ impl Render for NavicatMain {
         if window.window_title() != window_title {
             window.set_window_title(&window_title);
         }
+        if self.update_auto_check_pending {
+            self.update_auto_check_pending = false;
+            self.start_update_check(false, cx);
+        }
         // 调试入口：首帧后打开模型弹框（需要 window 创建 Input 实体；仅 debug 构建会置位）。
         if self.ai_model_dialog_debug_pending && self.ai_model_dialog.is_none() {
             self.ai_model_dialog_debug_pending = false;
@@ -155,6 +159,10 @@ impl Render for NavicatMain {
             .app_message
             .as_ref()
             .map(|message| app_message_overlay(message, window, cx, colors));
+        let update_dialog = self
+            .update_ui
+            .open
+            .then(|| self.update_dialog(colors, cx));
         let (sidebar_rows, sidebar_item_sizes) = if self.show_connection_browser {
             self.sidebar_tree_rows(
                 &state,
@@ -564,6 +572,7 @@ impl Render for NavicatMain {
             .when(self.pending_exit_confirm, |this| {
                 this.child(exit_confirm_modal(colors, cx))
             })
+            .when_some(update_dialog, |this, dialog| this.child(dialog))
             .when_some(self.backup_log_task, |this, task_id| {
                 if let Some(task) = self
                     .backup_tasks

@@ -3015,6 +3015,7 @@
       "shortcuts_saved": "快捷键已保存",
       "system_reset": "已恢复默认系统设置，点击保存后生效",
       "system_saved": "系统设置已保存，重启应用后生效",
+      "update_reset": "已恢复默认更新设置，点击保存后生效",
       "data_reset": "已恢复默认数据设置，点击保存后生效",
       "appearance_reset": "已恢复默认外观，点击保存后生效",
       "word_wrap_updated": "已更新自动换行"
@@ -3215,6 +3216,45 @@
       "auto_update_detail": "启动应用时检查是否有新的 FluxDB 版本",
       "check_updates": "检查更新",
       "check_updates_detail": "手动检查当前应用是否有可用更新"
+    },
+    "update": {
+      "title": "软件更新",
+      "checking": "正在检查更新…",
+      "check_now": "立即检查",
+      "current_version": "当前版本",
+      "available_version": "发现新版本 v%{version}",
+      "download": "下载更新",
+      "downloading_detail": "下载期间可以继续使用应用；取消后不会安装更新。",
+      "ready_detail": "更新包已通过签名与 SHA-256 校验。重启应用后将安装并自动重新打开。",
+      "installing_detail": "正在启动平台安装器，应用即将退出。",
+      "install_restart": "重启并安装",
+      "later": "稍后",
+      "up_to_date": "当前已是最新版本。",
+      "no_notes": "此版本没有提供发行说明。",
+      "retry": "重试",
+      "cancelled": "已取消更新下载",
+      "save_before_install": "请先保存或关闭所有未保存标签，再安装更新。",
+      "unsigned_notice": "当前为开源未签名构建，系统可能提示未知开发者；更新包仍需通过应用内签名校验。",
+      "status": {
+        "idle": "尚未检查",
+        "checking": "检查中",
+        "available": "发现新版本",
+        "up_to_date": "已是最新",
+        "downloading": "下载中",
+        "ready": "等待重启安装",
+        "installing": "安装中",
+        "error": "更新失败"
+      },
+      "error": {
+        "disabled": "当前构建未配置更新签名公钥",
+        "network": "无法连接更新服务",
+        "invalid_manifest": "更新清单元数据无效",
+        "invalid_signature": "更新清单签名无效，已拒绝安装",
+        "unsupported_platform": "当前平台暂不支持应用内更新",
+        "download": "下载更新包失败",
+        "checksum": "更新包校验失败，已拒绝安装",
+        "install": "启动更新安装器失败"
+      }
     },
     "system": {
       "group": {

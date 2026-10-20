@@ -3015,6 +3015,7 @@
       "shortcuts_saved": "Shortcuts saved",
       "system_reset": "System defaults restored. Save to apply.",
       "system_saved": "System settings saved. Restart the application to apply.",
+      "update_reset": "Update defaults restored. Save to apply.",
       "data_reset": "Data defaults restored. Save to apply.",
       "appearance_reset": "Appearance defaults restored. Save to apply.",
       "word_wrap_updated": "Word wrapping updated"
@@ -3215,6 +3216,45 @@
       "auto_update_detail": "Check for a new FluxDB version at startup",
       "check_updates": "Check for updates",
       "check_updates_detail": "Manually check whether an update is available"
+    },
+    "update": {
+      "title": "Software Update",
+      "checking": "Checking for updates…",
+      "check_now": "Check now",
+      "current_version": "Current version",
+      "available_version": "New version v%{version} is available",
+      "download": "Download update",
+      "downloading_detail": "You can keep using the application while downloading. Cancelling will not install the update.",
+      "ready_detail": "The update package passed signature and SHA-256 verification. Restart to install and reopen the application.",
+      "installing_detail": "Starting the platform installer. The application will exit shortly.",
+      "install_restart": "Restart and install",
+      "later": "Later",
+      "up_to_date": "You are running the latest version.",
+      "no_notes": "No release notes were provided for this version.",
+      "retry": "Retry",
+      "cancelled": "Update download cancelled",
+      "save_before_install": "Save or close all unsaved tabs before installing the update.",
+      "unsigned_notice": "This open-source build is not signed by a platform publisher certificate. The update package is still verified by the application's own signature.",
+      "status": {
+        "idle": "Not checked",
+        "checking": "Checking",
+        "available": "Update available",
+        "up_to_date": "Up to date",
+        "downloading": "Downloading",
+        "ready": "Ready to restart",
+        "installing": "Installing",
+        "error": "Update failed"
+      },
+      "error": {
+        "disabled": "This build has no update signing public key",
+        "network": "Unable to reach the update service",
+        "invalid_manifest": "The update manifest is invalid",
+        "invalid_signature": "The update manifest signature is invalid; installation was refused",
+        "unsupported_platform": "In-app updates are not supported on this platform",
+        "download": "Failed to download the update package",
+        "checksum": "The update package checksum is invalid; installation was refused",
+        "install": "Failed to start the update installer"
+      }
     },
     "system": {
       "group": {

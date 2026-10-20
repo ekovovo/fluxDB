@@ -165,6 +165,9 @@ pub struct Settings {
     /// 系统设置-性能诊断：是否显示 FPS / 帧耗时 / CPU / GPU / 内存 悬浮 HUD。
     #[serde(default)]
     pub performance_diagnostics: bool,
+    /// 启动首帧后是否自动检查 GitHub Release 更新。
+    #[serde(default)]
+    pub auto_check_updates: bool,
     #[serde(default)]
     pub global_font_family: String,
     /// Selected light/dark palette names from the application theme registry.
@@ -261,6 +264,7 @@ impl Default for Settings {
             show_status_bar: true,
             reduce_motion: false,
             performance_diagnostics: false,
+            auto_check_updates: false,
             global_font_family: String::new(),
             light_theme: default_light_theme(),
             dark_theme: default_dark_theme(),

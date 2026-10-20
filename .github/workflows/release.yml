@@ -25,9 +25,22 @@ jobs:
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
     runs-on: ${{ matrix.os }}
+    env:
+      FLUXDB_UPDATE_PUBLIC_KEY: ${{ vars.FLUXDB_UPDATE_PUBLIC_KEY }}
 
     steps:
       - uses: actions/checkout@v5
+
+      - name: Verify release tag matches desktop version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          crate_version="$(awk -F '"' '/^version = / { print $2; exit }' apps/fluxdb-desktop/Cargo.toml)"
+          test "$version" = "$crate_version" || {
+            echo "Tag version $version does not match apps/fluxdb-desktop/Cargo.toml version $crate_version" >&2
+            exit 1
+          }
 
       - name: Install Linux system build dependencies
         if: runner.os == 'Linux'
@@ -60,9 +73,12 @@ jobs:
           export VERSION="${GITHUB_REF_NAME#v}"
           bash scripts/package-macos.sh
           DMG="target/macos-package/FluxDB-$VERSION-macos-${{ matrix.arch }}.dmg"
+          UPDATER_ARCHIVE="target/macos-package/FluxDB-$VERSION-macos-${{ matrix.arch }}.app.tar.gz"
           hdiutil verify "$DMG"
           shasum -a 256 "$DMG" > "$DMG.sha256"
+          shasum -a 256 "$UPDATER_ARCHIVE" > "$UPDATER_ARCHIVE.sha256"
           echo "artifact=$DMG" >> "$GITHUB_ENV"
+          echo "updater_artifact=$UPDATER_ARCHIVE" >> "$GITHUB_ENV"
 
       - name: Build Windows desktop binary
         if: runner.os == 'Windows'
@@ -149,3 +165,74 @@ jobs:
             ${{ env.artifact }}
             ${{ env.artifact }}.sha256
           fail_on_unmatched_files: true
+
+      - name: Upload macOS updater archive
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release upload "$GITHUB_REF_NAME" \
+            "$UPDATER_ARTIFACT" \
+            "$UPDATER_ARTIFACT.sha256" \
+            --clobber
+
+  publish-manifest:
+    needs: build
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GITHUB_TOKEN: ${{ github.token }}
+      FLUXDB_UPDATE_SIGNING_KEY: ${{ secrets.FLUXDB_UPDATE_SIGNING_KEY }}
+      FLUXDB_UPDATE_PUBLIC_KEY: ${{ vars.FLUXDB_UPDATE_PUBLIC_KEY }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Publish bilingual release body when notes are provided
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          if python3 scripts/build-release-body.py \
+            --tag "$GITHUB_REF_NAME" \
+            --notes-dir release-notes \
+            --output target/release-body.md; then
+            gh release edit "$GITHUB_REF_NAME" --notes-file target/release-body.md
+          else
+            echo "::warning::No complete bilingual release notes for $GITHUB_REF_NAME; keeping the existing release body."
+          fi
+
+      - name: Generate and sign updater manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          has_private_key="${FLUXDB_UPDATE_SIGNING_KEY:+1}"
+          has_public_key="${FLUXDB_UPDATE_PUBLIC_KEY:+1}"
+          if [[ -z "$has_private_key" && -z "$has_public_key" ]]; then
+            echo "::warning::Update signing is not configured; release published without latest.json."
+            exit 0
+          fi
+          if [[ -z "$has_private_key" || -z "$has_public_key" ]]; then
+            echo "FLUXDB_UPDATE_SIGNING_KEY and FLUXDB_UPDATE_PUBLIC_KEY must be configured together." >&2
+            exit 1
+          fi
+          mkdir -p target/updater
+          python3 scripts/generate-update-manifest.py \
+            --repo "$GITHUB_REPOSITORY" \
+            --tag "$GITHUB_REF_NAME" \
+            --notes-dir release-notes \
+            --output target/updater/latest.json
+          key_file="$(mktemp)"
+          trap 'rm -f "$key_file"' EXIT
+          printf '%s' "$FLUXDB_UPDATE_SIGNING_KEY" > "$key_file"
+          openssl pkeyutl -sign -rawin -inkey "$key_file" \
+            -in target/updater/latest.json \
+            -out target/updater/latest.json.sig.bin
+          base64 target/updater/latest.json.sig.bin > target/updater/latest.json.sig
+          gh release upload "$GITHUB_REF_NAME" \
+            target/updater/latest.json \
+            target/updater/latest.json.sig \
+            --clobber

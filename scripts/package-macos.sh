@@ -42,8 +42,9 @@ RESOURCES_DIR="$CONTENTS_DIR/Resources"
 INFO_PLIST="$CONTENTS_DIR/Info.plist"
 ICON_PATH="$RESOURCES_DIR/AppIcon.icns"
 DMG_PATH="$PACKAGE_ROOT/$APP_NAME-$VERSION-macos-$ARCH.dmg"
+UPDATER_ARCHIVE="$PACKAGE_ROOT/$APP_NAME-$VERSION-macos-$ARCH.app.tar.gz"
 
-rm -rf "$APP_DIR" "$DMG_PATH"
+rm -rf "$APP_DIR" "$DMG_PATH" "$UPDATER_ARCHIVE"
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 
 install -m 755 "$BINARY_PATH" "$MACOS_DIR/fluxdb-desktop"
@@ -139,6 +140,10 @@ if [[ -n "${CODESIGN_IDENTITY:-}" || "$AD_HOC_SIGN" == "1" ]]; then
     codesign --verify --deep --strict --verbose=2 "$APP_DIR"
 fi
 plutil -lint "$INFO_PLIST"
+
+# 应用内更新使用稳定的 app 压缩包；DMG 继续作为手动安装包。
+tar -czf "$UPDATER_ARCHIVE" -C "$PACKAGE_ROOT" "$APP_NAME.app"
+echo "Created $UPDATER_ARCHIVE"
 
 if [[ "$CREATE_DMG" == "1" ]]; then
     if [[ "${CLEAN_CARGO_TARGET_BEFORE_DMG:-0}" == "1" ]]; then

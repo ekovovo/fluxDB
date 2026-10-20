@@ -1240,4 +1240,135 @@ mod i18n_e2e_tests {
         assert_eq!(reloaded.active_locale, "ja");
     }
 
+    #[gpui::test]
+    fn update_settings_controls_render_and_toggle_in_real_view(cx: &mut TestAppContext) {
+        let _guard = locale_guard();
+        let temp = tempfile::tempdir().expect("temp profile");
+        let storage = FileStorage::new(temp.path().join("profile"));
+        let settings = Settings {
+            locale: "en".to_string(),
+            show_sidebar: false,
+            ..Settings::default()
+        };
+        storage.save_settings(&settings).expect("save settings");
+        init_i18n(
+            &app_assets_base_path().join("locales"),
+            &storage.root_dir().join("locales"),
+            &settings.locale,
+        );
+        cx.update(|cx| {
+            extend_component_i18n();
+            gpui_component::init(cx);
+        });
+
+        let mut controller = AppController::new();
+        let _ = controller.dispatch(fluxdb_app::AppCommand::SaveSettings(settings.clone()));
+        assert!(matches!(
+            controller.dispatch(fluxdb_app::AppCommand::OpenSettings),
+            fluxdb_app::AppEvent::TabOpened(_)
+        ));
+        let storage_for_view = storage.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let view = cx.new(|cx| {
+                navicat_main_new(
+                    window,
+                    cx,
+                    controller,
+                    storage_for_view,
+                    gpui_component::ThemeMode::Light,
+                )
+            });
+            Root::new(view, window, cx)
+        });
+        let view = cx.update(|window, cx| {
+            window
+                .root::<Root>()
+                .expect("base window root")
+                .expect("typed window root")
+                .read(cx)
+                .view()
+                .clone()
+                .downcast::<NavicatMain>()
+                .expect("production NavicatMain root view")
+        });
+        cx.update(|_, cx| {
+            view.update(cx, |this, _| {
+                this.settings_panel_section = SettingsPanelSection::About;
+            });
+        });
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+        });
+
+        let switch = cx
+            .debug_bounds("settings-auto-check-updates-switch")
+            .expect("auto update switch");
+        assert!(
+            cx.debug_bounds("settings-check-updates").is_some(),
+            "manual update button must render"
+        );
+        cx.simulate_click(switch.center(), Modifiers::default());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(
+            cx.update(|_, cx| view.read(cx).settings_editor_draft.auto_check_updates),
+            "switch must update the settings draft"
+        );
+        let save = cx
+            .debug_bounds("settings-About-save")
+            .expect("about save button");
+        cx.simulate_click(save.center(), Modifiers::default());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(cx.update(|_, cx| {
+            view.read(cx).controller.state().settings.auto_check_updates
+        }));
+        assert!(
+            storage
+                .load_settings()
+                .expect("reload settings")
+                .auto_check_updates
+        );
+        assert_eq!(
+            rust_i18n::t!("app.settings.update.title").as_ref(),
+            "Software Update"
+        );
+
+        cx.update(|_, cx| {
+            view.update(cx, |this, _| {
+                this.update_ui.status = crate::UpdateUiStatus::Available;
+                this.update_ui.open = true;
+                this.update_ui.locale = "en".to_string();
+                this.update_ui.update = Some(fluxdb_app::AvailableUpdate {
+                    current_version: "0.1.9".to_string(),
+                    version: "0.2.0".to_string(),
+                    published_at: None,
+                    releases: vec![fluxdb_app::UpdateRelease {
+                        version: "0.2.0".to_string(),
+                        published_at: None,
+                        notes: std::collections::BTreeMap::from([(
+                            "en".to_string(),
+                            "## Highlights\n\n- In-app updates".to_string(),
+                        )]),
+                    }],
+                    asset: fluxdb_app::UpdateAsset {
+                        url: "https://example.com/FluxDB-update.app.tar.gz".to_string(),
+                        sha256: "a".repeat(64),
+                        size: 128,
+                        kind: fluxdb_app::UpdateAssetKind::MacosAppTarGz,
+                    },
+                    platform: "macos-aarch64".to_string(),
+                });
+            });
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(cx.debug_bounds("update-dialog").is_some());
+        assert!(cx.debug_bounds("update-dialog-download").is_some());
+        let later = cx.debug_bounds("update-dialog-later").expect("later button");
+        cx.simulate_click(later.center(), Modifiers::default());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(
+            cx.debug_bounds("update-dialog").is_none(),
+            "later must close the update dialog"
+        );
+    }
+
 }

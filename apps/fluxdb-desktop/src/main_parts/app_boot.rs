@@ -238,6 +238,7 @@ fn navicat_main_new(
     storage: FileStorage,
     theme_mode: ThemeMode,
 ) -> NavicatMain {
+                        let auto_check_updates = controller.state().settings.auto_check_updates;
                         let rename_group_input =
                             cx.new(|cx| {
                                 InputState::new(window, cx)
@@ -2654,6 +2655,15 @@ fn navicat_main_new(
                             controller,
                             storage,
                             theme_mode,
+                            update_ui: UpdateUiState::default(),
+                            update_auto_check_pending: auto_check_updates,
+                            update_cancel: Arc::new(AtomicBool::new(false)),
+                            update_downloaded_bytes: Arc::new(AtomicU64::new(0)),
+                            update_total_bytes: Arc::new(AtomicU64::new(0)),
+                            _update_check_task: None,
+                            _update_download_task: None,
+                            _update_progress_task: None,
+                            _update_install_task: None,
                             new_connection_kind: None,
                             new_connection_tab: NewConnectionTab::Connection,
                             new_connection_form: NewConnectionForm::for_kind(

@@ -36,12 +36,19 @@
 - 验收只报实际场景、命令、用例数、平台及必要证据；区分通过、失败、按评估不需要、跳过、应测未验证。零用例、只编译/启动或 GPU 跳过不算功能/视觉通过，环境不足不得改用当前桌面或伪称免测。
 - CI（`.github/workflows/ci.yml`）只保留 `workflow_dispatch` 手动触发，合并不自动跑。本地门禁用 `scripts/check.sh`（fmt + workspace check + clippy）。跨平台构建差异（Windows fxc/HLSL、Linux xkbcommon/OpenSSL）本地看不到，**打 tag 前必须手动 dispatch 一次 CI 并确认三平台全绿**，未验证不得打 tag。
 
+## Release 发布
+- Tag 固定为 `v<主版本>.<大版本迭代>.<小版本>`，第三位范围 `0..=99`；默认只加第三位，到 `99` 后可跨大版本（如 `v0.1.99 → v0.2.0`）。第二个数字仅按明确要求提升，Cargo 版本必须与 tag 一致。
+- 每个版本只发一个 Release；中英文说明分别写入 `release-notes/<tag>/zh-CN.md` 和 `en.md`。
+- 发版顺序固定：更新 Cargo 版本 → 准备中英文说明 → 手动运行三平台 CI 并全绿 → 推送 `v*` tag。
+- 更新签名密钥只配置一次，发版不得重新生成；未配置签名时跳过 `latest.json`，禁止发布未签名清单。
+
 ## 按任务必读
 | 涉及内容 | 阅读范围 |
 | --- | --- |
 | Rust 函数、接口、命名与错误处理 | [Rust 风格与单测](docs/testing/rust-style-and-unit-tests.md) 第 2 节 |
 | 编写/整理单测 | [Rust 风格与单测](docs/testing/rust-style-and-unit-tests.md) 第 3–6 节 |
 | 验证范围、E2E、Podman、截图 | 本文件“测试与验收”；Rust 测试命令见上述指南第 5 节 |
+| Release、版本号、更新清单或签名 | 本文件“Release 发布”；[应用内更新](docs/updates.md) |
 | UI 组件、交互、页面上下文或 GPUI 依赖 | [UI 规范](docs/ui-style.md) |
 | 语言包、locale 或界面文案迁移 | [界面国际化](docs/i18n.md) |
 | 国际化端到端验证 | [国际化 E2E 测试规范](docs/testing/i18n-e2e.md) |

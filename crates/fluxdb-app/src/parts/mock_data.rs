@@ -321,17 +321,6 @@ fn list_foreign_keys_for_connection_with_cancel(
     connector_for(config)?.list_foreign_keys_with_cancel(&path, should_cancel)
 }
 
-fn list_completion_triggers_for_connection_with_cancel(
-    config: &ConnectionConfig,
-    database: Option<&str>,
-    schema: Option<&str>,
-    filter: &str,
-    limit: u64,
-    should_cancel: &dyn Fn() -> bool,
-) -> fluxdb_core::Result<Vec<fluxdb_core::CompletionTrigger>> {
-    connector_for(config)?
-        .list_completion_triggers_with_cancel(database, schema, filter, limit, should_cancel)
-}
 
 fn load_data_for_connection(
     config: &ConnectionConfig,

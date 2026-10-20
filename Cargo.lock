@@ -2175,6 +2175,7 @@ dependencies = [
  "base64 0.22.1",
  "csv",
  "dirs 6.0.0",
+ "fluxdb-completion",
  "fluxdb-connectors",
  "fluxdb-core",
  "fluxdb-editor-core",
@@ -2193,6 +2194,13 @@ dependencies = [
  "uuid",
  "windows 0.57.0",
  "zip",
+]
+
+[[package]]
+name = "fluxdb-completion"
+version = "0.1.0"
+dependencies = [
+ "sqlparser",
 ]
 
 [[package]]

@@ -3526,10 +3526,6 @@
     }
   },
   "completion": {
-    "cte_column": "CTE 列：%{name}",
-    "derived_alias": "派生表别名",
-    "table_alias": "表别名",
-    "derived_column": "派生表列：%{name}",
     "type": {
       "numeric": "数值",
       "numeric_date_text": "数值/日期/字符串",

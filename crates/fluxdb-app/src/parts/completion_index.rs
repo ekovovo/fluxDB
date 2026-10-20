@@ -2,8 +2,6 @@
 
 const COMPLETION_INDEX_TTL_SECONDS: u64 = 30 * 60;
 const COMPLETION_PREFIX_LIMIT: usize = 24;
-const COMPLETION_FUZZY_SCAN_LIMIT: usize = 20_000;
-const COMPLETION_RESULT_LIMIT: usize = 100;
 const COMPLETION_WARMUP_BATCH_SIZE: usize = 50;
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
@@ -297,57 +295,6 @@ impl CompletionIndex {
             .collect()
     }
 
-    /// 写入某 scope 的触发器索引（整批替换）。
-    fn insert_triggers(
-        &mut self,
-        connection_id: ConnectionId,
-        database: Option<&str>,
-        schema: Option<&str>,
-        triggers: Vec<CompletionTrigger>,
-        db_kind: DatabaseKind,
-    ) {
-        let db_key = Self::db_key(connection_id, database, schema);
-        let mut seen = BTreeSet::new();
-        let mut trigger_ids = Vec::new();
-        for trigger in triggers {
-            let reference = TriggerRef {
-                database: database.map(str::to_string),
-                schema: trigger.schema.or_else(|| schema.map(str::to_string)),
-                name: trigger.name,
-                table: trigger.table,
-            };
-            let dedupe_key = (reference.schema.clone(), reference.name.clone(), reference.table.clone());
-            if !seen.insert(dedupe_key) {
-                continue;
-            }
-            let trigger_id = TriggerId(self.triggers.len());
-            self.triggers.push(reference);
-            trigger_ids.push(trigger_id);
-        }
-        self.triggers_by_db.insert(db_key.clone(), trigger_ids);
-        self.touch_meta(db_key, db_kind);
-    }
-
-    fn database_triggers(
-        &self,
-        connection_id: ConnectionId,
-        database: Option<&str>,
-        schema: Option<&str>,
-    ) -> Vec<CompletionTrigger> {
-        let db_key = Self::db_key(connection_id, database, schema);
-        self.triggers_by_db
-            .get(&db_key)
-            .into_iter()
-            .flat_map(|ids| ids.iter())
-            .filter_map(|id| self.triggers.get(id.0))
-            .map(|reference| CompletionTrigger {
-                schema: reference.schema.clone(),
-                name: reference.name.clone(),
-                table: reference.table.clone(),
-            })
-            .collect()
-    }
-
     fn insert_snapshot(&mut self, snapshot: CompletionIndexSnapshot) {
         if snapshot.meta.app_index_version != COMPLETION_INDEX_VERSION {
             return;
@@ -593,51 +540,6 @@ impl CompletionIndex {
             .collect()
     }
 
-    fn database_columns(
-        &self,
-        connection_id: ConnectionId,
-        database: Option<&str>,
-        schema: Option<&str>,
-        prefix: &str,
-    ) -> Vec<CompletionColumn> {
-        let db_key = Self::db_key(connection_id, database, schema);
-        let prefix = prefix.trim().to_ascii_lowercase();
-        let mut seen = BTreeSet::new();
-        let mut ids = Vec::new();
-        if !prefix.is_empty() {
-            let prefix_key = PrefixKey {
-                connection_id,
-                database: database.map(str::to_string),
-                schema: schema.map(str::to_string),
-                prefix: prefix.clone(),
-            };
-            if let Some(prefix_ids) = self.column_prefix_index.get(&prefix_key) {
-                ids.extend(prefix_ids.iter().copied());
-            }
-        }
-        if ids.len() < COMPLETION_RESULT_LIMIT {
-            if let Some(db_ids) = self.columns_by_db.get(&db_key) {
-                for id in db_ids.iter().take(COMPLETION_FUZZY_SCAN_LIMIT) {
-                    let Some(column) = self.columns.get(id.0) else {
-                        continue;
-                    };
-                    if prefix.is_empty() || matches_completion_fuzzy(&column.source.column, &prefix) {
-                        ids.push(*id);
-                    }
-                    if ids.len() >= COMPLETION_RESULT_LIMIT * 4 {
-                        break;
-                    }
-                }
-            }
-        }
-
-        ids.into_iter()
-            .filter(|id| seen.insert(*id))
-            .filter_map(|id| self.columns.get(id.0))
-            .map(indexed_column_to_completion)
-            .collect()
-    }
-
     fn database_tables(
         &self,
         connection_id: ConnectionId,
@@ -810,134 +712,6 @@ impl CompletionIndex {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct RankedCompletionItem {
-    item: QueryCompletionItem,
-    score: i32,
-    rank: (u8, usize, usize, usize),
-    source_table: String,
-    /// 限定前缀（别名优先，其次表名）。P2.10 重复列消歧用。
-    source_qualifier: String,
-}
-
-/// 重复列消歧（P2.10）：当同一列名出现在多个不同的引用表中时，把候选 label 与
-/// apply 前缀改为「限定前缀.列名」（限定前缀取别名，其次表名）；唯一列保持裸列名。
-/// 判定按「列名 × 出现过的不同表」计数：仅当跨表重复才加前缀，避免候选变长。
-fn disambiguate_duplicate_columns(mut items: Vec<RankedCompletionItem>) -> Vec<RankedCompletionItem> {
-    let mut column_owner_tables: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    for item in &items {
-        column_owner_tables
-            .entry(item.item.label.to_ascii_lowercase())
-            .or_default()
-            .insert(item.source_table.clone());
-    }
-    for item in &mut items {
-        let owners = column_owner_tables
-            .get(&item.item.label.to_ascii_lowercase())
-            .map(|set| set.len())
-            .unwrap_or(0);
-        if owners <= 1 {
-            continue;
-        }
-        let qualifier = if item.source_qualifier.is_empty() {
-            item.source_table.clone()
-        } else {
-            item.source_qualifier.clone()
-        };
-        item.item.label = format!("{qualifier}.{}", item.item.label);
-        item.item.insert_text = format!("{qualifier}.{}", item.item.insert_text);
-    }
-    items
-}
-
-fn rank_column_completion(
-    column: CompletionColumn,
-    prefix: &str,
-    scope: CompletionColumnScope,
-) -> RankedCompletionItem {
-    let mut score = match completion_match_rank(&column.name, prefix).0 {
-        0 => 0,
-        1 => 10,
-        2 => 30,
-        3 => 40,
-        _ => 100,
-    };
-    if completion_tokens(&column.name)
-        .iter()
-        .any(|token| token.starts_with(&prefix.to_ascii_lowercase()))
-    {
-        score = score.min(20);
-    }
-    match scope {
-        CompletionColumnScope::AliasQualified => score -= 20,
-        CompletionColumnScope::ReferencedTable => score -= 30,
-        CompletionColumnScope::DatabaseWide => {}
-    }
-    if column.primary_key {
-        score -= 5;
-    }
-    if column.name.eq_ignore_ascii_case("id") && !prefix.eq_ignore_ascii_case("id") {
-        score += 10;
-    }
-    let detail = column_completion_detail_with_table(&column);
-    // 文档提示含类型/可空/主键/注释，而非仅注释（§8.4）；须在 name 被移动前计算。
-    let documentation = column_completion_documentation(&column);
-    RankedCompletionItem {
-        rank: completion_match_rank(&column.name, prefix),
-        source_table: column.table.to_ascii_lowercase(),
-        source_qualifier: column.table.clone(),
-        item: QueryCompletionItem {
-            label: column.name.clone(),
-            insert_text: column.name,
-            kind: QueryCompletionKind::Column,
-            detail,
-            documentation,
-            filter_text: None,
-            sort_text: None,
-                    ..Default::default()
-},
-        score,
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum CompletionColumnScope {
-    DatabaseWide,
-    ReferencedTable,
-    AliasQualified,
-}
-
-fn sort_ranked_completion_items(mut items: Vec<RankedCompletionItem>) -> Vec<QueryCompletionItem> {
-    items.sort_by(|left, right| {
-        left.score
-            .cmp(&right.score)
-            .then_with(|| left.rank.cmp(&right.rank))
-            .then_with(|| {
-                left.item
-                    .label
-                    .to_ascii_lowercase()
-                    .cmp(&right.item.label.to_ascii_lowercase())
-            })
-            .then_with(|| left.source_table.cmp(&right.source_table))
-    });
-    items
-        .into_iter()
-        .take(COMPLETION_RESULT_LIMIT)
-        .map(|item| {
-            let mut completion = item.item;
-            // 以通用 sort_text 把 App 层来源分数带过 bridge；editor-core 不需要理解 SQL。
-            completion.sort_text = Some(format!(
-                "{:04}:{:01}:{:08}:{:08}",
-                item.score.saturating_add(1000),
-                item.rank.0,
-                item.rank.1,
-                item.rank.2
-            ));
-            completion
-        })
-        .collect()
-}
-
 fn completion_tokens(value: &str) -> Vec<String> {
     let mut tokens = BTreeSet::new();
     let lower = value.to_ascii_lowercase();
@@ -995,18 +769,6 @@ fn indexed_column_to_completion(column: &IndexedColumnRef) -> CompletionColumn {
         comment: column.source.comment.clone(),
         stable: None,
     }
-}
-
-fn column_completion_detail_with_table(column: &CompletionColumn) -> Option<String> {
-    let mut parts = Vec::new();
-    if let Some(type_name) = column.type_name.as_ref().filter(|value| !value.is_empty()) {
-        parts.push(type_name.clone());
-    }
-    if column.primary_key {
-        parts.push("PK".to_string());
-    }
-    parts.push(column.table.clone());
-    Some(parts.join(" · "))
 }
 
 fn empty_completion_meta(db_kind: DatabaseKind) -> CompletionIndexMeta {

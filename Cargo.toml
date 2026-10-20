@@ -3,6 +3,7 @@ members = [
     "apps/fluxdb-desktop",
     "apps/fluxdb-mcp",
     "crates/fluxdb-app",
+    "crates/fluxdb-completion",
     "crates/fluxdb-connectors",
     "crates/fluxdb-core",
     "crates/fluxdb-editor-core",
@@ -10,3 +11,6 @@ members = [
     "crates/fluxdb-storage",
 ]
 resolver = "3"
+
+[workspace.dependencies]
+sqlparser = { version = "0.62.0", features = ["visitor"] }

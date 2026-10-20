@@ -4,12 +4,13 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+fluxdb-completion = { path = "../fluxdb-completion" }
 fluxdb-connectors = { path = "../fluxdb-connectors" }
 fluxdb-core = { path = "../fluxdb-core" }
 fluxdb-editor-core = { path = "../fluxdb-editor-core" }
 fluxdb-storage = { path = "../fluxdb-storage" }
 sqlformat = "0.5.0"
-sqlparser = { version = "0.62.0", features = ["visitor"] }
+sqlparser = { workspace = true }
 rusqlite = { version = "0.32", features = ["bundled"] }
 tracing = "0.1"
 uuid = { version = "1.23", features = ["v4"] }

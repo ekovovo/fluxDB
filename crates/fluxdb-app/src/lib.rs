@@ -39,8 +39,8 @@ use fluxdb_core::{
     UserRoleMembership, WorkbenchHistoryItem, WorkbenchHistoryScope, WorkbenchHistoryStore,
     WriteCommit, WriteReviewOutcome, WriteRiskDecision, WriteRiskFacts,
     database_user_admin_provider, grants_from_query_result, infer_cloud_from_host,
-    matches_completion_fuzzy, redact_uri_password, role_memberships_from_grants,
-    set_sqlite_attached_database, sqlite_attached_database_path,
+    redact_uri_password, role_memberships_from_grants, set_sqlite_attached_database,
+    sqlite_attached_database_path,
 };
 use sqlformat::{Dialect, FormatOptions, Indent, QueryParams};
 use sqlparser::{
@@ -76,6 +76,7 @@ include!("parts/table_info.rs");
 include!("parts/user_admin.rs");
 include!("parts/completion_index.rs");
 include!("parts/query_completion.rs");
+include!("parts/completion_engine.rs");
 include!("parts/redis_commands.rs");
 include!("parts/redis_completion.rs");
 include!("parts/terminal_redis.rs");

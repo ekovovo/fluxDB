@@ -5,7 +5,7 @@
 // 通过注入的 schema / 补全源提供表、列等业务信息。该模块只做「能力定义」，
 // 不直接连接数据库：连接/连接信息一律由构造参数注入。
 //
-// 由于本文件与 dialect.rs / syntax.rs / completion.rs / semantic.rs / execution.rs
+// 由于本文件与 dialect.rs / syntax.rs / completion.rs / execution.rs
 // 通过 include! 合并进同一个 `sql_editor_adapter` 模块，所有用于整个模块的共享
 // `use` 统一放在本文件顶部，其余文件直接引用同一模块作用域下的类型，不重复 `use`。
 
@@ -108,28 +108,22 @@ pub struct SqlCompletionResponse {
     pub has_more: bool,
 }
 
-fn merge_completion_items(
-    mut provider_items: Vec<CompletionItem>,
-    local_items: Vec<CompletionItem>,
-) -> Vec<CompletionItem> {
-    let mut seen = std::collections::HashSet::with_capacity(provider_items.len() + local_items.len());
-    provider_items.retain(|item| {
-        seen.insert((
-            item.kind,
-            item.label.to_ascii_lowercase(),
-            item.insert_text.to_ascii_lowercase(),
-        ))
-    });
-    for item in local_items {
-        if seen.insert((
-            item.kind,
-            item.label.to_ascii_lowercase(),
-            item.insert_text.to_ascii_lowercase(),
-        )) {
-            provider_items.push(item);
-        }
-    }
-    provider_items
+/// 已知 SQL 函数 → 结果类型（DM-802，轻量白名单）。
+///
+/// 不建通用类型代数，只对常用聚合/标量函数给出结果类型，用于函数补全项的
+/// detail 增强。未知函数返回 None（保守）。键为小写函数名。
+pub fn function_result_type(fn_name: &str) -> Option<SharedString> {
+    Some(match fn_name.to_ascii_lowercase().as_str() {
+        "count" | "sum" | "count_big" | "if" | "ifnull" | "coalesce" => tr("app.completion.type.numeric"),
+        "avg" | "max" | "min" => tr("app.completion.type.numeric_date_text"),
+        "concat" | "substring" | "substr" | "lower" | "lcase" | "upper" | "ucase"
+        | "trim" | "ltrim" | "rtrim" | "replace" | "cast" | "convert" | "now"
+        | "current_date" | "current_timestamp" => tr("app.completion.type.text_date"),
+        "len" | "length" | "char_length" | "round" | "floor" | "ceil" | "abs"
+        | "mod" | "rand" => tr("app.completion.type.numeric"),
+        "date" | "year" | "month" | "day" | "hour" | "minute" | "second" => tr("app.completion.type.date_numeric"),
+        _ => return None,
+    })
 }
 
 pub type SqlCompletionResolver = Arc<dyn Fn(String, usize, bool, Arc<AtomicU64>, u64) -> Result<SqlCompletionResponse, String> + Send + Sync>;
@@ -175,22 +169,6 @@ fn completion_window(snapshot: &BufferSnapshot, cursor: usize) -> (String, usize
         .saturating_add(COMPLETION_WINDOW_BYTES)
         .min(snapshot.len());
     (snapshot.text_in_range(Range::new(start, end)), start)
-}
-
-/// 只解析光标所在语句的语义作用域，避免每次补全对 1MB 全文做 tree-sitter 解析。
-/// DM-800 跨 statement 的 CTE/别名提示在此牺牲（见 `ponytail:` 注）。
-fn semantic_scope_snapshot(snapshot: &BufferSnapshot, cursor: usize) -> SqlScope {
-    match statement_around_snapshot(snapshot, cursor) {
-        Some((start, end)) => {
-            // 只物化单条语句文本，而非全文（`to_string()` 会复制整个 Rope）。
-            let stmt = snapshot.text_in_range(Range::new(start, end));
-            SqlScope::from_text(&stmt)
-        }
-        None => SqlScope::default(),
-    }
-    // ponytail: 只取当前语句——跨语句 CTE/别名提示丢失（DM-800 已知取舍）。
-    // 若需恢复：并入光标前 1~2 条语句区间（代价是再扫一次全文字节，O(n) 扫描而非语法树）。
-    // 何时值得：用户明确反馈跨语句 CTE 补全丢失再升。
 }
 
 fn sql_signature_label(name: &str, qualifier: Option<&str>) -> String {
@@ -1499,16 +1477,9 @@ impl CompletionProvider for SqlAdapter {
             let document_bytes = snapshot.len();
             let (text, text_offset) = completion_window(&snapshot, request.cursor);
             let cursor = request.cursor.saturating_sub(text_offset).min(text.len());
-            // 文档绝对光标：语义窗口化用「光标所在语句」，不能用上面的窗口内相对 `cursor`。
-            let doc_cursor = request.cursor;
             let explicit = request.explicit;
             let query = request.query;
             let fallback_items = self.build_completion_items();
-            // Phase 8（DM-800~804）：收集查询内符号作为**动态**本地候选（CTE/关系别名/
-            // 派生表列），并与元数据候选合并进 resolver 结果。查询内符号随语句变化，
-            // 不走静态 completion_items_cache。全文 tree-sitter 采集由宿主 `cx.background_spawn`
-            // 在后台 executor 轮询本 future，故移入闭包内执行，避免在大文档上阻塞主线程
-            // （16k 行粘贴时每词首字符都触发补全，同步解析曾造成输入卡顿）。
             tracing::debug!(
                 target: "gdb_sql_perf",
                 op = "completion_prepare",
@@ -1525,13 +1496,9 @@ impl CompletionProvider for SqlAdapter {
             return Box::pin(async move {
                 let started = Instant::now();
                 // 复用共享原子作为 resolver 的 latest-wins 检查点（Arc<AtomicU64> 共享）。
-                let semantic_items = {
-                    let scope = semantic_scope_snapshot(&snapshot, doc_cursor);
-                    scope_to_items(&scope)
-                };
                 match resolver(text, cursor, explicit, latest_request.clone(), request_id) {
                     Ok(response) => {
-                        let mut items = response
+                        let items = response
                             .items
                             .into_iter()
                             .map(|mut item| {
@@ -1544,10 +1511,7 @@ impl CompletionProvider for SqlAdapter {
                                 item
                             })
                             .collect::<Vec<_>>();
-                        // 上下文结果即权威答案：本地静态回退（整份方言关键字 + with_schema
-                        // 注入的 schema 上下文）只在 resolver 不可用 / 失败时降级使用（见下方
-                        // Err 分支）。成功路径并入它会把整套关键字（如 `order`）和其它 schema
-                        // 的表混进 `schema.` 的定向结果，故此处只并入查询内语义候选。
+                        // 上下文结果即权威答案：本地静态回退只在 resolver 不可用时降级使用。
                         tracing::debug!(
                             target: "gdb_sql_completion",
                             op = "completion_fallback_skipped",
@@ -1556,8 +1520,6 @@ impl CompletionProvider for SqlAdapter {
                             fallback_count = fallback_items.len(),
                             "resolver 已返回上下文候选，跳过本地静态回退候选"
                         );
-                        // DM-800~803：合并查询内语义候选（CTE/别名/派生表列）。
-                        items = merge_completion_items(items, semantic_items.clone());
                         tracing::debug!(
                             target: "gdb_sql_perf",
                             op = "completion_provider",
@@ -1588,11 +1550,7 @@ impl CompletionProvider for SqlAdapter {
                             error = %error,
                             "SQL completion resolver failed; using local candidates"
                         );
-                        let local = merge_completion_items(
-                            fallback_items.as_ref().clone(),
-                            semantic_items.clone(),
-                        );
-                        let filtered = filter_items(&local, &query);
+                        let filtered = filter_items(fallback_items.as_ref(), &query);
                         tracing::debug!(
                             target: "gdb_sql_perf",
                             op = "completion_fallback",
@@ -1615,12 +1573,6 @@ impl CompletionProvider for SqlAdapter {
         }
         let items = self.build_completion_items();
         let query = request.query;
-        // Phase 8（DM-800~804）：无 resolver 时同样注入查询内语义候选（若有快照）。
-        // 全文 tree-sitter 采集由宿主 `cx.background_spawn` 在后台 executor 轮询本 future，
-        // 故移入闭包内执行，避免在大文档上阻塞主线程（与 resolver 路径同因，见 DM 卡顿整改）。
-        let document = request.document;
-        // 文档绝对光标：语义窗口化用「光标所在语句」定位当前范围。
-        let cursor = request.cursor;
         tracing::debug!(
             target: "gdb_sql_perf",
             op = "completion_prepare",
@@ -1634,17 +1586,6 @@ impl CompletionProvider for SqlAdapter {
         );
         Box::pin(async move {
             let started = Instant::now();
-            let semantic_items =
-                document.as_ref().map(|snapshot| {
-                    let scope = semantic_scope_snapshot(snapshot, cursor);
-                    scope_to_items(&scope)
-                });
-            let items: Arc<Vec<CompletionItem>> = match &semantic_items {
-                Some(semantic) if !semantic.is_empty() => {
-                    Arc::new(merge_completion_items(items.as_ref().clone(), semantic.clone()))
-                }
-                _ => items,
-            };
             let filtered = filter_items(&items, &query);
             tracing::debug!(
                 target: "gdb_sql_perf",

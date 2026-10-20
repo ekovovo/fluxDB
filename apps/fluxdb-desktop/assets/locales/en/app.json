@@ -3526,10 +3526,6 @@
     }
   },
   "completion": {
-    "cte_column": "CTE column: %{name}",
-    "derived_alias": "Derived table alias",
-    "table_alias": "Table alias",
-    "derived_column": "Derived table column: %{name}",
     "type": {
       "numeric": "Numeric",
       "numeric_date_text": "Numeric/date/text",

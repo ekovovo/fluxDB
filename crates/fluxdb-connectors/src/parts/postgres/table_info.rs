@@ -592,6 +592,7 @@ fn pg_load_table_design_metadata(
             foreign_keys: pg_foreign_keys_from_structure(&structure),
             triggers: pg_triggers_from_structure(&structure),
             ddl,
+            details_loaded: true,
         })
     })
 }

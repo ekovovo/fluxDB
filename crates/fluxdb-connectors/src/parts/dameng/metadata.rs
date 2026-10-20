@@ -558,6 +558,21 @@ fn dm_load_table_design_metadata(
     config: &ConnectionConfig,
     path: &ObjectPath,
 ) -> fluxdb_core::Result<fluxdb_core::TableDesignMetadata> {
+    dm_load_table_design_metadata_with_details(config, path, true)
+}
+
+fn dm_load_table_design_base_metadata(
+    config: &ConnectionConfig,
+    path: &ObjectPath,
+) -> fluxdb_core::Result<fluxdb_core::TableDesignMetadata> {
+    dm_load_table_design_metadata_with_details(config, path, false)
+}
+
+fn dm_load_table_design_metadata_with_details(
+    config: &ConnectionConfig,
+    path: &ObjectPath,
+    include_details: bool,
+) -> fluxdb_core::Result<fluxdb_core::TableDesignMetadata> {
     let schema = dm_request_schema(config, path)?;
     if path.kind == ObjectKind::View {
         let mut client = dm_connect(config)?;
@@ -570,31 +585,63 @@ fn dm_load_table_design_metadata(
             foreign_keys: Vec::new(),
             triggers: Vec::new(),
             ddl,
+            details_loaded: true,
         });
     }
 
     let mut client = dm_connect(config)?;
     let columns = dm_load_column_infos(&mut client, &schema, &path.name)?;
-    let indexes = dm_load_indexes(&mut client, &schema, &path.name)?;
-    let foreign_keys = dm_load_foreign_keys(&mut client, &schema, &path.name)?;
-    let triggers = dm_load_triggers(&mut client, &schema, &path.name)?;
+    let indexes = if include_details {
+        dm_load_indexes(&mut client, &schema, &path.name)?
+    } else {
+        Vec::new()
+    };
+    let foreign_keys = if include_details {
+        dm_load_foreign_keys(&mut client, &schema, &path.name)?
+    } else {
+        Vec::new()
+    };
+    let triggers = if include_details {
+        dm_load_triggers(&mut client, &schema, &path.name)?
+    } else {
+        Vec::new()
+    };
     let table_comment = dm_load_table_comment(&mut client, &schema, &path.name)?;
     client.close();
-    let ddl = dm_render_table_ddl(
-        &schema,
-        &path.name,
-        &columns,
-        &indexes,
-        &foreign_keys,
-        table_comment.as_deref(),
-    );
+    let ddl = if include_details {
+        dm_render_table_ddl(
+            &schema,
+            &path.name,
+            &columns,
+            &indexes,
+            &foreign_keys,
+            table_comment.as_deref(),
+        )
+    } else {
+        dm_render_table_base_ddl(
+            &schema,
+            &path.name,
+            &columns,
+            table_comment.as_deref(),
+        )
+    };
     Ok(fluxdb_core::TableDesignMetadata {
         columns: dm_completion_columns(path, &schema, columns),
         indexes,
         foreign_keys,
         triggers,
         ddl,
+        details_loaded: include_details,
     })
+}
+
+fn dm_render_table_base_ddl(
+    schema: &str,
+    table_name: &str,
+    columns: &[DmColumnInfo],
+    table_comment: Option<&str>,
+) -> String {
+    dm_render_table_ddl(schema, table_name, columns, &[], &[], table_comment)
 }
 
 fn dm_completion_columns(

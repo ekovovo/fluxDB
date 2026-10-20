@@ -15,13 +15,13 @@ impl NavicatMain {
         }
 
         self.show_message(
-            tr("app.create_table.loading_design").as_ref(),
+            tr("app.create_table.loading_design_base").as_ref(),
             AppMessageKind::Info,
             cx,
         );
         let finish_key = key.clone();
         let task = self.spawn_controller_command(
-            AppCommand::LoadDesignTable(object),
+            AppCommand::LoadDesignTableBase(object),
             move |this, event, cx| {
                 this._design_table_tasks.remove(&finish_key);
                 let result = match event {
@@ -36,8 +36,26 @@ impl NavicatMain {
                 };
                 let event = this
                     .controller
-                    .dispatch(AppCommand::FinishOpenDesignTable { result });
+                    .dispatch(AppCommand::FinishOpenDesignTable {
+                        result: result.clone(),
+                    });
                 this.apply_app_event(&event, cx);
+                if let (AppEvent::TabOpened(tab_id), Ok(create)) = (&event, result)
+                    && create.details_loading
+                {
+                    let Some(tab) = this.controller.state().tabs.iter().find(|tab| tab.id == *tab_id)
+                    else {
+                        return;
+                    };
+                    let TabKind::CreateTable(create) = &tab.kind else {
+                        return;
+                    };
+                    let CreateTableMode::Design { object, .. } = &create.mode else {
+                        return;
+                    };
+                    let object = object.clone();
+                    this.spawn_design_table_details(*tab_id, object, cx);
+                }
             },
             cx,
         );

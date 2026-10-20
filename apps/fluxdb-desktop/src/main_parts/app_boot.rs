@@ -3156,6 +3156,7 @@ fn navicat_main_new(
                             _completion_index_tasks: BTreeMap::new(),
                             _table_info_tasks: BTreeMap::new(),
                             _design_table_tasks: BTreeMap::new(),
+                            _design_table_detail_tasks: BTreeMap::new(),
                             _user_admin_users_tasks: BTreeMap::new(),
                             _user_admin_pg_membership_tasks: BTreeMap::new(),
                             _user_admin_pg_target_tasks: BTreeMap::new(),

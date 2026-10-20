@@ -393,6 +393,7 @@ fn mysql_load_table_design_metadata(
             foreign_keys,
             triggers,
             ddl,
+            details_loaded: true,
         })
     })
 }

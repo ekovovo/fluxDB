@@ -1033,9 +1033,11 @@ fn create_table_header_actions(
     cx: &mut Context<NavicatMain>,
 ) -> Div {
     let validation_error = create.validation_error();
-    let save_disabled = validation_error.is_some() || create.applying;
+    let save_disabled = validation_error.is_some() || create.applying || create.details_loading;
     let save_tooltip = if create.applying {
         tr("app.create_table.saving").to_string()
+    } else if create.details_loading {
+        tr("app.create_table.loading_design").to_string()
     } else if create.is_design() {
         validation_error
             .map(str::to_string)

@@ -436,6 +436,18 @@ fn load_table_design_for_connection(
     let metadata = connector_for(config)?.load_table_design_metadata(object)?;
     Ok(fluxdb_core::TableDesignMetadata {
         ddl: format_sql_text_for_dialect(&metadata.ddl, config.kind),
+        details_loaded: true,
+        ..metadata
+    })
+}
+
+fn load_table_design_base_for_connection(
+    config: &ConnectionConfig,
+    object: &ObjectPath,
+) -> fluxdb_core::Result<fluxdb_core::TableDesignMetadata> {
+    let metadata = connector_for(config)?.load_table_design_base_metadata(object)?;
+    Ok(fluxdb_core::TableDesignMetadata {
+        ddl: format_sql_text_for_dialect(&metadata.ddl, config.kind),
         ..metadata
     })
 }

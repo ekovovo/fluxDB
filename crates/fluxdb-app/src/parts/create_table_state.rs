@@ -32,6 +32,7 @@ impl CreateTableState {
             partition_sql: String::new(),
             applying: false,
             apply_error: None,
+            details_loading: false,
             active_tab: CreateTableTab::Fields,
             columns: vec![CreateTableColumn::default_id(1, provider)],
             indexes: Vec::new(),
@@ -101,6 +102,46 @@ impl CreateTableState {
 
     pub fn is_design(&self) -> bool {
         matches!(self.mode, CreateTableMode::Design { .. })
+    }
+
+    /// 用后台补齐的详情重建完整设计快照，保留用户已编辑的字段状态。
+    pub fn finish_design_details(
+        &mut self,
+        metadata: fluxdb_core::TableDesignMetadata,
+    ) -> Result<(), String> {
+        let CreateTableMode::Design {
+            object,
+            original,
+            original_ddl,
+        } = &mut self.mode
+        else {
+            return Err("只有设计表可以补齐详情".to_string());
+        };
+        self.indexes = create_table_indexes_from_info(metadata.indexes);
+        self.foreign_keys =
+            create_table_foreign_keys_from_info(object, metadata.foreign_keys);
+        self.triggers = create_table_triggers_from_info(metadata.triggers);
+        *original_ddl = Some(metadata.ddl);
+        // 详情是打开时的数据库事实，应重建完整基线；用户当前编辑保留在 create 上，
+        // 由后续 diff 检测，而不是被详情覆盖。
+        *original = CreateTableDesignSnapshot {
+            columns: original.columns.clone(),
+            indexes: self.indexes.clone(),
+            foreign_keys: self.foreign_keys.clone(),
+            triggers: self.triggers.clone(),
+            ..original.clone()
+        };
+        self.selected_index_id = self.indexes.first().map(|index| index.id);
+        self.selected_foreign_key_id = self
+            .foreign_keys
+            .first()
+            .map(|foreign_key| foreign_key.id);
+        self.selected_trigger_id = self.triggers.first().map(|trigger| trigger.id);
+        self.next_index_id = self.indexes.len() as u64 + 1;
+        self.next_foreign_key_id = self.foreign_keys.len() as u64 + 1;
+        self.next_trigger_id = self.triggers.len() as u64 + 1;
+        self.details_loading = false;
+        Ok(())
     }
 
     pub fn tab_title(&self) -> String {
@@ -880,6 +921,9 @@ impl CreateTableState {
     }
 
     pub fn validation_error(&self) -> Option<&'static str> {
+        if self.details_loading {
+            return Some("正在读取索引、外键和触发器，请稍候再保存");
+        }
         if let Some(message) = create_table_provider(self.database_kind).validation_error(self) {
             return Some(message);
         }

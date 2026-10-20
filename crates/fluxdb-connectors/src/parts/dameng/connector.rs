@@ -148,6 +148,16 @@ impl Connector for DamengConnector {
         )
     }
 
+    fn load_table_design_base_metadata(
+        &self,
+        path: &ObjectPath,
+    ) -> fluxdb_core::Result<fluxdb_core::TableDesignMetadata> {
+        dm_load_table_design_base_metadata(
+            self.config("达梦设计表基础元数据需要连接配置上下文")?,
+            path,
+        )
+    }
+
     fn list_completion_tables(
         &self,
         database: Option<&str>,

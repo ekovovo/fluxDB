@@ -34,12 +34,61 @@ fn assert_design_snapshot(config: &ConnectionConfig, object: ObjectPath, expecte
     controller.dispatch(fluxdb_app::AppCommand::ReplaceConnections(vec![
         config.clone(),
     ]));
-    let create = match controller.dispatch(fluxdb_app::AppCommand::LoadDesignTable(object)) {
+    let create = match controller.dispatch(fluxdb_app::AppCommand::LoadDesignTableBase(object)) {
         fluxdb_app::AppEvent::DesignTableLoaded(Ok(create)) => create,
         fluxdb_app::AppEvent::DesignTableLoaded(Err(error)) => {
             panic!("load design metadata: {}", error.message)
         }
         event => panic!("unexpected design load event: {event:?}"),
+    };
+    let details_loading = create.details_loading;
+    if details_loading {
+        assert_eq!(
+            create.validation_error(),
+            Some("正在读取索引、外键和触发器，请稍候再保存")
+        );
+    }
+    let tab_id = match controller
+        .dispatch(fluxdb_app::AppCommand::FinishOpenDesignTable { result: Ok(create) })
+    {
+        fluxdb_app::AppEvent::TabOpened(tab_id) => tab_id,
+        event => panic!("unexpected install design event: {event:?}"),
+    };
+    if details_loading {
+        let object = {
+            let tab = controller
+                .state()
+                .tabs
+                .iter()
+                .find(|tab| tab.id == tab_id)
+                .expect("design tab");
+            let fluxdb_app::TabKind::CreateTable(create) = &tab.kind else {
+                panic!("design tab kind");
+            };
+            match &create.mode {
+                fluxdb_app::CreateTableMode::Design { object, .. } => object.clone(),
+                fluxdb_app::CreateTableMode::Create => unreachable!(),
+            }
+        };
+        let metadata =
+            match controller.dispatch(fluxdb_app::AppCommand::LoadDesignTableDetails(object)) {
+                fluxdb_app::AppEvent::DesignTableDetailsLoaded(metadata) => metadata,
+                fluxdb_app::AppEvent::Failed(error) => {
+                    panic!("load design details: {}", error.message)
+                }
+                event => panic!("unexpected design details event: {event:?}"),
+            };
+        let _ = controller
+            .dispatch(fluxdb_app::AppCommand::FinishDesignTableDetails { tab_id, metadata });
+    }
+    let tab = controller
+        .state()
+        .tabs
+        .iter()
+        .find(|tab| tab.id == tab_id)
+        .expect("design tab");
+    let fluxdb_app::TabKind::CreateTable(create) = &tab.kind else {
+        panic!("design tab kind");
     };
     assert_eq!(create.columns.len(), expected_columns);
     assert!(!create.indexes.is_empty());

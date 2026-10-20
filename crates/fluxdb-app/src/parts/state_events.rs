@@ -310,6 +310,7 @@ pub enum AppEvent {
     TabOpened(TabId),
     /// 后台设计表元数据读取结果；由 UI 再发 Finish 命令安装标签页。
     DesignTableLoaded(std::result::Result<CreateTableState, UserFacingError>),
+    DesignTableDetailsLoaded(fluxdb_core::TableDesignMetadata),
     TabClosed(TabId),
     /// 已置位某标签的查询取消标志（可能仍在等语句收尾）；UI 据此提示「已请求停止」。
     QueryCancelRequested(TabId),

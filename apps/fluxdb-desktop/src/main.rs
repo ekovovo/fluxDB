@@ -21,7 +21,7 @@ use fluxdb_app::{
     CellDetailPanelState, ConnectionState, CreateTableCheck, CreateTableCheckField,
     CreateTableColumn, CreateTableColumnField, CreateTableColumnFlag, CreateTableField,
     CreateTableForeignKey, CreateTableForeignKeyField, CreateTableIndex,
-    CreateTableIndexColumnField, CreateTableIndexField, CreateTableOptionField,
+    CreateTableIndexColumnField, CreateTableIndexField, CreateTableMode, CreateTableOptionField,
     CreateTablePartitionField, CreateTableState, CreateTableTab, CreateTableTrigger,
     CreateTableTriggerEvent, CreateTableTriggerField, DataEditorState, ErDiagramState,
     ErLayoutResult, ForeignKeyCheckMode, LoadState, ObjectListState, PgDraftAttrField,

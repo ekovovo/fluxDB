@@ -508,7 +508,16 @@ pub trait Connector {
             foreign_keys,
             triggers,
             ddl,
+            details_loaded: true,
         })
+    }
+
+    /// 可先返回字段等首屏数据，`details_loaded=false` 表示索引等详情需后台补齐。
+    fn load_table_design_base_metadata(
+        &self,
+        path: &ObjectPath,
+    ) -> Result<TableDesignMetadata> {
+        self.load_table_design_metadata(path)
     }
 
     fn table_ddl(&self, _: &ObjectPath) -> Result<String> {

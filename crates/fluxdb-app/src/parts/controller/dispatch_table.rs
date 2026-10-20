@@ -49,6 +49,18 @@ impl AppController {
                 Ok(create) => AppEvent::DesignTableLoaded(Ok(create)),
                 Err(error) => AppEvent::DesignTableLoaded(Err(UserFacingError::from(error))),
             },
+            AppCommand::LoadDesignTableBase(object) => {
+                match self.prepare_design_table_base(&object) {
+                    Ok(create) => AppEvent::DesignTableLoaded(Ok(create)),
+                    Err(error) => AppEvent::DesignTableLoaded(Err(UserFacingError::from(error))),
+                }
+            }
+            AppCommand::LoadDesignTableDetails(object) => {
+                match self.load_design_table_details(&object) {
+                    Ok(metadata) => AppEvent::DesignTableDetailsLoaded(metadata),
+                    Err(error) => AppEvent::Failed(UserFacingError::from(error)),
+                }
+            }
             AppCommand::FinishOpenDesignTable { result } => match result {
                 Ok(create) => self.install_design_table(create),
                 Err(error) => {
@@ -56,6 +68,18 @@ impl AppController {
                     AppEvent::Failed(error)
                 }
             },
+            AppCommand::FinishDesignTableDetails { tab_id, metadata } => {
+                let Some(tab) = self.find_tab_mut(tab_id) else {
+                    return self.fail(Error::new(ErrorKind::Internal, "设计表标签页不存在"));
+                };
+                let TabKind::CreateTable(create) = &mut tab.kind else {
+                    return self.fail(Error::new(ErrorKind::Internal, "设计表标签页不存在"));
+                };
+                if let Err(message) = create.finish_design_details(metadata) {
+                    return self.fail(Error::new(ErrorKind::Query, message));
+                }
+                AppEvent::TabActivated(tab_id)
+            }
             AppCommand::RenameTable { object, new_name } => {
                 let Some(config) = self.connection_config(object.connection_id).cloned() else {
                     return self.fail(Error::new(ErrorKind::Connection, "连接不存在"));
@@ -1118,6 +1142,38 @@ impl AppController {
             metadata.triggers,
             Some(metadata.ddl),
         ))
+    }
+
+    fn prepare_design_table_base(
+        &self,
+        object: &ObjectPath,
+    ) -> fluxdb_core::Result<CreateTableState> {
+        let Some(config) = self.connection_config(object.connection_id) else {
+            return Err(Error::new(ErrorKind::Connection, "连接不存在"));
+        };
+        let metadata = load_table_design_base_for_connection(config, object)?;
+        let details_loading = !metadata.details_loaded;
+        let mut create = CreateTableState::design(
+            object.clone(),
+            config.kind,
+            metadata.columns,
+            metadata.indexes,
+            metadata.foreign_keys,
+            metadata.triggers,
+            Some(metadata.ddl),
+        );
+        create.details_loading = details_loading;
+        Ok(create)
+    }
+
+    fn load_design_table_details(
+        &self,
+        object: &ObjectPath,
+    ) -> fluxdb_core::Result<fluxdb_core::TableDesignMetadata> {
+        let Some(config) = self.connection_config(object.connection_id) else {
+            return Err(Error::new(ErrorKind::Connection, "连接不存在"));
+        };
+        load_table_design_for_connection(config, object)
     }
 
     /// 把已加载的设计表状态安装为标签页。调用发生在主线程且不做 IO。

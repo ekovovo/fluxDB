@@ -129,6 +129,8 @@ pub struct TableDesignMetadata {
     pub foreign_keys: Vec<ForeignKeyInfo>,
     pub triggers: Vec<TriggerInfo>,
     pub ddl: String,
+    /// 首屏是否已包含索引/外键/触发器。慢方言可先返回 false，再由后台补齐。
+    pub details_loaded: bool,
 }
 
 /// 触发器元数据：事件/时相/级别与函数身份，保留完整定义。

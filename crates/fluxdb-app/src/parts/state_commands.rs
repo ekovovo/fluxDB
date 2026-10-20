@@ -508,9 +508,17 @@ pub enum AppCommand {
     OpenDesignTable(ObjectPath),
     /// 在后台读取设计表快照；只返回结果，不改控制器状态。
     LoadDesignTable(ObjectPath),
+    /// 桌面端首屏：只读字段/主键等快速数据，详情随后补齐。
+    LoadDesignTableBase(ObjectPath),
+    /// 首屏加载完详情尚未返回时，后台补齐设计表完成值。
+    LoadDesignTableDetails(ObjectPath),
     /// 把后台读取结果安装为设计表标签页。
     FinishOpenDesignTable {
         result: std::result::Result<CreateTableState, UserFacingError>,
+    },
+    FinishDesignTableDetails {
+        tab_id: TabId,
+        metadata: fluxdb_core::TableDesignMetadata,
     },
     RenameTable {
         object: ObjectPath,

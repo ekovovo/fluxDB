@@ -664,6 +664,7 @@ struct NavicatMain {
     _table_info_tasks: BTreeMap<(TabId, TableInfoTab), Task<()>>,
     /// 设计表元数据后台加载任务，按表身份去重；完成后才在主线程安装标签页。
     _design_table_tasks: BTreeMap<String, Task<()>>,
+    _design_table_detail_tasks: BTreeMap<TabId, Task<()>>,
     _user_admin_users_tasks: BTreeMap<TabId, Task<()>>,
     _user_admin_pg_membership_tasks: BTreeMap<TabId, Task<()>>,
     _user_admin_pg_target_tasks: BTreeMap<TabId, Task<()>>,

@@ -780,4 +780,77 @@ mod dameng_create_table_tests {
         create.partition_enabled = true;
         assert_eq!(create.validation_error(), Some("达梦建表向导暂不支持分区"));
     }
+
+    #[test]
+    fn design_details_do_not_overwrite_user_edits_or_original_columns() {
+        let object = ObjectPath {
+            connection_id: ConnectionId(1),
+            database: Some("DAMENG".into()),
+            schema: Some("APPS".into()),
+            name: "ORDERS".into(),
+            kind: ObjectKind::Table,
+        };
+        let columns = vec![CompletionColumn {
+            database: Some("DAMENG".into()),
+            schema: Some("APPS".into()),
+            table: "ORDERS".into(),
+            name: "ID".into(),
+            type_name: Some("INT".into()),
+            nullable: false,
+            primary_key: true,
+            comment: None,
+            stable: None,
+        }];
+        let ddl = "CREATE TABLE \"APPS\".\"ORDERS\" (\"ID\" INT PRIMARY KEY);";
+        let mut create = CreateTableState::design(
+            object,
+            DatabaseKind::Dameng,
+            columns,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Some(ddl.into()),
+        );
+        create.details_loading = true;
+        assert_eq!(
+            create.validation_error(),
+            Some("正在读取索引、外键和触发器，请稍候再保存")
+        );
+        create.columns[0].comment = "edited".into();
+        let metadata = fluxdb_core::TableDesignMetadata {
+            columns: Vec::new(),
+            indexes: vec![IndexInfo {
+                name: "IDX_ORDERS_ID".into(),
+                columns: vec!["ID".into()],
+                is_unique: false,
+                is_primary: false,
+                index_type: Some("NORMAL".into()),
+                comment: None,
+            }],
+            foreign_keys: Vec::new(),
+            triggers: Vec::new(),
+            ddl: "CREATE TABLE \"APPS\".\"ORDERS\" (\"ID\" INT PRIMARY KEY); \
+                  CREATE INDEX \"IDX_ORDERS_ID\" ON \"APPS\".\"ORDERS\" (\"ID\");"
+                .into(),
+            details_loaded: true,
+        };
+        create.finish_design_details(metadata).expect("finish details");
+        assert_eq!(create.columns[0].comment, "edited");
+        assert!(!create.details_loading);
+        assert_eq!(create.indexes.len(), 1);
+        let sql = create.sql_preview().expect("detail change SQL");
+        assert!(sql.contains("COMMENT ON COLUMN"));
+        assert!(!sql.contains("CREATE INDEX"));
+        create.indexes.clear();
+        assert!(
+            create
+                .sql_preview()
+                .expect("drop detail index")
+                .contains("DROP INDEX \"APPS\".\"IDX_ORDERS_ID\"")
+        );
+        let CreateTableMode::Design { original, .. } = &create.mode else {
+            panic!("design mode");
+        };
+        assert_eq!(original.columns[0].comment, "");
+    }
 }

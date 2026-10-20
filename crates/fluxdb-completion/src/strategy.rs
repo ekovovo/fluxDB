@@ -2,6 +2,8 @@
 //!
 //! 与旧实现的根本差别：候选集合由语法槽位决定，而不是由光标前字符串决定。
 
+use std::collections::{HashMap, HashSet};
+
 use crate::dialect::CompletionDialect;
 use crate::locate::{ClauseSlot, ExprScope};
 use crate::metadata::{
@@ -24,6 +26,8 @@ pub(crate) struct SlotContext<'a> {
 const SCORE_FK_COLUMN: i32 = 120;
 const SCORE_ON_SNIPPET: i32 = 110;
 const SCORE_COLUMN: i32 = 100;
+/// 作用域内的 CTE / 派生表：比物理表更可能是本次要写的关系。
+const SCORE_LOCAL_RELATION: i32 = 96;
 const SCORE_ALIAS: i32 = 95;
 const SCORE_TABLE_RELATED: i32 = 95;
 const SCORE_TABLE: i32 = 90;
@@ -116,6 +120,16 @@ fn table_candidates(join: bool, ctx: &SlotContext<'_>) -> Vec<Candidate> {
         .qualifier
         .as_deref()
         .and_then(|qualifier| qualifier.rsplit('.').next());
+
+    // 作用域内的 CTE / 派生表：比物理表更可能是本次要写的关系，排前面。
+    if qualifier_schema.is_none() {
+        for (name, _) in ctx.symbols.virtual_bindings() {
+            candidates.push(
+                Candidate::new(name.clone(), name.clone(), CandidateKind::Table)
+                    .with_sort_text(format!("{SCORE_LOCAL_RELATION}:{name}")),
+            );
+        }
+    }
 
     for table in ctx.meta.tables(qualifier_schema.or(ctx.schema)) {
         let schema = table
@@ -215,7 +229,7 @@ fn expression_candidates(
         return virtual_column_candidates(&columns);
     }
     if qualifier.is_none() {
-        candidates.extend(virtual_column_candidates(&ctx.symbols.virtual_columns()));
+        candidates.extend(unqualified_column_candidates(ctx));
     }
 
     let tables = match qualifier {
@@ -253,14 +267,14 @@ fn expression_candidates(
             }
             resolved
         }
-        None => ctx.symbols.relation_keys(),
+        None => Vec::new(),
     };
 
     for key in tables {
         // AST 里只有名字，库/schema 上下文由连接补全。
         let key = key.with_context(ctx.database, ctx.schema);
         for column in ctx.meta.columns(&key) {
-            candidates.push(column_candidate(&column, &key, SCORE_COLUMN));
+            candidates.push(column_candidate(&column, &key, None, SCORE_COLUMN));
         }
     }
 
@@ -372,16 +386,45 @@ const GROUP_BY_KEYWORDS: &[&str] = &[
 ];
 const ORDER_BY_KEYWORDS: &[&str] = &["ASC", "DESC", "LIMIT", "OFFSET", "UNION", "UNION ALL"];
 
-/// 光标前是否已敲了半截词。有前缀时放开全量关键字，让 `SELECT * fro|` 能补出 FROM。
+/// 光标前是否已敲了半截词。
 fn is_typing(ctx: &SlotContext<'_>) -> bool {
     !ctx.word.word_part.trim().is_empty()
 }
 
-/// 表达式位置的关键字候选：打字中给全量（靠前缀收窄），空前缀只给当前子句相关的子集。
+/// 表达式槽位永远不给的语句级 / DDL 关键字。
+///
+/// 这些是 `WHERE x = 1 AND c|` 里补出 `CREATE` / `TRUNCATE` 的来源，纯噪声；要写新语句
+/// 时用户是从语句起始槽位开始的。
+const STATEMENT_KEYWORDS: &[&str] = &[
+    "SELECT",
+    "INSERT INTO",
+    "UPDATE",
+    "DELETE FROM",
+    "CREATE",
+    "ALTER",
+    "DROP",
+    "TRUNCATE",
+    "SHOW",
+    "EXPLAIN",
+    "DESCRIBE",
+    "CALL",
+    "WITH",
+    "GRANT",
+    "REVOKE",
+    "RENAME",
+    "COMMENT",
+    "USE",
+    "BEGIN",
+    "COMMIT",
+    "ROLLBACK",
+];
+
+/// 表达式位置的关键字候选。
+///
+/// 空前缀只给当前子句相关的一小撮；打字中额外放开「前缀命中的关键字」，让
+/// `SELECT * fro|` → `FROM`、`GROUP B|` → `GROUP BY` 仍然能补出来，但不放
+/// [`STATEMENT_KEYWORDS`]——整张词表灌进弹层是噪声的主要来源。
 fn expression_keywords(scope: ExprScope, ctx: &SlotContext<'_>) -> Vec<&'static str> {
-    if is_typing(ctx) {
-        return ctx.dialect.keywords().to_vec();
-    }
     let contextual: &[&str] = match scope {
         ExprScope::SelectItem => SELECT_ITEM_KEYWORDS,
         ExprScope::Where | ExprScope::Having => PREDICATE_KEYWORDS,
@@ -390,20 +433,50 @@ fn expression_keywords(scope: ExprScope, ctx: &SlotContext<'_>) -> Vec<&'static 
         ExprScope::OrderBy => ORDER_BY_KEYWORDS,
     };
     // 方言没有的关键字（如 MySQL 无 ILIKE）不进候选。
-    contextual
+    let mut keywords: Vec<&'static str> = contextual
         .iter()
         .copied()
         .filter(|keyword| ctx.dialect.keywords().contains(keyword))
-        .collect()
+        .collect();
+
+    let prefix = ctx.word.word_part.trim().to_ascii_lowercase();
+    if !prefix.is_empty() {
+        for keyword in ctx.dialect.keywords() {
+            if STATEMENT_KEYWORDS.contains(keyword) || keywords.contains(keyword) {
+                continue;
+            }
+            if keyword_matches_prefix(keyword, &prefix) {
+                keywords.push(keyword);
+            }
+        }
+    }
+    keywords
 }
 
-fn column_candidate(column: &ColumnMeta, key: &TableKey, score: i32) -> Candidate {
-    let mut candidate = Candidate::new(
-        column.name.clone(),
-        column.name.clone(),
-        CandidateKind::Column,
-    )
-    .with_sort_text(format!("{score}:{}", column.name));
+/// 关键字是否被已输入前缀命中：整词命中，或末词命中（`GROUP B|` 命中 `GROUP BY`）。
+fn keyword_matches_prefix(keyword: &str, prefix: &str) -> bool {
+    let keyword = keyword.to_ascii_lowercase();
+    keyword.starts_with(prefix)
+        || keyword
+            .rsplit(' ')
+            .next()
+            .is_some_and(|last| last.starts_with(prefix))
+}
+
+/// 列候选。`qualifier` 非空时展示与插入都用 `限定符.列名`：无限定符的同名列会被去重
+/// 合并成一条，用户没法选到另一张表的那一列。
+fn column_candidate(
+    column: &ColumnMeta,
+    key: &TableKey,
+    qualifier: Option<&str>,
+    score: i32,
+) -> Candidate {
+    let label = match qualifier {
+        Some(qualifier) => format!("{qualifier}.{}", column.name),
+        None => column.name.clone(),
+    };
+    let mut candidate = Candidate::new(label.clone(), label.clone(), CandidateKind::Column)
+        .with_sort_text(format!("{score}:{label}"));
     if let Some(type_name) = &column.type_name {
         candidate = candidate.with_detail(type_name.clone());
     }
@@ -411,6 +484,67 @@ fn column_candidate(column: &ColumnMeta, key: &TableKey, score: i32) -> Candidat
         candidate = candidate.with_schema(schema.clone());
     }
     candidate
+}
+
+/// 无限定符位置的列：同名跨多个来源时自动带限定符。
+fn unqualified_column_candidates(ctx: &SlotContext<'_>) -> Vec<Candidate> {
+    let ambiguous = ambiguous_column_names(ctx);
+    let is_ambiguous = |name: &str| ambiguous.contains(&name.to_ascii_lowercase());
+
+    let mut candidates = Vec::new();
+    for relation in &ctx.symbols.relations {
+        let key = relation.key.with_context(ctx.database, ctx.schema);
+        let qualifier = relation_name(relation);
+        for column in ctx.meta.columns(&key) {
+            let qualifier = is_ambiguous(&column.name).then_some(qualifier);
+            candidates.push(column_candidate(&column, &key, qualifier, SCORE_COLUMN));
+        }
+    }
+    for (name, columns) in ctx.symbols.virtual_bindings() {
+        for column in columns {
+            let label = if is_ambiguous(column) {
+                format!("{name}.{column}")
+            } else {
+                column.clone()
+            };
+            candidates.push(
+                Candidate::new(label.clone(), label.clone(), CandidateKind::Column)
+                    .with_sort_text(format!("{SCORE_COLUMN}:{label}")),
+            );
+        }
+    }
+    candidates
+}
+
+/// 在作用域内出现于多个来源的列名（小写）。
+///
+/// 按「限定符名集合」判重而不是出现次数：同一条 SQL 里自连接、或相关子查询里重复
+/// 出现的同一张表，限定符名相同，加限定符也消不了歧义。
+fn ambiguous_column_names(ctx: &SlotContext<'_>) -> HashSet<String> {
+    let mut owners: HashMap<String, HashSet<String>> = HashMap::new();
+    for relation in &ctx.symbols.relations {
+        let key = relation.key.with_context(ctx.database, ctx.schema);
+        let owner = relation_name(relation).to_ascii_lowercase();
+        for column in ctx.meta.columns(&key) {
+            owners
+                .entry(column.name.to_ascii_lowercase())
+                .or_default()
+                .insert(owner.clone());
+        }
+    }
+    for (name, columns) in ctx.symbols.virtual_bindings() {
+        for column in columns {
+            owners
+                .entry(column.to_ascii_lowercase())
+                .or_default()
+                .insert(name.to_ascii_lowercase());
+        }
+    }
+    owners
+        .into_iter()
+        .filter(|(_, owners)| owners.len() > 1)
+        .map(|(column, _)| column)
+        .collect()
 }
 
 /// 表名之后（别名/后续子句）：续接关键字 + 由外键推导的 ON 片段。
@@ -709,7 +843,7 @@ fn columns_of(key: &TableKey, ctx: &SlotContext<'_>, score: i32) -> Vec<Candidat
     ctx.meta
         .columns(key)
         .iter()
-        .map(|column| column_candidate(column, key, score))
+        .map(|column| column_candidate(column, key, None, score))
         .collect()
 }
 
@@ -719,7 +853,7 @@ fn named_column(key: &TableKey, name: &str, score: i32, ctx: &SlotContext<'_>) -
         .columns(key)
         .into_iter()
         .find(|column| column.name.eq_ignore_ascii_case(name))
-        .map(|column| column_candidate(&column, key, score))
+        .map(|column| column_candidate(&column, key, None, score))
         .unwrap_or_else(|| {
             Candidate::new(name, name, CandidateKind::Column)
                 .with_sort_text(format!("{score}:{name}"))
@@ -747,6 +881,17 @@ fn join_on_left_from_symbols(ctx: &SlotContext<'_>) -> Vec<Candidate> {
     join_on_left_candidates(&joined, &left_tables, ctx)
 }
 
+/// 词法兜底的关键字：子句未知，取谓词 + 投影两套并集，打字中再按前缀放开。
+fn fallback_keywords(ctx: &SlotContext<'_>) -> Vec<&'static str> {
+    let mut keywords = expression_keywords(ExprScope::Where, ctx);
+    for keyword in SELECT_ITEM_KEYWORDS {
+        if ctx.dialect.keywords().contains(keyword) && !keywords.contains(keyword) {
+            keywords.push(keyword);
+        }
+    }
+    keywords
+}
+
 /// 词法兜底：AST 完全不可用时的近似。
 fn lexical_candidates(prev_keyword: Option<&str>, ctx: &SlotContext<'_>) -> Vec<Candidate> {
     match prev_keyword {
@@ -760,13 +905,11 @@ fn lexical_candidates(prev_keyword: Option<&str>, ctx: &SlotContext<'_>) -> Vec<
         Some("SELECT") | Some("AND") | Some("OR") | Some("SET") | Some("BY") => {
             expression_candidates(ExprScope::SelectItem, ctx.word.qualifier.as_deref(), ctx)
         }
-        // 关键字识别不出子句（残句）：只在打字中给全量关键字，空前缀宁可不弹。
-        _ if is_typing(ctx) => ctx
-            .dialect
-            .keywords()
-            .iter()
+        // 关键字识别不出子句（残句）：只在打字中给关键字，空前缀宁可不弹。
+        _ if is_typing(ctx) => fallback_keywords(ctx)
+            .into_iter()
             .map(|keyword| {
-                Candidate::new(*keyword, *keyword, CandidateKind::Keyword)
+                Candidate::new(keyword, keyword, CandidateKind::Keyword)
                     .with_sort_text(format!("{SCORE_KEYWORD}:{keyword}"))
             })
             .collect(),

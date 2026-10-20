@@ -7,7 +7,10 @@ use crate::model::{Candidate, CompletionOutput, CompletionRequest, WordContext};
 use crate::parse::{LineColIndex, parse_tolerant};
 use crate::strategy::{SlotContext, slot_candidates};
 use crate::symbols::{Symbols, collect};
-use crate::word::{statement_range_at, word_context};
+use crate::word::{in_literal_or_comment, statement_range_at, word_context};
+
+/// 候选上限：弹层只消费靠前的一批，多余的既拖慢跨层序列化也没人会翻。
+const MAX_CANDIDATES: usize = 200;
 
 /// 补全主入口：输入窗口文本与光标，输出替换区间与候选。
 pub fn complete(
@@ -20,6 +23,14 @@ pub fn complete(
     let parser_dialect = dialect.parser_dialect();
 
     let word = word_context(text, cursor, parser_dialect);
+    // 字符串 / 注释里不是 SQL 语法位置，候选只会是噪声。
+    if in_literal_or_comment(text, cursor) {
+        return CompletionOutput {
+            replace_start: word.prefix_start,
+            replace_end: word.replace_end,
+            items: Vec::new(),
+        };
+    }
     let (statement_start, statement_end) = statement_range_at(text, cursor, parser_dialect);
     // 语句区间按去空白后的边界给出；光标可能落在尾部空白里，必须把窗口扩到光标。
     let statement_end = statement_end.max(cursor);
@@ -75,6 +86,7 @@ pub fn complete(
     let filter = word.word_part.trim().to_ascii_lowercase();
     items.sort_by_key(|left| sort_key(left, &filter));
     dedupe(&mut items);
+    items.truncate(MAX_CANDIDATES);
 
     CompletionOutput {
         replace_start: word.prefix_start,
@@ -326,9 +338,9 @@ mod tests {
         }
     }
 
-    /// 打字中仍放开全量关键字：`SELECT * fro|` → FROM。
+    /// 打字中前缀命中的关键字照旧可补：`AND|` → AND。
     #[test]
-    fn typed_prefix_still_offers_full_keyword_set() {
+    fn typed_prefix_keeps_matching_keywords() {
         let items = labels("SELECT * FROM users u WHERE u.id > 1 AND|");
         assert!(items.contains(&"AND".to_string()), "候选：{items:?}");
     }
@@ -377,6 +389,69 @@ mod tests {
         let items = labels("SELECT * FROM |");
         assert!(items.contains(&"users".to_string()), "候选：{items:?}");
         assert!(items.contains(&"orders".to_string()), "候选：{items:?}");
+    }
+
+    /// 作用域内的 CTE / 派生表进 FROM 候选，且排在物理表前面。
+    #[test]
+    fn cte_and_derived_tables_appear_after_from() {
+        let items = labels("WITH c AS (SELECT id FROM users) SELECT * FROM |");
+        assert_eq!(
+            items.first().map(String::as_str),
+            Some("c"),
+            "候选：{items:?}"
+        );
+        assert!(items.contains(&"users".to_string()), "候选：{items:?}");
+
+        let items = labels("SELECT * FROM (SELECT id FROM users) t, |");
+        assert_eq!(
+            items.first().map(String::as_str),
+            Some("t"),
+            "候选：{items:?}"
+        );
+    }
+
+    /// 同名跨多表的列自动带限定符，否则去重后只剩一条，另一张表的列选不到。
+    #[test]
+    fn ambiguous_columns_are_qualified() {
+        let items = labels("SELECT | FROM users u JOIN orders o ON u.id = o.user_id");
+        assert!(items.contains(&"u.id".to_string()), "候选：{items:?}");
+        assert!(items.contains(&"o.id".to_string()), "候选：{items:?}");
+        assert!(!items.contains(&"id".to_string()), "候选：{items:?}");
+        // 不歧义的列不加限定符。
+        assert!(items.contains(&"name".to_string()), "候选：{items:?}");
+    }
+
+    /// 打字中只放开前缀命中的关键字，不再把整张 DDL 词表灌进弹层。
+    #[test]
+    fn typing_does_not_dump_ddl_keywords() {
+        let items = labels("SELECT * FROM users u WHERE u.id = 1 AND c|");
+        for noise in [
+            "CREATE",
+            "TRUNCATE",
+            "CALL",
+            "SELECT",
+            "DISTINCT",
+            "REFERENCES",
+        ] {
+            assert!(!items.contains(&noise.to_string()), "候选：{items:?}");
+        }
+        assert!(items.contains(&"CASE".to_string()), "候选：{items:?}");
+    }
+
+    /// 收敛不能收敛掉跨子句续写：`GROUP B|` 仍要补出 `GROUP BY`。
+    #[test]
+    fn multiword_keyword_matches_by_last_word() {
+        let items = labels("SELECT * FROM users u GROUP B|");
+        assert!(items.contains(&"GROUP BY".to_string()), "候选：{items:?}");
+    }
+
+    /// 字符串 / 注释里不是 SQL 语法位置。
+    #[test]
+    fn no_completion_inside_string_or_comment() {
+        assert!(labels("SELECT * FROM users u -- 待办：补 JOIN |").is_empty());
+        assert!(labels("SELECT * FROM users u WHERE u.name = 'abc |").is_empty());
+        // 已闭合的字符串之后照常补全。
+        assert!(!labels("SELECT * FROM users u WHERE u.name = 'abc' |").is_empty());
     }
 
     #[test]

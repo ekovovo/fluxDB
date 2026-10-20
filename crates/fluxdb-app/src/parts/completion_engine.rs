@@ -447,11 +447,9 @@ fn qualify_ambiguous_tables(items: &mut [QueryCompletionItem], database: Option<
         ) {
             continue;
         }
-        if let Some(namespace) = item
-            .schema
-            .clone()
-            .or_else(|| database.map(str::to_string))
-        {
+        // 只统计真正带 namespace 的对象：CTE / 派生表（无 schema）不是跨 schema 的同名
+        // 对象，拿连接库名当它的 namespace 会把它误标成 `库.名`。
+        if let Some(namespace) = item.schema.clone() {
             owners
                 .entry(item.label.to_ascii_lowercase())
                 .or_default()

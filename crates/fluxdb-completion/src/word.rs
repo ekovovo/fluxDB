@@ -160,6 +160,59 @@ fn open_quote_before(text: &str, cursor: usize) -> Option<(usize, char)> {
     open
 }
 
+/// 光标是否落在字符串字面量或注释里。
+///
+/// 这两种位置不是 SQL 语法位置，任何候选都是噪声（`-- 待办：补 JOIN |` 补出 `JOIN` 尤其
+/// 荒诞）。单引号是字符串；双引号 / 反引号 / 方括号是标识符（见 [`is_quote_char`]），
+/// 仍要补全。不支持 PostgreSQL 的 `$tag$` 美元引用。
+pub(crate) fn in_literal_or_comment(text: &str, cursor: usize) -> bool {
+    let bytes = text.as_bytes();
+    let mut i = 0usize;
+    while i < cursor {
+        match bytes[i] {
+            b'\'' => {
+                i += 1;
+                while i < cursor {
+                    match bytes[i] {
+                        // 转义：两个连续单引号算一个字符，MySQL 的 `\'` 也认。
+                        b'\'' if bytes.get(i + 1) == Some(&b'\'') => i += 2,
+                        b'\\' => i += 2,
+                        b'\'' => break,
+                        _ => i += 1,
+                    }
+                }
+                if i >= cursor {
+                    return true; // 未闭合的字符串，光标还在里面
+                }
+                i += 1; // 跳过闭引号
+            }
+            b'-' if bytes.get(i + 1) == Some(&b'-') => {
+                while i < cursor && bytes[i] != b'\n' {
+                    i += 1;
+                }
+                if i >= cursor {
+                    return true;
+                }
+            }
+            b'/' if bytes.get(i + 1) == Some(&b'*') => {
+                i += 2;
+                while i < cursor {
+                    if bytes[i] == b'*' && bytes.get(i + 1) == Some(&b'/') {
+                        i += 2;
+                        break;
+                    }
+                    i += 1;
+                }
+                if i >= cursor {
+                    return true;
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    false
+}
+
 /// 计算光标处的词法上下文。
 pub(crate) fn word_context(text: &str, cursor: usize, dialect: &dyn Dialect) -> WordContext {
     let cursor = cursor.min(text.len());
@@ -334,6 +387,26 @@ mod tests {
     fn prev_keyword_skips_string_literals() {
         let c = ctx("SELECT 'from x' |");
         assert_eq!(c.prev_keyword.as_deref(), Some("SELECT"));
+    }
+
+    #[test]
+    fn detects_cursor_inside_literals_and_comments() {
+        let inside = |text: &str| {
+            let cursor = text.find('|').expect("用例必须用 | 标记光标");
+            in_literal_or_comment(&text.replace('|', ""), cursor)
+        };
+        assert!(inside("SELECT 'abc|"));
+        assert!(inside("SELECT 'a''b|"));
+        assert!(inside("SELECT 'it\\'s|"));
+        assert!(inside("SELECT * FROM t -- 待办：补 JOIN |"));
+        assert!(inside("SELECT /* 未闭合 |"));
+        assert!(!inside("SELECT 'abc' |"));
+        assert!(!inside("SELECT 'a''b' |"));
+        assert!(!inside("SELECT * FROM t -- 注释\n|"));
+        assert!(!inside("SELECT /* 注释 */ |"));
+        // 双引号 / 反引号是标识符，不是字面量。
+        assert!(!inside("SELECT \"my tab|"));
+        assert!(!inside("SELECT * from `3d_us|"));
     }
 
     #[test]

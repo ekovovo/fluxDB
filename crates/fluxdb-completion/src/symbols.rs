@@ -5,7 +5,7 @@
 //! 某个位置的扁平 [`Symbols`]——槽位策略与语义诊断都只认这个扁平视图。
 
 use core::ops::ControlFlow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use sqlparser::ast::{
     Expr, ObjectName, ObjectNamePart, Query, Select, SelectItem, SetExpr, Spanned, Statement,
@@ -23,15 +23,6 @@ pub(crate) struct RelationSymbol {
     pub(crate) alias: Option<String>,
 }
 
-/// 限定符名（小写）绑定的目标。
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum Binding {
-    /// 物理表 / 视图。
-    Relation(TableKey),
-    /// CTE / 派生表的投影列：列名由子查询推导，不走宿主元数据。
-    Virtual(Vec<String>),
-}
-
 /// 投影到某个位置的可见符号。
 ///
 /// 消费方看到的是扁平结构，作用域遮蔽已在投影时完成。
@@ -41,37 +32,34 @@ pub(crate) struct Symbols {
     pub(crate) relations: Vec<RelationSymbol>,
     /// 投影别名（`SELECT a AS x` 的 `x`），用于 ORDER BY / GROUP BY 槽位。
     pub(crate) output_aliases: Vec<String>,
-    /// 限定符名（小写）→ 绑定。投影时内层先写入，因此内层遮蔽外层。
-    bindings: HashMap<String, Binding>,
+    /// 限定符名（小写）→ 物理关系。投影时内层先写入，因此内层遮蔽外层。
+    bindings: HashMap<String, TableKey>,
+    /// 可见的 CTE / 派生表（名字, 投影列），内层在前；列名由子查询推导，不走宿主元数据。
+    virtuals: Vec<(String, Vec<String>)>,
 }
 
 impl Symbols {
     /// 解析 `qualifier`（可能是 `schema.table` 形式）命中的关系。
     pub(crate) fn resolve_qualifier(&self, qualifier: &str) -> Vec<TableKey> {
-        match self.binding(qualifier) {
-            Some(Binding::Relation(key)) => vec![key.clone()],
-            _ => Vec::new(),
-        }
+        self.bindings
+            .get(&last_segment(qualifier))
+            .cloned()
+            .into_iter()
+            .collect()
     }
 
     /// 限定符命中的派生列来源（CTE / 派生表遮蔽同名物理表）。
     pub(crate) fn qualifier_virtual_columns(&self, qualifier: &str) -> Option<Vec<String>> {
-        match self.binding(qualifier) {
-            Some(Binding::Virtual(columns)) => Some(columns.clone()),
-            _ => None,
-        }
+        let last = last_segment(qualifier);
+        self.virtuals
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case(&last))
+            .map(|(_, columns)| columns.clone())
     }
 
-    /// 无限定符时可见的 CTE / 派生表列。
-    pub(crate) fn virtual_columns(&self) -> Vec<String> {
-        self.bindings
-            .values()
-            .filter_map(|binding| match binding {
-                Binding::Virtual(columns) => Some(columns.iter().cloned()),
-                Binding::Relation(_) => None,
-            })
-            .flatten()
-            .collect()
+    /// 可见的 CTE / 派生表（名字, 投影列），内层在前。
+    pub(crate) fn virtual_bindings(&self) -> &[(String, Vec<String>)] {
+        &self.virtuals
     }
 
     /// 可见的全部关系（用于 `SELECT <cursor>` 这类无限定符场景）。
@@ -84,22 +72,28 @@ impl Symbols {
 
     /// `name` 是否是 CTE / 派生表别名：别名不是物理表，诊断不做存在性检查。
     pub(crate) fn is_virtual(&self, name: &str) -> bool {
-        matches!(self.binding(name), Some(Binding::Virtual(_)))
+        let last = last_segment(name);
+        self.virtuals
+            .iter()
+            .any(|(existing, _)| existing.eq_ignore_ascii_case(&last))
     }
+}
 
-    /// 只看最后一段：`public.users` 与 `users` 指向同一绑定。
-    fn binding(&self, qualifier: &str) -> Option<&Binding> {
-        let last = qualifier.rsplit('.').next().unwrap_or(qualifier);
-        self.bindings.get(&last.to_ascii_lowercase())
-    }
+/// 限定符只看最后一段：`public.users` 与 `users` 指向同一绑定。
+fn last_segment(qualifier: &str) -> String {
+    qualifier
+        .rsplit('.')
+        .next()
+        .unwrap_or(qualifier)
+        .to_ascii_lowercase()
 }
 
 /// 一个作用域内的原始收集结果。
 #[derive(Debug, Clone, Default)]
 struct Scope {
     relations: Vec<RelationSymbol>,
-    /// 限定符名（小写）→ 绑定，按注册顺序保存，投影时先写入者优先。
-    bindings: Vec<(String, Binding)>,
+    /// CTE / 派生表绑定（限定符名小写 → 投影列），按注册顺序保存。
+    virtuals: Vec<(String, Vec<String>)>,
     output_aliases: Vec<String>,
 }
 
@@ -128,21 +122,21 @@ impl ScopeTree {
                 .extend(self.scopes[id].relations.iter().cloned());
         }
 
-        // 绑定按「内 → 外」填：先写入者赢，实现内层遮蔽外层。
+        // 绑定按「内 → 外」填：先占名者赢，实现内层遮蔽外层。同一作用域内 CTE / 派生表
+        // 先占名，因此遮蔽同名物理表。
+        let mut claimed: HashSet<String> = HashSet::new();
         for &id in &chain {
             let scope = &self.scopes[id];
-            for (name, binding) in &scope.bindings {
-                symbols
-                    .bindings
-                    .entry(name.clone())
-                    .or_insert_with(|| binding.clone());
+            for (name, columns) in &scope.virtuals {
+                if claimed.insert(name.clone()) {
+                    symbols.virtuals.push((name.clone(), columns.clone()));
+                }
             }
             for relation in &scope.relations {
                 for name in relation_names(relation) {
-                    symbols
-                        .bindings
-                        .entry(name)
-                        .or_insert_with(|| Binding::Relation(relation.key.clone()));
+                    if claimed.insert(name.clone()) {
+                        symbols.bindings.insert(name, relation.key.clone());
+                    }
                 }
             }
         }
@@ -257,8 +251,8 @@ impl Visitor for SymbolCollector<'_> {
                         .collect()
                 };
                 let scope = self.scope();
-                if !scope.bindings.iter().any(|(existing, _)| *existing == name) {
-                    scope.bindings.push((name, Binding::Virtual(columns)));
+                if !scope.virtuals.iter().any(|(existing, _)| *existing == name) {
+                    scope.virtuals.push((name, columns));
                 }
             }
         }
@@ -302,8 +296,8 @@ impl Visitor for SymbolCollector<'_> {
                 let name = alias.name.value.to_ascii_lowercase();
                 let columns = projection_columns(subquery);
                 let scope = self.scope();
-                if !scope.bindings.iter().any(|(existing, _)| *existing == name) {
-                    scope.bindings.push((name, Binding::Virtual(columns)));
+                if !scope.virtuals.iter().any(|(existing, _)| *existing == name) {
+                    scope.virtuals.push((name, columns));
                 }
             }
             TableFactor::Table { name, alias, .. } => {

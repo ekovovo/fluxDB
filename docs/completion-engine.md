@@ -45,7 +45,7 @@ pub trait MetadataSource {
 4. **槽位定位**（`locate.rs`）：取包含光标的最小 AST 节点映射为 `ClauseSlot`。
 5. **槽位策略**（`strategy.rs`）：每个槽位决定候选来源与基础分。
 6. **过滤排序**（`engine.rs`）：引号标识符前缀匹配、其余 ASCII 不敏感子序列；按
-   `分数 → 前缀命中 → 标签` 排序，最后按 label/kind/schema 去重。
+   `分数 → 前缀命中 → 标签` 排序，按 label/kind/schema 去重，最后截到 200 条上限。
 
 ## 槽位与评分
 
@@ -53,15 +53,15 @@ pub trait MetadataSource {
 | --- | --- |
 | `StatementStart` | 语句起始关键字 |
 | `Expression{SelectItem/Where/Having/GroupBy/OrderBy/JoinOn}` | 关系列 + 函数（无限定符）；ORDER/GROUP 额外给投影别名；谓词给 NULL/TRUE/FALSE |
-| `FromTable` | 表/视图/schema + 续接关键字；JOIN 时外键目标表加分 |
+| `FromTable` | 作用域内的 CTE / 派生表 + 表/视图/schema + 续接关键字；JOIN 时外键目标表加分 |
 | `TableAlias` | 续接关键字 + 外键推导的 `ON l.c = r.fk` snippet |
 | `JoinOnLeft` | 有外键时只给 FK 关联列，否则两侧全列 |
 | `JoinOnRight` | 左侧列在整条 JOIN 链中的配对列；无外键回退目标表全列 |
 | `InsertColumn` / `UpdateAssignLhs` | 表列，排除已写列 |
 | `UpdateAssignValue` | DEFAULT/NULL/TRUE/FALSE + 函数 |
 
-基础分：FK 列 120 / ON snippet 110 / 列 100 / 投影别名 95 / 关联表 95 / 表 90 / schema 85 /
-函数 60 / 关键字 50。
+基础分：FK 列 120 / ON snippet 110 / 列 100 / 作用域内 CTE·派生表 96 / 投影别名 95 /
+关联表 95 / 表 90 / schema 85 / 函数 60 / 关键字 50。
 
 ## 有意变更（相对旧启发式）
 
@@ -69,14 +69,20 @@ pub trait MetadataSource {
 - 限定符与列按作用域解析：内层同名别名 / 派生表别名遮蔽外层，兄弟子查询的关系互不可见
   （此前整条语句平铺，`FROM users u` 与子查询 `FROM orders u` 会一起认作 `u`）。
 - `ON` 条件由外键硬限定，只有缺少 FK 元数据时才回退全列。
+- 无限定符的同名列跨多个来源时自动带限定符（`u.id` / `o.id`），不再被 label 去重合并成
+  一条——去重后用户只能拿到其中一张表的列，另一张点不到。
+- 作用域内的 CTE / 派生表进 FROM 候选，排在物理表之前。
+- 字符串字面量与注释里不产出候选（`-- 待办：补 JOIN |` 不再补出 `JOIN`）。
 - 未完成的 `INSERT (col,` / `UPDATE SET` 由前缀词法识别（sqlparser 需要完整语句）。
 - 同分内只做个性化重排（采纳历史），不跨语义分层调序。
 - 同名表跨 schema 时自动加 namespace 前缀，避免点错对象。
 - 达梦裸表补全的插入文本带 schema 限定；默认 schema 有对象时仍并入对象树已展开的
   其他 schema（引擎负责前缀过滤）。
 - 补全不再单独产出触发器候选（触发器不是合法表达式；旧链路的 Trigger 候选已移除）。
-- 关键字按子句收敛：空前缀只给当前子句相关的一小撮（投影 10 / 谓词 22 / ORDER BY 6），
-  打字中才放开全量词表靠前缀收窄。此前任何表达式位置都灌 60+ 个 DDL 关键字。
+- 关键字按子句收敛：空前缀只给当前子句相关的一小撮（投影 10 / 谓词 22 / ORDER BY 6）；
+  打字中额外放开「前缀命中的关键字」（整词命中或末词命中，`GROUP B|` → `GROUP BY`），
+  但不放语句级 / DDL 关键字。此前任何表达式位置都灌 60+ 个 DDL 关键字，
+  `WHERE x = 1 AND c|` 会补出 `CREATE` / `TRUNCATE`。
 - `FROM a, |` / `FROM a, b|` 回到表名槽（旧判定按「最近一个词」一律当别名位置，出不了表名）。
 - 编辑器语义诊断（未知表/列/函数）与函数参数提示已随旧链路删除；语法诊断保留。
   其中「未知表 / schema / 列」已用本引擎的解析与符号表重建，见下节；函数参数提示未恢复。
@@ -131,7 +137,10 @@ pub trait MetadataSource {
   外层；兄弟子查询互不可见；补全按光标投影，诊断按节点位置投影（同作用域只算一次）。
   `Symbols` 对外的字段与方法未变，`strategy.rs` / `locate.rs` 零改动
 
-验证：`cargo test -p fluxdb-completion`（93 例）、`cargo test -p fluxdb-app`（57 例，另有
+- 第 8 期：IDE 手感补齐 —— 完成。CTE/派生表进 FROM 候选、歧义列自动限定、打字中关键字
+  收敛（不再灌 DDL）、字符串/注释不产出候选、候选上限 200
+
+验证：`cargo test -p fluxdb-completion`（99 例）、`cargo test -p fluxdb-app`（57 例，另有
 3 个默认 ignore 的真库冒烟）、`cargo clippy --locked -p fluxdb-completion --all-targets`。
 
 真库冒烟（本地容器，密码只从环境变量读取）：

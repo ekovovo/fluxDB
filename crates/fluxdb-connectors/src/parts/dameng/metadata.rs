@@ -184,6 +184,91 @@ fn dm_load_column_infos(
     schema: &str,
     table: &str,
 ) -> fluxdb_core::Result<Vec<DmColumnInfo>> {
+    // `ALL_TAB_COLUMNS` 在 DM8 上会展开全部所有者，单表打开也需数百毫秒。
+    // 字段与注释按对象 ID 走 SYS 底表；主键/身份/约束继续用稳定视图补齐。
+    let fast_result = dm_execute(
+        client,
+        "SELECT C.NAME, C.TYPE$, C.LENGTH$, C.SCALE, C.NULLABLE$, CC.COMMENT$, C.DEFVAL, C.INFO2 \
+         FROM SYS.SYSCOLUMNS C \
+         JOIN SYS.SYSOBJECTS T ON T.ID=C.ID \
+         JOIN SYS.SYSOBJECTS S ON S.ID=T.SCHID \
+         LEFT JOIN SYS.SYSCOLUMNCOMMENTS CC \
+           ON CC.SCHNAME=S.NAME AND CC.TVNAME=T.NAME AND CC.COLNAME=C.NAME \
+         WHERE S.NAME=? AND T.NAME=? AND T.SUBTYPE$='UTAB' \
+         ORDER BY C.COLID",
+        &[Param::Str(schema.to_string()), Param::Str(table.to_string())],
+    )?;
+    let ExecuteResult::Query { rows, .. } = fast_result else {
+        return Err(Error::new(ErrorKind::Query, "达梦列元数据返回类型异常"));
+    };
+    if rows.is_empty() {
+        return dm_load_column_infos_from_catalog_views(client, schema, table);
+    }
+    let constraints = dm_execute(
+        client,
+        "SELECT CO.CONSTRAINT_NAME, CC.COLUMN_NAME, CO.CONSTRAINT_TYPE \
+         FROM ALL_CONSTRAINTS CO JOIN ALL_CONS_COLUMNS CC \
+           ON CC.OWNER=CO.OWNER AND CC.CONSTRAINT_NAME=CO.CONSTRAINT_NAME \
+         WHERE CO.OWNER=? AND CO.TABLE_NAME=? AND CO.CONSTRAINT_TYPE='P'",
+        &[Param::Str(schema.to_string()), Param::Str(table.to_string())],
+    )?;
+    let ExecuteResult::Query {
+        rows: constraint_rows,
+        ..
+    } = constraints
+    else {
+        return Err(Error::new(ErrorKind::Query, "达梦主键元数据返回类型异常"));
+    };
+    let primary_keys: std::collections::BTreeMap<String, String> = constraint_rows
+        .into_iter()
+        .filter_map(|row| {
+            Some((
+                row.get(1).and_then(dm_value_text)?.to_ascii_uppercase(),
+                row.first().and_then(dm_value_text)?,
+            ))
+        })
+        .collect();
+    rows.into_iter()
+        .map(|row| {
+            let name = row.first().and_then(dm_value_text).ok_or_else(|| {
+                Error::new(ErrorKind::Query, "达梦列元数据缺少字段名")
+            })?;
+            let data_type = row.get(1).and_then(dm_value_text).unwrap_or_default();
+            let length = row.get(2).and_then(dm_meta_u64).unwrap_or(0);
+            let scale = row.get(3).and_then(dm_meta_u64).unwrap_or(0);
+            let primary_key_constraint =
+                primary_keys.get(&name.to_ascii_uppercase()).cloned();
+            Ok(DmColumnInfo {
+                name: name.clone(),
+                type_name: dm_column_type_name(
+                    &data_type,
+                    length,
+                    dm_numeric_precision_from_length(&data_type, length),
+                    scale,
+                ),
+                nullable: row
+                    .get(4)
+                    .and_then(dm_value_text)
+                    .is_some_and(|value| value.eq_ignore_ascii_case("Y")),
+                primary_key: primary_key_constraint.is_some(),
+                comment: row.get(5).and_then(dm_value_text),
+                default_value: row
+                    .get(6)
+                    .and_then(dm_value_text)
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty() && !value.eq_ignore_ascii_case("NULL")),
+                auto_increment: row.get(7).and_then(dm_meta_i64).unwrap_or(0) != 0,
+                primary_key_constraint,
+            })
+        })
+        .collect()
+}
+
+fn dm_load_column_infos_from_catalog_views(
+    client: &mut DmClient,
+    schema: &str,
+    table: &str,
+) -> fluxdb_core::Result<Vec<DmColumnInfo>> {
     let result = dm_execute(
         client,
         "SELECT C.COLUMN_NAME, C.DATA_TYPE, C.DATA_LENGTH, C.DATA_PRECISION, C.DATA_SCALE, \
@@ -266,6 +351,16 @@ fn dm_column_type_name(
     } else {
         data_type.to_string()
     }
+}
+
+/// SYSCOLUMNS 对 DECIMAL/NUMERIC 不单独保存 precision；LENGTH$ 即总精度位数。
+fn dm_numeric_precision_from_length(data_type: &str, length: u64) -> Option<u64> {
+    matches!(
+        data_type.to_ascii_uppercase().as_str(),
+        "DECIMAL" | "NUMERIC" | "NUMBER"
+    )
+    .then_some(length)
+    .filter(|length| *length > 0)
 }
 
 fn dm_indexes_for(
@@ -688,4 +783,21 @@ fn dm_view_ddl_with_client(
 
 fn dm_string_literal(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
+}
+
+#[cfg(test)]
+mod dameng_fast_metadata_tests {
+    use super::{dm_column_type_name, dm_numeric_precision_from_length};
+
+    #[test]
+    fn syscolumns_length_keeps_numeric_precision_and_scale() {
+        for data_type in ["DECIMAL", "NUMERIC", "NUMBER"] {
+            let precision = dm_numeric_precision_from_length(data_type, 14);
+            assert_eq!(
+                dm_column_type_name(data_type, 14, precision, 2),
+                format!("{data_type}(14,2)")
+            );
+        }
+        assert_eq!(dm_numeric_precision_from_length("INT", 4), None);
+    }
 }

@@ -63,7 +63,7 @@ pub(crate) fn slot_candidates(slot: &ClauseSlot, ctx: &SlotContext<'_>) -> Vec<C
         ClauseSlot::UpdateAssignLhs { table, already_set } => {
             unlisted_columns(table, already_set, ctx)
         }
-        ClauseSlot::UpdateAssignValue => update_value_candidates(),
+        ClauseSlot::UpdateAssignValue => update_value_candidates(ctx),
         ClauseSlot::LexicalFallback { prev_keyword } => {
             lexical_candidates(prev_keyword.as_deref(), ctx)
         }
@@ -265,19 +265,7 @@ fn expression_candidates(
     }
 
     if qualifier.is_none() {
-        for function in ctx.dialect.functions() {
-            candidates.push(
-                Candidate::new(*function, format!("{function}()"), CandidateKind::Function)
-                    .with_sort_text(format!("{SCORE_FUNCTION}:{function}")),
-            );
-        }
-        // 用户自定义函数（过程只在 CALL 场景出现，暂不混入表达式候选）。
-        for routine in ctx.meta.routines(ctx.schema) {
-            if routine.kind != RoutineKind::Function {
-                continue;
-            }
-            candidates.push(routine_candidate(&routine));
-        }
+        candidates.extend(function_candidates(ctx));
         // 谓词表达式里的字面量常量。
         if matches!(
             scope,
@@ -290,17 +278,123 @@ fn expression_candidates(
                 );
             }
         }
-        // 子句关键字：`SELECT * fro|` 要能补出 FROM。全部关键字都进候选，靠前缀过滤
-        // 收窄，分数最低排在对象之后（与旧行为一致）。
-        for keyword in ctx.dialect.keywords() {
+        // 子句关键字：正在打字（`SELECT * fro|`）时全部关键字都进候选，靠前缀过滤收窄；
+        // 空前缀只给当前子句相关的一小撮，否则每次弹层都被 60+ 个 DDL 关键字淹没。
+        for keyword in expression_keywords(scope, ctx) {
             candidates.push(
-                Candidate::new(*keyword, *keyword, CandidateKind::Keyword)
+                Candidate::new(keyword, keyword, CandidateKind::Keyword)
                     .with_sort_text(format!("{SCORE_KEYWORD}:{keyword}")),
             );
         }
     }
 
     candidates
+}
+
+/// 内置函数 + 用户自定义函数（过程只在 CALL 场景出现，不混入表达式候选）。
+fn function_candidates(ctx: &SlotContext<'_>) -> Vec<Candidate> {
+    let mut candidates: Vec<Candidate> = ctx
+        .dialect
+        .functions()
+        .iter()
+        .map(|function| {
+            Candidate::new(*function, format!("{function}()"), CandidateKind::Function)
+                .with_sort_text(format!("{SCORE_FUNCTION}:{function}"))
+        })
+        .collect();
+    for routine in ctx.meta.routines(ctx.schema) {
+        if routine.kind == RoutineKind::Function {
+            candidates.push(routine_candidate(&routine));
+        }
+    }
+    candidates
+}
+
+/// 投影位置的关键字：`SELECT DISTINCT ...` / `CASE ... END` / 收尾的 FROM。
+const SELECT_ITEM_KEYWORDS: &[&str] = &[
+    "ALL", "DISTINCT", "CASE", "WHEN", "THEN", "ELSE", "END", "AS", "FROM", "INTO",
+];
+/// 谓词位置（WHERE / HAVING）的连接符、运算符与后续子句。
+const PREDICATE_KEYWORDS: &[&str] = &[
+    "AND",
+    "OR",
+    "NOT",
+    "IN",
+    "BETWEEN",
+    "LIKE",
+    "ILIKE",
+    "IS NULL",
+    "IS NOT NULL",
+    "EXISTS",
+    "CASE",
+    "GROUP BY",
+    "HAVING",
+    "ORDER BY",
+    "LIMIT",
+    "OFFSET",
+    "UNION",
+    "UNION ALL",
+    "INTERSECT",
+    "EXCEPT",
+    "WINDOW",
+    "RETURNING",
+];
+/// ON 条件里能续写的运算符与后续子句。
+const JOIN_ON_KEYWORDS: &[&str] = &[
+    "AND",
+    "OR",
+    "NOT",
+    "IN",
+    "BETWEEN",
+    "LIKE",
+    "ILIKE",
+    "IS NULL",
+    "IS NOT NULL",
+    "CASE",
+    "JOIN",
+    "LEFT JOIN",
+    "INNER JOIN",
+    "RIGHT JOIN",
+    "WHERE",
+    "GROUP BY",
+    "ORDER BY",
+    "LIMIT",
+    "OFFSET",
+];
+const GROUP_BY_KEYWORDS: &[&str] = &[
+    "HAVING",
+    "ORDER BY",
+    "LIMIT",
+    "OFFSET",
+    "UNION",
+    "UNION ALL",
+    "WINDOW",
+];
+const ORDER_BY_KEYWORDS: &[&str] = &["ASC", "DESC", "LIMIT", "OFFSET", "UNION", "UNION ALL"];
+
+/// 光标前是否已敲了半截词。有前缀时放开全量关键字，让 `SELECT * fro|` 能补出 FROM。
+fn is_typing(ctx: &SlotContext<'_>) -> bool {
+    !ctx.word.word_part.trim().is_empty()
+}
+
+/// 表达式位置的关键字候选：打字中给全量（靠前缀收窄），空前缀只给当前子句相关的子集。
+fn expression_keywords(scope: ExprScope, ctx: &SlotContext<'_>) -> Vec<&'static str> {
+    if is_typing(ctx) {
+        return ctx.dialect.keywords().to_vec();
+    }
+    let contextual: &[&str] = match scope {
+        ExprScope::SelectItem => SELECT_ITEM_KEYWORDS,
+        ExprScope::Where | ExprScope::Having => PREDICATE_KEYWORDS,
+        ExprScope::JoinOn => JOIN_ON_KEYWORDS,
+        ExprScope::GroupBy => GROUP_BY_KEYWORDS,
+        ExprScope::OrderBy => ORDER_BY_KEYWORDS,
+    };
+    // 方言没有的关键字（如 MySQL 无 ILIKE）不进候选。
+    contextual
+        .iter()
+        .copied()
+        .filter(|keyword| ctx.dialect.keywords().contains(keyword))
+        .collect()
 }
 
 fn column_candidate(column: &ColumnMeta, key: &TableKey, score: i32) -> Candidate {
@@ -588,14 +682,17 @@ fn unlisted_columns(
 }
 
 /// UPDATE 赋值右侧：常量字面量（值枚举需要列值采样，暂不提供）。
-fn update_value_candidates() -> Vec<Candidate> {
-    ["DEFAULT", "NULL", "TRUE", "FALSE"]
+fn update_value_candidates(ctx: &SlotContext<'_>) -> Vec<Candidate> {
+    let mut candidates: Vec<Candidate> = ["DEFAULT", "NULL", "TRUE", "FALSE"]
         .into_iter()
         .map(|literal| {
             Candidate::new(literal, literal, CandidateKind::Keyword)
                 .with_sort_text(format!("{SCORE_KEYWORD}:{literal}"))
         })
-        .collect()
+        .collect();
+    // 赋值右侧也是表达式：`SET name = COU|` 要能补函数。
+    candidates.extend(function_candidates(ctx));
+    candidates
 }
 
 fn virtual_column_candidates(columns: &[String]) -> Vec<Candidate> {
@@ -663,8 +760,8 @@ fn lexical_candidates(prev_keyword: Option<&str>, ctx: &SlotContext<'_>) -> Vec<
         Some("SELECT") | Some("AND") | Some("OR") | Some("SET") | Some("BY") => {
             expression_candidates(ExprScope::SelectItem, ctx.word.qualifier.as_deref(), ctx)
         }
-        // 关键字识别不出子句（残句）时给全量关键字，靠已输入前缀收窄。
-        _ => ctx
+        // 关键字识别不出子句（残句）：只在打字中给全量关键字，空前缀宁可不弹。
+        _ if is_typing(ctx) => ctx
             .dialect
             .keywords()
             .iter()
@@ -673,5 +770,6 @@ fn lexical_candidates(prev_keyword: Option<&str>, ctx: &SlotContext<'_>) -> Vec<
                     .with_sort_text(format!("{SCORE_KEYWORD}:{keyword}"))
             })
             .collect(),
+        _ => Vec::new(),
     }
 }

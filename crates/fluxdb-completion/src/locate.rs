@@ -104,6 +104,7 @@ pub(crate) fn locate_slot(
                 other => other,
             },
             word,
+            statement_prefix,
         );
     }
 
@@ -116,7 +117,7 @@ pub(crate) fn locate_slot(
         return slot;
     }
     if let Some(slot) = slot_from_prev_keyword(word) {
-        return normalize(slot, word);
+        return normalize(slot, word, statement_prefix);
     }
     if word.qualifier.is_some() {
         return ClauseSlot::Expression {
@@ -139,9 +140,23 @@ fn is_after_relation_name(word: &WordContext) -> bool {
         .is_none_or(|keyword| !last.eq_ignore_ascii_case(keyword))
 }
 
-fn normalize(slot: ClauseSlot, word: &WordContext) -> ClauseSlot {
+/// 光标前的词是不是紧跟逗号（`FROM a, |` / `FROM a, b|`）——那是新表名位置，不是别名位置。
+fn follows_comma(statement_prefix: &str, word: &WordContext) -> bool {
+    let head = statement_prefix
+        .strip_suffix(word.word_part.as_str())
+        .unwrap_or(statement_prefix);
+    head.trim_end().ends_with(',')
+}
+
+fn normalize(slot: ClauseSlot, word: &WordContext, statement_prefix: &str) -> ClauseSlot {
     match slot {
-        ClauseSlot::FromTable { .. } if is_after_relation_name(word) => ClauseSlot::TableAlias,
+        ClauseSlot::FromTable { join } if is_after_relation_name(word) => {
+            if follows_comma(statement_prefix, word) {
+                ClauseSlot::FromTable { join }
+            } else {
+                ClauseSlot::TableAlias
+            }
+        }
         other => other,
     }
 }
@@ -580,6 +595,7 @@ pub(crate) fn lexical_slot(
             prev_keyword: word.prev_keyword.clone(),
         }),
         word,
+        statement_prefix,
     )
 }
 

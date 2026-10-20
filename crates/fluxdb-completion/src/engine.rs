@@ -289,6 +289,67 @@ mod tests {
         assert_eq!(schema.insert_text, "public.");
     }
 
+    /// 空前缀下不能把 DDL 关键字灌进表达式候选（IDE 手感的核心）。
+    #[test]
+    fn empty_prefix_keeps_expression_keywords_contextual() {
+        for text in [
+            "SELECT * FROM users u WHERE u.id = |",
+            "SELECT * FROM users u ORDER BY |",
+        ] {
+            let items = labels(text);
+            for noise in ["CREATE", "DROP", "ALTER", "TRUNCATE", "DATABASE"] {
+                assert!(
+                    !items.contains(&noise.to_string()),
+                    "{text} 候选：{items:?}"
+                );
+            }
+        }
+    }
+
+    /// 各方言的上下文关键字表都要过滤出实际存在的项，不能整片落空。
+    #[test]
+    fn contextual_keywords_exist_in_every_dialect() {
+        for dialect in [
+            &dialect::MYSQL as &dyn crate::dialect::CompletionDialect,
+            &dialect::DAMENG,
+            &dialect::SQLITE,
+        ] {
+            let items = candidates_with(dialect, "SELECT * FROM users u WHERE u.id = |");
+            for keyword in ["AND", "OR", "LIKE", "IS NULL", "GROUP BY"] {
+                assert!(
+                    items.iter().any(|item| item.label == keyword),
+                    "缺少 {keyword}，候选：{items:?}"
+                );
+            }
+        }
+    }
+
+    /// 打字中仍放开全量关键字：`SELECT * fro|` → FROM。
+    #[test]
+    fn typed_prefix_still_offers_full_keyword_set() {
+        let items = labels("SELECT * FROM users u WHERE u.id > 1 AND|");
+        assert!(items.contains(&"AND".to_string()), "候选：{items:?}");
+    }
+
+    /// FROM 列表里的逗号后是新表名位置，不是别名位置。
+    #[test]
+    fn comma_in_from_starts_new_table_slot() {
+        let items = labels("SELECT * FROM users u, |");
+        assert!(items.contains(&"orders".to_string()), "候选：{items:?}");
+        assert!(items.contains(&"users".to_string()), "候选：{items:?}");
+        // 别名位置（无逗号）仍然只给续接关键字。
+        let items = labels("SELECT * FROM users u |");
+        assert!(!items.contains(&"orders".to_string()), "候选：{items:?}");
+        assert!(items.contains(&"WHERE".to_string()), "候选：{items:?}");
+    }
+
+    /// 赋值右侧也是表达式，函数要能补出来。
+    #[test]
+    fn update_set_value_suggests_functions() {
+        let items = labels("UPDATE users SET name = COU|");
+        assert!(items.contains(&"COUNT".to_string()), "候选：{items:?}");
+    }
+
     #[test]
     fn suggests_columns_for_bare_projection() {
         let items = labels("SELECT | FROM users");

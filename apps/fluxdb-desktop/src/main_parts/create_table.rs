@@ -1197,7 +1197,7 @@ fn create_table_tab_bar(
                 cx,
             ))
         })
-        .when(active_tab == CreateTableTab::Triggers, |this| {
+        .when(active_tab == CreateTableTab::Triggers && create.database_kind != DatabaseKind::Dameng, |this| {
             this.child(create_table_tab_action(
                 tr("app.create_table.add_trigger"),
                 AppCommand::AddCreateTableTrigger(tab_id),
@@ -1247,12 +1247,13 @@ fn create_table_tab_action(
         )
 }
 
-fn create_table_add_row_command(tab_id: TabId, active_tab: CreateTableTab) -> Option<AppCommand> {
-    match active_tab {
+fn create_table_add_row_command(tab_id: TabId, create: &CreateTableState) -> Option<AppCommand> {
+    match create.active_tab {
         CreateTableTab::Fields => Some(AppCommand::AddCreateTableColumn(tab_id)),
         CreateTableTab::Indexes => Some(AppCommand::AddCreateTableIndex(tab_id)),
         CreateTableTab::ForeignKeys => Some(AppCommand::AddCreateTableForeignKey(tab_id)),
         CreateTableTab::Checks => Some(AppCommand::AddCreateTableCheck(tab_id)),
+        CreateTableTab::Triggers if create.database_kind == DatabaseKind::Dameng => None,
         CreateTableTab::Triggers => Some(AppCommand::AddCreateTableTrigger(tab_id)),
         CreateTableTab::Options
         | CreateTableTab::Partitions

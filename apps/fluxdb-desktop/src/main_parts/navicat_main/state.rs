@@ -675,6 +675,7 @@ struct NavicatMain {
     _copy_table_ddl_task: Option<Task<()>>,
     _copy_table_structure_task: Option<Task<()>>,
     _danger_table_task: Option<Task<()>>,
+    _table_import_task: Option<Task<()>>,
     data_export_task_seq: u64,
     _test_connection_task: Option<Task<()>>,
     _create_schema_task: Option<Task<()>>,

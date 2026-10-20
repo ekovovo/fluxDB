@@ -654,7 +654,7 @@ impl NavicatMain {
                 self.request_apply_data_changes(tab.id, cx);
             }
             TabKind::CreateTable(create) => {
-                if let Some(command) = create_table_add_row_command(tab.id, create.active_tab) {
+                if let Some(command) = create_table_add_row_command(tab.id, &create) {
                     self.dispatch(command, cx);
                 }
             }

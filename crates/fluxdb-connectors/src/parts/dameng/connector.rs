@@ -33,6 +33,32 @@ impl Connector for DamengConnector {
         Ok(())
     }
 
+    fn create_schema(
+        &self,
+        connection_id: ConnectionId,
+        _: &str,
+        schema: &str,
+    ) -> fluxdb_core::Result<()> {
+        if connection_id != self.config("达梦新建 schema 需要连接配置上下文")?.id {
+            return Err(Error::new(ErrorKind::Connection, "连接不匹配"));
+        }
+        let schema = schema.trim();
+        if schema.is_empty() {
+            return Err(Error::new(ErrorKind::Query, "schema 名称不能为空"));
+        }
+        let mut client = dm_connect(self.config("达梦新建 schema 需要连接配置上下文")?)?;
+        dm_execute(
+            &mut client,
+            &format!(
+                "CREATE SCHEMA {}",
+                fluxdb_core::DamengDialect.quote_identifier(schema)
+            ),
+            &[],
+        )?;
+        client.close();
+        Ok(())
+    }
+
     fn list_objects(&self, path: Option<&ObjectPath>) -> fluxdb_core::Result<Vec<ObjectSummary>> {
         dm_list_objects(
             self.config("达梦对象浏览需要连接配置上下文")?,
@@ -106,6 +132,10 @@ impl Connector for DamengConnector {
             self.config("达梦外键元数据需要连接配置上下文")?,
             path,
         )
+    }
+
+    fn list_triggers(&self, path: &ObjectPath) -> fluxdb_core::Result<Vec<TriggerInfo>> {
+        dm_triggers_for(self.config("达梦触发器元数据需要连接配置上下文")?, path)
     }
 
     fn list_completion_tables(

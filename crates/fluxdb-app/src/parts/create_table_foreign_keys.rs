@@ -3,6 +3,7 @@ enum CreateTableSqlDialect {
     MySql,
     Sqlite,
     Postgres,
+    Dameng,
 }
 
 fn create_table_add_foreign_key(create: &mut CreateTableState) {
@@ -386,6 +387,7 @@ fn create_table_foreign_key_lines(
                 CreateTableSqlDialect::MySql => fluxdb_core::MySqlDialect.quote_identifier(column),
                 CreateTableSqlDialect::Sqlite => fluxdb_core::SqliteDialect.quote_identifier(column),
                 CreateTableSqlDialect::Postgres => fluxdb_core::PostgresDialect.quote_identifier(column),
+                CreateTableSqlDialect::Dameng => fluxdb_core::DamengDialect.quote_identifier(column),
             });
         }
         if columns.is_empty() {
@@ -425,6 +427,12 @@ fn create_table_foreign_key_lines(
                 columns.join(", "),
                 create_table_postgres_referenced_table(create, foreign_key)
             ),
+            CreateTableSqlDialect::Dameng => format!(
+                "CONSTRAINT {} FOREIGN KEY ({}) REFERENCES {}",
+                fluxdb_core::DamengDialect.quote_identifier(name),
+                columns.join(", "),
+                create_table_dameng_referenced_table(create, foreign_key)
+            ),
         };
         let quoted = referenced_columns
             .iter()
@@ -432,6 +440,7 @@ fn create_table_foreign_key_lines(
                 CreateTableSqlDialect::MySql => fluxdb_core::MySqlDialect.quote_identifier(column),
                 CreateTableSqlDialect::Sqlite => fluxdb_core::SqliteDialect.quote_identifier(column),
                 CreateTableSqlDialect::Postgres => fluxdb_core::PostgresDialect.quote_identifier(column),
+                CreateTableSqlDialect::Dameng => fluxdb_core::DamengDialect.quote_identifier(column),
             })
             .collect::<Vec<_>>();
         line.push_str(" (");
@@ -487,6 +496,27 @@ fn create_table_postgres_referenced_table(
         table
     } else {
         format!("{}.{table}", fluxdb_core::PostgresDialect.quote_identifier(schema))
+    }
+}
+
+/// 达梦外键引用表：`referenced_database` 在新建表表单里仍沿用 database 字段，
+/// 只有它与当前 database 不同时才视为 schema；否则回退到建表 schema。
+fn create_table_dameng_referenced_table(
+    create: &CreateTableState,
+    foreign_key: &CreateTableForeignKey,
+) -> String {
+    let referenced_database = foreign_key.referenced_database.trim();
+    let current_database = create.database.as_deref().unwrap_or("").trim();
+    let schema = if !referenced_database.is_empty() && referenced_database != current_database {
+        referenced_database
+    } else {
+        create.schema.trim()
+    };
+    let table = fluxdb_core::DamengDialect.quote_identifier(foreign_key.referenced_table.trim());
+    if schema.is_empty() {
+        table
+    } else {
+        format!("{}.{table}", fluxdb_core::DamengDialect.quote_identifier(schema))
     }
 }
 

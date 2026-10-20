@@ -461,6 +461,51 @@ fn localize_backend_error_text(text: &str) -> String {
         "PostgreSQL 触发器需要引用已存在的函数，不支持行内 BEGIN…END 触发器体" => "app.backend_error.app_msg_pg_trigger_function_required",
         "SQLite 自增字段必须是整数主键" => "app.backend_error.app_msg_sqlite_autoincrement_integer_pk",
         "SQLite 自增字段只能是单列整数主键" => "app.backend_error.app_msg_sqlite_autoincrement_single_pk",
+        "未读取到源表达梦 DDL，无法复制表" => "app.backend_error.app_msg_dm_copy_ddl_missing",
+        "未读取到可复制的达梦表结构 DDL" => {
+            "app.backend_error.app_msg_dm_copy_structure_missing"
+        }
+        "达梦表结构 DDL 引号未闭合" => "app.backend_error.app_msg_dm_ddl_quote_unclosed",
+        "达梦 DDL 缺少 CREATE TABLE" => {
+            "app.backend_error.app_msg_dm_ddl_create_table_missing"
+        }
+        "达梦 CREATE TABLE 缺少字段定义" => {
+            "app.backend_error.app_msg_dm_ddl_columns_missing"
+        }
+        "达梦索引 DDL 缺少 INDEX" => "app.backend_error.app_msg_dm_ddl_index_missing",
+        "达梦索引 DDL 缺少索引名" => "app.backend_error.app_msg_dm_ddl_index_name_missing",
+        "达梦索引 DDL 缺少 ON" => "app.backend_error.app_msg_dm_ddl_index_on_missing",
+        "达梦索引 DDL 缺少索引字段" => {
+            "app.backend_error.app_msg_dm_ddl_index_columns_missing"
+        }
+        "达梦 DDL 标识符未引用" => "app.backend_error.app_msg_dm_ddl_identifier_unquoted",
+        "达梦 DDL 标识符引用未闭合" => {
+            "app.backend_error.app_msg_dm_ddl_identifier_unclosed"
+        }
+        "达梦自增字段不能同时设置默认值" => {
+            "app.backend_error.app_msg_dm_identity_default_conflict"
+        }
+        "达梦建表向导暂不支持创建触发器" => "app.backend_error.app_msg_dm_trigger_unsupported",
+        "达梦建表向导暂不支持分区" => "app.backend_error.app_msg_dm_partition_unsupported",
+        "达梦设计表暂不支持指定哈希索引" => {
+            "app.backend_error.app_msg_dm_hash_index_unsupported"
+        }
+        "达梦索引不支持前缀长度" => "app.backend_error.app_msg_dm_index_prefix_unsupported",
+        "达梦设计表暂不支持修改触发器" => {
+            "app.backend_error.app_msg_dm_trigger_design_unsupported"
+        }
+        "达梦设计表暂不支持移除自增属性" => {
+            "app.backend_error.app_msg_dm_identity_remove_unsupported"
+        }
+        "达梦不支持 NOT ENFORCED 检查约束" => {
+            "app.backend_error.app_msg_dm_not_enforced_unsupported"
+        }
+        "达梦不支持以连接级开关临时禁用外键检查" => {
+            "app.backend_error.app_msg_dm_fk_check_unsupported"
+        }
+        "导入文件格式必须是 TXT、CSV、JSON 或 XML" => {
+            "app.backend_error.app_msg_import_format_unsupported"
+        }
         "表名不能为空" => "app.backend_error.app_msg_table_name_required",
         "表名没有变化" => "app.backend_error.app_msg_table_name_unchanged",
         "新表名不能和原表相同" => "app.backend_error.app_msg_table_name_same_as_original",

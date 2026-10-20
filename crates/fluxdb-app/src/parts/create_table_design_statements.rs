@@ -680,6 +680,12 @@ fn create_table_check_lines(
                         fluxdb_core::PostgresDialect.quote_identifier(name)
                     )
                 }
+                CreateTableSqlDialect::Dameng => {
+                    format!(
+                        "CONSTRAINT {} CHECK ({expression})",
+                        fluxdb_core::DamengDialect.quote_identifier(name)
+                    )
+                }
             }
         };
         if check.not_enforced {
@@ -691,6 +697,9 @@ fn create_table_check_lines(
                 // PG 的 CHECK 恒为强制（无 NOT ENFORCED），不生成假语法。
                 CreateTableSqlDialect::Postgres => {
                     return Err("PostgreSQL 不支持 NOT ENFORCED 检查约束".to_string());
+                }
+                CreateTableSqlDialect::Dameng => {
+                    return Err("达梦不支持 NOT ENFORCED 检查约束".to_string());
                 }
             }
         }
@@ -748,6 +757,7 @@ fn create_table_trigger_statements(
         CreateTableSqlDialect::Sqlite => fluxdb_core::SqliteDialect.quote_identifier(create.table_name.trim()),
         // PG 触发器走 create_table_postgres.rs 的专用生成（引用已存在函数），不走此路径。
         CreateTableSqlDialect::Postgres => fluxdb_core::PostgresDialect.quote_identifier(create.table_name.trim()),
+        CreateTableSqlDialect::Dameng => fluxdb_core::DamengDialect.quote_identifier(create.table_name.trim()),
     };
     create
         .triggers
@@ -765,6 +775,7 @@ fn create_table_trigger_statements(
                 CreateTableSqlDialect::MySql => fluxdb_core::MySqlDialect.quote_identifier(name),
                 CreateTableSqlDialect::Sqlite => fluxdb_core::SqliteDialect.quote_identifier(name),
                 CreateTableSqlDialect::Postgres => fluxdb_core::PostgresDialect.quote_identifier(name),
+                CreateTableSqlDialect::Dameng => fluxdb_core::DamengDialect.quote_identifier(name),
             };
             Ok(format!(
                 "CREATE TRIGGER {trigger_name}\n{} {} ON {table_name}\nFOR EACH ROW\n{body};",

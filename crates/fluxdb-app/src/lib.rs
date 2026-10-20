@@ -42,6 +42,9 @@ use fluxdb_core::{
     redact_uri_password, role_memberships_from_grants, set_sqlite_attached_database,
     sqlite_attached_database_path,
 };
+pub use fluxdb_core::{
+    TableDataImport, TableImportFormat, TableImportProgress, TableImportReport, TableImportRequest,
+};
 use sqlformat::{Dialect, FormatOptions, Indent, QueryParams};
 use sqlparser::ast::{Expr, ObjectName, ObjectNamePart, Statement};
 
@@ -60,6 +63,7 @@ include!("parts/create_table_foreign_keys.rs");
 include!("parts/create_table_provider.rs");
 include!("parts/create_table_postgres.rs");
 include!("parts/create_table_postgres_design.rs");
+include!("parts/create_table_dameng.rs");
 include!("parts/controller.rs");
 include!("parts/data_editor.rs");
 include!("parts/mock_data.rs");

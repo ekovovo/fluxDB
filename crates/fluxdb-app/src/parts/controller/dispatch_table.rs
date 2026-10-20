@@ -19,6 +19,12 @@ impl AppController {
                             .postgres_profile
                             .as_ref()
                             .map(|profile| profile.scope.default_schema.clone())
+                            .or_else(|| {
+                                config
+                                    .dameng_profile
+                                    .as_ref()
+                                    .map(|profile| profile.basic.schema.clone())
+                            })
                             .filter(|schema| !schema.trim().is_empty())
                     })
                     .unwrap_or_default();
@@ -162,7 +168,8 @@ impl AppController {
                     return self.fail(Error::new(ErrorKind::Connection, "连接不存在"));
                 };
                 let new_name = new_name.trim().to_string();
-                let source_ddl = if config.kind == DatabaseKind::Sqlite {
+                let source_ddl = if matches!(config.kind, DatabaseKind::Sqlite | DatabaseKind::Dameng)
+                {
                     match self.load_table_ddl(&object) {
                         Ok(ddl) => Some(ddl),
                         Err(error) => return self.fail(error),
@@ -357,30 +364,33 @@ impl AppController {
             },
             AppCommand::FinishCreateTableApply { tab_id, result } => match result {
                 Ok(()) => {
-                    let refresh_pg = match self.find_tab_mut(tab_id) {
+                    let refresh_design = match self.find_tab_mut(tab_id) {
                         Some(tab) => match &mut tab.kind {
                             TabKind::CreateTable(create) => {
                                 create.applying = false;
                                 create.apply_error = None;
                                 tab.dirty = false;
                                 create.is_design()
-                                    && create.database_kind == DatabaseKind::Postgres
+                                    && matches!(
+                                        create.database_kind,
+                                        DatabaseKind::Postgres | DatabaseKind::Dameng
+                                    )
                             }
                             _ => false,
                         },
                         None => return self.fail(Error::new(ErrorKind::Internal, "新建表标签页不存在")),
                     };
-                    // PG 设计表保存成功后按落库结构重建基线：否则 original_ddl 停留在打开时快照，
+                    // PG/达梦设计表保存成功后按落库结构重建基线：否则 original_ddl 停留在打开时快照，
                     // 下次保存会把「自己刚保存的改动」误判为外部变化而拒绝（§9.2）。
-                    if refresh_pg {
-                        if let Err(error) = self.refresh_design_table_after_apply(tab_id) {
-                            tracing::warn!(
-                                target: "gdb_create_table",
-                                ?tab_id,
-                                error = %error,
-                                "保存后刷新设计基线失败，保留当前编辑状态"
-                            );
-                        }
+                    if refresh_design
+                        && let Err(error) = self.refresh_design_table_after_apply(tab_id)
+                    {
+                        tracing::warn!(
+                            target: "gdb_create_table",
+                            ?tab_id,
+                            error = %error,
+                            "保存后刷新设计基线失败，保留当前编辑状态"
+                        );
                     }
                     AppEvent::CreateTableApplied(tab_id)
                 }

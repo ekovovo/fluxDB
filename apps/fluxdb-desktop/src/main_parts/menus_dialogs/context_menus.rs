@@ -428,7 +428,7 @@ fn table_context_menu(
             tr("app.context.import_data").to_string(),
             AppIcon::FolderInput,
             false,
-            None,
+            Some(TableMenuAction::ImportData),
             &menu,
             colors,
             cx,
@@ -496,11 +496,13 @@ fn table_export_submenu(
         context_submenu_clamped_top(menu.position.y, desired_top, height, window),
         colors,
     )
-        .child(table_inert_menu_item(
+        .child(table_submenu_action_item(
             tr("app.context.export_database").to_string(),
             AppIcon::Database,
-            false,
+            TableMenuAction::ExportDatabase,
+            menu,
             colors,
+            cx,
         ))
         .child(table_submenu_action_item(
             tr("app.context.export_data").to_string(),

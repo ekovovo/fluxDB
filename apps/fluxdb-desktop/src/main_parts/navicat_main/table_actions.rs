@@ -1,4 +1,192 @@
+fn copy_table_requires_source_ddl(database_kind: DatabaseKind) -> bool {
+    matches!(database_kind, DatabaseKind::Sqlite | DatabaseKind::Dameng)
+}
+
 impl NavicatMain {
+    fn choose_table_import_file(
+        &mut self,
+        object_path: ObjectPath,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self._table_import_task.is_some() {
+            self.show_message(
+                tr("app.table.import.running").as_ref(),
+                AppMessageKind::Warning,
+                cx,
+            );
+            return;
+        }
+        let receiver = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some(tr("app.table.import.choose_file")),
+        });
+        self._file_picker_task = Some(cx.spawn_in(window, async move |view, cx| {
+            let selected = receiver.await;
+            let path = match selected {
+                Ok(Ok(Some(paths))) => paths.into_iter().next(),
+                Ok(Ok(None)) => None,
+                Ok(Err(error)) => {
+                    let _ = cx.update(|_, cx| {
+                        let Some(view) = view.upgrade() else {
+                            return;
+                        };
+                        view.update(cx, |this, cx| {
+                            this.show_message(
+                                format!(
+                                    "{}: {error}",
+                                    tr("app.table.import.choose_file_failed")
+                                ),
+                                AppMessageKind::Error,
+                                cx,
+                            );
+                        });
+                    });
+                    None
+                }
+                Err(error) => {
+                    let _ = cx.update(|_, cx| {
+                        let Some(view) = view.upgrade() else {
+                            return;
+                        };
+                        view.update(cx, |this, cx| {
+                            this.show_message(
+                                format!(
+                                    "{}: {error}",
+                                    tr("app.table.import.choose_file_failed")
+                                ),
+                                AppMessageKind::Error,
+                                cx,
+                            );
+                        });
+                    });
+                    None
+                }
+            };
+            let Some(path) = path else {
+                return;
+            };
+            let _ = cx.update(|_, cx| {
+                let Some(view) = view.upgrade() else {
+                    return;
+                };
+                view.update(cx, |this, cx| {
+                    this.start_table_import(object_path, path, cx);
+                });
+            });
+        }));
+    }
+
+    fn start_table_import(
+        &mut self,
+        object_path: ObjectPath,
+        source: PathBuf,
+        cx: &mut Context<Self>,
+    ) {
+        if self._table_import_task.is_some() {
+            self.show_message(
+                tr("app.table.import.running").as_ref(),
+                AppMessageKind::Warning,
+                cx,
+            );
+            return;
+        }
+        let format = fluxdb_app::TableImportFormat::from_path(&source).ok_or_else(|| {
+            tr("app.table.import.format_unsupported").to_string()
+        });
+        let format = match format {
+            Ok(format) => format,
+            Err(message) => {
+                self.show_message(message, AppMessageKind::Warning, cx);
+                return;
+            }
+        };
+        self.show_message(
+            tr("app.table.import.started")
+                .replace("%{format}", format.label()),
+            AppMessageKind::Success,
+            cx,
+        );
+        let controller = self.controller.clone();
+        let object = object_path.clone();
+        let task = cx.spawn(async move |view, cx| {
+            let event = cx
+                .background_spawn(async move {
+                    controller.dispatch_database_task(
+                        AppCommand::ImportTableData {
+                            object: object.clone(),
+                            source,
+                        },
+                        &std::sync::atomic::AtomicBool::new(false),
+                        &mut |_| {},
+                    )
+                })
+                .await;
+            cx.update(|cx| {
+                let Some(view) = view.upgrade() else {
+                    return;
+                };
+                view.update(cx, |this, cx| {
+                    this._table_import_task = None;
+                    match event {
+                        AppEvent::TableDataImported { object, report } => {
+                            let mut message = tr("app.table.import.succeeded")
+                                .replace("%{rows}", &report.imported_rows.to_string());
+                            if !report.warnings.is_empty() {
+                                message.push_str(": ");
+                                message.push_str(
+                                    &report
+                                        .warnings
+                                        .iter()
+                                        .map(|warning| crate::localize_backend_error_text(warning))
+                                        .collect::<Vec<_>>()
+                                        .join("; "),
+                                );
+                            }
+                            this.show_message(message, AppMessageKind::Success, cx);
+                            this.request_data_editor_refresh_for_object(&object, cx);
+                            cx.notify();
+                        }
+                        AppEvent::Failed(error) => {
+                            this.show_message(error.message, AppMessageKind::Error, cx);
+                        }
+                        _ => {
+                            this.show_message(
+                                tr("app.table.import.no_result").as_ref(),
+                                AppMessageKind::Error,
+                                cx,
+                            );
+                        }
+                    }
+                });
+            });
+        });
+        self._table_import_task = Some(task);
+        cx.notify();
+    }
+
+    fn request_data_editor_refresh_for_object(
+        &mut self,
+        object: &ObjectPath,
+        cx: &mut Context<Self>,
+    ) {
+        let tab_ids = self
+            .controller
+            .state()
+            .tabs
+            .iter()
+            .filter_map(|tab| match &tab.kind {
+                TabKind::DataEditor(editor) if editor.object == *object => Some(tab.id),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        for tab_id in tab_ids {
+            self.request_data_editor_refresh(tab_id, cx);
+        }
+    }
+
     fn refresh_table_object(&mut self, object_path: &ObjectPath, cx: &mut Context<Self>) {
         let tab_refreshes = self
             .controller
@@ -62,7 +250,9 @@ impl NavicatMain {
         cx: &mut Context<Self>,
     ) {
         let new_name = format!("{}_copy", object_path.name);
-        let needs_ddl = self.table_database_kind(&object_path) == Some(DatabaseKind::Sqlite);
+        let needs_ddl = self
+            .table_database_kind(&object_path)
+            .is_some_and(copy_table_requires_source_ddl);
         self.pending_copy_table = Some(PendingCopyTable {
             object_path: object_path.clone(),
             new_name: new_name.clone(),
@@ -242,7 +432,7 @@ impl NavicatMain {
         let Some(database_kind) = self.table_database_kind(&form.object_path) else {
             return Err(tr("app.error.connection_missing").to_string());
         };
-        let source_ddl = if database_kind == DatabaseKind::Sqlite {
+        let source_ddl = if copy_table_requires_source_ddl(database_kind) {
             match &form.source_ddl {
                 Some(Ok(ddl)) => Some(ddl.as_str()),
                 Some(Err(message)) => return Err(message.clone()),

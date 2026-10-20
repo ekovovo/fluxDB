@@ -38,8 +38,10 @@ pub trait MetadataSource {
    3. 在 token 间隙插入占位符（偏移回映射）；
    4. 从尾部按 token 边界截断（最多 12 次）。
    全败 → 词法兜底。
-3. **符号表**（`symbols.rs`）：关系/别名、CTE（无显式列时从投影推导）、派生表、投影别名。
-   Phase 1–3 为整语句平铺收集，子查询可见外层别名。
+3. **符号表**（`symbols.rs`）：按词法作用域收集关系/别名、CTE（无显式列时从投影推导）、
+   派生表、投影别名。每个 `Query` 一层作用域，`visible_at(offset)` 投影出该位置可见的
+   扁平 `Symbols`；子查询可见外层关系，内层同名绑定遮蔽外层。光标落在所有 span 之外
+   （解析被截断）时退化成整条语句平铺，不遮蔽。
 4. **槽位定位**（`locate.rs`）：取包含光标的最小 AST 节点映射为 `ClauseSlot`。
 5. **槽位策略**（`strategy.rs`）：每个槽位决定候选来源与基础分。
 6. **过滤排序**（`engine.rs`）：引号标识符前缀匹配、其余 ASCII 不敏感子序列；按
@@ -64,6 +66,8 @@ pub trait MetadataSource {
 ## 有意变更（相对旧启发式）
 
 - 限定符既非别名、表名也非 CTE/派生表 → 空候选，不再兜底全列。
+- 限定符与列按作用域解析：内层同名别名 / 派生表别名遮蔽外层，兄弟子查询的关系互不可见
+  （此前整条语句平铺，`FROM users u` 与子查询 `FROM orders u` 会一起认作 `u`）。
 - `ON` 条件由外键硬限定，只有缺少 FK 元数据时才回退全列。
 - 未完成的 `INSERT (col,` / `UPDATE SET` 由前缀词法识别（sqlparser 需要完整语句）。
 - 同分内只做个性化重排（采纳历史），不跨语义分层调序。
@@ -123,8 +127,11 @@ pub trait MetadataSource {
 
 - 第 6 期：语义诊断（未知表 / schema / 列）在引擎上重建 —— 完成。desktop 的
   `SqlDiagnosticMetadata` 适配注入来源，`diagnose.rs` 复用补全的解析与符号表
+- 第 7 期：符号表改为作用域链（`ScopeTree`）—— 完成。内层同名别名 / 派生表别名遮蔽
+  外层；兄弟子查询互不可见；补全按光标投影，诊断按节点位置投影（同作用域只算一次）。
+  `Symbols` 对外的字段与方法未变，`strategy.rs` / `locate.rs` 零改动
 
-验证：`cargo test -p fluxdb-completion`（88 例）、`cargo test -p fluxdb-app`（57 例，另有
+验证：`cargo test -p fluxdb-completion`（93 例）、`cargo test -p fluxdb-app`（57 例，另有
 3 个默认 ignore 的真库冒烟）、`cargo clippy --locked -p fluxdb-completion --all-targets`。
 
 真库冒烟（本地容器，密码只从环境变量读取）：

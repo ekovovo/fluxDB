@@ -41,8 +41,10 @@ pub fn complete(
         .trim()
         .is_empty();
 
+    // 作用域链按光标投影：内层同名别名遮蔽外层。span 与光标同属解析后的文本坐标
+    // （插入式兜底就发生在光标处，光标之前不受偏移影响）。
     let symbols = match &parsed {
-        Some(parsed) => collect(&parsed.statements),
+        Some(parsed) => collect(&parsed.statements, &index).visible_at(cursor_in_statement),
         None => Symbols::default(),
     };
 

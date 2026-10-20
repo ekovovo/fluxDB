@@ -15,7 +15,7 @@ use sqlparser::tokenizer::Span;
 use crate::dialect::CompletionDialect;
 use crate::metadata::{MetadataSource, TableKey, TableMeta};
 use crate::parse::{LineColIndex, TolerantParse, parse_tolerant};
-use crate::symbols::{Symbols, collect, object_name_parts};
+use crate::symbols::{ScopeTree, Symbols, collect, object_name_parts};
 
 /// 诊断类别。展示层据此映射文案。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,19 +75,23 @@ pub fn diagnose(
         index: LineColIndex::new(text),
         text,
         columns_cache: HashMap::new(),
+        tree: ScopeTree::default(),
         symbols: Symbols::default(),
+        current_scope: None,
         diagnostics: Vec::new(),
     };
     let mut diagnostics = Vec::new();
     // 逐语句独立收集符号：跨语句的表集合不该互相可见，否则未限定列检查会拿别的
     // 语句的表当可见范围。
     for statement in &parsed.statements {
-        diagnoser.symbols = collect(std::slice::from_ref(statement));
+        diagnoser.tree = collect(std::slice::from_ref(statement), &diagnoser.index);
+        diagnoser.current_scope = None;
         diagnoser.diagnostics.clear();
         // INSERT 的目标不是 TableFactor，单独取一次。
         if let Statement::Insert(insert) = statement
             && let TableObject::TableName(name) = &insert.table
         {
+            diagnoser.refresh_symbols(name.span());
             diagnoser.check_table(name);
         }
         let _ = statement.visit(&mut diagnoser);
@@ -109,12 +113,30 @@ struct Diagnoser<'a> {
     text: &'a str,
     /// 列名（小写）按表缓存：一次诊断内同一张表只问宿主一次。
     columns_cache: HashMap<TableKey, HashSet<String>>,
-    /// 当前语句的符号表，每条语句重算。
+    /// 当前语句的作用域树，每条语句重算。
+    tree: ScopeTree,
+    /// 当前节点处可见的符号（`tree` 按节点位置投影）。
     symbols: Symbols,
+    /// `symbols` 对应的作用域，避免同一作用域内重复投影。
+    current_scope: Option<usize>,
     diagnostics: Vec<Diagnostic>,
 }
 
 impl Diagnoser<'_> {
+    /// 把符号表切到 `span` 起点所在的作用域。
+    ///
+    /// 诊断按节点遍历而非按光标，同一个作用域里的节点共用一次投影。
+    fn refresh_symbols(&mut self, span: Span) {
+        let offset = self.index.offset(span.start);
+        // 落在所有 span 之外（解析被截断）时统一记为 `usize::MAX`，与初始的 `None` 区分。
+        let scope = self.tree.containing_scope_at(offset).unwrap_or(usize::MAX);
+        if Some(scope) == self.current_scope {
+            return;
+        }
+        self.current_scope = Some(scope);
+        self.symbols = self.tree.visible_at(offset);
+    }
+
     /// sqlparser span（1 基 line/col，end 闭区间）→ 原文字节区间（end 开区间）。
     fn range(&self, span: Span) -> (usize, usize) {
         let start = self.parsed.map_offset(self.index.offset(span.start));
@@ -132,17 +154,7 @@ impl Diagnoser<'_> {
             return;
         };
         // CTE / 派生表别名不是物理表，符号表已知道它们。
-        if self
-            .symbols
-            .ctes
-            .iter()
-            .any(|cte| cte.name.eq_ignore_ascii_case(&table))
-            || self
-                .symbols
-                .derived
-                .iter()
-                .any(|derived| derived.name.eq_ignore_ascii_case(&table))
-        {
+        if self.symbols.is_virtual(&table) {
             return;
         }
         let (start, end) = self.range(name.span());
@@ -291,6 +303,7 @@ impl Visitor for Diagnoser<'_> {
     fn pre_visit_table_factor(&mut self, table_factor: &TableFactor) -> ControlFlow<Self::Break> {
         // 只认真正的关系引用；DDL（`CREATE TABLE foo`）不走这里，不会把新建对象标红。
         if let TableFactor::Table { name, .. } = table_factor {
+            self.refresh_symbols(name.span());
             self.check_table(name);
         }
         ControlFlow::Continue(())
@@ -299,9 +312,15 @@ impl Visitor for Diagnoser<'_> {
     fn pre_visit_expr(&mut self, expr: &Expr) -> ControlFlow<Self::Break> {
         match expr {
             Expr::CompoundIdentifier(parts) if parts.len() >= 2 => {
+                if let Some(column) = parts.last() {
+                    self.refresh_symbols(column.span);
+                }
                 self.check_qualified_column(parts);
             }
-            Expr::Identifier(ident) => self.check_unqualified_column(ident),
+            Expr::Identifier(ident) => {
+                self.refresh_symbols(ident.span);
+                self.check_unqualified_column(ident);
+            }
             _ => {}
         }
         ControlFlow::Continue(())
@@ -483,6 +502,21 @@ mod tests {
             &MockMeta::full(),
         );
         assert!(derived.is_empty(), "{derived:?}");
+    }
+
+    /// 兄弟子查询的表不在作用域里：第二个子查询的 `user_id` 不能靠第一个子查询的
+    /// `orders` 蒙混过关。
+    #[test]
+    fn sibling_subquery_relations_are_not_visible() {
+        let diagnostics = run(
+            "SELECT * FROM users WHERE name IN (SELECT id FROM orders) \
+             AND user_id IN (SELECT id FROM users)",
+            &MockMeta::full(),
+        );
+        assert_eq!(
+            kinds(&diagnostics),
+            vec![(DiagnosticKind::UnknownColumn, "user_id".to_string())]
+        );
     }
 
     #[test]

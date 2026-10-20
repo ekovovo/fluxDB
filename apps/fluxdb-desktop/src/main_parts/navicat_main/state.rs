@@ -714,6 +714,10 @@ struct NavicatMain {
     pending_query_parameters: Option<PendingQueryParameterPrompt>,
     pending_dangerous_query: Option<PendingDangerousQuery>,
     pending_dangerous_redis_command: Option<PendingDangerousRedisCommand>,
+    /// AI 提交的持久化配置提案；确认前不落库。
+    pending_config_proposal: Option<fluxdb_app::ConfigProposal>,
+    config_proposal_busy: bool,
+    config_delete_confirmed: bool,
     // 「执行 SQL 文件」弹框共享状态：dialog builder 在 NavicatMain::render 期间被同步执行，
     // 此时主视图处于 lease 状态，builder 内不能 view.read(cx)，实时数据统一放 Rc<RefCell<..>>
     // （先例：redis_hash_full_value_viewer）。

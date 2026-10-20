@@ -44,6 +44,20 @@ fn ai_format_token_count(tokens: i64, unit: AiTokenUnit) -> String {
     (tokens / unit.scale()).to_string()
 }
 
+/// 提案容量按既有 K/M 控件展示，未改动时保留精确 Token 值，避免 8192 被保存成 8000。
+fn ai_parse_proposed_token_count(
+    raw: &str,
+    unit: AiTokenUnit,
+    proposed: Option<i64>,
+) -> Result<Option<i64>, String> {
+    if let Some(exact) = proposed
+        && raw.trim() == ai_format_token_count(exact, unit)
+    {
+        return Ok(Some(exact));
+    }
+    ai_parse_token_count(raw, unit)
+}
+
 /// 回填容量字段时展示的单位：≥1M 用 M，否则用 K，显示值向下取整。
 ///
 /// 单位只是展示单位、不落库，因此必须由 token 数推导 —— 否则会出现「存的是 1M、
@@ -248,6 +262,22 @@ mod ai_capacity_tests {
             Ok(Some(128_000)),
         );
         assert!(ai_parse_token_count("1.5", AiTokenUnit::M).is_err());
+    }
+
+    #[test]
+    fn proposed_capacity_preserves_exact_tokens_until_edited() {
+        assert_eq!(
+            ai_parse_proposed_token_count("8", AiTokenUnit::K, Some(8192)),
+            Ok(Some(8192))
+        );
+        assert_eq!(
+            ai_parse_proposed_token_count("9", AiTokenUnit::K, Some(8192)),
+            Ok(Some(9000))
+        );
+        assert_eq!(
+            ai_parse_proposed_token_count("", AiTokenUnit::K, Some(8192)),
+            Ok(None)
+        );
     }
 
     #[test]

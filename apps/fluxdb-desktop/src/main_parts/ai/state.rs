@@ -49,6 +49,8 @@ struct AiChatUi {
     _io: Option<Task<()>>,
     deciding_approval: bool,
     _pump: Option<Task<()>>,
+    /// 本轮 AI 工具提交的宿主 UI 动作；只由当前任务持有，任务结束后丢弃。
+    ui_actions: Option<fluxdb_app::UiActionReceiver>,
     running: Option<fluxdb_app::AiConversationJob>,
     cancel: Option<fluxdb_core::CancelFlag>,
     /// 正在执行工具的最新实时进度（按 `call_id`）；终态回执到达后清理。
@@ -144,6 +146,7 @@ impl AiChatUi {
             _io: None,
             deciding_approval: false,
             _pump: None,
+            ui_actions: None,
             running: None,
             cancel: None,
             tool_progress: std::collections::BTreeMap::new(),

@@ -82,6 +82,7 @@ impl Render for NavicatMain {
         let app_state = self.controller.state();
         let state = render_state_snapshot(app_state);
         let colors = ui_colors_from_theme(self.theme_mode, cx);
+        let settings_for_config_proposal = self.controller.state().settings.clone();
         // 恢复弹框「现有库」目标下拉：目标连接切换时重载该连接下的库（渲染期消费，靠 target_db_loaded_for 防抖）。
         let restore_db_reload = self.restore_modal.as_ref().and_then(|modal| {
             let existing_mode = modal.kind != DatabaseKind::Sqlite
@@ -494,6 +495,20 @@ impl Render for NavicatMain {
                     this.child(dangerous_command_modal(
                         DangerousCommandKind::Redis,
                         pending.text,
+                        self.focus_handle.clone(),
+                        colors,
+                        cx,
+                    ))
+                },
+            )
+            .when_some(
+                self.pending_config_proposal.clone(),
+                |this, proposal| {
+                    this.child(config_proposal_modal(
+                        proposal,
+                        &settings_for_config_proposal,
+                        self.config_proposal_busy,
+                        self.config_delete_confirmed,
                         self.focus_handle.clone(),
                         colors,
                         cx,

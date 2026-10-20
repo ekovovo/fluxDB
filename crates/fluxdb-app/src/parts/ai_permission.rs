@@ -343,9 +343,15 @@ pub fn authorize(input: &AuthorizeInput) -> PermissionDecision {
     };
 
     // 1) 全局工具启停：用户关掉的工具最先拒绝，Agent 白名单与插件都不能覆盖。
+    let legacy_disabled = input.tool_id == "db.run"
+        && match input.risk {
+            fluxdb_core::ToolRisk::Read => input.globally_disabled_tools.contains("db.query"),
+            _ => input.globally_disabled_tools.contains("db.execute"),
+        };
     if input
         .globally_disabled_tools
         .contains(&input.tool_id)
+        || legacy_disabled
     {
         return deny(
             "tool_globally_disabled",
@@ -355,10 +361,11 @@ pub fn authorize(input: &AuthorizeInput) -> PermissionDecision {
 
     // 2) Agent 白名单（空 = 不限制）。
     if !input.agent_allowed_tools.is_empty()
-        && !input
-            .agent_allowed_tools
-            .iter()
-            .any(|id| id == &input.tool_id)
+        && !agent_allows_tool(
+            &input.agent_allowed_tools,
+            &input.tool_id,
+            input.risk,
+        )
     {
         return deny(
             "tool_not_allowed",
@@ -413,6 +420,52 @@ pub fn authorize(input: &AuthorizeInput) -> PermissionDecision {
         };
     }
     PermissionDecision::Allow { plan_hash: hash }
+}
+
+/// `db.run` 是 `db.query` / `db.execute` 的统一入口；旧的 Agent 白名单
+/// 仍按有效风险继续生效，避免升级后已有 Agent 突然失去 SQL 能力。
+fn agent_allows_tool(
+    allowed: &[String],
+    tool_id: &str,
+    risk: fluxdb_core::ToolRisk,
+) -> bool {
+    if allowed.iter().any(|id| id == tool_id) {
+        return true;
+    }
+    if tool_id == "db.run" {
+        return match risk {
+            fluxdb_core::ToolRisk::Read => allowed.iter().any(|id| id == "db.query"),
+            _ => allowed.iter().any(|id| id == "db.execute"),
+        };
+    }
+    false
+}
+
+#[cfg(test)]
+mod db_run_permission_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_sql_allowlist_is_risk_aware() {
+        let read_only = vec!["db.query".to_string()];
+        assert!(agent_allows_tool(
+            &read_only,
+            "db.run",
+            fluxdb_core::ToolRisk::Read
+        ));
+        assert!(!agent_allows_tool(
+            &read_only,
+            "db.run",
+            fluxdb_core::ToolRisk::Write
+        ));
+
+        let writer = vec!["db.execute".to_string()];
+        assert!(agent_allows_tool(
+            &writer,
+            "db.run",
+            fluxdb_core::ToolRisk::Write
+        ));
+    }
 }
 
 /// 已批准后复核：批准必须与**当前 plan_hash** 完全一致，且状态仍是 approved 且未过期。

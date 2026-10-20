@@ -1,5 +1,6 @@
 #[derive(Clone, Debug, PartialEq)]
 pub enum AppEvent {
+    ConfigProposalApplied(ConfigApplyOutcome),
     AiConversationLoaded(AiConversationView),
     /// AI 设置列表已刷新。
     AiSettingsLoaded,

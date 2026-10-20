@@ -220,6 +220,8 @@ impl NavicatMain {
             || self.ai_chat.session_running(self.controller.state().ai_conversation.session_id.as_deref())
             || self.ai_chat.loading
             || self.ai_chat._io.is_some()
+            || self.pending_config_proposal.is_some()
+            || self.config_proposal_busy
         {
             return;
         }
@@ -324,6 +326,10 @@ impl NavicatMain {
         // ER 关系能力与 ER 页面共用同一份缓存与目录服务：AI 建议与用户确认看到的是同一处。
         let relationships = self.controller.er_relationship_source();
         let runtime = self.ai_chat.runtime.as_ref().expect("runtime 已创建");
+        let (ui_actions_tx, ui_actions_rx) = fluxdb_app::ui_action_channel(16);
+        self.ai_chat.ui_actions = Some(ui_actions_rx);
+        let ui_actions: std::sync::Arc<dyn fluxdb_app::UiActionSink> =
+            std::sync::Arc::new(ui_actions_tx);
         let submitted = if debug_scripted {
                 runtime.submit_conversation_source(storage.clone(), job.clone(), cancel.clone(), move |cancel, emit| {
                     if !matches!(stream_fixture, AiChatStreamFixture::Default) {
@@ -366,7 +372,15 @@ impl NavicatMain {
                     Ok(vec![e])
                 })
         } else {
-            runtime.submit_conversation(storage.clone(), job.clone(), connection_configs, relationships, resume_approval, cancel)
+            runtime.submit_conversation(
+                storage.clone(),
+                job.clone(),
+                connection_configs,
+                relationships,
+                Some(ui_actions),
+                resume_approval,
+                cancel,
+            )
         };
         let rx = match submitted {
             Ok(receiver) => receiver,
@@ -376,11 +390,12 @@ impl NavicatMain {
             }
         };
         self.ai_chat._pump = Some(cx.spawn(async move |view, cx| {
+            let mut done = false;
+            let mut ui_finished = false;
             loop {
                 cx.background_executor()
                     .timer(std::time::Duration::from_millis(16))
                     .await;
-                let mut done = false;
                 let mut updates = Vec::new();
                 let mut disconnected = false;
                 for _ in 0..8 {
@@ -393,19 +408,38 @@ impl NavicatMain {
                         }
                     }
                 }
-                if !updates.is_empty() {
-                    let result = view.update(cx, |this, cx| {
-                        for update in updates {
-                            done |= update.terminal;
-                            this.ai_chat_consume_update(update, cx);
+                // 每帧同时消费会话回包与 UI 动作。UI 动作可能先于下一条工具回执到达，
+                // 不能等到有正文更新时才应用。
+                let result = view.update(cx, |this, cx| {
+                    for update in updates {
+                        done |= update.terminal;
+                        this.ai_chat_consume_update(update, cx);
+                    }
+                    let mut actions = Vec::new();
+                    // 有待确认提案时不取下一个；保留在有界队列里，不能静默覆盖确认内容。
+                    if this.pending_config_proposal.is_none() && !this.config_proposal_busy {
+                        if let Some(rx) = this.ai_chat.ui_actions.as_ref() {
+                            match rx.try_recv() {
+                                Ok(action) => actions.push(action),
+                                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                                Err(std::sync::mpsc::TryRecvError::Disconnected) => ui_finished = true,
+                            }
+                        } else {
+                            ui_finished = true;
                         }
-                    });
-                    if result.is_err() { break; }
-                }
-                if done {
+                    }
+                    for action in actions {
+                        this.apply_ai_ui_action(action, cx);
+                    }
+                    if ui_finished {
+                        this.ai_chat.ui_actions = None;
+                    }
+                });
+                if result.is_err() { break; }
+                if done && ui_finished {
                     break;
                 }
-                if disconnected {
+                if disconnected && !done {
                     let _ = view.update(cx, |this, cx| {
                         this.ai_chat.error = Some(
                             tr("app.ai.chat.action.channel_closed_error").to_string(),

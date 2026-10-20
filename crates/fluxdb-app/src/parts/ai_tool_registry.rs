@@ -12,6 +12,8 @@
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EffectClass {
     PureRead,
+    /// 只修改宿主内存中的页面草稿，不落盘、不触碰数据库。
+    LocalUiMutation,
     Mutating,
     ExternalSideEffect,
 }
@@ -211,8 +213,21 @@ impl ToolCatalog {
         tool: Box<dyn fluxdb_core::AiTool>,
         shape: ToolOutputShape,
     ) -> fluxdb_core::Result<()> {
+        self.add_tool_with_shape_and_effect(tool, shape, None)
+    }
+
+    /// 注册工具并覆盖声明的效果类别；用于“风险按只读、但会改本地 UI 草稿”的页面动作。
+    pub fn add_tool_with_shape_and_effect(
+        &mut self,
+        tool: Box<dyn fluxdb_core::AiTool>,
+        shape: ToolOutputShape,
+        effect: Option<EffectClass>,
+    ) -> fluxdb_core::Result<()> {
         let mut spec = ToolSpec::from_descriptor(tool.descriptor())?;
         spec.output_shape = shape;
+        if let Some(effect) = effect {
+            spec.effect = effect;
+        }
         if self.describe(&spec.id).is_some() {
             return Err(fluxdb_core::Error::new(
                 fluxdb_core::ErrorKind::Internal,

@@ -3200,6 +3200,9 @@ fn navicat_main_new(
                             pending_query_parameters: None,
                             pending_dangerous_query: None,
                             pending_dangerous_redis_command: None,
+                            pending_config_proposal: None,
+                            config_proposal_busy: false,
+                            config_delete_confirmed: false,
                             sql_file_modal: Rc::new(std::cell::RefCell::new(
                                 SqlFileModalData::default(),
                             )),

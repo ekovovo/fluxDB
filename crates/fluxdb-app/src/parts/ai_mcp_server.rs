@@ -630,7 +630,7 @@ impl McpExecutionService {
             crate::standard_redis_catalog(Arc::clone(&self.resolver), true)
                 .map_err(|error| McpCallError::new("catalog_error", error.message, false))?
         } else {
-            crate::standard_sql_catalog_with_results(
+            crate::standard_sql_catalog_legacy_with_results(
                 Arc::clone(&self.resolver),
                 Arc::clone(&self.results),
                 true,

@@ -3,6 +3,13 @@
 
 fn localize_backend_error_text(text: &str) -> String {
     let key = match text {
+        "config_proposal_expired" => "app.ai.config_proposal.expired",
+        "config_proposal_stale" => "app.ai.config_proposal.stale",
+        "config_proposal_already_applied" => "app.ai.config_proposal.already_applied",
+        "config_proposal_invalid" => "app.ai.config_proposal.invalid",
+        "config_proposal_missing" => "app.ai.config_proposal.missing_target",
+        "config_proposal_self_agent" => "app.ai.config_proposal.self_agent",
+
         "用户与权限标签页不存在" => "app.backend_error.user_admin_tab_missing",
         "连接不存在" => "app.backend_error.connection_missing",
         "新建表标签页不存在" => "app.backend_error.create_table_tab_missing",
@@ -85,6 +92,7 @@ fn localize_backend_error_text(text: &str) -> String {
         "缺少标准 SQL 工具定义: db.describe_object" => "app.backend_error.missing_tool_describe_object",
         "缺少 object_ref" => "app.backend_error.missing_object_ref",
         "缺少标准 SQL 工具定义: db.execute" => "app.backend_error.missing_tool_execute",
+        "缺少标准 SQL 工具定义: db.run" => "app.backend_error.missing_tool_run",
         "计划参数无效" => "app.backend_error.plan_params_invalid",
         "连接未授权" => "app.backend_error.connection_not_authorized",
         "无法检查数据库类型" => "app.backend_error.database_type_check_failed",

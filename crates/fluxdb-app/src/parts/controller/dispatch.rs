@@ -3800,6 +3800,12 @@ impl AppController {
             command @ (AppCommand::SyncMcpClients { .. }
             | AppCommand::RefreshMcpClients { .. }
             | AppCommand::SetMcpClientRegistration { .. }) => self.dispatch_mcp_clients(command),
+            AppCommand::ApplyConfirmedConfig { proposal, binary_path } => {
+                match self.apply_confirmed_config(&proposal, &binary_path) {
+                    Ok(outcome) => AppEvent::ConfigProposalApplied(outcome),
+                    Err(error) => AppEvent::AiSettingsError(error.message),
+                }
+            }
             AppCommand::SaveSettings(settings) => {
                 self.state.settings = settings;
                 AppEvent::SettingsSaved

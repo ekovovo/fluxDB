@@ -109,7 +109,11 @@ impl McpExecutionService {
                 Err(error) => return McpCallOutcome::failure(error),
             }
         }
-        if spec.risk == fluxdb_core::ToolRisk::Write && !policy.write_allowed {
+        let effective_risk = catalog
+            .executable(internal_id)
+            .map(|tool| tool.effective_risk(&prepared.to_json_string()))
+            .unwrap_or(spec.risk);
+        if effective_risk == fluxdb_core::ToolRisk::Write && !policy.write_allowed {
             return McpCallOutcome::failure(McpCallError::new(
                 "write_disabled",
                 "该数据源为只读或连接已标记只读，禁止写入",
@@ -117,7 +121,7 @@ impl McpExecutionService {
             ));
         }
         // 允许读写也不放开结构/管理类写入：DDL、GRANT、脚本/管理命令仍按内核白名单拒绝。
-        if spec.risk == fluxdb_core::ToolRisk::Write {
+        if effective_risk == fluxdb_core::ToolRisk::Write {
             if let Err(error) = self.validate_data_write(internal_id, &prepared) {
                 return McpCallOutcome::failure(error);
             }
@@ -148,7 +152,7 @@ impl McpExecutionService {
         let input = AuthorizeInput {
             tool_id: spec.id.clone(),
             tool_version: spec.version,
-            risk: spec.risk,
+            risk: effective_risk,
             target_json: target_json.clone(),
             normalized_arguments_json: prepared.to_json_string(),
             plugin_digest: None,
@@ -173,7 +177,7 @@ impl McpExecutionService {
             tool_version: spec.version,
             plan_hash: hash.clone(),
             decision,
-            risk: match spec.risk {
+            risk: match effective_risk {
                 fluxdb_core::ToolRisk::Read => "read",
                 fluxdb_core::ToolRisk::Write => "write",
                 fluxdb_core::ToolRisk::Admin => "admin",
@@ -198,7 +202,7 @@ impl McpExecutionService {
             PermissionDecision::RequireApproval { .. } => {
                 // 审批队列已移除：写工具走数据源「允许读写」直接执行；
                 // 读工具出现需审批结论（如审计要求）时按拒绝处理，不静默放行。
-                if spec.risk != fluxdb_core::ToolRisk::Write {
+                if effective_risk != fluxdb_core::ToolRisk::Write {
                     return McpCallOutcome::failure(McpCallError::new(
                         "approval_required",
                         "该调用需要人工确认，但 MCP 未启用审批队列",
@@ -264,7 +268,7 @@ impl McpExecutionService {
                         ruleset_version: "execution-policy-v1".into(),
                         plan_hash: hash.clone(),
                         decision: AuditDecision::Allow,
-                        risk: spec.risk.to_string(),
+                        risk: effective_risk.to_string(),
                         rule_ids: vec![],
                         reason_codes: vec![reason.clone()],
                     },

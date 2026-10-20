@@ -343,15 +343,9 @@ pub fn authorize(input: &AuthorizeInput) -> PermissionDecision {
     };
 
     // 1) 全局工具启停：用户关掉的工具最先拒绝，Agent 白名单与插件都不能覆盖。
-    let legacy_disabled = input.tool_id == "db.run"
-        && match input.risk {
-            fluxdb_core::ToolRisk::Read => input.globally_disabled_tools.contains("db.query"),
-            _ => input.globally_disabled_tools.contains("db.execute"),
-        };
     if input
         .globally_disabled_tools
         .contains(&input.tool_id)
-        || legacy_disabled
     {
         return deny(
             "tool_globally_disabled",
@@ -366,6 +360,13 @@ pub fn authorize(input: &AuthorizeInput) -> PermissionDecision {
             &input.tool_id,
             input.risk,
         )
+        && !dynamic_tool_capability(&input.tool_id)
+            .is_some_and(|capability| {
+                input
+                    .agent_allowed_tools
+                    .iter()
+                    .any(|allowed| allowed == capability)
+            })
     {
         return deny(
             "tool_not_allowed",
@@ -422,23 +423,20 @@ pub fn authorize(input: &AuthorizeInput) -> PermissionDecision {
     PermissionDecision::Allow { plan_hash: hash }
 }
 
-/// `db.run` 是 `db.query` / `db.execute` 的统一入口；旧的 Agent 白名单
-/// 仍按有效风险继续生效，避免升级后已有 Agent 突然失去 SQL 能力。
 fn agent_allows_tool(
     allowed: &[String],
     tool_id: &str,
-    risk: fluxdb_core::ToolRisk,
+    _risk: fluxdb_core::ToolRisk,
 ) -> bool {
-    if allowed.iter().any(|id| id == tool_id) {
-        return true;
+    allowed.iter().any(|id| id == tool_id)
+}
+
+/// 动态加载的配置动作继承领域能力，避免 Agent 白名单随每个 action 膨胀。
+fn dynamic_tool_capability(tool_id: &str) -> Option<&'static str> {
+    if tool_id.starts_with("config.") {
+        return Some(crate::CONFIG_PROPOSE_CAPABILITY);
     }
-    if tool_id == "db.run" {
-        return match risk {
-            fluxdb_core::ToolRisk::Read => allowed.iter().any(|id| id == "db.query"),
-            _ => allowed.iter().any(|id| id == "db.execute"),
-        };
-    }
-    false
+    None
 }
 
 #[cfg(test)]
@@ -446,25 +444,26 @@ mod db_run_permission_tests {
     use super::*;
 
     #[test]
-    fn legacy_sql_allowlist_is_risk_aware() {
-        let read_only = vec!["db.query".to_string()];
-        assert!(agent_allows_tool(
-            &read_only,
+    fn retired_sql_allowlist_ids_are_not_implicit_permissions() {
+        assert!(!agent_allows_tool(
+            &["db.query".to_string()],
             "db.run",
             fluxdb_core::ToolRisk::Read
         ));
-        assert!(!agent_allows_tool(
-            &read_only,
-            "db.run",
-            fluxdb_core::ToolRisk::Write
-        ));
-
-        let writer = vec!["db.execute".to_string()];
         assert!(agent_allows_tool(
-            &writer,
+            &["db.run".to_string()],
             "db.run",
             fluxdb_core::ToolRisk::Write
         ));
+    }
+
+    #[test]
+    fn configuration_actions_inherit_the_domain_capability() {
+        assert_eq!(
+            dynamic_tool_capability("config.model.create"),
+            Some("config.propose")
+        );
+        assert_eq!(dynamic_tool_capability("db.run"), None);
     }
 }
 

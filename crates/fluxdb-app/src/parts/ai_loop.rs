@@ -189,11 +189,12 @@ fn loop_tool_descriptors(catalog: &ToolCatalog) -> Vec<fluxdb_core::ToolDescript
         .specs()
         .iter()
         .filter(|spec| {
-            !read_only
-                || spec.risk == fluxdb_core::ToolRisk::Read
-                // db.run 的真实风险按 SQL 分类；只读策略下仍需暴露只读查询，
-                // 写语句会在授权阶段按 effective_risk 被拒绝。
-                || spec.id == "db.run"
+            catalog.is_model_visible(&spec.id)
+                && (!read_only
+                    || spec.risk == fluxdb_core::ToolRisk::Read
+                    // db.run 的真实风险按 SQL 分类；只读策略下仍需暴露只读查询，
+                    // 写语句会在授权阶段按 effective_risk 被拒绝。
+                    || spec.id == "db.run")
         })
         .map(|spec| fluxdb_core::ToolDescriptor {
             id: spec.id.clone(),

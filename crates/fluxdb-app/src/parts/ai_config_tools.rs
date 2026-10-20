@@ -21,20 +21,9 @@ pub const CONFIG_INSPECT_INPUT_SCHEMA: &str = r#"{
   }
 }"#;
 
-fn action_variant(
-    action: &str,
-    required: &[&str],
-    mut properties: serde_json::Value,
-) -> serde_json::Value {
-    let object = properties
-        .as_object_mut()
-        .expect("action properties must be an object");
-    object.insert(
-        "action".into(),
-        serde_json::json!({ "type": "string", "const": action }),
-    );
-    let mut required = required.to_vec();
-    required.push("action");
+fn action_variant(required: &[&str], properties: serde_json::Value) -> serde_json::Value {
+    // 动作由工具 ID 唯一确定；schema 只描述该动作自己的字段，避免模型
+    // 在已知工具名下重复填写无意义的 action。
     serde_json::json!({
         "type": "object",
         "additionalProperties": false,
@@ -43,27 +32,30 @@ fn action_variant(
     })
 }
 
-fn config_propose_schema() -> String {
-    let setting = action_variant(
-        "setting.update",
+fn config_setting_update_schema() -> serde_json::Value {
+    action_variant(
         &["section", "fields", "expected_revision"],
         serde_json::json!({
             "section": { "type": "string", "enum": ["editor", "appearance", "data", "system"] },
             "fields": crate::settings_fields_schema(),
             "expected_revision": { "type": "integer", "minimum": 0 }
         }),
-    );
-    let tool = action_variant(
-        "tool.set_enabled",
+    )
+}
+
+fn config_tool_set_enabled_schema() -> serde_json::Value {
+    action_variant(
         &["tool_id", "enabled", "expected_revision"],
         serde_json::json!({
             "tool_id": { "type": "string", "minLength": 1, "maxLength": 128 },
             "enabled": { "type": "boolean" },
             "expected_revision": { "type": "integer", "minimum": 0 }
         }),
-    );
-    let agent = action_variant(
-        "agent.create",
+    )
+}
+
+fn config_agent_create_schema() -> serde_json::Value {
+    action_variant(
         &["display_name", "system_prompt"],
         serde_json::json!({
             "display_name": { "type": "string", "minLength": 1, "maxLength": 128 },
@@ -75,23 +67,30 @@ fn config_propose_schema() -> String {
             "compression_trigger_percent": { "type": "integer", "minimum": 10, "maximum": 95 },
             "max_iterations": { "type": "integer", "minimum": 1, "maximum": 1000 }
         }),
-    );
-    let session_archive = action_variant(
-        "session.archive",
+    )
+}
+
+fn config_session_archive_schema() -> serde_json::Value {
+    action_variant(
         &["session_id", "expected_revision"],
         serde_json::json!({
             "session_id": { "type": "string", "minLength": 1, "maxLength": 128 },
             "expected_revision": { "type": "integer", "minimum": 0 }
         }),
-    );
-    let session_purge = action_variant(
-        "session.purge",
+    )
+}
+
+fn config_session_purge_schema() -> serde_json::Value {
+    action_variant(
         &["session_id", "expected_revision"],
         serde_json::json!({
             "session_id": { "type": "string", "minLength": 1, "maxLength": 128 },
             "expected_revision": { "type": "integer", "minimum": 0 }
         }),
-    );
+    )
+}
+
+fn config_model_create_schema() -> serde_json::Value {
     let mut provider_values = crate::ModelProvider::ALL
         .iter()
         .map(|provider| provider.stored_id())
@@ -102,8 +101,7 @@ fn config_propose_schema() -> String {
         "OpenAI Responses",
         "Anthropic Messages",
     ]);
-    let model = action_variant(
-        "model.create",
+    action_variant(
         &["display_name", "provider", "model"],
         serde_json::json!({
             "display_name": { "type": "string", "minLength": 1, "maxLength": 128 },
@@ -123,44 +121,33 @@ fn config_propose_schema() -> String {
             "enabled": { "type": "boolean" },
             "egress": { "type": "boolean" }
         }),
-    );
-    let model_update = update_variant("model.update", &model);
-    let agent_update = update_variant("agent.update", &agent);
-    let model_delete = delete_variant("model.delete");
-    let agent_delete = delete_variant("agent.delete");
-    let mcp_server = action_variant(
-        "mcp.server_set_enabled",
+    )
+}
+
+fn config_mcp_server_set_enabled_schema() -> serde_json::Value {
+    action_variant(
         &["id", "enabled", "expected_revision"],
         serde_json::json!({
             "id": { "type": "string", "minLength": 1, "maxLength": 128 },
             "enabled": { "type": "boolean" },
             "expected_revision": { "type": "integer", "minimum": 0 }
         }),
-    );
-    let mcp_sync = action_variant(
-        "mcp.sync_client",
+    )
+}
+
+fn config_mcp_sync_client_schema() -> serde_json::Value {
+    action_variant(
         &["client_key", "registered"],
         serde_json::json!({
             "client_key": { "type": "string", "minLength": 1, "maxLength": 128 },
             "registered": { "type": "boolean" }
         }),
-    );
-    serde_json::json!({
-        "type": "object",
-        "oneOf": [
-            setting, tool, agent, session_archive, session_purge, model, model_update, model_delete, agent_update, agent_delete, mcp_server, mcp_sync
-        ]
-    })
-    .to_string()
+    )
 }
 
-fn update_variant(action: &str, create: &serde_json::Value) -> serde_json::Value {
-    let mut fields = create["properties"].clone();
-    if let Some(fields) = fields.as_object_mut() {
-        fields.remove("action");
-    }
+fn update_variant(create: &serde_json::Value) -> serde_json::Value {
+    let fields = create["properties"].clone();
     action_variant(
-        action,
         &["id", "expected_revision", "changes"],
         serde_json::json!({
             "id": {"type":"string", "minLength":1, "maxLength":128},
@@ -170,9 +157,8 @@ fn update_variant(action: &str, create: &serde_json::Value) -> serde_json::Value
     )
 }
 
-fn delete_variant(action: &str) -> serde_json::Value {
+fn delete_variant() -> serde_json::Value {
     action_variant(
-        action,
         &["id", "expected_revision"],
         serde_json::json!({
             "id":{"type":"string", "minLength":1, "maxLength":128},
@@ -189,15 +175,22 @@ struct ConfigInspectTool {
 struct ConfigProposeTool {
     descriptor: fluxdb_core::ToolDescriptor,
     actions: std::sync::Arc<dyn crate::UiActionSink>,
+    schema: serde_json::Value,
+}
+
+#[derive(Clone, Copy)]
+struct ConfigToolboxAction {
+    domain: &'static str,
+    title: &'static str,
 }
 
 impl ConfigInspectTool {
     fn new(storage: fluxdb_storage::FileStorage) -> Self {
         Self {
             descriptor: fluxdb_core::ToolDescriptor {
-                id: "config.inspect".into(),
+                id: "toolbox.inspect".into(),
                 version: 1,
-                description: "读取非敏感配置摘要：设置、模型、Agent、工具、MCP、会话。任何页面都可调用；凭据只返回状态。".into(),
+                description: "读取实时、非敏感的宿主状态：设置、模型、Agent、工具、MCP、会话。返回稳定 ID、revision 与凭据状态；任何页面都可调用。".into(),
                 risk: fluxdb_core::ToolRisk::Read,
                 input_schema_json: CONFIG_INSPECT_INPUT_SCHEMA.into(),
             },
@@ -331,7 +324,7 @@ impl ConfigInspectTool {
                     "kind": "mcp",
                     "registration_clients": crate::McpClientKind::all().iter().map(|client| serde_json::json!({
                         "key": client.key(), "label": client.label(),
-                        "action": "mcp.sync_client"
+                    "proposal_tool": "config.mcp.sync_client"
                     })).collect::<Vec<_>>(),
                     "servers": servers.into_iter().take(limit).map(|server| serde_json::json!({
                         "id": server.id,
@@ -426,16 +419,22 @@ impl fluxdb_core::AiTool for ConfigInspectTool {
 }
 
 impl ConfigProposeTool {
-    fn new(actions: std::sync::Arc<dyn crate::UiActionSink>) -> Self {
+    fn new(
+        id: &str,
+        description: &str,
+        schema: serde_json::Value,
+        actions: std::sync::Arc<dyn crate::UiActionSink>,
+    ) -> Self {
         Self {
             descriptor: fluxdb_core::ToolDescriptor {
-                id: "config.propose".into(),
+                id: id.into(),
                 version: 1,
-                description: "提交待用户确认的持久化配置变更；不直接落库。支持 setting.update、tool.set_enabled、agent.create/update/delete、session.archive/purge、model.create/update/delete、mcp.*。编辑只传 changes 中明确修改的字段；不传 API Key。".into(),
+                description: description.into(),
                 risk: fluxdb_core::ToolRisk::Read,
-                input_schema_json: config_propose_schema(),
+                input_schema_json: schema.to_string(),
             },
             actions,
+            schema,
         }
     }
 
@@ -444,14 +443,12 @@ impl ConfigProposeTool {
         ctx: &fluxdb_core::ToolExecutionContext,
         value: &serde_json::Value,
     ) -> Result<crate::ConfigProposal, String> {
-        crate::validate_schema(
-            &serde_json::from_str(&config_propose_schema()).map_err(|e| e.to_string())?,
-            value,
-        )?;
-        let action = value
-            .get("action")
-            .and_then(|action| action.as_str())
-            .ok_or_else(|| "缺少 action".to_string())?;
+        crate::validate_schema(&self.schema, value)?;
+        let action = self
+            .descriptor
+            .id
+            .strip_prefix("config.")
+            .ok_or_else(|| "配置工具 ID 不是动态动作".to_string())?;
         let expected_revision = value
             .get("expected_revision")
             .and_then(|revision| revision.as_u64())
@@ -675,16 +672,144 @@ pub fn add_ai_config_tools(
     storage: fluxdb_storage::FileStorage,
     actions: std::sync::Arc<dyn crate::UiActionSink>,
 ) -> fluxdb_core::Result<()> {
+    let inspect = ConfigInspectTool::new(storage);
     catalog.add_tool_with_shape_and_effect(
-        Box::new(ConfigInspectTool::new(storage)),
+        Box::new(inspect),
         crate::ToolOutputShape::Opaque,
         Some(crate::EffectClass::PureRead),
     )?;
-    catalog.add_tool_with_shape_and_effect(
-        Box::new(ConfigProposeTool::new(actions)),
-        crate::ToolOutputShape::Opaque,
-        Some(crate::EffectClass::LocalUiMutation),
-    )
+    let actions_specs = [
+        (
+            "config.setting.update",
+            "修改普通设置",
+            config_setting_update_schema(),
+            ConfigToolboxAction {
+                domain: "config",
+                title: "修改设置",
+            },
+        ),
+        (
+            "config.tool.set_enabled",
+            "启停一个全局工具",
+            config_tool_set_enabled_schema(),
+            ConfigToolboxAction {
+                domain: "config",
+                title: "启停工具",
+            },
+        ),
+        (
+            "config.agent.create",
+            "创建 Agent",
+            config_agent_create_schema(),
+            ConfigToolboxAction {
+                domain: "config",
+                title: "创建 Agent",
+            },
+        ),
+        (
+            "config.agent.update",
+            "局部修改 Agent，只传 changes",
+            update_variant(&config_agent_create_schema()),
+            ConfigToolboxAction {
+                domain: "config",
+                title: "修改 Agent",
+            },
+        ),
+        (
+            "config.agent.delete",
+            "删除 Agent",
+            delete_variant(),
+            ConfigToolboxAction {
+                domain: "config",
+                title: "删除 Agent",
+            },
+        ),
+        (
+            "config.session.archive",
+            "归档会话",
+            config_session_archive_schema(),
+            ConfigToolboxAction {
+                domain: "config",
+                title: "归档会话",
+            },
+        ),
+        (
+            "config.session.purge",
+            "永久删除会话",
+            config_session_purge_schema(),
+            ConfigToolboxAction {
+                domain: "config",
+                title: "永久删除会话",
+            },
+        ),
+        (
+            "config.model.create",
+            "创建模型；是否落库仍由用户在表单中确认",
+            config_model_create_schema(),
+            ConfigToolboxAction {
+                domain: "config",
+                title: "创建模型",
+            },
+        ),
+        (
+            "config.model.update",
+            "局部修改模型；打开预填表单",
+            update_variant(&config_model_create_schema()),
+            ConfigToolboxAction {
+                domain: "config",
+                title: "修改模型",
+            },
+        ),
+        (
+            "config.model.delete",
+            "删除模型",
+            delete_variant(),
+            ConfigToolboxAction {
+                domain: "config",
+                title: "删除模型",
+            },
+        ),
+        (
+            "config.mcp.server_set_enabled",
+            "启停 MCP Server Profile",
+            config_mcp_server_set_enabled_schema(),
+            ConfigToolboxAction {
+                domain: "config",
+                title: "启停 MCP Server",
+            },
+        ),
+        (
+            "config.mcp.sync_client",
+            "注册或移除 MCP 客户端条目",
+            config_mcp_sync_client_schema(),
+            ConfigToolboxAction {
+                domain: "config",
+                title: "同步 MCP 客户端",
+            },
+        ),
+    ];
+    for (id, description, schema, toolbox) in actions_specs {
+        catalog.add_tool_with_shape_and_effect(
+            Box::new(ConfigProposeTool::new(
+                id,
+                description,
+                schema,
+                std::sync::Arc::clone(&actions),
+            )),
+            crate::ToolOutputShape::Opaque,
+            Some(crate::EffectClass::LocalUiMutation),
+        )?;
+        catalog.mark_toolbox_tool(
+            id,
+            crate::ToolboxMetadata {
+                domain: toolbox.domain.into(),
+                title: toolbox.title.into(),
+                // 配置写入仍统一受一个领域能力约束，避免 Agent 白名单随动作膨胀。
+                capability: crate::CONFIG_PROPOSE_CAPABILITY.into(),
+            },
+        )?;
+    }
+    Ok(())
 }
 
 fn required_str(value: &serde_json::Value, key: &str) -> Result<String, String> {
@@ -735,23 +860,30 @@ mod ai_config_tools_tests {
     use super::*;
 
     #[test]
-    fn propose_schema_accepts_action_specific_shapes() {
-        let schema: serde_json::Value =
-            serde_json::from_str(&config_propose_schema()).expect("schema");
+    fn each_config_action_has_its_own_schema() {
+        let schema = config_tool_set_enabled_schema();
         crate::validate_schema(
             &schema,
             &serde_json::json!({
-                "action": "tool.set_enabled",
                 "tool_id": "db.run",
                 "enabled": false,
                 "expected_revision": 2
             }),
         )
         .expect("tool action");
+        assert!(crate::validate_schema(
+            &schema,
+            &serde_json::json!({
+                "display_name": "DeepSeek V4",
+                "provider": "openai",
+                "model": "deepseek-v4"
+            }),
+        )
+        .is_err());
+        let schema = config_model_create_schema();
         crate::validate_schema(
             &schema,
             &serde_json::json!({
-                "action": "model.create",
                 "display_name": "DeepSeek V4",
                 "provider": "openai",
                 "model": "deepseek-v4",
@@ -763,13 +895,11 @@ mod ai_config_tools_tests {
 
     #[test]
     fn model_create_accepts_compatible_provider_aliases() {
-        let schema: serde_json::Value =
-            serde_json::from_str(&config_propose_schema()).expect("schema");
+        let schema = config_model_create_schema();
         for provider in ["openai", "deepseek", "OpenAI Chat Completions"] {
             crate::validate_schema(
                 &schema,
                 &serde_json::json!({
-                    "action": "model.create",
                     "display_name": "DeepSeek",
                     "provider": provider,
                     "model": "deepseek-chat"
@@ -781,7 +911,12 @@ mod ai_config_tools_tests {
 
     #[test]
     fn model_create_infers_deepseek_endpoint_but_preserves_explicit_endpoint() {
-        let tool = ConfigProposeTool::new(std::sync::Arc::new(NoopSink));
+        let tool = ConfigProposeTool::new(
+            "config.model.create",
+            "create model",
+            config_model_create_schema(),
+            std::sync::Arc::new(NoopSink),
+        );
         let ctx = fluxdb_core::ToolExecutionContext {
             automatic_approval: false,
             bounded_write: false,
@@ -796,7 +931,6 @@ mod ai_config_tools_tests {
             .proposal(
                 &ctx,
                 &serde_json::json!({
-                    "action": "model.create",
                     "display_name": "DeepSeek",
                     "provider": "deepseek",
                     "model": "deepseek-chat"
@@ -816,7 +950,6 @@ mod ai_config_tools_tests {
             .proposal(
                 &ctx,
                 &serde_json::json!({
-                    "action": "model.create",
                     "display_name": "DeepSeek",
                     "provider": "deepseek",
                     "model": "deepseek-chat",
@@ -835,24 +968,20 @@ mod ai_config_tools_tests {
 
     #[test]
     fn model_create_reports_the_matching_action_field_error() {
-        let schema: serde_json::Value =
-            serde_json::from_str(&config_propose_schema()).expect("schema");
-        let error = crate::validate_schema(
-            &schema,
-            &serde_json::json!({
-                "action": "model.create",
-                "display_name": "DeepSeek",
-                "provider": "openai"
-            }),
-        )
-        .expect_err("missing model must fail");
-        assert!(error.contains("action model.create"), "{error}");
-        assert!(error.contains("缺少必填字段: model"), "{error}");
+        let schema = config_model_create_schema();
+        let error = crate::validate_schema(&schema, &serde_json::json!({"display_name":"DeepSeek"}))
+            .expect_err("missing fields must fail");
+        assert!(error.contains("缺少必填字段"));
     }
 
     #[test]
     fn model_update_normalizes_provider_alias() {
-        let tool = ConfigProposeTool::new(std::sync::Arc::new(NoopSink));
+        let tool = ConfigProposeTool::new(
+            "config.model.update",
+            "update model",
+            update_variant(&config_model_create_schema()),
+            std::sync::Arc::new(NoopSink),
+        );
         let ctx = fluxdb_core::ToolExecutionContext {
             automatic_approval: false,
             bounded_write: false,
@@ -867,7 +996,6 @@ mod ai_config_tools_tests {
             .proposal(
                 &ctx,
                 &serde_json::json!({
-                    "action": "model.update",
                     "id": "model-1",
                     "expected_revision": 2,
                     "changes": {"provider": "deepseek"}
@@ -882,7 +1010,12 @@ mod ai_config_tools_tests {
 
     #[test]
     fn proposal_parses_global_actions() {
-        let tool = ConfigProposeTool::new(std::sync::Arc::new(NoopSink));
+        let tool = ConfigProposeTool::new(
+            "config.session.archive",
+            "archive session",
+            config_session_archive_schema(),
+            std::sync::Arc::new(NoopSink),
+        );
         let ctx = fluxdb_core::ToolExecutionContext {
             automatic_approval: false,
             bounded_write: false,
@@ -897,7 +1030,6 @@ mod ai_config_tools_tests {
             .proposal(
                 &ctx,
                 &serde_json::json!({
-                    "action": "session.archive",
                     "session_id": "s1",
                     "expected_revision": 3
                 }),
@@ -912,17 +1044,24 @@ mod ai_config_tools_tests {
 
     #[test]
     fn model_and_agent_updates_have_strict_partial_shapes_and_reject_credentials() {
-        let schema: serde_json::Value =
-            serde_json::from_str(&config_propose_schema()).expect("schema");
-        for action in ["model.update", "agent.update"] {
+        for (action, schema) in [
+            (
+                "model.update",
+                update_variant(&config_model_create_schema()),
+            ),
+            (
+                "agent.update",
+                update_variant(&config_agent_create_schema()),
+            ),
+        ] {
             let valid = serde_json::json!({
-                "action": action, "id":"existing", "expected_revision":2,
+                "id":"existing", "expected_revision":2,
                 "changes":{"display_name":"Renamed"}
             });
             crate::validate_schema(&schema, &valid).expect("partial update");
             for field in ["api_key", "password", "token", "ciphertext", "nonce"] {
                 let invalid = serde_json::json!({
-                    "action":action, "id":"existing", "expected_revision":2,
+                    "id":"existing", "expected_revision":2,
                     "changes":{field:"must-not-enter-proposal"}
                 });
                 assert!(
@@ -931,8 +1070,9 @@ mod ai_config_tools_tests {
                 );
             }
         }
+        let schema = config_model_create_schema();
         let invalid = serde_json::json!({
-            "action":"model.create", "display_name":"Fixture", "provider":"not-a-protocol",
+            "display_name":"Fixture", "provider":"not-a-protocol",
             "model":"fixture"
         });
         assert!(crate::validate_schema(&schema, &invalid).is_err());

@@ -3,7 +3,7 @@
 // 分层职责：
 // - `CredentialLease`：**请求前**才向凭据服务申请一次性明文；`SecretLease` 不实现 Serialize/Display，
 //   Debug 只输出 `[REDACTED]`，且只在 `stream()` 内短暂存在（请求头构造完即随作用域结束）。
-// - `ToolNameMapper`：宿主稳定 ID（`db.query`）与 Provider 安全名称（`db_query`）**可逆**映射，
+// - `ToolNameMapper`：宿主稳定 ID（`config.model.create`）与 Provider 安全名称**可逆**映射，
 //   注册时检测冲突；回程把 Provider 名称还原成宿主 ID，运行时只认宿主 ID。
 // - `ChatTransport`：真正的 HTTP 调用抽象。生产实现走 `stream_chat`（ureq，不跟随重定向）；
 //   测试注入假实现即可在无网络下断言请求体/认证与事件映射。

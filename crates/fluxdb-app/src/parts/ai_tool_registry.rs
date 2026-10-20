@@ -32,6 +32,16 @@ pub enum ToolOutputShape {
     Read,
 }
 
+/// 长尾工具的发现元数据。带此元数据的工具默认不直接暴露给模型，
+/// 需要先经 `toolbox.search` / `toolbox.load` 选择。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ToolboxMetadata {
+    pub domain: String,
+    pub title: String,
+    /// 稳定授权能力；动态工具可统一继承领域能力，而不是要求 Agent 枚举每个子工具。
+    pub capability: String,
+}
+
 /// 工具目录项（描述 + schema + 限制）。
 #[derive(Clone, Debug)]
 pub struct ToolSpec {
@@ -46,6 +56,8 @@ pub struct ToolSpec {
     pub output_limit_bytes: u64,
     /// 产出结果的形状；决定超限时兜底裁剪的策略。
     pub output_shape: ToolOutputShape,
+    /// 长尾工具发现元数据；`None` 表示该工具直接进入模型工具列表。
+    pub toolbox: Option<ToolboxMetadata>,
 }
 
 impl ToolSpec {
@@ -73,6 +85,7 @@ impl ToolSpec {
             output_limit_bytes: 128 * 1024,
             // 未声明结构仍有通用预算，但不猜测哪些业务字段可以删除。
             output_shape: ToolOutputShape::Opaque,
+            toolbox: None,
         })
     }
 }
@@ -152,6 +165,8 @@ pub struct ToolCatalog {
     /// 目录是工具实现与结果仓库的同一次装配，回执登记溢写事实时按此查句柄，
     /// 不再要求调用方把同一个仓库另传一遍——两处各传一次迟早会漏。
     results: Option<Arc<Mutex<ResultStore>>>,
+    /// 当前 Turn 已加载的长尾工具；模型下一次请求只看到这些条目。
+    toolbox: Option<Arc<crate::ToolboxState>>,
 }
 
 impl ToolCatalog {
@@ -163,6 +178,7 @@ impl ToolCatalog {
             max_argument_bytes: DEFAULT_MAX_ARGUMENT_BYTES,
             hooks: HookPipeline::default(),
             results: None,
+            toolbox: None,
         }
     }
 
@@ -197,6 +213,9 @@ impl ToolCatalog {
         }
         self.specs.retain(|spec| !disabled_ids.contains(&spec.id));
         self.executable.retain(|id, _| !disabled_ids.contains(id));
+        if let Some(state) = &self.toolbox {
+            state.remove_disabled(disabled_ids);
+        }
     }
 
     pub fn with_hooks(mut self, hooks: HookPipeline) -> Self {
@@ -258,6 +277,38 @@ impl ToolCatalog {
 
     pub fn specs(&self) -> &[ToolSpec] {
         &self.specs
+    }
+
+    /// 标记一个已登记工具为长尾工具；登记后默认隐藏，必须经 toolbox.load 显式加载。
+    pub fn mark_toolbox_tool(
+        &mut self,
+        id: &str,
+        metadata: ToolboxMetadata,
+    ) -> fluxdb_core::Result<()> {
+        let spec = self
+            .specs
+            .iter_mut()
+            .find(|spec| spec.id == id)
+            .ok_or_else(|| {
+                fluxdb_core::Error::new(
+                    fluxdb_core::ErrorKind::Internal,
+                    format!("工具 {id} 未登记，无法加入 toolbox"),
+                )
+            })?;
+        spec.toolbox = Some(metadata);
+        Ok(())
+    }
+
+    pub fn set_toolbox_state(&mut self, state: Arc<crate::ToolboxState>) {
+        self.toolbox = Some(state);
+    }
+
+    /// 模型是否能在本轮发现该工具。工具仍可 `describe`，但未加载的长尾项不进入
+    /// Provider tools 列表，避免 schema 一开始就全量进入上下文。
+    pub fn is_model_visible(&self, id: &str) -> bool {
+        self.toolbox
+            .as_ref()
+            .is_none_or(|state| !state.is_managed(id) || state.is_loaded(id))
     }
 
     /// 工具发现：按关键字过滤（id/描述），返回**摘要**，不返回 schema、不授予权限。

@@ -62,15 +62,27 @@ pub const AI_AGENT_TOOL_CATALOG: &[(&str, &str, &str, bool)] = &[
         false,
     ),
     (
-        "config.inspect",
+        "toolbox.inspect",
         "common",
-        "Read non-sensitive settings and AI configuration",
+        "Inspect live non-sensitive host state",
+        false,
+    ),
+    (
+        "toolbox.search",
+        "common",
+        "Search long-tail operations without loading their schemas",
+        false,
+    ),
+    (
+        "toolbox.load",
+        "common",
+        "Load selected operation schemas for the current turn",
         false,
     ),
     (
         "config.propose",
         "common",
-        "Propose a persistent configuration change for user confirmation",
+        "Allow toolbox-loaded configuration actions; persistence still requires confirmation",
         true,
     ),
     (
@@ -103,30 +115,10 @@ pub const AI_AGENT_TOOL_CATALOG: &[(&str, &str, &str, bool)] = &[
         "Generate relationship candidates for individual review; adoption requires user confirmation and does not execute database DDL",
         false,
     ),
-    // `db.run` 是内部统一入口；下面三个旧 ID 继续用于 MCP 兼容与旧 Agent 白名单，
-    // 全局开关会按有效风险映射到 `db.run`。
     (
         "db.run",
         "sql",
         "Single SQL entry: classify read/write, approve writes, optional plan",
-        true,
-    ),
-    (
-        "db.query",
-        "sql",
-        "Single bounded read-only query with bound parameters",
-        false,
-    ),
-    (
-        "db.explain",
-        "sql",
-        "Query plan without executing the statement",
-        false,
-    ),
-    (
-        "db.execute",
-        "sql",
-        "Dedicated write entry with scope authorization and approval",
         true,
     ),
     (
@@ -225,11 +217,11 @@ mod ai_tool_management_tests {
             ids.iter().copied().collect::<BTreeSet<_>>().len()
         );
         for id in [
-            "config.inspect",
+            "toolbox.inspect",
+            "toolbox.search",
+            "toolbox.load",
             "config.propose",
             "db.run",
-            "db.query",
-            "db.execute",
             "editor.read_range",
             "editor.search",
             "page.prefill_form",

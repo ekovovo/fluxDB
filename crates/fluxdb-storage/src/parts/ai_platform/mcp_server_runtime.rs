@@ -449,7 +449,7 @@ pub fn finish_server_request(
 /// 判定与内部 Turn 的启动恢复（`recovery::recover_on_startup`）一致：
 /// - `prepared`：还没占用执行权，SQL 未发出，确定未执行 → `cancelled`
 /// - `running` + 已实现的只读工具：读操作不改数据 → `cancelled`
-/// - `running` + 其他（含 `db.execute`/`redis.execute`）：结果待核实 → `unknown`
+/// - `running` + 其他（含 `db.run`/`redis.execute`）：结果待核实 → `unknown`
 ///
 /// 等待审批的 request 不在这里处理：没有用户在场时不能把历史批准变成执行许可，
 /// 也不该由本进程替用户决定，应保持 `waiting_approval` 等待重新审批。
@@ -503,14 +503,10 @@ pub fn recover_server_requests_on_start(conn: &Connection, now_ms: i64) -> Resul
 fn is_interrupted_read_only_tool(tool_id: &str) -> bool {
     matches!(
         tool_id,
-        "db.query"
-            | "db.search_objects"
+        "db.search_objects"
             | "db.describe_object"
-            | "db.explain"
-            | "fluxdb_query"
             | "fluxdb_search_objects"
             | "fluxdb_describe_object"
-            | "fluxdb_explain"
     )
 }
 

@@ -91,7 +91,6 @@ fn localize_backend_error_text(text: &str) -> String {
         "缺少标准 SQL 工具定义: db.search_objects" => "app.backend_error.missing_tool_search_objects",
         "缺少标准 SQL 工具定义: db.describe_object" => "app.backend_error.missing_tool_describe_object",
         "缺少 object_ref" => "app.backend_error.missing_object_ref",
-        "缺少标准 SQL 工具定义: db.execute" => "app.backend_error.missing_tool_execute",
         "缺少标准 SQL 工具定义: db.run" => "app.backend_error.missing_tool_run",
         "计划参数无效" => "app.backend_error.plan_params_invalid",
         "连接未授权" => "app.backend_error.connection_not_authorized",

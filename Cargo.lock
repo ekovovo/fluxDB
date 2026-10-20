@@ -2246,6 +2246,7 @@ dependencies = [
  "embed-resource",
  "encoding_rs",
  "fluxdb-app",
+ "fluxdb-completion",
  "fluxdb-core",
  "fluxdb-editor-core",
  "fluxdb-i18n",

@@ -7,6 +7,7 @@
 //! [`CompletionDialect`] 与 [`MetadataSource`] 反向适配，新增数据库只需再加一个
 //! 方言实现，引擎本身不需要改动。
 
+mod diagnose;
 mod dialect;
 mod engine;
 mod locate;
@@ -17,6 +18,7 @@ mod strategy;
 mod symbols;
 mod word;
 
+pub use diagnose::{Diagnostic, DiagnosticKind, DiagnosticRequest, diagnose};
 pub use dialect::{CompletionDialect, DAMENG, GENERIC, MYSQL, POSTGRES, SQLITE};
 pub use engine::complete;
 pub use metadata::{

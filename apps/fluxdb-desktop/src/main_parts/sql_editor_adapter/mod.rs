@@ -610,6 +610,86 @@ impl SyntaxProvider for SqlAdapter {
     }
 }
 
+/// 把注入的补全来源适配成补全引擎的元数据接口，供语义诊断复用引擎的解析与符号表。
+///
+/// 来源是内存快照（已加载的对象树 + 已打开的 DataEditor 列），没有 schema 维度：
+/// 表一律以裸名给出，`schemas()` 为空时引擎自动跳过 schema 存在性检查。
+struct SqlDiagnosticMetadata<'a> {
+    sources: &'a [Arc<dyn SqlCompletionSource>],
+}
+
+impl fluxdb_completion::MetadataSource for SqlDiagnosticMetadata<'_> {
+    fn tables(&self, _schema: Option<&str>) -> Vec<fluxdb_completion::TableMeta> {
+        self.sources
+            .iter()
+            .flat_map(|source| source.tables().into_iter().chain(source.views()))
+            .map(|name| fluxdb_completion::TableMeta {
+                schema: None,
+                name,
+                kind: fluxdb_completion::TableKind::Table,
+                comment: None,
+            })
+            .collect()
+    }
+
+    fn schemas(&self) -> Vec<String> {
+        self.sources
+            .iter()
+            .flat_map(|source| source.schemas())
+            .collect()
+    }
+
+    fn columns(&self, key: &fluxdb_completion::TableKey) -> Vec<fluxdb_completion::ColumnMeta> {
+        self.sources
+            .iter()
+            .flat_map(|source| source.columns())
+            .filter(|(table, _)| table.eq_ignore_ascii_case(&key.table))
+            .map(|(table, name)| fluxdb_completion::ColumnMeta {
+                table,
+                name,
+                type_name: None,
+                nullable: true,
+                primary_key: false,
+                comment: None,
+            })
+            .collect()
+    }
+
+    fn foreign_keys(
+        &self,
+        _key: &fluxdb_completion::TableKey,
+    ) -> Vec<fluxdb_completion::ForeignKeyMeta> {
+        Vec::new()
+    }
+}
+
+/// 编辑器方言 → 补全引擎方言（诊断复用引擎的容错解析器）。
+fn completion_dialect(dialect: SqlDialect) -> &'static dyn fluxdb_completion::CompletionDialect {
+    match dialect {
+        SqlDialect::Mysql => &fluxdb_completion::MYSQL,
+        SqlDialect::Postgres | SqlDialect::SqlServer => &fluxdb_completion::POSTGRES,
+        SqlDialect::Sqlite => &fluxdb_completion::SQLITE,
+    }
+}
+
+/// 引擎诊断 → 编辑器诊断。文案走语言包；严重级别统一 Warning，不阻断执行。
+fn sql_semantic_diagnostic(
+    diagnostic: fluxdb_completion::Diagnostic,
+    base_offset: usize,
+) -> Diagnostic {
+    let key = match diagnostic.kind {
+        fluxdb_completion::DiagnosticKind::UnknownTable => "app.completion.error.object_missing",
+        fluxdb_completion::DiagnosticKind::UnknownSchema => "app.completion.error.schema_missing",
+        fluxdb_completion::DiagnosticKind::UnknownColumn => "app.completion.error.column_missing",
+    };
+    Diagnostic {
+        range: Range::new(base_offset + diagnostic.start, base_offset + diagnostic.end),
+        severity: fluxdb_editor_core::DiagnosticSeverity::Warning,
+        message: tr(key).replace("%{name}", &diagnostic.name),
+        source: "sql-metadata".to_string(),
+    }
+}
+
 impl DiagnosticProvider for SqlAdapter {
     /// 基于 SQL 语法树返回语法错误诊断（如缺分号、语法错误附近的节点）。
     ///
@@ -647,6 +727,18 @@ impl DiagnosticProvider for SqlAdapter {
             request_id,
         )
         .unwrap_or_default();
+        // 语义诊断（未知表 / schema / 列）复用补全引擎的容错解析与符号表；按语句局部
+        // materialize，范围扫描直接读 Rope chunks，不把整篇文档拼成完整 String。
+        let statement_ranges = split_statement_ranges_snapshot(snapshot);
+        let semantic_started = Instant::now();
+        let semantic = self.semantic_diagnostics(
+            snapshot,
+            &statement_ranges,
+            self.diagnostics_latest_request.inner(),
+            request_id,
+        );
+        let semantic_count = semantic.len();
+        result.extend(semantic);
         result.sort_unstable_by_key(|diagnostic| diagnostic.range.start);
         if !self.diagnostics_latest_request.check(request_id) {
             tracing::debug!(
@@ -659,6 +751,16 @@ impl DiagnosticProvider for SqlAdapter {
             );
             return result;
         }
+        tracing::debug!(
+            target: "gdb_sql_perf",
+            op = "diagnostics_semantic",
+            editor_id,
+            elapsed_us = semantic_started.elapsed().as_micros() as u64,
+            buffer_version = version,
+            text_bytes,
+            statement_count = statement_ranges.len(),
+            diagnostic_count = semantic_count,
+        );
         tracing::debug!(
             target: "gdb_sql_perf",
             op = "diagnostics_parse",
@@ -675,7 +777,7 @@ impl DiagnosticProvider for SqlAdapter {
                     version,
                     text_bytes,
                     diagnostics: result.clone(),
-                    statement_ranges: split_statement_ranges_snapshot(snapshot),
+                    statement_ranges,
                 });
             }
         }
@@ -760,6 +862,8 @@ impl SqlAdapter {
         }
         let statement_text = snapshot.text_in_range(new_statement);
         let mut local = sql_diagnostics_tree_sitter_for_dialect(&statement_text, self.dialect);
+        // 语义诊断与语法诊断一样按语句局部算，文档基准偏移由下面的平移统一补。
+        local.extend(self.semantic_diagnostics_text(&statement_text, 0));
         for diagnostic in &mut local {
             diagnostic.range.start += new_statement.start;
             diagnostic.range.end += new_statement.start;
@@ -801,9 +905,46 @@ impl SqlAdapter {
         Some(diagnostics)
     }
 
+    /// 语义诊断（未知表 / schema / 列），按语句逐段算。
+    ///
+    /// 同步、只读内存来源，由前端在后台任务里调用；语句间检查取消，避免旧版本继续
+    /// 扫描长文档。
+    fn semantic_diagnostics(
+        &self,
+        snapshot: &BufferSnapshot,
+        statement_ranges: &[Range],
+        latest_request: &AtomicU64,
+        request_id: u64,
+    ) -> Vec<Diagnostic> {
+        let mut diagnostics = Vec::new();
+        for range in statement_ranges {
+            if latest_request.load(Ordering::Acquire) != request_id {
+                break;
+            }
+            let text = snapshot.text_in_range(*range);
+            diagnostics.extend(self.semantic_diagnostics_text(&text, range.start));
+        }
+        diagnostics
+    }
 
-
-
+    /// 单条语句的语义诊断；`base_offset` 是该语句在文档中的起始偏移。
+    fn semantic_diagnostics_text(&self, text: &str, base_offset: usize) -> Vec<Diagnostic> {
+        if self.sources.is_empty() {
+            return Vec::new();
+        }
+        let request = fluxdb_completion::DiagnosticRequest {
+            text,
+            database: None,
+            schema: None,
+        };
+        let metadata = SqlDiagnosticMetadata {
+            sources: &self.sources,
+        };
+        fluxdb_completion::diagnose(&request, completion_dialect(self.dialect), &metadata)
+            .into_iter()
+            .map(|diagnostic| sql_semantic_diagnostic(diagnostic, base_offset))
+            .collect()
+    }
 
 }
 

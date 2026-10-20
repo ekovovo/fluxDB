@@ -43,11 +43,7 @@ use fluxdb_core::{
     sqlite_attached_database_path,
 };
 use sqlformat::{Dialect, FormatOptions, Indent, QueryParams};
-use sqlparser::{
-    ast::{Expr, ObjectName, ObjectNamePart, Statement},
-    dialect::MySqlDialect,
-    parser::Parser,
-};
+use sqlparser::ast::{Expr, ObjectName, ObjectNamePart, Statement};
 
 // First-pass source split: included files remain in crate-root scope while module boundaries are refined.
 include!("parts/ai_conversation_state.rs");

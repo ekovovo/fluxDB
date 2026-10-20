@@ -14,6 +14,7 @@ chrono = "0.4"
 encoding_rs = "0.8"
 futures = "0.3"
 fluxdb-app = { path = "../../crates/fluxdb-app" }
+fluxdb-completion = { path = "../../crates/fluxdb-completion" }
 fluxdb-core = { path = "../../crates/fluxdb-core" }
 fluxdb-editor-core = { path = "../../crates/fluxdb-editor-core" }
 fluxdb-i18n = { path = "../../crates/fluxdb-i18n" }

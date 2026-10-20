@@ -3547,7 +3547,12 @@
       "text": "Text"
     },
     "function_return": "Function → %{ty}",
-    "function_or_procedure": "Function/stored procedure"
+    "function_or_procedure": "Function/stored procedure",
+    "error": {
+      "object_missing": "Object `%{name}` does not exist",
+      "schema_missing": "Schema `%{name}` does not exist",
+      "column_missing": "Column `%{name}` does not exist in this query"
+    }
   },
   "statusbar": {
     "objects": "%{count} objects",

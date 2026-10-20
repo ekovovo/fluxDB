@@ -75,6 +75,30 @@ pub trait MetadataSource {
   打字中才放开全量词表靠前缀收窄。此前任何表达式位置都灌 60+ 个 DDL 关键字。
 - `FROM a, |` / `FROM a, b|` 回到表名槽（旧判定按「最近一个词」一律当别名位置，出不了表名）。
 - 编辑器语义诊断（未知表/列/函数）与函数参数提示已随旧链路删除；语法诊断保留。
+  其中「未知表 / schema / 列」已用本引擎的解析与符号表重建，见下节；函数参数提示未恢复。
+
+## 语义诊断（`diagnose.rs`）
+
+与补全同一条管线：`parse_tolerant` → `collect` → AST 遍历，不再维护第二套解析或
+词法启发式。入口 `diagnose(request, dialect, meta) -> Vec<Diagnostic>`，返回
+`UnknownTable` / `UnknownSchema` / `UnknownColumn` 三类，偏移相对传入文本。
+
+只报「元数据明确覆盖、但名字对不上」的对象：
+
+- 宿主没加载任何表 / schema → 直接返回空。
+- 表：`TableFactor::Table` 与 `INSERT INTO` 目标（DDL 不走这条，`CREATE TABLE foo`
+  不会把新建对象标红）；CTE / 派生表别名不算物理表。
+- 限定列：限定符不在语句关系里、或该表没有列元数据 → 不报（错的是限定符，或我们
+  元数据不够）。
+- 未限定列：**要求语句内所有关系都有列元数据**才检查，否则放弃。少报一列，好过在
+  `SELECT a FROM t1, t2` 里把 `t2` 的列全标红。
+- 投影别名（`ORDER BY total`）不算列。
+- 名字比较 ASCII 不敏感；引号标识符大小写不一致时只会漏报，不会误报。
+
+宿主接线：desktop 的 `SqlDiagnosticMetadata` 把注入的 `SqlCompletionSource`
+（已加载对象树 + 已打开的 DataEditor 列）适配成 `MetadataSource`；`schemas()` 为空
+时 schema 检查自动跳过。文案走 `app.completion.error.{object,schema,column}_missing`。
+
 
 ## 宿主接线（fluxdb-app）
 
@@ -97,7 +121,10 @@ pub trait MetadataSource {
   `identifier_needs_quote` / `sql_identifier_tokens` / `sql_ddl_impact` / `now_ts` /
   `RecencyFrequency`）；desktop 的语义诊断与签名提示一并拆除
 
-验证：`cargo test -p fluxdb-completion`（75 例）、`cargo test -p fluxdb-app`（57 例，另有
+- 第 6 期：语义诊断（未知表 / schema / 列）在引擎上重建 —— 完成。desktop 的
+  `SqlDiagnosticMetadata` 适配注入来源，`diagnose.rs` 复用补全的解析与符号表
+
+验证：`cargo test -p fluxdb-completion`（88 例）、`cargo test -p fluxdb-app`（57 例，另有
 3 个默认 ignore 的真库冒烟）、`cargo clippy --locked -p fluxdb-completion --all-targets`。
 
 真库冒烟（本地容器，密码只从环境变量读取）：

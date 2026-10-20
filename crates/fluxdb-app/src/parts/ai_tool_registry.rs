@@ -390,11 +390,37 @@ fn validate_at(
         return Err(format!("schema 嵌套超过 {MAX_SCHEMA_DEPTH} 层"));
     }
     if let Some(variants) = schema.get("oneOf").and_then(|value| value.as_array()) {
-        let matches = variants
-            .iter()
-            .filter(|variant| validate_at(variant, value, root, depth + 1).is_ok())
-            .count();
-        if matches != 1 {
+        let action = value.get("action").and_then(|action| action.as_str());
+        let mut matches = 0;
+        let mut action_error = None;
+        for variant in variants {
+            match validate_at(variant, value, root, depth + 1) {
+                Ok(()) => matches += 1,
+                Err(error)
+                    if action_error.is_none()
+                        && action.is_some()
+                        && variant
+                            .get("properties")
+                            .and_then(|properties| properties.get("action"))
+                            .and_then(|action_schema| action_schema.get("const"))
+                            .and_then(|expected| expected.as_str())
+                            == action =>
+                {
+                    action_error = Some(error);
+                }
+                Err(_) => {}
+            }
+        }
+        if matches == 0 {
+            if let Some(error) = action_error {
+                return Err(format!(
+                    "参数不符合 action {} 的声明：{error}",
+                    action.unwrap_or_default()
+                ));
+            }
+            return Err("参数必须匹配且仅匹配一种声明形状".into());
+        }
+        if matches > 1 {
             return Err("参数必须匹配且仅匹配一种声明形状".into());
         }
     }

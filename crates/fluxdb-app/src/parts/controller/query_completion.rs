@@ -1801,6 +1801,84 @@ mod dameng_completion_index_tests {
                 .collect::<Vec<_>>()
         );
     }
+
+    /// PostgreSQL 真库冒烟。密码只从环境变量读取，避免写入仓库。
+    #[test]
+    #[ignore = "需要本地 PostgreSQL 测试库；设置 FLUXDB_SMOKE_POSTGRES_PASSWORD 后手动运行"]
+    fn postgres_live_metadata_feeds_completion() {
+        let Ok(password) = std::env::var("FLUXDB_SMOKE_POSTGRES_PASSWORD") else {
+            return;
+        };
+        let options = BTreeMap::from([
+            ("host".to_string(), "127.0.0.1".to_string()),
+            ("port".to_string(), "55432".to_string()),
+            ("maintenance_database".to_string(), "fluxdb_smoke".to_string()),
+            ("username".to_string(), "postgres".to_string()),
+            ("password".to_string(), password),
+            ("default_schema".to_string(), "demo".to_string()),
+        ]);
+        let config = ConnectionConfig {
+            id: ConnectionId(14),
+            name: "pg-smoke".into(),
+            kind: DatabaseKind::Postgres,
+            endpoint: Endpoint::Tcp {
+                host: "127.0.0.1".into(),
+                port: 55432,
+                database: Some("fluxdb_smoke".into()),
+            },
+            options: options.clone(),
+            redis_profile: None,
+            mysql_profile: None,
+            postgres_profile: Some(
+                fluxdb_core::PostgresConnectionProfile::from_options(&options),
+            ),
+            dameng_profile: None,
+        };
+        let mut controller = AppController::new();
+        let connection_id = config.id;
+        let _ = controller.dispatch(AppCommand::ReplaceConnections(vec![config]));
+
+        let text = "SELECT * FROM ord";
+        let tables = controller
+            .query_completions_for_text(
+                connection_id,
+                Some("fluxdb_smoke".into()),
+                Some("demo".into()),
+                text.into(),
+                text.len(),
+                true,
+            )
+            .expect("表补全")
+            .items;
+        assert!(
+            tables.iter().any(|item| item.label == "orders"),
+            "{:?}",
+            tables
+                .iter()
+                .map(|item| (&item.label, &item.insert_text))
+                .collect::<Vec<_>>()
+        );
+
+        // 外键硬限定：orders 只有 customer_id 参与 JOIN。
+        let text = "SELECT * FROM orders o JOIN customers c ON o.";
+        let on_items = controller
+            .query_completions_for_text(
+                connection_id,
+                Some("fluxdb_smoke".into()),
+                Some("demo".into()),
+                text.into(),
+                text.len(),
+                true,
+            )
+            .expect("ON 补全")
+            .items;
+        let mut labels = on_items
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect::<Vec<_>>();
+        labels.sort_unstable();
+        assert_eq!(labels, vec!["customer_id"], "{:?}", on_items.len());
+    }
 }
 
 /// T054：选中项完整对象说明的懒加载状态。

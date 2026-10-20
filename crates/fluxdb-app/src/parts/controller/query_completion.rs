@@ -1584,6 +1584,75 @@ mod dameng_completion_index_tests {
         assert_eq!(name.insert_text, "\"name\"");
         assert_eq!(&sql[result.replace_start..result.replace_end], "na");
     }
+
+    /// 真实 SQLite 连接冒烟：索引为空时走连接器实时元数据，补全仍能出表与列。
+    #[test]
+    fn sqlite_live_metadata_feeds_completion() {
+        let path = std::env::temp_dir().join(format!(
+            "fluxdb-completion-{}-{:?}.db",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        {
+            let connection = rusqlite::Connection::open(&path).expect("创建测试库");
+            connection
+                .execute_batch("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);")
+                .expect("建表");
+        }
+
+        let mut controller = AppController::new();
+        let mut config = sqlite_config();
+        config.endpoint = Endpoint::SqliteFile {
+            path: path.clone(),
+            read_only: false,
+        };
+        let connection_id = config.id;
+        let _ = controller.dispatch(AppCommand::ReplaceConnections(vec![config]));
+
+        let text = "SELECT * FROM us";
+        let tables = controller
+            .query_completions_for_text(
+                connection_id,
+                None,
+                None,
+                text.into(),
+                text.len(),
+                true,
+            )
+            .expect("表补全")
+            .items;
+        assert!(
+            tables.iter().any(|item| item.label == "users"),
+            "{:?}",
+            tables.iter().map(|item| &item.label).collect::<Vec<_>>()
+        );
+
+        let text = "SELECT u.na FROM users u";
+        let columns = controller
+            .query_completions_for_text(
+                connection_id,
+                None,
+                None,
+                text.into(),
+                "SELECT u.na".len(),
+                true,
+            )
+            .expect("列补全")
+            .items;
+        assert!(
+            columns
+                .iter()
+                .any(|item| item.kind == QueryCompletionKind::Column && item.label == "name"),
+            "{:?}",
+            columns
+                .iter()
+                .map(|item| (&item.label, item.kind))
+                .collect::<Vec<_>>()
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
 }
 
 /// T054：选中项完整对象说明的懒加载状态。

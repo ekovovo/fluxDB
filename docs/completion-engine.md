@@ -90,5 +90,5 @@ pub trait MetadataSource {
 - 第 4 期：`fluxdb-app` 接线并直接切换（无 legacy 开关）—— 完成
 - 第 5 期：删除旧补全代码（`query_completion.rs` 启发式、旧方言词表、desktop 语义注入）—— 完成
 
-验证：`cargo test -p fluxdb-completion`（66 例）、`cargo test -p fluxdb-app`、
-`cargo clippy --locked -p fluxdb-completion --all-targets`。
+验证：`cargo test -p fluxdb-completion`（66 例）、`cargo test -p fluxdb-app`（57 例，
+含真实 SQLite 连接的表/列补全冒烟）、`cargo clippy --locked -p fluxdb-completion --all-targets`。

@@ -92,12 +92,26 @@ fn config_propose_schema() -> String {
             "expected_revision": { "type": "integer", "minimum": 0 }
         }),
     );
+    let mut provider_values = crate::ModelProvider::ALL
+        .iter()
+        .map(|provider| provider.stored_id())
+        .collect::<Vec<_>>();
+    provider_values.extend([
+        "deepseek",
+        "OpenAI Chat Completions",
+        "OpenAI Responses",
+        "Anthropic Messages",
+    ]);
     let model = action_variant(
         "model.create",
         &["display_name", "provider", "model"],
         serde_json::json!({
             "display_name": { "type": "string", "minLength": 1, "maxLength": 128 },
-            "provider": { "type": "string", "enum": crate::ModelProvider::ALL.iter().map(|p|p.stored_id()).collect::<Vec<_>>() },
+            "provider": {
+                "type": "string",
+                "enum": provider_values,
+                "description": "API protocol, not vendor. Use openai for OpenAI-compatible endpoints such as DeepSeek."
+            },
             "endpoint": { "type": "string", "maxLength": 2048 },
             "endpoint_is_full_url": { "type": "boolean" },
             "model": { "type": "string", "minLength": 1, "maxLength": 256 },
@@ -494,20 +508,26 @@ impl ConfigProposeTool {
                 id: required_str(value, "session_id")?,
             },
             "model.create" => {
-                let provider = required_str(value, "provider")?;
+                let raw_provider = required_str(value, "provider")?;
+                let provider = normalize_model_provider(&raw_provider);
                 if !crate::ModelProvider::ALL
                     .iter()
                     .any(|candidate| candidate.stored_id() == provider)
                 {
-                    return Err(format!("不支持的 Provider: {provider}"));
+                    return Err(format!("不支持的 Provider: {raw_provider}"));
                 }
+                let endpoint = value
+                    .get("endpoint")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string)
+                    .or_else(|| {
+                        (raw_provider.eq_ignore_ascii_case("deepseek"))
+                            .then(|| "https://api.deepseek.com".to_string())
+                    });
                 crate::ConfigProposalKind::ModelCreate(crate::ModelCreateProposal {
                     display_name: required_str(value, "display_name")?,
                     provider,
-                    endpoint: value
-                        .get("endpoint")
-                        .and_then(|value| value.as_str())
-                        .map(str::to_string),
+                    endpoint,
                     endpoint_is_full_url: value
                         .get("endpoint_is_full_url")
                         .and_then(|value| value.as_bool())
@@ -530,7 +550,7 @@ impl ConfigProposeTool {
             }
             "model.update" => crate::ConfigProposalKind::ModelUpdate {
                 id: required_str(value, "id")?,
-                changes: required_changes(value)?,
+                changes: normalized_model_changes(value)?,
             },
             "model.delete" => crate::ConfigProposalKind::ModelDelete {
                 id: required_str(value, "id")?,
@@ -560,6 +580,33 @@ impl ConfigProposeTool {
             kind,
         })
     }
+}
+
+fn normalize_model_provider(value: &str) -> String {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "openai" | "openai chat completions" | "openai-chat" | "deepseek" => "openai".into(),
+        "openai-responses" | "openai responses" => "openai-responses".into(),
+        "anthropic" | "anthropic messages" => "anthropic".into(),
+        "decisions" => "decisions".into(),
+        _ => value.trim().to_string(),
+    }
+}
+
+fn normalized_model_changes(
+    value: &serde_json::Value,
+) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+    let mut changes = required_changes(value)?;
+    if let Some(provider) = changes.get("provider").and_then(|value| value.as_str()) {
+        let normalized = normalize_model_provider(provider);
+        if !crate::ModelProvider::ALL
+            .iter()
+            .any(|candidate| candidate.stored_id() == normalized)
+        {
+            return Err(format!("不支持的 Provider: {provider}"));
+        }
+        changes.insert("provider".into(), serde_json::Value::String(normalized));
+    }
+    Ok(changes)
 }
 
 impl fluxdb_core::AiTool for ConfigProposeTool {
@@ -712,6 +759,125 @@ mod ai_config_tools_tests {
             }),
         )
         .expect("model action");
+    }
+
+    #[test]
+    fn model_create_accepts_compatible_provider_aliases() {
+        let schema: serde_json::Value =
+            serde_json::from_str(&config_propose_schema()).expect("schema");
+        for provider in ["openai", "deepseek", "OpenAI Chat Completions"] {
+            crate::validate_schema(
+                &schema,
+                &serde_json::json!({
+                    "action": "model.create",
+                    "display_name": "DeepSeek",
+                    "provider": provider,
+                    "model": "deepseek-chat"
+                }),
+            )
+            .unwrap_or_else(|error| panic!("{provider}: {error}"));
+        }
+    }
+
+    #[test]
+    fn model_create_infers_deepseek_endpoint_but_preserves_explicit_endpoint() {
+        let tool = ConfigProposeTool::new(std::sync::Arc::new(NoopSink));
+        let ctx = fluxdb_core::ToolExecutionContext {
+            automatic_approval: false,
+            bounded_write: false,
+            session_id: "session".into(),
+            turn_id: "turn".into(),
+            iteration: 1,
+            call_id: "call".into(),
+            cancel: fluxdb_core::CancelFlag::new(),
+            progress: None,
+        };
+        let inferred = tool
+            .proposal(
+                &ctx,
+                &serde_json::json!({
+                    "action": "model.create",
+                    "display_name": "DeepSeek",
+                    "provider": "deepseek",
+                    "model": "deepseek-chat"
+                }),
+            )
+            .expect("deepseek proposal");
+        let crate::ConfigProposalKind::ModelCreate(draft) = inferred.kind else {
+            panic!("expected model create");
+        };
+        assert_eq!(draft.provider, "openai");
+        assert_eq!(
+            draft.endpoint.as_deref(),
+            Some("https://api.deepseek.com")
+        );
+
+        let explicit = tool
+            .proposal(
+                &ctx,
+                &serde_json::json!({
+                    "action": "model.create",
+                    "display_name": "DeepSeek",
+                    "provider": "deepseek",
+                    "model": "deepseek-chat",
+                    "endpoint": "https://proxy.example.com/v1"
+                }),
+            )
+            .expect("explicit endpoint proposal");
+        let crate::ConfigProposalKind::ModelCreate(draft) = explicit.kind else {
+            panic!("expected model create");
+        };
+        assert_eq!(
+            draft.endpoint.as_deref(),
+            Some("https://proxy.example.com/v1")
+        );
+    }
+
+    #[test]
+    fn model_create_reports_the_matching_action_field_error() {
+        let schema: serde_json::Value =
+            serde_json::from_str(&config_propose_schema()).expect("schema");
+        let error = crate::validate_schema(
+            &schema,
+            &serde_json::json!({
+                "action": "model.create",
+                "display_name": "DeepSeek",
+                "provider": "openai"
+            }),
+        )
+        .expect_err("missing model must fail");
+        assert!(error.contains("action model.create"), "{error}");
+        assert!(error.contains("缺少必填字段: model"), "{error}");
+    }
+
+    #[test]
+    fn model_update_normalizes_provider_alias() {
+        let tool = ConfigProposeTool::new(std::sync::Arc::new(NoopSink));
+        let ctx = fluxdb_core::ToolExecutionContext {
+            automatic_approval: false,
+            bounded_write: false,
+            session_id: "session".into(),
+            turn_id: "turn".into(),
+            iteration: 1,
+            call_id: "call".into(),
+            cancel: fluxdb_core::CancelFlag::new(),
+            progress: None,
+        };
+        let proposal = tool
+            .proposal(
+                &ctx,
+                &serde_json::json!({
+                    "action": "model.update",
+                    "id": "model-1",
+                    "expected_revision": 2,
+                    "changes": {"provider": "deepseek"}
+                }),
+            )
+            .expect("model update");
+        let crate::ConfigProposalKind::ModelUpdate { changes, .. } = proposal.kind else {
+            panic!("expected model update");
+        };
+        assert_eq!(changes["provider"], "openai");
     }
 
     #[test]

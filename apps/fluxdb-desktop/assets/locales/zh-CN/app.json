@@ -3547,15 +3547,7 @@
       "text": "文本"
     },
     "function_return": "函数 → %{ty}",
-    "function_or_procedure": "函数/存储过程",
-    "error": {
-      "object_missing": "对象 `%{name}` 不存在",
-      "schema_missing": "schema `%{name}` 不存在",
-      "function_missing": "函数 `%{name}` 不存在",
-      "type_missing": "类型 `%{name}` 不存在",
-      "column_missing": "列 `%{column}` 不存在于表 `%{table}`",
-      "column_out_of_scope": "列 `%{name}` 不存在于当前查询作用域"
-    }
+    "function_or_procedure": "函数/存储过程"
   },
   "statusbar": {
     "objects": "%{count} 个对象",

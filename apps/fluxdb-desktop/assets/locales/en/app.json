@@ -3547,15 +3547,7 @@
       "text": "Text"
     },
     "function_return": "Function → %{ty}",
-    "function_or_procedure": "Function/stored procedure",
-    "error": {
-      "object_missing": "Object `%{name}` does not exist",
-      "schema_missing": "Schema `%{name}` does not exist",
-      "function_missing": "Function `%{name}` does not exist",
-      "type_missing": "Type `%{name}` does not exist",
-      "column_missing": "Column `%{column}` does not exist in table `%{table}`",
-      "column_out_of_scope": "Column `%{name}` is not in the current query scope"
-    }
+    "function_or_procedure": "Function/stored procedure"
   },
   "statusbar": {
     "objects": "%{count} objects",

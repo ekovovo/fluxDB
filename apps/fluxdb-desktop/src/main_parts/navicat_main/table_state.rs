@@ -568,7 +568,6 @@ impl NavicatMain {
             execution: Some(adapter.clone() as _),
             decorations: Some(adapter.clone() as _),
             code_lens: Some(adapter.clone() as _),
-            signature: Some(adapter.clone() as _),
             ..Default::default()
         };
         let mut profile = fluxdb_editor_core::EditorProfile::default();

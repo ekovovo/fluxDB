@@ -24,7 +24,7 @@ use fluxdb_editor_core::{
     CompletionFuture, CompletionItem, CompletionKind, CompletionProvider,
     CompletionRequest, CompletionResult, Decoration, DecorationProvider, DecorationSet, Diagnostic,
     DiagnosticProvider, ExecuteMode, ExecutionAdapter, ExecutionUnit, Highlight,
-    InputEdit, LanguageDefinition, Point, Range, Selection, SignatureInfo, SignatureProvider,
+    InputEdit, LanguageDefinition, Range, Selection,
     SyntaxProvider, SyntaxResult, TaskOutcome, TriggerDecision,
 };
 
@@ -34,22 +34,6 @@ struct SqlDiagnosticsCache {
     text_bytes: usize,
     diagnostics: Vec<Diagnostic>,
     statement_ranges: Vec<Range>,
-}
-
-#[derive(Clone, Default)]
-struct SqlSemanticMetadata {
-    columns_by_table: std::collections::HashMap<String, std::collections::HashSet<String>>,
-    columns_by_table_exact: std::collections::HashMap<String, std::collections::HashSet<String>>,
-    tables: std::collections::HashSet<String>,
-    tables_exact: std::collections::HashSet<String>,
-    views: std::collections::HashSet<String>,
-    views_exact: std::collections::HashSet<String>,
-    schemas: std::collections::HashSet<String>,
-    schemas_exact: std::collections::HashSet<String>,
-    routines: std::collections::HashSet<String>,
-    routines_exact: std::collections::HashSet<String>,
-    types: std::collections::HashSet<String>,
-    types_exact: std::collections::HashSet<String>,
 }
 
 /// SQL 编辑器适配器：把 fluxdb-editor-core 的通用协议映射到 SQL 方言 + 注入的业务源。
@@ -95,8 +79,6 @@ pub struct SqlAdapter {
     diagnostics_cache: Arc<Mutex<Option<SqlDiagnosticsCache>>>,
     /// 静态方言/schema 候选的惰性缓存；来源变化时由 builder 失效。
     completion_items_cache: OnceLock<Arc<Vec<CompletionItem>>>,
-    /// 静态 schema 语义元数据的惰性缓存；来源变化时由 builder 失效。
-    semantic_metadata_cache: OnceLock<SqlSemanticMetadata>,
     /// 外部 source 可能动态变化，不能复用静态候选缓存。
     completion_items_cacheable: bool,
 }
@@ -171,27 +153,6 @@ fn completion_window(snapshot: &BufferSnapshot, cursor: usize) -> (String, usize
     (snapshot.text_in_range(Range::new(start, end)), start)
 }
 
-fn sql_signature_label(name: &str, qualifier: Option<&str>) -> String {
-    let base = match name.to_ascii_lowercase().as_str() {
-        "count" => "COUNT(expr)".to_string(),
-        "sum" => "SUM(expr)".to_string(),
-        "avg" => "AVG(expr)".to_string(),
-        "min" => "MIN(expr)".to_string(),
-        "max" => "MAX(expr)".to_string(),
-        "coalesce" => "COALESCE(value, fallback)".to_string(),
-        "ifnull" => "IFNULL(value, fallback)".to_string(),
-        "concat" => "CONCAT(value1, value2)".to_string(),
-        "substr" => "SUBSTR(string, start, length)".to_string(),
-        "substring" => "SUBSTRING(string, start, length)".to_string(),
-        _ => format!("{name}()"),
-    };
-    // 保留 schema 限定前缀（`sales.count(` → `sales.COUNT(expr)`），与调用处一致。
-    match qualifier.filter(|q| !q.is_empty()) {
-        Some(q) => format!("{q}.{base}"),
-        None => base,
-    }
-}
-
 fn build_code_lenses(text: &str) -> Vec<CodeLens> {
     split_statements(text)
         .into_iter()
@@ -256,7 +217,6 @@ impl SqlAdapter {
             diagnostics_latest_request: CancellationToken::default(),
             diagnostics_cache: Arc::new(Mutex::new(None)),
             completion_items_cache: OnceLock::new(),
-            semantic_metadata_cache: OnceLock::new(),
             completion_items_cacheable: true,
         }
     }
@@ -280,7 +240,6 @@ impl SqlAdapter {
     pub fn with_schema(mut self, schema: SqlSchemaContext) -> Self {
         self.sources.push(Arc::new(schema));
         self.completion_items_cache = OnceLock::new();
-        self.semantic_metadata_cache = OnceLock::new();
         self.diagnostics_cache = Arc::new(Mutex::new(None));
         self
     }
@@ -338,7 +297,6 @@ impl SqlAdapter {
     pub fn with_completion_index(mut self, source: Arc<dyn SqlCompletionSource>) -> Self {
         self.sources.push(source);
         self.completion_items_cache = OnceLock::new();
-        self.semantic_metadata_cache = OnceLock::new();
         self.completion_items_cacheable = false;
         self.diagnostics_cache = Arc::new(Mutex::new(None));
         self
@@ -349,7 +307,6 @@ impl SqlAdapter {
     pub fn set_dialect(&mut self, dialect: SqlDialect) {
         self.dialect = dialect;
         self.completion_items_cache = OnceLock::new();
-        self.semantic_metadata_cache = OnceLock::new();
         self.diagnostics_cache = Arc::new(Mutex::new(None));
     }
 
@@ -690,18 +647,6 @@ impl DiagnosticProvider for SqlAdapter {
             request_id,
         )
         .unwrap_or_default();
-        // 语义诊断按 statement 局部 materialize；范围扫描直接读取 Rope chunks，避免
-        // 为一次诊断把 1MB/10MB 文档拼成完整 String。
-        let semantic_started = Instant::now();
-        let statement_ranges = split_statement_ranges_snapshot(snapshot);
-        let semantic = self.semantic_diagnostics_snapshot_cancellable(
-            snapshot,
-            &statement_ranges,
-            self.diagnostics_latest_request.inner(),
-            request_id,
-        );
-        let semantic_count = semantic.len();
-        result.extend(semantic);
         result.sort_unstable_by_key(|diagnostic| diagnostic.range.start);
         if !self.diagnostics_latest_request.check(request_id) {
             tracing::debug!(
@@ -714,16 +659,6 @@ impl DiagnosticProvider for SqlAdapter {
             );
             return result;
         }
-        tracing::debug!(
-            target: "gdb_sql_perf",
-            op = "diagnostics_semantic",
-            editor_id,
-            elapsed_us = semantic_started.elapsed().as_micros() as u64,
-            buffer_version = snapshot.version(),
-            text_bytes = snapshot.len(),
-            statement_count = statement_ranges.len(),
-            diagnostic_count = semantic_count,
-        );
         tracing::debug!(
             target: "gdb_sql_perf",
             op = "diagnostics_parse",
@@ -740,7 +675,7 @@ impl DiagnosticProvider for SqlAdapter {
                     version,
                     text_bytes,
                     diagnostics: result.clone(),
-                    statement_ranges,
+                    statement_ranges: split_statement_ranges_snapshot(snapshot),
                 });
             }
         }
@@ -825,7 +760,6 @@ impl SqlAdapter {
         }
         let statement_text = snapshot.text_in_range(new_statement);
         let mut local = sql_diagnostics_tree_sitter_for_dialect(&statement_text, self.dialect);
-        local.extend(self.semantic_diagnostics_text(&statement_text, 0));
         for diagnostic in &mut local {
             diagnostic.range.start += new_statement.start;
             diagnostic.range.end += new_statement.start;
@@ -867,414 +801,10 @@ impl SqlAdapter {
         Some(diagnostics)
     }
 
-    fn semantic_diagnostics_text(&self, text: &str, base_offset: usize) -> Vec<Diagnostic> {
-        let metadata = self.semantic_metadata();
-        self.semantic_diagnostics_text_with_metadata(text, base_offset, &metadata)
-    }
 
-    fn semantic_metadata(&self) -> SqlSemanticMetadata {
-        if !self.completion_items_cacheable {
-            return self.semantic_metadata_uncached();
-        }
-        self.semantic_metadata_cache
-            .get_or_init(|| self.semantic_metadata_uncached())
-            .clone()
-    }
 
-    fn semantic_metadata_uncached(&self) -> SqlSemanticMetadata {
-        let mut metadata = SqlSemanticMetadata::default();
-        for source in &self.sources {
-            let tables = source.tables();
-            metadata
-                .tables
-                .extend(tables.iter().map(|name| name.to_ascii_lowercase()));
-            metadata.tables_exact.extend(tables);
-            let views = source.views();
-            metadata
-                .views
-                .extend(views.iter().map(|name| name.to_ascii_lowercase()));
-            metadata.views_exact.extend(views);
-            let schemas = source.schemas();
-            metadata
-                .schemas
-                .extend(schemas.iter().map(|name| name.to_ascii_lowercase()));
-            metadata.schemas_exact.extend(schemas);
-            let routines = source.routines();
-            metadata
-                .routines
-                .extend(routines.iter().map(|name| name.to_ascii_lowercase()));
-            metadata.routines_exact.extend(routines);
-            let types = source.types();
-            metadata
-                .types
-                .extend(types.iter().map(|name| name.to_ascii_lowercase()));
-            metadata.types_exact.extend(types);
-            for (table, column) in source.columns() {
-                metadata
-                    .columns_by_table
-                    .entry(table.to_ascii_lowercase())
-                    .or_default()
-                    .insert(column.to_ascii_lowercase());
-                metadata
-                    .columns_by_table_exact
-                    .entry(table)
-                    .or_default()
-                    .insert(column);
-            }
-        }
-        metadata
-    }
 
-    fn semantic_diagnostics_text_with_metadata(
-        &self,
-        text: &str,
-        base_offset: usize,
-        metadata: &SqlSemanticMetadata,
-    ) -> Vec<Diagnostic> {
-        if self.sources.is_empty() {
-            return Vec::new();
-        }
-        let tables = &metadata.tables;
-        let views = &metadata.views;
-        let schemas = &metadata.schemas;
-        let routines = &metadata.routines;
-        let types = &metadata.types;
-        let tables_exact = &metadata.tables_exact;
-        let views_exact = &metadata.views_exact;
-        let schemas_exact = &metadata.schemas_exact;
-        let routines_exact = &metadata.routines_exact;
-        let types_exact = &metadata.types_exact;
-        let tokens = sql_tokens(text);
-        let scope_symbols = fluxdb_app::sql_scope_symbols(
-            text,
-            match self.dialect {
-                SqlDialect::Mysql => fluxdb_core::DatabaseKind::MySql,
-                _ => fluxdb_core::DatabaseKind::Sqlite,
-            },
-        );
-        let ast_parsed = scope_symbols.ast_parsed;
-        let ast_functions = scope_symbols
-            .function_names
-            .into_iter()
-            .collect::<std::collections::HashSet<_>>();
-        let ast_types = scope_symbols
-            .cast_types
-            .into_iter()
-            .collect::<std::collections::HashSet<_>>();
-        let ast_columns = scope_symbols
-            .qualified_columns
-            .into_iter()
-            .collect::<std::collections::HashSet<_>>();
-        let ast_unqualified_columns = scope_symbols
-            .unqualified_columns
-            .into_iter()
-            .collect::<std::collections::HashSet<_>>();
-        let ast_referenced_tables = scope_symbols
-            .referenced_tables
-            .iter()
-            .map(|table| table.name.to_ascii_lowercase())
-            .collect::<std::collections::HashSet<_>>();
-        let ast_relation_names = scope_symbols
-            .relation_names
-            .iter()
-            .map(|name| name.to_ascii_lowercase())
-            .collect::<std::collections::HashSet<_>>();
-        let cte_columns = scope_symbols
-            .cte_columns
-            .into_iter()
-            .map(|(name, columns)| (name, columns.into_iter().collect::<std::collections::HashSet<_>>()))
-            .collect::<std::collections::HashMap<_, _>>();
-        let cte_names = cte_columns.keys().cloned().collect::<std::collections::HashSet<_>>();
-        let mut visible_columns = std::collections::HashSet::new();
-        let mut visible_columns_exact = std::collections::HashSet::new();
-        for table in &scope_symbols.referenced_tables {
-            if let Some(columns) = cte_columns.get(&table.name.to_ascii_lowercase()) {
-                visible_columns.extend(columns.iter().cloned());
-                visible_columns_exact.extend(columns.iter().cloned());
-            }
-            if let Some(columns) = metadata.columns_by_table.get(&table.name.to_ascii_lowercase()) {
-                visible_columns.extend(columns.iter().cloned());
-            }
-            if let Some(columns) = metadata.columns_by_table_exact.get(&table.name) {
-                visible_columns_exact.extend(columns.iter().cloned());
-            } else {
-                for (known_table, columns) in &metadata.columns_by_table_exact {
-                    if known_table.eq_ignore_ascii_case(&table.name) {
-                        visible_columns_exact.extend(columns.iter().cloned());
-                    }
-                }
-            }
-        }
-        let mut scoped_columns = None;
-        for table in scope_symbols.referenced_tables {
-            let Some(alias) = table.alias else { continue };
-            let columns = cte_columns
-                .get(&table.name.to_ascii_lowercase())
-                .cloned()
-                .or_else(|| metadata.columns_by_table.get(&table.name.to_ascii_lowercase()).cloned());
-            if let Some(columns) = columns {
-                scoped_columns
-                    .get_or_insert_with(|| metadata.columns_by_table.clone())
-                    .entry(alias)
-                    .or_insert(columns);
-            }
-        }
-        for (name, columns) in &cte_columns {
-            scoped_columns
-                .get_or_insert_with(|| metadata.columns_by_table.clone())
-                .entry(name.clone())
-                .or_insert_with(|| columns.clone());
-        }
-        let columns_by_table = scoped_columns
-            .as_ref()
-            .unwrap_or(&metadata.columns_by_table);
-        let object_is_known = |name: &str| {
-            if tables.contains(name) || views.contains(name) || cte_names.contains(name) {
-                return true;
-            }
-            let base_name = name.rsplit('.').next().unwrap_or(name);
-            tables
-                .iter()
-                .chain(views.iter())
-                .any(|known| known.rsplit('.').next() == Some(base_name))
-        };
-        let mut diagnostics = Vec::new();
 
-        // 只在对象名位于明确 SQL 子句后时检查存在性，避免把普通标识符误报为表。
-        for (index, token) in tokens.iter().enumerate() {
-            let expects_object = matches!(
-                token.word.as_str(),
-                "from" | "join" | "update" | "into" | "references" | "table" | "view"
-            );
-            if !expects_object {
-                continue;
-            }
-            let Some(object) = tokens.get(index + 1) else { continue };
-            if object.word == "(" || (!object.quoted && self.dialect.is_keyword(&object.word)) {
-                continue;
-            }
-            let (object_name, object_end, object_quoted, schema_quoted) = if let Some(next) = tokens.get(index + 2)
-                && text[object.end..next.start].trim() == "."
-            {
-                (
-                    format!("{}.{}", object.word, next.word),
-                    next.end,
-                    next.quoted,
-                    object.quoted,
-                )
-            } else {
-                (object.word.clone(), object.end, object.quoted, false)
-            };
-            let base_name = object_name.rsplit('.').next().unwrap_or(&object_name);
-            let object_name_folded = object_name.to_ascii_lowercase();
-            let base_name_folded = base_name.to_ascii_lowercase();
-            if ast_parsed
-                && !cte_names.contains(&object_name_folded)
-                && !ast_referenced_tables.contains(&object_name_folded)
-                && !ast_referenced_tables.contains(&base_name_folded)
-                && !ast_relation_names.contains(&object_name_folded)
-                && !ast_relation_names.contains(&base_name_folded)
-            {
-                continue;
-            }
-            let known_object = if object_quoted {
-                tables_exact.contains(&object_name)
-                    || tables_exact.contains(base_name)
-                    || views_exact.contains(&object_name)
-                    || views_exact.contains(base_name)
-            } else {
-                object_is_known(&object_name) || object_is_known(base_name)
-            };
-            if !(tables.is_empty() && views.is_empty() && cte_names.is_empty())
-                && !known_object
-            {
-                diagnostics.push(sql_metadata_diagnostic(
-                    base_offset + object.start,
-                    base_offset + object_end,
-                    tr("app.completion.error.object_missing").replace("%{name}", &object_name),
-                ));
-            }
-            if !schemas.is_empty() && let Some(dot) = object_name.find('.') {
-                let schema_name = &object_name[..dot];
-                let schema_known = if schema_quoted {
-                    schemas_exact.contains(schema_name)
-                } else {
-                    schemas.contains(&schema_name.to_ascii_lowercase())
-                };
-                if !schema_known {
-                    diagnostics.push(sql_metadata_diagnostic(
-                        base_offset + object.start,
-                        base_offset + object.start + dot,
-                        tr("app.completion.error.schema_missing").replace("%{name}", &schema_name),
-                    ));
-                }
-            }
-        }
-
-        // 只在 provider 明确提供 routine/type metadata 时检查自定义函数和类型。
-        if !routines.is_empty() {
-            for (_index, token) in tokens.iter().enumerate() {
-                if !text[token.end..].trim_start().starts_with('(') {
-                    continue;
-                }
-                if !token.quoted
-                    && (self.dialect.is_keyword(&token.word)
-                        || matches!(token.word.as_str(), "if" | "case" | "cast" | "convert"))
-                {
-                    continue;
-                }
-                if ast_parsed && !ast_functions.contains(&token.word.to_ascii_lowercase()) {
-                    continue;
-                }
-                let known_routine = if token.quoted {
-                    routines_exact.contains(&token.word)
-                } else {
-                    routines.contains(&token.word)
-                };
-                if !known_routine {
-                    diagnostics.push(sql_metadata_diagnostic(
-                        base_offset + token.start,
-                        base_offset + token.end,
-                        tr("app.completion.error.function_missing").replace("%{name}", &token.word),
-                    ));
-                }
-            }
-        }
-
-        if !types.is_empty() {
-            for (index, token) in tokens.iter().enumerate() {
-                let is_cast_type = tokens
-                    .get(index.wrapping_sub(1))
-                    .is_some_and(|prev| prev.word == "as");
-                if ast_parsed && !ast_types.contains(&token.word.to_ascii_lowercase()) {
-                    continue;
-                }
-                let known_type = if token.quoted {
-                    types_exact.contains(&token.word)
-                } else {
-                    types.contains(&token.word)
-                };
-                if is_cast_type
-                    && (token.quoted || !self.dialect.is_keyword(&token.word))
-                    && !known_type
-                {
-                    diagnostics.push(sql_metadata_diagnostic(
-                        base_offset + token.start,
-                        base_offset + token.end,
-                        tr("app.completion.error.type_missing").replace("%{name}", &token.word),
-                    ));
-                }
-            }
-        }
-
-        if columns_by_table.is_empty() {
-            return diagnostics;
-        }
-        for pair in tokens.windows(2) {
-            let [table_token, column_token] = pair else { continue };
-            if text[table_token.end..column_token.start].trim() != "." {
-                continue;
-            }
-            let table = table_token.word.as_str();
-            let column = column_token.word.as_str();
-            if ast_parsed
-                && !ast_columns.contains(&(
-                    table.to_ascii_lowercase(),
-                    column.to_ascii_lowercase(),
-                ))
-            {
-                continue;
-            }
-            let table_quoted = table_token.quoted;
-            let column_quoted = column_token.quoted;
-            let known_columns = if table_quoted {
-                metadata.columns_by_table_exact.get(table)
-            } else {
-                columns_by_table.get(&table.to_ascii_lowercase())
-            };
-            let Some(known_columns) = known_columns else {
-                continue;
-            };
-            let column_known = if column_quoted {
-                known_columns.contains(column)
-            } else {
-                known_columns.contains(&column.to_ascii_lowercase())
-            };
-            if column_known {
-                continue;
-            }
-            diagnostics.push(Diagnostic {
-                range: Range::new(
-                    base_offset + column_token.start,
-                    base_offset + column_token.end,
-                ),
-                severity: fluxdb_editor_core::DiagnosticSeverity::Warning,
-                message: tr("app.completion.error.column_missing").replace("%{column}", &column).replace("%{table}", &table),
-                source: "sql-metadata".to_string(),
-            });
-        }
-        if ast_parsed && !visible_columns.is_empty() {
-            let select_aliases = scope_symbols
-                .select_aliases
-                .iter()
-                .map(|alias| alias.to_ascii_lowercase())
-                .collect::<std::collections::HashSet<_>>();
-            for (index, token) in tokens.iter().enumerate() {
-                if (!token.quoted && self.dialect.is_keyword(&token.word))
-                    || (ast_unqualified_columns.is_empty()
-                        || !ast_unqualified_columns.contains(&token.word.to_ascii_lowercase()))
-                    || select_aliases.contains(&token.word.to_ascii_lowercase())
-                {
-                    continue;
-                }
-                let qualified = tokens
-                    .get(index.wrapping_sub(1))
-                    .is_some_and(|previous| text[previous.end..token.start].trim() == ".")
-                    || tokens
-                        .get(index + 1)
-                        .is_some_and(|next| text[token.end..next.start].trim() == ".");
-                if qualified {
-                    continue;
-                }
-                let known = if token.quoted {
-                    visible_columns_exact.contains(&token.word)
-                } else {
-                    visible_columns.contains(&token.word.to_ascii_lowercase())
-                };
-                if !known {
-                    diagnostics.push(sql_metadata_diagnostic(
-                        base_offset + token.start,
-                        base_offset + token.end,
-                        tr("app.completion.error.column_out_of_scope").replace("%{name}", &token.word),
-                    ));
-                }
-            }
-        }
-        diagnostics
-    }
-
-    fn semantic_diagnostics_snapshot_cancellable(
-        &self,
-        snapshot: &BufferSnapshot,
-        statement_ranges: &[Range],
-        latest_request: &AtomicU64,
-        request_id: u64,
-    ) -> Vec<Diagnostic> {
-        let metadata = self.semantic_metadata();
-        let mut diagnostics = Vec::new();
-        for range in statement_ranges {
-            if latest_request.load(Ordering::Acquire) != request_id {
-                break;
-            }
-            let text = snapshot.text_in_range(*range);
-            diagnostics.extend(self.semantic_diagnostics_text_with_metadata(
-                &text,
-                range.start,
-                &metadata,
-            ));
-        }
-        diagnostics
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -1388,15 +918,6 @@ fn skip_quoted_token(bytes: &[u8], mut i: usize, quote: u8) -> usize {
     i
 }
 
-fn sql_metadata_diagnostic(start: usize, end: usize, message: String) -> Diagnostic {
-    Diagnostic {
-        range: Range::new(start, end.max(start + 1)),
-        severity: fluxdb_editor_core::DiagnosticSeverity::Warning,
-        message,
-        source: "sql-metadata".to_string(),
-    }
-}
-
 fn is_sql_identifier_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'$')
 }
@@ -1416,9 +937,6 @@ impl CompletionProvider for SqlAdapter {
             let start = cursor.saturating_sub(COMPLETION_WINDOW_BYTES);
             snapshot.text_in_range(Range::new(start, cursor))
         });
-        let in_call = before
-            .as_ref()
-            .is_some_and(|b| fluxdb_app::sql_signature_at(b, b.len()).is_some());
         if !request.query.is_empty() {
             // F001：非显式自动触发时，若光标落于未闭合字符串/注释内（词字符被编辑器
             // 当普通前缀提取，query 非空），应抑制——否则在 `'se` / `-- sel` 里打字会误弹。
@@ -1429,21 +947,11 @@ impl CompletionProvider for SqlAdapter {
                     return TriggerDecision::No;
                 }
             }
-            // 方案 A：非显式且在函数参数上下文内（`foo(` 之后），补全浮层让位给签名
-            // tooltip，避免两者重叠。显式触发（Ctrl+Space）不受影响。
-            return if in_call {
-                TriggerDecision::No
-            } else {
-                TriggerDecision::Yes
-            };
+            return TriggerDecision::Yes;
         }
         let Some(before) = before else {
             return TriggerDecision::No;
         };
-        // 方案 A：函数参数上下文内同上抑制（覆盖 query 为空的下标/空格等场景）。
-        if in_call {
-            return TriggerDecision::No;
-        }
         if trailing_ident_qualifier(&before) || sql_space_trigger_context(&before) {
             TriggerDecision::Yes
         } else {
@@ -1624,30 +1132,6 @@ impl CompletionProvider for SqlAdapter {
             SqlDocState::Loading => D::Loading,
             SqlDocState::Ready(text) => D::Ready(text),
             SqlDocState::Error(reason) => D::Error(reason),
-        })
-    }
-}
-
-impl SignatureProvider for SqlAdapter {
-    /// 函数签名提示（P1.9/F003）：复用 fluxdb-app 的 SQL 语义函数调用定位（保留 schema
-    /// 限定前缀、多字节安全、忽略字符串内逗号），生成非阻塞的参数 tooltip。
-    /// connector 参数 metadata 未接入时退化为 `name()` 签名（可读降级）；
-    /// 光标不在函数调用括号内（或括号左侧非标识符）时返回 None（不显示）。
-    fn signature(&self, snapshot: &BufferSnapshot, position: Point) -> Option<SignatureInfo> {
-        // 只取光标前局部上下文，避免大文档全量复制（与 core 通用版同窗口）。
-        let cursor = snapshot.point_to_offset(position);
-        if cursor == 0 {
-            return None;
-        }
-        const SIG_CONTEXT_BYTES: usize = 64 * 1024;
-        let context_start = cursor.saturating_sub(SIG_CONTEXT_BYTES);
-        let text = snapshot.text_in_range(Range::new(context_start, cursor));
-        let call = fluxdb_app::sql_signature_at(&text, cursor - context_start)?;
-        Some(SignatureInfo {
-            label: sql_signature_label(&call.name, call.qualifier.as_deref()),
-            documentation: String::new(),
-            active_parameter: Some(call.active_parameter),
-            parameter_ranges: Vec::new(),
         })
     }
 }

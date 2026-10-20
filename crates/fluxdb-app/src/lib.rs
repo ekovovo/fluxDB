@@ -44,11 +44,7 @@ use fluxdb_core::{
 };
 use sqlformat::{Dialect, FormatOptions, Indent, QueryParams};
 use sqlparser::{
-    ast::{
-        Expr, FromTable, ObjectName, ObjectNamePart, Query as SqlAstQuery, SetExpr, Statement,
-        TableAlias, TableFactor, TableObject, TableWithJoins, UpdateTableFromKind,
-        visit_expressions, visit_relations,
-    },
+    ast::{Expr, ObjectName, ObjectNamePart, Statement},
     dialect::MySqlDialect,
     parser::Parser,
 };

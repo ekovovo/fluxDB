@@ -56,7 +56,7 @@ pub trait MetadataSource {
 | `JoinOnLeft` | 有外键时只给 FK 关联列，否则两侧全列 |
 | `JoinOnRight` | 左侧列在整条 JOIN 链中的配对列；无外键回退目标表全列 |
 | `InsertColumn` / `UpdateAssignLhs` | 表列，排除已写列 |
-| `UpdateAssignValue` | DEFAULT/NULL/TRUE/FALSE |
+| `UpdateAssignValue` | DEFAULT/NULL/TRUE/FALSE + 函数 |
 
 基础分：FK 列 120 / ON snippet 110 / 列 100 / 投影别名 95 / 关联表 95 / 表 90 / schema 85 /
 函数 60 / 关键字 50。
@@ -71,6 +71,10 @@ pub trait MetadataSource {
 - 达梦裸表补全的插入文本带 schema 限定；默认 schema 有对象时仍并入对象树已展开的
   其他 schema（引擎负责前缀过滤）。
 - 补全不再单独产出触发器候选（触发器不是合法表达式；旧链路的 Trigger 候选已移除）。
+- 关键字按子句收敛：空前缀只给当前子句相关的一小撮（投影 10 / 谓词 22 / ORDER BY 6），
+  打字中才放开全量词表靠前缀收窄。此前任何表达式位置都灌 60+ 个 DDL 关键字。
+- `FROM a, |` / `FROM a, b|` 回到表名槽（旧判定按「最近一个词」一律当别名位置，出不了表名）。
+- 编辑器语义诊断（未知表/列/函数）与函数参数提示已随旧链路删除；语法诊断保留。
 
 ## 宿主接线（fluxdb-app）
 
@@ -88,9 +92,12 @@ pub trait MetadataSource {
 - 第 2 期：JOIN 全链路、表达式槽位、投影别名、ON snippet —— 完成
 - 第 3 期：INSERT/UPDATE、CTE/派生表、词法 DML 降级 —— 完成
 - 第 4 期：`fluxdb-app` 接线并直接切换（无 legacy 开关）—— 完成
-- 第 5 期：删除旧补全代码（`query_completion.rs` 启发式、旧方言词表、desktop 语义注入）—— 完成
+- 第 5 期：删除旧补全代码 —— 完成。`crates/fluxdb-app/src/parts/query_completion.rs`
+  由 1396 行缩到 255 行，只剩仍有跨模块消费方的纯工具（`quote_identifier` /
+  `identifier_needs_quote` / `sql_identifier_tokens` / `sql_ddl_impact` / `now_ts` /
+  `RecencyFrequency`）；desktop 的语义诊断与签名提示一并拆除
 
-验证：`cargo test -p fluxdb-completion`（66 例）、`cargo test -p fluxdb-app`（57 例，另有
+验证：`cargo test -p fluxdb-completion`（75 例）、`cargo test -p fluxdb-app`（57 例，另有
 3 个默认 ignore 的真库冒烟）、`cargo clippy --locked -p fluxdb-completion --all-targets`。
 
 真库冒烟（本地容器，密码只从环境变量读取）：

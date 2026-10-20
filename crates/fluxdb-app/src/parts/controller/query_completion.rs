@@ -1892,12 +1892,20 @@ pub enum CompletionDocumentationState {
     Error(String),
 }
 
+/// 历史记录的表名提取：表触发词后第一个标识符的末段，加上 DDL 影响表。
+/// 旧的作用域符号收集已删，这里只做历史分组所需的轻量词法扫描。
 fn query_history_tables(sql: &str) -> Vec<String> {
-    // 历史记录这里只消费表名，限定名按哪种方言拆分不影响结果。
-    let mut tables = extract_referenced_tables(sql, DatabaseKind::MongoDb)
-        .into_iter()
-        .map(|table| table.name)
-        .collect::<BTreeSet<_>>();
+    let tokens = sql_identifier_tokens(sql);
+    let mut tables: BTreeSet<String> = tokens
+        .windows(2)
+        .filter(|window| {
+            matches!(
+                window[0].to_ascii_lowercase().as_str(),
+                "from" | "join" | "update" | "into" | "table"
+            ) && !window[1].chars().next().is_some_and(|c| c.is_ascii_digit())
+        })
+        .map(|window| window[1].to_ascii_lowercase())
+        .collect();
     if let Some(impact) = sql_ddl_impact(sql) {
         tables.extend(impact.tables);
     }

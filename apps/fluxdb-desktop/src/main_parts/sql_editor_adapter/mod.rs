@@ -965,10 +965,8 @@ impl SqlAdapter {
 
 #[derive(Clone, Debug)]
 struct SqlToken {
-    start: usize,
-    end: usize,
+    /// 去引号后的词（引号标识符已反转义），小写化由调用方按需处理。
     word: String,
-    quoted: bool,
 }
 
 fn sql_tokens(text: &str) -> Vec<SqlToken> {
@@ -982,7 +980,6 @@ fn sql_tokens(text: &str) -> Vec<SqlToken> {
                 continue;
             }
             b'"' | b'`' => {
-                let start = i;
                 let quote = bytes[i];
                 i += 1;
                 let value_start = i;
@@ -995,13 +992,10 @@ fn sql_tokens(text: &str) -> Vec<SqlToken> {
                         let value_end = i;
                         i += 1;
                         result.push(SqlToken {
-                            start,
-                            end: i,
                             word: text[value_start..value_end].replace(
                                 if quote == b'`' { "``" } else { "\"\"" },
                                 if quote == b'`' { "`" } else { "\"" },
                             ),
-                            quoted: true,
                         });
                         break;
                     }
@@ -1049,10 +1043,7 @@ fn sql_tokens(text: &str) -> Vec<SqlToken> {
             i += 1;
         }
         result.push(SqlToken {
-            start,
-            end: i,
             word: text[start..i].to_ascii_lowercase(),
-            quoted: false,
         });
     }
     result

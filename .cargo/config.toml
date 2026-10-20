@@ -1,0 +1,8 @@
+# macOS 的 ld 会把每个函数的展开信息编码进 compact unwind 表，表上限 16MB；本应用
+# 链接的 crate 多，链接时 ld 会警告 `__eh_frame section too large ...`。Rust 侧不使用
+# C++ 异常，关掉 compact unwind 编码即可消除该警告（换回 `__unwind_info` 之外的表）。
+[target.aarch64-apple-darwin]
+rustflags = ["-C", "link-arg=-Wl,-no_compact_unwind"]
+
+[target.x86_64-apple-darwin]
+rustflags = ["-C", "link-arg=-Wl,-no_compact_unwind"]

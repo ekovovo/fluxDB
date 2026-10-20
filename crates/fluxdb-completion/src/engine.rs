@@ -322,6 +322,22 @@ mod tests {
         assert!(items.contains(&"SELECT".to_string()), "候选：{items:?}");
     }
 
+    /// 表达式位置也要能补子句关键字：`SELECT * fro|` → FROM。
+    #[test]
+    fn suggests_clause_keywords_in_expression_scope() {
+        let items = labels("SELECT * fro|");
+        assert!(items.contains(&"FROM".to_string()), "候选：{items:?}");
+        let items = labels("SELECT * FROM t WHERE x = 1 AND|");
+        assert!(items.contains(&"AND".to_string()), "候选：{items:?}");
+    }
+
+    /// 已闭合的引号标识符之后，别名位置的关键字仍可补全。
+    #[test]
+    fn suggests_join_keyword_after_quoted_identifier() {
+        let items = labels("SELECT * from `3d_user` u left|");
+        assert!(items.contains(&"LEFT JOIN".to_string()), "候选：{items:?}");
+    }
+
     #[test]
     fn filters_by_partial_word() {
         let items = labels("SELECT na| FROM users");

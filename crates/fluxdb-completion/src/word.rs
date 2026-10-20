@@ -137,22 +137,27 @@ fn scan_ident_start(text: &str, end: usize) -> usize {
 
 /// 光标是否位于一个未闭合的引号标识符内；是则返回开引号的位置与字符。
 ///
-/// 引号标识符可以含空格（`"my tab`），因此不能用标识符字符反扫。
+/// 引号标识符可以含空格（`"my tab`），因此不能用标识符字符反扫。必须从语句头正向
+/// 配对扫描：反向只看「最近一个引号」会把已闭合标识符的闭引号误判成开引号，
+/// 导致 `from \`3d_user\` u left` 的词起点被拉到闭引号之后。
 fn open_quote_before(text: &str, cursor: usize) -> Option<(usize, char)> {
-    let before = &text[..cursor];
-    for (offset, ch) in before.char_indices().rev() {
+    let mut open: Option<(usize, char)> = None;
+    for (offset, ch) in text[..cursor].char_indices() {
         if !is_quote_char(ch) {
             continue;
         }
         let closer = if ch == '[' { ']' } else { ch };
-        // 开引号之后同类型闭引号成对出现 → 光标不在引号内。
-        let closers = before[offset + ch.len_utf8()..]
-            .chars()
-            .filter(|candidate| *candidate == closer)
-            .count();
-        return (closers % 2 == 0).then_some((offset, ch));
+        match open {
+            // 同类引号成对：遇到闭引号即出栈。
+            Some((_, opened)) if (if opened == '[' { ']' } else { opened }) == closer => {
+                open = None;
+            }
+            // 不同类型引号各自独立，不互相闭合。
+            Some(_) => {}
+            None => open = Some((offset, ch)),
+        }
     }
-    None
+    open
 }
 
 /// 计算光标处的词法上下文。
@@ -290,6 +295,26 @@ mod tests {
         let c = ctx("SELECT u.na| FROM users u");
         assert_eq!(c.qualifier.as_deref(), Some("u"));
         assert_eq!(c.word_part, "na");
+    }
+
+    /// 已闭合的引号标识符不能把词起点拉到闭引号之后（否则 `u left` 会被当成一个词）。
+    #[test]
+    fn closed_quoted_identifier_does_not_leak_into_word() {
+        let c = ctx("SELECT * from `3d_user` u left|");
+        assert_eq!(c.word_part, "left");
+        assert!(!c.quoted);
+        let c = ctx("SELECT * from `3d_user` u |");
+        assert_eq!(c.word_part, "");
+        assert!(!c.quoted);
+    }
+
+    /// 未闭合引号仍按大小写敏感处理，替换区间含开引号。
+    #[test]
+    fn unterminated_quote_keeps_quote_in_replacement() {
+        let c = ctx("SELECT * from `3d_us|");
+        assert_eq!(c.word_part, "3d_us");
+        assert!(c.quoted);
+        assert_eq!(c.replace_start, "SELECT * from ".len());
     }
 
     #[test]

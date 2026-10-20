@@ -290,6 +290,14 @@ fn expression_candidates(
                 );
             }
         }
+        // 子句关键字：`SELECT * fro|` 要能补出 FROM。全部关键字都进候选，靠前缀过滤
+        // 收窄，分数最低排在对象之后（与旧行为一致）。
+        for keyword in ctx.dialect.keywords() {
+            candidates.push(
+                Candidate::new(*keyword, *keyword, CandidateKind::Keyword)
+                    .with_sort_text(format!("{SCORE_KEYWORD}:{keyword}")),
+            );
+        }
     }
 
     candidates
@@ -655,6 +663,15 @@ fn lexical_candidates(prev_keyword: Option<&str>, ctx: &SlotContext<'_>) -> Vec<
         Some("SELECT") | Some("AND") | Some("OR") | Some("SET") | Some("BY") => {
             expression_candidates(ExprScope::SelectItem, ctx.word.qualifier.as_deref(), ctx)
         }
-        _ => keyword_candidates(ctx),
+        // 关键字识别不出子句（残句）时给全量关键字，靠已输入前缀收窄。
+        _ => ctx
+            .dialect
+            .keywords()
+            .iter()
+            .map(|keyword| {
+                Candidate::new(*keyword, *keyword, CandidateKind::Keyword)
+                    .with_sort_text(format!("{SCORE_KEYWORD}:{keyword}"))
+            })
+            .collect(),
     }
 }

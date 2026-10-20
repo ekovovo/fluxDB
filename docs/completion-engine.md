@@ -90,5 +90,14 @@ pub trait MetadataSource {
 - 第 4 期：`fluxdb-app` 接线并直接切换（无 legacy 开关）—— 完成
 - 第 5 期：删除旧补全代码（`query_completion.rs` 启发式、旧方言词表、desktop 语义注入）—— 完成
 
-验证：`cargo test -p fluxdb-completion`（66 例）、`cargo test -p fluxdb-app`（57 例，
-含真实 SQLite 连接的表/列补全冒烟）、`cargo clippy --locked -p fluxdb-completion --all-targets`。
+验证：`cargo test -p fluxdb-completion`（66 例）、`cargo test -p fluxdb-app`（57 例，另有
+2 个默认 ignore 的真库冒烟）、`cargo clippy --locked -p fluxdb-completion --all-targets`。
+
+真库冒烟（本地容器，密码只从环境变量读取）：
+
+```bash
+FLUXDB_SMOKE_MYSQL_PASSWORD=... cargo test -p fluxdb-app mysql_live_metadata_feeds_completion -- --ignored
+FLUXDB_SMOKE_DAMENG_PASSWORD=... cargo test -p fluxdb-app dameng_live_metadata_feeds_completion -- --ignored
+```
+
+覆盖：表补全、限定符列补全、MySQL 外键 ON 硬限定（`orders.customer_id`）。

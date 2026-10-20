@@ -1653,6 +1653,154 @@ mod dameng_completion_index_tests {
 
         let _ = std::fs::remove_file(&path);
     }
+
+    /// MySQL 真库冒烟。密码只从环境变量读取，避免写入仓库。
+    #[test]
+    #[ignore = "需要本地 MySQL 测试库；设置 FLUXDB_SMOKE_MYSQL_PASSWORD 后手动运行"]
+    fn mysql_live_metadata_feeds_completion() {
+        let Ok(password) = std::env::var("FLUXDB_SMOKE_MYSQL_PASSWORD") else {
+            return;
+        };
+        let options = BTreeMap::from([
+            ("username".to_string(), "root".to_string()),
+            ("password".to_string(), password),
+        ]);
+        let config = ConnectionConfig {
+            id: ConnectionId(12),
+            name: "mysql-smoke".into(),
+            kind: DatabaseKind::MySql,
+            endpoint: Endpoint::Tcp {
+                host: "127.0.0.1".into(),
+                port: 45595,
+                database: Some("fluxdb_demo".into()),
+            },
+            options,
+            redis_profile: None,
+            mysql_profile: None,
+            postgres_profile: None,
+            dameng_profile: None,
+        };
+        let mut controller = AppController::new();
+        let connection_id = config.id;
+        let _ = controller.dispatch(AppCommand::ReplaceConnections(vec![config]));
+
+        let text = "SELECT * FROM cus";
+        let tables = controller
+            .query_completions_for_text(
+                connection_id,
+                Some("fluxdb_demo".into()),
+                None,
+                text.into(),
+                text.len(),
+                true,
+            )
+            .expect("表补全")
+            .items;
+        assert!(
+            tables.iter().any(|item| item.label == "customers"),
+            "{:?}",
+            tables.iter().map(|item| &item.label).collect::<Vec<_>>()
+        );
+
+        // ON 左侧由外键硬限定：orders 只有 customer_id 参与该外键。
+        let text = "SELECT * FROM orders o JOIN customers c ON o.";
+        let on_items = controller
+            .query_completions_for_text(
+                connection_id,
+                Some("fluxdb_demo".into()),
+                None,
+                text.into(),
+                text.len(),
+                true,
+            )
+            .expect("ON 补全")
+            .items;
+        let mut labels = on_items
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect::<Vec<_>>();
+        labels.sort_unstable();
+        assert_eq!(labels, vec!["customer_id"], "{:?}", on_items.len());
+    }
+
+    /// 达梦真库冒烟。密码只从环境变量读取，避免写入仓库。
+    #[test]
+    #[ignore = "需要本地达梦测试库；设置 FLUXDB_SMOKE_DAMENG_PASSWORD 后手动运行"]
+    fn dameng_live_metadata_feeds_completion() {
+        let Ok(password) = std::env::var("FLUXDB_SMOKE_DAMENG_PASSWORD") else {
+            return;
+        };
+        let mut config = config();
+        config.id = ConnectionId(13);
+        if let Some(profile) = config.dameng_profile.as_mut() {
+            profile.basic.username = "SYSDBA".into();
+            profile.basic.password = SecretRef::inline(password);
+        }
+        let direct = list_completion_tables_for_connection_with_cancel(
+            &config,
+            Some("DAMENG"),
+            Some("FLUXDEMO"),
+            "",
+            100,
+            &|| false,
+        );
+        assert!(
+            direct.as_ref().is_ok_and(|tables| !tables.is_empty()),
+            "{:?}",
+            direct.err()
+        );
+
+        let mut controller = AppController::new();
+        let connection_id = config.id;
+        let _ = controller.dispatch(AppCommand::ReplaceConnections(vec![config]));
+
+        let text = "SELECT * FROM CUS";
+        let tables = controller
+            .query_completions_for_text(
+                connection_id,
+                Some("DAMENG".into()),
+                None,
+                text.into(),
+                text.len(),
+                true,
+            )
+            .expect("表补全")
+            .items;
+        assert!(
+            tables.iter().any(|item| {
+                item.label == "CUSTOMERS"
+                    && item.insert_text == "\"FLUXDEMO\".\"CUSTOMERS\""
+            }),
+            "{:?}",
+            tables
+                .iter()
+                .map(|item| (&item.label, &item.insert_text))
+                .collect::<Vec<_>>()
+        );
+
+        let text = "SELECT c.CUSTOMER_ FROM CUSTOMERS c";
+        let columns = controller
+            .query_completions_for_text(
+                connection_id,
+                Some("DAMENG".into()),
+                None,
+                text.into(),
+                "SELECT c.CUSTOMER_".len(),
+                true,
+            )
+            .expect("列补全")
+            .items;
+        assert!(
+            columns.iter().any(|item| {
+                item.kind == QueryCompletionKind::Column && item.label == "CUSTOMER_NO"
+            }),
+            "{:?}",
+            columns
+                .iter()
+                .map(|item| (&item.label, item.kind))
+                .collect::<Vec<_>>()
+        );
+    }
 }
 
 /// T054：选中项完整对象说明的懒加载状态。

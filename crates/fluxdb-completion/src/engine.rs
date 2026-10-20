@@ -113,19 +113,48 @@ fn retain_matching(items: &mut Vec<Candidate>, word: &WordContext) {
         if word.quoted {
             haystack.starts_with(filter)
         } else {
-            matches_fuzzy(haystack, filter)
+            fuzzy_score(haystack, filter).is_some()
         }
     });
 }
 
-/// ASCII 大小写不敏感的子序列匹配（与宿主 `matches_completion_fuzzy` 同语义）。
-fn matches_fuzzy(value: &str, filter: &str) -> bool {
-    let value = value.to_ascii_lowercase();
-    let mut value_chars = value.chars();
-    filter
-        .to_ascii_lowercase()
-        .chars()
-        .all(|filter_char| value_chars.any(|value_char| value_char == filter_char))
+/// 模糊匹配打分；`None` 表示不匹配（硬过滤）。
+///
+/// 与 DBeaver 的 `TextUtils.fuzzyScore` 同构：命中 +1、首位命中 +4、命中落在词边界
+/// （前一个字符不是字母数字，含 `_`）+2、连续命中序列按 4→8→16 翻倍。贪心从左到右
+/// 取首个命中，不做最优对齐——打分只用于同层内排序，不值当为它上 DP。
+pub fn fuzzy_score(value: &str, filter: &str) -> Option<i32> {
+    let filter = filter.trim();
+    if filter.is_empty() {
+        return Some(0);
+    }
+    let haystack: Vec<char> = value.to_ascii_lowercase().chars().collect();
+    let mut score = 0i32;
+    let mut cursor = 0usize;
+    let mut last_hit: Option<usize> = None;
+    let mut streak = 0u32;
+    for needle in filter.to_ascii_lowercase().chars() {
+        let hit = cursor
+            + haystack[cursor.min(haystack.len())..]
+                .iter()
+                .position(|&value_char| value_char == needle)?;
+        score += 1;
+        if hit == 0 {
+            score += 4;
+        } else if !haystack[hit - 1].is_alphanumeric() {
+            score += 2;
+        }
+        // 连续命中：第 n 个连续字符给 4×2^(n-1)，封顶 16（再长就没有区分度了）。
+        if last_hit == Some(hit.wrapping_sub(1)) && hit > 0 {
+            streak += 1;
+            score += 4 << (streak - 1).min(2);
+        } else {
+            streak = 0;
+        }
+        last_hit = Some(hit);
+        cursor = hit + 1;
+    }
+    Some(score)
 }
 
 /// 排序键：语义分优先，其次匹配度（前缀 > 子序列），最后按标签。
@@ -136,10 +165,9 @@ fn sort_key(item: &Candidate, filter: &str) -> (i32, i32, String) {
         .and_then(|sort_text| sort_text.split_once(':'))
         .and_then(|(score, label)| score.parse::<i32>().ok().map(|score| (score, label)))
         .unwrap_or((0, item.label.as_str()));
-    // 前缀命中优先于子序列命中。
-    let match_rank =
-        i32::from(!filter.is_empty() && !label.to_ascii_lowercase().starts_with(filter));
-    (-score, match_rank, label.to_string())
+    // 同层内按匹配质量排：前缀 / 词边界命中 > 中段子序列命中。
+    let match_score = fuzzy_score(label, filter).unwrap_or(0);
+    (-score, -match_score, label.to_string())
 }
 
 /// 同 label + kind 去重，保留先出现者（高分在前）。
@@ -441,6 +469,72 @@ mod tests {
     fn multiword_keyword_matches_by_last_word() {
         let items = labels("SELECT * FROM users u GROUP B|");
         assert!(items.contains(&"GROUP BY".to_string()), "候选：{items:?}");
+    }
+
+    /// 打字中只在本子句的合法后继集里做前缀放开：DDL 与跨子句关键字不出现在表达式里。
+    #[test]
+    fn expression_slot_only_offers_clause_legal_keywords() {
+        for text in [
+            "SELECT * FROM users u WHERE i|",
+            "SELECT * FROM users u ORDER BY i|",
+            "SELECT * FROM users u GROUP BY i|",
+        ] {
+            let items = labels(text);
+            for noise in [
+                "INDEX",
+                "IF EXISTS",
+                "IF NOT EXISTS",
+                "INNER JOIN",
+                "LEFT JOIN",
+            ] {
+                assert!(
+                    !items.contains(&noise.to_string()),
+                    "{text} 候选：{items:?}"
+                );
+            }
+        }
+        // 谓词里合法的仍要在。
+        let items = labels("SELECT * FROM users u WHERE i|");
+        for legal in ["IN", "IS NULL", "IS NOT NULL"] {
+            assert!(items.contains(&legal.to_string()), "候选：{items:?}");
+        }
+        // ORDER BY 里 `IN` / `IS NULL` 不合法，续写子句合法。
+        let items = labels("SELECT * FROM users u ORDER BY i|");
+        assert!(items.contains(&"LIMIT".to_string()), "候选：{items:?}");
+        assert!(!items.contains(&"IS NULL".to_string()), "候选：{items:?}");
+    }
+
+    /// `IN (` / `USING (` 不再是死胡同。
+    #[test]
+    fn parenthesized_slots_offer_columns() {
+        let items = labels("SELECT * FROM users u WHERE u.id IN (|");
+        assert!(items.contains(&"id".to_string()), "候选：{items:?}");
+        assert!(items.contains(&"name".to_string()), "候选：{items:?}");
+
+        // USING 只给两侧的关联列（外键配对），不是全列。
+        let items = labels("SELECT * FROM users u JOIN orders o USING (|");
+        assert!(items.contains(&"user_id".to_string()), "候选：{items:?}");
+        assert!(items.contains(&"id".to_string()), "候选：{items:?}");
+        assert!(!items.contains(&"name".to_string()), "候选：{items:?}");
+    }
+
+    /// 赋值右侧之后能接 WHERE（此前是空候选）。
+    #[test]
+    fn update_value_slot_continues_with_where() {
+        let items = labels("UPDATE users SET name = 1 WH|");
+        assert!(items.contains(&"WHERE".to_string()), "候选：{items:?}");
+    }
+
+    /// 模糊打分：前缀与词边界优先于中段子序列，不匹配直接判否。
+    #[test]
+    fn fuzzy_score_ranks_prefix_and_word_boundary_first() {
+        assert_eq!(fuzzy_score("id", "zzz"), None);
+        // 首位命中得分高于中段命中。
+        assert!(fuzzy_score("name", "na") > fuzzy_score("user_name", "na"));
+        // 词边界命中（`_` 之后）高于词中命中。
+        assert!(fuzzy_score("user_id", "id") > fuzzy_score("valid", "id"));
+        // 空过滤词视为全匹配。
+        assert_eq!(fuzzy_score("anything", ""), Some(0));
     }
 
     /// 字符串 / 注释里不是 SQL 语法位置。

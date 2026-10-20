@@ -37,6 +37,56 @@ pub trait CompletionDialect: Sync {
     }
 }
 
+/// 常见内置函数的参数骨架，供函数签名提示（`COUNT(|` → `COUNT(expr)`）使用。
+///
+/// 名字与各方言 [`CompletionDialect::functions`] 表同形（大写）；没列进来的函数不给
+/// 签名，提示层回退到只显示函数名。`label` 用 `NAME(参数, …)` 形式，渲染层按 `()` +
+/// 逗号切参数区间并高亮当前参数。
+const BUILTIN_FUNCTION_SIGNATURES: &[(&str, &str)] = &[
+    ("ABS", "ABS(number)"),
+    ("AVG", "AVG(expr)"),
+    ("CAST", "CAST(expr AS type)"),
+    ("COALESCE", "COALESCE(expr, ...)"),
+    ("CONCAT", "CONCAT(str, ...)"),
+    ("COUNT", "COUNT(expr)"),
+    ("DATE", "DATE(timevalue, modifier, ...)"),
+    ("DATETIME", "DATETIME(timevalue, modifier, ...)"),
+    ("DATE_TRUNC", "DATE_TRUNC(field, source)"),
+    ("EXTRACT", "EXTRACT(field FROM source)"),
+    ("GENERATE_SERIES", "GENERATE_SERIES(start, stop, step)"),
+    ("IFNULL", "IFNULL(expr, fallback)"),
+    ("INSTR", "INSTR(str, substr)"),
+    ("JSON_EXTRACT", "JSON_EXTRACT(json, path)"),
+    ("JSONB_EXTRACT_PATH", "JSONB_EXTRACT_PATH(json, path, ...)"),
+    ("LENGTH", "LENGTH(str)"),
+    ("LOWER", "LOWER(str)"),
+    ("MAX", "MAX(expr)"),
+    ("MIN", "MIN(expr)"),
+    ("NOW", "NOW()"),
+    ("NULLIF", "NULLIF(expr, value)"),
+    ("RANDOM", "RANDOM()"),
+    ("REPLACE", "REPLACE(str, from, to)"),
+    ("ROUND", "ROUND(number, decimals)"),
+    ("STRFTIME", "STRFTIME(format, timevalue, ...)"),
+    ("SUBSTR", "SUBSTR(str, start, length)"),
+    ("SUBSTRING", "SUBSTRING(str, start, length)"),
+    ("SUM", "SUM(expr)"),
+    ("TIME", "TIME(timevalue, modifier, ...)"),
+    ("TO_CHAR", "TO_CHAR(value, format)"),
+    ("TO_DATE", "TO_DATE(text, format)"),
+    ("TOTAL", "TOTAL(expr)"),
+    ("TRIM", "TRIM(str)"),
+    ("UPPER", "UPPER(str)"),
+];
+
+/// 查内置函数签名；`name` 大小写不敏感，未收录返回 `None`。
+pub fn builtin_function_signature(name: &str) -> Option<&'static str> {
+    BUILTIN_FUNCTION_SIGNATURES
+        .iter()
+        .find(|(function, _)| function.eq_ignore_ascii_case(name))
+        .map(|(_, signature)| *signature)
+}
+
 const GENERIC_KEYWORDS: &[&str] = &[
     "SELECT",
     "FROM",

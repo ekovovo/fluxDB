@@ -48,20 +48,27 @@ pub trait MetadataSource {
 4. **槽位定位**（`locate.rs`）：取包含光标的最小 AST 节点映射为 `ClauseSlot`。
 5. **槽位策略**（`strategy.rs`）：每个槽位决定候选来源与基础分。
 6. **过滤排序**（`engine.rs`）：引号标识符前缀匹配、其余 ASCII 不敏感子序列；按
-   `分数 → 前缀命中 → 标签` 排序，按 label/kind/schema 去重，最后截到 200 条上限。
+   `分数 → 匹配质量 → 标签` 排序，按 label/kind/schema 去重，最后截到 200 条上限。
+   匹配质量用 `fuzzy_score`（与 DBeaver `TextUtils.fuzzyScore` 同构）：命中 +1、首位命中
+   +4、词边界命中 +2、连续命中按 4→8→16 翻倍。同一份打分导出给宿主（
+   `fluxdb_completion::fuzzy_score`），本地候选回退与引擎不再各用一套匹配语义。
 
 ## 槽位与评分
 
 | 槽位 | 候选 |
 | --- | --- |
 | `StatementStart` | 语句起始关键字 |
-| `Expression{SelectItem/Where/Having/GroupBy/OrderBy/JoinOn}` | 关系列 + 函数（无限定符）；ORDER/GROUP 额外给投影别名；谓词给 NULL/TRUE/FALSE |
+| `Expression{SelectItem/Where/Having/GroupBy/OrderBy/JoinOn/Set}` | 关系列 + 函数（无限定符）；ORDER/GROUP 额外给投影别名；谓词给 NULL/TRUE/FALSE |
 | `FromTable` | 作用域内的 CTE / 派生表 + 表/视图/schema + 续接关键字；JOIN 时外键目标表加分 |
 | `TableAlias` | 续接关键字 + 外键推导的 `ON l.c = r.fk` snippet |
 | `JoinOnLeft` | 有外键时只给 FK 关联列，否则两侧全列 |
 | `JoinOnRight` | 左侧列在整条 JOIN 链中的配对列；无外键回退目标表全列 |
+| `JoinUsing` | `JOIN t USING (` 括号内：只给两侧都有的关联列（同 `JoinOnLeft` 的 FK 收窄） |
 | `InsertColumn` / `UpdateAssignLhs` | 表列，排除已写列 |
-| `UpdateAssignValue` | DEFAULT/NULL/TRUE/FALSE + 函数 |
+| `UpdateAssignValue` | DEFAULT/NULL/TRUE/FALSE + 函数 + `WHERE` / `RETURNING` |
+
+每个表达式槽位只给该子句合法的关键字（见「有意变更」），`IN (` / `= ANY (` 按谓词表达式
+处理，`UPDATE ... SET a = 1 |` 继续给 `WHERE` / `RETURNING`。
 
 基础分：FK 列 120 / ON snippet 110 / 列 100 / 作用域内 CTE·派生表 96 / 投影别名 95 /
 关联表 95 / 表 90 / schema 85 / 函数 60 / 关键字 50。
@@ -84,13 +91,18 @@ pub trait MetadataSource {
 - 达梦裸表补全的插入文本带 schema 限定；默认 schema 有对象时仍并入对象树已展开的
   其他 schema（引擎负责前缀过滤）。
 - 补全不再单独产出触发器候选（触发器不是合法表达式；旧链路的 Trigger 候选已移除）。
-- 关键字按子句收敛：空前缀只给当前子句相关的一小撮（投影 10 / 谓词 22 / ORDER BY 6）；
-  打字中额外放开「前缀命中的关键字」（整词命中或末词命中，`GROUP B|` → `GROUP BY`），
-  但不放语句级 / DDL 关键字。此前任何表达式位置都灌 60+ 个 DDL 关键字，
-  `WHERE x = 1 AND c|` 会补出 `CREATE` / `TRUNCATE`。
+- 关键字按**槽位合法后继集**给出，不再用「整表减黑名单」：每个表达式槽位只列该子句能接的
+  关键字（投影 / 谓词 / JOIN ON / GROUP BY / ORDER BY / SET 各一份，见 `strategy.rs` 的
+  `*_KEYWORDS`），谓词连接符（`AND` / `OR` / `IN` / `LIKE` / `BETWEEN` / `IS NULL` / `EXISTS`）
+  只进 WHERE / HAVING / ON，`CASE` / `WHEN` / `NULL` / `TRUE` 这类表达式原子进所有表达式槽位；
+  方言没有的关键字（MySQL 无 `ILIKE`）不进候选。此前靠前缀过滤从全表里捞，打字中
+  `WHERE i|` 会漏出 `INDEX` / `IF EXISTS`，`ORDER BY i|` 会漏出 `INNER JOIN`。
 - `FROM a, |` / `FROM a, b|` 回到表名槽（旧判定按「最近一个词」一律当别名位置，出不了表名）。
+- `IN (` / `= ANY (` 括号内按谓词表达式给候选（此前 0 候选）；`JOIN t USING (` 只给两侧
+  都有的关联列；`UPDATE ... SET a = 1 |` 继续给 `WHERE` / `RETURNING`（此前 0 候选）。
 - 编辑器语义诊断（未知表/列/函数）与函数参数提示已随旧链路删除；语法诊断保留。
-  其中「未知表 / schema / 列」已用本引擎的解析与符号表重建，见下节；函数参数提示未恢复。
+  其中「未知表 / schema / 列」已用本引擎的解析与符号表重建（见下节）；函数参数提示已在
+  第 10 期用内置签名表恢复。
 
 ## 语义诊断（`diagnose.rs`）
 
@@ -124,6 +136,12 @@ pub trait MetadataSource {
 - 裸表名在默认桶未命中时按表名回查所属 schema。
 - `Candidate` 直转 `QueryCompletionItem`；Schema 插入 `name.`，Snippet 显式标记格式。
 - 引号规则与个性化同分重排留在宿主（与旧行为一致）。
+- `AppController::sql_function_signature(connection_id, name)`：函数签名提示。只查连接方言的
+  静态内置表（`CompletionDialect::functions()` + 引擎的 `builtin_function_signature`），
+  不发任何数据库请求；方言不提供的函数、未收录的名字（含用户自定义例程）返回 `None`。
+- desktop 侧 `SqlSignatureResolver` 经 `SqlAdapter::with_signature_resolver` 注入，
+  `impl SignatureProvider for SqlAdapter` 用 `fluxdb_editor_core::signature_at` 定位调用点与
+  当前参数下标，签名文案由宿主解析器提供；`Providers.signature` 与 Redis 一样接同一适配器。
 
 ## 分期状态
 
@@ -147,8 +165,16 @@ pub trait MetadataSource {
 - 第 9 期：修语句起点回归 —— 词法上下文改为按语句计算，`sel|` 重新补出 `SELECT`（第 8 期
   的关键字收敛误伤了语句起始位置）
 
-验证：`cargo test -p fluxdb-completion`（101 例）、`cargo test -p fluxdb-app`（57 例，另有
-3 个默认 ignore 的真库冒烟）、`cargo clippy --locked -p fluxdb-completion --all-targets`。
+- 第 10 期：IDE 手感补齐（第二批）—— 完成。函数签名提示恢复（内置签名表 + `SignatureProvider`
+  接线）；关键字改为槽位合法后继集；匹配器统一到 `fuzzy_score`（引擎与 desktop 本地回退同一套
+  打分，editor-core 里无人调用的 `filter_and_sort` 一并删除）；`IN (` / `USING (` /
+  `SET a = 1 |` 三处死胡同补齐。签名表在 `dialect.rs`（`BUILTIN_FUNCTION_SIGNATURES`），
+  渲染层按 `()` + 逗号切参数，`parameter_ranges` 留空
+
+验证：`cargo test -p fluxdb-completion`（105 例）、`cargo test -p fluxdb-app`（58 例，另有
+3 个默认 ignore 的真库冒烟）、`cargo test -p fluxdb-editor-core`（3 例签名定位）、
+`cargo test -p fluxdb-desktop`（含 `filter_items` 4 例）、
+`cargo clippy --locked -p fluxdb-completion --all-targets`。
 
 真库冒烟（本地容器，密码只从环境变量读取）：
 

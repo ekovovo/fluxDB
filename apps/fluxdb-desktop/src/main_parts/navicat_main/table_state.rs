@@ -464,6 +464,9 @@ impl NavicatMain {
         let completion_schema = editor.schema.clone();
         // F004：采纳补全时回写个性化（recency/frequency）。与补全解析同一 controller。
         let accept_controller = completion_controller.clone();
+        // 函数签名提示：`COUNT(|` 给出参数骨架。只查连接方言的静态内置表，不发数据库请求。
+        let signature_controller = completion_controller.clone();
+        let signature_connection_id = editor.connection_id;
         // F005：metadata 详情解析复用同一 controller：优先读内存 CompletionIndex，索引未覆盖
         // 该对象时按 (库, schema, 表) 取一次列元数据并写回索引。
         let documentation_controller = completion_controller.clone();
@@ -546,12 +549,17 @@ impl NavicatMain {
                     fluxdb_app::CompletionDocumentationState::Error(reason) => S::Error(reason),
                 }
             });
+        let signature_resolver: sql_editor_adapter::SqlSignatureResolver =
+            std::sync::Arc::new(move |name: &str| {
+                signature_controller.sql_function_signature(signature_connection_id, name)
+            });
         let adapter = std::sync::Arc::new(
             sql_editor_adapter::SqlAdapter::new(dialect)
                 .with_status_store(status_store)
                 .with_schema(schema)
                 .with_completion_resolver(completion_resolver)
-                .with_documentation_resolver(documentation_resolver),
+                .with_documentation_resolver(documentation_resolver)
+                .with_signature_resolver(signature_resolver),
         );
         let language_registry = std::sync::Arc::new(fluxdb_editor_core::LanguageRegistry::new());
         language_registry.register(
@@ -568,6 +576,7 @@ impl NavicatMain {
             execution: Some(adapter.clone() as _),
             decorations: Some(adapter.clone() as _),
             code_lens: Some(adapter.clone() as _),
+            signature: Some(adapter.clone() as _),
             ..Default::default()
         };
         let mut profile = fluxdb_editor_core::EditorProfile::default();

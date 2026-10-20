@@ -22,6 +22,8 @@ pub(crate) enum ExprScope {
     JoinOn,
     GroupBy,
     OrderBy,
+    /// UPDATE ... SET 赋值右侧（`SET a = 1 |`）。
+    Set,
 }
 
 /// 光标所处的语法槽位。
@@ -63,6 +65,8 @@ pub(crate) enum ClauseSlot {
     },
     /// UPDATE ... SET col = 的值位置。
     UpdateAssignValue,
+    /// JOIN ... USING ( 的列清单内部：只给两侧都有的关联列。
+    JoinUsing,
     /// 兜底：AST 不可用，按最近关键字近似。
     LexicalFallback { prev_keyword: Option<String> },
 }
@@ -319,10 +323,13 @@ fn slot_from_prev_keyword(word: &WordContext) -> Option<ClauseSlot> {
             scope: ExprScope::JoinOn,
             qualifier: word.qualifier.clone(),
         },
-        "WHERE" => ClauseSlot::Expression {
+        // `WHERE x IN (` / `= ANY (`：括号里是值位置，按谓词表达式给候选。
+        "WHERE" | "IN" => ClauseSlot::Expression {
             scope: ExprScope::Where,
             qualifier: word.qualifier.clone(),
         },
+        // `JOIN t USING (`：括号里只能是两侧都有的关联列。
+        "USING" => ClauseSlot::JoinUsing,
         "HAVING" => ClauseSlot::Expression {
             scope: ExprScope::Having,
             qualifier: word.qualifier.clone(),

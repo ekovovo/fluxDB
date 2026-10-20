@@ -19,8 +19,10 @@ mod symbols;
 mod word;
 
 pub use diagnose::{Diagnostic, DiagnosticKind, DiagnosticRequest, diagnose};
-pub use dialect::{CompletionDialect, DAMENG, GENERIC, MYSQL, POSTGRES, SQLITE};
-pub use engine::complete;
+pub use dialect::{
+    CompletionDialect, DAMENG, GENERIC, MYSQL, POSTGRES, SQLITE, builtin_function_signature,
+};
+pub use engine::{complete, fuzzy_score};
 pub use metadata::{
     ColumnMeta, ForeignKeyMeta, MetadataSource, RoutineKind, RoutineMeta, TableKey, TableKind,
     TableMeta,

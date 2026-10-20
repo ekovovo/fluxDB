@@ -380,6 +380,29 @@ impl AppController {
         );
         Ok(result)
     }
+
+    /// 函数签名提示：`name` 是当前连接方言的内置函数时给出参数骨架（`COUNT(expr)`），
+    /// 否则 `None`。
+    ///
+    /// 只查静态内置表，不碰元数据：签名在括号内每次按键后都要重算，不能为它拉起远程
+    /// 查询。用户自定义例程暂不给签名，渲染层回退到只显示函数名。
+    pub fn sql_function_signature(
+        &self,
+        connection_id: ConnectionId,
+        name: &str,
+    ) -> Option<String> {
+        let config = self.connection_config(connection_id)?;
+        let dialect = app_completion_dialect(config.kind);
+        // 与候选同源：方言不提供的函数（如 SQLite 的 EXTRACT）也不给签名。
+        if !dialect
+            .functions()
+            .iter()
+            .any(|function| function.eq_ignore_ascii_case(name))
+        {
+            return None;
+        }
+        fluxdb_completion::builtin_function_signature(name).map(str::to_string)
+    }
 }
 
 /// 引擎候选 → 宿主补全项。表/视图的 detail 展示所属 namespace，注释进文档。

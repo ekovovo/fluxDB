@@ -544,18 +544,6 @@ impl CompletionController {
             }
         }
     }
-
-    /// 在已缓存/本地结果基础上做本地过滤与排序。
-    pub fn filter_and_sort(&self, items: Vec<CompletionItem>, query: &str) -> Vec<CompletionItem> {
-        let mut scored: Vec<(u32, CompletionItem)> = Vec::new();
-        for item in items {
-            if let Some(score) = item.match_score(query) {
-                scored.push((score, item));
-            }
-        }
-        scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.label.cmp(&b.1.label)));
-        scored.into_iter().map(|(_, item)| item).collect()
-    }
 }
 
 /// 便捷：计算给定 offset 前的补全前缀（词字符序列）。
@@ -583,5 +571,53 @@ pub fn sorted_range(start: Offset, end: Offset) -> Range {
         Range::new(start, end)
     } else {
         Range::new(end, start)
+    }
+}
+
+#[cfg(test)]
+mod signature_tests {
+    use super::*;
+    use crate::buffer::EditorBuffer;
+
+    /// 在文本末尾调用 `signature_at`；`text` 的末尾即光标位置。
+    fn signature_at_end(text: &str) -> Option<CallSignature> {
+        let snapshot = EditorBuffer::new_from(text).snapshot();
+        let point = snapshot.offset_to_point(text.len());
+        signature_at(&snapshot, point)
+    }
+
+    fn call(name: &str, active: usize) -> Option<CallSignature> {
+        Some(CallSignature {
+            name: name.to_string(),
+            active_parameter: active,
+        })
+    }
+
+    #[test]
+    fn signature_uses_innermost_call_and_counts_arguments() {
+        assert_eq!(signature_at_end("SELECT COUNT("), call("COUNT", 0));
+        assert_eq!(signature_at_end("SELECT CONCAT(a, "), call("CONCAT", 1));
+        // 嵌套：取最内层未闭合的调用。
+        assert_eq!(signature_at_end("SELECT SUM(ROUND(a, "), call("ROUND", 1));
+        // schema 限定只取末段标识符。
+        assert_eq!(
+            signature_at_end("SELECT pg_catalog.count("),
+            call("count", 0)
+        );
+    }
+
+    #[test]
+    fn signature_ignores_commas_in_string_literals() {
+        assert_eq!(signature_at_end("SELECT CONCAT('a,b', "), call("CONCAT", 1));
+    }
+
+    #[test]
+    fn signature_requires_unclosed_call_parenthesis() {
+        // 括号已闭合、不在任何括号内、以及括号左侧不是标识符（分组括号）都不算调用。
+        assert_eq!(signature_at_end("SELECT COUNT(a) "), None);
+        assert_eq!(signature_at_end("SELECT 1"), None);
+        assert_eq!(signature_at_end("SELECT (a + "), None);
+        // 空文档（光标 0）。
+        assert_eq!(signature_at_end(""), None);
     }
 }

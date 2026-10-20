@@ -1287,6 +1287,37 @@ mod dameng_completion_index_tests {
         }
     }
 
+    /// 签名提示只认连接方言的内置函数表：方言不提供的函数（SQLite 无 EXTRACT）不给签名，
+    /// 未收录的名字（含用户自定义例程）与未知连接同样不给。
+    #[test]
+    fn function_signature_follows_connection_dialect() {
+        let mut controller = AppController::new();
+        let dameng = config();
+        let dameng_id = dameng.id;
+        let sqlite = sqlite_config();
+        let sqlite_id = sqlite.id;
+        let _ = controller.dispatch(AppCommand::ReplaceConnections(vec![dameng, sqlite]));
+
+        assert_eq!(
+            controller
+                .sql_function_signature(dameng_id, "count")
+                .as_deref(),
+            Some("COUNT(expr)")
+        );
+        assert_eq!(
+            controller
+                .sql_function_signature(dameng_id, "EXTRACT")
+                .as_deref(),
+            Some("EXTRACT(field FROM source)")
+        );
+        assert_eq!(controller.sql_function_signature(sqlite_id, "EXTRACT"), None);
+        assert_eq!(controller.sql_function_signature(dameng_id, "MY_FUNC"), None);
+        assert_eq!(
+            controller.sql_function_signature(ConnectionId(99), "COUNT"),
+            None
+        );
+    }
+
     fn column(table: &str, name: &str) -> CompletionColumn {
         CompletionColumn {
             database: None,

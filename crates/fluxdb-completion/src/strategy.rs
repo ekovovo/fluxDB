@@ -68,6 +68,7 @@ pub(crate) fn slot_candidates(slot: &ClauseSlot, ctx: &SlotContext<'_>) -> Vec<C
             unlisted_columns(table, already_set, ctx)
         }
         ClauseSlot::UpdateAssignValue => update_value_candidates(ctx),
+        ClauseSlot::JoinUsing => join_on_left_from_symbols(ctx),
         ClauseSlot::LexicalFallback { prev_keyword } => {
             lexical_candidates(prev_keyword.as_deref(), ctx)
         }
@@ -324,23 +325,10 @@ fn function_candidates(ctx: &SlotContext<'_>) -> Vec<Candidate> {
     candidates
 }
 
-/// 投影位置的关键字：`SELECT DISTINCT ...` / `CASE ... END` / 收尾的 FROM。
-const SELECT_ITEM_KEYWORDS: &[&str] = &[
-    "ALL", "DISTINCT", "CASE", "WHEN", "THEN", "ELSE", "END", "AS", "FROM", "INTO",
-];
-/// 谓词位置（WHERE / HAVING）的连接符、运算符与后续子句。
+/// 投影位置的关键字：`SELECT DISTINCT ...` / 收尾的 FROM。`CASE ... END` 属表达式通用集。
+const SELECT_ITEM_KEYWORDS: &[&str] = &["ALL", "DISTINCT", "AS", "FROM", "INTO"];
+/// 谓词位置（WHERE / HAVING）的后续子句。连接符与运算符见 [`PREDICATE_OPERATOR_KEYWORDS`]。
 const PREDICATE_KEYWORDS: &[&str] = &[
-    "AND",
-    "OR",
-    "NOT",
-    "IN",
-    "BETWEEN",
-    "LIKE",
-    "ILIKE",
-    "IS NULL",
-    "IS NOT NULL",
-    "EXISTS",
-    "CASE",
     "GROUP BY",
     "HAVING",
     "ORDER BY",
@@ -353,18 +341,8 @@ const PREDICATE_KEYWORDS: &[&str] = &[
     "WINDOW",
     "RETURNING",
 ];
-/// ON 条件里能续写的运算符与后续子句。
+/// ON 条件里能续写的连接与后续子句。运算符见 [`PREDICATE_OPERATOR_KEYWORDS`]。
 const JOIN_ON_KEYWORDS: &[&str] = &[
-    "AND",
-    "OR",
-    "NOT",
-    "IN",
-    "BETWEEN",
-    "LIKE",
-    "ILIKE",
-    "IS NULL",
-    "IS NOT NULL",
-    "CASE",
     "JOIN",
     "LEFT JOIN",
     "INNER JOIN",
@@ -385,45 +363,38 @@ const GROUP_BY_KEYWORDS: &[&str] = &[
     "WINDOW",
 ];
 const ORDER_BY_KEYWORDS: &[&str] = &["ASC", "DESC", "LIMIT", "OFFSET", "UNION", "UNION ALL"];
+/// UPDATE ... SET 赋值右侧之后：只能接 WHERE 或 RETURNING。
+const SET_KEYWORDS: &[&str] = &["WHERE", "RETURNING"];
 
 /// 光标前是否已敲了半截词。
 fn is_typing(ctx: &SlotContext<'_>) -> bool {
     !ctx.word.word_part.trim().is_empty()
 }
 
-/// 表达式槽位永远不给的语句级 / DDL 关键字。
-///
-/// 这些是 `WHERE x = 1 AND c|` 里补出 `CREATE` / `TRUNCATE` 的来源，纯噪声；要写新语句
-/// 时用户是从语句起始槽位开始的。
-const STATEMENT_KEYWORDS: &[&str] = &[
-    "SELECT",
-    "INSERT INTO",
-    "UPDATE",
-    "DELETE FROM",
-    "CREATE",
-    "ALTER",
-    "DROP",
-    "TRUNCATE",
-    "SHOW",
-    "EXPLAIN",
-    "DESCRIBE",
-    "CALL",
-    "WITH",
-    "GRANT",
-    "REVOKE",
-    "RENAME",
-    "COMMENT",
-    "USE",
-    "BEGIN",
-    "COMMIT",
-    "ROLLBACK",
+/// 谓词里的连接符与运算符：只在 WHERE / HAVING / ON 中合法。
+const PREDICATE_OPERATOR_KEYWORDS: &[&str] = &[
+    "AND",
+    "OR",
+    "NOT",
+    "IN",
+    "BETWEEN",
+    "LIKE",
+    "ILIKE",
+    "IS NULL",
+    "IS NOT NULL",
+    "EXISTS",
 ];
 
-/// 表达式位置的关键字候选。
+/// 任何表达式里都合法的结构关键字与字面量常量。
+const EXPRESSION_ATOM_KEYWORDS: &[&str] = &[
+    "CASE", "WHEN", "THEN", "ELSE", "END", "NULL", "TRUE", "FALSE",
+];
+
+/// 表达式位置的关键字候选 = 本子句合法集 ∪ 表达式通用集，再按方言过滤。
 ///
-/// 空前缀只给当前子句相关的一小撮；打字中额外放开「前缀命中的关键字」，让
-/// `SELECT * fro|` → `FROM`、`GROUP B|` → `GROUP BY` 仍然能补出来，但不放
-/// [`STATEMENT_KEYWORDS`]——整张词表灌进弹层是噪声的主要来源。
+/// 打字中不再拿整张方言词表做前缀放开：`INDEX` / `IF EXISTS`（DDL）与 `INNER JOIN`
+/// （子句级）在表达式里不合法，`WHERE i|` 补出它们纯属噪声。`GROUP B|` → `GROUP BY`
+/// 这类续写仍成立，因为续写子句本来就在对应子句的合法集里。
 fn expression_keywords(scope: ExprScope, ctx: &SlotContext<'_>) -> Vec<&'static str> {
     let contextual: &[&str] = match scope {
         ExprScope::SelectItem => SELECT_ITEM_KEYWORDS,
@@ -431,36 +402,20 @@ fn expression_keywords(scope: ExprScope, ctx: &SlotContext<'_>) -> Vec<&'static 
         ExprScope::JoinOn => JOIN_ON_KEYWORDS,
         ExprScope::GroupBy => GROUP_BY_KEYWORDS,
         ExprScope::OrderBy => ORDER_BY_KEYWORDS,
+        ExprScope::Set => SET_KEYWORDS,
+    };
+    let operators: &[&str] = match scope {
+        ExprScope::Where | ExprScope::Having | ExprScope::JoinOn => PREDICATE_OPERATOR_KEYWORDS,
+        _ => &[],
     };
     // 方言没有的关键字（如 MySQL 无 ILIKE）不进候选。
-    let mut keywords: Vec<&'static str> = contextual
+    contextual
         .iter()
+        .chain(operators)
+        .chain(EXPRESSION_ATOM_KEYWORDS)
         .copied()
         .filter(|keyword| ctx.dialect.keywords().contains(keyword))
-        .collect();
-
-    let prefix = ctx.word.word_part.trim().to_ascii_lowercase();
-    if !prefix.is_empty() {
-        for keyword in ctx.dialect.keywords() {
-            if STATEMENT_KEYWORDS.contains(keyword) || keywords.contains(keyword) {
-                continue;
-            }
-            if keyword_matches_prefix(keyword, &prefix) {
-                keywords.push(keyword);
-            }
-        }
-    }
-    keywords
-}
-
-/// 关键字是否被已输入前缀命中：整词命中，或末词命中（`GROUP B|` 命中 `GROUP BY`）。
-fn keyword_matches_prefix(keyword: &str, prefix: &str) -> bool {
-    let keyword = keyword.to_ascii_lowercase();
-    keyword.starts_with(prefix)
-        || keyword
-            .rsplit(' ')
-            .next()
-            .is_some_and(|last| last.starts_with(prefix))
+        .collect()
 }
 
 /// 列候选。`qualifier` 非空时展示与插入都用 `限定符.列名`：无限定符的同名列会被去重
@@ -826,6 +781,13 @@ fn update_value_candidates(ctx: &SlotContext<'_>) -> Vec<Candidate> {
         .collect();
     // 赋值右侧也是表达式：`SET name = COU|` 要能补函数。
     candidates.extend(function_candidates(ctx));
+    // 值之后就是 WHERE：`SET name = 1 wh|` 不能什么都不给。
+    for keyword in expression_keywords(ExprScope::Set, ctx) {
+        candidates.push(
+            Candidate::new(keyword, keyword, CandidateKind::Keyword)
+                .with_sort_text(format!("{SCORE_KEYWORD}:{keyword}")),
+        );
+    }
     candidates
 }
 
@@ -881,11 +843,11 @@ fn join_on_left_from_symbols(ctx: &SlotContext<'_>) -> Vec<Candidate> {
     join_on_left_candidates(&joined, &left_tables, ctx)
 }
 
-/// 词法兜底的关键字：子句未知，取谓词 + 投影两套并集，打字中再按前缀放开。
+/// 词法兜底的关键字：子句未知，取谓词 + 投影两套合法集的并集。
 fn fallback_keywords(ctx: &SlotContext<'_>) -> Vec<&'static str> {
     let mut keywords = expression_keywords(ExprScope::Where, ctx);
-    for keyword in SELECT_ITEM_KEYWORDS {
-        if ctx.dialect.keywords().contains(keyword) && !keywords.contains(keyword) {
+    for keyword in expression_keywords(ExprScope::SelectItem, ctx) {
+        if !keywords.contains(&keyword) {
             keywords.push(keyword);
         }
     }

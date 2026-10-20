@@ -24,7 +24,7 @@ use fluxdb_editor_core::{
     CompletionFuture, CompletionItem, CompletionKind, CompletionProvider,
     CompletionRequest, CompletionResult, Decoration, DecorationProvider, DecorationSet, Diagnostic,
     DiagnosticProvider, ExecuteMode, ExecutionAdapter, ExecutionUnit, Highlight,
-    InputEdit, LanguageDefinition, Range, Selection,
+    InputEdit, LanguageDefinition, Point, Range, Selection, SignatureInfo, SignatureProvider,
     SyntaxProvider, SyntaxResult, TaskOutcome, TriggerDecision,
 };
 
@@ -58,6 +58,8 @@ pub struct SqlAdapter {
     completion_resolver: Option<SqlCompletionResolver>,
     /// 可选的宿主「选中项 metadata 详情」解析器（候选右侧面板异步填充）。
     documentation_resolver: Option<SqlDocumentationResolver>,
+    /// 可选的宿主函数签名解析器（光标在 `NAME(` 内时给出参数骨架）。
+    signature_resolver: Option<SqlSignatureResolver>,
     /// 按文档版本缓存 CodeLens 全集；视口变化只过滤，不重复切分全文。
     code_lens_cache: Arc<Mutex<Option<(u64, usize, usize, Vec<CodeLens>)>>>,
     /// 按文档版本缓存带稳定 id 的语句列表，供执行状态装饰复用。
@@ -140,6 +142,12 @@ pub type SqlDocumentationResolver = Arc<
         + Sync,
 >;
 
+/// 函数签名解析回调：按函数名取参数骨架（`COUNT` → `COUNT(expr)`），未收录返回 `None`。
+///
+/// 由宿主绑定 fluxdb-app 的 `sql_function_signature`（查连接方言的内置函数表，纯静态，
+/// 不碰数据库）。用户自定义例程暂不提供签名，渲染层回退到只显示函数名。
+pub type SqlSignatureResolver = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
+
 const COMPLETION_WINDOW_BYTES: usize = 64 * 1024;
 const CODE_LENS_SYNC_SCAN_LIMIT: usize = 128 * 1024;
 const CODE_LENS_VISIBLE_WINDOW_BYTES: usize = 16 * 1024;
@@ -209,6 +217,7 @@ impl SqlAdapter {
             status: None,
             completion_resolver: None,
             documentation_resolver: None,
+            signature_resolver: None,
             code_lens_cache: Arc::new(Mutex::new(None)),
             statement_runs_cache: Arc::new(Mutex::new(None)),
             syntax_cache: Arc::new(Mutex::new(None)),
@@ -253,6 +262,12 @@ impl SqlAdapter {
     /// 绑定宿主「选中项 metadata 详情」解析器（候选右侧面板）。
     pub fn with_documentation_resolver(mut self, resolver: SqlDocumentationResolver) -> Self {
         self.documentation_resolver = Some(resolver);
+        self
+    }
+
+    /// 注入函数签名解析器。未注入时不做签名提示（`SignatureProvider` 返回 `None`）。
+    pub fn with_signature_resolver(mut self, resolver: SqlSignatureResolver) -> Self {
+        self.signature_resolver = Some(resolver);
         self
     }
 

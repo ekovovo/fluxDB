@@ -36,6 +36,10 @@ pub struct MySqlDialect;
 #[derive(Clone, Copy, Debug)]
 pub struct SqliteDialect;
 
+/// 达梦 DM8 方言：标识符双引号，对象名 `"schema"."table"`，分页 `LIMIT/OFFSET`。
+#[derive(Clone, Copy, Debug)]
+pub struct DamengDialect;
+
 impl SqlDialect for PostgresDialect {
     fn quote_identifier(&self, value: &str) -> String {
         quote_identifier_with_delimiter(value, '"')
@@ -96,6 +100,25 @@ impl SqlDialect for SqliteDialect {
     }
 }
 
+impl SqlDialect for DamengDialect {
+    fn quote_identifier(&self, value: &str) -> String {
+        quote_identifier_with_delimiter(value, '"')
+    }
+
+    fn qualified_object_name(&self, path: &ObjectPath) -> String {
+        let mut parts = Vec::with_capacity(2);
+        if let Some(schema) = path.schema.as_deref().filter(|schema| !schema.is_empty()) {
+            parts.push(self.quote_identifier(schema));
+        }
+        parts.push(self.quote_identifier(&path.name));
+        parts.join(".")
+    }
+
+    fn render_limit_offset(&self, limit: u64, offset: u64) -> String {
+        render_limit_offset(limit, offset)
+    }
+}
+
 /// 用 MySQL/TiDB 的反引号引用单段标识符，并转义内部反引号。
 pub fn quote_mysql_identifier(value: &str) -> String {
     quote_identifier_with_delimiter(value, '`')
@@ -120,6 +143,7 @@ fn render_limit_offset(limit: u64, offset: u64) -> String {
 pub fn sql_dialect(kind: DatabaseKind) -> &'static dyn SqlDialect {
     match kind {
         DatabaseKind::Postgres => &PostgresDialect,
+        DatabaseKind::Dameng => &DamengDialect,
         DatabaseKind::Sqlite => &SqliteDialect,
         DatabaseKind::MySql | DatabaseKind::TiDb | DatabaseKind::MongoDb | DatabaseKind::Redis => {
             &MySqlDialect

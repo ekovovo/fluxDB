@@ -1439,6 +1439,7 @@ fn database_kind_name(kind: DatabaseKind) -> &'static str {
         DatabaseKind::MongoDb => "MongoDB",
         DatabaseKind::Redis => "Redis",
         DatabaseKind::Postgres => "PostgreSQL",
+        DatabaseKind::Dameng => "DM8",
     }
 }
 

@@ -29,7 +29,9 @@ pub fn create_table_provider(kind: DatabaseKind) -> &'static dyn CreateTableProv
         DatabaseKind::MySql | DatabaseKind::TiDb => &MYSQL_CREATE_TABLE_PROVIDER,
         DatabaseKind::Sqlite => &SQLITE_CREATE_TABLE_PROVIDER,
         DatabaseKind::Postgres => &POSTGRES_CREATE_TABLE_PROVIDER,
-        DatabaseKind::MongoDb | DatabaseKind::Redis => &UNSUPPORTED_CREATE_TABLE_PROVIDER,
+        DatabaseKind::MongoDb | DatabaseKind::Redis | DatabaseKind::Dameng => {
+            &UNSUPPORTED_CREATE_TABLE_PROVIDER
+        }
     }
 }
 

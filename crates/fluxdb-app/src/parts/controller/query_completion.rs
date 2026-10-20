@@ -22,6 +22,20 @@ fn completion_expectation_label(expectation: CompletionExpectation) -> &'static 
     }
 }
 
+/// 达梦连接配置里的默认 schema；用于在不可靠的会话默认 schema 下收窄裸名补全。
+fn default_completion_schema(config: &ConnectionConfig) -> Option<String> {
+    (config.kind == DatabaseKind::Dameng)
+        .then(|| {
+            config
+                .dameng_profile
+                .as_ref()
+                .map(|profile| profile.basic.schema.trim())
+                .filter(|schema| !schema.is_empty())
+                .map(str::to_string)
+        })
+        .flatten()
+}
+
 fn quote_completion_insert_text(
     item: &mut QueryCompletionItem,
     kind: DatabaseKind,
@@ -261,7 +275,7 @@ impl AppController {
             }
             let (table_database, table_schema) =
                 completion_namespace_scope(&context, database, config.kind);
-            let tables = self.indexed_completion_tables_with_cancel(
+            let mut tables = self.indexed_completion_tables_with_cancel(
                 config,
                 editor.connection_id,
                 table_database.as_deref(),
@@ -276,10 +290,74 @@ impl AppController {
                 );
                 Vec::new()
             });
+            // 达梦没有可靠的会话默认 schema：默认 schema 有匹配时优先它，
+            // 否则回退全库（插入文本会带 schema 限定），避免默认 schema 为空时
+            // 整个补全没有候选。
+            let tables = if config.kind == DatabaseKind::Dameng && context.qualifier.is_none() {
+                let default_schema = default_completion_schema(config);
+                let preferred = tables
+                    .iter()
+                    .filter(|table| {
+                        default_schema.as_deref().is_some_and(|default_schema| {
+                            table
+                                .schema
+                                .as_deref()
+                                .is_some_and(|schema| schema.eq_ignore_ascii_case(default_schema))
+                        })
+                    })
+                    .filter(|table| matches_completion_fuzzy(&table.name, &context.prefix))
+                    .count();
+                if preferred > 0 {
+                    tables
+                        .into_iter()
+                        .filter(|table| {
+                            default_schema.as_deref().is_some_and(|default_schema| {
+                                table.schema.as_deref().is_some_and(|schema| {
+                                    schema.eq_ignore_ascii_case(default_schema)
+                                })
+                            })
+                        })
+                        .collect()
+                } else {
+                    // 索引可能只覆盖默认 schema；对象树已展开的其他 schema 仍需合并，
+                    // 否则刚展开的 FLUXSALES 等表不会进入候选。
+                    let loaded = loaded_completion_tables(
+                        &self.state,
+                        editor.connection_id,
+                        database,
+                        None,
+                    );
+                    let mut seen = tables
+                        .iter()
+                        .map(|table| {
+                            (
+                                table.database.clone(),
+                                table.schema.clone(),
+                                table.name.to_ascii_lowercase(),
+                            )
+                        })
+                        .collect::<BTreeSet<_>>();
+                    for table in loaded {
+                        let key = (
+                            table.database.clone(),
+                            table.schema.clone(),
+                            table.name.to_ascii_lowercase(),
+                        );
+                        if seen.insert(key) {
+                            tables.push(table);
+                        }
+                    }
+                    tables
+                }
+            } else {
+                tables
+            };
             items.extend(table_completion_items(
                 tables,
                 &context.prefix,
                 table_schema.as_deref(),
+                config.kind,
+                context.qualifier.is_some(),
             ));
         }
 
@@ -1144,7 +1222,13 @@ impl AppController {
 
         let mut tables = loaded_completion_tables(&self.state, connection_id, database, schema);
         if tables.is_empty() {
-            tables = self.completion_tables_with_cancel(config, connection_id, database, schema, should_cancel)?;
+            tables = self.completion_tables_with_cancel(
+                config,
+                connection_id,
+                database,
+                schema,
+                should_cancel,
+            )?;
         }
         if should_cancel() {
             return Ok(Vec::new());
@@ -2127,12 +2211,311 @@ fn documentation_object_identity<'a>(
     schema: Option<&'a str>,
     label: &'a str,
 ) -> (Option<&'a str>, &'a str) {
-    if schema.is_some() {
-        return (schema, label);
+    if let Some(schema) = schema {
+        // 跨 schema 同名消歧时 label 已是 `schema.table`；候选另带真实 schema，
+        // 不能把整段 label 再当作表名去查列。
+        let qualified_prefix = format!("{schema}.");
+        return match label.strip_prefix(&qualified_prefix) {
+            Some(table) if !table.is_empty() => (Some(schema), table),
+            _ => (Some(schema), label),
+        };
     }
     match label.rsplit_once('.') {
         Some((schema, table)) if !schema.is_empty() && !table.is_empty() => (Some(schema), table),
         _ => (None, label),
+    }
+}
+
+#[cfg(test)]
+mod completion_documentation_identity_tests {
+    use super::documentation_object_identity;
+
+    #[test]
+    fn qualified_label_uses_bare_table_when_schema_is_known() {
+        assert_eq!(
+            documentation_object_identity(Some("FLUXDEMO"), "FLUXDEMO.CUSTOMERS"),
+            (Some("FLUXDEMO"), "CUSTOMERS")
+        );
+        assert_eq!(
+            documentation_object_identity(Some("public"), "customers"),
+            (Some("public"), "customers")
+        );
+    }
+}
+
+#[cfg(test)]
+mod dameng_completion_index_tests {
+    use super::*;
+    use fluxdb_core::{
+        DamengAdvancedOptions, DamengBasicOptions, DamengConnectionProfile, Endpoint, SecretRef,
+    };
+
+    fn config_with_schema(schema: &str) -> ConnectionConfig {
+        ConnectionConfig {
+            id: ConnectionId(7),
+            name: "dm".into(),
+            kind: DatabaseKind::Dameng,
+            endpoint: Endpoint::Tcp {
+                host: "127.0.0.1".into(),
+                port: 5236,
+                database: Some("DAMENG".into()),
+            },
+            options: BTreeMap::new(),
+            redis_profile: None,
+            mysql_profile: None,
+            postgres_profile: None,
+            dameng_profile: Some(DamengConnectionProfile {
+                basic: DamengBasicOptions {
+                    host: "127.0.0.1".into(),
+                    port: 5236,
+                    database: "DAMENG".into(),
+                    schema: schema.into(),
+                    username: "FLUXDEMO".into(),
+                    password: SecretRef::inline("secret"),
+                },
+                advanced: DamengAdvancedOptions {
+                    connect_timeout_secs: 1,
+                    query_timeout_secs: 0,
+                    encoding: String::new(),
+                    application_name: "test".into(),
+                },
+            }),
+        }
+    }
+
+    fn config() -> ConnectionConfig {
+        config_with_schema("FLUXDEMO")
+    }
+
+    fn table(schema: &str, name: &str) -> CompletionTable {
+        CompletionTable {
+            database: Some("DAMENG".into()),
+            schema: Some(schema.into()),
+            name: name.into(),
+            kind: ObjectKind::Table,
+            comment: None,
+        }
+    }
+
+    /// 真实落盘快照里表清单在 schema=None 桶、列在默认 schema 桶；裸名补全必须
+    /// 读前者，不能因为切到 schema 桶而读到空表清单。
+    #[test]
+    fn bare_completion_prefers_default_schema_and_falls_back_to_database() {
+        let mut controller = AppController::new();
+        let config = config();
+        let connection_id = config.id;
+        let _ = controller.dispatch(AppCommand::ReplaceConnections(vec![config]));
+        if let Ok(mut index) = controller.completion_index.lock() {
+            index.insert_tables(
+                connection_id,
+                Some("DAMENG"),
+                None,
+                vec![
+                    table("FLUXDEMO", "CUSTOMERS"),
+                    table("FLUXSALES", "SALES_ORDER"),
+                ],
+                DatabaseKind::Dameng,
+            );
+        }
+
+        let items = controller
+            .query_completions_for_text(
+                connection_id,
+                Some("DAMENG".into()),
+                None,
+                "SELECT * FROM CUST".into(),
+                "SELECT * FROM CUST".len(),
+                true,
+            )
+            .expect("completions")
+            .items;
+        let labels = items
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect::<Vec<_>>();
+
+        // 默认 schema 有匹配：只保留默认 schema，避免其他 schema 混入。
+        assert!(labels.contains(&"CUSTOMERS"), "{labels:?}");
+        assert!(!labels.contains(&"SALES_ORDER"), "{labels:?}");
+
+        // 默认 schema 无匹配：回退全库，并插入 schema 限定名，保证仍可执行。
+        let fallback = controller
+            .query_completions_for_text(
+                connection_id,
+                Some("DAMENG".into()),
+                None,
+                "SELECT * FROM SALES".into(),
+                "SELECT * FROM SALES".len(),
+                true,
+            )
+            .expect("fallback completions")
+            .items;
+        let fallback = fallback
+            .iter()
+            .filter(|item| item.kind == QueryCompletionKind::Table)
+            .map(|item| (&item.label, &item.insert_text))
+            .collect::<Vec<_>>();
+        assert!(
+            fallback
+                .iter()
+                .any(|(label, insert)| *label == "SALES_ORDER"
+                    && *insert == "\"FLUXSALES\".\"SALES_ORDER\""),
+            "{fallback:?}"
+        );
+    }
+
+    /// 索引只覆盖默认 schema 时，对象树中新展开的 schema 表仍需合并进回退候选。
+    #[test]
+    fn loaded_other_schema_tables_join_fallback_completion() {
+        let mut controller = AppController::new();
+        let config = config_with_schema("SYSDBA");
+        let connection_id = config.id;
+        let _ = controller.dispatch(AppCommand::ReplaceConnections(vec![config]));
+        let database = ObjectPath {
+            connection_id,
+            database: Some("DAMENG".into()),
+            schema: None,
+            name: "DAMENG".into(),
+            kind: ObjectKind::Database,
+        };
+        let schema = ObjectPath {
+            connection_id,
+            database: Some("DAMENG".into()),
+            schema: None,
+            name: "FLUXSALES".into(),
+            kind: ObjectKind::Schema,
+        };
+        let object = |name: &str| ObjectSummary {
+            path: ObjectPath {
+                connection_id,
+                database: Some("DAMENG".into()),
+                schema: Some("FLUXSALES".into()),
+                name: name.into(),
+                kind: ObjectKind::Table,
+            },
+            rows: None,
+            modified_at: None,
+            comment: None,
+            stable: None,
+        };
+        controller.merge_loaded_children(&database, vec![]);
+        controller.merge_loaded_children(&schema, vec![object("SALES_REGION")]);
+        if let Ok(mut index) = controller.completion_index.lock() {
+            index.insert_tables(
+                connection_id,
+                Some("DAMENG"),
+                None,
+                vec![table("FLUXDEMO", "CUSTOMERS")],
+                DatabaseKind::Dameng,
+            );
+        }
+
+        let items = controller
+            .query_completions_for_text(
+                connection_id,
+                Some("DAMENG".into()),
+                None,
+                "SELECT * FROM REGION".into(),
+                "SELECT * FROM REGION".len(),
+                true,
+            )
+            .expect("completions")
+            .items;
+
+        assert!(
+            items.iter().any(|item| {
+                item.label == "SALES_REGION"
+                    && item.insert_text == "\"FLUXSALES\".\"SALES_REGION\""
+            }),
+            "{:?}",
+            items
+                .iter()
+                .map(|item| (&item.label, &item.insert_text))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn qualified_completion_reads_requested_schema_bucket() {
+        let mut controller = AppController::new();
+        let config = config();
+        let connection_id = config.id;
+        let _ = controller.dispatch(AppCommand::ReplaceConnections(vec![config]));
+        if let Ok(mut index) = controller.completion_index.lock() {
+            index.insert_tables(
+                connection_id,
+                Some("DAMENG"),
+                Some("FLUXSALES"),
+                vec![table("FLUXSALES", "SALES_ORDER")],
+                DatabaseKind::Dameng,
+            );
+        }
+
+        let items = controller
+            .query_completions_for_text(
+                connection_id,
+                Some("DAMENG".into()),
+                None,
+                "SELECT * FROM FLUXSALES.".into(),
+                "SELECT * FROM FLUXSALES.".len(),
+                true,
+            )
+            .expect("completions")
+            .items;
+
+        assert!(
+            items
+                .iter()
+                .any(|item| item.label == "SALES_ORDER" && item.insert_text == "\"SALES_ORDER\""),
+            "{:?}",
+            items
+                .iter()
+                .map(|item| (&item.label, &item.insert_text))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// 管理员连接（默认 schema=SYSDBA）下，表在 FLUXDEMO 时仍需回退给出候选，
+    /// 并插入 schema 限定名。
+    #[test]
+    fn administrator_default_schema_falls_back_to_visible_tables() {
+        let mut controller = AppController::new();
+        let config = config_with_schema("SYSDBA");
+        let connection_id = config.id;
+        let _ = controller.dispatch(AppCommand::ReplaceConnections(vec![config]));
+        if let Ok(mut index) = controller.completion_index.lock() {
+            index.insert_tables(
+                connection_id,
+                Some("DAMENG"),
+                None,
+                vec![table("FLUXDEMO", "SALES_ORDERS")],
+                DatabaseKind::Dameng,
+            );
+        }
+
+        let items = controller
+            .query_completions_for_text(
+                connection_id,
+                Some("DAMENG".into()),
+                None,
+                "SELECT * FROM SALES".into(),
+                "SELECT * FROM SALES".len(),
+                true,
+            )
+            .expect("completions")
+            .items;
+
+        assert!(
+            items.iter().any(|item| {
+                item.label == "SALES_ORDERS"
+                    && item.insert_text == "\"FLUXDEMO\".\"SALES_ORDERS\""
+            }),
+            "{:?}",
+            items
+                .iter()
+                .map(|item| (&item.label, &item.insert_text))
+                .collect::<Vec<_>>()
+        );
     }
 }
 

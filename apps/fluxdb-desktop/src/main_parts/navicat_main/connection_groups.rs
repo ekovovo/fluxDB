@@ -807,7 +807,10 @@ impl NavicatMain {
         };
         if !matches!(
             connection.config.kind,
-            DatabaseKind::MySql | DatabaseKind::TiDb | DatabaseKind::Sqlite | DatabaseKind::Postgres
+            DatabaseKind::MySql
+                | DatabaseKind::TiDb
+                | DatabaseKind::Sqlite
+                | DatabaseKind::Postgres
         ) {
             self.show_message(
                 tr("app.connection_action.new_database_unsupported"),

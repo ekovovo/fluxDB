@@ -36,6 +36,7 @@ include!("parts/mock.rs");
 include!("parts/transport.rs");
 include!("parts/mysql.rs");
 include!("parts/postgres.rs");
+include!("parts/dameng.rs");
 include!("parts/redis.rs");
 include!("parts/sqlite.rs");
 include!("parts/sqlite_bounded_update.rs");

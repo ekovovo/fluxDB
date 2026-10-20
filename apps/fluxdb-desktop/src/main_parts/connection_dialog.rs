@@ -559,6 +559,19 @@ fn new_connection_modal(
                                             cx,
                                         ))
                                         .child(kind_tile(
+                                            "DM8",
+                                            DatabaseKind::Dameng,
+                                            kind,
+                                            editing,
+                                            colors,
+                                            cx,
+                                        ))
+                                )
+                                .child(
+                                    div()
+                                        .flex()
+                                        .gap_3()
+                                        .child(kind_tile(
                                             "Redis",
                                             DatabaseKind::Redis,
                                             kind,
@@ -620,6 +633,7 @@ fn new_connection_modal(
                         })
                         .child(
                             Button::new("new-connection-test")
+                                .debug_selector(|| "new-connection-test".into())
                                 .label(tr("app.connection.test"))
                                 .disabled(test_busy)
                                 .on_click({
@@ -634,6 +648,7 @@ fn new_connection_modal(
                         )
                         .child(
                             Button::new("new-connection-save")
+                                .debug_selector(|| "new-connection-save".into())
                                 .label(tr("app.connection.save_and_connect"))
                                 .primary()
                                 .w(px(116.))
@@ -667,6 +682,12 @@ fn kind_tile(
     // 磁贴可点击切换，纳入 headless 观察。
     div()
         .id(format!("new-connection-kind-{}", database_kind_element_suffix(kind)))
+        .debug_selector(move || {
+            format!(
+                "new-connection-kind-{}",
+                database_kind_element_suffix(kind)
+            )
+        })
         .aria_label(label)
         .role(Role::RadioButton)
         .aria_selected(selected)
@@ -785,6 +806,7 @@ fn database_kind_element_suffix(kind: DatabaseKind) -> &'static str {
         DatabaseKind::MongoDb => "mongodb",
         DatabaseKind::Redis => "redis",
         DatabaseKind::Postgres => "postgres",
+        DatabaseKind::Dameng => "dameng",
     }
 }
 
@@ -800,6 +822,7 @@ fn database_kind_icon_path(kind: DatabaseKind) -> &'static str {
         DatabaseKind::MongoDb => "db/mongodb.svg",
         DatabaseKind::Redis => "db/redis.svg",
         DatabaseKind::Postgres => "db/postgres.svg",
+        DatabaseKind::Dameng => "db/dm.svg",
     }
 }
 
@@ -1866,6 +1889,50 @@ fn connection_form(
             .child(field_row_light(
                 tr("app.connection.field.url_params"),
                 ConnectionField::UrlParams,
+                inputs,
+                false,
+                colors,
+                window,
+                cx,
+            )),
+        DatabaseKind::Dameng => base
+            .child(host_port_row_light(
+                tr("app.connection.field.host"),
+                inputs,
+                colors,
+                window,
+                cx,
+            ))
+            .child(field_row_light(
+                tr("app.connection.field.username"),
+                ConnectionField::Username,
+                inputs,
+                false,
+                colors,
+                window,
+                cx,
+            ))
+            .child(field_row_light(
+                tr("app.connection.field.password"),
+                ConnectionField::Password,
+                inputs,
+                true,
+                colors,
+                window,
+                cx,
+            ))
+            .child(field_row_light(
+                tr("app.connection.dameng.instance"),
+                ConnectionField::Database,
+                inputs,
+                false,
+                colors,
+                window,
+                cx,
+            ))
+            .child(field_row_light(
+                tr("app.connection.dameng.schema"),
+                ConnectionField::DamengSchema,
                 inputs,
                 false,
                 colors,

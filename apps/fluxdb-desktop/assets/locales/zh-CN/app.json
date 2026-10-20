@@ -1769,6 +1769,11 @@
       "query_timeout_hint": "单位：秒；0=不设限（statement_timeout）",
       "connect_timeout_hint": "单位：秒"
     },
+    "dameng": {
+      "instance": "实例",
+      "schema": "Schema",
+      "schema_optional": "默认 schema，可选（如 SYSDBA）"
+    },
     "ssh": {
       "title": "SSH 隧道",
       "enabled": "启用 SSH 隧道",

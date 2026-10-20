@@ -14,6 +14,8 @@ mod i18n_e2e_tests {
     };
 
     include!("i18n_tests/redis_stream.rs");
+    include!("i18n_tests/dameng_connection.rs");
+    include!("i18n_tests/dameng_completion.rs");
 
     /// 进程级 locale 是全局状态；会切换语言的用例必须串行，否则互相污染断言。
     fn locale_guard() -> std::sync::MutexGuard<'static, ()> {
@@ -774,6 +776,7 @@ mod i18n_e2e_tests {
             redis_profile: None,
             mysql_profile: None,
             postgres_profile: None,
+            dameng_profile: None,
         }]));
         controller.dispatch(AppCommand::SaveSettings(Settings {
             locale: "ja".into(),

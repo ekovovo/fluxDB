@@ -1769,6 +1769,11 @@
       "query_timeout_hint": "Seconds; 0=unlimited (statement_timeout)",
       "connect_timeout_hint": "Seconds"
     },
+    "dameng": {
+      "instance": "Instance",
+      "schema": "Schema",
+      "schema_optional": "Default schema, optional (for example SYSDBA)"
+    },
     "ssh": {
       "title": "SSH tunnel",
       "enabled": "Enable SSH tunnel",

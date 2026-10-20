@@ -532,7 +532,10 @@ impl NavicatMain {
     fn refresh_database_children_for_table(&mut self, object: &ObjectPath, cx: &mut Context<Self>) {
         // PG 按 schema 懒加载：只刷新该表所在 schema，避免 DB 级重载按 schema_scope=None
         // 清空整库所有表/视图（见 replace_loaded_children）。复制/删除/清空等表操作统一走这里。
-        if self.table_database_kind(object) == Some(DatabaseKind::Postgres) {
+        if matches!(
+            self.table_database_kind(object),
+            Some(DatabaseKind::Postgres | DatabaseKind::Dameng)
+        ) {
             let (Some(database), Some(schema)) = (object.database.clone(), object.schema.clone())
             else {
                 return;

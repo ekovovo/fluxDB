@@ -540,6 +540,7 @@ fn home_action_row(
     let label = label.into();
     div()
         .id(id)
+        .debug_selector(move || id.to_string())
         .aria_label(label.clone())
         .cursor_pointer()
         .h(px(44.))

@@ -276,6 +276,7 @@ enum ConnectionField {
     Username,
     Password,
     Database,
+    DamengSchema,
     UrlParams,
     SqlitePath,
     MongoDefaultDb,
@@ -379,6 +380,7 @@ struct NewConnectionForm {
     password: String,
     color: String,
     database: String,
+    dameng_schema: String,
     url_params: String,
     sqlite_path: String,
     mongo_srv: bool,
@@ -467,6 +469,7 @@ struct NewConnectionInputs {
     username: Entity<InputState>,
     password: Entity<InputState>,
     database: Entity<InputState>,
+    dameng_schema: Entity<InputState>,
     url_params: Entity<InputState>,
     sqlite_path: Entity<InputState>,
     mongo_auth_db: Entity<InputState>,
@@ -549,6 +552,7 @@ impl NewConnectionForm {
             password: String::new(),
             color: DEFAULT_CONNECTION_COLOR.to_string(),
             database: String::new(),
+            dameng_schema: String::new(),
             url_params: String::new(),
             sqlite_path: String::new(),
             mongo_srv: false,
@@ -638,6 +642,14 @@ impl NewConnectionForm {
                 form.username = "postgres".to_string();
                 form.database = "postgres".to_string();
             }
+            DatabaseKind::Dameng => {
+                form.name = format!("DM8 Local {index}");
+                form.host = "127.0.0.1".to_string();
+                form.port = "5236".to_string();
+                form.username = "SYSDBA".to_string();
+                form.database = "DAMENG".to_string();
+                form.dameng_schema = "SYSDBA".to_string();
+            }
         }
         form
     }
@@ -726,6 +738,14 @@ impl NewConnectionForm {
             if let Some(profile) = profile {
                 form.apply_postgres_profile(&profile);
             }
+        }
+
+        if config.kind == DatabaseKind::Dameng {
+            let profile = config
+                .dameng_profile
+                .clone()
+                .unwrap_or_else(|| fluxdb_core::DamengConnectionProfile::from_options(&config.options));
+            form.dameng_schema = profile.basic.schema.clone();
         }
 
         form
@@ -1195,6 +1215,29 @@ impl NewConnectionForm {
             },
         }
     }
+
+    fn build_dameng_profile(&self) -> fluxdb_core::DamengConnectionProfile {
+        fluxdb_core::DamengConnectionProfile {
+            basic: fluxdb_core::DamengBasicOptions {
+                host: self.host.trim().to_string(),
+                port: self
+                    .port
+                    .trim()
+                    .parse::<u16>()
+                    .unwrap_or_else(|_| database_default_port_u16(DatabaseKind::Dameng)),
+                database: self.database.trim().to_string(),
+                schema: self.dameng_schema.trim().to_string(),
+                username: self.username.trim().to_string(),
+                password: fluxdb_core::SecretRef::inline(self.password.trim().to_string()),
+            },
+            advanced: fluxdb_core::DamengAdvancedOptions {
+                connect_timeout_secs: 5,
+                query_timeout_secs: 0,
+                encoding: String::new(),
+                application_name: "FluxDB".into(),
+            },
+        }
+    }
 }
 
 impl NewConnectionInputs {
@@ -1211,6 +1254,7 @@ impl NewConnectionInputs {
             (&self.username, ConnectionField::Username),
             (&self.password, ConnectionField::Password),
             (&self.database, ConnectionField::Database),
+            (&self.dameng_schema, ConnectionField::DamengSchema),
             (&self.url_params, ConnectionField::UrlParams),
             (&self.sqlite_path, ConnectionField::SqlitePath),
             (&self.mongo_auth_db, ConnectionField::MongoAuthDb),
@@ -1295,6 +1339,8 @@ impl NewConnectionInputs {
             input_state(ConnectionField::Password, true, window, cx);
         let (database, database_subscription) =
             input_state(ConnectionField::Database, false, window, cx);
+        let (dameng_schema, dameng_schema_subscription) =
+            input_state(ConnectionField::DamengSchema, false, window, cx);
         let (url_params, url_params_subscription) =
             input_state(ConnectionField::UrlParams, false, window, cx);
         let (sqlite_path, sqlite_path_subscription) =
@@ -1502,6 +1548,7 @@ impl NewConnectionInputs {
             username,
             password,
             database,
+            dameng_schema,
             url_params,
             sqlite_path,
             mongo_auth_db,
@@ -1547,6 +1594,7 @@ impl NewConnectionInputs {
                 username_subscription,
                 password_subscription,
                 database_subscription,
+                dameng_schema_subscription,
                 url_params_subscription,
                 sqlite_path_subscription,
                 mongo_auth_db_subscription,
@@ -1597,6 +1645,7 @@ impl NewConnectionInputs {
             ConnectionField::Username => &self.username,
             ConnectionField::Password => &self.password,
             ConnectionField::Database | ConnectionField::MongoDefaultDb => &self.database,
+            ConnectionField::DamengSchema => &self.dameng_schema,
             ConnectionField::UrlParams => &self.url_params,
             ConnectionField::SqlitePath => &self.sqlite_path,
             ConnectionField::MongoAuthDb => &self.mongo_auth_db,
@@ -1646,6 +1695,12 @@ impl NewConnectionInputs {
         self.set_value(ConnectionField::Username, &form.username, window, cx);
         self.set_value(ConnectionField::Password, &form.password, window, cx);
         self.set_value(ConnectionField::Database, &form.database, window, cx);
+        self.set_value(
+            ConnectionField::DamengSchema,
+            &form.dameng_schema,
+            window,
+            cx,
+        );
         self.set_value(ConnectionField::UrlParams, &form.url_params, window, cx);
         self.set_value(ConnectionField::SqlitePath, &form.sqlite_path, window, cx);
         self.set_value(

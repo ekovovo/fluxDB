@@ -258,5 +258,75 @@ fn table_action_sql_provider(database_kind: DatabaseKind) -> &'static dyn TableA
         DatabaseKind::Sqlite => &SQLITE_TABLE_ACTION_SQL_PROVIDER,
         DatabaseKind::Postgres => &POSTGRES_TABLE_ACTION_SQL_PROVIDER,
         DatabaseKind::MongoDb | DatabaseKind::Redis => &UNSUPPORTED_TABLE_ACTION_SQL_PROVIDER,
+        DatabaseKind::Dameng => &DAMENG_TABLE_ACTION_SQL_PROVIDER,
     }
 }
+
+struct DamengTableActionSqlProvider;
+
+impl TableActionSqlProvider for DamengTableActionSqlProvider {
+    fn rename_table_sql(
+        &self,
+        _: Option<&str>,
+        old_name: &str,
+        new_name: &str,
+    ) -> Result<String, String> {
+        Ok(format!(
+            "ALTER TABLE {} RENAME TO {};",
+            fluxdb_core::DamengDialect.quote_identifier(old_name),
+            fluxdb_core::DamengDialect.quote_identifier(new_name)
+        ))
+    }
+
+    fn copy_table_sql(
+        &self,
+        _: Option<&str>,
+        _: &str,
+        _: &str,
+        _: bool,
+        _: Option<&str>,
+    ) -> Result<String, String> {
+        Err("达梦暂不支持复制表；请先查看 DDL 再手工创建".to_string())
+    }
+
+    fn drop_table_sql(
+        &self,
+        kind: ObjectKind,
+        _: Option<&str>,
+        table_name: &str,
+    ) -> Result<String, String> {
+        Ok(format!(
+            "DROP {} {};",
+            if kind == ObjectKind::View { "VIEW" } else { "TABLE" },
+            fluxdb_core::DamengDialect.quote_identifier(table_name)
+        ))
+    }
+
+    fn truncate_table_sql(
+        &self,
+        _: Option<&str>,
+        table_name: &str,
+        _: bool,
+    ) -> Result<String, String> {
+        Ok(format!(
+            "TRUNCATE TABLE {};",
+            fluxdb_core::DamengDialect.quote_identifier(table_name)
+        ))
+    }
+
+    fn with_foreign_key_check(
+        &self,
+        sql: String,
+        foreign_key_check: ForeignKeyCheckMode,
+    ) -> Result<String, String> {
+        match foreign_key_check {
+            ForeignKeyCheckMode::Default => Ok(sql),
+            ForeignKeyCheckMode::Enable | ForeignKeyCheckMode::Disable => Err(
+                "达梦不支持以连接级开关临时禁用外键检查".to_string(),
+            ),
+        }
+    }
+}
+
+static DAMENG_TABLE_ACTION_SQL_PROVIDER: DamengTableActionSqlProvider =
+    DamengTableActionSqlProvider;

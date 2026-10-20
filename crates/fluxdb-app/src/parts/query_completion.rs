@@ -333,7 +333,9 @@ fn sql_completion_context(sql: &str, cursor: usize, dialect: DatabaseKind) -> Sq
     let suggest_tables = !suggest_procedures
         && !suggest_triggers
         && !from_clause_context
-        && (is_table_context(&before_lower) || (qualifier.is_some() && !qualifier_matches_table));
+        && (is_table_context(&before_lower)
+            || is_qualified_relation_context(&before_lower)
+            || (qualifier.is_some() && !qualifier_matches_table));
     let suggest_columns = !from_clause_context
         && (qualifier_matches_table
         || is_column_context(&before_lower)
@@ -1093,6 +1095,7 @@ trait SqlCompletionDialect: Sync {
 struct MySqlCompletionDialect;
 struct SqliteCompletionDialect;
 struct PostgresCompletionDialect;
+struct DamengCompletionDialect;
 struct GenericCompletionDialect;
 
 impl SqlCompletionDialect for MySqlCompletionDialect {
@@ -1155,6 +1158,18 @@ impl SqlCompletionDialect for PostgresCompletionDialect {
     }
 }
 
+/// 达梦与 PostgreSQL 一样以 `schema.table` 解析二段名；DM 登录用户同名 schema
+/// 只是默认值，不能据此假定查询会话一定停留在该 schema。
+impl SqlCompletionDialect for DamengCompletionDialect {
+    fn referenced_tables(&self, sql: &str) -> Vec<ReferencedTable> {
+        referenced_tables_from_statements(sql, false, DatabaseKind::Dameng)
+    }
+
+    fn kind(&self) -> DatabaseKind {
+        DatabaseKind::Dameng
+    }
+}
+
 impl SqlCompletionDialect for GenericCompletionDialect {
     fn referenced_tables(&self, sql: &str) -> Vec<ReferencedTable> {
         referenced_tables_from_statements(sql, false, DatabaseKind::MongoDb)
@@ -1188,6 +1203,7 @@ fn referenced_tables_from_statements(
 static MYSQL_COMPLETION_DIALECT: MySqlCompletionDialect = MySqlCompletionDialect;
 static SQLITE_COMPLETION_DIALECT: SqliteCompletionDialect = SqliteCompletionDialect;
 static POSTGRES_COMPLETION_DIALECT: PostgresCompletionDialect = PostgresCompletionDialect;
+static DAMENG_COMPLETION_DIALECT: DamengCompletionDialect = DamengCompletionDialect;
 static GENERIC_COMPLETION_DIALECT: GenericCompletionDialect = GenericCompletionDialect;
 
 fn sql_completion_dialect(dialect: DatabaseKind) -> &'static dyn SqlCompletionDialect {
@@ -1195,6 +1211,7 @@ fn sql_completion_dialect(dialect: DatabaseKind) -> &'static dyn SqlCompletionDi
         DatabaseKind::MySql | DatabaseKind::TiDb => &MYSQL_COMPLETION_DIALECT,
         DatabaseKind::Sqlite => &SQLITE_COMPLETION_DIALECT,
         DatabaseKind::Postgres => &POSTGRES_COMPLETION_DIALECT,
+        DatabaseKind::Dameng => &DAMENG_COMPLETION_DIALECT,
         DatabaseKind::MongoDb | DatabaseKind::Redis => &GENERIC_COMPLETION_DIALECT,
     }
 }
@@ -1524,7 +1541,7 @@ fn object_name_identifier_parts(name: &ObjectName) -> Vec<String> {
 }
 
 /// SQL 对象限定名按方言映射为物理数据库与 schema。
-/// PostgreSQL 的二段名是 `schema.table`，三段名才是 `database.schema.table`；
+/// PostgreSQL/达梦的二段名是 `schema.table`，三段名才是 `database.schema.table`；
 /// MySQL/SQLite 的二段名保持为 `database.table`。
 fn completion_relation_namespace(
     qualifiers: &[String],
@@ -1533,7 +1550,7 @@ fn completion_relation_namespace(
     if qualifiers.is_empty() {
         return (None, None);
     }
-    if kind == DatabaseKind::Postgres {
+    if matches!(kind, DatabaseKind::Postgres | DatabaseKind::Dameng) {
         let schema = qualifiers.last().cloned();
         let database = (qualifiers.len() > 1).then(|| qualifiers[..qualifiers.len() - 1].join("."));
         (database, schema)
@@ -1924,7 +1941,7 @@ fn type_family_compatible(expected: TypeFamily, candidate: TypeFamily) -> bool {
 }
 
 /// 把 table context 中的限定路径映射到 completion index 的两级 key。
-/// PostgreSQL 的单段限定符是 schema，MySQL/SQLite 的单段限定符是 database。
+/// PostgreSQL/达梦的单段限定符是 schema，MySQL/SQLite 的单段限定符是 database。
 fn completion_namespace_scope(
     context: &SqlCompletionContext,
     default_database: Option<&str>,
@@ -1932,7 +1949,7 @@ fn completion_namespace_scope(
 ) -> (Option<String>, Option<String>) {
     match context.qualifier_path.as_slice() {
         [] => (default_database.map(str::to_string), None),
-        [namespace] if kind == DatabaseKind::Postgres => {
+        [namespace] if matches!(kind, DatabaseKind::Postgres | DatabaseKind::Dameng) => {
             (default_database.map(str::to_string), Some(namespace.clone()))
         }
         [database] => (Some(database.clone()), None),
@@ -1963,6 +1980,40 @@ fn is_table_context(before_lower: &str) -> bool {
         .iter()
         .any(|keyword| {
             before_lower.ends_with(keyword) || before_lower.ends_with(&format!("{keyword} "))
+        })
+}
+
+/// `FROM schema.` / `JOIN schema.` 的限定符属于关系名，不是列限定符。
+///
+/// 容错解析会把尾部的 `schema.` 先识别成一张名为 schema 的表，从而让
+/// `qualifier_matches_table` 误判为列上下文；这里以 FROM/JOIN 关键字显式纠正。
+fn is_qualified_relation_context(before_lower: &str) -> bool {
+    let Some((prefix, _)) = before_lower.trim_end().rsplit_once('.') else {
+        return false;
+    };
+    let prefix = prefix.trim_end();
+    // 关键字后到点号之间必须只是一段标识符链（`schema` / `db.schema`）；
+    // 出现别名或 WHERE 时说明这是列限定，不能当关系名。
+    ["delete from", "from", "join", "update", "into"]
+        .iter()
+        .filter_map(|keyword| {
+            prefix
+                .strip_prefix(&format!("{keyword} "))
+                .or_else(|| {
+                    prefix
+                        .rfind(&format!(" {keyword} "))
+                        .map(|index| &prefix[index + keyword.len() + 2..])
+                })
+        })
+        .any(|relation| {
+            let relation = relation.trim();
+            !relation.is_empty()
+                && relation.split('.').all(|part| {
+                    !part.is_empty()
+                        && part
+                            .chars()
+                            .all(|char| char.is_alphanumeric() || char == '_' || char == '"')
+                })
         })
 }
 
@@ -2575,6 +2626,8 @@ fn function_completion_items_for(
 ///
 /// 同表名出现在多个 schema（PG search_path 多段）时，label 与 apply 文本加 `schema.` 前缀区分，
 /// 唯一表名保持裸名；`detail` 始终展示所属 schema/库，便于用户确认来源。
+/// 达梦的会话默认 schema 不可靠（驱动不支持切换），未显式输入 schema 时插入文本
+/// 必须写全 `schema.table`，否则裸表名可能落到用户同名 schema 而报对象不存在。
 /// `scope_schema` 是本次补全使用的 schema 作用域（`completion_namespace_scope` 的结果），
 /// 与表清单写入 CompletionIndex 的桶键一致；写进候选后，详情面板即可按
 /// (库, schema, 表) 命中该对象的完整列身份，而不是无条件用 schema=None 去查。
@@ -2582,6 +2635,8 @@ fn table_completion_items(
     tables: Vec<CompletionTable>,
     prefix: &str,
     scope_schema: Option<&str>,
+    database_kind: DatabaseKind,
+    qualified_relation: bool,
 ) -> Vec<QueryCompletionItem> {
     let mut tables = tables
         .into_iter()
@@ -2644,6 +2699,11 @@ fn table_completion_items(
                     format!("{namespace}.{}", table.name),
                     format!("{namespace}.{}", table.name),
                 )
+            } else if database_kind == DatabaseKind::Dameng
+                && !qualified_relation
+                && !namespace.is_empty()
+            {
+                (table.name.clone(), format!("{namespace}.{}", table.name))
             } else {
                 (table.name.clone(), table.name)
             };
@@ -2661,7 +2721,10 @@ fn table_completion_items(
                     .map(str::to_string),
                 filter_text: None,
                 sort_text: None,
-                schema: scope_schema.map(str::to_string),
+                schema: table
+                    .schema
+                    .clone()
+                    .or_else(|| scope_schema.map(str::to_string)),
                 ..Default::default()
             }
         })
@@ -3347,3 +3410,105 @@ const SQLITE_COMPLETION_FUNCTIONS: &[&str] = &[
     "TYPEOF",
     "CAST",
 ];
+
+#[cfg(test)]
+mod query_completion_dameng_tests {
+    use super::*;
+
+    fn table(schema: &str, name: &str) -> CompletionTable {
+        CompletionTable {
+            database: Some("DAMENG".into()),
+            schema: Some(schema.into()),
+            name: name.into(),
+            kind: ObjectKind::Table,
+            comment: None,
+        }
+    }
+
+    #[test]
+    fn dameng_unique_table_keeps_bare_label_but_inserts_schema_qualified_name() {
+        let items = table_completion_items(
+            vec![table("FLUXDEMO", "CUSTOMERS")],
+            "co",
+            None,
+            DatabaseKind::Dameng,
+            false,
+        );
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].label, "CUSTOMERS");
+        assert_eq!(items[0].insert_text, "FLUXDEMO.CUSTOMERS");
+        assert_eq!(items[0].schema.as_deref(), Some("FLUXDEMO"));
+    }
+
+    #[test]
+    fn dameng_explicit_schema_completion_does_not_repeat_schema() {
+        let items = table_completion_items(
+            vec![table("FLUXDEMO", "CUSTOMERS")],
+            "",
+            Some("FLUXDEMO"),
+            DatabaseKind::Dameng,
+            true,
+        );
+
+        assert_eq!(items[0].label, "CUSTOMERS");
+        assert_eq!(items[0].insert_text, "CUSTOMERS");
+        assert_eq!(items[0].schema.as_deref(), Some("FLUXDEMO"));
+    }
+
+    #[test]
+    fn postgres_unique_table_keeps_bare_insert_text() {
+        let items = table_completion_items(
+            vec![table("public", "customers")],
+            "",
+            None,
+            DatabaseKind::Postgres,
+            false,
+        );
+
+        assert_eq!(items[0].label, "customers");
+        assert_eq!(items[0].insert_text, "customers");
+        assert_eq!(items[0].schema.as_deref(), Some("public"));
+    }
+
+    #[test]
+    fn dameng_from_prefix_is_table_context() {
+        let context = sql_completion_context(
+            "SELECT * FROM co",
+            "SELECT * FROM co".len(),
+            DatabaseKind::Dameng,
+        );
+
+        assert!(context.suggest_tables);
+        assert_eq!(context.prefix, "co");
+    }
+
+    #[test]
+    fn dameng_single_qualifier_is_a_schema_scope() {
+        let context = sql_completion_context(
+            "SELECT * FROM FLUXDEMO.",
+            "SELECT * FROM FLUXDEMO.".len(),
+            DatabaseKind::Dameng,
+        );
+
+        assert!(context.suggest_tables);
+        assert_eq!(context.qualifier.as_deref(), Some("FLUXDEMO"));
+        assert_eq!(
+            completion_namespace_scope(&context, Some("DAMENG"), DatabaseKind::Dameng),
+            (Some("DAMENG".into()), Some("FLUXDEMO".into()))
+        );
+    }
+
+    #[test]
+    fn qualified_column_after_from_table_stays_column_context() {
+        let context = sql_completion_context(
+            "SELECT * FROM customers c WHERE c.",
+            "SELECT * FROM customers c WHERE c.".len(),
+            DatabaseKind::Dameng,
+        );
+
+        assert!(!context.suggest_tables);
+        assert!(context.suggest_columns);
+        assert_eq!(context.qualifier.as_deref(), Some("c"));
+    }
+}

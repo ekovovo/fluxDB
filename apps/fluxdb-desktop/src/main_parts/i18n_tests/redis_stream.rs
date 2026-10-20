@@ -85,6 +85,7 @@
             redis_profile: None,
             mysql_profile: None,
             postgres_profile: None,
+            dameng_profile: None,
         }]));
         controller.dispatch(AppCommand::SaveSettings(Settings {
             locale: "ja".into(),

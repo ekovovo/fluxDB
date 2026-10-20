@@ -93,11 +93,13 @@ fn editable_query_object(request: &QueryRequest, kind: DatabaseKind) -> Option<O
     // 二段名的含义随方言不同（§8.4/R30）：PG 是 schema.table，MySQL/TiDB/SQLite 是
     // database.table。PG 三段视为 database.schema.table，取后两段定位（库由连接决定）。
     let (database, schema, name) = match (kind, parts.as_slice()) {
-        (DatabaseKind::Postgres, [name]) => (request.database.clone(), None, name.clone()),
-        (DatabaseKind::Postgres, [schema, name]) => {
+        (DatabaseKind::Postgres | DatabaseKind::Dameng, [name]) => {
+            (request.database.clone(), None, name.clone())
+        }
+        (DatabaseKind::Postgres | DatabaseKind::Dameng, [schema, name]) => {
             (request.database.clone(), Some(schema.clone()), name.clone())
         }
-        (DatabaseKind::Postgres, [database, schema, name]) => (
+        (DatabaseKind::Postgres | DatabaseKind::Dameng, [database, schema, name]) => (
             Some(database.clone()),
             Some(schema.clone()),
             name.clone(),
@@ -172,7 +174,7 @@ fn parse_sql_identifier(input: &str, kind: DatabaseKind) -> Option<(String, &str
         return None;
     }
     let raw = &input[..end];
-    let name = if kind == DatabaseKind::Postgres {
+    let name = if matches!(kind, DatabaseKind::Postgres | DatabaseKind::Dameng) {
         raw.to_ascii_lowercase()
     } else {
         raw.to_string()

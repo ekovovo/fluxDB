@@ -36,7 +36,7 @@ pub fn load_er_tables_in_background(
         name: String::new(),
         kind: ObjectKind::Schema,
     };
-    let summaries = if config.kind == DatabaseKind::Postgres {
+    let summaries = if matches!(config.kind, DatabaseKind::Postgres | DatabaseKind::Dameng) {
         let mut all = Vec::new();
         let database_path = ObjectPath {
             kind: ObjectKind::Database,
@@ -114,7 +114,7 @@ pub fn load_er_relations_from_db_with(
     // 当前账号有权访问（可见）的表身份集合：目录已按权限过滤，这里回填同一口径，
     // 用于剔除外键指向「无权访问的表」的悬空边，避免经 ER 导出/计数泄露被隐藏的表名。
     let mut visible_refs: BTreeSet<ErTableRef> = BTreeSet::new();
-    if config.kind == DatabaseKind::Postgres {
+    if matches!(config.kind, DatabaseKind::Postgres | DatabaseKind::Dameng) {
         let root = ObjectPath {
             connection_id: config.id,
             database: Some(database.clone()),

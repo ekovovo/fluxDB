@@ -356,6 +356,7 @@ impl NavicatMain {
             ConnectionField::Username => form.username = value,
             ConnectionField::Password => form.password = value,
             ConnectionField::Database | ConnectionField::MongoDefaultDb => form.database = value,
+            ConnectionField::DamengSchema => form.dameng_schema = value,
             ConnectionField::UrlParams => form.url_params = value,
             ConnectionField::SqlitePath => form.sqlite_path = value,
             ConnectionField::MongoAuthDb => form.mongo_auth_db = value,
@@ -598,6 +599,12 @@ impl NavicatMain {
                     return Err(message);
                 }
             }
+            DatabaseKind::Dameng => {
+                let profile = form.build_dameng_profile();
+                if let Some(message) = profile.validate() {
+                    return Err(message);
+                }
+            }
             _ => {
                 if form.host.trim().is_empty() {
                     return Err(tr("app.connection.error.host_required").to_string());
@@ -642,7 +649,11 @@ impl NavicatMain {
         }
 
         let endpoint = match kind {
-            DatabaseKind::MySql | DatabaseKind::TiDb | DatabaseKind::Redis | DatabaseKind::Postgres => Endpoint::Tcp {
+            DatabaseKind::MySql
+            | DatabaseKind::TiDb
+            | DatabaseKind::Redis
+            | DatabaseKind::Postgres
+            | DatabaseKind::Dameng => Endpoint::Tcp {
                 host: form.host.trim().to_string(),
                 port: form
                     .port
@@ -685,6 +696,11 @@ impl NavicatMain {
         } else {
             None
         };
+        let dameng_profile = if kind == DatabaseKind::Dameng {
+            Some(form.build_dameng_profile())
+        } else {
+            None
+        };
 
         ConnectionDraft {
             name: form.name.trim().to_string(),
@@ -694,6 +710,7 @@ impl NavicatMain {
             redis_profile,
             mysql_profile,
             postgres_profile,
+            dameng_profile,
         }
     }
 

@@ -19,6 +19,7 @@ pub fn er_test_connection() -> ConnectionConfig {
         redis_profile: None,
         mysql_profile: None,
         postgres_profile: None,
+        dameng_profile: None,
     }
 }
 

@@ -11,6 +11,7 @@ include!("parts/connection.rs");
 include!("parts/redis_profile.rs");
 include!("parts/mysql_profile.rs");
 include!("parts/postgres_profile.rs");
+include!("parts/dameng_profile.rs");
 include!("parts/postgres_identity.rs");
 include!("parts/postgres_user_admin.rs");
 include!("parts/object_query.rs");

@@ -103,7 +103,14 @@ pub(crate) fn statement_range_at(
             return (start, end);
         }
     }
-    ranges.last().copied().unwrap_or((0, text.len()))
+    // 光标在最后一条语句之后：中间隔了分号 ⇒ 是新语句的起点，不能挂回上一条（否则
+    // `SELECT 1; |` 会拿上一条的 SELECT 当上下文）；只是尾部空白 ⇒ 仍属于上一条。
+    let last = ranges.last().copied().unwrap_or((0, 0));
+    let tail = cursor.min(text.len());
+    if text[last.1.min(tail)..tail].contains(';') {
+        return (tail, tail);
+    }
+    (last.0, last.1.max(tail))
 }
 
 /// 光标所在词的字符判定：字母数字、下划线、美元符（含非 ASCII 标识符）。
@@ -416,5 +423,11 @@ mod tests {
         assert_eq!(ranges.len(), 3);
         let (start, end) = statement_range_at(text, 15, &GenericDialect {});
         assert_eq!(&text[start..end], "SELECT 2");
+
+        // 尾部空白仍属于上一条语句；隔了分号才是新语句的起点。
+        let (start, end) = statement_range_at("SELECT 1 ", 9, &GenericDialect {});
+        assert_eq!(&"SELECT 1 "[start..end], "SELECT 1 ");
+        let (start, end) = statement_range_at("SELECT 1; ", 10, &GenericDialect {});
+        assert_eq!(start, end);
     }
 }

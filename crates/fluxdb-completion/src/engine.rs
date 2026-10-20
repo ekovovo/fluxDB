@@ -22,33 +22,31 @@ pub fn complete(
     let cursor = clamp_to_boundary(text, request.cursor);
     let parser_dialect = dialect.parser_dialect();
 
-    let word = word_context(text, cursor, parser_dialect);
-    // 字符串 / 注释里不是 SQL 语法位置，候选只会是噪声。
-    if in_literal_or_comment(text, cursor) {
-        return CompletionOutput {
-            replace_start: word.prefix_start,
-            replace_end: word.replace_end,
-            items: Vec::new(),
-        };
-    }
     let (statement_start, statement_end) = statement_range_at(text, cursor, parser_dialect);
     // 语句区间按去空白后的边界给出；光标可能落在尾部空白里，必须把窗口扩到光标。
     let statement_end = statement_end.max(cursor);
     let statement = &text[statement_start..statement_end];
     let cursor_in_statement = cursor.saturating_sub(statement_start);
 
-    // 掩码区间：把光标处的残词换成等长占位标识符，保住 FROM 等后文子句。
-    let mask =
-        (word.replace_start >= statement_start && word.replace_end <= statement_end).then(|| {
-            (
-                word.replace_start - statement_start,
-                word.replace_end - statement_start,
-            )
-        });
+    // 词法上下文按「光标所在语句」算：前一个关键字必须落在同一语句内，
+    // 否则 `SELECT 1; sel|` 会拿上一条语句的 SELECT 当成当前上下文。
+    let word = word_context(statement, cursor_in_statement, parser_dialect);
+    // 字符串 / 注释里不是 SQL 语法位置，候选只会是噪声。
+    if in_literal_or_comment(statement, cursor_in_statement) {
+        return CompletionOutput {
+            replace_start: word.prefix_start + statement_start,
+            replace_end: word.replace_end + statement_start,
+            items: Vec::new(),
+        };
+    }
 
     let index = LineColIndex::new(statement);
+    // 掩码区间：把光标处的残词换成等长占位标识符，保住 FROM 等后文子句。
+    let mask = Some((word.replace_start, word.replace_end));
     let parsed = parse_tolerant(statement, mask, cursor_in_statement, parser_dialect);
-    let prefix_is_blank = statement[..cursor_in_statement.min(statement.len())]
+    // 词起点之前只有空白 ⇒ 语句起点。按词起点而非光标算：`sel|` 也是语句起点，
+    // 按光标算会被当成「表达式里打了一半」，把 SELECT 这类起始关键字挡掉。
+    let prefix_is_blank = statement[..word.replace_start.min(statement.len())]
         .trim()
         .is_empty();
 
@@ -89,8 +87,8 @@ pub fn complete(
     items.truncate(MAX_CANDIDATES);
 
     CompletionOutput {
-        replace_start: word.prefix_start,
-        replace_end: word.replace_end,
+        replace_start: word.prefix_start + statement_start,
+        replace_end: word.replace_end + statement_start,
         items,
     }
 }
@@ -457,6 +455,29 @@ mod tests {
     #[test]
     fn suggests_statement_starters_on_empty_input() {
         let items = labels("|");
+        assert!(items.contains(&"SELECT".to_string()), "候选：{items:?}");
+    }
+
+    /// 起始关键字打了一半也要补：`sel|` 是语句起点，不是「表达式里打了一半」。
+    #[test]
+    fn suggests_statement_starters_while_typing_at_statement_start() {
+        let items = labels("sel|");
+        assert_eq!(
+            items.first().map(String::as_str),
+            Some("SELECT"),
+            "候选：{items:?}"
+        );
+        let items = labels("ins|");
+        assert!(
+            items.contains(&"INSERT INTO".to_string()),
+            "候选：{items:?}"
+        );
+    }
+
+    /// 前一个关键字只在同一语句内算：分号后的新语句不该继承上一条的上下文。
+    #[test]
+    fn previous_keyword_does_not_leak_across_statements() {
+        let items = labels("SELECT 1; sel|");
         assert!(items.contains(&"SELECT".to_string()), "候选：{items:?}");
     }
 

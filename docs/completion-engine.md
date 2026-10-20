@@ -31,7 +31,10 @@ pub trait MetadataSource {
 
 ## 处理链路
 
-1. **词法**（`word.rs`）：光标词边界、限定符链（`schema.table.col`）、引号标识符、前序关键字；按分号切语句。
+1. **词法**（`word.rs`）：按分号切语句，再只按光标所在语句算词边界、限定符链
+   （`schema.table.col`）、引号标识符、前序关键字。前序关键字不跨语句：`SELECT 1; sel|`
+   的上下文是空，不是上一条的 `SELECT`。语句起点判定按**词起点**而非光标——`sel|` 也是
+   语句起点，按光标算会被当成「表达式里打了一半」，把 `SELECT` 这类起始关键字挡掉。
 2. **容错解析**（`parse.rs`）四级阶梯：
    1. 掩码光标残词为等长占位符（必须优先，避免 `u. FROM` 被贪婪解析成 `u.FROM AS users`）；
    2. 原文解析；
@@ -73,6 +76,8 @@ pub trait MetadataSource {
   一条——去重后用户只能拿到其中一张表的列，另一张点不到。
 - 作用域内的 CTE / 派生表进 FROM 候选，排在物理表之前。
 - 字符串字面量与注释里不产出候选（`-- 待办：补 JOIN |` 不再补出 `JOIN`）。
+- 词法上下文按语句隔离：语句起始位置打了一半也按起始槽位处理（`sel|` → `SELECT`、
+  `ins|` → `INSERT INTO`），分号后的新语句不继承上一条的关键字上下文。
 - 未完成的 `INSERT (col,` / `UPDATE SET` 由前缀词法识别（sqlparser 需要完整语句）。
 - 同分内只做个性化重排（采纳历史），不跨语义分层调序。
 - 同名表跨 schema 时自动加 namespace 前缀，避免点错对象。
@@ -139,8 +144,10 @@ pub trait MetadataSource {
 
 - 第 8 期：IDE 手感补齐 —— 完成。CTE/派生表进 FROM 候选、歧义列自动限定、打字中关键字
   收敛（不再灌 DDL）、字符串/注释不产出候选、候选上限 200
+- 第 9 期：修语句起点回归 —— 词法上下文改为按语句计算，`sel|` 重新补出 `SELECT`（第 8 期
+  的关键字收敛误伤了语句起始位置）
 
-验证：`cargo test -p fluxdb-completion`（99 例）、`cargo test -p fluxdb-app`（57 例，另有
+验证：`cargo test -p fluxdb-completion`（101 例）、`cargo test -p fluxdb-app`（57 例，另有
 3 个默认 ignore 的真库冒烟）、`cargo clippy --locked -p fluxdb-completion --all-targets`。
 
 真库冒烟（本地容器，密码只从环境变量读取）：

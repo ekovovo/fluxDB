@@ -2325,6 +2325,7 @@
     },
     "saving": "正在保存表",
     "saving_short": "保存中",
+    "loading_design": "正在读取表结构…",
     "save_design": "保存表设计",
     "save_and_create": "保存并创建表",
     "add_field": "新增字段",
@@ -2364,6 +2365,7 @@
       "tab_missing": "新建表标签页不存在",
       "save_no_result": "保存表没有返回结果",
       "load_field_no_result": "目标字段加载没有返回结果",
+      "load_design_failed": "打开表设计器失败",
       "load_failed": "加载失败",
       "add_field": "请添加字段",
       "select_field": "请选择字段"

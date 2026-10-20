@@ -429,6 +429,17 @@ fn load_table_info_for_connection(
     })
 }
 
+fn load_table_design_for_connection(
+    config: &ConnectionConfig,
+    object: &ObjectPath,
+) -> fluxdb_core::Result<fluxdb_core::TableDesignMetadata> {
+    let metadata = connector_for(config)?.load_table_design_metadata(object)?;
+    Ok(fluxdb_core::TableDesignMetadata {
+        ddl: format_sql_text_for_dialect(&metadata.ddl, config.kind),
+        ..metadata
+    })
+}
+
 /// 取表的展示 DDL（PG 用；MySQL/SQLite 走各自方言）。设计器保存前的结构指纹校验用。
 fn table_ddl_for_connection(
     config: &ConnectionConfig,

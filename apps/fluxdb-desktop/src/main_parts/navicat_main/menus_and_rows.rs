@@ -331,7 +331,7 @@ impl NavicatMain {
                 self.dispatch(AppCommand::OpenErDiagram(object_path), cx);
             }
             TableMenuAction::Design => {
-                self.dispatch(AppCommand::OpenDesignTable(object_path), cx);
+                self.open_design_table_in_background(object_path, cx);
             }
             TableMenuAction::NewTable => {
                 self.dispatch(

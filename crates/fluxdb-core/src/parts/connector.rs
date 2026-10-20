@@ -488,6 +488,29 @@ pub trait Connector {
         Err(Error::new(ErrorKind::Unsupported, "暂不支持触发器元数据"))
     }
 
+    /// 一次读取设计表所需的列、索引、外键、触发器与 DDL。
+    ///
+    /// 默认实现兼容尚未提供批量化目录查询的连接器。设计表打开路径位于后台线程，
+    /// 方言实现应尽量覆盖本方法并复用一条连接，避免重复登录和重复元数据查询。
+    fn load_table_design_metadata(&self, path: &ObjectPath) -> Result<TableDesignMetadata> {
+        let columns = self.list_completion_columns(
+            path.database.as_deref(),
+            path.schema.as_deref(),
+            &path.name,
+        )?;
+        let indexes = self.list_indexes(path)?;
+        let foreign_keys = self.list_foreign_keys(path)?;
+        let triggers = self.list_triggers(path)?;
+        let ddl = self.table_ddl(path)?;
+        Ok(TableDesignMetadata {
+            columns,
+            indexes,
+            foreign_keys,
+            triggers,
+            ddl,
+        })
+    }
+
     fn table_ddl(&self, _: &ObjectPath) -> Result<String> {
         Err(Error::new(ErrorKind::Unsupported, "暂不支持 DDL 元数据"))
     }

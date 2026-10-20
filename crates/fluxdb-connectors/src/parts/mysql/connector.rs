@@ -422,6 +422,16 @@ impl Connector for MySqlConnector {
         mysql_triggers(config, path)
     }
 
+    fn load_table_design_metadata(
+        &self,
+        path: &ObjectPath,
+    ) -> fluxdb_core::Result<fluxdb_core::TableDesignMetadata> {
+        let config = self.config.as_ref().ok_or_else(|| {
+            Error::new(ErrorKind::Connection, "MySQL 设计表元数据需要连接配置上下文")
+        })?;
+        mysql_load_table_design_metadata(config, path)
+    }
+
     fn table_ddl(&self, path: &ObjectPath) -> fluxdb_core::Result<String> {
         let config = self
             .config

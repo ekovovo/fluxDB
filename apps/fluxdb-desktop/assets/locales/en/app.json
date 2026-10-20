@@ -2325,6 +2325,7 @@
     },
     "saving": "Saving table",
     "saving_short": "Saving...",
+    "loading_design": "Reading table structure...",
     "save_design": "Save table design",
     "save_and_create": "Save and create table",
     "add_field": "Add field",
@@ -2364,6 +2365,7 @@
       "tab_missing": "The new table tab no longer exists",
       "save_no_result": "Saving the table returned no result",
       "load_field_no_result": "Loading the target field returned no result",
+      "load_design_failed": "Failed to open table designer",
       "load_failed": "Load failed",
       "add_field": "Add at least one field",
       "select_field": "Select a field"

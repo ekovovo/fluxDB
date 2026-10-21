@@ -681,7 +681,7 @@ pub fn add_ai_config_tools(
     let actions_specs = [
         (
             "config.setting.update",
-            "修改普通设置",
+            "修改白名单内的普通应用设置，例如编辑器字号、外观、数据页大小或日志级别。用于用户明确要调整已有设置；需要先用 toolbox.inspect 读取设置分区和 revision。只提交待确认提案。",
             config_setting_update_schema(),
             ConfigToolboxAction {
                 domain: "config",
@@ -690,7 +690,7 @@ pub fn add_ai_config_tools(
         ),
         (
             "config.tool.set_enabled",
-            "启停一个全局工具",
+            "启用或停用某个全局工具。用于用户要关闭、禁用、开启或恢复工具能力；需要工具 ID、目标状态和读到的 revision。该操作不等于修改 Agent 白名单。",
             config_tool_set_enabled_schema(),
             ConfigToolboxAction {
                 domain: "config",
@@ -699,7 +699,7 @@ pub fn add_ai_config_tools(
         ),
         (
             "config.agent.create",
-            "创建 Agent",
+            "创建一个新的 Agent。用于用户要新增、新建或配置一个独立 Agent；需要名称和 system prompt，可同时设置模型、工具白名单和迭代限制。不用于修改已有 Agent。",
             config_agent_create_schema(),
             ConfigToolboxAction {
                 domain: "config",
@@ -708,7 +708,7 @@ pub fn add_ai_config_tools(
         ),
         (
             "config.agent.update",
-            "局部修改 Agent，只传 changes",
+            "修改已有 Agent 的局部配置。用于用户要改名、调整提示词、模型、工具权限或运行参数；只传 changes 中明确修改的字段和 expected_revision。不用于创建或删除 Agent。",
             update_variant(&config_agent_create_schema()),
             ConfigToolboxAction {
                 domain: "config",
@@ -717,7 +717,7 @@ pub fn add_ai_config_tools(
         ),
         (
             "config.agent.delete",
-            "删除 Agent",
+            "删除一个已有 Agent。用于用户明确要移除某个 Agent；需要 Agent ID 和 revision。不能删除当前正在执行的 Agent，删除采用软删除以保留历史会话。",
             delete_variant(),
             ConfigToolboxAction {
                 domain: "config",
@@ -726,7 +726,7 @@ pub fn add_ai_config_tools(
         ),
         (
             "config.session.archive",
-            "归档会话",
+            "归档一个会话。用于用户要收起、归档或从常用列表移走会话，但保留历史内容；需要会话 ID 和 revision。不用于永久删除。",
             config_session_archive_schema(),
             ConfigToolboxAction {
                 domain: "config",
@@ -735,7 +735,7 @@ pub fn add_ai_config_tools(
         ),
         (
             "config.session.purge",
-            "永久删除会话",
+            "永久删除一个已归档且无活动任务的会话。用于用户明确要求彻底清除会话历史；需要会话 ID 和 revision。该操作不可恢复。",
             config_session_purge_schema(),
             ConfigToolboxAction {
                 domain: "config",
@@ -744,7 +744,7 @@ pub fn add_ai_config_tools(
         ),
         (
             "config.model.create",
-            "创建模型；是否落库仍由用户在表单中确认",
+            "创建新的模型配置。适用于用户要添加、接入或配置一个新的大模型，例如 DeepSeek、OpenAI 或 Anthropic；需要名称、Provider 协议和模型 ID。不用于修改已有模型，API Key 由用户在本地表单输入。",
             config_model_create_schema(),
             ConfigToolboxAction {
                 domain: "config",
@@ -753,7 +753,7 @@ pub fn add_ai_config_tools(
         ),
         (
             "config.model.update",
-            "局部修改模型；打开预填表单",
+            "修改已有模型配置。适用于用户要调整模型名称、Provider、Endpoint、模型 ID、容量、价格或启用状态；只传 changes 和 expected_revision，不传 API Key。",
             update_variant(&config_model_create_schema()),
             ConfigToolboxAction {
                 domain: "config",
@@ -762,7 +762,7 @@ pub fn add_ai_config_tools(
         ),
         (
             "config.model.delete",
-            "删除模型",
+            "删除一个已有模型配置。用于用户明确要移除模型；需要模型 ID 和 revision。不会删除 Agent 或会话历史，但引用检查失败时不会执行。",
             delete_variant(),
             ConfigToolboxAction {
                 domain: "config",
@@ -771,7 +771,7 @@ pub fn add_ai_config_tools(
         ),
         (
             "config.mcp.server_set_enabled",
-            "启停 MCP Server Profile",
+            "启用或停用已登记的本地 MCP Server Profile。用于用户要打开或关闭某个 MCP Server；需要 Profile ID、目标状态和 revision。不用于客户端注册。",
             config_mcp_server_set_enabled_schema(),
             ConfigToolboxAction {
                 domain: "config",
@@ -780,7 +780,7 @@ pub fn add_ai_config_tools(
         ),
         (
             "config.mcp.sync_client",
-            "注册或移除 MCP 客户端条目",
+            "为本应用在 Codex 或 Claude Code 中注册或移除 MCP 客户端配置。用于用户要同步或取消同步 MCP 客户端条目；需要 client_key 和 registered 状态。不用于安装客户端软件。",
             config_mcp_sync_client_schema(),
             ConfigToolboxAction {
                 domain: "config",

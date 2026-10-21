@@ -107,11 +107,13 @@ fn dm_list_relations(
     let mut client = dm_connect(config)?;
     let result = dm_execute(
         &mut client,
-        "SELECT O.OBJECT_NAME, O.OBJECT_TYPE, O.OBJECT_ID, C.COMMENTS \
-         FROM ALL_OBJECTS O \
-         LEFT JOIN ALL_TAB_COMMENTS C ON C.OWNER=O.OWNER AND C.TABLE_NAME=O.OBJECT_NAME \
-         WHERE O.OWNER=? AND O.OBJECT_TYPE IN ('TABLE','VIEW') \
-         ORDER BY O.OBJECT_NAME",
+        "SELECT T.NAME, T.SUBTYPE$, T.ID, C.COMMENT$ \
+         FROM SYS.SYSOBJECTS T \
+         JOIN SYS.SYSOBJECTS S ON S.ID=T.SCHID \
+         LEFT JOIN SYS.SYSTABLECOMMENTS C \
+           ON C.SCHNAME=S.NAME AND C.TVNAME=T.NAME \
+         WHERE S.NAME=? AND T.TYPE$='SCHOBJ' AND T.SUBTYPE$ IN ('UTAB','VIEW') \
+         ORDER BY T.NAME",
         &[Param::Str(schema.clone())],
     )?;
     client.close();

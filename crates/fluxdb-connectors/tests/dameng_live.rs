@@ -149,6 +149,10 @@ fn dameng_live_connection_objects_query_and_transaction() {
         assert!(relations.iter().any(|object| {
             object.path.kind == ObjectKind::Table && object.path.name == "FLUXDB_TEST_PARENT"
         }));
+        assert!(relations.iter().any(|object| {
+            object.path.name == "FLUXDB_TEST_PARENT"
+                && object.comment.as_deref() == Some("FluxDB DM8 integration test")
+        }));
         // 外键会让 DM 生成 SREF_CON_* 内部表；对象树与补全都不能把它们当作用户表。
         assert!(
             relations

@@ -595,11 +595,14 @@ impl DmClient {
         let mut result: Option<ExecuteResult> = None;
 
         'outer: for f in &frames {
-            if f.cmd == 187 && f.length > 30 {
-                // 普通查询结果集帧
+            if f.cmd == 187 {
+                // 187 既可能是查询结果集，也可能是 DML 影响行数确认。
+                // 必须用列数区分：DML 确认帧列数为 0，但帧长随批量行数增长
+                // （参数化 INSERT 4 行时确认帧为 36 字节）。早期只看长度，
+                // 会把 DML 误判为结果集，既不返回行数也不报错，且残留帧污染下一次执行。
                 let ncols = le_u16(&f.opts, 2) as usize;
                 let nrows = le_u16(&f.opts, 4) as usize;
-                if ncols > 0 && ncols <= 1000 {
+                if f.length > 30 && ncols > 0 && ncols <= 1000 {
                     let (cols, pos) = parse_columns(&f.body, 0, ncols, self.svr_encoding)?;
                     let mut rows_raw = parse_rows(&f.body, pos, ncols, nrows)?;
                     // 大结果集：帧24-25=65535（0xFFFF）表示还有更多行，发 cmd=7 拉剩余（循环直到取完）
@@ -614,6 +617,25 @@ impl DmClient {
                     result = Some(ExecuteResult::Query { columns: cols, rows });
                     break 'outer;
                 }
+
+                // 列数为 0：这是 DML 影响行数确认（大帧也可能来自批量 INSERT）。
+                let affected = le_i64(&f.opts, 4) as u64;
+                // CALL 存储过程：帧内可能含 OUT 参数值
+                if !out_indices.is_empty() && f.length > 4 {
+                    let out = self.parse_out_values(&f.body, &out_indices, server_params.as_deref());
+                    if !params.is_empty() && !is_query {
+                        let _ = self.read_frame(); // cmd=4 确认
+                    }
+                    result = Some(ExecuteResult::Call { affected, out });
+                } else {
+                    // 参数化 DML：cmd=4 的确认响应在结果帧后，必须读掉防残留，
+                    // 否则残留帧会让下一条语句读到别人的响应，报“无效的语句句柄”。
+                    if !params.is_empty() && !is_query {
+                        let _ = self.read_frame();
+                    }
+                    result = Some(ExecuteResult::Affected(affected));
+                }
+                break 'outer;
             } else if f.cmd == 0 && f.length > 30 && !params.is_empty() && is_query {
                 // 参数化 SELECT（Execute2）：cmd=0 含参数回显+列描述符（列描述符在 len(params)*32，
                 // DDL 后首条可能多 8B 类型名，用 parse_cols_robust 自适应定位）
@@ -651,24 +673,6 @@ impl DmClient {
                         }
                     }
                 }
-            } else if f.cmd == 187 {
-                // DML 结果：影响行数在帧头参数区偏移 24（int64，Go zq.go Dm_build_354）
-                let affected = le_i64(&f.opts, 4) as u64;
-                // CALL 存储过程：cmd=187 小帧可能含 OUT 参数值（uint16 长度+数据）
-                if !out_indices.is_empty() && f.length > 4 {
-                    let out = self.parse_out_values(&f.body, &out_indices, server_params.as_deref());
-                    if !params.is_empty() && !is_query {
-                        let _ = self.read_frame(); // cmd=4 确认
-                    }
-                    result = Some(ExecuteResult::Call { affected, out });
-                } else {
-                    // 参数化 DML：cmd=4 的确认响应（cmd=0 len=24）在结果帧后，必须读掉防残留
-                    if !params.is_empty() && !is_query {
-                        let _ = self.read_frame();
-                    }
-                    result = Some(ExecuteResult::Affected(affected));
-                }
-                break 'outer;
             }
         }
 

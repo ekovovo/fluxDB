@@ -15,6 +15,8 @@ mod i18n_e2e_tests {
 
     include!("i18n_tests/redis_stream.rs");
     include!("i18n_tests/config_proposal.rs");
+    include!("i18n_tests/sql_editor_edit.rs");
+    include!("i18n_tests/table_page_query.rs");
     include!("i18n_tests/dameng_connection.rs");
     include!("i18n_tests/dameng_completion.rs");
     include!("i18n_tests/dameng_table_design.rs");
@@ -128,6 +130,127 @@ mod i18n_e2e_tests {
                 .collect::<Vec<_>>();
             assert!(missing.is_empty(), "{locale} missing keys: {missing:?}");
         }
+    }
+
+    #[gpui::test]
+    fn ai_chat_tab_is_a_global_first_level_tab(cx: &mut TestAppContext) {
+        use crate::{
+            FirstLevelScope, WorkspaceTabGroup, first_level_has_second_row, first_level_tab_groups,
+            tab_first_level_scope,
+        };
+        let _guard = locale_guard();
+        let temp = tempfile::tempdir().expect("isolated profile");
+        let storage = FileStorage::new(temp.path().join("profile"));
+        init_i18n(
+            &app_assets_base_path().join("locales"),
+            &storage.root_dir().join("locales"),
+            "en",
+        );
+        let mut controller = AppController::new();
+        // 本用例只验证一级标签分组；关闭补全索引预热点，避免不存在的 SQLite
+        // 目标在用例结束后仍留下后台连接任务。
+        controller.dispatch(fluxdb_app::AppCommand::SaveSettings(Settings {
+            enable_completion_index: false,
+            ..Default::default()
+        }));
+        controller.dispatch(fluxdb_app::AppCommand::ReplaceConnections(vec![
+            fluxdb_core::ConnectionConfig {
+                id: fluxdb_core::ConnectionId(1),
+                name: "workspace".into(),
+                kind: fluxdb_core::DatabaseKind::Sqlite,
+                endpoint: fluxdb_core::Endpoint::SqliteFile {
+                    path: temp.path().join("db.sqlite"),
+                    read_only: true,
+                },
+                options: Default::default(),
+                redis_profile: None,
+                mysql_profile: None,
+                postgres_profile: None,
+                dameng_profile: None,
+            },
+        ]));
+        cx.update(|cx| {
+            extend_component_i18n();
+            gpui_component::init(cx);
+        });
+        let profile = storage.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let view = cx.new(|cx| {
+                navicat_main_new(
+                    window,
+                    cx,
+                    controller,
+                    profile,
+                    gpui_component::ThemeMode::Light,
+                )
+            });
+            Root::new(view, window, cx)
+        });
+        cx.run_until_parked();
+        let view = cx.update(|window, cx| {
+            window
+                .root::<Root>()
+                .expect("root")
+                .expect("typed root")
+                .read(cx)
+                .view()
+                .clone()
+                .downcast::<NavicatMain>()
+                .expect("production view")
+        });
+        // 只验证标签分组；跳过首帧会话恢复，避免后台存储任务越过用例边界
+        // 后向已结束的测试调度器投递唤醒。
+        cx.update(|_, cx| {
+            view.update(cx, |app, _| {
+                app.ai_chat.recovery_pending = false;
+            });
+        });
+        cx.update(|_, cx| {
+            view.update(cx, |app, cx| {
+                app.dispatch(fluxdb_app::AppCommand::OpenQueryEditorInDatabase {
+                    connection_id: fluxdb_core::ConnectionId(1),
+                    database: None,
+                    schema: None,
+                }, cx);
+                cx.notify();
+            });
+        });
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+        });
+        assert!(cx.debug_bounds("table-tab-row").is_some());
+        cx.update(|_, cx| {
+            view.update(cx, |app, cx| {
+                app.dispatch(fluxdb_app::AppCommand::OpenAiChatTab, cx);
+                let state = app.controller.state();
+                let ai = state
+                    .tabs
+                    .iter()
+                    .find(|tab| matches!(tab.kind, fluxdb_app::TabKind::AiChat { .. }))
+                    .expect("AI tab");
+                assert_eq!(tab_first_level_scope(ai), Some(FirstLevelScope::AiChat));
+                assert_eq!(ai.workspace(), None);
+                let groups = first_level_tab_groups(state);
+                assert!(groups
+                    .iter()
+                    .any(|group| matches!(group, WorkspaceTabGroup::AiChat { .. })));
+                assert!(groups
+                    .iter()
+                    .any(|group| matches!(group, WorkspaceTabGroup::Database { .. })));
+                assert!(!first_level_has_second_row(Some(&FirstLevelScope::AiChat)));
+                assert!(!first_level_has_second_row(Some(&FirstLevelScope::Settings)));
+                assert!(first_level_has_second_row(Some(&FirstLevelScope::Database(
+                    fluxdb_app::TabWorkspace {
+                        connection_id: fluxdb_core::ConnectionId(1),
+                        database: "main".into(),
+                    },
+                ))));
+            });
+        });
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+        });
+        assert!(cx.debug_bounds("table-tab-row").is_none());
     }
 
     #[test]

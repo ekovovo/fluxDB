@@ -45,9 +45,20 @@ impl AppController {
     fn load_data_page_command(
         &mut self,
         tab_id: TabId,
+        generation: u64,
         sort: Vec<SortSpec>,
         filters: Vec<FilterSpec>,
     ) -> AppEvent {
+        let Some(tab) = self.find_tab(tab_id) else {
+            return self.fail(Error::new(ErrorKind::Internal, "数据编辑器标签页不存在"));
+        };
+        let TabKind::DataEditor(editor) = &tab.kind else {
+            return self.fail(Error::new(ErrorKind::Internal, "数据编辑器标签页不存在"));
+        };
+        if !editor.accepts_load(generation) {
+            // 发起后用户又刷新/筛选或 AI 接管了该表页：本次结果不再写入。
+            return AppEvent::DataPageLoadDiscarded { tab_id, generation };
+        }
         let request = self.find_tab(tab_id).and_then(|tab| match &tab.kind {
             TabKind::DataEditor(editor) => Some((editor.object.clone(), editor.pagination)),
             _ => None,
@@ -60,6 +71,9 @@ impl AppController {
         if let Some(tab) = self.find_tab_mut(tab_id)
             && let TabKind::DataEditor(editor) = &mut tab.kind
         {
+            if !editor.accepts_load(generation) {
+                return AppEvent::DataPageLoadDiscarded { tab_id, generation };
+            }
             editor.loading = true;
             editor.error = None;
         }
@@ -69,6 +83,9 @@ impl AppController {
                 if let Some(tab) = self.find_tab_mut(tab_id)
                     && let TabKind::DataEditor(editor) = &mut tab.kind
                 {
+                    if !editor.accepts_load(generation) {
+                        return AppEvent::DataPageLoadDiscarded { tab_id, generation };
+                    }
                     editor.page = Some(page.clone());
                     editor.original_page = Some(page.clone());
                     editor.changes = None;
@@ -84,6 +101,9 @@ impl AppController {
                 if let Some(tab) = self.find_tab_mut(tab_id)
                     && let TabKind::DataEditor(editor) = &mut tab.kind
                 {
+                    if !editor.accepts_load(generation) {
+                        return AppEvent::DataPageLoadDiscarded { tab_id, generation };
+                    }
                     editor.loading = false;
                     editor.error = Some(user_error.clone());
                 }

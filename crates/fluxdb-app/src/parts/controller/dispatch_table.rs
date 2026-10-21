@@ -137,7 +137,7 @@ impl AppController {
                         editor.page = None;
                         editor.original_page = None;
                         editor.changes = None;
-                        editor.loading = true;
+                        editor.begin_load();
                         editor.table_info = TableInfoState::default();
                         tab.title = new_name.clone();
                         tab.dirty = false;

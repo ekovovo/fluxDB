@@ -1513,6 +1513,9 @@ pub struct DataEditorState {
     pub page: Option<DataPage>,
     pub original_page: Option<DataPage>,
     pub pagination: Pagination,
+    /// 表页数据加载令牌：每次用户筛选/刷新或 AI 查询都会递增。
+    /// 后台结果只允许写回与当前令牌一致的加载，避免旧结果覆盖新操作。
+    pub load_generation: u64,
     pub changes: Option<DataChangeSet>,
     pub editing_cell: Option<CellPosition>,
     pub cell_detail_panel: CellDetailPanelState,
@@ -1522,6 +1525,21 @@ pub struct DataEditorState {
     /// 但提交类操作 disabled，避免用户在写入期间继续改动同一批数据。
     pub submitting: bool,
     pub error: Option<UserFacingError>,
+}
+
+impl DataEditorState {
+    /// 开始一次新的表页加载，返回本次令牌。
+    pub fn begin_load(&mut self) -> u64 {
+        self.load_generation = self.load_generation.wrapping_add(1);
+        self.loading = true;
+        self.error = None;
+        self.load_generation
+    }
+
+    /// 只有最新一次加载可以写回数据或终态。
+    pub fn accepts_load(&self, generation: u64) -> bool {
+        self.load_generation == generation
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]

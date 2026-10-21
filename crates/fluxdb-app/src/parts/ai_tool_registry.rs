@@ -133,6 +133,7 @@ impl ToolError {
             retryable: true,
         }
     }
+
 }
 
 /// 已通过 schema 校验的参数（只能由校验器产出）。
@@ -202,6 +203,7 @@ impl ToolCatalog {
         self.max_argument_bytes = max_argument_bytes;
         self
     }
+
 
     /// 移除已被全局停用的工具条目（设置页「工具与 MCP → 工具」）。
     ///

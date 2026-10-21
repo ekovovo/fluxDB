@@ -31,6 +31,12 @@ impl AppController {
         }
 
         match command {
+            command @ (AppCommand::BrowseAiTableObjects { .. }
+                | AppCommand::FinishAiTableObjects { .. } | AppCommand::LoadAiTableColumns(_)
+                | AppCommand::RememberAiTableObject(_)
+                | AppCommand::BeginAiTableQuery { .. } | AppCommand::LoadAiTablePage { .. }) => {
+                self.dispatch_ai_table_page(command)
+            }
             AppCommand::AiConversation(command) => return self.dispatch_ai_conversation(command),
             command @ (AppCommand::PrepareBackup { .. }
             | AppCommand::RunBackup(_)
@@ -760,6 +766,7 @@ impl AppController {
                         page: None,
                         original_page: None,
                         pagination,
+                        load_generation: 0,
                         changes: None,
                         editing_cell: None,
                         cell_detail_panel: CellDetailPanelState::default(),
@@ -1219,7 +1226,20 @@ impl AppController {
                 AppEvent::TabOpened(tab_id)
             }
             AppCommand::LoadDataPage(tab_id) => {
-                self.load_data_page_command(tab_id, Vec::new(), Vec::new())
+                let generation = match self.find_data_editor_mut(tab_id) {
+                    Some(editor) => editor.begin_load(),
+                    None => {
+                        return self.fail(Error::new(ErrorKind::Internal, "数据编辑器标签页不存在"));
+                    }
+                };
+                self.load_data_page_command(tab_id, generation, Vec::new(), Vec::new())
+            }
+            AppCommand::BeginDataPageLoad(tab_id) => {
+                let Some(editor) = self.find_data_editor_mut(tab_id) else {
+                    return self.fail(Error::new(ErrorKind::Internal, "数据编辑器标签页不存在"));
+                };
+                let generation = editor.begin_load();
+                AppEvent::DataPageLoadStarted { tab_id, generation }
             }
             AppCommand::SetDataPagePagination {
                 tab_id,
@@ -1237,9 +1257,10 @@ impl AppController {
             }
             AppCommand::LoadDataPageWithSort {
                 tab_id,
+                generation,
                 sort,
                 filters,
-            } => self.load_data_page_command(tab_id, sort, filters),
+            } => self.load_data_page_command(tab_id, generation, sort, filters),
             AppCommand::LoadRedisKey { tab_id, key } => self.load_redis_key_command(tab_id, key),
             AppCommand::LoadRedisKeyMetadata { tab_id, keys } => {
                 self.load_redis_key_metadata_command(tab_id, keys)
@@ -1404,11 +1425,18 @@ impl AppController {
                 head,
                 count,
             } => self.apply_redis_list_items_pop_command(tab_id, key, head, count),
-            AppCommand::FinishDataPageLoad { tab_id, result } => match result {
+            AppCommand::FinishDataPageLoad {
+                tab_id,
+                generation,
+                result,
+            } => match result {
                 Ok(page) => {
                     if let Some(tab) = self.find_tab_mut(tab_id)
                         && let TabKind::DataEditor(editor) = &mut tab.kind
                     {
+                        if !editor.accepts_load(generation) {
+                            return AppEvent::DataPageLoadDiscarded { tab_id, generation };
+                        }
                         editor.page = Some(page.clone());
                         editor.original_page = Some(page.clone());
                         editor.changes = None;
@@ -1426,6 +1454,9 @@ impl AppController {
                     if let Some(tab) = self.find_tab_mut(tab_id)
                         && let TabKind::DataEditor(editor) = &mut tab.kind
                     {
+                        if !editor.accepts_load(generation) {
+                            return AppEvent::DataPageLoadDiscarded { tab_id, generation };
+                        }
                         editor.loading = false;
                         editor.error = Some(user_error.clone());
                     }

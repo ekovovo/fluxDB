@@ -1,10 +1,14 @@
 /// 内置 Agent 工具；数据库/Redis 工具同时供 MCP 使用，产物工具不对外暴露。
 /// 第二列是稳定分组码，第三列是未知工具 id 的英文兜底；已知 id 走 `ai_tool_text` 翻译。
 pub const AI_AGENT_TOOL_CATALOG: &[(&str, &str, &str, bool)] = &[
+    ("page.find_table", "common", "Find tables by name, table comment, or column name across saved SQL connections without reading rows", false),
+    ("page.browse_objects", "common", "Expand configured SQL connections in the sidebar and discover real objects", false),
+    ("page.open_table", "common", "Open a discovered table without querying rows", false),
+    ("page.query_table", "common", "Fill visible filters and optionally query the table page once", false),
     (
-        "page.prefill_form",
+        "editor.apply_edit",
         "common",
-        "Prefill a page form draft without saving",
+        "Replace the explicitly authorized SQL editor range without executing SQL",
         false,
     ),
     (
@@ -224,7 +228,6 @@ mod ai_tool_management_tests {
             "db.run",
             "editor.read_range",
             "editor.search",
-            "page.prefill_form",
             "page.read_rows",
             "file.read",
             "file.search",
@@ -234,6 +237,7 @@ mod ai_tool_management_tests {
         ] {
             assert!(ids.contains(&id), "{id}");
         }
+        assert!(!is_known_ai_tool("page.prefill_form"));
         for spec in standard_sql_tool_specs()
             .expect("SQL specs")
             .into_iter()

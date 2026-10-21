@@ -24,13 +24,25 @@ impl NavicatMain {
 
         let sort = self.data_sort_specs_for_tab(tab_id);
         let filters = self.data_filter_specs_for_tab(tab_id);
+        let event = self
+            .controller
+            .dispatch(AppCommand::BeginDataPageLoad(tab_id));
+        let generation = match event {
+            AppEvent::DataPageLoadStarted { generation, .. } => generation,
+            _ => return,
+        };
         let task = self.spawn_controller_command(
             AppCommand::LoadDataPageWithSort {
                 tab_id,
+                generation,
                 sort,
                 filters,
             },
             move |this, event, cx| {
+                if matches!(event, AppEvent::DataPageLoadDiscarded { .. }) {
+                    this._data_load_tasks.remove(&tab_id.0);
+                    return;
+                }
                 let result = match event {
                     AppEvent::DataLoaded(_, page) => Ok(page),
                     AppEvent::Failed(error) => Err(error),
@@ -51,7 +63,11 @@ impl NavicatMain {
                 {
                     let event = this
                         .controller
-                        .dispatch(AppCommand::FinishDataPageLoad { tab_id, result });
+                        .dispatch(AppCommand::FinishDataPageLoad {
+                            tab_id,
+                            generation,
+                            result,
+                        });
                     this.apply_app_event(&event, cx);
                 }
             },

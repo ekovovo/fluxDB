@@ -242,70 +242,16 @@ fn settings_default_editor_draft(saved: &Settings) -> Settings {
 }
 
 impl NavicatMain {
-    /// 应用 AI 提交的设置页预填动作；只改草稿，不保存。
+    /// 消费 AI 的结构化动作；配置提案仍需确认，SQL 修改走独立的范围校验。
     fn apply_ai_ui_action(
         &mut self,
         action: fluxdb_app::UiAction,
         cx: &mut Context<NavicatMain>,
     ) {
         match action {
-            fluxdb_app::UiAction::PrefillSettings {
-                page_ref, prefill, ..
-            } => {
-                let tab_id = page_ref
-                    .strip_prefix("page:")
-                    .and_then(|id| id.parse::<u64>().ok())
-                    .map(TabId);
-                let Some(tab) = self
-                    .controller
-                    .state()
-                    .tabs
-                    .iter()
-                    .find(|tab| Some(tab.id) == tab_id)
-                else {
-                    self.show_message(
-                        tr("app.ai.page_action.settings_page_unavailable").as_ref(),
-                        AppMessageKind::Warning,
-                        cx,
-                    );
-                    return;
-                };
-                if !matches!(tab.kind, TabKind::Settings(_)) {
-                    self.show_message(
-                        tr("app.ai.page_action.settings_page_unavailable").as_ref(),
-                        AppMessageKind::Warning,
-                        cx,
-                    );
-                    return;
-                }
-                // 草稿有用户未保存修改时不覆盖，避免 AI 与用户同时编辑丢改动。
-                if self.settings_editor_draft != self.controller.state().settings {
-                    self.show_message(
-                        tr("app.ai.page_action.settings_draft_dirty").as_ref(),
-                        AppMessageKind::Warning,
-                        cx,
-                    );
-                    return;
-                }
-                let mut draft = self.settings_editor_draft.clone();
-                if let Err(error) = fluxdb_app::apply_settings_prefill(&mut draft, &prefill) {
-                    self.show_message(
-                        tr("app.ai.page_action.settings_prefill_failed")
-                            .replace("%{error}", &error),
-                        AppMessageKind::Error,
-                        cx,
-                    );
-                    return;
-                }
-                self.settings_editor_draft = draft;
-                self.settings_panel_section = settings_panel_section_from_ai(prefill.section);
-                self.sync_settings_tab_dirty();
-                self.show_message(
-                    tr("app.ai.page_action.settings_prefilled").as_ref(),
-                    AppMessageKind::Success,
-                    cx,
-                );
-                cx.notify();
+            fluxdb_app::UiAction::TablePage(request) => self.apply_ai_table_page(request, cx),
+            fluxdb_app::UiAction::EditSqlEditor(request) => {
+                self.apply_ai_sql_editor_edit(request, cx);
             }
             fluxdb_app::UiAction::ProposeConfig(proposal) => {
                 self.pending_config_proposal = Some(proposal);

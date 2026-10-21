@@ -2408,7 +2408,9 @@ impl Editor {
             let task_started = Instant::now();
             // 连续输入时只让最后一次请求进入 provider，避免每个字符都触发 metadata 扫描。
             if !explicit {
-                smol::Timer::after(Duration::from_millis(PROVIDER_DEBOUNCE_MS)).await;
+                cx.background_executor()
+                    .timer(Duration::from_millis(PROVIDER_DEBOUNCE_MS))
+                    .await;
             }
             let current = this
                 .update(cx, |this, _| this.buffer.version() == version)
@@ -2525,7 +2527,9 @@ impl Editor {
         let task_id = NEXT_TASK_ID.fetch_add(1, Ordering::Relaxed);
         let task = cx.spawn(async move |this, cx| {
             let started = Instant::now();
-            smol::Timer::after(Duration::from_millis(PROVIDER_DEBOUNCE_MS)).await;
+            cx.background_executor()
+                .timer(Duration::from_millis(PROVIDER_DEBOUNCE_MS))
+                .await;
             let result = cx
                 .background_spawn(async move { signature.signature(&snapshot, position) })
                 .await;
@@ -3087,7 +3091,9 @@ impl Editor {
         let task = cx.spawn(async move |this, cx| {
             // Tree-sitter/语法 provider 属于 CPU 密集任务，不能在 GPUI executor 内同步运行。
             let task_started = Instant::now();
-            smol::Timer::after(Duration::from_millis(debounce_ms)).await;
+            cx.background_executor()
+                .timer(Duration::from_millis(debounce_ms))
+                .await;
             let current = this
                 .update(cx, |this, _| this.buffer.version() == version)
                 .unwrap_or(false);
@@ -3235,7 +3241,9 @@ impl Editor {
         };
         let task = cx.spawn(async move |this, cx| {
             let task_started = Instant::now();
-            smol::Timer::after(Duration::from_millis(debounce_ms)).await;
+            cx.background_executor()
+                .timer(Duration::from_millis(debounce_ms))
+                .await;
             // 连续输入时，旧诊断任务在进入后台前直接退出，避免每个按键都全文解析。
             let current = this
                 .update(cx, |this, _| this.buffer.version() == version)

@@ -17,6 +17,7 @@ fn query_result_editor(
             offset: 0,
             limit,
         },
+        load_generation: 0,
         changes: None,
         editing_cell: None,
         cell_detail_panel: CellDetailPanelState::default(),

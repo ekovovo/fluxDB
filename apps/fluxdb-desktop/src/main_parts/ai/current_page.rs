@@ -1,6 +1,9 @@
 impl NavicatMain {
     fn ai_context_source_tab(&self) -> Option<&TabState> {
         let state = self.controller.state();
+        if let Some(edit) = &self.ai_chat.pending_sql_edit {
+            return state.tabs.iter().find(|tab| tab.id.0 == edit.tab_id);
+        }
         let active = state.active_tab()?;
         if !matches!(active.kind, TabKind::AiChat { .. }) {
             return Some(active);
@@ -119,6 +122,7 @@ impl NavicatMain {
                     page.editor_grant = Some(fluxdb_app::EditorGrant {
                         tab_ref: format!("tab-{}", tab.id.0),
                         snapshot: text,
+                        sql_edit: None,
                     });
                 }
                 if sending && !query.running {
@@ -392,7 +396,7 @@ impl NavicatMain {
                     }),
                     "editable_sections": ["editor", "appearance", "data", "system"],
                     "read_scope": "只含当前分区的非敏感设置值；不含客户端路径、快捷键、危险操作清单或任何凭据",
-                    "note": "AI 只能预填已列入白名单的字段；保存仍由用户点击设置页按钮"
+                    "note": "设置修改通过 toolbox.search / toolbox.load 加载 config.setting.update；仅限白名单字段，用户确认提案后才保存"
                 });
             }
             _ => {

@@ -63,11 +63,21 @@ struct AiChatUi {
     epoch: u64,
     /// 「用 AI 修复」在会话尚未加载时待填入并发送的提示词。
     pending_fix_prompt: Option<String>,
+    pending_sql_edit: Option<fluxdb_app::SqlEditorEditGrant>,
+    table_query_ran: bool,
+    table_page_binding: Option<AiTablePageBinding>,
+    table_page_task: Option<Task<()>>,
+    /// 正在进行中的 AI 页面查询回桥；用户接管时立即结束等待，避免工具空等到超时。
+    table_page_request: Option<std::sync::Arc<fluxdb_app::AiTablePageRequest>>,
     debug_open_pending: bool,
     follow_reply: bool,
     new_reply: bool,
     scripted_fixture: bool,
     scripted_stream_fixture: AiChatStreamFixture,
+    #[cfg(test)]
+    scripted_edit_sql: Option<String>,
+    #[cfg(test)]
+    scripted_table_query: Option<(ObjectPath, fluxdb_app::AiTableQuery)>,
 }
 impl AiChatUi {
     fn new(window: &mut Window, cx: &mut Context<NavicatMain>) -> Self {
@@ -91,16 +101,35 @@ impl AiChatUi {
                 }
             },
         );
-        let model_select = cx.new(|cx| SelectState::new(SearchableVec::new(Vec::<AiChatModelOption>::new()), None, window, cx));
-        let model_subscription = cx.subscribe_in(&model_select, window, |this: &mut NavicatMain, _, event: &SelectEvent<SearchableVec<AiChatModelOption>>, window, cx| {
-            if let SelectEvent::Confirm(Some(value)) = event {
-                let chat = &this.controller.state().ai_conversation;
-                this.ai_chat_request(fluxdb_app::AiConversationCommand::SelectModel {
-                    model_id: (!value.is_empty()).then(|| value.clone()),
-                    expected_revision: chat.model_selection_revision,
-                }, window, cx);
-            }
+        let model_select = cx.new(|cx| {
+            SelectState::new(
+                SearchableVec::new(Vec::<AiChatModelOption>::new()),
+                None,
+                window,
+                cx,
+            )
         });
+        let model_subscription = cx.subscribe_in(
+            &model_select,
+            window,
+            |this: &mut NavicatMain,
+             _,
+             event: &SelectEvent<SearchableVec<AiChatModelOption>>,
+             window,
+             cx| {
+                if let SelectEvent::Confirm(Some(value)) = event {
+                    let chat = &this.controller.state().ai_conversation;
+                    this.ai_chat_request(
+                        fluxdb_app::AiConversationCommand::SelectModel {
+                            model_id: (!value.is_empty()).then(|| value.clone()),
+                            expected_revision: chat.model_selection_revision,
+                        },
+                        window,
+                        cx,
+                    );
+                }
+            },
+        );
         Self {
             open: false,
             loading: false,
@@ -115,7 +144,14 @@ impl AiChatUi {
             drawer: 460.,
             embedded: 420.,
             input,
-            agent_select: cx.new(|cx| SelectState::new(SearchableVec::new(Vec::<AiChatModelOption>::new()), None, window, cx)),
+            agent_select: cx.new(|cx| {
+                SelectState::new(
+                    SearchableVec::new(Vec::<AiChatModelOption>::new()),
+                    None,
+                    window,
+                    cx,
+                )
+            }),
             agent_options: Vec::new(),
             model_select,
             _model_subscription: model_subscription,
@@ -153,7 +189,9 @@ impl AiChatUi {
             runtime: None,
             _runtime_quit: cx.on_app_quit(|this, cx| {
                 let runtime = this.ai_chat.runtime.take();
-                if let Some(runtime) = &runtime { runtime.request_shutdown(); }
+                if let Some(runtime) = &runtime {
+                    runtime.request_shutdown();
+                }
                 cx.background_spawn(async move {
                     if let Some(mut runtime) = runtime {
                         if !runtime.shutdown(std::time::Duration::from_secs(2)) {
@@ -166,6 +204,15 @@ impl AiChatUi {
             recovery_failed: false,
             epoch: 0,
             pending_fix_prompt: None,
+            pending_sql_edit: None,
+            table_query_ran: false,
+            table_page_binding: None,
+            table_page_task: None,
+            table_page_request: None,
+            #[cfg(test)]
+            scripted_edit_sql: None,
+            #[cfg(test)]
+            scripted_table_query: None,
             follow_reply: true,
             new_reply: false,
             scripted_fixture: cfg!(debug_assertions)
@@ -177,7 +224,9 @@ impl AiChatUi {
                     Ok("error") => AiChatStreamFixture::Error,
                     _ => AiChatStreamFixture::Default,
                 }
-            } else { AiChatStreamFixture::Default },
+            } else {
+                AiChatStreamFixture::Default
+            },
             debug_open_pending: cfg!(debug_assertions)
                 && std::env::var("FLUXDB_DEBUG_AI_CHAT").is_ok_and(|v| v == "1"),
         }

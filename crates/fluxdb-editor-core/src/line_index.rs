@@ -175,8 +175,17 @@ fn split(root: Link, count: usize) -> (Link, Link) {
         (Some(Arc::new(node)), right)
     } else {
         let split_at = count - left_size;
-        let left_block = make_node(node.starts[..split_at].to_vec(), node.left.take(), None);
-        let right_block = make_node(node.starts[split_at..].to_vec(), None, node.right.take());
+        // 新块从零偏移开始，必须兑现原块积累的平移；子树已由 push 单独传播。
+        let left_starts = node.starts[..split_at]
+            .iter()
+            .map(|&offset| shift(offset, node.block_delta))
+            .collect();
+        let right_starts = node.starts[split_at..]
+            .iter()
+            .map(|&offset| shift(offset, node.block_delta))
+            .collect();
+        let left_block = make_node(left_starts, node.left.take(), None);
+        let right_block = make_node(right_starts, None, node.right.take());
         (Some(left_block), Some(right_block))
     }
 }

@@ -182,6 +182,8 @@ include!("main_parts/ai/report.rs");
 include!("main_parts/ai/diagnostics.rs");
 include!("main_parts/ai/report_charts.rs");
 include!("main_parts/ai/actions.rs");
+include!("main_parts/ai/sql_editor_edit.rs");
+include!("main_parts/ai/table_page.rs");
 include!("main_parts/ai/current_page.rs");
 include!("main_parts/ai/display.rs");
 include!("main_parts/ai/stream_actions.rs");
@@ -192,3 +194,5 @@ include!("main_parts/app_boot_helpers.rs");
 
 #[cfg(test)]
 include!("main_parts/i18n_tests.rs");
+#[cfg(test)]
+include!("main_parts/sidebar_refresh_tests.rs");

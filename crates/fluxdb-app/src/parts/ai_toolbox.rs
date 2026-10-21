@@ -1154,4 +1154,18 @@ mod ai_toolbox_tests {
         let state = catalog.toolbox.as_ref().expect("state").clone();
         assert!(state.search("model", None, 0, 10).0.is_empty());
     }
+
+    #[test]
+    fn retired_prefill_permission_does_not_grant_settings_writes() {
+        let state = ToolboxState::new(
+            &[spec("config.setting.update", "Update settings")],
+            &BTreeSet::new(),
+            &["page.prefill_form".into()],
+            false,
+            None,
+        );
+        assert_eq!(state.search("", None, 0, 10).1, 0);
+        assert!(state.load(&["page.prefill_form".into()]).is_err());
+        assert!(state.load(&["config.setting.update".into()]).is_err());
+    }
 }

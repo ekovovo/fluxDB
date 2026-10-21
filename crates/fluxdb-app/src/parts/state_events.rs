@@ -1,5 +1,11 @@
 #[derive(Clone, Debug, PartialEq)]
 pub enum AppEvent {
+    AiTableObjectsLoaded { connection_id: ConnectionId, parent: Option<ObjectPath>, objects: Vec<ObjectSummary> },
+    AiTableColumnsLoaded(ObjectPath, Vec<Column>),
+    /// 表页已开始一次新加载；generation 用于丢弃旧的后台结果。
+    DataPageLoadStarted { tab_id: TabId, generation: u64 },
+    /// 后台结果或终态属于已被取代的加载，未写入表页。
+    DataPageLoadDiscarded { tab_id: TabId, generation: u64 },
     ConfigProposalApplied(ConfigApplyOutcome),
     AiConversationLoaded(AiConversationView),
     /// AI 设置列表已刷新。

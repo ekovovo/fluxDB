@@ -149,9 +149,56 @@ fn configuration_confirmation_persists_only_after_real_click(cx: &mut TestAppCon
             crate::tr("app.ai.config_proposal.applied").to_string()
         );
     });
-    // 已保存设置变化后，旧 revision 的提案通过真实点击也必须失败。
+    // 用户已有不同的未保存草稿时，真实确认按钮不能覆盖草稿或写盘。
     cx.update(|_, cx| {
         view.update(cx, |app, cx| {
+            app.settings_editor_draft.editor_font_size = 20;
+            app.pending_config_proposal = Some(ConfigProposal {
+                request_id: "ui-config-dirty".into(),
+                turn_id: "config-turn".into(),
+                expected_revision: fluxdb_app::settings_fingerprint(
+                    &app.controller.state().settings,
+                ),
+                created_at_ms: crate::now_millis(),
+                kind: ConfigProposalKind::SettingUpdate(
+                    fluxdb_app::parse_settings_prefill(&serde_json::json!({
+                        "section":"editor","fields":{"editor_font_size":16}
+                    }))
+                    .expect("conflicting settings"),
+                ),
+            });
+            cx.notify();
+        })
+    });
+    cx.update(|window, cx| {
+        window.draw(cx).clear(cx);
+    });
+    let apply = cx
+        .debug_bounds("config-proposal-apply")
+        .expect("conflicting apply button");
+    cx.simulate_click(apply.center(), Modifiers::default());
+    cx.run_until_parked();
+    assert_eq!(
+        storage.load_settings().expect("conflict unchanged").editor_font_size,
+        18
+    );
+    cx.update(|_, cx| {
+        let app = view.read(cx);
+        assert!(app.pending_config_proposal.is_some());
+        assert!(!app.config_proposal_busy);
+        assert_eq!(app.settings_editor_draft.editor_font_size, 20);
+        assert_eq!(app.controller.state().settings.editor_font_size, 18);
+        let message = app.app_message.as_ref().expect("conflict feedback");
+        assert_eq!(message.kind, AppMessageKind::Warning);
+        assert_eq!(
+            message.text,
+            crate::tr("app.ai.config_proposal.settings_draft_dirty").to_string()
+        );
+    });
+    // 放弃测试草稿后，旧 revision 的提案通过真实点击也必须失败。
+    cx.update(|_, cx| {
+        view.update(cx, |app, cx| {
+            app.settings_editor_draft = app.controller.state().settings.clone();
             app.pending_config_proposal = Some(ConfigProposal {
                 request_id: "ui-config-stale".into(),
                 turn_id: "config-turn".into(),

@@ -1,7 +1,7 @@
-// 设置页的非敏感 AI 预填面。
+// 设置配置提案的非敏感字段白名单。
 //
-// 这里只处理“当前设置页可见、可撤销且不含凭据/路径”的字段。设置页由桌面端
-// 持有草稿，AI 工具只提交预填动作，真正保存仍由用户点击设置页的保存按钮完成。
+// 这里只处理不含凭据/路径的普通设置字段。AI 工具只提交配置提案，
+// 真正保存仍由用户在确认框中批准；已有的设置页草稿受冲突检查保护。
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SettingsSection {
@@ -65,7 +65,7 @@ pub fn settings_section_fields(section: SettingsSection) -> &'static [&'static s
     }
 }
 
-/// 工具 schema 中设置字段的统一声明；页面预填和持久化提案共用。
+/// 配置工具 schema 中设置字段的统一声明。
 pub fn settings_fields_schema() -> serde_json::Value {
     serde_json::json!({
         "type": "object",
@@ -94,7 +94,7 @@ pub fn settings_fields_schema() -> serde_json::Value {
     })
 }
 
-/// 解析并校验 `page.prefill_form` 的设置字段。
+/// 解析并校验 `config.setting.update` 的设置字段。
 ///
 /// schema 只做第一层过滤；这里仍按 section 校验字段归属和取值，避免模型把
 /// “危险 SQL 确认”“客户端路径”等未开放字段夹带进来。

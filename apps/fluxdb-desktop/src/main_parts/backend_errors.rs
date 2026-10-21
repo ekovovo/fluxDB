@@ -3,6 +3,21 @@
 
 fn localize_backend_error_text(text: &str) -> String {
     let key = match text {
+        "page_query_invalid" => "app.ai.page_query.invalid",
+        "page_query_unavailable" => "app.ai.page_query.unavailable",
+        "page_query_unsupported" => "app.ai.page_query.unsupported",
+        "page_query_failed" => "app.ai.page_query.failed",
+        "page_query_conflict" => "app.ai.page_query.conflict",
+        "page_query_busy" => "app.ai.page_query.busy",
+        "page_query_existing" => "app.ai.page_query.existing",
+        "page_query_cancelled" => "app.ai.page_query.cancelled",
+        "page_query_timeout" => "app.ai.page_query.timeout",
+        "page_query_already_run" => "app.ai.page_query.already_run",
+        "sql_edit_invalid" => "app.ai.sql_edit.invalid",
+        "sql_edit_unavailable" => "app.ai.sql_edit.unavailable",
+        "sql_edit_conflict" => "app.ai.sql_edit.conflict",
+        "sql_edit_cancelled" => "app.ai.sql_edit.cancelled",
+        "sql_edit_timeout" => "app.ai.sql_edit.timeout",
         "config_proposal_expired" => "app.ai.config_proposal.expired",
         "config_proposal_stale" => "app.ai.config_proposal.stale",
         "config_proposal_already_applied" => "app.ai.config_proposal.already_applied",

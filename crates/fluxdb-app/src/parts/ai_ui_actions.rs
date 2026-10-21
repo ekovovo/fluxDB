@@ -5,14 +5,10 @@
 
 use std::sync::mpsc;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub enum UiAction {
-    /// 把非敏感设置字段写入当前设置页草稿；不保存，等待用户确认。
-    PrefillSettings {
-        request_id: String,
-        page_ref: String,
-        prefill: crate::SettingsPrefill,
-    },
+    TablePage(std::sync::Arc<crate::AiTablePageRequest>),
+    EditSqlEditor(std::sync::Arc<crate::SqlEditorEditRequest>),
     /// 提交一个待确认的持久化设置变更；用户点击“保存并应用”后才落库。
     ProposeConfig(crate::ConfigProposal),
 }

@@ -128,6 +128,7 @@
         assert!(matches!(
             controller.dispatch(AppCommand::FinishDataPageLoad {
                 tab_id,
+                generation: 0,
                 result: Ok(page.clone()),
             }),
             AppEvent::DataLoaded(..)

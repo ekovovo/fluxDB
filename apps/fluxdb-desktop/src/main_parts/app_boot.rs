@@ -3425,6 +3425,7 @@ fn navicat_main_new(
                             data_filter_value_draft: None,
                             data_filter_applying_tabs: BTreeSet::new(),
                             _data_filter_apply_tasks: BTreeMap::new(),
+                            _data_filter_apply_generations: BTreeMap::new(),
                             app_message: None,
                             _app_message_task: None,
                             table_hover_color: None,

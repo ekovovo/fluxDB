@@ -1,5 +1,11 @@
 #[derive(Clone, Debug, PartialEq)]
 pub enum AppCommand {
+    BrowseAiTableObjects { connection_id: ConnectionId, parent: Option<ObjectPath> },
+    FinishAiTableObjects { connection_id: ConnectionId, parent: Option<ObjectPath>, objects: Vec<ObjectSummary> },
+    LoadAiTableColumns(ObjectPath),
+    RememberAiTableObject(ObjectPath),
+    BeginAiTableQuery { tab_id: TabId, limit: u64 },
+    LoadAiTablePage { tab_id: TabId, generation: u64, object: ObjectPath, query: AiTableQuery },
     AiConversation(AiConversationCommand),
     PrepareBackup {
         request: BackupRequest,
@@ -156,6 +162,8 @@ pub enum AppCommand {
         restart_identity: bool,
     },
     LoadDataPage(TabId),
+    /// 开始一次表页加载：递增该标签的加载令牌，返回旧后台结果应丢弃的依据。
+    BeginDataPageLoad(TabId),
     SetDataPagePagination {
         tab_id: TabId,
         offset: u64,
@@ -163,6 +171,7 @@ pub enum AppCommand {
     },
     LoadDataPageWithSort {
         tab_id: TabId,
+        generation: u64,
         sort: Vec<SortSpec>,
         filters: Vec<FilterSpec>,
     },
@@ -366,6 +375,7 @@ pub enum AppCommand {
     },
     FinishDataPageLoad {
         tab_id: TabId,
+        generation: u64,
         result: std::result::Result<DataPage, UserFacingError>,
     },
     ToggleTableInfo {

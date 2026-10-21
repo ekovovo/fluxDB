@@ -247,10 +247,10 @@ impl NavicatMain {
     }
 
     fn perform_data_filter_and_sort(&mut self, tab_id: TabId, cx: &mut Context<Self>) {
-        if self.data_filter_applying_tabs.contains(&tab_id) {
-            return;
+        // 用户重新应用筛选时接管正在进行的 AI 页面查询：新令牌会让 AI 迟到结果失效。
+        if self.ai_chat.table_page_task.is_some() {
+            self.take_over_ai_table_page(tab_id, cx);
         }
-
         self.data_filter_applying_tabs.insert(tab_id);
         match self
             .data_filter_modes

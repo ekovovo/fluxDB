@@ -162,12 +162,13 @@ impl AppController {
             self.state.active_tab = Some(tab.id);
             return AppEvent::TabActivated(tab.id);
         }
-        let workspace = self.state.active_tab().and_then(TabState::workspace);
         let tab_id = self.next_tab_id();
         self.push_tab(TabState {
             id: tab_id,
             title: "询问 AI".into(),
-            kind: TabKind::AiChat { workspace },
+            // AI 是全局一级标签（与设置同级），不归属任何连接/数据库；
+            // 当前业务页面由桌面端 `ai_chat.context_tab` 单独记录。
+            kind: TabKind::AiChat { workspace: None },
             dirty: false,
         });
         AppEvent::TabOpened(tab_id)

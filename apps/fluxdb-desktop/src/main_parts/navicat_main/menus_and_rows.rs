@@ -433,8 +433,20 @@ impl NavicatMain {
                 self.start_rename_table_folder(parent_key, folder_name, window, cx);
             }
             TableGroupMenuAction::Refresh => {
-                self.loaded_database_children.remove(&database_key);
-                self.load_database_children(menu.database_path, database_key, cx);
+                let (target, key) = match menu.schema.as_deref() {
+                    Some(schema) => (
+                        ObjectPath {
+                            connection_id: menu.connection_id,
+                            database: Some(menu.database.clone()),
+                            schema: Some(schema.to_string()),
+                            name: schema.to_string(),
+                            kind: ObjectKind::Schema,
+                        },
+                        schema_tree_key(menu.connection_id, &menu.database, schema),
+                    ),
+                    None => (menu.database_path, database_key),
+                };
+                self.load_database_children(target, key, cx);
                 return;
             }
         }

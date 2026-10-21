@@ -259,28 +259,77 @@ impl FileStorage {
         schema: Option<&str>,
     ) -> Result<Option<CompletionIndexSnapshot>> {
         let dir = self.completion_index_dir(connection, database, schema);
-        let meta_path = dir.join("meta.toml");
-        if meta_path.exists() {
-            let header = read_toml_file::<CompletionIndexHeader>(&meta_path)?;
-            let tables = read_toml_file::<CompletionIndexTables>(&dir.join("tables.toml"))?.tables;
-            let columns =
-                read_toml_file::<CompletionIndexColumns>(&dir.join("columns.toml"))?.columns;
-            let routines =
-                read_toml_file::<CompletionIndexRoutines>(&dir.join("routines.toml"))?.routines;
-            let triggers =
-                read_toml_file::<CompletionIndexTriggers>(&dir.join("triggers.toml"))?.triggers;
-            return Ok(Some(CompletionIndexSnapshot {
-                connection_id: header.connection_id,
-                database: header.database,
-                schema: header.schema,
-                tables,
-                columns,
-                routines,
-                triggers,
-                meta: header.meta,
-            }));
+        self.load_completion_index_dir(&dir, connection.id)
+    }
+
+    /// 读取一个连接下所有已落盘的补全索引快照。
+    ///
+    /// AI 找表不知道用户会问哪个库，需要一次合并该连接的全部作用域；
+    /// 单个快照损坏只跳过该作用域，不阻断其余索引。
+    pub fn load_completion_indexes_for_connection(
+        &self,
+        connection: &ConnectionConfig,
+    ) -> Result<Vec<CompletionIndexSnapshot>> {
+        let dir = self
+            .completion_index_root()
+            .join("connections")
+            .join(connection_fingerprint(connection))
+            .join("databases");
+        let entries = match fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(storage_error(error)),
+        };
+        let mut snapshots = Vec::new();
+        for entry in entries {
+            let entry = entry.map_err(storage_error)?;
+            if !entry.file_type().map_err(storage_error)?.is_dir() {
+                continue;
+            }
+            match self.load_completion_index_dir(&entry.path(), connection.id) {
+                Ok(Some(snapshot)) => snapshots.push(snapshot),
+                Ok(None) => {}
+                Err(error) => tracing::warn!(
+                    target: "fluxdb_storage",
+                    %error,
+                    connection_id = connection.id.0,
+                    path = %entry.path().display(),
+                    "补全索引快照损坏，跳过该作用域"
+                ),
+            }
         }
-        Ok(None)
+        Ok(snapshots)
+    }
+
+    fn load_completion_index_dir(
+        &self,
+        dir: &std::path::Path,
+        connection_id: ConnectionId,
+    ) -> Result<Option<CompletionIndexSnapshot>> {
+        let meta_path = dir.join("meta.toml");
+        if !meta_path.exists() {
+            return Ok(None);
+        }
+        let header = read_toml_file::<CompletionIndexHeader>(&meta_path)?;
+        if header.connection_id != connection_id {
+            return Ok(None);
+        }
+        let tables = read_toml_file::<CompletionIndexTables>(&dir.join("tables.toml"))?.tables;
+        let columns = read_toml_file::<CompletionIndexColumns>(&dir.join("columns.toml"))?.columns;
+        let routines =
+            read_toml_file::<CompletionIndexRoutines>(&dir.join("routines.toml"))?.routines;
+        let triggers =
+            read_toml_file::<CompletionIndexTriggers>(&dir.join("triggers.toml"))?.triggers;
+        Ok(Some(CompletionIndexSnapshot {
+            connection_id: header.connection_id,
+            database: header.database,
+            schema: header.schema,
+            tables,
+            columns,
+            routines,
+            triggers,
+            meta: header.meta,
+        }))
     }
 
     pub fn save_completion_index(

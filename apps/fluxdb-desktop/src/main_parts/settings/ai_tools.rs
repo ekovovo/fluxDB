@@ -22,10 +22,14 @@ fn ai_tool_text(id: &str, group: &str, desc: &str) -> (SharedString, SharedStrin
     };
     let desc: SharedString = match id {
         "connections.list" => tr("app.ai.tools.desc.connections_list"),
-        "page.prefill_form" => tr("app.ai.tools.desc.page_prefill_form"),
         "editor.search" => tr("app.ai.tools.desc.editor_search"),
+        "editor.apply_edit" => tr("app.ai.tools.desc.editor_apply_edit"),
         "editor.read_range" => tr("app.ai.tools.desc.editor_read_range"),
         "page.read_rows" => tr("app.ai.tools.desc.page_read_rows"),
+        "page.find_table" => tr("app.ai.tools.desc.page_find_table"),
+        "page.browse_objects" => tr("app.ai.tools.desc.page_browse_objects"),
+        "page.open_table" => tr("app.ai.tools.desc.page_open_table"),
+        "page.query_table" => tr("app.ai.tools.desc.page_query_table"),
         "file.search" => tr("app.ai.tools.desc.file_search"),
         "file.search_content" => tr("app.ai.tools.desc.file_search_content"),
         "file.read" => tr("app.ai.tools.desc.file_read"),
@@ -313,7 +317,11 @@ fn ai_tool_row(
         )
         .child(div().w(px(120.)).flex().items_start().child(if artifact {
             ai_pill(tr("app.ai.tools.risk.artifact"), colors.info, colors).into_any_element()
-        } else if id == "toolbox.load" || id == "config.propose" || id == "page.prefill_form" {
+        } else if matches!(id, "page.find_table" | "page.browse_objects" | "page.open_table" | "page.query_table") {
+            ai_pill(tr("app.ai.page_query.risk"), colors.info, colors).into_any_element()
+        } else if id == "editor.apply_edit" {
+            ai_pill(tr("app.ai.sql_edit.local_edit"), colors.info, colors).into_any_element()
+        } else if id == "toolbox.load" || id == "config.propose" {
             ai_pill(tr("app.ai.tools.risk.proposal"), colors.info, colors).into_any_element()
         } else if write {
             ai_pill(tr("app.ai.tools.risk.write"), colors.warning, colors).into_any_element()

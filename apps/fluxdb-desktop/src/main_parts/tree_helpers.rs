@@ -79,6 +79,7 @@ fn tree_with_highlight(
                     "database" => rgb(0xf0b400),
                     "schema" => rgb(0x2f80ed),
                     "table" | "tables" => rgb(0x10b85f),
+                    "refreshing" => rgb(0x10b85f),
                     "view" | "views" => rgb(0x9333ea),
                     "procedures" => rgb(0x2087ff),
                     "functions" => rgb(0xf59e0b),
@@ -160,6 +161,10 @@ fn highlighted_tree_label(text: &str, query: Option<&str>, colors: UiColors) -> 
 }
 
 fn tree_icon(glyph: &'static str) -> gpui::AnyElement {
+    if glyph == "refreshing" {
+        return refreshing_icon_with_color(16., rgb(0x10b85f)).into_any_element();
+    }
+
     if matches!(glyph, "query" | "queries") {
         return app_icon(AppIcon::FileSql, 16., rgb(0x2588ff));
     }
@@ -231,6 +236,20 @@ fn loading_spinner_with_color(size: f32, color: gpui::Rgba) -> impl IntoElement 
         .text_color(color)
         .with_animation(
             "tree_loading_spinner",
+            Animation::new(Duration::from_secs_f64(0.75))
+                .repeat()
+                .with_easing(ease_in_out),
+            |this, delta| this.with_transformation(Transformation::rotate(percentage(delta))),
+        )
+}
+
+fn refreshing_icon_with_color(size: f32, color: gpui::Rgba) -> impl IntoElement {
+    svg()
+        .size(px(size))
+        .path(app_icon_path(AppIcon::Refresh))
+        .text_color(color)
+        .with_animation(
+            "tree_refreshing_icon",
             Animation::new(Duration::from_secs_f64(0.75))
                 .repeat()
                 .with_easing(ease_in_out),
@@ -418,15 +437,18 @@ fn object_group_tree(
     group: ObjectGroup,
     indent: u8,
     expanded: bool,
+    refreshing: bool,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
     // 备份节点单击开 tab 需要 ObjectPath 的独立副本（右键闭包已消费 database_path）。
     let database_path_for_open = database_path.clone();
     let schema_for_toggle = schema.clone();
+    let schema_for_menu = schema.clone();
+    let glyph = if refreshing { "refreshing" } else { group.icon_key() };
     tree(
         arrow_element(expanded, colors),
-        group.icon_key(),
+        glyph,
         group.label().to_string(),
         indent,
         false,
@@ -490,6 +512,7 @@ fn object_group_tree(
                                     .database
                                     .clone()
                                     .unwrap_or_else(|| database_path.name.clone()),
+                                schema: schema_for_menu.clone(),
                                 position: event.position,
                             },
                             window,
@@ -1308,6 +1331,18 @@ fn connection_has_loaded_children(connection: &ConnectionState, database: &str) 
 
 fn database_tree_key(connection_id: ConnectionId, database: &str) -> String {
     format!("{}:{database}", connection_id.0)
+}
+
+/// 分组子项加载作用域 key：PG 表/视图按 schema 加载，其余数据库按库加载。
+fn object_group_children_key(
+    connection_id: ConnectionId,
+    database: &str,
+    schema: Option<&str>,
+) -> String {
+    match schema {
+        Some(schema) => schema_tree_key(connection_id, database, schema),
+        None => database_tree_key(connection_id, database),
+    }
 }
 
 fn table_tree_key(path: &ObjectPath) -> String {

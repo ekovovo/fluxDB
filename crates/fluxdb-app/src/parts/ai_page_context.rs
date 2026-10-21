@@ -7,7 +7,7 @@ pub enum PageContextKind {
     RedisKey,
     RedisBrowser,
     RedisWorkbench,
-    /// 设置页：只暴露当前分区的非敏感值与可预填字段。
+    /// 设置页：只暴露当前分区的非敏感值与可修改字段。
     Settings,
     /// ER 关系图：只提供目标定位、选中表/关系的有界摘要、加载状态与版本。
     ErDiagram,
@@ -62,12 +62,14 @@ impl CurrentPageContext {
         if self.editor_grant.is_some() {
             capabilities.extend(["editor.search", "editor.read_range"]);
         }
+        if self.editor_grant.as_ref().is_some_and(|grant| grant.sql_edit.is_some()) {
+            capabilities.push("editor.apply_edit");
+        }
         if self.data_grant.is_some() {
             capabilities.push("page.read_rows");
         }
         if self.kind == PageContextKind::Settings {
             capabilities.extend([
-                "page.prefill_form",
                 "toolbox.search",
                 "toolbox.load",
                 "toolbox.inspect",
@@ -421,6 +423,17 @@ mod er_page_context_tests {
             "ER 页面不授予任何数据读取能力：关系详情只经授权的关系工具按需读取"
         );
         assert_eq!(value["untrusted"], true);
+    }
+
+    #[test]
+    fn settings_page_exposes_toolbox_without_a_prefill_capability() {
+        let mut page = er_page_context();
+        page.kind = PageContextKind::Settings;
+        page.details = serde_json::json!({});
+        assert_eq!(
+            page.public_json()["capabilities"],
+            serde_json::json!(["toolbox.search", "toolbox.load", "toolbox.inspect"])
+        );
     }
 
     #[test]

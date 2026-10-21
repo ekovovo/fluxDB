@@ -14,6 +14,48 @@
 
 use std::collections::HashMap;
 
+/// 只填筛选条件不构成执行路径选择，允许 AI 后续在页面或 SQL 间继续决定。
+fn sql_page_query_is_prefill(arguments_json: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(arguments_json)
+        .is_ok_and(|value| value["execute"] == false)
+}
+
+/// 一轮里页面筛选查询与直接 SQL 查询只能二选一；只填条件不算执行。
+fn query_path_conflict(
+    tool_id: &str,
+    arguments_json: &str,
+    page_queried: bool,
+    sql_queried: bool,
+) -> bool {
+    (tool_id == "db.run" && page_queried)
+        || (tool_id == "page.query_table"
+            && !sql_page_query_is_prefill(arguments_json)
+            && (page_queried || sql_queried))
+}
+
+#[cfg(test)]
+mod ai_query_path_tests {
+    use super::{query_path_conflict, sql_page_query_is_prefill};
+
+    #[test]
+    fn page_and_sql_queries_are_mutually_exclusive_per_turn() {
+        let page = r#"{"execute":true,"page_ref":"p"}"#;
+        let prefill = r#"{"execute":false,"page_ref":"p"}"#;
+        assert!(query_path_conflict("db.run", "{}", true, false));
+        assert!(query_path_conflict("page.query_table", page, false, true));
+        assert!(query_path_conflict("page.query_table", page, true, false));
+        assert!(!query_path_conflict(
+            "page.query_table",
+            prefill,
+            true,
+            false
+        ));
+        assert!(!query_path_conflict("page.query_table", page, false, false));
+        assert!(!query_path_conflict("db.run", "{}", false, true));
+        assert!(sql_page_query_is_prefill(prefill));
+    }
+}
+
 /// 运行限制。
 #[derive(Clone, Copy, Debug)]
 pub struct LoopLimits {
@@ -86,7 +128,9 @@ pub struct TurnPermissionContext {
 /// 主循环的领域事件；执行方将事实持久化，再投影成会话更新。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LoopEvent {
-    IterationStarted { iteration: usize },
+    IterationStarted {
+        iteration: usize,
+    },
     /// 文本增量（UI 合并展示）。
     TextDelta(String),
     /// 公开推理摘要增量。
@@ -109,7 +153,9 @@ pub enum LoopEvent {
     /// 模型发布/更新了公开计划（`plan.update` 工具校验通过后的规范化结果）。
     ///
     /// 计划是**模型公开内容**，不是执行事实；步骤状态由模型显式声明，宿主不推断。
-    PlanUpdated { plan: crate::PlanUpdate },
+    PlanUpdated {
+        plan: crate::PlanUpdate,
+    },
     /// 一个执行阶段的脱敏耗时/结果；供「生命周期诊断」汇总，不含正文或凭据。
     ///
     /// 每阶段一条、在阶段边界即时发出：进程被杀后仍留有证据，不必等轮末汇总。
@@ -154,7 +200,9 @@ pub enum TurnOutcome {
         truncated: bool,
     },
     /// 安全暂停：达到迭代上限或无进展，需要用户介入。
-    Paused { reason: String },
+    Paused {
+        reason: String,
+    },
     /// 基础设施失败（Provider/工具/hook/宿主返回 Err），不是普通工具错误。
     ///
     /// 携带失败阶段与原始错误对象：受控错误码与可重试性只能在错误还活着时取，
@@ -183,8 +231,11 @@ pub struct TurnRunner<'a> {
 
 /// `ToolSpec` → Provider 可见的 `ToolDescriptor`（只暴露描述与 schema）。
 fn loop_tool_descriptors(catalog: &ToolCatalog) -> Vec<fluxdb_core::ToolDescriptor> {
-    let read_only=catalog.security.as_ref().is_some_and(|s|
-        s.settings().map(|(p,_)|p.tools_default==ExecutionPolicy::ReadOnly).unwrap_or(true));
+    let read_only = catalog.security.as_ref().is_some_and(|s| {
+        s.settings()
+            .map(|(p, _)| p.tools_default == ExecutionPolicy::ReadOnly)
+            .unwrap_or(true)
+    });
     catalog
         .specs()
         .iter()
@@ -300,6 +351,8 @@ impl<'a> TurnRunner<'a> {
     ) -> TurnOutcome {
         let mut signature_counts: HashMap<String, usize> = HashMap::new();
         let mut last_text = String::new();
+        // 页面筛选查询与直接 SQL 查询互斥；浏览/打开表不算执行路径。
+        let (mut page_queried, mut sql_queried) = (false, false);
 
         for iteration in 1..=self.limits.max_iterations {
             if cancel.is_cancelled() {
@@ -307,7 +360,10 @@ impl<'a> TurnRunner<'a> {
             }
             // 安全边界：把用户补充吸收进消息历史（不改执行目标）。
             for text in steering() {
-                state.messages.push(fluxdb_core::ModelMessage::new(fluxdb_core::ModelRole::User, text));
+                state.messages.push(fluxdb_core::ModelMessage::new(
+                    fluxdb_core::ModelRole::User,
+                    text,
+                ));
             }
             emit(LoopEvent::IterationStarted { iteration });
 
@@ -328,35 +384,48 @@ impl<'a> TurnRunner<'a> {
             let mut text = String::new();
             let mut tool_calls = Vec::new();
             let mut finish = None;
-            let (response, attempts) = retry_streamed_model_call(cancel, &mut |receive| {
-                crate::ai_executor::block_on_cancellable(
-                    self.provider.stream_events(request.clone(), cancel.clone(), receive), cancel,
-                ).and_then(|result| result)
-            }, &mut |event| {
-                if cancel.is_cancelled() { return; }
-                match event {
-                    fluxdb_core::ModelEvent::TextDelta(delta) => {
-                        text.push_str(delta);
-                        emit(LoopEvent::TextDelta(delta.clone()));
+            let (response, attempts) = retry_streamed_model_call(
+                cancel,
+                &mut |receive| {
+                    crate::ai_executor::block_on_cancellable(
+                        self.provider
+                            .stream_events(request.clone(), cancel.clone(), receive),
+                        cancel,
+                    )
+                    .and_then(|result| result)
+                },
+                &mut |event| {
+                    if cancel.is_cancelled() {
+                        return;
                     }
-                    fluxdb_core::ModelEvent::ReasoningSummaryDelta(delta) => {
-                        emit(LoopEvent::ReasoningSummaryDelta(delta.clone()));
+                    match event {
+                        fluxdb_core::ModelEvent::TextDelta(delta) => {
+                            text.push_str(delta);
+                            emit(LoopEvent::TextDelta(delta.clone()));
+                        }
+                        fluxdb_core::ModelEvent::ReasoningSummaryDelta(delta) => {
+                            emit(LoopEvent::ReasoningSummaryDelta(delta.clone()));
+                        }
+                        fluxdb_core::ModelEvent::ToolCallRequested(call) => {
+                            emit(LoopEvent::ToolCallRequested(call.clone()));
+                            tool_calls.push(call.clone());
+                        }
+                        fluxdb_core::ModelEvent::Usage(_) => {}
+                        fluxdb_core::ModelEvent::Finished(reason) => finish = Some(*reason),
                     }
-                    fluxdb_core::ModelEvent::ToolCallRequested(call) => {
-                        emit(LoopEvent::ToolCallRequested(call.clone()));
-                        tool_calls.push(call.clone());
-                    }
-                    fluxdb_core::ModelEvent::Usage(_) => {}
-                    fluxdb_core::ModelEvent::Finished(reason) => finish = Some(*reason),
-                }
-            });
+                },
+            );
             // EOF/[DONE] 不能代替模型结束事实；此校验在重试边界之外，
             // 同时让生命周期诊断把提前断流记为失败，而不是“请求成功”。
             let response = response.and_then(|()| match finish {
-                None => Err(fluxdb_core::Error::new(fluxdb_core::ErrorKind::Connection,
-                    "模型连接提前结束，未收到完整结束事件")),
+                None => Err(fluxdb_core::Error::new(
+                    fluxdb_core::ErrorKind::Connection,
+                    "模型连接提前结束，未收到完整结束事件",
+                )),
                 Some(fluxdb_core::FinishReason::Error) => Err(fluxdb_core::Error::new(
-                    fluxdb_core::ErrorKind::Internal, "模型返回错误结束")),
+                    fluxdb_core::ErrorKind::Internal,
+                    "模型返回错误结束",
+                )),
                 _ => Ok(()),
             });
             emit(LoopEvent::StageTiming {
@@ -367,7 +436,10 @@ impl<'a> TurnRunner<'a> {
                 attempts,
                 ok: response.is_ok(),
                 error_code: response.as_ref().err().map(stage_error_code),
-                retryable: response.as_ref().err().map(fluxdb_core::Error::is_retryable),
+                retryable: response
+                    .as_ref()
+                    .err()
+                    .map(fluxdb_core::Error::is_retryable),
             });
             if cancel.is_cancelled() || finish == Some(fluxdb_core::FinishReason::Cancelled) {
                 return TurnOutcome::Cancelled;
@@ -390,10 +462,12 @@ impl<'a> TurnRunner<'a> {
                         arguments_json: call.arguments_json.clone(),
                     })
                     .collect::<Vec<_>>();
-                state.messages.push(fluxdb_core::ModelMessage::assistant_with_tool_calls(
-                    text.clone(),
-                    calls,
-                ));
+                state
+                    .messages
+                    .push(fluxdb_core::ModelMessage::assistant_with_tool_calls(
+                        text.clone(),
+                        calls,
+                    ));
             }
             match finish {
                 Some(fluxdb_core::FinishReason::Error) => {
@@ -453,7 +527,10 @@ impl<'a> TurnRunner<'a> {
                     state.messages.push(fluxdb_core::ModelMessage::tool_result(
                         call.provider_call_id.clone(),
                         call.tool_id.clone(),
-                        format!("{{\"error\":\"invalid_json\",\"tool\":\"{}\"}}", call.tool_id),
+                        format!(
+                            "{{\"error\":\"invalid_json\",\"tool\":\"{}\"}}",
+                            call.tool_id
+                        ),
                     ));
                     continue;
                 }
@@ -472,12 +549,12 @@ impl<'a> TurnRunner<'a> {
                     continue;
                 };
                 if let Err(error) = self.tools.prepare(&call.tool_id, &call.arguments_json) {
-                        let notice = format!(
-                            "工具 {} 未执行：参数未通过校验（{}）。",
-                            call.tool_id, error.code
-                        );
-                        emit(LoopEvent::Notice(notice));
-                        state.messages.push(fluxdb_core::ModelMessage::tool_result(
+                    let notice = format!(
+                        "工具 {} 未执行：参数未通过校验（{}）。",
+                        call.tool_id, error.code
+                    );
+                    emit(LoopEvent::Notice(notice));
+                    state.messages.push(fluxdb_core::ModelMessage::tool_result(
                             call.provider_call_id.clone(),
                             call.tool_id.clone(),
                             format!(
@@ -487,15 +564,17 @@ impl<'a> TurnRunner<'a> {
                                 serde_json::Value::String(error.message).to_string()
                             ),
                         ));
-                        continue;
+                    continue;
                 }
                 // 1b) before-tool Hook：只在初始 schema 校验通过后才允许补丁；
                 // 补丁不能改变执行目标，且必须重新 schema/风险/审批校验（下方 shadow）。
-                let original_target = serde_json::from_str::<serde_json::Value>(&call.arguments_json)
-                    .ok()
-                    .and_then(|value| value.get("target").cloned());
+                let original_target =
+                    serde_json::from_str::<serde_json::Value>(&call.arguments_json)
+                        .ok()
+                        .and_then(|value| value.get("target").cloned());
                 let original_call_id = call.provider_call_id.clone();
-                let (call, hook_deny, hook_approval) = match self.tools.hooks.before(&call, cancel) {
+                let (call, hook_deny, hook_approval) = match self.tools.hooks.before(&call, cancel)
+                {
                     Ok(value) => value,
                     Err(error) => {
                         return TurnOutcome::Failed {
@@ -526,7 +605,19 @@ impl<'a> TurnRunner<'a> {
                         original.arguments_json = call.arguments_json.clone();
                     }
                 }
-                let prepared = match self.tools.prepare(&call.tool_id, &call.arguments_json) {
+                let conflicts = query_path_conflict(
+                    &call.tool_id,
+                    &call.arguments_json,
+                    page_queried,
+                    sql_queried,
+                );
+                let prepared = match if conflicts {
+                    Err(ToolError::invalid_arguments(
+                        "本轮已选择另一种查询方式；页面查询与 SQL 查询不能在同一轮重复执行",
+                    ))
+                } else {
+                    self.tools.prepare(&call.tool_id, &call.arguments_json)
+                } {
                     Ok(prepared) => prepared,
                     Err(error) => {
                         let notice = format!(
@@ -624,21 +715,38 @@ impl<'a> TurnRunner<'a> {
                     policy: self.permission.policy,
                     audit: Some(audit),
                 };
-                let mut automatic_approval=false;
-                let mut bounded_write=false;
-                let decision=if let Some(security)=&self.tools.security {
-                    let policy=match security.settings() {
-                        Ok((p,_))=>p.tools_default,
-                        Err(error)=>return TurnOutcome::Failed{stage:FailureStage::ToolCall,error},
+                let mut automatic_approval = false;
+                let mut bounded_write = false;
+                let decision = if let Some(security) = &self.tools.security {
+                    let policy = match security.settings() {
+                        Ok((p, _)) => p.tools_default,
+                        Err(error) => {
+                            return TurnOutcome::Failed {
+                                stage: FailureStage::ToolCall,
+                                error,
+                            };
+                        }
                     };
-                    match security.authorize(&input,policy,||{
-                        self.tools.executable(&call.tool_id).ok_or_else(||
-                            fluxdb_core::Error::new(fluxdb_core::ErrorKind::Unsupported,"工具不可用")
-                        )?.write_risk_facts(&prepared.to_json_string())
-                    },cancel) {
-                        Ok(result)=>{
-                            automatic_approval=result.automatic_approval;
-                            bounded_write=result.write_commit==fluxdb_core::WriteCommit::Bounded;
+                    match security.authorize(
+                        &input,
+                        policy,
+                        || {
+                            self.tools
+                                .executable(&call.tool_id)
+                                .ok_or_else(|| {
+                                    fluxdb_core::Error::new(
+                                        fluxdb_core::ErrorKind::Unsupported,
+                                        "工具不可用",
+                                    )
+                                })?
+                                .write_risk_facts(&prepared.to_json_string())
+                        },
+                        cancel,
+                    ) {
+                        Ok(result) => {
+                            automatic_approval = result.automatic_approval;
+                            bounded_write =
+                                result.write_commit == fluxdb_core::WriteCommit::Bounded;
                             if effective_risk != fluxdb_core::ToolRisk::Read {
                                 emit(LoopEvent::Notice(result.reason.clone()));
                             }
@@ -653,24 +761,37 @@ impl<'a> TurnRunner<'a> {
                                     "class":match signal.class{fluxdb_core::WriteRiskClass::Hard=>"hard",fluxdb_core::WriteRiskClass::Soft=>"soft"},
                                 })).collect::<Vec<_>>(),
                             }));
-                            if let Err(error)=with_ai_storage(&security.storage,|conn|
+                            if let Err(error) = with_ai_storage(&security.storage, |conn| {
                                 fluxdb_storage::ai_platform::run_events::append(conn,&state.turn_id,"execution_policy",
                                 &serde_json::json!({"tool":spec.id,"plan_hash":hash,"policy":policy,
                                     "reason":result.reason,"automatic_approval":automatic_approval,
                                     "write_commit":match result.write_commit{fluxdb_core::WriteCommit::Bounded=>"bounded",fluxdb_core::WriteCommit::Ordinary=>"ordinary"},
                                     "risk":risk_json,
-                                    "settings_revision":result.settings_revision}).to_string(),ai_chat_now()).map(|_|()))
-                            {return TurnOutcome::Failed{stage:FailureStage::ToolCall,error};}
+                                    "settings_revision":result.settings_revision}).to_string(),ai_chat_now()).map(|_|())
+                            }) {
+                                return TurnOutcome::Failed {
+                                    stage: FailureStage::ToolCall,
+                                    error,
+                                };
+                            }
                             result.decision
-                        },
-                        Err(error)=>return TurnOutcome::Failed{stage:FailureStage::ToolCall,error},
+                        }
+                        Err(error) => {
+                            return TurnOutcome::Failed {
+                                stage: FailureStage::ToolCall,
+                                error,
+                            };
+                        }
                     }
-                } else {authorize(&input)};
+                } else {
+                    authorize(&input)
+                };
 
                 match decision {
                     // 4a) 拒绝：合成 Denied 回执回给模型，永不执行。
                     PermissionDecision::Deny { code, reason, .. } => {
-                        let receipt = loop_denied_receipt(&call, code, &reason, &hash, loop_now_ms());
+                        let receipt =
+                            loop_denied_receipt(&call, code, &reason, &hash, loop_now_ms());
                         emit(LoopEvent::ToolFinished {
                             receipt: receipt.clone(),
                             audit: facts.clone(),
@@ -765,6 +886,16 @@ impl<'a> TurnRunner<'a> {
                             error_code: receipt.error_code.clone(),
                             retryable: receipt_retryable(&receipt),
                         });
+                        if receipt.is_success() {
+                            if call.tool_id == "db.run" {
+                                sql_queried = true;
+                            } else if call.tool_id == "page.query_table"
+                                && serde_json::from_str::<serde_json::Value>(&receipt.result_json)
+                                    .is_ok_and(|value| value["queried"] == true)
+                            {
+                                page_queried = true;
+                            }
+                        }
                         receipt
                     }
                     Ok(Err(error)) | Err(error) => {
@@ -832,11 +963,16 @@ impl<'a> TurnRunner<'a> {
                 {
                     emit(LoopEvent::PlanUpdated { plan });
                 }
-                if receipt.status==fluxdb_core::ToolReceiptStatus::Unknown {
-                    return TurnOutcome::Paused {reason:"写入结果未知，已停止后续工具调用，请人工核实；不会自动重试".into()};
+                if receipt.status == fluxdb_core::ToolReceiptStatus::Unknown {
+                    return TurnOutcome::Paused {
+                        reason: "写入结果未知，已停止后续工具调用，请人工核实；不会自动重试".into(),
+                    };
                 }
-                if let Err(error)=self.tools.hooks.after(&receipt,cancel) {
-                    return TurnOutcome::Failed{stage:FailureStage::ToolCall,error};
+                if let Err(error) = self.tools.hooks.after(&receipt, cancel) {
+                    return TurnOutcome::Failed {
+                        stage: FailureStage::ToolCall,
+                        error,
+                    };
                 }
                 state.messages.push(fluxdb_core::ModelMessage::tool_result(
                     receipt.call_id.clone(),
@@ -847,7 +983,8 @@ impl<'a> TurnRunner<'a> {
                         "truncated":projection.truncated,
                         "result":serde_json::from_str::<serde_json::Value>(&projection.text)
                             .unwrap_or(serde_json::Value::Null),
-                    }).to_string(),
+                    })
+                    .to_string(),
                 ));
             }
         }

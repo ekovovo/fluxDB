@@ -3805,7 +3805,7 @@ fn query_result_view(
     let (page, page_index) = match entry {
         QueryResultEntry::Page { page, page_index } => (page, page_index),
         QueryResultEntry::Failure { summary } => {
-            return query_result_error_state(tab_id, result_index, summary, colors, cx);
+            return query_result_error_state(tab_id, result_index, summary, this, colors, cx);
         }
     };
     let result_editor = editor.result_editors.get(&page_index);
@@ -4227,11 +4227,14 @@ fn query_result_error_state(
     tab_id: TabId,
     result_index: usize,
     summary: &QueryExecutionSummary,
+    this: &NavicatMain,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
     let copy_text = query_result_error_copy_text(summary);
     let summary_for_ai = summary.clone();
+    let ai_busy = this.ai_chat.loading || this.ai_chat.running.is_some()
+        || this.ai_chat.pending_sql_edit.is_some();
     let (variant, icon_name, accent) = app_message_style(AppMessageKind::Error, cx);
     let alert = Alert::new(
         gpui::ElementId::Name(
@@ -4322,8 +4325,10 @@ fn query_result_error_state(
                 AppIcon::Bot,
                 colors,
             )
+            .disabled(ai_busy)
+            .debug_selector(|| "query-ai-fix".into())
             .on_click(cx.listener(move |this, _, window, cx| {
-                this.ai_fix_query_error(summary_for_ai.clone(), window, cx);
+                this.begin_ai_sql_editor_edit(tab_id, Some(summary_for_ai.clone()), window, cx);
             })),
         );
 

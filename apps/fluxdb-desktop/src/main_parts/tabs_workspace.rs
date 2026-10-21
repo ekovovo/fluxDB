@@ -10,8 +10,7 @@ fn tabs(
         order_first_level_tab_groups(first_level_tab_groups(state), &app.workspace_tab_order);
     let active_scope = active_first_level_scope(state);
     let show_first_level = !groups.is_empty();
-    let show_second_level =
-        show_first_level && !matches!(active_scope, Some(FirstLevelScope::Settings));
+    let show_second_level = show_first_level && first_level_has_second_row(active_scope.as_ref());
     let height = if !show_first_level {
         34.
     } else if show_second_level {
@@ -116,6 +115,12 @@ type WorkspaceScope = TabWorkspace;
 enum FirstLevelScope {
     Database(WorkspaceScope),
     Settings,
+    AiChat,
+}
+
+/// 只有数据库工作区有二级标签；设置和 AI 是完整的全局页面。
+fn first_level_has_second_row(scope: Option<&FirstLevelScope>) -> bool {
+    !matches!(scope, Some(FirstLevelScope::Settings | FirstLevelScope::AiChat))
 }
 
 #[derive(Clone, Debug)]
@@ -130,6 +135,9 @@ enum WorkspaceTabGroup {
     Settings {
         first_tab_id: TabId,
     },
+    AiChat {
+        first_tab_id: TabId,
+    },
 }
 
 impl WorkspaceTabGroup {
@@ -137,12 +145,15 @@ impl WorkspaceTabGroup {
         match self {
             Self::Database { scope, .. } => FirstLevelScope::Database(scope.clone()),
             Self::Settings { .. } => FirstLevelScope::Settings,
+            Self::AiChat { .. } => FirstLevelScope::AiChat,
         }
     }
 
     fn first_tab_id(&self) -> TabId {
         match self {
-            Self::Database { first_tab_id, .. } | Self::Settings { first_tab_id } => *first_tab_id,
+            Self::Database { first_tab_id, .. }
+            | Self::Settings { first_tab_id }
+            | Self::AiChat { first_tab_id } => *first_tab_id,
         }
     }
 }
@@ -150,6 +161,7 @@ impl WorkspaceTabGroup {
 fn first_level_tab_groups(state: &AppState) -> Vec<WorkspaceTabGroup> {
     let mut groups = Vec::new();
     let mut settings_tab_id = None;
+    let mut ai_chat_tab_id = None;
     for tab in &state.tabs {
         match tab_first_level_scope(tab) {
             Some(FirstLevelScope::Database(scope)) => {
@@ -183,11 +195,20 @@ fn first_level_tab_groups(state: &AppState) -> Vec<WorkspaceTabGroup> {
                 settings_tab_id = Some(tab.id);
             }
             Some(FirstLevelScope::Settings) => {}
+            Some(FirstLevelScope::AiChat) if ai_chat_tab_id.is_none() => {
+                ai_chat_tab_id = Some(tab.id);
+            }
+            Some(FirstLevelScope::AiChat) => {}
             None => {}
         }
     }
     if let Some(first_tab_id) = settings_tab_id {
         groups.push(WorkspaceTabGroup::Settings { first_tab_id });
+    }
+    if let Some(ai_tab_id) = ai_chat_tab_id {
+        groups.push(WorkspaceTabGroup::AiChat {
+            first_tab_id: ai_tab_id,
+        });
     }
     groups
 }
@@ -519,6 +540,18 @@ fn first_level_tab_entries(
                     icon: AppIcon::Settings,
                 })
             }
+            WorkspaceTabGroup::AiChat { first_tab_id } => {
+                let title = tr("app.tabs.ai_chat");
+                if !query.is_empty() && !search_matches_text(&title, &query) {
+                    return None;
+                }
+                Some(TabSwitcherEntry {
+                    id: *first_tab_id,
+                    title: title.to_string(),
+                    active: matches!(active_scope, Some(FirstLevelScope::AiChat)),
+                    icon: AppIcon::Bot,
+                })
+            }
         })
         .collect()
 }
@@ -566,6 +599,8 @@ fn tab_workspace_scope(tab: &TabState) -> Option<WorkspaceScope> {
 fn tab_first_level_scope(tab: &TabState) -> Option<FirstLevelScope> {
     match &tab.kind {
         TabKind::Settings(_) => Some(FirstLevelScope::Settings),
+        // AI 是全局一级标签，不继承数据库工作区；业务页面由 context_tab 单独记录。
+        TabKind::AiChat { .. } => Some(FirstLevelScope::AiChat),
         _ => tab_workspace_scope(tab).map(FirstLevelScope::Database),
     }
 }
@@ -573,7 +608,7 @@ fn tab_first_level_scope(tab: &TabState) -> Option<FirstLevelScope> {
 fn database_scope(scope: Option<&FirstLevelScope>) -> Option<&WorkspaceScope> {
     match scope? {
         FirstLevelScope::Database(workspace) => Some(workspace),
-        FirstLevelScope::Settings => None,
+        FirstLevelScope::Settings | FirstLevelScope::AiChat => None,
     }
 }
 
@@ -760,6 +795,7 @@ fn table_tab_row(
     }
 
     div()
+        .debug_selector(|| "table-tab-row".into())
         .h(px(36.))
         .min_w(px(0.))
         .bg(colors.panel_bg)
@@ -988,10 +1024,12 @@ fn first_level_tab_view(
     let title = match group {
         WorkspaceTabGroup::Database { database, .. } => database.clone(),
         WorkspaceTabGroup::Settings { .. } => tr("app.tabs.settings").to_string(),
+        WorkspaceTabGroup::AiChat { .. } => tr("app.tabs.ai_chat").to_string(),
     };
     let subtitle = match group {
         WorkspaceTabGroup::Database { connection_name, .. } => connection_name.clone(),
         WorkspaceTabGroup::Settings { .. } => tr("app.tabs.global").to_string(),
+        WorkspaceTabGroup::AiChat { .. } => tr("app.tabs.global").to_string(),
     };
     let (icon, accent) = match group {
         WorkspaceTabGroup::Database {
@@ -1002,6 +1040,7 @@ fn first_level_tab_view(
             tab_identity_color(connection_color_hex, colors),
         ),
         WorkspaceTabGroup::Settings { .. } => (AppIcon::Settings, colors.info),
+        WorkspaceTabGroup::AiChat { .. } => (AppIcon::Bot, colors.info),
     };
     let dragged_workspace_tab = DraggedWorkspaceTab {
         scope: group.scope(),

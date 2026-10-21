@@ -74,7 +74,7 @@ fn flatten_sidebar_visible_rows(
     saved_queries: &[SavedQuery],
     _connecting_connections: &BTreeSet<ConnectionId>,
     loading_databases: &BTreeSet<String>,
-    _loaded_database_children: &BTreeSet<String>,
+    loaded_database_children: &BTreeSet<String>,
     pinned_databases: &BTreeSet<String>,
     pinned_tables: &BTreeSet<String>,
     table_folders: &BTreeMap<String, Vec<String>>,
@@ -106,7 +106,7 @@ fn flatten_sidebar_visible_rows(
                     None,
                     _connecting_connections,
                     loading_databases,
-                    _loaded_database_children,
+                    loaded_database_children,
                     pinned_databases,
                     pinned_tables,
                     table_folders,
@@ -184,7 +184,7 @@ fn flatten_sidebar_visible_rows(
                             Some(group.id),
                             _connecting_connections,
                             loading_databases,
-                            _loaded_database_children,
+                            loaded_database_children,
                             pinned_databases,
                             pinned_tables,
                             table_folders,
@@ -212,7 +212,7 @@ fn push_connection_visible_rows(
     group_id: Option<ConnectionGroupId>,
     _connecting_connections: &BTreeSet<ConnectionId>,
     loading_databases: &BTreeSet<String>,
-    _loaded_database_children: &BTreeSet<String>,
+    loaded_database_children: &BTreeSet<String>,
     pinned_databases: &BTreeSet<String>,
     pinned_tables: &BTreeSet<String>,
     table_folders: &BTreeMap<String, Vec<String>>,
@@ -308,7 +308,7 @@ fn push_connection_visible_rows(
             )
         };
         let database_loading = loading_databases.contains(&database_key);
-
+        let database_was_loaded = loaded_database_children.contains(&database_key);
         rows.push(SidebarVisibleRow {
             kind: SidebarRowKind::Database,
             indent: indent + 1,
@@ -325,13 +325,15 @@ fn push_connection_visible_rows(
             folder_name: None,
         });
 
-        let show_groups = database.path.kind != ObjectKind::RedisDb && database_expanded;
+        let show_groups = database.path.kind != ObjectKind::RedisDb
+            && database_expanded
+            && (!database_loading || database_was_loaded);
         // PG 按 schema 分桶；无 schema 的数据库（MySQL/SQLite/Redis）保持原树层级。
         let schemas = database_schemas(connection, &database_name);
         if schemas.is_empty() {
             if search_active && database_expanded {
                 for group in &matching_groups {
-                    if show_groups && !database_loading {
+                    if show_groups {
                         push_object_group_visible_rows(
                             connection,
                             &database,
@@ -344,7 +346,7 @@ fn push_connection_visible_rows(
                             search_query,
                             _connecting_connections,
                             loading_databases,
-                            _loaded_database_children,
+                            loaded_database_children,
                             pinned_tables,
                             table_folders,
                             table_folder_assignments,
@@ -354,7 +356,7 @@ fn push_connection_visible_rows(
                         );
                     }
                 }
-            } else if show_groups && !database_loading {
+            } else if show_groups {
                 for group in ObjectGroup::ALL {
                     push_object_group_visible_rows(
                         connection,
@@ -368,7 +370,7 @@ fn push_connection_visible_rows(
                         search_query,
                         _connecting_connections,
                         loading_databases,
-                        _loaded_database_children,
+                        loaded_database_children,
                         pinned_tables,
                         table_folders,
                         table_folder_assignments,
@@ -378,7 +380,7 @@ fn push_connection_visible_rows(
                     );
                 }
             }
-        } else if show_groups && !database_loading {
+        } else if show_groups {
             // PG schema 行：数据库展开后列出各 schema，schema 展开后再下钻到分组。
             for schema in schemas {
                 let schema_key = schema_tree_key(connection_id, &database_name, &schema);
@@ -387,6 +389,7 @@ fn push_connection_visible_rows(
                     search_active,
                 );
                 let schema_loading = loading_databases.contains(&schema_key);
+                let schema_loaded = loaded_database_children.contains(&schema_key);
                 rows.push(SidebarVisibleRow {
                     kind: SidebarRowKind::Schema,
                     indent: indent + 2,
@@ -402,7 +405,7 @@ fn push_connection_visible_rows(
                     folder_parent_key: None,
                     folder_name: None,
                 });
-                if !schema_expanded || schema_loading {
+                if !schema_expanded || (schema_loading && !schema_loaded) {
                     continue;
                 }
                 // search：只列匹配分组；正常：列全部分组。
@@ -420,7 +423,7 @@ fn push_connection_visible_rows(
                             search_query,
                             _connecting_connections,
                             loading_databases,
-                            _loaded_database_children,
+                            loaded_database_children,
                             pinned_tables,
                             table_folders,
                             table_folder_assignments,
@@ -443,7 +446,7 @@ fn push_connection_visible_rows(
                             search_query,
                             _connecting_connections,
                             loading_databases,
-                            _loaded_database_children,
+                            loaded_database_children,
                             pinned_tables,
                             table_folders,
                             table_folder_assignments,
@@ -821,6 +824,13 @@ fn build_sidebar_row(
                 this.expanded_object_groups.get(&group_key).copied().unwrap_or(false)
             };
             let database_path = row.database_path.clone().expect("object group has path");
+            let loading_key = object_group_children_key(
+                row.connection_id,
+                &database_name,
+                row.schema.as_deref(),
+            );
+            let refreshing =
+                group == ObjectGroup::Tables && this.loading_databases.contains(&loading_key);
             object_group_tree(
                 row.connection_id,
                 database_path,
@@ -829,6 +839,7 @@ fn build_sidebar_row(
                 group,
                 row.indent,
                 group_expanded,
+                refreshing,
                 colors,
                 cx,
             )

@@ -860,6 +860,39 @@ mod ai_config_tools_tests {
     use super::*;
 
     #[test]
+    fn settings_changes_are_discovered_and_loaded_through_toolbox() {
+        let storage = fluxdb_storage::FileStorage::new(
+            std::env::temp_dir().join(format!("fluxdb-config-{}", uuid::Uuid::new_v4())),
+        );
+        let mut catalog = crate::ToolCatalog::new(Vec::new());
+        add_ai_config_tools(
+            &mut catalog,
+            storage,
+            std::sync::Arc::new(NoopSink),
+        )
+        .expect("config tools");
+        install_ai_toolbox(&mut catalog, &BTreeSet::new(), &[], false, None)
+            .expect("toolbox");
+
+        assert!(catalog.describe("page.prefill_form").is_none());
+        assert!(!catalog.is_model_visible("config.setting.update"));
+        let state = catalog.toolbox.as_ref().expect("toolbox state");
+        let (items, total, _) = state.search("config.setting.update", Some("config"), 0, 10);
+        assert_eq!(total, 1);
+        assert_eq!(items[0]["id"], "config.setting.update");
+        assert!(items[0].get("input_schema").is_none());
+        state
+            .load(&["config.setting.update".into()])
+            .expect("load settings action");
+        assert!(catalog.is_model_visible("config.setting.update"));
+        let spec = catalog.describe("config.setting.update").expect("settings action");
+        assert_eq!(
+            spec.input_schema["required"],
+            serde_json::json!(["section", "fields", "expected_revision"])
+        );
+    }
+
+    #[test]
     fn each_config_action_has_its_own_schema() {
         let schema = config_tool_set_enabled_schema();
         crate::validate_schema(

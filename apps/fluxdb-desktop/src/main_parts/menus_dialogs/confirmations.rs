@@ -436,6 +436,8 @@ fn close_workspace_modal(
             .replace("%{details}", &details.join(", ")),
         FirstLevelScope::Settings => tr("app.confirm.close_settings_message")
             .replace("%{details}", &details.join(", ")),
+        FirstLevelScope::AiChat => tr("app.confirm.close_ai_chat_message")
+            .replace("%{details}", &details.join(", ")),
     };
 
     div()

@@ -460,7 +460,7 @@ impl NavicatMain {
                 && self.settings_editor_draft != target
             {
                 self.show_message(
-                    tr("app.ai.page_action.settings_draft_dirty"),
+                    tr("app.ai.config_proposal.settings_draft_dirty"),
                     AppMessageKind::Warning,
                     cx,
                 );

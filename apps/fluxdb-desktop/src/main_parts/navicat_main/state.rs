@@ -904,6 +904,8 @@ struct NavicatMain {
     data_filter_value_draft: Option<DataFilterValueDraft>,
     data_filter_applying_tabs: BTreeSet<TabId>,
     _data_filter_apply_tasks: BTreeMap<u64, Task<()>>,
+    /// 每个表页当前筛选加载对应的 generation；旧任务回调不得清理新任务状态。
+    _data_filter_apply_generations: BTreeMap<u64, u64>,
     app_message: Option<AppMessage>,
     _app_message_task: Option<Task<()>>,
     table_hover_color: Option<Hsla>,

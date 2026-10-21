@@ -9,7 +9,9 @@ impl NavicatMain {
         }
         if self.ai_chat.loaded {
             self.mount_ai_chat_tab(cx);
-            self.ai_chat.input.update(cx, |input, cx| input.focus(window, cx));
+            self.ai_chat
+                .input
+                .update(cx, |input, cx| input.focus(window, cx));
             cx.notify();
         } else {
             self.ai_chat_request(
@@ -22,7 +24,12 @@ impl NavicatMain {
     fn ai_chat_ui_command(&self, cx: &App) -> fluxdb_app::AiConversationCommand {
         fluxdb_app::AiConversationCommand::SaveUi {
             draft: self.ai_chat.input.read(cx).value().to_string(),
-            expanded_parts: self.controller.state().ai_conversation.expanded_parts.clone(),
+            expanded_parts: self
+                .controller
+                .state()
+                .ai_conversation
+                .expanded_parts
+                .clone(),
             mode: self.ai_chat.mode,
             drawer_width: self.ai_chat.drawer,
             embedded_width: self.ai_chat.embedded,
@@ -32,6 +39,8 @@ impl NavicatMain {
         self.ai_chat_request(self.ai_chat_ui_command(cx), window, cx);
     }
     fn close_ai_chat(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.ai_chat.pending_sql_edit = None;
+        self.ai_chat.pending_fix_prompt = None;
         self.reject_pending_ai_chat_approval(window, cx);
         self.save_ai_chat_ui(window, cx);
         self.ai_chat.open = false;
@@ -54,32 +63,11 @@ impl NavicatMain {
             );
             return;
         }
+        self.ai_chat.pending_sql_edit = None;
+        self.ai_chat.pending_fix_prompt = None;
         self.save_ai_chat_ui(window, cx);
         self.ai_chat.epoch += 1;
         self.ai_chat_request(fluxdb_app::AiConversationCommand::New, window, cx);
-    }
-    /// 「用 AI 修复」：把失败 SQL 与错误报文交给 AI；会话未加载时待加载完成后自动发送。
-    fn ai_fix_query_error(
-        &mut self,
-        summary: QueryExecutionSummary,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let prompt = format!(
-            "下面这条 SQL 执行失败，请帮我修复。\n\n错误信息：\n{}\n\n失败的 SQL：\n```sql\n{}\n```\n\n请只给出修复后的完整 SQL 和简短原因，不要调用数据库执行工具。",
-            summary.message.trim(),
-            summary.sql.trim()
-        );
-        if self.ai_chat.loaded {
-            self.ai_chat
-                .input
-                .update(cx, |input, cx| input.set_value(prompt, window, cx));
-            self.open_ai_chat(window, cx);
-            self.send_ai_chat(window, cx);
-        } else {
-            self.ai_chat.pending_fix_prompt = Some(prompt);
-            self.open_ai_chat(window, cx);
-        }
     }
     fn ai_chat_request(
         &mut self,
@@ -103,8 +91,11 @@ impl NavicatMain {
             fluxdb_app::AiConversationCommand::Load { .. } | fluxdb_app::AiConversationCommand::New
         );
         let approval = match &command {
-            fluxdb_app::AiConversationCommand::DecideApproval { approval_id, approved, .. } =>
-                Some((approval_id.clone(), *approved)),
+            fluxdb_app::AiConversationCommand::DecideApproval {
+                approval_id,
+                approved,
+                ..
+            } => Some((approval_id.clone(), *approved)),
             _ => None,
         };
         self.ai_chat.deciding_approval = approval.is_some();
@@ -121,7 +112,9 @@ impl NavicatMain {
                     let event = controller.dispatch(AppCommand::AiConversation(command));
                     // 决定与恢复准备都读写 SQLite，在后台完成；只有决定成功才准备恢复。
                     let resume = background_approval
-                        .filter(|(_, approved)| *approved && matches!(event, AppEvent::AiConversationLoaded(_)))
+                        .filter(|(_, approved)| {
+                            *approved && matches!(event, AppEvent::AiConversationLoaded(_))
+                        })
                         .map(|(id, _)| controller.prepare_ai_resume_job(&id));
                     let reference_errors = controller.ai_reference_errors();
                     (event, resume, reference_errors)
@@ -185,7 +178,8 @@ impl NavicatMain {
                             if approval.is_some() {
                                 this.show_message(
                                     tr("app.ai.chat.action.approval_changed").as_ref(),
-                                    AppMessageKind::Warning, cx,
+                                    AppMessageKind::Warning,
+                                    cx,
                                 );
                             } else {
                                 if recovering {
@@ -203,7 +197,8 @@ impl NavicatMain {
                                 tr("app.ai.chat.action.resume_failed")
                                     .replace("%{message}", &error.message)
                                     .as_str(),
-                                AppMessageKind::Warning, cx,
+                                AppMessageKind::Warning,
+                                cx,
                             ),
                         }
                     }
@@ -217,7 +212,13 @@ impl NavicatMain {
         if self.ai_chat.attachment_loading
             || self.ai_chat.recovery_pending
             || self.ai_chat.recovery_failed
-            || self.ai_chat.session_running(self.controller.state().ai_conversation.session_id.as_deref())
+            || self.ai_chat.session_running(
+                self.controller
+                    .state()
+                    .ai_conversation
+                    .session_id
+                    .as_deref(),
+            )
             || self.ai_chat.loading
             || self.ai_chat._io.is_some()
             || self.pending_config_proposal.is_some()
@@ -229,11 +230,58 @@ impl NavicatMain {
         if prompt.is_empty() {
             return;
         }
-        let page = Some(self.capture_ai_page_context(cx, true));
-        let context = page.as_ref().map(|page| page.snapshot.clone())
-            .unwrap_or_else(|| fluxdb_app::capture(&fluxdb_app::CapturedTab::NoTab {
-                connection_id: None, database: None, schema: None, last_object: None,
-            }, fluxdb_app::ContextLimits::default()));
+        let mut captured_page = self.capture_ai_page_context(cx, true);
+        let auto_edit = self.auto_bind_ai_sql_selection(&captured_page, cx);
+        let edit = self
+            .ai_chat
+            .pending_sql_edit
+            .as_ref()
+            .or(auto_edit.as_ref());
+        if let Some(edit) = edit {
+            let current = self
+                .query_editors
+                .get(&TabId(edit.tab_id))
+                .map(|editor| editor.read(cx).buffer.snapshot());
+            if !current
+                .as_ref()
+                .is_some_and(|current| edit.matches(current, &captured_page.snapshot.target))
+            {
+                self.ai_chat.pending_sql_edit = None;
+                self.show_message(tr("app.ai.sql_edit.conflict"), AppMessageKind::Warning, cx);
+                return;
+            }
+            captured_page.snapshot = fluxdb_app::capture_editor_snapshot(
+                edit.tab_id,
+                edit.target.clone(),
+                &edit.snapshot,
+                edit.range,
+            );
+            captured_page.details["sql_edit"] = serde_json::json!({
+                "range":{"start":edit.range.start,"end":edit.range.end},
+                "scope":"仅替换该选区或语句；不执行 SQL"
+            });
+            captured_page.data_grant = None;
+            captured_page.editor_grant = Some(fluxdb_app::EditorGrant {
+                tab_ref: format!("tab-{}", edit.tab_id),
+                snapshot: edit.snapshot.clone(),
+                sql_edit: Some(edit.clone()),
+            });
+        }
+        let page = Some(captured_page);
+        let context = page
+            .as_ref()
+            .map(|page| page.snapshot.clone())
+            .unwrap_or_else(|| {
+                fluxdb_app::capture(
+                    &fluxdb_app::CapturedTab::NoTab {
+                        connection_id: None,
+                        database: None,
+                        schema: None,
+                        last_object: None,
+                    },
+                    fluxdb_app::ContextLimits::default(),
+                )
+            });
         // debug 覆盖优先：GUI E2E 需要固定目标；生产永远是真实界面捕获。
         let pin = self
             .ai_debug_target_override()
@@ -246,11 +294,7 @@ impl NavicatMain {
         self.ai_chat._io = Some(cx.spawn_in(window, async move |view, cx| {
             let (result, chat) = cx
                 .background_spawn(async move {
-                    let result = controller.prepare_ai_conversation_page(
-                        &prompt,
-                        &pin,
-                        page,
-                    );
+                    let result = controller.prepare_ai_conversation_page(&prompt, &pin, page);
                     (result, controller.state().ai_conversation.clone())
                 })
                 .await;
@@ -261,9 +305,8 @@ impl NavicatMain {
                     Ok(job) => {
                         if epoch != this.ai_chat.epoch {
                             fluxdb_app::clear_current_page_grants(&job.turn_id);
-                            this.ai_chat.error = Some(
-                                tr("app.ai.chat.action.session_switched").to_string(),
-                            );
+                            this.ai_chat.error =
+                                Some(tr("app.ai.chat.action.session_switched").to_string());
                             cx.notify();
                             return;
                         }
@@ -301,6 +344,8 @@ impl NavicatMain {
         let cancel = fluxdb_core::CancelFlag::new();
         self.ai_chat.cancel = Some(cancel.clone());
         self.ai_chat.running = Some(job.clone());
+        self.ai_chat.table_query_ran = false;
+        self.ai_chat.table_page_binding = None;
         // 新一轮开始：丢弃上一轮遗留的流缓冲与揭示任务，避免串行内容。
         self.ai_chat.stream.reset();
         self.ai_chat.stream_reveal = None;
@@ -330,25 +375,87 @@ impl NavicatMain {
         self.ai_chat.ui_actions = Some(ui_actions_rx);
         let ui_actions: std::sync::Arc<dyn fluxdb_app::UiActionSink> =
             std::sync::Arc::new(ui_actions_tx);
+        #[cfg(test)]
+        let sql_edit_fixture = self.ai_chat.scripted_edit_sql.take().map(|sql| {
+            (
+                sql,
+                fluxdb_app::take_editor_grant(&job.turn_id),
+                job.clone(),
+                ui_actions.clone(),
+            )
+        });
+        #[cfg(test)]
+        let table_query_fixture =
+            self.ai_chat
+                .scripted_table_query
+                .take()
+                .map(|(object, query)| {
+                    (
+                        object,
+                        query,
+                        job.clone(),
+                        ui_actions.clone(),
+                        self.controller
+                            .state()
+                            .connections
+                            .iter()
+                            .map(|c| c.config.clone())
+                            .collect::<Vec<_>>(),
+                    )
+                });
         let submitted = if debug_scripted {
-                runtime.submit_conversation_source(storage.clone(), job.clone(), cancel.clone(), move |cancel, emit| {
+            runtime.submit_conversation_source(
+                storage.clone(),
+                job.clone(),
+                cancel.clone(),
+                move |cancel, emit| {
+                    #[cfg(test)]
+                    if let Some((object, query, job, actions, connections)) = table_query_fixture {
+                        return run_page_query_fixture(
+                            object,
+                            query,
+                            job,
+                            actions,
+                            connections,
+                            cancel,
+                            emit,
+                        );
+                    }
+                    #[cfg(test)]
+                    if let Some((sql, grant, job, actions)) = sql_edit_fixture {
+                        return run_sql_editor_edit_fixture(sql, grant, job, actions, cancel, emit);
+                    }
                     if !matches!(stream_fixture, AiChatStreamFixture::Default) {
-                        let text = "## 流式验证\n\n**内容必须连续显示。**\n\n```sql\nSELECT 1;\n```\n";
+                        let text =
+                            "## 流式验证\n\n**内容必须连续显示。**\n\n```sql\nSELECT 1;\n```\n";
                         emit(&fluxdb_core::ModelEvent::TextDelta(text.into()));
-                        if matches!(stream_fixture, AiChatStreamFixture::Burst | AiChatStreamFixture::Error) {
+                        if matches!(
+                            stream_fixture,
+                            AiChatStreamFixture::Burst | AiChatStreamFixture::Error
+                        ) {
                             std::thread::sleep(std::time::Duration::from_millis(120));
                         }
                         if matches!(stream_fixture, AiChatStreamFixture::Error) {
-                            return Err(fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, "离线流式错误夹具"));
+                            return Err(fluxdb_core::Error::new(
+                                fluxdb_core::ErrorKind::Internal,
+                                "离线流式错误夹具",
+                            ));
                         }
-                        if matches!(stream_fixture, AiChatStreamFixture::Burst) && !cancel.is_cancelled() {
-                            for ch in "突发分片不能丢失，也不能在结束时一次展开。\n".repeat(100).chars() {
+                        if matches!(stream_fixture, AiChatStreamFixture::Burst)
+                            && !cancel.is_cancelled()
+                        {
+                            for ch in "突发分片不能丢失，也不能在结束时一次展开。\n"
+                                .repeat(100)
+                                .chars()
+                            {
                                 emit(&fluxdb_core::ModelEvent::TextDelta(ch.to_string()));
                             }
                         }
                         let event = fluxdb_core::ModelEvent::Finished(if cancel.is_cancelled() {
                             fluxdb_core::FinishReason::Cancelled
-                        } else { fluxdb_core::FinishReason::Stop });
+                        } else {
+                            fluxdb_core::FinishReason::Stop
+                        });
                         emit(&event);
                         return Ok(vec![event]);
                     }
@@ -370,7 +477,8 @@ impl NavicatMain {
                     let e = fluxdb_core::ModelEvent::Finished(fluxdb_core::FinishReason::Stop);
                     emit(&e);
                     Ok(vec![e])
-                })
+                },
+            )
         } else {
             runtime.submit_conversation(
                 storage.clone(),
@@ -422,7 +530,9 @@ impl NavicatMain {
                             match rx.try_recv() {
                                 Ok(action) => actions.push(action),
                                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
-                                Err(std::sync::mpsc::TryRecvError::Disconnected) => ui_finished = true,
+                                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                                    ui_finished = true
+                                }
                             }
                         } else {
                             ui_finished = true;
@@ -435,15 +545,16 @@ impl NavicatMain {
                         this.ai_chat.ui_actions = None;
                     }
                 });
-                if result.is_err() { break; }
+                if result.is_err() {
+                    break;
+                }
                 if done && ui_finished {
                     break;
                 }
                 if disconnected && !done {
                     let _ = view.update(cx, |this, cx| {
-                        this.ai_chat.error = Some(
-                            tr("app.ai.chat.action.channel_closed_error").to_string(),
-                        );
+                        this.ai_chat.error =
+                            Some(tr("app.ai.chat.action.channel_closed_error").to_string());
                         this.ai_chat_finish_stream();
                         this.show_message(
                             tr("app.ai.chat.action.channel_closed_warning").as_ref(),
@@ -470,17 +581,19 @@ impl NavicatMain {
         fluxdb_app::clear_current_page_grants(&job.turn_id);
         self.ai_chat.error = Some(message.clone());
         self.ai_chat._pump = Some(cx.spawn(async move |view, cx| {
-            let update = cx.background_spawn(async move {
-                let (sender, receiver) = std::sync::mpsc::sync_channel(1);
-                fluxdb_app::run_ai_conversation_failure(
-                    &storage,
-                    &job,
-                    &sender,
-                    fluxdb_app::FailureStage::Prepare,
-                    fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, message),
-                );
-                receiver.try_recv().ok()
-            }).await;
+            let update = cx
+                .background_spawn(async move {
+                    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+                    fluxdb_app::run_ai_conversation_failure(
+                        &storage,
+                        &job,
+                        &sender,
+                        fluxdb_app::FailureStage::Prepare,
+                        fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, message),
+                    );
+                    receiver.try_recv().ok()
+                })
+                .await;
             if let Some(update) = update {
                 let _ = view.update(cx, |this, cx| {
                     this.ai_chat_consume_update(update, cx);
@@ -501,16 +614,25 @@ impl NavicatMain {
     ) {
         if self.ai_chat.deciding_approval
             || self.ai_chat.loading
-            || self
-                .ai_chat
-                .session_running(self.controller.state().ai_conversation.session_id.as_deref())
+            || self.ai_chat.session_running(
+                self.controller
+                    .state()
+                    .ai_conversation
+                    .session_id
+                    .as_deref(),
+            )
         {
             return;
         }
         self.ai_chat.deciding_approval = true;
         self.ai_chat_request(
-            fluxdb_app::AiConversationCommand::DecideApproval { approval_id, approved, expected_revision },
-            window, cx,
+            fluxdb_app::AiConversationCommand::DecideApproval {
+                approval_id,
+                approved,
+                expected_revision,
+            },
+            window,
+            cx,
         );
     }
 
@@ -520,20 +642,34 @@ impl NavicatMain {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        let pending = self.controller.state().ai_conversation.messages.iter()
+        let pending = self
+            .controller
+            .state()
+            .ai_conversation
+            .messages
+            .iter()
             .flat_map(|message| &message.parts)
             .filter(|part| part.kind == "notice" && part.status == "pending")
             .find_map(|part| {
                 let payload = serde_json::from_str::<serde_json::Value>(&part.payload_json).ok()?;
-                if payload.get("decision").and_then(serde_json::Value::as_str).is_some() {
+                if payload
+                    .get("decision")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some()
+                {
                     return None;
                 }
                 Some((
                     payload.get("approval_id")?.as_str()?.to_owned(),
-                    payload.get("approval_revision").and_then(serde_json::Value::as_i64).unwrap_or(1),
+                    payload
+                        .get("approval_revision")
+                        .and_then(serde_json::Value::as_i64)
+                        .unwrap_or(1),
                 ))
             });
-        let Some((id, revision)) = pending else { return false };
+        let Some((id, revision)) = pending else {
+            return false;
+        };
         self.decide_ai_chat_approval(id, false, revision, window, cx);
         true
     }
@@ -547,10 +683,22 @@ impl NavicatMain {
         let value: serde_json::Value = serde_json::from_str(&raw).ok()?;
         let target = fluxdb_app::TargetRef {
             connection_id: value.get("connection_id").and_then(|v| v.as_i64()),
-            database: value.get("database").and_then(|v| v.as_str()).map(str::to_owned),
-            schema: value.get("schema").and_then(|v| v.as_str()).map(str::to_owned),
-            object: value.get("object").and_then(|v| v.as_str()).map(str::to_owned),
-            redis_db: value.get("redis_db").and_then(|v| v.as_u64()).map(|v| v as u32),
+            database: value
+                .get("database")
+                .and_then(|v| v.as_str())
+                .map(str::to_owned),
+            schema: value
+                .get("schema")
+                .and_then(|v| v.as_str())
+                .map(str::to_owned),
+            object: value
+                .get("object")
+                .and_then(|v| v.as_str())
+                .map(str::to_owned),
+            redis_db: value
+                .get("redis_db")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as u32),
         };
         Some(fluxdb_app::TurnTargetPin {
             target_json: target.to_json(),
@@ -559,5 +707,4 @@ impl NavicatMain {
             captured_tab_revision: 0,
         })
     }
-
 }

@@ -644,6 +644,7 @@ struct SidebarTreeCacheKey {
     connections: Vec<ConnectionState>,
     sidebar_layout: SidebarLayout,
     loading_databases: BTreeSet<String>,
+    loaded_database_children: BTreeSet<String>,
     pinned_databases: BTreeSet<String>,
     pinned_tables: BTreeSet<String>,
     table_folders: BTreeMap<String, Vec<String>>,
@@ -1121,6 +1122,8 @@ struct TableGroupContextMenu {
     connection_id: ConnectionId,
     database_path: ObjectPath,
     database: String,
+    /// PG 下为所属 schema；非 schema 分桶数据库为 `None`，刷新时据此选择加载作用域。
+    schema: Option<String>,
     position: Point<Pixels>,
 }
 

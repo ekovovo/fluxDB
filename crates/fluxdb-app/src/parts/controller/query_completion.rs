@@ -68,6 +68,81 @@ fn quote_completion_insert_text(
 }
 
 impl AppController {
+    /// AI 找表的本地索引查询：只读取内存/盘上已建好的元数据索引，不访问数据库。
+    ///
+    /// 返回 `None` 表示该连接没有可用的新鲜索引（功能关闭、从未建索引或全部过期），
+    /// 调用方应回退到实时扫描；返回 `Some` 时结果可信，但只覆盖已建索引的库/schema，
+    /// 空结果不能推断为整库不存在，由工具回执显式说明覆盖范围。
+    fn ai_table_index_search(
+        &self,
+        config: &ConnectionConfig,
+        query: &str,
+        limit: usize,
+    ) -> Option<(Vec<MetadataSearchHit>, bool)> {
+        if !self.state.settings.enable_completion_index {
+            return None;
+        }
+        let now = unix_timestamp_secs();
+        // 不能因为某一个库已预热就跳过盘上其它库的快照：找表要覆盖整条连接。
+        let scopes_loaded = self
+            .completion_index
+            .lock()
+            .is_ok_and(|index| index.persisted_scopes_loaded(config.id));
+        if !scopes_loaded {
+            self.load_persisted_completion_indexes(config);
+        }
+        let index = self.completion_index.lock().ok()?;
+        if !index.has_fresh_connection_index(config.id, now) {
+            return None;
+        }
+        Some((
+            index.search_fresh_metadata(config.id, query, limit, now),
+            index.has_search_scope_gaps(config.id, now),
+        ))
+    }
+
+    /// 合并一个连接下所有作用域的盘上快照；每个连接只加载一次，
+    /// 之后由常规失效/刷新逻辑维护，避免每次找表都重复读文件。
+    fn load_persisted_completion_indexes(&self, config: &ConnectionConfig) {
+        if self
+            .completion_index
+            .lock()
+            .is_ok_and(|index| index.persisted_scopes_loaded(config.id))
+        {
+            return;
+        }
+        let Some(storage) = &self.completion_index_storage else {
+            return;
+        };
+        let snapshots = match storage.load_completion_indexes_for_connection(config) {
+            Ok(snapshots) => snapshots,
+            Err(error) => {
+                tracing::warn!(
+                    target: "gdb_sql_completion",
+                    op = "completion_index_load_all",
+                    error = %error,
+                    connection_id = config.id.0,
+                    "读取连接的补全索引快照失败，回退实时扫描"
+                );
+                return;
+            }
+        };
+        if let Ok(mut index) = self.completion_index.lock() {
+            for snapshot in snapshots {
+                // 内存里已有的作用域可能比盘上快照更新（刚刷新或刚标 dirty），不能被旧快照覆盖。
+                if index.has_database_index(
+                    snapshot.connection_id,
+                    snapshot.database.as_deref(),
+                    snapshot.schema.as_deref(),
+                ) {
+                    continue;
+                }
+                index.insert_snapshot(snapshot);
+            }
+            index.mark_persisted_scopes_loaded(config.id);
+        }
+    }
+
     fn execute_query(&self, request: &QueryRequest) -> fluxdb_core::Result<QueryExecutionResult> {
         self.execute_query_with_cancel(request, &|| false)
     }

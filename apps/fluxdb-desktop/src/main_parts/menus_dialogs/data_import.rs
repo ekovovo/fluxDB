@@ -8,6 +8,21 @@ enum TableDataImportTarget {
     Create,
 }
 
+/// 导入弹窗页签：与导出保持一致的“常规 + 消息日志”结构。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TableDataImportTab {
+    General,
+    Log,
+}
+
+/// 单条导入日志；批量写入时每条进度都会追加一行。
+#[derive(Clone, Debug)]
+struct TableDataImportLogEntry {
+    stage: String,
+    message: String,
+    success: bool,
+}
+
 /// 导入状态。
 #[derive(Clone, Debug)]
 struct TableDataImportForm {
@@ -22,6 +37,11 @@ struct TableDataImportForm {
     error: Option<String>,
     running: bool,
     loading: bool,
+    tab: TableDataImportTab,
+    logs: Vec<TableDataImportLogEntry>,
+    started_at: Option<Instant>,
+    finished_at: Option<Instant>,
+    imported_rows: u64,
 }
 
 impl TableDataImportForm {
@@ -37,6 +57,11 @@ impl TableDataImportForm {
             error: None,
             running: false,
             loading: false,
+            tab: TableDataImportTab::General,
+            logs: Vec::new(),
+            started_at: None,
+            finished_at: None,
+            imported_rows: 0,
         }
     }
 
@@ -348,15 +373,29 @@ impl NavicatMain {
         if let Some(current) = self.pending_data_import.as_mut() {
             current.running = true;
             current.error = None;
+            current.logs.clear();
+            current.started_at = Some(Instant::now());
+            current.finished_at = None;
+            current.imported_rows = 0;
+            // 开始时切到日志页，让用户直接看到写入进度。
+            current.tab = TableDataImportTab::Log;
+            current.logs.push(TableDataImportLogEntry {
+                stage: tr("app.data.data_import.stage_prepare").to_string(),
+                message: tr("app.data.data_import.log_starting").to_string(),
+                success: true,
+            });
         }
         let controller = self.controller.clone();
         let object = form.object.clone();
         let options = form.options.clone();
         let mappings = form.mappings.clone();
         let task = cx.spawn(async move |view, cx| {
-            let event = cx
+            // 进度在后台线程产生，先收进通道，回到 UI 线程后再并入日志。
+            let (progress_tx, progress_rx) =
+                std::sync::mpsc::channel::<(String, String)>();
+            let (event, progress_lines) = cx
                 .background_spawn(async move {
-                    controller.dispatch_database_task(
+                    let event = controller.dispatch_database_task(
                         AppCommand::ImportTableData {
                             object: object.clone(),
                             source,
@@ -364,8 +403,14 @@ impl NavicatMain {
                             column_mapping: mappings,
                         },
                         &std::sync::atomic::AtomicBool::new(false),
-                        &mut |_| {},
-                    )
+                        &mut |progress| {
+                            // 结构化传值，避免用分隔符拼接用户可见文本。
+                            let _ = progress_tx.send((progress.stage, progress.message));
+                        },
+                    );
+                    drop(progress_tx);
+                    let lines = progress_rx.into_iter().collect::<Vec<_>>();
+                    (event, lines)
                 })
                 .await;
             cx.update(|cx| {
@@ -374,9 +419,36 @@ impl NavicatMain {
                 };
                 view.update(cx, |this, cx| {
                     this._data_import_task = None;
+                    if let Some(current) = this.pending_data_import.as_mut() {
+                        for (stage, message) in progress_lines {
+                            current.logs.push(TableDataImportLogEntry {
+                                stage,
+                                message,
+                                success: true,
+                            });
+                        }
+                    }
                     match event {
                         AppEvent::TableDataImported { object, report } => {
-                            this.pending_data_import = None;
+                            if let Some(current) = this.pending_data_import.as_mut() {
+                                current.running = false;
+                                current.finished_at = Some(Instant::now());
+                                current.imported_rows = report.imported_rows;
+                                current.tab = TableDataImportTab::Log;
+                                current.logs.push(TableDataImportLogEntry {
+                                    stage: tr("app.data.data_import.stage_done").to_string(),
+                                    message: tr("app.table.import.succeeded")
+                                        .replace("%{rows}", &report.imported_rows.to_string()),
+                                    success: true,
+                                });
+                                for warning in &report.warnings {
+                                    current.logs.push(TableDataImportLogEntry {
+                                        stage: tr("app.data.data_import.stage_warning").to_string(),
+                                        message: crate::localize_backend_error_text(warning),
+                                        success: false,
+                                    });
+                                }
+                            }
                             let mut message = tr("app.table.import.succeeded")
                                 .replace("%{rows}", &report.imported_rows.to_string());
                             if !report.warnings.is_empty() {
@@ -400,7 +472,14 @@ impl NavicatMain {
                             };
                             if let Some(current) = this.pending_data_import.as_mut() {
                                 current.running = false;
-                                current.error = Some(message);
+                                current.finished_at = Some(Instant::now());
+                                current.tab = TableDataImportTab::Log;
+                                current.error = Some(message.clone());
+                                current.logs.push(TableDataImportLogEntry {
+                                    stage: tr("app.data.data_import.stage_failed").to_string(),
+                                    message,
+                                    success: false,
+                                });
                             }
                         }
                     }
@@ -448,19 +527,31 @@ fn table_data_import_modal(
         .key_context("TableDataImportModal")
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .child(table_data_import_header(&form, colors, cx))
-        .child(table_data_import_summary(&form, colors, cx))
-        .child(
-            div()
+        .child(table_data_import_tabs(form.tab, colors, cx))
+        .child(match form.tab {
+            TableDataImportTab::General => div()
                 .flex_1()
                 .min_h(px(0.))
-                .px_6()
-                .pb_4()
                 .flex()
-                .gap_4()
-                .child(table_data_import_mapping_panel(&form, colors, cx))
-                .child(table_data_import_preview_panel(&form, colors)),
-        )
-        .child(table_data_import_options_bar(&form, kind, colors, cx))
+                .flex_col()
+                .child(table_data_import_summary(&form, colors, cx))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_h(px(0.))
+                        .px_6()
+                        .pb_4()
+                        .flex()
+                        .gap_4()
+                        .child(table_data_import_mapping_panel(&form, colors, cx))
+                        .child(table_data_import_preview_panel(&form, colors)),
+                )
+                .child(table_data_import_options_bar(&form, kind, colors, cx))
+                .into_any_element(),
+            TableDataImportTab::Log => {
+                table_data_import_log_body(&form, colors).into_any_element()
+            }
+        })
         .child(table_data_import_footer(&form, can_import, colors, cx));
 
     div()
@@ -480,6 +571,173 @@ fn table_data_import_modal(
             cx.stop_propagation();
         }))
         .child(panel)
+}
+
+/// 页签栏：沿用导出弹框的样式，保持两个弹框一致。
+fn table_data_import_tabs(
+    active: TableDataImportTab,
+    colors: UiColors,
+    cx: &mut Context<NavicatMain>,
+) -> Div {
+    div()
+        .px_6()
+        .h(px(34.))
+        .flex_none()
+        .flex()
+        .items_center()
+        .border_b_1()
+        .border_color(colors.border_soft)
+        .child(table_data_import_tab_button(
+            tr("app.data.data_import.tab_general"),
+            active == TableDataImportTab::General,
+            TableDataImportTab::General,
+            colors,
+            cx,
+        ))
+        .child(table_data_import_tab_button(
+            tr("app.data.data_import.tab_log"),
+            active == TableDataImportTab::Log,
+            TableDataImportTab::Log,
+            colors,
+            cx,
+        ))
+}
+
+fn table_data_import_tab_button(
+    label: impl Into<SharedString>,
+    active: bool,
+    tab: TableDataImportTab,
+    colors: UiColors,
+    cx: &mut Context<NavicatMain>,
+) -> Div {
+    let label = label.into();
+    div()
+        .h(px(34.))
+        .px_3()
+        .flex()
+        .items_center()
+        .border_b_2()
+        .border_color(if active {
+            rgb(0x1687ff)
+        } else {
+            colors.border_soft
+        })
+        .text_size(px(13.))
+        .text_color(if active { colors.text } else { colors.muted })
+        .font_weight(gpui::FontWeight::SEMIBOLD)
+        .cursor_pointer()
+        .hover(move |style| style.bg(colors.hover))
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |this, _, _, cx| {
+                if let Some(form) = this.pending_data_import.as_mut() {
+                    form.tab = tab;
+                }
+                cx.notify();
+                cx.stop_propagation();
+            }),
+        )
+        .child(label)
+}
+
+/// 消息日志：阶段 + 文案，失败项用错误色区分。
+fn table_data_import_log_body(form: &TableDataImportForm, colors: UiColors) -> Div {
+    let status = if form.running {
+        tr("app.data.data_import.log_running").to_string()
+    } else if form.finished_at.is_some() {
+        tr("app.data.data_import.log_finished").to_string()
+    } else {
+        tr("app.data.data_import.log_idle").to_string()
+    };
+    let mut list = div().flex().flex_col().gap_1().px_6().py_4();
+    if let Some(error) = &form.error {
+        list = list.child(table_data_import_notice(error.clone(), colors.danger));
+    }
+    if form.logs.is_empty() {
+        list = list.child(
+            div()
+                .text_size(px(11.5))
+                .text_color(colors.muted)
+                .child(tr("app.data.data_import.log_empty")),
+        );
+    }
+    for entry in form.logs.iter() {
+        list = list.child(
+            div()
+                .flex()
+                .items_start()
+                .gap_3()
+                .px_2()
+                .py_1()
+                .child(
+                    div()
+                        .w(px(56.))
+                        .flex_none()
+                        .text_size(px(10.5))
+                        .text_color(if entry.success {
+                            colors.muted
+                        } else {
+                            colors.danger
+                        })
+                        .child(entry.stage.clone()),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .text_size(px(11.5))
+                        .text_color(if entry.success {
+                            colors.text
+                        } else {
+                            colors.danger
+                        })
+                        .child(entry.message.clone()),
+                ),
+        );
+    }
+
+    div()
+        .flex_1()
+        .min_h(px(0.))
+        .flex()
+        .flex_col()
+        .child(
+            // 运行概览与导出日志页保持一致的信息密度。
+            div()
+                .flex_none()
+                .px_6()
+                .pt_4()
+                .flex()
+                .items_center()
+                .gap_5()
+                .text_size(px(11.))
+                .text_color(colors.muted)
+                .child(
+                    tr("app.data.data_import.log_rows")
+                        .replace("%{count}", &form.imported_rows.to_string()),
+                )
+                .child(
+                    tr("app.data.data_import.log_status")
+                        .replace("%{status}", &status),
+                )
+                .when_some(form.started_at.zip(form.finished_at), |this, (start, end)| {
+                    this.child(
+                        tr("app.data.data_import.log_elapsed").replace(
+                            "%{ms}",
+                            &end.saturating_duration_since(start)
+                                .as_millis()
+                                .to_string(),
+                        ),
+                    )
+                }),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_h(px(0.))
+                .overflow_y_scrollbar()
+                .child(list),
+        )
 }
 
 fn table_data_import_header(
@@ -1301,14 +1559,16 @@ fn table_data_import_footer(
                     cx.stop_propagation();
                 })),
         )
-        .child(
-            Button::new("data-import-start")
-                .label(tr("app.data.data_import.start"))
-                .primary()
-                .disabled(!can_import || form.running)
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.confirm_table_import(cx);
-                    cx.stop_propagation();
-                })),
-        )
+        .when(form.tab == TableDataImportTab::General, |this| {
+            this.child(
+                Button::new("data-import-start")
+                    .label(tr("app.data.data_import.start"))
+                    .primary()
+                    .disabled(!can_import || form.running)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.confirm_table_import(cx);
+                        cx.stop_propagation();
+                    })),
+            )
+        })
 }

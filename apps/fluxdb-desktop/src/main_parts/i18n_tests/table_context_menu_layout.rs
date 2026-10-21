@@ -163,6 +163,10 @@ fn table_import_dialog_renders_with_disabled_create_option(cx: &mut TestAppConte
         assert_eq!(form.target, crate::TableDataImportTarget::Existing);
         assert!(form.source.is_none());
         assert!(form.format.is_none());
+        // 与导出弹框一致：默认常规页，日志页初始为空且未开始。
+        assert_eq!(form.tab, crate::TableDataImportTab::General);
+        assert!(form.logs.is_empty());
+        assert!(form.started_at.is_none());
         this.pending_data_import = Some(form);
         cx.notify();
     });

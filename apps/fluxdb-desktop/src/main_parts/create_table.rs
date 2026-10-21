@@ -967,6 +967,7 @@ fn create_table_content(
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
+    let loading_design = create.details_loading;
     div()
         .flex_1()
         .min_h(px(0.))
@@ -976,6 +977,22 @@ fn create_table_content(
         .flex_col()
         .child(create_table_header(tab_id, create, this, window, colors, cx))
         .child(create_table_editor(tab_id, create, this, window, colors, cx))
+        .when(loading_design, |this| {
+            this.child(
+                div()
+                    .debug_selector(|| "create-table-details-loading".into())
+                    .flex_none()
+                    .h(px(24.))
+                    .px_4()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .text_size(px(12.))
+                    .text_color(colors.muted)
+                    .child(loading_spinner_with_color(13., colors.muted))
+                    .child(tr("app.create_table.loading_design")),
+            )
+        })
 }
 
 fn create_table_header(

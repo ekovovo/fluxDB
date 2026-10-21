@@ -73,3 +73,56 @@ fn dameng_designer_explains_read_only_trigger_and_partition_tabs(cx: &mut TestAp
         });
     }
 }
+
+#[gpui::test]
+fn dameng_designer_uses_inline_loading_instead_of_toast(cx: &mut TestAppContext) {
+    use fluxdb_app::{AppCommand, AppEvent, CreateTableState};
+    use fluxdb_core::{ConnectionConfig, ConnectionId, DatabaseKind, Endpoint, ObjectKind, ObjectPath};
+
+    let _guard = locale_guard();
+    let temp = tempfile::tempdir().expect("isolated profile");
+    let storage = FileStorage::new(temp.path().join("profile"));
+    init_i18n(&app_assets_base_path().join("locales"), &storage.root_dir().join("locales"), "en");
+    let mut controller = AppController::new();
+    let config = ConnectionConfig {
+        id: ConnectionId(1),
+        name: "DM8 inline loading".into(),
+        kind: DatabaseKind::Dameng,
+        endpoint: Endpoint::Tcp { host: "dm8.invalid".into(), port: 1, database: None },
+        options: Default::default(),
+        redis_profile: None,
+        mysql_profile: None,
+        postgres_profile: None,
+        dameng_profile: None,
+    };
+    controller.dispatch(AppCommand::ReplaceConnections(vec![config.clone()]));
+    let object = ObjectPath {
+        connection_id: config.id,
+        database: None,
+        schema: Some("SYSDBA".into()),
+        name: "CUSTOMERS".into(),
+        kind: ObjectKind::Table,
+    };
+    let mut create = CreateTableState::design(
+        object,
+        DatabaseKind::Dameng,
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        None,
+    );
+    create.details_loading = true;
+    let AppEvent::TabOpened(_) = controller.dispatch(AppCommand::FinishOpenDesignTable { result: Ok(create) }) else {
+        panic!("design tab");
+    };
+    cx.update(|cx| { extend_component_i18n(); gpui_component::init(cx); });
+    let (_, cx) = cx.add_window_view(move |window, cx| {
+        let view = cx.new(|cx| navicat_main_new(window, cx, controller, storage, gpui_component::ThemeMode::Light));
+        Root::new(view, window, cx)
+    });
+    cx.simulate_resize(gpui::size(gpui::px(1440.), gpui::px(1000.)));
+    cx.update(|window, cx| { window.draw(cx).clear(cx); });
+    assert!(cx.debug_bounds("create-table-details-loading").is_some());
+    assert!(cx.debug_bounds("app-message-overlay").is_none());
+}

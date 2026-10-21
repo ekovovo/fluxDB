@@ -2324,7 +2324,6 @@
     "saving": "Saving table",
     "saving_short": "Saving...",
     "loading_design": "Reading more table details; saving will be enabled when ready...",
-    "loading_design_base": "Reading table structure...",
     "save_design": "Save table design",
     "save_and_create": "Save and create table",
     "add_field": "Add field",

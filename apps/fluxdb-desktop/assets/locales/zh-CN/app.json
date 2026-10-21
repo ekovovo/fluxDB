@@ -2324,7 +2324,6 @@
     "saving": "正在保存表",
     "saving_short": "保存中",
     "loading_design": "正在补齐表结构详情，完成后可保存…",
-    "loading_design_base": "正在读取表结构…",
     "save_design": "保存表设计",
     "save_and_create": "保存并创建表",
     "add_field": "新增字段",

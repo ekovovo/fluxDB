@@ -6,19 +6,10 @@ impl NavicatMain {
     fn open_design_table_in_background(&mut self, object: ObjectPath, cx: &mut Context<Self>) {
         let key = table_tree_key(&object);
         if self._design_table_tasks.contains_key(&key) {
-            self.show_message(
-                tr("app.create_table.loading_design").as_ref(),
-                AppMessageKind::Info,
-                cx,
-            );
             return;
         }
 
-        self.show_message(
-            tr("app.create_table.loading_design_base").as_ref(),
-            AppMessageKind::Info,
-            cx,
-        );
+        // 设计表加载用页内进度表示；重复点击同一张表仍复用现有任务。
         let finish_key = key.clone();
         let task = self.spawn_controller_command(
             AppCommand::LoadDesignTableBase(object),

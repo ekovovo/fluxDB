@@ -37,8 +37,15 @@ fn table_name_form_modal(
             Err(message) => (None, Some(message)),
         }
     };
-    let error = form_error.or(validation_error);
-    let can_submit = !running && sql.is_some() && error.is_none();
+    let decision_error = form_error.as_ref().or(validation_error.as_ref());
+    let can_submit = !running && sql.is_some() && decision_error.is_none();
+    // 复制失败已由主窗口 Alert 展示；弹窗内不再重复同一段文字，但仍阻止提交。
+    let visible_error = if is_copy && form_error.is_some() {
+        None
+    } else {
+        form_error
+    };
+    let error = visible_error.or(validation_error);
     let (title, field_label, key_context, cancel_id, confirm_id, input_id, preview_key, icon) =
         if is_copy {
             (
@@ -177,6 +184,7 @@ fn table_name_form_modal(
                             this.child(
                                 div()
                                     .id((key_context, 2u64))
+                                    .debug_selector(|| format!("{key_context}-error"))
                                     .aria_label(error.clone())
                                     .text_size(px(12.))
                                     .text_color(colors.danger)
@@ -206,6 +214,7 @@ fn table_name_form_modal(
                         )
                         .child(
                             Button::new(confirm_id)
+                                .debug_selector(|| format!("{key_context}-confirm"))
                                 .label(if running {
                                     tr("app.common.running")
                                 } else if is_copy {

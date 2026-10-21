@@ -142,6 +142,8 @@ pub enum AppCommand {
     ImportTableData {
         object: ObjectPath,
         source: std::path::PathBuf,
+        options: fluxdb_core::TableImportOptions,
+        column_mapping: Vec<fluxdb_core::TableImportColumnMapping>,
     },
     DropTable {
         object: ObjectPath,

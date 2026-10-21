@@ -738,6 +738,8 @@ struct NavicatMain {
     // 恢复弹框挂载状态:UI 实体 + 配置快照,运行时数据在 RestoreModal::runtime(Rc 共享)。
     restore_modal: Option<RestoreModal>,
     pending_data_export: Option<TableDataExportForm>,
+    pending_data_import: Option<TableDataImportForm>,
+    _data_import_task: Option<Task<()>>,
     data_export_custom_conditions_open: bool,
     data_export_preview: Option<TableDataExportPreviewState>,
     data_export_preview_seq: u64,

@@ -3221,6 +3221,8 @@ fn navicat_main_new(
                             )),
                             restore_modal: None,
                             pending_data_export: None,
+                            pending_data_import: None,
+                            _data_import_task: None,
                             data_export_custom_conditions_open: false,
                             data_export_preview: None,
                             data_export_preview_seq: 0,

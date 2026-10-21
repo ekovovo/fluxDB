@@ -353,7 +353,7 @@ impl NavicatMain {
                 self.open_copy_table_modal(object_path, window, cx);
             }
             TableMenuAction::ImportData => {
-                self.choose_table_import_file(object_path, window, cx);
+                self.open_table_import_wizard(object_path, window, cx);
             }
             TableMenuAction::ExportData => {
                 self.open_table_data_export_from_object(object_path, cx);

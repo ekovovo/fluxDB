@@ -558,6 +558,8 @@ fn dameng_imports_txt_csv_json_and_xml_export_formats() {
                         object,
                         source: path,
                         format,
+                        options: fluxdb_core::TableImportOptions::new(),
+                        column_mapping: Vec::new(),
                     },
                     &std::sync::atomic::AtomicBool::new(false),
                     &mut |_| {},

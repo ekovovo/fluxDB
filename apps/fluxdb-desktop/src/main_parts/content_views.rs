@@ -5545,7 +5545,15 @@ fn data_editor_toolbar(
                     ),
                 ))
                 .when(show_table_tools, |this| this.child(data_editor_action(tr("app.data.toolbar.analyze"), colors)))
-                .when(show_table_tools, |this| this.child(data_editor_action(tr("app.data.toolbar.import"), colors)))
+                .when(show_table_tools, |this| this.child(
+                    data_editor_action(tr("app.data.toolbar.import"), colors).on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _, window, cx| {
+                            this.open_table_import_wizard_for_tab(tab_id, window, cx);
+                            cx.stop_propagation();
+                        }),
+                    ),
+                ))
                 .when(show_table_tools, |this| this.child(data_editor_action(tr("app.data.toolbar.export"), colors).on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, _, _, cx| {

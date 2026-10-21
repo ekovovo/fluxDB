@@ -632,6 +632,17 @@ impl Render for NavicatMain {
                     cx,
                 ))
             })
+            .when_some(self.pending_data_import.clone(), |this, form| {
+                let kind = self
+                    .controller
+                    .state()
+                    .connections
+                    .iter()
+                    .find(|connection| connection.config.id == form.object.connection_id)
+                    .map(|connection| connection.config.kind)
+                    .unwrap_or(DatabaseKind::Postgres);
+                this.child(table_data_import_modal(form, kind, colors, cx))
+            })
             .when_some(self.pending_rename_table.clone(), |this, form| {
                 this.child(table_name_form_modal(
                     TableNameForm::Rename(form.clone()),

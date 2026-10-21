@@ -30,8 +30,13 @@ impl AppController {
             AppCommand::RunRestore { request, plan } => self
                 .execute_restore(&request, &plan, cancel, progress)
                 .map(AppEvent::RestoreCompleted),
-            AppCommand::ImportTableData { object, source } => self
-                .import_table_data(&object, &source, cancel, &mut |event| {
+            AppCommand::ImportTableData {
+                object,
+                source,
+                options,
+                column_mapping,
+            } => self
+                .import_table_data(&object, &source, options, column_mapping, cancel, &mut |event| {
                     progress(DatabaseTaskProgress {
                         stage: event.stage,
                         message: event.message,
@@ -198,6 +203,8 @@ impl AppController {
         &self,
         object: &ObjectPath,
         source: &std::path::Path,
+        options: fluxdb_core::TableImportOptions,
+        column_mapping: Vec<fluxdb_core::TableImportColumnMapping>,
         cancel: &AtomicBool,
         progress: &mut dyn FnMut(fluxdb_core::TableImportProgress),
     ) -> fluxdb_core::Result<fluxdb_core::TableImportReport> {
@@ -218,9 +225,39 @@ impl AppController {
                 object: object.clone(),
                 source: source.to_path_buf(),
                 format,
+                options,
+                column_mapping,
             },
             cancel,
             progress,
+        )
+    }
+
+    /// 解析导入样本并返回目标表字段，供导入对话框预览；不写数据库。
+    pub fn preview_table_import(
+        &self,
+        object: &ObjectPath,
+        source: &std::path::Path,
+        options: fluxdb_core::TableImportOptions,
+    ) -> fluxdb_core::Result<fluxdb_core::TableImportPreview> {
+        let config = self
+            .connection_config(object.connection_id)
+            .cloned()
+            .ok_or_else(|| Error::new(ErrorKind::Connection, "连接不存在"))?;
+        let format = fluxdb_core::TableImportFormat::from_path(source).ok_or_else(|| {
+            Error::new(
+                ErrorKind::Unsupported,
+                "导入文件格式必须是 TXT、CSV、JSON 或 XML",
+            )
+        })?;
+        fluxdb_connectors::table_data_import(config.kind)?.preview(
+            &fluxdb_core::TableImportPreviewRequest {
+                config,
+                object: object.clone(),
+                source: source.to_path_buf(),
+                format,
+                options,
+            },
         )
     }
 }

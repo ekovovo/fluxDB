@@ -94,6 +94,8 @@ fn sqlite_imports_all_export_formats() {
                     object: object.clone(),
                     source: path,
                     format,
+                    options: fluxdb_core::TableImportOptions::new(),
+                    column_mapping: Vec::new(),
                 },
                 &std::sync::atomic::AtomicBool::new(false),
                 &mut |_| {},
@@ -216,6 +218,8 @@ fn mysql_imports_all_export_formats() {
                         object: object.clone(),
                         source: path,
                         format,
+                        options: fluxdb_core::TableImportOptions::new(),
+                        column_mapping: Vec::new(),
                     },
                     &std::sync::atomic::AtomicBool::new(false),
                     &mut |_| {},
@@ -355,6 +359,8 @@ fn postgres_imports_all_export_formats() {
                         object: object.clone(),
                         source: path,
                         format,
+                        options: fluxdb_core::TableImportOptions::new(),
+                        column_mapping: Vec::new(),
                     },
                     &std::sync::atomic::AtomicBool::new(false),
                     &mut |_| {},
@@ -378,4 +384,123 @@ fn postgres_imports_all_export_formats() {
     if let Err(panic) = result {
         std::panic::resume_unwind(panic);
     }
+}
+
+#[test]
+fn sqlite_import_append_and_truncate_modes() {
+    use fluxdb_core::TableImportMode;
+
+    let dir = std::env::temp_dir().join(format!("fluxdb-import-modes-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let database = dir.join("modes.sqlite");
+    let config = ConnectionConfig {
+        id: ConnectionId(9_950),
+        name: "SQLite import modes".into(),
+        kind: DatabaseKind::Sqlite,
+        endpoint: Endpoint::SqliteFile {
+            path: database.clone(),
+            read_only: false,
+        },
+        options: std::collections::BTreeMap::new(),
+        redis_profile: None,
+        mysql_profile: None,
+        postgres_profile: None,
+        dameng_profile: None,
+    };
+    let object = ObjectPath {
+        connection_id: config.id,
+        database: None,
+        schema: None,
+        name: "items".into(),
+        kind: ObjectKind::Table,
+    };
+    connector_for(&config)
+        .expect("SQLite connector")
+        .execute(&QueryRequest {
+            connection_id: config.id,
+            database: None,
+            schema: None,
+            session_id: None,
+            text: "CREATE TABLE items (ID INTEGER, NAME TEXT)".into(),
+            mode: QueryMode::All,
+            options: QueryExecutionOptions::default(),
+        })
+        .expect("create table");
+
+    let csv = dir.join("rows.csv");
+    std::fs::write(&csv, "ID,NAME\n1,alpha\n2,beta\n").expect("write csv");
+    let provider = table_data_import(DatabaseKind::Sqlite).expect("provider");
+
+    // 追加：两次导入应累计 4 行。
+    for _ in 0..2 {
+        provider
+            .import(
+                &TableImportRequest {
+                    config: config.clone(),
+                    object: object.clone(),
+                    source: csv.clone(),
+                    format: TableImportFormat::Csv,
+                    options: fluxdb_core::TableImportOptions::new(),
+                    column_mapping: Vec::new(),
+                },
+                &std::sync::atomic::AtomicBool::new(false),
+                &mut |_| {},
+            )
+            .expect("append import");
+    }
+    let count = |config: &ConnectionConfig, object: &ObjectPath| -> usize {
+        connector_for(config)
+            .expect("connector")
+            .load_data(object, 0, 50, &[], &[])
+            .expect("load")
+            .rows
+            .len()
+    };
+    assert_eq!(count(&config, &object), 4, "append should accumulate rows");
+
+    // 清空后导入：结果应只剩本次 2 行。
+    let options = fluxdb_core::TableImportOptions {
+        mode: TableImportMode::Truncate,
+        ..fluxdb_core::TableImportOptions::new()
+    };
+    provider
+        .import(
+            &TableImportRequest {
+                config: config.clone(),
+                object: object.clone(),
+                source: csv.clone(),
+                format: TableImportFormat::Csv,
+                options,
+                column_mapping: Vec::new(),
+            },
+            &std::sync::atomic::AtomicBool::new(false),
+            &mut |_| {},
+        )
+        .expect("truncate import");
+    assert_eq!(count(&config, &object), 2, "truncate should replace rows");
+
+    // 空文件不允许清空：必须保留原有数据。
+    let empty = dir.join("empty.csv");
+    std::fs::write(&empty, "ID,NAME\n").expect("write empty csv");
+    provider
+        .import(
+            &TableImportRequest {
+                config: config.clone(),
+                object: object.clone(),
+                source: empty,
+                format: TableImportFormat::Csv,
+                options: fluxdb_core::TableImportOptions {
+                    mode: TableImportMode::Truncate,
+                    ..fluxdb_core::TableImportOptions::new()
+                },
+                column_mapping: Vec::new(),
+            },
+            &std::sync::atomic::AtomicBool::new(false),
+            &mut |_| {},
+        )
+        .expect("empty import is a no-op");
+    assert_eq!(count(&config, &object), 2, "empty file must not truncate");
+
+    let _ = std::fs::remove_dir_all(dir);
 }

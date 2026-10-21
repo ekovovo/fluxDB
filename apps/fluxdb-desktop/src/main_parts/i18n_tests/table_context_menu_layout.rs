@@ -88,3 +88,88 @@ fn table_context_menu_fits_at_bottom_of_viewport(cx: &mut TestAppContext) {
         "table context menu must keep its destructive actions inside the viewport"
     );
 }
+
+#[gpui::test]
+fn table_import_dialog_renders_with_disabled_create_option(cx: &mut TestAppContext) {
+    use fluxdb_app::AppCommand;
+    use fluxdb_core::{
+        ConnectionConfig, ConnectionId, DatabaseKind, Endpoint, ObjectKind, ObjectPath,
+    };
+
+    let _guard = locale_guard();
+    let temp = tempfile::tempdir().expect("isolated profile");
+    let storage = FileStorage::new(temp.path().join("profile"));
+    init_i18n(
+        &app_assets_base_path().join("locales"),
+        &storage.root_dir().join("locales"),
+        "en",
+    );
+    let mut controller = AppController::new();
+    let connection_id = ConnectionId(1);
+    controller.dispatch(AppCommand::ReplaceConnections(vec![ConnectionConfig {
+        id: connection_id,
+        name: "import dialog".into(),
+        kind: DatabaseKind::Sqlite,
+        endpoint: Endpoint::SqliteFile {
+            path: temp.path().join("import.sqlite"),
+            read_only: false,
+        },
+        options: Default::default(),
+        redis_profile: None,
+        mysql_profile: None,
+        postgres_profile: None,
+        dameng_profile: None,
+    }]));
+    cx.update(|cx| {
+        extend_component_i18n();
+        gpui_component::init(cx);
+    });
+    let (_, cx) = cx.add_window_view(move |window, cx| {
+        let view = cx.new(|cx| {
+            navicat_main_new(
+                window,
+                cx,
+                controller,
+                storage,
+                gpui_component::ThemeMode::Light,
+            )
+        });
+        Root::new(view, window, cx)
+    });
+    cx.simulate_resize(gpui::size(gpui::px(900.), gpui::px(620.)));
+    let view = cx.update(|window, cx| {
+        window
+            .root::<Root>()
+            .expect("root")
+            .expect("typed root")
+            .read(cx)
+            .view()
+            .clone()
+            .downcast::<NavicatMain>()
+            .expect("production view")
+    });
+    let _ = view.update(cx, |this, cx| {
+        // 直接构造导入表单，验证对话框在真实生产视图里可渲染且默认追加。
+        let object = ObjectPath {
+            connection_id: ConnectionId(1),
+            database: None,
+            schema: None,
+            name: "items".into(),
+            kind: ObjectKind::Table,
+        };
+        let source = temp.path().join("rows.csv");
+        std::fs::write(&source, "ID,NAME\n1,alpha\n").expect("csv");
+        let form = crate::TableDataImportForm::new(
+            object,
+            source,
+            fluxdb_core::TableImportFormat::Csv,
+        );
+        assert_eq!(form.options.mode, fluxdb_core::TableImportMode::Append);
+        assert_eq!(form.target, crate::TableDataImportTarget::Existing);
+        this.pending_data_import = Some(form);
+        cx.notify();
+    });
+    // 触发一次真实重绘：对话框若存在布局或状态错误会在这里暴露。
+    cx.update(|window, _| window.refresh());
+    cx.run_until_parked();
+}

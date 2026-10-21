@@ -1,6 +1,8 @@
 use fluxdb_core::{
     ParameterizedQueryRequest, QueryExecutionOptions, QueryMode, SqlParameter, TableDataImport,
-    TableImportFormat, TableImportProgress, TableImportReport, TableImportRequest,
+    TableImportColumnMapping, TableImportFormat, TableImportMode, TableImportPreview,
+    TableImportPreviewRequest, TableImportProgress, TableImportReport, TableImportRequest,
+    TableImportTargetColumn,
 };
 use std::{
     collections::BTreeSet,
@@ -8,9 +10,10 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
-const TABLE_IMPORT_MAX_BYTES: u64 = 64 * 1024 * 1024;
-const TABLE_IMPORT_MAX_ROWS: usize = 10_000;
-const TABLE_IMPORT_MAX_PARAMS: usize = 50_000;
+/// 单批写入行数上限，避免单条 INSERT 参数过多；行数本身不再设硬上限。
+const TABLE_IMPORT_BATCH_ROWS: usize = 500;
+/// 预览最多读取的行数。
+const TABLE_IMPORT_PREVIEW_ROWS: usize = 50;
 
 pub fn table_data_import(kind: DatabaseKind) -> fluxdb_core::Result<Box<dyn TableDataImport>> {
     match kind {
@@ -45,6 +48,13 @@ impl TableDataImport for MySqlTableImport {
     ) -> fluxdb_core::Result<TableImportReport> {
         import_relational(DatabaseKind::MySql, request, cancel, progress)
     }
+
+    fn preview(
+        &self,
+        request: &TableImportPreviewRequest,
+    ) -> fluxdb_core::Result<TableImportPreview> {
+        preview_relational(DatabaseKind::MySql, request)
+    }
 }
 
 impl TableDataImport for TiDbTableImport {
@@ -59,6 +69,13 @@ impl TableDataImport for TiDbTableImport {
         progress: &mut dyn FnMut(TableImportProgress),
     ) -> fluxdb_core::Result<TableImportReport> {
         import_relational(DatabaseKind::TiDb, request, cancel, progress)
+    }
+
+    fn preview(
+        &self,
+        request: &TableImportPreviewRequest,
+    ) -> fluxdb_core::Result<TableImportPreview> {
+        preview_relational(DatabaseKind::TiDb, request)
     }
 }
 
@@ -75,6 +92,13 @@ impl TableDataImport for PostgresTableImport {
     ) -> fluxdb_core::Result<TableImportReport> {
         import_relational(DatabaseKind::Postgres, request, cancel, progress)
     }
+
+    fn preview(
+        &self,
+        request: &TableImportPreviewRequest,
+    ) -> fluxdb_core::Result<TableImportPreview> {
+        preview_relational(DatabaseKind::Postgres, request)
+    }
 }
 
 impl TableDataImport for SqliteTableImport {
@@ -90,6 +114,13 @@ impl TableDataImport for SqliteTableImport {
     ) -> fluxdb_core::Result<TableImportReport> {
         import_relational(DatabaseKind::Sqlite, request, cancel, progress)
     }
+
+    fn preview(
+        &self,
+        request: &TableImportPreviewRequest,
+    ) -> fluxdb_core::Result<TableImportPreview> {
+        preview_relational(DatabaseKind::Sqlite, request)
+    }
 }
 
 impl TableDataImport for DamengTableImport {
@@ -104,6 +135,13 @@ impl TableDataImport for DamengTableImport {
         progress: &mut dyn FnMut(TableImportProgress),
     ) -> fluxdb_core::Result<TableImportReport> {
         import_relational(DatabaseKind::Dameng, request, cancel, progress)
+    }
+
+    fn preview(
+        &self,
+        request: &TableImportPreviewRequest,
+    ) -> fluxdb_core::Result<TableImportPreview> {
+        preview_relational(DatabaseKind::Dameng, request)
     }
 }
 
@@ -147,13 +185,20 @@ fn import_relational(
     if target_columns.is_empty() {
         return Err(Error::new(ErrorKind::Query, "目标表没有可导入字段"));
     }
-    let mapping = map_import_columns(&parsed.columns, &target_columns)?;
+    let mapping = map_import_columns(
+        &parsed.columns,
+        &target_columns,
+        &request.column_mapping,
+    )?;
 
     let ddl = connector.table_ddl(&request.object).ok();
     let (excluded, identity_columns) = ddl_import_column_flags(kind, ddl.as_deref());
     let mut warnings = Vec::new();
     let mut selected = Vec::new();
-    for (import_index, target_index) in mapping.into_iter().enumerate() {
+    for (import_index, target_index) in mapping {
+        let Some(target_index) = target_index else {
+            continue;
+        };
         let column = &target_columns[target_index];
         let upper = column.name.to_ascii_uppercase();
         if excluded.contains(&upper) {
@@ -164,12 +209,6 @@ fn import_relational(
     }
     if selected.is_empty() {
         return Err(Error::new(ErrorKind::Query, "导入文件没有可写入字段"));
-    }
-    if selected.len() * parsed.rows.len() > TABLE_IMPORT_MAX_PARAMS {
-        return Err(Error::new(
-            ErrorKind::Unsupported,
-            "导入行数或字段数超过单次上限，请拆分文件后重试",
-        ));
     }
     check_cancel(cancel)?;
     let table = import_qualified_table(kind, request)?;
@@ -189,16 +228,155 @@ fn import_relational(
     } else {
         ""
     };
-    let mut parameters = Vec::with_capacity(selected.len() * parsed.rows.len());
-    let mut values = Vec::with_capacity(parsed.rows.len());
-    for row in &parsed.rows {
+    if request.options.mode == TableImportMode::Truncate {
+        // MySQL/达梦的 TRUNCATE 是 DDL 且隐式提交，失败无法回滚；
+        // 因此必须在确认文件可解析且存在可写列之后再清空。
+        progress(TableImportProgress {
+            stage: "清空".into(),
+            message: format!("正在清空 {table}"),
+        });
+        check_cancel(cancel)?;
+        let truncate = match kind {
+            DatabaseKind::Sqlite => format!("DELETE FROM {table}"),
+            _ => format!("TRUNCATE TABLE {table}"),
+        };
+        let result = connector.execute(&QueryRequest {
+            connection_id: request.config.id,
+            database: request.object.database.clone(),
+            schema: request.object.schema.clone(),
+            session_id: None,
+            text: truncate,
+            mode: QueryMode::All,
+            options: QueryExecutionOptions::default(),
+        })?;
+        if let Some(summary) = result.summaries.iter().find(|summary| !summary.success) {
+            return Err(Error::new(ErrorKind::Query, summary.message.clone()));
+        }
+    }
+
+    let total_rows = parsed.rows.len();
+    let mut imported_rows = 0u64;
+    for (batch_index, chunk) in parsed.rows.chunks(TABLE_IMPORT_BATCH_ROWS).enumerate() {
+        check_cancel(cancel)?;
+        progress(TableImportProgress {
+            stage: "写入".into(),
+            message: format!(
+                "正在写入 {}/{} 行",
+                (batch_index * TABLE_IMPORT_BATCH_ROWS + chunk.len()).min(total_rows),
+                total_rows
+            ),
+        });
+        let (sql, parameters) = build_import_batch_sql(
+            kind,
+            &table,
+            &column_list,
+            overriding,
+            &selected,
+            &target_columns,
+            chunk,
+        )?;
+        let result = connector.execute_parameterized(&ParameterizedQueryRequest {
+            request: QueryRequest {
+                connection_id: request.config.id,
+                database: request.object.database.clone(),
+                schema: request.object.schema.clone(),
+                session_id: None,
+                text: sql,
+                mode: QueryMode::All,
+                options: QueryExecutionOptions::default(),
+            },
+            parameters,
+        })?;
+        if let Some(summary) = result.summaries.iter().find(|summary| !summary.success) {
+            return Err(Error::new(ErrorKind::Query, summary.message.clone()));
+        }
+        imported_rows += chunk.len() as u64;
+    }
+    Ok(TableImportReport {
+        total_rows: total_rows as u64,
+        imported_rows,
+        warnings,
+    })
+}
+
+/// 解析有限行样本并读取目标表字段；不写数据库，用于导入前预览。
+fn preview_relational(
+    kind: DatabaseKind,
+    request: &TableImportPreviewRequest,
+) -> fluxdb_core::Result<TableImportPreview> {
+    if request.config.kind != kind {
+        return Err(Error::new(ErrorKind::Internal, "预览执行器与连接类型不匹配"));
+    }
+    let parsed = parse_import_source(
+        &request.source,
+        request.format,
+        &request.options,
+        &AtomicBool::new(false),
+        &mut |_| {},
+    )?;
+    let target_columns = connector_for(&request.config)?
+        .list_completion_columns(
+            request.object.database.as_deref(),
+            request.object.schema.as_deref(),
+            &request.object.name,
+        )?
+        .into_iter()
+        .map(|column| TableImportTargetColumn {
+            name: column.name,
+            type_name: column.type_name,
+            nullable: column.nullable,
+        })
+        .collect::<Vec<_>>();
+    let truncated = parsed.rows.len() > TABLE_IMPORT_PREVIEW_ROWS;
+    let rows = parsed
+        .rows
+        .iter()
+        .take(TABLE_IMPORT_PREVIEW_ROWS)
+        .map(|row| row.iter().map(preview_cell_text).collect::<Vec<_>>())
+        .collect();
+    Ok(TableImportPreview {
+        format: request.format.label().to_string(),
+        encoding: if request.options.encoding.trim().is_empty() {
+            "UTF-8".to_string()
+        } else {
+            request.options.encoding.trim().to_ascii_uppercase()
+        },
+        columns: parsed.columns,
+        rows,
+        truncated,
+        target_columns,
+    })
+}
+
+fn preview_cell_text(value: &CellValue) -> String {
+    match value {
+        CellValue::Null => "(NULL)".to_string(),
+        CellValue::Bool(value) => value.to_string(),
+        CellValue::I64(value) => value.to_string(),
+        CellValue::F64(value) => value.to_string(),
+        CellValue::Text(value) | CellValue::Json(value) => value.clone(),
+        CellValue::Bytes(value) => format!("<{} 字节>", value.len()),
+        CellValue::BinarySummary(_) => "<二进制>".to_string(),
+    }
+}
+
+/// 构造单批 INSERT；批大小受 `TABLE_IMPORT_BATCH_ROWS` 约束，避免参数过多。
+fn build_import_batch_sql(
+    kind: DatabaseKind,
+    table: &str,
+    column_list: &str,
+    overriding: &str,
+    selected: &[(usize, usize)],
+    target_columns: &[fluxdb_core::CompletionColumn],
+    rows: &[Vec<CellValue>],
+) -> fluxdb_core::Result<(String, Vec<SqlParameter>)> {
+    let mut parameters = Vec::with_capacity(selected.len() * rows.len());
+    let mut values = Vec::with_capacity(rows.len());
+    for row in rows {
         let mut placeholders = Vec::with_capacity(selected.len());
-        for (import_index, target_index) in &selected {
+        for (import_index, target_index) in selected {
             let value = row.get(*import_index).cloned().unwrap_or(CellValue::Null);
-            let parameter = import_sql_parameter_for_column(
-                &value,
-                &target_columns[*target_index],
-            )?;
+            let parameter = import_sql_parameter_for_column(&value, &target_columns[*target_index])?;
             placeholders.push(match kind {
                 DatabaseKind::Postgres => {
                     parameters.push(parameter);
@@ -223,46 +401,13 @@ fn import_relational(
         }
         values.push(format!("({})", placeholders.join(", ")));
     }
-    let sql = format!(
-        "INSERT INTO {table} ({column_list}){overriding} VALUES {}",
-        values.join(", ")
-    );
-    let query = QueryRequest {
-        connection_id: request.config.id,
-        database: request.object.database.clone(),
-        schema: request.object.schema.clone(),
-        session_id: None,
-        text: sql,
-        mode: QueryMode::All,
-        options: QueryExecutionOptions::default(),
-    };
-    progress(TableImportProgress {
-        stage: "写入".into(),
-        message: format!("正在写入 {} 行", parsed.rows.len()),
-    });
-    check_cancel(cancel)?;
-    let result = connector.execute_parameterized(&ParameterizedQueryRequest {
-        request: query,
+    Ok((
+        format!(
+            "INSERT INTO {table} ({column_list}){overriding} VALUES {}",
+            values.join(", ")
+        ),
         parameters,
-    })?;
-    if let Some(summary) = result.summaries.iter().find(|summary| !summary.success) {
-        return Err(Error::new(ErrorKind::Query, summary.message.clone()));
-    }
-    let affected = result
-        .summaries
-        .iter()
-        .map(|summary| summary.affected_rows)
-        .max()
-        .unwrap_or(0);
-    Ok(TableImportReport {
-        total_rows: parsed.rows.len() as u64,
-        imported_rows: if affected > 0 {
-            affected as u64
-        } else {
-            parsed.rows.len() as u64
-        },
-        warnings,
-    })
+    ))
 }
 
 fn parse_import_file(
@@ -270,73 +415,138 @@ fn parse_import_file(
     cancel: &AtomicBool,
     progress: &mut dyn FnMut(TableImportProgress),
 ) -> fluxdb_core::Result<ParsedTable> {
-    let metadata = fs::metadata(&request.source)
+    parse_import_source(
+        &request.source,
+        request.format,
+        &request.options,
+        cancel,
+        progress,
+    )
+}
+
+/// 统一解析入口：预览与正式导入共用同一套规则，避免两边行为不一致。
+fn parse_import_source(
+    source: &std::path::Path,
+    format: TableImportFormat,
+    options: &fluxdb_core::TableImportOptions,
+    cancel: &AtomicBool,
+    progress: &mut dyn FnMut(TableImportProgress),
+) -> fluxdb_core::Result<ParsedTable> {
+    let metadata = fs::metadata(source)
         .map_err(|error| Error::new(ErrorKind::Internal, format!("读取导入文件失败：{error}")))?;
     if !metadata.is_file() {
         return Err(Error::new(ErrorKind::Internal, "导入源不是普通文件"));
     }
-    if metadata.len() > TABLE_IMPORT_MAX_BYTES {
-        return Err(Error::new(
-            ErrorKind::Unsupported,
-            "导入文件超过 64 MiB，请拆分后重试",
-        ));
-    }
-    let bytes = fs::read(&request.source)
+    let bytes = fs::read(source)
         .map_err(|error| Error::new(ErrorKind::Internal, format!("读取导入文件失败：{error}")))?;
-    let text = std::str::from_utf8(&bytes)
-        .map_err(|_| Error::new(ErrorKind::Query, "导入文件必须是 UTF-8 文本"))?;
-    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
-    let parsed = match request.format {
-        TableImportFormat::Txt => parse_delimited(text, b'\t', cancel, progress)?,
-        TableImportFormat::Csv => parse_delimited(text, b',', cancel, progress)?,
-        TableImportFormat::Json => parse_json(text, cancel, progress)?,
-        TableImportFormat::Xml => parse_xml(text, cancel, progress)?,
-    };
-    if parsed.rows.len() > TABLE_IMPORT_MAX_ROWS {
-        return Err(Error::new(
-            ErrorKind::Unsupported,
-            "导入行数超过单次上限，请拆分文件后重试",
-        ));
+    let text = decode_import_text(&bytes, &options.encoding)?;
+    let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
+    match format {
+        TableImportFormat::Txt => {
+            parse_delimited(text, options.delimiter_byte(), options, cancel, progress)
+        }
+        TableImportFormat::Csv => parse_delimited(text, b',', options, cancel, progress),
+        TableImportFormat::Json => parse_json(text, cancel, progress),
+        TableImportFormat::Xml => parse_xml(text, cancel, progress),
     }
-    Ok(parsed)
+}
+
+/// 按指定编码解码导入文件；空编码按 UTF-8 严格解码。
+fn decode_import_text(bytes: &[u8], encoding: &str) -> fluxdb_core::Result<String> {
+    let encoding = encoding.trim();
+    if encoding.is_empty()
+        || encoding.eq_ignore_ascii_case("utf-8")
+        || encoding.eq_ignore_ascii_case("utf8")
+    {
+        return std::str::from_utf8(bytes)
+            .map(str::to_string)
+            .map_err(|_| Error::new(ErrorKind::Query, "导入文件必须是 UTF-8 文本"));
+    }
+    let encoding = encoding_rs::Encoding::for_label(encoding.as_bytes())
+        .ok_or_else(|| Error::new(ErrorKind::Query, format!("不支持的导入编码：{encoding}")))?;
+    encoding
+        .decode_without_bom_handling_and_without_replacement(bytes)
+        .map(|text| text.into_owned())
+        .ok_or_else(|| {
+            Error::new(
+                ErrorKind::Query,
+                format!("导入文件不是合法的 {} 文本", encoding.name()),
+            )
+        })
 }
 
 fn parse_delimited(
     text: &str,
     delimiter: u8,
+    options: &fluxdb_core::TableImportOptions,
     cancel: &AtomicBool,
     progress: &mut dyn FnMut(TableImportProgress),
 ) -> fluxdb_core::Result<ParsedTable> {
     let mut reader = csv::ReaderBuilder::new()
         .delimiter(delimiter)
+        .quote(options.quote_byte())
+        .has_headers(options.has_header)
         .flexible(false)
         .from_reader(text.as_bytes());
-    let headers = reader
-        .headers()
-        .map_err(|error| Error::new(ErrorKind::Query, format!("导入表头无效：{error}")))?
-        .iter()
-        .map(|value| value.trim().to_string())
-        .collect::<Vec<_>>();
+    let headers = if options.has_header {
+        reader
+            .headers()
+            .map_err(|error| Error::new(ErrorKind::Query, format!("导入表头无效：{error}")))?
+            .iter()
+            .map(|value| value.trim().to_string())
+            .collect::<Vec<_>>()
+    } else {
+        // 无表头时按列序号生成稳定列名。
+        let mut plain = csv::ReaderBuilder::new()
+            .delimiter(delimiter)
+            .quote(options.quote_byte())
+            .has_headers(false)
+            .flexible(false)
+            .from_reader(text.as_bytes());
+        let count = plain
+            .records()
+            .next()
+            .transpose()
+            .map_err(|error| Error::new(ErrorKind::Query, format!("导入首行无效：{error}")))?
+            .map(|record| record.len())
+            .unwrap_or(0);
+        if count == 0 {
+            return Err(Error::new(ErrorKind::Query, "导入文件没有字段"));
+        }
+        (1..=count).map(|index| format!("column_{index}")).collect()
+    };
     validate_import_columns(&headers)?;
+    // 无表头时重新创建 reader 从头读取；有表头时沿用已消费首行的 reader。
+    let mut reader = if options.has_header {
+        reader
+    } else {
+        csv::ReaderBuilder::new()
+            .delimiter(delimiter)
+            .quote(options.quote_byte())
+            .has_headers(false)
+            .flexible(false)
+            .from_reader(text.as_bytes())
+    };
     let mut rows = Vec::new();
     for (index, record) in reader.records().enumerate() {
+        let line_offset = if options.has_header { 2 } else { 1 };
         check_cancel(cancel)?;
         let record = record.map_err(|error| {
             Error::new(
                 ErrorKind::Query,
-                format!("导入第 {} 行无效：{error}", index + 2),
+                format!("导入第 {} 行无效：{error}", index + line_offset),
             )
         })?;
         if record.len() != headers.len() {
             return Err(Error::new(
                 ErrorKind::Query,
-                format!("导入第 {} 行字段数与表头不一致", index + 2),
+                format!("导入第 {} 行字段数与表头不一致", index + line_offset),
             ));
         }
         rows.push(
             record
                 .iter()
-                .map(import_text_cell)
+                .map(|value| import_text_cell_with(value, options))
                 .collect::<Vec<_>>(),
         );
         if (index + 1) % 1000 == 0 {
@@ -507,15 +717,27 @@ fn validate_import_columns(columns: &[String]) -> fluxdb_core::Result<()> {
 fn map_import_columns(
     imported: &[String],
     target: &[CompletionColumn],
-) -> fluxdb_core::Result<Vec<usize>> {
+    explicit: &[TableImportColumnMapping],
+) -> fluxdb_core::Result<Vec<(usize, Option<usize>)>> {
     imported
         .iter()
-        .map(|name| {
+        .enumerate()
+        .map(|(index, name)| {
+            // 显式映射优先：`Some(target)` 指定目标列，`None` 表示跳过该列。
+            if let Some(mapping) = explicit
+                .iter()
+                .find(|mapping| mapping.source.eq_ignore_ascii_case(name))
+            {
+                let Some(target_name) = mapping.target.as_deref() else {
+                    return Ok((index, None));
+                };
+                return resolve_target_column(target, target_name, name).map(|target| (index, Some(target)));
+            }
             let exact = target
                 .iter()
                 .position(|column| column.name == *name);
-            if let Some(index) = exact {
-                return Ok(index);
+            if let Some(target_index) = exact {
+                return Ok((index, Some(target_index)));
             }
             let matches = target
                 .iter()
@@ -524,7 +746,7 @@ fn map_import_columns(
                 .map(|(index, _)| index)
                 .collect::<Vec<_>>();
             match matches.as_slice() {
-                [index] => Ok(*index),
+                [target_index] => Ok((index, Some(*target_index))),
                 [] => Err(Error::new(
                     ErrorKind::Query,
                     format!("目标表不存在字段：{name}"),
@@ -536,6 +758,33 @@ fn map_import_columns(
             }
         })
         .collect()
+}
+
+fn resolve_target_column(
+    target: &[CompletionColumn],
+    target_name: &str,
+    source: &str,
+) -> fluxdb_core::Result<usize> {
+    if let Some(index) = target.iter().position(|column| column.name == target_name) {
+        return Ok(index);
+    }
+    let matches = target
+        .iter()
+        .enumerate()
+        .filter(|(_, column)| column.name.eq_ignore_ascii_case(target_name))
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [index] => Ok(*index),
+        [] => Err(Error::new(
+            ErrorKind::Query,
+            format!("目标表不存在字段：{target_name}（源列 {source}）"),
+        )),
+        _ => Err(Error::new(
+            ErrorKind::Query,
+            format!("目标表字段名大小写不唯一：{target_name}"),
+        )),
+    }
 }
 
 fn ddl_import_column_flags(
@@ -691,6 +940,22 @@ fn import_text_cell(value: &str) -> CellValue {
     } else {
         CellValue::Text(value.to_string())
     }
+}
+
+/// 按解析选项转换文本单元格：可选去空白，空串可按 NULL 写入。
+fn import_text_cell_with(
+    value: &str,
+    options: &fluxdb_core::TableImportOptions,
+) -> CellValue {
+    let value = if options.trim_whitespace {
+        value.trim()
+    } else {
+        value
+    };
+    if options.empty_as_null && value.is_empty() {
+        return CellValue::Null;
+    }
+    import_text_cell(value)
 }
 
 fn import_json_cell(value: &serde_json::Value) -> CellValue {
@@ -893,6 +1158,8 @@ mod table_import_tests {
             },
             source: path,
             format,
+            options: fluxdb_core::TableImportOptions::new(),
+            column_mapping: Vec::new(),
         };
         parse_import_file(&request, &AtomicBool::new(false), &mut |_| {}).expect("parse")
     }
@@ -926,5 +1193,123 @@ mod table_import_tests {
         );
         assert_eq!(xml.rows[0][1], CellValue::Text("alpha".into()));
         assert_eq!(xml.rows[1][1], CellValue::Null);
+    }
+
+    fn parse_sample_with_options(
+        format: TableImportFormat,
+        extension: &str,
+        label: &str,
+        bytes: &[u8],
+        options: fluxdb_core::TableImportOptions,
+    ) -> fluxdb_core::Result<ParsedTable> {
+        let dir = std::env::temp_dir().join(format!(
+            "fluxdb-import-options-{}-{label}",
+            std::process::id(),
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join(format!("sample.{extension}"));
+        std::fs::write(&path, bytes).expect("write sample");
+        parse_import_source(&path, format, &options, &AtomicBool::new(false), &mut |_| {})
+    }
+
+    #[test]
+    fn parses_gb18030_text_with_custom_delimiter() {
+        // "姓名;城市\n张三;北京" 的 GB18030 编码。
+        let mut text = Vec::new();
+        text.extend_from_slice(&[0xd0, 0xd5, 0xc3, 0xfb]); // 姓名
+        text.push(b';');
+        text.extend_from_slice(&[0xb3, 0xc7, 0xca, 0xd0]); // 城市
+        text.push(b'\n');
+        text.extend_from_slice(&[0xd5, 0xc5, 0xc8, 0xfd]); // 张三
+        text.push(b';');
+        text.extend_from_slice(&[0xb1, 0xb1, 0xbe, 0xa9]); // 北京
+        text.push(b'\n');
+
+        let options = fluxdb_core::TableImportOptions {
+            encoding: "gb18030".into(),
+            delimiter: ";".into(),
+            ..fluxdb_core::TableImportOptions::new()
+        };
+        let parsed = parse_sample_with_options(TableImportFormat::Txt, "txt", "gb18030", &text, options)
+            .expect("parse gb18030");
+        assert_eq!(parsed.columns, vec!["姓名", "城市"]);
+        assert_eq!(parsed.rows[0][0], CellValue::Text("张三".into()));
+        assert_eq!(parsed.rows[0][1], CellValue::Text("北京".into()));
+    }
+
+    #[test]
+    fn parses_headerless_csv_with_generated_columns() {
+        let options = fluxdb_core::TableImportOptions {
+            has_header: false,
+            ..fluxdb_core::TableImportOptions::new()
+        };
+        let parsed = parse_sample_with_options(
+            TableImportFormat::Csv,
+            "csv",
+            "headerless",
+            b"1,alpha\n2,beta\n",
+            options,
+        )
+        .expect("parse headerless");
+        assert_eq!(parsed.columns, vec!["column_1", "column_2"]);
+        assert_eq!(parsed.rows.len(), 2);
+        assert_eq!(parsed.rows[1][1], CellValue::Text("beta".into()));
+    }
+
+    #[test]
+    fn trims_values_and_maps_empty_to_null() {
+        let options = fluxdb_core::TableImportOptions {
+            trim_whitespace: true,
+            empty_as_null: true,
+            ..fluxdb_core::TableImportOptions::new()
+        };
+        let parsed = parse_sample_with_options(
+            TableImportFormat::Csv,
+            "csv",
+            "trimmed",
+            b"ID,NAME\n1,  alpha  \n2,\n",
+            options,
+        )
+        .expect("parse trimmed");
+        assert_eq!(parsed.rows[0][1], CellValue::Text("alpha".into()));
+        assert_eq!(parsed.rows[1][1], CellValue::Null);
+    }
+
+    #[test]
+    fn explicit_mapping_can_skip_and_rename_columns() {
+        let target = vec![
+            completion_column("ID", "INT"),
+            completion_column("NAME", "TEXT"),
+        ];
+        let mapping = map_import_columns(
+            &["id".to_string(), "full_name".to_string(), "ignored".to_string()],
+            &target,
+            &[
+                TableImportColumnMapping {
+                    source: "full_name".into(),
+                    target: Some("NAME".into()),
+                },
+                TableImportColumnMapping {
+                    source: "ignored".into(),
+                    target: None,
+                },
+            ],
+        )
+        .expect("map columns");
+        assert_eq!(mapping, vec![(0, Some(0)), (1, Some(1)), (2, None)]);
+    }
+
+    fn completion_column(name: &str, type_name: &str) -> fluxdb_core::CompletionColumn {
+        fluxdb_core::CompletionColumn {
+            database: None,
+            schema: None,
+            table: "sample".into(),
+            name: name.into(),
+            type_name: Some(type_name.into()),
+            nullable: true,
+            primary_key: false,
+            comment: None,
+            stable: None,
+        }
     }
 }

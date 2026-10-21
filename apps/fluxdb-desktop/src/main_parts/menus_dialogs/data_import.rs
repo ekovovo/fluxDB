@@ -643,7 +643,7 @@ fn table_data_import_summary(
             )
         })
         .when_some(form.error.clone(), |this, error| {
-            this.child(table_data_import_notice(error, colors.danger, colors))
+            this.child(table_data_import_notice(error, colors.danger))
         })
 }
 
@@ -793,7 +793,8 @@ fn table_data_import_mapping_row(
                 .compact()
                 .w(px(210.))
                 .when(skipped, |this| this.text_color(colors.muted))
-                .dropdown_menu_with_anchor(gpui::Anchor::BottomRight, move |menu, _, _| {
+                // 映射行位于表格中部，向下展开才不会盖住上方内容。
+                .dropdown_menu_with_anchor(gpui::Anchor::TopLeft, move |menu, _, _| {
                     let mut menu = menu.min_w(px(240.)).max_w(px(320.)).check_side(gpui_component::Side::Right);
 
                     let skip_view = weak.clone();
@@ -953,7 +954,7 @@ fn table_data_import_options_bar(
         form.format,
         Some(fluxdb_core::TableImportFormat::Txt | fluxdb_core::TableImportFormat::Csv)
     );
-    let mut row = div()
+    let row = div()
         .flex_none()
         .px_6()
         .pb_3()
@@ -971,7 +972,27 @@ fn table_data_import_options_bar(
                 .gap_5()
                 .child(table_data_import_field(
                     tr("app.data.data_import.mode").as_ref(),
-                    table_data_import_mode_dropdown(form, cx).into_any_element(),
+                    {
+                        let mut cluster = div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(table_data_import_mode_dropdown(form, cx));
+                        // 清空风险紧跟模式选择，避免提示孤立在角落。
+                        if let Some(warning) = form.truncate_warning(kind) {
+                            cluster = cluster.child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_1()
+                                    .text_size(px(10.5))
+                                    .text_color(colors.warning)
+                                    .child(app_icon(AppIcon::Info, 12., colors.warning))
+                                    .child(warning),
+                            );
+                        }
+                        cluster.into_any_element()
+                    },
                     colors,
                 ))
                 .child(table_data_import_field(
@@ -1011,9 +1032,6 @@ fn table_data_import_options_bar(
                 }),
         );
 
-    if let Some(warning) = form.truncate_warning(kind) {
-        row = row.child(table_data_import_notice(warning, colors.warning, colors));
-    }
     row
 }
 
@@ -1238,18 +1256,25 @@ fn table_data_import_field(
         .child(control)
 }
 
-fn table_data_import_notice(text: String, tone: gpui::Rgba, colors: UiColors) -> Div {
+fn table_data_import_notice(text: String, tone: gpui::Rgba) -> Div {
     div()
-        .w_full()
-        .rounded(px(8.))
-        .bg(colors.panel_alt)
-        .px_3()
-        .py_2()
+        // 错误只占自身宽度，避免横跨整行压过主要内容。
+        .max_w(px(760.))
+        .rounded(px(6.))
+        .border_1()
+        .border_color(tone)
+        .px_2p5()
+        .py_1p5()
         .flex()
         .items_center()
-        .gap_2()
-        .child(app_icon(AppIcon::Info, 13., tone))
-        .child(div().text_size(px(11.)).text_color(tone).child(text))
+        .gap_1p5()
+        .child(app_icon(AppIcon::Info, 12., tone))
+        .child(
+            div()
+                .text_size(px(10.5))
+                .text_color(tone)
+                .child(text),
+        )
 }
 
 fn table_data_import_footer(

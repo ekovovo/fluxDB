@@ -21,6 +21,8 @@ struct TableDataImportLogEntry {
     stage: String,
     message: String,
     success: bool,
+    /// 相对开始时间的毫秒数，用于和导出日志一样展示每步耗时。
+    elapsed_ms: u64,
 }
 
 /// 导入状态。
@@ -301,6 +303,72 @@ impl NavicatMain {
         cx.notify();
     }
 
+    /// 把导入日志复制为纯文本，与导出的日志格式保持一致。
+    fn copy_table_import_log(&mut self, cx: &mut Context<Self>) {
+        let Some(form) = self.pending_data_import.as_ref() else {
+            return;
+        };
+        let mut lines = vec![
+            tr("app.data.data_import.log_table")
+                .replace("%{name}", &form.object.name),
+            tr("app.data.data_import.log_file").replace(
+                "%{name}",
+                &form
+                    .source_name()
+                    .unwrap_or_else(|| tr("app.data.data_import.no_file").to_string()),
+            ),
+            tr("app.data.data_import.log_rows")
+                .replace("%{count}", &form.imported_rows.to_string()),
+        ];
+        if let Some(start) = form.started_at {
+            let end = form.finished_at.unwrap_or_else(Instant::now);
+            lines.push(
+                tr("app.data.data_import.log_elapsed").replace(
+                    "%{ms}",
+                    &end.saturating_duration_since(start).as_millis().to_string(),
+                ),
+            );
+        }
+        if let Some(error) = &form.error {
+            lines.push(error.clone());
+        }
+        for (index, entry) in form.logs.iter().enumerate() {
+            lines.push(format!(
+                "#{} [{}] {} ms {}",
+                index + 1,
+                entry.stage,
+                entry.elapsed_ms,
+                entry.message
+            ));
+        }
+        cx.write_to_clipboard(ClipboardItem::new_string(lines.join("\n")));
+        self.show_message(
+            tr("app.data.data_import.log_copied"),
+            AppMessageKind::Success,
+            cx,
+        );
+    }
+
+    /// 清除已完成任务：关闭弹框；运行中不允许清除，避免丢失进度。
+    fn clear_table_import_task(&mut self, cx: &mut Context<Self>) {
+        let running = self
+            .pending_data_import
+            .as_ref()
+            .map(|form| form.running)
+            .unwrap_or(false);
+        if running {
+            self.show_message(
+                tr("app.data.data_import.running_no_clear"),
+                AppMessageKind::Warning,
+                cx,
+            );
+            return;
+        }
+        self.pending_data_import = None;
+        self._data_import_task = None;
+        cx.notify();
+    }
+
     fn set_table_import_mode(
         &mut self,
         mode: fluxdb_core::TableImportMode,
@@ -383,6 +451,7 @@ impl NavicatMain {
                 stage: tr("app.data.data_import.stage_prepare").to_string(),
                 message: tr("app.data.data_import.log_starting").to_string(),
                 success: true,
+                elapsed_ms: 0,
             });
         }
         let controller = self.controller.clone();
@@ -420,11 +489,13 @@ impl NavicatMain {
                 view.update(cx, |this, cx| {
                     this._data_import_task = None;
                     if let Some(current) = this.pending_data_import.as_mut() {
+                        let started_at = current.started_at.unwrap_or_else(Instant::now);
                         for (stage, message) in progress_lines {
                             current.logs.push(TableDataImportLogEntry {
                                 stage,
                                 message,
                                 success: true,
+                                elapsed_ms: started_at.elapsed().as_millis() as u64,
                             });
                         }
                     }
@@ -440,12 +511,20 @@ impl NavicatMain {
                                     message: tr("app.table.import.succeeded")
                                         .replace("%{rows}", &report.imported_rows.to_string()),
                                     success: true,
+                                    elapsed_ms: current
+                                        .started_at
+                                        .map(|start| start.elapsed().as_millis() as u64)
+                                        .unwrap_or(0),
                                 });
                                 for warning in &report.warnings {
                                     current.logs.push(TableDataImportLogEntry {
                                         stage: tr("app.data.data_import.stage_warning").to_string(),
                                         message: crate::localize_backend_error_text(warning),
                                         success: false,
+                                        elapsed_ms: current
+                                            .started_at
+                                            .map(|start| start.elapsed().as_millis() as u64)
+                                            .unwrap_or(0),
                                     });
                                 }
                             }
@@ -479,6 +558,10 @@ impl NavicatMain {
                                     stage: tr("app.data.data_import.stage_failed").to_string(),
                                     message,
                                     success: false,
+                                    elapsed_ms: current
+                                        .started_at
+                                        .map(|start| start.elapsed().as_millis() as u64)
+                                        .unwrap_or(0),
                                 });
                             }
                         }
@@ -1541,6 +1624,7 @@ fn table_data_import_footer(
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
+    let finished = form.finished_at.is_some();
     div()
         .h(px(64.))
         .flex_none()
@@ -1551,16 +1635,46 @@ fn table_data_import_footer(
         .items_center()
         .justify_end()
         .gap_2()
-        .child(
-            Button::new("data-import-cancel")
-                .label(tr("app.common.cancel"))
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.cancel_table_import_wizard(cx);
-                    cx.stop_propagation();
-                })),
-        )
+        // 日志页与导出一致：复制日志 / 清除任务 / 关闭。
+        .when(form.tab == TableDataImportTab::Log, |this| {
+            this.child(
+                Button::new("data-import-copy-log")
+                    .label(tr("app.data.data_import.copy_log"))
+                    .disabled(form.logs.is_empty())
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.copy_table_import_log(cx);
+                        cx.stop_propagation();
+                    })),
+            )
+            .when(finished, |this| {
+                this.child(
+                    Button::new("data-import-clear-task")
+                        .label(tr("app.data.data_import.clear_task"))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.clear_table_import_task(cx);
+                            cx.stop_propagation();
+                        })),
+                )
+            })
+            .child(
+                Button::new("data-import-close-log")
+                    .label(tr("app.common.close"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.cancel_table_import_wizard(cx);
+                        cx.stop_propagation();
+                    })),
+            )
+        })
         .when(form.tab == TableDataImportTab::General, |this| {
             this.child(
+                Button::new("data-import-cancel")
+                    .label(tr("app.common.cancel"))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.cancel_table_import_wizard(cx);
+                        cx.stop_propagation();
+                    })),
+            )
+            .child(
                 Button::new("data-import-start")
                     .label(tr("app.data.data_import.start"))
                     .primary()

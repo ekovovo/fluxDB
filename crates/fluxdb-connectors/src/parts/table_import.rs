@@ -255,15 +255,20 @@ fn import_relational(
     }
 
     let total_rows = parsed.rows.len();
+    let total_batches = total_rows.div_ceil(TABLE_IMPORT_BATCH_ROWS);
     let mut imported_rows = 0u64;
     for (batch_index, chunk) in parsed.rows.chunks(TABLE_IMPORT_BATCH_ROWS).enumerate() {
         check_cancel(cancel)?;
+        let written = (batch_index * TABLE_IMPORT_BATCH_ROWS + chunk.len()).min(total_rows);
         progress(TableImportProgress {
             stage: "写入".into(),
             message: format!(
-                "正在写入 {}/{} 行",
-                (batch_index * TABLE_IMPORT_BATCH_ROWS + chunk.len()).min(total_rows),
-                total_rows
+                "第 {}/{} 批，正在写入第 {}-{} 行（共 {} 行）",
+                batch_index + 1,
+                total_batches,
+                written.saturating_sub(chunk.len()) + 1,
+                written,
+                total_rows,
             ),
         });
         let (sql, parameters) = build_import_batch_sql(
@@ -1311,5 +1316,23 @@ mod table_import_tests {
             comment: None,
             stable: None,
         }
+    }
+
+    #[test]
+    fn batch_progress_reports_one_based_batches() {
+        // 1200 行按 500 行分批：三批，边界行号必须闭合，不能越界或重复。
+        let total_rows = 1200usize;
+        let total_batches = total_rows.div_ceil(TABLE_IMPORT_BATCH_ROWS);
+        assert_eq!(total_batches, 3);
+
+        let mut last_written = 0usize;
+        for (batch_index, chunk) in (0..total_rows).collect::<Vec<_>>().chunks(TABLE_IMPORT_BATCH_ROWS).enumerate() {
+            let written = (batch_index * TABLE_IMPORT_BATCH_ROWS + chunk.len()).min(total_rows);
+            let first = written.saturating_sub(chunk.len()) + 1;
+            assert_eq!(first, last_written + 1, "批次 {batch_index} 起点不连续");
+            assert!(written <= total_rows, "批次 {batch_index} 越界");
+            last_written = written;
+        }
+        assert_eq!(last_written, total_rows);
     }
 }

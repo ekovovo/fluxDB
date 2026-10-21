@@ -1,23 +1,5 @@
 // Included in crate-root scope by ../menus_dialogs.rs; 表数据导入向导弹窗。
 
-/// 导入向导步骤。
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum TableDataImportStep {
-    Source,
-    Mapping,
-    Execute,
-}
-
-impl TableDataImportStep {
-    fn label(self) -> &'static str {
-        match self {
-            Self::Source => "解析选项",
-            Self::Mapping => "字段映射",
-            Self::Execute => "执行导入",
-        }
-    }
-}
-
 /// 导入目标方式；“创建新表”暂未支持，保留为可见但置灰的预留项。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TableDataImportTarget {
@@ -35,13 +17,11 @@ struct TableDataImportForm {
     format: Option<fluxdb_core::TableImportFormat>,
     options: fluxdb_core::TableImportOptions,
     target: TableDataImportTarget,
-    step: TableDataImportStep,
     preview: Option<fluxdb_core::TableImportPreview>,
     mappings: Vec<fluxdb_core::TableImportColumnMapping>,
     error: Option<String>,
     running: bool,
     loading: bool,
-    progress: Option<String>,
 }
 
 impl TableDataImportForm {
@@ -52,13 +32,11 @@ impl TableDataImportForm {
             format: None,
             options: fluxdb_core::TableImportOptions::new(),
             target: TableDataImportTarget::Existing,
-            step: TableDataImportStep::Source,
             preview: None,
             mappings: Vec::new(),
             error: None,
             running: false,
             loading: false,
-            progress: None,
         }
     }
 
@@ -67,12 +45,6 @@ impl TableDataImportForm {
             .as_ref()?
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
-    }
-
-    fn format_label(&self) -> String {
-        self.format
-            .map(|format| format.label().to_string())
-            .unwrap_or_else(|| tr("app.data.data_import.no_file").to_string())
     }
 
     /// 清空模式在部分数据库无法回滚，需要在界面上明确提示。
@@ -376,7 +348,6 @@ impl NavicatMain {
         if let Some(current) = self.pending_data_import.as_mut() {
             current.running = true;
             current.error = None;
-            current.step = TableDataImportStep::Execute;
         }
         let controller = self.controller.clone();
         let object = form.object.clone();
@@ -441,35 +412,33 @@ impl NavicatMain {
     }
 }
 
-/// 导入向导弹窗：解析选项 → 字段映射 → 执行。
+/// 导入弹窗：单页完成配置、映射与预览，避免多步骤来回切换。
 fn table_data_import_modal(
     form: TableDataImportForm,
     kind: DatabaseKind,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
-    let can_continue =
-        form.source.is_some() && form.preview.is_some() && !form.loading && !form.running;
-    let can_import = can_continue
-        && form
-            .mappings
-            .iter()
-            .any(|mapping| mapping.target.is_some());
+    let has_preview = form.preview.is_some();
+    let can_import = has_preview
+        && !form.loading
+        && !form.running
+        && form.mappings.iter().any(|mapping| mapping.target.is_some());
 
     let panel = div()
-        .w(px(920.))
-        .max_w(px(920.))
-        .h(px(640.))
-        .rounded(colors.radius_lg)
+        .w(px(1080.))
+        .max_w(px(1080.))
+        .h(px(700.))
+        .rounded(px(12.))
         .border_1()
-        .border_color(colors.border_soft)
+        .border_color(colors.border)
         .bg(menu_surface_bg(colors))
         .shadow(vec![box_shadow(
             px(0.),
-            px(24.),
-            px(60.),
+            px(28.),
+            px(70.),
             px(0.),
-            hsla(0., 0., 0., if colors.is_dark { 0.5 } else { 0.16 }),
+            hsla(0., 0., 0., if colors.is_dark { 0.55 } else { 0.2 }),
         )])
         .flex()
         .flex_col()
@@ -479,33 +448,29 @@ fn table_data_import_modal(
         .key_context("TableDataImportModal")
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .child(table_data_import_header(&form, colors, cx))
-        .child(table_data_import_steps(form.step, colors))
-        .child(match form.step {
-            TableDataImportStep::Source => table_data_import_source_body(&form, kind, colors, cx)
-                .into_any_element(),
-            TableDataImportStep::Mapping => {
-                table_data_import_mapping_body(&form, colors, cx).into_any_element()
-            }
-            TableDataImportStep::Execute => {
-                table_data_import_execute_body(&form, colors).into_any_element()
-            }
-        })
-        .child(table_data_import_footer(
-            &form,
-            can_continue,
-            can_import,
-            colors,
-            cx,
-        ));
+        .child(table_data_import_summary(&form, colors, cx))
+        .child(
+            div()
+                .flex_1()
+                .min_h(px(0.))
+                .px_6()
+                .pb_4()
+                .flex()
+                .gap_4()
+                .child(table_data_import_mapping_panel(&form, colors, cx))
+                .child(table_data_import_preview_panel(&form, colors)),
+        )
+        .child(table_data_import_options_bar(&form, kind, colors, cx))
+        .child(table_data_import_footer(&form, can_import, colors, cx));
 
     div()
         .absolute()
         .inset_0()
         .occlude()
         .bg(if colors.is_dark {
-            opaque_grey(0.02, 0.58)
+            opaque_grey(0.02, 0.6)
         } else {
-            opaque_grey(0.75, 0.28)
+            opaque_grey(0.75, 0.3)
         })
         .flex()
         .items_center()
@@ -523,9 +488,9 @@ fn table_data_import_header(
     cx: &mut Context<NavicatMain>,
 ) -> Div {
     div()
-        .h(px(72.))
+        .h(px(58.))
         .flex_none()
-        .px_6()
+        .px_5()
         .flex()
         .items_center()
         .justify_between()
@@ -533,157 +498,450 @@ fn table_data_import_header(
             div()
                 .flex()
                 .items_center()
-                .gap_3()
-                .child(
-                    // 图标块：让标题区有视觉重心，而不是一行小字。
-                    div()
-                        .size(px(36.))
-                        .flex_none()
-                        .rounded(px(10.))
-                        .bg(colors.panel_alt)
-                        .border_1()
-                        .border_color(colors.border_soft)
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(app_icon(AppIcon::FolderInput, 18., colors.info)),
-                )
+                .gap_2p5()
+                .child(app_icon(AppIcon::FolderInput, 17., colors.text))
                 .child(
                     div()
-                        .flex()
-                        .flex_col()
-                        .gap_1()
-                        .child(
-                            div()
-                                .text_size(px(15.))
-                                .font_weight(gpui::FontWeight::SEMIBOLD)
-                                .child(tr("app.data.toolbar.import")),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(11.))
-                                .text_color(colors.muted)
-                                .child(table_data_import_subtitle(form)),
-                        ),
+                        .text_size(px(15.))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .child(tr("app.data.data_import.title")),
                 ),
         )
         .child(
             Button::new("data-import-close")
-                .label(tr("app.common.cancel"))
+                .ghost()
+                .compact()
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.cancel_table_import_wizard(cx);
                     cx.stop_propagation();
                 })),
         )
+        .when(form.running, |this| {
+            this.child(
+                div()
+                    .text_size(px(11.))
+                    .text_color(colors.muted)
+                    .child(tr("app.data.data_import.running")),
+            )
+        })
 }
 
-/// 头部副标题：目标表是核心信息，文件名其次，避免三项等权堆叠。
-fn table_data_import_subtitle(form: &TableDataImportForm) -> String {
-    match form.source_name() {
-        Some(name) => format!("{}  ←  {}", form.object.name, name),
-        None => format!(
-            "{}  ·  {}",
-            form.object.name,
-            tr("app.data.data_import.no_file")
-        ),
-    }
-}
+/// 目标表 + 选择文件 + 三项概览，对应 dbx 的首屏信息密度。
+fn table_data_import_summary(
+    form: &TableDataImportForm,
+    colors: UiColors,
+    cx: &mut Context<NavicatMain>,
+) -> Div {
+    let mapped = form
+        .mappings
+        .iter()
+        .filter(|mapping| mapping.target.is_some())
+        .count();
+    let total_columns = form
+        .preview
+        .as_ref()
+        .map(|preview| preview.columns.len())
+        .unwrap_or(0);
+    let preview_rows = form
+        .preview
+        .as_ref()
+        .map(|preview| preview.rows.len())
+        .unwrap_or(0);
 
-/// 分组标题：小字号 + 字重，和内容区形成清晰层级。
-fn table_data_import_section_label(label: &str, colors: UiColors) -> Div {
     div()
-        .text_size(px(11.))
-        .font_weight(gpui::FontWeight::SEMIBOLD)
-        .text_color(colors.muted)
-        .child(label.to_string())
-}
-
-fn table_data_import_steps(step: TableDataImportStep, colors: UiColors) -> Div {
-    let mut row = div()
-        .h(px(48.))
         .flex_none()
         .px_6()
+        .pb_4()
         .flex()
-        .items_center()
-        .gap_2()
-        .border_b_1()
-        .border_color(colors.border_soft);
-    for (index, current) in [
-        TableDataImportStep::Source,
-        TableDataImportStep::Mapping,
-        TableDataImportStep::Execute,
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        let active = current == step;
-        let done = index < step_index(step);
-        row = row.child(
+        .flex_col()
+        .gap_3()
+        .child(
             div()
                 .flex()
-                .items_center()
-                .gap_2()
+                .items_stretch()
+                .gap_3()
                 .child(
-                    // 数字圆点提供进度感；完成态用实心，当前态描边高亮。
                     div()
-                        .size(px(20.))
-                        .flex_none()
+                        .flex_1()
+                        .min_w(px(0.))
                         .rounded(px(10.))
+                        .border_1()
+                        .border_color(colors.border_soft)
+                        .bg(colors.panel_alt)
+                        .px_4()
+                        .py_3()
                         .flex()
-                        .items_center()
-                        .justify_center()
-                        .text_size(px(10.5))
-                        .when(done, |this| {
-                            this.bg(colors.info).text_color(colors.app_bg)
-                        })
-                        .when(active && !done, |this| {
-                            this.border_1()
-                                .border_color(colors.info)
-                                .text_color(colors.info)
-                        })
-                        .when(!active && !done, |this| {
-                            this.bg(colors.panel_alt)
+                        .flex_col()
+                        .gap_1()
+                        .child(
+                            div()
+                                .text_size(px(10.5))
                                 .text_color(colors.muted)
-                        })
-                        .child(if done {
-                            "✓".to_string()
+                                .child(tr("app.data.data_import.target_table")),
+                        )
+                        .child(
+                            div()
+                                .truncate()
+                                .text_size(px(13.5))
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .child(form.object.name.clone()),
+                        ),
+                )
+                .child(
+                    Button::new("data-import-choose-source")
+                        .label(if form.source.is_some() {
+                            tr("app.data.data_import.choose_file")
                         } else {
-                            (index + 1).to_string()
-                        }),
+                            tr("app.data.data_import.choose_file")
+                        })
+                                .on_click(cx.listener(|this, _, window, cx| {
+                            this.choose_table_import_source(window, cx);
+                            cx.stop_propagation();
+                        })),
+                ),
+        )
+        .child(
+            div()
+                .flex()
+                .gap_3()
+                .child(table_data_import_stat(
+                    tr("app.data.data_import.summary_file").as_ref(),
+                    &form
+                        .source_name()
+                        .unwrap_or_else(|| tr("app.data.data_import.no_file").to_string()),
+                    colors,
+                ))
+                .child(table_data_import_stat(
+                    tr("app.data.data_import.summary_rows").as_ref(),
+                    &if form.preview.is_some() {
+                        preview_rows.to_string()
+                    } else {
+                        "—".to_string()
+                    },
+                    colors,
+                ))
+                .child(table_data_import_stat(
+                    tr("app.data.data_import.summary_mapped").as_ref(),
+                    &if form.preview.is_some() {
+                        format!("{mapped} / {total_columns}")
+                    } else {
+                        "—".to_string()
+                    },
+                    colors,
+                )),
+        )
+        .when(form.loading, |this| {
+            this.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .text_size(px(11.))
+                    .text_color(colors.muted)
+                    .child(app_icon(AppIcon::Loader, 13., colors.info))
+                    .child(tr("app.data.data_import.parsing")),
+            )
+        })
+        .when_some(form.error.clone(), |this, error| {
+            this.child(table_data_import_notice(error, colors.danger, colors))
+        })
+}
+
+fn table_data_import_stat(label: &str, value: &str, colors: UiColors) -> Div {
+    div()
+        .flex_1()
+        .min_w(px(0.))
+        .rounded(px(10.))
+        .border_1()
+        .border_color(colors.border_soft)
+        .bg(colors.panel_alt)
+        .px_4()
+        .py_3()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .child(
+            div()
+                .text_size(px(10.5))
+                .text_color(colors.muted)
+                .child(label.to_string()),
+        )
+        .child(
+            div()
+                .truncate()
+                .text_size(px(13.))
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .child(value.to_string()),
+        )
+}
+
+/// 左侧字段映射：源字段 → 目标字段下拉，行高压紧避免滚动疲劳。
+fn table_data_import_mapping_panel(
+    form: &TableDataImportForm,
+    colors: UiColors,
+    cx: &mut Context<NavicatMain>,
+) -> Div {
+    let mut list = div()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .px_3()
+        .py_2();
+    if let Some(preview) = &form.preview {
+        for source in &preview.columns {
+            let current = form
+                .mappings
+                .iter()
+                .find(|mapping| &mapping.source == source)
+                .and_then(|mapping| mapping.target.clone());
+            list = list.child(table_data_import_mapping_row(
+                source,
+                current,
+                preview.target_columns.clone(),
+                cx,
+                colors,
+            ));
+        }
+    } else {
+        list = list.child(
+            div()
+                .p_4()
+                .text_size(px(11.))
+                .text_color(colors.muted)
+                .child(tr("app.data.data_import.mapping_empty")),
+        );
+    }
+
+    div()
+        .w(px(430.))
+        .flex_none()
+        .min_h(px(0.))
+        .rounded(px(10.))
+        .border_1()
+        .border_color(colors.border_soft)
+        .flex()
+        .flex_col()
+        .overflow_hidden()
+        .child(
+            div()
+                .flex_none()
+                .h(px(38.))
+                .px_4()
+                .border_b_1()
+                .border_color(colors.border_soft)
+                .flex()
+                .items_center()
+                .justify_between()
+                .child(
+                    div()
+                        .text_size(px(12.))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .child(tr("app.data.data_import.mapping_title")),
                 )
                 .child(
                     div()
-                        .text_size(px(11.5))
-                        .when(active, |this| {
-                            this.font_weight(gpui::FontWeight::SEMIBOLD)
-                                .text_color(colors.text)
-                        })
-                        .when(!active, |this| this.text_color(colors.muted))
-                        .child(current.label()),
+                        .text_size(px(10.5))
+                        .text_color(colors.muted)
+                        .child(tr("app.data.data_import.mapping_hint")),
                 ),
-        );
-        if index < 2 {
-            row = row.child(
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_h(px(0.))
+                .overflow_y_scrollbar()
+                .child(list),
+        )
+}
+
+fn table_data_import_mapping_row(
+    source: &str,
+    current: Option<String>,
+    columns: Vec<fluxdb_core::TableImportTargetColumn>,
+    cx: &mut Context<NavicatMain>,
+    colors: UiColors,
+) -> Div {
+    let skipped = current.is_none();
+    let label = current
+        .clone()
+        .unwrap_or_else(|| tr("app.data.data_import.skip").to_string());
+    let source_name = source.to_string();
+    let selected = current.clone();
+    let weak = cx.entity().downgrade();
+    let menu_columns = columns.clone();
+
+    div()
+        .h(px(40.))
+        .px_2()
+        .rounded(px(7.))
+        .flex()
+        .items_center()
+        .gap_3()
+        .child(
+            div()
+                .w(px(150.))
+                .min_w(px(0.))
+                .truncate()
+                .text_size(px(12.))
+                .child(source_name.clone()),
+        )
+        .child(
+            Button::new(SharedString::from(format!("data-import-map:{source}")))
+                .label(label)
+                .ghost()
+                .compact()
+                .when(skipped, |this| this.text_color(colors.muted))
+                .dropdown_menu_with_anchor(gpui::Anchor::BottomRight, move |menu, _, _| {
+                    let mut menu = menu.min_w(px(240.)).max_w(px(320.)).check_side(gpui_component::Side::Right);
+
+                    let skip_view = weak.clone();
+                    let skip_source = source_name.clone();
+                    menu = menu.item(
+                        PopupMenuItem::new(tr("app.data.data_import.skip"))
+                            .checked(selected.is_none())
+                            .on_click(move |_, _, cx| {
+                                if let Some(view) = skip_view.upgrade() {
+                                    view.update(cx, |this, cx| {
+                                        this.set_table_import_mapping(skip_source.clone(), None, cx);
+                                    });
+                                }
+                            }),
+                    );
+
+                    for column in &menu_columns {
+                        let target = column.name.clone();
+                        let map_view = weak.clone();
+                        let map_source = source_name.clone();
+                        let item_label = match &column.type_name {
+                            Some(type_name) => format!("{} · {}", column.name, type_name),
+                            None => column.name.clone(),
+                        };
+                        let checked = selected.as_deref() == Some(column.name.as_str());
+                        menu = menu.item(
+                            PopupMenuItem::new(item_label)
+                                .checked(checked)
+                                .on_click(move |_, _, cx| {
+                                    if let Some(view) = map_view.upgrade() {
+                                        view.update(cx, |this, cx| {
+                                            this.set_table_import_mapping(
+                                                map_source.clone(),
+                                                Some(target.clone()),
+                                                cx,
+                                            );
+                                        });
+                                    }
+                                }),
+                        );
+                    }
+                    menu
+                }),
+        )
+}
+
+/// 右侧数据预览：等宽列 + 斑马纹，最多展示预览行数。
+fn table_data_import_preview_panel(form: &TableDataImportForm, colors: UiColors) -> Div {
+    let mut content = div().flex().flex_col().px_3().py_2();
+    if let Some(preview) = &form.preview {
+        let mut header = div().flex().flex_none().h(px(32.));
+        for column in &preview.columns {
+            header = header.child(
                 div()
-                    .flex_1()
-                    .h(px(1.))
-                    .mx_2()
-                    .bg(colors.border_soft),
+                    .w(px(160.))
+                    .flex_none()
+                    .px_2()
+                    .flex()
+                    .items_center()
+                    .truncate()
+                    .text_size(px(11.))
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(colors.muted)
+                    .child(column.clone()),
             );
         }
+        content = content.child(header);
+        for (row_index, row) in preview.rows.iter().enumerate() {
+            let mut line = div()
+                .flex()
+                .flex_none()
+                .h(px(30.))
+                .rounded(px(6.))
+                .when(row_index % 2 == 1, |this| this.bg(colors.panel_alt));
+            for column_index in 0..preview.columns.len() {
+                let value = row.get(column_index).cloned().unwrap_or_default();
+                line = line.child(
+                    div()
+                        .w(px(160.))
+                        .flex_none()
+                        .px_2()
+                        .flex()
+                        .items_center()
+                        .truncate()
+                        .text_size(px(11.5))
+                        .child(value),
+                );
+            }
+            content = content.child(line);
+        }
+    } else {
+        content = content.child(
+            div()
+                .p_4()
+                .text_size(px(11.))
+                .text_color(colors.muted)
+                .child(tr("app.data.data_import.preview_empty")),
+        );
     }
-    row
+
+    div()
+        .flex_1()
+        .min_w(px(0.))
+        .min_h(px(0.))
+        .rounded(px(10.))
+        .border_1()
+        .border_color(colors.border_soft)
+        .flex()
+        .flex_col()
+        .overflow_hidden()
+        .child(
+            div()
+                .flex_none()
+                .h(px(38.))
+                .px_4()
+                .border_b_1()
+                .border_color(colors.border_soft)
+                .flex()
+                .items_center()
+                .justify_between()
+                .child(
+                    div()
+                        .text_size(px(12.))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .child(tr("app.data.data_import.preview_title")),
+                )
+                .when_some(form.preview.as_ref(), |this, preview| {
+                    this.child(
+                        div()
+                            .text_size(px(10.5))
+                            .text_color(colors.muted)
+                            .child(if preview.truncated {
+                                tr("app.data.data_import.preview_truncated").to_string()
+                            } else {
+                                format!("{} · {}", preview.encoding, preview.format)
+                            }),
+                    )
+                }),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_h(px(0.))
+                .overflow_x_scrollbar()
+                .child(content),
+        )
 }
 
-fn step_index(step: TableDataImportStep) -> usize {
-    match step {
-        TableDataImportStep::Source => 0,
-        TableDataImportStep::Mapping => 1,
-        TableDataImportStep::Execute => 2,
-    }
-}
-
-fn table_data_import_source_body(
+/// 底部选项条：导入模式与解析选项集中一行，减少纵向堆叠。
+fn table_data_import_options_bar(
     form: &TableDataImportForm,
     kind: DatabaseKind,
     colors: UiColors,
@@ -693,276 +951,259 @@ fn table_data_import_source_body(
         form.format,
         Some(fluxdb_core::TableImportFormat::Txt | fluxdb_core::TableImportFormat::Csv)
     );
-
-    // 左栏：文件与写入策略；右栏：解析选项与状态，避免单列下右侧大片留白。
-    let left = div()
-        .w(px(340.))
+    let mut row = div()
         .flex_none()
+        .px_6()
+        .pb_3()
         .flex()
         .flex_col()
-        .gap_4()
-        .child(table_data_import_file_card(form, colors, cx))
+        .gap_2()
         .child(
             div()
                 .flex()
-                .flex_col()
-                .gap_2p5()
-                .child(table_data_import_section_label(
-                    tr("app.data.data_import.target_mode").as_ref(),
-                    colors,
-                ))
+                .items_center()
+                .gap_3()
                 .child(
                     div()
-                        .flex()
-                        .flex_col()
-                        .gap_2()
-                        .child(table_data_import_target_option(
-                            "data-import-target-existing",
-                            tr("app.data.data_import.target_existing").as_ref(),
-                            tr("app.data.data_import.target_existing_hint").as_ref(),
-                            form.target == TableDataImportTarget::Existing,
-                            true,
-                            colors,
-                            cx.listener(|this, _, _, cx| {
+                        .text_size(px(10.5))
+                        .text_color(colors.muted)
+                        .child(tr("app.data.data_import.mode")),
+                )
+                .child(table_data_import_mode_dropdown(form, cx))
+                .child(
+                    div()
+                        .text_size(px(10.5))
+                        .text_color(colors.muted)
+                        .child(tr("app.data.data_import.target_mode")),
+                )
+                .child(table_data_import_target_dropdown(form, cx))
+                .child(
+                    div()
+                        .text_size(px(10.5))
+                        .text_color(colors.muted)
+                        .child(tr("app.data.data_import.encoding")),
+                )
+                .child(table_data_import_encoding_dropdown(form, colors, cx))
+                .child(div().flex_1())
+                .when(delimited, |this| {
+                    this.child(table_data_import_option_toggle(
+                        "data-import-has-header",
+                        tr("app.data.data_import.has_header").to_string(),
+                        form.options.has_header,
+                        colors,
+                        cx,
+                    ))
+                    .child(table_data_import_option_toggle(
+                        "data-import-trim",
+                        tr("app.data.data_import.trim").to_string(),
+                        form.options.trim_whitespace,
+                        colors,
+                        cx,
+                    ))
+                    .child(table_data_import_option_toggle(
+                        "data-import-empty-null",
+                        tr("app.data.data_import.empty_as_null").to_string(),
+                        form.options.empty_as_null,
+                        colors,
+                        cx,
+                    ))
+                }),
+        );
+
+    if let Some(warning) = form.truncate_warning(kind) {
+        row = row.child(table_data_import_notice(warning, colors.warning, colors));
+    }
+    row
+}
+
+/// 目标方式下拉：保留“创建新表”为置灰预留项，而不是隐藏。
+fn table_data_import_target_dropdown(
+    form: &TableDataImportForm,
+    cx: &mut Context<NavicatMain>,
+) -> impl IntoElement {
+    let weak = cx.entity().downgrade();
+    let current = form.target;
+    Button::new("data-import-target")
+        .label(match current {
+            TableDataImportTarget::Existing => {
+                tr("app.data.data_import.target_existing")
+            }
+            TableDataImportTarget::Create => tr("app.data.data_import.target_create"),
+        })
+        .ghost()
+        .compact()
+        .dropdown_menu_with_anchor(gpui::Anchor::TopRight, move |menu, _, _| {
+            let mut menu = menu.min_w(px(240.));
+            let exist_view = weak.clone();
+            menu = menu.item(
+                PopupMenuItem::new(tr("app.data.data_import.target_existing"))
+                    .checked(current == TableDataImportTarget::Existing)
+                    .on_click(move |_, _, cx| {
+                        if let Some(view) = exist_view.upgrade() {
+                            view.update(cx, |this, cx| {
                                 if let Some(form) = this.pending_data_import.as_mut() {
                                     form.target = TableDataImportTarget::Existing;
                                 }
                                 cx.notify();
-                                cx.stop_propagation();
-                            }),
-                        ))
-                        .child(table_data_import_target_option(
-                            "data-import-target-create",
-                            tr("app.data.data_import.target_create").as_ref(),
-                            tr("app.data.data_import.target_create_disabled").as_ref(),
-                            false,
-                            false,
-                            colors,
-                            // 置灰项不绑定点击：保留外观，便于后续开放。
-                            |_, _, _| {},
-                        )),
-                ),
-        )
-        .child(
-            div()
-                .flex()
-                .flex_col()
-                .gap_2p5()
-                .child(table_data_import_section_label(
-                    tr("app.data.data_import.mode").as_ref(),
-                    colors,
-                ))
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap_2()
-                        .child(table_data_import_mode_option(
-                            "data-import-mode-append",
-                            fluxdb_core::TableImportMode::Append,
-                            form.options.mode,
-                            colors,
-                            cx.listener(|this, _, _, cx| {
-                                this.set_table_import_mode(
-                                    fluxdb_core::TableImportMode::Append,
-                                    cx,
-                                );
-                                cx.stop_propagation();
-                            }),
-                        ))
-                        .child(table_data_import_mode_option(
-                            "data-import-mode-truncate",
-                            fluxdb_core::TableImportMode::Truncate,
-                            form.options.mode,
-                            colors,
-                            cx.listener(|this, _, _, cx| {
-                                this.set_table_import_mode(
-                                    fluxdb_core::TableImportMode::Truncate,
-                                    cx,
-                                );
-                                cx.stop_propagation();
-                            }),
-                        )),
-                ),
-        );
+                            });
+                        }
+                    }),
+            );
+            menu.item(
+                PopupMenuItem::new(tr("app.data.data_import.target_create"))
+                    .disabled(true)
+                    .checked(false),
+            )
+        })
+}
 
-    let mut right = div()
-        .flex_1()
-        .min_w(px(0.))
-        .flex()
-        .flex_col()
-        .gap_4()
-        .child(
-            div()
-                .flex()
-                .flex_col()
-                .gap_2p5()
-                .child(table_data_import_section_label(
-                    tr("app.data.data_import.parse_options").as_ref(),
-                    colors,
-                ))
-                .child(
-                    div()
-                        .flex()
-                        .flex_wrap()
-                        .gap_2()
-                        .children(table_data_import_encoding_options(form, colors, cx))
-                        .when(delimited, |this| {
-                            this.child(table_data_import_toggle_option(
-                                "data-import-has-header",
-                                tr("app.data.data_import.has_header").to_string(),
-                                form.options.has_header,
-                                colors,
-                                cx.listener(|this, _, _, cx| {
+/// 文件编码下拉：选项固定且互斥，改选后立即重新解析预览。
+fn table_data_import_encoding_dropdown(
+    form: &TableDataImportForm,
+    colors: UiColors,
+    cx: &mut Context<NavicatMain>,
+) -> impl IntoElement {
+    let weak = cx.entity().downgrade();
+    let current = if form.options.encoding.trim().is_empty() {
+        "UTF-8".to_string()
+    } else {
+        form.options.encoding.trim().to_ascii_uppercase()
+    };
+    Button::new("data-import-encoding")
+        .label(current.clone())
+        .ghost()
+        .compact()
+        .text_color(colors.text)
+        .dropdown_menu_with_anchor(gpui::Anchor::TopRight, move |menu, _, _| {
+            let mut menu = menu.min_w(px(180.));
+            for encoding in ["UTF-8", "GB18030"] {
+                let view = weak.clone();
+                let value = encoding.to_string();
+                let label = encoding.to_string();
+                menu = menu.item(
+                    PopupMenuItem::new(label)
+                        .checked(current == encoding)
+                        .on_click(move |_, _, cx| {
+                            if let Some(view) = view.upgrade() {
+                                let value = value.clone();
+                                view.update(cx, |this, cx| {
                                     this.set_table_import_options(
-                                        |options| options.has_header = !options.has_header,
-                                        cx,
-                                    );
-                                    cx.stop_propagation();
-                                }),
-                            ))
-                            .child(table_data_import_toggle_option(
-                                "data-import-trim",
-                                tr("app.data.data_import.trim").to_string(),
-                                form.options.trim_whitespace,
-                                colors,
-                                cx.listener(|this, _, _, cx| {
-                                    this.set_table_import_options(
-                                        |options| {
-                                            options.trim_whitespace = !options.trim_whitespace
+                                        move |options| {
+                                            // UTF-8 是默认编码，空值表示默认，避免多存一份状态。
+                                            options.encoding = if value == "UTF-8" {
+                                                String::new()
+                                            } else {
+                                                value.clone()
+                                            };
                                         },
                                         cx,
                                     );
-                                    cx.stop_propagation();
-                                }),
-                            ))
-                            .child(table_data_import_toggle_option(
-                                "data-import-empty-null",
-                                tr("app.data.data_import.empty_as_null").to_string(),
-                                form.options.empty_as_null,
-                                colors,
-                                cx.listener(|this, _, _, cx| {
-                                    this.set_table_import_options(
-                                        |options| options.empty_as_null = !options.empty_as_null,
-                                        cx,
-                                    );
-                                    cx.stop_propagation();
-                                }),
-                            ))
+                                });
+                            }
                         }),
-                ),
-        );
-
-    if let Some(warning) = form.truncate_warning(kind) {
-        right = right.child(table_data_import_notice(
-            warning,
-            colors.warning,
-            colors,
-        ));
-    }
-    if let Some(error) = &form.error {
-        right = right.child(table_data_import_notice(
-            error.clone(),
-            colors.danger,
-            colors,
-        ));
-    }
-    if form.loading {
-        right = right.child(
-            div()
-                .flex()
-                .items_center()
-                .gap_2()
-                .text_size(px(11.))
-                .text_color(colors.muted)
-                .child(app_icon(AppIcon::Loader, 14., colors.info))
-                .child(tr("app.data.data_import.parsing")),
-        );
-    }
-    if let Some(preview) = &form.preview {
-        right = right.child(
-            div()
-                .w_full()
-                .rounded(px(10.))
-                .border_1()
-                .border_color(colors.border_soft)
-                .bg(colors.panel_alt)
-                .px_4()
-                .py_3()
-                .flex()
-                .flex_col()
-                .gap_2()
-                .child(
-                    div()
-                        .text_size(px(11.))
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .text_color(colors.muted)
-                        .child(tr("app.data.data_import.preview_summary")),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .gap_5()
-                        .children(
-                            [
-                                (
-                                    tr("app.data.data_import.summary_columns").to_string(),
-                                    preview.columns.len().to_string(),
-                                ),
-                                (
-                                    tr("app.data.data_import.summary_rows").to_string(),
-                                    preview.rows.len().to_string(),
-                                ),
-                                (
-                                    tr("app.data.data_import.summary_encoding").to_string(),
-                                    preview.encoding.clone(),
-                                ),
-                            ]
-                            .into_iter()
-                            .map(|(label, value)| {
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .gap_1()
-                                    .child(
-                                        div()
-                                            .text_size(px(10.5))
-                                            .text_color(colors.muted)
-                                            .child(label),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_size(px(13.))
-                                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                                            .child(value),
-                                    )
-                                    .into_any_element()
-                            }),
-                        ),
-                )
-                .when(preview.truncated, |this| {
-                    this.child(
-                        div()
-                            .text_size(px(10.5))
-                            .text_color(colors.muted)
-                            .child(tr("app.data.data_import.preview_truncated")),
-                    )
-                }),
-        );
-    }
-
-    div()
-        .flex_1()
-        .min_h(px(0.))
-        .px_6()
-        .py_5()
-        .flex()
-        .gap_6()
-        .child(left)
-        .child(right)
+                );
+            }
+            menu
+        })
 }
 
-/// 统一的提示条：图标 + 文本，避免只有一行彩色文字。
+fn table_data_import_mode_dropdown(
+    form: &TableDataImportForm,
+    cx: &mut Context<NavicatMain>,
+) -> impl IntoElement {
+    let weak = cx.entity().downgrade();
+    let mode = form.options.mode;
+    let label = match mode {
+        fluxdb_core::TableImportMode::Append => tr("app.data.data_import.mode_append"),
+        fluxdb_core::TableImportMode::Truncate => tr("app.data.data_import.mode_truncate"),
+    };
+    Button::new("data-import-mode")
+        .label(label)
+        .ghost()
+        .compact()
+        .dropdown_menu_with_anchor(gpui::Anchor::TopRight, move |menu, _, _| {
+            let mut menu = menu.min_w(px(200.));
+            for option in [
+                fluxdb_core::TableImportMode::Append,
+                fluxdb_core::TableImportMode::Truncate,
+            ] {
+                let option_label = match option {
+                    fluxdb_core::TableImportMode::Append => {
+                        tr("app.data.data_import.mode_append")
+                    }
+                    fluxdb_core::TableImportMode::Truncate => {
+                        tr("app.data.data_import.mode_truncate")
+                    }
+                };
+                let view = weak.clone();
+                menu = menu.item(
+                    PopupMenuItem::new(option_label)
+                        .checked(option == mode)
+                        .on_click(move |_, _, cx| {
+                            if let Some(view) = view.upgrade() {
+                                view.update(cx, |this, cx| {
+                                    this.set_table_import_mode(option, cx);
+                                });
+                            }
+                        }),
+                );
+            }
+            menu
+        })
+}
+
+fn table_data_import_option_toggle(
+    id: &'static str,
+    label: String,
+    selected: bool,
+    colors: UiColors,
+    cx: &mut Context<NavicatMain>,
+) -> impl IntoElement {
+    let key = id.to_string();
+    div()
+        .id(id)
+        .h(px(26.))
+        .px_3()
+        .rounded(px(13.))
+        .border_1()
+        .border_color(if selected {
+            colors.info
+        } else {
+            colors.border_soft
+        })
+        .when(selected, |this| {
+            this.bg(colors.panel_alt)
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+        })
+        .when(!selected, |this| this.text_color(colors.muted))
+        .cursor_pointer()
+        .text_size(px(11.))
+        .flex()
+        .items_center()
+        .hover(move |style| style.bg(colors.hover))
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |this, _, _, cx| {
+                let key = key.clone();
+                this.set_table_import_options(
+                    move |options| match key.as_str() {
+                        "data-import-has-header" => options.has_header = !options.has_header,
+                        "data-import-trim" => {
+                            options.trim_whitespace = !options.trim_whitespace
+                        }
+                        "data-import-empty-null" => {
+                            options.empty_as_null = !options.empty_as_null
+                        }
+                        _ => {}
+                    },
+                    cx,
+                );
+                cx.stop_propagation();
+            }),
+        )
+        .child(label)
+}
+
 fn table_data_import_notice(text: String, tone: gpui::Rgba, colors: UiColors) -> Div {
     div()
         .w_full()
@@ -973,607 +1214,42 @@ fn table_data_import_notice(text: String, tone: gpui::Rgba, colors: UiColors) ->
         .flex()
         .items_center()
         .gap_2()
-        .child(app_icon(AppIcon::Info, 14., tone))
+        .child(app_icon(AppIcon::Info, 13., tone))
         .child(div().text_size(px(11.)).text_color(tone).child(text))
-}
-
-fn table_data_import_encoding_options(
-    form: &TableDataImportForm,
-    colors: UiColors,
-    cx: &mut Context<NavicatMain>,
-) -> Vec<gpui::AnyElement> {
-    ["UTF-8", "GB18030"]
-        .into_iter()
-        .map(|encoding| {
-            let selected = if form.options.encoding.trim().is_empty() {
-                encoding == "UTF-8"
-            } else {
-                form.options.encoding.eq_ignore_ascii_case(encoding)
-            };
-            table_data_import_toggle_option(
-                format!("data-import-encoding-{encoding}"),
-                encoding.to_string(),
-                selected,
-                colors,
-                cx.listener(move |this, _, _, cx| {
-                    this.set_table_import_options(
-                        |options| {
-                            options.encoding = if encoding == "UTF-8" {
-                                String::new()
-                            } else {
-                                encoding.to_string()
-                            };
-                        },
-                        cx,
-                    );
-                    cx.stop_propagation();
-                }),
-            )
-            .into_any_element()
-        })
-        .collect()
-}
-
-/// 文件区：未选择时是整块可点击的投放区，选择后展示文件名与格式。
-fn table_data_import_file_card(
-    form: &TableDataImportForm,
-    colors: UiColors,
-    cx: &mut Context<NavicatMain>,
-) -> impl IntoElement {
-    let has_file = form.source_name().is_some();
-    div()
-        .id("data-import-file-card")
-        .w_full()
-        .px_4()
-        .py_4()
-        .rounded(px(10.))
-        .border_1()
-        .border_color(if has_file {
-            colors.border
-        } else {
-            colors.info
-        })
-        .when(!has_file, |this| this.border_dashed())
-        .bg(if has_file {
-            colors.panel_alt
-        } else {
-            colors.input_bg
-        })
-        .cursor_pointer()
-        .hover(move |style| style.bg(colors.hover))
-        .on_mouse_down(
-            MouseButton::Left,
-            cx.listener(|this, _, window, cx| {
-                this.choose_table_import_source(window, cx);
-                cx.stop_propagation();
-            }),
-        )
-        .flex()
-        .items_center()
-        .gap_3()
-        .child(
-            div()
-                .size(px(38.))
-                .flex_none()
-                .rounded(px(10.))
-                .bg(colors.panel_bg)
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(app_icon(
-                    if has_file {
-                        AppIcon::FileSql
-                    } else {
-                        AppIcon::FolderInput
-                    },
-                    18.,
-                    if has_file { colors.info } else { colors.muted },
-                )),
-        )
-        .child(
-            div()
-                .flex_1()
-                .min_w(px(0.))
-                .flex()
-                .flex_col()
-                .gap_1()
-                .child(
-                    div()
-                        .text_size(px(13.))
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .truncate()
-                        .child(form.source_name().unwrap_or_else(|| {
-                            tr("app.data.data_import.choose_file").to_string()
-                        })),
-                )
-                .child(
-                    div()
-                        .text_size(px(11.))
-                        .text_color(colors.muted)
-                        .child(if has_file {
-                            format!(
-                                "{} · {}",
-                                form.format_label(),
-                                tr("app.data.data_import.change_file")
-                            )
-                        } else {
-                            tr("app.data.data_import.file_hint").to_string()
-                        }),
-                ),
-        )
-}
-
-fn table_data_import_toggle_option<F>(
-    id: impl Into<gpui::ElementId>,
-    label: String,
-    selected: bool,
-    colors: UiColors,
-    on_click: F,
-) -> impl IntoElement
-where
-    F: Fn(&gpui::MouseDownEvent, &mut Window, &mut App) + 'static,
-{
-    div()
-        .id(id.into())
-        .h(px(26.))
-        .px_3()
-        .rounded(px(13.))
-        .border_1()
-        .border_color(if selected {
-            colors.info
-        } else {
-            colors.border_soft
-        })
-        .when(selected, |this| {
-            this.bg(colors.panel_alt)
-                .text_color(colors.text)
-                .font_weight(gpui::FontWeight::SEMIBOLD)
-        })
-        .when(!selected, |this| this.text_color(colors.muted))
-        .cursor_pointer()
-        .text_size(px(11.))
-        .flex()
-        .items_center()
-        .hover(move |style| style.bg(colors.hover))
-        .on_mouse_down(MouseButton::Left, on_click)
-        .child(label)
-}
-
-fn table_data_import_target_option<F>(
-    id: &'static str,
-    title: &str,
-    hint: &str,
-    selected: bool,
-    enabled: bool,
-    colors: UiColors,
-    on_click: F,
-) -> impl IntoElement
-where
-    F: Fn(&gpui::MouseDownEvent, &mut Window, &mut App) + 'static,
-{
-    let title = title.to_string();
-    let hint = hint.to_string();
-    div()
-        .id(id)
-        .flex_1()
-        .min_w(px(0.))
-        .px_4()
-        .py_3()
-        .rounded(px(10.))
-        .border_1()
-        .border_color(if selected {
-            colors.info
-        } else {
-            colors.border_soft
-        })
-        .when(selected, |this| this.bg(colors.panel_alt))
-        .when(enabled, |this| {
-            this.cursor_pointer()
-                .hover(move |style| style.bg(colors.hover))
-                .on_mouse_down(MouseButton::Left, on_click)
-        })
-        .when(!enabled, |this| this.opacity(0.5))
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .justify_between()
-                .child(
-                    div()
-                        .text_size(px(12.5))
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .child(title),
-                )
-                .when(selected, |this| {
-                    this.child(app_icon(AppIcon::CircleCheck, 14., colors.info))
-                }),
-        )
-        .child(
-            div()
-                .mt_1p5()
-                .text_size(px(11.))
-                .text_color(colors.muted)
-                .child(hint),
-        )
-}
-
-fn table_data_import_mode_option<F>(
-    id: &'static str,
-    mode: fluxdb_core::TableImportMode,
-    selected: fluxdb_core::TableImportMode,
-    colors: UiColors,
-    on_click: F,
-) -> impl IntoElement
-where
-    F: Fn(&gpui::MouseDownEvent, &mut Window, &mut App) + 'static,
-{
-    let active = mode == selected;
-    let (label, hint) = match mode {
-        fluxdb_core::TableImportMode::Append => (
-            tr("app.data.data_import.mode_append"),
-            tr("app.data.data_import.mode_append_hint"),
-        ),
-        fluxdb_core::TableImportMode::Truncate => (
-            tr("app.data.data_import.mode_truncate"),
-            tr("app.data.data_import.mode_truncate_hint"),
-        ),
-    };
-    div()
-        .id(id)
-        .flex_1()
-        .min_w(px(0.))
-        .px_4()
-        .py_3()
-        .rounded(px(10.))
-        .border_1()
-        .border_color(if active {
-            colors.info
-        } else {
-            colors.border_soft
-        })
-        .when(active, |this| this.bg(colors.panel_alt))
-        .cursor_pointer()
-        .hover(move |style| style.bg(colors.hover))
-        .on_mouse_down(MouseButton::Left, on_click)
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .justify_between()
-                .child(
-                    div()
-                        .text_size(px(12.5))
-                        .font_weight(if active {
-                            gpui::FontWeight::SEMIBOLD
-                        } else {
-                            gpui::FontWeight::NORMAL
-                        })
-                        .child(label),
-                )
-                .when(active, |this| {
-                    this.child(app_icon(AppIcon::CircleCheck, 14., colors.info))
-                }),
-        )
-        .child(
-            div()
-                .mt_1p5()
-                .text_size(px(11.))
-                .text_color(colors.muted)
-                .child(hint),
-        )
-}
-
-fn table_data_import_mapping_body(
-    form: &TableDataImportForm,
-    colors: UiColors,
-    cx: &mut Context<NavicatMain>,
-) -> impl IntoElement {
-    let Some(preview) = &form.preview else {
-        return div()
-            .flex_1()
-            .px_6()
-            .py_5()
-            .text_color(colors.muted)
-            .child(tr("app.data.data_import.no_preview"))
-            .into_any_element();
-    };
-
-    // 映射表：斑马纹行 + 固定源列宽度，减弱“表单堆叠”感。
-    let mut table = div()
-        .flex()
-        .flex_col()
-        .gap_1p5()
-        .child(
-            div()
-                .flex()
-                .gap_3()
-                .px_3()
-                .pb_1()
-                .text_size(px(10.5))
-                .font_weight(gpui::FontWeight::SEMIBOLD)
-                .text_color(colors.muted)
-                .child(
-                    div()
-                        .w(px(230.))
-                        .child(tr("app.data.data_import.source_column")),
-                )
-                .child(div().flex_1().child(tr("app.data.data_import.target_column"))),
-        );
-
-    for (row_index, source) in preview.columns.iter().enumerate() {
-        let current = form
-            .mappings
-            .iter()
-            .find(|mapping| &mapping.source == source)
-            .and_then(|mapping| mapping.target.clone());
-        let matched = current.is_some();
-        let mut options = div().flex().flex_wrap().gap_1();
-        // 跳过该列。
-        options = options.child(table_data_import_mapping_chip(
-            format!("skip:{source}"),
-            tr("app.data.data_import.skip").to_string(),
-            !matched,
-            colors,
-            {
-                let source = source.clone();
-                cx.listener(move |this, _, _, cx| {
-                    this.set_table_import_mapping(source.clone(), None, cx);
-                    cx.stop_propagation();
-                })
-            },
-        ));
-        for column in &preview.target_columns {
-            let selected = current.as_deref() == Some(column.name.as_str());
-            let target = column.name.clone();
-            let label = match &column.type_name {
-                Some(type_name) => format!("{} · {}", column.name, type_name),
-                None => column.name.clone(),
-            };
-            options = options.child(table_data_import_mapping_chip(
-                format!("map:{source}:{}", column.name),
-                label,
-                selected,
-                colors,
-                {
-                    let source = source.clone();
-                    cx.listener(move |this, _, _, cx| {
-                        this.set_table_import_mapping(
-                            source.clone(),
-                            Some(target.clone()),
-                            cx,
-                        );
-                        cx.stop_propagation();
-                    })
-                },
-            ));
-        }
-        table = table.child(
-            div()
-                .flex()
-                .gap_3()
-                .items_start()
-                .px_3()
-                .py_2()
-                .rounded(px(8.))
-                .when(row_index % 2 == 1, |this| this.bg(colors.panel_alt))
-                .child(
-                    div()
-                        .w(px(230.))
-                        .min_w(px(0.))
-                        .truncate()
-                        .text_size(px(12.))
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .child(source.clone()),
-                )
-                .child(options),
-        );
-    }
-    div()
-        .flex_1()
-        .min_h(px(0.))
-        .overflow_y_scrollbar()
-        .px_6()
-        .py_5()
-        .child(table)
-        .into_any_element()
-}
-
-fn table_data_import_mapping_chip(
-    id: impl Into<gpui::ElementId>,
-    label: String,
-    selected: bool,
-    colors: UiColors,
-    on_click: impl Fn(&gpui::MouseDownEvent, &mut Window, &mut App) + 'static,
-) -> impl IntoElement {
-    div()
-        .id(id.into())
-        .h(px(26.))
-        .px_3()
-        .rounded(px(13.))
-        .border_1()
-        .border_color(if selected {
-            colors.info
-        } else {
-            colors.border_soft
-        })
-        .when(selected, |this| {
-            this.bg(colors.panel_alt)
-                .font_weight(gpui::FontWeight::SEMIBOLD)
-        })
-        .when(!selected, |this| this.text_color(colors.muted))
-        .cursor_pointer()
-        .text_size(px(11.))
-        .flex()
-        .items_center()
-        .hover(move |style| style.bg(colors.hover))
-        .on_mouse_down(MouseButton::Left, on_click)
-        .child(label)
-}
-
-fn table_data_import_execute_body(
-    form: &TableDataImportForm,
-    colors: UiColors,
-) -> Div {
-    let mut body = div()
-        .flex_1()
-        .min_h(px(0.))
-        .px_6()
-        .py_5()
-        .flex()
-        .flex_col()
-        .gap_4();
-    if form.running {
-        body = body.child(
-            div()
-                .w_full()
-                .px_4()
-                .py_4()
-                .rounded(px(10.))
-                .bg(colors.panel_alt)
-                .border_1()
-                .border_color(colors.border_soft)
-                .flex()
-                .items_center()
-                .gap_3()
-                .child(app_icon(AppIcon::Loader, 18., colors.info))
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap_1()
-                        .child(
-                            div()
-                                .text_size(px(12.5))
-                                .font_weight(gpui::FontWeight::SEMIBOLD)
-                                .child(tr("app.data.data_import.footer_execute")),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(11.))
-                                .text_color(colors.muted)
-                                .child(tr("app.data.data_import.running")),
-                        ),
-                ),
-        );
-    }
-    if let Some(progress) = &form.progress {
-        body = body.child(
-            div()
-                .text_size(px(11.))
-                .text_color(colors.muted)
-                .child(progress.clone()),
-        );
-    }
-    if let Some(error) = &form.error {
-        body = body.child(
-            div()
-                .w_full()
-                .px_3()
-                .py_2()
-                .rounded(px(8.))
-                .bg(colors.panel_alt)
-                .text_size(px(11.))
-                .text_color(colors.danger)
-                .child(error.clone()),
-        );
-    }
-    body
 }
 
 fn table_data_import_footer(
     form: &TableDataImportForm,
-    can_continue: bool,
     can_import: bool,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
-    let step = form.step;
     div()
-        .h(px(68.))
+        .h(px(64.))
         .flex_none()
-        .px_6()
+        .px_5()
         .border_t_1()
         .border_color(colors.border_soft)
-        .bg(colors.panel_alt)
         .flex()
         .items_center()
-        .justify_between()
+        .justify_end()
+        .gap_2()
         .child(
-            div()
-                .flex()
-                .items_center()
-                .gap_2()
-                .child(
-                    // 左侧给出当前步骤的上下文，避免只有两个孤零零的按钮。
-                    div()
-                        .text_size(px(11.))
-                        .text_color(colors.muted)
-                        .child(match step {
-                            TableDataImportStep::Source => {
-                                tr("app.data.data_import.footer_source")
-                            }
-                            TableDataImportStep::Mapping => {
-                                tr("app.data.data_import.footer_mapping")
-                            }
-                            TableDataImportStep::Execute => {
-                                tr("app.data.data_import.footer_execute")
-                            }
-                        }),
-                )
-                .when(step != TableDataImportStep::Source, |this| {
-                    this.child(
-                        Button::new("data-import-back")
-                            .label(tr("app.data.data_import.back"))
-                            .ghost()
-                            .disabled(form.running)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                if let Some(form) = this.pending_data_import.as_mut() {
-                                    form.step = match form.step {
-                                        TableDataImportStep::Execute => {
-                                            TableDataImportStep::Mapping
-                                        }
-                                        _ => TableDataImportStep::Source,
-                                    };
-                                }
-                                cx.notify();
-                                cx.stop_propagation();
-                            })),
-                    )
-                }),
+            Button::new("data-import-cancel")
+                .label(tr("app.common.cancel"))
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.cancel_table_import_wizard(cx);
+                    cx.stop_propagation();
+                })),
         )
         .child(
-            div()
-                .flex()
-                .items_center()
-                .gap_2()
-                .when(step == TableDataImportStep::Source, |this| {
-                    this.child(
-                        Button::new("data-import-next")
-                            .label(tr("app.data.data_import.next"))
-                            .primary()
-                            .disabled(!can_continue)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                if let Some(form) = this.pending_data_import.as_mut() {
-                                    form.step = TableDataImportStep::Mapping;
-                                }
-                                cx.notify();
-                                cx.stop_propagation();
-                            })),
-                    )
-                })
-                .when(step == TableDataImportStep::Mapping, |this| {
-                    this.child(
-                        Button::new("data-import-start")
-                            .label(tr("app.data.data_import.start"))
-                            .primary()
-                            .disabled(!can_import)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.confirm_table_import(cx);
-                                cx.stop_propagation();
-                            })),
-                    )
-                }),
+            Button::new("data-import-start")
+                .label(tr("app.data.data_import.start"))
+                .primary()
+                .disabled(!can_import || form.running)
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.confirm_table_import(cx);
+                    cx.stop_propagation();
+                })),
         )
 }
-
-

@@ -779,7 +779,7 @@ fn table_data_import_mapping_row(
         .gap_3()
         .child(
             div()
-                .w(px(150.))
+                .w(px(140.))
                 .min_w(px(0.))
                 .truncate()
                 .text_size(px(12.))
@@ -788,8 +788,10 @@ fn table_data_import_mapping_row(
         .child(
             Button::new(SharedString::from(format!("data-import-map:{source}")))
                 .label(label)
-                .ghost()
+                .outline()
+                .dropdown_caret(true)
                 .compact()
+                .w(px(210.))
                 .when(skipped, |this| this.text_color(colors.muted))
                 .dropdown_menu_with_anchor(gpui::Anchor::BottomRight, move |menu, _, _| {
                     let mut menu = menu.min_w(px(240.)).max_w(px(320.)).check_side(gpui_component::Side::Right);
@@ -957,33 +959,32 @@ fn table_data_import_options_bar(
         .pb_3()
         .flex()
         .flex_col()
-        .gap_2()
+        .gap_3()
+        .child(
+            // 选项区与上方表格用分隔线切开，避免看起来是表格的一部分。
+            div().h(px(1.)).w_full().bg(colors.border_soft),
+        )
         .child(
             div()
                 .flex()
                 .items_center()
-                .gap_3()
-                .child(
-                    div()
-                        .text_size(px(10.5))
-                        .text_color(colors.muted)
-                        .child(tr("app.data.data_import.mode")),
-                )
-                .child(table_data_import_mode_dropdown(form, cx))
-                .child(
-                    div()
-                        .text_size(px(10.5))
-                        .text_color(colors.muted)
-                        .child(tr("app.data.data_import.target_mode")),
-                )
-                .child(table_data_import_target_dropdown(form, cx))
-                .child(
-                    div()
-                        .text_size(px(10.5))
-                        .text_color(colors.muted)
-                        .child(tr("app.data.data_import.encoding")),
-                )
-                .child(table_data_import_encoding_dropdown(form, colors, cx))
+                .gap_5()
+                .child(table_data_import_field(
+                    tr("app.data.data_import.mode").as_ref(),
+                    table_data_import_mode_dropdown(form, cx).into_any_element(),
+                    colors,
+                ))
+                .child(table_data_import_field(
+                    tr("app.data.data_import.target_mode").as_ref(),
+                    table_data_import_target_dropdown(form, cx).into_any_element(),
+                    colors,
+                ))
+                .child(table_data_import_field(
+                    tr("app.data.data_import.encoding").as_ref(),
+                    table_data_import_encoding_dropdown(form, cx)
+                        .into_any_element(),
+                    colors,
+                ))
                 .child(div().flex_1())
                 .when(delimited, |this| {
                     this.child(table_data_import_option_toggle(
@@ -1030,7 +1031,8 @@ fn table_data_import_target_dropdown(
             }
             TableDataImportTarget::Create => tr("app.data.data_import.target_create"),
         })
-        .ghost()
+        .outline()
+        .dropdown_caret(true)
         .compact()
         .dropdown_menu_with_anchor(gpui::Anchor::TopRight, move |menu, _, _| {
             let mut menu = menu.min_w(px(240.));
@@ -1060,7 +1062,6 @@ fn table_data_import_target_dropdown(
 /// 文件编码下拉：选项固定且互斥，改选后立即重新解析预览。
 fn table_data_import_encoding_dropdown(
     form: &TableDataImportForm,
-    colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> impl IntoElement {
     let weak = cx.entity().downgrade();
@@ -1071,9 +1072,9 @@ fn table_data_import_encoding_dropdown(
     };
     Button::new("data-import-encoding")
         .label(current.clone())
-        .ghost()
+        .outline()
+        .dropdown_caret(true)
         .compact()
-        .text_color(colors.text)
         .dropdown_menu_with_anchor(gpui::Anchor::TopRight, move |menu, _, _| {
             let mut menu = menu.min_w(px(180.));
             for encoding in ["UTF-8", "GB18030"] {
@@ -1119,7 +1120,8 @@ fn table_data_import_mode_dropdown(
     };
     Button::new("data-import-mode")
         .label(label)
-        .ghost()
+        .outline()
+        .dropdown_caret(true)
         .compact()
         .dropdown_menu_with_anchor(gpui::Anchor::TopRight, move |menu, _, _| {
             let mut menu = menu.min_w(px(200.));
@@ -1162,24 +1164,27 @@ fn table_data_import_option_toggle(
     let key = id.to_string();
     div()
         .id(id)
-        .h(px(26.))
+        .h(px(28.))
         .px_3()
-        .rounded(px(13.))
+        .rounded(px(14.))
         .border_1()
         .border_color(if selected {
             colors.info
         } else {
-            colors.border_soft
+            colors.border
         })
         .when(selected, |this| {
-            this.bg(colors.panel_alt)
+            this.bg(colors.panel_bg)
                 .font_weight(gpui::FontWeight::SEMIBOLD)
         })
-        .when(!selected, |this| this.text_color(colors.muted))
+        .when(!selected, |this| {
+            this.bg(colors.input_bg).text_color(colors.muted)
+        })
         .cursor_pointer()
         .text_size(px(11.))
         .flex()
         .items_center()
+        .gap_1p5()
         .hover(move |style| style.bg(colors.hover))
         .on_mouse_down(
             MouseButton::Left,
@@ -1201,7 +1206,36 @@ fn table_data_import_option_toggle(
                 cx.stop_propagation();
             }),
         )
+        // 勾选图标让开关状态一眼可辨，而不是只靠颜色。
+        .child(app_icon(
+            if selected {
+                AppIcon::Check
+            } else {
+                AppIcon::Circle
+            },
+            11.,
+            if selected { colors.info } else { colors.muted },
+        ))
         .child(label)
+}
+
+/// 表单字段：上方小标签、下方控件，让控件归属明确。
+fn table_data_import_field(
+    label: &str,
+    control: gpui::AnyElement,
+    colors: UiColors,
+) -> Div {
+    div()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .child(
+            div()
+                .text_size(px(10.5))
+                .text_color(colors.muted)
+                .child(label.to_string()),
+        )
+        .child(control)
 }
 
 fn table_data_import_notice(text: String, tone: gpui::Rgba, colors: UiColors) -> Div {

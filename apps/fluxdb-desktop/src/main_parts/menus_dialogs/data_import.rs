@@ -30,8 +30,9 @@ enum TableDataImportTarget {
 #[derive(Clone, Debug)]
 struct TableDataImportForm {
     object: ObjectPath,
-    source: PathBuf,
-    format: fluxdb_core::TableImportFormat,
+    /// 文件与格式在弹框内选择；未选择时仍可看到解析选项和置灰的预留项。
+    source: Option<PathBuf>,
+    format: Option<fluxdb_core::TableImportFormat>,
     options: fluxdb_core::TableImportOptions,
     target: TableDataImportTarget,
     step: TableDataImportStep,
@@ -44,15 +45,11 @@ struct TableDataImportForm {
 }
 
 impl TableDataImportForm {
-    fn new(
-        object: ObjectPath,
-        source: PathBuf,
-        format: fluxdb_core::TableImportFormat,
-    ) -> Self {
+    fn new(object: ObjectPath) -> Self {
         Self {
             object,
-            source,
-            format,
+            source: None,
+            format: None,
             options: fluxdb_core::TableImportOptions::new(),
             target: TableDataImportTarget::Existing,
             step: TableDataImportStep::Source,
@@ -63,6 +60,19 @@ impl TableDataImportForm {
             loading: false,
             progress: None,
         }
+    }
+
+    fn source_name(&self) -> Option<String> {
+        self.source
+            .as_ref()?
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+    }
+
+    fn format_label(&self) -> String {
+        self.format
+            .map(|format| format.label().to_string())
+            .unwrap_or_else(|| tr("app.data.data_import.no_file").to_string())
     }
 
     /// 清空模式在部分数据库无法回滚，需要在界面上明确提示。
@@ -111,11 +121,11 @@ impl NavicatMain {
         self.open_table_import_wizard(object, window, cx);
     }
 
-    /// 打开导入向导：先选择文件，再进入解析选项。
+    /// 打开导入向导。弹框先出现，文件在框内选择。
     fn open_table_import_wizard(
         &mut self,
         object: ObjectPath,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if self._data_import_task.is_some() {
@@ -126,6 +136,23 @@ impl NavicatMain {
             );
             return;
         }
+        self.pending_data_import = Some(TableDataImportForm::new(object));
+        cx.notify();
+    }
+
+    /// 在弹框内选择导入文件；选好后解析预览。
+    fn choose_table_import_source(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(object) = self
+            .pending_data_import
+            .as_ref()
+            .map(|form| form.object.clone())
+        else {
+            return;
+        };
         let receiver = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: false,
@@ -179,7 +206,6 @@ impl NavicatMain {
             let Some(path) = path else {
                 return;
             };
-            let object_path = object.clone();
             let _ = cx.update(|_, cx| {
                 let Some(view) = view.upgrade() else {
                     return;
@@ -193,8 +219,16 @@ impl NavicatMain {
                         );
                         return;
                     };
-                    this.pending_data_import =
-                        Some(TableDataImportForm::new(object_path.clone(), path, format));
+                    let Some(form) = this.pending_data_import.as_mut() else {
+                        return;
+                    };
+                    if form.object != object {
+                        return;
+                    }
+                    form.source = Some(path);
+                    form.format = Some(format);
+                    form.preview = None;
+                    form.mappings.clear();
                     this.reload_table_import_preview(cx);
                     cx.notify();
                 });
@@ -207,6 +241,9 @@ impl NavicatMain {
         let Some(form) = self.pending_data_import.clone() else {
             return;
         };
+        let (Some(source), Some(_format)) = (form.source.clone(), form.format) else {
+            return;
+        };
         if form.loading {
             return;
         }
@@ -216,7 +253,6 @@ impl NavicatMain {
         }
         let controller = self.controller.clone();
         let object = form.object.clone();
-        let source = form.source.clone();
         let options = form.options.clone();
         let task = cx.spawn(async move |view, cx| {
             let preview = cx
@@ -318,6 +354,13 @@ impl NavicatMain {
         if form.running {
             return;
         }
+        let Some(source) = form.source.clone() else {
+            if let Some(current) = self.pending_data_import.as_mut() {
+                current.error = Some(tr("app.data.data_import.choose_first").to_string());
+            }
+            cx.notify();
+            return;
+        };
         if form
             .preview
             .as_ref()
@@ -325,7 +368,7 @@ impl NavicatMain {
             .unwrap_or(true)
         {
             if let Some(current) = self.pending_data_import.as_mut() {
-                current.error = Some("没有可导入的数据行".into());
+                current.error = Some(tr("app.data.data_import.no_rows").to_string());
             }
             cx.notify();
             return;
@@ -337,7 +380,6 @@ impl NavicatMain {
         }
         let controller = self.controller.clone();
         let object = form.object.clone();
-        let source = form.source.clone();
         let options = form.options.clone();
         let mappings = form.mappings.clone();
         let task = cx.spawn(async move |view, cx| {
@@ -406,7 +448,8 @@ fn table_data_import_modal(
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
-    let can_continue = form.preview.is_some() && !form.loading && !form.running;
+    let can_continue =
+        form.source.is_some() && form.preview.is_some() && !form.loading && !form.running;
     let can_import = can_continue
         && form
             .mappings
@@ -505,11 +548,8 @@ fn table_data_import_header(
                         .child(format!(
                             "{} · {} · {}",
                             form.object.name,
-                            form.format.label(),
-                            form.source
-                                .file_name()
-                                .map(|name| name.to_string_lossy().into_owned())
-                                .unwrap_or_default()
+                            form.format_label(),
+                            form.source_name().unwrap_or_default()
                         )),
                 ),
         )
@@ -587,6 +627,61 @@ fn table_data_import_source_body(
         .flex()
         .flex_col()
         .gap_4();
+
+    let delimited = matches!(
+        form.format,
+        Some(
+            fluxdb_core::TableImportFormat::Txt | fluxdb_core::TableImportFormat::Csv
+        )
+    );
+
+    // 文件选择放在弹框内：先看到导入配置，再选择文件。
+    body = body.child(
+        div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.))
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_size(px(11.))
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(colors.muted)
+                            .child(tr("app.data.data_import.source_file")),
+                    )
+                    .child(
+                        div()
+                            .h(px(28.))
+                            .px_2()
+                            .rounded(colors.radius)
+                            .border_1()
+                            .border_color(colors.border)
+                            .bg(colors.input_bg)
+                            .flex()
+                            .items_center()
+                            .truncate()
+                            .text_size(px(12.))
+                            .child(
+                                form.source_name()
+                                    .unwrap_or_else(|| tr("app.data.data_import.no_file").to_string()),
+                            ),
+                    ),
+            )
+            .child(
+                Button::new("data-import-choose-source")
+                    .label(tr("app.data.data_import.choose_file"))
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.choose_table_import_source(window, cx);
+                        cx.stop_propagation();
+                    })),
+            ),
+    );
 
     // 目标方式：创建新表保留为可见但置灰的预留项。
     body = body.child(
@@ -707,11 +802,7 @@ fn table_data_import_source_body(
                     .gap_2()
                     .children(table_data_import_encoding_options(form, colors, cx))
                     .when(
-                        matches!(
-                            form.format,
-                            fluxdb_core::TableImportFormat::Txt
-                                | fluxdb_core::TableImportFormat::Csv
-                        ),
+                        delimited,
                         |this| this.child(table_data_import_toggle_option(
                             "data-import-has-header",
                             tr("app.data.data_import.has_header").to_string(),
@@ -727,11 +818,7 @@ fn table_data_import_source_body(
                         )),
                     )
                     .when(
-                        matches!(
-                            form.format,
-                            fluxdb_core::TableImportFormat::Txt
-                                | fluxdb_core::TableImportFormat::Csv
-                        ),
+                        delimited,
                         |this| {
                             let mut this = this.child(table_data_import_toggle_option(
                                 "data-import-trim",

@@ -157,15 +157,12 @@ fn table_import_dialog_renders_with_disabled_create_option(cx: &mut TestAppConte
             name: "items".into(),
             kind: ObjectKind::Table,
         };
-        let source = temp.path().join("rows.csv");
-        std::fs::write(&source, "ID,NAME\n1,alpha\n").expect("csv");
-        let form = crate::TableDataImportForm::new(
-            object,
-            source,
-            fluxdb_core::TableImportFormat::Csv,
-        );
+        // 新流程：先弹框，文件在框内选择；此处验证未选文件时的初始状态。
+        let form = crate::TableDataImportForm::new(object);
         assert_eq!(form.options.mode, fluxdb_core::TableImportMode::Append);
         assert_eq!(form.target, crate::TableDataImportTarget::Existing);
+        assert!(form.source.is_none());
+        assert!(form.format.is_none());
         this.pending_data_import = Some(form);
         cx.notify();
     });

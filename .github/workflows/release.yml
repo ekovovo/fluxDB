@@ -174,8 +174,8 @@ jobs:
         run: |
           set -euo pipefail
           gh release upload "$GITHUB_REF_NAME" \
-            "$UPDATER_ARTIFACT" \
-            "$UPDATER_ARTIFACT.sha256" \
+            "${{ env.updater_artifact }}" \
+            "${{ env.updater_artifact }}.sha256" \
             --clobber
 
   publish-manifest:

@@ -408,6 +408,10 @@ fn dm_load_indexes(
         if let Some(index) = indexes.iter_mut().find(|index| index.name == name) {
             if let Some(column) = column
                 && has_columns
+                && !index
+                    .columns
+                    .iter()
+                    .any(|existing| existing.eq_ignore_ascii_case(&column))
             {
                 index.columns.push(column);
             }

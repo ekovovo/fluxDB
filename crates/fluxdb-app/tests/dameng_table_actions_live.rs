@@ -358,6 +358,15 @@ fn dameng_table_actions_create_rename_copy_truncate_backup_and_drop() {
             &config,
             &schema,
             &format!(
+                "CREATE INDEX \"IDX_{}_NAME\" ON {} (\"NAME\")",
+                source,
+                qualified(source)
+            ),
+        );
+        execute(
+            &config,
+            &schema,
+            &format!(
                 "INSERT INTO {} (\"NAME\") VALUES ('alpha')",
                 qualified(source)
             ),
@@ -379,19 +388,17 @@ fn dameng_table_actions_create_rename_copy_truncate_backup_and_drop() {
         };
         let ddl = connector.table_ddl(&source_path).expect("DM source DDL");
         assert!(ddl.contains("IDENTITY(1,1)"));
-        execute(
-            &config,
-            &schema,
-            &copy_table_sql_preview_with_source_ddl(
-                DatabaseKind::Dameng,
-                Some(&schema),
-                renamed,
-                copied,
-                true,
-                Some(&ddl),
-            )
-            .expect("DM copy table SQL"),
-        );
+        assert!(ddl.contains("CREATE INDEX"));
+        let copy_sql = copy_table_sql_preview_with_source_ddl(
+            DatabaseKind::Dameng,
+            Some(&schema),
+            renamed,
+            copied,
+            true,
+            Some(&ddl),
+        )
+        .expect("DM copy table SQL");
+        execute(&config, &schema, &copy_sql);
 
         let copied_path = ObjectPath {
             name: copied.into(),

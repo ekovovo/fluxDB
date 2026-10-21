@@ -719,6 +719,24 @@ mod dameng_table_action_tests {
     }
 
     #[test]
+    fn dameng_copy_keeps_generated_primary_index_column_once() {
+        let ddl = "CREATE TABLE \"FLUXSALES\".\"SALES_ORDER\" (\n  \"ORDER_ID\" BIGINT NOT NULL,\n  CONSTRAINT \"CONS1\" PRIMARY KEY (\"ORDER_ID\")\n);\nCREATE UNIQUE INDEX \"INDEX33555634\" ON \"FLUXSALES\".\"SALES_ORDER\" (\"ORDER_ID\");\nCREATE UNIQUE INDEX \"INDEX33555635\" ON \"FLUXSALES\".\"SALES_ORDER\" (\"ORDER_NO\");";
+        let sql = copy_table_sql_preview_with_source_ddl(
+            DatabaseKind::Dameng,
+            Some("FLUXSALES"),
+            "SALES_ORDER",
+            "SALES_ORDER_copy",
+            false,
+            Some(ddl),
+        )
+        .expect("copy SQL");
+        assert!(sql.contains(
+            "CREATE UNIQUE INDEX \"SALES_ORDER_copy_INDEX33555634\" ON \"FLUXSALES\".\"SALES_ORDER_copy\" (\"ORDER_ID\");"
+        ));
+        assert!(!sql.contains("\"ORDER_ID\", \"ORDER_ID\""));
+    }
+
+    #[test]
     fn dameng_copy_accepts_formatted_ddl() {
         let ddl = "CREATE TABLE \"APPS\".\"ORDERS\" (\n  \"ID\" INT IDENTITY(1,1) NOT NULL,\n  \"NAME\" VARCHAR(50)\n);";
         let formatted = format_sql_text_for_dialect(ddl, DatabaseKind::Dameng);

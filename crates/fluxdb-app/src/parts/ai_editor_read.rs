@@ -35,6 +35,7 @@ pub const EDITOR_READ_MAX_BYTES: usize = 16 * 1024;
 pub struct EditorGrant {
     pub tab_ref: String,
     pub snapshot: fluxdb_editor_core::BufferSnapshot,
+    pub sql_edit: Option<crate::SqlEditorEditGrant>,
 }
 
 /// `editor.read_range` 工具实现。

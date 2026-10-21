@@ -1,6 +1,9 @@
 impl NavicatMain {
     fn ai_context_source_tab(&self) -> Option<&TabState> {
         let state = self.controller.state();
+        if let Some(edit) = &self.ai_chat.pending_sql_edit {
+            return state.tabs.iter().find(|tab| tab.id.0 == edit.tab_id);
+        }
         let active = state.active_tab()?;
         if !matches!(active.kind, TabKind::AiChat { .. }) {
             return Some(active);
@@ -119,6 +122,7 @@ impl NavicatMain {
                     page.editor_grant = Some(fluxdb_app::EditorGrant {
                         tab_ref: format!("tab-{}", tab.id.0),
                         snapshot: text,
+                        sql_edit: None,
                     });
                 }
                 if sending && !query.running {
@@ -374,6 +378,27 @@ impl NavicatMain {
                     "error":workbench.error.as_ref().map(|e|&e.message),"execution_count":workbench.executions.len(),
                     "note":"只发送命令草稿与状态，不自动发送历史回复"});
             }
+            TabKind::Settings(_) => {
+                page.kind = PageContextKind::Settings;
+                let revision =
+                    fluxdb_app::settings_fingerprint(&self.controller.state().settings);
+                page.snapshot.tab_revision = revision;
+                let section = settings_ai_section(self.settings_panel_section);
+                page.details = serde_json::json!({
+                    "revision": revision,
+                    "active_section": settings_ai_section_key(self.settings_panel_section),
+                    "draft_dirty": self.settings_editor_draft != self.controller.state().settings,
+                    "values": section.map(|section| {
+                        fluxdb_app::settings_section_public_json(
+                            &self.controller.state().settings,
+                            section,
+                        )
+                    }),
+                    "editable_sections": ["editor", "appearance", "data", "system"],
+                    "read_scope": "只含当前分区的非敏感设置值；不含客户端路径、快捷键、危险操作清单或任何凭据",
+                    "note": "设置修改通过 toolbox.search / toolbox.load 加载 config.setting.update；仅限白名单字段，用户确认提案后才保存"
+                });
+            }
             _ => {
                 page.details = serde_json::json!({"available":false,"note":"当前页面正文未接入 AI，仅提供目标定位；不发送设置表单与凭据"});
                 page.details["page_type"] = serde_json::json!(match &tab.kind {
@@ -391,5 +416,34 @@ impl NavicatMain {
             }
         }
         page
+    }
+}
+
+fn settings_ai_section(
+    section: SettingsPanelSection,
+) -> Option<fluxdb_app::SettingsSection> {
+    match section {
+        SettingsPanelSection::Editor => Some(fluxdb_app::SettingsSection::Editor),
+        SettingsPanelSection::Appearance => Some(fluxdb_app::SettingsSection::Appearance),
+        SettingsPanelSection::Data => Some(fluxdb_app::SettingsSection::Data),
+        SettingsPanelSection::System => Some(fluxdb_app::SettingsSection::System),
+        _ => None,
+    }
+}
+
+fn settings_ai_section_key(section: SettingsPanelSection) -> &'static str {
+    match section {
+        SettingsPanelSection::Editor => "editor",
+        SettingsPanelSection::Shortcuts => "shortcuts",
+        SettingsPanelSection::Appearance => "appearance",
+        SettingsPanelSection::System => "system",
+        SettingsPanelSection::Data => "data",
+        SettingsPanelSection::ConnectionSecurity => "connection_security",
+        SettingsPanelSection::DatabaseSupport => "database_support",
+        SettingsPanelSection::AiModels => "ai_models",
+        SettingsPanelSection::AiToolsMcp => "ai_tools_mcp",
+        SettingsPanelSection::AiAgents => "ai_agents",
+        SettingsPanelSection::AiSessions => "ai_sessions",
+        SettingsPanelSection::About => "about",
     }
 }

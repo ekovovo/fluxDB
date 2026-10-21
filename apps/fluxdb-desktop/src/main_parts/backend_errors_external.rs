@@ -129,6 +129,76 @@ fn localize_backend_external_error_text(text: &str) -> Option<String> {
         "提示词超过 64 KiB 上限" => "app.backend_error.ext_prompt_too_large",
         "Agent 已存在" => "app.backend_error.ext_agent_exists",
         "非法连接状态" => "app.backend_error.ext_connection_state_invalid",
+        "达梦暂不支持从备份恢复" => "app.backend_error.ext_dm_restore_unsupported",
+        "达梦数据库名缺失" => "app.backend_error.ext_dm_database_name_missing",
+        "达梦不支持 SQLite 快照备份" => {
+            "app.backend_error.ext_dm_sqlite_snapshot_unsupported"
+        }
+        "达梦视图 DDL 返回类型异常" => "app.backend_error.ext_dm_view_ddl_type_invalid",
+        "达梦触发器元数据需要连接配置上下文" => "app.backend_error.ext_dm_trigger_connection_missing",
+        "达梦触发器元数据返回类型异常" => "app.backend_error.ext_dm_trigger_metadata_invalid",
+        "达梦触发器元数据缺少名称" => "app.backend_error.ext_dm_trigger_name_missing",
+        "未读取到达梦视图定义" => "app.backend_error.ext_dm_view_definition_missing",
+        "数据库中没有可备份的用户表" => "app.backend_error.ext_dm_no_backup_tables",
+        "数据库中没有可备份的表或视图" => "app.backend_error.ext_dm_no_backup_objects",
+        "达梦当前只支持整 schema 恢复，不支持逐表选择" => {
+            "app.backend_error.ext_dm_restore_per_table_unsupported"
+        }
+        "达梦备份包含多个 schema，当前只支持单 schema 恢复" => {
+            "app.backend_error.ext_dm_restore_multiple_schemas"
+        }
+        "达梦恢复只支持整 schema 导入；目标 schema 必须为空，失败可能留下部分对象。" => {
+            "app.backend_error.ext_dm_restore_schema_only"
+        }
+        "恢复不会切换数据库或自动删除目标 schema。" => {
+            "app.backend_error.ext_dm_restore_no_switch"
+        }
+        "达梦恢复脚本包含当前不支持的语句；请人工检查" => {
+            "app.backend_error.ext_dm_restore_stmt_unsupported"
+        }
+        "达梦恢复脚本包含身份或实例级语句，禁止自动恢复" => {
+            "app.backend_error.ext_dm_restore_identity_forbidden"
+        }
+        "达梦连接档案缺失" => "app.backend_error.ext_dm_restore_profile_missing",
+        "目标 schema 名称无效" => "app.backend_error.ext_dm_restore_schema_invalid",
+        "达梦恢复完成，但目标对象核对失败" => {
+            "app.backend_error.ext_dm_restore_verify_failed"
+        }
+        "恢复后未找到目标表" => "app.backend_error.ext_dm_restore_table_missing",
+        "数据包含未加载的二进制值或非有限浮点数，请改用原生备份" => {
+            "app.backend_error.ext_backup_unloaded_binary"
+        }
+        "当前连接类型没有可导入的表数据" => "app.backend_error.app_msg_import_unsupported",
+        "仅表对象支持数据导入" => "app.backend_error.app_msg_import_tables_only",
+        "导入源不是普通文件" => "app.backend_error.app_msg_import_source_not_file",
+        "导入文件超过 64 MiB，请拆分后重试" => "app.backend_error.app_msg_import_file_too_large",
+        "导入文件必须是 UTF-8 文本" => "app.backend_error.app_msg_import_utf8",
+        "导入文件没有字段" => "app.backend_error.app_msg_import_no_columns",
+        "导入字段名不能为空" => "app.backend_error.app_msg_import_column_empty",
+        "目标表没有可导入字段" => "app.backend_error.app_msg_import_target_no_columns",
+        "导入文件没有可写入字段" => "app.backend_error.app_msg_import_no_writable_columns",
+        "导入行数或字段数超过单次上限，请拆分文件后重试" => {
+            "app.backend_error.app_msg_import_too_many"
+        }
+        "导入行数超过单次上限，请拆分文件后重试" => {
+            "app.backend_error.app_msg_import_too_many"
+        }
+        "导入数据包含非有限浮点数" => "app.backend_error.app_msg_import_finite_float",
+        "导入整数值格式无效" => "app.backend_error.app_msg_import_invalid_integer",
+        "导入浮点值格式无效" => "app.backend_error.app_msg_import_invalid_float",
+        "导入布尔值格式无效" => "app.backend_error.app_msg_import_invalid_bool",
+        "导入不支持未完整加载的二进制字段" => {
+            "app.backend_error.app_msg_import_binary_unsupported"
+        }
+        "导入已取消" => "app.backend_error.app_msg_import_cancelled",
+        "导入执行器与连接类型不匹配" => "app.backend_error.app_msg_import_kind_mismatch",
+        "JSON 导入文件顶层必须是数组" => "app.backend_error.app_msg_import_json_top_array",
+        "JSON 导入文件必须包含对象数组" => {
+            "app.backend_error.app_msg_import_json_object_rows"
+        }
+        "XML 导入文件没有 row 节点" => "app.backend_error.app_msg_import_xml_no_rows",
+        "field 缺少 name 属性" => "app.backend_error.app_msg_import_xml_field_name",
+        "字段数与首行不一致" => "app.backend_error.app_msg_import_xml_field_count",
         _ => return None,
     };
     Some(tr(key).to_string())

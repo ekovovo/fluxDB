@@ -1,9 +1,18 @@
 impl NavicatMain {
     fn start_data_filter_sort_load(&mut self, tab_id: TabId, cx: &mut Context<Self>) {
-        if self._data_filter_apply_tasks.contains_key(&tab_id.0) {
-            return;
-        }
-
+        // 用户再次应用筛选时直接接管：领取新令牌，旧请求的结果会在回写时被丢弃。
+        let event = self
+            .controller
+            .dispatch(AppCommand::BeginDataPageLoad(tab_id));
+        let generation = match event {
+            AppEvent::DataPageLoadStarted { generation, .. } => generation,
+            _ => {
+                self.data_filter_applying_tabs.remove(&tab_id);
+                return;
+            }
+        };
+        self._data_filter_apply_generations
+            .insert(tab_id.0, generation);
         let mut controller = self.controller.clone();
         let sort = self.data_sort_specs_for_tab(tab_id);
         let filters = self.data_filter_specs_for_tab(tab_id);
@@ -12,10 +21,13 @@ impl NavicatMain {
                 .background_spawn(async move {
                     match controller.dispatch(AppCommand::LoadDataPageWithSort {
                         tab_id,
+                        generation,
                         sort,
                         filters,
                     }) {
-                        AppEvent::DataLoaded(_, page) => Ok(page),
+                        AppEvent::DataLoaded(_, page) => Ok(Some(page)),
+                        // 已被新的加载或用户操作取代：不写回、不提示。
+                        AppEvent::DataPageLoadDiscarded { .. } => Ok(None),
                         AppEvent::Failed(error) => Err(error),
                         _ => Err(fluxdb_core::UserFacingError {
                             title: tr("app.data.error.load").to_string(),
@@ -32,8 +44,26 @@ impl NavicatMain {
                     return;
                 };
                 view.update(cx, |this, cx| {
+                    let still_current = this
+                        ._data_filter_apply_generations
+                        .get(&tab_id.0)
+                        .is_some_and(|current| *current == generation);
+                    if !still_current {
+                        // 已被更新的用户操作或 AI 接管：不清理新任务，也不写旧结果。
+                        cx.notify();
+                        return;
+                    }
                     this.data_filter_applying_tabs.remove(&tab_id);
                     this._data_filter_apply_tasks.remove(&tab_id.0);
+                    this._data_filter_apply_generations.remove(&tab_id.0);
+                    let result = match result {
+                        Ok(Some(page)) => Ok(page),
+                        Ok(None) => {
+                            cx.notify();
+                            return;
+                        }
+                        Err(error) => Err(error),
+                    };
                     let tab_still_exists = this
                         .controller
                         .state()
@@ -43,7 +73,11 @@ impl NavicatMain {
                     if tab_still_exists {
                         let event = this
                             .controller
-                            .dispatch(AppCommand::FinishDataPageLoad { tab_id, result });
+                            .dispatch(AppCommand::FinishDataPageLoad {
+                                tab_id,
+                                generation,
+                                result,
+                            });
                         this.apply_app_event(&event, cx);
                     }
                     cx.notify();

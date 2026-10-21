@@ -379,6 +379,14 @@ pub trait AiTool: Send + Sync {
         Err(Error::new(ErrorKind::Unsupported, "影响范围或回滚能力无法核实，需要人工审核"))
     }
     fn descriptor(&self) -> &ToolDescriptor;
+    /// 本次入参对应的有效风险。
+    ///
+    /// 多数工具的风险是静态的，默认直接使用 descriptor。SQL/Redis 这类
+    /// “同一入口既可读也可写”的工具必须在授权前按入参分类，否则只读调用
+    /// 会被强制审批，写调用又可能绕过审批。
+    fn effective_risk(&self, _arguments_json: &str) -> ToolRisk {
+        self.descriptor().risk
+    }
     /// 执行一次调用；返回的回执是事实来源，不能被 Hook 改写。
     fn execute(
         &self,

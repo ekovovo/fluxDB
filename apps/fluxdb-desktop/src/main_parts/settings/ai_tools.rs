@@ -9,72 +9,7 @@ enum AiToolsTab {
     Audit,
 }
 
-/// 内置 Agent 工具；数据库/Redis 工具同时供 MCP 使用，产物工具不对外暴露。
-/// 第二列是稳定分组码，第三列是未知工具 id 的英文兜底；已知 id 走 `ai_tool_text` 翻译。
-const AI_AGENT_TOOL_CATALOG: &[(&str, &str, &str, bool)] = &[
-    ("connections.list", "common", "List authorized connection resources", false),
-    ("db.search_objects", "sql", "Incrementally search tables, views, and columns", false),
-    ("db.describe_object", "sql", "Read real columns, indexes, and relationships", false),
-    (
-        "db.get_relationships",
-        "relationship",
-        "Read registered relationships (physical foreign keys plus confirmed logical relationships), with availability and required filters",
-        false,
-    ),
-    (
-        "db.find_join_paths",
-        "relationship",
-        "Find join paths over available relationships and return a structured plan (without generating SQL)",
-        false,
-    ),
-    (
-        "er.propose_relationships",
-        "relationship",
-        "Generate relationship candidates for individual review; adoption requires user confirmation and does not execute database DDL",
-        false,
-    ),
-    ("db.query", "sql", "Single bounded read-only query with bound parameters", false),
-    ("db.explain", "sql", "Query plan without executing the statement", false),
-    ("db.execute", "sql", "Dedicated write entry with scope authorization and approval", true),
-    ("redis.scan", "redis", "Incremental scan; never a full KEYS", false),
-    ("redis.inspect", "redis", "Bounded type-aware value preview and TTL", false),
-    (
-        "redis.execute",
-        "redis",
-        "Controlled command that inspects all keys and risks",
-        true,
-    ),
-    (
-        "redis.subscribe",
-        "redis",
-        "Bounded subscription with time, count, and byte limits; cancellable",
-        false,
-    ),
-    ("redis.server_info", "redis", "Bounded version and diagnostic summary", false),
-    ("result.read_page", "common", "Read a result snapshot already obtained", false),
-    (
-        "diagnostics.read_turns",
-        "common",
-        "Read redacted failure facts from recent turns (terminal state, stage, error code, timing, failing tool)",
-        false,
-    ),
-    ("artifact.create", "artifact", "Create a report draft; built-in rendering requires the BI plugin", true),
-    ("artifact.add_block", "artifact", "Append charts, tables, or notes to a report without modifying the database", true),
-    ("artifact.finalize", "artifact", "Validate sources and generate a report snapshot without modifying the database", true),
-];
-
-/// 仅 MCP 提供的工具仍受全局开关控制，不进入内置 Agent 的配置。
-///
-/// 关系/路径工具对外复用同名内部 ID（`db.get_relationships` / `db.find_join_paths`），
-/// 因此它们的全局开关与内置 AI 是同一份，无需在此重复列出。
-const AI_MCP_ONLY_TOOL_CATALOG: &[(&str, &str, &str, bool)] = &[
-    (
-        "operation.status",
-        "common",
-        "Query the current caller's operation status, including unknown results after interruption",
-        false,
-    ),
-];
+use fluxdb_app::{AI_AGENT_TOOL_CATALOG, AI_MCP_ONLY_TOOL_CATALOG};
 
 fn ai_tool_text(id: &str, group: &str, desc: &str) -> (SharedString, SharedString) {
     let group = match group {
@@ -85,16 +20,32 @@ fn ai_tool_text(id: &str, group: &str, desc: &str) -> (SharedString, SharedStrin
         "artifact" => tr("app.ai.tools.group.artifact"),
         _ => group.into(),
     };
-    let desc = match id {
+    let desc: SharedString = match id {
         "connections.list" => tr("app.ai.tools.desc.connections_list"),
+        "editor.search" => tr("app.ai.tools.desc.editor_search"),
+        "editor.apply_edit" => tr("app.ai.tools.desc.editor_apply_edit"),
+        "editor.read_range" => tr("app.ai.tools.desc.editor_read_range"),
+        "page.read_rows" => tr("app.ai.tools.desc.page_read_rows"),
+        "page.find_table" => tr("app.ai.tools.desc.page_find_table"),
+        "page.browse_objects" => tr("app.ai.tools.desc.page_browse_objects"),
+        "page.open_table" => tr("app.ai.tools.desc.page_open_table"),
+        "page.query_table" => tr("app.ai.tools.desc.page_query_table"),
+        "file.search" => tr("app.ai.tools.desc.file_search"),
+        "file.search_content" => tr("app.ai.tools.desc.file_search_content"),
+        "file.read" => tr("app.ai.tools.desc.file_read"),
+        "context.read" => tr("app.ai.tools.desc.context_read"),
+        "plan.update" => tr("app.ai.tools.desc.plan_update"),
+
+        "toolbox.inspect" => tr("app.ai.tools.desc.toolbox_inspect"),
+        "toolbox.search" => tr("app.ai.tools.desc.toolbox_search"),
+        "toolbox.load" => tr("app.ai.tools.desc.toolbox_load"),
+        "config.propose" => tr("app.ai.tools.desc.config_propose"),
         "db.search_objects" => tr("app.ai.tools.desc.db_search_objects"),
         "db.describe_object" => tr("app.ai.tools.desc.db_describe_object"),
         "db.get_relationships" => tr("app.ai.tools.desc.db_get_relationships"),
         "db.find_join_paths" => tr("app.ai.tools.desc.db_find_join_paths"),
         "er.propose_relationships" => tr("app.ai.tools.desc.er_propose_relationships"),
-        "db.query" => tr("app.ai.tools.desc.db_query"),
-        "db.explain" => tr("app.ai.tools.desc.db_explain"),
-        "db.execute" => tr("app.ai.tools.desc.db_execute"),
+        "db.run" => tr("app.ai.tools.desc.db_run"),
         "redis.scan" => tr("app.ai.tools.desc.redis_scan"),
         "redis.inspect" => tr("app.ai.tools.desc.redis_inspect"),
         "redis.execute" => tr("app.ai.tools.desc.redis_execute"),
@@ -366,6 +317,12 @@ fn ai_tool_row(
         )
         .child(div().w(px(120.)).flex().items_start().child(if artifact {
             ai_pill(tr("app.ai.tools.risk.artifact"), colors.info, colors).into_any_element()
+        } else if matches!(id, "page.find_table" | "page.browse_objects" | "page.open_table" | "page.query_table") {
+            ai_pill(tr("app.ai.page_query.risk"), colors.info, colors).into_any_element()
+        } else if id == "editor.apply_edit" {
+            ai_pill(tr("app.ai.sql_edit.local_edit"), colors.info, colors).into_any_element()
+        } else if id == "toolbox.load" || id == "config.propose" {
+            ai_pill(tr("app.ai.tools.risk.proposal"), colors.info, colors).into_any_element()
         } else if write {
             ai_pill(tr("app.ai.tools.risk.write"), colors.warning, colors).into_any_element()
         } else {
@@ -385,7 +342,7 @@ fn ai_tool_row(
                     Switch::new(SharedString::from(format!("ai-tool:{id}")))
                         .checked(enabled)
                         .on_click(cx.listener(move |this, checked, _, cx| {
-                            // 全局启停经命令落库；关闭会级联收窄各 Agent 白名单。
+                            // 全局启停经命令落库；授权时与 Agent 白名单取交集。
                             this.set_ai_tool_enabled(
                                 tool_id_for_switch.clone(),
                                 *checked,

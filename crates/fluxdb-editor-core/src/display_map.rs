@@ -1185,3 +1185,39 @@ fn display_column_to_byte(text: &str, target: usize, tab_size: usize) -> usize {
     }
     text.len()
 }
+
+#[cfg(test)]
+mod line_edit_tests {
+    use super::*;
+    use crate::buffer::EditorBuffer;
+
+    #[test]
+    fn successive_edits_keep_visual_fragments_within_content_lines() {
+        for soft_wrap in [SoftWrap::None, SoftWrap::EditorWidth] {
+            let mut buffer = EditorBuffer::new_from("aa\r\nbb\r\ncc\r\ndd\r\n");
+            let mut display =
+                DisplayMap::new_with_tab_size(buffer.snapshot(), soft_wrap, 2, vec![], 4);
+            for (offset, text) in [(0, "x"), (5, "y")] {
+                let edit = buffer.edit(
+                    Range::empty(offset),
+                    text,
+                    offset + text.len(),
+                    offset + text.len(),
+                    false,
+                );
+                display.apply_change(buffer.snapshot(), &edit.changes[0], vec![]);
+            }
+            let mut lines = vec![String::new(); 5];
+            for visual in display.visual_lines(0, display.visual_row_count()) {
+                let start = buffer.line_start(visual.buffer_row);
+                let text = buffer.text_in_range(Range::new(
+                    start + visual.column_start,
+                    start + visual.column_end,
+                ));
+                assert!(!text.contains(['\r', '\n']), "{soft_wrap:?}: {visual:?}");
+                lines[visual.buffer_row].push_str(&text);
+            }
+            assert_eq!(lines, ["xaa", "ybb", "cc", "dd", ""]);
+        }
+    }
+}

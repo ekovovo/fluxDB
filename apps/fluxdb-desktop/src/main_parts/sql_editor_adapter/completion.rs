@@ -3,8 +3,6 @@
 // 定义注入用的 `SqlSchemaContext` 与 `SqlCompletionSource` trait object，
 // 以及本地候选过滤函数 `filter_items`（纯逻辑，不依赖数据库）。
 
-use std::borrow::Cow;
-
 /// 结构化 schema 上下文：表名与 (表, 列) 列集合。
 ///
 /// 用于向适配器注入表 / 列补全数据，保持适配器自包含、可测试，
@@ -120,26 +118,26 @@ impl SqlCompletionSource for SqlSchemaContext {
 
 /// 在本地候选中按查询词过滤并排序，返回匹配项。
 ///
-/// 匹配规则：查询词为空时返回全部；否则按 label 是否包含查询词过滤。
-/// 排序：前缀命中优先，其次 priority 高者优先，最后按 label 字典序稳定。
+/// 匹配规则与引擎同一套打分（`fluxdb_completion::fuzzy_score`）：子序列命中即保留，
+/// 前缀 / 词边界 / 连续命中得分更高。此前这里用 `contains` 子串匹配，与引擎的子序列
+/// 语义不同，同一份候选走 resolver 与走本地回退会出现不同结果。
+/// 排序：匹配得分优先，其次 priority 高者优先，最后按 label 字典序稳定。
 pub fn filter_items(items: &[CompletionItem], query: &str) -> Vec<CompletionItem> {
-    if query.trim().is_empty() {
+    let query = query.trim();
+    if query.is_empty() {
         let mut sorted = items.to_vec();
         sorted.sort_by(|a, b| b.priority.cmp(&a.priority).then(a.label.cmp(&b.label)));
         return sorted;
     }
-    let q = query.to_lowercase();
-    let mut matched: Vec<(bool, CompletionItem)> = items
+    let mut matched: Vec<(i32, CompletionItem)> = items
         .iter()
-        .filter_map(|it| {
-            let normalized = if it.filter_text.is_empty() {
-                Cow::Owned(it.label.to_lowercase())
+        .filter_map(|item| {
+            let haystack = if item.filter_text.is_empty() {
+                item.label.as_str()
             } else {
-                Cow::Borrowed(it.filter_text.as_str())
+                item.filter_text.as_str()
             };
-            normalized
-                .contains(&q)
-                .then(|| (normalized.starts_with(&q), it.clone()))
+            fluxdb_completion::fuzzy_score(haystack, query).map(|score| (score, item.clone()))
         })
         .collect();
     matched.sort_by(|a, b| {
@@ -148,6 +146,25 @@ pub fn filter_items(items: &[CompletionItem], query: &str) -> Vec<CompletionItem
             .then(a.1.label.cmp(&b.1.label))
     });
     matched.into_iter().map(|(_, item)| item).collect()
+}
+
+impl SignatureProvider for SqlAdapter {
+    /// 光标落在 `NAME(...)` 内时给出该函数的参数骨架。
+    ///
+    /// 调用点定位（含嵌套取最内层、schema 限定取末段）与 active 参数下标由
+    /// `fluxdb_editor_core::signature_at` 完成；本适配器只按函数名向宿主解析器取骨架文本。
+    /// `parameter_ranges` 留空：SQL 函数骨架用 `()` + 逗号分隔，渲染层按既有规则切分。
+    fn signature(&self, snapshot: &BufferSnapshot, position: Point) -> Option<SignatureInfo> {
+        let resolver = self.signature_resolver.as_ref()?;
+        let call = fluxdb_editor_core::signature_at(snapshot, position)?;
+        let label = resolver(call.name.as_str())?;
+        Some(SignatureInfo {
+            label,
+            documentation: String::new(),
+            active_parameter: Some(call.active_parameter),
+            parameter_ranges: Vec::new(),
+        })
+    }
 }
 
 /// 判断 `<cursor>` 前的文本是否以「标识符.」结尾（如 `SELECT u.`），用于空前缀补全触发。
@@ -311,5 +328,54 @@ fn segment_is_masked(text: &str, start: usize, end: usize) -> bool {
 /// 标识符字符（与 fluxdb-app 的 `is_sql_ident_char` 对齐）。
 fn is_ident_char(ch: char) -> bool {
     ch.is_ascii_alphanumeric() || ch == '_' || ch == '$'
+}
+
+#[cfg(test)]
+mod filter_items_tests {
+    use super::*;
+    use fluxdb_editor_core::{CompletionKind, CompletionItem};
+
+    fn item(label: &str, priority: i32) -> CompletionItem {
+        let mut item = CompletionItem::new(label, CompletionKind::Column);
+        item.priority = priority;
+        item
+    }
+
+    fn labels(items: &[CompletionItem]) -> Vec<&str> {
+        items.iter().map(|item| item.label.as_str()).collect()
+    }
+
+    #[test]
+    fn filter_items_matches_subsequence_like_the_engine() {
+        let items = vec![item("customer_id", 0), item("id", 0), item("name", 0)];
+        // `cid` 只是 customer_id 的子序列；id / name 都不含 c，必须被过滤掉。
+        assert_eq!(labels(&filter_items(&items, "cid")), vec!["customer_id"]);
+    }
+
+    #[test]
+    fn filter_items_ranks_match_quality_before_priority() {
+        // 前缀命中（id）比中段子序列命中（index）分高，即使后者 priority 更高。
+        let items = vec![item("index", 5), item("id", 0)];
+        assert_eq!(labels(&filter_items(&items, "id")), vec!["id", "index"]);
+    }
+
+    #[test]
+    fn filter_items_breaks_ties_by_priority_then_label() {
+        // `a_col` 与 `b_col` 的 `col` 匹配得分相同：priority 高者在前，同 priority 按 label 字典序。
+        let items = vec![item("b_col", 1), item("a_col", 9)];
+        assert_eq!(labels(&filter_items(&items, "col")), vec!["a_col", "b_col"]);
+        let items = vec![item("b_col", 1), item("a_col", 1)];
+        assert_eq!(labels(&filter_items(&items, "col")), vec!["a_col", "b_col"]);
+    }
+
+    #[test]
+    fn filter_items_empty_query_sorts_by_priority_then_label() {
+        // 空查询不做匹配过滤，只按 priority 降序 + label 升序。
+        let items = vec![item("b_col", 1), item("a_col", 1), item("c_col", 9)];
+        assert_eq!(
+            labels(&filter_items(&items, "")),
+            vec!["c_col", "a_col", "b_col"]
+        );
+    }
 }
 

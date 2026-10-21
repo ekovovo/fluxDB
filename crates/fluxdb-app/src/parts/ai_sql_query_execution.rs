@@ -101,7 +101,7 @@ fn execute_sql_with_parameters_and_progress(
             split_statements: false,
             page_offset: 0,
             page_size: fetch_rows,
-            // 只读入口要求数据库级只读；写入口（db.execute）传 false，不受影响。
+            // 只读执行器要求数据库级只读；统一入口中的写分支传 false。
             read_only,
         },
         // 每个 resolver 对应一个 Agent Turn 的专属会话，不借用编辑器 Tab。

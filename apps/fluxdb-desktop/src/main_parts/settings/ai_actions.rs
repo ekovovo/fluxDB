@@ -61,8 +61,7 @@ impl NavicatMain {
         cx.notify();
     }
 
-    /// 切换标准工具的全局启停：关闭会同时从各 Agent 白名单中移除该工具，
-    /// 因此要提示用户实际受影响的 Agent，而不是只报"已关闭"。
+    /// 切换标准工具的全局启停；全局开关收窄实际授权，不清空 Agent 白名单。
     ///
     /// 与模型/插件启停一致走同步 dispatch：这里只有一次本地 SQLite 短事务，
     /// 不触网也不连用户数据库，没有需要移到后台线程的长任务。
@@ -406,6 +405,16 @@ impl NavicatMain {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.open_ai_model_dialog_with_draft(id, None, window, cx);
+    }
+
+    fn open_ai_model_dialog_with_draft(
+        &mut self,
+        id: Option<String>,
+        draft: Option<&fluxdb_app::ModelCreateProposal>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let existing = id.as_ref().and_then(|id| {
             self.controller
                 .state()
@@ -447,6 +456,55 @@ impl NavicatMain {
                     });
                 }
             }
+        }
+        if let Some(draft) = draft {
+            let provider = fluxdb_app::ModelProvider::from_stored(&draft.provider).label();
+            dialog.inputs.provider.update(cx, |select, cx| {
+                select.set_selected_value(&provider.to_string(), window, cx);
+            });
+            let mut set =
+                |input: &Entity<InputState>, value: String, cx: &mut Context<NavicatMain>| {
+                input.update(cx, |state, cx| state.set_value(value, window, cx));
+                };
+            set(&dialog.inputs.display_name, draft.display_name.clone(), cx);
+            set(&dialog.inputs.model_key, draft.model.clone(), cx);
+            set(
+                &dialog.inputs.endpoint,
+                draft.endpoint.clone().unwrap_or_default(),
+                cx,
+            );
+            let price = |micros: Option<i64>| {
+                micros
+                    .map(|micros| format!("{}", micros as f64 / 1_000_000.0))
+                    .unwrap_or_default()
+            };
+            set(
+                &dialog.inputs.price_input,
+                price(draft.input_price_micros),
+                cx,
+            );
+            set(
+                &dialog.inputs.price_output,
+                price(draft.output_price_micros),
+                cx,
+            );
+            set(
+                &dialog.inputs.price_cache,
+                price(draft.cached_input_price_micros),
+                cx,
+            );
+            fill_ai_capacity_field(
+                draft.context_window_tokens, &dialog.inputs.context_window, &dialog.inputs.context_unit,
+                &mut dialog.capacity_units[0], window, cx,
+            );
+            fill_ai_capacity_field(
+                draft.max_output_tokens, &dialog.inputs.max_output, &dialog.inputs.output_unit,
+                &mut dialog.capacity_units[1], window, cx,
+            );
+            dialog.proposed_capacities = [draft.context_window_tokens, draft.max_output_tokens];
+            dialog.enabled = draft.enabled;
+            dialog.egress = draft.egress;
+            dialog.endpoint_is_full_url = draft.endpoint_is_full_url;
         }
         // 调试用（仅 debug）：预置候选，便于截图核对浮层样式。
         if cfg!(debug_assertions) {
@@ -544,16 +602,16 @@ impl NavicatMain {
                 cx,
             );
         }
-        let context_window = match ai_parse_token_count(
+        let context_window = match ai_parse_proposed_token_count(
             &ai_input_text(&dialog.inputs.context_window, cx),
-            dialog.capacity_units[0],
+            dialog.capacity_units[0], dialog.proposed_capacities[0],
         ) {
             Ok(v) => v,
             Err(msg) => return self.set_ai_model_dialog_error(msg, cx),
         };
-        let max_output = match ai_parse_token_count(
+        let max_output = match ai_parse_proposed_token_count(
             &ai_input_text(&dialog.inputs.max_output, cx),
-            dialog.capacity_units[1],
+            dialog.capacity_units[1], dialog.proposed_capacities[1],
         ) {
             Ok(v) => v,
             Err(msg) => return self.set_ai_model_dialog_error(msg, cx),

@@ -14,6 +14,15 @@ mod i18n_e2e_tests {
     };
 
     include!("i18n_tests/redis_stream.rs");
+    include!("i18n_tests/config_proposal.rs");
+    include!("i18n_tests/sql_editor_edit.rs");
+    include!("i18n_tests/table_page_query.rs");
+    include!("i18n_tests/dameng_connection.rs");
+    include!("i18n_tests/dameng_completion.rs");
+    include!("i18n_tests/dameng_table_design.rs");
+    include!("i18n_tests/table_copy_error.rs");
+    include!("i18n_tests/table_danger_layout.rs");
+    include!("i18n_tests/table_context_menu_layout.rs");
 
     /// 进程级 locale 是全局状态；会切换语言的用例必须串行，否则互相污染断言。
     fn locale_guard() -> std::sync::MutexGuard<'static, ()> {
@@ -121,6 +130,127 @@ mod i18n_e2e_tests {
                 .collect::<Vec<_>>();
             assert!(missing.is_empty(), "{locale} missing keys: {missing:?}");
         }
+    }
+
+    #[gpui::test]
+    fn ai_chat_tab_is_a_global_first_level_tab(cx: &mut TestAppContext) {
+        use crate::{
+            FirstLevelScope, WorkspaceTabGroup, first_level_has_second_row, first_level_tab_groups,
+            tab_first_level_scope,
+        };
+        let _guard = locale_guard();
+        let temp = tempfile::tempdir().expect("isolated profile");
+        let storage = FileStorage::new(temp.path().join("profile"));
+        init_i18n(
+            &app_assets_base_path().join("locales"),
+            &storage.root_dir().join("locales"),
+            "en",
+        );
+        let mut controller = AppController::new();
+        // 本用例只验证一级标签分组；关闭补全索引预热点，避免不存在的 SQLite
+        // 目标在用例结束后仍留下后台连接任务。
+        controller.dispatch(fluxdb_app::AppCommand::SaveSettings(Settings {
+            enable_completion_index: false,
+            ..Default::default()
+        }));
+        controller.dispatch(fluxdb_app::AppCommand::ReplaceConnections(vec![
+            fluxdb_core::ConnectionConfig {
+                id: fluxdb_core::ConnectionId(1),
+                name: "workspace".into(),
+                kind: fluxdb_core::DatabaseKind::Sqlite,
+                endpoint: fluxdb_core::Endpoint::SqliteFile {
+                    path: temp.path().join("db.sqlite"),
+                    read_only: true,
+                },
+                options: Default::default(),
+                redis_profile: None,
+                mysql_profile: None,
+                postgres_profile: None,
+                dameng_profile: None,
+            },
+        ]));
+        cx.update(|cx| {
+            extend_component_i18n();
+            gpui_component::init(cx);
+        });
+        let profile = storage.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let view = cx.new(|cx| {
+                navicat_main_new(
+                    window,
+                    cx,
+                    controller,
+                    profile,
+                    gpui_component::ThemeMode::Light,
+                )
+            });
+            Root::new(view, window, cx)
+        });
+        cx.run_until_parked();
+        let view = cx.update(|window, cx| {
+            window
+                .root::<Root>()
+                .expect("root")
+                .expect("typed root")
+                .read(cx)
+                .view()
+                .clone()
+                .downcast::<NavicatMain>()
+                .expect("production view")
+        });
+        // 只验证标签分组；跳过首帧会话恢复，避免后台存储任务越过用例边界
+        // 后向已结束的测试调度器投递唤醒。
+        cx.update(|_, cx| {
+            view.update(cx, |app, _| {
+                app.ai_chat.recovery_pending = false;
+            });
+        });
+        cx.update(|_, cx| {
+            view.update(cx, |app, cx| {
+                app.dispatch(fluxdb_app::AppCommand::OpenQueryEditorInDatabase {
+                    connection_id: fluxdb_core::ConnectionId(1),
+                    database: None,
+                    schema: None,
+                }, cx);
+                cx.notify();
+            });
+        });
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+        });
+        assert!(cx.debug_bounds("table-tab-row").is_some());
+        cx.update(|_, cx| {
+            view.update(cx, |app, cx| {
+                app.dispatch(fluxdb_app::AppCommand::OpenAiChatTab, cx);
+                let state = app.controller.state();
+                let ai = state
+                    .tabs
+                    .iter()
+                    .find(|tab| matches!(tab.kind, fluxdb_app::TabKind::AiChat { .. }))
+                    .expect("AI tab");
+                assert_eq!(tab_first_level_scope(ai), Some(FirstLevelScope::AiChat));
+                assert_eq!(ai.workspace(), None);
+                let groups = first_level_tab_groups(state);
+                assert!(groups
+                    .iter()
+                    .any(|group| matches!(group, WorkspaceTabGroup::AiChat { .. })));
+                assert!(groups
+                    .iter()
+                    .any(|group| matches!(group, WorkspaceTabGroup::Database { .. })));
+                assert!(!first_level_has_second_row(Some(&FirstLevelScope::AiChat)));
+                assert!(!first_level_has_second_row(Some(&FirstLevelScope::Settings)));
+                assert!(first_level_has_second_row(Some(&FirstLevelScope::Database(
+                    fluxdb_app::TabWorkspace {
+                        connection_id: fluxdb_core::ConnectionId(1),
+                        database: "main".into(),
+                    },
+                ))));
+            });
+        });
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+        });
+        assert!(cx.debug_bounds("table-tab-row").is_none());
     }
 
     #[test]
@@ -774,6 +904,7 @@ mod i18n_e2e_tests {
             redis_profile: None,
             mysql_profile: None,
             postgres_profile: None,
+            dameng_profile: None,
         }]));
         controller.dispatch(AppCommand::SaveSettings(Settings {
             locale: "ja".into(),
@@ -1233,6 +1364,137 @@ mod i18n_e2e_tests {
             &saved.locale,
         );
         assert_eq!(reloaded.active_locale, "ja");
+    }
+
+    #[gpui::test]
+    fn update_settings_controls_render_and_toggle_in_real_view(cx: &mut TestAppContext) {
+        let _guard = locale_guard();
+        let temp = tempfile::tempdir().expect("temp profile");
+        let storage = FileStorage::new(temp.path().join("profile"));
+        let settings = Settings {
+            locale: "en".to_string(),
+            show_sidebar: false,
+            ..Settings::default()
+        };
+        storage.save_settings(&settings).expect("save settings");
+        init_i18n(
+            &app_assets_base_path().join("locales"),
+            &storage.root_dir().join("locales"),
+            &settings.locale,
+        );
+        cx.update(|cx| {
+            extend_component_i18n();
+            gpui_component::init(cx);
+        });
+
+        let mut controller = AppController::new();
+        let _ = controller.dispatch(fluxdb_app::AppCommand::SaveSettings(settings.clone()));
+        assert!(matches!(
+            controller.dispatch(fluxdb_app::AppCommand::OpenSettings),
+            fluxdb_app::AppEvent::TabOpened(_)
+        ));
+        let storage_for_view = storage.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let view = cx.new(|cx| {
+                navicat_main_new(
+                    window,
+                    cx,
+                    controller,
+                    storage_for_view,
+                    gpui_component::ThemeMode::Light,
+                )
+            });
+            Root::new(view, window, cx)
+        });
+        let view = cx.update(|window, cx| {
+            window
+                .root::<Root>()
+                .expect("base window root")
+                .expect("typed window root")
+                .read(cx)
+                .view()
+                .clone()
+                .downcast::<NavicatMain>()
+                .expect("production NavicatMain root view")
+        });
+        cx.update(|_, cx| {
+            view.update(cx, |this, _| {
+                this.settings_panel_section = SettingsPanelSection::About;
+            });
+        });
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+        });
+
+        let switch = cx
+            .debug_bounds("settings-auto-check-updates-switch")
+            .expect("auto update switch");
+        assert!(
+            cx.debug_bounds("settings-check-updates").is_some(),
+            "manual update button must render"
+        );
+        cx.simulate_click(switch.center(), Modifiers::default());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(
+            cx.update(|_, cx| view.read(cx).settings_editor_draft.auto_check_updates),
+            "switch must update the settings draft"
+        );
+        let save = cx
+            .debug_bounds("settings-About-save")
+            .expect("about save button");
+        cx.simulate_click(save.center(), Modifiers::default());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(cx.update(|_, cx| {
+            view.read(cx).controller.state().settings.auto_check_updates
+        }));
+        assert!(
+            storage
+                .load_settings()
+                .expect("reload settings")
+                .auto_check_updates
+        );
+        assert_eq!(
+            rust_i18n::t!("app.settings.update.title").as_ref(),
+            "Software Update"
+        );
+
+        cx.update(|_, cx| {
+            view.update(cx, |this, _| {
+                this.update_ui.status = crate::UpdateUiStatus::Available;
+                this.update_ui.open = true;
+                this.update_ui.locale = "en".to_string();
+                this.update_ui.update = Some(fluxdb_app::AvailableUpdate {
+                    current_version: "0.1.9".to_string(),
+                    version: "0.2.0".to_string(),
+                    published_at: None,
+                    releases: vec![fluxdb_app::UpdateRelease {
+                        version: "0.2.0".to_string(),
+                        published_at: None,
+                        notes: std::collections::BTreeMap::from([(
+                            "en".to_string(),
+                            "## Highlights\n\n- In-app updates".to_string(),
+                        )]),
+                    }],
+                    asset: fluxdb_app::UpdateAsset {
+                        url: "https://example.com/FluxDB-update.app.tar.gz".to_string(),
+                        sha256: "a".repeat(64),
+                        size: 128,
+                        kind: fluxdb_app::UpdateAssetKind::MacosAppTarGz,
+                    },
+                    platform: "macos-aarch64".to_string(),
+                });
+            });
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(cx.debug_bounds("update-dialog").is_some());
+        assert!(cx.debug_bounds("update-dialog-download").is_some());
+        let later = cx.debug_bounds("update-dialog-later").expect("later button");
+        cx.simulate_click(later.center(), Modifiers::default());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(
+            cx.debug_bounds("update-dialog").is_none(),
+            "later must close the update dialog"
+        );
     }
 
 }

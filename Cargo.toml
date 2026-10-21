@@ -3,10 +3,16 @@ members = [
     "apps/fluxdb-desktop",
     "apps/fluxdb-mcp",
     "crates/fluxdb-app",
+    "crates/fluxdb-completion",
     "crates/fluxdb-connectors",
     "crates/fluxdb-core",
     "crates/fluxdb-editor-core",
     "crates/fluxdb-i18n",
     "crates/fluxdb-storage",
 ]
+# Vendored third-party DM driver: keep it out of workspace fmt/clippy/test gates.
+exclude = ["crates/dm-pure"]
 resolver = "3"
+
+[workspace.dependencies]
+sqlparser = { version = "0.62.0", features = ["visitor"] }

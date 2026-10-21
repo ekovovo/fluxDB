@@ -194,20 +194,54 @@ impl AppController {
                             fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, e.to_string())
                         })?;
                     }
-                    AiConversationCommand::SelectModel { ref model_id, expected_revision } => {
-                        fluxdb_storage::ai_platform::model_selection::save(conn,self.state.ai_conversation.session_id.as_deref(),model_id.as_deref(),expected_revision)?;
+                    AiConversationCommand::SelectModel {
+                        ref model_id,
+                        expected_revision,
+                    } => {
+                        fluxdb_storage::ai_platform::model_selection::save(
+                            conn,
+                            self.state.ai_conversation.session_id.as_deref(),
+                            model_id.as_deref(),
+                            expected_revision,
+                        )?;
                     }
-                    AiConversationCommand::AddReference {ref reference} => {
-                        let reference=if reference.kind=="file" {
+                    AiConversationCommand::AddReference { ref reference } => {
+                        let reference = if reference.kind == "file" {
                             ensure_ai_files_enabled(conn)?;
-                            let raw:serde_json::Value=serde_json::from_str(&reference.source).map_err(|_|fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal,"附件授权损坏"))?;
-                            let path=raw["path"].as_str().ok_or_else(||fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal,"附件路径缺失"))?;
-                            let mut validated=authorize_ai_file(std::path::Path::new(path),storage.root_dir())?;
-                            validated.id=reference.id.clone();validated
-                        } else { reference.clone() };
-                        fluxdb_storage::ai_platform::context_references::add(conn,self.state.ai_conversation.session_id.as_deref(),&reference.id,&reference.json().to_string())?;
+                            let raw: serde_json::Value = serde_json::from_str(&reference.source)
+                                .map_err(|_| {
+                                    fluxdb_core::Error::new(
+                                        fluxdb_core::ErrorKind::Internal,
+                                        "附件授权损坏",
+                                    )
+                                })?;
+                            let path = raw["path"].as_str().ok_or_else(|| {
+                                fluxdb_core::Error::new(
+                                    fluxdb_core::ErrorKind::Internal,
+                                    "附件路径缺失",
+                                )
+                            })?;
+                            let mut validated =
+                                authorize_ai_file(std::path::Path::new(path), storage.root_dir())?;
+                            validated.id = reference.id.clone();
+                            validated
+                        } else {
+                            reference.clone()
+                        };
+                        fluxdb_storage::ai_platform::context_references::add(
+                            conn,
+                            self.state.ai_conversation.session_id.as_deref(),
+                            &reference.id,
+                            &reference.json().to_string(),
+                        )?;
                     }
-                    AiConversationCommand::RemoveReference {ref reference_id} => fluxdb_storage::ai_platform::context_references::remove(conn,self.state.ai_conversation.session_id.as_deref(),reference_id)?,
+                    AiConversationCommand::RemoveReference { ref reference_id } => {
+                        fluxdb_storage::ai_platform::context_references::remove(
+                            conn,
+                            self.state.ai_conversation.session_id.as_deref(),
+                            reference_id,
+                        )?
+                    }
                     AiConversationCommand::DecideApproval { .. } => unreachable!(),
                     AiConversationCommand::Apply { .. }
                     | AiConversationCommand::RecoverOnStartup => unreachable!(),
@@ -261,7 +295,9 @@ impl AppController {
                 })?
                 .to_string();
             let model = fluxdb_storage::ai_platform::models::load_model(conn, &model_id)?;
-            if !model.enabled || model.kind != fluxdb_storage::ai_platform::models::ModelKind::Generation {
+            if !model.enabled
+                || model.kind != fluxdb_storage::ai_platform::models::ModelKind::Generation
+            {
                 return Err(fluxdb_core::Error::new(
                     fluxdb_core::ErrorKind::Internal,
                     "原任务模型已停用，无法恢复任务",
@@ -321,8 +357,13 @@ impl AppController {
         target: &TurnTargetPin,
         page: Option<CurrentPageContext>,
     ) -> fluxdb_core::Result<AiConversationJob> {
-        let context = page.as_ref().map(|p| p.public_json().to_string()).unwrap_or_default();
-        let (editor, data) = page.map(|p| (p.editor_grant, p.data_grant)).unwrap_or_default();
+        let context = page
+            .as_ref()
+            .map(|p| p.public_json().to_string())
+            .unwrap_or_default();
+        let (editor, data) = page
+            .map(|p| (p.editor_grant, p.data_grant))
+            .unwrap_or_default();
         self.prepare_ai_conversation_with_grants(prompt, target, &context, editor, data)
     }
 
@@ -340,11 +381,35 @@ impl AppController {
                 "当前页面摘录超限",
             ));
         }
+        let sql_edit_only = editor_grant
+            .as_ref()
+            .and_then(|grant| grant.sql_edit.as_ref())
+            .is_some_and(|grant| grant.exclusive_edit);
+        if let Some(edit) = editor_grant
+            .as_ref()
+            .and_then(|grant| grant.sql_edit.as_ref())
+        {
+            edit.validate().map_err(editor_error)?;
+            if edit.target != target.target
+                || Some(edit.tab_id) != target.captured_tab_id
+                || edit.snapshot.version() != target.captured_tab_revision
+            {
+                return Err(editor_error("sql_edit_conflict"));
+            }
+        }
         let storage = self.ai_storage()?;
         if let Some(grant) = page_grant.as_ref() {
-            let config = grant.target.connection_id.and_then(|id| self.state.connections.iter()
-                .find(|connection|connection.config.id.0 as i64 == id).map(|connection|&connection.config))
-                .ok_or_else(||editor_error("页面数据所属连接不可用"))?;
+            let config = grant
+                .target
+                .connection_id
+                .and_then(|id| {
+                    self.state
+                        .connections
+                        .iter()
+                        .find(|connection| connection.config.id.0 as i64 == id)
+                        .map(|connection| &connection.config)
+                })
+                .ok_or_else(|| editor_error("页面数据所属连接不可用"))?;
             self.validate_ai_database_resource(config)?;
         }
         let (job, view) = with_ai_storage(&storage, |conn| {
@@ -360,9 +425,11 @@ impl AppController {
             // 新会话的 Agent 选择：内置默认 Agent 是代码内置入口，但如果它没有可用的
             // 生成模型（既未绑定、也没有全局默认模型），就回退到"已绑定可用模型的自定义
             // Agent"，避免用户配好自定义 Agent + 模型后仍无法对话。
-            let agent_has_usable_model = |agent: &&fluxdb_storage::ai_platform::agents::AgentView| {
-                agent.default_model_profile_id.is_some() || runtime.default_model_profile_id.is_some()
-            };
+            let agent_has_usable_model =
+                |agent: &&fluxdb_storage::ai_platform::agents::AgentView| {
+                    agent.default_model_profile_id.is_some()
+                        || runtime.default_model_profile_id.is_some()
+                };
             let agent = if let Some(session) = current.as_ref() {
                 // 已有会话维持原身份。
                 agents.iter().find(|a| a.id == session.agent_id)
@@ -376,9 +443,7 @@ impl AppController {
                 });
                 preferred
                     .filter(|agent| agent_has_usable_model(agent))
-                    .or_else(|| {
-                        builtin.filter(|agent| agent_has_usable_model(agent))
-                    })
+                    .or_else(|| builtin.filter(|agent| agent_has_usable_model(agent)))
                     .or_else(|| {
                         // 兜底：任一已启用且绑定了模型的 Agent；都没有时再退回内置
                         // （此时会给出"请先配置默认主模型"的明确提示）。
@@ -400,7 +465,10 @@ impl AppController {
                     "当前 Agent 已停用",
                 ));
             }
-            let (selected_model_id, _) = fluxdb_storage::ai_platform::model_selection::load(conn, current.as_ref().map(|s|s.id.as_str()))?;
+            let (selected_model_id, _) = fluxdb_storage::ai_platform::model_selection::load(
+                conn,
+                current.as_ref().map(|s| s.id.as_str()),
+            )?;
             // 路由 precedence（设计 §17）：会话/草稿显式选择 → Agent 的 main_candidate 角色绑定
             // → Agent 默认模型 → 全局默认。显式选择不合格时绝不静默回退，避免固定模型被换掉。
             let (model_id, route_source) = match selected_model_id {
@@ -447,29 +515,68 @@ impl AppController {
                 .map(|s| s.id.clone())
                 .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
             let turn_id = uuid::Uuid::new_v4().to_string();
-            let references=fluxdb_storage::ai_platform::context_references::list(conn,current.as_ref().map(|s|s.id.as_str()))?
-                .iter().filter_map(|raw|serde_json::from_str(raw).ok()).filter_map(|v|AiContextReference::parse(&v)).collect::<Vec<_>>();
-            let mut target_json = self.referenced_execution_target(&references)?
-                .map(|target| target.to_json()).unwrap_or_else(|| target.target_json.clone());
+            // 页面查询是独立的最小授权面：历史 @ 引用/附件不能把正文或数据带进本轮。
+            let references = fluxdb_storage::ai_platform::context_references::list(
+                conn,
+                current.as_ref().map(|s| s.id.as_str()),
+            )?
+            .iter()
+            .filter_map(|raw| serde_json::from_str(raw).ok())
+            .filter_map(|v| AiContextReference::parse(&v))
+            .collect::<Vec<_>>();
+            // 编辑器改写始终绑定宿主原目标，历史会话或 @ 引用不能换掉元数据来源。
+            let mut target_json = if sql_edit_only {
+                target.target_json.clone()
+            } else {
+                self.referenced_execution_target(&references)?
+                    .map(|target| target.to_json())
+                    .unwrap_or_else(|| target.target_json.clone())
+            };
             // 清空的是下一轮输入引用，不是会话绑定；主页追问沿用原目标，显式引用/当前页面优先。
-            if ai_tool_target_handle(&target_json).is_none() && target.target.is_empty() {
+            if !sql_edit_only
+                && ai_tool_target_handle(&target_json).is_none()
+                && target.target.is_empty()
+            {
                 if let Some(session) = current.as_ref() {
-                    if let Some(previous) = fluxdb_storage::ai_platform::sessions::list_turns(conn, &session.id)?.last()
-                        .filter(|turn| ai_tool_target_handle(&turn.target_json).is_some()) {
+                    if let Some(previous) =
+                        fluxdb_storage::ai_platform::sessions::list_turns(conn, &session.id)?
+                            .last()
+                            .filter(|turn| ai_tool_target_handle(&turn.target_json).is_some())
+                    {
                         let value: serde_json::Value = serde_json::from_str(&previous.target_json)
-                            .map_err(|_| fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, "会话目标损坏"))?;
-                        if !self.state.connections.iter().any(|connection| i64::try_from(connection.config.id.0).ok() == value["connection_id"].as_i64()) {
-                            return Err(fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, "会话目标连接已不存在，请重新选择引用或连接"));
+                            .map_err(|_| {
+                                fluxdb_core::Error::new(
+                                    fluxdb_core::ErrorKind::Internal,
+                                    "会话目标损坏",
+                                )
+                            })?;
+                        if !self.state.connections.iter().any(|connection| {
+                            i64::try_from(connection.config.id.0).ok()
+                                == value["connection_id"].as_i64()
+                        }) {
+                            return Err(fluxdb_core::Error::new(
+                                fluxdb_core::ErrorKind::Internal,
+                                "会话目标连接已不存在，请重新选择引用或连接",
+                            ));
                         }
                         target_json = previous.target_json.clone();
                     }
                 }
             }
             let reference_grants = self.ai_reference_detail_grants(&references)?;
-            let public_refs=references.iter().map(|r|self.ai_public_reference(r)).collect::<fluxdb_core::Result<Vec<_>>>()?;
-            let database_context=self.ai_database_context(&target_json)?;
-            let file_grants=references.iter().filter(|r|r.kind=="file").map(AiContextReference::json).collect::<Vec<_>>();
-            let snapshot=serde_json::json!({"model_profile_id":model_id,"agent_id":agent.id,"agent_revision":agent.revision,"compression_trigger_percent":agent.compression_trigger_percent,"max_iterations":agent.max_iterations,"system_prompt":agent.system_prompt,"ui_context":context,"context_references":public_refs,"database_context":database_context,"file_grants":file_grants,"reference_grants":reference_grants});
+            let public_refs = references
+                .iter()
+                .map(|r| self.ai_public_reference(r))
+                .collect::<fluxdb_core::Result<Vec<_>>>()?;
+            let database_context = self.ai_database_context(&target_json)?;
+            let file_grants = references
+                .iter()
+                .filter(|r| r.kind == "file")
+                .map(AiContextReference::json)
+                .collect::<Vec<_>>();
+            let snapshot = serde_json::json!({"model_profile_id":model_id,"agent_id":agent.id,"agent_revision":agent.revision,"compression_trigger_percent":agent.compression_trigger_percent,"max_iterations":agent.max_iterations,"system_prompt":agent.system_prompt,"ui_context":context,"context_references":public_refs,"database_context":database_context,"file_grants":file_grants,"reference_grants":reference_grants});
+            let mut snapshot = snapshot;
+            snapshot["sql_edit_only"] = serde_json::json!(sql_edit_only);
             if let Some(grant) = editor_grant {
                 register_editor_grant(&turn_id, grant)?;
             }
@@ -480,7 +587,18 @@ impl AppController {
                 })?;
                 registry.insert(turn_id.clone(), grant);
             }
-            if let Err(error) = fluxdb_storage::ai_platform::conversation::send(conn,ai_chat_now(),current.is_none(),&session_id,&agent.id,&turn_id,&uuid::Uuid::new_v4().to_string(),prompt,&target_json,&snapshot.to_string()) {
+            if let Err(error) = fluxdb_storage::ai_platform::conversation::send(
+                conn,
+                ai_chat_now(),
+                current.is_none(),
+                &session_id,
+                &agent.id,
+                &turn_id,
+                &uuid::Uuid::new_v4().to_string(),
+                prompt,
+                &target_json,
+                &snapshot.to_string(),
+            ) {
                 clear_editor_grant(&turn_id);
                 take_page_data_grant(&turn_id);
                 return Err(error.into());

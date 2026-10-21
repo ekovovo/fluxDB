@@ -4,12 +4,13 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+fluxdb-completion = { path = "../fluxdb-completion" }
 fluxdb-connectors = { path = "../fluxdb-connectors" }
 fluxdb-core = { path = "../fluxdb-core" }
 fluxdb-editor-core = { path = "../fluxdb-editor-core" }
 fluxdb-storage = { path = "../fluxdb-storage" }
 sqlformat = "0.5.0"
-sqlparser = { version = "0.62.0", features = ["visitor"] }
+sqlparser = { workspace = true }
 rusqlite = { version = "0.32", features = ["bundled"] }
 tracing = "0.1"
 uuid = { version = "1.23", features = ["v4"] }
@@ -19,6 +20,9 @@ serde_json = "1"
 serde = { version = "1", features = ["derive"] }
 base64 = "0.22"
 url = "2"
+ring = "0.17.14"
+sha2 = "0.10.9"
+semver = "1.0.28"
 zip = { version = "8", default-features = false, features = ["deflate"] }
 # 附件 CSV 流式分段解析（引号转义/嵌入换行交给 crate，不手写状态机）。
 csv = "1.4"

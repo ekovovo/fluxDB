@@ -5,6 +5,15 @@ struct NavicatMain {
     controller: AppController,
     storage: FileStorage,
     theme_mode: ThemeMode,
+    update_ui: UpdateUiState,
+    update_auto_check_pending: bool,
+    update_cancel: Arc<AtomicBool>,
+    update_downloaded_bytes: Arc<AtomicU64>,
+    update_total_bytes: Arc<AtomicU64>,
+    _update_check_task: Option<Task<()>>,
+    _update_download_task: Option<Task<()>>,
+    _update_progress_task: Option<Task<()>>,
+    _update_install_task: Option<Task<()>>,
     new_connection_kind: Option<DatabaseKind>,
     new_connection_tab: NewConnectionTab,
     new_connection_form: NewConnectionForm,
@@ -653,6 +662,9 @@ struct NavicatMain {
     _query_completion_tasks: BTreeMap<(TabId, u64), Task<()>>,
     _completion_index_tasks: BTreeMap<(ConnectionId, Option<String>), Task<()>>,
     _table_info_tasks: BTreeMap<(TabId, TableInfoTab), Task<()>>,
+    /// 设计表元数据后台加载任务，按表身份去重；完成后才在主线程安装标签页。
+    _design_table_tasks: BTreeMap<String, Task<()>>,
+    _design_table_detail_tasks: BTreeMap<TabId, Task<()>>,
     _user_admin_users_tasks: BTreeMap<TabId, Task<()>>,
     _user_admin_pg_membership_tasks: BTreeMap<TabId, Task<()>>,
     _user_admin_pg_target_tasks: BTreeMap<TabId, Task<()>>,
@@ -675,6 +687,7 @@ struct NavicatMain {
     _copy_table_ddl_task: Option<Task<()>>,
     _copy_table_structure_task: Option<Task<()>>,
     _danger_table_task: Option<Task<()>>,
+    _table_import_task: Option<Task<()>>,
     data_export_task_seq: u64,
     _test_connection_task: Option<Task<()>>,
     _create_schema_task: Option<Task<()>>,
@@ -714,6 +727,10 @@ struct NavicatMain {
     pending_query_parameters: Option<PendingQueryParameterPrompt>,
     pending_dangerous_query: Option<PendingDangerousQuery>,
     pending_dangerous_redis_command: Option<PendingDangerousRedisCommand>,
+    /// AI 提交的持久化配置提案；确认前不落库。
+    pending_config_proposal: Option<fluxdb_app::ConfigProposal>,
+    config_proposal_busy: bool,
+    config_delete_confirmed: bool,
     // 「执行 SQL 文件」弹框共享状态：dialog builder 在 NavicatMain::render 期间被同步执行，
     // 此时主视图处于 lease 状态，builder 内不能 view.read(cx)，实时数据统一放 Rc<RefCell<..>>
     // （先例：redis_hash_full_value_viewer）。
@@ -721,6 +738,8 @@ struct NavicatMain {
     // 恢复弹框挂载状态:UI 实体 + 配置快照,运行时数据在 RestoreModal::runtime(Rc 共享)。
     restore_modal: Option<RestoreModal>,
     pending_data_export: Option<TableDataExportForm>,
+    pending_data_import: Option<TableDataImportForm>,
+    _data_import_task: Option<Task<()>>,
     data_export_custom_conditions_open: bool,
     data_export_preview: Option<TableDataExportPreviewState>,
     data_export_preview_seq: u64,
@@ -885,6 +904,8 @@ struct NavicatMain {
     data_filter_value_draft: Option<DataFilterValueDraft>,
     data_filter_applying_tabs: BTreeSet<TabId>,
     _data_filter_apply_tasks: BTreeMap<u64, Task<()>>,
+    /// 每个表页当前筛选加载对应的 generation；旧任务回调不得清理新任务状态。
+    _data_filter_apply_generations: BTreeMap<u64, u64>,
     app_message: Option<AppMessage>,
     _app_message_task: Option<Task<()>>,
     table_hover_color: Option<Hsla>,

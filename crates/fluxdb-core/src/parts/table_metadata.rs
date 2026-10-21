@@ -118,6 +118,21 @@ pub struct TableStructure {
     pub comment: Option<String>,
 }
 
+/// 打开设计表所需的完整、一致的元数据快照。
+///
+/// 各连接器可覆盖 `Connector::load_table_design_metadata`，在一条连接内复用同一次
+/// 目录读取；默认实现仅为兼容尚未优化的方言。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TableDesignMetadata {
+    pub columns: Vec<CompletionColumn>,
+    pub indexes: Vec<IndexInfo>,
+    pub foreign_keys: Vec<ForeignKeyInfo>,
+    pub triggers: Vec<TriggerInfo>,
+    pub ddl: String,
+    /// 首屏是否已包含索引/外键/触发器。慢方言可先返回 false，再由后台补齐。
+    pub details_loaded: bool,
+}
+
 /// 触发器元数据：事件/时相/级别与函数身份，保留完整定义。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TriggerMeta {

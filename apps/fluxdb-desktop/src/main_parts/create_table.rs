@@ -967,15 +967,52 @@ fn create_table_content(
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
-    div()
+    let mut content = div()
         .flex_1()
         .min_h(px(0.))
+        .relative()
         .bg(colors.content_bg)
         .overflow_hidden()
         .flex()
         .flex_col()
         .child(create_table_header(tab_id, create, this, window, colors, cx))
-        .child(create_table_editor(tab_id, create, this, window, colors, cx))
+        .child(create_table_editor(tab_id, create, this, window, colors, cx));
+    if create.details_loading {
+        content = content.child(create_table_loading_overlay(colors));
+    }
+    content
+}
+
+fn create_table_loading_overlay(colors: UiColors) -> Div {
+    div()
+        .debug_selector(|| "create-table-details-loading".into())
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full()
+        .occlude()
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(if colors.is_dark {
+            hsla(220. / 360., 0.12, 0.08, 0.64)
+        } else {
+            hsla(210. / 360., 0.20, 0.98, 0.72)
+        })
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap_3()
+                .child(loading_spinner_with_color(32., colors.muted))
+                .child(
+                    div()
+                        .text_size(px(13.))
+                        .text_color(colors.text)
+                        .child(tr("app.create_table.loading_design")),
+                ),
+        )
 }
 
 fn create_table_header(
@@ -1033,9 +1070,11 @@ fn create_table_header_actions(
     cx: &mut Context<NavicatMain>,
 ) -> Div {
     let validation_error = create.validation_error();
-    let save_disabled = validation_error.is_some() || create.applying;
+    let save_disabled = validation_error.is_some() || create.applying || create.details_loading;
     let save_tooltip = if create.applying {
         tr("app.create_table.saving").to_string()
+    } else if create.details_loading {
+        tr("app.create_table.loading_design").to_string()
     } else if create.is_design() {
         validation_error
             .map(str::to_string)
@@ -1086,6 +1125,7 @@ fn create_table_editor(
     cx: &mut Context<NavicatMain>,
 ) -> Div {
     div()
+        .debug_selector(|| "create-table-editor".into())
         .flex_1()
         .min_h(px(CREATE_TABLE_EDITOR_MIN_HEIGHT))
         .mx_4()
@@ -1197,7 +1237,7 @@ fn create_table_tab_bar(
                 cx,
             ))
         })
-        .when(active_tab == CreateTableTab::Triggers, |this| {
+        .when(active_tab == CreateTableTab::Triggers && create.database_kind != DatabaseKind::Dameng, |this| {
             this.child(create_table_tab_action(
                 tr("app.create_table.add_trigger"),
                 AppCommand::AddCreateTableTrigger(tab_id),
@@ -1247,12 +1287,13 @@ fn create_table_tab_action(
         )
 }
 
-fn create_table_add_row_command(tab_id: TabId, active_tab: CreateTableTab) -> Option<AppCommand> {
-    match active_tab {
+fn create_table_add_row_command(tab_id: TabId, create: &CreateTableState) -> Option<AppCommand> {
+    match create.active_tab {
         CreateTableTab::Fields => Some(AppCommand::AddCreateTableColumn(tab_id)),
         CreateTableTab::Indexes => Some(AppCommand::AddCreateTableIndex(tab_id)),
         CreateTableTab::ForeignKeys => Some(AppCommand::AddCreateTableForeignKey(tab_id)),
         CreateTableTab::Checks => Some(AppCommand::AddCreateTableCheck(tab_id)),
+        CreateTableTab::Triggers if create.database_kind == DatabaseKind::Dameng => None,
         CreateTableTab::Triggers => Some(AppCommand::AddCreateTableTrigger(tab_id)),
         CreateTableTab::Options
         | CreateTableTab::Partitions

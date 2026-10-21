@@ -414,8 +414,10 @@ fn completion_row(
     let hover_editor = editor.clone();
     let accept_editor = editor.clone();
 
+    let debug_label = item.label.clone();
     let mut row = div()
         .id(ElementId::from(index))
+        .debug_selector(move || format!("completion-item:{debug_label}"))
         .h(px(COMPLETION_ROW_HEIGHT))
         .flex()
         .items_center()

@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
     mpsc,
 };
 use std::time::{Duration, Instant};
@@ -21,7 +21,7 @@ use fluxdb_app::{
     CellDetailPanelState, ConnectionState, CreateTableCheck, CreateTableCheckField,
     CreateTableColumn, CreateTableColumnField, CreateTableColumnFlag, CreateTableField,
     CreateTableForeignKey, CreateTableForeignKeyField, CreateTableIndex,
-    CreateTableIndexColumnField, CreateTableIndexField, CreateTableOptionField,
+    CreateTableIndexColumnField, CreateTableIndexField, CreateTableMode, CreateTableOptionField,
     CreateTablePartitionField, CreateTableState, CreateTableTab, CreateTableTrigger,
     CreateTableTriggerEvent, CreateTableTriggerField, DataEditorState, ErDiagramState,
     ErLayoutResult, ForeignKeyCheckMode, LoadState, ObjectListState, PgDraftAttrField,
@@ -174,6 +174,7 @@ include!("main_parts/ai/model_selection.rs");
 include!("main_parts/ai/references.rs");
 include!("main_parts/ai/message.rs");
 include!("main_parts/ai/approval.rs");
+include!("main_parts/ai/config_proposal.rs");
 include!("main_parts/ai/relationship_review.rs");
 include!("main_parts/ai/relationship_review_dialog.rs");
 include!("main_parts/ai/timeline.rs");
@@ -181,6 +182,8 @@ include!("main_parts/ai/report.rs");
 include!("main_parts/ai/diagnostics.rs");
 include!("main_parts/ai/report_charts.rs");
 include!("main_parts/ai/actions.rs");
+include!("main_parts/ai/sql_editor_edit.rs");
+include!("main_parts/ai/table_page.rs");
 include!("main_parts/ai/current_page.rs");
 include!("main_parts/ai/display.rs");
 include!("main_parts/ai/stream_actions.rs");
@@ -191,3 +194,5 @@ include!("main_parts/app_boot_helpers.rs");
 
 #[cfg(test)]
 include!("main_parts/i18n_tests.rs");
+#[cfg(test)]
+include!("main_parts/sidebar_refresh_tests.rs");

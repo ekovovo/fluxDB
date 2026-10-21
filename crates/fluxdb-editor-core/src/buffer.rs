@@ -908,3 +908,49 @@ impl<'a> Iterator for SnapshotChunkIter<'a> {
         None
     }
 }
+
+#[cfg(test)]
+mod line_edit_tests {
+    use super::*;
+
+    #[test]
+    fn successive_edits_preserve_shifted_line_starts_and_snapshots() {
+        for (first_range, first_text, first_starts, expected_starts, expected_lines) in [
+            (
+                Range::empty(0),
+                "x",
+                vec![0, 4, 7, 10, 13],
+                vec![0, 4, 8, 11, 14],
+                ["xaa", "ybb", "cc", "dd", ""],
+            ),
+            (
+                Range::new(0, 1),
+                "",
+                vec![0, 2, 5, 8, 11],
+                vec![0, 2, 6, 9, 12],
+                ["a", "ybb", "cc", "dd", ""],
+            ),
+        ] {
+            let mut buffer = EditorBuffer::new_from("aa\nbb\ncc\ndd\n");
+            buffer.edit(
+                first_range,
+                first_text,
+                first_text.len(),
+                first_text.len(),
+                false,
+            );
+            let snapshot = buffer.snapshot();
+            assert_eq!(snapshot.line_starts(), first_starts);
+
+            let offset = buffer.line_start(1);
+            buffer.edit(Range::empty(offset), "y", offset + 1, offset + 1, false);
+            assert_eq!(buffer.line_starts(), expected_starts);
+            for (row, expected) in expected_lines.iter().enumerate() {
+                assert_eq!(buffer.line_text(row), *expected);
+                assert_eq!(buffer.snapshot().line_text(row), *expected);
+            }
+            assert_eq!(snapshot.line_starts(), first_starts);
+            assert_eq!(snapshot.line_text(1), "bb");
+        }
+    }
+}

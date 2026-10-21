@@ -204,7 +204,8 @@ pub enum QueryMode {
 /// 旧缓存因版本不匹配被安全拒绝并重建，但连接、查询与历史不受影响（§8.4）。
 /// 3：快照新增 routines（含签名）/triggers，用于函数重载索引与触发器持久化。
 /// 4：表指纹改为十六进制字符串落盘（u64 超出 TOML 的 i64 整数上限，旧格式会整份写不出）。
-pub const COMPLETION_INDEX_VERSION: u32 = 4;
+/// 5：达梦过滤 `SREF_CON_*` 等内部表；旧快照可能仍含这些不可引用对象。
+pub const COMPLETION_INDEX_VERSION: u32 = 5;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct QueryCompletionResult {

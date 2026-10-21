@@ -29,11 +29,66 @@ pub fn create_table_provider(kind: DatabaseKind) -> &'static dyn CreateTableProv
         DatabaseKind::MySql | DatabaseKind::TiDb => &MYSQL_CREATE_TABLE_PROVIDER,
         DatabaseKind::Sqlite => &SQLITE_CREATE_TABLE_PROVIDER,
         DatabaseKind::Postgres => &POSTGRES_CREATE_TABLE_PROVIDER,
-        DatabaseKind::MongoDb | DatabaseKind::Redis => &UNSUPPORTED_CREATE_TABLE_PROVIDER,
+        DatabaseKind::Dameng => &DAMENG_CREATE_TABLE_PROVIDER,
+        DatabaseKind::MongoDb | DatabaseKind::Redis => {
+            &UNSUPPORTED_CREATE_TABLE_PROVIDER
+        }
     }
 }
 
 static POSTGRES_CREATE_TABLE_PROVIDER: PostgresCreateTableProvider = PostgresCreateTableProvider;
+static DAMENG_CREATE_TABLE_PROVIDER: DamengCreateTableProvider = DamengCreateTableProvider;
+
+struct DamengCreateTableProvider;
+
+impl CreateTableProvider for DamengCreateTableProvider {
+    fn type_options(&self) -> &'static [&'static str] {
+        DAMENG_CREATE_TABLE_TYPE_OPTIONS
+    }
+
+    fn default_column_type(&self) -> &'static str {
+        "varchar"
+    }
+
+    fn default_id_type(&self) -> &'static str {
+        "int"
+    }
+
+    fn default_length(&self, data_type: &str) -> Option<&'static str> {
+        match create_table_base_type(data_type).as_str() {
+            "char" | "varchar" | "varchar2" | "nchar" | "nvarchar" | "nvarchar2" => Some("255"),
+            "number" | "numeric" | "decimal" => Some("10"),
+            _ => None,
+        }
+    }
+
+    fn type_capabilities(&self, data_type: &str) -> CreateTableTypeCapabilities {
+        let base = create_table_base_type(data_type);
+        CreateTableTypeCapabilities {
+            length: dameng_supports_length(&base),
+            scale: dameng_supports_scale(&base),
+            number_options: dameng_supports_scale(&base),
+            auto_increment: dameng_is_integer_type(&base),
+            ..Default::default()
+        }
+    }
+
+    fn validation_error(&self, create: &CreateTableState) -> Option<&'static str> {
+        create_table_dameng_validation_error(create)
+    }
+
+    fn sql_preview(&self, create: &CreateTableState) -> Result<String, String> {
+        create_table_dameng_sql_preview(create)
+    }
+
+    fn design_sql_preview(&self, create: &CreateTableState) -> Result<String, String> {
+        create_table_design_sql_preview_for_provider(self, create)
+    }
+
+    fn design_statements(&self, create: &CreateTableState) -> Result<Vec<String>, String> {
+        create_table_dameng_design_statements(create)
+    }
+}
 
 /// PostgreSQL 建表 provider（T16，设计 §9.2）。
 ///

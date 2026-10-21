@@ -19,6 +19,13 @@ impl NavicatMain {
             return;
         }
         self.ai_chat.tab_id = None;
+        // 关闭 AI 标签会结束本轮页面授权：立即结束仍在等待的页面动作，
+        // 不让工具有空等到超时，也不保留可被迟到结果回写的绑定。
+        if let Some(request) = self.ai_chat.table_page_request.take() {
+            request.complete(Err("page_query_cancelled"));
+        }
+        self.ai_chat.table_page_task = None;
+        self.ai_chat.table_page_binding = None;
         if self.ai_chat.open
             && self.ai_chat.mode == fluxdb_storage::ai_platform::settings::PanelMode::Tab
         {

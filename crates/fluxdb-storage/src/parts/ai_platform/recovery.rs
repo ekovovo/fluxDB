@@ -4,6 +4,10 @@ use crate::sqlite::sqlite_error;
 use fluxdb_core::Result;
 use rusqlite::{Connection, TransactionBehavior, params};
 
+/// 已取消的旧 SQL 兼容 ID 及其统一入口。迁移只保留用户真实的“启用/停用”
+/// 意图，不再把这些旧 ID 留在 Agent 白名单或全局开关里。
+const RETIRED_SQL_TOOL_IDS: &[&str] = &["db.query", "db.execute", "db.explain"];
+
 /// staged 产物候选：文件核对与状态推进由调用方在事务外完成（这里只给出事实）。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StagedArtifactCandidate {
@@ -35,6 +39,7 @@ pub fn recover_on_startup(conn: &mut Connection, now: i64) -> Result<RecoverySum
     tx.execute("UPDATE ai_usage_ledger SET measurement='unknown',updated_at_ms=?1 WHERE measurement='pending'", [now])
         .map_err(sqlite_error)?;
     let mut result = RecoverySummary::default();
+    migrate_retired_sql_tools(&tx, now)?;
     let mut stmt = tx.prepare("SELECT id,session_id,status FROM ai_turns WHERE status IN ('queued','preparing','generating','executing_tools','cancel_requested','waiting_approval','waiting_user','interrupted','outcome_unknown') ORDER BY started_at_ms,id").map_err(sqlite_error)?;
     let turns = stmt
         .query_map([], |r| {
@@ -69,10 +74,7 @@ pub fn recover_on_startup(conn: &mut Connection, now: i64) -> Result<RecoverySum
         for (call, tool, status, _receipt) in calls {
             let interrupted_status = if status == "running" {
                 // 不依据 SQL 前缀断言只读；只有已实现的专用只读工具可确认为读取中断。
-                if matches!(
-                    tool.as_str(),
-                    "db.query" | "db.search_objects" | "db.describe_object" | "db.explain"
-                ) {
+                if matches!(tool.as_str(), "db.search_objects" | "db.describe_object") {
                     "cancelled"
                 } else {
                     "unknown"
@@ -262,6 +264,101 @@ pub fn recover_on_startup(conn: &mut Connection, now: i64) -> Result<RecoverySum
     Ok(result)
 }
 
+fn migrate_retired_sql_tools(tx: &rusqlite::Transaction<'_>, now: i64) -> Result<()> {
+    // `db.run` 的全局开关不存在行时默认启用；只有任一旧入口被显式关闭时，
+    // 才写入统一的关闭行。已有的 `db.run` 设置优先，绝不反向覆盖。
+    let legacy_disabled: bool = tx
+        .query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM ai_tool_settings
+                 WHERE tool_id IN ('db.query','db.execute','db.explain') AND enabled=0
+             )",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(sqlite_error)?;
+    if legacy_disabled {
+        tx.execute(
+            "INSERT INTO ai_tool_settings (tool_id,enabled,revision,updated_at_ms)
+             VALUES ('db.run',0,1,?1)
+             ON CONFLICT(tool_id) DO NOTHING",
+            [now],
+        )
+        .map_err(sqlite_error)?;
+    }
+    tx.execute(
+        "DELETE FROM ai_tool_settings
+          WHERE tool_id IN ('db.query','db.execute','db.explain')",
+        [],
+    )
+    .map_err(sqlite_error)?;
+    tx.execute(
+        "UPDATE ai_tool_settings
+            SET tool_id='toolbox.inspect',revision=revision+1
+          WHERE tool_id='config.inspect'
+            AND NOT EXISTS (SELECT 1 FROM ai_tool_settings WHERE tool_id='toolbox.inspect')",
+        [],
+    )
+    .map_err(sqlite_error)?;
+    tx.execute(
+        "DELETE FROM ai_tool_settings WHERE tool_id='config.inspect'",
+        [],
+    )
+    .map_err(sqlite_error)?;
+    // 旧统一配置入口不是用户可见的单独能力；继续保存在设置表会让界面出现
+    // 一个无法独立启停的幽灵行。
+    tx.execute(
+        "DELETE FROM ai_tool_settings WHERE tool_id='config.propose'",
+        [],
+    )
+    .map_err(sqlite_error)?;
+
+    let agents = {
+        let mut stmt = tx
+            .prepare("SELECT id,allowed_tools_json FROM ai_agents")
+            .map_err(sqlite_error)?;
+        stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(sqlite_error)?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(sqlite_error)?
+    };
+    for (id, raw) in agents {
+        let Ok(mut tools) = serde_json::from_str::<Vec<String>>(&raw) else {
+            continue;
+        };
+        let had_legacy = tools
+            .iter()
+            .any(|tool| RETIRED_SQL_TOOL_IDS.contains(&tool.as_str()));
+        let had_old_inspect = tools.iter().any(|tool| tool == "config.inspect");
+        if !had_legacy && !had_old_inspect {
+            continue;
+        }
+        if !tools.iter().any(|tool| tool == "db.run") {
+            if had_legacy {
+                tools.push("db.run".into());
+            }
+        }
+        tools.retain(|tool| !RETIRED_SQL_TOOL_IDS.contains(&tool.as_str()));
+        if had_old_inspect && !tools.iter().any(|tool| tool == "toolbox.inspect") {
+            tools.push("toolbox.inspect".into());
+        }
+        tools.retain(|tool| tool != "config.inspect");
+        tx.execute(
+            "UPDATE ai_agents SET allowed_tools_json=?2,revision=revision+1 WHERE id=?1",
+            params![
+                id,
+                serde_json::to_string(&tools).map_err(|e| {
+                    fluxdb_core::Error::new(fluxdb_core::ErrorKind::Internal, e.to_string())
+                })?
+            ],
+        )
+        .map_err(sqlite_error)?;
+    }
+    Ok(())
+}
+
 /// 只读查询 staged 产物候选（供启动对账与测试复用，不做任何写入）。
 pub fn staged_artifact_candidates(conn: &Connection) -> Result<Vec<StagedArtifactCandidate>> {
     let mut stmt = conn
@@ -306,4 +403,71 @@ fn expired_retained_paths(tx: &rusqlite::Transaction<'_>, now: i64) -> Result<Ve
                     .any(|part| matches!(part, std::path::Component::ParentDir))
         })
         .collect())
+}
+
+#[cfg(test)]
+mod retired_tool_migration_tests {
+    use super::*;
+
+    fn test_conn() -> Connection {
+        let conn = Connection::open_in_memory().expect("memory db");
+        crate::ai_platform::ensure_schema(&conn).expect("schema");
+        conn
+    }
+
+    #[test]
+    fn retired_sql_and_inspect_ids_migrate_without_losing_intent() {
+        let mut conn = test_conn();
+        conn.execute(
+            "INSERT INTO ai_tool_settings(tool_id,enabled,revision,updated_at_ms)
+             VALUES ('db.execute',0,3,1),('config.inspect',0,2,1)",
+            [],
+        )
+        .expect("legacy settings");
+        conn.execute(
+            "INSERT INTO ai_agents(id,display_name,enabled,system_prompt,allowed_tools_json,
+                created_at_ms,updated_at_ms)
+             VALUES ('agent-test','Test',1,'prompt','[\"db.query\",\"config.inspect\"]',1,1)",
+            [],
+        )
+        .expect("legacy agent");
+
+        recover_on_startup(&mut conn, 2).expect("recovery");
+
+        let db_run_disabled: bool = conn
+            .query_row(
+                "SELECT enabled=0 FROM ai_tool_settings WHERE tool_id='db.run'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("db.run migrated");
+        assert!(db_run_disabled);
+        let old_settings: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM ai_tool_settings
+                  WHERE tool_id IN ('db.query','db.execute','db.explain','config.inspect')",
+                [],
+                |row| row.get(0),
+            )
+            .expect("old settings removed");
+        assert_eq!(old_settings, 0);
+        let inspect_disabled: bool = conn
+            .query_row(
+                "SELECT enabled=0 FROM ai_tool_settings WHERE tool_id='toolbox.inspect'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("inspect migrated");
+        assert!(inspect_disabled);
+
+        let tools: String = conn
+            .query_row(
+                "SELECT allowed_tools_json FROM ai_agents WHERE id='agent-test'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("agent tools");
+        let tools: Vec<String> = serde_json::from_str(&tools).expect("tools json");
+        assert_eq!(tools, ["db.run", "toolbox.inspect"]);
+    }
 }

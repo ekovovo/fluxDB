@@ -32,6 +32,7 @@ pub fn connector_for(config: &ConnectionConfig) -> fluxdb_core::Result<Box<dyn C
         }
         DatabaseKind::Sqlite => Box::new(SqliteConnector::with_config(config.clone())),
         DatabaseKind::Postgres => Box::new(PostgresConnector::with_config(config.clone())),
+        DatabaseKind::Dameng => Box::new(DamengConnector::with_config(config.clone())),
         DatabaseKind::Redis => Box::new(RedisConnector::with_config(config.clone())),
         DatabaseKind::MongoDb => {
             return Err(Error::new(

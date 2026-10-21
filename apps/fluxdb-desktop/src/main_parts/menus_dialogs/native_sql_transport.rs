@@ -3,6 +3,7 @@ fn resolved_credentials(config: &ConnectionConfig) -> (String, u16, String, Stri
     // MySQL 用 root/剩下扁平键），按连接类型选择对应归一化，避免 PG 拿到 MySQL 默认 root。
     let resolved = match config.kind {
         DatabaseKind::Postgres => config.postgres_resolved(),
+        DatabaseKind::Dameng => config.dameng_resolved(),
         _ => config.mysql_resolved(),
     };
     let (host, port) = match &resolved.endpoint {
@@ -15,7 +16,7 @@ fn resolved_credentials(config: &ConnectionConfig) -> (String, u16, String, Stri
         .get("username")
         .cloned()
         .unwrap_or_else(|| {
-            if config.kind == DatabaseKind::Postgres {
+            if matches!(config.kind, DatabaseKind::Postgres | DatabaseKind::Dameng) {
                 String::new()
             } else {
                 "root".to_string()

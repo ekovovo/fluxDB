@@ -6,4 +6,7 @@ target/
 docs/design
 apps/gdb-desktop/target/
 docs/design-assets
-.cargo/
+# 忽略本地 cargo 配置，但仓库级的链接参数（macOS 去 __eh_frame 警告）要入库。
+.cargo/*
+!.cargo/config.toml
+update-signing-key.pem

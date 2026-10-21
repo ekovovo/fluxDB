@@ -259,6 +259,7 @@ fn ai_database_kind_label(kind: fluxdb_core::DatabaseKind) -> &'static str {
         fluxdb_core::DatabaseKind::MongoDb => "MongoDB",
         fluxdb_core::DatabaseKind::Redis => "Redis",
         fluxdb_core::DatabaseKind::Postgres => "PostgreSQL",
+        fluxdb_core::DatabaseKind::Dameng => "达梦 DM8",
     }
 }
 

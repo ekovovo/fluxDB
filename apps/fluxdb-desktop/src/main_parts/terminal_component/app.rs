@@ -47,6 +47,7 @@ impl NavicatMain {
                 redis_profile: None,
                 mysql_profile: None,
                 postgres_profile: None,
+                dameng_profile: None,
             });
 
         let adapter: Box<dyn TerminalSessionAdapter> =

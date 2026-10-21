@@ -39,19 +39,14 @@ use fluxdb_core::{
     UserRoleMembership, WorkbenchHistoryItem, WorkbenchHistoryScope, WorkbenchHistoryStore,
     WriteCommit, WriteReviewOutcome, WriteRiskDecision, WriteRiskFacts,
     database_user_admin_provider, grants_from_query_result, infer_cloud_from_host,
-    matches_completion_fuzzy, redact_uri_password, role_memberships_from_grants,
-    set_sqlite_attached_database, sqlite_attached_database_path,
+    redact_uri_password, role_memberships_from_grants, set_sqlite_attached_database,
+    sqlite_attached_database_path,
+};
+pub use fluxdb_core::{
+    TableDataImport, TableImportFormat, TableImportProgress, TableImportReport, TableImportRequest,
 };
 use sqlformat::{Dialect, FormatOptions, Indent, QueryParams};
-use sqlparser::{
-    ast::{
-        Expr, FromTable, ObjectName, ObjectNamePart, Query as SqlAstQuery, SetExpr, Statement,
-        TableAlias, TableFactor, TableObject, TableWithJoins, UpdateTableFromKind,
-        visit_expressions, visit_relations,
-    },
-    dialect::MySqlDialect,
-    parser::Parser,
-};
+use sqlparser::ast::{Expr, ObjectName, ObjectNamePart, Statement};
 
 // First-pass source split: included files remain in crate-root scope while module boundaries are refined.
 include!("parts/ai_conversation_state.rs");
@@ -68,6 +63,7 @@ include!("parts/create_table_foreign_keys.rs");
 include!("parts/create_table_provider.rs");
 include!("parts/create_table_postgres.rs");
 include!("parts/create_table_postgres_design.rs");
+include!("parts/create_table_dameng.rs");
 include!("parts/controller.rs");
 include!("parts/data_editor.rs");
 include!("parts/mock_data.rs");
@@ -76,10 +72,12 @@ include!("parts/table_info.rs");
 include!("parts/user_admin.rs");
 include!("parts/completion_index.rs");
 include!("parts/query_completion.rs");
+include!("parts/completion_engine.rs");
 include!("parts/redis_commands.rs");
 include!("parts/redis_completion.rs");
 include!("parts/terminal_redis.rs");
 include!("parts/native_client_io.rs");
+include!("parts/updater.rs");
 include!("parts/pg_client_tools.rs");
 #[path = "parts/mysql_client_tools.rs"]
 mod mysql_client_tools;
@@ -110,6 +108,8 @@ include!("parts/ai_decision_provider.rs");
 include!("parts/ai_jev.rs");
 include!("parts/ai_usage.rs");
 include!("parts/ai_tool_registry.rs");
+include!("parts/ai_toolbox.rs");
+include!("parts/ai_tool_management.rs");
 include!("parts/ai_tool_output.rs");
 include!("parts/ai_plugins.rs");
 include!("parts/ai_plugin_config.rs");
@@ -133,8 +133,14 @@ include!("parts/ai_write_review.rs");
 include!("parts/ai_execution_policy.rs");
 include!("parts/ai_context.rs");
 include!("parts/ai_page_context.rs");
+include!("parts/settings_surface.rs");
+include!("parts/ai_ui_actions.rs");
+include!("parts/ai_config_tools.rs");
+include!("parts/config_proposal_apply.rs");
 include!("parts/ai_content_search.rs");
 include!("parts/ai_editor_read.rs");
+include!("parts/ai_sql_editor_edit.rs");
+include!("parts/ai_table_page.rs");
 include!("parts/sql_files.rs");
 include!("parts/ai_references.rs");
 include!("parts/ai_file_tools.rs");

@@ -4,7 +4,9 @@ impl NavicatMain {
         let until = Instant::now() + Duration::from_millis(180);
         self.data_filter_value_search_loading_until = Some(until);
         self.data_filter_value_search_task = Some(cx.spawn(async move |view, cx| {
-            smol::Timer::after(Duration::from_millis(190)).await;
+            cx.background_executor()
+                .timer(Duration::from_millis(190))
+                .await;
             view.update(cx, move |this, cx| {
                 if this
                     .data_filter_value_search_loading_until

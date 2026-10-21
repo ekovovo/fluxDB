@@ -147,10 +147,7 @@ impl AuditRules {
         if input.tool_id.starts_with("redis.") {
             return self.evaluate_redis(input, &arguments);
         }
-        if matches!(
-            input.tool_id.as_str(),
-            "db.query" | "db.execute" | "db.explain"
-        ) {
+        if input.tool_id == "db.run" {
             return self.evaluate_sql(input, &arguments);
         }
         RuleVerdict::allow()

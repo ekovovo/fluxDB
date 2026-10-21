@@ -94,6 +94,7 @@ mod query_execution_stack_tests {
                 options: BTreeMap::new(),
                 mysql_profile: None,
                 postgres_profile: None,
+                dameng_profile: None,
                 redis_profile: None,
             };
             controller.dispatch(AppCommand::ReplaceConnections(vec![config]));
@@ -166,6 +167,7 @@ mod query_execution_stack_tests {
                 options: BTreeMap::new(),
                 mysql_profile: None,
                 postgres_profile: None,
+                dameng_profile: None,
                 redis_profile: None,
             };
             controller.dispatch(AppCommand::ReplaceConnections(vec![config]));

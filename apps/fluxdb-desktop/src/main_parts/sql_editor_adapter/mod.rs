@@ -5,7 +5,7 @@
 // 通过注入的 schema / 补全源提供表、列等业务信息。该模块只做「能力定义」，
 // 不直接连接数据库：连接/连接信息一律由构造参数注入。
 //
-// 由于本文件与 dialect.rs / syntax.rs / completion.rs / semantic.rs / execution.rs
+// 由于本文件与 dialect.rs / syntax.rs / completion.rs / execution.rs
 // 通过 include! 合并进同一个 `sql_editor_adapter` 模块，所有用于整个模块的共享
 // `use` 统一放在本文件顶部，其余文件直接引用同一模块作用域下的类型，不重复 `use`。
 
@@ -36,22 +36,6 @@ struct SqlDiagnosticsCache {
     statement_ranges: Vec<Range>,
 }
 
-#[derive(Clone, Default)]
-struct SqlSemanticMetadata {
-    columns_by_table: std::collections::HashMap<String, std::collections::HashSet<String>>,
-    columns_by_table_exact: std::collections::HashMap<String, std::collections::HashSet<String>>,
-    tables: std::collections::HashSet<String>,
-    tables_exact: std::collections::HashSet<String>,
-    views: std::collections::HashSet<String>,
-    views_exact: std::collections::HashSet<String>,
-    schemas: std::collections::HashSet<String>,
-    schemas_exact: std::collections::HashSet<String>,
-    routines: std::collections::HashSet<String>,
-    routines_exact: std::collections::HashSet<String>,
-    types: std::collections::HashSet<String>,
-    types_exact: std::collections::HashSet<String>,
-}
-
 /// SQL 编辑器适配器：把 fluxdb-editor-core 的通用协议映射到 SQL 方言 + 注入的业务源。
 ///
 /// 本结构体持有方言与补全来源（schema / 补全索引），本身不做任何网络或数据库操作。
@@ -74,6 +58,8 @@ pub struct SqlAdapter {
     completion_resolver: Option<SqlCompletionResolver>,
     /// 可选的宿主「选中项 metadata 详情」解析器（候选右侧面板异步填充）。
     documentation_resolver: Option<SqlDocumentationResolver>,
+    /// 可选的宿主函数签名解析器（光标在 `NAME(` 内时给出参数骨架）。
+    signature_resolver: Option<SqlSignatureResolver>,
     /// 按文档版本缓存 CodeLens 全集；视口变化只过滤，不重复切分全文。
     code_lens_cache: Arc<Mutex<Option<(u64, usize, usize, Vec<CodeLens>)>>>,
     /// 按文档版本缓存带稳定 id 的语句列表，供执行状态装饰复用。
@@ -95,8 +81,6 @@ pub struct SqlAdapter {
     diagnostics_cache: Arc<Mutex<Option<SqlDiagnosticsCache>>>,
     /// 静态方言/schema 候选的惰性缓存；来源变化时由 builder 失效。
     completion_items_cache: OnceLock<Arc<Vec<CompletionItem>>>,
-    /// 静态 schema 语义元数据的惰性缓存；来源变化时由 builder 失效。
-    semantic_metadata_cache: OnceLock<SqlSemanticMetadata>,
     /// 外部 source 可能动态变化，不能复用静态候选缓存。
     completion_items_cacheable: bool,
 }
@@ -108,28 +92,22 @@ pub struct SqlCompletionResponse {
     pub has_more: bool,
 }
 
-fn merge_completion_items(
-    mut provider_items: Vec<CompletionItem>,
-    local_items: Vec<CompletionItem>,
-) -> Vec<CompletionItem> {
-    let mut seen = std::collections::HashSet::with_capacity(provider_items.len() + local_items.len());
-    provider_items.retain(|item| {
-        seen.insert((
-            item.kind,
-            item.label.to_ascii_lowercase(),
-            item.insert_text.to_ascii_lowercase(),
-        ))
-    });
-    for item in local_items {
-        if seen.insert((
-            item.kind,
-            item.label.to_ascii_lowercase(),
-            item.insert_text.to_ascii_lowercase(),
-        )) {
-            provider_items.push(item);
-        }
-    }
-    provider_items
+/// 已知 SQL 函数 → 结果类型（DM-802，轻量白名单）。
+///
+/// 不建通用类型代数，只对常用聚合/标量函数给出结果类型，用于函数补全项的
+/// detail 增强。未知函数返回 None（保守）。键为小写函数名。
+pub fn function_result_type(fn_name: &str) -> Option<SharedString> {
+    Some(match fn_name.to_ascii_lowercase().as_str() {
+        "count" | "sum" | "count_big" | "if" | "ifnull" | "coalesce" => tr("app.completion.type.numeric"),
+        "avg" | "max" | "min" => tr("app.completion.type.numeric_date_text"),
+        "concat" | "substring" | "substr" | "lower" | "lcase" | "upper" | "ucase"
+        | "trim" | "ltrim" | "rtrim" | "replace" | "cast" | "convert" | "now"
+        | "current_date" | "current_timestamp" => tr("app.completion.type.text_date"),
+        "len" | "length" | "char_length" | "round" | "floor" | "ceil" | "abs"
+        | "mod" | "rand" => tr("app.completion.type.numeric"),
+        "date" | "year" | "month" | "day" | "hour" | "minute" | "second" => tr("app.completion.type.date_numeric"),
+        _ => return None,
+    })
 }
 
 pub type SqlCompletionResolver = Arc<dyn Fn(String, usize, bool, Arc<AtomicU64>, u64) -> Result<SqlCompletionResponse, String> + Send + Sync>;
@@ -164,6 +142,12 @@ pub type SqlDocumentationResolver = Arc<
         + Sync,
 >;
 
+/// 函数签名解析回调：按函数名取参数骨架（`COUNT` → `COUNT(expr)`），未收录返回 `None`。
+///
+/// 由宿主绑定 fluxdb-app 的 `sql_function_signature`（查连接方言的内置函数表，纯静态，
+/// 不碰数据库）。用户自定义例程暂不提供签名，渲染层回退到只显示函数名。
+pub type SqlSignatureResolver = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
+
 const COMPLETION_WINDOW_BYTES: usize = 64 * 1024;
 const CODE_LENS_SYNC_SCAN_LIMIT: usize = 128 * 1024;
 const CODE_LENS_VISIBLE_WINDOW_BYTES: usize = 16 * 1024;
@@ -175,43 +159,6 @@ fn completion_window(snapshot: &BufferSnapshot, cursor: usize) -> (String, usize
         .saturating_add(COMPLETION_WINDOW_BYTES)
         .min(snapshot.len());
     (snapshot.text_in_range(Range::new(start, end)), start)
-}
-
-/// 只解析光标所在语句的语义作用域，避免每次补全对 1MB 全文做 tree-sitter 解析。
-/// DM-800 跨 statement 的 CTE/别名提示在此牺牲（见 `ponytail:` 注）。
-fn semantic_scope_snapshot(snapshot: &BufferSnapshot, cursor: usize) -> SqlScope {
-    match statement_around_snapshot(snapshot, cursor) {
-        Some((start, end)) => {
-            // 只物化单条语句文本，而非全文（`to_string()` 会复制整个 Rope）。
-            let stmt = snapshot.text_in_range(Range::new(start, end));
-            SqlScope::from_text(&stmt)
-        }
-        None => SqlScope::default(),
-    }
-    // ponytail: 只取当前语句——跨语句 CTE/别名提示丢失（DM-800 已知取舍）。
-    // 若需恢复：并入光标前 1~2 条语句区间（代价是再扫一次全文字节，O(n) 扫描而非语法树）。
-    // 何时值得：用户明确反馈跨语句 CTE 补全丢失再升。
-}
-
-fn sql_signature_label(name: &str, qualifier: Option<&str>) -> String {
-    let base = match name.to_ascii_lowercase().as_str() {
-        "count" => "COUNT(expr)".to_string(),
-        "sum" => "SUM(expr)".to_string(),
-        "avg" => "AVG(expr)".to_string(),
-        "min" => "MIN(expr)".to_string(),
-        "max" => "MAX(expr)".to_string(),
-        "coalesce" => "COALESCE(value, fallback)".to_string(),
-        "ifnull" => "IFNULL(value, fallback)".to_string(),
-        "concat" => "CONCAT(value1, value2)".to_string(),
-        "substr" => "SUBSTR(string, start, length)".to_string(),
-        "substring" => "SUBSTRING(string, start, length)".to_string(),
-        _ => format!("{name}()"),
-    };
-    // 保留 schema 限定前缀（`sales.count(` → `sales.COUNT(expr)`），与调用处一致。
-    match qualifier.filter(|q| !q.is_empty()) {
-        Some(q) => format!("{q}.{base}"),
-        None => base,
-    }
 }
 
 fn build_code_lenses(text: &str) -> Vec<CodeLens> {
@@ -270,6 +217,7 @@ impl SqlAdapter {
             status: None,
             completion_resolver: None,
             documentation_resolver: None,
+            signature_resolver: None,
             code_lens_cache: Arc::new(Mutex::new(None)),
             statement_runs_cache: Arc::new(Mutex::new(None)),
             syntax_cache: Arc::new(Mutex::new(None)),
@@ -278,7 +226,6 @@ impl SqlAdapter {
             diagnostics_latest_request: CancellationToken::default(),
             diagnostics_cache: Arc::new(Mutex::new(None)),
             completion_items_cache: OnceLock::new(),
-            semantic_metadata_cache: OnceLock::new(),
             completion_items_cacheable: true,
         }
     }
@@ -302,7 +249,6 @@ impl SqlAdapter {
     pub fn with_schema(mut self, schema: SqlSchemaContext) -> Self {
         self.sources.push(Arc::new(schema));
         self.completion_items_cache = OnceLock::new();
-        self.semantic_metadata_cache = OnceLock::new();
         self.diagnostics_cache = Arc::new(Mutex::new(None));
         self
     }
@@ -316,6 +262,12 @@ impl SqlAdapter {
     /// 绑定宿主「选中项 metadata 详情」解析器（候选右侧面板）。
     pub fn with_documentation_resolver(mut self, resolver: SqlDocumentationResolver) -> Self {
         self.documentation_resolver = Some(resolver);
+        self
+    }
+
+    /// 注入函数签名解析器。未注入时不做签名提示（`SignatureProvider` 返回 `None`）。
+    pub fn with_signature_resolver(mut self, resolver: SqlSignatureResolver) -> Self {
+        self.signature_resolver = Some(resolver);
         self
     }
 
@@ -360,7 +312,6 @@ impl SqlAdapter {
     pub fn with_completion_index(mut self, source: Arc<dyn SqlCompletionSource>) -> Self {
         self.sources.push(source);
         self.completion_items_cache = OnceLock::new();
-        self.semantic_metadata_cache = OnceLock::new();
         self.completion_items_cacheable = false;
         self.diagnostics_cache = Arc::new(Mutex::new(None));
         self
@@ -371,7 +322,6 @@ impl SqlAdapter {
     pub fn set_dialect(&mut self, dialect: SqlDialect) {
         self.dialect = dialect;
         self.completion_items_cache = OnceLock::new();
-        self.semantic_metadata_cache = OnceLock::new();
         self.diagnostics_cache = Arc::new(Mutex::new(None));
     }
 
@@ -675,6 +625,86 @@ impl SyntaxProvider for SqlAdapter {
     }
 }
 
+/// 把注入的补全来源适配成补全引擎的元数据接口，供语义诊断复用引擎的解析与符号表。
+///
+/// 来源是内存快照（已加载的对象树 + 已打开的 DataEditor 列），没有 schema 维度：
+/// 表一律以裸名给出，`schemas()` 为空时引擎自动跳过 schema 存在性检查。
+struct SqlDiagnosticMetadata<'a> {
+    sources: &'a [Arc<dyn SqlCompletionSource>],
+}
+
+impl fluxdb_completion::MetadataSource for SqlDiagnosticMetadata<'_> {
+    fn tables(&self, _schema: Option<&str>) -> Vec<fluxdb_completion::TableMeta> {
+        self.sources
+            .iter()
+            .flat_map(|source| source.tables().into_iter().chain(source.views()))
+            .map(|name| fluxdb_completion::TableMeta {
+                schema: None,
+                name,
+                kind: fluxdb_completion::TableKind::Table,
+                comment: None,
+            })
+            .collect()
+    }
+
+    fn schemas(&self) -> Vec<String> {
+        self.sources
+            .iter()
+            .flat_map(|source| source.schemas())
+            .collect()
+    }
+
+    fn columns(&self, key: &fluxdb_completion::TableKey) -> Vec<fluxdb_completion::ColumnMeta> {
+        self.sources
+            .iter()
+            .flat_map(|source| source.columns())
+            .filter(|(table, _)| table.eq_ignore_ascii_case(&key.table))
+            .map(|(table, name)| fluxdb_completion::ColumnMeta {
+                table,
+                name,
+                type_name: None,
+                nullable: true,
+                primary_key: false,
+                comment: None,
+            })
+            .collect()
+    }
+
+    fn foreign_keys(
+        &self,
+        _key: &fluxdb_completion::TableKey,
+    ) -> Vec<fluxdb_completion::ForeignKeyMeta> {
+        Vec::new()
+    }
+}
+
+/// 编辑器方言 → 补全引擎方言（诊断复用引擎的容错解析器）。
+fn completion_dialect(dialect: SqlDialect) -> &'static dyn fluxdb_completion::CompletionDialect {
+    match dialect {
+        SqlDialect::Mysql => &fluxdb_completion::MYSQL,
+        SqlDialect::Postgres | SqlDialect::SqlServer => &fluxdb_completion::POSTGRES,
+        SqlDialect::Sqlite => &fluxdb_completion::SQLITE,
+    }
+}
+
+/// 引擎诊断 → 编辑器诊断。文案走语言包；严重级别统一 Warning，不阻断执行。
+fn sql_semantic_diagnostic(
+    diagnostic: fluxdb_completion::Diagnostic,
+    base_offset: usize,
+) -> Diagnostic {
+    let key = match diagnostic.kind {
+        fluxdb_completion::DiagnosticKind::UnknownTable => "app.completion.error.object_missing",
+        fluxdb_completion::DiagnosticKind::UnknownSchema => "app.completion.error.schema_missing",
+        fluxdb_completion::DiagnosticKind::UnknownColumn => "app.completion.error.column_missing",
+    };
+    Diagnostic {
+        range: Range::new(base_offset + diagnostic.start, base_offset + diagnostic.end),
+        severity: fluxdb_editor_core::DiagnosticSeverity::Warning,
+        message: tr(key).replace("%{name}", &diagnostic.name),
+        source: "sql-metadata".to_string(),
+    }
+}
+
 impl DiagnosticProvider for SqlAdapter {
     /// 基于 SQL 语法树返回语法错误诊断（如缺分号、语法错误附近的节点）。
     ///
@@ -712,11 +742,11 @@ impl DiagnosticProvider for SqlAdapter {
             request_id,
         )
         .unwrap_or_default();
-        // 语义诊断按 statement 局部 materialize；范围扫描直接读取 Rope chunks，避免
-        // 为一次诊断把 1MB/10MB 文档拼成完整 String。
-        let semantic_started = Instant::now();
+        // 语义诊断（未知表 / schema / 列）复用补全引擎的容错解析与符号表；按语句局部
+        // materialize，范围扫描直接读 Rope chunks，不把整篇文档拼成完整 String。
         let statement_ranges = split_statement_ranges_snapshot(snapshot);
-        let semantic = self.semantic_diagnostics_snapshot_cancellable(
+        let semantic_started = Instant::now();
+        let semantic = self.semantic_diagnostics(
             snapshot,
             &statement_ranges,
             self.diagnostics_latest_request.inner(),
@@ -741,8 +771,8 @@ impl DiagnosticProvider for SqlAdapter {
             op = "diagnostics_semantic",
             editor_id,
             elapsed_us = semantic_started.elapsed().as_micros() as u64,
-            buffer_version = snapshot.version(),
-            text_bytes = snapshot.len(),
+            buffer_version = version,
+            text_bytes,
             statement_count = statement_ranges.len(),
             diagnostic_count = semantic_count,
         );
@@ -847,6 +877,7 @@ impl SqlAdapter {
         }
         let statement_text = snapshot.text_in_range(new_statement);
         let mut local = sql_diagnostics_tree_sitter_for_dialect(&statement_text, self.dialect);
+        // 语义诊断与语法诊断一样按语句局部算，文档基准偏移由下面的平移统一补。
         local.extend(self.semantic_diagnostics_text(&statement_text, 0));
         for diagnostic in &mut local {
             diagnostic.range.start += new_statement.start;
@@ -889,422 +920,53 @@ impl SqlAdapter {
         Some(diagnostics)
     }
 
-    fn semantic_diagnostics_text(&self, text: &str, base_offset: usize) -> Vec<Diagnostic> {
-        let metadata = self.semantic_metadata();
-        self.semantic_diagnostics_text_with_metadata(text, base_offset, &metadata)
-    }
-
-    fn semantic_metadata(&self) -> SqlSemanticMetadata {
-        if !self.completion_items_cacheable {
-            return self.semantic_metadata_uncached();
-        }
-        self.semantic_metadata_cache
-            .get_or_init(|| self.semantic_metadata_uncached())
-            .clone()
-    }
-
-    fn semantic_metadata_uncached(&self) -> SqlSemanticMetadata {
-        let mut metadata = SqlSemanticMetadata::default();
-        for source in &self.sources {
-            let tables = source.tables();
-            metadata
-                .tables
-                .extend(tables.iter().map(|name| name.to_ascii_lowercase()));
-            metadata.tables_exact.extend(tables);
-            let views = source.views();
-            metadata
-                .views
-                .extend(views.iter().map(|name| name.to_ascii_lowercase()));
-            metadata.views_exact.extend(views);
-            let schemas = source.schemas();
-            metadata
-                .schemas
-                .extend(schemas.iter().map(|name| name.to_ascii_lowercase()));
-            metadata.schemas_exact.extend(schemas);
-            let routines = source.routines();
-            metadata
-                .routines
-                .extend(routines.iter().map(|name| name.to_ascii_lowercase()));
-            metadata.routines_exact.extend(routines);
-            let types = source.types();
-            metadata
-                .types
-                .extend(types.iter().map(|name| name.to_ascii_lowercase()));
-            metadata.types_exact.extend(types);
-            for (table, column) in source.columns() {
-                metadata
-                    .columns_by_table
-                    .entry(table.to_ascii_lowercase())
-                    .or_default()
-                    .insert(column.to_ascii_lowercase());
-                metadata
-                    .columns_by_table_exact
-                    .entry(table)
-                    .or_default()
-                    .insert(column);
-            }
-        }
-        metadata
-    }
-
-    fn semantic_diagnostics_text_with_metadata(
-        &self,
-        text: &str,
-        base_offset: usize,
-        metadata: &SqlSemanticMetadata,
-    ) -> Vec<Diagnostic> {
-        if self.sources.is_empty() {
-            return Vec::new();
-        }
-        let tables = &metadata.tables;
-        let views = &metadata.views;
-        let schemas = &metadata.schemas;
-        let routines = &metadata.routines;
-        let types = &metadata.types;
-        let tables_exact = &metadata.tables_exact;
-        let views_exact = &metadata.views_exact;
-        let schemas_exact = &metadata.schemas_exact;
-        let routines_exact = &metadata.routines_exact;
-        let types_exact = &metadata.types_exact;
-        let tokens = sql_tokens(text);
-        let scope_symbols = fluxdb_app::sql_scope_symbols(
-            text,
-            match self.dialect {
-                SqlDialect::Mysql => fluxdb_core::DatabaseKind::MySql,
-                _ => fluxdb_core::DatabaseKind::Sqlite,
-            },
-        );
-        let ast_parsed = scope_symbols.ast_parsed;
-        let ast_functions = scope_symbols
-            .function_names
-            .into_iter()
-            .collect::<std::collections::HashSet<_>>();
-        let ast_types = scope_symbols
-            .cast_types
-            .into_iter()
-            .collect::<std::collections::HashSet<_>>();
-        let ast_columns = scope_symbols
-            .qualified_columns
-            .into_iter()
-            .collect::<std::collections::HashSet<_>>();
-        let ast_unqualified_columns = scope_symbols
-            .unqualified_columns
-            .into_iter()
-            .collect::<std::collections::HashSet<_>>();
-        let ast_referenced_tables = scope_symbols
-            .referenced_tables
-            .iter()
-            .map(|table| table.name.to_ascii_lowercase())
-            .collect::<std::collections::HashSet<_>>();
-        let ast_relation_names = scope_symbols
-            .relation_names
-            .iter()
-            .map(|name| name.to_ascii_lowercase())
-            .collect::<std::collections::HashSet<_>>();
-        let cte_columns = scope_symbols
-            .cte_columns
-            .into_iter()
-            .map(|(name, columns)| (name, columns.into_iter().collect::<std::collections::HashSet<_>>()))
-            .collect::<std::collections::HashMap<_, _>>();
-        let cte_names = cte_columns.keys().cloned().collect::<std::collections::HashSet<_>>();
-        let mut visible_columns = std::collections::HashSet::new();
-        let mut visible_columns_exact = std::collections::HashSet::new();
-        for table in &scope_symbols.referenced_tables {
-            if let Some(columns) = cte_columns.get(&table.name.to_ascii_lowercase()) {
-                visible_columns.extend(columns.iter().cloned());
-                visible_columns_exact.extend(columns.iter().cloned());
-            }
-            if let Some(columns) = metadata.columns_by_table.get(&table.name.to_ascii_lowercase()) {
-                visible_columns.extend(columns.iter().cloned());
-            }
-            if let Some(columns) = metadata.columns_by_table_exact.get(&table.name) {
-                visible_columns_exact.extend(columns.iter().cloned());
-            } else {
-                for (known_table, columns) in &metadata.columns_by_table_exact {
-                    if known_table.eq_ignore_ascii_case(&table.name) {
-                        visible_columns_exact.extend(columns.iter().cloned());
-                    }
-                }
-            }
-        }
-        let mut scoped_columns = None;
-        for table in scope_symbols.referenced_tables {
-            let Some(alias) = table.alias else { continue };
-            let columns = cte_columns
-                .get(&table.name.to_ascii_lowercase())
-                .cloned()
-                .or_else(|| metadata.columns_by_table.get(&table.name.to_ascii_lowercase()).cloned());
-            if let Some(columns) = columns {
-                scoped_columns
-                    .get_or_insert_with(|| metadata.columns_by_table.clone())
-                    .entry(alias)
-                    .or_insert(columns);
-            }
-        }
-        for (name, columns) in &cte_columns {
-            scoped_columns
-                .get_or_insert_with(|| metadata.columns_by_table.clone())
-                .entry(name.clone())
-                .or_insert_with(|| columns.clone());
-        }
-        let columns_by_table = scoped_columns
-            .as_ref()
-            .unwrap_or(&metadata.columns_by_table);
-        let object_is_known = |name: &str| {
-            if tables.contains(name) || views.contains(name) || cte_names.contains(name) {
-                return true;
-            }
-            let base_name = name.rsplit('.').next().unwrap_or(name);
-            tables
-                .iter()
-                .chain(views.iter())
-                .any(|known| known.rsplit('.').next() == Some(base_name))
-        };
-        let mut diagnostics = Vec::new();
-
-        // 只在对象名位于明确 SQL 子句后时检查存在性，避免把普通标识符误报为表。
-        for (index, token) in tokens.iter().enumerate() {
-            let expects_object = matches!(
-                token.word.as_str(),
-                "from" | "join" | "update" | "into" | "references" | "table" | "view"
-            );
-            if !expects_object {
-                continue;
-            }
-            let Some(object) = tokens.get(index + 1) else { continue };
-            if object.word == "(" || (!object.quoted && self.dialect.is_keyword(&object.word)) {
-                continue;
-            }
-            let (object_name, object_end, object_quoted, schema_quoted) = if let Some(next) = tokens.get(index + 2)
-                && text[object.end..next.start].trim() == "."
-            {
-                (
-                    format!("{}.{}", object.word, next.word),
-                    next.end,
-                    next.quoted,
-                    object.quoted,
-                )
-            } else {
-                (object.word.clone(), object.end, object.quoted, false)
-            };
-            let base_name = object_name.rsplit('.').next().unwrap_or(&object_name);
-            let object_name_folded = object_name.to_ascii_lowercase();
-            let base_name_folded = base_name.to_ascii_lowercase();
-            if ast_parsed
-                && !cte_names.contains(&object_name_folded)
-                && !ast_referenced_tables.contains(&object_name_folded)
-                && !ast_referenced_tables.contains(&base_name_folded)
-                && !ast_relation_names.contains(&object_name_folded)
-                && !ast_relation_names.contains(&base_name_folded)
-            {
-                continue;
-            }
-            let known_object = if object_quoted {
-                tables_exact.contains(&object_name)
-                    || tables_exact.contains(base_name)
-                    || views_exact.contains(&object_name)
-                    || views_exact.contains(base_name)
-            } else {
-                object_is_known(&object_name) || object_is_known(base_name)
-            };
-            if !(tables.is_empty() && views.is_empty() && cte_names.is_empty())
-                && !known_object
-            {
-                diagnostics.push(sql_metadata_diagnostic(
-                    base_offset + object.start,
-                    base_offset + object_end,
-                    tr("app.completion.error.object_missing").replace("%{name}", &object_name),
-                ));
-            }
-            if !schemas.is_empty() && let Some(dot) = object_name.find('.') {
-                let schema_name = &object_name[..dot];
-                let schema_known = if schema_quoted {
-                    schemas_exact.contains(schema_name)
-                } else {
-                    schemas.contains(&schema_name.to_ascii_lowercase())
-                };
-                if !schema_known {
-                    diagnostics.push(sql_metadata_diagnostic(
-                        base_offset + object.start,
-                        base_offset + object.start + dot,
-                        tr("app.completion.error.schema_missing").replace("%{name}", &schema_name),
-                    ));
-                }
-            }
-        }
-
-        // 只在 provider 明确提供 routine/type metadata 时检查自定义函数和类型。
-        if !routines.is_empty() {
-            for (_index, token) in tokens.iter().enumerate() {
-                if !text[token.end..].trim_start().starts_with('(') {
-                    continue;
-                }
-                if !token.quoted
-                    && (self.dialect.is_keyword(&token.word)
-                        || matches!(token.word.as_str(), "if" | "case" | "cast" | "convert"))
-                {
-                    continue;
-                }
-                if ast_parsed && !ast_functions.contains(&token.word.to_ascii_lowercase()) {
-                    continue;
-                }
-                let known_routine = if token.quoted {
-                    routines_exact.contains(&token.word)
-                } else {
-                    routines.contains(&token.word)
-                };
-                if !known_routine {
-                    diagnostics.push(sql_metadata_diagnostic(
-                        base_offset + token.start,
-                        base_offset + token.end,
-                        tr("app.completion.error.function_missing").replace("%{name}", &token.word),
-                    ));
-                }
-            }
-        }
-
-        if !types.is_empty() {
-            for (index, token) in tokens.iter().enumerate() {
-                let is_cast_type = tokens
-                    .get(index.wrapping_sub(1))
-                    .is_some_and(|prev| prev.word == "as");
-                if ast_parsed && !ast_types.contains(&token.word.to_ascii_lowercase()) {
-                    continue;
-                }
-                let known_type = if token.quoted {
-                    types_exact.contains(&token.word)
-                } else {
-                    types.contains(&token.word)
-                };
-                if is_cast_type
-                    && (token.quoted || !self.dialect.is_keyword(&token.word))
-                    && !known_type
-                {
-                    diagnostics.push(sql_metadata_diagnostic(
-                        base_offset + token.start,
-                        base_offset + token.end,
-                        tr("app.completion.error.type_missing").replace("%{name}", &token.word),
-                    ));
-                }
-            }
-        }
-
-        if columns_by_table.is_empty() {
-            return diagnostics;
-        }
-        for pair in tokens.windows(2) {
-            let [table_token, column_token] = pair else { continue };
-            if text[table_token.end..column_token.start].trim() != "." {
-                continue;
-            }
-            let table = table_token.word.as_str();
-            let column = column_token.word.as_str();
-            if ast_parsed
-                && !ast_columns.contains(&(
-                    table.to_ascii_lowercase(),
-                    column.to_ascii_lowercase(),
-                ))
-            {
-                continue;
-            }
-            let table_quoted = table_token.quoted;
-            let column_quoted = column_token.quoted;
-            let known_columns = if table_quoted {
-                metadata.columns_by_table_exact.get(table)
-            } else {
-                columns_by_table.get(&table.to_ascii_lowercase())
-            };
-            let Some(known_columns) = known_columns else {
-                continue;
-            };
-            let column_known = if column_quoted {
-                known_columns.contains(column)
-            } else {
-                known_columns.contains(&column.to_ascii_lowercase())
-            };
-            if column_known {
-                continue;
-            }
-            diagnostics.push(Diagnostic {
-                range: Range::new(
-                    base_offset + column_token.start,
-                    base_offset + column_token.end,
-                ),
-                severity: fluxdb_editor_core::DiagnosticSeverity::Warning,
-                message: tr("app.completion.error.column_missing").replace("%{column}", &column).replace("%{table}", &table),
-                source: "sql-metadata".to_string(),
-            });
-        }
-        if ast_parsed && !visible_columns.is_empty() {
-            let select_aliases = scope_symbols
-                .select_aliases
-                .iter()
-                .map(|alias| alias.to_ascii_lowercase())
-                .collect::<std::collections::HashSet<_>>();
-            for (index, token) in tokens.iter().enumerate() {
-                if (!token.quoted && self.dialect.is_keyword(&token.word))
-                    || (ast_unqualified_columns.is_empty()
-                        || !ast_unqualified_columns.contains(&token.word.to_ascii_lowercase()))
-                    || select_aliases.contains(&token.word.to_ascii_lowercase())
-                {
-                    continue;
-                }
-                let qualified = tokens
-                    .get(index.wrapping_sub(1))
-                    .is_some_and(|previous| text[previous.end..token.start].trim() == ".")
-                    || tokens
-                        .get(index + 1)
-                        .is_some_and(|next| text[token.end..next.start].trim() == ".");
-                if qualified {
-                    continue;
-                }
-                let known = if token.quoted {
-                    visible_columns_exact.contains(&token.word)
-                } else {
-                    visible_columns.contains(&token.word.to_ascii_lowercase())
-                };
-                if !known {
-                    diagnostics.push(sql_metadata_diagnostic(
-                        base_offset + token.start,
-                        base_offset + token.end,
-                        tr("app.completion.error.column_out_of_scope").replace("%{name}", &token.word),
-                    ));
-                }
-            }
-        }
-        diagnostics
-    }
-
-    fn semantic_diagnostics_snapshot_cancellable(
+    /// 语义诊断（未知表 / schema / 列），按语句逐段算。
+    ///
+    /// 同步、只读内存来源，由前端在后台任务里调用；语句间检查取消，避免旧版本继续
+    /// 扫描长文档。
+    fn semantic_diagnostics(
         &self,
         snapshot: &BufferSnapshot,
         statement_ranges: &[Range],
         latest_request: &AtomicU64,
         request_id: u64,
     ) -> Vec<Diagnostic> {
-        let metadata = self.semantic_metadata();
         let mut diagnostics = Vec::new();
         for range in statement_ranges {
             if latest_request.load(Ordering::Acquire) != request_id {
                 break;
             }
             let text = snapshot.text_in_range(*range);
-            diagnostics.extend(self.semantic_diagnostics_text_with_metadata(
-                &text,
-                range.start,
-                &metadata,
-            ));
+            diagnostics.extend(self.semantic_diagnostics_text(&text, range.start));
         }
         diagnostics
     }
+
+    /// 单条语句的语义诊断；`base_offset` 是该语句在文档中的起始偏移。
+    fn semantic_diagnostics_text(&self, text: &str, base_offset: usize) -> Vec<Diagnostic> {
+        if self.sources.is_empty() {
+            return Vec::new();
+        }
+        let request = fluxdb_completion::DiagnosticRequest {
+            text,
+            database: None,
+            schema: None,
+        };
+        let metadata = SqlDiagnosticMetadata {
+            sources: &self.sources,
+        };
+        fluxdb_completion::diagnose(&request, completion_dialect(self.dialect), &metadata)
+            .into_iter()
+            .map(|diagnostic| sql_semantic_diagnostic(diagnostic, base_offset))
+            .collect()
+    }
+
 }
 
 #[derive(Clone, Debug)]
 struct SqlToken {
-    start: usize,
-    end: usize,
+    /// 去引号后的词（引号标识符已反转义），小写化由调用方按需处理。
     word: String,
-    quoted: bool,
 }
 
 fn sql_tokens(text: &str) -> Vec<SqlToken> {
@@ -1318,7 +980,6 @@ fn sql_tokens(text: &str) -> Vec<SqlToken> {
                 continue;
             }
             b'"' | b'`' => {
-                let start = i;
                 let quote = bytes[i];
                 i += 1;
                 let value_start = i;
@@ -1331,13 +992,10 @@ fn sql_tokens(text: &str) -> Vec<SqlToken> {
                         let value_end = i;
                         i += 1;
                         result.push(SqlToken {
-                            start,
-                            end: i,
                             word: text[value_start..value_end].replace(
                                 if quote == b'`' { "``" } else { "\"\"" },
                                 if quote == b'`' { "`" } else { "\"" },
                             ),
-                            quoted: true,
                         });
                         break;
                     }
@@ -1385,10 +1043,7 @@ fn sql_tokens(text: &str) -> Vec<SqlToken> {
             i += 1;
         }
         result.push(SqlToken {
-            start,
-            end: i,
             word: text[start..i].to_ascii_lowercase(),
-            quoted: false,
         });
     }
     result
@@ -1410,15 +1065,6 @@ fn skip_quoted_token(bytes: &[u8], mut i: usize, quote: u8) -> usize {
     i
 }
 
-fn sql_metadata_diagnostic(start: usize, end: usize, message: String) -> Diagnostic {
-    Diagnostic {
-        range: Range::new(start, end.max(start + 1)),
-        severity: fluxdb_editor_core::DiagnosticSeverity::Warning,
-        message,
-        source: "sql-metadata".to_string(),
-    }
-}
-
 fn is_sql_identifier_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'$')
 }
@@ -1438,9 +1084,6 @@ impl CompletionProvider for SqlAdapter {
             let start = cursor.saturating_sub(COMPLETION_WINDOW_BYTES);
             snapshot.text_in_range(Range::new(start, cursor))
         });
-        let in_call = before
-            .as_ref()
-            .is_some_and(|b| fluxdb_app::sql_signature_at(b, b.len()).is_some());
         if !request.query.is_empty() {
             // F001：非显式自动触发时，若光标落于未闭合字符串/注释内（词字符被编辑器
             // 当普通前缀提取，query 非空），应抑制——否则在 `'se` / `-- sel` 里打字会误弹。
@@ -1451,21 +1094,11 @@ impl CompletionProvider for SqlAdapter {
                     return TriggerDecision::No;
                 }
             }
-            // 方案 A：非显式且在函数参数上下文内（`foo(` 之后），补全浮层让位给签名
-            // tooltip，避免两者重叠。显式触发（Ctrl+Space）不受影响。
-            return if in_call {
-                TriggerDecision::No
-            } else {
-                TriggerDecision::Yes
-            };
+            return TriggerDecision::Yes;
         }
         let Some(before) = before else {
             return TriggerDecision::No;
         };
-        // 方案 A：函数参数上下文内同上抑制（覆盖 query 为空的下标/空格等场景）。
-        if in_call {
-            return TriggerDecision::No;
-        }
         if trailing_ident_qualifier(&before) || sql_space_trigger_context(&before) {
             TriggerDecision::Yes
         } else {
@@ -1499,16 +1132,9 @@ impl CompletionProvider for SqlAdapter {
             let document_bytes = snapshot.len();
             let (text, text_offset) = completion_window(&snapshot, request.cursor);
             let cursor = request.cursor.saturating_sub(text_offset).min(text.len());
-            // 文档绝对光标：语义窗口化用「光标所在语句」，不能用上面的窗口内相对 `cursor`。
-            let doc_cursor = request.cursor;
             let explicit = request.explicit;
             let query = request.query;
             let fallback_items = self.build_completion_items();
-            // Phase 8（DM-800~804）：收集查询内符号作为**动态**本地候选（CTE/关系别名/
-            // 派生表列），并与元数据候选合并进 resolver 结果。查询内符号随语句变化，
-            // 不走静态 completion_items_cache。全文 tree-sitter 采集由宿主 `cx.background_spawn`
-            // 在后台 executor 轮询本 future，故移入闭包内执行，避免在大文档上阻塞主线程
-            // （16k 行粘贴时每词首字符都触发补全，同步解析曾造成输入卡顿）。
             tracing::debug!(
                 target: "gdb_sql_perf",
                 op = "completion_prepare",
@@ -1525,13 +1151,9 @@ impl CompletionProvider for SqlAdapter {
             return Box::pin(async move {
                 let started = Instant::now();
                 // 复用共享原子作为 resolver 的 latest-wins 检查点（Arc<AtomicU64> 共享）。
-                let semantic_items = {
-                    let scope = semantic_scope_snapshot(&snapshot, doc_cursor);
-                    scope_to_items(&scope)
-                };
                 match resolver(text, cursor, explicit, latest_request.clone(), request_id) {
                     Ok(response) => {
-                        let mut items = response
+                        let items = response
                             .items
                             .into_iter()
                             .map(|mut item| {
@@ -1544,10 +1166,7 @@ impl CompletionProvider for SqlAdapter {
                                 item
                             })
                             .collect::<Vec<_>>();
-                        // 上下文结果即权威答案：本地静态回退（整份方言关键字 + with_schema
-                        // 注入的 schema 上下文）只在 resolver 不可用 / 失败时降级使用（见下方
-                        // Err 分支）。成功路径并入它会把整套关键字（如 `order`）和其它 schema
-                        // 的表混进 `schema.` 的定向结果，故此处只并入查询内语义候选。
+                        // 上下文结果即权威答案：本地静态回退只在 resolver 不可用时降级使用。
                         tracing::debug!(
                             target: "gdb_sql_completion",
                             op = "completion_fallback_skipped",
@@ -1556,8 +1175,6 @@ impl CompletionProvider for SqlAdapter {
                             fallback_count = fallback_items.len(),
                             "resolver 已返回上下文候选，跳过本地静态回退候选"
                         );
-                        // DM-800~803：合并查询内语义候选（CTE/别名/派生表列）。
-                        items = merge_completion_items(items, semantic_items.clone());
                         tracing::debug!(
                             target: "gdb_sql_perf",
                             op = "completion_provider",
@@ -1588,11 +1205,7 @@ impl CompletionProvider for SqlAdapter {
                             error = %error,
                             "SQL completion resolver failed; using local candidates"
                         );
-                        let local = merge_completion_items(
-                            fallback_items.as_ref().clone(),
-                            semantic_items.clone(),
-                        );
-                        let filtered = filter_items(&local, &query);
+                        let filtered = filter_items(fallback_items.as_ref(), &query);
                         tracing::debug!(
                             target: "gdb_sql_perf",
                             op = "completion_fallback",
@@ -1615,12 +1228,6 @@ impl CompletionProvider for SqlAdapter {
         }
         let items = self.build_completion_items();
         let query = request.query;
-        // Phase 8（DM-800~804）：无 resolver 时同样注入查询内语义候选（若有快照）。
-        // 全文 tree-sitter 采集由宿主 `cx.background_spawn` 在后台 executor 轮询本 future，
-        // 故移入闭包内执行，避免在大文档上阻塞主线程（与 resolver 路径同因，见 DM 卡顿整改）。
-        let document = request.document;
-        // 文档绝对光标：语义窗口化用「光标所在语句」定位当前范围。
-        let cursor = request.cursor;
         tracing::debug!(
             target: "gdb_sql_perf",
             op = "completion_prepare",
@@ -1634,17 +1241,6 @@ impl CompletionProvider for SqlAdapter {
         );
         Box::pin(async move {
             let started = Instant::now();
-            let semantic_items =
-                document.as_ref().map(|snapshot| {
-                    let scope = semantic_scope_snapshot(snapshot, cursor);
-                    scope_to_items(&scope)
-                });
-            let items: Arc<Vec<CompletionItem>> = match &semantic_items {
-                Some(semantic) if !semantic.is_empty() => {
-                    Arc::new(merge_completion_items(items.as_ref().clone(), semantic.clone()))
-                }
-                _ => items,
-            };
             let filtered = filter_items(&items, &query);
             tracing::debug!(
                 target: "gdb_sql_perf",
@@ -1683,30 +1279,6 @@ impl CompletionProvider for SqlAdapter {
             SqlDocState::Loading => D::Loading,
             SqlDocState::Ready(text) => D::Ready(text),
             SqlDocState::Error(reason) => D::Error(reason),
-        })
-    }
-}
-
-impl SignatureProvider for SqlAdapter {
-    /// 函数签名提示（P1.9/F003）：复用 fluxdb-app 的 SQL 语义函数调用定位（保留 schema
-    /// 限定前缀、多字节安全、忽略字符串内逗号），生成非阻塞的参数 tooltip。
-    /// connector 参数 metadata 未接入时退化为 `name()` 签名（可读降级）；
-    /// 光标不在函数调用括号内（或括号左侧非标识符）时返回 None（不显示）。
-    fn signature(&self, snapshot: &BufferSnapshot, position: Point) -> Option<SignatureInfo> {
-        // 只取光标前局部上下文，避免大文档全量复制（与 core 通用版同窗口）。
-        let cursor = snapshot.point_to_offset(position);
-        if cursor == 0 {
-            return None;
-        }
-        const SIG_CONTEXT_BYTES: usize = 64 * 1024;
-        let context_start = cursor.saturating_sub(SIG_CONTEXT_BYTES);
-        let text = snapshot.text_in_range(Range::new(context_start, cursor));
-        let call = fluxdb_app::sql_signature_at(&text, cursor - context_start)?;
-        Some(SignatureInfo {
-            label: sql_signature_label(&call.name, call.qualifier.as_deref()),
-            documentation: String::new(),
-            active_parameter: Some(call.active_parameter),
-            parameter_ranges: Vec::new(),
         })
     }
 }

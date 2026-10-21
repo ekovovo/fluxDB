@@ -272,6 +272,7 @@ fn input_box_light(
         .focus_bordered(false);
 
     div()
+        .debug_selector(move || connection_field_element_id(field).to_string())
         .w_full()
         .h(px(34.))
         .rounded(colors.radius_lg)
@@ -388,6 +389,7 @@ fn database_default_port(kind: DatabaseKind) -> &'static str {
         DatabaseKind::MongoDb => "27017",
         DatabaseKind::Redis => "6379",
         DatabaseKind::Postgres => "5432",
+        DatabaseKind::Dameng => "5236",
         DatabaseKind::Sqlite => "",
     }
 }
@@ -452,6 +454,15 @@ fn connection_fields(kind: DatabaseKind) -> &'static [ConnectionField] {
             ConnectionField::Database,
             ConnectionField::UrlParams,
         ],
+        DatabaseKind::Dameng => &[
+            ConnectionField::Name,
+            ConnectionField::Host,
+            ConnectionField::Port,
+            ConnectionField::Username,
+            ConnectionField::Password,
+            ConnectionField::Database,
+            ConnectionField::DamengSchema,
+        ],
     }
 }
 
@@ -466,6 +477,7 @@ fn connection_field_element_id(field: ConnectionField) -> &'static str {
         ConnectionField::Username => "connection-username",
         ConnectionField::Password => "connection-password",
         ConnectionField::Database => "connection-database",
+        ConnectionField::DamengSchema => "connection-dameng-schema",
         ConnectionField::UrlParams => "connection-url-params",
         ConnectionField::SqlitePath => "connection-sqlite-path",
         ConnectionField::MongoDefaultDb => "connection-mongo-default-db",
@@ -516,6 +528,7 @@ fn connection_field_label(field: ConnectionField) -> SharedString {
         ConnectionField::Username => tr("app.connection.field.username"),
         ConnectionField::Password => tr("app.connection.optional"),
         ConnectionField::Database => tr("app.connection.field.database"),
+        ConnectionField::DamengSchema => tr("app.connection.dameng.schema"),
         ConnectionField::UrlParams => tr("app.connection.field.url_params"),
         ConnectionField::SqlitePath => tr("app.connection.field.file_path"),
         ConnectionField::MongoDefaultDb => tr("app.connection.field.default_db"),
@@ -562,6 +575,7 @@ fn connection_field_placeholder(field: ConnectionField) -> SharedString {
         ConnectionField::Username => tr("app.connection.field.username"),
         ConnectionField::Password => tr("app.connection.optional"),
         ConnectionField::Database => tr("app.connection.field.database"),
+        ConnectionField::DamengSchema => tr("app.connection.dameng.schema_optional"),
         ConnectionField::MongoDefaultDb => tr("app.connection.optional"),
         ConnectionField::UrlParams => {
             "key=value&key2=value2".into()

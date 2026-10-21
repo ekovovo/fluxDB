@@ -704,17 +704,18 @@ fn variant_name(statement: &sqlparser::ast::Statement) -> String {
         .to_lowercase()
 }
 
-/// `db.query` 的输入 schema（设计 §21.3）。
-pub const DB_QUERY_INPUT_SCHEMA: &str = r##"{
+/// `db.run` 的统一 SQL 入口：只读/写由内核分类，`mode=explain` 走计划。
+pub const DB_RUN_INPUT_SCHEMA: &str = r##"{
   "type": "object",
   "additionalProperties": false,
   "required": ["target", "sql"],
   "properties": {
     "target": { "type": "string", "minLength": 1 },
     "sql": { "type": "string", "minLength": 1, "maxLength": 65536 },
-        "parameters": { "type": "array", "maxItems": 1024, "items": { "$ref": "#/$defs/parameter" } },
+    "parameters": { "type": "array", "maxItems": 1024, "items": { "$ref": "#/$defs/parameter" } },
     "max_rows": { "type": "integer", "minimum": 1, "maximum": 1000 },
-    "timeout_ms": { "type": "integer", "minimum": 100, "maximum": 30000 }
+    "timeout_ms": { "type": "integer", "minimum": 100, "maximum": 30000 },
+    "mode": { "type": "string", "enum": ["auto", "explain"] }
   },
   "$defs": {
     "parameter": {
@@ -731,45 +732,6 @@ pub const DB_QUERY_INPUT_SCHEMA: &str = r##"{
     }
   }
 }"##;
-
-/// `db.execute` 的输入 schema：修改专用入口（审批绑定 plan hash）。
-pub const DB_EXECUTE_INPUT_SCHEMA: &str = r##"{
-  "type": "object",
-  "additionalProperties": false,
-  "required": ["target", "sql"],
-  "properties": {
-    "target": { "type": "string", "minLength": 1 },
-    "sql": { "type": "string", "minLength": 1, "maxLength": 65536 },
-        "parameters": { "type": "array", "maxItems": 1024, "items": { "$ref": "#/$defs/parameter" } },
-    "timeout_ms": { "type": "integer", "minimum": 100, "maximum": 30000 }
-  },
-  "$defs": {
-    "parameter": {
-      "oneOf": [
-        { "type": "object", "additionalProperties": false, "required": ["type"], "properties": { "type": { "const": "null" } } },
-        { "type": "object", "additionalProperties": false, "required": ["type", "value"], "properties": { "type": { "const": "bool" }, "value": { "type": "boolean" } } },
-        { "type": "object", "additionalProperties": false, "required": ["type", "value"], "properties": { "type": { "const": "i64" }, "value": { "type": "string" } } },
-        { "type": "object", "additionalProperties": false, "required": ["type", "value"], "properties": { "type": { "const": "u64" }, "value": { "type": "string" } } },
-        { "type": "object", "additionalProperties": false, "required": ["type", "value"], "properties": { "type": { "const": "f64" }, "value": { "type": "number" } } },
-        { "type": "object", "additionalProperties": false, "required": ["type", "value"], "properties": { "type": { "const": "decimal" }, "value": { "type": "string" } } },
-        { "type": "object", "additionalProperties": false, "required": ["type", "value"], "properties": { "type": { "const": "text" }, "value": { "type": "string" } } },
-        { "type": "object", "additionalProperties": false, "required": ["type", "value"], "properties": { "type": { "const": "bytes" }, "value": { "type": "string" } } }
-      ]
-    }
-  }
-}"##;
-
-/// `db.explain` 的输入 schema（默认不执行 ANALYZE）。
-pub const DB_EXPLAIN_INPUT_SCHEMA: &str = r#"{
-  "type": "object",
-  "additionalProperties": false,
-  "required": ["target", "sql"],
-  "properties": {
-    "target": { "type": "string", "minLength": 1 },
-    "sql": { "type": "string", "minLength": 1, "maxLength": 65536 },
-    "mode": { "type": "string", "enum": ["plan", "execute"] }
-  }
-}"#;
 
 /// `db.search_objects` 的输入 schema（渐进元数据，不 dump 全库 DDL）。
 pub const DB_SEARCH_OBJECTS_INPUT_SCHEMA: &str = r#"{
@@ -815,37 +777,20 @@ pub const DB_DESCRIBE_OBJECT_INPUT_SCHEMA: &str = r#"{
   }
 }"#;
 
-/// 按分类决定工具入口：只读走 `db.query`，其余必须走 `db.execute`（审批）。
-pub fn route_for_sql(sql: &str, dialect: SqlDialectKind) -> (&'static str, SqlRisk) {
-    let risk = analyze_sql(sql, dialect);
-    let tool = match &risk {
-        SqlRisk::ReadOnly => "db.query",
-        SqlRisk::RequiresAuthorization { .. } | SqlRisk::Rejected { .. } => "db.execute",
-    };
-    (tool, risk)
-}
-
 /// 构造标准 SQL 工具的定义。
 ///
-/// - `db.query`：只读入口（Read）；
-/// - `db.execute`：修改专用入口（Write，必须走审批）；
-/// - `db.explain`：默认不执行（Read），`mode=execute` 时由策略层降级为需审批；
+/// - `db.run`：统一执行入口（目录按最坏情况标 Write，单次调用按 SQL 分类）；
 /// - `db.search_objects`/`db.describe_object`：只读元数据探索。
 pub fn standard_sql_tool_specs() -> fluxdb_core::Result<Vec<ToolSpec>> {
     let descriptors = [
         fluxdb_core::ToolDescriptor {
-            id: "db.query".into(),
+            id: "db.run".into(),
             version: 1,
-            description: "单条受控只读查询（驱动绑定参数、有界结果）".into(),
-            risk: fluxdb_core::ToolRisk::Read,
-            input_schema_json: DB_QUERY_INPUT_SCHEMA.into(),
-        },
-        fluxdb_core::ToolDescriptor {
-            id: "db.execute".into(),
-            version: 1,
-            description: "单条修改语句（范围授权 + 审批绑定 plan hash）".into(),
+            description: "执行单条 SQL：只读语句直接返回结果，写语句需审批；mode=explain 只看计划。".into(),
+            // 目录按最坏情况标注；单次调用的有效风险由 `effective_risk` 按 SQL 分类。
+            // 只读执行策略下仍需保留该入口用于查询，见 `loop_tool_descriptors`。
             risk: fluxdb_core::ToolRisk::Write,
-            input_schema_json: DB_EXECUTE_INPUT_SCHEMA.into(),
+            input_schema_json: DB_RUN_INPUT_SCHEMA.into(),
         },
         fluxdb_core::ToolDescriptor {
             id: "db.search_objects".into(),
@@ -861,13 +806,6 @@ pub fn standard_sql_tool_specs() -> fluxdb_core::Result<Vec<ToolSpec>> {
             risk: fluxdb_core::ToolRisk::Read,
             input_schema_json: DB_DESCRIBE_OBJECT_INPUT_SCHEMA.into(),
         },
-        fluxdb_core::ToolDescriptor {
-            id: "db.explain".into(),
-            version: 1,
-            description: "查询计划（默认不执行；执行式计划另需审批）".into(),
-            risk: fluxdb_core::ToolRisk::Read,
-            input_schema_json: DB_EXPLAIN_INPUT_SCHEMA.into(),
-        },
     ];
     let mut specs = descriptors
         .iter()
@@ -875,7 +813,10 @@ pub fn standard_sql_tool_specs() -> fluxdb_core::Result<Vec<ToolSpec>> {
         .collect::<fluxdb_core::Result<Vec<_>>>()?;
     // 执行回执保留已取得行；通用层按预算裁完整前缀，不固定样本行数。
     for spec in &mut specs {
-        if matches!(spec.id.as_str(), "db.query" | "db.explain") {
+        if spec.id == "db.run" {
+            spec.effect = crate::EffectClass::Mutating;
+        }
+        if spec.id == "db.run" {
             spec.output_shape = crate::ToolOutputShape::Sample {
                 omit_field: "rows".into(),
                 rows_omitted_field: Some("rows_omitted".into()),

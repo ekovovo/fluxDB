@@ -23,6 +23,8 @@ pub struct CreateTableState {
     pub partition_sql: String,
     pub applying: bool,
     pub apply_error: Option<UserFacingError>,
+    /// 设计器的索引/外键/触发器仍在后台读取；加载完成前禁止保存。
+    pub details_loading: bool,
     pub active_tab: CreateTableTab,
     pub columns: Vec<CreateTableColumn>,
     pub indexes: Vec<CreateTableIndex>,

@@ -12,12 +12,24 @@ impl AiConnectionsListTool {
         let connections = connections
             .iter()
             .map(|config| {
+                let can_run_sql = Some(config.id) == current_connection;
+                let can_browse_page = matches!(
+                    config.kind,
+                    fluxdb_core::DatabaseKind::Sqlite
+                        | fluxdb_core::DatabaseKind::Postgres
+                        | fluxdb_core::DatabaseKind::MySql
+                        | fluxdb_core::DatabaseKind::TiDb
+                        | fluxdb_core::DatabaseKind::Dameng
+                );
                 serde_json::json!({
                     "connection_id": config.id.0,
                     "connection_name": config.name,
                     "database_kind": config.kind,
                     "connection_read_only": connection_is_read_only(config),
                     "is_current": Some(config.id) == current_connection,
+                    // 目录能力必须与 resolver 的真实范围一致：列出连接不等于可执行 SQL。
+                    "can_run_sql": can_run_sql,
+                    "can_browse_page": can_browse_page,
                 })
             })
             .collect::<Vec<_>>();
@@ -25,14 +37,24 @@ impl AiConnectionsListTool {
             descriptor: fluxdb_core::ToolDescriptor {
                 id: "connections.list".into(),
                 version: 1,
-                description: "列出本轮已保存连接的 ID、名称、数据库类型、只读标记及当前目标，不返回地址、路径或凭据。发现不授予执行权限：只能操作当前绑定连接，其他连接需用户在界面选择后重新发送。".into(),
+                description: "列出已保存的 SQL 连接 ID、名称、数据库类型、只读标记，并明确 can_run_sql（只有当前绑定连接为 true）与 can_browse_page。不返回地址、路径或凭据。can_run_sql=false 时不要用 db.* 猜连接 ID；按表名或业务描述查表改用 page.find_table，需要逐级浏览时用 page.browse_objects。".into(),
                 risk: fluxdb_core::ToolRisk::Read,
                 input_schema_json: r#"{"type":"object","properties":{},"additionalProperties":false}"#.into(),
             },
             snapshot: serde_json::json!({
                 "connections": connections,
                 "snapshot_scope": "turn",
-                "execution_scope": "current_connection_only",
+                "execution_scope": if current_connection.is_some() {
+                    "current_connection_only"
+                } else {
+                    "no_bound_target"
+                },
+                "bound_connection_id": current_connection.map(|id| id.0),
+                "guidance": if current_connection.is_some() {
+                    "db.* only accepts the bound connection. Use page.find_table/page.browse_objects for any other saved connection."
+                } else {
+                    "No SQL execution target is bound. Do not try conn:<id>; use page.find_table or page.browse_objects to discover and open a table."
+                },
             }),
         }
     }

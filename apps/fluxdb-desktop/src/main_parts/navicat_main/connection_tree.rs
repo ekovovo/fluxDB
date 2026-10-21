@@ -66,6 +66,7 @@ impl NavicatMain {
             redis_profile: config.redis_profile.clone(),
             mysql_profile: config.mysql_profile.clone(),
             postgres_profile: config.postgres_profile.clone(),
+            dameng_profile: config.dameng_profile.clone(),
         };
         let event = self
             .controller

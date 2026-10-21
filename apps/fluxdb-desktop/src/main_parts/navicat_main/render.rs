@@ -4,6 +4,10 @@ impl Render for NavicatMain {
         if window.window_title() != window_title {
             window.set_window_title(&window_title);
         }
+        if self.update_auto_check_pending {
+            self.update_auto_check_pending = false;
+            self.start_update_check(false, cx);
+        }
         // 调试入口：首帧后打开模型弹框（需要 window 创建 Input 实体；仅 debug 构建会置位）。
         if self.ai_model_dialog_debug_pending && self.ai_model_dialog.is_none() {
             self.ai_model_dialog_debug_pending = false;
@@ -82,6 +86,7 @@ impl Render for NavicatMain {
         let app_state = self.controller.state();
         let state = render_state_snapshot(app_state);
         let colors = ui_colors_from_theme(self.theme_mode, cx);
+        let settings_for_config_proposal = self.controller.state().settings.clone();
         // 恢复弹框「现有库」目标下拉：目标连接切换时重载该连接下的库（渲染期消费，靠 target_db_loaded_for 防抖）。
         let restore_db_reload = self.restore_modal.as_ref().and_then(|modal| {
             let existing_mode = modal.kind != DatabaseKind::Sqlite
@@ -127,11 +132,9 @@ impl Render for NavicatMain {
         let connection_browser_width =
             clamp_connection_browser_width(self.connection_browser_width);
         let first_level_groups = first_level_tab_groups(&state);
-        let settings_active = matches!(
-            active_first_level_scope(&state),
-            Some(FirstLevelScope::Settings)
-        );
-        let two_level_tabs = !first_level_groups.is_empty() && !settings_active;
+        let active_scope = active_first_level_scope(&state);
+        let two_level_tabs =
+            !first_level_groups.is_empty() && first_level_has_second_row(active_scope.as_ref());
         let query_history_detail = self.query_history_detail.clone();
         let pending_apply_preview = self.pending_apply_data_changes.and_then(|tab_id| {
             self.data_change_preview_for_tab(tab_id)
@@ -154,10 +157,15 @@ impl Render for NavicatMain {
             .app_message
             .as_ref()
             .map(|message| app_message_overlay(message, window, cx, colors));
+        let update_dialog = self
+            .update_ui
+            .open
+            .then(|| self.update_dialog(colors, cx));
         let (sidebar_rows, sidebar_item_sizes) = if self.show_connection_browser {
             self.sidebar_tree_rows(
                 &state,
                 &self.loading_databases,
+                &self.loaded_database_children,
                 &self.pinned_databases,
                 &self.pinned_tables,
                 &self.table_folders,
@@ -295,7 +303,7 @@ impl Render for NavicatMain {
                                 this.child(tab_switcher_popup(
                                     kind,
                                     &state,
-                                    active_first_level_scope(&state).as_ref(),
+                                    active_scope.as_ref(),
                                     self.tab_switcher_search_input.clone(),
                                     &self.tab_switcher_search,
                                     two_level_tabs,
@@ -500,6 +508,20 @@ impl Render for NavicatMain {
                     ))
                 },
             )
+            .when_some(
+                self.pending_config_proposal.clone(),
+                |this, proposal| {
+                    this.child(config_proposal_modal(
+                        proposal,
+                        &settings_for_config_proposal,
+                        self.config_proposal_busy,
+                        self.config_delete_confirmed,
+                        self.focus_handle.clone(),
+                        colors,
+                        cx,
+                    ))
+                },
+            )
             // 「执行 SQL 文件」弹框已迁移到 gpui-component Dialog（window.open_dialog），
             // 由 `Root` 插件层统一渲染，不再在此条件挂载自绘弹层
             .when_some(self.pending_backup_modal.clone(), |this, form| {
@@ -549,6 +571,7 @@ impl Render for NavicatMain {
             .when(self.pending_exit_confirm, |this| {
                 this.child(exit_confirm_modal(colors, cx))
             })
+            .when_some(update_dialog, |this, dialog| this.child(dialog))
             .when_some(self.backup_log_task, |this, task_id| {
                 if let Some(task) = self
                     .backup_tasks
@@ -607,6 +630,17 @@ impl Render for NavicatMain {
                     colors,
                     cx,
                 ))
+            })
+            .when_some(self.pending_data_import.clone(), |this, form| {
+                let kind = self
+                    .controller
+                    .state()
+                    .connections
+                    .iter()
+                    .find(|connection| connection.config.id == form.object.connection_id)
+                    .map(|connection| connection.config.kind)
+                    .unwrap_or(DatabaseKind::Postgres);
+                this.child(table_data_import_modal(form, kind, colors, cx))
             })
             .when_some(self.pending_rename_table.clone(), |this, form| {
                 this.child(table_name_form_modal(
@@ -855,6 +889,7 @@ fn render_tab_kind_snapshot(kind: &TabKind) -> TabKind {
             page: None,
             original_page: None,
             pagination: editor.pagination,
+            load_generation: editor.load_generation,
             changes: None,
             editing_cell: editor.editing_cell,
             cell_detail_panel: CellDetailPanelState::default(),

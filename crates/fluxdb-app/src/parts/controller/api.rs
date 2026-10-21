@@ -113,8 +113,7 @@ impl AppController {
         editor.original_page = None;
         editor.changes = None;
         editor.editing_cell = None;
-        editor.loading = true;
-        editor.error = None;
+        editor.begin_load();
         tab.dirty = false;
     }
 
@@ -342,7 +341,7 @@ impl AppController {
                 editor.page = None;
                 editor.original_page = None;
                 editor.changes = None;
-                editor.loading = true;
+                editor.begin_load();
                 editor.table_info = TableInfoState::default();
                 tab.title = new_name.to_string();
                 tab.dirty = false;

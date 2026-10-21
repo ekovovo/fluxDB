@@ -331,7 +331,7 @@ impl NavicatMain {
                 self.dispatch(AppCommand::OpenErDiagram(object_path), cx);
             }
             TableMenuAction::Design => {
-                self.dispatch(AppCommand::OpenDesignTable(object_path), cx);
+                self.open_design_table_in_background(object_path, cx);
             }
             TableMenuAction::NewTable => {
                 self.dispatch(
@@ -352,8 +352,20 @@ impl NavicatMain {
             TableMenuAction::CopyTable => {
                 self.open_copy_table_modal(object_path, window, cx);
             }
+            TableMenuAction::ImportData => {
+                self.open_table_import_wizard(object_path, window, cx);
+            }
             TableMenuAction::ExportData => {
                 self.open_table_data_export_from_object(object_path, cx);
+            }
+            TableMenuAction::ExportDatabase => {
+                self.show_backup_modal_preselect(
+                    Some(object_path.connection_id),
+                    object_path.database.clone(),
+                    None,
+                    window,
+                    cx,
+                );
             }
             TableMenuAction::CopyStructure => {
                 self.copy_table_structure(object_path, cx);
@@ -421,8 +433,20 @@ impl NavicatMain {
                 self.start_rename_table_folder(parent_key, folder_name, window, cx);
             }
             TableGroupMenuAction::Refresh => {
-                self.loaded_database_children.remove(&database_key);
-                self.load_database_children(menu.database_path, database_key, cx);
+                let (target, key) = match menu.schema.as_deref() {
+                    Some(schema) => (
+                        ObjectPath {
+                            connection_id: menu.connection_id,
+                            database: Some(menu.database.clone()),
+                            schema: Some(schema.to_string()),
+                            name: schema.to_string(),
+                            kind: ObjectKind::Schema,
+                        },
+                        schema_tree_key(menu.connection_id, &menu.database, schema),
+                    ),
+                    None => (menu.database_path, database_key),
+                };
+                self.load_database_children(target, key, cx);
                 return;
             }
         }
@@ -1254,8 +1278,9 @@ fn connection_menu_height(items: f32, separators: f32) -> f32 {
 // 注意：菜单项/分隔符数量必须与 context_menus.rs 中对应渲染函数保持一致，
 // 少算会导致菜单底部（如"删除表/清空表"）被视口裁切。
 fn table_context_menu_height() -> f32 {
-    // table_context_menu：15 个菜单项 + 3 个分隔符
-    context_menu_height(15., 3.)
+    // table_context_menu：17 个菜单项 + 3 个分隔符。少算 2 项会让
+    // “删除表/清空表”在贴底右键时被视口裁切。
+    context_menu_height(17., 3.)
 }
 
 fn data_cell_context_menu_height(menu: &DataCellContextMenu) -> f32 {

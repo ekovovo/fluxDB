@@ -152,6 +152,7 @@ fn content(
         Some(tab) if matches!(tab.kind, TabKind::Settings(_)) => {
             settings_content(
                 state,
+                &this.update_ui,
                 AiSettingsPanelState {
                     filter: this.ai_model_filter.clone(),
                     filter_input: this.ai_model_filter_input.clone(),
@@ -540,6 +541,7 @@ fn home_action_row(
     let label = label.into();
     div()
         .id(id)
+        .debug_selector(move || id.to_string())
         .aria_label(label.clone())
         .cursor_pointer()
         .h(px(44.))
@@ -3803,7 +3805,7 @@ fn query_result_view(
     let (page, page_index) = match entry {
         QueryResultEntry::Page { page, page_index } => (page, page_index),
         QueryResultEntry::Failure { summary } => {
-            return query_result_error_state(tab_id, result_index, summary, colors, cx);
+            return query_result_error_state(tab_id, result_index, summary, this, colors, cx);
         }
     };
     let result_editor = editor.result_editors.get(&page_index);
@@ -4225,11 +4227,14 @@ fn query_result_error_state(
     tab_id: TabId,
     result_index: usize,
     summary: &QueryExecutionSummary,
+    this: &NavicatMain,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
     let copy_text = query_result_error_copy_text(summary);
     let summary_for_ai = summary.clone();
+    let ai_busy = this.ai_chat.loading || this.ai_chat.running.is_some()
+        || this.ai_chat.pending_sql_edit.is_some();
     let (variant, icon_name, accent) = app_message_style(AppMessageKind::Error, cx);
     let alert = Alert::new(
         gpui::ElementId::Name(
@@ -4320,8 +4325,10 @@ fn query_result_error_state(
                 AppIcon::Bot,
                 colors,
             )
+            .disabled(ai_busy)
+            .debug_selector(|| "query-ai-fix".into())
             .on_click(cx.listener(move |this, _, window, cx| {
-                this.ai_fix_query_error(summary_for_ai.clone(), window, cx);
+                this.begin_ai_sql_editor_edit(tab_id, Some(summary_for_ai.clone()), window, cx);
             })),
         );
 
@@ -5543,7 +5550,15 @@ fn data_editor_toolbar(
                     ),
                 ))
                 .when(show_table_tools, |this| this.child(data_editor_action(tr("app.data.toolbar.analyze"), colors)))
-                .when(show_table_tools, |this| this.child(data_editor_action(tr("app.data.toolbar.import"), colors)))
+                .when(show_table_tools, |this| this.child(
+                    data_editor_action(tr("app.data.toolbar.import"), colors).on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _, window, cx| {
+                            this.open_table_import_wizard_for_tab(tab_id, window, cx);
+                            cx.stop_propagation();
+                        }),
+                    ),
+                ))
                 .when(show_table_tools, |this| this.child(data_editor_action(tr("app.data.toolbar.export"), colors).on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, _, _, cx| {

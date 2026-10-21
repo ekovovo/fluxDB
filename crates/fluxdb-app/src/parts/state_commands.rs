@@ -1,5 +1,11 @@
 #[derive(Clone, Debug, PartialEq)]
 pub enum AppCommand {
+    BrowseAiTableObjects { connection_id: ConnectionId, parent: Option<ObjectPath> },
+    FinishAiTableObjects { connection_id: ConnectionId, parent: Option<ObjectPath>, objects: Vec<ObjectSummary> },
+    LoadAiTableColumns(ObjectPath),
+    RememberAiTableObject(ObjectPath),
+    BeginAiTableQuery { tab_id: TabId, limit: u64 },
+    LoadAiTablePage { tab_id: TabId, generation: u64, object: ObjectPath, query: AiTableQuery },
     AiConversation(AiConversationCommand),
     PrepareBackup {
         request: BackupRequest,
@@ -138,6 +144,13 @@ pub enum AppCommand {
         new_name: String,
         copy_data: bool,
     },
+    /// 从 TXT/CSV/JSON/XML 文件追加导入表数据。
+    ImportTableData {
+        object: ObjectPath,
+        source: std::path::PathBuf,
+        options: fluxdb_core::TableImportOptions,
+        column_mapping: Vec<fluxdb_core::TableImportColumnMapping>,
+    },
     DropTable {
         object: ObjectPath,
         foreign_key_check: ForeignKeyCheckMode,
@@ -149,6 +162,8 @@ pub enum AppCommand {
         restart_identity: bool,
     },
     LoadDataPage(TabId),
+    /// 开始一次表页加载：递增该标签的加载令牌，返回旧后台结果应丢弃的依据。
+    BeginDataPageLoad(TabId),
     SetDataPagePagination {
         tab_id: TabId,
         offset: u64,
@@ -156,6 +171,7 @@ pub enum AppCommand {
     },
     LoadDataPageWithSort {
         tab_id: TabId,
+        generation: u64,
         sort: Vec<SortSpec>,
         filters: Vec<FilterSpec>,
     },
@@ -359,6 +375,7 @@ pub enum AppCommand {
     },
     FinishDataPageLoad {
         tab_id: TabId,
+        generation: u64,
         result: std::result::Result<DataPage, UserFacingError>,
     },
     ToggleTableInfo {
@@ -501,6 +518,20 @@ pub enum AppCommand {
         schema: Option<String>,
     },
     OpenDesignTable(ObjectPath),
+    /// 在后台读取设计表快照；只返回结果，不改控制器状态。
+    LoadDesignTable(ObjectPath),
+    /// 桌面端首屏：只读字段/主键等快速数据，详情随后补齐。
+    LoadDesignTableBase(ObjectPath),
+    /// 首屏加载完详情尚未返回时，后台补齐设计表完成值。
+    LoadDesignTableDetails(ObjectPath),
+    /// 把后台读取结果安装为设计表标签页。
+    FinishOpenDesignTable {
+        result: std::result::Result<CreateTableState, UserFacingError>,
+    },
+    FinishDesignTableDetails {
+        tab_id: TabId,
+        metadata: fluxdb_core::TableDesignMetadata,
+    },
     RenameTable {
         object: ObjectPath,
         new_name: String,
@@ -1193,6 +1224,11 @@ pub enum AppCommand {
     PinTab(TabId),
     ReplaceQueryHistory(Vec<QueryHistoryEntry>),
     SaveSettings(Settings),
+    /// 仅宿主用户确认后在后台派发；不作为 AI 工具直接开放。
+    ApplyConfirmedConfig {
+        proposal: Box<ConfigProposal>,
+        binary_path: String,
+    },
     /// 刷新设置页「大模型 / 工具与MCP / 会话历史」列表（模型、Agent、插件实例、MCP Client、会话）。
     RefreshAiSettings,
     /// 续读设置页会话历史下一页（稳定游标分页；已加载部分不重复）。

@@ -1,4 +1,78 @@
+fn copy_table_requires_source_ddl(database_kind: DatabaseKind) -> bool {
+    matches!(database_kind, DatabaseKind::Sqlite | DatabaseKind::Dameng)
+}
+
 impl NavicatMain {
+    fn open_design_table_in_background(&mut self, object: ObjectPath, cx: &mut Context<Self>) {
+        let key = table_tree_key(&object);
+        if self._design_table_tasks.contains_key(&key) {
+            return;
+        }
+
+        // 设计表加载用页内进度表示；重复点击同一张表仍复用现有任务。
+        let finish_key = key.clone();
+        let task = self.spawn_controller_command(
+            AppCommand::LoadDesignTableBase(object),
+            move |this, event, cx| {
+                this._design_table_tasks.remove(&finish_key);
+                let result = match event {
+                    AppEvent::DesignTableLoaded(result) => result,
+                    AppEvent::Failed(error) => Err(error),
+                    _ => Err(fluxdb_core::UserFacingError {
+                        title: tr("app.create_table.error.load_design_failed").to_string(),
+                        message: tr("app.create_table.error.load_field_no_result").to_string(),
+                        detail: None,
+                        retryable: true,
+                    }),
+                };
+                let event = this
+                    .controller
+                    .dispatch(AppCommand::FinishOpenDesignTable {
+                        result: result.clone(),
+                    });
+                this.apply_app_event(&event, cx);
+                if let (AppEvent::TabOpened(tab_id), Ok(create)) = (&event, result)
+                    && create.details_loading
+                {
+                    let Some(tab) = this.controller.state().tabs.iter().find(|tab| tab.id == *tab_id)
+                    else {
+                        return;
+                    };
+                    let TabKind::CreateTable(create) = &tab.kind else {
+                        return;
+                    };
+                    let CreateTableMode::Design { object, .. } = &create.mode else {
+                        return;
+                    };
+                    let object = object.clone();
+                    this.spawn_design_table_details(*tab_id, object, cx);
+                }
+            },
+            cx,
+        );
+        self._design_table_tasks.insert(key, task);
+    }
+
+    fn request_data_editor_refresh_for_object(
+        &mut self,
+        object: &ObjectPath,
+        cx: &mut Context<Self>,
+    ) {
+        let tab_ids = self
+            .controller
+            .state()
+            .tabs
+            .iter()
+            .filter_map(|tab| match &tab.kind {
+                TabKind::DataEditor(editor) if editor.object == *object => Some(tab.id),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        for tab_id in tab_ids {
+            self.request_data_editor_refresh(tab_id, cx);
+        }
+    }
+
     fn refresh_table_object(&mut self, object_path: &ObjectPath, cx: &mut Context<Self>) {
         let tab_refreshes = self
             .controller
@@ -62,7 +136,9 @@ impl NavicatMain {
         cx: &mut Context<Self>,
     ) {
         let new_name = format!("{}_copy", object_path.name);
-        let needs_ddl = self.table_database_kind(&object_path) == Some(DatabaseKind::Sqlite);
+        let needs_ddl = self
+            .table_database_kind(&object_path)
+            .is_some_and(copy_table_requires_source_ddl);
         self.pending_copy_table = Some(PendingCopyTable {
             object_path: object_path.clone(),
             new_name: new_name.clone(),
@@ -242,7 +318,7 @@ impl NavicatMain {
         let Some(database_kind) = self.table_database_kind(&form.object_path) else {
             return Err(tr("app.error.connection_missing").to_string());
         };
-        let source_ddl = if database_kind == DatabaseKind::Sqlite {
+        let source_ddl = if copy_table_requires_source_ddl(database_kind) {
             match &form.source_ddl {
                 Some(Ok(ddl)) => Some(ddl.as_str()),
                 Some(Err(message)) => return Err(message.clone()),
@@ -532,7 +608,10 @@ impl NavicatMain {
     fn refresh_database_children_for_table(&mut self, object: &ObjectPath, cx: &mut Context<Self>) {
         // PG 按 schema 懒加载：只刷新该表所在 schema，避免 DB 级重载按 schema_scope=None
         // 清空整库所有表/视图（见 replace_loaded_children）。复制/删除/清空等表操作统一走这里。
-        if self.table_database_kind(object) == Some(DatabaseKind::Postgres) {
+        if matches!(
+            self.table_database_kind(object),
+            Some(DatabaseKind::Postgres | DatabaseKind::Dameng)
+        ) {
             let (Some(database), Some(schema)) = (object.database.clone(), object.schema.clone())
             else {
                 return;

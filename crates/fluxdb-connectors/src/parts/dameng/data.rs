@@ -1,0 +1,211 @@
+const DM_DATA_SOURCE_ALIAS: &str = "__fluxdb_source";
+
+fn dm_load_data(
+    config: &ConnectionConfig,
+    path: &ObjectPath,
+    offset: u64,
+    limit: u64,
+    sort: &[SortSpec],
+    filters: &[FilterSpec],
+) -> fluxdb_core::Result<DataPage> {
+    if !matches!(path.kind, ObjectKind::Table | ObjectKind::View) {
+        return Err(Error::new(ErrorKind::Unsupported, "仅表和视图支持数据读取"));
+    }
+    let schema = dm_request_schema(config, path)?;
+    let pagination = Pagination::new(offset, limit);
+    let mut client = dm_connect(config)?;
+    let columns = dm_load_columns(&mut client, &schema, &path.name)?;
+    let table = dm_qualified_table(&schema, &path.name);
+    let (where_sql, params) = dm_where_params(filters, &columns)?;
+    let order = dm_order_by_clause(sort, &columns, DM_DATA_SOURCE_ALIAS);
+    // 多取一行只用于判断是否还有下一页，不把它展示给调用方。
+    let fetch_limit = pagination.limit.saturating_add(1);
+    let sql = format!(
+        "SELECT {alias}.* FROM {table} {alias}{where_sql}{order} LIMIT ? OFFSET ?",
+        alias = fluxdb_core::DamengDialect.quote_identifier(DM_DATA_SOURCE_ALIAS),
+    );
+    let mut bound = params.clone();
+    bound.push(Param::Int(fetch_limit as i64));
+    bound.push(Param::Int(pagination.offset as i64));
+    let result = dm_execute(&mut client, &sql, &bound)?;
+    client.close();
+    let ExecuteResult::Query { rows, .. } = result else {
+        return Err(Error::new(ErrorKind::Query, "达梦数据页返回类型异常"));
+    };
+    // 类型展示以表元数据为准：结果描述的 VARCHAR 精度常按字节给出，
+    // 直接覆盖会把 VARCHAR(24) 显示成 VARCHAR(96)。
+    let output_columns = columns;
+    let mut data_rows = Vec::with_capacity(rows.len());
+    for row in rows {
+        let mut values = row
+            .into_iter()
+            .take(output_columns.len())
+            .map(|value| dm_cell_value(&value))
+            .collect::<Vec<_>>();
+        if values.len() < output_columns.len() {
+            values.resize(output_columns.len(), CellValue::Null);
+        }
+        data_rows.push(Row { values });
+    }
+    let has_more = data_rows.len() > pagination.limit as usize;
+    data_rows.truncate(pagination.limit as usize);
+    Ok(DataPage {
+        columns: output_columns,
+        rows: data_rows,
+        offset: pagination.offset,
+        limit: pagination.limit,
+        has_more,
+    })
+}
+
+fn dm_order_by_clause(sort: &[SortSpec], columns: &[Column], alias: &str) -> String {
+    let mut parts = Vec::new();
+    for spec in sort {
+        if columns.iter().any(|column| column.name == spec.field) {
+            parts.push(format!(
+                "{}.{} {}",
+                fluxdb_core::DamengDialect.quote_identifier(alias),
+                fluxdb_core::DamengDialect.quote_identifier(&spec.field),
+                match spec.direction {
+                    SortDirection::Asc => "ASC",
+                    SortDirection::Desc => "DESC",
+                }
+            ));
+        }
+    }
+    let sorted = sort.iter().map(|spec| spec.field.as_str()).collect::<Vec<_>>();
+    for column in columns
+        .iter()
+        .filter(|column| column.primary_key && !sorted.contains(&column.name.as_str()))
+    {
+        parts.push(format!(
+            "{}.{} ASC",
+            fluxdb_core::DamengDialect.quote_identifier(alias),
+            fluxdb_core::DamengDialect.quote_identifier(&column.name)
+        ));
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!(" ORDER BY {}", parts.join(", "))
+    }
+}
+
+fn dm_where_params(
+    filters: &[FilterSpec],
+    columns: &[Column],
+) -> fluxdb_core::Result<(String, Vec<Param>)> {
+    let mut clauses = Vec::new();
+    let mut params = Vec::new();
+    for filter in filters.iter().filter(|filter| filter.enabled) {
+        if !data_filter_clause_is_pushable(filter) {
+            return Err(Error::new(ErrorKind::Query, "达梦过滤条件缺少必要的比较值"));
+        }
+        let Some(column) = columns.iter().find(|column| column.name == filter.field) else {
+            return Err(Error::new(
+                ErrorKind::Query,
+                format!("过滤引用了不存在的列: {}", filter.field),
+            ));
+        };
+        dm_push_filter(&mut clauses, &mut params, filter, column);
+    }
+    if clauses.is_empty() {
+        Ok((String::new(), params))
+    } else {
+        Ok((format!(" WHERE {}", clauses.join(" AND ")), params))
+    }
+}
+
+fn dm_push_filter(
+    clauses: &mut Vec<String>,
+    params: &mut Vec<Param>,
+    filter: &FilterSpec,
+    column: &Column,
+) {
+    let name = format!(
+        "{}.{}",
+        fluxdb_core::DamengDialect.quote_identifier(DM_DATA_SOURCE_ALIAS),
+        fluxdb_core::DamengDialect.quote_identifier(&column.name)
+    );
+    let mut push = |values: &[CellValue]| {
+        for value in values {
+            params.push(dm_param(value));
+        }
+    };
+    match filter.op {
+        FilterOp::IsNull | FilterOp::NotExists => clauses.push(format!("{name} IS NULL")),
+        FilterOp::IsNotNull | FilterOp::Exists => clauses.push(format!("{name} IS NOT NULL")),
+        FilterOp::IsEmpty => {
+            push(&[CellValue::Text(String::new())]);
+            clauses.push(format!("{name} = ?"));
+        }
+        FilterOp::IsNotEmpty => {
+            push(&[CellValue::Text(String::new())]);
+            clauses.push(format!("{name} != ?"));
+        }
+        FilterOp::Between | FilterOp::NotBetween => {
+            push(&filter.values[..2]);
+            clauses.push(format!(
+                "{name}{} BETWEEN ? AND ?",
+                if filter.op == FilterOp::NotBetween { " NOT" } else { "" }
+            ));
+        }
+        FilterOp::InList | FilterOp::NotInList => {
+            push(&filter.values);
+            clauses.push(format!(
+                "{name}{} IN ({})",
+                if filter.op == FilterOp::NotInList { " NOT" } else { "" },
+                std::iter::repeat_n("?", filter.values.len())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        FilterOp::Eq | FilterOp::NotEq => {
+            push(&filter.values);
+            let connector = if filter.op == FilterOp::Eq { " OR " } else { " AND " };
+            clauses.push(
+                filter
+                    .values
+                    .iter()
+                    .map(|_| format!("{name} {} ?", if filter.op == FilterOp::Eq { "=" } else { "!=" }))
+                    .collect::<Vec<_>>()
+                    .join(connector),
+            );
+        }
+        FilterOp::Contains
+        | FilterOp::NotContains
+        | FilterOp::StartsWith
+        | FilterOp::NotStartsWith
+        | FilterOp::EndsWith
+        | FilterOp::NotEndsWith => {
+            let value = filter.values.first().map(|value| match value {
+                CellValue::Text(value) | CellValue::Json(value) => value.clone(),
+                other => other.display_label(),
+            });
+            let Some(value) = value else { return };
+            let (like, negate) = match filter.op {
+                FilterOp::Contains | FilterOp::NotContains => (format!("%{value}%"), filter.op == FilterOp::NotContains),
+                FilterOp::StartsWith | FilterOp::NotStartsWith => {
+                    (format!("{value}%"), filter.op == FilterOp::NotStartsWith)
+                }
+                _ => (format!("%{value}"), filter.op == FilterOp::NotEndsWith),
+            };
+            params.push(Param::Str(like));
+            clauses.push(format!("{name} {}LIKE ?", if negate { "NOT " } else { "" }));
+        }
+        FilterOp::GreaterThan
+        | FilterOp::GreaterThanOrEqual
+        | FilterOp::LessThan
+        | FilterOp::LessThanOrEqual => {
+            let Some(value) = filter.values.first() else { return };
+            params.push(dm_param(value));
+            let op = match filter.op {
+                FilterOp::GreaterThan => ">",
+                FilterOp::GreaterThanOrEqual => ">=",
+                FilterOp::LessThan => "<",
+                _ => "<=",
+            };
+            clauses.push(format!("{name} {op} ?"));
+        }
+    }
+}

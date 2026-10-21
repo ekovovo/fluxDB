@@ -1,5 +1,12 @@
 #[derive(Clone, Debug, PartialEq)]
 pub enum AppEvent {
+    AiTableObjectsLoaded { connection_id: ConnectionId, parent: Option<ObjectPath>, objects: Vec<ObjectSummary> },
+    AiTableColumnsLoaded(ObjectPath, Vec<Column>),
+    /// 表页已开始一次新加载；generation 用于丢弃旧的后台结果。
+    DataPageLoadStarted { tab_id: TabId, generation: u64 },
+    /// 后台结果或终态属于已被取代的加载，未写入表页。
+    DataPageLoadDiscarded { tab_id: TabId, generation: u64 },
+    ConfigProposalApplied(ConfigApplyOutcome),
     AiConversationLoaded(AiConversationView),
     /// AI 设置列表已刷新。
     AiSettingsLoaded,
@@ -291,6 +298,10 @@ pub enum AppEvent {
     },
     TableDropped(ObjectPath),
     TableTruncated(ObjectPath),
+    TableDataImported {
+        object: ObjectPath,
+        report: fluxdb_core::TableImportReport,
+    },
     CreateTableReferenceColumnsLoaded {
         tab_id: TabId,
         foreign_key_id: u64,
@@ -303,6 +314,9 @@ pub enum AppEvent {
         page: DataPage,
     },
     TabOpened(TabId),
+    /// 后台设计表元数据读取结果；由 UI 再发 Finish 命令安装标签页。
+    DesignTableLoaded(std::result::Result<CreateTableState, UserFacingError>),
+    DesignTableDetailsLoaded(fluxdb_core::TableDesignMetadata),
     TabClosed(TabId),
     /// 已置位某标签的查询取消标志（可能仍在等语句收尾）；UI 据此提示「已请求停止」。
     QueryCancelRequested(TabId),

@@ -12,6 +12,8 @@ DefaultGroupName=FluxDB
 PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
+CloseApplications=yes
+RestartApplications=no
 OutputDir=..\target\windows-package
 OutputBaseFilename=FluxDB-{#AppVersion}-windows-x64-setup
 Compression=lzma2
@@ -32,3 +34,10 @@ Name: "{autodesktop}\FluxDB"; Filename: "{app}\fluxdb-desktop.exe"; Tasks: deskt
 
 [Run]
 Filename: "{app}\fluxdb-desktop.exe"; Description: "Launch FluxDB"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\fluxdb-desktop.exe"; Flags: nowait runasoriginaluser; Check: IsUpdateMode
+
+[Code]
+function IsUpdateMode: Boolean;
+begin
+  Result := Pos('/UPDATE', Uppercase(GetCmdTail)) > 0;
+end;

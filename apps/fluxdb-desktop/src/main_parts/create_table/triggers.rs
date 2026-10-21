@@ -6,6 +6,10 @@ fn create_table_triggers(
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
+    if create.database_kind == DatabaseKind::Dameng {
+        return create_table_empty_state(tr("app.create_table.trigger.dameng_read_only"), colors)
+            .debug_selector(|| "create-table-dameng-triggers-read-only".to_string());
+    }
     let trigger_count = create.triggers.len();
     let mut rows = div().flex().flex_col();
     for (position, trigger) in create.triggers.iter().enumerate() {

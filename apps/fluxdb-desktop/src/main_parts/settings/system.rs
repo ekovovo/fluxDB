@@ -332,14 +332,58 @@ fn settings_database_support_panel(colors: UiColors) -> GroupBox {
     )
 }
 
-fn settings_about_panel(colors: UiColors) -> Div {
+fn settings_about_panel(
+    settings: &Settings,
+    update: &UpdateUiState,
+    colors: UiColors,
+    cx: &mut Context<NavicatMain>,
+) -> Div {
+    let auto_check_draft = settings.auto_check_updates;
+    let update_draft = cx.entity().downgrade();
+    let busy = matches!(
+        update.status,
+        UpdateUiStatus::Checking
+            | UpdateUiStatus::Downloading
+            | UpdateUiStatus::Installing
+    );
+    let manual_label = match update.status {
+        UpdateUiStatus::Checking => tr("app.settings.update.checking"),
+        _ => tr("app.settings.update.check_now"),
+    };
+    let update_hint = if update.status == UpdateUiStatus::Available {
+        update
+            .update
+            .as_ref()
+            .map(|available| {
+                SharedString::from(
+                    tr("app.settings.update.available_version")
+                        .replace("%{version}", &available.version),
+                )
+            })
+            .unwrap_or_else(|| tr("app.settings.update.status.available"))
+    } else {
+        match update.status {
+            UpdateUiStatus::Idle => tr("app.settings.update.status.idle"),
+            UpdateUiStatus::Checking => tr("app.settings.update.status.checking"),
+            UpdateUiStatus::Available => tr("app.settings.update.status.available"),
+            UpdateUiStatus::UpToDate => tr("app.settings.update.status.up_to_date"),
+            UpdateUiStatus::Downloading => tr("app.settings.update.status.downloading"),
+            UpdateUiStatus::ReadyToInstall => tr("app.settings.update.status.ready"),
+            UpdateUiStatus::Installing => tr("app.settings.update.status.installing"),
+            UpdateUiStatus::Error => tr("app.settings.update.status.error"),
+        }
+    };
     div().flex().flex_col().gap_3().child(
         settings_panel_group(tr("app.settings.about.group.about"), colors)
             .child(settings_preference_row(
                 "FluxDB Desktop",
-                tr("app.settings.about.app_detail"),
+                format!(
+                    "{}  ·  {}",
+                    tr("app.settings.update.current_version"),
+                    env!("CARGO_PKG_VERSION")
+                ),
                 AppIcon::Database,
-                tr("app.settings.status.developing"),
+                format!("v{}", env!("CARGO_PKG_VERSION")),
                 colors,
             ))
             .child(settings_preference_row(
@@ -352,20 +396,49 @@ fn settings_about_panel(colors: UiColors) -> Div {
     )
     .child(
         settings_panel_group(tr("app.settings.about.group.updates"), colors)
-            .child(settings_preference_row(
-                tr("app.settings.about.auto_update"),
-                tr("app.settings.about.auto_update_detail"),
-                AppIcon::Refresh,
-                tr("app.settings.status.pending"),
-                colors,
-            ))
-            .child(settings_preference_row(
-                tr("app.settings.about.check_updates"),
-                tr("app.settings.about.check_updates_detail"),
-                AppIcon::Refresh,
-                tr("app.settings.status.pending"),
-                colors,
-            )),
+            .child(
+                settings_action_row_with_id(
+                    "settings-auto-check-updates",
+                    tr("app.settings.about.auto_update"),
+                    tr("app.settings.about.auto_update_detail"),
+                    AppIcon::Refresh,
+                    colors,
+                )
+                .child(
+                    div()
+                        .debug_selector(|| "settings-auto-check-updates-switch".into())
+                        .child(
+                            Switch::new("settings-auto-check-updates")
+                                .checked(auto_check_draft)
+                                .on_click(move |checked, _, cx| {
+                                    let _ = update_draft.update(cx, |this, cx| {
+                                        this.settings_editor_draft.auto_check_updates = *checked;
+                                        cx.notify();
+                                    });
+                                }),
+                        ),
+                ),
+            )
+            .child(
+                settings_action_row_with_id(
+                    "settings-check-updates",
+                    tr("app.settings.about.check_updates"),
+                    update_hint,
+                    AppIcon::Refresh,
+                    colors,
+                )
+                .child(
+                    Button::new("settings-check-updates")
+                        .label(manual_label)
+                        .small()
+                        .rounded(colors.radius)
+                        .disabled(busy)
+                        .debug_selector(|| "settings-check-updates".into())
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.start_update_check(true, cx);
+                        })),
+                ),
+            ),
     )
 }
 

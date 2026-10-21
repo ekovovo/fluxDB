@@ -36,6 +36,7 @@ fn query_toolbar(
                 rgb(0x20c76a),
                 colors,
             )
+                .debug_selector(|| "query-run".into())
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener({

@@ -31,12 +31,19 @@ impl AppController {
         }
 
         match command {
+            command @ (AppCommand::BrowseAiTableObjects { .. }
+                | AppCommand::FinishAiTableObjects { .. } | AppCommand::LoadAiTableColumns(_)
+                | AppCommand::RememberAiTableObject(_)
+                | AppCommand::BeginAiTableQuery { .. } | AppCommand::LoadAiTablePage { .. }) => {
+                self.dispatch_ai_table_page(command)
+            }
             AppCommand::AiConversation(command) => return self.dispatch_ai_conversation(command),
             command @ (AppCommand::PrepareBackup { .. }
             | AppCommand::RunBackup(_)
             | AppCommand::PrepareRestore(_)
             | AppCommand::ProbeRestore(_)
-            | AppCommand::RunRestore { .. }) => {
+            | AppCommand::RunRestore { .. }
+            | AppCommand::ImportTableData { .. }) => {
                 self.dispatch_database_task(command, &AtomicBool::new(false), &mut |_| {})
             }
             AppCommand::LoadConnections => {
@@ -254,6 +261,7 @@ impl AppController {
                             redis_profile: Some(profile),
                             mysql_profile: None,
                             postgres_profile: None,
+                            dameng_profile: None,
                         };
                         AppEvent::RedisConnectionDiscovered(draft)
                     }
@@ -758,6 +766,7 @@ impl AppController {
                         page: None,
                         original_page: None,
                         pagination,
+                        load_generation: 0,
                         changes: None,
                         editing_cell: None,
                         cell_detail_panel: CellDetailPanelState::default(),
@@ -1217,7 +1226,20 @@ impl AppController {
                 AppEvent::TabOpened(tab_id)
             }
             AppCommand::LoadDataPage(tab_id) => {
-                self.load_data_page_command(tab_id, Vec::new(), Vec::new())
+                let generation = match self.find_data_editor_mut(tab_id) {
+                    Some(editor) => editor.begin_load(),
+                    None => {
+                        return self.fail(Error::new(ErrorKind::Internal, "数据编辑器标签页不存在"));
+                    }
+                };
+                self.load_data_page_command(tab_id, generation, Vec::new(), Vec::new())
+            }
+            AppCommand::BeginDataPageLoad(tab_id) => {
+                let Some(editor) = self.find_data_editor_mut(tab_id) else {
+                    return self.fail(Error::new(ErrorKind::Internal, "数据编辑器标签页不存在"));
+                };
+                let generation = editor.begin_load();
+                AppEvent::DataPageLoadStarted { tab_id, generation }
             }
             AppCommand::SetDataPagePagination {
                 tab_id,
@@ -1235,9 +1257,10 @@ impl AppController {
             }
             AppCommand::LoadDataPageWithSort {
                 tab_id,
+                generation,
                 sort,
                 filters,
-            } => self.load_data_page_command(tab_id, sort, filters),
+            } => self.load_data_page_command(tab_id, generation, sort, filters),
             AppCommand::LoadRedisKey { tab_id, key } => self.load_redis_key_command(tab_id, key),
             AppCommand::LoadRedisKeyMetadata { tab_id, keys } => {
                 self.load_redis_key_metadata_command(tab_id, keys)
@@ -1402,11 +1425,18 @@ impl AppController {
                 head,
                 count,
             } => self.apply_redis_list_items_pop_command(tab_id, key, head, count),
-            AppCommand::FinishDataPageLoad { tab_id, result } => match result {
+            AppCommand::FinishDataPageLoad {
+                tab_id,
+                generation,
+                result,
+            } => match result {
                 Ok(page) => {
                     if let Some(tab) = self.find_tab_mut(tab_id)
                         && let TabKind::DataEditor(editor) = &mut tab.kind
                     {
+                        if !editor.accepts_load(generation) {
+                            return AppEvent::DataPageLoadDiscarded { tab_id, generation };
+                        }
                         editor.page = Some(page.clone());
                         editor.original_page = Some(page.clone());
                         editor.changes = None;
@@ -1424,6 +1454,9 @@ impl AppController {
                     if let Some(tab) = self.find_tab_mut(tab_id)
                         && let TabKind::DataEditor(editor) = &mut tab.kind
                     {
+                        if !editor.accepts_load(generation) {
+                            return AppEvent::DataPageLoadDiscarded { tab_id, generation };
+                        }
                         editor.loading = false;
                         editor.error = Some(user_error.clone());
                     }
@@ -3799,6 +3832,12 @@ impl AppController {
             command @ (AppCommand::SyncMcpClients { .. }
             | AppCommand::RefreshMcpClients { .. }
             | AppCommand::SetMcpClientRegistration { .. }) => self.dispatch_mcp_clients(command),
+            AppCommand::ApplyConfirmedConfig { proposal, binary_path } => {
+                match self.apply_confirmed_config(&proposal, &binary_path) {
+                    Ok(outcome) => AppEvent::ConfigProposalApplied(outcome),
+                    Err(error) => AppEvent::AiSettingsError(error.message),
+                }
+            }
             AppCommand::SaveSettings(settings) => {
                 self.state.settings = settings;
                 AppEvent::SettingsSaved
@@ -3914,11 +3953,43 @@ impl AppController {
         if let Some(message) = create.validation_error() {
             return Err(Error::new(ErrorKind::Query, message));
         }
+        // 达梦不支持 `BEGIN; … COMMIT;` 这种 SQL 事务包装；设计表按批次直接执行，
+        // 保存前仍做外部 DDL 一致性检查，避免用旧快照覆盖别人的改动。
+        if create.database_kind == DatabaseKind::Dameng && create.is_design() {
+            self.ensure_design_not_stale(&create)?;
+            let sql = create
+                .sql_preview()
+                .map_err(|message| Error::new(ErrorKind::Query, message))?;
+            let request = QueryRequest {
+                connection_id: create.connection_id,
+                database: create.database.clone(),
+                session_id: None,
+                schema: create
+                    .schema
+                    .trim()
+                    .is_empty()
+                    .then_some(None)
+                    .unwrap_or_else(|| Some(create.schema.trim().to_string())),
+                text: sql,
+                mode: fluxdb_core::QueryMode::All,
+                options: QueryExecutionOptions {
+                    continue_on_error: false,
+                    split_statements: true,
+                    ..QueryExecutionOptions::default()
+                },
+            };
+            let execution = self.execute_query(&request)?;
+            if let Some(summary) = execution.summaries.iter().find(|summary| !summary.success) {
+                return Err(Error::new(ErrorKind::Query, summary.message.clone()));
+            }
+            self.mark_query_history_completion_dirty(&request, &request.text);
+            return Ok(());
+        }
         // PG 的 CREATE TABLE / ALTER 计划是同批事务性语句：走单批路径（与设计模式一致），
         // 不套用 MySQL/SQLite 的「建表 SQL + 单独触发器」拆分（那会丢掉 PG 触发器）。
         if create.is_design() || create.database_kind == DatabaseKind::Postgres {
             if create.database_kind == DatabaseKind::Postgres {
-                self.ensure_postgres_design_not_stale(&create)?;
+                self.ensure_design_not_stale(&create)?;
             }
             let sql = create
                 .sql_preview()
@@ -4013,7 +4084,7 @@ COMMIT;"
     /// 外部 DDL 保护：保存前重查表结构，与打开设计器时的 DDL 不一致就拒绝应用（§9.2）。
     ///
     /// 不拿过期快照覆盖别人的改动；用户刷新后重新预览即可继续。
-    fn ensure_postgres_design_not_stale(
+    fn ensure_design_not_stale(
         &self,
         create: &CreateTableState,
     ) -> fluxdb_core::Result<()> {

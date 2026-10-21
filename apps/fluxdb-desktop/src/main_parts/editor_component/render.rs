@@ -84,6 +84,7 @@ impl Render for Editor {
             .child(EditorCanvas { editor: editor.clone() });
         let mut root = div()
             .id(("fluxdb-editor", element_id))
+            .debug_selector(|| "query-editor".into())
             .relative()
             .size_full()
             .overflow_hidden()

@@ -548,6 +548,7 @@ impl SidebarTreeCacheKey {
         &self,
         state: &AppState,
         loading_databases: &BTreeSet<String>,
+        loaded_database_children: &BTreeSet<String>,
         pinned_databases: &BTreeSet<String>,
         pinned_tables: &BTreeSet<String>,
         table_folders: &BTreeMap<String, Vec<String>>,
@@ -560,6 +561,7 @@ impl SidebarTreeCacheKey {
         self.connections == state.connections
             && self.sidebar_layout == state.sidebar_layout
             && &self.loading_databases == loading_databases
+            && &self.loaded_database_children == loaded_database_children
             && &self.pinned_databases == pinned_databases
             && &self.pinned_tables == pinned_tables
             && &self.table_folders == table_folders
@@ -577,6 +579,7 @@ impl NavicatMain {
         &self,
         state: &AppState,
         loading_databases: &BTreeSet<String>,
+        loaded_database_children: &BTreeSet<String>,
         pinned_databases: &BTreeSet<String>,
         pinned_tables: &BTreeSet<String>,
         table_folders: &BTreeMap<String, Vec<String>>,
@@ -593,6 +596,7 @@ impl NavicatMain {
                 && cache.key.matches(
                     state,
                     loading_databases,
+                    loaded_database_children,
                     pinned_databases,
                     pinned_tables,
                     table_folders,
@@ -613,7 +617,7 @@ impl NavicatMain {
             saved_queries,
             &BTreeSet::new(),
             loading_databases,
-            &BTreeSet::new(),
+            loaded_database_children,
             pinned_databases,
             pinned_tables,
             table_folders,
@@ -632,6 +636,7 @@ impl NavicatMain {
                 connections: state.connections.clone(),
                 sidebar_layout: state.sidebar_layout.clone(),
                 loading_databases: loading_databases.clone(),
+                loaded_database_children: loaded_database_children.clone(),
                 pinned_databases: pinned_databases.clone(),
                 pinned_tables: pinned_tables.clone(),
                 table_folders: table_folders.clone(),

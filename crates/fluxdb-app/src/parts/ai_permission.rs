@@ -355,10 +355,18 @@ pub fn authorize(input: &AuthorizeInput) -> PermissionDecision {
 
     // 2) Agent 白名单（空 = 不限制）。
     if !input.agent_allowed_tools.is_empty()
-        && !input
-            .agent_allowed_tools
-            .iter()
-            .any(|id| id == &input.tool_id)
+        && !agent_allows_tool(
+            &input.agent_allowed_tools,
+            &input.tool_id,
+            input.risk,
+        )
+        && !dynamic_tool_capability(&input.tool_id)
+            .is_some_and(|capability| {
+                input
+                    .agent_allowed_tools
+                    .iter()
+                    .any(|allowed| allowed == capability)
+            })
     {
         return deny(
             "tool_not_allowed",
@@ -413,6 +421,50 @@ pub fn authorize(input: &AuthorizeInput) -> PermissionDecision {
         };
     }
     PermissionDecision::Allow { plan_hash: hash }
+}
+
+fn agent_allows_tool(
+    allowed: &[String],
+    tool_id: &str,
+    _risk: fluxdb_core::ToolRisk,
+) -> bool {
+    allowed.iter().any(|id| id == tool_id)
+}
+
+/// 动态加载的配置动作继承领域能力，避免 Agent 白名单随每个 action 膨胀。
+fn dynamic_tool_capability(tool_id: &str) -> Option<&'static str> {
+    if tool_id.starts_with("config.") {
+        return Some(crate::CONFIG_PROPOSE_CAPABILITY);
+    }
+    None
+}
+
+#[cfg(test)]
+mod db_run_permission_tests {
+    use super::*;
+
+    #[test]
+    fn retired_sql_allowlist_ids_are_not_implicit_permissions() {
+        assert!(!agent_allows_tool(
+            &["db.query".to_string()],
+            "db.run",
+            fluxdb_core::ToolRisk::Read
+        ));
+        assert!(agent_allows_tool(
+            &["db.run".to_string()],
+            "db.run",
+            fluxdb_core::ToolRisk::Write
+        ));
+    }
+
+    #[test]
+    fn configuration_actions_inherit_the_domain_capability() {
+        assert_eq!(
+            dynamic_tool_capability("config.model.create"),
+            Some("config.propose")
+        );
+        assert_eq!(dynamic_tool_capability("db.run"), None);
+    }
 }
 
 /// 已批准后复核：批准必须与**当前 plan_hash** 完全一致，且状态仍是 approved 且未过期。

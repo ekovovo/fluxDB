@@ -414,7 +414,8 @@ pub fn database_user_admin_provider(kind: DatabaseKind) -> Option<DatabaseUserAd
         DatabaseKind::Sqlite
         | DatabaseKind::MongoDb
         | DatabaseKind::Redis
-        | DatabaseKind::Postgres => None,
+        | DatabaseKind::Postgres
+        | DatabaseKind::Dameng => None,
     }
 }
 

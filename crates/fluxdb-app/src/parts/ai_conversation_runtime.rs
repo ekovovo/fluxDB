@@ -9,6 +9,7 @@ impl AiRuntimeHandle {
         job: AiConversationJob,
         connections: Vec<fluxdb_core::ConnectionConfig>,
         relationships: Option<Arc<dyn ErRelationshipSource>>,
+        ui_actions: Option<Arc<dyn UiActionSink>>,
         resume_approval: Option<String>,
         cancel: CancelFlag,
     ) -> Result<ConversationEventReceiver, RuntimeError> {
@@ -45,8 +46,36 @@ impl AiRuntimeHandle {
                     }
                     let provider =
                         AiConversationProvider::from_storage(storage, &job.model_profile_id)?;
-                    let security =
-                        ai_turn_security_context(storage, &job.turn_id)?;
+                    let security = ai_turn_security_context(storage, &job.turn_id)?;
+                    let turn = with_ai_storage(storage, |conn| {
+                        fluxdb_storage::ai_platform::sessions::load_turn(conn, &job.turn_id)
+                    })?;
+                    let snapshot: serde_json::Value =
+                        serde_json::from_str(&turn.runtime_snapshot_json)
+                            .map_err(|_| editor_error("运行快照损坏"))?;
+                    let sql_edit_only = snapshot["sql_edit_only"].as_bool() == Some(true);
+                    // 页面查询是普通工具路径之一，不改变本轮对已保存连接的最小读取面。
+                    let page_connections = connections
+                        .iter()
+                        .filter(|config| {
+                            matches!(
+                                config.kind,
+                                DatabaseKind::Sqlite
+                                    | DatabaseKind::MySql
+                                    | DatabaseKind::TiDb
+                                    | DatabaseKind::Postgres
+                                    | DatabaseKind::Dameng
+                            )
+                        })
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    let editor_grant = take_editor_grant(&job.turn_id);
+                    let edit_grant = editor_grant
+                        .as_ref()
+                        .and_then(|grant| grant.sql_edit.clone());
+                    if sql_edit_only && (edit_grant.is_none() || ui_actions.is_none()) {
+                        return Err(editor_error("sql_edit_unavailable"));
+                    }
                     let connection_id = security.connection_id;
                     let pinned = connection_id.and_then(|id| {
                         connections
@@ -102,6 +131,13 @@ impl AiRuntimeHandle {
                         &connections,
                         pinned.as_ref().map(|config| config.id),
                     )))?;
+                    if let Some(actions) = ui_actions.as_ref() {
+                        add_ai_table_page_tools(
+                            &mut tools,
+                            &page_connections,
+                            Arc::clone(actions),
+                        )?;
+                    }
                     // 全局停用的工具不进目录：模型既发现不到，也无法绕过发现直接调用。
                     tools = tools.with_hooks(ai_builtin_hooks(storage, job)?);
                     add_ai_file_tools(&mut tools, storage, job)?;
@@ -115,8 +151,18 @@ impl AiRuntimeHandle {
                     )?;
                     // 编辑器全文由宿主在发送时登记，取走即释放：不写运行快照，
                     // 本轮结束后工具目录随之消失（设计 §13.2 不持久化整份内容）。
-                    add_ai_editor_read_tools(&mut tools, take_editor_grant(&job.turn_id))?;
+                    add_ai_editor_read_tools(&mut tools, editor_grant)?;
+                    // 显式修改/修复与“发送时自动绑定选区”都可写回；但后者不限制
+                    // 本轮其它只读查询，用户只是在抽屉里发起一次修改。
+                    if let (Some(grant), Some(actions)) = (edit_grant, ui_actions.as_ref())
+                    {
+                        add_ai_sql_editor_edit_tool(&mut tools, grant, Arc::clone(actions))?;
+                    }
                     add_ai_page_tools(&mut tools, take_page_data_grant(&job.turn_id), job)?;
+                    // 配置读取/提案是全局能力，不依赖当前页面。
+                    if let Some(actions) = ui_actions.as_ref() {
+                        add_ai_config_tools(&mut tools, storage.clone(), Arc::clone(actions))?;
+                    }
                     // 「计划与执行进度」插件：仅在实例开启且当前 Agent 未禁用绑定时
                     // 暴露 `plan.update`；关闭后工具不进入目录，模型发现不到。
                     add_ai_plan_tool(&mut tools, storage, &job.session_id)?;
@@ -131,9 +177,40 @@ impl AiRuntimeHandle {
                             spec.output_shape,
                         )?;
                     }
+                    // 必须放在所有 SQL/关系工具装配之后：这些工具只能对绑定连接执行，
+                    // 没有执行目标时暴露给模型只会诱导它反复猜 conn:<id>（dev 会话 5122b1cd）。
+                    // 放到目录冻结之前，确保 toolbox 也看不到它们。
+                    if pinned.is_none() {
+                        without_unbound_sql_tools(&mut tools);
+                    }
                     tools.without_tools(&security.disabled_tools);
+                    mark_builtin_long_tail_tools(&mut tools)?;
                     // 审批模型与本轮 Agent 用的是同一个模型：Jev 决策不可用时由它回退审批。
-                    tools=tools.with_execution_security(ExecutionSecurity::with_connections(storage.clone(),connections.clone(),job.model_profile_id.clone()));
+                    tools = tools.with_execution_security(ExecutionSecurity::with_connections(
+                        storage.clone(),
+                        connections.clone(),
+                        job.model_profile_id.clone(),
+                    ));
+                    let read_only = tools.security.as_ref().is_some_and(|security| {
+                        security
+                            .settings()
+                            .map(|(policy, _)| policy.tools_default == ExecutionPolicy::ReadOnly)
+                            .unwrap_or(true)
+                    });
+                    install_ai_toolbox(
+                        &mut tools,
+                        &security.disabled_tools,
+                        &security.agent_allowed_tools,
+                        read_only,
+                        Some(Arc::new(StorageToolboxSelector {
+                            storage: storage.clone(),
+                            agent_id: turn_agent_id(storage, &job.session_id),
+                            job: job.clone(),
+                        })),
+                    )?;
+                    if sql_edit_only {
+                        restrict_sql_editor_edit_tools(&mut tools);
+                    }
                     let permission = TurnPermissionContext {
                         agent_allowed_tools: security.agent_allowed_tools,
                         disabled_tools: security.disabled_tools,
@@ -149,36 +226,34 @@ impl AiRuntimeHandle {
                     Ok((provider, tools, permission, audit))
                 });
                 match assembled {
-                    Ok((provider, tools, permission, audit)) => {
-                        match resume_approval.as_deref() {
-                            Some(approval_id) => resume_ai_approved_turn(
-                                storage,
-                                job,
-                                &turn.cancel,
-                                sender,
-                                &provider,
-                                &tools,
-                                &audit,
-                                permission,
-                                approval_id,
-                                Some(turn),
-                            ),
-                            None => ai_conversation_run_turn(
-                                storage,
-                                job,
-                                &turn.cancel,
-                                sender,
-                                &provider,
-                                None,
-                                &tools,
-                                &audit,
-                                permission,
-                                Vec::new(),
-                                String::new(),
-                                Some(turn),
-                            ),
-                        }
-                    }
+                    Ok((provider, tools, permission, audit)) => match resume_approval.as_deref() {
+                        Some(approval_id) => resume_ai_approved_turn(
+                            storage,
+                            job,
+                            &turn.cancel,
+                            sender,
+                            &provider,
+                            &tools,
+                            &audit,
+                            permission,
+                            approval_id,
+                            Some(turn),
+                        ),
+                        None => ai_conversation_run_turn(
+                            storage,
+                            job,
+                            &turn.cancel,
+                            sender,
+                            &provider,
+                            None,
+                            &tools,
+                            &audit,
+                            permission,
+                            Vec::new(),
+                            String::new(),
+                            Some(turn),
+                        ),
+                    },
                     Err(error) => run_ai_conversation_failure(
                         storage,
                         job,

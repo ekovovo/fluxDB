@@ -103,6 +103,7 @@ impl SqlDialect {
             DatabaseKind::MySql | DatabaseKind::TiDb => SqlDialect::Mysql,
             DatabaseKind::Sqlite => SqlDialect::Sqlite,
             DatabaseKind::Postgres => SqlDialect::Postgres,
+            DatabaseKind::Dameng => SqlDialect::Postgres,
             DatabaseKind::MongoDb | DatabaseKind::Redis => SqlDialect::Mysql,
         }
     }

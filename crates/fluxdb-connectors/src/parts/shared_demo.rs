@@ -156,7 +156,7 @@ fn mock_completion_columns(table: &str) -> Vec<Column> {
 }
 
 /// T081 demo 各表外键（P2.13 FK JOIN 建议）。复合外键以同名多条 ForeignKeyInfo 表达，
-/// fk_join_completion_items 会按 name 分组生成 `ON a.x = b.x AND a.y = b.y`。
+/// 补全引擎按外键配对生成 `ON a.x = b.x AND a.y = b.y`。
 fn mock_completion_foreign_keys(table: &str) -> Vec<ForeignKeyInfo> {
     match table {
         // Product.category_id -> ProductCategory.id

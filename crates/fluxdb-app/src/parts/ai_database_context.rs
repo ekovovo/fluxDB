@@ -41,6 +41,7 @@ impl AppController {
             DatabaseKind::Sqlite => "sqlite",
             DatabaseKind::Redis => "redis",
             DatabaseKind::MongoDb => "mongodb",
+            DatabaseKind::Dameng => "dameng",
         };
         let sql_dialect = dialect_for(config.kind).map(|dialect| match dialect {
             SqlDialectKind::MySql => "mysql",

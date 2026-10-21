@@ -238,6 +238,7 @@ fn navicat_main_new(
     storage: FileStorage,
     theme_mode: ThemeMode,
 ) -> NavicatMain {
+                        let auto_check_updates = controller.state().settings.auto_check_updates;
                         let rename_group_input =
                             cx.new(|cx| {
                                 InputState::new(window, cx)
@@ -2654,6 +2655,15 @@ fn navicat_main_new(
                             controller,
                             storage,
                             theme_mode,
+                            update_ui: UpdateUiState::default(),
+                            update_auto_check_pending: auto_check_updates,
+                            update_cancel: Arc::new(AtomicBool::new(false)),
+                            update_downloaded_bytes: Arc::new(AtomicU64::new(0)),
+                            update_total_bytes: Arc::new(AtomicU64::new(0)),
+                            _update_check_task: None,
+                            _update_download_task: None,
+                            _update_progress_task: None,
+                            _update_install_task: None,
                             new_connection_kind: None,
                             new_connection_tab: NewConnectionTab::Connection,
                             new_connection_form: NewConnectionForm::for_kind(
@@ -3145,6 +3155,8 @@ fn navicat_main_new(
                             _query_completion_tasks: BTreeMap::new(),
                             _completion_index_tasks: BTreeMap::new(),
                             _table_info_tasks: BTreeMap::new(),
+                            _design_table_tasks: BTreeMap::new(),
+                            _design_table_detail_tasks: BTreeMap::new(),
                             _user_admin_users_tasks: BTreeMap::new(),
                             _user_admin_pg_membership_tasks: BTreeMap::new(),
                             _user_admin_pg_target_tasks: BTreeMap::new(),
@@ -3167,6 +3179,7 @@ fn navicat_main_new(
                             _copy_table_ddl_task: None,
                             _copy_table_structure_task: None,
                             _danger_table_task: None,
+                            _table_import_task: None,
                             data_export_task_seq: 0,
                             _test_connection_task: None,
                             _create_schema_task: None,
@@ -3200,11 +3213,16 @@ fn navicat_main_new(
                             pending_query_parameters: None,
                             pending_dangerous_query: None,
                             pending_dangerous_redis_command: None,
+                            pending_config_proposal: None,
+                            config_proposal_busy: false,
+                            config_delete_confirmed: false,
                             sql_file_modal: Rc::new(std::cell::RefCell::new(
                                 SqlFileModalData::default(),
                             )),
                             restore_modal: None,
                             pending_data_export: None,
+                            pending_data_import: None,
+                            _data_import_task: None,
                             data_export_custom_conditions_open: false,
                             data_export_preview: None,
                             data_export_preview_seq: 0,
@@ -3407,6 +3425,7 @@ fn navicat_main_new(
                             data_filter_value_draft: None,
                             data_filter_applying_tabs: BTreeSet::new(),
                             _data_filter_apply_tasks: BTreeMap::new(),
+                            _data_filter_apply_generations: BTreeMap::new(),
                             app_message: None,
                             _app_message_task: None,
                             table_hover_color: None,

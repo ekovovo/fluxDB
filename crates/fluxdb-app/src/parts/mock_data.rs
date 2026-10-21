@@ -12,6 +12,7 @@ fn mock_connections() -> Vec<ConnectionConfig> {
             redis_profile: None,
             mysql_profile: None,
             postgres_profile: None,
+            dameng_profile: None,
         },
         ConnectionConfig {
             id: ConnectionId(2),
@@ -26,6 +27,7 @@ fn mock_connections() -> Vec<ConnectionConfig> {
             redis_profile: None,
             mysql_profile: None,
             postgres_profile: None,
+            dameng_profile: None,
         },
     ]
 }
@@ -319,17 +321,6 @@ fn list_foreign_keys_for_connection_with_cancel(
     connector_for(config)?.list_foreign_keys_with_cancel(&path, should_cancel)
 }
 
-fn list_completion_triggers_for_connection_with_cancel(
-    config: &ConnectionConfig,
-    database: Option<&str>,
-    schema: Option<&str>,
-    filter: &str,
-    limit: u64,
-    should_cancel: &dyn Fn() -> bool,
-) -> fluxdb_core::Result<Vec<fluxdb_core::CompletionTrigger>> {
-    connector_for(config)?
-        .list_completion_triggers_with_cancel(database, schema, filter, limit, should_cancel)
-}
 
 fn load_data_for_connection(
     config: &ConnectionConfig,
@@ -435,6 +426,29 @@ fn load_table_info_for_connection(
             TableInfoResult::Ddl(format_sql_text_for_dialect(&ddl, config.kind))
         }
         result => result,
+    })
+}
+
+fn load_table_design_for_connection(
+    config: &ConnectionConfig,
+    object: &ObjectPath,
+) -> fluxdb_core::Result<fluxdb_core::TableDesignMetadata> {
+    let metadata = connector_for(config)?.load_table_design_metadata(object)?;
+    Ok(fluxdb_core::TableDesignMetadata {
+        ddl: format_sql_text_for_dialect(&metadata.ddl, config.kind),
+        details_loaded: true,
+        ..metadata
+    })
+}
+
+fn load_table_design_base_for_connection(
+    config: &ConnectionConfig,
+    object: &ObjectPath,
+) -> fluxdb_core::Result<fluxdb_core::TableDesignMetadata> {
+    let metadata = connector_for(config)?.load_table_design_base_metadata(object)?;
+    Ok(fluxdb_core::TableDesignMetadata {
+        ddl: format_sql_text_for_dialect(&metadata.ddl, config.kind),
+        ..metadata
     })
 }
 

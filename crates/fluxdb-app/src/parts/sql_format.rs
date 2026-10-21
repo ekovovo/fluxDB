@@ -753,7 +753,8 @@ fn format_sql_with_options(sql: &str, dialect: DatabaseKind) -> String {
                 | DatabaseKind::Sqlite
                 | DatabaseKind::MongoDb
                 | DatabaseKind::Redis
-                | DatabaseKind::Postgres => Dialect::Generic,
+                | DatabaseKind::Postgres
+                | DatabaseKind::Dameng => Dialect::Generic,
             },
             ..FormatOptions::default()
         },

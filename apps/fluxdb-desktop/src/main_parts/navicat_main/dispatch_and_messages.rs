@@ -1132,6 +1132,7 @@ impl NavicatMain {
                 }
                 self.data_filter_applying_tabs.remove(tab_id);
                 self._data_filter_apply_tasks.remove(&tab_id.0);
+                self._data_filter_apply_generations.remove(&tab_id.0);
                 self.data_search_panels.remove(tab_id);
                 self.data_search_queries.remove(tab_id);
                 self.data_search_active_matches.remove(tab_id);

@@ -305,6 +305,42 @@ fn dameng_live_connection_objects_query_and_transaction() {
     }
 }
 
+#[test]
+#[ignore = "需要 FLUXDB_DM_SMOKE=host:port:user:password 指向可达的 DM8"]
+fn dameng_live_reports_utf8_encoding_for_unicode_text() {
+    let config = smoke_config().expect("FLUXDB_DM_SMOKE must be host:port:user:password");
+    let profile = config.dameng_profile.as_ref().expect("DM profile");
+    let text = "中文往返ABC";
+    for encoding in [None, Some("utf-8".to_string()), Some("gb18030".to_string())] {
+        let mut client = dm_pure::DmClient::with_config(dm_pure::ClientConfig {
+            host: profile.basic.host.clone(),
+            port: profile.basic.port,
+            user: profile.basic.username.clone(),
+            password: profile.password().unwrap_or("").to_string(),
+            encoding,
+            ..dm_pure::ClientConfig::default()
+        });
+        client.connect().expect("DM encoding connection");
+        // 会话字符集必须与驱动实际编解码一致，否则中文会被静默改写。
+        let result = client
+            .execute("SELECT ? FROM DUAL", &[dm_pure::Param::Str(text.into())])
+            .expect("parameter roundtrip");
+        match result.rows().and_then(|rows| rows.first()) {
+            Some(row) => assert_eq!(
+                row.first(),
+                Some(&dm_pure::Value::Str(text.into())),
+                "server encoding {}",
+                client.server_encoding_name()
+            ),
+            None => panic!(
+                "no row for server encoding {}",
+                client.server_encoding_name()
+            ),
+        }
+        client.close();
+    }
+}
+
 fn dm_execute_raw(config: &ConnectionConfig, sql: &str, params: &[dm_pure::Param]) {
     let profile = config.dameng_profile.as_ref().expect("DM profile");
     let mut client = dm_pure::DmClient::new(

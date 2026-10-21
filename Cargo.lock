@@ -1744,8 +1744,6 @@ dependencies = [
 [[package]]
 name = "dm-pure"
 version = "1.2.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "efa989761bf2837630eb74c881ff1ccec61ec06730da700dc7dc2c36e115a729"
 dependencies = [
  "aes",
  "cipher",
@@ -2215,6 +2213,7 @@ dependencies = [
  "csv",
  "dirs 6.0.0",
  "dm-pure",
+ "encoding_rs",
  "fluxdb-core",
  "futures-util",
  "roxmltree 0.21.1",

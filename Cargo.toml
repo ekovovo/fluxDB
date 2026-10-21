@@ -10,6 +10,8 @@ members = [
     "crates/fluxdb-i18n",
     "crates/fluxdb-storage",
 ]
+# Vendored third-party DM driver: keep it out of workspace fmt/clippy/test gates.
+exclude = ["crates/dm-pure"]
 resolver = "3"
 
 [workspace.dependencies]

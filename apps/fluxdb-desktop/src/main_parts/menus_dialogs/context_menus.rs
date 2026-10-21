@@ -300,6 +300,7 @@ fn table_context_menu(
     };
 
     div()
+        .debug_selector(|| "table-context-menu".into())
         .absolute()
         .top(menu.position.y)
         .left(menu.position.x)

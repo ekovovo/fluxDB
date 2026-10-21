@@ -1266,8 +1266,9 @@ fn connection_menu_height(items: f32, separators: f32) -> f32 {
 // 注意：菜单项/分隔符数量必须与 context_menus.rs 中对应渲染函数保持一致，
 // 少算会导致菜单底部（如"删除表/清空表"）被视口裁切。
 fn table_context_menu_height() -> f32 {
-    // table_context_menu：15 个菜单项 + 3 个分隔符
-    context_menu_height(15., 3.)
+    // table_context_menu：17 个菜单项 + 3 个分隔符。少算 2 项会让
+    // “删除表/清空表”在贴底右键时被视口裁切。
+    context_menu_height(17., 3.)
 }
 
 fn data_cell_context_menu_height(menu: &DataCellContextMenu) -> f32 {

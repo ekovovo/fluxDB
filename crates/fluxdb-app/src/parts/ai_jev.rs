@@ -429,6 +429,12 @@ const COMPACTION_ORIGIN: AdviceOrigin = AdviceOrigin {
     circuit_reason: "压缩决策模型熔断中，跳过本轮建议",
 };
 
+const TOOLBOX_SELECTION_ORIGIN: AdviceOrigin = AdviceOrigin {
+    role: "tool_selection",
+    source: "toolbox.search",
+    circuit_reason: "Jev 熔断中，跳过工具选择",
+};
+
 /// 发起一次相关性建议；调用方必须已经有 Turn（计量账本要求真实 turn 归属）。
 pub fn advise_relevance(
     storage: &fluxdb_storage::FileStorage,
@@ -478,6 +484,87 @@ pub fn advise_relevance(
         cancel,
         now_ms,
     )
+}
+
+/// 为 toolbox.search 选择操作：Jev 只接收 query 与候选摘要，不接收对话历史或工具 Schema。
+pub fn advise_tool_selection(
+    storage: &fluxdb_storage::FileStorage,
+    agent_id: Option<&str>,
+    session_id: &str,
+    turn_id: &str,
+    query: &str,
+    candidates: &[crate::ToolboxCandidate],
+    cancel: &fluxdb_core::CancelFlag,
+) -> crate::ToolboxSelection {
+    if candidates.is_empty() {
+        return crate::ToolboxSelection::Unavailable {
+            reason: "没有候选工具".into(),
+        };
+    }
+    let bounded = candidates
+        .iter()
+        .take(MAX_RELEVANCE_CANDIDATES)
+        .collect::<Vec<_>>();
+    let now_ms = ai_chat_now();
+    let (model_profile_id, status) = match with_ai_storage(storage, |conn| {
+        let status = jev_status(conn, now_ms)?;
+        let model = match resolve_decision_model(conn, agent_id, now_ms)? {
+            Some(model) => model,
+            None => return Ok((String::new(), status)),
+        };
+        Ok((model, status))
+    }) {
+        Ok(value) => value,
+        Err(error) => {
+            return crate::ToolboxSelection::Unavailable {
+                reason: error.message,
+            };
+        }
+    };
+    if !status.is_usable() || model_profile_id.is_empty() {
+        return crate::ToolboxSelection::Unavailable {
+            reason: status
+                .detail
+                .clone()
+                .unwrap_or_else(|| status.label().to_string()),
+        };
+    }
+    let ids = bounded
+        .iter()
+        .map(|candidate| candidate.id.clone())
+        .collect::<Vec<_>>();
+    let mut prompt = format!(
+        "根据用户目标选择唯一最合适的工具。只从下列候选中选择，不得生成新工具。\n用户目标：{query}\n"
+    );
+    for candidate in &bounded {
+        prompt.push_str(&format!(
+            "- {}：{}（{}；必填字段：{}）\n",
+            candidate.id,
+            candidate.title,
+            candidate.description,
+            candidate.required_fields.join(", ")
+        ));
+    }
+    prompt.push_str("无法判断时选择最接近用户目标的一个；不要执行工具。");
+    match advise_with_model(
+        storage,
+        session_id,
+        turn_id,
+        &model_profile_id,
+        &ids,
+        prompt,
+        TOOLBOX_SELECTION_ORIGIN,
+        cancel,
+        now_ms,
+    ) {
+        JevAdvice::Adopted { chosen } => crate::ToolboxSelection::Selected {
+            id: chosen,
+            source: "jev",
+        },
+        JevAdvice::NotAttempted(reason) | JevAdvice::Degraded { reason } => {
+            crate::ToolboxSelection::Unavailable { reason }
+        }
+    }
 }
 
 /// 压缩决策候选：宿主已经算好的一个合法切点，只暴露公开标签与取舍说明。

@@ -7,6 +7,17 @@
 不携带参数 Schema；`toolbox.load` 在本轮加载 1–5 个操作，下一轮模型请求才会看到
 这些操作的完整 Schema。加载不等于授权，配置写入工具只提交待确认提案。
 
+`toolbox.search` 的选择顺序固定为：
+
+1. 有可用 Jev 决策插件时，用 `query + 工具摘要` 让 Jev 选一个候选。
+2. Jev 不可用、失败或低置信度时，用当前对话模型做一次隔离请求，只发送
+   `query + 工具摘要`，不带历史、页面正文、完整 Schema，也不允许工具调用。
+3. 两者都不可用时返回该领域的候选摘要，不返回空列表，由主模型从候选中选择。
+
+选择器返回的 ID 必须属于本次候选集合；非法 ID 会被丢弃。搜索结果增加
+`recommended_ids`、`recommended_tool`、`selection_source` 和 `next_step`，
+主模型应使用推荐 ID 调用 `toolbox.load`，不要把推荐当成已授权执行。
+
 | 工具/动作 | 行为 |
 | --- | --- |
 | `toolbox.inspect` | 读取设置、模型、Agent、全局工具开关、MCP、会话摘要 |

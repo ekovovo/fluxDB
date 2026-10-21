@@ -161,6 +161,11 @@ impl AiRuntimeHandle {
                         &security.disabled_tools,
                         &security.agent_allowed_tools,
                         read_only,
+                        Some(Arc::new(StorageToolboxSelector {
+                            storage: storage.clone(),
+                            agent_id: turn_agent_id(storage, &job.session_id),
+                            job: job.clone(),
+                        })),
                     )?;
                     let permission = TurnPermissionContext {
                         agent_allowed_tools: security.agent_allowed_tools,

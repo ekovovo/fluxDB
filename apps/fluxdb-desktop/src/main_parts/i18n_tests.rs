@@ -19,6 +19,7 @@ mod i18n_e2e_tests {
     include!("i18n_tests/dameng_completion.rs");
     include!("i18n_tests/dameng_table_design.rs");
     include!("i18n_tests/table_copy_error.rs");
+    include!("i18n_tests/table_danger_layout.rs");
 
     /// 进程级 locale 是全局状态；会切换语言的用例必须串行，否则互相污染断言。
     fn locale_guard() -> std::sync::MutexGuard<'static, ()> {

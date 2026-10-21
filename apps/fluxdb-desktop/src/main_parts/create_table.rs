@@ -967,32 +967,52 @@ fn create_table_content(
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
-    let loading_design = create.details_loading;
-    div()
+    let mut content = div()
         .flex_1()
         .min_h(px(0.))
+        .relative()
         .bg(colors.content_bg)
         .overflow_hidden()
         .flex()
         .flex_col()
         .child(create_table_header(tab_id, create, this, window, colors, cx))
-        .child(create_table_editor(tab_id, create, this, window, colors, cx))
-        .when(loading_design, |this| {
-            this.child(
-                div()
-                    .debug_selector(|| "create-table-details-loading".into())
-                    .flex_none()
-                    .h(px(24.))
-                    .px_4()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .text_size(px(12.))
-                    .text_color(colors.muted)
-                    .child(loading_spinner_with_color(13., colors.muted))
-                    .child(tr("app.create_table.loading_design")),
-            )
+        .child(create_table_editor(tab_id, create, this, window, colors, cx));
+    if create.details_loading {
+        content = content.child(create_table_loading_overlay(colors));
+    }
+    content
+}
+
+fn create_table_loading_overlay(colors: UiColors) -> Div {
+    div()
+        .debug_selector(|| "create-table-details-loading".into())
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full()
+        .occlude()
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(if colors.is_dark {
+            hsla(220. / 360., 0.12, 0.08, 0.64)
+        } else {
+            hsla(210. / 360., 0.20, 0.98, 0.72)
         })
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap_3()
+                .child(loading_spinner_with_color(32., colors.muted))
+                .child(
+                    div()
+                        .text_size(px(13.))
+                        .text_color(colors.text)
+                        .child(tr("app.create_table.loading_design")),
+                ),
+        )
 }
 
 fn create_table_header(
@@ -1105,6 +1125,7 @@ fn create_table_editor(
     cx: &mut Context<NavicatMain>,
 ) -> Div {
     div()
+        .debug_selector(|| "create-table-editor".into())
         .flex_1()
         .min_h(px(CREATE_TABLE_EDITOR_MIN_HEIGHT))
         .mx_4()

@@ -202,6 +202,7 @@ fn danger_table_fk_row(
     colors: UiColors,
 ) -> impl IntoElement {
     div()
+        .debug_selector(|| "danger-table-fk-row".into())
         .flex()
         .items_center()
         .gap_2()
@@ -214,20 +215,14 @@ fn danger_table_fk_row(
         )
         .child(
             div()
-                .h(px(32.))
+                .debug_selector(|| "danger-table-fk-select".into())
                 .flex_1()
-                .rounded(colors.radius)
-                .border_1()
-                .border_color(colors.border)
-                .bg(colors.input_bg)
-                .overflow_hidden()
                 .child(
                     Select::new(&select)
-                        .appearance(false)
                         .placeholder(tr("app.table.danger.default"))
                         .disabled(running)
                         .w_full()
-                        .h_full()
+                        .h(px(34.))
                         .menu_width(px(160.)),
                 ),
         )

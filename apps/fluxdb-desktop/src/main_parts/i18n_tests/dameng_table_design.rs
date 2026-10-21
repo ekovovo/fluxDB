@@ -123,6 +123,13 @@ fn dameng_designer_uses_inline_loading_instead_of_toast(cx: &mut TestAppContext)
     });
     cx.simulate_resize(gpui::size(gpui::px(1440.), gpui::px(1000.)));
     cx.update(|window, cx| { window.draw(cx).clear(cx); });
-    assert!(cx.debug_bounds("create-table-details-loading").is_some());
+    let overlay = cx
+        .debug_bounds("create-table-details-loading")
+        .expect("large design loading overlay");
+    let editor = cx
+        .debug_bounds("create-table-editor")
+        .expect("table editor");
+    assert!(overlay.size.width > editor.size.width);
+    assert!(overlay.size.height > gpui::px(100.));
     assert!(cx.debug_bounds("app-message-overlay").is_none());
 }

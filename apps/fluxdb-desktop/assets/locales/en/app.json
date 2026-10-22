@@ -3230,6 +3230,8 @@
       },
       "page_size": "Default page size",
       "page_size_detail": "Rows loaded per page when opening a data table",
+      "show_column_comments": "Keep column comments visible",
+      "show_column_comments_detail": "Show column name, type, and comment on separate header lines, truncating long text with an ellipsis; table rows become taller while enabled",
       "backup_dir": "Backup directory",
       "backup_dir_detail": "Default folder for database backup files",
       "sqlite3_path": "sqlite3 path",

@@ -1623,6 +1623,8 @@ struct DataPageTableDelegate {
     cells_editable: bool,
     header_actions: bool,
     show_row_index: bool,
+    show_column_comments: bool,
+    has_column_comments: bool,
     redis_page: bool,
     on_sort: DataTableSortHandler,
 }

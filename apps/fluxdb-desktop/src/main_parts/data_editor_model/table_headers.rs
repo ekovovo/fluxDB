@@ -44,13 +44,36 @@ fn data_table_header_tooltip_row(
         .child(div().flex_1().text_color(value_color).child(value))
 }
 
-fn data_table_column_comment_label(meta: &DataTableColumnMeta) -> String {
+fn data_table_column_comment(meta: &DataTableColumnMeta) -> Option<&str> {
     meta.comment
         .as_deref()
         .map(str::trim)
         .filter(|comment| !comment.is_empty())
-        .map(str::to_string).unwrap_or_else(|| tr("app.data.column.none").to_string())
-        .to_string()
+}
+
+fn data_table_has_column_comments(column_meta: &[DataTableColumnMeta]) -> bool {
+    column_meta
+        .iter()
+        .any(|meta| data_table_column_comment(meta).is_some())
+}
+
+/// 三行表头（字段名 / 类型 / 注释）所需行高。表格组件的表头与数据行共用行高，
+/// 因此注释常驻开启后整表行高会一起增加。
+const DATA_TABLE_COMMENT_HEADER_HEIGHT: Pixels = px(48.);
+const DATA_TABLE_COMMENT_HEADER_NAME_LINE_HEIGHT: Pixels = px(14.);
+const DATA_TABLE_COMMENT_HEADER_DETAIL_LINE_HEIGHT: Pixels = px(11.);
+
+impl DataPageTableDelegate {
+    fn comment_header_height(&self) -> Option<Pixels> {
+        (self.header_actions && self.show_column_comments && self.has_column_comments)
+            .then_some(DATA_TABLE_COMMENT_HEADER_HEIGHT)
+    }
+}
+
+fn data_table_column_comment_label(meta: &DataTableColumnMeta) -> String {
+    data_table_column_comment(meta)
+        .map(str::to_string)
+        .unwrap_or_else(|| tr("app.data.column.none").to_string())
 }
 
 fn data_table_column_attr_label(meta: &DataTableColumnMeta) -> String {
@@ -375,5 +398,49 @@ fn data_table_cell_padding() -> gpui::Edges<Pixels> {
         right: px(12.),
         bottom: px(5.),
         left: px(12.),
+    }
+}
+
+#[cfg(test)]
+mod data_table_column_comment_tests {
+    use super::*;
+
+    fn column_meta(comment: Option<&str>) -> DataTableColumnMeta {
+        DataTableColumnMeta {
+            name: "status".to_string(),
+            type_name: "TEXT".to_string(),
+            comment: comment.map(str::to_string),
+            nullable: true,
+            primary_key: false,
+            choices: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn header_comment_ignores_missing_and_blank_values() {
+        for comment in [None, Some(""), Some("  \n ")] {
+            assert_eq!(data_table_column_comment(&column_meta(comment)), None);
+        }
+    }
+
+    #[test]
+    fn header_comment_trims_surrounding_whitespace() {
+        assert_eq!(
+            data_table_column_comment(&column_meta(Some("  order status  "))),
+            Some("order status")
+        );
+    }
+
+    #[test]
+    fn expanded_header_requires_at_least_one_real_comment() {
+        assert!(!data_table_has_column_comments(&[]));
+        assert!(!data_table_has_column_comments(&[
+            column_meta(None),
+            column_meta(Some("  ")),
+        ]));
+        assert!(data_table_has_column_comments(&[
+            column_meta(None),
+            column_meta(Some("order status")),
+        ]));
     }
 }

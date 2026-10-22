@@ -17,6 +17,7 @@ impl DataPageTableDelegate {
         temporal_part_input: Entity<InputState>,
         temporal_part_editing: Option<TemporalPartEditState>,
         cells_editable: bool,
+        show_column_comments: bool,
         redis_table_width: Option<Pixels>,
         on_sort: DataTableSortHandler,
     ) -> Self {
@@ -118,6 +119,7 @@ impl DataPageTableDelegate {
             });
         }
 
+        let has_column_comments = data_table_has_column_comments(&column_meta);
         let rows = page.rows.iter().enumerate().collect::<Vec<_>>();
 
         let sorts = sort_rules
@@ -200,6 +202,8 @@ impl DataPageTableDelegate {
             cells_editable,
             header_actions,
             show_row_index,
+            show_column_comments,
+            has_column_comments,
             redis_page,
             on_sort,
         }

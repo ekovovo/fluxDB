@@ -3230,6 +3230,8 @@
       },
       "page_size": "默认分页行数",
       "page_size_detail": "新打开数据表时默认每页加载的行数",
+      "show_column_comments": "字段注释常驻",
+      "show_column_comments_detail": "在数据表表头分别显示字段名、类型和注释，过长时以省略号截断；开启后整表行高会随之增加",
       "backup_dir": "备份目录",
       "backup_dir_detail": "数据库备份文件默认保存目录，保存后生效",
       "sqlite3_path": "sqlite3 路径",

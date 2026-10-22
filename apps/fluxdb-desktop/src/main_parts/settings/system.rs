@@ -56,7 +56,25 @@ fn settings_data_panel(
                     colors,
                     false,
                     cx,
-                )),
+                ))
+                .child(
+                    settings_checkbox_row(
+                        tr("app.settings.data.show_column_comments"),
+                        tr("app.settings.data.show_column_comments_detail"),
+                        AppIcon::Text,
+                        "settings-show-column-comments",
+                        settings.show_column_comments,
+                        colors,
+                    )
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _, _, cx| {
+                            this.settings_editor_draft.show_column_comments =
+                                !this.settings_editor_draft.show_column_comments;
+                            cx.notify();
+                        }),
+                    ),
+                ),
         )
         .child(backup_group)
         .children(clients.into_iter().map(|client| {

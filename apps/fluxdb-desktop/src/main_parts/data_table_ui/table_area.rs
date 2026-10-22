@@ -8,6 +8,15 @@ fn component_data_table(
     theme.colors.table_active = transparent;
     theme.colors.table_active_border = transparent;
     let is_redis_table = table_state.read(cx).delegate().redis_page;
+    let comment_header_height = table_state.read(cx).delegate().comment_header_height();
+
+    let mut table = DataTable::new(table_state)
+        .stripe(false)
+        .bordered(false)
+        .scrollbar_visible(true, true);
+    if let Some(height) = comment_header_height {
+        table = table.with_size(height);
+    }
 
     div()
         .relative()
@@ -15,12 +24,7 @@ fn component_data_table(
         .flex_1()
         .min_h(px(0.))
         .overflow_hidden()
-        .child(
-            DataTable::new(&table_state)
-                .stripe(false)
-                .bordered(false)
-                .scrollbar_visible(true, true),
-        )
+        .child(table)
         .when(is_redis_table, |this| {
             let measured_table = table_state.clone();
             this.child(

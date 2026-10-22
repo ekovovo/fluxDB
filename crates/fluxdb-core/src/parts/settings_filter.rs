@@ -182,6 +182,9 @@ pub struct Settings {
     /// `page_size` 相互独立；取值经 `Pagination::new` 收敛到合法区间。
     #[serde(default = "default_data_table_page_size")]
     pub data_table_page_size: u64,
+    /// 数据表表头是否常驻显示字段注释；过长时由表头按列宽省略。
+    #[serde(default)]
+    pub show_column_comments: bool,
     pub show_sidebar: bool,
     pub show_inspector: bool,
     #[serde(default = "default_editor_font_size")]
@@ -270,6 +273,7 @@ impl Default for Settings {
             dark_theme: default_dark_theme(),
             page_size: Pagination::DEFAULT_LIMIT,
             data_table_page_size: default_data_table_page_size(),
+            show_column_comments: false,
             show_sidebar: true,
             show_inspector: true,
             editor_font_size: default_editor_font_size(),

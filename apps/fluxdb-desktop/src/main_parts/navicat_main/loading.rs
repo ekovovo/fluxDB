@@ -686,6 +686,7 @@ impl NavicatMain {
             self.temporal_part_input.clone(),
             self.temporal_part_editing,
             true,
+            self.controller.state().settings.show_column_comments,
             redis_table_width,
             self.data_table_sort_handler(cx),
         );

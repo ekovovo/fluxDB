@@ -48,6 +48,7 @@ fn settings_section_changed(
         }
         SettingsPanelSection::Data => {
             saved.data_table_page_size != draft.data_table_page_size
+        || saved.show_column_comments != draft.show_column_comments
         || saved.backup_dir != draft.backup_dir
         || saved.mysqldump_path != draft.mysqldump_path
         || saved.mysql_client_dir != draft.mysql_client_dir
@@ -112,6 +113,7 @@ fn settings_apply_section_fields(
 
 fn settings_apply_backup_fields(settings: &mut Settings, draft: &Settings) {
     settings.data_table_page_size = draft.data_table_page_size;
+    settings.show_column_comments = draft.show_column_comments;
     settings.backup_dir = draft.backup_dir.clone();
     settings.mysqldump_path = draft.mysqldump_path.clone();
     settings.mysql_client_dir = draft.mysql_client_dir.clone();
@@ -163,6 +165,7 @@ fn reset_settings_section(
         SettingsPanelSection::Data => {
             let defaults = Settings::default();
             this.settings_editor_draft.data_table_page_size = defaults.data_table_page_size;
+            this.settings_editor_draft.show_column_comments = defaults.show_column_comments;
             this.settings_editor_draft.backup_dir = defaults.backup_dir;
             this.settings_editor_draft.mysqldump_path = defaults.mysqldump_path;
             this.settings_editor_draft.mysql_client_dir = defaults.mysql_client_dir;
@@ -305,6 +308,17 @@ impl NavicatMain {
         let locale = fluxdb_i18n::effective_locale(&self.controller.state().settings.locale);
         apply_ui_locale(&locale, cx);
         let new_settings = self.controller.state().settings.clone();
+        if before.show_column_comments != new_settings.show_column_comments {
+            for table_state in self.data_table_states.values() {
+                table_state.update(cx, |table, cx| {
+                    if table.delegate().show_column_comments == new_settings.show_column_comments {
+                        return;
+                    }
+                    table.delegate_mut().show_column_comments = new_settings.show_column_comments;
+                    cx.notify();
+                });
+            }
+        }
         let font_size = new_settings.editor_font_size.clamp(10, 24) as f32;
         let line_height = new_settings.editor_line_height.clamp(13, 28) as f32;
         let soft_wrap = new_settings.editor_word_wrap;

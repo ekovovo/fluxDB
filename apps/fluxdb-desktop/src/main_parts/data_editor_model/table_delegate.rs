@@ -258,6 +258,10 @@ impl TableDelegate for DataPageTableDelegate {
             });
         let type_color =
             data_type_color(type_name.as_str()).unwrap_or(cx.theme().muted_foreground.into());
+        let expanded_header = self.comment_header_height().is_some();
+        let header_comment = expanded_header
+            .then(|| data_table_column_comment(&meta))
+            .flatten();
         let sort = self
             .sorts
             .iter()
@@ -319,18 +323,52 @@ impl TableDelegate for DataPageTableDelegate {
                             .text_color(cx.theme().foreground)
                             .whitespace_nowrap()
                             .text_ellipsis()
+                            .when(expanded_header, |this| {
+                                this.h(DATA_TABLE_COMMENT_HEADER_NAME_LINE_HEIGHT)
+                                    .line_height(DATA_TABLE_COMMENT_HEADER_NAME_LINE_HEIGHT)
+                            })
                             .child(localized_column_header(&column.name)),
                     )
-                    .when(self.header_actions && !type_name.is_empty(), |this| {
+                    .when(expanded_header, |this| {
                         this.child(
                             div()
+                                .h(DATA_TABLE_COMMENT_HEADER_DETAIL_LINE_HEIGHT)
+                                .line_height(DATA_TABLE_COMMENT_HEADER_DETAIL_LINE_HEIGHT)
                                 .text_size(px(9.))
                                 .text_color(type_color)
                                 .whitespace_nowrap()
                                 .text_ellipsis()
                                 .child(type_name.clone()),
                         )
-                    }),
+                        .child(
+                            div()
+                                .h(DATA_TABLE_COMMENT_HEADER_DETAIL_LINE_HEIGHT)
+                                .line_height(DATA_TABLE_COMMENT_HEADER_DETAIL_LINE_HEIGHT)
+                                .text_size(px(9.))
+                                .text_color(cx.theme().muted_foreground)
+                                .whitespace_nowrap()
+                                .text_ellipsis()
+                                .child(
+                                    header_comment
+                                        // 表头单行展示，注释里的换行折叠为空格；完整内容仍走悬浮提示。
+                                        .map(|comment| comment.replace(['\r', '\n'], " "))
+                                        .unwrap_or_default(),
+                                ),
+                        )
+                    })
+                    .when(
+                        !expanded_header && self.header_actions && !type_name.is_empty(),
+                        |this| {
+                            this.child(
+                                div()
+                                    .text_size(px(9.))
+                                    .text_color(type_color)
+                                    .whitespace_nowrap()
+                                    .text_ellipsis()
+                                    .child(type_name.clone()),
+                            )
+                        },
+                    ),
             )
             .when((!self.show_row_index || col_ix > 0) && self.header_actions, |this| {
                 this.child(

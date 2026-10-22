@@ -546,6 +546,9 @@ fn create_table_mysql_validation_error(create: &CreateTableState) -> Option<&'st
         {
             return Some("字符串默认值需要用引号包裹");
         }
+        if let Some(message) = create_table_enum_values_validation_error(column) {
+            return Some(message);
+        }
     }
 
     if create
@@ -569,6 +572,33 @@ fn create_table_mysql_validation_error(create: &CreateTableState) -> Option<&'st
         return Some(message);
     }
 
+    None
+}
+
+fn create_table_enum_values_validation_error(
+    column: &CreateTableColumn,
+) -> Option<&'static str> {
+    let base = create_table_base_type(&column.data_type);
+    if !matches!(base.as_str(), "enum" | "set") {
+        return None;
+    }
+    if column.enum_values.is_empty() {
+        return Some("ENUM/SET 至少需要一个成员");
+    }
+    if column.enum_values.iter().any(|value| value.is_empty()) {
+        return Some("ENUM/SET 成员不能为空");
+    }
+    let mut values = BTreeSet::new();
+    if column
+        .enum_values
+        .iter()
+        .any(|value| !values.insert(value.clone()))
+    {
+        return Some("ENUM/SET 成员不能重复");
+    }
+    if base == "set" && column.enum_values.len() > 64 {
+        return Some("SET 最多支持 64 个成员");
+    }
     None
 }
 
@@ -1136,6 +1166,21 @@ fn create_table_column_type(data_type: &str, length: &str, scale: &str) -> Strin
     }
 }
 
+fn create_table_enum_type(data_type: &str, values: &[String]) -> String {
+    if values.is_empty() {
+        return data_type.trim().to_string();
+    }
+    format!(
+        "{}({})",
+        data_type.trim(),
+        values
+            .iter()
+            .map(|value| quote_mysql_string(value))
+            .collect::<Vec<_>>()
+            .join(",")
+    )
+}
+
 /// MySQL `column_type` 把 unsigned/zerofill 作为尾缀返回（如 `int unsigned`）；
 /// 设计表已有独立开关，这里只剥尾缀，保留类型内的空格与枚举字面量。
 fn create_table_strip_mysql_type_modifiers(raw_type: &str) -> String {
@@ -1176,7 +1221,10 @@ fn create_table_supports_length(data_type: &str) -> bool {
     create_table_is_char_length_type(data_type)
         || create_table_is_binary_length_type(data_type)
         || create_table_is_decimal_type(data_type)
-        || matches!(create_table_base_type(data_type).as_str(), "float" | "double")
+        || matches!(
+            create_table_base_type(data_type).as_str(),
+            "float" | "double" | "interval"
+        )
         || create_table_base_type(data_type) == "bit"
         // MySQL 的时间类型括号内是小数秒精度（0..=6），同样复用长度输入。
         || matches!(
@@ -1200,6 +1248,20 @@ fn create_table_default_length(data_type: &str) -> Option<&'static str> {
 fn create_table_supports_scale(data_type: &str) -> bool {
     create_table_is_decimal_type(data_type)
         || matches!(create_table_base_type(data_type).as_str(), "float" | "double")
+}
+
+fn create_table_sqlite_supports_length(data_type: &str) -> bool {
+    matches!(
+        create_table_base_type(data_type).as_str(),
+        "char" | "varchar" | "nchar" | "nvarchar" | "binary" | "varbinary"
+    )
+}
+
+fn create_table_sqlite_supports_scale(data_type: &str) -> bool {
+    matches!(
+        create_table_base_type(data_type).as_str(),
+        "decimal" | "numeric"
+    )
 }
 
 fn create_table_is_char_length_type(data_type: &str) -> bool {

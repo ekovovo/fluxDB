@@ -284,9 +284,20 @@ fn create_table_design_type_parts(
     match database_kind {
         DatabaseKind::Postgres => create_table_postgres_design_type_parts(raw_type),
         DatabaseKind::MySql | DatabaseKind::TiDb => create_table_mysql_design_type_parts(raw_type),
-        // SQLite 类型声明允许任意名称和参数，不应按其他方言拆分。
-        DatabaseKind::Sqlite => (raw_type.trim().to_string(), String::new(), String::new()),
+        DatabaseKind::Sqlite => create_table_sqlite_design_type_parts(raw_type),
         _ => create_table_split_column_type(raw_type),
+    }
+}
+
+fn create_table_sqlite_design_type_parts(raw_type: &str) -> (String, String, String) {
+    let (base, length, scale) = create_table_split_column_type(raw_type);
+    if base.contains('(') {
+        return (base, length, scale);
+    }
+    if create_table_sqlite_supports_length(&base) || create_table_sqlite_supports_scale(&base) {
+        (base, length, scale)
+    } else {
+        (raw_type.trim().to_string(), String::new(), String::new())
     }
 }
 
@@ -303,6 +314,49 @@ fn create_table_mysql_design_type_parts(raw_type: &str) -> (String, String, Stri
     } else {
         (raw_type.trim().to_string(), String::new(), String::new())
     }
+}
+
+fn create_table_mysql_type_values(raw_type: &str) -> Option<(String, Vec<String>)> {
+    let raw_type = raw_type.trim();
+    let (base, rest) = raw_type.split_once('(')?;
+    let base = base.trim().to_ascii_lowercase();
+    if !matches!(base.as_str(), "enum" | "set") {
+        return None;
+    }
+    let args = rest.strip_suffix(')')?.trim();
+    let mut values = Vec::new();
+    let mut chars = args.chars().peekable();
+    loop {
+        while chars.next_if(|ch| ch.is_whitespace() || *ch == ',').is_some() {}
+        let Some(quote) = chars.next() else {
+            break;
+        };
+        if quote != '\'' && quote != '"' {
+            return None;
+        }
+        let mut value = String::new();
+        let mut closed = false;
+        while let Some(ch) = chars.next() {
+            if ch == '\\' {
+                value.push(chars.next()?);
+            } else if ch == quote {
+                if chars.peek() == Some(&quote) {
+                    chars.next();
+                    value.push(quote);
+                } else {
+                    closed = true;
+                    break;
+                }
+            } else {
+                value.push(ch);
+            }
+        }
+        if !closed {
+            return None;
+        }
+        values.push(value);
+    }
+    Some((base, values))
 }
 
 fn create_table_postgres_design_type_parts(raw_type: &str) -> (String, String, String) {
@@ -380,6 +434,7 @@ impl CreateTableColumn {
             name: String::new(),
             length: provider.default_length(&data_type).unwrap_or("").to_string(),
             data_type,
+            enum_values: Vec::new(),
             scale: String::new(),
             nullable: true,
             primary_key: false,
@@ -407,13 +462,24 @@ impl CreateTableColumn {
             .as_deref()
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(|| provider.default_column_type());
-        let (data_type, length, scale) =
+        let (mut data_type, mut length, mut scale) =
             create_table_design_type_parts(database_kind, provider, raw_type);
+        let enum_values = if matches!(database_kind, DatabaseKind::MySql | DatabaseKind::TiDb) {
+            create_table_mysql_type_values(raw_type)
+        } else {
+            None
+        };
+        if let Some((base, _)) = &enum_values {
+            data_type = base.clone();
+            length.clear();
+            scale.clear();
+        }
         let lower_raw_type = raw_type.to_ascii_lowercase();
         Self {
             id,
             name: column.name,
             data_type,
+            enum_values: enum_values.map(|(_, values)| values).unwrap_or_default(),
             length,
             scale,
             nullable: column.nullable,
@@ -451,7 +517,17 @@ impl CreateTableColumn {
             self.scale.clear();
         }
         let old_length = self.length.trim().to_string();
+        let old_base = create_table_base_type(&self.data_type);
         self.data_type = data_type;
+        let old_enum = matches!(old_base.as_str(), "enum" | "set");
+        let new_base = create_table_base_type(&self.data_type);
+        if matches!(new_base.as_str(), "enum" | "set") {
+            if !old_enum {
+                self.enum_values = vec![String::new()];
+            }
+        } else {
+            self.enum_values.clear();
+        }
 
         if capabilities.length {
             if let Some(default_length) = provider.default_length(&self.data_type)
@@ -492,9 +568,6 @@ impl CreateTableColumn {
         if !capabilities.zerofill {
             self.zerofill = false;
         }
-        if matches!(create_table_base_type(&self.data_type).as_str(), "year") {
-            self.unsigned = false;
-        }
     }
 
     fn sql_line(&self) -> Option<String> {
@@ -505,7 +578,14 @@ impl CreateTableColumn {
         let mut sql = format!(
             "{} {}",
             fluxdb_core::MySqlDialect.quote_identifier(name),
-            create_table_column_type(&self.data_type, &self.length, &self.scale)
+            if matches!(
+                create_table_base_type(&self.data_type).as_str(),
+                "enum" | "set"
+            ) {
+                create_table_enum_type(&self.data_type, &self.enum_values)
+            } else {
+                create_table_column_type(&self.data_type, &self.length, &self.scale)
+            }
         );
         if self.unsigned {
             sql.push_str(" UNSIGNED");
@@ -807,12 +887,67 @@ mod create_table_design_type_tests {
             Some("`created_at` timestamp(6)")
         );
         assert_eq!(columns[5].sql_line().as_deref(), Some("`open_at` time(3)"));
-        assert_eq!(columns[3].data_type, "enum('A','B')");
+        assert_eq!(columns[3].data_type, "enum");
+        assert_eq!(columns[3].enum_values, ["A", "B"]);
         assert!(columns[3].length.is_empty());
         assert_eq!(
             columns[3].sql_line().as_deref(),
             Some("`status` enum('A','B')")
         );
+    }
+
+    #[test]
+    fn mysql_enum_and_set_values_are_structured_and_round_trip() {
+        let create = design(
+            DatabaseKind::MySql,
+            vec![
+                completion("status", r#"enum('New','Done''Today','A\\B')"#),
+                completion("tags", "set('a','b')"),
+            ],
+        );
+        let columns = &create.columns;
+        assert_eq!(columns[0].data_type, "enum");
+        assert_eq!(columns[0].enum_values, ["New", "Done'Today", r#"A\B"#]);
+        assert_eq!(
+            columns[0].sql_line().as_deref(),
+            Some(r#"`status` enum('New','Done''Today','A\\B')"#)
+        );
+        assert_eq!(columns[1].data_type, "set");
+        assert_eq!(columns[1].enum_values, ["a", "b"]);
+        assert_eq!(columns[1].sql_line().as_deref(), Some("`tags` set('a','b')"));
+    }
+
+    #[test]
+    fn mysql_enum_and_set_values_are_validated() {
+        let mut create = design(
+            DatabaseKind::MySql,
+            vec![completion("status", "enum('A','B')")],
+        );
+        create.table_name = "items".into();
+        create.mode = CreateTableMode::Create;
+        assert_eq!(create.validation_error(), None);
+
+        create.columns[0].enum_values.clear();
+        assert_eq!(
+            create.validation_error(),
+            Some("ENUM/SET 至少需要一个成员")
+        );
+
+        create.columns[0].enum_values = vec!["A".into(), "".into()];
+        assert_eq!(
+            create.validation_error(),
+            Some("ENUM/SET 成员不能为空")
+        );
+
+        create.columns[0].enum_values = vec!["A".into(), "A".into()];
+        assert_eq!(
+            create.validation_error(),
+            Some("ENUM/SET 成员不能重复")
+        );
+
+        create.columns[0].data_type = "set".into();
+        create.columns[0].enum_values = (0..65).map(|index| format!("v{index}")).collect();
+        assert_eq!(create.validation_error(), Some("SET 最多支持 64 个成员"));
     }
 
     #[test]
@@ -941,7 +1076,10 @@ mod create_table_design_type_tests {
             );
             create.table_name = "items".into();
             create.mode = CreateTableMode::Create;
-            assert_eq!(create.columns[0].data_type, raw_type);
+            let expected_base = raw_type
+                .split_once('(')
+                .map_or(raw_type, |(base, _)| base);
+            assert_eq!(create.columns[0].data_type, expected_base);
             assert!(
                 create
                     .sql_preview()
@@ -949,6 +1087,35 @@ mod create_table_design_type_tests {
                 "SQLite must preserve {raw_type}"
             );
         }
+    }
+
+    #[test]
+    fn sqlite_common_types_expose_length_and_scale() {
+        let create = design(
+            DatabaseKind::Sqlite,
+            vec![
+                completion("name", "varchar(64)"),
+                completion("amount", "decimal(10,2)"),
+            ],
+        );
+        assert_eq!(
+            (
+                create.columns[0].data_type.as_str(),
+                create.columns[0].length.as_str(),
+                create.columns[0].scale.as_str(),
+            ),
+            ("varchar", "64", "")
+        );
+        assert_eq!(
+            (
+                create.columns[1].data_type.as_str(),
+                create.columns[1].length.as_str(),
+                create.columns[1].scale.as_str(),
+            ),
+            ("decimal", "10", "2")
+        );
+        assert!(create.type_capabilities("varchar").length);
+        assert!(create.type_capabilities("decimal").scale);
     }
 
     #[test]

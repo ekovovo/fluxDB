@@ -14,6 +14,39 @@ struct CreateTableSelectOption {
     inherit_default: bool,
 }
 
+#[derive(Clone)]
+struct CreateTableTypeOption {
+    value: String,
+    custom_entry: bool,
+}
+
+impl SelectItem for CreateTableTypeOption {
+    type Value = String;
+
+    fn title(&self) -> SharedString {
+        if self.custom_entry {
+            tr("app.create_table.column.custom_type_action")
+        } else {
+            self.value.clone().into()
+        }
+    }
+
+    fn value(&self) -> &String {
+        &self.value
+    }
+
+    fn render(&self, _: &mut Window, _: &mut App) -> impl IntoElement {
+        let debug_id = if self.custom_entry {
+            "create-table-type-option:custom".to_string()
+        } else {
+            format!("create-table-type-option:{}", self.value)
+        };
+        div()
+            .debug_selector(move || debug_id.clone())
+            .child(self.title())
+    }
+}
+
 impl SelectItem for CreateTableSelectOption {
     type Value = String;
 
@@ -60,7 +93,8 @@ struct CreateTableFieldsTableRow {
     index: usize,
     column: CreateTableColumn,
     name_input: Entity<InputState>,
-    type_select: Entity<SelectState<SearchableVec<String>>>,
+    type_select: Entity<SelectState<SearchableVec<CreateTableTypeOption>>>,
+    type_input: Entity<InputState>,
     length_input: Entity<InputState>,
     default_input: Entity<InputState>,
     comment_input: Entity<InputState>,
@@ -91,6 +125,17 @@ impl NavicatMain {
                     .default_value(value.to_string())
             });
             let subscription = cx.subscribe(&input, move |this, input, event: &InputEvent, cx| {
+                if let CreateTableInputKey::ColumnCustomType(tab_id, column_id) = key {
+                    if matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
+                        this.finish_create_table_custom_type_edit(
+                            tab_id,
+                            column_id,
+                            input.read(cx).value().to_string(),
+                            cx,
+                        );
+                    }
+                    return;
+                }
                 if matches!(event, InputEvent::Change) {
                     this.update_create_table_input(key, input.read(cx).value().to_string(), cx);
                 }
@@ -160,12 +205,16 @@ impl NavicatMain {
                     cx,
                 );
             }
-            CreateTableInputKey::ColumnCustomType(tab_id, column_id) => {
-                self.set_create_table_column_input(
-                    tab_id,
-                    column_id,
-                    CreateTableColumnField::CustomType,
-                    value,
+            // 自定义类型在 Enter/Blur 时整体提交，输入过程中只保留在输入框草稿里。
+            CreateTableInputKey::ColumnCustomType(_, _) => {}
+            CreateTableInputKey::ColumnEnumValue(tab_id, column_id, index) => {
+                self.dispatch(
+                    AppCommand::SetCreateTableColumnEnumValue {
+                        tab_id,
+                        column_id,
+                        index,
+                        value,
+                    },
                     cx,
                 );
             }
@@ -366,6 +415,37 @@ impl NavicatMain {
             },
             cx,
         );
+    }
+
+    fn finish_create_table_custom_type_edit(
+        &mut self,
+        tab_id: TabId,
+        column_id: u64,
+        value: String,
+        cx: &mut Context<Self>,
+    ) {
+        if self.create_table_custom_type_editing != Some((tab_id, column_id)) {
+            return;
+        }
+        let value = value.trim().to_string();
+        if !value.is_empty() {
+            self.set_create_table_column_input(
+                tab_id,
+                column_id,
+                CreateTableColumnField::CustomType,
+                value,
+                cx,
+            );
+        }
+        self.create_table_custom_type_editing = None;
+        cx.notify();
+    }
+
+    fn create_table_enum_scroll(&mut self, tab_id: TabId, column_id: u64) -> ScrollHandle {
+        self.create_table_enum_scrolls
+            .entry((tab_id, column_id))
+            .or_default()
+            .clone()
     }
 
     fn set_create_table_option_input(
@@ -622,7 +702,7 @@ impl NavicatMain {
         value: &str,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> Entity<SelectState<SearchableVec<String>>> {
+    ) -> Entity<SelectState<SearchableVec<CreateTableTypeOption>>> {
         let key = (tab_id, column_id);
         if !self.create_table_type_selects.contains_key(&key) {
             let (options, selected_index) =
@@ -641,11 +721,16 @@ impl NavicatMain {
                 window,
                 move |this: &mut NavicatMain,
                       _select,
-                      event: &SelectEvent<SearchableVec<String>>,
+                      event: &SelectEvent<SearchableVec<CreateTableTypeOption>>,
                       _window,
                       cx| {
                     let SelectEvent::Confirm(value) = event;
                     if let Some(value) = value {
+                        if value.is_empty() {
+                            this.create_table_custom_type_editing = Some((tab_id, column_id));
+                            cx.notify();
+                            return;
+                        }
                         this.set_create_table_column_input(
                             tab_id,
                             column_id,
@@ -1384,6 +1469,13 @@ fn create_table_fields(
                 window,
                 cx,
             ),
+            type_input: this.create_table_input(
+                CreateTableInputKey::ColumnCustomType(tab_id, column.id),
+                tr("app.create_table.column.custom_type_placeholder"),
+                &column.data_type,
+                window,
+                cx,
+            ),
             length_input: this.create_table_input(
                 CreateTableInputKey::ColumnLength(tab_id, column.id),
                 create_table_length_placeholder(create.database_kind, &column.data_type),
@@ -1420,6 +1512,7 @@ fn create_table_fields(
             row,
             row_count,
             create.selected_column_id == Some(column.id),
+            this.create_table_custom_type_editing == Some((tab_id, column.id)),
             this.create_table_comment_editor_sizes
                 .get(&(tab_id, column.id))
                 .copied()
@@ -1464,6 +1557,13 @@ fn create_table_fields(
             tab_id,
             create.database_kind,
             create.selected_column(),
+            create.selected_column().and_then(|selected| match &create.mode {
+                CreateTableMode::Design { original, .. } => original
+                    .columns
+                    .iter()
+                    .find(|column| column.id == selected.id),
+                CreateTableMode::Create => None,
+            }),
             this,
             window,
             colors,
@@ -1554,6 +1654,7 @@ fn create_table_field_row(
     row: CreateTableFieldsTableRow,
     row_count: usize,
     selected: bool,
+    editing_type: bool,
     comment_editor_size: (f32, f32),
     window: &mut Window,
     colors: UiColors,
@@ -1562,6 +1663,7 @@ fn create_table_field_row(
     let select_view = view.clone();
     let column_id = row.column.id;
     let row_index = row.index;
+    let type_value = row.column.data_type.clone();
     let length_enabled = create_table_supports_length(database_kind, &row.column.data_type);
     div()
         .h(px(34.))
@@ -1596,9 +1698,16 @@ fn create_table_field_row(
         ))
         .child(create_table_type_select_cell(
             row.type_select,
+            row.type_input,
             150.,
             row_index,
+            editing_type,
+            tab_id,
+            column_id,
+            &type_value,
+            window,
             colors,
+            cx,
         ))
         .child(
             create_table_input_cell_enabled(
@@ -3116,11 +3225,21 @@ fn create_table_operation_button(
 }
 
 fn create_table_type_select_cell(
-    select: Entity<SelectState<SearchableVec<String>>>,
+    select: Entity<SelectState<SearchableVec<CreateTableTypeOption>>>,
+    input: Entity<InputState>,
     width: f32,
     row_index: usize,
+    editing: bool,
+    tab_id: TabId,
+    column_id: u64,
+    model_value: &str,
+    window: &mut Window,
     colors: UiColors,
+    cx: &mut Context<NavicatMain>,
 ) -> Div {
+    let cancel_input = input.clone();
+    let cancel_select = select.clone();
+    let model_value = model_value.to_string();
     div()
         .w(px(width))
         .flex_shrink_0()
@@ -3130,7 +3249,41 @@ fn create_table_type_select_cell(
         .px_2()
         .flex()
         .items_center()
-        .child(
+        .capture_action(cx.listener(
+            move |this, _: &gpui_component::input::Escape, window, cx| {
+                if this.create_table_custom_type_editing != Some((tab_id, column_id)) {
+                    cx.propagate();
+                    return;
+                }
+                this.create_table_custom_type_editing = None;
+                cancel_input.update(cx, |input, cx| {
+                    input.set_value(model_value.clone(), window, cx);
+                });
+                cancel_select
+                    .read(cx)
+                    .focus_handle(cx)
+                    .focus(window, cx);
+                cx.stop_propagation();
+                cx.notify();
+            },
+        ))
+        .child(if editing {
+            if !input.read(cx).focus_handle(cx).is_focused(window) {
+                input.update(cx, |input, cx| {
+                    input.focus(window, cx);
+                    input.select_all(window, cx);
+                });
+            }
+            div()
+                .debug_selector(move || format!("create-table-custom-type-input-{row_index}"))
+                .child(create_table_input_box(
+                    input,
+                    width - 18.,
+                    window,
+                    colors,
+                    cx,
+                ))
+        } else {
             div()
                 .w(px(width - 18.))
                 .h(px(CREATE_TABLE_INPUT_HEIGHT))
@@ -3145,8 +3298,8 @@ fn create_table_type_select_cell(
                         )
                         .size_full()
                         .menu_width(px(220.)),
-                ),
-        )
+                )
+        })
 }
 
 fn create_table_select_cell_with_placeholder<T: 'static, I: SelectItem + 'static>(
@@ -3280,26 +3433,44 @@ fn create_table_type_select_box<T: 'static, I: SelectItem + 'static>(
         )
 }
 
-fn create_table_type_options(database_kind: DatabaseKind) -> Vec<String> {
-    let mut options = create_table_common_type_options(database_kind);
-    options.extend(create_table_special_type_options(database_kind));
-    options
+fn create_table_type_options(database_kind: DatabaseKind) -> Vec<CreateTableTypeOption> {
+    create_table_common_type_options(database_kind)
+        .into_iter()
+        .chain(create_table_special_type_options(database_kind))
+        .map(|value| CreateTableTypeOption {
+            value,
+            custom_entry: false,
+        })
+        .chain(std::iter::once(CreateTableTypeOption {
+            value: String::new(),
+            custom_entry: true,
+        }))
+        .collect()
 }
 
 /// 当前类型不在预设选项时补到末尾并选中，避免已有列类型显示成灰色占位文字。
 fn create_table_type_select_items(
     database_kind: DatabaseKind,
     value: &str,
-) -> (Vec<String>, Option<IndexPath>) {
+) -> (Vec<CreateTableTypeOption>, Option<IndexPath>) {
     let value = value.trim();
     let mut options = create_table_type_options(database_kind);
-    if !value.is_empty() && !options.iter().any(|option| option.eq_ignore_ascii_case(value))
+    if !value.is_empty()
+        && !options
+            .iter()
+            .any(|option| !option.custom_entry && option.value.eq_ignore_ascii_case(value))
     {
-        options.push(value.to_string());
+        options.insert(
+            options.len() - 1,
+            CreateTableTypeOption {
+                value: value.to_string(),
+                custom_entry: false,
+            },
+        );
     }
     let index = options
         .iter()
-        .position(|option| option.eq_ignore_ascii_case(value))
+        .position(|option| !option.custom_entry && option.value.eq_ignore_ascii_case(value))
         .map(IndexPath::new);
     (options, index)
 }
@@ -3545,11 +3716,12 @@ fn create_table_column_options(
     tab_id: TabId,
     database_kind: DatabaseKind,
     column: Option<&CreateTableColumn>,
+    original_column: Option<&CreateTableColumn>,
     this: &mut NavicatMain,
     window: &mut Window,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
-) -> Div {
+) -> AnyElement {
     let Some(column) = column else {
         return div()
             .flex_none()
@@ -3561,26 +3733,79 @@ fn create_table_column_options(
             .px_3()
             .text_size(px(13.))
             .text_color(colors.muted)
-            .child(tr("app.create_table.error.select_field"));
+            .child(tr("app.create_table.error.select_field"))
+            .into_any_element();
     };
     let id = column.id;
     let data_type = column.data_type.to_lowercase();
     let capabilities = create_table_provider(database_kind).type_capabilities(&data_type);
+    let is_enum = matches!(database_kind, DatabaseKind::MySql | DatabaseKind::TiDb)
+        && matches!(create_table_type_base(&column.data_type).as_str(), "enum" | "set");
+    let enum_max_height = f32::from(window.viewport_size().height) * 0.3;
+    let enum_panel_height =
+        create_table_enum_options_height(column, original_column).min(enum_max_height);
     let mut options = div()
+        .w_full()
         .flex()
         .flex_wrap()
         .items_center()
-        .gap_3();
+        .gap_3()
+        .when(is_enum, |this| this.h_full().flex_col());
 
-    if !create_table_type_is_known(database_kind, &column.data_type) {
-        options = options.child(create_table_custom_type_option(
+    if is_enum {
+        options = options.child(create_table_enum_values_editor(
             tab_id,
             column,
+            original_column,
             this,
             window,
             colors,
             cx,
         ));
+    }
+
+    if !create_table_type_is_known(database_kind, &column.data_type) {
+        let value = column.data_type.clone();
+        let column_id = column.id;
+        options = options.child(
+            div()
+                .debug_selector(move || format!("create-table-custom-type-summary-{column_id}"))
+                .flex()
+                .items_center()
+                .gap_2()
+                .child(
+                    div()
+                        .w(px(84.))
+                        .text_size(px(12.))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(colors.text)
+                        .child(tr("app.create_table.column.custom_type")),
+                )
+                .child(
+                    div()
+                        .min_w(px(0.))
+                        .max_w(px(360.))
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .text_size(px(12.))
+                        .text_color(colors.text)
+                        .child(value),
+                )
+                .child(
+                    Button::new(format!("custom-type-edit-{tab_id:?}-{column_id}"))
+                        .ghost()
+                        .xsmall()
+                        .debug_selector(move || {
+                            format!("create-table-custom-type-edit-{column_id}")
+                        })
+                        .child(tr("app.create_table.column.custom_type_edit"))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.create_table_custom_type_editing = Some((tab_id, column_id));
+                            cx.notify();
+                        })),
+                ),
+        );
     }
 
     if capabilities.text_options {
@@ -3713,227 +3938,291 @@ fn create_table_column_options(
         ));
     }
 
+    let options_scroll = if is_enum {
+        div()
+            .flex_1()
+            .min_h(px(0.))
+            .px_3()
+            .py_2()
+            .child(options)
+            .into_any_element()
+    } else {
+        div()
+            .debug_selector(|| "create-table-column-options-scroll".into())
+            .flex_1()
+            .overflow_hidden()
+            .child(
+                div().flex_1().overflow_hidden().child(
+                    div()
+                        .size_full()
+                        .overflow_y_scrollbar()
+                        .px_3()
+                        .py_2()
+                        .child(options),
+                ),
+            )
+            .into_any_element()
+    };
+
     div()
         .flex_none()
         .min_h(px(74.))
         .debug_selector(|| "create-table-column-options".into())
-        .max_h(gpui::relative(0.3))
+        .when(!is_enum, |this| this.max_h(gpui::relative(0.3)))
+        .when(is_enum, |this| this.h(px(enum_panel_height)).max_h(px(enum_max_height)))
         .border_t_1()
         .border_color(colors.border)
         .bg(colors.panel_alt)
-        .px_3()
-        .py_2()
+        .flex()
+        .flex_col()
         .overflow_hidden()
-        .child(
-            div()
-                .min_h(px(74.))
-                .max_h(gpui::relative(0.3))
-                .overflow_y_scrollbar()
-                .child(options),
-        )
+        .child(options_scroll)
+        .into_any_element()
 }
 
-fn create_table_custom_type_option(
+fn create_table_enum_options_height(
+    column: &CreateTableColumn,
+    original: Option<&CreateTableColumn>,
+) -> f32 {
+    let rows = column.enum_values.len();
+    let rows_height = rows as f32 * 28.;
+    let row_gaps = rows.saturating_sub(1) as f32 * 4.;
+    let warning_height = if create_table_enum_values_are_risky(column, original) {
+        42. + 8.
+    } else {
+        0.
+    };
+    // 头部、头部到成员列表的间距、成员行与面板上下 padding。
+    24. + 8. + rows_height + row_gaps + warning_height + 16.
+}
+
+fn create_table_enum_values_are_risky(
+    column: &CreateTableColumn,
+    original: Option<&CreateTableColumn>,
+) -> bool {
+    let Some(original) = original else {
+        return false;
+    };
+    let removed_existing = original
+        .enum_values
+        .iter()
+        .any(|value| !column.enum_values.contains(value));
+    let mut old = original.enum_values.clone();
+    let mut new = column.enum_values.clone();
+    old.sort();
+    new.sort();
+    removed_existing || (old == new && original.enum_values != column.enum_values)
+}
+
+fn create_table_enum_values_editor(
     tab_id: TabId,
     column: &CreateTableColumn,
+    original: Option<&CreateTableColumn>,
     this: &mut NavicatMain,
     window: &mut Window,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
     let column_id = column.id;
-    let draft = this.create_table_input(
-        CreateTableInputKey::ColumnCustomType(tab_id, column_id),
-        tr("app.create_table.column.custom_type_placeholder"),
-        &column.data_type,
-        window,
-        cx,
-    );
-    let value = column.data_type.clone();
-    let view = cx.entity().downgrade();
-    let label = tr("app.create_table.column.custom_type");
-    let summary = column.data_type.clone();
+    let base = create_table_type_base(&column.data_type);
+    let risky = create_table_enum_values_are_risky(column, original);
+    let scroll = this.create_table_enum_scroll(tab_id, column_id);
+    let new_member_index = column.enum_values.len();
+    let add_button = Button::new(format!("enum-add-{tab_id:?}-{column_id}"))
+        .ghost()
+        .xsmall()
+        .debug_selector(move || format!("create-table-enum-add-{column_id}"))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap_1()
+                .child(app_icon(AppIcon::Plus, 13., colors.muted))
+                .child(tr("app.create_table.column.enum_add_value")),
+        )
+        .on_click(cx.listener(move |this, _, _, cx| {
+            let scroll = this.create_table_enum_scroll(tab_id, column_id);
+            this.dispatch(
+                AppCommand::AddCreateTableColumnEnumValue { tab_id, column_id },
+                cx,
+            );
+            scroll.scroll_to_top_of_item(new_member_index);
+        }));
+    let mut rows = Vec::new();
 
-    div()
-        .debug_selector(move || format!("create-table-custom-type-option-{column_id}"))
+    for (index, value) in column.enum_values.iter().enumerate() {
+        let input = this.create_table_input(
+            CreateTableInputKey::ColumnEnumValue(tab_id, column_id, index),
+            tr("app.create_table.column.enum_value_placeholder"),
+            value,
+            window,
+            cx,
+        );
+        rows.push(
+            div()
+                .debug_selector(move || {
+                    format!("create-table-enum-value-row-{column_id}-{index}")
+                })
+                .h(px(28.))
+                .flex()
+                .items_center()
+                .gap_1()
+                .child(
+                    div()
+                        .debug_selector(move || {
+                            format!("create-table-enum-value-input-{column_id}-{index}")
+                        })
+                        .child(create_table_input_box(input, 260., window, colors, cx)),
+                )
+                .child(create_table_enum_value_action(
+                    format!("enum-up-{tab_id:?}-{column_id}-{index}"),
+                    AppIcon::ChevronUp,
+                    tr("app.create_table.column.enum_move_up"),
+                    index > 0,
+                    AppCommand::MoveCreateTableColumnEnumValueUp {
+                        tab_id,
+                        column_id,
+                        index,
+                    },
+                    colors,
+                    cx,
+                ))
+                .child(create_table_enum_value_action(
+                    format!("enum-down-{tab_id:?}-{column_id}-{index}"),
+                    AppIcon::ChevronDown,
+                    tr("app.create_table.column.enum_move_down"),
+                    index + 1 < column.enum_values.len(),
+                    AppCommand::MoveCreateTableColumnEnumValueDown {
+                        tab_id,
+                        column_id,
+                        index,
+                    },
+                    colors,
+                    cx,
+                ))
+                .child(create_table_enum_value_action(
+                    format!("enum-remove-{tab_id:?}-{column_id}-{index}"),
+                    AppIcon::Trash,
+                    tr("app.create_table.column.enum_remove_value"),
+                    true,
+                    AppCommand::RemoveCreateTableColumnEnumValue {
+                        tab_id,
+                        column_id,
+                        index,
+                    },
+                    colors,
+                    cx,
+                )),
+        );
+    }
+
+    let header = div()
         .flex()
         .items_center()
         .gap_2()
         .child(
             div()
-                .w(px(84.))
                 .text_size(px(12.))
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .text_color(colors.text)
-                .child(label),
+                .child(if base == "set" {
+                    tr("app.create_table.column.set_values")
+                } else {
+                    tr("app.create_table.column.enum_values")
+                }),
         )
         .child(
             div()
-                .min_w(px(0.))
-                .max_w(px(360.))
-                .overflow_hidden()
-                .whitespace_nowrap()
-                .text_ellipsis()
                 .text_size(px(12.))
-                .text_color(colors.text)
-                .child(summary),
+                .text_color(colors.muted)
+                .child(format!(
+                    "{} / {}",
+                    column.enum_values.len(),
+                    if base == "set" { 64 } else { 65535 }
+                )),
         )
+        .child(div().flex_1())
+        .child(add_button);
+
+    let mut member_list = div()
+        .id(gpui::ElementId::Name(
+            format!("create-table-enum-members-{}-{column_id}", tab_id.0).into(),
+        ))
+        .debug_selector(|| "create-table-enum-members-scroll".into())
+        .size_full()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .track_scroll(&scroll)
+        .overflow_y_scroll();
+    member_list = member_list.children(rows);
+
+    div()
+        .debug_selector(move || format!("create-table-enum-editor-{column_id}"))
+        .w_full()
+        .h_full()
+        .flex()
+        .flex_col()
+        .gap_2()
+        .child(header)
         .child(
-            Popover::new((
-                gpui::ElementId::Name(format!("create-table-custom-type-popover-{}", tab_id.0).into()),
-                column_id.to_string(),
-            ))
-            .appearance(false)
-            .anchor(Anchor::TopRight)
-            .trigger(
-                Button::new((
-                    gpui::ElementId::Name(
-                        format!("create-table-custom-type-trigger-{}", tab_id.0).into(),
-                    ),
-                    column_id.to_string(),
-                ))
-                .ghost()
-                .xsmall()
-                .debug_selector(move || {
-                    format!("create-table-custom-type-edit-{column_id}")
-                })
-                .child(tr("app.create_table.column.custom_type_edit")),
-            )
-            .content(move |_, window, cx| {
-                let popover = cx.entity();
-                let view = view.clone();
-                let draft = draft.clone();
-                let value = value.clone();
-                let apply = {
-                    let popover = popover.clone();
-                    let view = view.clone();
-                    let draft = draft.clone();
-                    move |window: &mut Window, cx: &mut gpui::App| {
-                        let next = draft.read(cx).value().trim().to_string();
-                        if next.is_empty() {
-                            return;
-                        }
-                        let _ = view.update(cx, |this, cx| {
-                            this.set_create_table_column_input(
-                                tab_id,
-                                column_id,
-                                CreateTableColumnField::CustomType,
-                                next,
-                                cx,
-                            );
-                        });
-                        popover.update(cx, |state, cx| state.dismiss(window, cx));
-                    }
-                };
-                let cancel = {
-                    let popover = popover.clone();
-                    let draft = draft.clone();
-                    move |window: &mut Window, cx: &mut gpui::App| {
-                        draft.update(cx, |input, cx| {
-                            input.set_value(value.clone(), window, cx);
-                        });
-                        popover.update(cx, |state, cx| state.dismiss(window, cx));
-                    }
-                };
-                let focused = draft.read(cx).focus_handle(cx).is_focused(window);
-                div()
-                    .debug_selector(|| "create-table-custom-type-popover".into())
-                    .w(px(320.))
-                    .rounded(colors.radius)
-                    .border_1()
-                    .border_color(colors.border)
-                    .bg(colors.panel_bg)
-                    .shadow_md()
-                    .p_4()
-                    .flex()
-                    .flex_col()
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap_1()
-                            .child(
-                                div()
-                                    .text_size(px(14.))
-                                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                                    .text_color(colors.text)
-                                    .child(tr("app.create_table.column.custom_type")),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(12.))
-                                    .text_color(colors.muted)
-                                    .child(tr("app.create_table.column.custom_type_description")),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .mt_3()
-                            .h(px(34.))
-                            .rounded(colors.radius)
-                            .border_1()
-                            .border_color(create_table_input_border_color(focused, colors))
-                            .bg(colors.input_bg)
-                            .hover(move |style| {
-                                style.border_color(
-                                    create_table_input_hover_border_color(focused, colors),
-                                )
-                            })
-                            .child(
-                                Input::new(&draft)
-                                    .appearance(false)
-                                    .focus_bordered(false)
-                                    .w_full()
-                                    .h_full()
-                                    .px_3(),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .mt_2()
-                            .text_size(px(12.))
-                            .text_color(colors.muted)
-                            .child(tr("app.create_table.column.custom_type_hint")),
-                    )
-                    .child(
-                        div()
-                            .mt_4()
-                            .flex()
-                            .justify_end()
-                            .gap_2()
-                            .child(
-                                Button::new((
-                                    gpui::ElementId::Name(
-                                        format!("create-table-custom-type-cancel-{}", tab_id.0)
-                                            .into(),
-                                    ),
-                                    column_id.to_string(),
-                                ))
-                                .label(tr("app.create_table.popover.cancel"))
-                                .small()
-                                .outline()
-                                .on_click(move |_, window, cx| {
-                                    cancel(window, cx);
-                                }),
-                            )
-                            .child(
-                                Button::new((
-                                    gpui::ElementId::Name(
-                                        format!("create-table-custom-type-apply-{}", tab_id.0)
-                                            .into(),
-                                    ),
-                                    column_id.to_string(),
-                                ))
-                                .label(tr("app.create_table.popover.confirm"))
-                                .small()
-                                .primary()
-                                .on_click(move |_, window, cx| {
-                                    apply(window, cx);
-                                }),
-                            ),
-                    )
-            }),
+            div()
+                .relative()
+                .flex_1()
+                .min_h(px(0.))
+                .child(
+                    member_list,
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .child(Scrollbar::new(&scroll)),
+                ),
         )
+        .when(risky, |this| {
+            this.child(
+                div()
+                    .flex()
+                    .items_start()
+                    .gap_2()
+                    .px_3()
+                    .py_2()
+                    .rounded(colors.radius)
+                    .bg(colors.panel_bg)
+                    .border_1()
+                    .border_color(colors.warning)
+                    .text_size(px(12.))
+                    .text_color(colors.warning)
+                    .child(app_icon(AppIcon::TriangleAlert, 14., colors.warning))
+                    .child(tr("app.create_table.column.enum_values_risk")),
+            )
+        })
+}
+
+fn create_table_enum_value_action(
+    id: String,
+    icon: AppIcon,
+    tooltip: SharedString,
+    enabled: bool,
+    command: AppCommand,
+    colors: UiColors,
+    cx: &mut Context<NavicatMain>,
+) -> Button {
+    Button::new(id.clone())
+        .ghost()
+        .xsmall()
+        .w(px(24.))
+        .h(px(24.))
+        .p_0()
+        .debug_selector(move || id)
+        .disabled(!enabled)
+        .tooltip(tooltip)
+        .child(app_icon(icon, 13., colors.text))
+        .on_click(cx.listener(move |this, _, _, cx| {
+            this.dispatch(command.clone(), cx);
+            cx.stop_propagation();
+        }))
 }
 
 fn create_table_option_input(
@@ -4093,6 +4382,14 @@ fn create_table_type_is_known(database_kind: DatabaseKind, data_type: &str) -> b
             option.eq_ignore_ascii_case(data_type)
                 || (option.eq_ignore_ascii_case(base) && !data_type.contains(['(', '[', '.']))
         })
+}
+
+fn create_table_type_base(data_type: &str) -> String {
+    data_type
+        .trim()
+        .split_once('(')
+        .map_or(data_type.trim(), |(base, _)| base.trim())
+        .to_ascii_lowercase()
 }
 
 fn create_table_inherit_select_options(mut options: Vec<String>) -> Vec<String> {
@@ -4295,8 +4592,12 @@ mod create_table_type_select_tests {
     #[test]
     fn custom_type_is_appended_and_selected() {
         let (options, index) = create_table_type_select_items(DatabaseKind::Postgres, "order_state");
-        assert_eq!(options.last().map(String::as_str), Some("order_state"));
-        assert_eq!(index, Some(IndexPath::new(options.len() - 1)));
+        assert_eq!(
+            options.get(options.len() - 2).map(|option| option.value.as_str()),
+            Some("order_state")
+        );
+        assert!(options.last().is_some_and(|option| option.custom_entry));
+        assert_eq!(index, Some(IndexPath::new(options.len() - 2)));
     }
 
     #[test]
@@ -4305,7 +4606,7 @@ mod create_table_type_select_tests {
         assert_eq!(
             options
                 .iter()
-                .filter(|option| option.eq_ignore_ascii_case("varchar"))
+                .filter(|option| option.value.eq_ignore_ascii_case("varchar"))
                 .count(),
             1
         );
@@ -4313,7 +4614,7 @@ mod create_table_type_select_tests {
             index,
             options
                 .iter()
-                .position(|option| option.eq_ignore_ascii_case("varchar"))
+                .position(|option| option.value.eq_ignore_ascii_case("varchar"))
                 .map(IndexPath::new)
         );
     }
@@ -4324,9 +4625,45 @@ mod create_table_type_select_tests {
             let common = fluxdb_app::create_table_common_type_options(kind);
             let special = fluxdb_app::create_table_special_type_options(kind);
             let (options, _) = create_table_type_select_items(kind, "");
-            assert_eq!(options.len(), common.len() + special.len(), "{kind:?}");
-            assert_eq!(&options[..common.len()], common.as_slice(), "{kind:?}");
-            assert_eq!(&options[common.len()..], special.as_slice(), "{kind:?}");
+            assert_eq!(options.len(), common.len() + special.len() + 1, "{kind:?}");
+            assert_eq!(
+                options[..common.len()]
+                    .iter()
+                    .map(|option| option.value.as_str())
+                    .collect::<Vec<_>>(),
+                common.iter().map(String::as_str).collect::<Vec<_>>(),
+                "{kind:?}"
+            );
+            assert_eq!(
+                options[common.len()..common.len() + special.len()]
+                    .iter()
+                    .map(|option| option.value.as_str())
+                    .collect::<Vec<_>>(),
+                special.iter().map(String::as_str).collect::<Vec<_>>(),
+                "{kind:?}"
+            );
+            assert!(options.last().is_some_and(|option| option.custom_entry));
         }
+    }
+
+    #[test]
+    fn sqlite_common_types_use_structured_parameters() {
+        for data_type in ["varchar", "decimal"] {
+            assert!(
+                create_table_type_is_known(DatabaseKind::Sqlite, data_type),
+                "SQLite {data_type} must be a built-in type"
+            );
+            let (_, selected) = create_table_type_select_items(DatabaseKind::Sqlite, data_type);
+            assert!(
+                selected.is_some(),
+                "SQLite {data_type} must select the built-in type"
+            );
+        }
+        assert!(create_table_supports_length(DatabaseKind::Sqlite, "varchar"));
+        assert!(
+            create_table_provider(DatabaseKind::Sqlite)
+                .type_capabilities("decimal")
+                .scale
+        );
     }
 }

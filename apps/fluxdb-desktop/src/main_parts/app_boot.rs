@@ -3277,6 +3277,8 @@ fn navicat_main_new(
                             create_table_foreign_key_referenced_fields_draft: None,
                             create_table_type_selects: BTreeMap::new(),
                             _create_table_type_select_subscriptions: BTreeMap::new(),
+                            create_table_custom_type_editing: None,
+                            create_table_enum_scrolls: BTreeMap::new(),
                             create_table_selects: BTreeMap::new(),
                             _create_table_select_subscriptions: BTreeMap::new(),
                             data_export_object_selects: BTreeMap::new(),

@@ -137,7 +137,7 @@ fn create_table_sqlite_column_line(
     let mut sql = format!(
         "{} {}",
         fluxdb_core::SqliteDialect.quote_identifier(name),
-        create_table_sqlite_column_type(&column.data_type)
+        create_table_sqlite_column_type_for_column(column)
     );
     if inline_auto_increment_id && column.auto_increment {
         sql.push_str(" PRIMARY KEY AUTOINCREMENT");
@@ -151,11 +151,24 @@ fn create_table_sqlite_column_line(
     Some(sql)
 }
 
-fn create_table_sqlite_column_type(data_type: &str) -> String {
-    let data_type = data_type.trim();
+fn create_table_sqlite_column_type_for_column(column: &CreateTableColumn) -> String {
+    let data_type = column.data_type.trim();
+    let length = column.length.trim();
+    let scale = column.scale.trim();
     if data_type.contains('(') {
         return data_type.to_string();
     }
+    if !length.is_empty() && !scale.is_empty() && create_table_sqlite_supports_scale(data_type) {
+        return format!("{data_type}({length},{scale})");
+    }
+    if !length.is_empty() && create_table_sqlite_supports_length(data_type) {
+        return format!("{data_type}({length})");
+    }
+    create_table_sqlite_column_type(data_type)
+}
+
+fn create_table_sqlite_column_type(data_type: &str) -> String {
+    let data_type = data_type.trim();
     let base = create_table_base_type(data_type);
     match base.as_str() {
         "int" | "integer" | "tinyint" | "smallint" | "mediumint" | "bigint" | "boolean" => {

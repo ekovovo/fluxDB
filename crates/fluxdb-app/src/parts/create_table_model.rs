@@ -81,6 +81,7 @@ pub struct CreateTableColumn {
     pub id: u64,
     pub name: String,
     pub data_type: String,
+    pub enum_values: Vec<String>,
     pub length: String,
     pub scale: String,
     pub nullable: bool,

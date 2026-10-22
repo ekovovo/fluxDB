@@ -419,6 +419,9 @@ impl CreateTableProvider for SqliteCreateTableProvider {
         let base = create_table_base_type(data_type);
         let integer = base == "integer" || base == "int";
         CreateTableTypeCapabilities {
+            length: create_table_sqlite_supports_length(&base),
+            scale: create_table_sqlite_supports_scale(&base),
+            number_options: create_table_sqlite_supports_scale(&base),
             auto_increment: integer,
             auto_update_time: false,
             ..Default::default()

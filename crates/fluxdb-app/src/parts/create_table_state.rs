@@ -416,6 +416,54 @@ impl CreateTableState {
         self.autofill_empty_index_names();
     }
 
+    pub fn add_column_enum_value(&mut self, column_id: u64) {
+        let Some(column) = self.columns.iter_mut().find(|column| column.id == column_id) else {
+            return;
+        };
+        if matches!(
+            create_table_base_type(&column.data_type).as_str(),
+            "enum" | "set"
+        ) {
+            column.enum_values.push(String::new());
+        }
+    }
+
+    pub fn set_column_enum_value(&mut self, column_id: u64, index: usize, value: String) {
+        let Some(column) = self.columns.iter_mut().find(|column| column.id == column_id) else {
+            return;
+        };
+        if let Some(slot) = column.enum_values.get_mut(index) {
+            *slot = value;
+        }
+    }
+
+    pub fn remove_column_enum_value(&mut self, column_id: u64, index: usize) {
+        let Some(column) = self.columns.iter_mut().find(|column| column.id == column_id) else {
+            return;
+        };
+        if index < column.enum_values.len() {
+            column.enum_values.remove(index);
+        }
+    }
+
+    pub fn move_column_enum_value_up(&mut self, column_id: u64, index: usize) {
+        let Some(column) = self.columns.iter_mut().find(|column| column.id == column_id) else {
+            return;
+        };
+        if index > 0 && index < column.enum_values.len() {
+            column.enum_values.swap(index - 1, index);
+        }
+    }
+
+    pub fn move_column_enum_value_down(&mut self, column_id: u64, index: usize) {
+        let Some(column) = self.columns.iter_mut().find(|column| column.id == column_id) else {
+            return;
+        };
+        if index + 1 < column.enum_values.len() {
+            column.enum_values.swap(index, index + 1);
+        }
+    }
+
     pub fn add_check(&mut self) {
         let id = self.next_check_id;
         self.next_check_id += 1;

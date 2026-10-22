@@ -2507,10 +2507,17 @@
       "auto_increment": "自增",
       "auto_update_timestamp": "自动更新时间",
       "custom_type": "自定义类型",
+      "custom_type_action": "自定义类型…",
       "custom_type_placeholder": "完整类型定义",
       "custom_type_edit": "编辑",
-      "custom_type_description": "输入数据库支持的完整类型定义",
-      "custom_type_hint": "例如 bit(8)、numeric(12,4)[]、public.\"OrderState\""
+      "enum_values": "枚举成员",
+      "set_values": "集合成员",
+      "enum_value_placeholder": "成员值",
+      "enum_add_value": "添加成员",
+      "enum_move_up": "上移成员",
+      "enum_move_down": "下移成员",
+      "enum_remove_value": "删除成员",
+      "enum_values_risk": "删除已有成员或调整顺序可能导致旧数据无法读取，请先确认存量数据。"
     },
     "header": {
       "name": "名称",

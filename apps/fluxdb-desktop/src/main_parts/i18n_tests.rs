@@ -5,7 +5,7 @@ mod i18n_e2e_tests {
     use fluxdb_app::AppController;
     use fluxdb_core::Settings;
     use fluxdb_storage::{FileStorage, Storage as _};
-    use gpui::{AppContext as _, Modifiers, TestAppContext};
+    use gpui::{AppContext as _, Modifiers, ParentElement as _, Styled as _, TestAppContext};
     use gpui_component::Root;
 
     use crate::{

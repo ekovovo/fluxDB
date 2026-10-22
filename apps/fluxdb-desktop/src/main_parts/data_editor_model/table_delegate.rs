@@ -271,6 +271,7 @@ impl TableDelegate for DataPageTableDelegate {
         // 排序/复制/列操作使用的都是真实字段名（Column.key），而非展示标题（Column.name，
         // 如主键会带 “  PK” 后缀），否则传给 connector 的 SortSpec.field 会匹配不到列。
         let column_name = column.key.to_string();
+        let tooltip_header_name = column_name.clone();
         let copy_column_name = column_name.clone();
         let action_column_name = column_name.clone();
         let tooltip_meta = meta.clone();
@@ -308,6 +309,9 @@ impl TableDelegate for DataPageTableDelegate {
                     .flex_col()
                     .justify_center()
                     .id(("data-table-header-text", col_ix))
+                    .debug_selector(move || {
+                        format!("data-table-header-text:{tooltip_header_name}")
+                    })
                     .tooltip(move |window, cx| {
                         data_table_header_tooltip(tooltip_meta.clone(), type_color)
                             .build(window, cx)

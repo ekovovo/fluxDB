@@ -20,6 +20,7 @@ mod i18n_e2e_tests {
     include!("i18n_tests/dameng_connection.rs");
     include!("i18n_tests/dameng_completion.rs");
     include!("i18n_tests/dameng_table_design.rs");
+    include!("i18n_tests/table_design_types.rs");
     include!("i18n_tests/table_copy_error.rs");
     include!("i18n_tests/table_danger_layout.rs");
     include!("i18n_tests/table_context_menu_layout.rs");

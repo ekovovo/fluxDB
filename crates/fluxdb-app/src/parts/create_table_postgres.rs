@@ -188,7 +188,20 @@ fn create_table_postgres_column_type(column: &CreateTableColumn) -> String {
     let scale = column.scale.trim();
     // PG 精度语法按类型族判断，不复用 MySQL 的 varchar/decimal 判定（numeric ≠ decimal）。
     let supports_scale = matches!(base.as_str(), "numeric" | "decimal");
-    let supports_length = matches!(base.as_str(), "varchar" | "char" | "bpchar" | "bit" | "varbit");
+    let supports_length = matches!(
+        base.as_str(),
+        "varchar"
+            | "char"
+            | "bpchar"
+            | "bit"
+            | "varbit"
+            | "numeric"
+            | "decimal"
+            | "timestamp"
+            | "timestamptz"
+            | "time"
+            | "timetz"
+    );
     let modifiers = if length.is_empty() || !(supports_length || supports_scale) {
         String::new()
     } else if supports_scale && !scale.is_empty() {

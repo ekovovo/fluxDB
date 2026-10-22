@@ -352,8 +352,13 @@ pub fn verify_manifest_signature(
             format!("更新签名不是 UTF-8：{error}"),
         )
     })?;
+    // GNU base64 默认每 76 列换行，已发布的签名文件因此不是单行。
+    let signature_encoded = signature_text
+        .chars()
+        .filter(|character| !character.is_ascii_whitespace())
+        .collect::<String>();
     let signature = base64::engine::general_purpose::STANDARD
-        .decode(signature_text.trim())
+        .decode(signature_encoded)
         .map_err(|error| {
             UpdateError::new(
                 UpdateErrorKind::InvalidSignature,
@@ -963,5 +968,21 @@ mod updater_tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn ed25519_signature_accepts_base64_line_wrapping() {
+        let public_key = base64::engine::general_purpose::STANDARD
+            .decode("FM1FcW0Y45iNLlCEJnyreOe/rw+eqvuIypLaeJ+1ji0=")
+            .unwrap();
+        let single_line = "aLZ5zPge4XET0lvNcNJK2xyzZrY8shsclkWbhATHuTPy+WfPOkLBqIvUutsWKGHjFkqmaPCvNY28ymQTdCjeBQ==";
+        let wrapped = format!("{}\r\n{}\n", &single_line[..76], &single_line[76..]);
+
+        verify_manifest_signature(
+            b"fluxdb-update-test-manifest",
+            wrapped.as_bytes(),
+            &public_key,
+        )
+        .expect("base64 line wrapping must be ignored");
     }
 }

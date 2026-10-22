@@ -52,10 +52,7 @@ pub(crate) fn tokenize_spans(text: &str, dialect: &dyn Dialect) -> Vec<TokenSpan
         .filter(|token| !matches!(token.token, Token::EOF))
         .map(|token| TokenSpan {
             start: index.offset(token.span.start),
-            end: index
-                .offset(token.span.end)
-                .saturating_add(1)
-                .min(text.len()),
+            end: index.end_offset(token.span.end),
             token: token.token,
         })
         .collect()

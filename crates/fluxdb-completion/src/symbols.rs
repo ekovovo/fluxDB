@@ -227,7 +227,7 @@ impl SymbolCollector<'_> {
     /// sqlparser span（1 基 line/col，end 闭区间）→ 字节区间（end 开区间）。
     fn range(&self, span: Span) -> (usize, usize) {
         let start = self.index.offset(span.start);
-        let end = self.index.offset(span.end).saturating_add(1);
+        let end = self.index.end_offset(span.end);
         (start, end.max(start))
     }
 }

@@ -142,7 +142,7 @@ impl Diagnoser<'_> {
         let start = self.parsed.map_offset(self.index.offset(span.start));
         let end = self
             .parsed
-            .map_offset(self.index.offset(span.end).saturating_add(1))
+            .map_offset(self.index.end_offset(span.end))
             .min(self.text.len());
         (start, end.max(start))
     }

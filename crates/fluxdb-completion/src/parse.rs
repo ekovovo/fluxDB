@@ -8,23 +8,33 @@ use sqlparser::dialect::Dialect;
 use sqlparser::parser::Parser;
 use sqlparser::tokenizer::Location;
 
-/// 文本行首偏移表，用于把 `Location`（1 基 line/column）转成字节偏移。
+/// 字符列到字节偏移的索引，用于转换 sqlparser 的 1 基 `Location`。
+///
+/// sqlparser 按字符（不是字节）计列，因此不能把列号直接加到行首字节上；
+/// 这里记录每行各字符的字节起点，并在行尾追加一个排他终点（换行字节或文本末尾），
+/// 使同一个映射既能给出 token 起点，也能给出 token 的排他终点。
 #[derive(Debug, Clone)]
 pub(crate) struct LineColIndex {
-    line_starts: Vec<usize>,
+    /// 每行各字符的字节起点；末项是该行的排他终点。
+    lines: Vec<Vec<usize>>,
     len: usize,
 }
 
 impl LineColIndex {
     pub(crate) fn new(text: &str) -> Self {
-        let mut line_starts = vec![0usize];
-        for (offset, byte) in text.bytes().enumerate() {
-            if byte == b'\n' {
-                line_starts.push(offset + 1);
+        let mut lines: Vec<Vec<usize>> = vec![Vec::new()];
+        for (offset, ch) in text.char_indices() {
+            if ch == '\n' {
+                // 换行字节本身不算列，但它是上一行的排他终点。
+                lines.last_mut().expect("至少有一行").push(offset);
+                lines.push(Vec::new());
+            } else {
+                lines.last_mut().expect("至少有一行").push(offset);
             }
         }
+        lines.last_mut().expect("至少有一行").push(text.len());
         Self {
-            line_starts,
+            lines,
             len: text.len(),
         }
     }
@@ -35,12 +45,29 @@ impl LineColIndex {
             return 0;
         }
         let line_index = (location.line - 1) as usize;
-        let Some(&line_start) = self.line_starts.get(line_index) else {
-            return self.len;
-        };
-        // column 从 1 开始；column=0 表示空 span，按行首处理。
         let column = location.column.saturating_sub(1) as usize;
-        (line_start + column).min(self.len)
+        self.lines
+            .get(line_index)
+            .and_then(|line| line.get(column))
+            .copied()
+            .unwrap_or(self.len)
+    }
+
+    /// 从 `Location` 往后推进一个字符得到的排他字节终点。
+    ///
+    /// 原实现是字节 `+1`；中文等多字节字符上会落进字符内部。这里按字符宽度推进，
+    /// 保持 ASCII 行为不变。
+    pub(crate) fn end_offset(&self, location: Location) -> usize {
+        if location.line == 0 {
+            return 0;
+        }
+        let line_index = (location.line - 1) as usize;
+        let column = location.column.saturating_sub(1) as usize;
+        self.lines
+            .get(line_index)
+            .and_then(|line| line.get(column + 1))
+            .copied()
+            .unwrap_or(self.len)
     }
 }
 
@@ -298,5 +325,27 @@ mod tests {
         assert_eq!(index.offset(Location { line: 1, column: 1 }), 0);
         assert_eq!(index.offset(Location { line: 2, column: 1 }), 9);
         assert_eq!(index.offset(Location { line: 3, column: 1 }), 20);
+    }
+
+    #[test]
+    fn line_col_index_maps_unicode_columns_to_byte_offsets() {
+        let text = "SELECT 得 FROM t\nWHERE 中文 = '值'";
+        let index = LineColIndex::new(text);
+
+        assert_eq!(index.offset(Location { line: 1, column: 8 }), 7);
+        assert_eq!(index.offset(Location { line: 1, column: 9 }), 10);
+        assert_eq!(index.offset(Location { line: 2, column: 7 }), 24);
+        assert_eq!(index.offset(Location { line: 2, column: 9 }), 30);
+        assert_eq!(index.end_offset(Location { line: 1, column: 8 }), 10);
+    }
+
+    #[test]
+    fn truncates_mixed_unicode_statement_at_token_boundary() {
+        let sql = "SELECT x FROM t WHERE 得 =";
+
+        let parsed = parse(sql).expect("中文残句应能截断解析");
+
+        assert!(parsed.parsed_len <= sql.len());
+        assert!(sql.is_char_boundary(parsed.parsed_len));
     }
 }

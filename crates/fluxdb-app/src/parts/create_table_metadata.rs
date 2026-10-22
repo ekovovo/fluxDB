@@ -269,6 +269,78 @@ fn create_table_unquote_identifier(value: &str) -> String {
         .to_string()
 }
 
+/// 设计表加载的类型名 → 编辑器基础类型 + 长度/精度。
+///
+/// 驱动回传的类型名可能带方言修饰（PG 的 `character varying(255)`、
+/// `timestamp without time zone`，MySQL 的 `int unsigned`）；这里统一成下拉选项，
+/// 无法识别的类型整体保留，由界面按自定义类型展示。
+fn create_table_design_type_parts(
+    database_kind: DatabaseKind,
+    raw_type: &str,
+) -> (String, String, String) {
+    match database_kind {
+        DatabaseKind::Postgres => create_table_postgres_design_type_parts(raw_type),
+        DatabaseKind::MySql | DatabaseKind::TiDb => {
+            let (base, length, scale) = create_table_split_column_type(raw_type);
+            (create_table_mysql_design_base_type(&base), length, scale)
+        }
+        _ => create_table_split_column_type(raw_type),
+    }
+}
+
+fn create_table_mysql_design_base_type(base: &str) -> String {
+    // 带参数的 enum/set 等已由 split 视为完整自定义类型，不能再拆分其内容。
+    if base.contains('(') {
+        return base.to_string();
+    }
+    base.split_whitespace()
+        .filter(|part| {
+            !part.eq_ignore_ascii_case("unsigned") && !part.eq_ignore_ascii_case("zerofill")
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn create_table_postgres_design_type_parts(raw_type: &str) -> (String, String, String) {
+    let raw = raw_type.trim().to_ascii_lowercase();
+    // 数组、带引号或 schema 限定的自定义类型没有可拆分的列长度语义，整体保留。
+    if raw.contains('[') || raw.contains('"') || raw.contains('.') {
+        return (raw, String::new(), String::new());
+    }
+    let (base, rest) = match raw.split_once('(') {
+        Some((base, rest)) => (base.trim(), Some(rest)),
+        None => (raw.as_str(), None),
+    };
+    let (args, suffix) = rest
+        .and_then(|rest| rest.split_once(')'))
+        .map(|(args, suffix)| (args.trim(), suffix.trim()))
+        .unwrap_or(("", ""));
+    // 时区修饰在括号后（`timestamp(6) with time zone`），需要和后缀一起判断。
+    let canonical = match (base, suffix) {
+        ("character varying", "") => "varchar",
+        ("character", "") => "char",
+        ("timestamp without time zone", "") | ("timestamp", "") => "timestamp",
+        ("timestamp with time zone", "") | ("timestamp", "with time zone") => "timestamptz",
+        ("timestamp", "without time zone") => "timestamp",
+        ("time without time zone", "") | ("time", "") => "time",
+        ("time with time zone", "") | ("time", "with time zone") => "timetz",
+        ("time", "without time zone") => "time",
+        ("bit varying", "") => "varbit",
+        ("bit", "") => "bit",
+        ("numeric" | "decimal", "") => base,
+        // 未知类型或未知修饰（含参数）整体保留，避免保存时丢定义。
+        _ => return (raw, String::new(), String::new()),
+    };
+    let mut parts = args.split(',').map(str::trim);
+    let length = parts.next().unwrap_or_default().to_string();
+    let scale = parts.next().unwrap_or_default().to_string();
+    let numeric = |value: &str| value.chars().all(|ch| ch.is_ascii_digit());
+    if (!length.is_empty() && !numeric(&length)) || (!scale.is_empty() && !numeric(&scale)) {
+        return (raw, String::new(), String::new());
+    }
+    (canonical.to_string(), length, scale)
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CreateTableColumnFlag {
     Nullable,
@@ -317,6 +389,7 @@ impl CreateTableColumn {
     fn from_completion(
         id: u64,
         column: CompletionColumn,
+        database_kind: DatabaseKind,
         provider: &dyn CreateTableProvider,
     ) -> Self {
         let raw_type = column
@@ -324,7 +397,8 @@ impl CreateTableColumn {
             .as_deref()
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(|| provider.default_column_type());
-        let (data_type, length, scale) = create_table_split_column_type(raw_type);
+        let (data_type, length, scale) =
+            create_table_design_type_parts(database_kind, raw_type);
         Self {
             id,
             name: column.name,
@@ -442,5 +516,184 @@ impl CreateTableColumn {
 
     fn supports_primary_key_prefix_length(&self) -> bool {
         self.primary_key && create_table_supports_key_length(&self.data_type)
+    }
+}
+
+#[cfg(test)]
+mod create_table_design_type_tests {
+    use super::*;
+
+    fn completion(name: &str, type_name: &str) -> CompletionColumn {
+        CompletionColumn {
+            database: Some("db".into()),
+            schema: Some("public".into()),
+            table: "items".into(),
+            name: name.into(),
+            type_name: Some(type_name.into()),
+            nullable: true,
+            primary_key: false,
+            comment: None,
+            stable: None,
+        }
+    }
+
+    fn design(kind: DatabaseKind, columns: Vec<CompletionColumn>) -> CreateTableState {
+        CreateTableState::design(
+            ObjectPath {
+                connection_id: ConnectionId(1),
+                database: Some("db".into()),
+                schema: Some("public".into()),
+                name: "items".into(),
+                kind: ObjectKind::Table,
+            },
+            kind,
+            columns,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            None,
+        )
+    }
+
+    #[test]
+    fn postgres_catalog_types_use_editor_names() {
+        let create = design(
+            DatabaseKind::Postgres,
+            vec![
+                completion("name", "character varying(64)"),
+                completion("code", "character(8)"),
+                completion("created_at", "timestamp without time zone"),
+                completion("updated_at", "timestamp(6) with time zone"),
+                completion("open_at", "time with time zone"),
+                completion("close_at", "time(6) without time zone"),
+                completion("amount", "numeric(12,4)"),
+                completion("flags", "bit varying(8)"),
+                completion("precise_at", "timestamp(6) without time zone"),
+            ],
+        );
+        let columns = &create.columns;
+        assert_eq!(
+            (columns[0].data_type.as_str(), columns[0].length.as_str()),
+            ("varchar", "64")
+        );
+        assert_eq!(
+            (columns[1].data_type.as_str(), columns[1].length.as_str()),
+            ("char", "8")
+        );
+        assert_eq!(
+            (columns[2].data_type.as_str(), columns[2].length.as_str()),
+            ("timestamp", "")
+        );
+        assert_eq!(
+            (columns[3].data_type.as_str(), columns[3].length.as_str()),
+            ("timestamptz", "6")
+        );
+        assert_eq!(
+            (columns[4].data_type.as_str(), columns[4].length.as_str()),
+            ("timetz", "")
+        );
+        assert_eq!(
+            (columns[5].data_type.as_str(), columns[5].length.as_str()),
+            ("time", "6")
+        );
+        assert_eq!(
+            (
+                columns[6].data_type.as_str(),
+                columns[6].length.as_str(),
+                columns[6].scale.as_str(),
+            ),
+            ("numeric", "12", "4")
+        );
+        assert_eq!(
+            (columns[7].data_type.as_str(), columns[7].length.as_str()),
+            ("varbit", "8")
+        );
+        assert_eq!(
+            (columns[8].data_type.as_str(), columns[8].length.as_str()),
+            ("timestamp", "6")
+        );
+        assert_eq!(
+            create_table_postgres_column_type(&columns[3]),
+            "timestamptz(6)"
+        );
+        assert_eq!(create_table_postgres_column_type(&columns[5]), "time(6)");
+        assert_eq!(
+            create_table_postgres_column_type(&columns[8]),
+            "timestamp(6)"
+        );
+        assert!(create.type_capabilities("varchar").length);
+        assert!(create.type_capabilities("char").length);
+        assert!(create.type_capabilities("numeric").length);
+        assert!(create.type_capabilities("numeric").scale);
+        assert!(create.type_capabilities("timestamp").length);
+        assert!(create.type_capabilities("timestamptz").length);
+        assert!(create.type_capabilities("time").length);
+        assert!(create.type_capabilities("timetz").length);
+    }
+
+    #[test]
+    fn postgres_ambiguous_or_custom_types_stay_intact() {
+        let create = design(
+            DatabaseKind::Postgres,
+            vec![
+                completion("created_at", "interval(3)"),
+                completion("tags", "character varying(32)[]"),
+                completion("state", "public.order_state"),
+            ],
+        );
+        let columns = &create.columns;
+        assert_eq!(columns[0].data_type, "interval(3)");
+        assert!(columns[0].length.is_empty());
+        assert_eq!(columns[1].data_type, "character varying(32)[]");
+        assert!(columns[1].length.is_empty());
+        assert_eq!(columns[2].data_type, "public.order_state");
+        assert!(!create.type_capabilities(&columns[0].data_type).length);
+        assert!(!create.type_capabilities(&columns[1].data_type).length);
+    }
+
+    #[test]
+    fn mysql_catalog_types_drop_unsigned_and_zerofill_suffixes() {
+        let create = design(
+            DatabaseKind::MySql,
+            vec![
+                completion("id", "int unsigned"),
+                completion("score", "int(10) unsigned zerofill"),
+                completion("name", "varchar(64)"),
+                completion("status", "enum('A','B')"),
+                completion("created_at", "timestamp(6)"),
+                completion("open_at", "time(3)"),
+            ],
+        );
+        let columns = &create.columns;
+        assert_eq!(columns[0].data_type, "int");
+        assert!(columns[0].unsigned);
+        assert_eq!(columns[1].data_type, "int");
+        assert!(columns[1].unsigned);
+        assert!(columns[1].zerofill);
+        assert_eq!(
+            (columns[2].data_type.as_str(), columns[2].length.as_str()),
+            ("varchar", "64")
+        );
+        assert_eq!(
+            (columns[4].data_type.as_str(), columns[4].length.as_str()),
+            ("timestamp", "6")
+        );
+        assert_eq!(
+            (columns[5].data_type.as_str(), columns[5].length.as_str()),
+            ("time", "3")
+        );
+        assert!(create.type_capabilities("timestamp").length);
+        assert!(create.type_capabilities("time").length);
+        assert_eq!(
+            columns[4].sql_line().as_deref(),
+            Some("`created_at` timestamp(6)")
+        );
+        assert_eq!(columns[5].sql_line().as_deref(), Some("`open_at` time(3)"));
+        assert_eq!(columns[3].data_type, "enum('A','B')");
+        assert!(columns[3].length.is_empty());
+        assert_eq!(
+            columns[3].sql_line().as_deref(),
+            Some("`status` enum('A','B')")
+        );
     }
 }

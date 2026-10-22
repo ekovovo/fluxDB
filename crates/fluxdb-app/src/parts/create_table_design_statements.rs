@@ -1102,17 +1102,26 @@ fn create_table_split_column_type(raw_type: &str) -> (String, String, String) {
         return (raw_type.to_ascii_lowercase(), String::new(), String::new());
     };
     let mut parts = args.split(',').map(|part| part.trim().to_string());
-    (
-        base.trim().to_ascii_lowercase(),
-        parts.next().unwrap_or_default(),
-        parts.next().unwrap_or_default(),
-    )
+    let length = parts.next().unwrap_or_default();
+    let scale = parts.next().unwrap_or_default();
+    // enum('A','B')、自定义类型参数等不是长度/精度：保留完整定义（含大小写），
+    // 否则保存设计表时会把参数当成长度丢掉。
+    let numeric = |value: &str| value.chars().all(|ch| ch.is_ascii_digit());
+    if (!length.is_empty() && !numeric(&length)) || (!scale.is_empty() && !numeric(&scale)) {
+        return (raw_type.to_string(), String::new(), String::new());
+    }
+    (base.trim().to_ascii_lowercase(), length, scale)
 }
 
 fn create_table_supports_length(data_type: &str) -> bool {
     create_table_is_char_length_type(data_type)
         || create_table_is_binary_length_type(data_type)
         || create_table_is_decimal_type(data_type)
+        // MySQL 的时间类型括号内是小数秒精度（0..=6），同样复用长度输入。
+        || matches!(
+            create_table_base_type(data_type).as_str(),
+            "datetime" | "timestamp" | "time"
+        )
 }
 
 fn create_table_default_length(data_type: &str) -> Option<&'static str> {

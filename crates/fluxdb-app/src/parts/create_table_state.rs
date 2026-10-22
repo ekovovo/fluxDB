@@ -69,7 +69,14 @@ impl CreateTableState {
         create.columns = columns
             .into_iter()
             .enumerate()
-            .map(|(index, column)| CreateTableColumn::from_completion(index as u64 + 1, column, provider))
+            .map(|(index, column)| {
+                CreateTableColumn::from_completion(
+                    index as u64 + 1,
+                    column,
+                    database_kind,
+                    provider,
+                )
+            })
             .collect();
         create.indexes = create_table_indexes_from_info(indexes);
         create.foreign_keys = create_table_foreign_keys_from_info(&object, foreign_keys);

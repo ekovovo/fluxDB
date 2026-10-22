@@ -616,10 +616,12 @@ impl NavicatMain {
     ) -> Entity<SelectState<SearchableVec<String>>> {
         let key = (tab_id, column_id);
         if !self.create_table_type_selects.contains_key(&key) {
+            let (options, selected_index) =
+                create_table_type_select_items(database_kind, value);
             let select = cx.new(|cx| {
                 SelectState::new(
-                    SearchableVec::new(create_table_type_options(database_kind)),
-                    create_table_type_index(database_kind, value),
+                    SearchableVec::new(options),
+                    selected_index,
                     window,
                     cx,
                 )
@@ -651,14 +653,16 @@ impl NavicatMain {
         }
 
         let select = self.create_table_type_selects.get(&key).cloned().unwrap();
-        if select
+        let selected_matches = select
             .read(cx)
             .selected_value()
-            .map(String::as_str)
-            != Some(value)
-        {
+            .is_some_and(|selected| selected.trim().eq_ignore_ascii_case(value.trim()));
+        if !selected_matches {
+            let (options, selected_index) =
+                create_table_type_select_items(database_kind, value);
             select.update(cx, |select, cx| {
-                select.set_selected_index(create_table_type_index(database_kind, value), window, cx);
+                select.set_items(SearchableVec::new(options), window, cx);
+                select.set_selected_index(selected_index, window, cx);
             });
         }
         select
@@ -1548,6 +1552,8 @@ fn create_table_field_row(
 ) -> Div {
     let select_view = view.clone();
     let column_id = row.column.id;
+    let row_index = row.index;
+    let length_enabled = create_table_supports_length(database_kind, &row.column.data_type);
     div()
         .h(px(34.))
         .flex_none()
@@ -1585,14 +1591,19 @@ fn create_table_field_row(
             colors,
             cx,
         ))
-        .child(create_table_input_cell_enabled(
-            row.length_input,
-            100.,
-            create_table_supports_length(database_kind, &row.column.data_type),
-            window,
-            colors,
-            cx,
-        ))
+        .child(
+            create_table_input_cell_enabled(
+                row.length_input,
+                100.,
+                length_enabled,
+                window,
+                colors,
+                cx,
+            )
+            .debug_selector(move || {
+                format!("create-table-length-{row_index}-enabled:{length_enabled}")
+            }),
+        )
         .child(create_table_flag_cell(
             view.clone(),
             tab_id,
@@ -3244,12 +3255,21 @@ fn create_table_type_options(database_kind: DatabaseKind) -> Vec<String> {
         .collect()
 }
 
-fn create_table_type_index(database_kind: DatabaseKind, value: &str) -> Option<IndexPath> {
-    create_table_provider(database_kind)
-        .type_options()
+/// 当前类型不在预设选项时补到末尾并选中，避免已有列类型显示成灰色占位文字。
+fn create_table_type_select_items(
+    database_kind: DatabaseKind,
+    value: &str,
+) -> (Vec<String>, Option<IndexPath>) {
+    let value = value.trim();
+    let mut options = create_table_type_options(database_kind);
+    if !value.is_empty() && !options.iter().any(|option| option.eq_ignore_ascii_case(value)) {
+        options.push(value.to_string());
+    }
+    let index = options
         .iter()
-        .position(|candidate| candidate.eq_ignore_ascii_case(value.trim()))
-        .map(|index| IndexPath::new(index))
+        .position(|option| option.eq_ignore_ascii_case(value))
+        .map(IndexPath::new);
+    (options, index)
 }
 
 fn create_table_default_cell<T: 'static>(
@@ -3983,5 +4003,50 @@ fn create_table_input_hover_border_color(focused: bool, colors: UiColors) -> gpu
         rgb(0x4a5260)
     } else {
         rgb(0x9aa4b2)
+    }
+}
+
+#[cfg(test)]
+impl NavicatMain {
+    fn create_table_type_value_for_test(
+        &self,
+        tab_id: TabId,
+        column_id: u64,
+        cx: &App,
+    ) -> Option<String> {
+        self.create_table_type_selects
+            .get(&(tab_id, column_id))
+            .and_then(|select| select.read(cx).selected_value().cloned())
+    }
+}
+
+#[cfg(test)]
+mod create_table_type_select_tests {
+    use super::*;
+
+    #[test]
+    fn custom_type_is_appended_and_selected() {
+        let (options, index) = create_table_type_select_items(DatabaseKind::Postgres, "order_state");
+        assert_eq!(options.last().map(String::as_str), Some("order_state"));
+        assert_eq!(index, Some(IndexPath::new(options.len() - 1)));
+    }
+
+    #[test]
+    fn canonical_type_is_not_duplicated_by_case() {
+        let (options, index) = create_table_type_select_items(DatabaseKind::MySql, "VARCHAR");
+        assert_eq!(
+            options
+                .iter()
+                .filter(|option| option.eq_ignore_ascii_case("varchar"))
+                .count(),
+            1
+        );
+        assert_eq!(
+            index,
+            options
+                .iter()
+                .position(|option| option.eq_ignore_ascii_case("varchar"))
+                .map(IndexPath::new)
+        );
     }
 }

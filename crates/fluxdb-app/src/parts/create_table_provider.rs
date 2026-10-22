@@ -120,7 +120,21 @@ impl CreateTableProvider for PostgresCreateTableProvider {
 
     fn type_capabilities(&self, data_type: &str) -> CreateTableTypeCapabilities {
         let base = create_table_base_type(data_type);
-        let length = matches!(base.as_str(), "varchar" | "char" | "bpchar" | "bit" | "varbit");
+        // numeric 精度和 timestamp/time 的小数秒精度都复用 length 输入。
+        let length = matches!(
+            base.as_str(),
+            "varchar"
+                | "char"
+                | "bpchar"
+                | "bit"
+                | "varbit"
+                | "numeric"
+                | "decimal"
+                | "timestamp"
+                | "timestamptz"
+                | "time"
+                | "timetz"
+        );
         let scale = matches!(base.as_str(), "numeric" | "decimal");
         CreateTableTypeCapabilities {
             length,

@@ -173,6 +173,13 @@ fn postgres_design_types_are_selected_instead_of_showing_placeholder(cx: &mut Te
     cx.update(|window, cx| {
         window.draw(cx).clear(cx);
     });
+    let popover = cx
+        .debug_bounds("create-table-custom-type-popover")
+        .expect("custom type editor popover");
+    assert!(
+        (popover.size.width - gpui::px(320.)).abs() <= gpui::px(1.),
+        "custom type editor should stay compact: {popover:?}"
+    );
     cx.update(|_, cx| {
         let view = view.read(cx);
         let tab = view.controller.state().tabs.iter()

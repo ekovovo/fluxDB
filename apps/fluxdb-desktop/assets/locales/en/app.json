@@ -2509,7 +2509,8 @@
       "custom_type": "Custom type",
       "custom_type_placeholder": "Complete type definition",
       "custom_type_edit": "Edit",
-      "custom_type_hint": "Use a complete definition, e.g. bit(8), numeric(12,4)[], public.\"OrderState\""
+      "custom_type_description": "Enter the complete type definition supported by the database",
+      "custom_type_hint": "e.g. bit(8), numeric(12,4)[], public.\"OrderState\""
     },
     "header": {
       "name": "Name",

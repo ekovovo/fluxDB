@@ -2509,7 +2509,8 @@
       "custom_type": "自定义类型",
       "custom_type_placeholder": "完整类型定义",
       "custom_type_edit": "编辑",
-      "custom_type_hint": "支持完整定义，例如 bit(8)、numeric(12,4)[]、public.\"OrderState\""
+      "custom_type_description": "输入数据库支持的完整类型定义",
+      "custom_type_hint": "例如 bit(8)、numeric(12,4)[]、public.\"OrderState\""
     },
     "header": {
       "name": "名称",

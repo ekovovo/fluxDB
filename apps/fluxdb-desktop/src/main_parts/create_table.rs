@@ -3808,7 +3808,7 @@ fn create_table_custom_type_option(
                     let popover = popover.clone();
                     let view = view.clone();
                     let draft = draft.clone();
-                    move |_: &gpui::MouseDownEvent, window: &mut Window, cx: &mut gpui::App| {
+                    move |window: &mut Window, cx: &mut gpui::App| {
                         let next = draft.read(cx).value().trim().to_string();
                         if next.is_empty() {
                             return;
@@ -3828,7 +3828,7 @@ fn create_table_custom_type_option(
                 let cancel = {
                     let popover = popover.clone();
                     let draft = draft.clone();
-                    move |_: &gpui::MouseDownEvent, window: &mut Window, cx: &mut gpui::App| {
+                    move |window: &mut Window, cx: &mut gpui::App| {
                         draft.update(cx, |input, cx| {
                             input.set_value(value.clone(), window, cx);
                         });
@@ -3837,63 +3837,99 @@ fn create_table_custom_type_option(
                 };
                 let focused = draft.read(cx).focus_handle(cx).is_focused(window);
                 div()
-                    .w(px(380.))
+                    .debug_selector(|| "create-table-custom-type-popover".into())
+                    .w(px(320.))
                     .rounded(colors.radius)
                     .border_1()
                     .border_color(colors.border)
                     .bg(colors.panel_bg)
                     .shadow_md()
-                    .p_3()
+                    .p_4()
                     .flex()
                     .flex_col()
-                    .gap_3()
                     .child(
                         div()
-                            .text_size(px(13.))
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .text_color(colors.text)
-                            .child(tr("app.create_table.column.custom_type")),
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_size(px(14.))
+                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .text_color(colors.text)
+                                    .child(tr("app.create_table.column.custom_type")),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(12.))
+                                    .text_color(colors.muted)
+                                    .child(tr("app.create_table.column.custom_type_description")),
+                            ),
                     )
                     .child(
                         div()
-                            .h(px(CREATE_TABLE_INPUT_HEIGHT))
+                            .mt_3()
+                            .h(px(34.))
                             .rounded(colors.radius)
                             .border_1()
                             .border_color(create_table_input_border_color(focused, colors))
                             .bg(colors.input_bg)
+                            .hover(move |style| {
+                                style.border_color(
+                                    create_table_input_hover_border_color(focused, colors),
+                                )
+                            })
                             .child(
                                 Input::new(&draft)
                                     .appearance(false)
                                     .focus_bordered(false)
                                     .w_full()
                                     .h_full()
-                                    .px_2(),
+                                    .px_3(),
                             ),
                     )
                     .child(
                         div()
+                            .mt_2()
                             .text_size(px(12.))
                             .text_color(colors.muted)
                             .child(tr("app.create_table.column.custom_type_hint")),
                     )
                     .child(
                         div()
+                            .mt_4()
                             .flex()
                             .justify_end()
                             .gap_2()
                             .child(
-                                create_table_popover_text_button(
-                                    tr("app.create_table.popover.cancel"),
-                                    colors,
-                                )
-                                .on_mouse_down(MouseButton::Left, cancel),
+                                Button::new((
+                                    gpui::ElementId::Name(
+                                        format!("create-table-custom-type-cancel-{}", tab_id.0)
+                                            .into(),
+                                    ),
+                                    column_id.to_string(),
+                                ))
+                                .label(tr("app.create_table.popover.cancel"))
+                                .small()
+                                .outline()
+                                .on_click(move |_, window, cx| {
+                                    cancel(window, cx);
+                                }),
                             )
                             .child(
-                                create_table_popover_text_button(
-                                    tr("app.create_table.popover.confirm"),
-                                    colors,
-                                )
-                                .on_mouse_down(MouseButton::Left, apply),
+                                Button::new((
+                                    gpui::ElementId::Name(
+                                        format!("create-table-custom-type-apply-{}", tab_id.0)
+                                            .into(),
+                                    ),
+                                    column_id.to_string(),
+                                ))
+                                .label(tr("app.create_table.popover.confirm"))
+                                .small()
+                                .primary()
+                                .on_click(move |_, window, cx| {
+                                    apply(window, cx);
+                                }),
                             ),
                     )
             }),

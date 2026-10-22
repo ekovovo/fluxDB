@@ -324,7 +324,9 @@ impl CreateTableColumn {
             .as_deref()
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(|| provider.default_column_type());
-        let (data_type, length, scale) = create_table_split_column_type(raw_type);
+        let normalized_type = provider.normalize_metadata_type(raw_type);
+        let (data_type, length, scale) = create_table_split_column_type(&normalized_type);
+        let lower_raw_type = raw_type.to_ascii_lowercase();
         Self {
             id,
             name: column.name,
@@ -337,8 +339,8 @@ impl CreateTableColumn {
             comment: column.comment.unwrap_or_default(),
             auto_increment: false,
             auto_update_time: false,
-            unsigned: raw_type.to_ascii_lowercase().contains(" unsigned"),
-            zerofill: raw_type.to_ascii_lowercase().contains(" zerofill"),
+            unsigned: lower_raw_type.contains(" unsigned"),
+            zerofill: lower_raw_type.contains(" zerofill"),
             binary: false,
             charset: String::new(),
             collation: String::new(),

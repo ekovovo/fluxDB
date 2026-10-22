@@ -23,7 +23,7 @@ fn data_cell_temporal_kind(type_name: &str) -> Option<DataCellTemporalKind> {
             Some(DataCellTemporalKind::DateTime)
         }
         "date" => Some(DataCellTemporalKind::Date),
-        "time" => Some(DataCellTemporalKind::Time),
+        "time" | "timetz" => Some(DataCellTemporalKind::Time),
         _ => None,
     }
 }

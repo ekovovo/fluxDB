@@ -187,8 +187,13 @@ fn create_table_postgres_column_type(column: &CreateTableColumn) -> String {
     let length = column.length.trim();
     let scale = column.scale.trim();
     // PG 精度语法按类型族判断，不复用 MySQL 的 varchar/decimal 判定（numeric ≠ decimal）。
+    // 时间族的 length 承载小数秒精度，必须保留，否则修改列时会静默丢精度。
     let supports_scale = matches!(base.as_str(), "numeric" | "decimal");
-    let supports_length = matches!(base.as_str(), "varchar" | "char" | "bpchar" | "bit" | "varbit");
+    let supports_length = matches!(
+        base.as_str(),
+        "varchar" | "char" | "bpchar" | "bit" | "varbit"
+            | "timestamp" | "timestamptz" | "time" | "timetz"
+    );
     let modifiers = if length.is_empty() || !(supports_length || supports_scale) {
         String::new()
     } else if supports_scale && !scale.is_empty() {
@@ -320,4 +325,35 @@ fn create_table_postgres_trigger_statements(create: &CreateTableState) -> Result
         ));
     }
     Ok(statements)
+}
+
+#[cfg(test)]
+mod postgres_column_type_tests {
+    use super::{CreateTableColumn, POSTGRES_CREATE_TABLE_PROVIDER, create_table_postgres_column_type};
+    use fluxdb_core::CompletionColumn;
+
+    #[test]
+    fn time_family_precision_survives_design_round_trip() {
+        let parsed = CreateTableColumn::from_completion(
+            1,
+            CompletionColumn {
+                database: Some("app".into()),
+                schema: Some("public".into()),
+                table: "events".into(),
+                name: "happened_at".into(),
+                type_name: Some("timestamptz(3)".into()),
+                nullable: false,
+                primary_key: false,
+                comment: None,
+                stable: Some(1),
+            },
+            &POSTGRES_CREATE_TABLE_PROVIDER,
+        );
+        assert_eq!(parsed.data_type, "timestamptz");
+        assert_eq!(parsed.length, "3");
+        assert_eq!(
+            create_table_postgres_column_type(&parsed),
+            "timestamptz(3)"
+        );
+    }
 }

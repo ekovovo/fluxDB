@@ -283,25 +283,24 @@ fn create_table_design_type_parts(
     let raw_type = raw_type.as_str();
     match database_kind {
         DatabaseKind::Postgres => create_table_postgres_design_type_parts(raw_type),
-        DatabaseKind::MySql | DatabaseKind::TiDb => {
-            let (base, length, scale) = create_table_split_column_type(raw_type);
-            (create_table_mysql_design_base_type(&base), length, scale)
-        }
+        DatabaseKind::MySql | DatabaseKind::TiDb => create_table_mysql_design_type_parts(raw_type),
         _ => create_table_split_column_type(raw_type),
     }
 }
 
-fn create_table_mysql_design_base_type(base: &str) -> String {
-    // 带参数的 enum/set 等已由 split 视为完整自定义类型，不能再拆分其内容。
+fn create_table_mysql_design_type_parts(raw_type: &str) -> (String, String, String) {
+    let (base, length, scale) = create_table_split_column_type(raw_type);
+    // enum/set 等非数字参数已由 split 整体保留。
     if base.contains('(') {
-        return base.to_string();
+        return (base, length, scale);
     }
-    base.split_whitespace()
-        .filter(|part| {
-            !part.eq_ignore_ascii_case("unsigned") && !part.eq_ignore_ascii_case("zerofill")
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
+    // 只有已知支持长度/精度的类型才拆数字参数；BIT(8)、VECTOR(1536) 等
+    // 数字参数不是列长度，拆开后在回写时会被静默丢掉。
+    if create_table_mysql_supports_length(&base) || create_table_mysql_supports_scale(&base) {
+        (base, length, scale)
+    } else {
+        (raw_type.trim().to_string(), String::new(), String::new())
+    }
 }
 
 fn create_table_postgres_design_type_parts(raw_type: &str) -> (String, String, String) {
@@ -776,9 +775,13 @@ mod create_table_design_type_tests {
         let columns = &create.columns;
         assert_eq!(columns[0].data_type, "int");
         assert!(columns[0].unsigned);
-        assert_eq!(columns[1].data_type, "int");
+        assert_eq!(columns[1].data_type, "int(10)");
         assert!(columns[1].unsigned);
         assert!(columns[1].zerofill);
+        assert_eq!(
+            columns[1].sql_line().as_deref(),
+            Some("`score` int(10) UNSIGNED ZEROFILL")
+        );
         assert_eq!(
             (columns[2].data_type.as_str(), columns[2].length.as_str()),
             ("varchar", "64")
@@ -804,5 +807,51 @@ mod create_table_design_type_tests {
             columns[3].sql_line().as_deref(),
             Some("`status` enum('A','B')")
         );
+    }
+
+    #[test]
+    fn mysql_unsupported_numeric_parameters_stay_opaque() {
+        for raw_type in ["bit(8)", "float(7,4)", "year(4)", "vector(1536)"] {
+            let mut create = design(
+                DatabaseKind::MySql,
+                vec![completion("value", raw_type)],
+            );
+            let column = &create.columns[0];
+            assert_eq!(column.data_type, raw_type);
+            assert!(column.length.is_empty());
+            assert!(column.scale.is_empty());
+            assert!(!create.type_capabilities(raw_type).length);
+            assert!(
+                column
+                    .sql_line()
+                    .is_some_and(|line| line.contains(raw_type))
+            );
+
+            create.set_column_field(1, CreateTableColumnField::Comment, "kept".into());
+            assert!(
+                create
+                    .sql_preview()
+                    .is_ok_and(|sql| sql.contains(raw_type)),
+                "comment edit must preserve {raw_type}"
+            );
+        }
+    }
+
+    #[test]
+    fn temporal_precision_rejects_values_above_six() {
+        for kind in [DatabaseKind::Postgres, DatabaseKind::MySql] {
+            let mut create = design(kind, vec![completion("value", "timestamp")]);
+            create.table_name = "items".into();
+
+            create.set_column_field(1, CreateTableColumnField::Length, "7".into());
+            assert_eq!(
+                create.validation_error(),
+                Some("时间类型精度必须在 0 到 6 之间"),
+                "{kind:?}"
+            );
+
+            create.set_column_field(1, CreateTableColumnField::Length, "6".into());
+            assert_eq!(create.validation_error(), None, "{kind:?}");
+        }
     }
 }

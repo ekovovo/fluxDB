@@ -512,6 +512,9 @@ fn create_table_mysql_validation_error(create: &CreateTableState) -> Option<&'st
     if create.table_name.trim().is_empty() {
         return Some("请输入表名");
     }
+    if let Some(message) = create_table_temporal_precision_validation_error(create) {
+        return Some(message);
+    }
 
     let named_columns = create
         .columns
@@ -564,6 +567,24 @@ fn create_table_mysql_validation_error(create: &CreateTableState) -> Option<&'st
     }
 
     None
+}
+
+fn create_table_temporal_precision_validation_error(
+    create: &CreateTableState,
+) -> Option<&'static str> {
+    let invalid = create.columns.iter().any(|column| {
+        let base = create_table_base_type(&column.data_type);
+        matches!(
+            base.as_str(),
+            "datetime" | "timestamp" | "timestamptz" | "time" | "timetz"
+        ) && !column.length.trim().is_empty()
+            && column
+                .length
+                .trim()
+                .parse::<u32>()
+                .map_or(true, |precision| precision > 6)
+    });
+    invalid.then_some("时间类型精度必须在 0 到 6 之间")
 }
 
 impl CreateTableIndex {

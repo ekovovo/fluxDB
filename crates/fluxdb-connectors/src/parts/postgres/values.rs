@@ -30,7 +30,11 @@ pub(crate) fn pg_type_display_name(formatted: &str) -> String {
         Some(body) => (body, "[]"),
         None => (formatted, ""),
     };
-    for (standard, alias) in [("character varying", "varchar"), ("character", "char")] {
+    for (standard, alias) in [
+        ("character varying", "varchar"),
+        ("character", "char"),
+        ("bit varying", "varbit"),
+    ] {
         if let Some(rest) = body.strip_prefix(standard)
             && (rest.is_empty() || rest.starts_with('('))
         {
@@ -309,6 +313,8 @@ mod pg_type_display_tests {
             ("time(6) with time zone", "timetz(6)"),
             ("timestamp with time zone[]", "timestamptz[]"),
             ("timestamp(3) with time zone[]", "timestamptz(3)[]"),
+            ("bit varying(8)", "varbit(8)"),
+            ("bit varying[]", "varbit[]"),
             ("numeric(10,2)", "numeric(10,2)"),
             ("interval", "interval"),
         ] {

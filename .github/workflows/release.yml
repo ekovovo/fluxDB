@@ -231,7 +231,8 @@ jobs:
           openssl pkeyutl -sign -rawin -inkey "$key_file" \
             -in target/updater/latest.json \
             -out target/updater/latest.json.sig.bin
-          base64 target/updater/latest.json.sig.bin > target/updater/latest.json.sig
+          base64 --wrap=0 target/updater/latest.json.sig.bin \
+            > target/updater/latest.json.sig
           gh release upload "$GITHUB_REF_NAME" \
             target/updater/latest.json \
             target/updater/latest.json.sig \

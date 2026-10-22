@@ -1582,6 +1582,7 @@ fn create_table_field_row(
         })
         .child(
             create_table_table_cell((row.index + 1).to_string(), colors)
+                .debug_selector(move || format!("create-table-row-{row_index}"))
                 .w(px(46.))
                 .flex_shrink_0()
                 .px_3(),
@@ -3571,21 +3572,16 @@ fn create_table_column_options(
         .items_center()
         .gap_3();
 
-    let custom_type_input = this.create_table_input(
-        CreateTableInputKey::ColumnCustomType(tab_id, id),
-        tr("app.create_table.column.custom_type_placeholder"),
-        &column.data_type,
-        window,
-        cx,
-    );
-    options = options.child(create_table_option_input(
-        tr("app.create_table.column.custom_type"),
-        custom_type_input,
-        280.,
-        window,
-        colors,
-        cx,
-    ));
+    if !create_table_type_is_known(database_kind, &column.data_type) {
+        options = options.child(create_table_custom_type_option(
+            tab_id,
+            column,
+            this,
+            window,
+            colors,
+            cx,
+        ));
+    }
 
     if capabilities.text_options {
         let charset_select = this.create_table_select(
@@ -3719,6 +3715,7 @@ fn create_table_column_options(
 
     div()
         .flex_none()
+        .min_h(px(74.))
         .debug_selector(|| "create-table-column-options".into())
         .max_h(gpui::relative(0.3))
         .border_t_1()
@@ -3729,10 +3726,177 @@ fn create_table_column_options(
         .overflow_hidden()
         .child(
             div()
-                .min_h(px(0.))
+                .min_h(px(74.))
                 .max_h(gpui::relative(0.3))
                 .overflow_y_scrollbar()
                 .child(options),
+        )
+}
+
+fn create_table_custom_type_option(
+    tab_id: TabId,
+    column: &CreateTableColumn,
+    this: &mut NavicatMain,
+    window: &mut Window,
+    colors: UiColors,
+    cx: &mut Context<NavicatMain>,
+) -> Div {
+    let column_id = column.id;
+    let draft = this.create_table_input(
+        CreateTableInputKey::ColumnCustomType(tab_id, column_id),
+        tr("app.create_table.column.custom_type_placeholder"),
+        &column.data_type,
+        window,
+        cx,
+    );
+    let value = column.data_type.clone();
+    let view = cx.entity().downgrade();
+    let label = tr("app.create_table.column.custom_type");
+    let summary = column.data_type.clone();
+
+    div()
+        .debug_selector(move || format!("create-table-custom-type-option-{column_id}"))
+        .flex()
+        .items_center()
+        .gap_2()
+        .child(
+            div()
+                .w(px(84.))
+                .text_size(px(12.))
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .text_color(colors.text)
+                .child(label),
+        )
+        .child(
+            div()
+                .min_w(px(0.))
+                .max_w(px(360.))
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .text_size(px(12.))
+                .text_color(colors.text)
+                .child(summary),
+        )
+        .child(
+            Popover::new((
+                gpui::ElementId::Name(format!("create-table-custom-type-popover-{}", tab_id.0).into()),
+                column_id.to_string(),
+            ))
+            .appearance(false)
+            .anchor(Anchor::TopRight)
+            .trigger(
+                Button::new((
+                    gpui::ElementId::Name(
+                        format!("create-table-custom-type-trigger-{}", tab_id.0).into(),
+                    ),
+                    column_id.to_string(),
+                ))
+                .ghost()
+                .xsmall()
+                .debug_selector(move || {
+                    format!("create-table-custom-type-edit-{column_id}")
+                })
+                .child(tr("app.create_table.column.custom_type_edit")),
+            )
+            .content(move |_, window, cx| {
+                let popover = cx.entity();
+                let view = view.clone();
+                let draft = draft.clone();
+                let value = value.clone();
+                let apply = {
+                    let popover = popover.clone();
+                    let view = view.clone();
+                    let draft = draft.clone();
+                    move |_: &gpui::MouseDownEvent, window: &mut Window, cx: &mut gpui::App| {
+                        let next = draft.read(cx).value().trim().to_string();
+                        if next.is_empty() {
+                            return;
+                        }
+                        let _ = view.update(cx, |this, cx| {
+                            this.set_create_table_column_input(
+                                tab_id,
+                                column_id,
+                                CreateTableColumnField::CustomType,
+                                next,
+                                cx,
+                            );
+                        });
+                        popover.update(cx, |state, cx| state.dismiss(window, cx));
+                    }
+                };
+                let cancel = {
+                    let popover = popover.clone();
+                    let draft = draft.clone();
+                    move |_: &gpui::MouseDownEvent, window: &mut Window, cx: &mut gpui::App| {
+                        draft.update(cx, |input, cx| {
+                            input.set_value(value.clone(), window, cx);
+                        });
+                        popover.update(cx, |state, cx| state.dismiss(window, cx));
+                    }
+                };
+                let focused = draft.read(cx).focus_handle(cx).is_focused(window);
+                div()
+                    .w(px(380.))
+                    .rounded(colors.radius)
+                    .border_1()
+                    .border_color(colors.border)
+                    .bg(colors.panel_bg)
+                    .shadow_md()
+                    .p_3()
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .child(
+                        div()
+                            .text_size(px(13.))
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(colors.text)
+                            .child(tr("app.create_table.column.custom_type")),
+                    )
+                    .child(
+                        div()
+                            .h(px(CREATE_TABLE_INPUT_HEIGHT))
+                            .rounded(colors.radius)
+                            .border_1()
+                            .border_color(create_table_input_border_color(focused, colors))
+                            .bg(colors.input_bg)
+                            .child(
+                                Input::new(&draft)
+                                    .appearance(false)
+                                    .focus_bordered(false)
+                                    .w_full()
+                                    .h_full()
+                                    .px_2(),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(12.))
+                            .text_color(colors.muted)
+                            .child(tr("app.create_table.column.custom_type_hint")),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .justify_end()
+                            .gap_2()
+                            .child(
+                                create_table_popover_text_button(
+                                    tr("app.create_table.popover.cancel"),
+                                    colors,
+                                )
+                                .on_mouse_down(MouseButton::Left, cancel),
+                            )
+                            .child(
+                                create_table_popover_text_button(
+                                    tr("app.create_table.popover.confirm"),
+                                    colors,
+                                )
+                                .on_mouse_down(MouseButton::Left, apply),
+                            ),
+                    )
+            }),
         )
 }
 
@@ -3876,6 +4040,23 @@ fn create_table_length_placeholder(database_kind: DatabaseKind, data_type: &str)
     create_table_provider(database_kind)
         .default_length(data_type)
         .unwrap_or("")
+}
+
+fn create_table_type_is_known(database_kind: DatabaseKind, data_type: &str) -> bool {
+    let data_type = data_type.trim();
+    if data_type.is_empty() {
+        return true;
+    }
+    let base = data_type
+        .split_once('(')
+        .map_or(data_type, |(base, _)| base.trim());
+    create_table_provider(database_kind)
+        .type_options()
+        .iter()
+        .any(|option| {
+            option.eq_ignore_ascii_case(data_type)
+                || (option.eq_ignore_ascii_case(base) && !data_type.contains(['(', '[', '.']))
+        })
 }
 
 fn create_table_inherit_select_options(mut options: Vec<String>) -> Vec<String> {

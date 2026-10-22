@@ -147,6 +147,44 @@ fn postgres_design_types_are_selected_instead_of_showing_placeholder(cx: &mut Te
         cx.debug_bounds("create-table-length-2-enabled:true").is_some(),
         "timestamp precision must be editable as length"
     );
+    assert!(
+        cx.debug_bounds("create-table-custom-type-option-1").is_none(),
+        "standard types must not show the custom type editor"
+    );
+    let state_row = cx
+        .debug_bounds("create-table-row-1")
+        .expect("custom type row");
+    cx.simulate_click(state_row.center(), Modifiers::default());
+    cx.update(|window, cx| {
+        window.draw(cx).clear(cx);
+    });
+    assert!(
+        cx.debug_bounds("create-table-custom-type-option-2").is_some(),
+        "opaque custom types must expose a summary and edit entry"
+    );
+    assert!(
+        cx.debug_bounds("create-table-custom-type-edit-2").is_some(),
+        "opaque custom types must expose an edit action"
+    );
+    let edit = cx
+        .debug_bounds("create-table-custom-type-edit-2")
+        .expect("custom type edit");
+    cx.simulate_click(edit.center(), Modifiers::default());
+    cx.update(|window, cx| {
+        window.draw(cx).clear(cx);
+    });
+    cx.update(|_, cx| {
+        let view = view.read(cx);
+        let tab = view.controller.state().tabs.iter()
+            .find(|tab| tab.id == tab_id).expect("design tab");
+        let TabKind::CreateTable(create) = &tab.kind else {
+            panic!("design tab kind");
+        };
+        let CreateTableMode::Design { original, .. } = &create.mode else {
+            panic!("design snapshot");
+        };
+        assert_eq!(create.columns, original.columns, "opening the editor must not mutate the draft");
+    });
     let type_select = cx
         .debug_bounds("create-table-type-select-0")
         .expect("type select bounds");
@@ -163,6 +201,10 @@ fn postgres_design_types_are_selected_instead_of_showing_placeholder(cx: &mut Te
     let options = cx
         .debug_bounds("create-table-column-options")
         .expect("column options bounds");
+    assert!(
+        options.size.height >= gpui::px(74.),
+        "column options must keep a visible minimum height: options={options:?}"
+    );
     assert!(
         options.size.height <= editor.size.height * 0.3 + gpui::px(0.5),
         "column options must stay within 30% of the editor height: editor={editor:?}, options={options:?}"

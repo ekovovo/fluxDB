@@ -35,13 +35,31 @@ fn data_table_header_tooltip_row(
     value_color: impl Into<Hsla>,
 ) -> impl IntoElement {
     let label: SharedString = label.into();
+    let tooltip_value_selector = label.clone();
     div()
         .flex()
-        .items_center()
+        .items_start()
         .gap_3()
         .text_size(px(13.))
-        .child(div().w(px(34.)).text_color(rgb(0x7b8190)).child(label))
-        .child(div().flex_1().text_color(value_color).child(value))
+        .child(
+            div()
+                .w(px(34.))
+                .flex_none()
+                .text_color(rgb(0x7b8190))
+                .child(label),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w(px(0.))
+                .overflow_hidden()
+                .whitespace_normal()
+                .text_color(value_color)
+                .debug_selector(move || {
+                    format!("data-table-header-tooltip-value:{tooltip_value_selector}")
+                })
+                .child(value),
+        )
 }
 
 fn data_table_column_comment_label(meta: &DataTableColumnMeta) -> String {

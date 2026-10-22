@@ -174,3 +174,119 @@ fn table_import_dialog_renders_with_disabled_create_option(cx: &mut TestAppConte
     cx.update(|window, _| window.refresh());
     cx.run_until_parked();
 }
+
+#[gpui::test]
+fn long_column_comment_wraps_inside_header_tooltip(cx: &mut TestAppContext) {
+    use crate::{DataPageTableDelegate, NavicatMain, TabId};
+    use fluxdb_core::{CellValue, Column, DataPage, Row};
+    use gpui_component::table::{DataTable, TableState};
+
+    struct TooltipHarness {
+        _app: gpui::Entity<NavicatMain>,
+        table: gpui::Entity<TableState<DataPageTableDelegate>>,
+    }
+
+    impl gpui::Render for TooltipHarness {
+        fn render(
+            &mut self,
+            _window: &mut gpui::Window,
+            _cx: &mut gpui::Context<Self>,
+        ) -> impl gpui::IntoElement {
+            let _ = &self._app;
+            gpui::div()
+                .size_full()
+                .child(DataTable::new(&self.table))
+        }
+    }
+
+    let _guard = locale_guard();
+    let temp = tempfile::tempdir().expect("isolated profile");
+    let storage = FileStorage::new(temp.path().join("profile"));
+    init_i18n(
+        &app_assets_base_path().join("locales"),
+        &storage.root_dir().join("locales"),
+        "en",
+    );
+    cx.update(|cx| {
+        extend_component_i18n();
+        gpui_component::init(cx);
+    });
+    let (_, cx) = cx.add_window_view(move |window, cx| {
+        let app = cx.new(|cx| {
+            navicat_main_new(
+                window,
+                cx,
+                AppController::new(),
+                storage,
+                gpui_component::ThemeMode::Light,
+            )
+        });
+        let page = std::sync::Arc::new(DataPage {
+            columns: vec![Column {
+                name: "mom_kwh".into(),
+                type_name: Some("numeric(14,2)".into()),
+                nullable: true,
+                primary_key: false,
+                comment: Some("环比电量（上月环比累计电量 kvh）".into()),
+            }],
+            rows: vec![Row {
+                values: vec![CellValue::Null],
+            }],
+            offset: 0,
+            limit: 1,
+            has_more: false,
+        });
+        let edit_input = app.read(cx).data_cell_edit_input.clone();
+        let delegate = DataPageTableDelegate::from_page_with_rule(
+            app.downgrade(),
+            TabId(1),
+            page,
+            None,
+            None,
+            &Default::default(),
+            None,
+            None,
+            None,
+            false,
+            None,
+            None,
+            edit_input.clone(),
+            None,
+            edit_input,
+            None,
+            true,
+            None,
+            std::sync::Arc::new(|_, _, _, _| {}),
+        );
+        let table = cx.new(|cx| {
+            TableState::new(delegate, window, cx)
+                .sortable(false)
+                .col_movable(false)
+                .col_resizable(true)
+                .col_selectable(false)
+        });
+        TooltipHarness {
+            _app: app,
+            table,
+        }
+    });
+    cx.simulate_resize(gpui::size(gpui::px(500.), gpui::px(300.)));
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.run_until_parked();
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let header = cx
+        .debug_bounds("data-table-header-text:mom_kwh")
+        .expect("column header");
+    cx.simulate_mouse_move(header.center(), None, gpui::Modifiers::none());
+    cx.background_executor
+        .advance_clock(std::time::Duration::from_millis(600));
+    cx.run_until_parked();
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let value = cx
+        .debug_bounds("data-table-header-tooltip-value:Comment")
+        .expect("column comment tooltip");
+    assert!(
+        value.size.width <= gpui::px(150.) && value.size.height > gpui::px(20.),
+        "long comment must wrap inside the tooltip card: {value:?}"
+    );
+}

@@ -3,6 +3,10 @@ pub trait CreateTableProvider {
     fn default_column_type(&self) -> &'static str;
     fn default_id_type(&self) -> &'static str;
     fn default_length(&self, data_type: &str) -> Option<&'static str>;
+    /// 把元数据返回的完整类型文本规范化为设计表解析用的基础形式。
+    fn normalize_metadata_type(&self, raw_type: &str) -> String {
+        raw_type.to_string()
+    }
     fn type_capabilities(&self, data_type: &str) -> CreateTableTypeCapabilities;
     fn validation_error(&self, create: &CreateTableState) -> Option<&'static str>;
     fn sql_preview(&self, create: &CreateTableState) -> Result<String, String>;
@@ -112,13 +116,17 @@ impl CreateTableProvider for PostgresCreateTableProvider {
 
     fn default_length(&self, data_type: &str) -> Option<&'static str> {
         // PG 的 varchar/numeric 不写长度即为无限制；只有 char 习惯给长度。
-        match create_table_base_type(data_type).as_str() {
+        match data_type.trim().to_ascii_lowercase().as_str() {
             "char" | "bpchar" => Some("1"),
             _ => None,
         }
     }
 
     fn type_capabilities(&self, data_type: &str) -> CreateTableTypeCapabilities {
+        // 完整定义由元数据层原样保留，不能按括号前的标量类型开放参数或 identity。
+        if data_type.contains(['(', '[', '"', '.']) {
+            return CreateTableTypeCapabilities::default();
+        }
         let base = create_table_base_type(data_type);
         // numeric 精度和 timestamp/time 的小数秒精度都复用 length 输入。
         let length = matches!(
@@ -241,6 +249,11 @@ impl CreateTableProvider for MySqlCreateTableProvider {
 
     fn default_length(&self, data_type: &str) -> Option<&'static str> {
         create_table_mysql_default_length(data_type)
+    }
+
+    fn normalize_metadata_type(&self, raw_type: &str) -> String {
+        // column_type 会把 unsigned/zerofill 拼在类型后；设计表用独立开关承载这两个属性。
+        create_table_strip_mysql_type_modifiers(raw_type)
     }
 
     fn type_capabilities(&self, data_type: &str) -> CreateTableTypeCapabilities {

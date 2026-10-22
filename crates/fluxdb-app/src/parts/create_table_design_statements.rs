@@ -1093,6 +1093,22 @@ fn create_table_column_type(data_type: &str, length: &str, scale: &str) -> Strin
     }
 }
 
+/// MySQL `column_type` 把 unsigned/zerofill 作为尾缀返回（如 `int unsigned`）；
+/// 设计表已有独立开关，这里只剥尾缀，保留类型内的空格与枚举字面量。
+fn create_table_strip_mysql_type_modifiers(raw_type: &str) -> String {
+    let mut value = raw_type.trim();
+    loop {
+        let lower = value.to_ascii_lowercase();
+        let Some(stripped_len) = [" unsigned", " zerofill"]
+            .iter()
+            .find_map(|suffix| lower.ends_with(suffix).then(|| value.len() - suffix.len()))
+        else {
+            return value.to_string();
+        };
+        value = value[..stripped_len].trim_end();
+    }
+}
+
 fn create_table_split_column_type(raw_type: &str) -> (String, String, String) {
     let raw_type = raw_type.trim();
     let Some((base, rest)) = raw_type.split_once('(') else {
@@ -1242,4 +1258,76 @@ fn create_table_mysql_is_integer_type(data_type: &str) -> bool {
 
 fn create_table_mysql_is_auto_update_time_type(data_type: &str) -> bool {
     create_table_is_auto_update_time_type(data_type)
+}
+
+#[cfg(test)]
+mod create_table_type_parsing_tests {
+    use super::{
+        CreateTableColumn, MYSQL_CREATE_TABLE_PROVIDER, create_table_split_column_type,
+        create_table_strip_mysql_type_modifiers,
+    };
+    use fluxdb_core::{CompletionColumn, DatabaseKind};
+
+    fn completion_column(type_name: &str) -> CompletionColumn {
+        CompletionColumn {
+            database: Some("app".into()),
+            schema: None,
+            table: "items".into(),
+            name: "amount".into(),
+            type_name: Some(type_name.into()),
+            nullable: false,
+            primary_key: false,
+            comment: None,
+            stable: None,
+        }
+    }
+
+    #[test]
+    fn mysql_type_modifiers_stay_separate_from_base_type() {
+        for (raw, expected) in [
+            ("int unsigned", "int"),
+            ("int unsigned zerofill", "int"),
+            ("float zerofill", "float"),
+            ("decimal(10,2) unsigned", "decimal(10,2)"),
+            ("enum('a b')", "enum('a b')"),
+        ] {
+            assert_eq!(create_table_strip_mysql_type_modifiers(raw), expected);
+        }
+        assert_eq!(
+            create_table_split_column_type("int"),
+            ("int".to_string(), String::new(), String::new())
+        );
+    }
+
+    #[test]
+    fn mysql_unsigned_column_keeps_flag_without_duplicating_sql_modifier() {
+        let parsed = CreateTableColumn::from_completion(
+            1,
+            completion_column("int unsigned"),
+            DatabaseKind::MySql,
+            &MYSQL_CREATE_TABLE_PROVIDER,
+        );
+        assert_eq!(parsed.data_type, "int");
+        assert!(parsed.unsigned);
+        assert_eq!(
+            parsed.sql_line().as_deref(),
+            Some("`amount` int UNSIGNED NOT NULL")
+        );
+
+        let parsed = CreateTableColumn::from_completion(
+            2,
+            completion_column("decimal(10,2) unsigned zerofill"),
+            DatabaseKind::MySql,
+            &MYSQL_CREATE_TABLE_PROVIDER,
+        );
+        assert_eq!(parsed.data_type, "decimal");
+        assert_eq!(parsed.length, "10");
+        assert_eq!(parsed.scale, "2");
+        assert!(parsed.unsigned);
+        assert!(parsed.zerofill);
+        assert_eq!(
+            parsed.sql_line().as_deref(),
+            Some("`amount` decimal(10,2) UNSIGNED ZEROFILL NOT NULL")
+        );
+    }
 }

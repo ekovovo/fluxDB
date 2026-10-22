@@ -215,8 +215,9 @@ async fn pg_list_completion_columns_async(
                 return None;
             }
             let name: String = row.get(2);
-            // format_type 已含 schema 声明与长度，直接作为 type_name 展示。
-            let type_name: String = row.get(3);
+            // format_type 已含 schema 声明与长度，字符/时间类型收敛为应用短别名后展示。
+            let formatted_type: String = row.get(3);
+            let type_name = pg_type_display_name(&formatted_type);
             let not_null: bool = row.get(4);
             let comment: String = row.get(5);
             let primary_key: bool = row.get(6);

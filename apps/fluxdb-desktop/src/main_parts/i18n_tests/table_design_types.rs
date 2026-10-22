@@ -1,6 +1,8 @@
 #[gpui::test]
 fn postgres_design_types_are_selected_instead_of_showing_placeholder(cx: &mut TestAppContext) {
-    use fluxdb_app::{AppCommand, AppEvent, CreateTableState};
+    use fluxdb_app::{
+        AppCommand, AppEvent, CreateTableMode, CreateTableState, TabKind, create_table_provider,
+    };
     use fluxdb_core::{
         CompletionColumn, ConnectionConfig, ConnectionId, DatabaseKind, Endpoint, ObjectKind,
         ObjectPath,
@@ -54,8 +56,10 @@ fn postgres_design_types_are_selected_instead_of_showing_placeholder(cx: &mut Te
         DatabaseKind::Postgres,
         vec![
             column("name", "character varying(64)"),
-            column("state", "public.order_status"),
+            column("state", r#"public."OrderStatus""#),
             column("created_at", "timestamp(6) without time zone"),
+            column("amounts", "numeric(12,4)[]"),
+            column("event_times", "timestamp(6) with time zone[]"),
         ],
         Vec::new(),
         Vec::new(),
@@ -109,7 +113,7 @@ fn postgres_design_types_are_selected_instead_of_showing_placeholder(cx: &mut Te
         assert_eq!(
             view.create_table_type_value_for_test(tab_id, 2, cx)
                 .as_deref(),
-            Some("public.order_status"),
+            Some(r#"public."OrderStatus""#),
             "custom types must stay selected instead of showing the muted placeholder"
         );
         assert_eq!(
@@ -117,6 +121,18 @@ fn postgres_design_types_are_selected_instead_of_showing_placeholder(cx: &mut Te
                 .as_deref(),
             Some("timestamp"),
             "timestamp precision must be separated from the type name"
+        );
+        assert_eq!(
+            view.create_table_type_value_for_test(tab_id, 4, cx)
+                .as_deref(),
+            Some("numeric(12,4)[]"),
+            "array type parameters must stay part of the complete definition"
+        );
+        assert_eq!(
+            view.create_table_type_value_for_test(tab_id, 5, cx)
+                .as_deref(),
+            Some("timestamp(6) with time zone[]"),
+            "time arrays must retain precision and time zone"
         );
     });
     assert!(
@@ -131,4 +147,45 @@ fn postgres_design_types_are_selected_instead_of_showing_placeholder(cx: &mut Te
         cx.debug_bounds("create-table-length-2-enabled:true").is_some(),
         "timestamp precision must be editable as length"
     );
+    let type_select = cx
+        .debug_bounds("create-table-type-select-0")
+        .expect("type select bounds");
+    let length_input = cx
+        .debug_bounds("create-table-length-0-enabled:true")
+        .expect("length input bounds");
+    assert!(
+        (type_select.center().y - length_input.center().y).abs() <= gpui::px(0.5),
+        "type select and length input must share the same row center: select={type_select:?}, length={length_input:?}"
+    );
+    for selector in [
+        "create-table-length-3-enabled:false",
+        "create-table-length-4-enabled:false",
+    ] {
+        let bounds = cx
+            .debug_bounds(selector)
+            .expect("array length input must be disabled");
+        cx.simulate_click(bounds.center(), Modifiers::default());
+        cx.simulate_input("8");
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+        });
+        cx.update(|_, cx| {
+            let view = view.read(cx);
+            let tab = view.controller.state().tabs.iter()
+                .find(|tab| tab.id == tab_id).expect("design tab");
+            let TabKind::CreateTable(create) = &tab.kind else {
+                panic!("design tab kind");
+            };
+            let CreateTableMode::Design { original, .. } = &create.mode else {
+                panic!("design snapshot");
+            };
+            assert_eq!(create.columns, original.columns, "disabled input must not edit any column");
+            assert!(!tab.dirty, "disabled array parameters must not dirty the draft");
+            assert_eq!(
+                create_table_provider(create.database_kind).design_statements(create),
+                Ok(Vec::new())
+            );
+        });
+    }
 }

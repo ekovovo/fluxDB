@@ -1587,9 +1587,8 @@ fn create_table_field_row(
         .child(create_table_type_select_cell(
             row.type_select,
             150.,
-            window,
+            row_index,
             colors,
-            cx,
         ))
         .child(
             create_table_input_cell_enabled(
@@ -3106,14 +3105,38 @@ fn create_table_operation_button(
     )
 }
 
-fn create_table_type_select_cell<T: 'static>(
+fn create_table_type_select_cell(
     select: Entity<SelectState<SearchableVec<String>>>,
     width: f32,
-    window: &mut Window,
+    row_index: usize,
     colors: UiColors,
-    cx: &mut Context<T>,
 ) -> Div {
-    create_table_select_cell_with_placeholder(select, width, "varchar", window, colors, cx)
+    div()
+        .w(px(width))
+        .flex_shrink_0()
+        .h_full()
+        .border_l_1()
+        .border_color(colors.border_soft)
+        .px_2()
+        .flex()
+        .items_center()
+        .child(
+            div()
+                .w(px(width - 18.))
+                .h(px(CREATE_TABLE_INPUT_HEIGHT))
+                .debug_selector(move || format!("create-table-type-select-{row_index}"))
+                .child(
+                    Select::new(&select)
+                        .small()
+                        .text_size(px(13.))
+                        .placeholder("varchar")
+                        .search_placeholder(
+                            tr("app.create_table.search_placeholder_select_or_type"),
+                        )
+                        .size_full()
+                        .menu_width(px(220.)),
+                ),
+        )
 }
 
 fn create_table_select_cell_with_placeholder<T: 'static, I: SelectItem + 'static>(

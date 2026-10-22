@@ -12,7 +12,7 @@ pub struct ColumnMeta {
     pub name: String,
     /// 1 起始的字段顺序（对应 PG attnum>0 的序；已 DROPPED 不进入此列）。
     pub ordinal: u32,
-    /// 类型完整文本（PG `format_type`，含长度/精度，如 `varchar(100)`）。
+    /// 类型完整文本（含长度/精度，如 `varchar(100)`；PG 字符/时间类型归一为应用短别名）。
     pub data_type: String,
     /// 类型 schema 限定身份（PG 为 nspname；用于跨会话类型识别）。
     pub type_schema: Option<String>,

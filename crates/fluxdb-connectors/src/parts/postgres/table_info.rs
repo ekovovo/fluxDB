@@ -131,7 +131,8 @@ async fn pg_load_columns(
     for row in rows {
         let name: String = row.get(0);
         let ordinal: i32 = row.get(1);
-        let data_type: String = row.get(2);
+        let formatted_type: String = row.get(2);
+        let data_type = pg_type_display_name(&formatted_type);
         let type_schema: String = row.get(3);
         let type_name: String = row.get(4);
         let not_null: bool = row.get(5);

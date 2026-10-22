@@ -307,9 +307,10 @@ async fn pg_columns(
 
     rows.into_iter()
         .map(|row| {
+            let formatted_type: String = row.get(1);
             Ok(Column {
                 name: row.get(0),
-                type_name: Some(row.get(1)),
+                type_name: Some(pg_type_display_name(&formatted_type)),
                 nullable: row.get(2),
                 primary_key: row.get(3),
                 comment: Some(row.get::<_, String>(4)).filter(|value| !value.is_empty()),

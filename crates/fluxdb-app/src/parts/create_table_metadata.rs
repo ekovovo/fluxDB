@@ -276,8 +276,11 @@ fn create_table_unquote_identifier(value: &str) -> String {
 /// 无法识别的类型整体保留，由界面按自定义类型展示。
 fn create_table_design_type_parts(
     database_kind: DatabaseKind,
+    provider: &dyn CreateTableProvider,
     raw_type: &str,
 ) -> (String, String, String) {
+    let raw_type = provider.normalize_metadata_type(raw_type);
+    let raw_type = raw_type.as_str();
     match database_kind {
         DatabaseKind::Postgres => create_table_postgres_design_type_parts(raw_type),
         DatabaseKind::MySql | DatabaseKind::TiDb => {
@@ -302,10 +305,11 @@ fn create_table_mysql_design_base_type(base: &str) -> String {
 }
 
 fn create_table_postgres_design_type_parts(raw_type: &str) -> (String, String, String) {
-    let raw = raw_type.trim().to_ascii_lowercase();
+    let raw_type = raw_type.trim();
+    let raw = raw_type.to_ascii_lowercase();
     // 数组、带引号或 schema 限定的自定义类型没有可拆分的列长度语义，整体保留。
     if raw.contains('[') || raw.contains('"') || raw.contains('.') {
-        return (raw, String::new(), String::new());
+        return (raw_type.to_string(), String::new(), String::new());
     }
     let (base, rest) = match raw.split_once('(') {
         Some((base, rest)) => (base.trim(), Some(rest)),
@@ -319,24 +323,29 @@ fn create_table_postgres_design_type_parts(raw_type: &str) -> (String, String, S
     let canonical = match (base, suffix) {
         ("character varying", "") => "varchar",
         ("character", "") => "char",
+        ("varchar", "") => "varchar",
+        ("char", "") => "char",
         ("timestamp without time zone", "") | ("timestamp", "") => "timestamp",
         ("timestamp with time zone", "") | ("timestamp", "with time zone") => "timestamptz",
+        ("timestamptz", "") => "timestamptz",
         ("timestamp", "without time zone") => "timestamp",
         ("time without time zone", "") | ("time", "") => "time",
         ("time with time zone", "") | ("time", "with time zone") => "timetz",
+        ("timetz", "") => "timetz",
         ("time", "without time zone") => "time",
         ("bit varying", "") => "varbit",
         ("bit", "") => "bit",
+        ("varbit", "") => "varbit",
         ("numeric" | "decimal", "") => base,
         // 未知类型或未知修饰（含参数）整体保留，避免保存时丢定义。
-        _ => return (raw, String::new(), String::new()),
+        _ => return (raw_type.to_string(), String::new(), String::new()),
     };
     let mut parts = args.split(',').map(str::trim);
     let length = parts.next().unwrap_or_default().to_string();
     let scale = parts.next().unwrap_or_default().to_string();
     let numeric = |value: &str| value.chars().all(|ch| ch.is_ascii_digit());
     if (!length.is_empty() && !numeric(&length)) || (!scale.is_empty() && !numeric(&scale)) {
-        return (raw, String::new(), String::new());
+        return (raw_type.to_string(), String::new(), String::new());
     }
     (canonical.to_string(), length, scale)
 }
@@ -398,7 +407,8 @@ impl CreateTableColumn {
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(|| provider.default_column_type());
         let (data_type, length, scale) =
-            create_table_design_type_parts(database_kind, raw_type);
+            create_table_design_type_parts(database_kind, provider, raw_type);
+        let lower_raw_type = raw_type.to_ascii_lowercase();
         Self {
             id,
             name: column.name,
@@ -411,8 +421,8 @@ impl CreateTableColumn {
             comment: column.comment.unwrap_or_default(),
             auto_increment: false,
             auto_update_time: false,
-            unsigned: raw_type.to_ascii_lowercase().contains(" unsigned"),
-            zerofill: raw_type.to_ascii_lowercase().contains(" zerofill"),
+            unsigned: lower_raw_type.contains(" unsigned"),
+            zerofill: lower_raw_type.contains(" zerofill"),
             binary: false,
             charset: String::new(),
             collation: String::new(),
@@ -422,10 +432,26 @@ impl CreateTableColumn {
 
     fn set_data_type(&mut self, provider: &dyn CreateTableProvider, data_type: String) {
         let old_default = provider.default_length(&self.data_type);
+        let old_capabilities = provider.type_capabilities(&self.data_type);
+        let capabilities = provider.type_capabilities(&data_type);
+        let is_temporal_precision = |data_type: &str| {
+            matches!(
+                create_table_base_type(data_type).as_str(),
+                "datetime" | "timestamp" | "timestamptz" | "time" | "timetz"
+            )
+        };
+        // 字符长度、数值精度和小数秒精度不能互相沿用；同族切换保留用户参数。
+        if old_capabilities.length != capabilities.length
+            || old_capabilities.scale != capabilities.scale
+            || is_temporal_precision(&self.data_type) != is_temporal_precision(&data_type)
+        {
+            self.length.clear();
+            self.scale.clear();
+        }
         let old_length = self.length.trim().to_string();
         self.data_type = data_type;
 
-        if provider.type_capabilities(&self.data_type).length {
+        if capabilities.length {
             if let Some(default_length) = provider.default_length(&self.data_type)
                 && (old_length.is_empty() || Some(old_length.as_str()) == old_default)
             {
@@ -435,13 +461,13 @@ impl CreateTableColumn {
             self.length.clear();
         }
 
-        if !provider.type_capabilities(&self.data_type).scale {
+        if !capabilities.scale {
             self.scale.clear();
         }
-        if !provider.type_capabilities(&self.data_type).key_length {
+        if !capabilities.key_length {
             self.key_length.clear();
         }
-        if !provider.type_capabilities(&self.data_type).text_options {
+        if !capabilities.text_options {
             self.binary = false;
             self.charset.clear();
             self.collation.clear();
@@ -633,22 +659,105 @@ mod create_table_design_type_tests {
 
     #[test]
     fn postgres_ambiguous_or_custom_types_stay_intact() {
-        let create = design(
-            DatabaseKind::Postgres,
-            vec![
-                completion("created_at", "interval(3)"),
-                completion("tags", "character varying(32)[]"),
-                completion("state", "public.order_state"),
-            ],
-        );
-        let columns = &create.columns;
-        assert_eq!(columns[0].data_type, "interval(3)");
-        assert!(columns[0].length.is_empty());
-        assert_eq!(columns[1].data_type, "character varying(32)[]");
-        assert!(columns[1].length.is_empty());
-        assert_eq!(columns[2].data_type, "public.order_state");
-        assert!(!create.type_capabilities(&columns[0].data_type).length);
-        assert!(!create.type_capabilities(&columns[1].data_type).length);
+        let provider = create_table_provider(DatabaseKind::Postgres);
+        for raw_type in [
+            "interval(3)",
+            "character varying(32)[]",
+            "numeric(12,4)[]",
+            "timestamp(6) with time zone[]",
+            "integer[]",
+            "public.order_state",
+            r#"public."OrderState""#,
+            r#""Type(WithParams)""#,
+            "numeric(12,-2)",
+        ] {
+            let mut create = design(
+                DatabaseKind::Postgres,
+                vec![completion("value", raw_type)],
+            );
+            assert_eq!(create.columns[0].data_type, raw_type);
+            assert_eq!(
+                create.type_capabilities(raw_type),
+                CreateTableTypeCapabilities::default(),
+                "opaque type must not offer scalar editors: {raw_type}"
+            );
+            assert_eq!(
+                create_table_postgres_column_type(&create.columns[0]),
+                raw_type,
+                "DDL must preserve the complete type: {raw_type}"
+            );
+
+            create.set_column_field(1, CreateTableColumnField::Length, "8".into());
+            create.set_column_field(1, CreateTableColumnField::Scale, "2".into());
+            assert!(create.columns[0].length.is_empty());
+            assert!(create.columns[0].scale.is_empty());
+            assert_eq!(provider.design_statements(&create), Ok(Vec::new()));
+
+            create.set_column_field(1, CreateTableColumnField::Comment, "kept".into());
+            assert_eq!(
+                create.sql_preview(),
+                Ok(r#"COMMENT ON COLUMN "public"."items"."value" IS 'kept';"#.into()),
+                "comment edit must not change the column type: {raw_type}"
+            );
+            create.mode = CreateTableMode::Create;
+            assert!(
+                create.sql_preview().expect("create preview")
+                    .contains(&format!(r#""value" {raw_type}"#)),
+                "CREATE must retain the complete type: {raw_type}"
+            );
+        }
+    }
+
+    #[test]
+    fn postgres_type_changes_distinguish_opaque_and_scalar_definitions() {
+        for (raw_type, target_type) in [
+            ("numeric(12,4)[]", "numeric"),
+            ("timestamp(6) with time zone[]", "timestamp"),
+            ("interval(3)", "interval"),
+        ] {
+            let mut create = design(
+                DatabaseKind::Postgres,
+                vec![completion("value", raw_type)],
+            );
+            create.set_column_field(1, CreateTableColumnField::DataType, target_type.into());
+            assert_eq!(
+                create.sql_preview(),
+                Ok(format!(
+                    r#"ALTER TABLE "public"."items" ALTER COLUMN "value" TYPE {target_type};"#
+                )),
+                "an intentional type change must not disappear: {raw_type}"
+            );
+        }
+    }
+
+    #[test]
+    fn type_switches_reset_incompatible_parameters_and_keep_same_family() {
+        for (kind, raw_type, target, length, scale) in [
+            (DatabaseKind::Postgres, "character varying(64)", "timestamp", "", ""),
+            (DatabaseKind::Postgres, "numeric(12,4)", "time", "", ""),
+            (DatabaseKind::Postgres, "timestamp(6) without time zone", "numeric", "", ""),
+            (DatabaseKind::Postgres, "numeric(12,4)", "varchar", "", ""),
+            (DatabaseKind::Postgres, "numeric(12,4)", "decimal", "12", "4"),
+            (DatabaseKind::Postgres, "timestamp(6) without time zone", "timetz", "6", ""),
+            (DatabaseKind::Postgres, "character varying(64)", "char", "64", ""),
+            (DatabaseKind::MySql, "varchar(64)", "datetime", "", ""),
+            (DatabaseKind::MySql, "decimal(12,4)", "timestamp", "", ""),
+            (DatabaseKind::MySql, "timestamp(6)", "decimal", "10", ""),
+            (DatabaseKind::MySql, "decimal(12,4)", "varchar", "255", ""),
+            (DatabaseKind::MySql, "int(10)", "varchar", "255", ""),
+            (DatabaseKind::MySql, "timestamp(6)", "time", "6", ""),
+            (DatabaseKind::TiDb, "varchar(64)", "timestamp", "", ""),
+            (DatabaseKind::Dameng, "varchar(64)", "number", "10", ""),
+            (DatabaseKind::Dameng, "number(12,4)", "varchar", "255", ""),
+        ] {
+            let mut create = design(kind, vec![completion("value", raw_type)]);
+            create.set_column_field(1, CreateTableColumnField::DataType, target.into());
+            assert_eq!(
+                (create.columns[0].length.as_str(), create.columns[0].scale.as_str()),
+                (length, scale),
+                "{kind:?}: {raw_type} -> {target}"
+            );
+        }
     }
 
     #[test]

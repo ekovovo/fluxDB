@@ -152,6 +152,10 @@ fn create_table_sqlite_column_line(
 }
 
 fn create_table_sqlite_column_type(data_type: &str) -> String {
+    let data_type = data_type.trim();
+    if data_type.contains('(') {
+        return data_type.to_string();
+    }
     let base = create_table_base_type(data_type);
     match base.as_str() {
         "int" | "integer" | "tinyint" | "smallint" | "mediumint" | "bigint" | "boolean" => {
@@ -162,7 +166,9 @@ fn create_table_sqlite_column_type(data_type: &str) -> String {
         "blob" | "binary" | "varbinary" | "tinyblob" | "mediumblob" | "longblob" => {
             "BLOB".to_string()
         }
-        _ => "TEXT".to_string(),
+        "text" | "char" | "varchar" | "nchar" | "nvarchar" | "clob" | "date" | "datetime"
+        | "json" => "TEXT".to_string(),
+        _ => data_type.to_string(),
     }
 }
 fn create_table_design_sql_preview_for_provider(

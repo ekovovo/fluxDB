@@ -9,15 +9,25 @@ pub(crate) const POSTGRES_CREATE_TABLE_TYPE_OPTIONS: &[&str] = &[
     "smallint",
     "integer",
     "bigint",
+    "int2",
+    "int4",
+    "int8",
     "serial",
+    "smallserial",
     "bigserial",
     "numeric",
     "real",
+    "float4",
+    "float8",
     "double precision",
     "boolean",
     "text",
     "varchar",
     "char",
+    "bpchar",
+    "name",
+    "bit",
+    "varbit",
     "bytea",
     "date",
     "time",
@@ -32,7 +42,29 @@ pub(crate) const POSTGRES_CREATE_TABLE_TYPE_OPTIONS: &[&str] = &[
     "inet",
     "cidr",
     "macaddr",
+    "macaddr8",
+    "oid",
+    "regclass",
+    "regproc",
     "money",
+    "tsvector",
+    "tsquery",
+    "point",
+    "line",
+    "lseg",
+    "box",
+    "path",
+    "polygon",
+    "circle",
+    "int4range",
+    "int8range",
+    "numrange",
+    "tsrange",
+    "tstzrange",
+    "daterange",
+    "citext",
+    "hstore",
+    "ltree",
 ];
 
 /// 单引号字符串字面量（注释体等值位），转义内部单引号。
@@ -185,7 +217,7 @@ fn create_table_postgres_column_line(column: &CreateTableColumn) -> Option<Strin
 fn create_table_postgres_column_type(column: &CreateTableColumn) -> String {
     let data_type = column.data_type.trim();
     let capabilities = POSTGRES_CREATE_TABLE_PROVIDER.type_capabilities(data_type);
-    if !capabilities.length {
+    if !capabilities.length && !capabilities.bit_length {
         return data_type.to_string();
     }
     let base = data_type.to_ascii_lowercase();

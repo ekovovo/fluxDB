@@ -188,6 +188,7 @@ pub enum CreateTablePartitionField {
 pub enum CreateTableColumnField {
     Name,
     DataType,
+    CustomType,
     Length,
     Scale,
     DefaultValue,

@@ -2505,7 +2505,9 @@
       "unsigned": "Unsigned",
       "zero_fill": "Zero fill",
       "auto_increment": "Auto increment",
-      "auto_update_timestamp": "Auto-update timestamp"
+      "auto_update_timestamp": "Auto-update timestamp",
+      "custom_type": "Custom type",
+      "custom_type_placeholder": "Complete type definition"
     },
     "header": {
       "name": "Name",

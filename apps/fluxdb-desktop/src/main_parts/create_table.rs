@@ -160,6 +160,15 @@ impl NavicatMain {
                     cx,
                 );
             }
+            CreateTableInputKey::ColumnCustomType(tab_id, column_id) => {
+                self.set_create_table_column_input(
+                    tab_id,
+                    column_id,
+                    CreateTableColumnField::CustomType,
+                    value,
+                    cx,
+                );
+            }
             CreateTableInputKey::ColumnScale(tab_id, column_id) => {
                 self.set_create_table_column_input(
                     tab_id,
@@ -3271,11 +3280,9 @@ fn create_table_type_select_box<T: 'static, I: SelectItem + 'static>(
 }
 
 fn create_table_type_options(database_kind: DatabaseKind) -> Vec<String> {
-    create_table_provider(database_kind)
-        .type_options()
-        .iter()
-        .map(|value| value.to_string())
-        .collect()
+    let mut options = create_table_common_type_options(database_kind);
+    options.extend(create_table_special_type_options(database_kind));
+    options
 }
 
 /// 当前类型不在预设选项时补到末尾并选中，避免已有列类型显示成灰色占位文字。
@@ -3285,7 +3292,8 @@ fn create_table_type_select_items(
 ) -> (Vec<String>, Option<IndexPath>) {
     let value = value.trim();
     let mut options = create_table_type_options(database_kind);
-    if !value.is_empty() && !options.iter().any(|option| option.eq_ignore_ascii_case(value)) {
+    if !value.is_empty() && !options.iter().any(|option| option.eq_ignore_ascii_case(value))
+    {
         options.push(value.to_string());
     }
     let index = options
@@ -3563,6 +3571,22 @@ fn create_table_column_options(
         .items_center()
         .gap_3();
 
+    let custom_type_input = this.create_table_input(
+        CreateTableInputKey::ColumnCustomType(tab_id, id),
+        tr("app.create_table.column.custom_type_placeholder"),
+        &column.data_type,
+        window,
+        cx,
+    );
+    options = options.child(create_table_option_input(
+        tr("app.create_table.column.custom_type"),
+        custom_type_input,
+        280.,
+        window,
+        colors,
+        cx,
+    ));
+
     if capabilities.text_options {
         let charset_select = this.create_table_select(
             CreateTableSelectKey::ColumnCharset(tab_id, id),
@@ -3630,57 +3654,55 @@ fn create_table_column_options(
         ));
     }
 
-    if capabilities.number_options || capabilities.auto_increment {
-        if capabilities.scale {
-            options = options.child(create_table_option_input(
+    if (capabilities.number_options || capabilities.auto_increment) && capabilities.scale {
+        options = options.child(create_table_option_input(
+            tr("app.create_table.column.decimal"),
+            this.create_table_input(
+                CreateTableInputKey::ColumnScale(tab_id, id),
                 tr("app.create_table.column.decimal"),
-                this.create_table_input(
-                    CreateTableInputKey::ColumnScale(tab_id, id),
-                    tr("app.create_table.column.decimal"),
-                    &column.scale,
-                    window,
-                    cx,
-                ),
-                120.,
+                &column.scale,
                 window,
-                colors,
                 cx,
-            ));
-        }
+            ),
+            120.,
+            window,
+            colors,
+            cx,
+        ));
+    }
 
-        if capabilities.unsigned {
-            options = options.child(create_table_option_flag(
-                tab_id,
-                id,
-                tr("app.create_table.column.unsigned"),
-                column.unsigned,
-                CreateTableColumnFlag::Unsigned,
-                colors,
-                cx,
-            ));
-        }
-        if capabilities.zerofill {
-            options = options.child(create_table_option_flag(
-                tab_id,
-                id,
-                tr("app.create_table.column.zero_fill"),
-                column.zerofill,
-                CreateTableColumnFlag::Zerofill,
-                colors,
-                cx,
-            ));
-        }
-        if capabilities.auto_increment {
-            options = options.child(create_table_option_flag(
-                tab_id,
-                id,
-                tr("app.create_table.column.auto_increment"),
-                column.auto_increment,
-                CreateTableColumnFlag::AutoIncrement,
-                colors,
-                cx,
-            ));
-        }
+    if capabilities.unsigned {
+        options = options.child(create_table_option_flag(
+            tab_id,
+            id,
+            tr("app.create_table.column.unsigned"),
+            column.unsigned,
+            CreateTableColumnFlag::Unsigned,
+            colors,
+            cx,
+        ));
+    }
+    if capabilities.zerofill {
+        options = options.child(create_table_option_flag(
+            tab_id,
+            id,
+            tr("app.create_table.column.zero_fill"),
+            column.zerofill,
+            CreateTableColumnFlag::Zerofill,
+            colors,
+            cx,
+        ));
+    }
+    if capabilities.auto_increment {
+        options = options.child(create_table_option_flag(
+            tab_id,
+            id,
+            tr("app.create_table.column.auto_increment"),
+            column.auto_increment,
+            CreateTableColumnFlag::AutoIncrement,
+            colors,
+            cx,
+        ));
     }
 
     if capabilities.auto_update_time {
@@ -3697,14 +3719,21 @@ fn create_table_column_options(
 
     div()
         .flex_none()
-        .h(px(74.))
+        .debug_selector(|| "create-table-column-options".into())
+        .max_h(gpui::relative(0.3))
         .border_t_1()
         .border_color(colors.border)
         .bg(colors.panel_alt)
         .px_3()
         .py_2()
         .overflow_hidden()
-        .child(div().size_full().overflow_y_scrollbar().child(options))
+        .child(
+            div()
+                .min_h(px(0.))
+                .max_h(gpui::relative(0.3))
+                .overflow_y_scrollbar()
+                .child(options),
+        )
 }
 
 fn create_table_option_input(
@@ -3839,9 +3868,8 @@ fn create_table_option_flag(
 }
 
 fn create_table_supports_length(database_kind: DatabaseKind, data_type: &str) -> bool {
-    create_table_provider(database_kind)
-        .type_capabilities(data_type)
-        .length
+    let capabilities = create_table_provider(database_kind).type_capabilities(data_type);
+    capabilities.length || capabilities.bit_length
 }
 
 fn create_table_length_placeholder(database_kind: DatabaseKind, data_type: &str) -> &'static str {
@@ -4071,5 +4099,17 @@ mod create_table_type_select_tests {
                 .position(|option| option.eq_ignore_ascii_case("varchar"))
                 .map(IndexPath::new)
         );
+    }
+
+    #[test]
+    fn special_types_are_grouped_after_common_types() {
+        for kind in [DatabaseKind::MySql, DatabaseKind::Postgres] {
+            let common = fluxdb_app::create_table_common_type_options(kind);
+            let special = fluxdb_app::create_table_special_type_options(kind);
+            let (options, _) = create_table_type_select_items(kind, "");
+            assert_eq!(options.len(), common.len() + special.len(), "{kind:?}");
+            assert_eq!(&options[..common.len()], common.as_slice(), "{kind:?}");
+            assert_eq!(&options[common.len()..], special.as_slice(), "{kind:?}");
+        }
     }
 }

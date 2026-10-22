@@ -360,8 +360,12 @@ impl CreateTableState {
             CreateTableColumnField::DataType => {
                 column.set_data_type(provider, value);
             }
+            CreateTableColumnField::CustomType => {
+                column.set_data_type(provider, value);
+            }
             CreateTableColumnField::Length => {
-                if provider.type_capabilities(&column.data_type).length {
+                let capabilities = provider.type_capabilities(&column.data_type);
+                if capabilities.length || capabilities.bit_length {
                     column.length = create_table_digits_only(&value);
                 } else {
                     column.length.clear();

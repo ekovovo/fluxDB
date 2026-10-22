@@ -515,6 +515,9 @@ fn create_table_mysql_validation_error(create: &CreateTableState) -> Option<&'st
     if let Some(message) = create_table_temporal_precision_validation_error(create) {
         return Some(message);
     }
+    if let Some(message) = create_table_bit_length_validation_error(create) {
+        return Some(message);
+    }
 
     let named_columns = create
         .columns
@@ -585,6 +588,25 @@ fn create_table_temporal_precision_validation_error(
                 .map_or(true, |precision| precision > 6)
     });
     invalid.then_some("时间类型精度必须在 0 到 6 之间")
+}
+
+fn create_table_bit_length_validation_error(create: &CreateTableState) -> Option<&'static str> {
+    if !matches!(
+        create.database_kind,
+        DatabaseKind::MySql | DatabaseKind::TiDb
+    ) {
+        return None;
+    }
+    let invalid = create.columns.iter().any(|column| {
+        create_table_base_type(&column.data_type) == "bit"
+            && !column.length.trim().is_empty()
+            && column
+                .length
+                .trim()
+                .parse::<u32>()
+                .map_or(true, |bits| !(1..=64).contains(&bits))
+    });
+    invalid.then_some("BIT 位宽必须在 1 到 64 之间")
 }
 
 impl CreateTableIndex {
@@ -1154,6 +1176,8 @@ fn create_table_supports_length(data_type: &str) -> bool {
     create_table_is_char_length_type(data_type)
         || create_table_is_binary_length_type(data_type)
         || create_table_is_decimal_type(data_type)
+        || matches!(create_table_base_type(data_type).as_str(), "float" | "double")
+        || create_table_base_type(data_type) == "bit"
         // MySQL 的时间类型括号内是小数秒精度（0..=6），同样复用长度输入。
         || matches!(
             create_table_base_type(data_type).as_str(),
@@ -1162,7 +1186,9 @@ fn create_table_supports_length(data_type: &str) -> bool {
 }
 
 fn create_table_default_length(data_type: &str) -> Option<&'static str> {
-    if create_table_is_char_length_type(data_type) || create_table_is_binary_length_type(data_type) {
+    if create_table_base_type(data_type) == "bit" {
+        Some("1")
+    } else if create_table_is_char_length_type(data_type) || create_table_is_binary_length_type(data_type) {
         Some("255")
     } else if create_table_is_decimal_type(data_type) {
         Some("10")
@@ -1173,6 +1199,7 @@ fn create_table_default_length(data_type: &str) -> Option<&'static str> {
 
 fn create_table_supports_scale(data_type: &str) -> bool {
     create_table_is_decimal_type(data_type)
+        || matches!(create_table_base_type(data_type).as_str(), "float" | "double")
 }
 
 fn create_table_is_char_length_type(data_type: &str) -> bool {

@@ -17,6 +17,7 @@ pub trait CreateTableProvider {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct CreateTableTypeCapabilities {
     pub length: bool,
+    pub bit_length: bool,
     pub scale: bool,
     pub text_options: bool,
     pub key_length: bool,
@@ -26,6 +27,70 @@ pub struct CreateTableTypeCapabilities {
     pub auto_increment: bool,
     pub auto_update_time: bool,
     pub binary_attribute: bool,
+}
+
+/// 返回该方言用于“新建表”的基础类型。特殊/扩展类型放在末尾，由界面单独分组。
+pub fn create_table_common_type_options(kind: DatabaseKind) -> Vec<String> {
+    let options = create_table_provider(kind).type_options();
+    options
+        .iter()
+        .filter(|option| !create_table_type_is_special(kind, option))
+        .map(|option| option.to_string())
+        .collect()
+}
+
+pub fn create_table_special_type_options(kind: DatabaseKind) -> Vec<String> {
+    create_table_provider(kind)
+        .type_options()
+        .iter()
+        .filter(|option| create_table_type_is_special(kind, option))
+        .map(|option| option.to_string())
+        .collect()
+}
+
+fn create_table_type_is_special(kind: DatabaseKind, data_type: &str) -> bool {
+    match kind {
+        DatabaseKind::MySql | DatabaseKind::TiDb => matches!(
+            data_type,
+            "enum"
+                | "set"
+                | "geometry"
+                | "point"
+                | "linestring"
+                | "polygon"
+                | "multipoint"
+                | "multilinestring"
+                | "multipolygon"
+                | "geometrycollection"
+                | "vector"
+        ),
+        DatabaseKind::Postgres => matches!(
+            data_type,
+            "oid"
+                | "regclass"
+                | "regproc"
+                | "tsvector"
+                | "tsquery"
+                | "point"
+                | "line"
+                | "lseg"
+                | "box"
+                | "path"
+                | "polygon"
+                | "circle"
+                | "int4range"
+                | "int8range"
+                | "numrange"
+                | "tsrange"
+                | "tstzrange"
+                | "daterange"
+                | "citext"
+                | "hstore"
+                | "ltree"
+        ),
+        DatabaseKind::Sqlite => matches!(data_type, "any" | "enum" | "set"),
+        _ => false,
+    }
 }
 
 pub fn create_table_provider(kind: DatabaseKind) -> &'static dyn CreateTableProvider {
@@ -128,14 +193,13 @@ impl CreateTableProvider for PostgresCreateTableProvider {
             return CreateTableTypeCapabilities::default();
         }
         let base = create_table_base_type(data_type);
+        let bit_length = matches!(base.as_str(), "bit" | "varbit");
         // numeric 精度和 timestamp/time 的小数秒精度都复用 length 输入。
         let length = matches!(
             base.as_str(),
             "varchar"
                 | "char"
                 | "bpchar"
-                | "bit"
-                | "varbit"
                 | "numeric"
                 | "decimal"
                 | "timestamp"
@@ -146,6 +210,7 @@ impl CreateTableProvider for PostgresCreateTableProvider {
         let scale = matches!(base.as_str(), "numeric" | "decimal");
         CreateTableTypeCapabilities {
             length,
+            bit_length,
             scale,
             text_options: false,
             key_length: false,
@@ -226,10 +291,49 @@ const MYSQL_CREATE_TABLE_TYPE_OPTIONS: &[&str] = &[
     "time",
     "json",
     "boolean",
+    "year",
+    "bit",
+    "enum",
+    "set",
+    "geometry",
+    "point",
+    "linestring",
+    "polygon",
+    "multipoint",
+    "multilinestring",
+    "multipolygon",
+    "geometrycollection",
+    "vector",
 ];
 
 const SQLITE_CREATE_TABLE_TYPE_OPTIONS: &[&str] = &[
-    "integer", "real", "numeric", "text", "blob", "boolean", "date", "datetime", "json",
+    "integer",
+    "real",
+    "numeric",
+    "text",
+    "blob",
+    "boolean",
+    "date",
+    "datetime",
+    "json",
+    "any",
+    "char",
+    "varchar",
+    "nchar",
+    "nvarchar",
+    "clob",
+    "double",
+    "double precision",
+    "float",
+    "decimal",
+    "int",
+    "tinyint",
+    "smallint",
+    "mediumint",
+    "bigint",
+    "unsigned big int",
+    "enum",
+    "set",
 ];
 
 struct MySqlCreateTableProvider;
@@ -257,13 +361,17 @@ impl CreateTableProvider for MySqlCreateTableProvider {
     }
 
     fn type_capabilities(&self, data_type: &str) -> CreateTableTypeCapabilities {
+        let base = create_table_base_type(data_type);
+        let bit_length = base == "bit";
         CreateTableTypeCapabilities {
             length: create_table_mysql_supports_length(data_type),
+            bit_length,
             scale: create_table_mysql_supports_scale(data_type),
             text_options: create_table_mysql_is_text_type(data_type),
             key_length: create_table_mysql_supports_key_length(data_type),
             number_options: create_table_mysql_is_number_type(data_type),
-            unsigned: create_table_mysql_is_number_type(data_type),
+            unsigned: create_table_mysql_is_number_type(data_type)
+                && create_table_base_type(data_type) != "year",
             zerofill: create_table_mysql_is_number_type(data_type),
             auto_increment: create_table_mysql_is_number_type(data_type),
             auto_update_time: create_table_mysql_is_auto_update_time_type(data_type),

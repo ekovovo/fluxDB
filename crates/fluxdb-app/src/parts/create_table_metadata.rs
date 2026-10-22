@@ -284,6 +284,8 @@ fn create_table_design_type_parts(
     match database_kind {
         DatabaseKind::Postgres => create_table_postgres_design_type_parts(raw_type),
         DatabaseKind::MySql | DatabaseKind::TiDb => create_table_mysql_design_type_parts(raw_type),
+        // SQLite 类型声明允许任意名称和参数，不应按其他方言拆分。
+        DatabaseKind::Sqlite => (raw_type.trim().to_string(), String::new(), String::new()),
         _ => create_table_split_column_type(raw_type),
     }
 }
@@ -441,6 +443,7 @@ impl CreateTableColumn {
         };
         // 字符长度、数值精度和小数秒精度不能互相沿用；同族切换保留用户参数。
         if old_capabilities.length != capabilities.length
+            || old_capabilities.bit_length != capabilities.bit_length
             || old_capabilities.scale != capabilities.scale
             || is_temporal_precision(&self.data_type) != is_temporal_precision(&data_type)
         {
@@ -459,6 +462,7 @@ impl CreateTableColumn {
         } else {
             self.length.clear();
         }
+
 
         if !capabilities.scale {
             self.scale.clear();
@@ -487,6 +491,9 @@ impl CreateTableColumn {
         }
         if !capabilities.zerofill {
             self.zerofill = false;
+        }
+        if matches!(create_table_base_type(&self.data_type).as_str(), "year") {
+            self.unsigned = false;
         }
     }
 
@@ -675,11 +682,10 @@ mod create_table_design_type_tests {
                 vec![completion("value", raw_type)],
             );
             assert_eq!(create.columns[0].data_type, raw_type);
-            assert_eq!(
-                create.type_capabilities(raw_type),
-                CreateTableTypeCapabilities::default(),
-                "opaque type must not offer scalar editors: {raw_type}"
-            );
+            let capabilities = create.type_capabilities(raw_type);
+            assert!(!capabilities.length);
+            assert!(!capabilities.bit_length);
+            assert!(!capabilities.scale);
             assert_eq!(
                 create_table_postgres_column_type(&create.columns[0]),
                 raw_type,
@@ -811,30 +817,59 @@ mod create_table_design_type_tests {
 
     #[test]
     fn mysql_unsupported_numeric_parameters_stay_opaque() {
-        for raw_type in ["bit(8)", "float(7,4)", "year(4)", "vector(1536)"] {
-            let mut create = design(
-                DatabaseKind::MySql,
-                vec![completion("value", raw_type)],
-            );
-            let column = &create.columns[0];
-            assert_eq!(column.data_type, raw_type);
-            assert!(column.length.is_empty());
-            assert!(column.scale.is_empty());
-            assert!(!create.type_capabilities(raw_type).length);
-            assert!(
-                column
-                    .sql_line()
-                    .is_some_and(|line| line.contains(raw_type))
-            );
+        let raw_type = "vector(1536)";
+        let mut create = design(
+            DatabaseKind::MySql,
+            vec![completion("value", raw_type)],
+        );
+        let column = &create.columns[0];
+        assert_eq!(column.data_type, raw_type);
+        assert!(column.length.is_empty());
+        assert!(column.scale.is_empty());
+        assert!(!create.type_capabilities(raw_type).length);
+        assert!(
+            column
+                .sql_line()
+                .is_some_and(|line| line.contains(raw_type))
+        );
 
-            create.set_column_field(1, CreateTableColumnField::Comment, "kept".into());
-            assert!(
-                create
-                    .sql_preview()
-                    .is_ok_and(|sql| sql.contains(raw_type)),
-                "comment edit must preserve {raw_type}"
-            );
-        }
+        create.set_column_field(1, CreateTableColumnField::Comment, "kept".into());
+        assert!(
+            create
+                .sql_preview()
+                .is_ok_and(|sql| sql.contains(raw_type)),
+            "comment edit must preserve {raw_type}"
+        );
+
+        let create = design(
+            DatabaseKind::MySql,
+            vec![completion("ratio", "float(7,4)")],
+        );
+        assert_eq!(
+            (
+                create.columns[0].data_type.as_str(),
+                create.columns[0].length.as_str(),
+                create.columns[0].scale.as_str(),
+            ),
+            ("float", "7", "4")
+        );
+        assert_eq!(
+            create.columns[0].sql_line().as_deref(),
+            Some("`ratio` float(7,4)")
+        );
+
+        let create = design(
+            DatabaseKind::MySql,
+            vec![completion("bits", "bit(8)")],
+        );
+        assert_eq!(
+            (create.columns[0].data_type.as_str(), create.columns[0].length.as_str()),
+            ("bit", "8")
+        );
+        assert_eq!(
+            create.columns[0].sql_line().as_deref(),
+            Some("`bits` bit(8)")
+        );
     }
 
     #[test]
@@ -852,6 +887,159 @@ mod create_table_design_type_tests {
 
             create.set_column_field(1, CreateTableColumnField::Length, "6".into());
             assert_eq!(create.validation_error(), None, "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn mysql_bit_and_year_keep_their_parameter_semantics() {
+        let mut create = design(
+            DatabaseKind::MySql,
+            vec![
+                completion("flags", "bit(8)"),
+                completion("year_short", "year(2)"),
+                completion("year_default", "year"),
+            ],
+        );
+        create.table_name = "items".into();
+        assert_eq!(create.columns[0].data_type, "bit");
+        assert_eq!(create.columns[0].length, "8");
+        assert_eq!(create.columns[1].data_type, "year(2)");
+        assert!(create.columns[1].length.is_empty());
+        assert_eq!(create.columns[2].data_type, "year");
+        assert_eq!(create.columns[2].sql_line().as_deref(), Some("`year_default` year"));
+
+        create.set_column_field(1, CreateTableColumnField::Length, "65".into());
+        assert_eq!(
+            create.validation_error(),
+            Some("BIT 位宽必须在 1 到 64 之间")
+        );
+        create.set_column_field(1, CreateTableColumnField::Length, "64".into());
+        assert_eq!(create.validation_error(), None);
+
+        assert!(!create.type_capabilities("year(2)").length);
+    }
+
+    #[test]
+    fn custom_types_round_trip_in_every_supported_dialect() {
+        for (kind, raw_type, expected) in [
+            (DatabaseKind::MySql, "int(10) unsigned zerofill", "int(10)"),
+            (DatabaseKind::MySql, "vector(1536)", "vector(1536)"),
+            (DatabaseKind::Postgres, "public.\"OrderState\"", "public.\"OrderState\""),
+            (DatabaseKind::Sqlite, "datetime", "datetime"),
+        ] {
+            let create = design(kind, vec![completion("value", raw_type)]);
+            assert_eq!(create.columns[0].data_type, expected, "{kind:?}: {raw_type}");
+        }
+    }
+
+    #[test]
+    fn sqlite_preserves_declared_type_parameters() {
+        for raw_type in ["varchar(64)", "decimal(10,2)", "custom_type"] {
+            let mut create = design(
+                DatabaseKind::Sqlite,
+                vec![completion("value", raw_type)],
+            );
+            create.table_name = "items".into();
+            create.mode = CreateTableMode::Create;
+            assert_eq!(create.columns[0].data_type, raw_type);
+            assert!(
+                create
+                    .sql_preview()
+                    .is_ok_and(|sql| sql.contains(raw_type)),
+                "SQLite must preserve {raw_type}"
+            );
+        }
+    }
+
+    #[test]
+    fn postgres_bit_precision_is_not_limited_by_mysql_range() {
+        let mut create = design(
+            DatabaseKind::Postgres,
+            vec![completion("flags", "bit(100)")],
+        );
+        create.table_name = "items".into();
+        create.mode = CreateTableMode::Create;
+        assert_eq!(create.validation_error(), None);
+        assert_eq!(
+            create_table_postgres_column_type(&create.columns[0]),
+            "bit(100)"
+        );
+    }
+
+    #[test]
+    fn dialect_type_options_cover_core_and_extension_gaps() {
+        let mysql = create_table_provider(DatabaseKind::MySql).type_options();
+        for expected in [
+            "bit", "year", "enum", "set", "geometry", "point", "vector",
+        ] {
+            assert!(mysql.contains(&expected), "MySQL missing {expected}");
+        }
+        let postgres = create_table_provider(DatabaseKind::Postgres).type_options();
+        for expected in [
+            "bit", "varbit", "smallserial", "int2", "float8", "tsvector", "int4range",
+            "citext",
+        ] {
+            assert!(postgres.contains(&expected), "PostgreSQL missing {expected}");
+        }
+        let sqlite = create_table_provider(DatabaseKind::Sqlite).type_options();
+        for expected in ["any", "char", "varchar", "clob", "enum", "set"] {
+            assert!(sqlite.contains(&expected), "SQLite missing {expected}");
+        }
+    }
+
+    #[test]
+    fn new_mysql_types_survive_create_preview() {
+        let mut create = design(
+            DatabaseKind::MySql,
+            vec![
+                completion("flags", "bit(8)"),
+                completion("year_short", "year(2)"),
+                completion("status", "enum('New','Done')"),
+                completion("tags", "set('a','b')"),
+                completion("shape", "geometry"),
+                completion("embedding", "vector(1536)"),
+            ],
+        );
+        create.table_name = "items".into();
+        create.mode = CreateTableMode::Create;
+        let sql = create.sql_preview().expect("MySQL create preview");
+        for expected in [
+            "bit(8)",
+            "year(2)",
+            "enum('New','Done')",
+            "set('a','b')",
+            "geometry",
+            "vector(1536)",
+        ] {
+            assert!(sql.contains(expected), "missing {expected}:\n{sql}");
+        }
+    }
+
+    #[test]
+    fn new_postgres_types_survive_create_preview() {
+        let mut create = design(
+            DatabaseKind::Postgres,
+            vec![
+                completion("small_id", "smallserial"),
+                completion("flags", "bit(8)"),
+                completion("varying_flags", "varbit(16)"),
+                completion("search", "tsvector"),
+                completion("bounds", "int4range"),
+                completion("label", "citext"),
+            ],
+        );
+        create.table_name = "items".into();
+        create.mode = CreateTableMode::Create;
+        let sql = create.sql_preview().expect("PostgreSQL create preview");
+        for expected in [
+            "smallserial",
+            "bit(8)",
+            "varbit(16)",
+            "tsvector",
+            "int4range",
+            "citext",
+        ] {
+            assert!(sql.contains(expected), "missing {expected}:\n{sql}");
         }
     }
 }

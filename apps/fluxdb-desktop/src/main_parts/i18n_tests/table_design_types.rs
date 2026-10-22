@@ -157,6 +157,16 @@ fn postgres_design_types_are_selected_instead_of_showing_placeholder(cx: &mut Te
         (type_select.center().y - length_input.center().y).abs() <= gpui::px(0.5),
         "type select and length input must share the same row center: select={type_select:?}, length={length_input:?}"
     );
+    let editor = cx
+        .debug_bounds("create-table-editor")
+        .expect("create table editor bounds");
+    let options = cx
+        .debug_bounds("create-table-column-options")
+        .expect("column options bounds");
+    assert!(
+        options.size.height <= editor.size.height * 0.3 + gpui::px(0.5),
+        "column options must stay within 30% of the editor height: editor={editor:?}, options={options:?}"
+    );
     for selector in [
         "create-table-length-3-enabled:false",
         "create-table-length-4-enabled:false",

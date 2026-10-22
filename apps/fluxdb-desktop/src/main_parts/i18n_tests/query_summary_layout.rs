@@ -121,7 +121,7 @@ fn query_summary_columns_align_and_stay_readable_when_narrow(cx: &mut TestAppCon
 fn assert_query_summary_columns(cx: &mut gpui::VisualTestContext) {
     use crate::{
         QUERY_SUMMARY_AFFECTED_WIDTH, QUERY_SUMMARY_ELAPSED_WIDTH, QUERY_SUMMARY_RETURNED_WIDTH,
-        QUERY_SUMMARY_STATEMENT_MIN_WIDTH, QUERY_SUMMARY_TYPE_MIN_WIDTH,
+        QUERY_SUMMARY_STATEMENT_MIN_WIDTH, QUERY_SUMMARY_TYPE_WIDTH,
     };
 
     for (header_selector, row_selector, minimum_width) in [
@@ -133,7 +133,7 @@ fn assert_query_summary_columns(cx: &mut gpui::VisualTestContext) {
         (
             "query-summary-header:type",
             "query-summary-row:0:type",
-            QUERY_SUMMARY_TYPE_MIN_WIDTH,
+            QUERY_SUMMARY_TYPE_WIDTH,
         ),
         (
             "query-summary-header:returned",

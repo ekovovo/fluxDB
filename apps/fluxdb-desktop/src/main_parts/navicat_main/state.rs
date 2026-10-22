@@ -796,8 +796,11 @@ struct NavicatMain {
     create_table_comment_editor_resize_start: Option<CreateTableCommentEditorResizeStart>,
     create_table_check_expression_editor_resize_start:
         Option<CreateTableCheckExpressionEditorResizeStart>,
-    create_table_type_selects: BTreeMap<(TabId, u64), Entity<SelectState<SearchableVec<String>>>>,
+    create_table_type_selects:
+        BTreeMap<(TabId, u64), Entity<SelectState<SearchableVec<CreateTableTypeOption>>>>,
     _create_table_type_select_subscriptions: BTreeMap<(TabId, u64), Subscription>,
+    create_table_custom_type_editing: Option<(TabId, u64)>,
+    create_table_enum_scrolls: BTreeMap<(TabId, u64), ScrollHandle>,
     create_table_selects: BTreeMap<CreateTableSelectKey, Entity<SelectState<SearchableVec<CreateTableSelectOption>>>>,
     _create_table_select_subscriptions: BTreeMap<CreateTableSelectKey, Subscription>,
     data_export_object_selects:

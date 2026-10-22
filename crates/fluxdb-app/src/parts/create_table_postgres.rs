@@ -9,15 +9,25 @@ pub(crate) const POSTGRES_CREATE_TABLE_TYPE_OPTIONS: &[&str] = &[
     "smallint",
     "integer",
     "bigint",
+    "int2",
+    "int4",
+    "int8",
     "serial",
+    "smallserial",
     "bigserial",
     "numeric",
     "real",
+    "float4",
+    "float8",
     "double precision",
     "boolean",
     "text",
     "varchar",
     "char",
+    "bpchar",
+    "name",
+    "bit",
+    "varbit",
     "bytea",
     "date",
     "time",
@@ -32,7 +42,29 @@ pub(crate) const POSTGRES_CREATE_TABLE_TYPE_OPTIONS: &[&str] = &[
     "inet",
     "cidr",
     "macaddr",
+    "macaddr8",
+    "oid",
+    "regclass",
+    "regproc",
     "money",
+    "tsvector",
+    "tsquery",
+    "point",
+    "line",
+    "lseg",
+    "box",
+    "path",
+    "polygon",
+    "circle",
+    "int4range",
+    "int8range",
+    "numrange",
+    "tsrange",
+    "tstzrange",
+    "daterange",
+    "citext",
+    "hstore",
+    "ltree",
 ];
 
 /// 单引号字符串字面量（注释体等值位），转义内部单引号。
@@ -183,28 +215,17 @@ fn create_table_postgres_column_line(column: &CreateTableColumn) -> Option<Strin
 
 /// 列类型文本：保留类型名（含 schema/长度/精度），显式长度/精度按用户输入补齐。
 fn create_table_postgres_column_type(column: &CreateTableColumn) -> String {
-    let base = create_table_base_type(&column.data_type);
+    let data_type = column.data_type.trim();
+    let capabilities = POSTGRES_CREATE_TABLE_PROVIDER.type_capabilities(data_type);
+    if !capabilities.length && !capabilities.bit_length {
+        return data_type.to_string();
+    }
+    let base = data_type.to_ascii_lowercase();
     let length = column.length.trim();
     let scale = column.scale.trim();
-    // PG 精度语法按类型族判断，不复用 MySQL 的 varchar/decimal 判定（numeric ≠ decimal）。
-    let supports_scale = matches!(base.as_str(), "numeric" | "decimal");
-    let supports_length = matches!(
-        base.as_str(),
-        "varchar"
-            | "char"
-            | "bpchar"
-            | "bit"
-            | "varbit"
-            | "numeric"
-            | "decimal"
-            | "timestamp"
-            | "timestamptz"
-            | "time"
-            | "timetz"
-    );
-    let modifiers = if length.is_empty() || !(supports_length || supports_scale) {
+    let modifiers = if length.is_empty() {
         String::new()
-    } else if supports_scale && !scale.is_empty() {
+    } else if capabilities.scale && !scale.is_empty() {
         format!("({length},{scale})")
     } else {
         format!("({length})")
@@ -333,4 +354,36 @@ fn create_table_postgres_trigger_statements(create: &CreateTableState) -> Result
         ));
     }
     Ok(statements)
+}
+
+#[cfg(test)]
+mod postgres_column_type_tests {
+    use super::{CreateTableColumn, POSTGRES_CREATE_TABLE_PROVIDER, create_table_postgres_column_type};
+    use fluxdb_core::{CompletionColumn, DatabaseKind};
+
+    #[test]
+    fn time_family_precision_survives_design_round_trip() {
+        let parsed = CreateTableColumn::from_completion(
+            1,
+            CompletionColumn {
+                database: Some("app".into()),
+                schema: Some("public".into()),
+                table: "events".into(),
+                name: "happened_at".into(),
+                type_name: Some("timestamptz(3)".into()),
+                nullable: false,
+                primary_key: false,
+                comment: None,
+                stable: Some(1),
+            },
+            DatabaseKind::Postgres,
+            &POSTGRES_CREATE_TABLE_PROVIDER,
+        );
+        assert_eq!(parsed.data_type, "timestamptz");
+        assert_eq!(parsed.length, "3");
+        assert_eq!(
+            create_table_postgres_column_type(&parsed),
+            "timestamptz(3)"
+        );
+    }
 }

@@ -4,6 +4,8 @@ enum CreateTableInputKey {
     TableComment(TabId),
     ColumnName(TabId, u64),
     ColumnLength(TabId, u64),
+    ColumnCustomType(TabId, u64),
+    ColumnEnumValue(TabId, u64, usize),
     ColumnScale(TabId, u64),
     ColumnDefault(TabId, u64),
     ColumnComment(TabId, u64),

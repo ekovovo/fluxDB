@@ -585,6 +585,31 @@ pub enum AppCommand {
         field: CreateTableColumnField,
         value: String,
     },
+    AddCreateTableColumnEnumValue {
+        tab_id: TabId,
+        column_id: u64,
+    },
+    SetCreateTableColumnEnumValue {
+        tab_id: TabId,
+        column_id: u64,
+        index: usize,
+        value: String,
+    },
+    RemoveCreateTableColumnEnumValue {
+        tab_id: TabId,
+        column_id: u64,
+        index: usize,
+    },
+    MoveCreateTableColumnEnumValueUp {
+        tab_id: TabId,
+        column_id: u64,
+        index: usize,
+    },
+    MoveCreateTableColumnEnumValueDown {
+        tab_id: TabId,
+        column_id: u64,
+        index: usize,
+    },
     ToggleCreateTableColumnFlag {
         tab_id: TabId,
         column_id: u64,

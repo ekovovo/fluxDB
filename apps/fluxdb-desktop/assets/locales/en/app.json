@@ -2505,7 +2505,19 @@
       "unsigned": "Unsigned",
       "zero_fill": "Zero fill",
       "auto_increment": "Auto increment",
-      "auto_update_timestamp": "Auto-update timestamp"
+      "auto_update_timestamp": "Auto-update timestamp",
+      "custom_type": "Custom type",
+      "custom_type_action": "Custom type…",
+      "custom_type_placeholder": "Complete type definition",
+      "custom_type_edit": "Edit",
+      "enum_values": "Enum members",
+      "set_values": "Set members",
+      "enum_value_placeholder": "Member value",
+      "enum_add_value": "Add member",
+      "enum_move_up": "Move member up",
+      "enum_move_down": "Move member down",
+      "enum_remove_value": "Remove member",
+      "enum_values_risk": "Removing members or changing their order can make existing values unreadable. Verify stored data first."
     },
     "header": {
       "name": "Name",

@@ -5,7 +5,7 @@ mod i18n_e2e_tests {
     use fluxdb_app::AppController;
     use fluxdb_core::Settings;
     use fluxdb_storage::{FileStorage, Storage as _};
-    use gpui::{AppContext as _, Modifiers, ParentElement as _, Styled as _, TestAppContext};
+    use gpui::{AppContext as _, Modifiers, ParentElement as _, Styled as _, TestAppContext, px};
     use gpui_component::Root;
 
     use crate::{
@@ -1625,7 +1625,44 @@ mod i18n_e2e_tests {
         });
         cx.update(|window, cx| window.draw(cx).clear(cx));
         assert!(cx.debug_bounds("update-dialog").is_some());
+        let notes = cx
+            .debug_bounds("update-dialog-notes")
+            .expect("release notes must be visible");
+        assert!(
+            notes.size.height > px(40.),
+            "release notes must not collapse: {notes:?}"
+        );
         assert!(cx.debug_bounds("update-dialog-download").is_some());
+
+        cx.update(|_, cx| {
+            view.update(cx, |this, _| {
+                this.update_ui.status = crate::UpdateUiStatus::Downloading;
+                this.update_ui.downloaded_bytes = 64;
+                this.update_ui.total_bytes = 128;
+            });
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(
+            cx.debug_bounds("update-download-progress").is_some(),
+            "download progress bar must be visible"
+        );
+        assert!(
+            cx.debug_bounds("update-download-status").is_some(),
+            "download percentage and byte count must be visible"
+        );
+        assert_eq!(
+            rust_i18n::t!("app.settings.update.downloading_percent")
+                .replace("%{percent}", "50"),
+            "Downloading 50%"
+        );
+        assert!(cx.debug_bounds("update-dialog-cancel").is_some());
+
+        cx.update(|_, cx| {
+            view.update(cx, |this, _| {
+                this.update_ui.status = crate::UpdateUiStatus::Available;
+            });
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
         let later = cx.debug_bounds("update-dialog-later").expect("later button");
         cx.simulate_click(later.center(), Modifiers::default());
         cx.update(|window, cx| window.draw(cx).clear(cx));

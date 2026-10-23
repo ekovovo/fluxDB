@@ -3480,6 +3480,7 @@
       "current_version": "Current version",
       "available_version": "New version v%{version} is available",
       "download": "Download update",
+      "downloading_percent": "Downloading %{percent}%",
       "downloading_detail": "You can keep using the application while downloading. Cancelling will not install the update.",
       "ready_detail": "The update package passed signature and SHA-256 verification. Restart to install and reopen the application.",
       "installing_detail": "Starting the platform installer. The application will exit shortly.",

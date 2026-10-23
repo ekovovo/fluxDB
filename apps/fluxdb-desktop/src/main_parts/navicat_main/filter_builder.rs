@@ -381,6 +381,47 @@ impl NavicatMain {
         cx.notify();
     }
 
+    fn set_data_filter_combinator_popover(
+        &mut self,
+        tab_id: TabId,
+        rule_index: usize,
+        cx: &mut Context<Self>,
+    ) {
+        let next = DataFilterPopover {
+            tab_id,
+            kind: DataFilterPopoverKind::Combinator,
+            rule_index: Some(rule_index),
+            sort_index: None,
+        };
+        self.data_filter_popover = if self.data_filter_popover == Some(next) {
+            None
+        } else {
+            Some(next)
+        };
+        self.sync_table_hover_overlay_block(cx);
+        cx.notify();
+    }
+
+    fn select_data_filter_combinator(
+        &mut self,
+        tab_id: TabId,
+        rule_index: usize,
+        connector: fluxdb_core::FilterCombinator,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(rule) = self
+            .data_filter_draft_rules
+            .get_mut(&tab_id)
+            .and_then(|rules| rules.get_mut(rule_index))
+        {
+            rule.connector = connector;
+        }
+        self.data_filter_popover = None;
+        self.sync_data_filter_builder_to_text(tab_id);
+        self.sync_table_hover_overlay_block(cx);
+        cx.notify();
+    }
+
     /// 单值弹层勾选建议值：把该值填进输入框；再点同一项取消勾选（清空输入）。
     ///
     /// 单值形态下「勾选」不是多选，而是指定那一个值，因此直接改草稿输入，
@@ -787,7 +828,6 @@ impl NavicatMain {
 
     fn clear_data_filter_and_sort_rules(&mut self, tab_id: TabId, cx: &mut Context<Self>) {
         self.data_filter_draft_rules.remove(&tab_id);
-        self.data_filter_combinators.remove(&tab_id);
         self.data_sort_draft_rules.remove(&tab_id);
         self.data_filter_rules.remove(&tab_id);
         self.data_sort_rules.remove(&tab_id);
@@ -814,7 +854,6 @@ impl NavicatMain {
         if self.data_filter_panels.contains(&tab_id) {
             self.data_filter_panels.remove(&tab_id);
             self.data_filter_draft_rules.remove(&tab_id);
-            self.data_filter_combinators.remove(&tab_id);
             self.data_sort_draft_rules.remove(&tab_id);
             self.data_filter_grouped_tabs.remove(&tab_id);
             self.data_filter_modes.remove(&tab_id);

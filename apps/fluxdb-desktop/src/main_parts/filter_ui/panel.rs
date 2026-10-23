@@ -10,7 +10,6 @@ fn data_filter_panel(
     applying: bool,
     data_filter_text_input: Entity<gpui_component::input::EditorState>,
     database_kind: DatabaseKind,
-    combinator: fluxdb_core::FilterCombinator,
     colors: UiColors,
     window: &mut Window,
     cx: &mut Context<NavicatMain>,
@@ -41,7 +40,6 @@ fn data_filter_panel(
         .child(data_filter_mode_header(
             tab_id,
             mode,
-            combinator,
             colors,
             dialect,
             cx,
@@ -51,7 +49,6 @@ fn data_filter_panel(
                 tab_id,
                 rules,
                 default_field_for_row,
-                combinator,
                 colors,
                 cx,
             ),
@@ -143,7 +140,6 @@ fn data_filter_apply_button(colors: UiColors, applying: bool) -> Div {
 fn data_filter_mode_header(
     tab_id: TabId,
     mode: DataFilterMode,
-    combinator: fluxdb_core::FilterCombinator,
     colors: UiColors,
     dialect: sql_editor_adapter::SqlDialect,
     cx: &mut Context<NavicatMain>,
@@ -167,38 +163,6 @@ fn data_filter_mode_header(
                 .items_center()
                 .gap_1()
                 .flex_shrink_0()
-                .when(mode == DataFilterMode::Builder, |this| {
-                    this.child(
-                        data_filter_mode_button(
-                            "data-filter-combinator",
-                            SharedString::from(filter_combinator_label(combinator)),
-                            combinator == fluxdb_core::FilterCombinator::Or,
-                            colors,
-                        )
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |this, _, _, cx| {
-                                let next = match this
-                                    .data_filter_combinators
-                                    .get(&tab_id)
-                                    .copied()
-                                    .unwrap_or_default()
-                                {
-                                    fluxdb_core::FilterCombinator::And => {
-                                        fluxdb_core::FilterCombinator::Or
-                                    }
-                                    fluxdb_core::FilterCombinator::Or => {
-                                        fluxdb_core::FilterCombinator::And
-                                    }
-                                };
-                                this.data_filter_combinators.insert(tab_id, next);
-                                this.sync_data_filter_builder_to_text(tab_id);
-                                cx.notify();
-                                cx.stop_propagation();
-                            }),
-                        ),
-                    )
-                })
                 .child(data_filter_mode_button(
                     "data-filter-mode-builder",
                     tr("app.filter.mode.builder"),
@@ -384,14 +348,13 @@ fn data_editor_sql_preview(
     offset: u64,
     limit: u64,
     db_kind: DatabaseKind,
-    combinator: fluxdb_core::FilterCombinator,
 ) -> String {
     let sqlserver = db_kind == DatabaseKind::SqlServer;
     let mut clauses = Vec::new();
     let mut has_order_by = false;
     match mode {
         DataFilterMode::Builder => {
-            let where_clause = data_filter_rules_sql(rules, db_kind, combinator);
+            let where_clause = data_filter_rules_sql(rules, db_kind);
             if !where_clause.is_empty() {
                 clauses.push(format!("WHERE {where_clause}"));
             }

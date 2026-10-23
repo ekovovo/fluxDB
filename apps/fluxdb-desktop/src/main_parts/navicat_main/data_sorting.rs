@@ -181,12 +181,7 @@ impl NavicatMain {
             .get(&tab_id)
             .cloned()
             .unwrap_or_default();
-        let combinator = self
-            .data_filter_combinators
-            .get(&tab_id)
-            .copied()
-            .unwrap_or_default();
-        data_filter_expression_from_rules(&rules, combinator)
+        data_filter_expression_from_rules(&rules)
     }
 
     fn data_changes_for_tab(&self, tab_id: TabId) -> Option<DataChangeSet> {

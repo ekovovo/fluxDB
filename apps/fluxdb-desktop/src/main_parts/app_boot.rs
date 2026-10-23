@@ -589,6 +589,7 @@ fn navicat_main_new(
                             });
                         let data_filter_text_input = cx.new(|cx| {
                             gpui_component::input::EditorState::new(window, cx)
+                                .language(SQL_HIGHLIGHT_LANGUAGE)
                                 .placeholder(tr("app.placeholder.filter_expression"))
                         });
                         let data_sort_text_input = cx.new(|cx| {
@@ -3570,7 +3571,6 @@ fn navicat_main_new(
                             data_filter_rules: BTreeMap::new(),
                             data_sort_rules: BTreeMap::new(),
                             data_filter_draft_rules: BTreeMap::new(),
-                            data_filter_combinators: BTreeMap::new(),
                             data_sort_draft_rules: BTreeMap::new(),
                             data_filter_grouped_tabs: BTreeSet::new(),
                             data_filter_modes: BTreeMap::new(),

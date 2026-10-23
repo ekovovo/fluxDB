@@ -899,7 +899,6 @@ struct NavicatMain {
     data_filter_rules: BTreeMap<TabId, Vec<DataFilterRule>>,
     data_sort_rules: BTreeMap<TabId, Vec<DataSortRule>>,
     data_filter_draft_rules: BTreeMap<TabId, Vec<DataFilterRule>>,
-    data_filter_combinators: BTreeMap<TabId, fluxdb_core::FilterCombinator>,
     data_sort_draft_rules: BTreeMap<TabId, Vec<DataSortRule>>,
     data_filter_grouped_tabs: BTreeSet<TabId>,
     data_filter_modes: BTreeMap<TabId, DataFilterMode>,

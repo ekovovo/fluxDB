@@ -2,6 +2,7 @@
 enum DataFilterPopoverKind {
     Field,
     Operator,
+    Combinator,
     Value,
     SortField,
     SortMenu,
@@ -28,6 +29,8 @@ struct DataFilterRule {
     /// 从输入表达式解析出的原始类型。表单编辑值后丢弃，避免把用户新输入的
     /// `"007"` 错误保留成整数类型。
     typed_values: Option<Vec<fluxdb_core::FilterValue>>,
+    /// 本行与下一行之间的组合符；最后一行的值不参与表达式。
+    connector: fluxdb_core::FilterCombinator,
     grouped: bool,
 }
 
@@ -212,6 +215,7 @@ impl Default for DataFilterRule {
             values: Vec::new(),
             advanced_expression: None,
             typed_values: None,
+            connector: fluxdb_core::FilterCombinator::And,
             grouped: false,
         }
     }
@@ -421,61 +425,96 @@ fn data_filter_operator_from_core(operator: fluxdb_core::FilterOperator) -> Data
 
 fn data_filter_expression_from_rules(
     rules: &[DataFilterRule],
-    combinator: fluxdb_core::FilterCombinator,
 ) -> fluxdb_core::Result<fluxdb_core::FilterExpression> {
-    let form_rules = rules
-        .iter()
-        .filter(|rule| rule.advanced_expression.is_none())
-        .map(fluxdb_core::FilterFormRule::from)
-        .collect::<Vec<_>>();
-    let form_expression = fluxdb_core::filter_expression_from_form(&form_rules, combinator)
-        .map_err(|error| fluxdb_core::Error::new(fluxdb_core::ErrorKind::Query, error.to_string()))?;
-    let advanced = rules
-        .iter()
-        .filter(|rule| {
-            rule.enabled
-                && rule
-                    .advanced_expression
-                    .as_deref()
-                    .is_some_and(|text| !text.trim().is_empty())
-        })
-        .map(|rule| {
-            fluxdb_core::FilterExpression::Raw(
-                rule.advanced_expression.clone().unwrap_or_default(),
-            )
-        })
-        .collect::<Vec<_>>();
-    if advanced.is_empty() {
-        return Ok(form_expression);
-    }
-    // 表单规则为空时，高级条件必须保持自己的根组合语义，不能额外套一层
-    // `AND ()` 或 `OR ()`。
-    let form_is_empty = matches!(
-        &form_expression,
-        fluxdb_core::FilterExpression::And(items) | fluxdb_core::FilterExpression::Or(items)
-            if items.is_empty()
-    );
-    if form_is_empty {
-        return Ok(if advanced.len() == 1 {
-            advanced
-                .into_iter()
-                .next()
-                .expect("advanced conditions are non-empty")
-        } else {
-            match combinator {
-                fluxdb_core::FilterCombinator::And => {
-                    fluxdb_core::FilterExpression::And(advanced)
-                }
-                fluxdb_core::FilterCombinator::Or => fluxdb_core::FilterExpression::Or(advanced),
+    let mut terms = Vec::new();
+    let mut index = 0;
+    while index < rules.len() {
+        let rule = &rules[index];
+        if rule.grouped {
+            let group_start = index;
+            while index + 1 < rules.len() && rules[index + 1].grouped {
+                index += 1;
             }
-        });
+            let group = &rules[group_start..=index];
+            if let Some(expression) = data_filter_rule_sequence_expression(group)? {
+                terms.push((
+                    expression,
+                    rules[index].connector,
+                ));
+            }
+        } else if let Some(expression) = data_filter_single_rule_expression(rule)? {
+            terms.push((expression, rule.connector));
+        }
+        index += 1;
     }
-    let mut expressions = vec![form_expression];
-    expressions.extend(advanced);
-    Ok(match combinator {
-        fluxdb_core::FilterCombinator::And => fluxdb_core::FilterExpression::And(expressions),
-        fluxdb_core::FilterCombinator::Or => fluxdb_core::FilterExpression::Or(expressions),
-    })
+    Ok(data_filter_join_terms(terms))
+}
+
+fn data_filter_single_rule_expression(
+    rule: &DataFilterRule,
+) -> fluxdb_core::Result<Option<fluxdb_core::FilterExpression>> {
+    if !rule.enabled {
+        return Ok(None);
+    }
+    if let Some(expression) = rule
+        .advanced_expression
+        .as_deref()
+        .filter(|expression| !expression.trim().is_empty())
+    {
+        return Ok(Some(fluxdb_core::FilterExpression::Raw(
+            expression.to_string(),
+        )));
+    }
+    let mut form_rule = fluxdb_core::FilterFormRule::from(rule);
+    form_rule.grouped = false;
+    let expression = fluxdb_core::filter_expression_from_form(
+        std::slice::from_ref(&form_rule),
+        fluxdb_core::FilterCombinator::And,
+    )
+    .map_err(|error| fluxdb_core::Error::new(fluxdb_core::ErrorKind::Query, error.to_string()))?;
+    let fluxdb_core::FilterExpression::And(mut items) = expression else {
+        return Ok(Some(expression));
+    };
+    Ok((items.len() == 1).then(|| items.remove(0)))
+}
+
+fn data_filter_rule_sequence_expression(
+    rules: &[DataFilterRule],
+) -> fluxdb_core::Result<Option<fluxdb_core::FilterExpression>> {
+    let mut terms = Vec::new();
+    for rule in rules {
+        if let Some(expression) = data_filter_single_rule_expression(rule)? {
+            terms.push((expression, rule.connector));
+        }
+    }
+    Ok((!terms.is_empty()).then(|| data_filter_join_terms(terms)))
+}
+
+/// 行间组合符使用 SQL 默认优先级：AND 先结合，再由 OR 连接各段。
+fn data_filter_join_terms(
+    terms: Vec<(fluxdb_core::FilterExpression, fluxdb_core::FilterCombinator)>,
+) -> fluxdb_core::FilterExpression {
+    if terms.is_empty() {
+        return fluxdb_core::FilterExpression::And(Vec::new());
+    }
+    let mut or_terms = Vec::new();
+    let mut and_terms = Vec::new();
+    for (index, (expression, connector)) in terms.iter().enumerate() {
+        and_terms.push(expression.clone());
+        if index + 1 == terms.len() || *connector == fluxdb_core::FilterCombinator::Or {
+            let part = if and_terms.len() == 1 {
+                and_terms.remove(0)
+            } else {
+                fluxdb_core::FilterExpression::And(std::mem::take(&mut and_terms))
+            };
+            or_terms.push(part);
+        }
+    }
+    if or_terms.len() == 1 {
+        or_terms.remove(0)
+    } else {
+        fluxdb_core::FilterExpression::Or(or_terms)
+    }
 }
 
 fn normalized_data_filter_value(value: &str) -> String {
@@ -628,4 +667,37 @@ fn local_table_filters_after_value_toggle(
         filters.remove(field);
     }
     filters
+}
+
+#[cfg(test)]
+mod data_filter_expression_tests {
+    use super::*;
+
+    fn rule(field: &str, value: &str, connector: fluxdb_core::FilterCombinator) -> DataFilterRule {
+        DataFilterRule {
+            enabled: true,
+            field: Some(field.into()),
+            operator: DataFilterOperator::Eq,
+            values: vec![value.into()],
+            advanced_expression: None,
+            typed_values: None,
+            connector,
+            grouped: false,
+        }
+    }
+
+    #[test]
+    fn row_connectors_follow_sql_and_precedence() {
+        let expression = data_filter_expression_from_rules(&[
+            rule("a", "1", fluxdb_core::FilterCombinator::Or),
+            rule("b", "2", fluxdb_core::FilterCombinator::And),
+            rule("c", "3", fluxdb_core::FilterCombinator::And),
+        ])
+        .expect("expression");
+        let fluxdb_core::FilterExpression::Or(items) = expression else {
+            panic!("OR root");
+        };
+        assert!(matches!(&items[0], fluxdb_core::FilterExpression::Condition(_)));
+        assert!(matches!(&items[1], fluxdb_core::FilterExpression::And(nodes) if nodes.len() == 2));
+    }
 }

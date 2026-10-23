@@ -431,6 +431,7 @@ impl NavicatMain {
                 values: vec![menu.value.clone()],
                 advanced_expression: None,
                 typed_values: None,
+                connector: fluxdb_core::FilterCombinator::And,
                 grouped: false,
             }],
         );

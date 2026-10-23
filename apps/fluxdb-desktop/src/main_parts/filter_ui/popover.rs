@@ -28,6 +28,9 @@ fn data_filter_popover_layer(
     let selected_operator = rule
         .map(|rule| rule.operator)
         .unwrap_or(DataFilterOperator::Contains);
+    let selected_connector = rule
+        .map(|rule| rule.connector)
+        .unwrap_or_default();
     let recommended_values = data_filter_recommended_values(page, selected_field, value_search);
 
     let menu = match popover.kind {
@@ -47,6 +50,14 @@ fn data_filter_popover_layer(
             rule_index,
             selected_operator,
             DATA_FILTER_POPOVER_TOP,
+            colors,
+            cx,
+        ),
+        DataFilterPopoverKind::Combinator => data_filter_combinator_menu(
+            tab_id,
+            rule_index,
+            selected_connector,
+            DATA_FILTER_POPOVER_TOP + rule_index as f32 * 24.,
             colors,
             cx,
         ),
@@ -181,7 +192,6 @@ fn data_filter_builder_rows(
     tab_id: TabId,
     rules: &[DataFilterRule],
     default_field: Option<String>,
-    combinator: fluxdb_core::FilterCombinator,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
@@ -210,7 +220,6 @@ fn data_filter_builder_rows(
                     default_field.clone(),
                     true,
                     group_index < group_end,
-                    combinator,
                     colors,
                     cx,
                 ));
@@ -220,7 +229,7 @@ fn data_filter_builder_rows(
                 group_end,
                 default_field.clone(),
                 group_end + 1 < rules.len(),
-                combinator,
+                rules[group_end].connector,
                 colors,
                 cx,
             ));
@@ -233,7 +242,6 @@ fn data_filter_builder_rows(
                 default_field.clone(),
                 false,
                 show_connector,
-                combinator,
                 colors,
                 cx,
             ));
@@ -268,7 +276,7 @@ fn data_filter_group_close_row(
     group_end_index: usize,
     default_field: Option<String>,
     show_and: bool,
-    combinator: fluxdb_core::FilterCombinator,
+    connector: fluxdb_core::FilterCombinator,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
@@ -290,13 +298,13 @@ fn data_filter_group_close_row(
                 .child(")"),
         )
         .when(show_and, |this| {
-            this.child(
-                div()
-                    .text_size(px(12.))
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .text_color(rgb(0x006bd6))
-                    .child(filter_combinator_label(combinator)),
-            )
+            this.child(data_filter_connector_button(
+                tab_id,
+                group_end_index,
+                connector,
+                colors,
+                cx,
+            ))
         })
         .when(!show_and, |this| {
             this.child(data_filter_small_button("+", colors).on_mouse_down(
@@ -376,7 +384,6 @@ fn data_filter_rule_row(
     default_field: Option<String>,
     nested: bool,
     show_and: bool,
-    combinator: fluxdb_core::FilterCombinator,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
@@ -387,7 +394,7 @@ fn data_filter_rule_row(
             expression,
             rule.enabled,
             show_and,
-            combinator,
+            rule.connector,
             colors,
             cx,
         );
@@ -489,13 +496,13 @@ fn data_filter_rule_row(
             })
         })
         .when(show_and, |this| {
-            this.child(
-                div()
-                    .text_size(px(12.))
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .text_color(rgb(0x006bd6))
-                    .child(filter_combinator_label(combinator)),
-            )
+            this.child(data_filter_connector_button(
+                tab_id,
+                rule_index,
+                rule.connector,
+                colors,
+                cx,
+            ))
         })
         .when(!show_and, |this| {
             this.child(data_filter_small_button("+", colors).on_mouse_down(
@@ -543,7 +550,7 @@ fn data_filter_advanced_rule_row(
     expression: &str,
     enabled: bool,
     show_and: bool,
-    combinator: fluxdb_core::FilterCombinator,
+    connector: fluxdb_core::FilterCombinator,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
@@ -591,13 +598,13 @@ fn data_filter_advanced_rule_row(
                 ),
         )
         .when(show_and, |this| {
-            this.child(
-                div()
-                    .text_size(px(12.))
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .text_color(rgb(0x006bd6))
-                    .child(filter_combinator_label(combinator)),
-            )
+            this.child(data_filter_connector_button(
+                tab_id,
+                rule_index,
+                connector,
+                colors,
+                cx,
+            ))
         })
         .child(data_filter_delete_button(colors).on_mouse_down(
             MouseButton::Left,
@@ -606,6 +613,42 @@ fn data_filter_advanced_rule_row(
                 cx.stop_propagation();
             }),
         ))
+}
+
+fn data_filter_connector_button(
+    tab_id: TabId,
+    rule_index: usize,
+    connector: fluxdb_core::FilterCombinator,
+    colors: UiColors,
+    cx: &mut Context<NavicatMain>,
+) -> Div {
+    div()
+        .debug_selector(move || format!("data-filter-connector-{rule_index}"))
+        .h(px(18.))
+        .px_1()
+        .rounded(colors.radius * 0.5)
+        .text_size(px(12.))
+        .font_weight(gpui::FontWeight::SEMIBOLD)
+        .text_color(rgb(0x006bd6))
+        .cursor_pointer()
+        .flex()
+        .items_center()
+        .justify_center()
+        .hover(move |style| {
+            style.bg(if colors.is_dark {
+                rgb(0x244565)
+            } else {
+                rgb(0xc8e5fb)
+            })
+        })
+        .child(filter_combinator_label(connector))
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |this, _, _, cx| {
+                this.set_data_filter_combinator_popover(tab_id, rule_index, cx);
+                cx.stop_propagation();
+            }),
+        )
 }
 
 fn data_filter_value_label(selected_values: &[String]) -> String {
@@ -1014,6 +1057,45 @@ fn data_filter_operator_menu(
         .top(px(top))
         .left(px(90.))
         .child(list)
+}
+
+fn data_filter_combinator_menu(
+    tab_id: TabId,
+    rule_index: usize,
+    selected_connector: fluxdb_core::FilterCombinator,
+    top: f32,
+    colors: UiColors,
+    cx: &mut Context<NavicatMain>,
+) -> Div {
+    let mut menu = data_filter_menu_surface(104., 60., colors)
+        .top(px(top))
+        .left(px(112.));
+    for connector in [
+        fluxdb_core::FilterCombinator::And,
+        fluxdb_core::FilterCombinator::Or,
+    ] {
+        let debug_id = match connector {
+            fluxdb_core::FilterCombinator::And => "data-filter-connector-option-and",
+            fluxdb_core::FilterCombinator::Or => "data-filter-connector-option-or",
+        };
+        menu = menu.child(
+            data_filter_menu_item(
+                filter_combinator_label(connector).to_string(),
+                connector == selected_connector,
+                None,
+                colors,
+            )
+            .debug_selector(move || debug_id.into())
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _, _, cx| {
+                    this.select_data_filter_combinator(tab_id, rule_index, connector, cx);
+                    cx.stop_propagation();
+                }),
+            ),
+        );
+    }
+    menu
 }
 
 fn data_sort_action_menu(

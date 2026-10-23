@@ -1123,7 +1123,6 @@ impl NavicatMain {
                     .remove(&redis_list_item_mutation_task_id(*tab_id));
                 self.data_filter_modes.remove(tab_id);
                 self.data_filter_texts.remove(tab_id);
-                self.data_filter_combinators.remove(tab_id);
                 self.data_filter_condition_completion_signatures.remove(tab_id);
                 self.data_sort_texts.remove(tab_id);
                 self.data_filter_panel_heights.remove(tab_id);

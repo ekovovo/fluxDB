@@ -44,6 +44,7 @@ fn configure_data_filter_condition_completion(
     database_kind: DatabaseKind,
 ) {
     editor.set_folding(false, window, cx);
+    editor.set_highlighter(SQL_HIGHLIGHT_LANGUAGE, cx);
     let mut lsp = CompletionLsp::default();
     lsp.completion_provider = Some(std::rc::Rc::new(DataFilterConditionCompletionProvider {
         fields: std::sync::Arc::new(fields),

@@ -442,4 +442,69 @@ fn ai_page_query_opens_sidebar_table_fills_conditions_and_shows_rows(cx: &mut Te
         cx.update(|_, cx| !view.read(cx).data_filter_draft_rules.contains_key(&tab_id)),
         "empty input must clear the previous form"
     );
+
+    cx.update(|window, cx| {
+        view.update(cx, |this, cx| {
+            this.data_filter_modes
+                .insert(tab_id, crate::DataFilterMode::Builder);
+            this.data_filter_draft_rules.insert(
+                tab_id,
+                vec![
+                    crate::DataFilterRule {
+                        enabled: true,
+                        field: Some("status".into()),
+                        operator: crate::DataFilterOperator::Eq,
+                        values: vec!["failed".into()],
+                        advanced_expression: None,
+                        typed_values: None,
+                        connector: fluxdb_core::FilterCombinator::And,
+                        grouped: false,
+                    },
+                    crate::DataFilterRule {
+                        enabled: true,
+                        field: Some("status".into()),
+                        operator: crate::DataFilterOperator::Eq,
+                        values: vec!["ok".into()],
+                        advanced_expression: None,
+                        typed_values: None,
+                        connector: fluxdb_core::FilterCombinator::And,
+                        grouped: false,
+                    },
+                ],
+            );
+            cx.notify();
+        });
+        window.draw(cx).clear(cx);
+    });
+    let connector = cx
+        .debug_bounds("data-filter-connector-0")
+        .expect("row connector");
+    cx.simulate_click(connector.center(), Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(cx
+        .debug_bounds("data-filter-connector-option-and")
+        .is_some());
+    assert!(cx
+        .debug_bounds("data-filter-connector-option-or")
+        .is_some());
+    let or_option = cx
+        .debug_bounds("data-filter-connector-option-or")
+        .expect("OR option");
+    cx.simulate_click(or_option.center(), Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.update(|_, cx| {
+        let app = view.read(cx);
+        let rules = app
+            .data_filter_draft_rules
+            .get(&tab_id)
+            .expect("connector rules");
+        assert_eq!(
+            rules[0].connector,
+            fluxdb_core::FilterCombinator::Or
+        );
+        assert!(app
+            .data_filter_texts
+            .get(&tab_id)
+            .is_some_and(|text| text.contains(" OR ")));
+    });
 }

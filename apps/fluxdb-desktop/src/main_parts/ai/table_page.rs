@@ -742,6 +742,7 @@ impl NavicatMain {
                 values: item.values.iter().cloned().collect(),
                 advanced_expression: None,
                 typed_values: None,
+                connector: fluxdb_core::FilterCombinator::And,
                 grouped: false,
             });
         }

@@ -773,11 +773,6 @@ fn data_editor_content(
     let display_page = this.data_page_for_display(tab_id, page);
     let page = display_page.as_ref();
     let db_kind = this.connection_database_kind(editor.object.connection_id);
-    let filter_combinator = this
-        .data_filter_combinators
-        .get(&tab_id)
-        .copied()
-        .unwrap_or_default();
     let sql = data_editor_sql_preview(
         &editor.object,
         filter_rules.as_slice(),
@@ -788,7 +783,6 @@ fn data_editor_content(
         page.offset,
         page.limit,
         db_kind,
-        filter_combinator,
     );
     let all_field_names = page
         .columns
@@ -862,7 +856,6 @@ fn data_editor_content(
             filter_applying,
             data_filter_text_input,
             db_kind,
-            filter_combinator,
             colors,
             window,
             cx,

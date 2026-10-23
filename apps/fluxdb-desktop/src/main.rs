@@ -32,9 +32,10 @@ use fluxdb_app::{
     SqlServerSecurityFormKind, SqlServerSecurityListFilter, SqlServerSecuritySaveStatus,
     SqlServerSecurityState, TabId, TabKind, TabState, TabWorkspace, TableInfoState, TableInfoTab,
     UserAdminDetailTab, UserAdminState, compress_sql_text, copy_table_sql_preview_with_source_ddl,
-    create_table_provider, drop_table_sql_preview, er_neighborhood_included_tables,
-    er_place_avoiding_overlaps, er_relation_layout, format_sql_text_for_dialect,
-    rename_table_sql_preview, truncate_table_sql_preview,
+    create_table_common_type_options, create_table_provider, create_table_special_type_options,
+    drop_table_sql_preview, er_neighborhood_included_tables, er_place_avoiding_overlaps,
+    er_relation_layout, format_sql_text_for_dialect, rename_table_sql_preview,
+    truncate_table_sql_preview,
 };
 use fluxdb_core::{
     BinaryUpdatePayload, CellValue, Column as GdbColumn, CommandBulk, CommandExecutionItem,
@@ -198,5 +199,7 @@ include!("main_parts/app_boot_helpers.rs");
 
 #[cfg(test)]
 include!("main_parts/i18n_tests.rs");
+#[cfg(test)]
+include!("main_parts/tabs_workspace_tests.rs");
 #[cfg(test)]
 include!("main_parts/sidebar_refresh_tests.rs");

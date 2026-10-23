@@ -316,6 +316,16 @@ impl Connector for PostgresConnector {
         pg_list_completion_tables(config, database, schema, filter, limit, &|| false)
     }
 
+    fn list_completion_tables_all_schemas(
+        &self,
+        database: Option<&str>,
+        filter: &str,
+        limit: u64,
+    ) -> fluxdb_core::Result<Vec<CompletionTable>> {
+        let config = self.as_config("PostgreSQL 补全需要连接配置上下文")?;
+        pg_list_completion_tables_all_schemas(config, database, filter, limit, &|| false)
+    }
+
     fn list_completion_columns(
         &self,
         database: Option<&str>,
@@ -374,6 +384,20 @@ impl Connector for PostgresConnector {
         }
         let config = self.as_config("PostgreSQL 补全需要连接配置上下文")?;
         pg_list_completion_tables(config, database, schema, filter, limit, should_cancel)
+    }
+
+    fn list_completion_tables_all_schemas_with_cancel(
+        &self,
+        database: Option<&str>,
+        filter: &str,
+        limit: u64,
+        should_cancel: &dyn Fn() -> bool,
+    ) -> fluxdb_core::Result<Vec<CompletionTable>> {
+        if should_cancel() {
+            return Ok(Vec::new());
+        }
+        let config = self.as_config("PostgreSQL 补全需要连接配置上下文")?;
+        pg_list_completion_tables_all_schemas(config, database, filter, limit, should_cancel)
     }
 
     fn list_completion_columns_with_cancel(

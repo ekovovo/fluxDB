@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>fluxDB · MongoDB</title>
+  <link rel="stylesheet" href="mongodb-ui.css">
+  <script src="mongodb-ui.js" defer></script>
+</head>
+<body>
+  <div class="app">
+    <header class="window-bar">
+      <div class="traffic" aria-hidden="true"><i></i><i></i><i></i></div>
+      <button class="icon-button" id="sidebar-toggle" data-label="toggleSidebar"><span data-icon="panel-left-close"></span></button>
+      <span data-icon="home" class="window-home"></span>
+      <span class="window-context"><img src="../../apps/fluxdb-desktop/assets/db/mongodb.svg" alt=""> local-mongo</span>
+      <span class="prototype" data-i18n="prototype"></span>
+      <div class="window-actions">
+        <button class="text-button" id="about" data-i18n="designNote"></button>
+        <button class="icon-button" id="language" aria-label="English / 中文"><span class="language-label">EN</span></button>
+        <button class="icon-button" id="theme" data-label="theme"><span data-icon="sun"></span></button>
+      </div>
+    </header>
+    <div class="workspace">
+      <aside class="sidebar" aria-label="Connections">
+        <div class="side-heading"><strong data-i18n="connections"></strong><div>
+          <button class="icon-button" disabled data-label="newGroup"><span data-icon="folder"></span></button>
+          <button class="icon-button" id="tree-refresh" data-label="refresh"><span data-icon="refresh-cw"></span></button>
+          <button class="icon-button" disabled data-label="newConnection"><span data-icon="plug"></span></button>
+        </div></div>
+        <label class="tree-search"><span data-icon="search"></span><input id="tree-search" type="search" data-placeholder="searchCollections" data-label="searchCollections"></label>
+        <nav id="tree" class="tree" data-label="connectionTree"></nav>
+        <div class="side-footer"><button class="button" disabled><span data-icon="plug"></span><span data-i18n="newConnection"></span></button></div>
+      </aside>
+      <main class="main">
+        <nav class="connection-tabs" data-label="connectionTabs">
+          <span class="connection-tab muted"><i class="connection-dot"></i><img src="../../apps/fluxdb-desktop/assets/db/mysql.svg" alt=""> dev-mysql</span>
+          <span class="connection-tab selected"><i class="connection-dot live"></i><img src="../../apps/fluxdb-desktop/assets/db/mongodb.svg" alt=""> shop_demo <small>local-mongo</small></span>
+        </nav>
+        <nav class="object-tabs" data-label="objectTabs">
+          <span class="object-tab selected"><span data-icon="table-2"></span><b id="object-name">orders</b><span class="tab-description" data-i18n="collection"></span></span>
+        </nav>
+        <div class="object-strip">
+          <span class="namespace"><span data-icon="database"></span>shop_demo<span class="slash">/</span><strong id="namespace-name">orders</strong></span>
+          <span class="sample-pill"><span data-icon="shield-check"></span><span data-i18n="demoOnly"></span></span>
+          <span class="strip-right" data-i18n="localOnly"></span>
+        </div>
+        <nav class="section-tabs" role="tablist" data-label="collectionViews">
+          <button class="section-tab selected" data-tab="documents" role="tab" aria-selected="true"><span data-icon="file-code"></span><span data-i18n="documents"></span></button>
+          <button class="section-tab" data-tab="aggregation" role="tab" aria-selected="false"><span data-icon="workflow"></span><span data-i18n="aggregation"></span></button>
+          <button class="section-tab" data-tab="indexes" role="tab" aria-selected="false"><span data-icon="list-filter"></span><span data-i18n="indexes"></span><small id="index-count">3</small></button>
+          <button class="section-tab" data-tab="info" role="tab" aria-selected="false"><span data-icon="info"></span><span data-i18n="collectionInfo"></span></button>
+        </nav>
+        <section class="document-page" id="document-page" role="tabpanel">
+          <form class="query-panel" id="query-form">
+            <div class="query-main">
+              <label class="query-input"><span class="query-label">Filter</span><input id="filter" spellcheck="false" autocomplete="off" value="{}" aria-label="Filter"></label>
+              <button class="button query-options" type="button" id="query-options" aria-expanded="false"><span data-icon="list-filter"></span><span data-i18n="options"></span><span data-icon="chevron-down"></span></button>
+              <button class="button primary" type="submit" id="find"><span data-icon="play"></span><span data-i18n="find"></span></button>
+              <button class="icon-button" type="button" id="reset" data-label="reset"><span data-icon="undo-2"></span></button>
+            </div>
+            <div class="query-extras" id="query-extras" hidden>
+              <label class="query-input"><span class="query-label">Project</span><input id="project" value="{}" spellcheck="false" aria-label="Projection"></label>
+              <label class="query-input"><span class="query-label">Sort</span><input id="sort" value="{}" spellcheck="false" aria-label="Sort"></label>
+              <label class="query-input short"><span class="query-label">Limit</span><input id="limit" type="number" min="1" max="100" value="8" aria-label="Limit"></label>
+            </div>
+            <div class="query-error" id="query-error" role="alert" hidden></div>
+          </form>
+          <div class="results-toolbar">
+            <div class="segmented" role="group" data-label="displayMode">
+              <button class="selected" data-view="documents" aria-pressed="true" data-label="documentView"><span data-icon="list"></span><span data-i18n="documents"></span></button>
+              <button data-view="table" aria-pressed="false" data-label="tableView"><span data-icon="table-2"></span><span data-i18n="table"></span></button>
+              <button data-view="json" aria-pressed="false" aria-label="JSON"><span data-icon="file-code"></span><span>JSON</span></button>
+            </div>
+            <span class="result-summary" id="result-summary"></span>
+            <div class="result-actions">
+              <button class="icon-button" id="refresh" data-label="refresh"><span data-icon="refresh-cw"></span></button>
+              <button class="button" disabled data-label="insertUnavailable"><span data-icon="plus"></span><span data-i18n="insert"></span></button>
+              <button class="button detail-toggle" id="detail-toggle" aria-pressed="false"><span data-icon="panel-right"></span><span data-i18n="detail"></span></button>
+            </div>
+          </div>
+          <div class="results-layout">
+            <div class="results-scroll" id="results"></div>
+            <aside class="inspector" id="inspector" hidden data-label="documentDetail">
+              <header class="inspector-head"><span data-icon="file-code"></span><strong data-i18n="documentDetail"></strong><button class="icon-button" id="close-inspector" data-label="closeDetail"><span data-icon="x"></span></button></header>
+              <div class="inspector-meta"><span class="type-badge">Extended JSON</span><span data-i18n="preserveBson"></span></div>
+              <div class="inspector-code" id="inspector-code"></div>
+              <footer class="inspector-foot"><span data-icon="lock-keyhole"></span><span data-i18n="notAiContext"></span></footer>
+            </aside>
+          </div>
+          <footer class="pagination">
+            <span class="page-range" id="page-range"></span>
+            <label><span data-i18n="perPage"></span><select id="page-size" data-label="perPage"><option value="3">3</option><option value="5">5</option><option value="8">8</option></select></label>
+            <div class="page-buttons"><button class="icon-button" id="previous" data-label="previous"><span data-icon="chevron-left"></span></button><span id="page-number"></span><button class="icon-button" id="next" data-label="next"><span data-icon="chevron-right"></span></button></div>
+          </footer>
+        </section>
+        <section class="secondary-page" id="secondary-page" role="tabpanel" hidden></section>
+      </main>
+    </div>
+    <footer class="statusbar"><span class="status-path" id="status-path">local-mongo / shop_demo / orders</span><span class="status-spacer"></span><span class="status-dot"></span><span data-i18n="sampleData"></span><span class="status-separator"></span><span data-i18n="noConnection"></span><span class="status-separator"></span><span>UTF-8</span></footer>
+  </div>
+  <dialog id="design-dialog">
+    <header><h2 data-i18n="designNote"></h2><button class="icon-button" id="close-dialog" data-label="close"><span data-icon="x"></span></button></header>
+    <div class="dialog-body"><p data-i18n="designBody"></p><h3 data-i18n="contextBoundary"></h3><p data-i18n="contextBody"></p><h3 data-i18n="queryBoundary"></h3><p data-i18n="queryBody"></p></div>
+    <footer><button class="button primary" id="got-it" data-i18n="gotIt"></button></footer>
+  </dialog>
+  <div id="toast" role="status" aria-live="polite" hidden></div>
+</body>
+</html>

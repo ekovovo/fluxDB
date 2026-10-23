@@ -1,52 +1,110 @@
 # FluxDB
 
-**开源、跨平台的原生数据库客户端与 SQL 编辑器。**
+**原生跨平台数据库客户端与 SQL 编辑器：在一个窗口中完成查询、数据编辑、结构管理和 Redis 调试。**
 
-在一个桌面应用中连接 MySQL、TiDB、PostgreSQL、SQL Server、SQLite、达梦 DM8 和 Redis，编写 SQL、编辑数据、管理表结构与浏览键值。
-
-基于 Rust + GPUI 构建，不依赖 Electron 或 WebView，支持 macOS、Windows 和 Linux。
+FluxDB 使用 Rust + GPUI 构建，不依赖 Electron 或 WebView。它把 MySQL、PostgreSQL、SQL Server、SQLite、TiDB、达梦 DM8 和 Redis 放进同一套桌面工作流，并提供有明确权限边界的 AI Agent。
 
 **简体中文 | [English](./README.en.md)**
 
 [![Release](https://img.shields.io/github/v/release/fluxdb-alt/fluxDB)](https://github.com/fluxdb-alt/fluxDB/releases/latest)
-[![CI](https://github.com/fluxdb-alt/fluxDB/actions/workflows/ci.yml/badge.svg)](https://github.com/fluxdb-alt/fluxDB/actions/workflows/ci.yml)
+[![CI](https://img.shields.io/github/actions/workflow/status/fluxdb-alt/fluxDB/ci.yml)](https://github.com/fluxdb-alt/fluxDB/actions/workflows/ci.yml)
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue)](./LICENSE)
 ![Platforms](https://img.shields.io/badge/平台-macOS%20%7C%20Windows%20%7C%20Linux-blue)
 
-[下载最新版本](https://github.com/fluxdb-alt/fluxDB/releases/latest) · [功能特性](#功能特性) · [安装说明](#下载安装) · [操作手册](./docs/user-guide.md) · [反馈问题](https://github.com/fluxdb-alt/fluxDB/issues)
+[下载最新版本](https://github.com/fluxdb-alt/fluxDB/releases/latest) · [最近更新](#最近更新) · [功能一览](#核心能力) · [数据库支持](#数据库支持) · [操作手册](./docs/user-guide.md) · [反馈问题](https://github.com/fluxdb-alt/fluxDB/issues)
 
+![FluxDB SQL 编辑器、表结构提示与补全](docs/screenshots/sql_editor_adapter.png)
 
-**演示视频** · 2 分 46 秒 · MP4，约 8.6 MB
+## 最近更新
+
+### v0.1.10
+
+- **新增达梦 DM8 数据源**：连接管理、Schema 与对象浏览、SQL 查询、表结构设计与数据编辑。
+- **新增表数据导入向导**：支持 TXT、CSV、JSON、XML，提供字段映射、追加 / 截断模式和导入日志。
+- **AI Agent 增加页面与编辑器授权**：可按授权查找并查询表，也可改写指定 SQL 范围，但不会自动执行。
+- **新增应用内更新**：从 GitHub Release 检查更新，并校验签名清单与安装包摘要。
+
+[完整更新说明](./release-notes/v0.1.10/zh-CN.md) · [历史版本](https://github.com/fluxdb-alt/fluxDB/releases)
+
+## 为什么选择 FluxDB
+
+- **一个工作台，多种数据源**：在同一个窗口中管理关系型数据库和 Redis，减少工具切换。
+- **从查询到写入的完整路径**：SQL 编辑、结果编辑回写、表结构设计、数据导入导出、备份恢复和 ER 图互相衔接。
+- **原生桌面体验**：基于 Rust + GPUI，不依赖 Electron 或 WebView。
+- **AI 有明确安全边界**：AI 只能读取有界数据、修改授权编辑器或执行受控操作；写入类工具需要审批。
+
+## 核心能力
+
+### SQL 与数据编辑
+
+- SQL 编辑器：语法高亮、代码折叠、关键字 / 表 / 列 / 函数补全、SQL 格式化和查询历史。
+- 数据浏览：分页、筛选、排序、行详情和单元格详情。
+- 数据写入：编辑结果集并回写数据库，保留危险操作提示。
+- 数据导入：支持 TXT、CSV、JSON、XML。
+- 数据导出：支持 SQL、TXT、CSV、JSON、XML。
+- SQL 文件执行：可执行已有 `.sql` 文件。
+
+### 表结构与 ER 图
+
+- 查看列、索引、外键、触发器和 DDL。
+- 可视化创建和修改表结构，并生成对应数据库方言的 DDL。
+- ER 图基于真实外键自动布局，也支持手工记录本地逻辑关系。
+- 逻辑关系只保存在本地图谱中，不会创建或修改数据库外键。
+- ER 图可导出 JSON、DBML、Mermaid 和 SVG。
+
+### Redis 工作台
+
+- 浏览 Redis 键空间，查看和编辑常用数据类型、TTL 与键详情。
+- Workbench 支持命令执行和命令历史。
+- 内嵌 Redis CLI 终端。
+- 支持 Pub/Sub 订阅，可观察频道消息。
+- 连接配置支持 TLS、SSH 隧道、Sentinel、Cluster 以及 URI / Cloud 配置。
+
+### 运维、安全与更新
+
+- 连接密码和模型 API Key 走受控存储，不进入普通配置导出、日志、事件快照或 AI 上下文。
+- 应用内更新会校验签名清单与安装包摘要。
+- 发布包附带 SHA-256 校验文件。
+- 界面内置简体中文和 English，并支持运行时切换。
+
+## 演示
+
+**完整演示视频**
 
 https://github.com/user-attachments/assets/f6075999-a87f-4644-9d14-dbda49a7981d
 
-> 早期版本，界面支持简体中文与 English，功能与兼容性尚未经过广泛的真实场景验证。建议先连接测试库；操作重要数据前，请先备份。
+## 数据库支持
 
-## 功能特性
+各数据库的能力范围不同，具体操作见[操作手册](./docs/user-guide.md)。
 
-- **SQL 编辑器**：语法高亮、代码折叠、关键字与表列补全、SQL 格式化和查询历史。
-- **数据浏览与编辑**：分页浏览、筛选数据、编辑并回写结果，支持数据导出、表数据导入与 SQL 文件执行。
-- **表结构管理**：查看列信息和 DDL，创建、修改数据表。
-- **ER 关系图**：浏览数据库外键，手动记录本地逻辑关系，并从单表展开关联视图。本地逻辑关系不会创建或修改数据库外键。
-- **Redis 工作台**：浏览与编辑键值，查看键详情，通过内嵌终端执行命令。
-- **多连接工作区**：在侧边栏管理连接与数据库对象，使用标签页切换工作内容，提供明暗主题。
+| 数据库 | 当前能力 | 备份 / 恢复 | 连接与限制 |
+| --- | --- | --- | --- |
+| MySQL | SQL 查询、对象浏览、表结构管理、数据编辑、导入导出、原生客户端工具入口 | `mysqldump` 逻辑备份，SQL 恢复 | TLS / SSL、SSH 隧道、代理、超时、字符集 |
+| TiDB | 复用 MySQL 协议链路，适配 SQL 方言、补全与表结构管理 | 复用 MySQL 逻辑备份能力 | 连接能力与 MySQL 一致 |
+| PostgreSQL | SQL 查询、Schema / 对象浏览、表结构管理、数据编辑、用户与角色管理、psql 工具入口 | `pg_dump` plain SQL 备份，`psql` 恢复 | TLS、SSH、代理、Schema 作用域、超时 |
+| SQL Server | T-SQL 查询、数据库与 Schema 对象浏览、表结构管理、数据编辑、导入导出、用户/角色/权限管理、逻辑备份与恢复、AI 页面上下文与受控执行 | 对象级逻辑 SQL 备份与恢复 | SQL 认证、TLS、显式端口；命名实例需填写实际端口 |
+| SQLite | 本地文件连接、SQL 查询、对象浏览、表结构管理、数据编辑 | `VACUUM INTO` 完整一致快照；恢复到新文件并检查完整性与外键 | 本地文件路径 |
+| 达梦 DM8 | Schema / 对象浏览、SQL 查询、表结构管理与设计、数据编辑、表数据导入 | 逻辑备份与 SQL 恢复；当前恢复面向单 Schema | 实例与 Schema 连接配置 |
+| Redis | 键空间浏览、键值编辑、TTL、Workbench、CLI、Pub/Sub | 不提供数据库级备份恢复 | TLS、SSH、Sentinel、Cluster、URI / Cloud；Cluster 仅支持 DB 0 |
 
-### 数据库支持
+MongoDB 和 MariaDB 尚未支持。它们只出现在规划中，不应被视为当前能力。
 
-各数据库的功能范围有所不同，具体操作见[操作手册](./docs/user-guide.md)。
+## AI Agent
 
-| 数据库 | 主要能力 |
-| --- | --- |
-| MySQL / TiDB | 连接管理、SQL 查询、表结构管理、数据编辑、导出与备份 |
-| PostgreSQL | SQL 查询、Schema 与对象浏览、表结构管理、数据编辑、用户与角色权限管理、原生客户端工具 |
-| SQLite | 本地数据库连接、SQL 查询、表结构浏览与数据编辑 |
-| 达梦 DM8 | 连接管理、Schema 与对象浏览、SQL 查询、表结构管理、数据编辑、表数据导入、备份与恢复 |
-| SQL Server | 连接管理、新建/删除数据库、新建 Schema、对象浏览、SQL 查询、表结构管理、数据编辑、表数据导入、用户/角色/权限管理、逻辑备份与恢复、AI 只读执行与执行计划 |
-| Redis | 连接总览、键值浏览与编辑、工作台与命令终端 |
+FluxDB 内置可选 AI Agent，用于理解结构、编写 SQL、排查数据和生成报表。它不是无边界的桌面助手。
+
+- **结构发现**：搜索连接、库、Schema、表、视图和列，不默认读取全表数据。
+- **有界数据读取**：只按工具契约读取有限行数或有限内容，避免把业务数据无限加入上下文。
+- **授权编辑器操作**：只能修改明确授权的 SQL 编辑器范围，不会静默执行编辑器中的 SQL。
+- **受控 SQL 与 Redis 执行**：`db.run`、`redis.execute` 等写入或高风险工具需要审批。
+- **文件与页面上下文**：只能读取用户授权的附件、页面引用或编辑器快照。
+- **BI 与报表**：可生成报告草稿、图表、表格和说明，并输出可保存的报表产物。
+- **MCP 与插件**：支持 MCP Client / Server、模型绑定、插件启停、工具权限分级和用量诊断。
+- **模型由用户提供**：需要自行配置模型服务和 API Key；密钥走受控存储，不进入普通日志、导出或 AI 上下文。
 
 ## 下载安装
 
-前往 **[最新版本下载页](https://github.com/fluxdb-alt/fluxDB/releases/latest)**，在 Assets 中选择对应平台的安装包。版本变化与更新说明见 [Releases](https://github.com/fluxdb-alt/fluxDB/releases)。
+前往[最新版本下载页](https://github.com/fluxdb-alt/fluxDB/releases/latest)，根据系统选择安装包。
 
 | 平台 | 架构 | 安装包 |
 | --- | --- | --- |
@@ -60,6 +118,8 @@ https://github.com/user-attachments/assets/f6075999-a87f-4644-9d14-dbda49a7981d
 - **Linux**：面向 Ubuntu 22.04/24.04 等 Debian 系发行版，支持 X11 / Wayland 图形桌面。下载后在所在目录执行 `sudo apt install ./fluxdb_<版本>_amd64.deb`，将 `<版本>` 替换为实际版本号。
 
 发布包附带 `.sha256` 校验文件。Windows ARM64、Linux ARM64、AppImage、Flatpak 和 Snap 暂未提供；更多发行版与硬件环境的兼容性仍需持续验证。
+
+MySQL / PostgreSQL 的备份恢复依赖本机 `mysqldump` / `mysql`、`pg_dump` / `psql` 客户端；基础查询和编辑不需要这些工具。
 
 安装后，点击「添加连接」，选择数据库类型，填写连接信息并测试连接，即可开始使用。详细步骤见[操作手册](./docs/user-guide.md)（当前以 macOS 界面和快捷键为例）。
 
@@ -112,39 +172,25 @@ macOS 可使用仓库脚本生成包含动态库的 `.app` 和 `.dmg`：
 - **提出建议**：在 [Issues](https://github.com/fluxdb-alt/fluxDB/issues) 中描述使用场景和希望解决的问题。较大改动建议先讨论方案。
 - **提交代码**：Fork 仓库并创建分支，保持修改聚焦，在 Pull Request 中说明改动原因与验证结果。开发约定见 [AGENTS.md](./AGENTS.md)，界面改动另请参阅 [UI 样式规范](./docs/ui-style.md)。
 
-Rust 修改提交前运行：
+提交前建议运行本地门禁：
 
 ```bash
-cargo fmt --all -- --check
-cargo check --workspace --locked
+./scripts/check.sh
 ```
 
-UI 行为修改还需启动应用验证主窗口及相关交互。
+跨平台构建差异仍需在发布前通过 CI 验证。
 
-本项目代码由 AI 生成，人工负责需求定义与验收，包括审阅变更、运行测试和检查界面效果。
+本项目开发流程深度使用 AI 辅助，人工负责需求定义、方案审阅、测试验收和发布把关。
 
 ## 路线图
 
-### 已完成
+当前优先完善既有数据库的真实场景覆盖、稳定性和跨平台发布体验。后续候选方向包括：
 
-- **MySQL**：连接管理（TLS/SSL、SSH 隧道、代理、超时与字符集等选项）、SQL 编辑与执行、库表与数据浏览编辑、表结构管理、结果导出，以及 mysqldump 备份与恢复、mysql 客户端工具入口。
-- **TiDB**：复用 MySQL 协议与驱动，已适配 TiDB 的 SQL 方言、补全与结构管理，与 MySQL 一同验证。
-- **PostgreSQL**：SQL 查询、Schema 与对象浏览、表结构管理、数据编辑、用户与角色权限管理，以及 psql 原生客户端工具。
-- **SQLite**：本地数据库文件连接、SQL 查询、表结构浏览与数据编辑。
-- **达梦 DM8**：实例与 Schema 连接管理、对象浏览、SQL 查询、表结构管理与设计、数据编辑、表数据导入、逻辑备份与整 Schema 恢复，以及语义补全。
-- **SQL Server**：数据库与 Schema 对象浏览、T-SQL 查询、表结构管理与设计、数据编辑、表数据导入、SQL 登录名/数据库用户/角色成员/显式权限管理、对象级逻辑备份与恢复，以及 AI 页面上下文、只读 SQL 执行与执行计划。
-- **Redis**：连接总览、键空间浏览、键值与 TTL 编辑、工作台与内嵌命令终端。
-- **AI Agent**：对话式智能体，可编写、解释并执行 SQL，探索数据库与 Redis、读取文件、做 BI 分析并生成报表产物；提供工具权限分级与写入审批、页面与 SQL 编辑授权、MCP Client / Server、模型与插件配置。
-- **界面国际化**：内置简体中文与 English 语言包，支持运行时切换与用户语言包覆盖；新增语言无需修改 Rust 代码。
-- **应用内更新**：从 GitHub Release 检查更新，校验签名清单与安装包摘要后下载安装。
+- **MongoDB**：文档型数据源浏览与编辑。
+- **MariaDB**：独立方言、系统表与备份参数适配。
+- **更多数据库**：按社区需求评估 Oracle、ClickHouse、DuckDB、Elasticsearch / OpenSearch 等方向。
 
-### 还未接入
-
-以下为规划方向，尚未完成的功能不代表当前版本已经支持。
-
-- **MongoDB**：文档型数据源，计划支持连接管理、集合与文档浏览、文档编辑与索引查看。
-- **MariaDB**：协议兼容 MySQL，但系统表、语法与备份参数存在差异，需完成版本识别与方言适配后再作为独立数据源接入。
-- **更多数据库**：按社区需求排序推进候选数据源（如 Oracle、ClickHouse、DuckDB、Elasticsearch / OpenSearch 等），复用现有 Connector 分层、SQL 方言与 AI 工具抽象；每个数据源需补齐连接管理、对象浏览、数据浏览与编辑、导入导出与备份恢复等能力后，才计入「已完成」。
+路线图不代表当前版本已经支持。
 
 ## 支持与赞助
 

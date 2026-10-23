@@ -187,52 +187,8 @@ pub(crate) fn trailing_ident_qualifier(before: &str) -> bool {
     if !trimmed[dot + 1..].trim_matches([' ', '\t']).is_empty() {
         return false;
     }
-    // 取 '.' 前连续标识符字符；标识符内不能夹着字符串/注释片段。
-    let start = identifier_start_before_dot(trimmed, dot);
-    if start >= dot {
-        return false;
-    }
-    // 标识符段 [start, dot) 必须完全位于字符串/注释之外。
-    !segment_is_masked(trimmed, start, dot)
-}
-
-/// 取 `.` 前标识符起点；额外识别 SQL Server 方括号引用，避免 `[dbo].`
-/// 在闭方括号处停止扫描而不触发补全。双引号/反引号仍沿用既有 mask 语义。
-fn identifier_start_before_dot(text: &str, dot: usize) -> usize {
-    let before = &text[..dot];
-    if let Some(closer) = before.chars().next_back() {
-        // 双引号/反引号在既有 mask 里按字符串处理（MySQL 语义），不在这里放开；
-        // 方括号是 SQL Server 独有的标识符引用，确定不是字符串。
-        let opener = match closer {
-            ']' => Some('['),
-            _ => None,
-        };
-        if let Some(opener) = opener {
-            // 正向配对，跳过双写转义（`[a]]b]`），记录最后一段的起点。
-            let mut open: Option<usize> = None;
-            let mut chars = before.char_indices().peekable();
-            while let Some((index, ch)) = chars.next() {
-                if open.is_none() {
-                    if ch == opener {
-                        open = Some(index);
-                    }
-                    continue;
-                }
-                if ch != closer {
-                    continue;
-                }
-                if matches!(chars.peek(), Some((_, next)) if *next == closer) {
-                    chars.next();
-                    continue;
-                }
-                if index + ch.len_utf8() == before.len() {
-                    return open.expect("open is set");
-                }
-                open = None;
-            }
-            return dot;
-        }
-    }
+    // 取 '.' 前的一段标识符；支持 `"schema".` / `` `schema`. `` / `[schema].`。
+    // 标识符内不能夹着字符串/注释片段。
     let mut start = dot;
     for (index, ch) in before.char_indices().rev() {
         if is_ident_char(ch) {
@@ -241,7 +197,21 @@ fn identifier_start_before_dot(text: &str, dot: usize) -> usize {
             break;
         }
     }
-    start
+    if start > 0 {
+        let before = trimmed[..start].chars().next_back();
+        if before.is_some_and(|ch| matches!(ch, '"' | '`' | '[')) {
+            start -= before.unwrap().len_utf8();
+        } else if trimmed[..start].ends_with(']')
+            && let Some(open) = trimmed[..start - 1].rfind('[')
+        {
+            start = open;
+        }
+    }
+    if start >= dot {
+        return false;
+    }
+    // 标识符段 [start, dot) 必须完全位于字符串/注释之外。
+    !segment_is_masked(trimmed, start, dot)
 }
 
 /// F001：空前缀空格自动触发补全。判断 `<cursor>` 前刚输入空白（空格/tab/换行），
@@ -284,7 +254,7 @@ fn masked_range_at(text: &str, pos: usize) -> Option<(usize, usize)> {
     let mut i = 0usize;
     while i < n {
         match bytes[i] {
-            b'\'' | b'"' | b'`' => {
+            b'\'' => {
                 let quote = bytes[i];
                 let start = i;
                 i += 1;
@@ -369,6 +339,22 @@ fn segment_is_masked(text: &str, start: usize, end: usize) -> bool {
 /// 标识符字符（与 fluxdb-app 的 `is_sql_ident_char` 对齐）。
 fn is_ident_char(ch: char) -> bool {
     ch.is_ascii_alphanumeric() || ch == '_' || ch == '$'
+}
+
+#[cfg(test)]
+mod trigger_tests {
+    use super::trailing_ident_qualifier;
+
+    #[test]
+    fn quoted_schema_prefix_triggers_completion() {
+        for before in [
+            r#"SELECT * FROM "fluxdb_pr46_acceptance"."#,
+            "SELECT * FROM `fluxdb_pr46_acceptance`.",
+            "SELECT * FROM [fluxdb_pr46_acceptance].",
+        ] {
+            assert!(trailing_ident_qualifier(before), "{before}");
+        }
+    }
 }
 
 #[cfg(test)]

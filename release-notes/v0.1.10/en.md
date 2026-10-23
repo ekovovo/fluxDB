@@ -16,6 +16,7 @@
 - Fixed framed-response detection, duplicate generated index columns, blocking table-designer metadata loads and object refresh issues on Dameng.
 - Fixed loaded tables briefly disappearing during sidebar refresh and table context menus overflowing the viewport.
 - Fixed late results overwriting editor or page state, with added concurrency and cancellation coverage.
+- Fixed in-app updates rejecting wrapped signature files with an invalid Base64 error.
 
 ## Validation
 

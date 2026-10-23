@@ -388,9 +388,7 @@ impl SlotLocator<'_> {
     /// 记录候选；同跨度时保留先记录者（更内层的节点先被访问）。
     fn record(&mut self, span: sqlparser::tokenizer::Span, slot: ClauseSlot) {
         let start = self.parsed.map_offset(self.index.offset(span.start));
-        let end = self
-            .parsed
-            .map_offset(self.index.offset(span.end).saturating_add(1));
+        let end = self.parsed.map_offset(self.index.end_offset(span.end));
         // 插入的占位符经过偏移回映射后是零宽跨度，仍要参与定位。
         if self.cursor < start || self.cursor > end {
             return;

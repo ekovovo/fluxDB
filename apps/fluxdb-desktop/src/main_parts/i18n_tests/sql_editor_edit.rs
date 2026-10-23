@@ -82,7 +82,8 @@ fn sql_editor_edit_journey(cx: &mut TestAppContext, repair: bool) {
             tab_id,
             result: Ok(fluxdb_core::QueryExecutionResult {
                 summaries: vec![fluxdb_core::QueryExecutionSummary {
-                    sql: "SELEC 1;".into(),
+                    // 模拟执行器追加默认 LIMIT 后的实际 SQL；来源快照仍指向编辑器原文。
+                    sql: "SELEC 1 LIMIT 100;".into(),
                     kind: fluxdb_core::QueryStatementKind::ResultSet,
                     success: false,
                     message: "near SELEC: syntax error".into(),
@@ -130,6 +131,15 @@ fn sql_editor_edit_journey(cx: &mut TestAppContext, repair: bool) {
             .downcast::<NavicatMain>()
             .expect("production view")
     });
+    if repair {
+        let statements = crate::sql_editor_adapter::build_statement_runs(original);
+        cx.update(|_, cx| {
+            view.update(cx, |app, _| {
+                app.query_execution_sources
+                    .insert(tab_id, vec![statements[1].clone()]);
+            });
+        });
+    }
     cx.update(|window, cx| {
         window.draw(cx).clear(cx);
     });

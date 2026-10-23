@@ -91,7 +91,7 @@ fn tabs(
                 .min_w(px(0.))
                 .flex()
                 .child(row.child(query_tab_blank_area(
-                    database_scope(active_scope.as_ref()).cloned(),
+                    database_scope(state, active_scope.as_ref()),
                     cx,
                 )))
                 .when(show_switcher, |this| {
@@ -114,11 +114,13 @@ type WorkspaceScope = TabWorkspace;
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum FirstLevelScope {
     Database(WorkspaceScope),
+    /// Redis 的稳定工作区边界是连接；DB 编号只作为连接内标签的上下文。
+    RedisConnection(ConnectionId),
     Settings,
     AiChat,
 }
 
-/// 只有数据库工作区有二级标签；设置和 AI 是完整的全局页面。
+/// 数据库工作区和 Redis 连接工作区有二级标签；设置和 AI 是完整的全局页面。
 fn first_level_has_second_row(scope: Option<&FirstLevelScope>) -> bool {
     !matches!(scope, Some(FirstLevelScope::Settings | FirstLevelScope::AiChat))
 }
@@ -130,6 +132,12 @@ enum WorkspaceTabGroup {
         connection_name: String,
         connection_color_hex: String,
         database: String,
+        first_tab_id: TabId,
+    },
+    RedisConnection {
+        connection_id: ConnectionId,
+        connection_name: String,
+        connection_color_hex: String,
         first_tab_id: TabId,
     },
     Settings {
@@ -144,6 +152,9 @@ impl WorkspaceTabGroup {
     fn scope(&self) -> FirstLevelScope {
         match self {
             Self::Database { scope, .. } => FirstLevelScope::Database(scope.clone()),
+            Self::RedisConnection { connection_id, .. } => {
+                FirstLevelScope::RedisConnection(*connection_id)
+            }
             Self::Settings { .. } => FirstLevelScope::Settings,
             Self::AiChat { .. } => FirstLevelScope::AiChat,
         }
@@ -152,6 +163,7 @@ impl WorkspaceTabGroup {
     fn first_tab_id(&self) -> TabId {
         match self {
             Self::Database { first_tab_id, .. }
+            | Self::RedisConnection { first_tab_id, .. }
             | Self::Settings { first_tab_id }
             | Self::AiChat { first_tab_id } => *first_tab_id,
         }
@@ -188,6 +200,32 @@ fn first_level_tab_groups(state: &AppState) -> Vec<WorkspaceTabGroup> {
                     connection_color_hex,
                     database: scope.database.clone(),
                     scope,
+                    first_tab_id: tab.id,
+                });
+            }
+            Some(FirstLevelScope::RedisConnection(connection_id)) => {
+                let exists = groups.iter().any(|group| {
+                    matches!(
+                        group,
+                        WorkspaceTabGroup::RedisConnection {
+                            connection_id: group_connection_id,
+                            ..
+                        } if *group_connection_id == connection_id
+                    )
+                });
+                if exists {
+                    continue;
+                }
+                let connection_color_hex = state
+                    .connections
+                    .iter()
+                    .find(|connection| connection.config.id == connection_id)
+                    .map(|connection| connection_config_color_hex(&connection.config.options).to_string())
+                    .unwrap_or_else(|| DEFAULT_CONNECTION_COLOR.to_string());
+                groups.push(WorkspaceTabGroup::RedisConnection {
+                    connection_id,
+                    connection_name: connection_name(state, connection_id),
+                    connection_color_hex,
                     first_tab_id: tab.id,
                 });
             }
@@ -528,6 +566,26 @@ fn first_level_tab_entries(
                     icon: AppIcon::Database,
                 })
             }
+            WorkspaceTabGroup::RedisConnection {
+                connection_id,
+                connection_name,
+                first_tab_id,
+                ..
+            } => {
+                if !query.is_empty() && !search_matches_text(connection_name, &query) {
+                    return None;
+                }
+                Some(TabSwitcherEntry {
+                    id: *first_tab_id,
+                    title: connection_name.clone(),
+                    active: matches!(
+                        active_scope,
+                        Some(FirstLevelScope::RedisConnection(active))
+                            if active == connection_id
+                    ),
+                    icon: AppIcon::Database,
+                })
+            }
             WorkspaceTabGroup::Settings { first_tab_id } => {
                 let settings_title = tr("app.tabs.settings");
                 if !query.is_empty() && !search_matches_text(&settings_title, &query) {
@@ -587,6 +645,10 @@ fn tab_matches_workspace_scope(tab: &TabState, active_scope: Option<&FirstLevelS
             Some(FirstLevelScope::Database(active_scope)),
             Some(FirstLevelScope::Database(tab_scope)),
         ) => &tab_scope == active_scope,
+        (
+            Some(FirstLevelScope::RedisConnection(active_connection)),
+            Some(FirstLevelScope::RedisConnection(tab_connection)),
+        ) => *active_connection == tab_connection,
         (None, None) => true,
         _ => false,
     }
@@ -598,6 +660,18 @@ fn tab_workspace_scope(tab: &TabState) -> Option<WorkspaceScope> {
 
 fn tab_first_level_scope(tab: &TabState) -> Option<FirstLevelScope> {
     match &tab.kind {
+        TabKind::DataEditor(editor)
+            if matches!(editor.object.kind, ObjectKind::RedisDb | ObjectKind::RedisKey) =>
+        {
+            Some(FirstLevelScope::RedisConnection(editor.object.connection_id))
+        }
+        TabKind::RedisWorkbench(workbench) => {
+            Some(FirstLevelScope::RedisConnection(workbench.connection_id))
+        }
+        TabKind::RedisCli(cli) => Some(FirstLevelScope::RedisConnection(cli.connection_id)),
+        TabKind::RedisPubSub(pubsub) => {
+            Some(FirstLevelScope::RedisConnection(pubsub.connection_id))
+        }
         TabKind::Settings(_) => Some(FirstLevelScope::Settings),
         // AI 是全局一级标签，不继承数据库工作区；业务页面由 context_tab 单独记录。
         TabKind::AiChat { .. } => Some(FirstLevelScope::AiChat),
@@ -605,16 +679,20 @@ fn tab_first_level_scope(tab: &TabState) -> Option<FirstLevelScope> {
     }
 }
 
-fn database_scope(scope: Option<&FirstLevelScope>) -> Option<&WorkspaceScope> {
+fn database_scope(state: &AppState, scope: Option<&FirstLevelScope>) -> Option<WorkspaceScope> {
     match scope? {
-        FirstLevelScope::Database(workspace) => Some(workspace),
+        FirstLevelScope::Database(workspace) => Some(workspace.clone()),
+        FirstLevelScope::RedisConnection(connection_id) => state
+            .active_tab()
+            .and_then(TabState::workspace)
+            .filter(|workspace| workspace.connection_id == *connection_id),
         FirstLevelScope::Settings | FirstLevelScope::AiChat => None,
     }
 }
 
 fn tab_context_menu_close_targets<I>(scopes: I, tab_id: TabId, include_current: bool) -> Vec<TabId>
 where
-    I: IntoIterator<Item = (TabId, Option<WorkspaceScope>)>,
+    I: IntoIterator<Item = (TabId, Option<FirstLevelScope>)>,
 {
     let scopes = scopes.into_iter().collect::<Vec<_>>();
     let Some(target_scope) = scopes
@@ -808,7 +886,7 @@ fn table_tab_row(
                 .min_w(px(0.))
                 .flex()
                 .child(tab_strip.child(query_tab_blank_area(
-                    database_scope(active_scope).cloned(),
+                    database_scope(state, active_scope),
                     cx,
                 )))
                 .when(show_switcher, |this| {
@@ -1023,16 +1101,25 @@ fn first_level_tab_view(
     let close_scope = group.scope();
     let title = match group {
         WorkspaceTabGroup::Database { database, .. } => database.clone(),
+        WorkspaceTabGroup::RedisConnection { connection_name, .. } => connection_name.clone(),
         WorkspaceTabGroup::Settings { .. } => tr("app.tabs.settings").to_string(),
         WorkspaceTabGroup::AiChat { .. } => tr("app.tabs.ai_chat").to_string(),
     };
     let subtitle = match group {
         WorkspaceTabGroup::Database { connection_name, .. } => connection_name.clone(),
+        WorkspaceTabGroup::RedisConnection { .. } => tr("app.tabs.redis").to_string(),
         WorkspaceTabGroup::Settings { .. } => tr("app.tabs.global").to_string(),
         WorkspaceTabGroup::AiChat { .. } => tr("app.tabs.global").to_string(),
     };
     let (icon, accent) = match group {
         WorkspaceTabGroup::Database {
+            connection_color_hex,
+            ..
+        } => (
+            AppIcon::Database,
+            tab_identity_color(connection_color_hex, colors),
+        ),
+        WorkspaceTabGroup::RedisConnection {
             connection_color_hex,
             ..
         } => (

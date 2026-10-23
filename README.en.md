@@ -1,53 +1,112 @@
 # FluxDB
 
-**An open-source, cross-platform native database client and SQL editor.**
+**A native, cross-platform database client and SQL editor for queries, data editing, schema management and Redis work in one window.**
 
-Connect to MySQL, TiDB, PostgreSQL, SQL Server, SQLite, Dameng DM8, and Redis in one desktop app to write SQL, edit data, manage table structures, and browse key-value data.
-
-Built with Rust + GPUI, without Electron or a WebView. Available for macOS, Windows, and Linux.
+FluxDB is built with Rust and GPUI, without Electron or a WebView. It brings MySQL, PostgreSQL, SQL Server, SQLite, TiDB, Dameng DM8 and Redis into one desktop workflow, with a permission-aware AI Agent.
 
 **English | [简体中文](./README.md)**
 
 [![Release](https://img.shields.io/github/v/release/fluxdb-alt/fluxDB)](https://github.com/fluxdb-alt/fluxDB/releases/latest)
-[![CI](https://github.com/fluxdb-alt/fluxDB/actions/workflows/ci.yml/badge.svg)](https://github.com/fluxdb-alt/fluxDB/actions/workflows/ci.yml)
+[![CI](https://img.shields.io/github/actions/workflow/status/fluxdb-alt/fluxDB/ci.yml)](https://github.com/fluxdb-alt/fluxDB/actions/workflows/ci.yml)
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue)](./LICENSE)
 ![Platforms](https://img.shields.io/badge/Platforms-macOS%20%7C%20Windows%20%7C%20Linux-blue)
 
-[Download the latest release](https://github.com/fluxdb-alt/fluxDB/releases/latest) · [Features](#features) · [Installation](#download-and-install) · [User Guide](./docs/user-guide.md) · [Report an issue](https://github.com/fluxdb-alt/fluxDB/issues)
+[Download the latest release](https://github.com/fluxdb-alt/fluxDB/releases/latest) · [Latest changes](#latest-changes) · [Features](#core-capabilities) · [Database support](#database-support) · [User guide](./docs/user-guide.md) · [Report an issue](https://github.com/fluxdb-alt/fluxDB/issues)
+
+![FluxDB SQL editor with schema completion](docs/screenshots/sql_editor_adapter.png)
 
 
 
-**Demo video** · 2 min 46 sec · MP4, approximately 8.6 MB
+## Latest changes
+
+### v0.1.10
+
+- **Dameng DM8 support**: connections, schema and object browsing, SQL queries, table design and data editing.
+- **Table data import wizard**: TXT, CSV, JSON and XML with column mapping, append/truncate modes and import logs.
+- **More AI Agent permissions**: query a table with explicit page access, or rewrite an authorized SQL range without automatically executing it.
+- **In-app updates**: check GitHub Releases and verify the signed manifest and package checksum before installing.
+
+[Full release notes](./release-notes/v0.1.10/en.md) · [All releases](https://github.com/fluxdb-alt/fluxDB/releases)
+
+## Why FluxDB
+
+- **One workspace for multiple data sources**: manage relational databases and Redis side by side.
+- **From query to write**: SQL editing, editable result sets, table design, import/export, backup/restore and ER diagrams.
+- **Native desktop experience**: Rust + GPUI, without Electron or a WebView.
+- **AI with explicit boundaries**: bounded reads, authorized editor edits and approval for write or high-risk tools.
+
+## Core capabilities
+
+### SQL and data
+
+- Syntax highlighting, code folding, keyword/table/column/function completion, SQL formatting and query history.
+- Paginated browsing, filters, sorting, row details and cell details.
+- Editable result sets with writes back to the database and safeguards for dangerous actions.
+- Import TXT, CSV, JSON and XML.
+- Export SQL, TXT, CSV, JSON and XML.
+- Execute existing `.sql` files.
+
+### Schema and ER diagrams
+
+- Inspect columns, indexes, foreign keys, triggers and DDL.
+- Create and modify tables visually, with DDL generated for the target database dialect.
+- Layout ER diagrams from real foreign keys, with optional local logical relationships.
+- Local logical relationships never create or modify database foreign keys.
+- Export ER diagrams as JSON, DBML, Mermaid or SVG.
+
+### Redis workbench
+
+- Browse the keyspace and inspect or edit common value types, TTL and key details.
+- Run commands with command history in the Workbench.
+- Use the embedded Redis CLI terminal.
+- Observe channel messages with Pub/Sub subscriptions.
+- Connect with TLS, SSH tunnels, Sentinel, Cluster, URI or Cloud configuration.
+
+### Operations, security and updates
+
+- Connection passwords and model API keys use controlled storage and stay out of ordinary exports, logs, event snapshots and AI context.
+- In-app updates verify the signed manifest and package checksum.
+- Release packages include SHA-256 checksums.
+- The UI supports English and Simplified Chinese with runtime switching.
+
+## Demo
+
+**Full demo** · 2 min 46 sec · MP4, about 8.6 MB
 
 https://github.com/user-attachments/assets/f6075999-a87f-4644-9d14-dbda49a7981d
 
-> Early release. The UI supports Simplified Chinese and English, and features and compatibility have not yet been tested across a broad range of real-world scenarios. Start with a test database and back up important data before making changes.
+## Database support
 
-## Features
+Capabilities vary by database. See the [user guide](./docs/user-guide.md) for details.
 
-- **SQL editor**: Syntax highlighting, code folding, keyword/table/column completion, SQL formatting, and query history.
-- **Data browsing and editing**: Browse pages, filter rows, edit and write back results, export data, import table data, and execute SQL files.
-- **Table management**: Inspect columns and DDL, create tables, and modify table structures.
-- **ER diagrams**: Browse database foreign keys, manually record local logical relationships, and explore related tables from a single table. Local logical relationships do not create or modify database foreign keys.
-- **Redis workbench**: Browse and edit values, inspect key details, and run commands in an embedded terminal.
-- **Multi-connection workspace**: Manage connections and database objects in the sidebar, switch between tabs, and choose a light or dark theme.
+| Database | Current capabilities | Backup / restore | Connections and limits |
+| --- | --- | --- | --- |
+| MySQL | SQL queries, object browsing, table management, data editing, import/export, native client tool entry | `mysqldump` logical backup; SQL restore | TLS/SSL, SSH tunnel, proxy, timeouts, charset |
+| TiDB | Reuses the MySQL protocol path with TiDB SQL dialect, completion and schema management | Reuses MySQL logical backup | Same connection features as MySQL |
+| PostgreSQL | SQL queries, schema/object browsing, table management, data editing, users and roles, psql tool entry | `pg_dump` plain SQL; `psql` restore | TLS, SSH, proxy, schema scope, timeouts |
+| SQL Server | T-SQL queries, database/schema browsing, table management, data editing, import/export, login/user/role/permission administration, logical backup/restore, AI page context and controlled execution | Object-level logical SQL backup and restore | SQL authentication, TLS, explicit ports; named instances require the actual port |
+| SQLite | Local file connections, SQL queries, object browsing, table management, data editing | Consistent `VACUUM INTO` snapshot; restore to a new file with integrity and foreign-key checks | Local file path |
+| Dameng DM8 | Schema/object browsing, SQL queries, table design and management, data editing, table import | Logical backup and SQL restore; restore currently targets a single schema | Instance and schema connection settings |
+| Redis | Keyspace browsing, value editing, TTL, Workbench, CLI, Pub/Sub | No database-level backup/restore | TLS, SSH, Sentinel, Cluster, URI/Cloud; Cluster uses DB 0 only |
 
-### Database support
+MongoDB and MariaDB are not currently supported. They are roadmap candidates, not current capabilities.
 
-Available features vary by database. See the [user guide](./docs/user-guide.md) (in Chinese) for details.
+## AI Agent
 
-| Database | Main capabilities |
-| --- | --- |
-| MySQL / TiDB | Connections, SQL queries, table management, data editing, export, and backup |
-| PostgreSQL | SQL queries, schema and object browsing, table management, data editing, user and role administration, and native client tools |
-| SQLite | Local database connections, SQL queries, table structure browsing, and data editing |
-| Dameng DM8 | Connections, schema and object browsing, SQL queries, table management, data editing, table data import, and backup/restore |
-| SQL Server | Connections, create/drop databases, create schemas, object browsing, SQL queries, table management, data editing, table data import, login/user/role/permission administration, logical backup/restore, and read-only AI SQL execution with plans |
-| Redis | Connection overview, key-value browsing and editing, workbench, and command terminal |
+FluxDB includes an optional AI Agent for understanding schemas, writing SQL, investigating data and generating reports. It is not an unrestricted desktop assistant.
+
+- **Schema discovery**: search connections, databases, schemas, tables, views and columns without reading whole tables by default.
+- **Bounded reads**: read only the rows or content allowed by each tool contract.
+- **Authorized editor actions**: edit only an explicitly authorized SQL range and never execute it implicitly.
+- **Controlled SQL and Redis execution**: write or high-risk tools such as `db.run` and `redis.execute` require approval.
+- **Scoped context**: read only authorized attachments, page references or editor snapshots.
+- **BI and reports**: generate report drafts, charts, tables and explanations as saveable artifacts.
+- **MCP and plugins**: configure MCP Client/Server, model bindings, plugins, tool permissions and usage diagnostics.
+- **User-provided models**: configure your own model service and API key. Secrets use controlled storage and do not enter ordinary logs, exports or AI context.
 
 ## Download and install
 
-Open the **[latest release](https://github.com/fluxdb-alt/fluxDB/releases/latest)** and choose your platform's package under Assets. See [Releases](https://github.com/fluxdb-alt/fluxDB/releases) for release notes and earlier versions.
+Open the [latest release](https://github.com/fluxdb-alt/fluxDB/releases/latest) and choose the package for your platform.
 
 | Platform | Architecture | Package |
 | --- | --- | --- |
@@ -56,30 +115,32 @@ Open the **[latest release](https://github.com/fluxdb-alt/fluxDB/releases/latest
 | Windows | x64 | `FluxDB-<version>-windows-x64-setup.exe` |
 | Linux | x64 | `fluxdb_<version>_amd64.deb` |
 
-- **macOS**: Open the DMG and drag the app into Applications. The app is currently ad-hoc signed and not notarized. If macOS blocks the first launch, verify the download source and allow it in System Settings → Privacy & Security.
-- **Windows**: Run the installer and follow the prompts. A desktop shortcut is optional.
-- **Linux**: The DEB targets Debian-based distributions such as Ubuntu 22.04/24.04, with X11 / Wayland desktops. From the download directory, run `sudo apt install ./fluxdb_<version>_amd64.deb`, replacing `<version>` with the actual version.
+- **macOS**: open the DMG and drag FluxDB into Applications. The app is currently ad-hoc signed and not notarized. If macOS blocks the first launch, verify the download source and allow it in System Settings → Privacy & Security.
+- **Windows**: run the installer and optionally create a desktop shortcut.
+- **Linux**: targets Debian-based distributions such as Ubuntu 22.04/24.04 with X11 or Wayland. Run `sudo apt install ./fluxdb_<version>_amd64.deb`.
 
-Release packages include `.sha256` checksum files. Windows ARM64, Linux ARM64, AppImage, Flatpak, and Snap packages are not currently available. Compatibility with additional distributions and hardware still needs validation.
+Release packages include `.sha256` checksums. Windows ARM64, Linux ARM64, AppImage, Flatpak and Snap are not currently available.
 
-After installation, click “添加连接” (Add connection), choose a database type, enter connection details, and test the connection. Follow the [user guide](./docs/user-guide.md) for more details; it is currently in Chinese and uses macOS screenshots and shortcuts.
+MySQL and PostgreSQL backup/restore depend on the local `mysqldump`/`mysql` and `pg_dump`/`psql` clients. Basic queries and editing do not require them.
+
+After installation, choose “Add connection”, select a database type, enter the connection details and test the connection. See the [user guide](./docs/user-guide.md); it currently uses Chinese screenshots and macOS shortcuts.
 
 ## Run from source
 
 <details>
-<summary>Build dependencies, running, and packaging</summary>
+<summary>Build dependencies, running and packaging</summary>
 
 ### Prerequisites
 
-Install the latest stable [Rust toolchain](https://rustup.rs) (the project uses Rust edition 2024) and your platform's native build tools:
+Install the latest stable [Rust toolchain](https://rustup.rs) (the project uses Rust edition 2024) and the native build tools for your platform:
 
 | Platform | Build dependencies |
 | --- | --- |
 | macOS | Xcode Command Line Tools, available through `xcode-select --install` |
-| Windows | Visual Studio Build Tools with Desktop development with C++ and Windows SDK, using the MSVC toolchain; release builds require the SDK's `fxc.exe` |
-| Linux | C/C++ compiler, pkg-config, CMake, Clang, and development libraries for OpenSSL, fonts, X11 / Wayland, and more; see the [CI configuration](./.github/workflows/ci.yml) for the complete list |
+| Windows | Visual Studio Build Tools with Desktop development with C++ and the Windows SDK, using the MSVC toolchain; release builds require the SDK's `fxc.exe` |
+| Linux | C/C++ compiler, pkg-config, CMake, Clang, OpenSSL, font and X11/Wayland development libraries; see the [CI configuration](./.github/workflows/ci.yml) for the complete list |
 
-### Launch the app
+### Run
 
 ```bash
 git clone https://github.com/fluxdb-alt/fluxDB.git
@@ -87,7 +148,7 @@ cd fluxDB
 cargo run --locked -p fluxdb-desktop
 ```
 
-The first build takes time to download and compile dependencies.
+The first build downloads and compiles dependencies and may take a while.
 
 ### Build and package
 
@@ -95,79 +156,63 @@ The first build takes time to download and compile dependencies.
 cargo build --locked --release -p fluxdb-desktop
 ```
 
-On macOS, use the bundled script to generate an `.app` and `.dmg` with dynamic libraries included:
+On macOS, generate an `.app` and `.dmg` containing the required dynamic libraries:
 
 ```bash
 ./scripts/package-macos.sh
 ```
 
-The script supports options such as `PROFILE=debug` and `CREATE_DMG=0`; see the [packaging script](./scripts/package-macos.sh). Windows installer and Linux DEB packaging steps are in the [release workflow](./.github/workflows/release.yml).
+The script supports options such as `PROFILE=debug` and `CREATE_DMG=0`; see the [packaging script](./scripts/package-macos.sh). Windows installer and Linux DEB steps are defined in the [release workflow](./.github/workflows/release.yml).
 
 </details>
 
 ## Contributing
 
-Bug reports, feature suggestions, documentation improvements, and code contributions are welcome.
+Issues, feature proposals, documentation improvements and code contributions are welcome.
 
-- **Report a bug**: Search [existing issues](https://github.com/fluxdb-alt/fluxDB/issues) first. Include the app version, operating system and architecture, database type and version, reproduction steps, and expected versus actual behavior. Add sanitized logs or screenshots where useful.
-- **Suggest a feature**: Describe your use case and the problem in [Issues](https://github.com/fluxdb-alt/fluxDB/issues). For larger changes, discuss the approach before implementation.
-- **Contribute code**: Fork the repository, create a branch, and keep changes focused. Explain the reason for the change and validation results in your pull request. See [AGENTS.md](./AGENTS.md) for development conventions and the [UI style guide](./docs/ui-style.md) for interface changes (both in Chinese).
+- **Report a bug**: search [existing issues](https://github.com/fluxdb-alt/fluxDB/issues) first, then include the app version, operating system and architecture, database type and version, reproduction steps, expected and actual results, and sanitized logs or screenshots where useful.
+- **Suggest a feature**: describe the use case and the problem it solves. Discuss larger changes before implementation.
+- **Contribute code**: fork the repository, create a focused branch and explain the reason and validation results in the pull request. See [AGENTS.md](./AGENTS.md) for development conventions and the [UI style guide](./docs/ui-style.md) for interface changes (both in Chinese).
 
-Before submitting Rust changes, run:
+Run the local quality gate before submitting:
 
 ```bash
-cargo fmt --all -- --check
-cargo check --workspace --locked
+./scripts/check.sh
 ```
 
-For UI behavior changes, also launch the app and verify the main window and affected interactions.
+Cross-platform build differences still require CI verification before release.
 
-The project's code is generated by AI. Humans define requirements and perform acceptance checks, including reviewing changes, running tests, and inspecting the UI.
+AI is used extensively in the development workflow. Humans own requirements, review, validation and release approval.
 
 ## Roadmap
 
-### Done
+Current priorities are real-world coverage for existing databases, stability and the cross-platform release experience. Candidate directions include:
 
-- **MySQL**: connection management (TLS/SSL, SSH tunnel, proxy, timeouts and charset options), SQL editing and execution, database/table and data browsing and editing, table structure management, result export, plus mysqldump backup and restore and the mysql client tool entry.
-- **TiDB**: reuses the MySQL protocol and driver, with TiDB SQL dialect, completion and structure management already adapted and verified alongside MySQL.
-- **PostgreSQL**: SQL queries, schema and object browsing, table structure management, data editing, user and role permission management, and the psql native client tool.
-- **SQLite**: local database file connections, SQL queries, table structure browsing and data editing.
-- **Dameng DM8**: instance and schema connections, object browsing, SQL queries, table structure management and design, data editing, table data import, logical backup and whole-schema restore, and semantic completion.
-- **SQL Server**: database and schema object browsing, T-SQL queries, table structure management and design, data editing, table data import, SQL login/database user/role membership/explicit permission administration, object-level logical backup and restore, plus AI page context, read-only SQL execution and query plans.
-- **Redis**: connection overview, keyspace browsing, key value and TTL editing, workbench and the embedded command terminal.
-- **AI Agent**: a conversational agent that can write, explain and run SQL, explore databases and Redis, read files, run BI analysis and produce reports; it ships tool permission tiers with write approval, page and SQL editor grants, MCP client / server, and model and plugin configuration.
-- **UI internationalization**: bundled Simplified Chinese and English packs with runtime switching and user locale overrides; adding a language requires no Rust changes.
-- **In-app updates**: check GitHub Releases for updates, verify the signed manifest and package checksum, then download and install.
+- **MongoDB**: document browsing and editing.
+- **MariaDB**: independent dialect, system tables and backup parameter support.
+- **More databases**: evaluate Oracle, ClickHouse, DuckDB, Elasticsearch/OpenSearch and others based on community demand.
 
-### Not yet integrated
+The roadmap does not imply current support.
 
-These are planned directions; unfinished items are not available features of the current release.
+## Support and sponsorship
 
-- **MongoDB**: a document data source; the plan covers connection management, collection and document browsing, document editing and index inspection.
-- **MariaDB**: protocol-compatible with MySQL but different in system tables, syntax and backup parameters, so version detection and dialect adaptation are needed before it is offered as a standalone data source.
-- **More databases**: further data sources are taken in community-demand order (for example Oracle, ClickHouse, DuckDB, Elasticsearch / OpenSearch), reusing the existing connector layers, SQL dialects and AI tool abstractions. A data source only counts as "done" once connection management, object browsing, data browsing and editing, import/export and backup/restore are all in place.
+If FluxDB is useful to you, consider starring the repository, sharing it with others, or contributing through issues, documentation and code.
 
-## Support & Sponsorship
+You can also sponsor ongoing development and AI tooling costs.
 
-If FluxDB is useful to you, consider starring the repository, sharing it with others, reporting issues, improving the docs, or contributing code.
-
-You can also sponsor development and AI tooling costs using the QR codes below. Thank you for your support!
-
-| Alipay | WeChat Pay |
+| Alipay | WeChat |
 | :---: | :---: |
-| <img src="docs/sponsor/alipay.png" alt="Alipay sponsorship QR code" width="220"> | <img src="docs/sponsor/wechat.png" alt="WeChat Pay sponsorship QR code" width="220"> |
+| <img src="docs/sponsor/alipay.png" alt="Alipay sponsorship QR code" width="220"> | <img src="docs/sponsor/wechat.png" alt="WeChat sponsorship QR code" width="220"> |
 
-## Acknowledgments
+## Acknowledgements
 
-Thanks to these open-source projects for their foundations and design references:
-
-- [Zed](https://github.com/zed-industries/zed): The GPUI ecosystem, editor design, and native desktop architecture.
-- [GPUI Component / gpui-kit](https://github.com/longbridge/gpui-kit): UI components such as inputs and dialogs.
-- [dbx](https://github.com/t8y2/dbx): References for database abstractions and connection management.
-- [RedisInsight](https://github.com/RedisInsight/RedisInsight): References for Redis visualization and interactions.
+- [Zed](https://github.com/zed-industries/zed): GPUI ecosystem, editor and native desktop architecture.
+- [GPUI Component / gpui-kit](https://github.com/longbridge/gpui-kit): reusable UI components.
+- [dbx](https://github.com/t8y2/dbx): multi-database abstraction and connection-management design reference.
+- [RedisInsight](https://github.com/RedisInsight/RedisInsight): Redis visualization and interaction design reference.
 
 ## License
 
 FluxDB is licensed under the [GNU GPL v3.0 or later](./LICENSE).
 
-See [NOTICE](./NOTICE) for the project's copyright and license notice.
+See [NOTICE](./NOTICE) for copyright and attribution details.

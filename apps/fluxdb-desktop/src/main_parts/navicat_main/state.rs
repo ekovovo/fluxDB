@@ -821,8 +821,11 @@ struct NavicatMain {
     create_table_comment_editor_resize_start: Option<CreateTableCommentEditorResizeStart>,
     create_table_check_expression_editor_resize_start:
         Option<CreateTableCheckExpressionEditorResizeStart>,
-    create_table_type_selects: BTreeMap<(TabId, u64), Entity<SelectState<SearchableVec<String>>>>,
+    create_table_type_selects:
+        BTreeMap<(TabId, u64), Entity<SelectState<SearchableVec<CreateTableTypeOption>>>>,
     _create_table_type_select_subscriptions: BTreeMap<(TabId, u64), Subscription>,
+    create_table_custom_type_editing: Option<(TabId, u64)>,
+    create_table_enum_scrolls: BTreeMap<(TabId, u64), ScrollHandle>,
     create_table_selects: BTreeMap<CreateTableSelectKey, Entity<SelectState<SearchableVec<CreateTableSelectOption>>>>,
     _create_table_select_subscriptions: BTreeMap<CreateTableSelectKey, Subscription>,
     data_export_object_selects:
@@ -831,6 +834,9 @@ struct NavicatMain {
     query_editors: BTreeMap<TabId, Entity<editor_component::Editor>>,
     /// 查询页语句执行状态仓库（按 tab 缓存；与 SqlAdapter 共享，供装饰还原行背景）。
     query_statement_statuses: BTreeMap<TabId, sql_editor_adapter::SqlStatusStore>,
+    /// 最近一次从编辑器发起的执行语句快照，与结果摘要同序。
+    /// 仅用于失败修复定位，不能用于执行或刷新 SQL。
+    query_execution_sources: BTreeMap<TabId, Vec<SqlStatementRun>>,
     query_save_targets: BTreeMap<TabId, QuerySaveTarget>,
     saved_queries: Vec<SavedQuery>,
     /// 启动后是否已完成持久化历史/保存查询的一次性异步恢复（防重复触发）。

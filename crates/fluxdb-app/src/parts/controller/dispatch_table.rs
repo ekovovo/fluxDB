@@ -554,6 +554,78 @@ impl AppController {
                     self.fail(Error::new(ErrorKind::Internal, "新建表标签页不存在"))
                 }
             }
+            AppCommand::AddCreateTableColumnEnumValue { tab_id, column_id } => {
+                if let Some(tab) = self.find_tab_mut(tab_id)
+                    && let TabKind::CreateTable(create) = &mut tab.kind
+                {
+                    create.add_column_enum_value(column_id);
+                    tab.dirty = true;
+                    AppEvent::TabActivated(tab_id)
+                } else {
+                    self.fail(Error::new(ErrorKind::Internal, "新建表标签页不存在"))
+                }
+            }
+            AppCommand::SetCreateTableColumnEnumValue {
+                tab_id,
+                column_id,
+                index,
+                value,
+            } => {
+                if let Some(tab) = self.find_tab_mut(tab_id)
+                    && let TabKind::CreateTable(create) = &mut tab.kind
+                {
+                    create.set_column_enum_value(column_id, index, value);
+                    tab.dirty = true;
+                    AppEvent::TabActivated(tab_id)
+                } else {
+                    self.fail(Error::new(ErrorKind::Internal, "新建表标签页不存在"))
+                }
+            }
+            AppCommand::RemoveCreateTableColumnEnumValue {
+                tab_id,
+                column_id,
+                index,
+            } => {
+                if let Some(tab) = self.find_tab_mut(tab_id)
+                    && let TabKind::CreateTable(create) = &mut tab.kind
+                {
+                    create.remove_column_enum_value(column_id, index);
+                    tab.dirty = true;
+                    AppEvent::TabActivated(tab_id)
+                } else {
+                    self.fail(Error::new(ErrorKind::Internal, "新建表标签页不存在"))
+                }
+            }
+            AppCommand::MoveCreateTableColumnEnumValueUp {
+                tab_id,
+                column_id,
+                index,
+            } => {
+                if let Some(tab) = self.find_tab_mut(tab_id)
+                    && let TabKind::CreateTable(create) = &mut tab.kind
+                {
+                    create.move_column_enum_value_up(column_id, index);
+                    tab.dirty = true;
+                    AppEvent::TabActivated(tab_id)
+                } else {
+                    self.fail(Error::new(ErrorKind::Internal, "新建表标签页不存在"))
+                }
+            }
+            AppCommand::MoveCreateTableColumnEnumValueDown {
+                tab_id,
+                column_id,
+                index,
+            } => {
+                if let Some(tab) = self.find_tab_mut(tab_id)
+                    && let TabKind::CreateTable(create) = &mut tab.kind
+                {
+                    create.move_column_enum_value_down(column_id, index);
+                    tab.dirty = true;
+                    AppEvent::TabActivated(tab_id)
+                } else {
+                    self.fail(Error::new(ErrorKind::Internal, "新建表标签页不存在"))
+                }
+            }
             AppCommand::ToggleCreateTableColumnFlag {
                 tab_id,
                 column_id,

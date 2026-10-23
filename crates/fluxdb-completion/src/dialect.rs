@@ -28,7 +28,10 @@ pub trait CompletionDialect: Sync {
         format!("{quote}{name}{quote}")
     }
 
-    /// 裸表名补全是否必须带 schema 限定（达梦默认 schema 可能不是查询所在 schema）。
+    /// 裸表名补全是否必须带 schema 限定。
+    ///
+    /// PostgreSQL 的 search_path 可能不含对象树中可见的 schema；达梦的默认 schema
+    /// 也不一定等于查询目标 schema。两者都需显式限定，避免补全结果无法执行。
     fn qualify_bare_table(&self) -> bool {
         false
     }
@@ -569,6 +572,10 @@ impl CompletionDialect for PostgresCompletionDialect {
 
     fn functions(&self) -> &'static [&'static str] {
         POSTGRES_FUNCTIONS
+    }
+
+    fn qualify_bare_table(&self) -> bool {
+        true
     }
 
     fn supports_routines(&self) -> bool {

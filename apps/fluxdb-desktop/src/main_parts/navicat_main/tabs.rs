@@ -130,23 +130,42 @@ impl NavicatMain {
     }
 
     fn close_workspace_warning(&self, scope: FirstLevelScope) -> PendingCloseWorkspace {
+        let state = self.controller.state();
+        let display_name = match &scope {
+            FirstLevelScope::Database(workspace) => Some(workspace.database.clone()),
+            FirstLevelScope::RedisConnection(connection_id) => {
+                Some(connection_name(state, *connection_id))
+            }
+            FirstLevelScope::Settings | FirstLevelScope::AiChat => None,
+        };
         let mut pending = PendingCloseWorkspace {
             scope,
+            display_name,
             unsaved_queries: 0,
             running_queries: 0,
         };
-        for tab in &self.controller.state().tabs {
+        for tab in &state.tabs {
             if tab_first_level_scope(tab).as_ref() != Some(&pending.scope) {
                 continue;
             }
-            let TabKind::QueryEditor(editor) = &tab.kind else {
-                continue;
-            };
-            if editor.has_unsaved_sql() {
-                pending.unsaved_queries += 1;
-            }
-            if editor.running {
-                pending.running_queries += 1;
+            match &tab.kind {
+                TabKind::QueryEditor(editor) => {
+                    if editor.has_unsaved_sql() {
+                        pending.unsaved_queries += 1;
+                    }
+                    if editor.running {
+                        pending.running_queries += 1;
+                    }
+                }
+                TabKind::RedisWorkbench(workbench) => {
+                    if workbench.has_unsaved_text() {
+                        pending.unsaved_queries += 1;
+                    }
+                    if workbench.running {
+                        pending.running_queries += 1;
+                    }
+                }
+                _ => {}
             }
         }
         pending
@@ -207,7 +226,7 @@ impl NavicatMain {
                         .state()
                         .tabs
                         .iter()
-                        .map(|tab| (tab.id, tab_workspace_scope(tab))),
+                        .map(|tab| (tab.id, tab_first_level_scope(tab))),
                     tab_id,
                     false,
                 );
@@ -221,7 +240,7 @@ impl NavicatMain {
                         .state()
                         .tabs
                         .iter()
-                        .map(|tab| (tab.id, tab_workspace_scope(tab))),
+                        .map(|tab| (tab.id, tab_first_level_scope(tab))),
                     tab_id,
                     true,
                 );

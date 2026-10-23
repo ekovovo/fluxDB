@@ -23,6 +23,52 @@ pub(crate) fn pg_type_base(type_name: &str) -> &str {
     base.strip_suffix("[]").unwrap_or(base).trim()
 }
 
+/// `format_type` 对内置字符/时间类型返回 SQL 标准名；统一收敛为应用内建表/设计表的
+/// 短别名，保留精度与数组后缀，其余类型原样返回。
+pub(crate) fn pg_type_display_name(formatted: &str) -> String {
+    let (body, array_suffix) = match formatted.strip_suffix("[]") {
+        Some(body) => (body, "[]"),
+        None => (formatted, ""),
+    };
+    for (standard, alias) in [
+        ("character varying", "varchar"),
+        ("character", "char"),
+        ("bit varying", "varbit"),
+    ] {
+        if let Some(rest) = body.strip_prefix(standard)
+            && (rest.is_empty() || rest.starts_with('('))
+        {
+            return format!("{alias}{rest}{array_suffix}");
+        }
+    }
+    if let Some(name) = pg_time_type_display_name(body) {
+        return format!("{name}{array_suffix}");
+    }
+    formatted.to_string()
+}
+
+/// 时间族标准名 → 短别名：`timestamp(3) with time zone` → `timestamptz(3)`。
+fn pg_time_type_display_name(body: &str) -> Option<String> {
+    for (base, without_zone, with_zone) in [
+        ("timestamp", "timestamp", "timestamptz"),
+        ("time", "time", "timetz"),
+    ] {
+        let Some(rest) = body.strip_prefix(base) else {
+            continue;
+        };
+        if !(rest.is_empty() || rest.starts_with('(') || rest.starts_with(' ')) {
+            continue;
+        }
+        if let Some(precision) = rest.strip_suffix(" without time zone") {
+            return Some(format!("{without_zone}{precision}"));
+        }
+        if let Some(precision) = rest.strip_suffix(" with time zone") {
+            return Some(format!("{with_zone}{precision}"));
+        }
+    }
+    None
+}
+
 /// 整数列宽度：绑定参数需按列真实宽度选型（i64→int8，对 int4 列会序列化失败）。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PgIntKind {
@@ -245,4 +291,34 @@ fn pg_decode_bytea(value: &str) -> Option<Vec<u8>> {
         }
     }
     Some(out)
+}
+
+#[cfg(test)]
+mod pg_type_display_tests {
+    use super::pg_type_display_name;
+
+    #[test]
+    fn format_type_aliases_keep_precision_and_array_suffix() {
+        for (formatted, expected) in [
+            ("character varying(32)", "varchar(32)"),
+            ("character(7)", "char(7)"),
+            ("character varying[]", "varchar[]"),
+            ("timestamp without time zone", "timestamp"),
+            ("timestamp(3) without time zone", "timestamp(3)"),
+            ("timestamp with time zone", "timestamptz"),
+            ("timestamp(3) with time zone", "timestamptz(3)"),
+            ("time without time zone", "time"),
+            ("time(6) without time zone", "time(6)"),
+            ("time with time zone", "timetz"),
+            ("time(6) with time zone", "timetz(6)"),
+            ("timestamp with time zone[]", "timestamptz[]"),
+            ("timestamp(3) with time zone[]", "timestamptz(3)[]"),
+            ("bit varying(8)", "varbit(8)"),
+            ("bit varying[]", "varbit[]"),
+            ("numeric(10,2)", "numeric(10,2)"),
+            ("interval", "interval"),
+        ] {
+            assert_eq!(pg_type_display_name(formatted), expected, "{formatted}");
+        }
+    }
 }

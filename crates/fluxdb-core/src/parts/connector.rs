@@ -334,6 +334,33 @@ pub trait Connector {
         Ok(Vec::new())
     }
 
+    /// 当前数据库内所有可见 schema 的表/视图，用于不限定 schema 的裸表补全。
+    fn list_completion_tables_all_schemas(
+        &self,
+        _: Option<&str>,
+        _: &str,
+        _: u64,
+    ) -> Result<Vec<CompletionTable>> {
+        Ok(Vec::new())
+    }
+
+    fn list_completion_tables_all_schemas_with_cancel(
+        &self,
+        database: Option<&str>,
+        filter: &str,
+        limit: u64,
+        should_cancel: &dyn Fn() -> bool,
+    ) -> Result<Vec<CompletionTable>> {
+        if should_cancel() {
+            return Ok(Vec::new());
+        }
+        let result = self.list_completion_tables_all_schemas(database, filter, limit)?;
+        if should_cancel() {
+            return Ok(Vec::new());
+        }
+        Ok(result)
+    }
+
     fn list_completion_tables_with_cancel(
         &self,
         database: Option<&str>,

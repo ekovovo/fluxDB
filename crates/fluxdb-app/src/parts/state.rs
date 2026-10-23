@@ -1898,6 +1898,8 @@ impl<T> CompletionCacheEntry<T> {
 #[derive(Debug, Default)]
 struct CompletionCache {
     tables: BTreeMap<CompletionTablesKey, CompletionCacheEntry<Vec<CompletionTable>>>,
+    all_schema_tables:
+        BTreeMap<CompletionAllSchemaTablesKey, CompletionCacheEntry<Vec<CompletionTable>>>,
     columns: BTreeMap<CompletionColumnsKey, CompletionCacheEntry<Vec<CompletionColumn>>>,
     routines: BTreeMap<CompletionRoutinesKey, CompletionCacheEntry<Vec<CompletionRoutine>>>,
     triggers: BTreeMap<CompletionTriggersKey, CompletionCacheEntry<Vec<CompletionTrigger>>>,
@@ -1911,6 +1913,12 @@ struct CompletionTablesKey {
     connection_id: ConnectionId,
     database: Option<String>,
     schema: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct CompletionAllSchemaTablesKey {
+    connection_id: ConnectionId,
+    database: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]

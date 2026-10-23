@@ -132,7 +132,11 @@ fn table_candidates(join: bool, ctx: &SlotContext<'_>) -> Vec<Candidate> {
         }
     }
 
-    for table in ctx.meta.tables(qualifier_schema.or(ctx.schema)) {
+    let tables = match qualifier_schema {
+        Some(schema) => ctx.meta.tables(Some(schema)),
+        None => ctx.meta.tables_for_bare_name(ctx.schema),
+    };
+    for table in tables {
         let schema = table
             .schema
             .clone()

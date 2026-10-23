@@ -4,6 +4,8 @@ enum CreateTableInputKey {
     TableComment(TabId),
     ColumnName(TabId, u64),
     ColumnLength(TabId, u64),
+    ColumnCustomType(TabId, u64),
+    ColumnEnumValue(TabId, u64, usize),
     ColumnScale(TabId, u64),
     ColumnDefault(TabId, u64),
     ColumnComment(TabId, u64),
@@ -1364,6 +1366,7 @@ struct PendingDisconnectConnection {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct PendingCloseWorkspace {
     scope: FirstLevelScope,
+    display_name: Option<String>,
     unsaved_queries: usize,
     running_queries: usize,
 }

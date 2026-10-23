@@ -32,7 +32,7 @@ fn tab_context_menu(
         state
             .tabs
             .iter()
-            .map(|tab| (tab.id, tab_workspace_scope(tab))),
+            .map(|tab| (tab.id, tab_first_level_scope(tab))),
         menu.tab_id,
         true,
     );
@@ -40,7 +40,7 @@ fn tab_context_menu(
         state
             .tabs
             .iter()
-            .map(|tab| (tab.id, tab_workspace_scope(tab))),
+            .map(|tab| (tab.id, tab_first_level_scope(tab))),
         menu.tab_id,
         false,
     );

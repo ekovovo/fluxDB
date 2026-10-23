@@ -19,6 +19,17 @@ const REDIS_WB_EDITOR_MIN_WIDTH: f32 = 320.;
 const REDIS_WB_RESULT_MIN_WIDTH: f32 = 320.;
 // 单条执行记录卡片的结果区最大高度：超长 reply 在卡片内滚动，避免把整张卡片 / 外层列表撑高。
 const REDIS_WB_RECORD_BODY_MAX_HEIGHT: f32 = 320.;
+// 执行摘要的数值列按完整表头留宽；空间不足时由整张表横向滚动，而不是压缩成省略号。
+const QUERY_SUMMARY_STATEMENT_MIN_WIDTH: f32 = 280.;
+const QUERY_SUMMARY_TYPE_WIDTH: f32 = 240.;
+const QUERY_SUMMARY_RETURNED_WIDTH: f32 = 72.;
+const QUERY_SUMMARY_AFFECTED_WIDTH: f32 = 72.;
+const QUERY_SUMMARY_ELAPSED_WIDTH: f32 = 76.;
+const QUERY_SUMMARY_TABLE_MIN_WIDTH: f32 = QUERY_SUMMARY_STATEMENT_MIN_WIDTH
+    + QUERY_SUMMARY_TYPE_WIDTH
+    + QUERY_SUMMARY_RETURNED_WIDTH
+    + QUERY_SUMMARY_AFFECTED_WIDTH
+    + QUERY_SUMMARY_ELAPSED_WIDTH;
 
 /// 垂直分栏（编辑器在结果区上方）可用高度估算：视口高度扣除顶部工具条。
 fn redis_workbench_split_height(window: &Window) -> f32 {
@@ -4328,7 +4339,15 @@ fn query_result_error_state(
             .disabled(ai_busy)
             .debug_selector(|| "query-ai-fix".into())
             .on_click(cx.listener(move |this, _, window, cx| {
-                this.begin_ai_sql_editor_edit(tab_id, Some(summary_for_ai.clone()), window, cx);
+                this.begin_ai_sql_editor_edit(
+                    tab_id,
+                    Some(QueryFailureRepair {
+                        result_index,
+                        summary: summary_for_ai.clone(),
+                    }),
+                    window,
+                    cx,
+                );
             })),
         );
 
@@ -4670,7 +4689,13 @@ fn query_execution_summary_view(
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
-    let mut table = div().w_full().flex().flex_col();
+    let mut table = div()
+        .id(("query-execution-summary-table", tab_id.0))
+        .debug_selector(|| "query-summary-table".into())
+        .w_full()
+        .min_w(px(QUERY_SUMMARY_TABLE_MIN_WIDTH))
+        .flex()
+        .flex_col();
     table = table.child(query_summary_header(colors));
     for (row_index, summary) in summaries.iter().enumerate() {
         table = table.child(query_summary_row(row_index, summary, colors, cx));
@@ -4699,9 +4724,52 @@ fn query_execution_summary_view(
                 .min_h(px(0.))
                 .min_w(px(0.))
                 .id(("query-execution-summary-scroll", tab_id.0))
-                .overflow_y_scrollbar()
+                .overflow_scrollbar()
                 .child(table),
         )
+}
+
+#[derive(Clone, Copy)]
+enum QuerySummaryColumn {
+    Statement,
+    Type,
+    Returned,
+    Affected,
+    Elapsed,
+}
+
+impl QuerySummaryColumn {
+    fn debug_name(self) -> &'static str {
+        match self {
+            Self::Statement => "statement",
+            Self::Type => "type",
+            Self::Returned => "returned",
+            Self::Affected => "affected",
+            Self::Elapsed => "elapsed",
+        }
+    }
+
+    fn apply(self, cell: Div) -> Div {
+        let cell = match self {
+            Self::Statement => cell
+                .flex_1()
+                .flex_basis(px(0.))
+                .min_w(px(QUERY_SUMMARY_STATEMENT_MIN_WIDTH)),
+            Self::Type => cell.flex_none().w(px(QUERY_SUMMARY_TYPE_WIDTH)),
+            Self::Returned => cell.flex_none().w(px(QUERY_SUMMARY_RETURNED_WIDTH)),
+            Self::Affected => cell.flex_none().w(px(QUERY_SUMMARY_AFFECTED_WIDTH)),
+            Self::Elapsed => cell.flex_none().w(px(QUERY_SUMMARY_ELAPSED_WIDTH)),
+        };
+        match self {
+            Self::Statement => cell.pl_2().pr_1(),
+            Self::Type => cell.px_2(),
+            Self::Returned | Self::Affected | Self::Elapsed => cell.px_2(),
+        }
+    }
+
+    fn is_numeric(self) -> bool {
+        matches!(self, Self::Returned | Self::Affected | Self::Elapsed)
+    }
 }
 
 fn query_summary_header(colors: UiColors) -> Div {
@@ -4713,12 +4781,61 @@ fn query_summary_header(colors: UiColors) -> Div {
         .border_b_1()
         .border_color(colors.border)
         .bg(colors.panel_alt)
-        .child(query_summary_cell(tr("app.query.header.statement"), 1., true, colors))
-        .child(query_summary_cell(tr("app.query.header.type"), 0.42, true, colors))
-        .child(query_summary_cell(tr("app.query.header.returned"), 0.22, true, colors))
-        .child(query_summary_cell(tr("app.query.header.affected"), 0.22, true, colors))
-        .child(query_summary_cell(tr("app.query.header.elapsed"), 0.2, true, colors))
-        .child(div().w(px(42.)).flex_none())
+        .child(query_summary_header_cell(
+            QuerySummaryColumn::Statement,
+            tr("app.query.header.statement"),
+            colors,
+        ))
+        .child(query_summary_header_cell(
+            QuerySummaryColumn::Type,
+            tr("app.query.header.type"),
+            colors,
+        ))
+        .child(query_summary_header_cell(
+            QuerySummaryColumn::Returned,
+            tr("app.query.header.returned"),
+            colors,
+        ))
+        .child(query_summary_header_cell(
+            QuerySummaryColumn::Affected,
+            tr("app.query.header.affected"),
+            colors,
+        ))
+        .child(query_summary_header_cell(
+            QuerySummaryColumn::Elapsed,
+            tr("app.query.header.elapsed"),
+            colors,
+        ))
+}
+
+fn query_summary_header_cell(
+    column: QuerySummaryColumn,
+    text: impl Into<String>,
+    colors: UiColors,
+) -> Div {
+    let column_name = column.debug_name();
+    let text = single_line_summary_text(text.into());
+    column
+        .apply(
+            div()
+                .debug_selector(move || format!("query-summary-header:{column_name}"))
+                .h_full()
+                .flex()
+                .items_center()
+                .overflow_hidden(),
+        )
+        .when(column.is_numeric(), |this| this.justify_end())
+        .child(
+            div()
+                .min_w(px(0.))
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .text_size(px(12.))
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .text_color(colors.muted)
+                .child(text),
+        )
 }
 
 fn query_summary_row(
@@ -4737,9 +4854,24 @@ fn query_summary_row(
         .text_color(colors.text)
         .child(query_summary_sql_cell(row_index, summary, colors, cx))
         .child(query_summary_type_cell(row_index, summary, colors, cx))
-        .child(query_summary_cell(summary.returned_rows.to_string(), 0.22, false, colors))
-        .child(query_summary_cell(summary.affected_rows.to_string(), 0.22, false, colors))
-        .child(query_summary_cell(format!("{}ms", summary.elapsed_ms), 0.2, false, colors))
+        .child(query_summary_numeric_cell(
+            row_index,
+            QuerySummaryColumn::Returned,
+            summary.returned_rows.to_string(),
+            colors,
+        ))
+        .child(query_summary_numeric_cell(
+            row_index,
+            QuerySummaryColumn::Affected,
+            summary.affected_rows.to_string(),
+            colors,
+        ))
+        .child(query_summary_numeric_cell(
+            row_index,
+            QuerySummaryColumn::Elapsed,
+            format!("{}ms", summary.elapsed_ms),
+            colors,
+        ))
 }
 
 fn query_summary_sql_cell(
@@ -4749,16 +4881,16 @@ fn query_summary_sql_cell(
     cx: &mut Context<NavicatMain>,
 ) -> Div {
     let sql_text = single_line_summary_text(summary.sql.clone());
-    div()
-        .flex_1()
-        .flex_basis(px(0.))
-        .min_w(px(0.))
-        .h_full()
-        .pl_2()
-        .pr_1()
-        .flex()
-        .items_center()
-        .gap_1()
+    QuerySummaryColumn::Statement
+        .apply(
+            div()
+                .debug_selector(move || format!("query-summary-row:{row_index}:statement"))
+                .h_full()
+                .flex()
+                .items_center()
+                .gap_1()
+                .overflow_hidden(),
+        )
         .child(
             div()
                 .id(("query-summary-sql", row_index))
@@ -4856,15 +4988,16 @@ fn query_summary_type_cell(
     } else {
         rgb(0xff5c5c)
     };
-    div()
-        .flex_1()
-        .flex_basis(px(0.))
-        .min_w(px(0.))
-        .h_full()
-        .px_2()
-        .flex()
-        .items_center()
-        .gap_2()
+    QuerySummaryColumn::Type
+        .apply(
+            div()
+                .debug_selector(move || format!("query-summary-row:{row_index}:type"))
+                .h_full()
+                .flex()
+                .items_center()
+                .gap_2()
+                .overflow_hidden(),
+        )
         .child(
             div()
                 .px_2()
@@ -4907,33 +5040,34 @@ fn query_summary_type_cell(
         })
 }
 
-fn query_summary_cell(text: impl Into<String>, flex: f32, header: bool, colors: UiColors) -> Div {
+fn query_summary_numeric_cell(
+    row_index: usize,
+    column: QuerySummaryColumn,
+    text: impl Into<String>,
+    colors: UiColors,
+) -> Div {
     let text = single_line_summary_text(text.into());
-
-    div()
-        .flex_1()
-        .flex_basis(px(0.))
-        .min_w(px(0.))
-        .h_full()
-        .px_2()
-        .flex()
-        .items_center()
-        .overflow_hidden()
+    let column_name = column.debug_name();
+    column
+        .apply(
+            div()
+                .debug_selector(move || format!("query-summary-row:{row_index}:{column_name}"))
+                .h_full()
+                .flex()
+                .items_center()
+                .justify_end()
+                .overflow_hidden(),
+        )
         .child(
             div()
+                .min_w(px(0.))
                 .overflow_hidden()
                 .whitespace_nowrap()
                 .text_ellipsis()
                 .text_size(px(12.))
-                .font_weight(if header {
-                    gpui::FontWeight::SEMIBOLD
-                } else {
-                    gpui::FontWeight::NORMAL
-                })
-                .text_color(if header { colors.muted } else { colors.text })
+                .text_color(colors.text)
                 .child(text),
         )
-        .when(flex < 0.5, |this| this.flex_none().w(px(110. * flex.max(0.2))))
 }
 
 fn single_line_summary_text(text: String) -> String {

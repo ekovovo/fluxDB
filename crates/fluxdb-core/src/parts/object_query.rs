@@ -4,6 +4,8 @@ pub enum ObjectKind {
     Schema,
     Table,
     View,
+    Procedure,
+    Function,
     Column,
     Index,
     Collection,
@@ -57,6 +59,12 @@ pub struct QueryExecutionOptions {
     /// 作为客户端 AST 策略之外的纵深防线：即使某个未在 denylist 里的函数/语法带副作用，
     /// 服务端也会拒绝写入。默认 `false`，普通编辑器路径不受影响。
     pub read_only: bool,
+    /// 只取执行计划、不执行语句（AI `db.explain`）。
+    ///
+    /// 目前只有 SQL Server 需要：它没有 `EXPLAIN` 前缀，计划由
+    /// `SET SHOWPLAN_ALL ON` 会话开关产生。其它方言继续用文本包装，
+    /// 该标志保持 `false`。
+    pub explain_only: bool,
 }
 
 impl Default for QueryExecutionOptions {
@@ -67,6 +75,7 @@ impl Default for QueryExecutionOptions {
             page_offset: 0,
             page_size: Pagination::DEFAULT_LIMIT,
             read_only: false,
+            explain_only: false,
         }
     }
 }

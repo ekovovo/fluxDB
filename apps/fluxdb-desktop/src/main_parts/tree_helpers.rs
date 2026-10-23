@@ -304,6 +304,13 @@ fn database_tree(
         None,
         colors,
     )
+    .debug_selector(move || {
+        let database = database_path
+            .database
+            .clone()
+            .unwrap_or_else(|| database_path.name.clone());
+        format!("database-row:{database}")
+    })
     .on_mouse_down(
         MouseButton::Left,
         cx.listener(move |this, event: &MouseDownEvent, _, cx| {
@@ -381,18 +388,11 @@ fn schema_tree(
     } else {
         arrow_element(expanded, colors)
     };
+    let schema_selector = schema.clone();
     tree_with_highlight(
-        arrow,
-        "schema",
-        schema,
-        indent,
-        selected,
-        false,
-        None,
-        None,
-        None,
-        colors,
+        arrow, "schema", schema, indent, selected, false, None, None, None, colors,
     )
+    .debug_selector(move || format!("schema-row:{schema_selector}"))
     .on_mouse_down(
         MouseButton::Left,
         cx.listener(move |this, _, _, cx| {
@@ -445,7 +445,11 @@ fn object_group_tree(
     let database_path_for_open = database_path.clone();
     let schema_for_toggle = schema.clone();
     let schema_for_menu = schema.clone();
-    let glyph = if refreshing { "refreshing" } else { group.icon_key() };
+    let glyph = if refreshing {
+        "refreshing"
+    } else {
+        group.icon_key()
+    };
     tree(
         arrow_element(expanded, colors),
         glyph,
@@ -463,10 +467,16 @@ fn object_group_tree(
             // 备份节点单击：打开该库的备份列表 tab（不再展开子行）。
             // 新建备份入口保留在右键菜单；运行中任务在备份 tab 内展示。
             if group == ObjectGroup::Backup {
-                this.dispatch(AppCommand::OpenBackupList(database_path_for_open.clone()), cx);
+                this.dispatch(
+                    AppCommand::OpenBackupList(database_path_for_open.clone()),
+                    cx,
+                );
             } else if group == ObjectGroup::ErDiagram {
                 // ER 图节点单击：打开整库 ER 关系图 tab（画布原型），不展开子行。
-                this.dispatch(AppCommand::OpenErDiagram(database_path_for_open.clone()), cx);
+                this.dispatch(
+                    AppCommand::OpenErDiagram(database_path_for_open.clone()),
+                    cx,
+                );
             } else {
                 this.toggle_object_group_tree(
                     connection_id,
@@ -542,9 +552,8 @@ fn table_folder_tree(
     let selected = selected_table_folder.is_some_and(|(selected_parent, selected_name)| {
         selected_parent == &parent_key && selected_name == &name
     });
-    let renaming = pending_rename_table_folder.is_some_and(|pending| {
-        pending.parent_key == parent_key && pending.original_name == name
-    });
+    let renaming = pending_rename_table_folder
+        .is_some_and(|pending| pending.parent_key == parent_key && pending.original_name == name);
     let row_bg = if selected || renaming {
         colors.tree_selected
     } else {
@@ -678,6 +687,10 @@ fn table_tree(
     let path = object.path.clone();
     let menu_path = object.path.clone();
     let is_table = object.path.kind == ObjectKind::Table;
+    let is_routine = matches!(
+        object.path.kind,
+        ObjectKind::Procedure | ObjectKind::Function
+    );
     let selected = active_object_path == Some(&object.path);
     tree_with_highlight(
         empty_arrow_element(),
@@ -691,11 +704,25 @@ fn table_tree(
         search_query,
         colors,
     )
+    .debug_selector({
+        let name = object.path.name.clone();
+        move || {
+            if is_routine {
+                format!("routine-tree-row:{name}")
+            } else {
+                format!("table-tree-row:{name}")
+            }
+        }
+    })
     .on_mouse_down(
         MouseButton::Left,
         cx.listener(move |this, _event: &MouseDownEvent, _, cx| {
             this.close_context_menus(cx);
-            this.dispatch(AppCommand::OpenDataEditor(path.clone()), cx);
+            if is_routine {
+                this.open_routine_ddl(path.clone(), cx);
+            } else {
+                this.dispatch(AppCommand::OpenDataEditor(path.clone()), cx);
+            }
             cx.stop_propagation();
         }),
     )
@@ -1033,6 +1060,8 @@ fn object_glyph(kind: ObjectKind) -> &'static str {
     match kind {
         ObjectKind::Table => "table",
         ObjectKind::View => "view",
+        ObjectKind::Procedure => "procedures",
+        ObjectKind::Function => "functions",
         ObjectKind::Column => "┃",
         ObjectKind::Index => "#",
         ObjectKind::Collection => "◆",
@@ -1060,9 +1089,9 @@ fn group_objects<'a>(
         .filter(|object| match group {
             ObjectGroup::Tables => object.path.kind == ObjectKind::Table,
             ObjectGroup::Views => object.path.kind == ObjectKind::View,
+            ObjectGroup::Procedures => object.path.kind == ObjectKind::Procedure,
+            ObjectGroup::Functions => object.path.kind == ObjectKind::Function,
             ObjectGroup::Queries
-            | ObjectGroup::Procedures
-            | ObjectGroup::Functions
             | ObjectGroup::Backup
             // ER 图节点单击开 tab、不展开子行，故不从对象目录取行。
             | ObjectGroup::ErDiagram => false,
@@ -1078,7 +1107,12 @@ fn sorted_group_objects<'a>(
     pinned_tables: &BTreeSet<String>,
 ) -> Vec<&'a ObjectSummary> {
     let mut objects = group_objects(connection, database, schema, group);
-    objects.sort_by_key(|object| (!pinned_tables.contains(&table_tree_key(&object.path)), &object.path.name));
+    objects.sort_by_key(|object| {
+        (
+            !pinned_tables.contains(&table_tree_key(&object.path)),
+            &object.path.name,
+        )
+    });
     objects
 }
 
@@ -1104,16 +1138,22 @@ fn sorted_folder_table_objects<'a>(
     pinned_tables: &BTreeSet<String>,
     table_folder_assignments: &BTreeMap<String, (String, String)>,
 ) -> Vec<&'a ObjectSummary> {
-    sorted_group_objects(connection, database, None, ObjectGroup::Tables, pinned_tables)
-        .into_iter()
-        .filter(|object| {
-            table_folder_assignments
-                .get(&table_tree_key(&object.path))
-                .is_some_and(|(parent_key, assigned_folder)| {
-                    parent_key == folder_parent_key && assigned_folder == folder
-                })
-        })
-        .collect()
+    sorted_group_objects(
+        connection,
+        database,
+        None,
+        ObjectGroup::Tables,
+        pinned_tables,
+    )
+    .into_iter()
+    .filter(|object| {
+        table_folder_assignments
+            .get(&table_tree_key(&object.path))
+            .is_some_and(|(parent_key, assigned_folder)| {
+                parent_key == folder_parent_key && assigned_folder == folder
+            })
+    })
+    .collect()
 }
 
 fn table_folder_parent_key(connection_id: ConnectionId, database: &str) -> String {
@@ -1196,6 +1236,8 @@ fn connection_databases(connection: &ConnectionState, include_system: bool) -> V
             }
             ObjectKind::Table
             | ObjectKind::View
+            | ObjectKind::Procedure
+            | ObjectKind::Function
             | ObjectKind::Collection
             | ObjectKind::RedisKey => {
                 let database = object
@@ -1261,7 +1303,10 @@ fn database_schemas(connection: &ConnectionState, database: &str) -> Vec<String>
                     schemas.insert(schema.to_string());
                 }
             }
-            ObjectKind::Table | ObjectKind::View => {
+            ObjectKind::Table
+            | ObjectKind::View
+            | ObjectKind::Procedure
+            | ObjectKind::Function => {
                 if let Some(schema) = object.path.schema.as_deref() {
                     if !schema.is_empty() {
                         schemas.insert(schema.to_string());
@@ -1323,9 +1368,12 @@ fn connection_has_loaded_children(connection: &ConnectionState, database: &str) 
     connection.objects.iter().any(|object| {
         matches!(
             object.path.kind,
-            ObjectKind::Table | ObjectKind::View | ObjectKind::RedisKey
-        )
-            && object.path.database.as_deref().unwrap_or("main") == database
+            ObjectKind::Table
+            | ObjectKind::View
+            | ObjectKind::Procedure
+            | ObjectKind::Function
+            | ObjectKind::RedisKey
+        ) && object.path.database.as_deref().unwrap_or("main") == database
     })
 }
 
@@ -1372,7 +1420,9 @@ fn object_group_tree_key_scoped(
     group: ObjectGroup,
 ) -> String {
     match schema {
-        Some(schema) => object_group_tree_key(connection_id, &format!("{database}.{schema}"), group),
+        Some(schema) => {
+            object_group_tree_key(connection_id, &format!("{database}.{schema}"), group)
+        }
         None => object_group_tree_key(connection_id, database, group),
     }
 }
@@ -1394,7 +1444,11 @@ fn table_header(colors: UiColors) -> impl IntoElement {
         .text_color(colors.muted)
         .child(cell(tr("app.tree.header.name").to_string(), 210., colors))
         .child(cell(tr("app.tree.header.rows").to_string(), 55., colors))
-        .child(cell(tr("app.tree.header.modified").to_string(), 150., colors))
+        .child(cell(
+            tr("app.tree.header.modified").to_string(),
+            150.,
+            colors,
+        ))
         .child(cell_flex(tr("app.tree.header.comment").to_string(), colors))
 }
 
@@ -1475,6 +1529,7 @@ fn database_kind_name(kind: DatabaseKind) -> &'static str {
         DatabaseKind::Redis => "Redis",
         DatabaseKind::Postgres => "PostgreSQL",
         DatabaseKind::Dameng => "DM8",
+        DatabaseKind::SqlServer => "SQL Server",
     }
 }
 

@@ -320,6 +320,40 @@ mod tests {
     }
 
     #[test]
+    fn sqlserver_closed_bracket_qualifier_lists_only_schema_tables() {
+        // 图一：`[app].` 后应只补该 schema 的表；不能把整库表/schema 再列一遍。
+        let items = candidates_with(&dialect::SQLSERVER, "SELECT * FROM [public].|");
+        assert!(
+            items.iter().any(|item| item.label == "users"),
+            "{:?}",
+            items.iter().map(|item| &item.label).collect::<Vec<_>>()
+        );
+        assert!(
+            items
+                .iter()
+                .all(|item| item.kind != crate::model::CandidateKind::Schema),
+            "already-qualified schema must not be suggested again"
+        );
+        let users = items
+            .iter()
+            .find(|item| item.label == "users")
+            .expect("users candidate");
+        // 替换区间只覆盖已输入的表名部分，`[public].` 原样保留。
+        assert_eq!(users.insert_text, "users");
+    }
+
+    #[test]
+    fn sqlserver_bracket_qualifier_keeps_schema_when_partially_typed() {
+        // 闭合方括号 + 已输入部分表名：仍按 schema 过滤。
+        let items = candidates_with(&dialect::SQLSERVER, "SELECT * FROM [public].us|");
+        let labels = items
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(labels, vec!["users"], "{labels:?}");
+    }
+
+    #[test]
     fn schema_candidate_inserts_trailing_dot() {
         let items = candidates_with(&dialect::POSTGRES, "SELECT * FROM |");
         let schema = items

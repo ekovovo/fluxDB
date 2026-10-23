@@ -44,7 +44,10 @@ fn enumerate_backup_objects(
         name: String::new(),
         kind: ObjectKind::Schema,
     };
-    let summaries = if request.config.kind == DatabaseKind::Postgres {
+    let summaries = if matches!(
+        request.config.kind,
+        DatabaseKind::Postgres | DatabaseKind::SqlServer
+    ) {
         let database = ObjectPath { kind: ObjectKind::Database, ..root.clone() };
         let mut all = Vec::new();
         for schema in connector.list_objects(Some(&database))? {
@@ -61,9 +64,11 @@ fn enumerate_backup_objects(
             ObjectKind::View if include_views => BackupObjectKind::View,
             _ => continue,
         };
-        // PG 对象必须保留 schema 身份，区分 public.orders 与 archive.orders。
+        // PG/SQL Server 对象必须保留 schema 身份，区分 public.orders 与 archive.orders。
         let schema = if request.config.kind == DatabaseKind::Postgres {
             Some(summary.path.schema.clone().unwrap_or_else(|| "public".into()))
+        } else if request.config.kind == DatabaseKind::SqlServer {
+            Some(summary.path.schema.clone().unwrap_or_else(|| "dbo".into()))
         } else {
             None
         };

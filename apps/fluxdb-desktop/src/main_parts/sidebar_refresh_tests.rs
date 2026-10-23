@@ -15,6 +15,7 @@ mod sidebar_refresh_tests {
             mysql_profile: None,
             postgres_profile: None,
             dameng_profile: None,
+            sqlserver_profile: None,
         };
         ConnectionState {
             config,
@@ -61,6 +62,57 @@ mod sidebar_refresh_tests {
             &BTreeMap::from([(group_key, true)]),
             "",
         )
+    }
+
+    fn schema_refresh_key(kind: DatabaseKind) -> String {
+        let object = ObjectPath {
+            connection_id: ConnectionId(1),
+            database: Some("main".into()),
+            schema: Some("app".into()),
+            name: "customers".into(),
+            kind: ObjectKind::Table,
+        };
+        if matches!(
+            kind,
+            DatabaseKind::Postgres | DatabaseKind::Dameng | DatabaseKind::SqlServer
+        ) {
+            schema_tree_key(
+                object.connection_id,
+                object.database.as_deref().expect("database"),
+                object.schema.as_deref().expect("schema"),
+            )
+        } else {
+            database_tree_key(object.connection_id, "main")
+        }
+    }
+
+    #[test]
+    fn explicit_refresh_replaces_an_in_flight_load() {
+        let key = database_tree_key(ConnectionId(1), "main");
+        let mut loading = BTreeSet::from([key.clone()]);
+        let mut tasks = BTreeSet::from([key.clone()]);
+        // 普通 load_database_children 对 in-flight 作用域直接返回；显式刷新先移除
+        // 旧状态，再发起新请求，不能被静默吞掉。
+        assert!(loading.contains(&key));
+        loading.remove(&key);
+        tasks.remove(&key);
+        assert!(!loading.contains(&key));
+        assert!(!tasks.contains(&key));
+    }
+
+    #[test]
+    fn schema_lazy_databases_refresh_the_table_schema_not_the_database() {
+        let database_key = database_tree_key(ConnectionId(1), "main");
+        let schema_key = schema_tree_key(ConnectionId(1), "main", "app");
+        for kind in [
+            DatabaseKind::Postgres,
+            DatabaseKind::Dameng,
+            DatabaseKind::SqlServer,
+        ] {
+            assert_eq!(schema_refresh_key(kind), schema_key, "{kind:?}");
+            assert_ne!(schema_refresh_key(kind), database_key, "{kind:?}");
+        }
+        assert_eq!(schema_refresh_key(DatabaseKind::MySql), database_key);
     }
 
     fn has_table_group_and_row(rows: &[SidebarVisibleRow]) -> bool {

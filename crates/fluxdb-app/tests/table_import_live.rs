@@ -49,6 +49,7 @@ fn sqlite_imports_all_export_formats() {
         mysql_profile: None,
         postgres_profile: None,
         dameng_profile: None,
+        sqlserver_profile: None,
     };
     execute(
         &config,
@@ -157,6 +158,7 @@ fn mysql_imports_all_export_formats() {
         }),
         postgres_profile: None,
         dameng_profile: None,
+        sqlserver_profile: None,
     }
     .mysql_resolved();
     connector_for(&config)
@@ -286,6 +288,7 @@ fn postgres_imports_all_export_formats() {
             ..PostgresConnectionProfile::default()
         }),
         dameng_profile: None,
+        sqlserver_profile: None,
     }
     .postgres_resolved();
     connector_for(&config)
@@ -407,6 +410,7 @@ fn sqlite_import_append_and_truncate_modes() {
         mysql_profile: None,
         postgres_profile: None,
         dameng_profile: None,
+        sqlserver_profile: None,
     };
     let object = ObjectPath {
         connection_id: config.id,

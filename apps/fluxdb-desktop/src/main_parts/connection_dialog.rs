@@ -76,7 +76,11 @@ fn topbar(
         .items_center()
         .gap_1()
         // macOS 保留原生红绿灯（关闭/最小化/全屏）预留区；Windows/Linux 自绘按钮在右侧，无需预留。
-        .pl(if cfg!(target_os = "macos") { px(84.) } else { px(12.) })
+        .pl(if cfg!(target_os = "macos") {
+            px(84.)
+        } else {
+            px(12.)
+        })
         .pr_3()
         // 侧边栏展开/收起切换按钮（图标随状态变化）+ 首页按钮，两态都保留在顶部栏。
         .child(
@@ -94,19 +98,24 @@ fn topbar(
                 true,
                 colors,
             )
-            .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
-                this.show_connection_browser = !this.show_connection_browser;
-                cx.stop_propagation();
-                cx.notify();
-            })),
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    this.show_connection_browser = !this.show_connection_browser;
+                    cx.stop_propagation();
+                    cx.notify();
+                }),
+            ),
         )
-        .child(topbar_icon_button(AppIcon::Home, tr("app.topbar.home"), true, colors).on_mouse_down(
-            MouseButton::Left,
-            cx.listener(|this, _, _, cx| {
-                this.dispatch(AppCommand::DeactivateTab, cx);
-                cx.stop_propagation();
-            }),
-        ))
+        .child(
+            topbar_icon_button(AppIcon::Home, tr("app.topbar.home"), true, colors).on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    this.dispatch(AppCommand::DeactivateTab, cx);
+                    cx.stop_propagation();
+                }),
+            ),
+        )
         .when_some(connection_info, |this, name| {
             // 当前打开的数据库连接信息（文本），与活动表/库保持关联。
             this.child(
@@ -143,30 +152,51 @@ fn topbar(
         // 「询问 AI」原先挂在 SQL 编辑器工具栏上，移到这里与其余全局入口同排；
         // 「历史」「设置」是业务按钮移除后收纳在此的既有项。
         .child(
-            topbar_icon_button(AppIcon::Github, tr("app.topbar.github"), true, colors).on_mouse_down(
+            topbar_icon_button(AppIcon::Github, tr("app.topbar.github"), true, colors)
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|_, _, _, cx| {
+                        cx.open_url(GITHUB_REPOSITORY_URL);
+                        cx.stop_propagation();
+                    }),
+                ),
+        )
+        // 全局入口：关闭/重新打开不会重放任务。
+        .child(
+            Button::new("ask-ai")
+                .debug_selector(|| "ask-ai".into())
+                .small()
+                .ghost()
+                .cursor_pointer()
+                .child(app_icon(AppIcon::Bot, 16., colors.muted))
+                .tooltip(tr("app.topbar.ask_ai"))
+                .on_click(cx.listener(|this, _, window, cx| this.open_ai_chat(window, cx))),
+        )
+        .child(
+            topbar_icon_button(
+                AppIcon::CalendarClock,
+                tr("app.topbar.history"),
+                true,
+                colors,
+            )
+            .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(|_, _, _, cx| {
-                    cx.open_url(GITHUB_REPOSITORY_URL);
+                cx.listener(|this, _, window, cx| {
+                    this.toggle_history(window, cx);
                     cx.stop_propagation();
                 }),
             ),
         )
-        // 全局入口：关闭/重新打开不会重放任务。
-        .child(Button::new("ask-ai").debug_selector(||"ask-ai".into()).small().ghost().cursor_pointer().child(app_icon(AppIcon::Bot,16.,colors.muted)).tooltip(tr("app.topbar.ask_ai")).on_click(cx.listener(|this,_,window,cx|this.open_ai_chat(window,cx))))
-        .child(topbar_icon_button(AppIcon::CalendarClock, tr("app.topbar.history"), true, colors).on_mouse_down(
-            MouseButton::Left,
-            cx.listener(|this, _, window, cx| {
-                this.toggle_history(window, cx);
-                cx.stop_propagation();
-            }),
-        ))
-        .child(topbar_icon_button(AppIcon::Settings, tr("app.topbar.settings"), true, colors).on_mouse_down(
-            MouseButton::Left,
-            cx.listener(|this, _, _, cx| {
-                this.dispatch(AppCommand::OpenSettings, cx);
-                cx.stop_propagation();
-            }),
-        ))
+        .child(
+            topbar_icon_button(AppIcon::Settings, tr("app.topbar.settings"), true, colors)
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _, _, cx| {
+                        this.dispatch(AppCommand::OpenSettings, cx);
+                        cx.stop_propagation();
+                    }),
+                ),
+        )
         // 非 macOS：GPUI 隐藏原生标题栏后不绘制窗口控制按钮，需由应用自绘
         // 最小化/最大化(还原)/关闭，否则 Windows/Linux 右上角无法关闭窗口。
         // macOS 走原生红绿灯（topbar 顶部 `pl(84.)` 预留区），不渲染。
@@ -225,13 +255,21 @@ fn window_control_buttons(
     let muted = colors.muted;
     // 最大化/还原：is_maximized 决定按钮图标，点击时按平台切换窗口状态。
     let maximized = window.is_maximized();
-    let maximize_icon = if maximized { AppIcon::Square } else { AppIcon::Maximize };
+    let maximize_icon = if maximized {
+        AppIcon::Square
+    } else {
+        AppIcon::Maximize
+    };
     let maximize_label = if maximized {
         tr("app.window.restore")
     } else {
         tr("app.window.maximize")
     };
-    let maximize_id = if maximized { "win-btn-restore" } else { "win-btn-maximize" };
+    let maximize_id = if maximized {
+        "win-btn-restore"
+    } else {
+        "win-btn-maximize"
+    };
 
     div()
         .flex()
@@ -286,11 +324,14 @@ fn window_control_buttons(
                 .hover(move |style| style.bg(WINDOW_CLOSE_HOVER))
                 .tooltip(move |window, cx| Tooltip::new(tr("app.window.close")).build(window, cx))
                 .child(app_icon_box(AppIcon::Close, 34., 16., muted))
-                .on_mouse_down(MouseButton::Left, cx.listener(|this, _, _, cx| {
-                    this.pending_exit_confirm = true;
-                    cx.stop_propagation();
-                    cx.notify();
-                })),
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _, _, cx| {
+                        this.pending_exit_confirm = true;
+                        cx.stop_propagation();
+                        cx.notify();
+                    }),
+                ),
         )
 }
 
@@ -566,6 +607,14 @@ fn new_connection_modal(
                                             colors,
                                             cx,
                                         ))
+                                        .child(kind_tile(
+                                            "SQL Server",
+                                            DatabaseKind::SqlServer,
+                                            kind,
+                                            editing,
+                                            colors,
+                                            cx,
+                                        )),
                                 )
                                 .child(
                                     div()
@@ -681,12 +730,12 @@ fn kind_tile(
     // ID 按数据库类型命名而非文案，便于 UI 自动化稳定定位「切换到哪种数据库」。
     // 磁贴可点击切换，纳入 headless 观察。
     div()
-        .id(format!("new-connection-kind-{}", database_kind_element_suffix(kind)))
+        .id(format!(
+            "new-connection-kind-{}",
+            database_kind_element_suffix(kind)
+        ))
         .debug_selector(move || {
-            format!(
-                "new-connection-kind-{}",
-                database_kind_element_suffix(kind)
-            )
+            format!("new-connection-kind-{}", database_kind_element_suffix(kind))
         })
         .aria_label(label)
         .role(Role::RadioButton)
@@ -807,6 +856,7 @@ fn database_kind_element_suffix(kind: DatabaseKind) -> &'static str {
         DatabaseKind::Redis => "redis",
         DatabaseKind::Postgres => "postgres",
         DatabaseKind::Dameng => "dameng",
+        DatabaseKind::SqlServer => "sqlserver",
     }
 }
 
@@ -823,6 +873,7 @@ fn database_kind_icon_path(kind: DatabaseKind) -> &'static str {
         DatabaseKind::Redis => "db/redis.svg",
         DatabaseKind::Postgres => "db/postgres.svg",
         DatabaseKind::Dameng => "db/dm.svg",
+        DatabaseKind::SqlServer => "db/sqlserver.svg",
     }
 }
 
@@ -833,10 +884,16 @@ fn connection_tab_bar(
     cx: &mut Context<NavicatMain>,
 ) -> impl IntoElement {
     let tabs = [
-        (NewConnectionTab::Connection, tr("app.connection.tab.connection")),
+        (
+            NewConnectionTab::Connection,
+            tr("app.connection.tab.connection"),
+        ),
         (NewConnectionTab::Tls, tr("app.connection.tab.tls")),
         (NewConnectionTab::Ssh, tr("app.connection.tab.ssh")),
-        (NewConnectionTab::Advanced, tr("app.connection.tab.advanced")),
+        (
+            NewConnectionTab::Advanced,
+            tr("app.connection.tab.advanced"),
+        ),
     ];
     let _ = colors;
     let selected_index = tabs
@@ -877,25 +934,27 @@ fn new_connection_tab_content(
         NewConnectionTab::Connection => connection_form(kind, form, inputs, colors, window, cx),
         // TLS / SSH / Advanced：Redis 与 MySQL/TiDB 都有实际表单，其余类型显示提示占位。
         NewConnectionTab::Tls => match kind {
-            DatabaseKind::MySql | DatabaseKind::TiDb | DatabaseKind::Redis | DatabaseKind::Postgres => {
-                tls_form(kind, form, inputs, colors, window, cx)
-            }
+            DatabaseKind::MySql
+            | DatabaseKind::TiDb
+            | DatabaseKind::Redis
+            | DatabaseKind::Postgres => tls_form(kind, form, inputs, colors, window, cx),
+            DatabaseKind::SqlServer => sqlserver_encryption_form(inputs, colors, window, cx),
             _ => redis_only_settings_hint(colors),
         },
         NewConnectionTab::Ssh => match kind {
-            DatabaseKind::MySql | DatabaseKind::TiDb | DatabaseKind::Redis | DatabaseKind::Postgres => {
-                ssh_form(kind, form, inputs, colors, window, cx)
-            }
+            DatabaseKind::MySql
+            | DatabaseKind::TiDb
+            | DatabaseKind::Redis
+            | DatabaseKind::Postgres => ssh_form(kind, form, inputs, colors, window, cx),
             _ => redis_only_settings_hint(colors),
         },
         NewConnectionTab::Advanced => match kind {
             DatabaseKind::MySql | DatabaseKind::TiDb => {
                 mysql_advanced_form(form, inputs, colors, window, cx)
             }
-            DatabaseKind::Postgres => {
-                postgres_advanced_form(form, inputs, colors, window, cx)
-            }
+            DatabaseKind::Postgres => postgres_advanced_form(form, inputs, colors, window, cx),
             DatabaseKind::Redis => advanced_form(form, inputs, colors, window, cx),
+            DatabaseKind::SqlServer => sqlserver_advanced_form(inputs, colors, window, cx),
             _ => redis_only_settings_hint(colors),
         },
     }
@@ -903,26 +962,22 @@ fn new_connection_tab_content(
 
 /// 非 Redis 连接在 TLS/SSH/高级页签下的提示占位。
 fn redis_only_settings_hint(colors: UiColors) -> Div {
-    div()
-        .flex()
-        .flex_col()
-        .gap_4()
-        .child(
-            div()
-                .w_full()
-                .h(px(120.))
-                .rounded(colors.radius_lg)
-                .border_1()
-                .border_color(colors.border)
-                .bg(colors.panel_alt)
-                .flex()
-                .items_center()
-                .justify_center()
-                .px_4()
-                .text_size(px(13.))
-                .text_color(colors.muted)
-                .child(tr("app.connection.redis_only")),
-        )
+    div().flex().flex_col().gap_4().child(
+        div()
+            .w_full()
+            .h(px(120.))
+            .rounded(colors.radius_lg)
+            .border_1()
+            .border_color(colors.border)
+            .bg(colors.panel_alt)
+            .flex()
+            .items_center()
+            .justify_center()
+            .px_4()
+            .text_size(px(13.))
+            .text_color(colors.muted)
+            .child(tr("app.connection.redis_only")),
+    )
 }
 
 /// TLS 页签：启用开关 + 证书/私钥文件路径 + SNI + 校验证书。
@@ -940,17 +995,13 @@ fn tls_form(
         .flex_col()
         .gap_4()
         .child(redis_section_label(tr("app.connection.tls.title"), colors))
-        .child(
-            h_form()
-                .label_width(px(112.))
-                .child(toggle_row_light(
-                    tr("app.connection.tls.enabled"),
-                    ConnectionToggleField::TlsEnabled,
-                    form.tls_enabled,
-                    colors,
-                    cx,
-                )),
-        )
+        .child(h_form().label_width(px(112.)).child(toggle_row_light(
+            tr("app.connection.tls.enabled"),
+            ConnectionToggleField::TlsEnabled,
+            form.tls_enabled,
+            colors,
+            cx,
+        )))
         // TLS 参数明细：启用时正常显示，未启用时整体置灰。
         .when(enabled, |this| {
             this.child(tls_parameters_block(kind, form, inputs, colors, window, cx))
@@ -1040,26 +1091,24 @@ fn mysql_tls_mode_block(
     cx: &mut Context<NavicatMain>,
 ) -> Div {
     // 与「连接信息」表单一致：label 在前、输入框在后（h_form 定宽对齐）。
-    div()
-        .w_full()
-        .child(
-            h_form()
-                .label_width(px(112.))
-                .child(connection_select_field(
-                    tr("app.connection.tls.ssl_mode"),
-                    &inputs.mysql_ssl_mode_select,
-                    "",
-                ))
-                .child(field_row_light(
-                    tr("app.connection.tls.charset"),
-                    ConnectionField::MysqlCharset,
-                    inputs,
-                    false,
-                    colors,
-                    window,
-                    cx,
-                )),
-        )
+    div().w_full().child(
+        h_form()
+            .label_width(px(112.))
+            .child(connection_select_field(
+                tr("app.connection.tls.ssl_mode"),
+                &inputs.mysql_ssl_mode_select,
+                "",
+            ))
+            .child(field_row_light(
+                tr("app.connection.tls.charset"),
+                ConnectionField::MysqlCharset,
+                inputs,
+                false,
+                colors,
+                window,
+                cx,
+            )),
+    )
 }
 
 /// PostgreSQL 的 TLS 模式（disable/prefer/require/verify-ca/verify-full）。
@@ -1076,6 +1125,80 @@ fn postgres_tls_mode_block(
                 tr("app.connection.tls.ssl_mode"),
                 &inputs.pg_ssl_mode_select,
                 "",
+            )),
+    )
+}
+
+/// SQL Server TLS 页签：加密模式；默认信任服务器证书，不额外提供 CA 路径。
+fn sqlserver_encryption_form(
+    inputs: &NewConnectionInputs,
+    colors: UiColors,
+    _window: &mut Window,
+    _cx: &mut Context<NavicatMain>,
+) -> Div {
+    div()
+        .flex()
+        .flex_col()
+        .gap_4()
+        .child(redis_section_label(
+            tr("app.connection.sqlserver.encryption"),
+            colors,
+        ))
+        .child(
+            h_form()
+                .label_width(px(112.))
+                .child(connection_select_field(
+                    tr("app.connection.sqlserver.encryption"),
+                    &inputs.sqlserver_encryption_select,
+                    "",
+                ))
+                .child(
+                    field().label("").child(
+                        div()
+                            .text_size(px(11.))
+                            .text_color(colors.muted)
+                            .child(tr("app.connection.sqlserver.encryption_hint")),
+                    ),
+                ),
+        )
+}
+
+/// SQL Server 高级页签：超时与应用名。
+fn sqlserver_advanced_form(
+    inputs: &NewConnectionInputs,
+    colors: UiColors,
+    window: &mut Window,
+    cx: &mut Context<NavicatMain>,
+) -> Div {
+    div().w_full().child(
+        h_form()
+            .label_width(px(112.))
+            .child(field_row_light(
+                tr("app.connection.sqlserver.connect_timeout"),
+                ConnectionField::SqlServerConnectTimeout,
+                inputs,
+                false,
+                colors,
+                window,
+                cx,
+            ))
+            .child(field_row_light(
+                tr("app.connection.sqlserver.query_timeout"),
+                ConnectionField::SqlServerQueryTimeout,
+                inputs,
+                false,
+                colors,
+                window,
+                cx,
+            ))
+            .child(field_row_light(
+                tr("app.connection.sqlserver.application_name"),
+                ConnectionField::SqlServerApplicationName,
+                inputs,
+                false,
+                colors,
+                window,
+                cx,
             )),
     )
 }
@@ -1177,17 +1300,13 @@ fn ssh_form(
         .flex_col()
         .gap_4()
         .child(redis_section_label(tr("app.connection.ssh.title"), colors))
-        .child(
-            h_form()
-                .label_width(px(112.))
-                .child(toggle_row_light(
-                    tr("app.connection.ssh.enabled"),
-                    ConnectionToggleField::SshEnabled,
-                    form.ssh_enabled,
-                    colors,
-                    cx,
-                )),
-        )
+        .child(h_form().label_width(px(112.)).child(toggle_row_light(
+            tr("app.connection.ssh.enabled"),
+            ConnectionToggleField::SshEnabled,
+            form.ssh_enabled,
+            colors,
+            cx,
+        )))
         // 隧道参数：启用时正常显示，未启用时整体置灰。
         .when(enabled, |this| {
             this.child(ssh_tunnel_block(form, inputs, colors, window, cx))
@@ -1224,44 +1343,42 @@ fn ssh_tunnel_block(
     cx: &mut Context<NavicatMain>,
 ) -> Div {
     // 与「连接信息」表单一致：label 在前、输入框在后（h_form 定宽对齐）。
-    div()
-        .w_full()
-        .child(
-            h_form()
-                .label_width(px(112.))
-                .child(field_row_light(
-                    tr("app.connection.field.host"),
-                    ConnectionField::SshHost,
-                    inputs,
-                    false,
-                    colors,
-                    window,
-                    cx,
-                ))
-                .child(field_row_light(
-                    tr("app.connection.field.port"),
-                    ConnectionField::SshPort,
-                    inputs,
-                    false,
-                    colors,
-                    window,
-                    cx,
-                ))
-                .child(field_row_light(
-                    tr("app.connection.field.username"),
-                    ConnectionField::SshUsername,
-                    inputs,
-                    false,
-                    colors,
-                    window,
-                    cx,
-                ))
-                .child(connection_select_field(
-                    tr("app.connection.ssh.auth_method"),
-                    &inputs.ssh_auth_select,
-                    "",
-                )),
-        )
+    div().w_full().child(
+        h_form()
+            .label_width(px(112.))
+            .child(field_row_light(
+                tr("app.connection.field.host"),
+                ConnectionField::SshHost,
+                inputs,
+                false,
+                colors,
+                window,
+                cx,
+            ))
+            .child(field_row_light(
+                tr("app.connection.field.port"),
+                ConnectionField::SshPort,
+                inputs,
+                false,
+                colors,
+                window,
+                cx,
+            ))
+            .child(field_row_light(
+                tr("app.connection.field.username"),
+                ConnectionField::SshUsername,
+                inputs,
+                false,
+                colors,
+                window,
+                cx,
+            ))
+            .child(connection_select_field(
+                tr("app.connection.ssh.auth_method"),
+                &inputs.ssh_auth_select,
+                "",
+            )),
+    )
 }
 
 /// SSH 密码认证块。
@@ -1273,19 +1390,15 @@ fn ssh_password_block(
 ) -> Div {
     div()
         .w_full()
-        .child(
-            h_form()
-                .label_width(px(112.))
-                .child(field_row_light(
-                    tr("app.connection.field.password"),
-                    ConnectionField::SshPassword,
-                    inputs,
-                    true,
-                    colors,
-                    window,
-                    cx,
-                )),
-        )
+        .child(h_form().label_width(px(112.)).child(field_row_light(
+            tr("app.connection.field.password"),
+            ConnectionField::SshPassword,
+            inputs,
+            true,
+            colors,
+            window,
+            cx,
+        )))
 }
 
 /// SSH 私钥认证块：私钥文件 + 口令。
@@ -1295,30 +1408,28 @@ fn ssh_private_key_block(
     window: &mut Window,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
-    div()
-        .w_full()
-        .child(
-            h_form()
-                .label_width(px(112.))
-                .child(file_field_row_light(
-                    tr("app.connection.ssh.private_key"),
-                    ConnectionField::SshPrivateKey,
-                    tr("app.connection.ssh.private_key_prompt"),
-                    inputs,
-                    colors,
-                    window,
-                    cx,
-                ))
-                .child(field_row_light(
-                    tr("app.connection.ssh.passphrase"),
-                    ConnectionField::SshPassphrase,
-                    inputs,
-                    true,
-                    colors,
-                    window,
-                    cx,
-                )),
-        )
+    div().w_full().child(
+        h_form()
+            .label_width(px(112.))
+            .child(file_field_row_light(
+                tr("app.connection.ssh.private_key"),
+                ConnectionField::SshPrivateKey,
+                tr("app.connection.ssh.private_key_prompt"),
+                inputs,
+                colors,
+                window,
+                cx,
+            ))
+            .child(field_row_light(
+                tr("app.connection.ssh.passphrase"),
+                ConnectionField::SshPassphrase,
+                inputs,
+                true,
+                colors,
+                window,
+                cx,
+            )),
+    )
 }
 
 /// MySQL/TiDB SSH 调优块：连接超时 + 心跳间隔。
@@ -1370,18 +1481,17 @@ fn mysql_advanced_form(
         .flex()
         .flex_col()
         .gap_4()
-        .child(redis_section_label(tr("app.connection.mysql.proxy"), colors))
-        .child(
-            h_form()
-                .label_width(px(112.))
-                .child(toggle_row_light(
-                    tr("app.connection.mysql.proxy_enabled"),
-                    ConnectionToggleField::MysqlProxyEnabled,
-                    form.mysql_proxy_enabled,
-                    colors,
-                    cx,
-                )),
-        )
+        .child(redis_section_label(
+            tr("app.connection.mysql.proxy"),
+            colors,
+        ))
+        .child(h_form().label_width(px(112.)).child(toggle_row_light(
+            tr("app.connection.mysql.proxy_enabled"),
+            ConnectionToggleField::MysqlProxyEnabled,
+            form.mysql_proxy_enabled,
+            colors,
+            cx,
+        )))
         // 代理参数：启用时正常显示，未启用时整体置灰。
         .when(proxy_enabled, |this| {
             this.child(mysql_proxy_block(form, inputs, colors, window, cx))
@@ -1389,7 +1499,10 @@ fn mysql_advanced_form(
         .when(!proxy_enabled, |this| {
             this.child(mysql_proxy_block(form, inputs, colors, window, cx).opacity(0.45))
         })
-        .child(redis_section_label(tr("app.connection.mysql.advanced"), colors))
+        .child(redis_section_label(
+            tr("app.connection.mysql.advanced"),
+            colors,
+        ))
         .child(
             h_form()
                 .label_width(px(112.))
@@ -1428,17 +1541,13 @@ fn mysql_advanced_form(
                 .text_color(colors.muted)
                 .child(tr("app.connection.mysql.reuse_note")),
         )
-        .child(
-            h_form()
-                .label_width(px(112.))
-                .child(toggle_row_light(
-                    tr("app.connection.mysql.tcp_keepalive"),
-                    ConnectionToggleField::MysqlTcpKeepalive,
-                    form.mysql_tcp_keepalive,
-                    colors,
-                    cx,
-                )),
-        )
+        .child(h_form().label_width(px(112.)).child(toggle_row_light(
+            tr("app.connection.mysql.tcp_keepalive"),
+            ConnectionToggleField::MysqlTcpKeepalive,
+            form.mysql_tcp_keepalive,
+            colors,
+            cx,
+        )))
 }
 
 /// MySQL/TiDB 代理参数块：类型 / 主机 / 端口 / 用户名 / 密码。
@@ -1450,57 +1559,55 @@ fn mysql_proxy_block(
     cx: &mut Context<NavicatMain>,
 ) -> Div {
     // 与「连接信息」表单一致：label 在前、输入框在后（h_form 定宽对齐）。
-    div()
-        .w_full()
-        .child(
-            h_form()
-                .label_width(px(112.))
-                .child(field_row_light(
-                    tr("app.connection.mysql.proxy_type"),
-                    ConnectionField::MysqlProxyType,
-                    inputs,
-                    false,
-                    colors,
-                    window,
-                    cx,
-                ))
-                .child(field_row_light(
-                    tr("app.connection.field.host"),
-                    ConnectionField::MysqlProxyHost,
-                    inputs,
-                    false,
-                    colors,
-                    window,
-                    cx,
-                ))
-                .child(field_row_light(
-                    tr("app.connection.field.port"),
-                    ConnectionField::MysqlProxyPort,
-                    inputs,
-                    false,
-                    colors,
-                    window,
-                    cx,
-                ))
-                .child(field_row_light(
-                    tr("app.connection.mysql.proxy_username"),
-                    ConnectionField::MysqlProxyUsername,
-                    inputs,
-                    false,
-                    colors,
-                    window,
-                    cx,
-                ))
-                .child(field_row_light(
-                    tr("app.connection.mysql.proxy_password"),
-                    ConnectionField::MysqlProxyPassword,
-                    inputs,
-                    true,
-                    colors,
-                    window,
-                    cx,
-                )),
-        )
+    div().w_full().child(
+        h_form()
+            .label_width(px(112.))
+            .child(field_row_light(
+                tr("app.connection.mysql.proxy_type"),
+                ConnectionField::MysqlProxyType,
+                inputs,
+                false,
+                colors,
+                window,
+                cx,
+            ))
+            .child(field_row_light(
+                tr("app.connection.field.host"),
+                ConnectionField::MysqlProxyHost,
+                inputs,
+                false,
+                colors,
+                window,
+                cx,
+            ))
+            .child(field_row_light(
+                tr("app.connection.field.port"),
+                ConnectionField::MysqlProxyPort,
+                inputs,
+                false,
+                colors,
+                window,
+                cx,
+            ))
+            .child(field_row_light(
+                tr("app.connection.mysql.proxy_username"),
+                ConnectionField::MysqlProxyUsername,
+                inputs,
+                false,
+                colors,
+                window,
+                cx,
+            ))
+            .child(field_row_light(
+                tr("app.connection.mysql.proxy_password"),
+                ConnectionField::MysqlProxyPassword,
+                inputs,
+                true,
+                colors,
+                window,
+                cx,
+            )),
+    )
 }
 
 /// 高级页签：Sentinel / Cluster / 云自动发现 / 连接串导入。
@@ -1515,7 +1622,10 @@ fn advanced_form(
         .flex()
         .flex_col()
         .gap_4()
-        .child(redis_section_label(tr("app.connection.redis.sentinel"), colors))
+        .child(redis_section_label(
+            tr("app.connection.redis.sentinel"),
+            colors,
+        ))
         .child(
             h_form()
                 .label_width(px(112.))
@@ -1538,7 +1648,10 @@ fn advanced_form(
                     cx,
                 )),
         )
-        .child(redis_section_label(tr("app.connection.redis.cluster"), colors))
+        .child(redis_section_label(
+            tr("app.connection.redis.cluster"),
+            colors,
+        ))
         .child(
             h_form()
                 .label_width(px(112.))
@@ -1559,7 +1672,10 @@ fn advanced_form(
                     cx,
                 )),
         )
-        .child(redis_section_label(tr("app.connection.redis.cloud"), colors))
+        .child(redis_section_label(
+            tr("app.connection.redis.cloud"),
+            colors,
+        ))
         .child(
             h_form()
                 .label_width(px(112.))
@@ -1587,7 +1703,10 @@ fn advanced_form(
                     cx,
                 )),
         )
-        .child(redis_section_label(tr("app.connection.redis.import"), colors))
+        .child(redis_section_label(
+            tr("app.connection.redis.import"),
+            colors,
+        ))
         .child(
             h_form()
                 .label_width(px(112.))
@@ -1606,42 +1725,53 @@ fn discovery_uri_row(
         .label(tr("app.connection.redis.uri"))
         .items_center()
         .child(
-        div()
-            .w_full()
-            .flex()
-            .items_center()
-            .gap_3()
-            .child(
-                input_box_light(ConnectionField::DiscoveryUri, inputs, false, colors, window, cx)
+            div()
+                .w_full()
+                .flex()
+                .items_center()
+                .gap_3()
+                .child(
+                    input_box_light(
+                        ConnectionField::DiscoveryUri,
+                        inputs,
+                        false,
+                        colors,
+                        window,
+                        cx,
+                    )
                     .flex_1()
                     .min_w(px(0.)),
-            )
-            .child(
-                div()
-                    .h(px(34.))
-                    .flex_none()
-                    .px_3()
-                    .rounded(colors.radius_lg)
-                    .border_1()
-                    .border_color(rgb(0x1687ff))
-                    .bg(if colors.is_dark { rgb(0x16324f) } else { rgb(0xe6f2ff) })
-                    .flex()
-                    .items_center()
-                    .text_size(px(13.))
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .text_color(rgb(0x1687ff))
-                    .cursor_pointer()
-                    .hover(move |style| style.bg(colors.hover))
-                    .child(tr("app.connection.redis.import_action"))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, _, _, cx| {
-                            this.import_redis_connection_string(cx);
-                            cx.stop_propagation();
-                        }),
-                    ),
-            ),
-    )
+                )
+                .child(
+                    div()
+                        .h(px(34.))
+                        .flex_none()
+                        .px_3()
+                        .rounded(colors.radius_lg)
+                        .border_1()
+                        .border_color(rgb(0x1687ff))
+                        .bg(if colors.is_dark {
+                            rgb(0x16324f)
+                        } else {
+                            rgb(0xe6f2ff)
+                        })
+                        .flex()
+                        .items_center()
+                        .text_size(px(13.))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(rgb(0x1687ff))
+                        .cursor_pointer()
+                        .hover(move |style| style.bg(colors.hover))
+                        .child(tr("app.connection.redis.import_action"))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _, _, cx| {
+                                this.import_redis_connection_string(cx);
+                                cx.stop_propagation();
+                            }),
+                        ),
+                ),
+        )
 }
 
 /// 小节标题。
@@ -1661,10 +1791,11 @@ fn connection_select_field<I: SelectItem + 'static>(
     select: &Entity<SelectState<SearchableVec<I>>>,
     search_placeholder: impl Into<SharedString>,
 ) -> Field {
-    field()
-        .label(label.into())
-        .items_center()
-        .child(Select::new(select).small().search_placeholder(search_placeholder))
+    field().label(label.into()).items_center().child(
+        Select::new(select)
+            .small()
+            .search_placeholder(search_placeholder),
+    )
 }
 
 /// 布尔开关行：把 Checkbox 的点击写回表单对应开关字段。
@@ -1677,17 +1808,20 @@ fn toggle_row_light(
 ) -> Field {
     let view = cx.entity();
     let id = connection_toggle_id(field_id);
-    field().label(label.into()).items_center().child(
-        Checkbox::new(id)
-            .checked(checked)
-            .on_click(move |new_checked, _, cx| {
-                let field_id = field_id;
-                let new_checked = *new_checked;
-                let _ = view.update(cx, |this, cx| {
-                    this.set_connection_toggle_field(field_id, new_checked, cx);
-                });
-            }),
-    )
+    field()
+        .label(label.into())
+        .items_center()
+        .child(
+            Checkbox::new(id)
+                .checked(checked)
+                .on_click(move |new_checked, _, cx| {
+                    let field_id = field_id;
+                    let new_checked = *new_checked;
+                    let _ = view.update(cx, |this, cx| {
+                        this.set_connection_toggle_field(field_id, new_checked, cx);
+                    });
+                }),
+        )
 }
 
 /// 文件选择行：文件路径输入 + 「选择文件」按钮。
@@ -1780,8 +1914,12 @@ fn connection_toggle_id(field: ConnectionToggleField) -> &'static str {
         ConnectionToggleField::MysqlProxyEnabled => "new-connection-toggle-mysql-proxy",
         ConnectionToggleField::MysqlTcpKeepalive => "new-connection-toggle-mysql-tcp-keepalive",
         ConnectionToggleField::PgTcpKeepalive => "new-connection-toggle-pg-tcp-keepalive",
-        ConnectionToggleField::PgShowOtherDatabases => "new-connection-toggle-pg-show-other-databases",
-        ConnectionToggleField::PgShowSystemSchemas => "new-connection-toggle-pg-show-system-schemas",
+        ConnectionToggleField::PgShowOtherDatabases => {
+            "new-connection-toggle-pg-show-other-databases"
+        }
+        ConnectionToggleField::PgShowSystemSchemas => {
+            "new-connection-toggle-pg-show-system-schemas"
+        }
     }
 }
 
@@ -1933,6 +2071,59 @@ fn connection_form(
             .child(field_row_light(
                 tr("app.connection.dameng.schema"),
                 ConnectionField::DamengSchema,
+                inputs,
+                false,
+                colors,
+                window,
+                cx,
+            )),
+        DatabaseKind::SqlServer => base
+            .child(host_port_row_light(
+                tr("app.connection.field.host"),
+                inputs,
+                colors,
+                window,
+                cx,
+            ))
+            .child(field_row_light(
+                tr("app.connection.field.username"),
+                ConnectionField::Username,
+                inputs,
+                false,
+                colors,
+                window,
+                cx,
+            ))
+            .child(field_row_light(
+                tr("app.connection.field.password"),
+                ConnectionField::Password,
+                inputs,
+                true,
+                colors,
+                window,
+                cx,
+            ))
+            .child(field_row_light(
+                tr("app.connection.field.database"),
+                ConnectionField::Database,
+                inputs,
+                false,
+                colors,
+                window,
+                cx,
+            ))
+            .child(field_row_light(
+                tr("app.connection.sqlserver.schema"),
+                ConnectionField::SqlServerSchema,
+                inputs,
+                false,
+                colors,
+                window,
+                cx,
+            ))
+            .child(field_row_light(
+                tr("app.connection.sqlserver.instance"),
+                ConnectionField::SqlServerInstance,
                 inputs,
                 false,
                 colors,

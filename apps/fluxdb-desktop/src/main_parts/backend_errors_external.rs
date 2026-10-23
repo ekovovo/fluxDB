@@ -81,6 +81,15 @@ fn localize_backend_external_error_text(text: &str) -> Option<String> {
         "PostgreSQL 查询会话已达上限，请关闭不使用的查询标签" => "app.backend_error.ext_pg_session_limit",
         "探活超时" => "app.backend_error.ext_health_check_timeout",
         "查询超时" => "app.backend_error.ext_query_timeout",
+        "SQL Server 查询超时，连接已关闭；执行结果待核实" => {
+            "app.backend_error.sqlserver_query_timeout"
+        }
+        "查询已取消，SQL Server 连接已关闭；执行结果待核实" => {
+            "app.backend_error.sqlserver_query_cancelled"
+        }
+        "SQL Server 查询会话已达上限，请关闭不使用的查询标签" => {
+            "app.backend_error.sqlserver_session_limit"
+        }
         "未找到目标行" => "app.backend_error.ext_target_row_missing",
         "未找到该对象（可能已被删除或不在当前 schema）" => "app.backend_error.ext_object_not_found",
         "连接类型不支持角色管理" => "app.backend_error.ext_role_management_unsupported",
@@ -187,6 +196,7 @@ fn localize_backend_external_error_text(text: &str) -> Option<String> {
         "导入整数值格式无效" => "app.backend_error.app_msg_import_invalid_integer",
         "导入浮点值格式无效" => "app.backend_error.app_msg_import_invalid_float",
         "导入布尔值格式无效" => "app.backend_error.app_msg_import_invalid_bool",
+        "导入二进制值格式无效" => "app.backend_error.app_msg_import_invalid_binary",
         "导入不支持未完整加载的二进制字段" => {
             "app.backend_error.app_msg_import_binary_unsupported"
         }

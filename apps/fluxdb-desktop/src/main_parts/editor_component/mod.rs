@@ -20,7 +20,7 @@ use std::{
 };
 
 use fluxdb_editor_core::{
-    Block, BlockId, BufferSnapshot, CancellationToken, CodeLens, CodeLensProvider, CompletionContinuation, CompletionController, CompletionItem, CompletionProvider, CompletionRequest, CompletionSession, DecorationProvider, Diagnostic, DiagnosticProvider, DisplayMap, DocumentationRequest, DocumentationState, EditorBuffer,
+    Block, BlockId, BufferSnapshot, CancellationToken, CodeLens, CodeLensProvider, CompletionContinuation, CompletionController, CompletionItem, CompletionKind, CompletionProvider, CompletionRequest, CompletionSession, DecorationProvider, Diagnostic, DiagnosticProvider, DisplayMap, DocumentationRequest, DocumentationState, EditorBuffer,
     EditorConfig, EditorProfile, ExecuteMode, ExecutionAdapter, Fold, FoldSet, HoverContent, HoverProvider, InlineHintProvider,
     inline_hints_to_snapshot, InputEdit, InsertTextFormat, LanguageDefinition, LanguageRegistry,
     Point, Range as CoreRange, Selection,
@@ -2656,11 +2656,14 @@ impl Editor {
         };
         let new_cursor = replace_start + insert_text.len();
         self.selection = Selection::new(replace_start, replace_end);
+        // 先抑制编辑回调里的请求；schema 的下一轮请求要在旧浮层关闭、取消令牌更新后发起。
+        let continues_qualified_name = item.kind == CompletionKind::Schema
+            && insert_text.ends_with('.');
         self.suppress_next_auto_completion = true;
-        if self
+        let applied = self
             .apply_edit(&insert_text, new_cursor, new_cursor, true, cx)
-            .is_none()
-        {
+            .is_some();
+        if !applied {
             self.suppress_next_auto_completion = false;
         }
         // 有占位符时进入 snippet 会话：选中首个占位，Tab/Shift-Tab 切换。
@@ -2685,6 +2688,9 @@ impl Editor {
         // DM-703：接受即 bump session，令仍 in-flight 的请求在提交时判废。
         self._completion_session_token.cancel();
         cx.emit(EditorEvent::CompletionAccepted(item));
+        if applied && continues_qualified_name {
+            self.request_completion(false, cx);
+        }
     }
 
     /// 补全列表当前是否可见。

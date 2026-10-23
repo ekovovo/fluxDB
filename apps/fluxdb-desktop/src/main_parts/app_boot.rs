@@ -1394,6 +1394,37 @@ fn navicat_main_new(
                             )
                             .searchable(true)
                         });
+                        let sqlserver_security_database_select = cx.new(|cx| {
+                            SelectState::new(SearchableVec::new(Vec::new()), None, window, cx).searchable(true)
+                        });
+                        let sqlserver_security_name_input = cx.new(|cx| {
+                            InputState::new(window, cx)
+                                .placeholder(tr("app.sqlserver_security.name_placeholder"))
+                        });
+                        let sqlserver_security_password_input = cx.new(|cx| {
+                            InputState::new(window, cx)
+                                .placeholder(tr("app.placeholder.password"))
+                                .masked(true)
+                        });
+                        let sqlserver_security_confirm_password_input = cx.new(|cx| {
+                            InputState::new(window, cx)
+                                .placeholder(tr("app.placeholder.confirm_password"))
+                                .masked(true)
+                        });
+                        let sqlserver_security_login_select = cx.new(|cx| {
+                            SelectState::new(SearchableVec::new(Vec::new()), None, window, cx).searchable(true)
+                        });
+                        let sqlserver_security_default_select = cx.new(|cx| {
+                            SelectState::new(SearchableVec::new(Vec::new()), None, window, cx).searchable(true)
+                        });
+                        let sqlserver_security_permission_input = cx.new(|cx| {
+                            InputState::new(window, cx)
+                                .placeholder(tr("app.placeholder.permission_name"))
+                        });
+                        let sqlserver_security_permission_target_input = cx.new(|cx| {
+                            InputState::new(window, cx)
+                                .placeholder(tr("app.placeholder.permission_target"))
+                        });
                         let user_admin_max_queries_input =
                             cx.new(|cx| InputState::new(window, cx).placeholder("0"));
                         let user_admin_max_updates_input =
@@ -2296,6 +2327,116 @@ fn navicat_main_new(
                                 cx.notify();
                             },
                         );
+                        let sqlserver_security_database_subscription = cx.subscribe_in(
+                            &sqlserver_security_database_select, window,
+                            |this: &mut NavicatMain, _, event: &SelectEvent<SearchableVec<String>>, _, cx| {
+                                let SelectEvent::Confirm(value) = event;
+                                if let (Some(tab_id), Some(database)) = (this.active_user_admin_tab_id(), value) {
+                                    this.select_sqlserver_security_database(tab_id, database.clone(), cx);
+                                }
+                            },
+                        );
+                        let sqlserver_security_name_subscription = cx.subscribe(
+                            &sqlserver_security_name_input,
+                            |this: &mut NavicatMain, input, event: &InputEvent, cx| {
+                                if matches!(event, InputEvent::Change)
+                                    && let Some(tab_id) = this.active_user_admin_tab_id()
+                                {
+                                    this.dispatch(
+                                        AppCommand::SetSqlServerSecurityFormField {
+                                            tab_id,
+                                            field: SqlServerSecurityFormField::Name,
+                                            value: input.read(cx).value().to_string(),
+                                        },
+                                        cx,
+                                    );
+                                }
+                            },
+                        );
+                        let sqlserver_security_password_subscription = cx.subscribe(
+                            &sqlserver_security_password_input,
+                            |this: &mut NavicatMain, input, event: &InputEvent, cx| {
+                                if matches!(event, InputEvent::Change)
+                                    && let Some(tab_id) = this.active_user_admin_tab_id()
+                                {
+                                    this.dispatch(
+                                        AppCommand::SetSqlServerSecurityFormField {
+                                            tab_id,
+                                            field: SqlServerSecurityFormField::Password,
+                                            value: input.read(cx).value().to_string(),
+                                        },
+                                        cx,
+                                    );
+                                }
+                            },
+                        );
+                        let sqlserver_security_confirm_password_subscription = cx.subscribe(
+                            &sqlserver_security_confirm_password_input,
+                            |this: &mut NavicatMain, input, event: &InputEvent, cx| {
+                                if matches!(event, InputEvent::Change)
+                                    && let Some(tab_id) = this.active_user_admin_tab_id()
+                                {
+                                    this.dispatch(
+                                        AppCommand::SetSqlServerSecurityFormField {
+                                            tab_id,
+                                            field: SqlServerSecurityFormField::ConfirmPassword,
+                                            value: input.read(cx).value().to_string(),
+                                        },
+                                        cx,
+                                    );
+                                }
+                            },
+                        );
+                        let sqlserver_security_login_subscription = cx.subscribe_in(
+                            &sqlserver_security_login_select, window,
+                            |this: &mut NavicatMain, _, event: &SelectEvent<SearchableVec<String>>, _, cx| {
+                                let SelectEvent::Confirm(value) = event;
+                                if let (Some(tab_id), Some(value)) = (this.active_user_admin_tab_id(), value) {
+                                    this.dispatch(AppCommand::SetSqlServerSecurityFormField { tab_id, field: SqlServerSecurityFormField::Login, value: value.clone() }, cx);
+                                }
+                            });
+                        let sqlserver_security_default_subscription = cx.subscribe_in(
+                            &sqlserver_security_default_select, window,
+                            |this: &mut NavicatMain, _, event: &SelectEvent<SearchableVec<String>>, _, cx| {
+                                let SelectEvent::Confirm(value) = event;
+                                if let (Some(tab_id), Some(value)) = (this.active_user_admin_tab_id(), value) {
+                                    this.dispatch(AppCommand::SetSqlServerSecurityFormField { tab_id, field: SqlServerSecurityFormField::DefaultValue, value: value.clone() }, cx);
+                                }
+                            });
+                        let sqlserver_security_permission_subscription = cx.subscribe(
+                            &sqlserver_security_permission_input,
+                            |this: &mut NavicatMain, input, event: &InputEvent, cx| {
+                                if matches!(event, InputEvent::Change)
+                                    && let Some(tab_id) = this.active_user_admin_tab_id()
+                                {
+                                    this.dispatch(
+                                        AppCommand::SetSqlServerSecurityFormField {
+                                            tab_id,
+                                            field: SqlServerSecurityFormField::Permission,
+                                            value: input.read(cx).value().to_string(),
+                                        },
+                                        cx,
+                                    );
+                                }
+                            },
+                        );
+                        let sqlserver_security_permission_target_subscription = cx.subscribe(
+                            &sqlserver_security_permission_target_input,
+                            |this: &mut NavicatMain, input, event: &InputEvent, cx| {
+                                if matches!(event, InputEvent::Change)
+                                    && let Some(tab_id) = this.active_user_admin_tab_id()
+                                {
+                                    this.dispatch(
+                                        AppCommand::SetSqlServerSecurityFormField {
+                                            tab_id,
+                                            field: SqlServerSecurityFormField::PermissionTarget,
+                                            value: input.read(cx).value().to_string(),
+                                        },
+                                        cx,
+                                    );
+                                }
+                            },
+                        );
                         let user_admin_new_password_subscription = cx.subscribe(
                             &user_admin_new_password_input,
                             |this: &mut NavicatMain, input, event: &InputEvent, cx| {
@@ -3079,6 +3220,35 @@ fn navicat_main_new(
                                 pg_member_of_role_select_subscription,
                             pg_member_new_admin: false,
                             pg_select_items_fingerprint: String::new(),
+                            sqlserver_security_database_select,
+                            _sqlserver_security_database_subscription: sqlserver_security_database_subscription,
+                            sqlserver_security_database_items: Vec::new(),
+                            sqlserver_security_name_input,
+                            _sqlserver_security_name_subscription:
+                                sqlserver_security_name_subscription,
+                            sqlserver_security_password_input,
+                            _sqlserver_security_password_subscription:
+                                sqlserver_security_password_subscription,
+                            sqlserver_security_confirm_password_input,
+                            _sqlserver_security_confirm_password_subscription:
+                                sqlserver_security_confirm_password_subscription,
+                            sqlserver_security_login_select,
+                            _sqlserver_security_login_subscription:
+                                sqlserver_security_login_subscription,
+                            sqlserver_security_default_select,
+                            sqlserver_security_form_options: (Vec::new(), Vec::new()),
+                            _sqlserver_security_default_subscription:
+                                sqlserver_security_default_subscription,
+                            sqlserver_security_permission_input,
+                            _sqlserver_security_permission_subscription:
+                                sqlserver_security_permission_subscription,
+                            sqlserver_security_permission_target_input,
+                            _sqlserver_security_permission_target_subscription:
+                                sqlserver_security_permission_target_subscription,
+                            _sqlserver_security_load_task: None,
+                            _sqlserver_security_permissions_task: None,
+                            _sqlserver_security_preview_task: None,
+                            _sqlserver_security_apply_task: None,
                             user_admin_max_queries_input,
                             _user_admin_max_queries_subscription:
                                 user_admin_max_queries_subscription,
@@ -3176,6 +3346,7 @@ fn navicat_main_new(
                             _delete_database_tasks: BTreeMap::new(),
                             _rename_table_task: None,
                             _copy_table_task: None,
+                            _routine_ddl_task: None,
                             _copy_table_ddl_task: None,
                             _copy_table_structure_task: None,
                             _danger_table_task: None,
@@ -3230,6 +3401,7 @@ fn navicat_main_new(
                             pending_table_data_export_after_load: None,
                             pending_rename_table: None,
                             pending_copy_table: None,
+                            pending_routine_ddl: None,
                             pending_column_choices: None,
                             pending_danger_table_action: None,
                             data_export_log_task: None,

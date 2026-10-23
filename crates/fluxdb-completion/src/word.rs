@@ -124,6 +124,15 @@ fn is_quote_char(ch: char) -> bool {
 
 /// 从 `end` 往前扫一个标识符（可带引号），返回其起点。
 fn scan_ident_start(text: &str, end: usize) -> usize {
+    // 已闭合的引号标识符：`[app]`、`"app"`、`` `app` `` 的最后一个字符是闭引号，
+    // 反扫普通标识符会在闭引号处停下，导致限定符整段丢失（`[app].` 被当成未限定）。
+    if let Some(closer) = text[..end].chars().next_back()
+        && let Some(opener) = matching_quote_opener(closer)
+        && let Some((offset, opened)) = open_quote_before(text, end - closer.len_utf8())
+        && opened == opener
+    {
+        return offset;
+    }
     let mut start = end;
     for (offset, ch) in text[..end].char_indices().rev() {
         if is_ident_char(ch) {
@@ -142,6 +151,32 @@ fn scan_ident_start(text: &str, end: usize) -> usize {
     start
 }
 
+fn matching_quote_opener(closer: char) -> Option<char> {
+    match closer {
+        '"' | '`' => Some(closer),
+        ']' => Some('['),
+        _ => None,
+    }
+}
+
+/// 去掉标识符两端的引号，并还原内部成对转义（`[a]]b]` → `a]b`）。
+fn unquote_identifier(value: &str) -> String {
+    let mut chars = value.chars();
+    let Some(opener) = chars.next() else {
+        return String::new();
+    };
+    let closer = match opener {
+        '[' => ']',
+        '"' | '`' => opener,
+        _ => return value.to_string(),
+    };
+    if !value.ends_with(closer) || value.len() < opener.len_utf8() + closer.len_utf8() {
+        return value.to_string();
+    }
+    let inner = &value[opener.len_utf8()..value.len() - closer.len_utf8()];
+    inner.replace(&format!("{closer}{closer}"), &closer.to_string())
+}
+
 /// 光标是否位于一个未闭合的引号标识符内；是则返回开引号的位置与字符。
 ///
 /// 引号标识符可以含空格（`"my tab`），因此不能用标识符字符反扫。必须从语句头正向
@@ -149,19 +184,23 @@ fn scan_ident_start(text: &str, end: usize) -> usize {
 /// 导致 `from \`3d_user\` u left` 的词起点被拉到闭引号之后。
 fn open_quote_before(text: &str, cursor: usize) -> Option<(usize, char)> {
     let mut open: Option<(usize, char)> = None;
-    for (offset, ch) in text[..cursor].char_indices() {
-        if !is_quote_char(ch) {
+    let mut chars = text[..cursor].char_indices().peekable();
+    while let Some((offset, ch)) = chars.next() {
+        if let Some((_, opened)) = open {
+            let closer = if opened == '[' { ']' } else { opened };
+            if ch != closer {
+                continue;
+            }
+            // 双写闭引号是转义字符，不结束标识符（`[a]]b]`、`"a""b"`）。
+            if matches!(chars.peek(), Some((_, next)) if *next == closer) {
+                chars.next();
+                continue;
+            }
+            open = None;
             continue;
         }
-        let closer = if ch == '[' { ']' } else { ch };
-        match open {
-            // 同类引号成对：遇到闭引号即出栈。
-            Some((_, opened)) if (if opened == '[' { ']' } else { opened }) == closer => {
-                open = None;
-            }
-            // 不同类型引号各自独立，不互相闭合。
-            Some(_) => {}
-            None => open = Some((offset, ch)),
+        if is_quote_char(ch) {
+            open = Some((offset, ch));
         }
     }
     open
@@ -247,7 +286,7 @@ pub(crate) fn word_context(text: &str, cursor: usize, dialect: &dyn Dialect) -> 
         if qual_start == qual_end {
             break;
         }
-        qualifier_segments.push(text[qual_start..qual_end].to_string());
+        qualifier_segments.push(unquote_identifier(&text[qual_start..qual_end]));
         replace_start = qual_start;
         // 继续向前：可能是 `schema.table.` 的上一级。
         if !text[..qual_start].ends_with('.') {
@@ -341,6 +380,22 @@ mod tests {
         assert_eq!(c.word_part, "");
         assert_eq!(c.qualifier.as_deref(), Some("u"));
         assert_eq!(c.replace_start, 7);
+    }
+
+    #[test]
+    fn captures_closed_quoted_qualifiers_with_escaped_delimiters() {
+        for (text, qualifier) in [
+            ("SELECT * FROM [app].|", "app"),
+            ("SELECT * FROM [a]]b].|", "a]b"),
+            ("SELECT * FROM [a[b].|", "a[b"),
+            (r#"SELECT * FROM "a""b".|"#, "a\"b"),
+            ("SELECT * FROM `a``b`.|", "a`b"),
+        ] {
+            let c = ctx(text);
+            assert_eq!(c.qualifier.as_deref(), Some(qualifier), "{text}");
+            assert_eq!(c.word_part, "", "{text}");
+            assert_eq!(c.prefix_start, text.len() - 1, "{text}");
+        }
     }
 
     #[test]

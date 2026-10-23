@@ -218,12 +218,19 @@ impl AppController {
         admin: &mut UserAdminState,
         users: &[DatabaseUserIdentity],
     ) {
-        if admin
+        let pending_selection = admin.pending_selected_user.take();
+        if pending_selection
+            .as_ref()
+            .is_some_and(|pending| users.iter().any(|user| user == pending))
+        {
+            admin.selected_user = pending_selection;
+        } else if admin
             .selected_user
             .as_ref()
             .is_none_or(|selected| !users.iter().any(|user| user == selected))
         {
-            admin.selected_user = users.first().cloned();
+            admin.selected_user = pending_selection
+                .or_else(|| users.first().cloned());
         }
         admin.creating_user = false;
         if let Some(selected) = &admin.selected_user {

@@ -33,7 +33,10 @@ fn sql_ddl_impact(sql: &str) -> Option<SqlDdlImpact> {
         let token = tokens[index].to_ascii_lowercase();
         match token.as_str() {
             "create" => {
-                let Some(kind) = tokens.get(index + 1).map(|value| value.to_ascii_lowercase()) else {
+                let Some(kind) = tokens
+                    .get(index + 1)
+                    .map(|value| value.to_ascii_lowercase())
+                else {
                     impact.database_wide = true;
                     break;
                 };
@@ -67,7 +70,9 @@ fn sql_ddl_impact(sql: &str) -> Option<SqlDdlImpact> {
             }
             "alter" | "drop" | "truncate" => {
                 let next_index = index + 1;
-                let next = tokens.get(next_index).map(|value| value.to_ascii_lowercase());
+                let next = tokens
+                    .get(next_index)
+                    .map(|value| value.to_ascii_lowercase());
                 if matches!(next.as_deref(), Some("database" | "schema")) {
                     impact.database_wide = true;
                 } else {
@@ -124,7 +129,13 @@ fn ddl_object_name_after(tokens: &[String], mut index: usize) -> Option<String> 
             index += 1;
             continue;
         }
-        return Some(token.split('.').next_back().unwrap_or(token).to_ascii_lowercase());
+        return Some(
+            token
+                .split('.')
+                .next_back()
+                .unwrap_or(token)
+                .to_ascii_lowercase(),
+        );
     }
     None
 }
@@ -152,18 +163,17 @@ pub fn identifier_needs_quote(
 
 /// 按方言给标识符加引号并对内部引号做转义（P1.6）。
 ///
-/// 规则：MySQL/TiDB 用反引号并转义反引号；其余（SQLite/PostgreSQL/SQL Server）用双引号并转义双引号。
+/// 规则：MySQL/TiDB 用反引号；SQL Server 用方括号；其余用双引号。
 /// 普通安全标识符（非保留字、无特殊字符）原样返回，避免候选过度带引号。
-pub fn quote_identifier(
-    name: &str,
-    kind: DatabaseKind,
-    reserved: impl Fn(&str) -> bool,
-) -> String {
+pub fn quote_identifier(name: &str, kind: DatabaseKind, reserved: impl Fn(&str) -> bool) -> String {
     if !identifier_needs_quote(name, kind, &reserved) {
         return name.to_string();
     }
     match kind {
-        DatabaseKind::MySql | DatabaseKind::TiDb => fluxdb_core::MySqlDialect.quote_identifier(name),
+        DatabaseKind::MySql | DatabaseKind::TiDb => {
+            fluxdb_core::MySqlDialect.quote_identifier(name)
+        }
+        DatabaseKind::SqlServer => fluxdb_core::SqlServerDialect.quote_identifier(name),
         _ => fluxdb_core::PostgresDialect.quote_identifier(name),
     }
 }

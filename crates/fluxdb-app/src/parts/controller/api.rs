@@ -100,6 +100,7 @@ impl AppController {
         &self.state
     }
 
+    /// Headless tests can seed a loaded object tree without a network round trip.
     /// 切换 Redis Key 列表视图前清空当前 data 页，让 UI 走 RedisInsight 那种
     /// “先重置、再重新加载首批数据” 的节奏。
     pub fn reset_data_page_for_reload(&mut self, tab_id: TabId) {

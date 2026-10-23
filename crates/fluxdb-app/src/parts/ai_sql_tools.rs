@@ -66,12 +66,23 @@ impl<R: SqlExecutionResolver> AiSqlReadTool<R> {
 }
 
 /// EXPLAIN 的入参规整：默认只做 plan，不执行 ANALYZE（设计 §21.5）。
-fn apply_explain_mode(args: &mut ParsedSqlArgs) -> Result<(), SqlExecError> {
+///
+/// SQL Server 没有 `EXPLAIN` 前缀，计划要通过 `SET SHOWPLAN_ALL ON` 会话开关获得；
+/// 该开关是会话级状态，因此必须在独立连接上执行并在拿到计划后关闭，不能直接
+/// 拼进用户 SQL。这里只对非 SQL Server 方言做文本包装，SQL Server 由执行层处理。
+fn apply_explain_mode(
+    args: &mut ParsedSqlArgs,
+    policy: &dyn SqlPolicy,
+) -> Result<(), SqlExecError> {
     if args.mode.as_deref() == Some("execute") {
         return Err(SqlExecError::new(
             "explain_execute_unsupported",
             "执行式查询计划（EXPLAIN ANALYZE）默认不开放，需走修改入口另行审批",
         ));
+    }
+    if policy.explain_mode() == ExplainMode::Showplan {
+        // SQL Server 的计划由执行器用 SHOWPLAN 专用会话生成；这里不改写 SQL。
+        return Ok(());
     }
     let trimmed = args.sql.trim_start();
     if !trimmed.to_ascii_lowercase().starts_with("explain") {
@@ -106,22 +117,33 @@ impl<R: SqlExecutionResolver + 'static> fluxdb_core::AiTool for AiSqlReadTool<R>
             };
             let outcome = match parse_sql_args(&arguments_json) {
                 Ok(mut args) => {
-                    let prepared = if wrap_explain {
-                        apply_explain_mode(&mut args)
-                    } else {
-                        Ok(())
+                    let policy = resolver
+                        .connection_config(args.target.connection_id)
+                        .and_then(|config| policy_for(config.kind));
+                    let prepared = match (wrap_explain, policy) {
+                        (true, Some(policy)) => apply_explain_mode(&mut args, policy),
+                        (true, None) => Err(SqlExecError::new(
+                            "unsupported_database",
+                            "该连接类型不支持查询计划",
+                        )),
+                        (false, _) => Ok(()),
                     };
                     match prepared {
                         Ok(()) => execute_sql_with_parameters_and_progress(
                             resolver.as_ref(),
                             &args.target,
-                            &args.sql,
-                            args.max_rows,
-                            &args.parameters,
-                            true,
+                            SqlExecInput {
+                                sql: &args.sql,
+                                max_rows: args.max_rows,
+                                parameters: &args.parameters,
+                            },
                             &|| cancel.is_cancelled(),
                             &mut report_progress,
-                            false,
+                            SqlExecRunOptions {
+                                read_only: true,
+                                bounded_write: false,
+                                explain_only: wrap_explain,
+                            },
                         ),
                         Err(error) => Err(error),
                     }
@@ -426,16 +448,16 @@ impl<R: SqlExecutionResolver + 'static> fluxdb_core::AiTool for AiSqlExecuteTool
             .ok_or_else(|| {
                 fluxdb_core::Error::new(fluxdb_core::ErrorKind::Permission, "连接未授权")
             })?;
-        let dialect = dialect_for(config.kind).ok_or_else(|| {
+        let policy = policy_for(config.kind).ok_or_else(|| {
             fluxdb_core::Error::new(fluxdb_core::ErrorKind::Unsupported, "无法检查数据库类型")
         })?;
         // 作用域越界不是"高风险"而是确定性拒绝：直接返回受控错误，
         // 授权链据此停在人工，不把越界当成可以靠评审模型背书的形状问题。
-        validate_sql_scope(&args.sql, dialect, &args.target).map_err(|_| {
+        validate_sql_scope(&args.sql, policy, &args.target).map_err(|_| {
             fluxdb_core::Error::new(fluxdb_core::ErrorKind::Permission, "SQL 超出作用域")
         })?;
         let bounded = fluxdb_connectors::connector_for(&config)?.supports_bounded_write();
-        Ok(crate::sql_write_risk_facts(&args.sql, dialect, bounded))
+        Ok(crate::sql_write_risk_facts(&args.sql, policy, bounded))
     }
     fn descriptor(&self) -> &fluxdb_core::ToolDescriptor {
         &self.descriptor
@@ -445,12 +467,12 @@ impl<R: SqlExecutionResolver + 'static> fluxdb_core::AiTool for AiSqlExecuteTool
         // 展示投影：工具自己按入参里的连接与 SQL 判定风险，不依赖外层会话传入方言。
         match parse_sql_args(arguments_json) {
             Ok(args) => {
-                let dialect = self
+                let policy = self
                     .resolver
                     .connection_config(args.target.connection_id)
-                    .and_then(|config| dialect_for(config.kind));
-                match dialect {
-                    Some(dialect) => crate::sql_approval_details(&args.sql, dialect),
+                    .and_then(|config| policy_for(config.kind));
+                match policy {
+                    Some(policy) => crate::sql_approval_details(&args.sql, policy),
                     None => fluxdb_core::ApprovalDetails {
                         risk: fluxdb_core::ApprovalRisk::High,
                         guardrails: vec!["计划风险尚未核实".to_string()],
@@ -488,14 +510,19 @@ impl<R: SqlExecutionResolver + 'static> fluxdb_core::AiTool for AiSqlExecuteTool
                 Ok(args) => execute_sql_with_parameters_and_progress(
                     resolver.as_ref(),
                     &args.target,
-                    &args.sql,
-                    args.max_rows,
-                    &args.parameters,
-                    // 修改入口：不做只读分类拦截，但仍受"单条语句/事务控制拒绝"约束。
-                    false,
+                    SqlExecInput {
+                        sql: &args.sql,
+                        max_rows: args.max_rows,
+                        parameters: &args.parameters,
+                    },
                     &|| cancel.is_cancelled(),
                     &mut report_progress,
-                    ctx.bounded_write,
+                    SqlExecRunOptions {
+                        // 修改入口：不做只读分类拦截，但仍受"单条语句/事务控制拒绝"约束。
+                        read_only: false,
+                        bounded_write: ctx.bounded_write,
+                        explain_only: false,
+                    },
                 ),
                 Err(error) => Err(error),
             };
@@ -567,10 +594,10 @@ impl<R: SqlExecutionResolver> AiSqlRunTool<R> {
         let Some(config) = self.resolver.connection_config(args.target.connection_id) else {
             return fluxdb_core::ToolRisk::Write;
         };
-        let Some(dialect) = dialect_for(config.kind) else {
+        let Some(policy) = policy_for(config.kind) else {
             return fluxdb_core::ToolRisk::Write;
         };
-        match analyze_sql(&args.sql, dialect) {
+        match analyze_sql(&args.sql, policy) {
             // Rejected 会在执行入口被确定性拒绝，不产生副作用，不需要人工审批。
             SqlRisk::ReadOnly | SqlRisk::Rejected { .. } => fluxdb_core::ToolRisk::Read,
             SqlRisk::RequiresAuthorization { .. } => fluxdb_core::ToolRisk::Write,

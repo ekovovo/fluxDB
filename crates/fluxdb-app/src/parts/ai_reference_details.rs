@@ -99,7 +99,7 @@ impl AppController {
                     .find(|connection| connection.config.id == path.connection_id)
                     .ok_or_else(|| Error::new(ErrorKind::Internal, "引用连接已移除"))?
                     .config;
-                if dialect_for(config.kind).is_some() {
+                if policy_for(config.kind).is_some() {
                     self.validate_ai_database_resource(config)?;
                     let connector = fluxdb_connectors::connector_for(config)?;
                     let tables = connector

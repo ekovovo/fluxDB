@@ -1,5 +1,8 @@
 #[derive(Clone, Debug, PartialEq)]
 pub enum AppEvent {
+    /// 测试专用：已加载的 SQL Server `database → schema → table` 树直接安装到连接状态。
+    #[cfg(test)]
+    TestConnectionLoaded(ConnectionConfig),
     AiTableObjectsLoaded { connection_id: ConnectionId, parent: Option<ObjectPath>, objects: Vec<ObjectSummary> },
     AiTableColumnsLoaded(ObjectPath, Vec<Column>),
     /// 表页已开始一次新加载；generation 用于丢弃旧的后台结果。
@@ -178,6 +181,29 @@ pub enum AppEvent {
     UserAdminPgRolePlanFinished(TabId, PgRoleSavePlan, Result<Vec<String>, UserFacingError>),
     /// PG 变更计划应用成功（UI 刷新角色列表并清空草稿）。
     UserAdminPgRolePlanApplied(TabId),
+    /// SQL Server 安全快照加载完成。
+    SqlServerSecurityDatabasesLoaded(TabId, Result<Vec<String>, UserFacingError>),
+    UserAdminSqlServerLoaded(
+        TabId,
+        Result<fluxdb_core::SqlServerSecuritySnapshot, UserFacingError>,
+    ),
+    /// SQL Server 指定主体显式权限加载完成。
+    UserAdminSqlServerPermissionsLoaded {
+        tab_id: TabId,
+        principal: fluxdb_core::SqlServerPrincipalRef,
+        result: Result<Vec<fluxdb_core::SqlServerPermission>, UserFacingError>,
+    },
+    /// SQL Server 安全计划脱敏预览完成。
+    UserAdminSqlServerPreview {
+        tab_id: TabId,
+        result: Result<Vec<String>, UserFacingError>,
+    },
+    /// SQL Server 安全计划应用完成；只返回脱敏 SQL 和主体名，不携带密码草稿。
+    UserAdminSqlServerApplied {
+        tab_id: TabId,
+        principal: String,
+        result: Result<Vec<String>, UserFacingError>,
+    },
     DataLoaded(TabId, DataPage),
     /// 惰性补齐无用的事件：元信息已由控制器合并进 `editor.page`，只用于通知 UI 续补下一批可见行。
     RedisKeyMetadataLoaded {

@@ -3,10 +3,9 @@ impl NavicatMain {
         let mut layout = self.controller.state().sidebar_layout.clone();
         layout.table_folders = self.table_folders.clone();
         layout.table_folder_assignments = self.table_folder_assignments.clone();
-        let _ = self.storage.save_sidebar_layout(
-            &self.controller.connection_configs(),
-            &layout,
-        );
+        let _ = self
+            .storage
+            .save_sidebar_layout(&self.controller.connection_configs(), &layout);
     }
 
     fn create_connection_group(&mut self, cx: &mut Context<Self>) -> Option<ConnectionGroupId> {
@@ -67,6 +66,7 @@ impl NavicatMain {
             mysql_profile: config.mysql_profile.clone(),
             postgres_profile: config.postgres_profile.clone(),
             dameng_profile: config.dameng_profile.clone(),
+            sqlserver_profile: config.sqlserver_profile.clone(),
         };
         let event = self
             .controller
@@ -249,9 +249,11 @@ impl NavicatMain {
 
     /// 是否仍有已连接的 Redis 连接（决定概览定时任务是否继续）。
     fn has_connected_redis_connections(&self) -> bool {
-        self.controller.state().connections.iter().any(|connection| {
-            connection.connected && connection.config.kind == DatabaseKind::Redis
-        })
+        self.controller
+            .state()
+            .connections
+            .iter()
+            .any(|connection| connection.connected && connection.config.kind == DatabaseKind::Redis)
     }
 
     /// 新建 schema 成功后失效该库对象缓存并重取 schema 清单，使新 schema 出现在对象树。
@@ -301,7 +303,28 @@ impl NavicatMain {
         if self.loading_databases.contains(&database_key) {
             return;
         }
+        self.start_database_children_load(database_path, database_key, cx);
+    }
 
+    /// 显式刷新（表分组右键/表操作完成）必须重新请求，不能被同一作用域的
+    /// in-flight 去重静默吞掉。旧任务被取消，其迟到结果也不会覆盖新结果。
+    fn refresh_database_children(
+        &mut self,
+        database_path: ObjectPath,
+        database_key: String,
+        cx: &mut Context<Self>,
+    ) {
+        self.loading_databases.remove(&database_key);
+        self._database_tasks.remove(&database_key);
+        self.start_database_children_load(database_path, database_key, cx);
+    }
+
+    fn start_database_children_load(
+        &mut self,
+        database_path: ObjectPath,
+        database_key: String,
+        cx: &mut Context<Self>,
+    ) {
         self.loading_databases.insert(database_key.clone());
         let mut controller = self.controller.clone();
         let task_key = database_key.clone();
@@ -427,5 +450,4 @@ impl NavicatMain {
         self.expanded_object_groups.insert(key, !expanded);
         cx.notify();
     }
-
 }

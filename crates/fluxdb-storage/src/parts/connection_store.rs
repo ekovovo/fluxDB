@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use fluxdb_core::{
     ConnectionConfig, DamengConnectionProfile, DatabaseKind, Endpoint, Error, ErrorKind,
     MysqlConnectionProfile, PostgresConnectionProfile, RedisConnectionProfile, Result,
+    SqlServerConnectionProfile,
 };
 
 use crate::sqlite::sqlite_error;
@@ -64,6 +65,8 @@ struct ConnectionExtra {
     postgres_profile: Option<PostgresConnectionProfile>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     dameng_profile: Option<DamengConnectionProfile>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sqlserver_profile: Option<SqlServerConnectionProfile>,
 }
 
 /// 数据库类型的落盘取值。
@@ -76,6 +79,7 @@ pub(crate) fn kind_to_str(kind: DatabaseKind) -> &'static str {
         DatabaseKind::Redis => "redis",
         DatabaseKind::Postgres => "postgres",
         DatabaseKind::Dameng => "dameng",
+        DatabaseKind::SqlServer => "sqlserver",
     }
 }
 
@@ -89,6 +93,7 @@ pub(crate) fn kind_from_str(value: &str) -> Option<DatabaseKind> {
         "redis" => Some(DatabaseKind::Redis),
         "postgres" => Some(DatabaseKind::Postgres),
         "dameng" => Some(DatabaseKind::Dameng),
+        "sqlserver" => Some(DatabaseKind::SqlServer),
         _ => None,
     }
 }
@@ -274,6 +279,7 @@ fn from_config(connection: &ConnectionConfig) -> Result<StoredInsert> {
             mysql_profile: connection.mysql_profile.clone(),
             postgres_profile: connection.postgres_profile.clone(),
             dameng_profile: connection.dameng_profile.clone(),
+            sqlserver_profile: connection.sqlserver_profile.clone(),
         },
     })
 }
@@ -350,5 +356,6 @@ fn to_config(row: StoredRow) -> Result<ConnectionConfig> {
         mysql_profile: extra.mysql_profile,
         postgres_profile: extra.postgres_profile,
         dameng_profile: extra.dameng_profile,
+        sqlserver_profile: extra.sqlserver_profile,
     })
 }

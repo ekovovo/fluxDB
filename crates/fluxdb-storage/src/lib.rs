@@ -45,7 +45,8 @@ use fluxdb_core::{
     ColumnRef, CompletionIndexMeta, CompletionIndexSnapshot, ConnectionConfig, ConnectionId,
     ErRebindEntity, ErRelationship, Error, ErrorKind, MysqlConnectionProfile, MysqlTransportLayer,
     PostgresConnectionProfile, PostgresTransportLayer, RedisConnectionProfile, Result, RoutineRef,
-    SavedQuery, SecretRef, Settings, SidebarLayout, TableRef, TriggerRef,
+    SavedQuery, SecretRef, Settings, SidebarLayout, SqlServerConnectionProfile, TableRef,
+    TriggerRef,
 };
 
 /// ER 逻辑关系目录的 kv key 前缀：`er_rel:{scope}` 存该作用域的 `Vec<ErRelationship>`。
@@ -755,6 +756,14 @@ impl FileStorage {
                 slot.key.clear();
             }
         }
+        if let Some(profile) = connection.sqlserver_profile.as_mut() {
+            for (kind, slot) in sqlserver_profile_secret_slots_mut(profile) {
+                if slot.inline.is_none() {
+                    slot.inline = self.best_effort_secret_read(id, kind);
+                }
+                slot.key.clear();
+            }
+        }
         Ok(connection)
     }
 
@@ -1073,6 +1082,11 @@ fn strip_plaintext_secrets(connection: &ConnectionConfig) -> ConnectionConfig {
             slot.inline = None;
         }
     }
+    if let Some(profile) = connection.sqlserver_profile.as_mut() {
+        for (_, slot) in sqlserver_profile_secret_slots_mut(profile) {
+            slot.inline = None;
+        }
+    }
     connection
 }
 
@@ -1090,6 +1104,9 @@ fn profile_secret_slots_combined(connection: &ConnectionConfig) -> Vec<(&'static
     }
     if let Some(profile) = connection.dameng_profile.as_ref() {
         slots.extend(dameng_profile_secret_slots(profile));
+    }
+    if let Some(profile) = connection.sqlserver_profile.as_ref() {
+        slots.extend(sqlserver_profile_secret_slots(profile));
     }
     slots
 }
@@ -1250,6 +1267,24 @@ fn dameng_profile_secret_slots(
 
 fn dameng_profile_secret_slots_mut(
     profile: &mut fluxdb_core::DamengConnectionProfile,
+) -> Vec<(&'static str, &mut SecretRef)> {
+    vec![(
+        connection_secrets::DATABASE_PASSWORD,
+        &mut profile.basic.password,
+    )]
+}
+
+fn sqlserver_profile_secret_slots(
+    profile: &SqlServerConnectionProfile,
+) -> Vec<(&'static str, &SecretRef)> {
+    vec![(
+        connection_secrets::DATABASE_PASSWORD,
+        &profile.basic.password,
+    )]
+}
+
+fn sqlserver_profile_secret_slots_mut(
+    profile: &mut SqlServerConnectionProfile,
 ) -> Vec<(&'static str, &mut SecretRef)> {
     vec![(
         connection_secrets::DATABASE_PASSWORD,

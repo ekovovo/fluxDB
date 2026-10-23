@@ -446,7 +446,7 @@ impl NavicatMain {
                     ),
                     None => (menu.database_path, database_key),
                 };
-                self.load_database_children(target, key, cx);
+                self.refresh_database_children(target, key, cx);
                 return;
             }
         }

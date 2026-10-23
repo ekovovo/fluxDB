@@ -187,6 +187,9 @@ fn pg_user_admin_toolbar(
 ) -> Div {
     let saving = admin.pg_save_status == PgRoleSaveStatus::Saving;
     let save_disabled = saving || !this.pg_save_enabled(tab_id);
+    let cancel_disabled = saving
+        || admin.pg_save_status == PgRoleSaveStatus::NeedsVerify
+        || !admin.pg_has_draft_changes();
     let deletable = admin
         .pg_selected_role
         .as_deref()
@@ -234,10 +237,30 @@ fn pg_user_admin_toolbar(
                 save_disabled,
                 colors,
             )
+            .debug_selector(|| "pg-user-admin-save".into())
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, _, cx| {
                     this.start_pg_plan_apply(tab_id, cx);
+                    cx.stop_propagation();
+                }),
+            ),
+        )
+        .child(
+            user_admin_button(
+                tr("app.common.cancel"),
+                AppIcon::Undo,
+                false,
+                cancel_disabled,
+                colors,
+            )
+            .debug_selector(|| "pg-user-admin-cancel".into())
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _, _, cx| {
+                    if !cancel_disabled {
+                        this.dispatch(AppCommand::DiscardPgDraftEdits(tab_id), cx);
+                    }
                     cx.stop_propagation();
                 }),
             ),
@@ -254,6 +277,7 @@ fn pg_user_admin_toolbar(
                 admin.loading_users,
                 colors,
             )
+            .debug_selector(|| "pg-user-admin-refresh".into())
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, _, cx| {
@@ -270,6 +294,7 @@ fn pg_user_admin_toolbar(
                 !deletable,
                 colors,
             )
+            .debug_selector(|| "pg-user-admin-delete".into())
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, _, cx| {

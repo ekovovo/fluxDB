@@ -104,6 +104,7 @@ impl SqlDialect {
             DatabaseKind::Sqlite => SqlDialect::Sqlite,
             DatabaseKind::Postgres => SqlDialect::Postgres,
             DatabaseKind::Dameng => SqlDialect::Postgres,
+            DatabaseKind::SqlServer => SqlDialect::SqlServer,
             DatabaseKind::MongoDb | DatabaseKind::Redis => SqlDialect::Mysql,
         }
     }
@@ -111,9 +112,7 @@ impl SqlDialect {
     /// 判断某个词是否为该方言的关键字 / 函数（不区分大小写）。
     pub fn is_keyword(&self, word: &str) -> bool {
         let lower = word.to_ascii_lowercase();
-        self.keywords()
-            .iter()
-            .any(|def| def.word == lower)
+        self.keywords().iter().any(|def| def.word == lower)
     }
 }
 

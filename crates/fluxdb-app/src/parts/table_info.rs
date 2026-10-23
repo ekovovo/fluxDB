@@ -89,10 +89,26 @@ fn replace_loaded_children(
     let clears_database_tables = schema_scope.is_none()
         && children
             .iter()
-            .any(|child| matches!(child.path.kind, ObjectKind::Table | ObjectKind::View));
+            .any(|child| {
+                matches!(
+                    child.path.kind,
+                    ObjectKind::Table
+                        | ObjectKind::View
+                        | ObjectKind::Procedure
+                        | ObjectKind::Function
+                )
+            });
     current.retain(|object| {
         let same_database = object.path.database.as_deref().unwrap_or("main") == database;
-        if !(same_database && matches!(object.path.kind, ObjectKind::Table | ObjectKind::View)) {
+        if !(same_database
+            && matches!(
+                object.path.kind,
+                ObjectKind::Table
+                    | ObjectKind::View
+                    | ObjectKind::Procedure
+                    | ObjectKind::Function
+            ))
+        {
             return true;
         }
         match schema_scope {

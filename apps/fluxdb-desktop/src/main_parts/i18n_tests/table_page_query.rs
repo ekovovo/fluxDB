@@ -45,6 +45,7 @@ fn ai_page_query_opens_sidebar_table_fills_conditions_and_shows_rows(cx: &mut Te
         mysql_profile: None,
         postgres_profile: None,
         dameng_profile: None,
+        sqlserver_profile: None,
     }]));
     let event = controller.dispatch(AppCommand::SaveAiModel(AiModelSaveInput {
         display_name: "offline page query fixture".into(),

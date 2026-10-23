@@ -282,10 +282,11 @@ fn table_sql_preview_box(
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> impl IntoElement {
+    // DDL 是多行文本；单行 Input 会删掉换行，导致每次渲染都判断为未同步并重置内容。
     let editor = window.use_keyed_state(key, cx, {
         let sql = sql.clone();
         move |window, cx| {
-            InputState::new(window, cx)
+            gpui_component::input::TextareaState::new(window, cx)
                 .default_value(sql)
         }
     });
@@ -296,6 +297,7 @@ fn table_sql_preview_box(
     });
 
     div()
+        .debug_selector(move || key.to_string())
         .flex()
         .flex_col()
         .gap_1()
@@ -315,10 +317,10 @@ fn table_sql_preview_box(
                 .bg(colors.panel_alt)
                 .overflow_hidden()
                 .child(
-                    Input::new(&editor)
+                    gpui_component::input::Textarea::new(&editor)
                         .appearance(false)
                         .bordered(false)
-                        .focus_bordered(false)
+                        .readonly(true)
                         .text_size(px(12.))
                         .font_family(EDITOR_FONT)
                         .p_2()

@@ -733,9 +733,7 @@ fn table_data_import_log_body(form: &TableDataImportForm, colors: UiColors) -> D
         tr("app.data.data_import.log_idle").to_string()
     };
     let mut list = div().flex().flex_col().gap_1().px_6().py_4();
-    if let Some(error) = &form.error {
-        list = list.child(table_data_import_notice(error.clone(), colors.danger));
-    }
+    // 失败原因已经作为“失败”阶段日志写入；顶部再渲染一次会重复同一错误。
     if form.logs.is_empty() {
         list = list.child(
             div()
@@ -1599,6 +1597,7 @@ fn table_data_import_field(
 
 fn table_data_import_notice(text: String, tone: gpui::Rgba) -> Div {
     div()
+        .debug_selector(|| "data-import-notice".into())
         // 错误只占自身宽度，避免横跨整行压过主要内容。
         .max_w(px(760.))
         .rounded(px(6.))

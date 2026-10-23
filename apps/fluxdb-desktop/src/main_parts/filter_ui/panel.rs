@@ -214,7 +214,9 @@ fn data_editor_sql_preview(
     limit: u64,
     db_kind: DatabaseKind,
 ) -> String {
+    let sqlserver = db_kind == DatabaseKind::SqlServer;
     let mut clauses = Vec::new();
+    let mut has_order_by = false;
     match mode {
         DataFilterMode::Builder => {
             let where_clause = data_filter_rules_sql(rules, db_kind);
@@ -231,6 +233,7 @@ fn data_editor_sql_preview(
                 .collect::<Vec<_>>();
             if !order_by.is_empty() {
                 clauses.push(format!("ORDER BY {}", order_by.join(", ")));
+                has_order_by = true;
             }
         }
         DataFilterMode::Text => {
@@ -241,17 +244,28 @@ fn data_editor_sql_preview(
             let sort_text = sort_text.trim();
             if !sort_text.is_empty() {
                 clauses.push(format!("ORDER BY {sort_text}"));
+                has_order_by = true;
             }
         }
     }
 
-    // 分页子句统一由方言渲染（PostgreSQL/MySQL/TiDB/SQLite 均 `LIMIT … OFFSET …`）。
-    clauses.push(
-        sql_dialect(db_kind)
-            .render_limit_offset(limit, offset)
-            .trim_start()
-            .to_string(),
-    );
+    if sqlserver && !has_order_by {
+        // T-SQL 的 OFFSET/FETCH 需要 ORDER BY；首页用 TOP，翻页补稳定占位排序。
+        if offset == 0 {
+            return format!(
+                "SELECT TOP ({limit}) * FROM {} {}",
+                sql_qualified_object_name(object, db_kind),
+                clauses.join(" ")
+            )
+            .trim_end()
+            .to_string();
+        }
+        clauses.push("ORDER BY (SELECT NULL)".to_string());
+    }
+
+    // 分页子句统一由方言渲染（其余关系型数据库为 `LIMIT … OFFSET …`）。
+    let pagination = sql_dialect(db_kind).render_limit_offset(limit, offset);
+    clauses.push(pagination.trim_start().to_string());
 
     format!(
         "SELECT * FROM {} {}",

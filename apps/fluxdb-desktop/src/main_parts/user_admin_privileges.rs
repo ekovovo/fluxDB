@@ -2,7 +2,10 @@ fn user_admin_privileges_sql_preview(
     provider: fluxdb_core::DatabaseUserAdminProvider,
     admin: &UserAdminState,
 ) -> UserAdminSqlPreviewDraft {
-    let Some(user) = user_admin_selected_existing_user(admin) else {
+    // 新建用户与同批授权：权限语句必须引用即将创建的身份，才能在 CREATE 之后执行。
+    let Some(user) = user_admin_selected_existing_user(admin)
+        .or_else(|| admin.creating_user.then(|| admin.draft_user_identity()))
+    else {
         return UserAdminSqlPreviewDraft::default();
     };
     let mut statements = Vec::new();
@@ -75,6 +78,14 @@ fn user_admin_privileges_sql_preview(
         statements,
         danger,
     }
+}
+
+#[cfg(test)]
+fn user_admin_privileges_sql_preview_for_test(
+    provider: fluxdb_core::DatabaseUserAdminProvider,
+    admin: &UserAdminState,
+) -> UserAdminSqlPreviewDraft {
+    user_admin_privileges_sql_preview(provider, admin)
 }
 
 fn user_admin_privilege_delta(left: &[String], right: &[String]) -> Vec<String> {
@@ -537,7 +548,10 @@ fn user_admin_privilege_database_options(state: &AppState, admin: &UserAdminStat
                         databases.insert(name);
                     }
                 }
-                ObjectKind::Table | ObjectKind::View => {
+                ObjectKind::Table
+                | ObjectKind::View
+                | ObjectKind::Procedure
+                | ObjectKind::Function => {
                     if let Some(name) = &object.path.database
                         && !name.trim().is_empty()
                     {

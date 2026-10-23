@@ -81,6 +81,9 @@ impl CreateTableState {
         if database_kind == DatabaseKind::Dameng {
             create_table_apply_dameng_design_ddl(&mut create, ddl.as_deref());
         }
+        if database_kind == DatabaseKind::SqlServer {
+            create_table_apply_sqlserver_design_ddl(&mut create, ddl.as_deref());
+        }
         create.selected_column_id = create.columns.first().map(|column| column.id);
         create.selected_index_id = create.indexes.first().map(|index| index.id);
         create.selected_foreign_key_id = create.foreign_keys.first().map(|foreign_key| foreign_key.id);

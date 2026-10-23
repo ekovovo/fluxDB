@@ -38,8 +38,8 @@ impl ApprovalScope {
 /// 由 SQL 内核分类生成 SQL 工具的审批展示事实。
 ///
 /// 只作为展示投影，不参与授权判定；行数未实际查询前明确写"未核实"。
-pub fn sql_approval_details(sql: &str, dialect: SqlDialectKind) -> ApprovalDetails {
-    let (guardrails, risk) = sql_approval_guardrails(&analyze_sql(sql, dialect));
+pub fn sql_approval_details(sql: &str, policy: &dyn SqlPolicy) -> ApprovalDetails {
+    let (guardrails, risk) = sql_approval_guardrails(&analyze_sql(sql, policy));
     ApprovalDetails {
         risk,
         statements: vec![sql.to_string()],

@@ -40,6 +40,13 @@ pub struct SqliteDialect;
 #[derive(Clone, Copy, Debug)]
 pub struct DamengDialect;
 
+/// SQL Server 方言：标识符方括号（内部 `]` → `]]`）；对象名 `[schema].[table]`。
+///
+/// 不生成三段名：Azure SQL Database 与部分 Babelfish 端点不支持跨库引用，
+/// 连接器会在目标数据库内执行，database 只用于对象树分组。
+#[derive(Clone, Copy, Debug)]
+pub struct SqlServerDialect;
+
 impl SqlDialect for PostgresDialect {
     fn quote_identifier(&self, value: &str) -> String {
         quote_identifier_with_delimiter(value, '"')
@@ -119,6 +126,27 @@ impl SqlDialect for DamengDialect {
     }
 }
 
+impl SqlDialect for SqlServerDialect {
+    fn quote_identifier(&self, value: &str) -> String {
+        format!("[{}]", value.replace(']', "]]"))
+    }
+
+    fn qualified_object_name(&self, path: &ObjectPath) -> String {
+        let mut parts = Vec::with_capacity(2);
+        if let Some(schema) = path.schema.as_deref().filter(|schema| !schema.is_empty()) {
+            parts.push(self.quote_identifier(schema));
+        }
+        parts.push(self.quote_identifier(&path.name));
+        parts.join(".")
+    }
+
+    fn render_limit_offset(&self, limit: u64, offset: u64) -> String {
+        // OFFSET/FETCH 要求 ORDER BY；调用方在没有排序时需自行补 ORDER BY (SELECT NULL)
+        // 或改用 TOP。这里只负责带排序的分页片段。
+        format!(" OFFSET {offset} ROWS FETCH NEXT {limit} ROWS ONLY")
+    }
+}
+
 /// 用 MySQL/TiDB 的反引号引用单段标识符，并转义内部反引号。
 pub fn quote_mysql_identifier(value: &str) -> String {
     quote_identifier_with_delimiter(value, '`')
@@ -144,10 +172,42 @@ pub fn sql_dialect(kind: DatabaseKind) -> &'static dyn SqlDialect {
     match kind {
         DatabaseKind::Postgres => &PostgresDialect,
         DatabaseKind::Dameng => &DamengDialect,
+        DatabaseKind::SqlServer => &SqlServerDialect,
         DatabaseKind::Sqlite => &SqliteDialect,
         DatabaseKind::MySql | DatabaseKind::TiDb | DatabaseKind::MongoDb | DatabaseKind::Redis => {
             &MySqlDialect
         }
+    }
+}
+
+#[cfg(test)]
+mod sqlserver_dialect_tests {
+    use super::{SqlDialect as _, SqlServerDialect};
+    use crate::ObjectPath;
+
+    #[test]
+    fn quotes_sqlserver_identifiers_with_brackets_and_escapes_closing_brackets() {
+        assert_eq!(SqlServerDialect.quote_identifier("order]items"), "[order]]items]");
+    }
+
+    #[test]
+    fn qualifies_sqlserver_objects_with_schema_only() {
+        let path = ObjectPath {
+            connection_id: crate::ConnectionId(1),
+            database: Some("sales".into()),
+            schema: Some("dbo".into()),
+            name: "customers".into(),
+            kind: crate::ObjectKind::Table,
+        };
+        assert_eq!(SqlServerDialect.qualified_object_name(&path), "[dbo].[customers]");
+    }
+
+    #[test]
+    fn renders_sqlserver_offset_fetch_pagination() {
+        assert_eq!(
+            SqlServerDialect.render_limit_offset(25, 50),
+            " OFFSET 50 ROWS FETCH NEXT 25 ROWS ONLY"
+        );
     }
 }
 

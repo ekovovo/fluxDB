@@ -1,9 +1,22 @@
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct DangerTableCapabilities {
+    foreign_key_check: bool,
+    restart_identity: bool,
+}
+
+fn danger_table_capabilities(database_kind: DatabaseKind) -> DangerTableCapabilities {
+    DangerTableCapabilities {
+        foreign_key_check: matches!(database_kind, DatabaseKind::MySql | DatabaseKind::TiDb),
+        restart_identity: database_kind == DatabaseKind::Postgres,
+    }
+}
+
 fn danger_table_modal(
     form: PendingDangerTableAction,
     sql_preview: Result<String, String>,
     foreign_key_check_select: Entity<SelectState<SearchableVec<ForeignKeyCheckOption>>>,
     running: bool,
-    is_postgres: bool,
+    capabilities: DangerTableCapabilities,
     focus_handle: FocusHandle,
     window: &mut Window,
     colors: UiColors,
@@ -15,13 +28,10 @@ fn danger_table_modal(
     };
     let error = form.error.clone().or(validation_error);
     let can_submit = !running && form.acknowledged && sql.is_some() && error.is_none();
-    // 注意：不能在 builder 内 `cx.entity().read(cx)` 自读判断 PG——此 builder 在 NavicatMain::render
-    // 期间被同步执行，此时 NavicatMain 已被租用，自读会触发 double-lease panic（read while updating）。
-    // PG 由调用方在 render 内直接读取字段后传入（render.rs）。PG：外键检查选择器为 MySQL 专属，
-    // PG 不适用（with_foreign_key_check 会拒绝），隐藏；清空表提供「重置自增值 RESTART IDENTITY」
-    // 显式选项（默认 CONTINUE IDENTITY）。
+    // 注意：不能在 builder 内 `cx.entity().read(cx)` 自读判断连接类型——此 builder 在
+    // NavicatMain::render 期间被同步执行，自读会触发 double-lease panic。能力由调用方读取后传入。
     let is_truncate = form.action == DangerTableAction::Truncate;
-    let pg_restart_identity = is_postgres && is_truncate;
+    let restart_identity = capabilities.restart_identity && is_truncate;
 
     div()
         .absolute()
@@ -75,15 +85,14 @@ fn danger_table_modal(
                         .flex_col()
                         .gap_3()
                         .child(danger_table_prompt(&form))
-                        // 外键检查为 MySQL/TiDB 专属；PG 隐藏（无 disable-FK-check 语义）。
-                        .when(!is_postgres, |this| {
+                        .when(capabilities.foreign_key_check, |this| {
                             this.child(danger_table_fk_row(
                                 foreign_key_check_select,
                                 running,
                                 colors,
                             ))
                         })
-                        .when(pg_restart_identity, |this| {
+                        .when(restart_identity, |this| {
                             this.child(danger_table_restart_identity_row(
                                 &form,
                                 running,

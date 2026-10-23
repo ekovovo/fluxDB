@@ -463,16 +463,15 @@ impl McpExecutionService {
             .resolver
             .connection_config(target.connection_id)
             .ok_or_else(|| McpCallError::new("invalid_connection", "连接不存在", false))?;
-        let dialect = dialect_for(config.kind).ok_or_else(|| {
+        let policy = policy_for(config.kind).ok_or_else(|| {
             McpCallError::new("unsupported_database", "该连接类型不支持 SQL 写工具", false)
         })?;
         // `analyze_sql` 对白名单外的语句（DDL/GRANT/事务控制等）给不出只读结论；
         // 这里要求语句是明确的 DML，未知语法与结构变更一律拒绝。
-        let statements =
-            sqlparser::parser::Parser::parse_sql(dialect.parser_dialect().as_ref(), sql.trim())
-                .map_err(|_| {
-                    McpCallError::new("write_unverifiable", "SQL 无法解析，无法核对写范围", false)
-                })?;
+        let statements = sqlparser::parser::Parser::parse_sql(policy.parser_dialect(), sql.trim())
+            .map_err(|_| {
+                McpCallError::new("write_unverifiable", "SQL 无法解析，无法核对写范围", false)
+            })?;
         if statements.len() != 1 {
             return Err(McpCallError::new(
                 "write_unverifiable",

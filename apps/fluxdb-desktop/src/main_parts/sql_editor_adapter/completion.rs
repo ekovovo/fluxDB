@@ -188,19 +188,60 @@ pub(crate) fn trailing_ident_qualifier(before: &str) -> bool {
         return false;
     }
     // 取 '.' 前连续标识符字符；标识符内不能夹着字符串/注释片段。
+    let start = identifier_start_before_dot(trimmed, dot);
+    if start >= dot {
+        return false;
+    }
+    // 标识符段 [start, dot) 必须完全位于字符串/注释之外。
+    !segment_is_masked(trimmed, start, dot)
+}
+
+/// 取 `.` 前标识符起点；额外识别 SQL Server 方括号引用，避免 `[dbo].`
+/// 在闭方括号处停止扫描而不触发补全。双引号/反引号仍沿用既有 mask 语义。
+fn identifier_start_before_dot(text: &str, dot: usize) -> usize {
+    let before = &text[..dot];
+    if let Some(closer) = before.chars().next_back() {
+        // 双引号/反引号在既有 mask 里按字符串处理（MySQL 语义），不在这里放开；
+        // 方括号是 SQL Server 独有的标识符引用，确定不是字符串。
+        let opener = match closer {
+            ']' => Some('['),
+            _ => None,
+        };
+        if let Some(opener) = opener {
+            // 正向配对，跳过双写转义（`[a]]b]`），记录最后一段的起点。
+            let mut open: Option<usize> = None;
+            let mut chars = before.char_indices().peekable();
+            while let Some((index, ch)) = chars.next() {
+                if open.is_none() {
+                    if ch == opener {
+                        open = Some(index);
+                    }
+                    continue;
+                }
+                if ch != closer {
+                    continue;
+                }
+                if matches!(chars.peek(), Some((_, next)) if *next == closer) {
+                    chars.next();
+                    continue;
+                }
+                if index + ch.len_utf8() == before.len() {
+                    return open.expect("open is set");
+                }
+                open = None;
+            }
+            return dot;
+        }
+    }
     let mut start = dot;
-    for (index, ch) in trimmed[..dot].char_indices().rev() {
+    for (index, ch) in before.char_indices().rev() {
         if is_ident_char(ch) {
             start = index;
         } else {
             break;
         }
     }
-    if start >= dot {
-        return false;
-    }
-    // 标识符段 [start, dot) 必须完全位于字符串/注释之外。
-    !segment_is_masked(trimmed, start, dot)
+    start
 }
 
 /// F001：空前缀空格自动触发补全。判断 `<cursor>` 前刚输入空白（空格/tab/换行），
@@ -376,6 +417,19 @@ mod filter_items_tests {
             labels(&filter_items(&items, "")),
             vec!["c_col", "a_col", "b_col"]
         );
+    }
+
+    #[test]
+    fn trailing_qualifier_recognizes_quoted_identifiers() {
+        // SQL Server 方括号标识符闭合后，点号必须触发补全。
+        for text in [
+            "SELECT * FROM [dbo].",
+            "SELECT * FROM [a]]b].",
+        ] {
+            assert!(trailing_ident_qualifier(text), "{text}");
+        }
+        assert!(!trailing_ident_qualifier("SELECT * FROM ."));
+        assert!(!trailing_ident_qualifier("SELECT 'x.'"));
     }
 }
 

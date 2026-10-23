@@ -348,6 +348,17 @@ enum ConnectionField {
     MysqlQueryTimeout,
     /// 连接空闲 TTL（秒），0 表示不回收
     MysqlIdleTtl,
+    // —— SQL Server 专用文本字段 ——
+    /// 默认 schema；空表示连接后读取 `SCHEMA_NAME()`，最终回退 `dbo`。
+    SqlServerSchema,
+    /// 命名实例；首版不解析 SQL Browser，用户需同时填写实际端口。
+    SqlServerInstance,
+    /// 建连超时（秒），默认 5
+    SqlServerConnectTimeout,
+    /// 查询超时（秒），0 表示不设限
+    SqlServerQueryTimeout,
+    /// 应用名（服务端 `APP_NAME()` 显示）
+    SqlServerApplicationName,
 }
 
 /// 布尔开关类字段 ID（非文本输入，走 `set_connection_toggle_field`）。
@@ -446,6 +457,14 @@ struct NewConnectionForm {
     pg_show_other_databases: bool,
     /// 对象树是否显示系统 schema
     pg_show_system_schemas: bool,
+    // —— SQL Server 专用编辑值 ——
+    /// 加密模式：`disable` / `require` / `trust_server_certificate`
+    sqlserver_encryption: String,
+    sqlserver_schema: String,
+    sqlserver_instance: String,
+    sqlserver_connect_timeout_secs: String,
+    sqlserver_query_timeout_secs: String,
+    sqlserver_application_name: String,
     sentinel_master_name: String,
     /// Sentinel 节点列表，换行分隔
     sentinel_endpoints: String,
@@ -494,6 +513,13 @@ struct NewConnectionInputs {
     pg_application_name: Entity<InputState>,
     pg_connect_timeout: Entity<InputState>,
     pg_query_timeout: Entity<InputState>,
+    /// —— SQL Server 专用 ——
+    sqlserver_encryption_select: Entity<SelectState<SearchableVec<ConnectionSelectOption>>>,
+    sqlserver_schema: Entity<InputState>,
+    sqlserver_instance: Entity<InputState>,
+    sqlserver_connect_timeout: Entity<InputState>,
+    sqlserver_query_timeout: Entity<InputState>,
+    sqlserver_application_name: Entity<InputState>,
     mysql_charset: Entity<InputState>,
     mysql_proxy_type: Entity<InputState>,
     mysql_ssh_connect_timeout: Entity<InputState>,
@@ -596,6 +622,12 @@ impl NewConnectionForm {
             pg_tcp_keepalive: false,
             pg_show_other_databases: false,
             pg_show_system_schemas: false,
+            sqlserver_encryption: "trust_server_certificate".to_string(),
+            sqlserver_schema: String::new(),
+            sqlserver_instance: String::new(),
+            sqlserver_connect_timeout_secs: "5".to_string(),
+            sqlserver_query_timeout_secs: "0".to_string(),
+            sqlserver_application_name: "FluxDB".to_string(),
             sentinel_master_name: String::new(),
             sentinel_endpoints: String::new(),
             cluster_start_nodes: String::new(),
@@ -651,6 +683,12 @@ impl NewConnectionForm {
                 form.username = "SYSDBA".to_string();
                 form.database = "DAMENG".to_string();
                 form.dameng_schema = "SYSDBA".to_string();
+            }
+            DatabaseKind::SqlServer => {
+                form.name = format!("SQL Server Local {index}");
+                form.host = "127.0.0.1".to_string();
+                form.port = "1433".to_string();
+                form.username = "sa".to_string();
             }
         }
         form
@@ -743,14 +781,40 @@ impl NewConnectionForm {
         }
 
         if config.kind == DatabaseKind::Dameng {
-            let profile = config
-                .dameng_profile
-                .clone()
-                .unwrap_or_else(|| fluxdb_core::DamengConnectionProfile::from_options(&config.options));
+            let profile = config.dameng_profile.clone().unwrap_or_else(|| {
+                fluxdb_core::DamengConnectionProfile::from_options(&config.options)
+            });
             form.dameng_schema = profile.basic.schema.clone();
         }
 
+        if config.kind == DatabaseKind::SqlServer {
+            let profile = config.sqlserver_profile.clone().unwrap_or_else(|| {
+                fluxdb_core::SqlServerConnectionProfile::from_options(&config.options)
+            });
+            form.apply_sqlserver_profile(&profile);
+        }
+
         form
+    }
+
+    /// 用一份 SQL Server 档案回填表单；档案是拨号与保存的事实来源。
+    fn apply_sqlserver_profile(&mut self, profile: &fluxdb_core::SqlServerConnectionProfile) {
+        self.host = profile.basic.host.clone();
+        self.port = profile.basic.port.to_string();
+        self.database = profile.basic.database.clone();
+        self.sqlserver_schema = profile.basic.schema.clone();
+        self.sqlserver_instance = profile.basic.instance.clone();
+        self.username = profile.basic.username.clone();
+        self.password = profile
+            .basic
+            .password
+            .value()
+            .unwrap_or_default()
+            .to_string();
+        self.sqlserver_encryption = profile.advanced.encryption.as_str().to_string();
+        self.sqlserver_connect_timeout_secs = profile.advanced.connect_timeout_secs.to_string();
+        self.sqlserver_query_timeout_secs = profile.advanced.query_timeout_secs.to_string();
+        self.sqlserver_application_name = profile.advanced.application_name.clone();
     }
 
     /// 用一份 PostgreSQL 档案回填表单的 PG 专用编辑值。
@@ -1240,15 +1304,44 @@ impl NewConnectionForm {
             },
         }
     }
+
+    fn build_sqlserver_profile(&self) -> fluxdb_core::SqlServerConnectionProfile {
+        fluxdb_core::SqlServerConnectionProfile {
+            basic: fluxdb_core::SqlServerBasicOptions {
+                host: self.host.trim().to_string(),
+                port: self
+                    .port
+                    .trim()
+                    .parse::<u16>()
+                    .unwrap_or_else(|_| database_default_port_u16(DatabaseKind::SqlServer)),
+                database: self.database.trim().to_string(),
+                schema: self.sqlserver_schema.trim().to_string(),
+                instance: self.sqlserver_instance.trim().to_string(),
+                username: self.username.trim().to_string(),
+                password: fluxdb_core::SecretRef::inline(self.password.clone()),
+            },
+            advanced: fluxdb_core::SqlServerAdvancedOptions {
+                encryption: fluxdb_core::SqlServerEncryption::parse(&self.sqlserver_encryption)
+                    .unwrap_or(fluxdb_core::SqlServerEncryption::TrustServerCertificate),
+                connect_timeout_secs: self
+                    .sqlserver_connect_timeout_secs
+                    .trim()
+                    .parse()
+                    .unwrap_or(5),
+                query_timeout_secs: self
+                    .sqlserver_query_timeout_secs
+                    .trim()
+                    .parse()
+                    .unwrap_or(0),
+                application_name: self.sqlserver_application_name.trim().to_string(),
+            },
+        }
+    }
 }
 
 impl NewConnectionInputs {
     /// 输入框 placeholder 在创建时缓存；切换语言后更新，保留已输入内容。
-    fn refresh_placeholders(
-        &self,
-        window: &mut Window,
-        cx: &mut Context<NavicatMain>,
-    ) {
+    fn refresh_placeholders(&self, window: &mut Window, cx: &mut Context<NavicatMain>) {
         let inputs = [
             (&self.name, ConnectionField::Name),
             (&self.host, ConnectionField::Host),
@@ -1271,16 +1364,39 @@ impl NewConnectionInputs {
             (&self.ssh_private_key, ConnectionField::SshPrivateKey),
             (&self.ssh_passphrase, ConnectionField::SshPassphrase),
             (&self.pg_default_schema, ConnectionField::PgDefaultSchema),
-            (&self.pg_application_name, ConnectionField::PgApplicationName),
-            (&self.pg_connect_timeout, ConnectionField::PgConnectTimeoutSecs),
+            (
+                &self.pg_application_name,
+                ConnectionField::PgApplicationName,
+            ),
+            (
+                &self.pg_connect_timeout,
+                ConnectionField::PgConnectTimeoutSecs,
+            ),
             (&self.pg_query_timeout, ConnectionField::PgQueryTimeoutSecs),
+            (&self.sqlserver_schema, ConnectionField::SqlServerSchema),
+            (&self.sqlserver_instance, ConnectionField::SqlServerInstance),
+            (
+                &self.sqlserver_connect_timeout,
+                ConnectionField::SqlServerConnectTimeout,
+            ),
+            (
+                &self.sqlserver_query_timeout,
+                ConnectionField::SqlServerQueryTimeout,
+            ),
+            (
+                &self.sqlserver_application_name,
+                ConnectionField::SqlServerApplicationName,
+            ),
             (&self.mysql_charset, ConnectionField::MysqlCharset),
             (&self.mysql_proxy_type, ConnectionField::MysqlProxyType),
             (
                 &self.mysql_ssh_connect_timeout,
                 ConnectionField::MysqlSshConnectTimeout,
             ),
-            (&self.mysql_ssh_keepalive, ConnectionField::MysqlSshKeepalive),
+            (
+                &self.mysql_ssh_keepalive,
+                ConnectionField::MysqlSshKeepalive,
+            ),
             (&self.mysql_proxy_host, ConnectionField::MysqlProxyHost),
             (&self.mysql_proxy_port, ConnectionField::MysqlProxyPort),
             (
@@ -1291,15 +1407,24 @@ impl NewConnectionInputs {
                 &self.mysql_proxy_password,
                 ConnectionField::MysqlProxyPassword,
             ),
-            (&self.mysql_connect_timeout, ConnectionField::MysqlConnectTimeout),
-            (&self.mysql_query_timeout, ConnectionField::MysqlQueryTimeout),
+            (
+                &self.mysql_connect_timeout,
+                ConnectionField::MysqlConnectTimeout,
+            ),
+            (
+                &self.mysql_query_timeout,
+                ConnectionField::MysqlQueryTimeout,
+            ),
             (&self.mysql_idle_ttl, ConnectionField::MysqlIdleTtl),
             (
                 &self.sentinel_master_name,
                 ConnectionField::SentinelMasterName,
             ),
             (&self.sentinel_endpoints, ConnectionField::SentinelEndpoints),
-            (&self.cluster_start_nodes, ConnectionField::ClusterStartNodes),
+            (
+                &self.cluster_start_nodes,
+                ConnectionField::ClusterStartNodes,
+            ),
             (&self.cloud_subscription, ConnectionField::CloudSubscription),
             (&self.cloud_resource, ConnectionField::CloudResource),
             (&self.discovery_uri, ConnectionField::DiscoveryUri),
@@ -1378,6 +1503,17 @@ impl NewConnectionInputs {
             input_state(ConnectionField::PgConnectTimeoutSecs, false, window, cx);
         let (pg_query_timeout, pg_query_timeout_subscription) =
             input_state(ConnectionField::PgQueryTimeoutSecs, false, window, cx);
+        // —— SQL Server 专用文本输入 ——
+        let (sqlserver_schema, sqlserver_schema_subscription) =
+            input_state(ConnectionField::SqlServerSchema, false, window, cx);
+        let (sqlserver_instance, sqlserver_instance_subscription) =
+            input_state(ConnectionField::SqlServerInstance, false, window, cx);
+        let (sqlserver_connect_timeout, sqlserver_connect_timeout_subscription) =
+            input_state(ConnectionField::SqlServerConnectTimeout, false, window, cx);
+        let (sqlserver_query_timeout, sqlserver_query_timeout_subscription) =
+            input_state(ConnectionField::SqlServerQueryTimeout, false, window, cx);
+        let (sqlserver_application_name, sqlserver_application_name_subscription) =
+            input_state(ConnectionField::SqlServerApplicationName, false, window, cx);
         // —— MySQL / TiDB 专用文本输入 ——
         let (mysql_charset, mysql_charset_subscription) =
             input_state(ConnectionField::MysqlCharset, false, window, cx);
@@ -1543,6 +1679,42 @@ impl NewConnectionInputs {
             },
         );
 
+        // SQL Server 加密模式：默认信任服务器证书（自签部署常见），仍要求 TLS。
+        let sqlserver_encryption_select = cx.new(|cx| {
+            SelectState::new(
+                SearchableVec::new(vec![
+                    ConnectionSelectOption {
+                        value: "disable".into(),
+                        label_key: "app.connection.sqlserver.encryption_disable",
+                    },
+                    ConnectionSelectOption {
+                        value: "require".into(),
+                        label_key: "app.connection.sqlserver.encryption_require",
+                    },
+                    ConnectionSelectOption {
+                        value: "trust_server_certificate".into(),
+                        label_key: "app.connection.sqlserver.encryption_trust",
+                    },
+                ]),
+                Some(IndexPath::new(2)),
+                window,
+                cx,
+            )
+        });
+        let sqlserver_encryption_select_s = cx.subscribe(
+            &sqlserver_encryption_select,
+            move |this: &mut NavicatMain,
+                  _select,
+                  event: &SelectEvent<SearchableVec<ConnectionSelectOption>>,
+                  cx| {
+                let SelectEvent::Confirm(value) = event;
+                if let Some(value) = value {
+                    this.new_connection_form.sqlserver_encryption = value.value().clone();
+                    cx.notify();
+                }
+            },
+        );
+
         Self {
             name,
             host,
@@ -1569,6 +1741,12 @@ impl NewConnectionInputs {
             pg_application_name,
             pg_connect_timeout,
             pg_query_timeout,
+            sqlserver_encryption_select,
+            sqlserver_schema,
+            sqlserver_instance,
+            sqlserver_connect_timeout,
+            sqlserver_query_timeout,
+            sqlserver_application_name,
             mysql_ssl_mode_select,
             mysql_charset,
             mysql_proxy_type,
@@ -1615,6 +1793,12 @@ impl NewConnectionInputs {
                 pg_application_name_subscription,
                 pg_connect_timeout_subscription,
                 pg_query_timeout_subscription,
+                sqlserver_encryption_select_s,
+                sqlserver_schema_subscription,
+                sqlserver_instance_subscription,
+                sqlserver_connect_timeout_subscription,
+                sqlserver_query_timeout_subscription,
+                sqlserver_application_name_subscription,
                 mysql_ssl_mode_select_s,
                 mysql_charset_subscription,
                 mysql_proxy_type_subscription,
@@ -1665,6 +1849,11 @@ impl NewConnectionInputs {
             ConnectionField::PgApplicationName => &self.pg_application_name,
             ConnectionField::PgConnectTimeoutSecs => &self.pg_connect_timeout,
             ConnectionField::PgQueryTimeoutSecs => &self.pg_query_timeout,
+            ConnectionField::SqlServerSchema => &self.sqlserver_schema,
+            ConnectionField::SqlServerInstance => &self.sqlserver_instance,
+            ConnectionField::SqlServerConnectTimeout => &self.sqlserver_connect_timeout,
+            ConnectionField::SqlServerQueryTimeout => &self.sqlserver_query_timeout,
+            ConnectionField::SqlServerApplicationName => &self.sqlserver_application_name,
             ConnectionField::MysqlCharset => &self.mysql_charset,
             ConnectionField::MysqlProxyType => &self.mysql_proxy_type,
             ConnectionField::MysqlSshConnectTimeout => &self.mysql_ssh_connect_timeout,
@@ -1739,6 +1928,37 @@ impl NewConnectionInputs {
         self.set_value(
             ConnectionField::SshPassphrase,
             &form.ssh_passphrase,
+            window,
+            cx,
+        );
+        // —— SQL Server 专用 ——
+        self.set_value(
+            ConnectionField::SqlServerSchema,
+            &form.sqlserver_schema,
+            window,
+            cx,
+        );
+        self.set_value(
+            ConnectionField::SqlServerInstance,
+            &form.sqlserver_instance,
+            window,
+            cx,
+        );
+        self.set_value(
+            ConnectionField::SqlServerConnectTimeout,
+            &form.sqlserver_connect_timeout_secs,
+            window,
+            cx,
+        );
+        self.set_value(
+            ConnectionField::SqlServerQueryTimeout,
+            &form.sqlserver_query_timeout_secs,
+            window,
+            cx,
+        );
+        self.set_value(
+            ConnectionField::SqlServerApplicationName,
+            &form.sqlserver_application_name,
             window,
             cx,
         );

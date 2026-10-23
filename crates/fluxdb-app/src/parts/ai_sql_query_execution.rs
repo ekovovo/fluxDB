@@ -33,27 +33,53 @@ pub fn execute_sql_with_parameters(
     execute_sql_with_parameters_and_progress(
         resolver,
         target,
-        sql,
-        max_rows,
-        parameters,
-        read_only,
+        SqlExecInput {
+            sql,
+            max_rows,
+            parameters,
+        },
         should_cancel,
         &mut |_| {},
-        false,
+        SqlExecRunOptions {
+            read_only,
+            bounded_write: false,
+            explain_only: false,
+        },
     )
+}
+
+/// 执行链的可选模式。集中成一个结构，避免继续增加位置参数。
+#[derive(Clone, Copy, Debug, Default)]
+struct SqlExecRunOptions {
+    /// 只读入口：分类器先拦，连接器再用只读事务兜底。
+    read_only: bool,
+    /// 有界提交（仅具备该能力的连接器）。
+    bounded_write: bool,
+    /// 请求执行计划；仅 SQL Server 走 SHOWPLAN，其它方言在包装阶段已改写 SQL。
+    explain_only: bool,
+}
+
+/// 一次执行请求的 SQL、行数上限与参数。
+#[derive(Clone, Copy)]
+struct SqlExecInput<'a> {
+    sql: &'a str,
+    max_rows: u64,
+    parameters: &'a [fluxdb_core::SqlParameter],
 }
 
 fn execute_sql_with_parameters_and_progress(
     resolver: &dyn SqlExecutionResolver,
     target: &AiSqlTarget,
-    sql: &str,
-    max_rows: u64,
-    parameters: &[fluxdb_core::SqlParameter],
-    read_only: bool,
+    input: SqlExecInput<'_>,
     should_cancel: &dyn Fn() -> bool,
     on_progress: &mut dyn FnMut(fluxdb_core::ToolProgressEvent),
-    bounded_write: bool,
+    options: SqlExecRunOptions,
 ) -> Result<SqlExecutionOutcome, SqlExecError> {
+    let SqlExecInput {
+        sql,
+        max_rows,
+        parameters,
+    } = input;
     let config = resolver
         .connection_config(target.connection_id)
         .ok_or_else(|| {
@@ -62,10 +88,13 @@ fn execute_sql_with_parameters_and_progress(
                 format!("连接不存在: {}", target.connection_id.0),
             )
         })?;
-    let dialect = dialect_for(config.kind)
+    let policy = policy_for(config.kind)
         .ok_or_else(|| SqlExecError::new("unsupported_database", "该连接类型不支持 SQL 工具"))?;
 
-    let risk = analyze_sql(sql, dialect);
+    let read_only = options.read_only;
+    // 只有声明 Showplan 的策略才走专用会话；其它方言在 apply_explain_mode 里已包装。
+    let explain_only = options.explain_only && policy.explain_mode() == ExplainMode::Showplan;
+    let risk = analyze_sql(sql, policy);
     // 结构性拒绝（多语句、事务控制）优先给出更具体的原因。
     if let SqlRisk::Rejected { reasons } = &risk {
         return Err(SqlExecError::new(
@@ -79,7 +108,7 @@ fn execute_sql_with_parameters_and_progress(
             format!("只读入口拒绝该语句（{}）", risk.reasons().join(",")),
         ));
     }
-    validate_sql_scope(sql, dialect, target)?;
+    validate_sql_scope(sql, policy, target)?;
 
     let connector = fluxdb_connectors::connector_for(&config).map_err(|error| {
         SqlExecError::new("connector_error", format!("无法创建连接器: {error}"))
@@ -88,7 +117,12 @@ fn execute_sql_with_parameters_and_progress(
     // 取 max_rows+1：多取一行才能区分「结果正好这么多」与「被上限截断」，
     // 否则主动追加的 LIMIT 会让 truncated 永远为 false，模型无法知道还有更多行（设计 §21.3）。
     let fetch_rows = max_rows.saturating_add(1);
-    let bounded = sql_text_for_execution(sql, fetch_rows, config.kind);
+    // SQL Server 的 SHOWPLAN 会话里不能再套 TOP，否则返回的是改写后的语句计划。
+    let bounded = if explain_only && config.kind == DatabaseKind::SqlServer {
+        strip_sql_comments(sql)
+    } else {
+        sql_text_for_execution(sql, fetch_rows, config.kind)
+    };
     let request = fluxdb_core::QueryRequest {
         connection_id: target.connection_id,
         database: target.database.clone(),
@@ -102,7 +136,8 @@ fn execute_sql_with_parameters_and_progress(
             page_offset: 0,
             page_size: fetch_rows,
             // 只读执行器要求数据库级只读；统一入口中的写分支传 false。
-            read_only,
+            read_only: read_only || explain_only,
+            explain_only,
         },
         // 每个 resolver 对应一个 Agent Turn 的专属会话，不借用编辑器 Tab。
         session_id: Some(resolver.query_session_id()),
@@ -117,7 +152,7 @@ fn execute_sql_with_parameters_and_progress(
     let mut first_error: Option<String> = None;
     let mut progress = Vec::new();
     // 走有界提交只在连接器确实具备该能力时发生；自动放行的普通写入按原语句执行。
-    let execution = if bounded_write {
+    let execution = if options.bounded_write {
         connector
             .execute_bounded_update(
                 &fluxdb_core::ParameterizedQueryRequest {
@@ -227,15 +262,14 @@ fn execute_sql_with_parameters_and_progress(
 /// 裸名由请求携带的默认 database/schema 解析；显式同名限定允许，显式越界 fail closed。
 fn validate_sql_scope(
     sql: &str,
-    dialect: SqlDialectKind,
+    policy: &dyn SqlPolicy,
     target: &AiSqlTarget,
 ) -> Result<(), SqlExecError> {
     use sqlparser::ast::{ObjectName, ObjectNamePart, visit_expressions, visit_relations};
     use std::ops::ControlFlow;
 
-    let statements =
-        sqlparser::parser::Parser::parse_sql(dialect.parser_dialect().as_ref(), sql)
-            .map_err(|_| SqlExecError::new("unknown_syntax", "SQL 无法解析，无法校验作用域"))?;
+    let statements = sqlparser::parser::Parser::parse_sql(policy.parser_dialect(), sql)
+        .map_err(|_| SqlExecError::new("unknown_syntax", "SQL 无法解析，无法校验作用域"))?;
     if statements.len() != 1 {
         return Err(SqlExecError::new(
             "rejected_sql",
@@ -243,20 +277,12 @@ fn validate_sql_scope(
         ));
     }
     let statement = &statements[0];
-    let allowed_namespace = match dialect {
-        SqlDialectKind::MySql => target.database.as_deref(),
-        SqlDialectKind::Sqlite => target.database.as_deref().or(Some("main")),
-        SqlDialectKind::Postgres => target.schema.as_deref(),
+    let allowed_namespace = match policy.namespace_scope() {
+        NamespaceScope::Database => target.database.as_deref(),
+        NamespaceScope::AttachedDatabase => target.database.as_deref().or(Some("main")),
+        NamespaceScope::Schema | NamespaceScope::SchemaAndDatabase => target.schema.as_deref(),
     };
-    let namespace_kind = if dialect == SqlDialectKind::MySql {
-        "database"
-    } else {
-        if dialect == SqlDialectKind::Sqlite {
-            "attached database"
-        } else {
-            "schema"
-        }
-    };
+    let namespace_kind = policy.namespace_scope().label();
     let out_of_scope = |name: &ObjectName, kind: &str| -> ControlFlow<()> {
         // 裸名按请求默认 namespace 解析；从两段限定名开始检查倒数第二段。
         if name.0.len() < 2 {
@@ -269,7 +295,24 @@ fn validate_sql_scope(
         }) else {
             return ControlFlow::Break(());
         };
-        if allowed_namespace.is_some_and(|allowed| qualifier.eq_ignore_ascii_case(allowed)) {
+        let namespace_ok =
+            allowed_namespace.is_some_and(|allowed| qualifier.eq_ignore_ascii_case(allowed));
+        // SQL Server 的三段名 `[db].[schema].[table]`：database 也必须等于 target，
+        // 否则会跨库读取/写入。两段名没有 database 段，按请求默认库解析。
+        let database_ok = if policy.namespace_scope() == NamespaceScope::SchemaAndDatabase
+            && name.0.len() >= 3
+        {
+            let database = name.0.get(name.0.len() - 3).and_then(|part| match part {
+                ObjectNamePart::Identifier(ident) => Some(ident.value.as_str()),
+                ObjectNamePart::Function(_) => None,
+            });
+            database
+                .zip(target.database.as_deref())
+                .is_some_and(|(database, allowed)| database.eq_ignore_ascii_case(allowed))
+        } else {
+            true
+        };
+        if namespace_ok && database_ok {
             ControlFlow::Continue(())
         } else {
             tracing::warn!(
@@ -672,4 +715,250 @@ pub fn describe_object(
         return Err(SqlExecError::new("cancelled", "元数据描述已取消"));
     }
     Ok(serde_json::Value::Object(result))
+}
+
+#[cfg(test)]
+mod sqlserver_ai_exec_tests {
+    use super::{SqlExecInput, SqlExecRunOptions, execute_sql};
+    use crate::{AiSqlTarget, DatabaseKind, MapSqlResolver};
+    use fluxdb_core::{
+        ConnectionConfig, ConnectionId, Endpoint, SecretRef, SqlServerAdvancedOptions,
+        SqlServerBasicOptions, SqlServerConnectionProfile, SqlServerEncryption,
+    };
+    use std::collections::BTreeMap;
+
+    /// AI 执行链的纯策略测试：不建连，只验证方言映射与分类结果。
+    #[test]
+    fn sqlserver_has_ai_dialect_and_classifies_select() {
+        let policy = crate::policy_for(DatabaseKind::SqlServer).expect("policy");
+        assert!(crate::analyze_sql(
+            "SELECT TOP (5) * FROM [dbo].[t]",
+            policy
+        )
+        .is_read_only());
+    }
+
+    /// 真实库：只读 SELECT 放行，写语句在策略层拒绝，数据不被改动。
+    #[test]
+    #[ignore = "需要 FLUXDB_MSSQL_SMOKE=host:port:user:password 指向可达的 SQL Server"]
+    fn sqlserver_ai_read_only_executes_select_and_rejects_writes() {
+        let config = smoke_config();
+        let table = format!(
+            "FLUXDB_AI_{}",
+            uuid::Uuid::new_v4()
+                .simple()
+                .to_string()
+                .to_ascii_uppercase()
+        );
+        run(
+            &config,
+            &format!(
+                "CREATE TABLE [dbo].[{table}] ([ID] int IDENTITY(1,1) PRIMARY KEY, [NAME] nvarchar(50) NOT NULL); \
+                 INSERT INTO [dbo].[{table}] ([NAME]) VALUES (N'alpha'), (N'beta');"
+            ),
+        );
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let resolver = MapSqlResolver::new([config.clone()]);
+            let target = AiSqlTarget::parse(&format!(
+                "conn:{}/db:{}/schema:dbo",
+                config.id.0,
+                database_name(&config)
+            ))
+            .expect("target");
+            let should_cancel = || false;
+
+            let outcome = execute_sql(
+                &resolver as &dyn crate::SqlExecutionResolver,
+                &target,
+                &format!("SELECT [NAME] FROM [dbo].[{table}] ORDER BY [ID]"),
+                10,
+                true,
+                &should_cancel,
+            )
+            .expect("read-only select");
+            assert_eq!(outcome.rows.len(), 2);
+            // AI 路径必须把 LIMIT 改写成 TOP，否则 SQL Server 语法错误。
+            assert!(outcome.executed_sql.contains("TOP (11)"), "{}", outcome.executed_sql);
+
+            let error = execute_sql(
+                &resolver as &dyn crate::SqlExecutionResolver,
+                &target,
+                &format!("UPDATE [dbo].[{table}] SET [NAME] = N'hacked'"),
+                10,
+                true,
+                &should_cancel,
+            )
+            .expect_err("write must be rejected");
+            assert_eq!(error.code, "not_read_only");
+
+            let error = execute_sql(
+                &resolver as &dyn crate::SqlExecutionResolver,
+                &target,
+                "EXEC xp_cmdshell 'dir'",
+                10,
+                true,
+                &should_cancel,
+            )
+            .expect_err("xp_cmdshell must be rejected");
+            assert!(
+                matches!(error.code, "not_read_only" | "rejected_sql"),
+                "{error:?}"
+            );
+
+            let error = execute_sql(
+                &resolver as &dyn crate::SqlExecutionResolver,
+                &target,
+                "SELECT name FROM [otherdb].[dbo].[secrets]",
+                10,
+                true,
+                &should_cancel,
+            )
+            .expect_err("cross-database reference must be rejected");
+            assert_eq!(error.code, "scope_mismatch");
+
+            // 执行计划：SQL Server 走 SET SHOWPLAN_ALL，而不是 EXPLAIN 前缀。
+            let plan = execute_sql_with_explain(
+                &resolver as &dyn crate::SqlExecutionResolver,
+                &target,
+                &format!("SELECT [NAME] FROM [dbo].[{table}]"),
+                &should_cancel,
+            )
+            .expect("SQL Server plan");
+            assert!(
+                plan.columns.iter().any(|column| column.eq_ignore_ascii_case("StmtText")),
+                "{:?}",
+                plan.columns
+            );
+            assert!(
+                plan.rows.iter().any(|row| row.iter().any(|cell| {
+                    cell.as_str()
+                        .is_some_and(|text| text.contains("[NAME]"))
+                })),
+                "plan should mention the selected column"
+            );
+
+            let connector = fluxdb_connectors::connector_for(&config).expect("connector");
+            let page = connector
+                .load_data(
+                    &fluxdb_core::ObjectPath {
+                        connection_id: config.id,
+                        database: Some(database_name(&config)),
+                        schema: Some("dbo".into()),
+                        name: table.clone(),
+                        kind: fluxdb_core::ObjectKind::Table,
+                    },
+                    0,
+                    10,
+                    &[],
+                    &[],
+                )
+                .expect("load data");
+            let names = page
+                .rows
+                .iter()
+                .map(|row| row.values[1].display_label())
+                .collect::<Vec<_>>();
+            assert_eq!(names, vec!["alpha".to_string(), "beta".to_string()]);
+        }));
+        run(&config, &format!("DROP TABLE IF EXISTS [dbo].[{table}]"));
+        if let Err(panic) = result {
+            std::panic::resume_unwind(panic);
+        }
+    }
+
+    fn smoke_config() -> ConnectionConfig {
+        let raw = std::env::var("FLUXDB_MSSQL_SMOKE")
+            .expect("FLUXDB_MSSQL_SMOKE must be host:port:user:password");
+        let parts = raw.splitn(4, ':').collect::<Vec<_>>();
+        let host = parts[0];
+        let port = parts[1].parse::<u16>().expect("SQL Server port");
+        let database =
+            std::env::var("FLUXDB_MSSQL_DATABASE").unwrap_or_else(|_| "fluxdb_smoke".into());
+        ConnectionConfig {
+            id: ConnectionId(9_912),
+            name: "SQL Server AI exec".into(),
+            kind: DatabaseKind::SqlServer,
+            endpoint: Endpoint::Tcp {
+                host: host.into(),
+                port,
+                database: Some(database.clone()),
+            },
+            options: BTreeMap::new(),
+            redis_profile: None,
+            mysql_profile: None,
+            postgres_profile: None,
+            dameng_profile: None,
+            sqlserver_profile: Some(SqlServerConnectionProfile {
+                basic: SqlServerBasicOptions {
+                    host: host.into(),
+                    port,
+                    database,
+                    schema: "dbo".into(),
+                    instance: String::new(),
+                    username: parts[2].into(),
+                    password: SecretRef::inline(parts[3]),
+                },
+                advanced: SqlServerAdvancedOptions {
+                    encryption: SqlServerEncryption::TrustServerCertificate,
+                    connect_timeout_secs: 10,
+                    query_timeout_secs: 30,
+                    application_name: "FluxDB SQL Server AI exec".into(),
+                },
+            }),
+        }
+    }
+
+    fn database_name(config: &ConnectionConfig) -> String {
+        config
+            .sqlserver_profile
+            .as_ref()
+            .map(|profile| profile.basic.database.clone())
+            .unwrap_or_else(|| "fluxdb_smoke".into())
+    }
+
+    fn run(config: &ConnectionConfig, sql: &str) {
+        let connector = fluxdb_connectors::connector_for(config).expect("connector");
+        let result = connector
+            .execute(&fluxdb_core::QueryRequest {
+                connection_id: config.id,
+                database: Some(database_name(config)),
+                schema: Some("dbo".into()),
+                session_id: None,
+                text: sql.into(),
+                mode: fluxdb_core::QueryMode::All,
+                options: fluxdb_core::QueryExecutionOptions {
+                    continue_on_error: false,
+                    split_statements: true,
+                    ..fluxdb_core::QueryExecutionOptions::default()
+                },
+            })
+            .expect("execute SQL Server SQL");
+        if let Some(summary) = result.summaries.iter().find(|summary| !summary.success) {
+            panic!("SQL Server SQL failed: {}\n{sql}", summary.message);
+        }
+    }
+
+    fn execute_sql_with_explain(
+        resolver: &dyn crate::SqlExecutionResolver,
+        target: &AiSqlTarget,
+        sql: &str,
+        should_cancel: &dyn Fn() -> bool,
+    ) -> Result<super::SqlExecutionOutcome, crate::SqlExecError> {
+        super::execute_sql_with_parameters_and_progress(
+            resolver,
+            target,
+            SqlExecInput {
+                sql,
+                max_rows: 10,
+                parameters: &[],
+            },
+            should_cancel,
+            &mut |_| {},
+            SqlExecRunOptions {
+                read_only: true,
+                bounded_write: false,
+                explain_only: true,
+            },
+        )
+    }
 }

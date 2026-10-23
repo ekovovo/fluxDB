@@ -17,6 +17,7 @@ fn app_completion_dialect(kind: DatabaseKind) -> &'static dyn CompletionDialect 
         DatabaseKind::Sqlite => &fluxdb_completion::SQLITE,
         DatabaseKind::Postgres => &fluxdb_completion::POSTGRES,
         DatabaseKind::Dameng => &fluxdb_completion::DAMENG,
+        DatabaseKind::SqlServer => &fluxdb_completion::SQLSERVER,
         DatabaseKind::MongoDb | DatabaseKind::Redis => &fluxdb_completion::GENERIC,
     }
 }
@@ -101,14 +102,16 @@ impl<'a> IndexMetadataSource<'a> {
         if self.cancelled() {
             return Vec::new();
         }
-        match self.controller.indexed_table_completion_columns_with_cancel(
-            self.config,
-            self.connection_id,
-            key.database.as_deref().or(self.database.as_deref()),
-            schema,
-            &key.table,
-            self.should_cancel,
-        ) {
+        match self
+            .controller
+            .indexed_table_completion_columns_with_cancel(
+                self.config,
+                self.connection_id,
+                key.database.as_deref().or(self.database.as_deref()),
+                schema,
+                &key.table,
+                self.should_cancel,
+            ) {
             Ok(columns) => columns
                 .into_iter()
                 .map(|column| ColumnMeta {
@@ -153,12 +156,7 @@ impl MetadataSource for IndexMetadataSource<'_> {
             }
             let mut seen = tables
                 .iter()
-                .map(|table| {
-                    (
-                        table.schema.clone(),
-                        table.name.to_ascii_lowercase(),
-                    )
-                })
+                .map(|table| (table.schema.clone(), table.name.to_ascii_lowercase()))
                 .collect::<std::collections::HashSet<_>>();
             for table in loaded_completion_tables(
                 &self.controller.state,
@@ -210,7 +208,9 @@ impl MetadataSource for IndexMetadataSource<'_> {
         {
             columns = self.fetch_columns(key, Some(&schema));
         }
-        self.columns.borrow_mut().insert(key.clone(), columns.clone());
+        self.columns
+            .borrow_mut()
+            .insert(key.clone(), columns.clone());
         columns
     }
 
@@ -434,18 +434,16 @@ fn completion_item_from_engine(
         CandidateKind::Function => QueryCompletionKind::Function,
         CandidateKind::Procedure => QueryCompletionKind::Procedure,
     };
-    let (detail, documentation) = if matches!(
-        kind,
-        QueryCompletionKind::Table | QueryCompletionKind::View
-    ) {
-        let namespace = schema.as_deref().map(|schema| match database {
-            Some(database) => format!("{database}.{schema}"),
-            None => schema.to_string(),
-        });
-        (namespace, documentation.or(detail))
-    } else {
-        (detail, documentation)
-    };
+    let (detail, documentation) =
+        if matches!(kind, QueryCompletionKind::Table | QueryCompletionKind::View) {
+            let namespace = schema.as_deref().map(|schema| match database {
+                Some(database) => format!("{database}.{schema}"),
+                None => schema.to_string(),
+            });
+            (namespace, documentation.or(detail))
+        } else {
+            (detail, documentation)
+        };
     QueryCompletionItem {
         label,
         insert_text,
@@ -487,11 +485,7 @@ fn qualify_ambiguous_tables(items: &mut [QueryCompletionItem], database: Option<
         {
             continue;
         }
-        let Some(namespace) = item
-            .schema
-            .clone()
-            .or_else(|| database.map(str::to_string))
-        else {
+        let Some(namespace) = item.schema.clone().or_else(|| database.map(str::to_string)) else {
             continue;
         };
         if owners
@@ -506,7 +500,10 @@ fn qualify_ambiguous_tables(items: &mut [QueryCompletionItem], database: Option<
 }
 
 /// 个性化只做同分内重排：不改变语义分层的先后。
-fn apply_personalized_order(items: &mut Vec<QueryCompletionItem>, recency: &Mutex<RecencyFrequency>) {
+fn apply_personalized_order(
+    items: &mut Vec<QueryCompletionItem>,
+    recency: &Mutex<RecencyFrequency>,
+) {
     let Ok(recency) = recency.lock() else {
         return;
     };

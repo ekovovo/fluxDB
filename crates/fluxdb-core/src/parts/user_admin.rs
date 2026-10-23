@@ -7,6 +7,7 @@ pub enum UserAdminDialect {
 pub enum PrivilegeScope {
     MySql,
     Postgres,
+    SqlServer,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -415,14 +416,16 @@ pub fn database_user_admin_provider(kind: DatabaseKind) -> Option<DatabaseUserAd
         | DatabaseKind::MongoDb
         | DatabaseKind::Redis
         | DatabaseKind::Postgres
-        | DatabaseKind::Dameng => None,
+        | DatabaseKind::Dameng
+        | DatabaseKind::SqlServer => None,
     }
 }
 
 pub fn supports_database_user_admin(kind: DatabaseKind) -> bool {
-    // PostgreSQL 走独立 PG 角色管理（角色/成员/对象权限经连接器读取，见 T27），
-    // 无需 MySQL 的 SQL-生成 provider，故单独放行。
-    matches!(kind, DatabaseKind::Postgres) || database_user_admin_provider(kind).is_some()
+    // PostgreSQL 与 SQL Server 分别走独立的角色/权限工作台，无需 MySQL 的
+    // user@host SQL 生成 provider。
+    matches!(kind, DatabaseKind::Postgres | DatabaseKind::SqlServer)
+        || database_user_admin_provider(kind).is_some()
 }
 
 pub fn grants_from_query_result(result: &QueryExecutionResult) -> Vec<String> {

@@ -348,7 +348,7 @@ impl Render for NavicatMain {
                 this.child(connection_context_menu(menu, &state, colors, cx))
             })
             .when_some(self.database_context_menu.clone(), |this, menu| {
-                // Redis CLI 只对 Redis 连接下的数据库显示；新建 schema 只对 PostgreSQL 显示。
+                // Redis CLI 只对 Redis 显示；新建 schema 对支持数据库内 schema 的类型显示。
                 let is_redis = self
                     .controller
                     .state()
@@ -361,11 +361,25 @@ impl Render for NavicatMain {
                     .connections
                     .iter()
                     .any(|c| c.config.id == menu.connection_id && c.config.kind == DatabaseKind::Postgres);
+                let is_sqlserver = self
+                    .controller
+                    .state()
+                    .connections
+                    .iter()
+                    .any(|c| c.config.id == menu.connection_id && c.config.kind == DatabaseKind::SqlServer);
+                let is_dameng = self
+                    .controller
+                    .state()
+                    .connections
+                    .iter()
+                    .any(|c| c.config.id == menu.connection_id && c.config.kind == DatabaseKind::Dameng);
                 this.child(database_context_menu(
                     menu,
                     &self.pinned_databases,
                     is_redis,
                     is_postgres,
+                    is_sqlserver,
+                    is_dameng,
                     colors,
                     cx,
                 ))
@@ -666,6 +680,9 @@ impl Render for NavicatMain {
                     cx,
                 ))
             })
+            .when_some(self.pending_routine_ddl.clone(), |this, form| {
+                this.child(routine_ddl_modal(form, window, colors, cx))
+            })
             .when_some(self.pending_column_choices.clone(), |this, form| {
                 this.child(column_choices_modal(
                     form,
@@ -677,20 +694,21 @@ impl Render for NavicatMain {
                 ))
             })
             .when_some(self.pending_danger_table_action.clone(), |this, form| {
-                // 危险表（删/清空）弹框：判断是否 PG 必须在 render 内直接读 self 字段，
-                // 不能经 `cx.entity().read(cx)` 自读（render 时 NavicatMain 已被租用会 panic）。
-                let is_postgres = self
+                // 危险表（删/清空）弹框的选项能力必须在 render 内直接读取连接类型后判定。
+                let capabilities = self
                     .controller
                     .state()
                     .connections
                     .iter()
-                    .any(|c| c.config.id == form.object_path.connection_id && c.config.kind == DatabaseKind::Postgres);
+                    .find(|connection| connection.config.id == form.object_path.connection_id)
+                    .map(|connection| danger_table_capabilities(connection.config.kind))
+                    .unwrap_or_default();
                 this.child(danger_table_modal(
                     form.clone(),
                     self.danger_table_sql_for_form(&form),
                     self.danger_table_foreign_key_check_select.clone(),
                     self._danger_table_task.is_some(),
-                    is_postgres,
+                    capabilities,
                     self.focus_handle.clone(),
                     window,
                     colors,
@@ -937,9 +955,11 @@ fn render_tab_kind_snapshot(kind: &TabKind) -> TabKind {
 
         TabKind::UserAdmin(admin) => TabKind::UserAdmin(UserAdminState {
             connection_id: admin.connection_id,
+            sqlserver: admin.sqlserver.clone(),
             active_detail_tab: admin.active_detail_tab,
             users: Vec::new(),
             selected_user: admin.selected_user.clone(),
+            pending_selected_user: admin.pending_selected_user.clone(),
             creating_user: admin.creating_user,
             grants: Vec::new(),
             grants_loaded_user: admin.grants_loaded_user.clone(),
@@ -992,6 +1012,7 @@ fn render_tab_kind_snapshot(kind: &TabKind) -> TabKind {
             pg_roles: Vec::new(),
             pg_roles_error: admin.pg_roles_error.clone(),
             pg_selected_role: admin.pg_selected_role.clone(),
+            pending_selected_pg_role: admin.pending_selected_pg_role.clone(),
             pg_draft: None,
             pg_memberships: Vec::new(),
             pg_memberships_loaded: admin.pg_memberships_loaded,

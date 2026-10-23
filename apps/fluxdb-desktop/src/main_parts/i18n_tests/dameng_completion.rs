@@ -43,6 +43,7 @@
                     application_name: "FluxDB E2E".into(),
                 },
             }),
+            sqlserver_profile: None,
         }
     }
 

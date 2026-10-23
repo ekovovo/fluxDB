@@ -7,6 +7,7 @@ pub enum DatabaseKind {
     Redis,
     Postgres,
     Dameng,
+    SqlServer,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
@@ -37,6 +38,9 @@ pub struct ConnectionConfig {
     /// 达梦 DM8 专用结构化连接档案；历史连接缺省为 `None`。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dameng_profile: Option<DamengConnectionProfile>,
+    /// SQL Server 专用结构化连接档案；历史连接缺省为 `None`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sqlserver_profile: Option<SqlServerConnectionProfile>,
 }
 
 impl ConnectionConfig {
@@ -109,6 +113,22 @@ impl ConnectionConfig {
     /// 若携带达梦档案，则把档案归一化进 `endpoint` / `options`。
     pub fn dameng_resolved(&self) -> Self {
         let Some(profile) = self.dameng_profile.clone() else {
+            return self.clone();
+        };
+        let mut config = self.clone();
+        let (host, port) = profile.dial_endpoint();
+        config.endpoint = Endpoint::Tcp {
+            host,
+            port,
+            database: non_empty_string(&profile.basic.database),
+        };
+        config.options.extend(profile.into_options());
+        config
+    }
+
+    /// 若携带 SQL Server 档案，则把档案归一化进 `endpoint` / `options`。
+    pub fn sqlserver_resolved(&self) -> Self {
+        let Some(profile) = self.sqlserver_profile.clone() else {
             return self.clone();
         };
         let mut config = self.clone();
@@ -391,6 +411,9 @@ pub struct ConnectionDraft {
     /// 达梦 DM8 专用结构化连接档案；见 [`ConnectionConfig::dameng_profile`]。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dameng_profile: Option<DamengConnectionProfile>,
+    /// SQL Server 专用结构化连接档案；见 [`ConnectionConfig::sqlserver_profile`]。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sqlserver_profile: Option<SqlServerConnectionProfile>,
 }
 
 impl ConnectionDraft {
@@ -405,6 +428,7 @@ impl ConnectionDraft {
             mysql_profile: self.mysql_profile,
             postgres_profile: self.postgres_profile,
             dameng_profile: self.dameng_profile,
+            sqlserver_profile: self.sqlserver_profile,
         }
     }
 }

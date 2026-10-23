@@ -1254,7 +1254,9 @@ fn completion_kind_icon(kind: fluxdb_editor_core::CompletionKind) -> AppIcon {
         fluxdb_editor_core::CompletionKind::Function => AppIcon::FileSql,
         fluxdb_editor_core::CompletionKind::Table => AppIcon::Table,
         fluxdb_editor_core::CompletionKind::Column => AppIcon::List,
-        fluxdb_editor_core::CompletionKind::Schema => AppIcon::Database,
+        // schema 不是 database：侧边栏用文件夹式 schema 图标，补全沿用同一语义，
+        // 避免 SQL Server/PostgreSQL 的 schema 候选看起来像可切换的数据库。
+        fluxdb_editor_core::CompletionKind::Schema => AppIcon::Schema,
         fluxdb_editor_core::CompletionKind::Method => AppIcon::FileSql,
         _ => AppIcon::Select,
     }

@@ -29,6 +29,8 @@ fn for_each_statement(
     let mut line = Vec::new();
     let mut statement = String::new();
     let mut quote = None;
+    // SQL Server 方括号标识符可能包含 `;` 或 `--`，切分时必须整体跳过。
+    let mut bracket = false;
     let mut block = false;
     let mut executable = false;
     let mut escaped = false;
@@ -98,6 +100,16 @@ fn for_each_statement(
                         quote = None;
                     }
                 }
+            } else if bracket {
+                statement.push(ch);
+                if ch == ']' {
+                    if next == Some(']') {
+                        statement.push(']');
+                        i += 1;
+                    } else {
+                        bracket = false;
+                    }
+                }
             } else if ch == '-' && next == Some('-') || ch == '#' && kind != DatabaseKind::Postgres
             {
                 break;
@@ -113,6 +125,9 @@ fn for_each_statement(
                 continue;
             } else if matches!(ch, '\'' | '"' | '`') {
                 quote = Some(ch);
+                statement.push(ch);
+            } else if ch == '[' && kind == DatabaseKind::SqlServer {
+                bracket = true;
                 statement.push(ch);
             } else if ch == ';' {
                 if !statement.trim().is_empty() {
@@ -140,7 +155,7 @@ fn for_each_statement(
     if copy_data {
         return Err(task_error("COPY 数据块缺少结束标记，备份可能被截断"));
     }
-    if quote.is_some() || block {
+    if quote.is_some() || block || bracket {
         return Err(task_error("SQL 备份被截断或包含不支持的引用语法"));
     }
     if !statement.trim().is_empty() {

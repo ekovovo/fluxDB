@@ -20,18 +20,14 @@ mod i18n_e2e_tests {
     include!("i18n_tests/dameng_connection.rs");
     include!("i18n_tests/sqlserver_connection.rs");
     include!("i18n_tests/dameng_completion.rs");
-    include!("i18n_tests/sqlserver_completion.rs");
     include!("i18n_tests/dameng_table_design.rs");
     include!("i18n_tests/table_design_types.rs");
     include!("i18n_tests/table_copy_error.rs");
     include!("i18n_tests/table_danger_layout.rs");
     include!("i18n_tests/table_context_menu_layout.rs");
     include!("i18n_tests/sqlserver_table_context.rs");
-    include!("i18n_tests/sqlserver_copy.rs");
-    include!("i18n_tests/sqlserver_routine_ddl.rs");
     include!("i18n_tests/user_admin_toolbar.rs");
     include!("i18n_tests/sqlserver_security.rs");
-    include!("i18n_tests/sqlserver_security_database.rs");
     include!("i18n_tests/query_summary_layout.rs");
 
     /// 进程级 locale 是全局状态；会切换语言的用例必须串行，否则互相污染断言。

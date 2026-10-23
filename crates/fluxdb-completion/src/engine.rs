@@ -310,13 +310,18 @@ mod tests {
     }
 
     #[test]
-    fn dameng_bare_table_inserts_schema_qualified_name() {
-        let items = candidates_with(&dialect::DAMENG, "SELECT * FROM |");
-        let users = items
-            .iter()
-            .find(|item| item.label == "users")
-            .expect("应补出 users 表");
-        assert_eq!(users.insert_text, "public.users");
+    fn schema_qualified_dialects_insert_qualified_bare_tables() {
+        for dialect in [
+            &dialect::POSTGRES as &dyn crate::dialect::CompletionDialect,
+            &dialect::DAMENG,
+        ] {
+            let items = candidates_with(dialect, "SELECT * FROM |");
+            let users = items
+                .iter()
+                .find(|item| item.label == "users")
+                .expect("应补出 users 表");
+            assert_eq!(users.insert_text, "public.users");
+        }
     }
 
     #[test]
@@ -327,6 +332,25 @@ mod tests {
             .find(|item| item.label == "public")
             .expect("应补出 public schema");
         assert_eq!(schema.insert_text, "public.");
+    }
+
+    #[test]
+    fn postgres_prefix_matching_still_finds_schema_qualified_table() {
+        let items = candidates_with(&dialect::POSTGRES, "SELECT * FROM us|");
+        let users = items
+            .iter()
+            .find(|item| item.label == "users")
+            .expect("应补出 users 表");
+        assert_eq!(users.insert_text, "public.users");
+    }
+
+    #[test]
+    fn quoted_schema_prefix_lists_tables() {
+        let items = candidates_with(&dialect::POSTGRES, r#"SELECT * FROM "public".|"#);
+        assert!(
+            items.iter().any(|item| item.label == "users"),
+            "候选：{items:?}"
+        );
     }
 
     /// 空前缀下不能把 DDL 关键字灌进表达式候选（IDE 手感的核心）。
@@ -625,6 +649,15 @@ mod tests {
     #[test]
     fn replaces_partial_word_range() {
         assert_eq!(replace_range("SELECT na| FROM users"), (7, 9));
+    }
+
+    #[test]
+    fn replaces_partial_word_after_multiline_statement() {
+        assert_eq!(replace_range("SELECT 1;\n\n\nsel|"), (12, 15));
+        assert_eq!(
+            replace_range("SELECT * FROM \"fluxdb_pr46_acceptance\".\"pg_acceptance\";\n\n\nsel|"),
+            (58, 61)
+        );
     }
 
     #[test]

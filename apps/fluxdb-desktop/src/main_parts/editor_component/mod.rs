@@ -1747,6 +1747,13 @@ impl Editor {
         self.apply_edit(text, new_cursor, new_cursor, true, cx);
     }
 
+    /// 采纳的候选是否已经把光标带到下一级限定符（`schema.`）。
+    /// 这类接受不是“完成”，而是进入下一轮补全，不能复用普通候选的抑制行为。
+    fn accepted_completion_needs_chain_trigger(&self, insert_text: &str) -> bool {
+        insert_text.ends_with('.')
+            && self.profile.completion_trigger_chars.contains(&'.')
+    }
+
     fn backspace(&mut self, cx: &mut Context<Self>) {
         let (start, end) = self.selection_start_end();
         if start != end {
@@ -2655,8 +2662,13 @@ impl Editor {
             InsertTextFormat::PlainText => (item.insert_text.clone(), Vec::new()),
         };
         let new_cursor = replace_start + insert_text.len();
+        let chain_next_level = self.accepted_completion_needs_chain_trigger(&insert_text);
         self.selection = Selection::new(replace_start, replace_end);
+        // 接受候选项是一次整段写回，不应让 after_edit 立即重开原先的候选；
+        // 若文本停在 `schema.`，在会话失效后显式发起下一级补全。
         self.suppress_next_auto_completion = true;
+        self.completion_visible = false;
+        self.completion_loading = false;
         if self
             .apply_edit(&insert_text, new_cursor, new_cursor, true, cx)
             .is_none()
@@ -2684,6 +2696,9 @@ impl Editor {
         self.completion_anchor_offset = None;
         // DM-703：接受即 bump session，令仍 in-flight 的请求在提交时判废。
         self._completion_session_token.cancel();
+        if chain_next_level {
+            self.request_completion(false, cx);
+        }
         cx.emit(EditorEvent::CompletionAccepted(item));
     }
 

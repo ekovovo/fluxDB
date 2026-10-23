@@ -95,6 +95,13 @@ pub trait MetadataSource {
     /// 指定 schema 下的表与视图；`schema` 为 `None` 时取连接默认作用域。
     fn tables(&self, schema: Option<&str>) -> Vec<TableMeta>;
 
+    /// 裸表名候选：允许补充当前 schema 之外、仍可被显式限定的对象。
+    ///
+    /// 显式 `schema.` 补全仍走 [`Self::tables`]，不会混入其他 schema。
+    fn tables_for_bare_name(&self, schema: Option<&str>) -> Vec<TableMeta> {
+        self.tables(schema)
+    }
+
     /// 可用的 schema 列表。
     fn schemas(&self) -> Vec<String>;
 

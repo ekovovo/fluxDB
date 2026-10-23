@@ -190,6 +190,10 @@ impl AppController {
             }
         }
         if let Ok(mut cache) = self.completion_cache.lock() {
+            cache.all_schema_tables.remove(&CompletionAllSchemaTablesKey {
+                connection_id,
+                database: database.map(str::to_string),
+            });
             cache.tables.remove(&CompletionTablesKey {
                 connection_id,
                 database: database.map(str::to_string),

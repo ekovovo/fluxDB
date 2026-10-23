@@ -216,6 +216,50 @@ impl Connector for DamengConnector {
             .collect())
     }
 
+    fn list_completion_tables_all_schemas(
+        &self,
+        database: Option<&str>,
+        filter: &str,
+        limit: u64,
+    ) -> fluxdb_core::Result<Vec<CompletionTable>> {
+        let config = self.config("达梦补全元数据需要连接配置上下文")?;
+        let mut client = dm_connect(config)?;
+        let result = dm_execute(
+            &mut client,
+            "SELECT OBJECT_NAME, OBJECT_TYPE, OWNER FROM ALL_OBJECTS \
+             WHERE OBJECT_TYPE IN ('TABLE','VIEW') AND OBJECT_NAME LIKE ? \
+             ORDER BY OWNER, OBJECT_NAME",
+            &[Param::Str(format!("%{}%", filter.trim()))],
+        )?;
+        client.close();
+        let ExecuteResult::Query { rows, .. } = result else {
+            return Err(Error::new(ErrorKind::Query, "达梦补全表列表返回类型异常"));
+        };
+        Ok(rows
+            .into_iter()
+            .filter_map(|row| {
+                let name = row.first().and_then(dm_value_text)?;
+                if dm_internal_object_name(&name) {
+                    return None;
+                }
+                let object_type = row.get(1).and_then(dm_value_text).unwrap_or_default();
+                let schema = row.get(2).and_then(dm_value_text)?;
+                Some(CompletionTable {
+                    database: database.map(str::to_string),
+                    schema: Some(schema),
+                    kind: if object_type.eq_ignore_ascii_case("VIEW") {
+                        ObjectKind::View
+                    } else {
+                        ObjectKind::Table
+                    },
+                    name,
+                    comment: None,
+                })
+            })
+            .take(limit as usize)
+            .collect())
+    }
+
     fn list_completion_columns(
         &self,
         database: Option<&str>,

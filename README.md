@@ -1,6 +1,6 @@
 # FluxDB
 
-**原生跨平台数据库客户端与 SQL 编辑器：在一个窗口中完成查询、数据编辑、结构管理和 Redis 调试。**
+**原生跨平台数据库客户端与 SQL 编辑器，面向高性能、低开销的桌面体验设计：在一个窗口中完成查询、数据编辑、结构管理和 Redis 调试。**
 
 FluxDB 使用 Rust + GPUI 构建，不依赖 Electron 或 WebView。它把 MySQL、PostgreSQL、SQL Server、SQLite、TiDB、达梦 DM8 和 Redis 放进同一套桌面工作流，并提供有明确权限边界的 AI Agent。
 
@@ -17,12 +17,15 @@ FluxDB 使用 Rust + GPUI 构建，不依赖 Electron 或 WebView。它把 MySQL
 
 ## 最近更新
 
-### v0.1.10
+### v0.1.11
 
-- **新增达梦 DM8 数据源**：连接管理、Schema 与对象浏览、SQL 查询、表结构设计与数据编辑。
-- **新增表数据导入向导**：支持 TXT、CSV、JSON、XML，提供字段映射、追加 / 截断模式和导入日志。
-- **AI Agent 增加页面与编辑器授权**：可按授权查找并查询表，也可改写指定 SQL 范围，但不会自动执行。
-- **新增应用内更新**：从 GitHub Release 检查更新，并校验签名清单与安装包摘要。
+- **新增 SQL Server 数据源**：SQL 认证、TLS、数据库 / Schema / 对象浏览、T-SQL 查询、表结构管理与数据编辑、表数据导入导出、登录名 / 数据库用户 / 角色成员 / 显式权限管理、对象级逻辑备份恢复，以及 AI 页面上下文与受控执行。
+- **SQL Server 首版边界**：暂不支持 Windows 集成认证、Azure AD、包含数据库用户、列级权限编辑、用户自定义服务器角色、命名实例自动解析和数据库级物理备份；详见[数据库支持](#数据库支持)。
+- **SQL 编辑与补全优化**：裸表名补全可跨 Schema，并继续补全下一级限定；修复中文等 UTF-8 SQL 中的补全定位偏移。
+- **表设计优化**：按数据库方言扩充类型与适配列选项，支持枚举 / 自定义类型按需编辑、长度与精度校验，统一 PostgreSQL / MySQL 类型展示。
+- **查询结果与 Redis 工作区优化**：压缩查询摘要的元数据列，改善长列注释换行；Redis 标签按连接聚合为一级工作区。
+- **AI 修复定位优化**：执行失败后的 SQL 修复按实际执行来源定位编辑器语句，避免在改写 SQL 后定位错行。
+
 
 [完整更新说明](./release-notes/v0.1.10/zh-CN.md) · [历史版本](https://github.com/fluxdb-alt/fluxDB/releases)
 
@@ -30,7 +33,7 @@ FluxDB 使用 Rust + GPUI 构建，不依赖 Electron 或 WebView。它把 MySQL
 
 - **一个工作台，多种数据源**：在同一个窗口中管理关系型数据库和 Redis，减少工具切换。
 - **从查询到写入的完整路径**：SQL 编辑、结果编辑回写、表结构设计、数据导入导出、备份恢复和 ER 图互相衔接。
-- **原生桌面体验**：基于 Rust + GPUI，不依赖 Electron 或 WebView。
+- **原生架构，性能优先**：基于 Rust + GPUI，不依赖 Electron 或 WebView，以低开销与交互响应为设计目标。
 - **AI 有明确安全边界**：AI 只能读取有界数据、修改授权编辑器或执行受控操作；写入类工具需要审批。
 
 ## 核心能力
@@ -77,15 +80,15 @@ https://github.com/user-attachments/assets/f6075999-a87f-4644-9d14-dbda49a7981d
 
 各数据库的能力范围不同，具体操作见[操作手册](./docs/user-guide.md)。
 
-| 数据库 | 当前能力 | 备份 / 恢复 | 连接与限制 |
-| --- | --- | --- | --- |
-| MySQL | SQL 查询、对象浏览、表结构管理、数据编辑、导入导出、原生客户端工具入口 | `mysqldump` 逻辑备份，SQL 恢复 | TLS / SSL、SSH 隧道、代理、超时、字符集 |
-| TiDB | 复用 MySQL 协议链路，适配 SQL 方言、补全与表结构管理 | 复用 MySQL 逻辑备份能力 | 连接能力与 MySQL 一致 |
-| PostgreSQL | SQL 查询、Schema / 对象浏览、表结构管理、数据编辑、用户与角色管理、psql 工具入口 | `pg_dump` plain SQL 备份，`psql` 恢复 | TLS、SSH、代理、Schema 作用域、超时 |
-| SQL Server | T-SQL 查询、数据库与 Schema 对象浏览、表结构管理、数据编辑、导入导出、用户/角色/权限管理、逻辑备份与恢复、AI 页面上下文与受控执行 | 对象级逻辑 SQL 备份与恢复 | SQL 认证、TLS、显式端口；命名实例需填写实际端口 |
-| SQLite | 本地文件连接、SQL 查询、对象浏览、表结构管理、数据编辑 | `VACUUM INTO` 完整一致快照；恢复到新文件并检查完整性与外键 | 本地文件路径 |
-| 达梦 DM8 | Schema / 对象浏览、SQL 查询、表结构管理与设计、数据编辑、表数据导入 | 逻辑备份与 SQL 恢复；当前恢复面向单 Schema | 实例与 Schema 连接配置 |
-| Redis | 键空间浏览、键值编辑、TTL、Workbench、CLI、Pub/Sub | 不提供数据库级备份恢复 | TLS、SSH、Sentinel、Cluster、URI / Cloud；Cluster 仅支持 DB 0 |
+| 数据库 | 当前能力 | 备份 / 恢复 | 连接与限制 | 尚未支持 |
+| --- | --- | --- | --- | --- |
+| MySQL | SQL 查询、对象浏览、表结构管理、数据编辑、导入导出、原生客户端工具入口 | `mysqldump` 逻辑备份，SQL 恢复 | TLS / SSL、SSH 隧道、代理、超时、字符集 | - |
+| TiDB | 复用 MySQL 协议链路，适配 SQL 方言、补全与表结构管理 | 复用 MySQL 逻辑备份能力 | 连接能力与 MySQL 一致 | - |
+| PostgreSQL | SQL 查询、Schema / 对象浏览、表结构管理、数据编辑、用户与角色管理、psql 工具入口 | `pg_dump` plain SQL 备份，`psql` 恢复 | TLS、SSH、代理、Schema 作用域、超时 | - |
+| SQL Server | T-SQL 查询、数据库 / Schema / 对象浏览、表结构管理与数据编辑、表数据导入导出、登录名 / 数据库用户 / 角色成员 / 显式权限管理、对象级逻辑备份恢复、AI 页面上下文与受控执行 | 对象级逻辑 SQL 备份与恢复 | SQL Server 认证、TLS、显式端口；命名实例需填写实际端口 | Windows 集成认证、Azure AD、包含数据库用户、列级权限编辑、用户自定义服务器角色、SQL Browser / 命名实例自动解析、数据库级物理备份（`BACKUP DATABASE`）。对象级逻辑备份恢复不能替代数据库级灾难恢复。 |
+| SQLite | 本地文件连接、SQL 查询、对象浏览、表结构管理、数据编辑 | `VACUUM INTO` 完整一致快照；恢复到新文件并检查完整性与外键 | 本地文件路径 | - |
+| 达梦 DM8 | Schema / 对象浏览、SQL 查询、表结构管理与设计、数据编辑、表数据导入 | 逻辑备份与 SQL 恢复；当前恢复面向单 Schema | 实例与 Schema 连接配置 | - |
+| Redis | 键空间浏览、键值编辑、TTL、Workbench、CLI、Pub/Sub | 不提供数据库级备份恢复 | TLS、SSH、Sentinel、Cluster、URI / Cloud；Cluster 仅支持 DB 0 | - |
 
 MongoDB 和 MariaDB 尚未支持。它们只出现在规划中，不应被视为当前能力。
 
@@ -186,7 +189,7 @@ macOS 可使用仓库脚本生成包含动态库的 `.app` 和 `.dmg`：
 
 当前优先完善既有数据库的真实场景覆盖、稳定性和跨平台发布体验。后续候选方向包括：
 
-- **MongoDB**：文档型数据源浏览与编辑。
+- **MongoDB**：文档型数据源浏览、查询与编辑。
 - **MariaDB**：独立方言、系统表与备份参数适配。
 - **更多数据库**：按社区需求评估 Oracle、ClickHouse、DuckDB、Elasticsearch / OpenSearch 等方向。
 

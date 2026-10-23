@@ -428,7 +428,9 @@ impl NavicatMain {
                 enabled: true,
                 field: Some(menu.column_name.clone()),
                 operator,
-                values: BTreeSet::from([menu.value.clone()]),
+                values: vec![menu.value.clone()],
+                advanced_expression: None,
+                typed_values: None,
                 grouped: false,
             }],
         );

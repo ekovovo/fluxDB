@@ -330,14 +330,19 @@ fn load_data_for_connection(
     pagination: Pagination,
     sort: &[SortSpec],
     filters: &[FilterSpec],
+    expression: Option<&fluxdb_core::FilterExpression>,
 ) -> fluxdb_core::Result<DataPage> {
-    connector_for(config)?.load_data(
-        object,
-        pagination.offset,
-        pagination.limit,
-        sort,
-        filters,
-    )
+    let connector = connector_for(config)?;
+    match expression {
+        Some(expression) => connector.load_data_expression(
+            object,
+            pagination.offset,
+            pagination.limit,
+            sort,
+            expression,
+        ),
+        None => connector.load_data(object, pagination.offset, pagination.limit, sort, filters),
+    }
 }
 
 /// 一致快照分页导出路由：各后端调用其 `export_pages`（PG 覆写为单 REPEATABLE READ 事务快照，

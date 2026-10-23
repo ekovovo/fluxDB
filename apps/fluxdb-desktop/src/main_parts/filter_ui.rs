@@ -2,6 +2,7 @@
 
 include!("filter_ui/highlighting.rs");
 include!("filter_ui/field_filter.rs");
+include!("filter_ui/condition_completion.rs");
 include!("filter_ui/panel.rs");
 include!("filter_ui/sql_parser.rs");
 include!("filter_ui/popover.rs");

@@ -15,12 +15,19 @@ struct DataFilterPopover {
     sort_index: Option<usize>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 struct DataFilterRule {
     enabled: bool,
     field: Option<String>,
     operator: DataFilterOperator,
-    values: BTreeSet<String>,
+    /// 有序值：BETWEEN 的上下限不能被排序交换；IN 列表也保持用户输入顺序。
+    values: Vec<String>,
+    /// 输入模式中无法无损拆成字段/运算符/值的表达式文本。
+    /// 该行只读，避免切换模式时静默改变语义。
+    advanced_expression: Option<String>,
+    /// 从输入表达式解析出的原始类型。表单编辑值后丢弃，避免把用户新输入的
+    /// `"007"` 错误保留成整数类型。
+    typed_values: Option<Vec<fluxdb_core::FilterValue>>,
     grouped: bool,
 }
 
@@ -35,7 +42,7 @@ struct DataFilterValueDraft {
     field: String,
     /// 打开弹层时的运算符快照，用于确认时校验值形态兼容性。
     operator: DataFilterOperator,
-    values: BTreeSet<String>,
+    values: Vec<String>,
     /// 单值输入框文案（保留用户正在输入、尚未提交的文本）。
     input: String,
     /// 批量粘贴区是否展开。
@@ -88,7 +95,11 @@ fn data_filter_rule_can_add_more_value(operator: DataFilterOperator, current_len
 }
 
 /// 从批量片段解析出的待添加值：trim、忽略空行，纯逻辑便于单测。
-fn filter_batch_values_to_add(text: &str, separator: BatchSeparator, selected: &BTreeSet<String>) -> (Vec<String>, usize, usize) {
+fn filter_batch_values_to_add(
+    text: &str,
+    separator: BatchSeparator,
+    selected: &[String],
+) -> (Vec<String>, usize, usize) {
     let mut added = Vec::new();
     let mut duplicated = 0usize;
     let mut ignored_empty = 0usize;
@@ -118,6 +129,7 @@ fn data_filter_rule_after_field_switch(
     rule.field = Some(field);
     let had_values = !rule.values.is_empty();
     rule.values.clear();
+    rule.typed_values = None;
     (rule, had_values)
 }
 
@@ -125,12 +137,12 @@ fn data_filter_rule_after_field_switch(
 /// 无值运算符清空——旧值会以错误的 OR 组合或多余的 BETWEEN 参数参与查询。
 /// 单值之间互切（`=` 改 `!=`）保留同一个值，避免改运算符就丢输入。
 fn data_filter_values_for_arity(
-    values: &BTreeSet<String>,
+    values: &[String],
     operator: DataFilterOperator,
-) -> BTreeSet<String> {
+) -> Vec<String> {
     match operator.max_values() {
         Some(max) => values.iter().take(max).cloned().collect(),
-        None => values.clone(),
+        None => values.to_vec(),
     }
 }
 
@@ -139,6 +151,12 @@ fn data_filter_rule_after_operator_switch(
     mut rule: DataFilterRule,
 ) -> DataFilterRule {
     rule.values = data_filter_values_for_arity(&rule.values, operator);
+    rule.typed_values = rule.typed_values.as_ref().map(|values| {
+        match operator.max_values() {
+            Some(max) => values.iter().take(max).cloned().collect(),
+            None => values.clone(),
+        }
+    });
     rule.operator = operator;
     rule
 }
@@ -191,7 +209,9 @@ impl Default for DataFilterRule {
             enabled: true,
             field: None,
             operator: DataFilterOperator::Contains,
-            values: BTreeSet::new(),
+            values: Vec::new(),
+            advanced_expression: None,
+            typed_values: None,
             grouped: false,
         }
     }
@@ -328,6 +348,134 @@ fn data_filter_specs_from_rules(rules: &[DataFilterRule]) -> Vec<FilterSpec> {
         .filter(|rule| rule.enabled)
         .filter_map(data_filter_spec_from_rule)
         .collect()
+}
+
+impl From<&DataFilterRule> for fluxdb_core::FilterFormRule {
+    fn from(rule: &DataFilterRule) -> Self {
+        Self {
+            enabled: rule.enabled,
+            field: rule.field.clone(),
+            operator: match rule.operator {
+                DataFilterOperator::Eq => fluxdb_core::FilterOperator::Eq,
+                DataFilterOperator::Ne => fluxdb_core::FilterOperator::Ne,
+                DataFilterOperator::Lt => fluxdb_core::FilterOperator::Lt,
+                DataFilterOperator::Le => fluxdb_core::FilterOperator::Le,
+                DataFilterOperator::Gt => fluxdb_core::FilterOperator::Gt,
+                DataFilterOperator::Ge => fluxdb_core::FilterOperator::Ge,
+                DataFilterOperator::Contains => fluxdb_core::FilterOperator::Contains,
+                DataFilterOperator::NotContains => fluxdb_core::FilterOperator::NotContains,
+                DataFilterOperator::StartsWith => fluxdb_core::FilterOperator::StartsWith,
+                DataFilterOperator::NotStartsWith => fluxdb_core::FilterOperator::NotStartsWith,
+                DataFilterOperator::EndsWith => fluxdb_core::FilterOperator::EndsWith,
+                DataFilterOperator::NotEndsWith => fluxdb_core::FilterOperator::NotEndsWith,
+                DataFilterOperator::IsNull => fluxdb_core::FilterOperator::IsNull,
+                DataFilterOperator::IsNotNull => fluxdb_core::FilterOperator::IsNotNull,
+                DataFilterOperator::IsEmpty => fluxdb_core::FilterOperator::IsEmpty,
+                DataFilterOperator::IsNotEmpty => fluxdb_core::FilterOperator::IsNotEmpty,
+                DataFilterOperator::Between => fluxdb_core::FilterOperator::Between,
+                DataFilterOperator::NotBetween => fluxdb_core::FilterOperator::NotBetween,
+                DataFilterOperator::InList => fluxdb_core::FilterOperator::InList,
+                DataFilterOperator::NotInList => fluxdb_core::FilterOperator::NotInList,
+            },
+            values: rule
+                .typed_values
+                .as_ref()
+                .filter(|values| values.len() == rule.values.len())
+                .cloned()
+                .unwrap_or_else(|| {
+                    rule.values
+                        .iter()
+                        // 用户新输入的值必须保持字符串语义：`007` 不能变成整数 7。
+                        .map(|value| fluxdb_core::FilterValue::Text(value.clone()))
+                        .collect()
+                }),
+            grouped: rule.grouped,
+        }
+    }
+}
+
+fn data_filter_operator_from_core(operator: fluxdb_core::FilterOperator) -> DataFilterOperator {
+    match operator {
+        fluxdb_core::FilterOperator::Eq => DataFilterOperator::Eq,
+        fluxdb_core::FilterOperator::Ne => DataFilterOperator::Ne,
+        fluxdb_core::FilterOperator::Lt => DataFilterOperator::Lt,
+        fluxdb_core::FilterOperator::Le => DataFilterOperator::Le,
+        fluxdb_core::FilterOperator::Gt => DataFilterOperator::Gt,
+        fluxdb_core::FilterOperator::Ge => DataFilterOperator::Ge,
+        fluxdb_core::FilterOperator::Contains => DataFilterOperator::Contains,
+        fluxdb_core::FilterOperator::NotContains => DataFilterOperator::NotContains,
+        fluxdb_core::FilterOperator::StartsWith => DataFilterOperator::StartsWith,
+        fluxdb_core::FilterOperator::NotStartsWith => DataFilterOperator::NotStartsWith,
+        fluxdb_core::FilterOperator::EndsWith => DataFilterOperator::EndsWith,
+        fluxdb_core::FilterOperator::NotEndsWith => DataFilterOperator::NotEndsWith,
+        fluxdb_core::FilterOperator::IsNull => DataFilterOperator::IsNull,
+        fluxdb_core::FilterOperator::IsNotNull => DataFilterOperator::IsNotNull,
+        fluxdb_core::FilterOperator::IsEmpty => DataFilterOperator::IsEmpty,
+        fluxdb_core::FilterOperator::IsNotEmpty => DataFilterOperator::IsNotEmpty,
+        fluxdb_core::FilterOperator::Between => DataFilterOperator::Between,
+        fluxdb_core::FilterOperator::NotBetween => DataFilterOperator::NotBetween,
+        fluxdb_core::FilterOperator::InList => DataFilterOperator::InList,
+        fluxdb_core::FilterOperator::NotInList => DataFilterOperator::NotInList,
+    }
+}
+
+fn data_filter_expression_from_rules(
+    rules: &[DataFilterRule],
+    combinator: fluxdb_core::FilterCombinator,
+) -> fluxdb_core::Result<fluxdb_core::FilterExpression> {
+    let form_rules = rules
+        .iter()
+        .filter(|rule| rule.advanced_expression.is_none())
+        .map(fluxdb_core::FilterFormRule::from)
+        .collect::<Vec<_>>();
+    let form_expression = fluxdb_core::filter_expression_from_form(&form_rules, combinator)
+        .map_err(|error| fluxdb_core::Error::new(fluxdb_core::ErrorKind::Query, error.to_string()))?;
+    let advanced = rules
+        .iter()
+        .filter(|rule| {
+            rule.enabled
+                && rule
+                    .advanced_expression
+                    .as_deref()
+                    .is_some_and(|text| !text.trim().is_empty())
+        })
+        .map(|rule| {
+            fluxdb_core::FilterExpression::Raw(
+                rule.advanced_expression.clone().unwrap_or_default(),
+            )
+        })
+        .collect::<Vec<_>>();
+    if advanced.is_empty() {
+        return Ok(form_expression);
+    }
+    // 表单规则为空时，高级条件必须保持自己的根组合语义，不能额外套一层
+    // `AND ()` 或 `OR ()`。
+    let form_is_empty = matches!(
+        &form_expression,
+        fluxdb_core::FilterExpression::And(items) | fluxdb_core::FilterExpression::Or(items)
+            if items.is_empty()
+    );
+    if form_is_empty {
+        return Ok(if advanced.len() == 1 {
+            advanced
+                .into_iter()
+                .next()
+                .expect("advanced conditions are non-empty")
+        } else {
+            match combinator {
+                fluxdb_core::FilterCombinator::And => {
+                    fluxdb_core::FilterExpression::And(advanced)
+                }
+                fluxdb_core::FilterCombinator::Or => fluxdb_core::FilterExpression::Or(advanced),
+            }
+        });
+    }
+    let mut expressions = vec![form_expression];
+    expressions.extend(advanced);
+    Ok(match combinator {
+        fluxdb_core::FilterCombinator::And => fluxdb_core::FilterExpression::And(expressions),
+        fluxdb_core::FilterCombinator::Or => fluxdb_core::FilterExpression::Or(expressions),
+    })
 }
 
 fn normalized_data_filter_value(value: &str) -> String {

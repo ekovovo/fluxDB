@@ -587,6 +587,7 @@ impl NavicatMain {
                         generation,
                         sort: Vec::new(),
                         filters: Vec::new(),
+                        expression: None,
                     })
                 })
                 .await;
@@ -739,6 +740,8 @@ impl NavicatMain {
                 field: Some(item.field.clone()),
                 operator,
                 values: item.values.iter().cloned().collect(),
+                advanced_expression: None,
+                typed_values: None,
                 grouped: false,
             });
         }

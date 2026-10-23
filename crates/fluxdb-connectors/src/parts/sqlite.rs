@@ -214,6 +214,29 @@ fn sqlite_load_data(
     sort: &[SortSpec],
     filters: &[FilterSpec],
 ) -> fluxdb_core::Result<DataPage> {
+    sqlite_load_data_with_expression(config, path, offset, limit, sort, filters, None)
+}
+
+fn sqlite_load_data_expression(
+    config: &ConnectionConfig,
+    path: &ObjectPath,
+    offset: u64,
+    limit: u64,
+    sort: &[SortSpec],
+    expression: &fluxdb_core::FilterExpression,
+) -> fluxdb_core::Result<DataPage> {
+    sqlite_load_data_with_expression(config, path, offset, limit, sort, &[], Some(expression))
+}
+
+fn sqlite_load_data_with_expression(
+    config: &ConnectionConfig,
+    path: &ObjectPath,
+    offset: u64,
+    limit: u64,
+    sort: &[SortSpec],
+    filters: &[FilterSpec],
+    expression: Option<&fluxdb_core::FilterExpression>,
+) -> fluxdb_core::Result<DataPage> {
     if !matches!(path.kind, ObjectKind::Table | ObjectKind::View) {
         return Err(Error::new(ErrorKind::Unsupported, "仅表和视图支持数据读取"));
     }
@@ -243,13 +266,24 @@ fn sqlite_load_data(
             "SELECT {select_list} FROM {}",
             sqlite_qualified_table(database, &path.name)
         ));
-        push_data_where_clause(
-            &mut builder,
-            filters,
-            &columns,
-            |value| fluxdb_core::SqliteDialect.quote_identifier(value),
-            push_sqlite_bind,
-        );
+        if let Some(expression) = expression {
+            if let Some(tree) = crate::filter_dialects::compile_filter_tree(
+                DatabaseKind::Sqlite,
+                expression,
+            )
+            .map_err(|error| Error::new(ErrorKind::Query, error.to_string()))?
+            {
+                push_expression_where_clause(&mut builder, &tree, push_sqlite_filter_bind);
+            }
+        } else {
+            push_data_where_clause(
+                &mut builder,
+                filters,
+                &columns,
+                |value| fluxdb_core::SqliteDialect.quote_identifier(value),
+                push_sqlite_bind,
+            );
+        }
         builder.push(data_order_by_clause(
             sort,
             &columns,
@@ -269,6 +303,30 @@ fn sqlite_load_data(
         connection.close().await.map_err(sqlite_error)?;
         Ok(sqlite_rows_to_page(columns, rows, pagination))
     })
+}
+
+fn push_sqlite_filter_bind(
+    builder: &mut QueryBuilder<'_, Sqlite>,
+    value: &fluxdb_core::FilterValue,
+) {
+    use fluxdb_core::FilterValue;
+    match value {
+        FilterValue::Null => {
+            builder.push_bind(Option::<String>::None);
+        }
+        FilterValue::Text(value) => {
+            builder.push_bind(value.clone());
+        }
+        FilterValue::Integer(value) => {
+            builder.push_bind(*value);
+        }
+        FilterValue::Float(value) => {
+            builder.push_bind(*value);
+        }
+        FilterValue::Boolean(value) => {
+            builder.push_bind(*value);
+        }
+    }
 }
 
 fn sqlite_preview_data_export(

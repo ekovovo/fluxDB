@@ -93,6 +93,24 @@ impl Connector for SqlServerConnector {
         )
     }
 
+    fn load_data_expression(
+        &self,
+        path: &ObjectPath,
+        offset: u64,
+        limit: u64,
+        sort: &[SortSpec],
+        expression: &fluxdb_core::FilterExpression,
+    ) -> fluxdb_core::Result<DataPage> {
+        sqlserver_load_data_expression(
+            self.config("SQL Server 数据读取需要连接配置上下文")?,
+            path,
+            offset,
+            limit,
+            sort,
+            expression,
+        )
+    }
+
     fn preview_data_export(
         &self,
         path: &ObjectPath,

@@ -1236,7 +1236,7 @@ impl AppController {
                         return self.fail(Error::new(ErrorKind::Internal, "数据编辑器标签页不存在"));
                     }
                 };
-                self.load_data_page_command(tab_id, generation, Vec::new(), Vec::new())
+                self.load_data_page_command(tab_id, generation, Vec::new(), Vec::new(), None)
             }
             AppCommand::BeginDataPageLoad(tab_id) => {
                 let Some(editor) = self.find_data_editor_mut(tab_id) else {
@@ -1264,7 +1264,8 @@ impl AppController {
                 generation,
                 sort,
                 filters,
-            } => self.load_data_page_command(tab_id, generation, sort, filters),
+                expression,
+            } => self.load_data_page_command(tab_id, generation, sort, filters, expression),
             AppCommand::LoadRedisKey { tab_id, key } => self.load_redis_key_command(tab_id, key),
             AppCommand::LoadRedisKeyMetadata { tab_id, keys } => {
                 self.load_redis_key_metadata_command(tab_id, keys)

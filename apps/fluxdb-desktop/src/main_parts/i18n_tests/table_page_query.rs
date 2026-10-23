@@ -169,7 +169,7 @@ fn ai_page_query_opens_sidebar_table_fills_conditions_and_shows_rows(cx: &mut Te
     cx.update(|window, cx| {
         window.draw(cx).clear(cx);
     });
-    cx.update(|_, cx| {
+    let tab_id = cx.update(|_, cx| {
         let app = view.read(cx);
         let (tab_id, editor) = app
             .controller
@@ -249,5 +249,197 @@ fn ai_page_query_opens_sidebar_table_fills_conditions_and_shows_rows(cx: &mut Te
             message.text,
             crate::tr("app.ai.page_query.queried").to_string()
         );
+        tab_id
     });
+
+    assert!(cx.debug_bounds("data-filter-mode-builder").is_some());
+    assert!(cx.debug_bounds("data-filter-mode-input").is_some());
+    assert!(cx.debug_bounds("data-filter-condition-editor").is_none());
+    cx.update(|_, cx| {
+        view.update(cx, |this, cx| {
+            this.ai_chat.open = false;
+            cx.notify();
+        });
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let input_mode = cx
+        .debug_bounds("data-filter-mode-input")
+        .expect("input mode button");
+    cx.simulate_click(input_mode.center(), Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.update(|_, cx| {
+        let app = view.read(cx);
+        assert_eq!(
+            app.data_filter_modes.get(&tab_id),
+            Some(&crate::DataFilterMode::Text)
+        );
+        assert_eq!(
+            app.data_filter_text_input.read(cx).value().to_string(),
+            "\"status\" = 'failed'"
+        );
+    });
+    assert!(cx.debug_bounds("data-filter-condition-editor").is_some());
+    cx.update(|_, cx| {
+        let app = view.read(cx);
+        assert_eq!(
+            app.data_sort_draft_rules.get(&tab_id).map(Vec::len),
+            Some(1),
+            "sort form must remain independent from filter input mode"
+        );
+    });
+
+    cx.update(|window, cx| {
+        view.update(cx, |this, cx| {
+            this.data_filter_texts
+                .insert(tab_id, "\"status\" = 'ok'".to_string());
+            this.data_filter_text_input.update(cx, |editor, cx| {
+                editor.set_value("\"status\" = 'ok'", window, cx);
+            });
+        });
+    });
+    cx.update(|window, cx| {
+        view.update(cx, |this, cx| {
+            this.set_data_filter_mode(
+                tab_id,
+                crate::DataFilterMode::Builder,
+                crate::sql_editor_adapter::SqlDialect::Sqlite,
+                window,
+                cx,
+            );
+        });
+        window.draw(cx).clear(cx);
+    });
+    cx.update(|_, cx| {
+        let app = view.read(cx);
+        let rules = app
+            .data_filter_draft_rules
+            .get(&tab_id)
+            .expect("input must flow back into the form");
+        assert_eq!(
+            rules.len(),
+            1,
+            "structured input must replace the form contents"
+        );
+        assert_eq!(rules[0].field.as_deref(), Some("status"));
+        assert_eq!(rules[0].operator, crate::DataFilterOperator::Eq);
+        assert_eq!(rules[0].values, vec!["ok".to_string()]);
+        assert_eq!(
+            app.data_filter_modes.get(&tab_id),
+            Some(&crate::DataFilterMode::Builder)
+        );
+    });
+    cx.update(|window, cx| {
+        view.update(cx, |this, cx| {
+            this.set_data_filter_mode(
+                tab_id,
+                crate::DataFilterMode::Text,
+                crate::sql_editor_adapter::SqlDialect::Sqlite,
+                window,
+                cx,
+            );
+        });
+    });
+    assert_eq!(
+        cx.update(|_, cx| view.read(cx).data_filter_text_input.read(cx).value().to_string()),
+        "\"status\" = 'ok'"
+    );
+
+    cx.update(|window, cx| {
+        view.update(cx, |this, cx| {
+            this.data_filter_texts.insert(tab_id, "\"id\" > 1".to_string());
+            this.data_filter_text_input
+                .update(cx, |editor, cx| editor.set_value("\"id\" > 1", window, cx));
+            this.set_data_filter_mode(
+                tab_id,
+                crate::DataFilterMode::Builder,
+                crate::sql_editor_adapter::SqlDialect::Sqlite,
+                window,
+                cx,
+            );
+        });
+    });
+    cx.update(|_, cx| {
+        let rules = view
+            .read(cx)
+            .data_filter_draft_rules
+            .get(&tab_id)
+            .expect("typed form");
+        assert_eq!(
+            rules[0].typed_values,
+            Some(vec![fluxdb_core::FilterValue::Integer(1)])
+        );
+    });
+    cx.update(|window, cx| {
+        view.update(cx, |this, cx| {
+            this.set_data_filter_mode(
+                tab_id,
+                crate::DataFilterMode::Text,
+                crate::sql_editor_adapter::SqlDialect::Sqlite,
+                window,
+                cx,
+            );
+        });
+    });
+    assert_eq!(
+        cx.update(|_, cx| view.read(cx).data_filter_text_input.read(cx).value().to_string()),
+        "\"id\" > 1",
+        "numeric input must keep its type when round-tripping through the form"
+    );
+
+    cx.update(|_, cx| {
+        view.update(cx, |this, _| {
+            this.data_filter_texts
+                .insert(tab_id, "lower(\"status\") = 'ok'".to_string());
+        });
+    });
+    cx.update(|window, cx| {
+        view.update(cx, |this, cx| {
+            this.set_data_filter_mode(
+                tab_id,
+                crate::DataFilterMode::Builder,
+                crate::sql_editor_adapter::SqlDialect::Sqlite,
+                window,
+                cx,
+            );
+        });
+        window.draw(cx).clear(cx);
+    });
+    cx.update(|_, cx| {
+        let rules = view
+            .read(cx)
+            .data_filter_draft_rules
+            .get(&tab_id)
+            .expect("advanced rule");
+        assert_eq!(rules.len(), 1);
+        assert_eq!(
+            rules[0].advanced_expression.as_deref(),
+            Some("lower(\"status\") = 'ok'")
+        );
+    });
+    assert!(cx.debug_bounds("data-filter-advanced-rule-0").is_some());
+
+    cx.update(|window, cx| {
+        view.update(cx, |this, cx| {
+            this.data_filter_texts.remove(&tab_id);
+            this.set_data_filter_mode(
+                tab_id,
+                crate::DataFilterMode::Text,
+                crate::sql_editor_adapter::SqlDialect::Sqlite,
+                window,
+                cx,
+            );
+            this.data_filter_texts.remove(&tab_id);
+            this.set_data_filter_mode(
+                tab_id,
+                crate::DataFilterMode::Builder,
+                crate::sql_editor_adapter::SqlDialect::Sqlite,
+                window,
+                cx,
+            );
+        });
+    });
+    assert!(
+        cx.update(|_, cx| !view.read(cx).data_filter_draft_rules.contains_key(&tab_id)),
+        "empty input must clear the previous form"
+    );
 }

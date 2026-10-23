@@ -801,7 +801,7 @@ impl AppController {
     ) -> fluxdb_core::Result<DataPage> {
         let columns = self.ai_table_columns(object)?;
         let (filters, sort) = query.specs(&columns)?;
-        self.load_data_page(object, Pagination::new(0, query.limit), &sort, &filters)
+        self.load_data_page(object, Pagination::new(0, query.limit), &sort, &filters, None)
     }
 }
 

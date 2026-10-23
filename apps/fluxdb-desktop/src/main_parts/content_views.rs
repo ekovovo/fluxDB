@@ -672,7 +672,6 @@ fn data_editor_content(
     let local_filter_draft_values = this.local_filter_draft_values.clone();
     let data_filter_search_input = this.data_filter_search_input.clone();
     let data_filter_text_input = this.data_filter_text_input.clone();
-    let data_sort_text_input = this.data_sort_text_input.clone();
     let data_sql_panel_input = this.data_sql_panel_input.clone();
     let data_page_input = this.data_page_input.clone();
     let data_search_input = this.data_search_input.clone();
@@ -774,6 +773,11 @@ fn data_editor_content(
     let display_page = this.data_page_for_display(tab_id, page);
     let page = display_page.as_ref();
     let db_kind = this.connection_database_kind(editor.object.connection_id);
+    let filter_combinator = this
+        .data_filter_combinators
+        .get(&tab_id)
+        .copied()
+        .unwrap_or_default();
     let sql = data_editor_sql_preview(
         &editor.object,
         filter_rules.as_slice(),
@@ -784,6 +788,7 @@ fn data_editor_content(
         page.offset,
         page.limit,
         db_kind,
+        filter_combinator,
     );
     let all_field_names = page
         .columns
@@ -856,7 +861,8 @@ fn data_editor_content(
             filter_panel_height,
             filter_applying,
             data_filter_text_input,
-            data_sort_text_input,
+            db_kind,
+            filter_combinator,
             colors,
             window,
             cx,
@@ -5659,6 +5665,7 @@ fn data_editor_toolbar(
                 .gap_2()
                 .when(show_table_tools, |this| this.child(
                     data_editor_action(tr("app.data.toolbar.filter_sort"), colors)
+                        .debug_selector(|| "data-filter-sort-toggle".into())
                         .when(filter_open, |this| {
                             this.border_color(rgb(0x7db4ff)).bg(if colors.is_dark {
                                 rgb(0x16345f)

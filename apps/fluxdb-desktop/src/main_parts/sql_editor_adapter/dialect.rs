@@ -116,6 +116,65 @@ impl SqlDialect {
     }
 }
 
+/// 数据页筛选条件输入使用的关键字表。
+///
+/// 达梦复用 PostgreSQL 方言作为通用 SQL 编辑能力，但筛选补全需要补上
+/// 达梦常用函数与伪列；MongoDB/Redis 没有 SQL 条件，返回空表。
+pub fn data_filter_keywords(kind: DatabaseKind) -> Vec<KeywordDef> {
+    match kind {
+        DatabaseKind::MySql | DatabaseKind::TiDb => MYSQL_KEYWORDS.to_vec(),
+        DatabaseKind::Postgres => POSTGRES_KEYWORDS.to_vec(),
+        DatabaseKind::Sqlite => SQLITE_KEYWORDS.to_vec(),
+        DatabaseKind::SqlServer => SQLSERVER_KEYWORDS.to_vec(),
+        DatabaseKind::Dameng => {
+            let mut keywords = DAMENG_FILTER_KEYWORDS.to_vec();
+            keywords.extend(
+                POSTGRES_KEYWORDS
+                    .iter()
+                    .copied()
+                    .filter(|keyword| {
+                        !DAMENG_FILTER_KEYWORDS
+                            .iter()
+                            .any(|specific| specific.word == keyword.word)
+                    }),
+            );
+            keywords
+        }
+        DatabaseKind::MongoDb | DatabaseKind::Redis => Vec::new(),
+    }
+}
+
+/// 条件补全里展示的数据库名称；达梦不能显示成 PostgreSQL。
+pub fn data_filter_dialect_name(kind: DatabaseKind) -> &'static str {
+    match kind {
+        DatabaseKind::MySql => "MySQL",
+        DatabaseKind::TiDb => "TiDB",
+        DatabaseKind::Sqlite => "SQLite",
+        DatabaseKind::Postgres => "PostgreSQL",
+        DatabaseKind::Dameng => "Dameng",
+        DatabaseKind::SqlServer => "SQL Server",
+        DatabaseKind::MongoDb => "MongoDB",
+        DatabaseKind::Redis => "Redis",
+    }
+}
+
+static DAMENG_FILTER_KEYWORDS: &[KeywordDef] = &[
+    KeywordDef::kw("rownum"),
+    KeywordDef::kw("connect"),
+    KeywordDef::kw("start"),
+    KeywordDef::kw("prior"),
+    KeywordDef::func("sysdate"),
+    KeywordDef::func("nvl"),
+    KeywordDef::func("decode"),
+    KeywordDef::func("to_char"),
+    KeywordDef::func("to_date"),
+    KeywordDef::func("to_number"),
+    KeywordDef::func("instr"),
+    KeywordDef::func("substr"),
+    KeywordDef::func("trunc"),
+    KeywordDef::func("listagg"),
+];
+
 /// MySQL 关键字 / 内置函数表。
 static MYSQL_KEYWORDS: &[KeywordDef] = &[
     KeywordDef::kw("select"),

@@ -1949,6 +1949,7 @@ fn data_export_filter_sort_builder(
             export_filter_tab_id,
             filter_rules.as_slice(),
             default_field.clone(),
+            fluxdb_core::FilterCombinator::And,
             colors,
             cx,
         ))

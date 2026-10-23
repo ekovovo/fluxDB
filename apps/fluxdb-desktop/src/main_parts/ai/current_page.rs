@@ -193,7 +193,8 @@ impl NavicatMain {
                         "items":rules.iter().take(16).map(|r|serde_json::json!({
                             "enabled":r.enabled,"field":r.field,"operator":format!("{:?}",r.operator),
                             "values":r.values.iter().take(16).map(|v|v.chars().take(128).collect::<String>()).collect::<Vec<_>>(),
-                            "values_truncated":r.values.len()>16,"grouped":r.grouped
+                            "values_truncated":r.values.len()>16,"grouped":r.grouped,
+                            "advanced_expression":r.advanced_expression.as_ref().map(|v|v.chars().take(1024).collect::<String>())
                         })).collect::<Vec<_>>()
                     })),
                     "sort":self.data_sort_texts.get(&tab.id).map(|s|s.chars().take(1024).collect::<String>()),

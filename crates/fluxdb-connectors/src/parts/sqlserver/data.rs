@@ -6,6 +6,29 @@ fn sqlserver_load_data(
     sort: &[SortSpec],
     filters: &[FilterSpec],
 ) -> fluxdb_core::Result<DataPage> {
+    sqlserver_load_data_with_expression(config, path, offset, limit, sort, filters, None)
+}
+
+fn sqlserver_load_data_expression(
+    config: &ConnectionConfig,
+    path: &ObjectPath,
+    offset: u64,
+    limit: u64,
+    sort: &[SortSpec],
+    expression: &fluxdb_core::FilterExpression,
+) -> fluxdb_core::Result<DataPage> {
+    sqlserver_load_data_with_expression(config, path, offset, limit, sort, &[], Some(expression))
+}
+
+fn sqlserver_load_data_with_expression(
+    config: &ConnectionConfig,
+    path: &ObjectPath,
+    offset: u64,
+    limit: u64,
+    sort: &[SortSpec],
+    filters: &[FilterSpec],
+    expression: Option<&fluxdb_core::FilterExpression>,
+) -> fluxdb_core::Result<DataPage> {
     if !matches!(path.kind, ObjectKind::Table | ObjectKind::View) {
         return Err(Error::new(ErrorKind::Unsupported, "仅表和视图支持数据读取"));
     }
@@ -17,7 +40,12 @@ fn sqlserver_load_data(
     let query_columns = sqlserver_columns_to_page_columns(&columns);
     let table = sqlserver_qualified_table(&schema, &path.name);
     let mut parameters = Vec::new();
-    let where_sql = sqlserver_where_clause(filters, &query_columns, None, &mut parameters)?;
+    let where_sql = match expression {
+        Some(expression) => {
+            sqlserver_expression_where_clause(expression, &query_columns, None, &mut parameters)?
+        }
+        None => sqlserver_where_clause(filters, &query_columns, None, &mut parameters)?,
+    };
     let order = sqlserver_data_order_by(sort, &query_columns, None);
     let select_list = sqlserver_data_select_list(&query_columns);
     let fetch_limit = pagination.limit.saturating_add(1);

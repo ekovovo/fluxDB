@@ -162,7 +162,7 @@ impl NavicatMain {
                     rule_index,
                     field: rule.field.clone().unwrap_or_default(),
                     operator: rule.operator,
-                    values: rule.values.iter().cloned().collect(),
+                    values: rule.values.clone(),
                     input: String::new(),
                     batch_open: false,
                     batch_text: String::new(),
@@ -171,7 +171,7 @@ impl NavicatMain {
                 // 单值弹层的输入框就是那一个值，打开时直接带上当前值；
                 // 多值弹层的输入框是「新增一个值」的入口，必须为空。
                 let input_text = if rule.operator.value_arity() == DataFilterValueArity::Single {
-                    rule.values.iter().next().cloned().unwrap_or_default()
+                    rule.values.first().cloned().unwrap_or_default()
                 } else {
                     String::new()
                 };
@@ -184,7 +184,7 @@ impl NavicatMain {
                         rule_index,
                         field: String::new(),
                         operator: DataFilterOperator::InList,
-                        values: BTreeSet::new(),
+                        values: Vec::new(),
                         input: String::new(),
                         batch_open: false,
                         batch_text: String::new(),
@@ -252,24 +252,53 @@ impl NavicatMain {
             self.take_over_ai_table_page(tab_id, cx);
         }
         self.data_filter_applying_tabs.insert(tab_id);
-        match self
+        let mode = self
             .data_filter_modes
             .get(&tab_id)
             .copied()
-            .unwrap_or(DataFilterMode::Builder)
-        {
-            DataFilterMode::Builder => self.sync_data_filter_builder_to_text(tab_id),
-            DataFilterMode::Text => self.sync_data_filter_text_to_builder(tab_id),
+            .unwrap_or(DataFilterMode::Builder);
+        let filter_rules = match mode {
+            DataFilterMode::Builder => {
+                self.sync_data_filter_builder_to_text(tab_id);
+                self.data_filter_draft_rules
+                    .get(&tab_id)
+                    .cloned()
+                    .unwrap_or_default()
+            }
+            DataFilterMode::Text => {
+                if let Err(error) = self.data_filter_expression_for_tab(tab_id) {
+                    self.data_filter_applying_tabs.remove(&tab_id);
+                    self.show_message(error.to_string(), AppMessageKind::Warning, cx);
+                    cx.notify();
+                    return;
+                }
+                // 输入模式以结构化表达式为准；这里的规则只用于 IDE 中“当前页面”
+                // 上下文和草稿同步，真实执行走 `data_filter_expression_for_tab`。
+                self.data_filter_rules_from_text(tab_id)
+                    .unwrap_or_default()
+            }
+        };
+        if mode == DataFilterMode::Text {
+            // 输入模式执行时也同步表单草稿，确保之后切回表单看到的就是本次执行条件。
+            if let Err(error) = self.sync_data_filter_text_to_builder(tab_id) {
+                self.data_filter_applying_tabs.remove(&tab_id);
+                self.show_message(error, AppMessageKind::Warning, cx);
+                cx.notify();
+                return;
+            }
         }
 
-        if let Some(rules) = self.data_filter_draft_rules.get(&tab_id).cloned() {
-            if rules.is_empty() {
-                self.data_filter_rules.remove(&tab_id);
-            } else {
-                self.data_filter_rules.insert(tab_id, rules);
+        match mode {
+            DataFilterMode::Builder => {
+                if filter_rules.is_empty() {
+                    self.data_filter_rules.remove(&tab_id);
+                } else {
+                    self.data_filter_rules.insert(tab_id, filter_rules);
+                }
             }
-        } else {
-            self.data_filter_rules.remove(&tab_id);
+            DataFilterMode::Text => {
+                self.data_filter_rules.remove(&tab_id);
+            }
         }
 
         if let Some(rules) = self.data_sort_draft_rules.get(&tab_id).cloned() {
@@ -404,7 +433,9 @@ impl NavicatMain {
         if let Some(draft) = self.data_filter_value_draft.as_mut()
             && draft.tab_id == tab_id
         {
-            if !draft.values.remove(&value) {
+            if let Some(index) = draft.values.iter().position(|selected| selected == &value) {
+                draft.values.remove(index);
+            } else {
                 if !data_filter_rule_can_add_more_value(draft.operator, draft.values.len()) {
                     self.show_message(
                         tr("app.filter.error.between_max").to_string(),
@@ -412,7 +443,7 @@ impl NavicatMain {
                         cx,
                     );
                 } else {
-                    draft.values.insert(value);
+                    draft.values.push(value);
                 }
             }
         }
@@ -429,7 +460,9 @@ impl NavicatMain {
         if let Some(draft) = self.data_filter_value_draft.as_mut()
             && draft.tab_id == tab_id
         {
-            draft.values.remove(&value);
+            if let Some(index) = draft.values.iter().position(|selected| selected == &value) {
+                draft.values.remove(index);
+            }
         }
         cx.notify();
     }
@@ -465,7 +498,7 @@ impl NavicatMain {
                     if !data_filter_rule_can_add_more_value(draft.operator, draft.values.len()) {
                         break;
                     }
-                    draft.values.insert(value);
+                    draft.values.push(value);
                 }
                 draft.batch_text.clear();
             }
@@ -535,7 +568,7 @@ impl NavicatMain {
             return;
         }
         let value = raw.trim().to_string();
-        if draft.values.contains(&value) {
+        if draft.values.iter().any(|selected| selected == &value) {
             self.show_message(tr("app.filter.error.value_selected").as_ref(), AppMessageKind::Warning, cx);
         } else if !data_filter_rule_can_add_more_value(draft.operator, draft.values.len()) {
             self.show_message(
@@ -544,7 +577,7 @@ impl NavicatMain {
                 cx,
             );
         } else {
-            draft.values.insert(value);
+            draft.values.push(value);
         }
         // 保持输入框空并保留焦点，方便连续输入。
         self.data_filter_value_input_text.clear();
@@ -574,9 +607,9 @@ impl NavicatMain {
         if draft.operator.value_arity() == DataFilterValueArity::Single {
             let value = std::mem::take(&mut draft.input).trim().to_string();
             draft.values = if value.is_empty() {
-                BTreeSet::new()
+                Vec::new()
             } else {
-                BTreeSet::from([value])
+                vec![value]
             };
         } else {
             // 未提交的单值输入先纳入草稿（沿用与手动添加相同的去空/去重规则）。
@@ -584,7 +617,7 @@ impl NavicatMain {
             if !pending.trim().is_empty()
                 && data_filter_rule_can_add_more_value(draft.operator, draft.values.len())
             {
-                draft.values.insert(pending.trim().to_string());
+                draft.values.push(pending.trim().to_string());
             } else if !pending.trim().is_empty() {
                 // 介于/不介于已满两个值：未提交的单值无法加入，明确提示而非静默丢弃。
                 self.show_message(
@@ -628,7 +661,12 @@ impl NavicatMain {
             .get_mut(&tab_id)
             .and_then(|rules| rules.get_mut(draft.rule_index))
         {
+            let values_unchanged =
+                rule.operator == draft.operator && rule.values == draft.values;
             rule.values = draft.values;
+            if !values_unchanged {
+                rule.typed_values = None;
+            }
         }
         self.data_filter_popover = None;
         self.sync_table_hover_overlay_block(cx);
@@ -749,11 +787,13 @@ impl NavicatMain {
 
     fn clear_data_filter_and_sort_rules(&mut self, tab_id: TabId, cx: &mut Context<Self>) {
         self.data_filter_draft_rules.remove(&tab_id);
+        self.data_filter_combinators.remove(&tab_id);
         self.data_sort_draft_rules.remove(&tab_id);
         self.data_filter_rules.remove(&tab_id);
         self.data_sort_rules.remove(&tab_id);
         self.data_filter_grouped_tabs.remove(&tab_id);
         self.data_filter_texts.remove(&tab_id);
+        self.data_filter_condition_completion_signatures.remove(&tab_id);
         self.data_sort_texts.remove(&tab_id);
         if self
             .data_filter_popover
@@ -774,10 +814,12 @@ impl NavicatMain {
         if self.data_filter_panels.contains(&tab_id) {
             self.data_filter_panels.remove(&tab_id);
             self.data_filter_draft_rules.remove(&tab_id);
+            self.data_filter_combinators.remove(&tab_id);
             self.data_sort_draft_rules.remove(&tab_id);
             self.data_filter_grouped_tabs.remove(&tab_id);
             self.data_filter_modes.remove(&tab_id);
             self.data_filter_texts.remove(&tab_id);
+            self.data_filter_condition_completion_signatures.remove(&tab_id);
             self.data_sort_texts.remove(&tab_id);
             if self
                 .data_filter_popover

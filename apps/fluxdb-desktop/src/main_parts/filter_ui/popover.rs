@@ -151,6 +151,11 @@ fn data_filter_panel_height(rules: &[DataFilterRule], mode: DataFilterMode) -> f
         let mut height: f32 = 0.;
         let mut index = 0;
         while index < rules.len() {
+            if rules[index].advanced_expression.is_some() {
+                height += 36.;
+                index += 1;
+                continue;
+            }
             if rules[index].grouped {
                 let mut group_count = 0.;
                 while index < rules.len() && rules[index].grouped {
@@ -176,6 +181,7 @@ fn data_filter_builder_rows(
     tab_id: TabId,
     rules: &[DataFilterRule],
     default_field: Option<String>,
+    combinator: fluxdb_core::FilterCombinator,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
@@ -183,19 +189,12 @@ fn data_filter_builder_rows(
         return data_filter_empty_rule_row(tab_id, default_field, colors, cx);
     }
 
-    let mut list = div()
-        .bg(if colors.is_dark {
-            rgb(0x18314d)
-        } else {
-            rgb(0xd8eefc)
-        })
-        .flex()
-        .flex_col();
+    let mut list = div().flex().flex_col();
 
     let mut index = 0;
     while index < rules.len() {
         let rule = &rules[index];
-        let show_and = index + 1 < rules.len();
+        let show_connector = index + 1 < rules.len();
         if rule.grouped {
             let group_start = index;
             let mut group_end = index;
@@ -211,6 +210,7 @@ fn data_filter_builder_rows(
                     default_field.clone(),
                     true,
                     group_index < group_end,
+                    combinator,
                     colors,
                     cx,
                 ));
@@ -220,6 +220,7 @@ fn data_filter_builder_rows(
                 group_end,
                 default_field.clone(),
                 group_end + 1 < rules.len(),
+                combinator,
                 colors,
                 cx,
             ));
@@ -231,7 +232,8 @@ fn data_filter_builder_rows(
                 rule,
                 default_field.clone(),
                 false,
-                show_and,
+                show_connector,
+                combinator,
                 colors,
                 cx,
             ));
@@ -266,6 +268,7 @@ fn data_filter_group_close_row(
     group_end_index: usize,
     default_field: Option<String>,
     show_and: bool,
+    combinator: fluxdb_core::FilterCombinator,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
@@ -292,7 +295,7 @@ fn data_filter_group_close_row(
                     .text_size(px(12.))
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .text_color(rgb(0x006bd6))
-                    .child("and"),
+                    .child(filter_combinator_label(combinator)),
             )
         })
         .when(!show_and, |this| {
@@ -373,9 +376,22 @@ fn data_filter_rule_row(
     default_field: Option<String>,
     nested: bool,
     show_and: bool,
+    combinator: fluxdb_core::FilterCombinator,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
+    if let Some(expression) = rule.advanced_expression.as_deref() {
+        return data_filter_advanced_rule_row(
+            tab_id,
+            rule_index,
+            expression,
+            rule.enabled,
+            show_and,
+            combinator,
+            colors,
+            cx,
+        );
+    }
     let fallback_field = tr("app.filter.field");
     let selected_field = rule
         .field
@@ -392,7 +408,7 @@ fn data_filter_rule_row(
     let selected_values = rule
         .operator
         .requires_values()
-        .then(|| rule.values.iter().cloned().collect::<Vec<_>>());
+        .then(|| rule.values.to_vec());
     let value_label = selected_values
         .as_deref()
         .map(data_filter_value_label);
@@ -404,6 +420,13 @@ fn data_filter_rule_row(
         .flex()
         .items_center()
         .gap_2()
+        .when(rule.enabled, |this| {
+            this.bg(if colors.is_dark {
+                rgb(0x18314d)
+            } else {
+                rgb(0xeaf4fe)
+            })
+        })
         .hover(move |style| style.bg(colors.hover))
         .child(data_filter_check(rule.enabled, colors).on_mouse_down(
             MouseButton::Left,
@@ -471,7 +494,7 @@ fn data_filter_rule_row(
                     .text_size(px(12.))
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .text_color(rgb(0x006bd6))
-                    .child("and"),
+                    .child(filter_combinator_label(combinator)),
             )
         })
         .when(!show_and, |this| {
@@ -512,6 +535,79 @@ fn data_filter_rule_row(
         ))
 }
 
+/// 输入条件无法无损拆成字段/运算符/值时保留的高级条件行。
+/// 它只读，但和普通规则一样可禁用/删除并显示全局 AND/OR。
+fn data_filter_advanced_rule_row(
+    tab_id: TabId,
+    rule_index: usize,
+    expression: &str,
+    enabled: bool,
+    show_and: bool,
+    combinator: fluxdb_core::FilterCombinator,
+    colors: UiColors,
+    cx: &mut Context<NavicatMain>,
+) -> Div {
+    div()
+        .h(px(36.))
+        .px_3()
+        .flex()
+        .items_center()
+        .gap_2()
+        .when(enabled, |this| {
+            this.bg(if colors.is_dark {
+                rgb(0x18314d)
+            } else {
+                rgb(0xeaf4fe)
+            })
+        })
+        .hover(move |style| style.bg(colors.hover))
+        .child(data_filter_check(enabled, colors).on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |this, _, _, cx| {
+                this.toggle_data_filter_rule_enabled(tab_id, rule_index, cx);
+                cx.stop_propagation();
+            }),
+        ))
+        .child(
+            div()
+                .debug_selector(|| format!("data-filter-advanced-rule-{rule_index}"))
+                .flex()
+                .flex_col()
+                .min_w(px(0.))
+                .flex_1()
+                .overflow_hidden()
+                .child(
+                    div()
+                        .text_size(px(12.))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(colors.text)
+                        .child(tr("app.filter.advanced_condition").to_string()),
+                )
+                .child(
+                    div()
+                        .text_size(px(11.))
+                        .text_color(colors.muted)
+                        .child(expression.to_string()),
+                ),
+        )
+        .when(show_and, |this| {
+            this.child(
+                div()
+                    .text_size(px(12.))
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(rgb(0x006bd6))
+                    .child(filter_combinator_label(combinator)),
+            )
+        })
+        .child(data_filter_delete_button(colors).on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |this, _, _, cx| {
+                this.delete_data_filter_rule(tab_id, rule_index, cx);
+                cx.stop_propagation();
+            }),
+        ))
+}
+
 fn data_filter_value_label(selected_values: &[String]) -> String {
     if selected_values.is_empty() {
         "<?>".to_string()
@@ -533,8 +629,7 @@ fn data_filter_single_value_slot(
 ) -> Div {
     let label = rule
         .values
-        .iter()
-        .next()
+        .first()
         .cloned()
         .unwrap_or_else(|| "<?>".to_string());
     data_filter_clickable_text(label, colors).on_mouse_down(
@@ -1666,7 +1761,7 @@ fn data_filter_batch_toggle(open: &bool, colors: UiColors) -> Div {
 /// 已选值标签区：短值横向排列自动换行，UUID 等长值截断并提示查看；数量多时限制高度滚动。
 fn data_filter_selected_values_tags(
     tab_id: TabId,
-    selected: &BTreeSet<String>,
+    selected: &[String],
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
@@ -1870,7 +1965,7 @@ fn data_filter_suggested_values_list(
     tab_id: TabId,
     rule_index: usize,
     values: &[String],
-    selected: &BTreeSet<String>,
+    selected: &[String],
     search: &str,
     colors: &UiColors,
     cx: &mut Context<NavicatMain>,

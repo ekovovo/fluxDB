@@ -24,6 +24,29 @@ fn pg_load_data(
     sort: &[SortSpec],
     filters: &[FilterSpec],
 ) -> fluxdb_core::Result<DataPage> {
+    pg_load_data_with_expression(config, path, offset, limit, sort, filters, None)
+}
+
+fn pg_load_data_expression(
+    config: &ConnectionConfig,
+    path: &ObjectPath,
+    offset: u64,
+    limit: u64,
+    sort: &[SortSpec],
+    expression: &fluxdb_core::FilterExpression,
+) -> fluxdb_core::Result<DataPage> {
+    pg_load_data_with_expression(config, path, offset, limit, sort, &[], Some(expression))
+}
+
+fn pg_load_data_with_expression(
+    config: &ConnectionConfig,
+    path: &ObjectPath,
+    offset: u64,
+    limit: u64,
+    sort: &[SortSpec],
+    filters: &[FilterSpec],
+    expression: Option<&fluxdb_core::FilterExpression>,
+) -> fluxdb_core::Result<DataPage> {
     if !matches!(path.kind, ObjectKind::Table | ObjectKind::View) {
         return Err(Error::new(ErrorKind::Unsupported, "仅表和视图支持数据读取"));
     }
@@ -44,7 +67,10 @@ fn pg_load_data(
             "SELECT {select_list}\nFROM {table} AS {}",
             fluxdb_core::PostgresDialect.quote_identifier(PG_DATA_SOURCE_ALIAS)
         );
-        let (where_sql, params) = pg_where_params(filters, &columns)?;
+        let (where_sql, params) = match expression {
+            Some(expression) => pg_expression_where_params(expression, &columns)?,
+            None => pg_where_params(filters, &columns)?,
+        };
         sql.push_str(&where_sql);
         sql.push_str(&pg_order_by_clause(sort, &columns));
         // limit+1 探测是否还有下一页。
@@ -385,6 +411,148 @@ fn pg_where_params(filters: &[FilterSpec], columns: &[Column]) -> fluxdb_core::R
         Ok((String::new(), params))
     } else {
         Ok((format!("\nWHERE {}", clauses.join("\n  AND ")), params))
+    }
+}
+
+fn pg_expression_where_params(
+    expression: &fluxdb_core::FilterExpression,
+    columns: &[Column],
+) -> fluxdb_core::Result<(String, Vec<Box<dyn ToSql + Sync>>)> {
+    let mut params: Vec<Box<dyn ToSql + Sync>> = Vec::new();
+    let sql = pg_expression_sql(expression, columns, &mut params)?;
+    if sql.trim().is_empty() {
+        Ok((String::new(), params))
+    } else {
+        Ok((format!("\nWHERE {sql}"), params))
+    }
+}
+
+fn pg_expression_sql(
+    expression: &fluxdb_core::FilterExpression,
+    columns: &[Column],
+    params: &mut Vec<Box<dyn ToSql + Sync>>,
+) -> fluxdb_core::Result<String> {
+    use fluxdb_core::FilterExpression;
+    Ok(match expression {
+        FilterExpression::Condition(condition) => {
+            let column = columns
+                .iter()
+                .find(|column| column.name == condition.field)
+                .ok_or_else(|| {
+                    Error::new(
+                        ErrorKind::Query,
+                        format!("过滤引用了不存在的列: {}", condition.field),
+                    )
+                })?;
+            pg_filter_expression_condition(condition, column, params)?
+        }
+        FilterExpression::And(items) => {
+            let sql = items
+                .iter()
+                .map(|item| pg_expression_sql(item, columns, params))
+                .collect::<fluxdb_core::Result<Vec<_>>>()?
+                .into_iter()
+                .filter(|item| !item.is_empty())
+                .collect::<Vec<_>>();
+            if sql.len() <= 1 {
+                sql.into_iter().next().unwrap_or_default()
+            } else {
+                format!("({})", sql.join(" AND "))
+            }
+        }
+        FilterExpression::Or(items) => {
+            let sql = items
+                .iter()
+                .map(|item| pg_expression_sql(item, columns, params))
+                .collect::<fluxdb_core::Result<Vec<_>>>()?
+                .into_iter()
+                .filter(|item| !item.is_empty())
+                .collect::<Vec<_>>();
+            if sql.len() <= 1 {
+                sql.into_iter().next().unwrap_or_default()
+            } else {
+                format!("({})", sql.join(" OR "))
+            }
+        }
+        FilterExpression::Not(inner) => {
+            format!("NOT ({})", pg_expression_sql(inner, columns, params)?)
+        }
+        FilterExpression::Raw(raw) => raw.clone(),
+    })
+}
+
+fn pg_filter_expression_condition(
+    condition: &fluxdb_core::FilterCondition,
+    column: &Column,
+    params: &mut Vec<Box<dyn ToSql + Sync>>,
+) -> fluxdb_core::Result<String> {
+    let field = fluxdb_core::PostgresDialect.quote_identifier(&column.name);
+    let bind = |params: &mut Vec<Box<dyn ToSql + Sync>>, value: &fluxdb_core::FilterValue| {
+        pg_next_param(params, &pg_filter_value_cell(value), None)
+    };
+    let first = condition.values.first();
+    let field_sql = match condition.op {
+        fluxdb_core::FilterOperator::Eq => {
+            format!("{field} = {}", bind(params, first.ok_or_else(|| Error::new(ErrorKind::Query, "过滤条件缺少值"))?))
+        }
+        fluxdb_core::FilterOperator::Ne => {
+            format!("{field} != {}", bind(params, first.ok_or_else(|| Error::new(ErrorKind::Query, "过滤条件缺少值"))?))
+        }
+        fluxdb_core::FilterOperator::Lt => {
+            format!("{field} < {}", bind(params, first.ok_or_else(|| Error::new(ErrorKind::Query, "过滤条件缺少值"))?))
+        }
+        fluxdb_core::FilterOperator::Le => {
+            format!("{field} <= {}", bind(params, first.ok_or_else(|| Error::new(ErrorKind::Query, "过滤条件缺少值"))?))
+        }
+        fluxdb_core::FilterOperator::Gt => {
+            format!("{field} > {}", bind(params, first.ok_or_else(|| Error::new(ErrorKind::Query, "过滤条件缺少值"))?))
+        }
+        fluxdb_core::FilterOperator::Ge => {
+            format!("{field} >= {}", bind(params, first.ok_or_else(|| Error::new(ErrorKind::Query, "过滤条件缺少值"))?))
+        }
+        fluxdb_core::FilterOperator::IsNull => format!("{field} IS NULL"),
+        fluxdb_core::FilterOperator::IsNotNull => format!("{field} IS NOT NULL"),
+        fluxdb_core::FilterOperator::IsEmpty => format!("{field} = ''"),
+        fluxdb_core::FilterOperator::IsNotEmpty => format!("{field} != ''"),
+        fluxdb_core::FilterOperator::Contains
+        | fluxdb_core::FilterOperator::NotContains
+        | fluxdb_core::FilterOperator::StartsWith
+        | fluxdb_core::FilterOperator::NotStartsWith
+        | fluxdb_core::FilterOperator::EndsWith
+        | fluxdb_core::FilterOperator::NotEndsWith => {
+            let value = first.ok_or_else(|| Error::new(ErrorKind::Query, "过滤条件缺少值"))?;
+            let text = fluxdb_core::filter_value_text(value);
+            let pattern = match condition.op {
+                fluxdb_core::FilterOperator::Contains | fluxdb_core::FilterOperator::NotContains => format!("%{text}%"),
+                fluxdb_core::FilterOperator::StartsWith | fluxdb_core::FilterOperator::NotStartsWith => format!("{text}%"),
+                _ => format!("%{text}"),
+            };
+            let negative = matches!(condition.op, fluxdb_core::FilterOperator::NotContains | fluxdb_core::FilterOperator::NotStartsWith | fluxdb_core::FilterOperator::NotEndsWith);
+            format!("{field}{} LIKE {}", if negative { " NOT" } else { "" }, bind(params, &fluxdb_core::FilterValue::Text(pattern)))
+        }
+        fluxdb_core::FilterOperator::Between | fluxdb_core::FilterOperator::NotBetween => {
+            let start = condition.values.first().ok_or_else(|| Error::new(ErrorKind::Query, "过滤条件缺少区间起点"))?;
+            let end = condition.values.get(1).ok_or_else(|| Error::new(ErrorKind::Query, "过滤条件缺少区间终点"))?;
+            format!("{field}{} BETWEEN {} AND {}", if condition.op == fluxdb_core::FilterOperator::NotBetween { " NOT" } else { "" }, bind(params, start), bind(params, end))
+        }
+        fluxdb_core::FilterOperator::InList | fluxdb_core::FilterOperator::NotInList => {
+            if condition.values.is_empty() {
+                return Err(Error::new(ErrorKind::Query, "过滤条件缺少列表值"));
+            }
+            let values = condition.values.iter().map(|value| bind(params, value)).collect::<Vec<_>>().join(", ");
+            format!("{field}{} IN ({values})", if condition.op == fluxdb_core::FilterOperator::NotInList { " NOT" } else { "" })
+        }
+    };
+    Ok(field_sql)
+}
+
+fn pg_filter_value_cell(value: &fluxdb_core::FilterValue) -> CellValue {
+    match value {
+        fluxdb_core::FilterValue::Text(value) => CellValue::Text(value.clone()),
+        fluxdb_core::FilterValue::Integer(value) => CellValue::I64(*value),
+        fluxdb_core::FilterValue::Float(value) => CellValue::F64(*value),
+        fluxdb_core::FilterValue::Boolean(value) => CellValue::Bool(*value),
+        fluxdb_core::FilterValue::Null => CellValue::Null,
     }
 }
 

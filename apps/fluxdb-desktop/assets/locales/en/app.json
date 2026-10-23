@@ -388,6 +388,17 @@
     "add_condition": "Add condition",
     "reset_conditions": "Reset conditions",
     "apply": "Apply filters",
+    "advanced_condition": "Advanced condition",
+    "input_unsupported": "This data source does not support SQL filter expressions",
+    "mode": {
+      "builder": "Form",
+      "input": "Input"
+    },
+    "completion": {
+      "field": "Current-page field",
+      "operator": "Filter operator",
+      "dialect": "%{dialect} keyword"
+    },
     "no_pending_sql_comment": "-- No pending SQL",
     "filter_value": "Filter value",
     "input_value": "Input value"

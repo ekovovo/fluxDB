@@ -177,6 +177,7 @@ pub enum AppCommand {
         generation: u64,
         sort: Vec<SortSpec>,
         filters: Vec<FilterSpec>,
+        expression: Option<FilterExpression>,
     },
     LoadRedisKey {
         tab_id: TabId,

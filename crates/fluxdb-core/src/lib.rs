@@ -20,6 +20,7 @@ include!("parts/object_query.rs");
 include!("parts/sql_context.rs");
 include!("parts/completion_filter.rs");
 include!("parts/settings_filter.rs");
+include!("parts/filter_expression.rs");
 include!("parts/data_page.rs");
 include!("parts/table_metadata.rs");
 include!("parts/user_admin.rs");

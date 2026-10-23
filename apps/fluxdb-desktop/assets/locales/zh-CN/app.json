@@ -388,6 +388,17 @@
     "add_condition": "新增条件",
     "reset_conditions": "重置条件",
     "apply": "应用筛选",
+    "advanced_condition": "高级条件",
+    "input_unsupported": "当前数据源不支持 SQL 条件表达式",
+    "mode": {
+      "builder": "表单",
+      "input": "输入"
+    },
+    "completion": {
+      "field": "当前页字段",
+      "operator": "筛选运算符",
+      "dialect": "%{dialect} 关键字"
+    },
     "no_pending_sql_comment": "-- 暂无待提交 SQL",
     "filter_value": "筛选值",
     "input_value": "输入值"

@@ -228,6 +228,17 @@ pub trait Connector {
         sort: &[SortSpec],
         filters: &[FilterSpec],
     ) -> Result<DataPage>;
+    /// 使用统一表达式树读取数据页。默认实现保留旧连接器兼容，新方言走精确参数绑定。
+    fn load_data_expression(
+        &self,
+        path: &ObjectPath,
+        offset: u64,
+        limit: u64,
+        sort: &[SortSpec],
+        _filters: &FilterExpression,
+    ) -> Result<DataPage> {
+        self.load_data(path, offset, limit, sort, &[])
+    }
     fn preview_data_export(
         &self,
         _: &ObjectPath,

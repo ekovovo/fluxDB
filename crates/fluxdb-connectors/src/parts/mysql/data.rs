@@ -10,6 +10,29 @@ fn mysql_load_data(
     sort: &[SortSpec],
     filters: &[FilterSpec],
 ) -> fluxdb_core::Result<DataPage> {
+    mysql_load_data_with_expression(config, path, offset, limit, sort, filters, None)
+}
+
+fn mysql_load_data_expression(
+    config: &ConnectionConfig,
+    path: &ObjectPath,
+    offset: u64,
+    limit: u64,
+    sort: &[SortSpec],
+    expression: &fluxdb_core::FilterExpression,
+) -> fluxdb_core::Result<DataPage> {
+    mysql_load_data_with_expression(config, path, offset, limit, sort, &[], Some(expression))
+}
+
+fn mysql_load_data_with_expression(
+    config: &ConnectionConfig,
+    path: &ObjectPath,
+    offset: u64,
+    limit: u64,
+    sort: &[SortSpec],
+    filters: &[FilterSpec],
+    expression: Option<&fluxdb_core::FilterExpression>,
+) -> fluxdb_core::Result<DataPage> {
     if !matches!(path.kind, ObjectKind::Table | ObjectKind::View) {
         return Err(Error::new(ErrorKind::Unsupported, "仅表和视图支持数据读取"));
     }
@@ -49,13 +72,24 @@ fn mysql_load_data(
             fluxdb_core::MySqlDialect.quote_identifier(&path.name),
             fluxdb_core::MySqlDialect.quote_identifier(MYSQL_DATA_SOURCE_ALIAS)
         ));
-        push_data_where_clause(
-            &mut builder,
-            filters,
-            &columns,
-            |value| fluxdb_core::MySqlDialect.quote_identifier(value),
-            push_mysql_bind,
-        );
+        if let Some(expression) = expression {
+            if let Some(tree) = crate::filter_dialects::compile_filter_tree(
+                DatabaseKind::MySql,
+                expression,
+            )
+            .map_err(|error| Error::new(ErrorKind::Query, error.to_string()))?
+            {
+                push_expression_where_clause(&mut builder, &tree, push_mysql_filter_bind);
+            }
+        } else {
+            push_data_where_clause(
+                &mut builder,
+                filters,
+                &columns,
+                |value| fluxdb_core::MySqlDialect.quote_identifier(value),
+                push_mysql_bind,
+            );
+        }
         builder.push(mysql_order_by_clause(sort, &columns));
         builder.push(" LIMIT ");
         builder.push_bind(pagination.limit + 1);
@@ -254,6 +288,30 @@ fn mysql_ensure_columns_available(
         ErrorKind::Query,
         format!("未读取到 `{database}`.`{table}` 的字段信息，请确认当前账号是否有该表的权限"),
     ))
+}
+
+fn push_mysql_filter_bind(
+    builder: &mut QueryBuilder<'_, MySql>,
+    value: &fluxdb_core::FilterValue,
+) {
+    use fluxdb_core::FilterValue;
+    match value {
+        FilterValue::Null => {
+            builder.push_bind(Option::<String>::None);
+        }
+        FilterValue::Text(value) => {
+            builder.push_bind(value.clone());
+        }
+        FilterValue::Integer(value) => {
+            builder.push_bind(*value);
+        }
+        FilterValue::Float(value) => {
+            builder.push_bind(*value);
+        }
+        FilterValue::Boolean(value) => {
+            builder.push_bind(*value);
+        }
+    }
 }
 
 async fn mysql_columns(

@@ -386,6 +386,107 @@ fn push_data_where_clause<DB>(
     }
 }
 
+/// 统一表达式树的连接器侧适配：方言层只产出占位符，驱动侧负责把值绑定成
+/// sqlx 参数。这样 AND/OR/括号不再散落在各连接器。
+pub(crate) fn push_expression_where_clause<DB>(
+    builder: &mut QueryBuilder<'_, DB>,
+    tree: &fluxdb_core::CompiledFilterNode,
+    push_value: fn(&mut QueryBuilder<'_, DB>, &fluxdb_core::FilterValue),
+) where
+    DB: sqlx::Database,
+{
+    // sqlx 的 push_bind 会立即追加参数；因此只能在确定需要 WHERE 后遍历一次。
+    // 先用零副作用的结构检查判断是否为空，再渲染同一棵树一次。
+    if !compiled_expression_is_empty(tree) {
+        builder.push(" WHERE ");
+        push_expression_node(builder, tree, push_value);
+    }
+}
+
+fn compiled_expression_is_empty(tree: &fluxdb_core::CompiledFilterNode) -> bool {
+    match tree {
+        fluxdb_core::CompiledFilterNode::Condition { sql, .. } => sql.trim().is_empty(),
+        fluxdb_core::CompiledFilterNode::And(items)
+        | fluxdb_core::CompiledFilterNode::Or(items) => {
+            items.iter().all(compiled_expression_is_empty)
+        }
+        fluxdb_core::CompiledFilterNode::Not(inner) => compiled_expression_is_empty(inner),
+    }
+}
+
+fn push_expression_node<DB>(
+    builder: &mut QueryBuilder<'_, DB>,
+    tree: &fluxdb_core::CompiledFilterNode,
+    push_value: fn(&mut QueryBuilder<'_, DB>, &fluxdb_core::FilterValue),
+) -> bool
+where
+    DB: sqlx::Database,
+{
+    match tree {
+        fluxdb_core::CompiledFilterNode::Condition { sql, parameters } => {
+            if sql.trim().is_empty() {
+                return false;
+            }
+            let mut parts = sql.split('?');
+            builder.push(parts.next().unwrap_or_default());
+            for (parameter, suffix) in parameters.iter().zip(parts) {
+                push_value(builder, parameter);
+                builder.push(suffix);
+            }
+            true
+        }
+        fluxdb_core::CompiledFilterNode::And(items) => {
+            render_expression_binary(builder, items, " AND ", push_value)
+        }
+        fluxdb_core::CompiledFilterNode::Or(items) => {
+            render_expression_binary(builder, items, " OR ", push_value)
+        }
+        fluxdb_core::CompiledFilterNode::Not(inner) => {
+            builder.push("NOT (");
+            let rendered = push_expression_node(builder, inner, push_value);
+            builder.push(")");
+            rendered
+        }
+    }
+}
+
+fn render_expression_binary<DB>(
+    builder: &mut QueryBuilder<'_, DB>,
+    items: &[fluxdb_core::CompiledFilterNode],
+    separator: &str,
+    push_value: fn(&mut QueryBuilder<'_, DB>, &fluxdb_core::FilterValue),
+) -> bool
+where
+    DB: sqlx::Database,
+{
+    if items.is_empty() {
+        return false;
+    }
+    let rendered_count = items
+        .iter()
+        .filter(|item| !compiled_expression_is_empty(item))
+        .count();
+    if rendered_count > 1 {
+        builder.push("(");
+    }
+    let mut rendered = false;
+    for item in items {
+        if compiled_expression_is_empty(item) {
+            continue;
+        }
+        if rendered {
+            builder.push(separator);
+        }
+        if push_expression_node(builder, item, push_value) {
+            rendered = true;
+        }
+    }
+    if rendered_count > 1 {
+        builder.push(")");
+    }
+    rendered
+}
+
 fn data_filter_clause_is_pushable(filter: &FilterSpec) -> bool {
     match filter.op {
         FilterOp::IsNull
@@ -396,6 +497,54 @@ fn data_filter_clause_is_pushable(filter: &FilterSpec) -> bool {
         | FilterOp::NotExists => true,
         FilterOp::Between | FilterOp::NotBetween => filter.values.len() >= 2,
         _ => !filter.values.is_empty(),
+    }
+}
+
+#[cfg(test)]
+mod compiled_filter_binding_tests {
+    use super::*;
+
+    fn push_value(
+        builder: &mut QueryBuilder<'_, sqlx::MySql>,
+        value: &fluxdb_core::FilterValue,
+    ) {
+        match value {
+            fluxdb_core::FilterValue::Null => {
+                builder.push_bind(Option::<String>::None);
+            }
+            fluxdb_core::FilterValue::Text(value) => {
+                builder.push_bind(value.clone());
+            }
+            fluxdb_core::FilterValue::Integer(value) => {
+                builder.push_bind(*value);
+            }
+            fluxdb_core::FilterValue::Float(value) => {
+                builder.push_bind(*value);
+            }
+            fluxdb_core::FilterValue::Boolean(value) => {
+                builder.push_bind(*value);
+            }
+        }
+    }
+
+    #[test]
+    fn expression_is_rendered_and_bound_once_in_tree_order() {
+        let tree = fluxdb_core::CompiledFilterNode::And(vec![
+            fluxdb_core::CompiledFilterNode::Condition {
+                sql: "`status` = ?".to_string(),
+                parameters: vec![fluxdb_core::FilterValue::Text("failed".into())],
+            },
+            fluxdb_core::CompiledFilterNode::Condition {
+                sql: "`score` > ?".to_string(),
+                parameters: vec![fluxdb_core::FilterValue::Integer(10)],
+            },
+        ]);
+        let mut builder = QueryBuilder::<sqlx::MySql>::new("SELECT * FROM `records`");
+        push_expression_where_clause(&mut builder, &tree, push_value);
+        assert_eq!(
+            builder.sql(),
+            "SELECT * FROM `records` WHERE (`status` = ? AND `score` > ?)"
+        );
     }
 }
 

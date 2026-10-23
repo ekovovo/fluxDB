@@ -2,7 +2,6 @@
 enum DataFilterPopoverKind {
     Field,
     Operator,
-    Combinator,
     Value,
     SortField,
     SortMenu,

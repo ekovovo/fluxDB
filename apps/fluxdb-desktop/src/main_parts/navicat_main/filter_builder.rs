@@ -381,32 +381,10 @@ impl NavicatMain {
         cx.notify();
     }
 
-    fn set_data_filter_combinator_popover(
+    fn toggle_data_filter_combinator(
         &mut self,
         tab_id: TabId,
         rule_index: usize,
-        cx: &mut Context<Self>,
-    ) {
-        let next = DataFilterPopover {
-            tab_id,
-            kind: DataFilterPopoverKind::Combinator,
-            rule_index: Some(rule_index),
-            sort_index: None,
-        };
-        self.data_filter_popover = if self.data_filter_popover == Some(next) {
-            None
-        } else {
-            Some(next)
-        };
-        self.sync_table_hover_overlay_block(cx);
-        cx.notify();
-    }
-
-    fn select_data_filter_combinator(
-        &mut self,
-        tab_id: TabId,
-        rule_index: usize,
-        connector: fluxdb_core::FilterCombinator,
         cx: &mut Context<Self>,
     ) {
         if let Some(rule) = self
@@ -414,7 +392,10 @@ impl NavicatMain {
             .get_mut(&tab_id)
             .and_then(|rules| rules.get_mut(rule_index))
         {
-            rule.connector = connector;
+            rule.connector = match rule.connector {
+                fluxdb_core::FilterCombinator::And => fluxdb_core::FilterCombinator::Or,
+                fluxdb_core::FilterCombinator::Or => fluxdb_core::FilterCombinator::And,
+            };
         }
         self.data_filter_popover = None;
         self.sync_data_filter_builder_to_text(tab_id);

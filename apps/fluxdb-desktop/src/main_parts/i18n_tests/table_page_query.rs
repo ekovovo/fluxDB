@@ -481,17 +481,6 @@ fn ai_page_query_opens_sidebar_table_fills_conditions_and_shows_rows(cx: &mut Te
         .expect("row connector");
     cx.simulate_click(connector.center(), Modifiers::default());
     cx.update(|window, cx| window.draw(cx).clear(cx));
-    assert!(cx
-        .debug_bounds("data-filter-connector-option-and")
-        .is_some());
-    assert!(cx
-        .debug_bounds("data-filter-connector-option-or")
-        .is_some());
-    let or_option = cx
-        .debug_bounds("data-filter-connector-option-or")
-        .expect("OR option");
-    cx.simulate_click(or_option.center(), Modifiers::default());
-    cx.update(|window, cx| window.draw(cx).clear(cx));
     cx.update(|_, cx| {
         let app = view.read(cx);
         let rules = app
@@ -506,5 +495,21 @@ fn ai_page_query_opens_sidebar_table_fills_conditions_and_shows_rows(cx: &mut Te
             .data_filter_texts
             .get(&tab_id)
             .is_some_and(|text| text.contains(" OR ")));
+    });
+    let connector = cx
+        .debug_bounds("data-filter-connector-0")
+        .expect("switched connector");
+    cx.simulate_click(connector.center(), Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    cx.update(|_, cx| {
+        let rules = view
+            .read(cx)
+            .data_filter_draft_rules
+            .get(&tab_id)
+            .expect("connector rules");
+        assert_eq!(
+            rules[0].connector,
+            fluxdb_core::FilterCombinator::And
+        );
     });
 }

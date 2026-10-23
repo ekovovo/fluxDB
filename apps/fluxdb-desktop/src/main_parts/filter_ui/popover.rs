@@ -28,9 +28,6 @@ fn data_filter_popover_layer(
     let selected_operator = rule
         .map(|rule| rule.operator)
         .unwrap_or(DataFilterOperator::Contains);
-    let selected_connector = rule
-        .map(|rule| rule.connector)
-        .unwrap_or_default();
     let recommended_values = data_filter_recommended_values(page, selected_field, value_search);
 
     let menu = match popover.kind {
@@ -50,14 +47,6 @@ fn data_filter_popover_layer(
             rule_index,
             selected_operator,
             DATA_FILTER_POPOVER_TOP,
-            colors,
-            cx,
-        ),
-        DataFilterPopoverKind::Combinator => data_filter_combinator_menu(
-            tab_id,
-            rule_index,
-            selected_connector,
-            DATA_FILTER_POPOVER_TOP + rule_index as f32 * 24.,
             colors,
             cx,
         ),
@@ -645,7 +634,7 @@ fn data_filter_connector_button(
         .on_mouse_down(
             MouseButton::Left,
             cx.listener(move |this, _, _, cx| {
-                this.set_data_filter_combinator_popover(tab_id, rule_index, cx);
+                this.toggle_data_filter_combinator(tab_id, rule_index, cx);
                 cx.stop_propagation();
             }),
         )
@@ -1057,45 +1046,6 @@ fn data_filter_operator_menu(
         .top(px(top))
         .left(px(90.))
         .child(list)
-}
-
-fn data_filter_combinator_menu(
-    tab_id: TabId,
-    rule_index: usize,
-    selected_connector: fluxdb_core::FilterCombinator,
-    top: f32,
-    colors: UiColors,
-    cx: &mut Context<NavicatMain>,
-) -> Div {
-    let mut menu = data_filter_menu_surface(104., 60., colors)
-        .top(px(top))
-        .left(px(112.));
-    for connector in [
-        fluxdb_core::FilterCombinator::And,
-        fluxdb_core::FilterCombinator::Or,
-    ] {
-        let debug_id = match connector {
-            fluxdb_core::FilterCombinator::And => "data-filter-connector-option-and",
-            fluxdb_core::FilterCombinator::Or => "data-filter-connector-option-or",
-        };
-        menu = menu.child(
-            data_filter_menu_item(
-                filter_combinator_label(connector).to_string(),
-                connector == selected_connector,
-                None,
-                colors,
-            )
-            .debug_selector(move || debug_id.into())
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |this, _, _, cx| {
-                    this.select_data_filter_combinator(tab_id, rule_index, connector, cx);
-                    cx.stop_propagation();
-                }),
-            ),
-        );
-    }
-    menu
 }
 
 fn data_sort_action_menu(

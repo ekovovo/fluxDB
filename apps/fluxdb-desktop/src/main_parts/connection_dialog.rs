@@ -137,15 +137,24 @@ fn topbar(
         })
         .child(
             div()
+                // Windows 将 WindowControlArea::Drag 映射为 HTCAPTION，交由系统处理移动和双击；
+                // macOS/Linux 由 gpui 的 start_window_move 交给平台窗口管理器。
+                // 下按仅由 macOS/Linux 消费，Windows 交给 DefWindowProc，避免拦截原生拖拽。
+                .id("topbar-window-drag")
                 .flex_1()
                 .h_full()
-                .on_mouse_down(MouseButton::Left, |event, window, cx| {
-                    if event.click_count >= 2 {
-                        toggle_window_maximized(window);
-                    } else {
-                        window.start_window_move();
-                    }
-                    cx.stop_propagation();
+                .when(cfg!(target_os = "windows"), |this| {
+                    this.window_control_area(WindowControlArea::Drag)
+                })
+                .when(!cfg!(target_os = "windows"), |this| {
+                    this.on_mouse_down(MouseButton::Left, |event, window, cx| {
+                        if event.click_count >= 2 {
+                            toggle_window_maximized(window);
+                        } else {
+                            window.start_window_move();
+                        }
+                        cx.stop_propagation();
+                    })
                 }),
         )
         // 顶部栏最右侧：github + 询问 AI + 历史 + 设置。

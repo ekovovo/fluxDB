@@ -66,8 +66,8 @@ use gpui::{
     MouseUpEvent, NoAction, PathPromptOptions, Pixels, Point, Render, Role, ScrollHandle,
     ScrollStrategy, SharedString, Size, Stateful, StatefulInteractiveElement, Subscription, Task,
     TitlebarOptions, Transformation, UniformListScrollHandle, WeakEntity, Window, WindowBounds,
-    WindowOptions, actions, anchored, canvas, deferred, div, ease_in_out, hsla, img, opaque_grey,
-    percentage, point, px, rgb, size, svg, uniform_list,
+    WindowControlArea, WindowOptions, actions, anchored, canvas, deferred, div, ease_in_out, hsla,
+    img, opaque_grey, percentage, point, px, rgb, size, svg, uniform_list,
 };
 use gpui_component::{
     ActiveTheme as _, Colorize as _, Disableable as _, IconName, IndexPath, Root, Sizable as _,

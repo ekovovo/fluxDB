@@ -1359,6 +1359,7 @@ struct PendingDisconnectConnection {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct PendingCloseWorkspace {
     scope: FirstLevelScope,
+    display_name: Option<String>,
     unsaved_queries: usize,
     running_queries: usize,
 }

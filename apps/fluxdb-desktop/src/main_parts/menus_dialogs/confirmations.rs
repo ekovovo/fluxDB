@@ -434,6 +434,12 @@ fn close_workspace_modal(
         FirstLevelScope::Database(workspace) => tr("app.confirm.close_workspace_message")
             .replace("%{database}", &workspace.database)
             .replace("%{details}", &details.join(", ")),
+        FirstLevelScope::RedisConnection(_) => tr("app.confirm.close_redis_connection_message")
+            .replace(
+                "%{connection}",
+                pending.display_name.as_deref().unwrap_or_default(),
+            )
+            .replace("%{details}", &details.join(", ")),
         FirstLevelScope::Settings => tr("app.confirm.close_settings_message")
             .replace("%{details}", &details.join(", ")),
         FirstLevelScope::AiChat => tr("app.confirm.close_ai_chat_message")

@@ -1,6 +1,6 @@
 # FluxDB
 
-**A native, cross-platform database client and SQL editor for queries, data editing, schema management and Redis work in one window.**
+**A native, cross-platform database client and SQL editor designed for high performance and low overhead: query, edit data, manage schemas and debug Redis in one window.**
 
 FluxDB is built with Rust and GPUI, without Electron or a WebView. It brings MySQL, PostgreSQL, SQL Server, SQLite, TiDB, Dameng DM8 and Redis into one desktop workflow, with a permission-aware AI Agent.
 
@@ -19,6 +19,15 @@ FluxDB is built with Rust and GPUI, without Electron or a WebView. It brings MyS
 
 ## Latest changes
 
+### Since v0.1.10 (unreleased)
+
+- **SQL Server support**: SQL authentication, TLS, database/schema/object browsing, T-SQL queries, table design and data editing, table import/export, logins, database users, role membership and explicit permissions, object-level logical backup/restore, and AI page context with controlled execution.
+- **SQL Server first-release limits**: Windows integrated authentication, Azure AD, contained database users, column-level permission editing, user-defined server roles, automatic named-instance discovery, and database-level physical backup are not implemented yet. See [Database support](#database-support).
+- **SQL editor and completion**: bare table-name completion works across schemas and continues to the next qualifier; completion offsets are fixed for UTF-8 SQL.
+- **Table designer**: expanded dialect-specific types and adaptive column options, on-demand enum/custom-type editing, validated lengths and precision, and consistent PostgreSQL/MySQL type display.
+- **Results and Redis workspace**: query-summary metadata columns are more compact, long column comments wrap correctly, and Redis tabs are grouped by connection as top-level workspaces.
+- **AI repair targeting**: failed-SQL repair now locates the editor statement using the actual execution source, so it remains correct after SQL rewriting.
+
 ### v0.1.10
 
 - **Dameng DM8 support**: connections, schema and object browsing, SQL queries, table design and data editing.
@@ -32,7 +41,7 @@ FluxDB is built with Rust and GPUI, without Electron or a WebView. It brings MyS
 
 - **One workspace for multiple data sources**: manage relational databases and Redis side by side.
 - **From query to write**: SQL editing, editable result sets, table design, import/export, backup/restore and ER diagrams.
-- **Native desktop experience**: Rust + GPUI, without Electron or a WebView.
+- **Native architecture, performance first**: built with Rust + GPUI, without Electron or a WebView, with low overhead and responsive interaction as design goals.
 - **AI with explicit boundaries**: bounded reads, authorized editor edits and approval for write or high-risk tools.
 
 ## Core capabilities
@@ -79,15 +88,15 @@ https://github.com/user-attachments/assets/f6075999-a87f-4644-9d14-dbda49a7981d
 
 Capabilities vary by database. See the [user guide](./docs/user-guide.md) for details.
 
-| Database | Current capabilities | Backup / restore | Connections and limits |
-| --- | --- | --- | --- |
-| MySQL | SQL queries, object browsing, table management, data editing, import/export, native client tool entry | `mysqldump` logical backup; SQL restore | TLS/SSL, SSH tunnel, proxy, timeouts, charset |
-| TiDB | Reuses the MySQL protocol path with TiDB SQL dialect, completion and schema management | Reuses MySQL logical backup | Same connection features as MySQL |
-| PostgreSQL | SQL queries, schema/object browsing, table management, data editing, users and roles, psql tool entry | `pg_dump` plain SQL; `psql` restore | TLS, SSH, proxy, schema scope, timeouts |
-| SQL Server | T-SQL queries, database/schema browsing, table management, data editing, import/export, login/user/role/permission administration, logical backup/restore, AI page context and controlled execution | Object-level logical SQL backup and restore | SQL authentication, TLS, explicit ports; named instances require the actual port |
-| SQLite | Local file connections, SQL queries, object browsing, table management, data editing | Consistent `VACUUM INTO` snapshot; restore to a new file with integrity and foreign-key checks | Local file path |
-| Dameng DM8 | Schema/object browsing, SQL queries, table design and management, data editing, table import | Logical backup and SQL restore; restore currently targets a single schema | Instance and schema connection settings |
-| Redis | Keyspace browsing, value editing, TTL, Workbench, CLI, Pub/Sub | No database-level backup/restore | TLS, SSH, Sentinel, Cluster, URI/Cloud; Cluster uses DB 0 only |
+| Database | Current capabilities | Backup / restore | Connections and limits | Not yet supported |
+| --- | --- | --- | --- | --- |
+| MySQL | SQL queries, object browsing, table management, data editing, import/export, native client tool entry | `mysqldump` logical backup; SQL restore | TLS/SSL, SSH tunnel, proxy, timeouts, charset | - |
+| TiDB | Reuses the MySQL protocol path with TiDB SQL dialect, completion and schema management | Reuses MySQL logical backup | Same connection features as MySQL | - |
+| PostgreSQL | SQL queries, schema/object browsing, table management, data editing, users and roles, psql tool entry | `pg_dump` plain SQL; `psql` restore | TLS, SSH, proxy, schema scope, timeouts | - |
+| SQL Server | T-SQL queries, database/schema/object browsing, table design and data editing, table import/export, logins, database users, role membership and explicit permissions, object-level logical backup/restore, AI page context and controlled execution | Object-level logical SQL backup and restore | SQL Server authentication, TLS, explicit ports; named instances require the actual port | Windows integrated authentication, Azure AD, contained database users, column-level permission editing, user-defined server roles, SQL Browser/named-instance auto-discovery, and database-level physical `BACKUP DATABASE`. Object-level logical backup and restore is not a substitute for database-level disaster recovery. |
+| SQLite | Local file connections, SQL queries, object browsing, table management, data editing | Consistent `VACUUM INTO` snapshot; restore to a new file with integrity and foreign-key checks | Local file path | - |
+| Dameng DM8 | Schema/object browsing, SQL queries, table design and management, data editing, table import | Logical backup and SQL restore; restore currently targets a single schema | Instance and schema connection settings | - |
+| Redis | Keyspace browsing, value editing, TTL, Workbench, CLI, Pub/Sub | No database-level backup/restore | TLS, SSH, Sentinel, Cluster, URI/Cloud; Cluster uses DB 0 only | - |
 
 MongoDB and MariaDB are not currently supported. They are roadmap candidates, not current capabilities.
 
@@ -188,7 +197,8 @@ AI is used extensively in the development workflow. Humans own requirements, rev
 
 Current priorities are real-world coverage for existing databases, stability and the cross-platform release experience. Candidate directions include:
 
-- **MongoDB**: document browsing and editing.
+- **SQL Server follow-up**: Windows integrated authentication and Azure AD, contained database users, column-level permissions, user-defined server roles, named-instance auto-discovery, and database-level physical backup/restore.
+- **MongoDB**: document browsing, querying and editing.
 - **MariaDB**: independent dialect, system tables and backup parameter support.
 - **More databases**: evaluate Oracle, ClickHouse, DuckDB, Elasticsearch/OpenSearch and others based on community demand.
 

@@ -207,7 +207,20 @@ impl NavicatMain {
         let text = self
             .data_filter_draft_rules
             .get(&tab_id)
-            .map(|rules| data_filter_rules_sql_pretty(rules, db_kind))
+            .map(|rules| {
+                let columns = self
+                    .controller
+                    .state()
+                    .tabs
+                    .iter()
+                    .find_map(|tab| match &tab.kind {
+                        TabKind::DataEditor(editor) if tab.id == tab_id => editor.page.as_ref(),
+                        _ => None,
+                    })
+                    .map(|page| page.columns.as_slice())
+                    .unwrap_or_default();
+                data_filter_rules_sql_pretty(rules, db_kind, columns)
+            })
             .unwrap_or_default();
         if text.is_empty() {
             self.data_filter_texts.remove(&tab_id);

@@ -181,7 +181,18 @@ impl NavicatMain {
             .get(&tab_id)
             .cloned()
             .unwrap_or_default();
-        data_filter_expression_from_rules(&rules)
+        let columns = self
+            .controller
+            .state()
+            .tabs
+            .iter()
+            .find_map(|tab| match &tab.kind {
+                TabKind::DataEditor(editor) if tab.id == tab_id => editor.page.as_ref(),
+                _ => None,
+            })
+            .map(|page| page.columns.clone())
+            .unwrap_or_default();
+        data_filter_expression_from_rules(&rules, &columns)
     }
 
     fn data_changes_for_tab(&self, tab_id: TabId) -> Option<DataChangeSet> {

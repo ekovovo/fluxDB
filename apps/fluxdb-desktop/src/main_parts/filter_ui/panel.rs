@@ -97,6 +97,7 @@ fn data_filter_panel(
 
 fn data_filter_apply_button(colors: UiColors, applying: bool) -> Div {
     let button = div()
+        .debug_selector(|| "data-filter-apply".into())
         .h(px(26.))
         .px_3()
         .rounded(colors.radius)
@@ -340,6 +341,7 @@ fn data_filter_panel_resize_handle(
 
 fn data_editor_sql_preview(
     object: &ObjectPath,
+    columns: &[GdbColumn],
     rules: &[DataFilterRule],
     sort_rules: &[DataSortRule],
     mode: DataFilterMode,
@@ -354,7 +356,7 @@ fn data_editor_sql_preview(
     let mut has_order_by = false;
     match mode {
         DataFilterMode::Builder => {
-            let where_clause = data_filter_rules_sql(rules, db_kind);
+            let where_clause = data_filter_rules_sql(rules, db_kind, columns);
             if !where_clause.is_empty() {
                 clauses.push(format!("WHERE {where_clause}"));
             }

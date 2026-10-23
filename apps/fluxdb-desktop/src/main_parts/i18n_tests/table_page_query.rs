@@ -445,6 +445,7 @@ fn ai_page_query_opens_sidebar_table_fills_conditions_and_shows_rows(cx: &mut Te
 
     cx.update(|window, cx| {
         view.update(cx, |this, cx| {
+            this.data_filter_panels.insert(tab_id);
             this.data_filter_modes
                 .insert(tab_id, crate::DataFilterMode::Builder);
             this.data_filter_draft_rules.insert(
@@ -476,6 +477,7 @@ fn ai_page_query_opens_sidebar_table_fills_conditions_and_shows_rows(cx: &mut Te
         });
         window.draw(cx).clear(cx);
     });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
     let connector = cx
         .debug_bounds("data-filter-connector-0")
         .expect("row connector");
@@ -511,5 +513,197 @@ fn ai_page_query_opens_sidebar_table_fills_conditions_and_shows_rows(cx: &mut Te
             rules[0].connector,
             fluxdb_core::FilterCombinator::And
         );
+    });
+}
+
+#[gpui::test]
+fn numeric_form_filter_changes_query_results(cx: &mut TestAppContext) {
+    use fluxdb_app::{AppCommand, AppEvent, TabKind};
+    use fluxdb_core::{
+        ConnectionConfig, ConnectionId, DatabaseKind, Endpoint, ObjectKind, ObjectPath,
+    };
+
+    let _guard = locale_guard();
+    let temp = tempfile::tempdir().expect("isolated profile");
+    let storage = FileStorage::new(temp.path().join("profile"));
+    let database = temp.path().join("numeric-filter.sqlite");
+    let connection = fluxdb_storage::AiConnection::open(&database).expect("SQLite database");
+    connection
+        .execute_batch(
+            "CREATE TABLE records (id INTEGER PRIMARY KEY, amount NUMERIC);
+             INSERT INTO records VALUES (1, 123.45), (2, 2), (3, 3);",
+        )
+        .expect("fixture rows");
+    drop(connection);
+    let settings = Settings {
+        locale: "en".into(),
+        ..Default::default()
+    };
+    storage.save_settings(&settings).expect("settings");
+    init_i18n(
+        &app_assets_base_path().join("locales"),
+        &storage.root_dir().join("locales"),
+        "en",
+    );
+    let mut controller = AppController::new();
+    controller.dispatch(AppCommand::ReplaceConnections(vec![ConnectionConfig {
+        id: ConnectionId(1),
+        name: "numeric filter fixture".into(),
+        kind: DatabaseKind::Sqlite,
+        endpoint: Endpoint::SqliteFile {
+            path: database,
+            read_only: true,
+        },
+        options: Default::default(),
+        redis_profile: None,
+        mysql_profile: None,
+        postgres_profile: None,
+        dameng_profile: None,
+        sqlserver_profile: None,
+    }]));
+    cx.update(|cx| {
+        extend_component_i18n();
+        gpui_component::init(cx);
+    });
+    let (_, cx) = cx.add_window_view(move |window, cx| {
+        let view = cx.new(|cx| {
+            navicat_main_new(
+                window,
+                cx,
+                controller,
+                storage,
+                gpui_component::ThemeMode::Light,
+            )
+        });
+        Root::new(view, window, cx)
+    });
+    let view = cx.update(|window, cx| {
+        window
+            .root::<Root>()
+            .expect("root")
+            .expect("typed root")
+            .read(cx)
+            .view()
+            .clone()
+            .downcast::<NavicatMain>()
+            .expect("production view")
+    });
+    let tab_id = cx.update(|_, cx| {
+        let event = view.update(cx, |this, cx| {
+            this.dispatch(
+                AppCommand::OpenDataEditor(ObjectPath {
+                connection_id: ConnectionId(1),
+                database: Some("main".into()),
+                schema: None,
+                name: "records".into(),
+                kind: ObjectKind::Table,
+                }),
+                cx,
+            )
+        });
+        let AppEvent::TabOpened(tab_id) = event else {
+            panic!("open data editor: {event:?}");
+        };
+        tab_id
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        cx.background_executor
+            .advance_clock(std::time::Duration::from_millis(16));
+        cx.run_until_parked();
+        let loaded = cx.update(|_, cx| {
+            view.read(cx)
+                .controller
+                .state()
+                .tabs
+                .iter()
+                .find(|tab| tab.id == tab_id)
+                .and_then(|tab| match &tab.kind {
+                    TabKind::DataEditor(editor) => editor.page.as_ref(),
+                    _ => None,
+                })
+                .map(|page| page.rows.len())
+        });
+        if loaded == Some(3) {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "initial page did not load");
+        std::thread::yield_now();
+    }
+    cx.update(|window, cx| {
+        view.update(cx, |this, cx| {
+            this.data_filter_panels.insert(tab_id);
+            this.data_filter_modes
+                .insert(tab_id, crate::DataFilterMode::Builder);
+            this.data_filter_draft_rules.insert(
+                tab_id,
+                vec![crate::DataFilterRule {
+                    enabled: true,
+                    field: Some("amount".into()),
+                    operator: crate::DataFilterOperator::Eq,
+                    values: vec!["2".into()],
+                    advanced_expression: None,
+                    typed_values: None,
+                    connector: fluxdb_core::FilterCombinator::And,
+                    grouped: false,
+                }],
+            );
+            cx.notify();
+        });
+        window.draw(cx).clear(cx);
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let apply = cx
+        .debug_bounds("data-filter-apply")
+        .expect("apply filter button");
+    cx.simulate_click(apply.center(), Modifiers::default());
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        cx.background_executor
+            .advance_clock(std::time::Duration::from_millis(16));
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let filtered = cx.update(|_, cx| {
+            let app = view.read(cx);
+            let TabKind::DataEditor(editor) = &app
+                .controller
+                .state()
+                .tabs
+                .iter()
+                .find(|tab| tab.id == tab_id)
+                .expect("data tab")
+                .kind
+            else {
+                panic!("data editor");
+            };
+            editor
+                .page
+                .as_ref()
+                .is_some_and(|page| page.rows.len() == 1)
+        });
+        if filtered {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "filtered page did not load"
+        );
+        std::thread::yield_now();
+    }
+    cx.update(|_, cx| {
+        let app = view.read(cx);
+        let TabKind::DataEditor(editor) = &app
+            .controller
+            .state()
+            .tabs
+            .iter()
+            .find(|tab| tab.id == tab_id)
+            .expect("data tab")
+            .kind
+        else {
+            panic!("data editor");
+        };
+        let page = editor.page.as_ref().expect("filtered page");
+        assert_eq!(page.rows.len(), 1);
     });
 }

@@ -97,8 +97,9 @@ fn data_filter_multi_value_sql(
 fn data_filter_rules_sql(
     rules: &[DataFilterRule],
     db_kind: DatabaseKind,
+    columns: &[GdbColumn],
 ) -> String {
-    data_filter_expression_from_rules(rules)
+    data_filter_expression_from_rules(rules, columns)
         .ok()
         .and_then(|expression| {
             fluxdb_core::filter_dialect_for(db_kind)?.render(&expression).ok()
@@ -109,8 +110,9 @@ fn data_filter_rules_sql(
 fn data_filter_rules_sql_pretty(
     rules: &[DataFilterRule],
     db_kind: DatabaseKind,
+    columns: &[GdbColumn],
 ) -> String {
-    data_filter_rules_sql(rules, db_kind)
+    data_filter_rules_sql(rules, db_kind, columns)
 }
 
 fn parse_data_filter_rule_text(text: &str) -> Option<DataFilterRule> {

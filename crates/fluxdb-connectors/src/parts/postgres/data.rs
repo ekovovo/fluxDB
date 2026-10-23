@@ -488,7 +488,7 @@ fn pg_filter_expression_condition(
 ) -> fluxdb_core::Result<String> {
     let field = fluxdb_core::PostgresDialect.quote_identifier(&column.name);
     let bind = |params: &mut Vec<Box<dyn ToSql + Sync>>, value: &fluxdb_core::FilterValue| {
-        pg_next_param(params, &pg_filter_value_cell(value), None)
+        pg_bind_sql(params, column, &pg_filter_value_cell(value))
     };
     let first = condition.values.first();
     let field_sql = match condition.op {
@@ -685,6 +685,7 @@ fn pg_text_ok_column(column_type: &str) -> bool {
 ///   直接序列化到 numeric 等推断参数类型（网格编辑数值 → F64 绑定 numeric 会报
 ///   `error serializing parameter 0`）；
 /// - 外层 `AS <type>` 在服务端把 text 转成目标列类型完成赋值。
+///
 /// 字符串列（text/varchar/char/bpchar/name/citext）与整型列直绑原生值即可。
 fn pg_bind_sql(params: &mut Vec<Box<dyn ToSql + Sync>>, column: &Column, value: &CellValue) -> String {
     let type_name = column.type_name.as_deref().unwrap_or("");
@@ -817,4 +818,61 @@ pub fn pg_export_pages(
         let _ = client.batch_execute("ROLLBACK").await;
         result
     })
+}
+
+#[cfg(test)]
+mod pg_filter_binding_tests {
+    use super::*;
+
+    fn column(name: &str, type_name: &str) -> Column {
+        Column {
+            name: name.into(),
+            type_name: Some(type_name.into()),
+            nullable: false,
+            primary_key: false,
+            comment: None,
+        }
+    }
+
+    #[test]
+    fn numeric_filter_uses_text_bridge_for_float_value() {
+        let columns = [column("amount", "numeric(12,4)")];
+        let expression = fluxdb_core::FilterExpression::Condition(fluxdb_core::FilterCondition {
+            field: "amount".into(),
+            op: fluxdb_core::FilterOperator::Eq,
+            values: vec![fluxdb_core::FilterValue::Float(2.5)],
+        });
+
+        let (sql, params) =
+            pg_expression_where_params(&expression, &columns).expect("PostgreSQL filter SQL");
+
+        assert_eq!(
+            sql,
+            "\nWHERE \"amount\" = CAST(CAST($1 AS text) AS numeric(12,4))"
+        );
+        assert_eq!(params.len(), 1);
+    }
+
+    #[test]
+    fn integer_filter_binds_native_integer_width() {
+        let columns = [column("id", "integer")];
+        let expression = fluxdb_core::FilterExpression::Condition(fluxdb_core::FilterCondition {
+            field: "id".into(),
+            op: fluxdb_core::FilterOperator::Eq,
+            values: vec![fluxdb_core::FilterValue::Integer(1)],
+        });
+
+        let (sql, params) =
+            pg_expression_where_params(&expression, &columns).expect("PostgreSQL filter SQL");
+
+        assert_eq!(sql, "\nWHERE \"id\" = $1");
+        assert_eq!(params.len(), 1);
+        assert!(matches!(
+            params[0].to_sql_checked(
+                &tokio_postgres::types::Type::INT4,
+                &mut tokio_postgres::types::private::BytesMut::new()
+            ),
+            Ok(tokio_postgres::types::IsNull::No)
+        ));
+    }
 }

@@ -775,6 +775,7 @@ fn data_editor_content(
     let db_kind = this.connection_database_kind(editor.object.connection_id);
     let sql = data_editor_sql_preview(
         &editor.object,
+        &page.columns,
         filter_rules.as_slice(),
         sort_rules.as_slice(),
         filter_mode,

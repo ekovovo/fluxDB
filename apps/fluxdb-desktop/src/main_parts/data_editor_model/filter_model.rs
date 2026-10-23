@@ -424,6 +424,7 @@ fn data_filter_operator_from_core(operator: fluxdb_core::FilterOperator) -> Data
 
 fn data_filter_expression_from_rules(
     rules: &[DataFilterRule],
+    columns: &[GdbColumn],
 ) -> fluxdb_core::Result<fluxdb_core::FilterExpression> {
     let mut terms = Vec::new();
     let mut index = 0;
@@ -435,13 +436,13 @@ fn data_filter_expression_from_rules(
                 index += 1;
             }
             let group = &rules[group_start..=index];
-            if let Some(expression) = data_filter_rule_sequence_expression(group)? {
+            if let Some(expression) = data_filter_rule_sequence_expression(group, columns)? {
                 terms.push((
                     expression,
                     rules[index].connector,
                 ));
             }
-        } else if let Some(expression) = data_filter_single_rule_expression(rule)? {
+        } else if let Some(expression) = data_filter_single_rule_expression(rule, columns)? {
             terms.push((expression, rule.connector));
         }
         index += 1;
@@ -451,6 +452,7 @@ fn data_filter_expression_from_rules(
 
 fn data_filter_single_rule_expression(
     rule: &DataFilterRule,
+    columns: &[GdbColumn],
 ) -> fluxdb_core::Result<Option<fluxdb_core::FilterExpression>> {
     if !rule.enabled {
         return Ok(None);
@@ -466,6 +468,16 @@ fn data_filter_single_rule_expression(
     }
     let mut form_rule = fluxdb_core::FilterFormRule::from(rule);
     form_rule.grouped = false;
+    let type_name = form_rule
+        .field
+        .as_deref()
+        .and_then(|field| columns.iter().find(|column| column.name == field))
+        .and_then(|column| column.type_name.as_deref());
+    form_rule.values = form_rule
+        .values
+        .iter()
+        .map(|value| data_filter_value_for_column(value, type_name))
+        .collect();
     let expression = fluxdb_core::filter_expression_from_form(
         std::slice::from_ref(&form_rule),
         fluxdb_core::FilterCombinator::And,
@@ -479,14 +491,74 @@ fn data_filter_single_rule_expression(
 
 fn data_filter_rule_sequence_expression(
     rules: &[DataFilterRule],
+    columns: &[GdbColumn],
 ) -> fluxdb_core::Result<Option<fluxdb_core::FilterExpression>> {
     let mut terms = Vec::new();
     for rule in rules {
-        if let Some(expression) = data_filter_single_rule_expression(rule)? {
+        if let Some(expression) = data_filter_single_rule_expression(rule, columns)? {
             terms.push((expression, rule.connector));
         }
     }
     Ok((!terms.is_empty()).then(|| data_filter_join_terms(terms)))
+}
+
+fn data_filter_value_for_column(
+    value: &fluxdb_core::FilterValue,
+    type_name: Option<&str>,
+) -> fluxdb_core::FilterValue {
+    let fluxdb_core::FilterValue::Text(text) = value else {
+        return value.clone();
+    };
+    match data_filter_column_scalar_type(type_name) {
+        DataFilterColumnScalarType::Integer => text
+            .trim()
+            .parse::<i64>()
+            .map(fluxdb_core::FilterValue::Integer)
+            .unwrap_or_else(|_| value.clone()),
+        DataFilterColumnScalarType::Float => text
+            .trim()
+            .parse::<f64>()
+            .map(fluxdb_core::FilterValue::Float)
+            .unwrap_or_else(|_| value.clone()),
+        DataFilterColumnScalarType::Boolean => match text.trim().to_ascii_lowercase().as_str() {
+            "true" | "1" => fluxdb_core::FilterValue::Boolean(true),
+            "false" | "0" => fluxdb_core::FilterValue::Boolean(false),
+            _ => value.clone(),
+        },
+        DataFilterColumnScalarType::Other => value.clone(),
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DataFilterColumnScalarType {
+    Integer,
+    Float,
+    Boolean,
+    Other,
+}
+
+fn data_filter_column_scalar_type(type_name: Option<&str>) -> DataFilterColumnScalarType {
+    let Some(type_name) = type_name else {
+        return DataFilterColumnScalarType::Other;
+    };
+    let base = type_name
+        .trim()
+        .to_ascii_lowercase()
+        .split('(')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    match base.as_str() {
+        "int" | "integer" | "tinyint" | "smallint" | "mediumint" | "bigint" | "int2"
+        | "int4" | "int8" | "serial" | "smallserial" | "bigserial" | "year" => {
+            DataFilterColumnScalarType::Integer
+        }
+        "numeric" | "decimal" | "dec" | "real" | "double" | "double precision" | "float"
+        | "float4" | "float8" | "number" => DataFilterColumnScalarType::Float,
+        "bool" | "boolean" | "bit" => DataFilterColumnScalarType::Boolean,
+        _ => DataFilterColumnScalarType::Other,
+    }
 }
 
 /// 行间组合符使用 SQL 默认优先级：AND 先结合，再由 OR 连接各段。
@@ -687,16 +759,58 @@ mod data_filter_expression_tests {
 
     #[test]
     fn row_connectors_follow_sql_and_precedence() {
-        let expression = data_filter_expression_from_rules(&[
-            rule("a", "1", fluxdb_core::FilterCombinator::Or),
-            rule("b", "2", fluxdb_core::FilterCombinator::And),
-            rule("c", "3", fluxdb_core::FilterCombinator::And),
-        ])
+        let expression = data_filter_expression_from_rules(
+            &[
+                rule("a", "1", fluxdb_core::FilterCombinator::Or),
+                rule("b", "2", fluxdb_core::FilterCombinator::And),
+                rule("c", "3", fluxdb_core::FilterCombinator::And),
+            ],
+            &[],
+        )
         .expect("expression");
         let fluxdb_core::FilterExpression::Or(items) = expression else {
             panic!("OR root");
         };
         assert!(matches!(&items[0], fluxdb_core::FilterExpression::Condition(_)));
         assert!(matches!(&items[1], fluxdb_core::FilterExpression::And(nodes) if nodes.len() == 2));
+    }
+
+    #[test]
+    fn numeric_column_text_values_use_native_filter_types() {
+        let columns = vec![
+            GdbColumn {
+                name: "id".into(),
+                type_name: Some("integer".into()),
+                nullable: false,
+                primary_key: true,
+                comment: None,
+            },
+            GdbColumn {
+                name: "amount".into(),
+                type_name: Some("numeric(12,4)".into()),
+                nullable: false,
+                primary_key: false,
+                comment: None,
+            },
+        ];
+        let expression = data_filter_expression_from_rules(
+            &[
+                rule("id", "1", fluxdb_core::FilterCombinator::And),
+                rule("amount", "2.5", fluxdb_core::FilterCombinator::And),
+            ],
+            &columns,
+        )
+        .expect("expression");
+        let fluxdb_core::FilterExpression::And(items) = expression else {
+            panic!("AND root");
+        };
+        let fluxdb_core::FilterExpression::Condition(id) = &items[0] else {
+            panic!("id condition");
+        };
+        let fluxdb_core::FilterExpression::Condition(amount) = &items[1] else {
+            panic!("amount condition");
+        };
+        assert_eq!(id.values, vec![fluxdb_core::FilterValue::Integer(1)]);
+        assert_eq!(amount.values, vec![fluxdb_core::FilterValue::Float(2.5)]);
     }
 }

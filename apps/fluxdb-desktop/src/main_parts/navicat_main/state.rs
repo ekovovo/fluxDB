@@ -809,6 +809,9 @@ struct NavicatMain {
     query_editors: BTreeMap<TabId, Entity<editor_component::Editor>>,
     /// 查询页语句执行状态仓库（按 tab 缓存；与 SqlAdapter 共享，供装饰还原行背景）。
     query_statement_statuses: BTreeMap<TabId, sql_editor_adapter::SqlStatusStore>,
+    /// 最近一次从编辑器发起的执行语句快照，与结果摘要同序。
+    /// 仅用于失败修复定位，不能用于执行或刷新 SQL。
+    query_execution_sources: BTreeMap<TabId, Vec<SqlStatementRun>>,
     query_save_targets: BTreeMap<TabId, QuerySaveTarget>,
     saved_queries: Vec<SavedQuery>,
     /// 启动后是否已完成持久化历史/保存查询的一次性异步恢复（防重复触发）。

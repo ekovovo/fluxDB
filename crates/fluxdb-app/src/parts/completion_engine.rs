@@ -134,51 +134,101 @@ impl<'a> IndexMetadataSource<'a> {
 
     /// 表名 → schema：AST 里常只有裸表名，索引按 schema 分桶。
     fn resolve_schema(&self, table: &str) -> Option<String> {
-        self.tables(self.schema.as_deref())
+        self.tables_for_bare_name(self.schema.as_deref())
             .into_iter()
             .find(|candidate| candidate.name.eq_ignore_ascii_case(table))?
             .schema
+    }
+
+    /// 合并整库或对象树中的候选；按 `(schema, table)` 去重，保留同名跨 schema 表。
+    fn merge_completion_tables(
+        &self,
+        tables: &mut Vec<TableMeta>,
+        rows: Vec<fluxdb_core::CompletionTable>,
+    ) {
+        let mut seen = tables
+            .iter()
+            .map(|table| (table.schema.clone(), table.name.to_ascii_lowercase()))
+            .collect::<std::collections::HashSet<_>>();
+        for table in rows {
+            let key = (table.schema.clone(), table.name.to_ascii_lowercase());
+            if seen.insert(key) {
+                tables.push(TableMeta {
+                    schema: table.schema,
+                    name: table.name,
+                    kind: match table.kind {
+                        ObjectKind::View => TableKind::View,
+                        _ => TableKind::Table,
+                    },
+                    comment: table.comment,
+                });
+            }
+        }
+    }
+
+    /// 合并对象树中已加载的其他 schema 表；显式 schema 补全不会走到这里。
+    fn merge_loaded_tables(&self, tables: &mut Vec<TableMeta>) {
+        let loaded = loaded_completion_tables(
+            &self.controller.state,
+            self.connection_id,
+            self.database.as_deref(),
+            None,
+        );
+        self.merge_completion_tables(tables, loaded);
+    }
+
+    /// 是否存在“schema 已知、但对象树尚未加载表清单”的其他 schema。
+    ///
+    /// 已展开 schema 的表由对象树缓存直接补入；只有折叠未加载的 schema 才需要整库查询。
+    fn has_unloaded_known_schema(&self, schema: Option<&str>) -> bool {
+        let loaded_schemas = loaded_completion_tables(
+            &self.controller.state,
+            self.connection_id,
+            self.database.as_deref(),
+            None,
+        )
+        .into_iter()
+        .filter_map(|table| table.schema.map(|schema| schema.to_ascii_lowercase()))
+        .collect::<std::collections::HashSet<_>>();
+        self.schemas().iter().any(|candidate| {
+            schema.is_none_or(|active| !candidate.eq_ignore_ascii_case(active))
+                && !loaded_schemas.contains(&candidate.to_ascii_lowercase())
+        })
     }
 }
 
 impl MetadataSource for IndexMetadataSource<'_> {
     fn tables(&self, schema: Option<&str>) -> Vec<TableMeta> {
+        self.fetch_tables(schema)
+    }
+
+    fn tables_for_bare_name(&self, schema: Option<&str>) -> Vec<TableMeta> {
         let mut tables = self.fetch_tables(schema);
         // 达梦默认 schema 不是可靠的会话默认值：对象树里已展开的其他 schema
-        // 也要并入候选（插入文本由方言带 schema 限定）；默认 schema 无对象时
-        // 直接回退全库。
-        if schema.is_some() && schema == self.fallback_schema.as_deref() {
+        // 也要并入候选；PostgreSQL 同样允许显式限定其他 schema，不能只给
+        // search_path / 当前 schema 的表。插入文本由方言补 schema 限定。
+        let include_loaded_schemas = self.config.kind == DatabaseKind::Postgres
+            || (schema.is_some() && schema == self.fallback_schema.as_deref());
+        if include_loaded_schemas {
             if tables.is_empty() {
                 tables = self.fetch_tables(None);
             }
-            let mut seen = tables
-                .iter()
-                .map(|table| {
-                    (
-                        table.schema.clone(),
-                        table.name.to_ascii_lowercase(),
-                    )
-                })
-                .collect::<std::collections::HashSet<_>>();
-            for table in loaded_completion_tables(
-                &self.controller.state,
-                self.connection_id,
-                self.database.as_deref(),
-                None,
-            ) {
-                let key = (table.schema.clone(), table.name.to_ascii_lowercase());
-                if seen.insert(key) {
-                    tables.push(TableMeta {
-                        schema: table.schema,
-                        name: table.name,
-                        kind: match table.kind {
-                            ObjectKind::View => TableKind::View,
-                            _ => TableKind::Table,
-                        },
-                        comment: table.comment,
-                    });
+            if self.has_unloaded_known_schema(schema) {
+                match self.controller.completion_tables_all_schemas_with_cancel(
+                    self.config,
+                    self.connection_id,
+                    self.database.as_deref(),
+                    self.should_cancel,
+                ) {
+                    Ok(rows) => self.merge_completion_tables(&mut tables, rows),
+                    Err(error) => tracing::warn!(
+                        target: "gdb_sql_completion",
+                        error = %error,
+                        "跨 schema 表清单不可用，保留当前已加载候选"
+                    ),
                 }
             }
+            self.merge_loaded_tables(&mut tables);
         }
         tables
     }

@@ -56,7 +56,8 @@ impl LineColIndex {
     /// 从 `Location` 往后推进一个字符得到的排他字节终点。
     ///
     /// 原实现是字节 `+1`；中文等多字节字符上会落进字符内部。这里按字符宽度推进，
-    /// 保持 ASCII 行为不变。
+    /// 保持 ASCII 行为不变。位置位于行尾时没有下一个字符，回退到该位置自身，
+    /// 避免跨过换行后误判为全文末尾。
     pub(crate) fn end_offset(&self, location: Location) -> usize {
         if location.line == 0 {
             return 0;
@@ -67,7 +68,7 @@ impl LineColIndex {
             .get(line_index)
             .and_then(|line| line.get(column + 1))
             .copied()
-            .unwrap_or(self.len)
+            .unwrap_or_else(|| self.offset(location))
     }
 }
 
@@ -337,6 +338,13 @@ mod tests {
         assert_eq!(index.offset(Location { line: 2, column: 7 }), 24);
         assert_eq!(index.offset(Location { line: 2, column: 9 }), 30);
         assert_eq!(index.end_offset(Location { line: 1, column: 8 }), 10);
+        assert_eq!(
+            index.end_offset(Location {
+                line: 1,
+                column: 16
+            }),
+            17
+        );
     }
 
     #[test]

@@ -187,13 +187,24 @@ pub(crate) fn trailing_ident_qualifier(before: &str) -> bool {
     if !trimmed[dot + 1..].trim_matches([' ', '\t']).is_empty() {
         return false;
     }
-    // 取 '.' 前连续标识符字符；标识符内不能夹着字符串/注释片段。
+    // 取 '.' 前的一段标识符；支持 `"schema".` / `` `schema`. `` / `[schema].`。
+    // 标识符内不能夹着字符串/注释片段。
     let mut start = dot;
     for (index, ch) in trimmed[..dot].char_indices().rev() {
         if is_ident_char(ch) {
             start = index;
         } else {
             break;
+        }
+    }
+    if start > 0 {
+        let before = trimmed[..start].chars().next_back();
+        if before.is_some_and(|ch| matches!(ch, '"' | '`' | '[')) {
+            start -= before.unwrap().len_utf8();
+        } else if trimmed[..start].ends_with(']')
+            && let Some(open) = trimmed[..start - 1].rfind('[')
+        {
+            start = open;
         }
     }
     if start >= dot {
@@ -243,7 +254,7 @@ fn masked_range_at(text: &str, pos: usize) -> Option<(usize, usize)> {
     let mut i = 0usize;
     while i < n {
         match bytes[i] {
-            b'\'' | b'"' | b'`' => {
+            b'\'' => {
                 let quote = bytes[i];
                 let start = i;
                 i += 1;
@@ -328,6 +339,22 @@ fn segment_is_masked(text: &str, start: usize, end: usize) -> bool {
 /// 标识符字符（与 fluxdb-app 的 `is_sql_ident_char` 对齐）。
 fn is_ident_char(ch: char) -> bool {
     ch.is_ascii_alphanumeric() || ch == '_' || ch == '$'
+}
+
+#[cfg(test)]
+mod trigger_tests {
+    use super::trailing_ident_qualifier;
+
+    #[test]
+    fn quoted_schema_prefix_triggers_completion() {
+        for before in [
+            r#"SELECT * FROM "fluxdb_pr46_acceptance"."#,
+            "SELECT * FROM `fluxdb_pr46_acceptance`.",
+            "SELECT * FROM [fluxdb_pr46_acceptance].",
+        ] {
+            assert!(trailing_ident_qualifier(before), "{before}");
+        }
+    }
 }
 
 #[cfg(test)]

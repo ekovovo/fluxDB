@@ -730,6 +730,51 @@ impl AppController {
         Ok(tables)
     }
 
+    /// 裸表补全的整库表清单。不同 schema 同名表必须同时保留，供上层按 schema 消歧。
+    fn completion_tables_all_schemas_with_cancel(
+        &self,
+        config: &ConnectionConfig,
+        connection_id: ConnectionId,
+        database: Option<&str>,
+        should_cancel: &dyn Fn() -> bool,
+    ) -> fluxdb_core::Result<Vec<CompletionTable>> {
+        if should_cancel() {
+            return Ok(Vec::new());
+        }
+        let key = CompletionAllSchemaTablesKey {
+            connection_id,
+            database: database.map(str::to_string),
+        };
+        let now = unix_timestamp_secs();
+        if let Ok(cache) = self.completion_cache.lock()
+            && let Some(entry) = cache.all_schema_tables.get(&key)
+            && entry.is_fresh(now)
+        {
+            return Ok(entry.value.clone());
+        }
+
+        let tables = connector_for(config)?
+            .list_completion_tables_all_schemas_with_cancel(
+                database,
+                "",
+                COMPLETION_METADATA_LIMIT,
+                should_cancel,
+            )?;
+        if should_cancel() {
+            return Ok(Vec::new());
+        }
+        if let Ok(mut cache) = self.completion_cache.lock() {
+            cache.all_schema_tables.insert(
+                key,
+                CompletionCacheEntry {
+                    value: tables.clone(),
+                    fetched_at: now,
+                },
+            );
+        }
+        Ok(tables)
+    }
+
     /// 收集 schema 候选（P1.5）：合并索引中的 namespace 与对象树已加载的 schema。
     ///
     /// 索引只覆盖已预热的表（PostgreSQL 通常是 search_path 内的表），
@@ -1556,6 +1601,84 @@ mod dameng_completion_index_tests {
     }
 
     #[test]
+    fn unloaded_other_schema_tables_join_bare_completion() {
+        let mut controller = AppController::new();
+        let config = config_with_schema("SYSDBA");
+        let connection_id = config.id;
+        let _ = controller.dispatch(AppCommand::ReplaceConnections(vec![config]));
+        controller.merge_loaded_children(
+            &ObjectPath {
+                connection_id,
+                database: Some("DAMENG".into()),
+                schema: None,
+                name: "DAMENG".into(),
+                kind: ObjectKind::Database,
+            },
+            vec![ObjectSummary {
+                path: ObjectPath {
+                    connection_id,
+                    database: Some("DAMENG".into()),
+                    schema: None,
+                    name: "FLUXSALES".into(),
+                    kind: ObjectKind::Schema,
+                },
+                rows: None,
+                modified_at: None,
+                comment: None,
+                stable: None,
+            }],
+        );
+        if let Ok(mut index) = controller.completion_index.lock() {
+            index.insert_tables(
+                connection_id,
+                Some("DAMENG"),
+                Some("SYSDBA"),
+                vec![table("SYSDBA", "CUSTOMERS")],
+                DatabaseKind::Dameng,
+            );
+        }
+        if let Ok(mut cache) = controller.completion_cache.lock() {
+            cache.all_schema_tables.insert(
+                CompletionAllSchemaTablesKey {
+                    connection_id,
+                    database: Some("DAMENG".into()),
+                },
+                CompletionCacheEntry {
+                    value: vec![
+                        table("SYSDBA", "CUSTOMERS"),
+                        table("FLUXSALES", "SALES_REGION"),
+                    ],
+                    fetched_at: unix_timestamp_secs(),
+                },
+            );
+        }
+
+        let items = controller
+            .query_completions_for_text(
+                connection_id,
+                Some("DAMENG".into()),
+                None,
+                "SELECT * FROM REGION".into(),
+                "SELECT * FROM REGION".len(),
+                true,
+            )
+            .expect("completions")
+            .items;
+
+        assert!(
+            items.iter().any(|item| {
+                item.label == "SALES_REGION"
+                    && item.insert_text == "\"FLUXSALES\".\"SALES_REGION\""
+            }),
+            "{:?}",
+            items
+                .iter()
+                .map(|item| (&item.label, &item.insert_text))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn qualified_completion_reads_requested_schema_bucket() {
         let mut controller = AppController::new();
         let config = config();
@@ -1984,6 +2107,156 @@ mod dameng_completion_index_tests {
             .collect::<Vec<_>>();
         labels.sort_unstable();
         assert_eq!(labels, vec!["customer_id"], "{:?}", on_items.len());
+    }
+}
+
+#[cfg(test)]
+mod postgres_completion_index_tests {
+    use super::*;
+    use fluxdb_core::{Endpoint, PostgresConnectionProfile};
+
+    fn config() -> ConnectionConfig {
+        ConnectionConfig {
+            id: ConnectionId(15),
+            name: "pg-multi-schema-completion".into(),
+            kind: DatabaseKind::Postgres,
+            endpoint: Endpoint::Tcp {
+                host: "127.0.0.1".into(),
+                port: 5432,
+                database: Some("fluxdb_pr46".into()),
+            },
+            options: BTreeMap::new(),
+            redis_profile: None,
+            mysql_profile: None,
+            postgres_profile: Some(PostgresConnectionProfile::default()),
+            dameng_profile: None,
+        }
+    }
+
+    fn table(schema: &str, name: &str) -> CompletionTable {
+        CompletionTable {
+            database: Some("fluxdb_pr46".into()),
+            schema: Some(schema.into()),
+            name: name.into(),
+            kind: ObjectKind::Table,
+            comment: None,
+        }
+    }
+
+    #[test]
+    fn pg_bare_completion_merges_loaded_other_schema_tables() {
+        let mut controller = AppController::new();
+        let config = config();
+        let connection_id = config.id;
+        let _ = controller.dispatch(AppCommand::ReplaceConnections(vec![config]));
+        if let Ok(mut index) = controller.completion_index.lock() {
+            index.insert_tables(
+                connection_id,
+                Some("fluxdb_pr46"),
+                Some("fluxdb_pr46_acceptance"),
+                vec![table("fluxdb_pr46_acceptance", "pg_acceptance")],
+                DatabaseKind::Postgres,
+            );
+        }
+        controller.merge_loaded_children(
+            &ObjectPath {
+                connection_id,
+                database: Some("fluxdb_pr46".into()),
+                schema: None,
+                name: "fluxdb_pr46".into(),
+                kind: ObjectKind::Database,
+            },
+            vec![
+                ObjectSummary {
+                    path: ObjectPath {
+                        connection_id,
+                        database: Some("fluxdb_pr46".into()),
+                        schema: None,
+                        name: "fluxdb_pr46_acceptance".into(),
+                        kind: ObjectKind::Schema,
+                    },
+                    rows: None,
+                    modified_at: None,
+                    comment: None,
+                    stable: None,
+                },
+                ObjectSummary {
+                    path: ObjectPath {
+                        connection_id,
+                        database: Some("fluxdb_pr46".into()),
+                        schema: None,
+                        name: "fluxdb_pr46_repro".into(),
+                        kind: ObjectKind::Schema,
+                    },
+                    rows: None,
+                    modified_at: None,
+                    comment: None,
+                    stable: None,
+                },
+            ],
+        );
+        if let Ok(mut cache) = controller.completion_cache.lock() {
+            cache.all_schema_tables.insert(
+                CompletionAllSchemaTablesKey {
+                    connection_id,
+                    database: Some("fluxdb_pr46".into()),
+                },
+                CompletionCacheEntry {
+                    value: vec![
+                        table("fluxdb_pr46_acceptance", "pg_acceptance"),
+                        table("fluxdb_pr46_repro", "pg_display_probe"),
+                    ],
+                    fetched_at: unix_timestamp_secs(),
+                },
+            );
+        }
+
+        let text = "SELECT * FROM dis";
+        let items = controller
+            .query_completions_for_text(
+                connection_id,
+                Some("fluxdb_pr46".into()),
+                Some("fluxdb_pr46_acceptance".into()),
+                text.into(),
+                text.len(),
+                true,
+            )
+            .expect("bare completions")
+            .items;
+        assert!(
+            items.iter().any(|item| {
+                item.label == "pg_display_probe"
+                    && item.insert_text == r#""fluxdb_pr46_repro"."pg_display_probe""#
+            }),
+            "{:?}",
+            items
+                .iter()
+                .map(|item| (&item.label, &item.insert_text))
+                .collect::<Vec<_>>()
+        );
+
+        let text = r#"SELECT * FROM "fluxdb_pr46_acceptance"."#;
+        let items = controller
+            .query_completions_for_text(
+                connection_id,
+                Some("fluxdb_pr46".into()),
+                Some("fluxdb_pr46_acceptance".into()),
+                text.into(),
+                text.len(),
+                true,
+            )
+            .expect("qualified completions")
+            .items;
+        assert!(
+            items
+                .iter()
+                .all(|item| item.label != "pg_display_probe"),
+            "explicit schema completion must not merge other schemas: {:?}",
+            items
+                .iter()
+                .map(|item| (&item.label, &item.insert_text))
+                .collect::<Vec<_>>()
+        );
     }
 }
 

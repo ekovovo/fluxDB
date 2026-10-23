@@ -119,8 +119,34 @@ fn is_quote_char(ch: char) -> bool {
     ch == '"' || ch == '`' || ch == '['
 }
 
-/// 从 `end` 往前扫一个标识符（可带引号），返回其起点。
-fn scan_ident_start(text: &str, end: usize) -> usize {
+fn unquote_ident(value: &str) -> &str {
+    if value.len() < 2 {
+        return value;
+    }
+    let opener = value.as_bytes()[0];
+    let closer = value.as_bytes()[value.len() - 1];
+    if matches!((opener, closer), (b'"', b'"') | (b'`', b'`') | (b'[', b']')) {
+        &value[1..value.len() - 1]
+    } else {
+        value
+    }
+}
+
+/// 反扫 `schema.table.` 的一段标识符，返回 `(起点, 是否带引号)`。
+fn scan_ident(text: &str, end: usize) -> (usize, bool) {
+    if let Some(closer) = text[..end].chars().next_back() {
+        let opener = match closer {
+            '"' | '`' => Some(closer),
+            ']' => Some('['),
+            _ => None,
+        };
+        if let Some(opener) = opener
+            && let Some(open) = text[..end - closer.len_utf8()].rfind(opener)
+        {
+            return (open, true);
+        }
+    }
+
     let mut start = end;
     for (offset, ch) in text[..end].char_indices().rev() {
         if is_ident_char(ch) {
@@ -129,14 +155,7 @@ fn scan_ident_start(text: &str, end: usize) -> usize {
             break;
         }
     }
-    // 引号包裹的标识符：把开引号也纳入替换区间。
-    if start > 0 {
-        let before = text[..start].chars().next_back();
-        if before.is_some_and(is_quote_char) {
-            return start - before.unwrap().len_utf8();
-        }
-    }
-    start
+    (start, false)
 }
 
 /// 光标是否位于一个未闭合的引号标识符内；是则返回开引号的位置与字符。
@@ -224,12 +243,16 @@ pub(crate) fn word_context(text: &str, cursor: usize, dialect: &dyn Dialect) -> 
     // 引号标识符：`"my tab` 这类未闭合输入要按大小写敏感处理，
     // 且替换区间从开引号开始，插入时由宿主补全整个带引号标识符。
     let open_quote = open_quote_before(text, cursor);
+    let word_end = cursor;
+    let (unquoted_word_start, quoted_word) = scan_ident(text, word_end);
+    let qualified = text[..unquoted_word_start].ends_with('.');
+    let open_quote = open_quote.filter(|_| !qualified && !quoted_word);
     let quoted = open_quote.is_some();
     let word_start = match open_quote {
         Some((quote_pos, quote)) => quote_pos + quote.len_utf8(),
-        None => scan_ident_start(text, cursor),
+        None => unquoted_word_start,
     };
-    let word_part = text[word_start..cursor].to_string();
+    let word_part = text[word_start..word_end].to_string();
 
     let mut replace_start = match open_quote {
         Some((quote_pos, _)) => quote_pos,
@@ -240,11 +263,16 @@ pub(crate) fn word_context(text: &str, cursor: usize, dialect: &dyn Dialect) -> 
     // 向前吃掉 `a.b.` 形式的限定符链；`schema.tbl.col` 整体作为 qualifier。
     let mut seg_end = replace_start;
     while let Some((qual_end, '.')) = text[..seg_end].char_indices().next_back() {
-        let qual_start = scan_ident_start(text, qual_end);
+        let (qual_start, quoted) = scan_ident(text, qual_end);
         if qual_start == qual_end {
             break;
         }
-        qualifier_segments.push(text[qual_start..qual_end].to_string());
+        let segment = &text[qual_start..qual_end];
+        qualifier_segments.push(if quoted {
+            unquote_ident(segment).to_string()
+        } else {
+            segment.to_string()
+        });
         replace_start = qual_start;
         // 继续向前：可能是 `schema.table.` 的上一级。
         if !text[..qual_start].ends_with('.') {
@@ -259,7 +287,7 @@ pub(crate) fn word_context(text: &str, cursor: usize, dialect: &dyn Dialect) -> 
     });
 
     // 词尾：光标后已存在的同词字符一并纳入替换区间；引号词吃到闭引号。
-    let mut replace_end = cursor;
+    let mut replace_end = word_end;
     if let Some((_, quote)) = open_quote {
         let closer = if quote == '[' { ']' } else { quote };
         if let Some(offset) = text[cursor..].find(closer) {
@@ -348,6 +376,27 @@ mod tests {
     }
 
     #[test]
+    fn strips_quotes_from_qualified_schema() {
+        let c = ctx(r#"SELECT * FROM "fluxdb_pr46_acceptance".|"#);
+        assert_eq!(c.qualifier.as_deref(), Some("fluxdb_pr46_acceptance"));
+        assert_eq!(c.word_part, "");
+    }
+
+    #[test]
+    fn qualified_schema_keeps_quoted_identifier_behavior() {
+        let c = ctx(r#"SELECT * FROM "my schema".|"#);
+        assert_eq!(c.qualifier.as_deref(), Some("my schema"));
+        assert_eq!(c.word_part, "");
+    }
+
+    #[test]
+    fn strips_quotes_from_multi_level_qualifier() {
+        let c = ctx(r#"SELECT * FROM "public"."users".|"#);
+        assert_eq!(c.qualifier.as_deref(), Some("public.users"));
+        assert_eq!(c.word_part, "");
+    }
+
+    #[test]
     fn captures_qualifier_with_partial_column() {
         let c = ctx("SELECT u.na| FROM users u");
         assert_eq!(c.qualifier.as_deref(), Some("u"));
@@ -426,5 +475,14 @@ mod tests {
         assert_eq!(&"SELECT 1 "[start..end], "SELECT 1 ");
         let (start, end) = statement_range_at("SELECT 1; ", 10, &GenericDialect {});
         assert_eq!(start, end);
+
+        // 分号位于行尾后仍要切出后续语句，不能让分号跨度吞到窗口末尾。
+        let text = "SELECT 1;\n\n\nsel";
+        assert_eq!(
+            statement_ranges(text, &GenericDialect {}),
+            vec![(0, 8), (12, 15)]
+        );
+        let (start, end) = statement_range_at(text, text.len(), &GenericDialect {});
+        assert_eq!(&text[start..end], "sel");
     }
 }

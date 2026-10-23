@@ -378,3 +378,191 @@
             );
         });
     }
+
+    /// PostgreSQL schema 补全：点击 schema 插入带引号的 `"schema".` 后，
+    /// 生产编辑器应接续弹出该 schema 的表候选。
+    #[gpui::test]
+    fn postgres_schema_acceptance_chains_to_table_completion(cx: &mut TestAppContext) {
+        use std::time::{Duration, Instant};
+
+        use fluxdb_core::{
+            ConnectionId, DatabaseKind, Endpoint, ObjectKind, ObjectPath, ObjectSummary,
+            PostgresConnectionProfile,
+        };
+
+        let _guard = locale_guard();
+        let temp = tempfile::tempdir().expect("temp profile");
+        let storage = FileStorage::new(temp.path().join("profile"));
+        init_i18n(&app_assets_base_path().join("locales"), temp.path(), "zh-CN");
+        cx.update(|cx| {
+            extend_component_i18n();
+            gpui_component::init(cx);
+        });
+
+        let connection_id = ConnectionId(78);
+        let database = "fluxdb_pr46";
+        let schema = "fluxdb_pr46_acceptance";
+        let mut controller = AppController::new();
+        let _ = controller.dispatch(fluxdb_app::AppCommand::ReplaceConnections(vec![
+            fluxdb_core::ConnectionConfig {
+                id: connection_id,
+                name: "PG quoted schema completion".into(),
+                kind: DatabaseKind::Postgres,
+                endpoint: Endpoint::Tcp {
+                    host: "127.0.0.1".into(),
+                    port: 5432,
+                    database: Some(database.into()),
+                },
+                options: std::collections::BTreeMap::new(),
+                redis_profile: None,
+                mysql_profile: None,
+                postgres_profile: Some(PostgresConnectionProfile::default()),
+                dameng_profile: None,
+            },
+        ]));
+        let _ = controller.dispatch(fluxdb_app::AppCommand::OpenQueryEditorInDatabase {
+            connection_id,
+            database: Some(database.into()),
+            schema: Some(schema.into()),
+        });
+        controller.merge_loaded_children(
+            &ObjectPath {
+                connection_id,
+                database: Some(database.into()),
+                schema: Some(schema.into()),
+                name: schema.into(),
+                kind: ObjectKind::Schema,
+            },
+            vec![ObjectSummary {
+                path: ObjectPath {
+                    connection_id,
+                    database: Some(database.into()),
+                    schema: Some(schema.into()),
+                    name: "pg_acceptance".into(),
+                    kind: ObjectKind::Table,
+                },
+                rows: None,
+                modified_at: None,
+                comment: None,
+                stable: None,
+            }],
+        );
+        let storage_for_view = storage.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let view = cx.new(|cx| {
+                navicat_main_new(
+                    window,
+                    cx,
+                    controller,
+                    storage_for_view,
+                    gpui_component::ThemeMode::Light,
+                )
+            });
+            Root::new(view, window, cx)
+        });
+        cx.simulate_resize(gpui::size(gpui::px(1440.), gpui::px(900.)));
+        let view = cx.update(|window, cx| {
+            window
+                .root::<Root>()
+                .expect("root")
+                .expect("typed root")
+                .read(cx)
+                .view()
+                .clone()
+                .downcast::<NavicatMain>()
+                .expect("production view")
+        });
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+        });
+
+        let tab_id = cx.update(|_, cx| {
+            view.read(cx)
+                .controller
+                .state()
+                .active_tab
+                .expect("query tab")
+        });
+        let editor = cx
+            .update(|_, cx| view.read(cx).query_editors.get(&tab_id).cloned())
+            .expect("SQL editor entity");
+        let bounds = cx.debug_bounds("query-editor").expect("SQL editor");
+        cx.simulate_click(bounds.center(), Modifiers::default());
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+        });
+        let sql = "SELECT * FROM flu";
+        cx.simulate_input(sql);
+        cx.update(|_, cx| {
+            assert_eq!(editor.read(cx).text(), sql);
+        });
+
+        cx.background_executor.advance_clock(Duration::from_millis(100));
+        cx.run_until_parked();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let ready = cx.update(|_, cx| {
+                let editor = editor.read(cx);
+                editor
+                    .completion_items
+                    .iter()
+                    .any(|item| item.label == schema)
+            });
+            if ready {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "schema completion did not open within 5s"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+            cx.background_executor.advance_clock(Duration::from_millis(100));
+            cx.run_until_parked();
+        }
+
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+        });
+        let schema_row = cx
+            .debug_bounds("completion-item:fluxdb_pr46_acceptance")
+            .expect("schema completion row");
+        cx.simulate_click(schema_row.center(), Modifiers::default());
+        cx.update(|_, cx| {
+            assert_eq!(
+                editor.read(cx).text(),
+                format!(r#"SELECT * FROM "{schema}"."#)
+            );
+        });
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let ready = cx.update(|_, cx| {
+                let editor = editor.read(cx);
+                editor.completion_visible()
+                    && editor
+                        .completion_items
+                        .iter()
+                        .any(|item| item.label == "pg_acceptance")
+            });
+            if ready {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "table completion did not chain after accepting schema"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+            cx.background_executor.advance_clock(Duration::from_millis(100));
+            cx.run_until_parked();
+        }
+        cx.update(|_, cx| {
+            assert!(
+                editor
+                    .read(cx)
+                    .completion_items
+                    .iter()
+                    .any(|item| item.label == "pg_acceptance"),
+                "table completion should follow accepted schema"
+            );
+        });
+    }

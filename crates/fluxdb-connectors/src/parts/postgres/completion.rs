@@ -163,6 +163,55 @@ async fn pg_list_completion_tables_async(
         .collect())
 }
 
+/// 裸表补全的整库表/视图清单：一次查询覆盖所有当前账号有权限使用的 schema。
+async fn pg_list_completion_tables_all_schemas_async(
+    client: &tokio_postgres::Client,
+    physical_db: &str,
+    filter: &str,
+    limit: u64,
+) -> fluxdb_core::Result<Vec<CompletionTable>> {
+    let pattern = completion_fuzzy_like_pattern(filter);
+    let sql = format!(
+        "SELECT c.relname, c.relkind::text, n.nspname, \
+                COALESCE(pg_catalog.obj_description(c.oid, 'pg_class'), '') \
+         FROM pg_catalog.pg_class c \
+         JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+         WHERE c.relkind IN ({PG_COMPLETION_RELKINDS}) \
+           AND n.nspname !~ '^pg_' AND n.nspname <> 'information_schema' \
+           AND pg_catalog.has_schema_privilege(n.oid, 'USAGE') \
+           AND (pg_catalog.pg_has_role(c.relowner, 'USAGE') \
+                OR pg_catalog.has_table_privilege(c.oid, 'SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER') \
+                OR pg_catalog.has_any_column_privilege(c.oid, 'SELECT, INSERT, UPDATE, REFERENCES')) \
+           AND c.relname ILIKE $1 ESCAPE '\\' \
+         ORDER BY n.nspname, c.relname \
+         LIMIT $2"
+    );
+    let rows = client
+        .query(&sql, &[&pattern, &(limit as i64)])
+        .await
+        .map_err(pg_error)?;
+    Ok(rows
+        .into_iter()
+        .map(|row| {
+            let name: String = row.get(0);
+            let relkind: String = row.get(1);
+            let schema: String = row.get(2);
+            let comment: String = row.get(3);
+            CompletionTable {
+                database: Some(physical_db.to_string()),
+                schema: Some(schema),
+                kind: if matches!(relkind.as_str(), "v" | "m") {
+                    ObjectKind::View
+                } else {
+                    ObjectKind::Table
+                },
+                name,
+                comment: (!comment.trim().is_empty()).then_some(comment),
+            }
+        })
+        .collect())
+}
+
 /// 批量列：一次 catalog 查询按真实表范围取列，避免逐表 N+1（§8.4）。
 ///
 /// 同表名跨 schema 时按 search_path 顺序只保留首个可见 schema 的列（见
@@ -339,6 +388,29 @@ fn pg_list_completion_tables(
             session.client.as_ref(),
             &physical_db,
             &schemas,
+            filter,
+            limit,
+        )
+        .await
+    })
+}
+
+fn pg_list_completion_tables_all_schemas(
+    config: &ConnectionConfig,
+    database: Option<&str>,
+    filter: &str,
+    limit: u64,
+    should_cancel: &dyn Fn() -> bool,
+) -> fluxdb_core::Result<Vec<CompletionTable>> {
+    let physical_db = pg_completion_database(config, database)?;
+    pg_runtime().block_on(async {
+        let session = pg_connect(config, &physical_db).await?;
+        if should_cancel() {
+            return Ok(Vec::new());
+        }
+        pg_list_completion_tables_all_schemas_async(
+            session.client.as_ref(),
+            &physical_db,
             filter,
             limit,
         )

@@ -255,6 +255,115 @@ mod i18n_e2e_tests {
         assert!(cx.debug_bounds("table-tab-row").is_none());
     }
 
+    #[gpui::test]
+    fn redis_databases_render_below_one_connection_tab(cx: &mut TestAppContext) {
+        let _guard = locale_guard();
+        let temp = tempfile::tempdir().expect("isolated profile");
+        let storage = FileStorage::new(temp.path().join("profile"));
+        init_i18n(
+            &app_assets_base_path().join("locales"),
+            &storage.root_dir().join("locales"),
+            "en",
+        );
+        let mut controller = AppController::new();
+        controller.dispatch(fluxdb_app::AppCommand::SaveSettings(Settings {
+            enable_completion_index: false,
+            ..Default::default()
+        }));
+        controller.dispatch(fluxdb_app::AppCommand::ReplaceConnections(vec![
+            fluxdb_core::ConnectionConfig {
+                id: fluxdb_core::ConnectionId(1),
+                name: "docker-redis".into(),
+                kind: fluxdb_core::DatabaseKind::Redis,
+                endpoint: fluxdb_core::Endpoint::Tcp {
+                    host: "redis.invalid".into(),
+                    port: 6379,
+                    database: None,
+                },
+                options: Default::default(),
+                redis_profile: None,
+                mysql_profile: None,
+                postgres_profile: None,
+                dameng_profile: None,
+            },
+        ]));
+        let fluxdb_app::AppEvent::TabOpened(db0_tab) =
+            controller.dispatch(fluxdb_app::AppCommand::OpenRedisWorkbench {
+                connection_id: fluxdb_core::ConnectionId(1),
+                database: 0,
+            })
+        else {
+            panic!("open Redis DB 0 workbench");
+        };
+        let fluxdb_app::AppEvent::TabOpened(db1_tab) =
+            controller.dispatch(fluxdb_app::AppCommand::OpenRedisWorkbench {
+                connection_id: fluxdb_core::ConnectionId(1),
+                database: 1,
+            })
+        else {
+            panic!("open Redis DB 1 workbench");
+        };
+
+        cx.update(|cx| {
+            extend_component_i18n();
+            gpui_component::init(cx);
+        });
+        let profile = storage.clone();
+        let (_, cx) = cx.add_window_view(move |window, cx| {
+            let view = cx.new(|cx| {
+                navicat_main_new(
+                    window,
+                    cx,
+                    controller,
+                    profile,
+                    gpui_component::ThemeMode::Light,
+                )
+            });
+            Root::new(view, window, cx)
+        });
+        cx.run_until_parked();
+        let view = cx.update(|window, cx| {
+            window
+                .root::<Root>()
+                .expect("root")
+                .expect("typed root")
+                .read(cx)
+                .view()
+                .clone()
+                .downcast::<NavicatMain>()
+                .expect("production view")
+        });
+        cx.update(|_, cx| {
+            view.update(cx, |app, _| {
+                app.ai_chat.recovery_pending = false;
+            });
+        });
+        cx.update(|_, cx| {
+            view.update(cx, |app, cx| {
+                app.dispatch(
+                    fluxdb_app::AppCommand::UpdateRedisWorkbenchText {
+                        tab_id: db1_tab,
+                        text: "PING".into(),
+                    },
+                    cx,
+                );
+                let pending = app.close_workspace_warning(
+                    crate::FirstLevelScope::RedisConnection(fluxdb_core::ConnectionId(1)),
+                );
+                assert_eq!(pending.unsaved_queries, 1);
+            });
+        });
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+        });
+
+        assert_eq!((db0_tab.0, db1_tab.0), (1, 2));
+        assert!(cx.debug_bounds("first-level-tab:1").is_some());
+        assert!(cx.debug_bounds("first-level-tab:2").is_none());
+        assert!(cx.debug_bounds("workspace-tab:1").is_some());
+        assert!(cx.debug_bounds("workspace-tab:2").is_some());
+    }
+
     #[test]
     fn bundled_packs_have_identical_keys_and_placeholders() {
         fn flatten_leaves(

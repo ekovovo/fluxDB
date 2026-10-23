@@ -21,12 +21,12 @@ const REDIS_WB_RESULT_MIN_WIDTH: f32 = 320.;
 const REDIS_WB_RECORD_BODY_MAX_HEIGHT: f32 = 320.;
 // 执行摘要的数值列按完整表头留宽；空间不足时由整张表横向滚动，而不是压缩成省略号。
 const QUERY_SUMMARY_STATEMENT_MIN_WIDTH: f32 = 280.;
-const QUERY_SUMMARY_TYPE_MIN_WIDTH: f32 = 240.;
-const QUERY_SUMMARY_RETURNED_WIDTH: f32 = 92.;
-const QUERY_SUMMARY_AFFECTED_WIDTH: f32 = 92.;
-const QUERY_SUMMARY_ELAPSED_WIDTH: f32 = 96.;
+const QUERY_SUMMARY_TYPE_WIDTH: f32 = 240.;
+const QUERY_SUMMARY_RETURNED_WIDTH: f32 = 72.;
+const QUERY_SUMMARY_AFFECTED_WIDTH: f32 = 72.;
+const QUERY_SUMMARY_ELAPSED_WIDTH: f32 = 76.;
 const QUERY_SUMMARY_TABLE_MIN_WIDTH: f32 = QUERY_SUMMARY_STATEMENT_MIN_WIDTH
-    + QUERY_SUMMARY_TYPE_MIN_WIDTH
+    + QUERY_SUMMARY_TYPE_WIDTH
     + QUERY_SUMMARY_RETURNED_WIDTH
     + QUERY_SUMMARY_AFFECTED_WIDTH
     + QUERY_SUMMARY_ELAPSED_WIDTH;
@@ -4339,7 +4339,15 @@ fn query_result_error_state(
             .disabled(ai_busy)
             .debug_selector(|| "query-ai-fix".into())
             .on_click(cx.listener(move |this, _, window, cx| {
-                this.begin_ai_sql_editor_edit(tab_id, Some(summary_for_ai.clone()), window, cx);
+                this.begin_ai_sql_editor_edit(
+                    tab_id,
+                    Some(QueryFailureRepair {
+                        result_index,
+                        summary: summary_for_ai.clone(),
+                    }),
+                    window,
+                    cx,
+                );
             })),
         );
 
@@ -4747,10 +4755,7 @@ impl QuerySummaryColumn {
                 .flex_1()
                 .flex_basis(px(0.))
                 .min_w(px(QUERY_SUMMARY_STATEMENT_MIN_WIDTH)),
-            Self::Type => cell
-                .flex_1()
-                .flex_basis(px(0.))
-                .min_w(px(QUERY_SUMMARY_TYPE_MIN_WIDTH)),
+            Self::Type => cell.flex_none().w(px(QUERY_SUMMARY_TYPE_WIDTH)),
             Self::Returned => cell.flex_none().w(px(QUERY_SUMMARY_RETURNED_WIDTH)),
             Self::Affected => cell.flex_none().w(px(QUERY_SUMMARY_AFFECTED_WIDTH)),
             Self::Elapsed => cell.flex_none().w(px(QUERY_SUMMARY_ELAPSED_WIDTH)),
@@ -4758,7 +4763,7 @@ impl QuerySummaryColumn {
         match self {
             Self::Statement => cell.pl_2().pr_1(),
             Self::Type => cell.px_2(),
-            Self::Returned | Self::Affected | Self::Elapsed => cell.px_3(),
+            Self::Returned | Self::Affected | Self::Elapsed => cell.px_2(),
         }
     }
 

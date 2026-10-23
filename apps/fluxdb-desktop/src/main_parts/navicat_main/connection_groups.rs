@@ -811,6 +811,7 @@ impl NavicatMain {
                 | DatabaseKind::TiDb
                 | DatabaseKind::Sqlite
                 | DatabaseKind::Postgres
+                | DatabaseKind::SqlServer
         ) {
             self.show_message(
                 tr("app.connection_action.new_database_unsupported"),
@@ -823,13 +824,26 @@ impl NavicatMain {
         self.connection_context_menu = None;
         self.group_context_menu = None;
         let is_postgres = connection.config.kind == DatabaseKind::Postgres;
+        let is_sqlserver = connection.config.kind == DatabaseKind::SqlServer;
         self.pending_create_database = Some(CreateDatabaseForm {
             connection_id,
             database_kind: connection.config.kind,
             database_name: String::new(),
             // PG：charset 即 ENCODING、collation 即 LC_COLLATE/LC_CTYPE(locale)。
-            charset: if is_postgres { "UTF8".to_string() } else { "utf8mb4".to_string() },
-            collation: if is_postgres { "C".to_string() } else { "utf8mb4_unicode_ci".to_string() },
+            charset: if is_postgres {
+                "UTF8".to_string()
+            } else if is_sqlserver {
+                String::new()
+            } else {
+                "utf8mb4".to_string()
+            },
+            collation: if is_postgres {
+                "C".to_string()
+            } else if is_sqlserver {
+                "SQL_Latin1_General_CP1_CI_AS".to_string()
+            } else {
+                "utf8mb4_unicode_ci".to_string()
+            },
             owner: String::new(),
             template: String::new(),
         });
@@ -844,6 +858,8 @@ impl NavicatMain {
         };
         let collation_options = if is_postgres {
             pg_locale_options().iter().map(|s| s.to_string()).collect()
+        } else if is_sqlserver {
+            sqlserver_create_database_collation_options()
         } else {
             create_database_collation_options("utf8mb4")
         };
@@ -1075,7 +1091,10 @@ impl NavicatMain {
         } else {
             String::new()
         };
-        let collation = if requires_charset {
+        let collation = if connection_config.kind == DatabaseKind::SqlServer {
+            // SQL Server 的 COLLATE 可选；空值表示使用服务器默认排序规则。
+            form.collation.trim().to_string()
+        } else if requires_charset {
             let collation = form.collation.trim().to_string();
             if collation.is_empty() {
                 self.show_message(

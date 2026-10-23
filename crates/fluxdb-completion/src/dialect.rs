@@ -2,7 +2,9 @@
 //!
 //! 接入新数据库 = 新增一个实现 + 静态实例，引擎零改动。
 
-use sqlparser::dialect::{Dialect, GenericDialect, MySqlDialect, PostgreSqlDialect, SQLiteDialect};
+use sqlparser::dialect::{
+    Dialect, GenericDialect, MsSqlDialect, MySqlDialect, PostgreSqlDialect, SQLiteDialect,
+};
 
 /// 方言需要向引擎提供的语法事实。
 pub trait CompletionDialect: Sync {
@@ -321,6 +323,119 @@ const DAMENG_KEYWORDS: &[&str] = &[
     "IF NOT EXISTS",
 ];
 
+/// SQL Server / T-SQL 常用语法。分页使用 `TOP` / `OFFSET ... FETCH`，
+/// 对象名可用方括号引用；解析器使用 sqlparser 的 MSSQL 方言。
+const SQLSERVER_KEYWORDS: &[&str] = &[
+    "SELECT",
+    "FROM",
+    "WHERE",
+    "JOIN",
+    "LEFT JOIN",
+    "RIGHT JOIN",
+    "INNER JOIN",
+    "FULL JOIN",
+    "CROSS APPLY",
+    "OUTER APPLY",
+    "ON",
+    "AS",
+    "AND",
+    "OR",
+    "NOT",
+    "IN",
+    "IS NULL",
+    "IS NOT NULL",
+    "LIKE",
+    "BETWEEN",
+    "EXISTS",
+    "GROUP BY",
+    "HAVING",
+    "ORDER BY",
+    "OFFSET",
+    "FETCH NEXT",
+    "TOP",
+    "INSERT INTO",
+    "VALUES",
+    "UPDATE",
+    "SET",
+    "DELETE FROM",
+    "MERGE INTO",
+    "CREATE",
+    "ALTER",
+    "DROP",
+    "TRUNCATE",
+    "TABLE",
+    "VIEW",
+    "INDEX",
+    "SCHEMA",
+    "DATABASE",
+    "PROCEDURE",
+    "FUNCTION",
+    "TRIGGER",
+    "PRIMARY KEY",
+    "FOREIGN KEY",
+    "REFERENCES",
+    "CONSTRAINT",
+    "DEFAULT",
+    "UNIQUE",
+    "CHECK",
+    "IDENTITY",
+    "EXEC",
+    "DECLARE",
+    "BEGIN",
+    "COMMIT",
+    "ROLLBACK",
+    "TRY",
+    "CATCH",
+    "THROW",
+    "DISTINCT",
+    "UNION",
+    "UNION ALL",
+    "WITH",
+    "OVER",
+    "PARTITION BY",
+    "CASE",
+    "WHEN",
+    "THEN",
+    "ELSE",
+    "END",
+    "IF EXISTS",
+    "IF NOT EXISTS",
+];
+
+const SQLSERVER_FUNCTIONS: &[&str] = &[
+    "COUNT",
+    "SUM",
+    "AVG",
+    "MIN",
+    "MAX",
+    "COALESCE",
+    "ISNULL",
+    "NULLIF",
+    "CONCAT",
+    "SUBSTRING",
+    "LEN",
+    "LOWER",
+    "UPPER",
+    "TRIM",
+    "LTRIM",
+    "RTRIM",
+    "REPLACE",
+    "ROUND",
+    "GETDATE",
+    "SYSDATETIME",
+    "DATEADD",
+    "DATEDIFF",
+    "DATEPART",
+    "CONVERT",
+    "CAST",
+    "ROW_NUMBER",
+    "RANK",
+    "DENSE_RANK",
+    "IIF",
+    "TRY_CONVERT",
+    "SCOPE_IDENTITY",
+];
+
 const GENERIC_FUNCTIONS: &[&str] = &[
     "COUNT",
     "SUM",
@@ -490,6 +605,41 @@ impl CompletionDialect for DamengCompletionDialect {
     }
 }
 
+/// SQL Server：sqlparser 的 MSSQL 方言；方括号引用标识符。
+pub struct SqlServerCompletionDialect;
+
+impl CompletionDialect for SqlServerCompletionDialect {
+    fn parser_dialect(&self) -> &'static dyn Dialect {
+        &MsSqlDialect {}
+    }
+
+    fn keywords(&self) -> &'static [&'static str] {
+        SQLSERVER_KEYWORDS
+    }
+
+    fn functions(&self) -> &'static [&'static str] {
+        SQLSERVER_FUNCTIONS
+    }
+
+    fn identifier_quote(&self) -> char {
+        '['
+    }
+
+    fn quote_ident(&self, name: &str) -> String {
+        format!("[{}]", name.replace(']', "]]"))
+    }
+
+    // SQL Server 的默认 schema 可被登录用户改掉，且库内可能有同名表；
+    // 裸表名补全显式带 schema，避免依赖会话默认值。
+    fn qualify_bare_table(&self) -> bool {
+        true
+    }
+
+    fn supports_routines(&self) -> bool {
+        true
+    }
+}
+
 /// 兜底方言：未知数据库类型。
 pub struct GenericCompletionDialect;
 
@@ -511,4 +661,5 @@ pub static MYSQL: MySqlCompletionDialect = MySqlCompletionDialect;
 pub static SQLITE: SqliteCompletionDialect = SqliteCompletionDialect;
 pub static POSTGRES: PostgresCompletionDialect = PostgresCompletionDialect;
 pub static DAMENG: DamengCompletionDialect = DamengCompletionDialect;
+pub static SQLSERVER: SqlServerCompletionDialect = SqlServerCompletionDialect;
 pub static GENERIC: GenericCompletionDialect = GenericCompletionDialect;

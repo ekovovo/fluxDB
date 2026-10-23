@@ -99,6 +99,7 @@ pub fn create_table_provider(kind: DatabaseKind) -> &'static dyn CreateTableProv
         DatabaseKind::Sqlite => &SQLITE_CREATE_TABLE_PROVIDER,
         DatabaseKind::Postgres => &POSTGRES_CREATE_TABLE_PROVIDER,
         DatabaseKind::Dameng => &DAMENG_CREATE_TABLE_PROVIDER,
+        DatabaseKind::SqlServer => &SQLSERVER_CREATE_TABLE_PROVIDER,
         DatabaseKind::MongoDb | DatabaseKind::Redis => {
             &UNSUPPORTED_CREATE_TABLE_PROVIDER
         }
@@ -107,6 +108,72 @@ pub fn create_table_provider(kind: DatabaseKind) -> &'static dyn CreateTableProv
 
 static POSTGRES_CREATE_TABLE_PROVIDER: PostgresCreateTableProvider = PostgresCreateTableProvider;
 static DAMENG_CREATE_TABLE_PROVIDER: DamengCreateTableProvider = DamengCreateTableProvider;
+static SQLSERVER_CREATE_TABLE_PROVIDER: SqlServerCreateTableProvider =
+    SqlServerCreateTableProvider;
+
+struct SqlServerCreateTableProvider;
+
+impl CreateTableProvider for SqlServerCreateTableProvider {
+    fn type_options(&self) -> &'static [&'static str] {
+        SQLSERVER_CREATE_TABLE_TYPE_OPTIONS
+    }
+
+    fn default_column_type(&self) -> &'static str {
+        "nvarchar"
+    }
+
+    fn default_id_type(&self) -> &'static str {
+        "int"
+    }
+
+    fn default_length(&self, data_type: &str) -> Option<&'static str> {
+        match create_table_base_type(data_type).as_str() {
+            "char" | "varchar" | "nchar" | "nvarchar" | "binary" | "varbinary" => Some("255"),
+            "decimal" | "numeric" => Some("18"),
+            _ => None,
+        }
+    }
+
+    fn type_capabilities(&self, data_type: &str) -> CreateTableTypeCapabilities {
+        let base = create_table_base_type(data_type);
+        CreateTableTypeCapabilities {
+            length: matches!(
+                base.as_str(),
+                "char"
+                    | "varchar"
+                    | "nchar"
+                    | "nvarchar"
+                    | "binary"
+                    | "varbinary"
+                    | "decimal"
+                    | "numeric"
+            ),
+            scale: matches!(
+                base.as_str(),
+                "decimal" | "numeric" | "time" | "datetime2" | "datetimeoffset"
+            ),
+            number_options: matches!(base.as_str(), "decimal" | "numeric"),
+            auto_increment: sqlserver_is_identity_type(&base),
+            ..Default::default()
+        }
+    }
+
+    fn validation_error(&self, create: &CreateTableState) -> Option<&'static str> {
+        create_table_sqlserver_validation_error(create)
+    }
+
+    fn sql_preview(&self, create: &CreateTableState) -> Result<String, String> {
+        create_table_sqlserver_sql_preview(create)
+    }
+
+    fn design_sql_preview(&self, create: &CreateTableState) -> Result<String, String> {
+        create_table_design_sql_preview_for_provider(self, create)
+    }
+
+    fn design_statements(&self, create: &CreateTableState) -> Result<Vec<String>, String> {
+        create_table_sqlserver_design_statements(create)
+    }
+}
 
 struct DamengCreateTableProvider;
 

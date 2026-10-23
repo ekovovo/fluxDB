@@ -9,23 +9,23 @@
 // 通过 include! 合并进同一个 `sql_editor_adapter` 模块，所有用于整个模块的共享
 // `use` 统一放在本文件顶部，其余文件直接引用同一模块作用域下的类型，不重复 `use`。
 
-use std::future::Future;
 use crate::tr;
 use gpui::SharedString;
+use std::future::Future;
 use std::pin::Pin;
 use std::sync::{
-    atomic::{AtomicU64, Ordering},
     Arc, Mutex, OnceLock,
+    atomic::{AtomicU64, Ordering},
 };
 use std::time::Instant;
 
 use fluxdb_editor_core::{
     BufferSnapshot, CancellationToken, CodeLens, CodeLensProvider, CompletionContinuation,
-    CompletionFuture, CompletionItem, CompletionKind, CompletionProvider,
-    CompletionRequest, CompletionResult, Decoration, DecorationProvider, DecorationSet, Diagnostic,
-    DiagnosticProvider, ExecuteMode, ExecutionAdapter, ExecutionUnit, Highlight,
-    InputEdit, LanguageDefinition, Point, Range, Selection, SignatureInfo, SignatureProvider,
-    SyntaxProvider, SyntaxResult, TaskOutcome, TriggerDecision,
+    CompletionFuture, CompletionItem, CompletionKind, CompletionProvider, CompletionRequest,
+    CompletionResult, Decoration, DecorationProvider, DecorationSet, Diagnostic,
+    DiagnosticProvider, ExecuteMode, ExecutionAdapter, ExecutionUnit, Highlight, InputEdit,
+    LanguageDefinition, Point, Range, Selection, SignatureInfo, SignatureProvider, SyntaxProvider,
+    SyntaxResult, TaskOutcome, TriggerDecision,
 };
 
 #[derive(Clone, Debug)]
@@ -98,19 +98,28 @@ pub struct SqlCompletionResponse {
 /// detail 增强。未知函数返回 None（保守）。键为小写函数名。
 pub fn function_result_type(fn_name: &str) -> Option<SharedString> {
     Some(match fn_name.to_ascii_lowercase().as_str() {
-        "count" | "sum" | "count_big" | "if" | "ifnull" | "coalesce" => tr("app.completion.type.numeric"),
+        "count" | "sum" | "count_big" | "if" | "ifnull" | "coalesce" => {
+            tr("app.completion.type.numeric")
+        }
         "avg" | "max" | "min" => tr("app.completion.type.numeric_date_text"),
-        "concat" | "substring" | "substr" | "lower" | "lcase" | "upper" | "ucase"
-        | "trim" | "ltrim" | "rtrim" | "replace" | "cast" | "convert" | "now"
-        | "current_date" | "current_timestamp" => tr("app.completion.type.text_date"),
-        "len" | "length" | "char_length" | "round" | "floor" | "ceil" | "abs"
-        | "mod" | "rand" => tr("app.completion.type.numeric"),
-        "date" | "year" | "month" | "day" | "hour" | "minute" | "second" => tr("app.completion.type.date_numeric"),
+        "concat" | "substring" | "substr" | "lower" | "lcase" | "upper" | "ucase" | "trim"
+        | "ltrim" | "rtrim" | "replace" | "cast" | "convert" | "now" | "current_date"
+        | "current_timestamp" => tr("app.completion.type.text_date"),
+        "len" | "length" | "char_length" | "round" | "floor" | "ceil" | "abs" | "mod" | "rand" => {
+            tr("app.completion.type.numeric")
+        }
+        "date" | "year" | "month" | "day" | "hour" | "minute" | "second" => {
+            tr("app.completion.type.date_numeric")
+        }
         _ => return None,
     })
 }
 
-pub type SqlCompletionResolver = Arc<dyn Fn(String, usize, bool, Arc<AtomicU64>, u64) -> Result<SqlCompletionResponse, String> + Send + Sync>;
+pub type SqlCompletionResolver = Arc<
+    dyn Fn(String, usize, bool, Arc<AtomicU64>, u64) -> Result<SqlCompletionResponse, String>
+        + Send
+        + Sync,
+>;
 
 /// 补全候选右侧「metadata 详情」的异步状态。由候选项切换触发，latest-wins 取消。
 #[derive(Clone, Debug, PartialEq)]
@@ -300,7 +309,8 @@ impl SqlAdapter {
                 Some(text) if !text.is_empty() => SqlDocState::Ready(text.to_string()),
                 _ => SqlDocState::Error(tr("app.completion.no_column_comment").to_string()),
             },
-            fluxdb_editor_core::CompletionKind::Keyword | fluxdb_editor_core::CompletionKind::Text => {
+            fluxdb_editor_core::CompletionKind::Keyword
+            | fluxdb_editor_core::CompletionKind::Text => {
                 SqlDocState::Error(tr("app.completion.no_document").to_string())
             }
             _ => SqlDocState::Ready(label.to_string()),
@@ -370,7 +380,11 @@ impl SqlAdapter {
         let mut items: Vec<CompletionItem> = Vec::new();
         for kw in self.dialect.keywords() {
             let mut item = CompletionItem::new(kw.word, kw.kind);
-            item.priority = if kw.kind == CompletionKind::Keyword { 50 } else { 40 };
+            item.priority = if kw.kind == CompletionKind::Keyword {
+                50
+            } else {
+                40
+            };
             item.detail = format!("{} {}", self.dialect.name(), self.kind_label(kw.kind));
             items.push(item);
         }
@@ -573,26 +587,22 @@ impl SyntaxProvider for SqlAdapter {
                 );
                 return result;
             }
-            let (highlights, cache_mode) =
-                highlight_sql_tree_sitter_cached_snapshot(
-                    &snapshot,
-                    dialect,
-                    &changed,
-                    version,
-                    &syntax_cache,
-                    latest_request.inner(),
-                    request_id,
-                );
+            let (highlights, cache_mode) = highlight_sql_tree_sitter_cached_snapshot(
+                &snapshot,
+                dialect,
+                &changed,
+                version,
+                &syntax_cache,
+                latest_request.inner(),
+                request_id,
+            );
             // 全量路径返回整份文档高亮，dirty 区间取全文首尾，宿主据此 `from_highlights` 复建主存储。
             // 增量路径（statement/statement_window）已在上面返回作用域 patch。
             let result = SyntaxResult {
                 buffer_version: version,
                 highlights,
                 dirty_ranges: vec![Range::new(0, snapshot.len())],
-                needs_refinement: matches!(
-                    cache_mode,
-                    "tokenizer_large" | "statement_refinement"
-                ),
+                needs_refinement: matches!(cache_mode, "tokenizer_large" | "statement_refinement"),
             };
             let elapsed_us = started.elapsed().as_micros() as u64;
             tracing::debug!(
@@ -682,7 +692,8 @@ impl fluxdb_completion::MetadataSource for SqlDiagnosticMetadata<'_> {
 fn completion_dialect(dialect: SqlDialect) -> &'static dyn fluxdb_completion::CompletionDialect {
     match dialect {
         SqlDialect::Mysql => &fluxdb_completion::MYSQL,
-        SqlDialect::Postgres | SqlDialect::SqlServer => &fluxdb_completion::POSTGRES,
+        SqlDialect::Postgres => &fluxdb_completion::POSTGRES,
+        SqlDialect::SqlServer => &fluxdb_completion::SQLSERVER,
         SqlDialect::Sqlite => &fluxdb_completion::SQLITE,
     }
 }
@@ -821,7 +832,6 @@ impl DiagnosticProvider for SqlAdapter {
         };
         result
     }
-
 }
 
 impl SqlAdapter {
@@ -960,7 +970,6 @@ impl SqlAdapter {
             .map(|diagnostic| sql_semantic_diagnostic(diagnostic, base_offset))
             .collect()
     }
-
 }
 
 #[derive(Clone, Debug)]
@@ -1107,7 +1116,8 @@ impl CompletionProvider for SqlAdapter {
     }
 
     fn cancel_pending(&self) {
-        self.completion_latest_request.fetch_add(1, Ordering::AcqRel);
+        self.completion_latest_request
+            .fetch_add(1, Ordering::AcqRel);
         tracing::debug!(
             target: "gdb_sql_perf",
             op = "completion_cancel_requested",
@@ -1264,7 +1274,10 @@ impl CompletionProvider for SqlAdapter {
     /// F005：候选项右侧 metadata 详情。由选中项/悬停切换在后台触发，latest-wins 取消。
     /// 优先走宿主 resolver（fluxdb-app：索引命中直接返回，未命中按身份取一次元数据）；
     /// 无 resolver 时回退到候选内联注释。
-    fn documentation(&self, request: fluxdb_editor_core::DocumentationRequest) -> Option<fluxdb_editor_core::DocumentationState> {
+    fn documentation(
+        &self,
+        request: fluxdb_editor_core::DocumentationRequest,
+    ) -> Option<fluxdb_editor_core::DocumentationState> {
         use fluxdb_editor_core::DocumentationState as D;
         let kind = request.kind;
         let state = self.resolve_documentation(
@@ -1286,7 +1299,11 @@ impl CompletionProvider for SqlAdapter {
 impl ExecutionAdapter for SqlAdapter {
     /// 把选区或光标所在语句切分成执行单元。选区非空时使用选区文本，
     /// 否则取光标所在语句；执行模式根据首词推断。
-    fn execution_units(&self, snapshot: &BufferSnapshot, selection: Selection) -> Vec<ExecutionUnit> {
+    fn execution_units(
+        &self,
+        snapshot: &BufferSnapshot,
+        selection: Selection,
+    ) -> Vec<ExecutionUnit> {
         // 有选区时直接执行选区文本。
         if !selection.is_empty() {
             let range = selection.range();
@@ -1322,7 +1339,10 @@ impl CodeLensProvider for SqlAdapter {
     fn code_lenses(&self, snapshot: &BufferSnapshot, visible: Range) -> Vec<CodeLens> {
         let started = Instant::now();
         let version = snapshot.version();
-        let visible = Range::new(visible.start.min(snapshot.len()), visible.end.min(snapshot.len()));
+        let visible = Range::new(
+            visible.start.min(snapshot.len()),
+            visible.end.min(snapshot.len()),
+        );
         let mut cache_hit = false;
         let result = match self.code_lens_cache.lock() {
             Ok(mut cache) => {
@@ -1336,9 +1356,12 @@ impl CodeLensProvider for SqlAdapter {
                     let lenses = build_code_lenses_from_snapshot(snapshot);
                     *cache = Some((version, snapshot.len(), snapshot.line_count(), lenses));
                 }
-                if let Some((_, _, _, lenses)) = cache.as_ref().filter(|(cached, bytes, lines, _)| {
-                    (*cached, *bytes, *lines) == (version, snapshot.len(), snapshot.line_count())
-                }) {
+                if let Some((_, _, _, lenses)) =
+                    cache.as_ref().filter(|(cached, bytes, lines, _)| {
+                        (*cached, *bytes, *lines)
+                            == (version, snapshot.len(), snapshot.line_count())
+                    })
+                {
                     lenses
                         .iter()
                         .filter(|lens| {
@@ -1399,14 +1422,22 @@ impl DecorationProvider for SqlAdapter {
     fn decorations(&self, snapshot: &BufferSnapshot, visible: Range) -> DecorationSet {
         let started = Instant::now();
         let Some(store) = &self.status else {
-            return DecorationSet { decorations: Vec::new() };
+            return DecorationSet {
+                decorations: Vec::new(),
+            };
         };
         let status = match store.lock() {
             Ok(status) => status,
-            Err(_) => return DecorationSet { decorations: Vec::new() },
+            Err(_) => {
+                return DecorationSet {
+                    decorations: Vec::new(),
+                };
+            }
         };
         if status.is_empty() {
-            return DecorationSet { decorations: Vec::new() };
+            return DecorationSet {
+                decorations: Vec::new(),
+            };
         }
         let mut cache_hit = false;
         let runs = match self.statement_runs_cache.lock() {
@@ -1480,4 +1511,3 @@ impl DecorationProvider for SqlAdapter {
         DecorationSet { decorations }
     }
 }
-

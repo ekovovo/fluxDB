@@ -58,6 +58,22 @@ fn create_database_collation_options(charset: &str) -> Vec<String> {
         .collect()
 }
 
+/// SQL Server 常用排序规则；服务器允许任意已安装排序规则名，下拉只是常用候选。
+fn sqlserver_create_database_collation_options() -> Vec<String> {
+    [
+        "SQL_Latin1_General_CP1_CI_AS",
+        "Latin1_General_CI_AS",
+        "Latin1_General_100_CI_AS_SC",
+        "Chinese_PRC_CI_AS",
+        "Chinese_PRC_100_CI_AS_SC",
+        "Japanese_CI_AS",
+        "Korean_Wansung_CI_AS",
+    ]
+    .iter()
+    .map(|value| (*value).to_string())
+    .collect()
+}
+
 fn create_database_modal(
     form: CreateDatabaseForm,
     name_input: Entity<InputState>,
@@ -75,6 +91,7 @@ fn create_database_modal(
         DatabaseKind::MySql | DatabaseKind::TiDb | DatabaseKind::Postgres
     );
     let is_postgres = form.database_kind == DatabaseKind::Postgres;
+    let is_sqlserver = form.database_kind == DatabaseKind::SqlServer;
     let can_submit = !running
         && !form.database_name.trim().is_empty()
         && (!needs_charset
@@ -137,7 +154,7 @@ fn create_database_modal(
                             running,
                             colors,
                         ))
-                        .when(needs_charset, |this| {
+                        .when(needs_charset && !is_sqlserver, |this| {
                             this.child(create_database_select_field(
                                 if is_postgres {
                                     tr("app.database.field.encoding")
@@ -155,8 +172,17 @@ fn create_database_modal(
                                 } else {
                                     tr("app.database.field.collation")
                                 },
-                                collation_select,
+                                collation_select.clone(),
                                 if is_postgres { "C" } else { "utf8mb4_unicode_ci" },
+                                running,
+                                colors,
+                            ))
+                        })
+                        .when(is_sqlserver && !needs_charset, |this| {
+                            this.child(create_database_select_field(
+                                tr("app.database.field.collation"),
+                                collation_select,
+                                "SQL_Latin1_General_CP1_CI_AS",
                                 running,
                                 colors,
                             ))

@@ -886,6 +886,11 @@ fn connection_matches_sidebar_search(
 fn object_matches_sidebar_search(object: &ObjectSummary, query: &str) -> bool {
     matches!(
         object.path.kind,
-        ObjectKind::Table | ObjectKind::View | ObjectKind::Collection | ObjectKind::RedisKey
+        ObjectKind::Table
+            | ObjectKind::View
+            | ObjectKind::Procedure
+            | ObjectKind::Function
+            | ObjectKind::Collection
+            | ObjectKind::RedisKey
     ) && search_matches_text(&object.path.name, query)
 }

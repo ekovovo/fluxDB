@@ -676,6 +676,7 @@ pub fn add_ai_table_page_tools(
                     | DatabaseKind::MySql
                     | DatabaseKind::TiDb
                     | DatabaseKind::Dameng
+                    | DatabaseKind::SqlServer
             )
         })
         .map(|c| c.id)
@@ -714,6 +715,7 @@ impl AppController {
                 | DatabaseKind::TiDb
                 | DatabaseKind::Postgres
                 | DatabaseKind::Dameng
+                | DatabaseKind::SqlServer
         ) {
             return Err(editor_error("page_query_unsupported"));
         }
@@ -869,6 +871,7 @@ mod ai_table_page_tests {
             mysql_profile: None,
             postgres_profile: None,
             dameng_profile: None,
+            sqlserver_profile: None,
         }
     }
 
@@ -1005,6 +1008,7 @@ mod ai_table_page_tests {
             mysql_profile: None,
             postgres_profile: None,
             dameng_profile: None,
+            sqlserver_profile: None,
         };
         let controller = AppController::new();
         let result = controller
@@ -1418,6 +1422,7 @@ mod ai_table_page_tests {
             mysql_profile: None,
             postgres_profile: None,
             dameng_profile: None,
+            sqlserver_profile: None,
         }]));
         let table = ObjectPath {
             connection_id: ConnectionId(1),

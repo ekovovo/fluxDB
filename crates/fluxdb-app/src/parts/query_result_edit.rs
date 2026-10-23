@@ -13,10 +13,7 @@ fn query_result_editor(
         object,
         page: Some(page.clone()),
         original_page: Some(page),
-        pagination: Pagination {
-            offset: 0,
-            limit,
-        },
+        pagination: Pagination { offset: 0, limit },
         load_generation: 0,
         changes: None,
         editing_cell: None,
@@ -77,7 +74,15 @@ fn editable_query_object(request: &QueryRequest, kind: DatabaseKind) -> Option<O
     if !starts_with_sql_keyword(&statement, "select") {
         return None;
     }
-    for keyword in ["distinct", "join", "group", "having", "union", "intersect", "except"] {
+    for keyword in [
+        "distinct",
+        "join",
+        "group",
+        "having",
+        "union",
+        "intersect",
+        "except",
+    ] {
         if has_top_level_sql_keyword(&statement, keyword) {
             return None;
         }
@@ -91,27 +96,25 @@ fn editable_query_object(request: &QueryRequest, kind: DatabaseKind) -> Option<O
         return None;
     }
 
-    // 二段名的含义随方言不同（§8.4/R30）：PG 是 schema.table，MySQL/TiDB/SQLite 是
-    // database.table。PG 三段视为 database.schema.table，取后两段定位（库由连接决定）。
+    // 二段名的含义随方言不同（§8.4/R30）：PG/SQL Server 是 schema.table，
+    // MySQL/TiDB/SQLite 是 database.table。三段名统一视为 database.schema.table。
     let (database, schema, name) = match (kind, parts.as_slice()) {
-        (DatabaseKind::Postgres | DatabaseKind::Dameng, [name]) => {
+        (DatabaseKind::Postgres | DatabaseKind::Dameng | DatabaseKind::SqlServer, [name]) => {
             (request.database.clone(), None, name.clone())
         }
-        (DatabaseKind::Postgres | DatabaseKind::Dameng, [schema, name]) => {
-            (request.database.clone(), Some(schema.clone()), name.clone())
-        }
-        (DatabaseKind::Postgres | DatabaseKind::Dameng, [database, schema, name]) => (
-            Some(database.clone()),
-            Some(schema.clone()),
-            name.clone(),
-        ),
+        (
+            DatabaseKind::Postgres | DatabaseKind::Dameng | DatabaseKind::SqlServer,
+            [schema, name],
+        ) => (request.database.clone(), Some(schema.clone()), name.clone()),
+        (
+            DatabaseKind::Postgres | DatabaseKind::Dameng | DatabaseKind::SqlServer,
+            [database, schema, name],
+        ) => (Some(database.clone()), Some(schema.clone()), name.clone()),
         (_, [name]) => (request.database.clone(), None, name.clone()),
         (_, [database, name]) => (Some(database.clone()), None, name.clone()),
-        (_, [database, schema, name]) => (
-            Some(database.clone()),
-            Some(schema.clone()),
-            name.clone(),
-        ),
+        (_, [database, schema, name]) => {
+            (Some(database.clone()), Some(schema.clone()), name.clone())
+        }
         _ => return None,
     };
 
@@ -142,10 +145,28 @@ fn parse_sql_object_name(input: &str, kind: DatabaseKind) -> Option<(Vec<String>
 
 /// 解析单个标识符，按方言识别引号字符并解开内部转义。
 ///
-/// MySQL/TiDB 用反引号，其余方言（PostgreSQL/SQLite）用双引号；未加引号的名字在 PG 下
+/// MySQL/TiDB 用反引号，SQL Server 用方括号，其余方言用双引号；未加引号的名字在 PG 下
 /// 折叠为小写（未加引号的 `FROM Sales` 指的是 `sales`），带引号则按原样保留大小写。
 fn parse_sql_identifier(input: &str, kind: DatabaseKind) -> Option<(String, &str)> {
     let input = input.trim_start();
+    if kind == DatabaseKind::SqlServer
+        && let Some(rest) = input.strip_prefix('[')
+    {
+        let mut name = String::new();
+        let mut rest = rest;
+        loop {
+            let end = rest.find(']')?;
+            name.push_str(&rest[..end]);
+            rest = &rest[end + 1..];
+            if let Some(after_escape) = rest.strip_prefix(']') {
+                // SQL Server 方括号标识符用 `]]` 表示字面 `]`。
+                name.push(']');
+                rest = after_escape;
+                continue;
+            }
+            return Some((name, rest));
+        }
+    }
     let quote = match kind {
         DatabaseKind::MySql | DatabaseKind::TiDb => '`',
         _ => '"',
@@ -220,14 +241,15 @@ fn apply_query_result_column_metadata(
     if !columns.iter().any(|column| column.primary_key) {
         return None;
     }
-    let result_has_all_primary_keys = columns
-        .iter()
-        .filter(|column| column.primary_key)
-        .all(|primary| {
-            page.columns
-                .iter()
-                .any(|column| column.name.eq_ignore_ascii_case(&primary.name))
-        });
+    let result_has_all_primary_keys =
+        columns
+            .iter()
+            .filter(|column| column.primary_key)
+            .all(|primary| {
+                page.columns
+                    .iter()
+                    .any(|column| column.name.eq_ignore_ascii_case(&primary.name))
+            });
     if !result_has_all_primary_keys {
         return None;
     }

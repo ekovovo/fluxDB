@@ -190,7 +190,7 @@ pub(crate) fn trailing_ident_qualifier(before: &str) -> bool {
     // 取 '.' 前的一段标识符；支持 `"schema".` / `` `schema`. `` / `[schema].`。
     // 标识符内不能夹着字符串/注释片段。
     let mut start = dot;
-    for (index, ch) in trimmed[..dot].char_indices().rev() {
+    for (index, ch) in before.char_indices().rev() {
         if is_ident_char(ch) {
             start = index;
         } else {
@@ -403,6 +403,19 @@ mod filter_items_tests {
             labels(&filter_items(&items, "")),
             vec!["c_col", "a_col", "b_col"]
         );
+    }
+
+    #[test]
+    fn trailing_qualifier_recognizes_quoted_identifiers() {
+        // SQL Server 方括号标识符闭合后，点号必须触发补全。
+        for text in [
+            "SELECT * FROM [dbo].",
+            "SELECT * FROM [a]]b].",
+        ] {
+            assert!(trailing_ident_qualifier(text), "{text}");
+        }
+        assert!(!trailing_ident_qualifier("SELECT * FROM ."));
+        assert!(!trailing_ident_qualifier("SELECT 'x.'"));
     }
 }
 

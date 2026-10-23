@@ -171,6 +171,51 @@ pub trait Connector {
     fn list_grant_targets(&self, _: ConnectionId, _database: &str) -> Result<PgGrantTargetLists> {
         Err(Error::new(ErrorKind::Unsupported, "暂不支持读取权限目标列表"))
     }
+    /// SQL Server 用户与权限第一阶段：读取服务器登录名、目标库用户/角色和成员关系。
+    fn sqlserver_security_snapshot(
+        &self,
+        _: ConnectionId,
+        _: &str,
+    ) -> Result<SqlServerSecuritySnapshot> {
+        Err(Error::new(
+            ErrorKind::Unsupported,
+            "暂不支持读取 SQL Server 用户与权限",
+        ))
+    }
+    /// SQL Server 指定主体的显式服务器/数据库权限（不含继承和固定角色隐含权限）。
+    fn sqlserver_principal_permissions(
+        &self,
+        _: ConnectionId,
+        _: &str,
+        _: &SqlServerPrincipalRef,
+    ) -> Result<Vec<SqlServerPermission>> {
+        Err(Error::new(
+            ErrorKind::Unsupported,
+            "暂不支持读取 SQL Server 权限",
+        ))
+    }
+    /// 脱敏渲染 SQL Server 安全计划，供 UI 预览。
+    fn render_sqlserver_security_plan(
+        &self,
+        _: ConnectionId,
+        _plan: &SqlServerSecurityPlan,
+    ) -> Result<Vec<String>> {
+        Err(Error::new(
+            ErrorKind::Unsupported,
+            "暂不支持预览 SQL Server 用户与权限变更",
+        ))
+    }
+    /// 在单事务内应用 SQL Server 安全计划；任一语句失败整批回滚。
+    fn apply_sqlserver_security_plan(
+        &self,
+        _: ConnectionId,
+        _plan: &SqlServerSecurityPlan,
+    ) -> Result<Vec<String>> {
+        Err(Error::new(
+            ErrorKind::Unsupported,
+            "暂不支持应用 SQL Server 用户与权限变更",
+        ))
+    }
     fn delete_database(&self, _: ConnectionId, _: &str) -> Result<()> {
         Err(Error::new(ErrorKind::Unsupported, "暂不支持删除数据库"))
     }

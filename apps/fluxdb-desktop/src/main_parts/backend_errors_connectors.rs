@@ -2,6 +2,18 @@
 
 fn localize_backend_connector_error_text(text: &str) -> Option<String> {
     let key = match text {
+        "请先保存或取消当前 SQL Server 安全变更" => "app.sqlserver_security.database_switch_locked",
+        "请选择列表中的 SQL Server Schema" => "app.sqlserver_security.choose_schema",
+        "请先刷新核实 SQL Server 提交结果" => "app.sqlserver_security.needs_verify",
+        "请先预览或刷新核实 SQL Server 安全变更" => "app.sqlserver_security.preview_required",
+        "SQL Server 登录密码不能为空且两次输入必须一致" => "app.sqlserver_security.password_required",
+        "SQL Server 登录密码不能超过 128 个字符" => "app.sqlserver_security.password_too_long",
+        "请先完成加载、保存或取消当前 SQL Server 安全变更" => {
+            "app.sqlserver_security.database_switch_busy"
+        }
+        "请选择列表中的 SQL Server 数据库" => "app.sqlserver_security.database_not_available",
+        "SQL Server 用户与权限需要先选择目标数据库" => "app.sqlserver_security.choose_database",
+        "SQL Server 连接任务异常结束" => "app.backend_error.sqlserver_connection_task_failed",
         "删除、结构变更、批量或复杂表达式需要人工审核" => "app.backend_error.conn_error_001",
         "间接副作用、敏感对象或唯一行边界无法核实，需要人工审核" => "app.backend_error.conn_error_002",
         "字符集不能为空" => "app.backend_error.conn_error_003",

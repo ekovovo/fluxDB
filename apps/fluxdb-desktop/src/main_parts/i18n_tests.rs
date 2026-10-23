@@ -18,12 +18,16 @@ mod i18n_e2e_tests {
     include!("i18n_tests/sql_editor_edit.rs");
     include!("i18n_tests/table_page_query.rs");
     include!("i18n_tests/dameng_connection.rs");
+    include!("i18n_tests/sqlserver_connection.rs");
     include!("i18n_tests/dameng_completion.rs");
     include!("i18n_tests/dameng_table_design.rs");
     include!("i18n_tests/table_design_types.rs");
     include!("i18n_tests/table_copy_error.rs");
     include!("i18n_tests/table_danger_layout.rs");
     include!("i18n_tests/table_context_menu_layout.rs");
+    include!("i18n_tests/sqlserver_table_context.rs");
+    include!("i18n_tests/user_admin_toolbar.rs");
+    include!("i18n_tests/sqlserver_security.rs");
     include!("i18n_tests/query_summary_layout.rs");
 
     /// 进程级 locale 是全局状态；会切换语言的用例必须串行，否则互相污染断言。
@@ -169,6 +173,7 @@ mod i18n_e2e_tests {
                 mysql_profile: None,
                 postgres_profile: None,
                 dameng_profile: None,
+                sqlserver_profile: None,
             },
         ]));
         cx.update(|cx| {
@@ -285,6 +290,7 @@ mod i18n_e2e_tests {
                 mysql_profile: None,
                 postgres_profile: None,
                 dameng_profile: None,
+                sqlserver_profile: None,
             },
         ]));
         let fluxdb_app::AppEvent::TabOpened(db0_tab) =
@@ -683,6 +689,26 @@ mod i18n_e2e_tests {
             "Connection not found"
         );
         assert_eq!(
+            localize_backend_error_text("SQL Server 连接任务异常结束"),
+            "SQL Server connection task terminated unexpectedly"
+        );
+        assert_eq!(
+            localize_backend_error_text("导入二进制值格式无效"),
+            "Invalid binary value; use 0x-prefixed hexadecimal"
+        );
+        assert_eq!(
+            localize_backend_error_text(
+                "SQL Server 查询超时，连接已关闭；执行结果待核实"
+            ),
+            "SQL Server query timed out; the connection was closed and the result must be verified"
+        );
+        assert_eq!(
+            localize_backend_error_text(
+                "查询已取消，SQL Server 连接已关闭；执行结果待核实"
+            ),
+            "Query cancelled; the SQL Server connection was closed and the result must be verified"
+        );
+        assert_eq!(
             localize_backend_error_text("SQL 无法解析，无法校验作用域"),
             "SQL cannot be parsed, so scope cannot be validated"
         );
@@ -1016,6 +1042,7 @@ mod i18n_e2e_tests {
             mysql_profile: None,
             postgres_profile: None,
             dameng_profile: None,
+            sqlserver_profile: None,
         }]));
         controller.dispatch(AppCommand::SaveSettings(Settings {
             locale: "ja".into(),

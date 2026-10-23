@@ -199,13 +199,32 @@ impl AppController {
                 }
             },
             DatabaseKind::Postgres => PrivilegeScope::Postgres,
+            DatabaseKind::SqlServer => PrivilegeScope::SqlServer,
             _ => {
                 return self.fail(Error::new(ErrorKind::Unsupported, "暂不支持该连接的用户与权限管理"));
             }
         };
-        let database = connection.config.options.get("database").cloned();
+        let database = connection
+            .config
+            .options
+            .get("database")
+            .cloned()
+            .or_else(|| {
+                connection
+                    .config
+                    .sqlserver_profile
+                    .as_ref()
+                    .map(|profile| profile.basic.database.clone())
+                    .filter(|database| !database.trim().is_empty())
+            });
         let tab_id = self.next_tab_id();
         let mut admin = UserAdminState::new(connection_id, database, scope);
+        if scope == PrivilegeScope::SqlServer {
+            admin.sqlserver = Some(SqlServerSecurityState {
+                database: if admin.privilege_database == "*" { String::new() } else { admin.privilege_database.clone() },
+                ..SqlServerSecurityState::default()
+            });
+        }
         // PG：面板以「成员关系」为主视图，默认停在 MemberOf，选角色即自动加载成员（无 MySQL 权限页）。
         if scope == PrivilegeScope::Postgres {
             admin.active_detail_tab = UserAdminDetailTab::MemberOf;

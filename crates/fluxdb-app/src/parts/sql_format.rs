@@ -49,7 +49,10 @@ struct ProtectedSqlIdentifiers {
 }
 
 fn protect_digit_prefixed_identifiers(sql: &str, dialect: DatabaseKind) -> ProtectedSqlIdentifiers {
-    if !matches!(dialect, DatabaseKind::MySql | DatabaseKind::TiDb) {
+    // SQL Server 的方括号标识符内部允许空格；`sqlformat` 会把它改写成 `[ ID ]`，
+    // 使 `[ID]` 与列名 `ID` 不再相等。先整体占位，格式化后再原样还原。
+    let protect_brackets = dialect == DatabaseKind::SqlServer;
+    if !matches!(dialect, DatabaseKind::MySql | DatabaseKind::TiDb) && !protect_brackets {
         return ProtectedSqlIdentifiers {
             sql: sql.to_string(),
             identifiers: Vec::new(),
@@ -62,6 +65,32 @@ fn protect_digit_prefixed_identifiers(sql: &str, dialect: DatabaseKind) -> Prote
     while let Some((index, ch)) = chars.next() {
         match ch {
             '\'' | '"' | '`' => copy_quoted_sql_from_indices(&mut protected, &mut chars, ch),
+            '[' if protect_brackets => {
+                let start = index;
+                let mut end = index + 1;
+                let mut closed = false;
+                while let Some((next_index, next_ch)) = chars.next() {
+                    end = next_index + next_ch.len_utf8();
+                    if next_ch == ']' {
+                        if matches!(chars.peek(), Some((_, ']'))) {
+                            chars.next();
+                            end += 1;
+                        } else {
+                            closed = true;
+                            break;
+                        }
+                    }
+                }
+                if !closed {
+                    // 未闭合的方括号交给 formatter 原样处理，避免吞掉后续 SQL。
+                    protected.push_str(&sql[start..end]);
+                    continue;
+                }
+                let identifier = &sql[start..end];
+                let placeholder = format!("__GDBSQLFMTIDENT{}__", identifiers.len());
+                identifiers.push(identifier.to_string());
+                protected.push_str(&placeholder);
+            }
             '-' if matches!(chars.peek(), Some((_, '-'))) => {
                 protected.push(ch);
                 protected.push(chars.next().unwrap().1);
@@ -113,11 +142,10 @@ fn restore_protected_identifiers(sql: &str, identifiers: &[String]) -> String {
 }
 
 fn is_digit_prefixed_identifier(token: &str) -> bool {
-    token
-        .chars()
-        .next()
-        .is_some_and(|ch| ch.is_ascii_digit())
-        && token.chars().any(|ch| ch == '_' || ch.is_ascii_alphabetic())
+    token.chars().next().is_some_and(|ch| ch.is_ascii_digit())
+        && token
+            .chars()
+            .any(|ch| ch == '_' || ch.is_ascii_alphabetic())
         && token.parse::<f64>().is_err()
 }
 
@@ -181,7 +209,7 @@ fn sql_text_for_execution(sql: &str, default_limit: u64, db_kind: DatabaseKind) 
         // PG/Redis/Mongo：如实保留 `"`，不做字符串归一。
         sql.to_string()
     };
-    apply_default_select_limit(&strip_sql_comments(&pipeline), default_limit)
+    apply_default_select_limit(&strip_sql_comments(&pipeline), default_limit, db_kind)
 }
 
 fn strip_sql_comments(sql: &str) -> String {
@@ -191,6 +219,7 @@ fn strip_sql_comments(sql: &str) -> String {
     while let Some(ch) = chars.next() {
         match ch {
             '\'' | '"' | '`' => copy_quoted_sql(&mut stripped, &mut chars, ch),
+            '[' => copy_bracket_identifier(&mut stripped, &mut chars),
             '-' if matches!(chars.peek(), Some('-')) => {
                 chars.next();
                 stripped.push(' ');
@@ -212,16 +241,25 @@ fn strip_sql_comments(sql: &str) -> String {
     stripped
 }
 
-fn apply_default_select_limit(sql: &str, default_limit: u64) -> String {
+fn apply_default_select_limit(sql: &str, default_limit: u64, db_kind: DatabaseKind) -> String {
     let mut output = String::with_capacity(sql.len() + 16);
     let mut start = 0;
     for (end, separator_len) in sql_statement_ranges(sql) {
-        let statement = normalize_select_limit_before_order(sql[start..end].trim());
+        let statement = sql[start..end].trim();
+        let statement = if db_kind == DatabaseKind::SqlServer {
+            // T-SQL 没有 `LIMIT`，用 TOP 封顶，且不能与 OFFSET/FETCH 混用。
+            apply_sqlserver_top_limit(statement, default_limit)
+        } else {
+            limit_select_statement(
+                &normalize_select_limit_before_order(statement),
+                default_limit,
+            )
+        };
         if !statement.is_empty() {
             if !output.is_empty() {
                 output.push(' ');
             }
-            output.push_str(&limit_select_statement(&statement, default_limit));
+            output.push_str(&statement);
             if separator_len > 0 {
                 output.push(';');
             }
@@ -229,6 +267,89 @@ fn apply_default_select_limit(sql: &str, default_limit: u64) -> String {
         start = end + separator_len;
     }
     output
+}
+
+/// 给 T-SQL 的 SELECT 加 `TOP (n)` 上限。
+///
+/// 与 `LIMIT` 不同，TOP 必须紧跟在 `SELECT [ALL|DISTINCT]` 之后；已经有
+/// `OFFSET/FETCH` 的语句不能再加 TOP（T-SQL 禁止同用），保持原样交给服务端。
+/// 已有 TOP 且大于上限时改写为上限，避免模型写 `TOP 100000` 绕过结果有界。
+fn apply_sqlserver_top_limit(statement: &str, page_size: u64) -> String {
+    if page_size == 0 || statement.is_empty() {
+        return statement.to_string();
+    }
+    let Some(select_start) = find_top_level_sql_keyword(statement, "select") else {
+        return statement.to_string();
+    };
+    // 已有 OFFSET/FETCH 分页时不再叠加 TOP。
+    if has_top_level_sql_keyword(statement, "offset") || has_top_level_sql_keyword(statement, "fetch")
+    {
+        return statement.to_string();
+    }
+    let header_end = find_top_level_sql_keyword(statement, "from")
+        .or_else(|| find_top_level_sql_keyword(statement, "where"))
+        .unwrap_or(statement.len());
+    let header = &statement[select_start + "select".len()..header_end];
+
+    let mut cursor = select_start + "select".len();
+    let mut rest = &statement[cursor..];
+    for keyword in ["all", "distinct"] {
+        let trimmed = rest.trim_start();
+        if ascii_keyword_at(trimmed, 0, keyword) {
+            cursor = statement.len() - trimmed.len() + keyword.len();
+            rest = &statement[cursor..];
+            break;
+        }
+    }
+    let trimmed = rest.trim_start();
+    if ascii_keyword_at(trimmed, 0, "top") {
+        // 解析 `TOP n` / `TOP (n)`；表达式形式（变量/子查询）不猜测，原样保留。
+        let top_start = statement.len() - trimmed.len();
+        let after_top = &trimmed["top".len()..];
+        let value_start = after_top
+            .char_indices()
+            .find(|(_, ch)| !ch.is_whitespace())
+            .map(|(index, _)| index);
+        let Some(value_start) = value_start else {
+            return statement.to_string();
+        };
+        let value_text = &after_top[value_start..];
+        let (count, count_end) = if let Some(inner) = value_text.strip_prefix('(') {
+            let Some(close) = inner.find(')') else {
+                return statement.to_string();
+            };
+            // +2：跳过开括号与闭括号本身。
+            (inner[..close].trim(), value_start + close + 2)
+        } else {
+            let end = value_text
+                .find(|ch: char| !ch.is_ascii_digit())
+                .unwrap_or(value_text.len());
+            (&value_text[..end], value_start + end)
+        };
+        let Ok(count) = count.parse::<u64>() else {
+            return statement.to_string();
+        };
+        if count <= page_size {
+            return statement.to_string();
+        }
+        let value_abs_start = top_start + "top".len() + value_start;
+        let value_abs_end = top_start + "top".len() + count_end;
+        let mut capped = String::with_capacity(statement.len() + 4);
+        capped.push_str(&statement[..value_abs_start]);
+        capped.push_str(&format!("({page_size})"));
+        capped.push_str(&statement[value_abs_end..]);
+        return capped;
+    }
+
+    // 没有 TOP：插到 SELECT [ALL|DISTINCT] 之后。
+    let _ = header;
+    let mut limited = String::with_capacity(statement.len() + 12);
+    limited.push_str(&statement[..cursor]);
+    limited.push_str(" TOP (");
+    limited.push_str(&page_size.to_string());
+    limited.push(')');
+    limited.push_str(&statement[cursor..]);
+    limited
 }
 
 fn normalize_select_limit_before_order(statement: &str) -> String {
@@ -258,6 +379,8 @@ fn sql_statement_ranges(sql: &str) -> Vec<(usize, usize)> {
     while let Some((index, ch)) = chars.next() {
         match ch {
             '\'' | '"' | '`' => skip_quoted_sql(&mut chars, ch),
+            // SQL Server 方括号标识符里的 `from`/`where` 不是关键字。
+            '[' => skip_bracket_identifier(&mut chars),
             '-' if matches!(chars.peek(), Some((_, '-'))) => skip_line_comment(&mut chars),
             '#' => skip_line_comment(&mut chars),
             '/' if matches!(chars.peek(), Some((_, '*'))) => skip_block_comment(&mut chars),
@@ -273,6 +396,35 @@ fn sql_statement_ranges(sql: &str) -> Vec<(usize, usize)> {
     }
     ranges.push((sql.len(), 0));
     ranges
+}
+
+fn skip_bracket_identifier(chars: &mut std::iter::Peekable<std::str::CharIndices<'_>>) {
+    while let Some((_, ch)) = chars.next() {
+        if ch == ']' {
+            if matches!(chars.peek(), Some((_, ']'))) {
+                chars.next();
+            } else {
+                break;
+            }
+        }
+    }
+}
+
+fn copy_bracket_identifier(
+    output: &mut String,
+    chars: &mut std::iter::Peekable<std::str::Chars<'_>>,
+) {
+    output.push('[');
+    while let Some(ch) = chars.next() {
+        output.push(ch);
+        if ch == ']' {
+            if matches!(chars.peek(), Some(']')) {
+                output.push(chars.next().unwrap());
+            } else {
+                break;
+            }
+        }
+    }
 }
 
 pub fn sql_text_statement_ranges(sql: &str) -> Vec<std::ops::Range<usize>> {
@@ -297,7 +449,11 @@ fn trim_sql_statement_range(sql: &str, range: &mut std::ops::Range<usize>) {
             .next()
             .is_some_and(char::is_whitespace)
     {
-        range.start += sql[range.start..range.end].chars().next().unwrap().len_utf8();
+        range.start += sql[range.start..range.end]
+            .chars()
+            .next()
+            .unwrap()
+            .len_utf8();
     }
     while range.end > range.start
         && sql[range.start..range.end]
@@ -305,7 +461,11 @@ fn trim_sql_statement_range(sql: &str, range: &mut std::ops::Range<usize>) {
             .next_back()
             .is_some_and(char::is_whitespace)
     {
-        range.end -= sql[range.start..range.end].chars().next_back().unwrap().len_utf8();
+        range.end -= sql[range.start..range.end]
+            .chars()
+            .next_back()
+            .unwrap()
+            .len_utf8();
     }
 }
 
@@ -321,7 +481,8 @@ fn limit_select_statement(statement: &str, page_size: u64) -> String {
     }
     if let Some(limit_start) = find_top_level_sql_keyword(statement, "limit") {
         // 已有 LIMIT：仅当 count 超过封顶值时改写，否则保持原样。
-        return cap_existing_limit(statement, limit_start, page_size).unwrap_or_else(|| statement.to_string());
+        return cap_existing_limit(statement, limit_start, page_size)
+            .unwrap_or_else(|| statement.to_string());
     }
     format!("{statement} LIMIT {page_size}")
 }
@@ -424,6 +585,7 @@ fn find_top_level_sql_keyword(statement: &str, keyword: &str) -> Option<usize> {
     while let Some((index, ch)) = chars.next() {
         match ch {
             '\'' | '"' | '`' => skip_quoted_sql(&mut chars, ch),
+            '[' => skip_bracket_identifier(&mut chars),
             '-' if matches!(chars.peek(), Some((_, '-'))) => skip_line_comment(&mut chars),
             '#' => skip_line_comment(&mut chars),
             '/' if matches!(chars.peek(), Some((_, '*'))) => skip_block_comment(&mut chars),
@@ -446,10 +608,7 @@ fn find_top_level_sql_keyword(statement: &str, keyword: &str) -> Option<usize> {
     None
 }
 
-fn skip_quoted_sql(
-    chars: &mut std::iter::Peekable<std::str::CharIndices<'_>>,
-    quote: char,
-) {
+fn skip_quoted_sql(chars: &mut std::iter::Peekable<std::str::CharIndices<'_>>, quote: char) {
     while let Some((_, ch)) = chars.next() {
         if ch == quote {
             if matches!(chars.peek(), Some((_, next)) if *next == quote) {
@@ -514,10 +673,7 @@ fn dollar_quote_opener_tag(
 
 /// 跳过 dollar-quote 体内直到匹配的结束 `$tag$`。标签体不含 `;`/`；`，
 /// 故不匹配处的消费不影响分号切分。
-fn skip_dollar_quote(
-    chars: &mut std::iter::Peekable<std::str::CharIndices<'_>>,
-    tag: &str,
-) {
+fn skip_dollar_quote(chars: &mut std::iter::Peekable<std::str::CharIndices<'_>>, tag: &str) {
     while let Some((_, c)) = chars.peek().copied() {
         if c != '$' {
             chars.next();
@@ -668,10 +824,7 @@ fn copy_until_block_comment_end(
     }
 }
 
-fn strip_until_newline(
-    output: &mut String,
-    chars: &mut std::iter::Peekable<std::str::Chars<'_>>,
-) {
+fn strip_until_newline(output: &mut String, chars: &mut std::iter::Peekable<std::str::Chars<'_>>) {
     for ch in chars.by_ref() {
         if ch == '\n' {
             output.push(ch);
@@ -680,10 +833,7 @@ fn strip_until_newline(
     }
 }
 
-fn strip_block_comment(
-    output: &mut String,
-    chars: &mut std::iter::Peekable<std::str::Chars<'_>>,
-) {
+fn strip_block_comment(output: &mut String, chars: &mut std::iter::Peekable<std::str::Chars<'_>>) {
     let mut previous = '\0';
     for ch in chars.by_ref() {
         if ch == '\n' {
@@ -754,7 +904,8 @@ fn format_sql_with_options(sql: &str, dialect: DatabaseKind) -> String {
                 | DatabaseKind::MongoDb
                 | DatabaseKind::Redis
                 | DatabaseKind::Postgres
-                | DatabaseKind::Dameng => Dialect::Generic,
+                | DatabaseKind::Dameng
+                | DatabaseKind::SqlServer => Dialect::Generic,
             },
             ..FormatOptions::default()
         },
@@ -1307,4 +1458,68 @@ fn is_sql_keyword(token: &str) -> bool {
             | "varchar"
             | "where"
     )
+}
+
+#[cfg(test)]
+mod sqlserver_limit_tests {
+    use super::sql_text_for_execution;
+    use fluxdb_core::DatabaseKind;
+
+    #[test]
+    fn sqlserver_appends_top_and_never_uses_limit() {
+        let sql =
+            sql_text_for_execution("SELECT [id] FROM [dbo].[orders]", 101, DatabaseKind::SqlServer);
+        assert_eq!(sql, "SELECT TOP (101) [id] FROM [dbo].[orders]");
+        assert!(!sql.to_ascii_uppercase().contains("LIMIT"));
+    }
+
+    #[test]
+    fn sqlserver_keeps_smaller_top_and_caps_larger_top() {
+        assert_eq!(
+            sql_text_for_execution("SELECT TOP 5 * FROM [dbo].[t]", 100, DatabaseKind::SqlServer),
+            "SELECT TOP 5 * FROM [dbo].[t]"
+        );
+        assert_eq!(
+            sql_text_for_execution(
+                "SELECT TOP (5000) * FROM [dbo].[t]",
+                100,
+                DatabaseKind::SqlServer
+            ),
+            "SELECT TOP (100) * FROM [dbo].[t]"
+        );
+    }
+
+    #[test]
+    fn sqlserver_top_goes_after_distinct() {
+        assert_eq!(
+            sql_text_for_execution(
+                "SELECT DISTINCT [name] FROM [dbo].[t]",
+                10,
+                DatabaseKind::SqlServer
+            ),
+            "SELECT DISTINCT TOP (10) [name] FROM [dbo].[t]"
+        );
+    }
+
+    #[test]
+    fn sqlserver_does_not_stack_top_on_offset_fetch() {
+        let sql = "SELECT * FROM [dbo].[t] ORDER BY [id] OFFSET 0 ROWS FETCH NEXT 5 ROWS ONLY";
+        assert_eq!(
+            sql_text_for_execution(sql, 100, DatabaseKind::SqlServer),
+            sql
+        );
+    }
+
+    #[test]
+    fn sqlserver_bracket_identifiers_are_not_keywords() {
+        // `[from]` / `[where]` 是列名，不能被当成子句边界。
+        assert_eq!(
+            sql_text_for_execution(
+                "SELECT [from], [where] FROM [dbo].[t]",
+                3,
+                DatabaseKind::SqlServer
+            ),
+            "SELECT TOP (3) [from], [where] FROM [dbo].[t]"
+        );
+    }
 }

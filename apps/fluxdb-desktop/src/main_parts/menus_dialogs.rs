@@ -2,6 +2,7 @@
 
 include!("menus_dialogs/context_menus.rs");
 include!("menus_dialogs/table_name_form.rs");
+include!("menus_dialogs/routine_ddl.rs");
 include!("menus_dialogs/table_copy.rs");
 include!("menus_dialogs/table_danger.rs");
 include!("menus_dialogs/row_viewer.rs");

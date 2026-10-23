@@ -44,6 +44,7 @@ fn sql_editor_edit_journey(cx: &mut TestAppContext, repair: bool) {
         mysql_profile: None,
         postgres_profile: None,
         dameng_profile: None,
+        sqlserver_profile: None,
     }]));
     let event = controller.dispatch(AppCommand::SaveAiModel(AiModelSaveInput {
         display_name: "offline SQL edit fixture".into(),

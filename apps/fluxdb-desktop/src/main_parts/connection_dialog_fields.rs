@@ -31,6 +31,14 @@ fn connection_field_hint(field: ConnectionField) -> SharedString {
         ConnectionField::MysqlConnectTimeout => tr("app.connection.mysql.connect_timeout_hint"),
         ConnectionField::MysqlQueryTimeout => tr("app.connection.mysql.query_timeout_hint"),
         ConnectionField::MysqlIdleTtl => tr("app.connection.mysql.idle_ttl_hint"),
+        ConnectionField::SqlServerInstance => tr("app.connection.sqlserver.instance_hint"),
+        ConnectionField::SqlServerConnectTimeout => {
+            tr("app.connection.sqlserver.connect_timeout_hint")
+        }
+        ConnectionField::SqlServerQueryTimeout => tr("app.connection.sqlserver.query_timeout_hint"),
+        ConnectionField::SqlServerApplicationName => {
+            tr("app.connection.sqlserver.application_name_hint")
+        }
         _ => SharedString::default(),
     }
 }
@@ -71,25 +79,25 @@ fn sqlite_file_row_light(
         .label(tr("app.connection.field.file_path"))
         .items_center()
         .child(
-        div()
-            .w_full()
-            .flex()
-            .items_center()
-            .gap_3()
-            .child(
-                input_box_light(
-                    ConnectionField::SqlitePath,
-                    inputs,
-                    false,
-                    colors,
-                    window,
-                    cx,
+            div()
+                .w_full()
+                .flex()
+                .items_center()
+                .gap_3()
+                .child(
+                    input_box_light(
+                        ConnectionField::SqlitePath,
+                        inputs,
+                        false,
+                        colors,
+                        window,
+                        cx,
+                    )
+                    .flex_1()
+                    .min_w(px(0.)),
                 )
-                .flex_1()
-                .min_w(px(0.)),
-            )
-            .child(folder_button_light(colors, cx).flex_none()),
-    )
+                .child(folder_button_light(colors, cx).flex_none()),
+        )
 }
 
 fn connection_method_row_light(
@@ -108,11 +116,7 @@ fn connection_method_row_light(
     )
 }
 
-fn segment_button_light(
-    label: impl Into<SharedString>,
-    selected: bool,
-    colors: UiColors,
-) -> Div {
+fn segment_button_light(label: impl Into<SharedString>, selected: bool, colors: UiColors) -> Div {
     let label = label.into();
     div()
         .h(px(28.))
@@ -390,6 +394,7 @@ fn database_default_port(kind: DatabaseKind) -> &'static str {
         DatabaseKind::Redis => "6379",
         DatabaseKind::Postgres => "5432",
         DatabaseKind::Dameng => "5236",
+        DatabaseKind::SqlServer => "1433",
         DatabaseKind::Sqlite => "",
     }
 }
@@ -463,6 +468,16 @@ fn connection_fields(kind: DatabaseKind) -> &'static [ConnectionField] {
             ConnectionField::Database,
             ConnectionField::DamengSchema,
         ],
+        DatabaseKind::SqlServer => &[
+            ConnectionField::Name,
+            ConnectionField::Host,
+            ConnectionField::Port,
+            ConnectionField::Username,
+            ConnectionField::Password,
+            ConnectionField::Database,
+            ConnectionField::SqlServerSchema,
+            ConnectionField::SqlServerInstance,
+        ],
     }
 }
 
@@ -513,6 +528,11 @@ fn connection_field_element_id(field: ConnectionField) -> &'static str {
         ConnectionField::MysqlConnectTimeout => "connection-mysql-connect-timeout",
         ConnectionField::MysqlQueryTimeout => "connection-mysql-query-timeout",
         ConnectionField::MysqlIdleTtl => "connection-mysql-idle-ttl",
+        ConnectionField::SqlServerSchema => "connection-sqlserver-schema",
+        ConnectionField::SqlServerInstance => "connection-sqlserver-instance",
+        ConnectionField::SqlServerConnectTimeout => "connection-sqlserver-connect-timeout",
+        ConnectionField::SqlServerQueryTimeout => "connection-sqlserver-query-timeout",
+        ConnectionField::SqlServerApplicationName => "connection-sqlserver-application-name",
     }
 }
 
@@ -564,6 +584,13 @@ fn connection_field_label(field: ConnectionField) -> SharedString {
         ConnectionField::MysqlConnectTimeout => tr("app.connection.mysql.connect_timeout"),
         ConnectionField::MysqlQueryTimeout => tr("app.connection.mysql.query_timeout"),
         ConnectionField::MysqlIdleTtl => tr("app.connection.mysql.idle_ttl"),
+        ConnectionField::SqlServerSchema => tr("app.connection.sqlserver.schema"),
+        ConnectionField::SqlServerInstance => tr("app.connection.sqlserver.instance"),
+        ConnectionField::SqlServerConnectTimeout => tr("app.connection.sqlserver.connect_timeout"),
+        ConnectionField::SqlServerQueryTimeout => tr("app.connection.sqlserver.query_timeout"),
+        ConnectionField::SqlServerApplicationName => {
+            tr("app.connection.sqlserver.application_name")
+        }
     }
 }
 
@@ -577,9 +604,7 @@ fn connection_field_placeholder(field: ConnectionField) -> SharedString {
         ConnectionField::Database => tr("app.connection.field.database"),
         ConnectionField::DamengSchema => tr("app.connection.dameng.schema_optional"),
         ConnectionField::MongoDefaultDb => tr("app.connection.optional"),
-        ConnectionField::UrlParams => {
-            "key=value&key2=value2".into()
-        }
+        ConnectionField::UrlParams => "key=value&key2=value2".into(),
         ConnectionField::SqlitePath => "/path/to/database.db or :memory:".into(),
         ConnectionField::MongoAuthDb => tr("app.connection.field.auth_db_optional"),
         ConnectionField::TlsCa => tr("app.connection.tls.ca"),
@@ -617,5 +642,12 @@ fn connection_field_placeholder(field: ConnectionField) -> SharedString {
         ConnectionField::CloudSubscription => tr("app.connection.redis.cloud_subscription"),
         ConnectionField::CloudResource => tr("app.connection.redis.cloud_resource"),
         ConnectionField::DiscoveryUri => tr("app.connection.redis.uri"),
+        ConnectionField::SqlServerSchema => tr("app.connection.sqlserver.schema_optional"),
+        ConnectionField::SqlServerInstance => tr("app.connection.sqlserver.instance_optional"),
+        ConnectionField::SqlServerConnectTimeout => "5".into(),
+        ConnectionField::SqlServerQueryTimeout => tr("app.connection.sqlserver.query_timeout_hint"),
+        ConnectionField::SqlServerApplicationName => {
+            tr("app.connection.sqlserver.application_name_optional")
+        }
     }
 }

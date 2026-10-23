@@ -2,7 +2,7 @@
 
 **A native, cross-platform database client and SQL editor for queries, data editing, schema management and Redis work in one window.**
 
-FluxDB is built with Rust and GPUI, without Electron or a WebView. It brings MySQL, PostgreSQL, SQLite, TiDB, Dameng DM8 and Redis into one desktop workflow, with a permission-aware AI Agent.
+FluxDB is built with Rust and GPUI, without Electron or a WebView. It brings MySQL, PostgreSQL, SQL Server, SQLite, TiDB, Dameng DM8 and Redis into one desktop workflow, with a permission-aware AI Agent.
 
 **English | [简体中文](./README.md)**
 
@@ -84,11 +84,12 @@ Capabilities vary by database. See the [user guide](./docs/user-guide.md) for de
 | MySQL | SQL queries, object browsing, table management, data editing, import/export, native client tool entry | `mysqldump` logical backup; SQL restore | TLS/SSL, SSH tunnel, proxy, timeouts, charset |
 | TiDB | Reuses the MySQL protocol path with TiDB SQL dialect, completion and schema management | Reuses MySQL logical backup | Same connection features as MySQL |
 | PostgreSQL | SQL queries, schema/object browsing, table management, data editing, users and roles, psql tool entry | `pg_dump` plain SQL; `psql` restore | TLS, SSH, proxy, schema scope, timeouts |
+| SQL Server | T-SQL queries, database/schema browsing, table management, data editing, import/export, login/user/role/permission administration, logical backup/restore, AI page context and controlled execution | Object-level logical SQL backup and restore | SQL authentication, TLS, explicit ports; named instances require the actual port |
 | SQLite | Local file connections, SQL queries, object browsing, table management, data editing | Consistent `VACUUM INTO` snapshot; restore to a new file with integrity and foreign-key checks | Local file path |
 | Dameng DM8 | Schema/object browsing, SQL queries, table design and management, data editing, table import | Logical backup and SQL restore; restore currently targets a single schema | Instance and schema connection settings |
 | Redis | Keyspace browsing, value editing, TTL, Workbench, CLI, Pub/Sub | No database-level backup/restore | TLS, SSH, Sentinel, Cluster, URI/Cloud; Cluster uses DB 0 only |
 
-MongoDB, MariaDB and SQL Server are not currently supported. They are roadmap candidates, not current capabilities.
+MongoDB and MariaDB are not currently supported. They are roadmap candidates, not current capabilities.
 
 ## AI Agent
 
@@ -189,7 +190,6 @@ Current priorities are real-world coverage for existing databases, stability and
 
 - **MongoDB**: document browsing and editing.
 - **MariaDB**: independent dialect, system tables and backup parameter support.
-- **SQL Server**: T-SQL, connection protocol and object management.
 - **More databases**: evaluate Oracle, ClickHouse, DuckDB, Elasticsearch/OpenSearch and others based on community demand.
 
 The roadmap does not imply current support.

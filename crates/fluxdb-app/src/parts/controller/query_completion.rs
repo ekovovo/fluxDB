@@ -400,6 +400,22 @@ impl AppController {
         if should_cancel() {
             return Ok(Vec::new());
         }
+        if config.kind == DatabaseKind::SqlServer && schema.is_none() {
+            // 对象树与旧索引可能只覆盖展开过的 schema，不能当作整库目录。
+            // 通过现有 TTL 缓存读取完整 catalog，仍按数据库隔离并保留取消检查。
+            let tables = self.completion_tables_with_cancel(
+                config, connection_id, database, None, should_cancel,
+            )?;
+            if should_cancel() {
+                return Ok(Vec::new());
+            }
+            if let Ok(mut index) = self.completion_index.lock()
+                && index.database_tables(connection_id, database, None) != tables
+            {
+                index.insert_tables(connection_id, database, None, tables.clone(), config.kind);
+            }
+            return Ok(tables);
+        }
         if let Ok(index) = self.completion_index.lock() {
             let tables = index.database_tables(connection_id, database, schema);
             if !tables.is_empty() {
@@ -786,7 +802,7 @@ impl AppController {
         database: Option<&str>,
     ) -> fluxdb_core::Result<Vec<(Option<String>, Option<String>)>> {
         let database_matches = |candidate: Option<&str>| {
-            config.kind != DatabaseKind::Postgres
+            !matches!(config.kind, DatabaseKind::Postgres | DatabaseKind::SqlServer)
                 || database.is_none_or(|database| {
                     candidate.is_none_or(|candidate| candidate.eq_ignore_ascii_case(database))
                 })
@@ -1383,6 +1399,7 @@ mod dameng_completion_index_tests {
                     application_name: "test".into(),
                 },
             }),
+            sqlserver_profile: None,
         }
     }
 
@@ -1404,6 +1421,7 @@ mod dameng_completion_index_tests {
             mysql_profile: None,
             postgres_profile: None,
             dameng_profile: None,
+            sqlserver_profile: None,
         }
     }
 
@@ -1460,6 +1478,65 @@ mod dameng_completion_index_tests {
             kind: ObjectKind::Table,
             comment: None,
         }
+    }
+
+    #[test]
+    fn sqlserver_schema_candidates_do_not_leak_between_databases() {
+        let config = ConnectionConfig {
+            id: ConnectionId(19),
+            name: "SQL Server schema isolation".into(),
+            kind: DatabaseKind::SqlServer,
+            endpoint: Endpoint::Tcp {
+                host: "127.0.0.1".into(),
+                port: 1433,
+                database: Some("current_db".into()),
+            },
+            options: BTreeMap::new(),
+            redis_profile: None,
+            mysql_profile: None,
+            postgres_profile: None,
+            dameng_profile: None,
+            sqlserver_profile: None,
+        };
+        let mut controller = AppController::new();
+        controller.dispatch(AppCommand::ReplaceConnections(vec![config.clone()]));
+        for (database, indexed_schema, tree_schema) in [
+            ("current_db", "app", "hr"),
+            ("other_db", "foreign_index", "foreign_tree"),
+        ] {
+            controller.completion_index.lock().expect("completion index").insert_tables(
+                config.id, Some(database), None,
+                vec![CompletionTable {
+                    database: Some(database.into()),
+                    schema: Some(indexed_schema.into()),
+                    name: "customers".into(),
+                    kind: ObjectKind::Table,
+                    comment: None,
+                }],
+                config.kind,
+            );
+            controller.state.connections[0].objects.push(ObjectSummary {
+                path: ObjectPath {
+                    connection_id: config.id,
+                    database: Some(database.into()),
+                    schema: Some(tree_schema.into()),
+                    name: tree_schema.into(),
+                    kind: ObjectKind::Schema,
+                },
+                rows: None,
+                modified_at: None,
+                comment: None,
+                stable: None,
+            });
+        }
+        assert_eq!(
+            controller.completion_schemas(&config, config.id, Some("CURRENT_DB"))
+                .expect("schema candidates"),
+            vec![
+                (Some("current_db".into()), Some("app".into())),
+                (Some("current_db".into()), Some("hr".into())),
+            ]
+        );
     }
 
     /// 真实落盘快照里表清单在 schema=None 桶、列在默认 schema 桶；裸名补全必须
@@ -1908,6 +1985,7 @@ mod dameng_completion_index_tests {
             mysql_profile: None,
             postgres_profile: None,
             dameng_profile: None,
+            sqlserver_profile: None,
         };
         let mut controller = AppController::new();
         let connection_id = config.id;
@@ -2062,6 +2140,7 @@ mod dameng_completion_index_tests {
                 fluxdb_core::PostgresConnectionProfile::from_options(&options),
             ),
             dameng_profile: None,
+            sqlserver_profile: None,
         };
         let mut controller = AppController::new();
         let connection_id = config.id;
@@ -2130,6 +2209,7 @@ mod postgres_completion_index_tests {
             mysql_profile: None,
             postgres_profile: Some(PostgresConnectionProfile::default()),
             dameng_profile: None,
+            sqlserver_profile: None,
         }
     }
 

@@ -797,9 +797,13 @@ pub struct ErDiagramState {
 #[derive(Clone, Debug, PartialEq)]
 pub struct UserAdminState {
     pub connection_id: ConnectionId,
+    /// SQL Server 使用独立的 Login/User/Role 安全模型，避免与 MySQL/PG 字段混用。
+    pub sqlserver: Option<SqlServerSecurityState>,
     pub active_detail_tab: UserAdminDetailTab,
     pub users: Vec<DatabaseUserIdentity>,
     pub selected_user: Option<DatabaseUserIdentity>,
+    /// 保存成功后下一次用户列表回填应选中的身份（新用户刷新后仍保持选中）。
+    pub pending_selected_user: Option<DatabaseUserIdentity>,
     pub creating_user: bool,
     pub grants: Vec<String>,
     pub grants_loaded_user: Option<DatabaseUserIdentity>,
@@ -859,6 +863,8 @@ pub struct UserAdminState {
     pub pg_roles_error: Option<UserFacingError>,
     /// 当前选中角色名。
     pub pg_selected_role: Option<String>,
+    /// 保存成功后下一次角色列表回填应选中的角色名（新建/改名后的最终身份）。
+    pub pending_selected_pg_role: Option<String>,
     /// 当前编辑/新建草稿；None 表示无未保存编辑会话。
     pub pg_draft: Option<PgRoleDraft>,
     /// 全量成员关系（pg_auth_members），供「所属角色 / 此角色的成员」双向展示。
@@ -1039,9 +1045,11 @@ impl UserAdminState {
     ) -> Self {
         Self {
             connection_id,
+            sqlserver: None,
             active_detail_tab: UserAdminDetailTab::General,
             users: Vec::new(),
             selected_user: None,
+            pending_selected_user: None,
             creating_user: false,
             grants: Vec::new(),
             grants_loaded_user: None,
@@ -1094,6 +1102,7 @@ impl UserAdminState {
             pg_roles: Vec::new(),
             pg_roles_error: None,
             pg_selected_role: None,
+            pending_selected_pg_role: None,
             pg_draft: None,
             pg_memberships: Vec::new(),
             pg_memberships_loaded: false,
@@ -1135,6 +1144,45 @@ impl UserAdminState {
         self.ssl_subject.clear();
     }
 
+    /// MySQL/TiDB 工具栏「取消」：丢弃本地草稿，回到当前选中用户的服务端基线。
+    ///
+    /// 新建态没有基线，取消即结束新建并回到已选中用户（没有则清空表单）；对象权限行
+    /// 回到基线副本，成员/授权草稿、待执行 SQL 与密码字段全部丢弃。
+    pub fn discard_mysql_edits(&mut self) {
+        self.creating_user = false;
+        self.pending_selected_user = None;
+        self.active_detail_tab = UserAdminDetailTab::General;
+        self.pending_sql = None;
+        self.apply_error = None;
+        self.grants.clear();
+        self.grants_loaded_user = None;
+        self.grants_error = None;
+        self.member_grants.clear();
+        self.member_grants_loaded_role = None;
+        self.member_grants_error = None;
+        self.role_membership_edits.clear();
+        self.member_grant_edits.clear();
+        self.privilege_rows = self.base_privilege_rows.clone();
+        self.new_password.clear();
+        self.create_password.clear();
+        self.password_expiry_policy = "DEFAULT".to_string();
+        self.reset_advanced_defaults();
+        match self.selected_user.clone() {
+            Some(selected) => {
+                self.create_user = selected.user.clone();
+                self.create_host = selected.host.clone();
+                self.auth_plugin = selected
+                    .plugin
+                    .clone()
+                    .unwrap_or_else(|| "caching_sha2_password".to_string());
+            }
+            None => {
+                self.create_user.clear();
+                self.create_host.clear();
+                self.auth_plugin.clear();
+            }
+        }
+    }
     // ===== PG 用户与角色工作台辅助（改版）=====
 
     /// 选中角色的基线数据（来自 pg_roles）；新建草稿时为 None。
@@ -1149,6 +1197,29 @@ impl UserAdminState {
         self.pg_draft = self.pg_baseline_role().map(PgRoleDraft::from_role);
     }
 
+    /// 工具栏「取消」：丢弃当前角色的全部本地编辑，回到服务端基线。
+    ///
+    /// 新建草稿没有服务端基线，取消即结束编辑会话；编辑既有角色则重建干净草稿并清空
+    /// 成员/授权草稿与预览，选中角色和角色列表保持不变。
+    pub fn discard_pg_edits(&mut self) {
+        self.pending_selected_pg_role = None;
+        let creating = self.pg_draft.as_ref().is_some_and(|draft| draft.create);
+        self.pg_membership_edits.clear();
+        self.pg_grant_edits.clear();
+        self.pg_plan_preview = None;
+        self.pg_preview_loading = false;
+        self.pg_plan_preview_masked = false;
+        self.pg_plan_error = None;
+        self.pg_pending_switch = None;
+        self.pg_reset_grant_target_session();
+        if creating {
+            self.pg_selected_role = None;
+            self.pg_draft = None;
+        } else {
+            self.pg_reset_draft_from_baseline();
+        }
+        self.active_detail_tab = UserAdminDetailTab::General;
+    }
     /// 清空权限页目标选择及其读取结果；数据库/Schema/对象都必须由用户重新显式选择。
     pub fn pg_reset_grant_target_session(&mut self) {
         self.pg_grant_kind = PgGrantObjectKind::default();

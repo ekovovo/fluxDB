@@ -95,6 +95,7 @@ mod query_execution_stack_tests {
                 mysql_profile: None,
                 postgres_profile: None,
                 dameng_profile: None,
+                sqlserver_profile: None,
                 redis_profile: None,
             };
             controller.dispatch(AppCommand::ReplaceConnections(vec![config]));
@@ -168,6 +169,7 @@ mod query_execution_stack_tests {
                 mysql_profile: None,
                 postgres_profile: None,
                 dameng_profile: None,
+                sqlserver_profile: None,
                 redis_profile: None,
             };
             controller.dispatch(AppCommand::ReplaceConnections(vec![config]));

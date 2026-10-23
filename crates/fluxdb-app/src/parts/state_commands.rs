@@ -1,5 +1,8 @@
 #[derive(Clone, Debug, PartialEq)]
 pub enum AppCommand {
+    /// 测试专用：以给定连接配置构造一条已连接的 SQL Server 对象树。
+    #[cfg(test)]
+    LoadTestConnectionTree(ConnectionConfig),
     BrowseAiTableObjects { connection_id: ConnectionId, parent: Option<ObjectPath> },
     FinishAiTableObjects { connection_id: ConnectionId, parent: Option<ObjectPath>, objects: Vec<ObjectSummary> },
     LoadAiTableColumns(ObjectPath),
@@ -945,6 +948,8 @@ pub enum AppCommand {
     BeginUserAdminCreateUser(TabId),
     /// 结束「新建」态（取消新建或提交完成），回到选中既有对象。
     EndUserAdminCreateUser(TabId),
+    /// 放弃 MySQL/TiDB 本地草稿，回到当前选中用户的服务端基线。
+    DiscardUserAdminEdits(TabId),
     // ===== PG 用户与角色工作台（改版）=====
     /// 切换选中 PG 角色（UI 在有草稿时先弹确认，确认后走 DiscardPgDraftAndSelect）。
     SelectPgRole {
@@ -967,6 +972,8 @@ pub enum AppCommand {
     PgBeginCreateRole(TabId),
     /// 取消/关闭当前草稿（仅清理本地草稿，不写库）。
     PgCancelDraft(TabId),
+    /// 工具栏「取消」：编辑既有角色回到服务端基线，新建草稿直接丢弃。
+    DiscardPgDraftEdits(TabId),
     SetPgDraftName {
         tab_id: TabId,
         name: String,
@@ -1079,6 +1086,91 @@ pub enum AppCommand {
         plan: PgRoleSavePlan,
         result: Result<Vec<String>, UserFacingError>,
     },
+    /// SQL Server 安全快照：启动、加载、回填。
+    LoadSqlServerSecurityDatabases(TabId),
+    FinishSqlServerSecurityDatabases {
+        tab_id: TabId,
+        result: Result<Vec<String>, UserFacingError>,
+    },
+    SelectSqlServerSecurityDatabase { tab_id: TabId, database: String },
+    StartSqlServerSecurityLoad(TabId),
+    LoadSqlServerSecurity(TabId),
+    FinishSqlServerSecurityLoad {
+        tab_id: TabId,
+        result: Result<fluxdb_core::SqlServerSecuritySnapshot, UserFacingError>,
+    },
+    /// SQL Server 指定主体的显式权限：启动、加载、回填。
+    StartSqlServerPermissionsLoad {
+        tab_id: TabId,
+        principal: fluxdb_core::SqlServerPrincipalRef,
+    },
+    LoadSqlServerPermissions {
+        tab_id: TabId,
+        principal: fluxdb_core::SqlServerPrincipalRef,
+    },
+    FinishSqlServerPermissionsLoad {
+        tab_id: TabId,
+        principal: fluxdb_core::SqlServerPrincipalRef,
+        result: Result<Vec<fluxdb_core::SqlServerPermission>, UserFacingError>,
+    },
+    SelectSqlServerPrincipal {
+        tab_id: TabId,
+        principal: fluxdb_core::SqlServerPrincipalRef,
+    },
+    SetSqlServerSecurityFilter {
+        tab_id: TabId,
+        filter: SqlServerSecurityListFilter,
+    },
+    /// 新建/编辑表单只存在于内存；提交时转成结构化安全变更。
+    OpenSqlServerSecurityForm {
+        tab_id: TabId,
+        kind: SqlServerSecurityFormKind,
+    },
+    CloseSqlServerPermissionComposer(TabId),
+    SetSqlServerSecurityFormField {
+        tab_id: TabId,
+        field: SqlServerSecurityFormField,
+        value: String,
+    },
+    SetSqlServerSecurityFormFlag {
+        tab_id: TabId,
+        flag: SqlServerSecurityFormFlag,
+        value: bool,
+    },
+    DiscardSqlServerSecurityChanges(TabId),
+    SubmitSqlServerSecurityForm(TabId),
+    ToggleSqlServerRoleMembership {
+        tab_id: TabId,
+        scope: fluxdb_core::SqlServerRoleScope,
+        role: String,
+        member: String,
+    },
+    SetSqlServerSelectedLoginEnabled {
+        tab_id: TabId,
+        enabled: bool,
+    },
+    RevokeSqlServerPermission {
+        tab_id: TabId,
+        permission_index: usize,
+    },
+    /// 安全计划脱敏预览与单事务应用。
+    StartSqlServerSecurityPreview(TabId),
+    LoadSqlServerSecurityPreview(TabId),
+    FinishSqlServerSecurityPreview {
+        tab_id: TabId,
+        revision: u64,
+        result: Result<Vec<String>, UserFacingError>,
+    },
+    StartSqlServerSecurityApply(TabId),
+    ApplySqlServerSecurityPlan(TabId),
+    FinishSqlServerSecurityApply {
+        tab_id: TabId,
+        principal: String,
+        result: Result<Vec<String>, UserFacingError>,
+    },
+    BeginDeleteSqlServerPrincipal(TabId),
+    ConfirmDeleteSqlServerPrincipal(TabId),
+    CancelDeleteSqlServerPrincipal(TabId),
     /// 删除角色确认框。
     PgBeginDeleteRole(TabId),
     PgCancelDeleteRole(TabId),

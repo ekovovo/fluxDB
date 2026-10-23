@@ -67,6 +67,8 @@ fn ai_reference_target(reference: &AiContextReference) -> fluxdb_core::Result<Op
             | "schema"
             | "table"
             | "view"
+            | "procedure"
+            | "function"
             | "column"
             | "index"
             | "collection"
@@ -80,6 +82,8 @@ fn ai_reference_target(reference: &AiContextReference) -> fluxdb_core::Result<Op
             fluxdb_core::ObjectKind::Schema => "schema",
             fluxdb_core::ObjectKind::Table => "table",
             fluxdb_core::ObjectKind::View => "view",
+            fluxdb_core::ObjectKind::Procedure => "procedure",
+            fluxdb_core::ObjectKind::Function => "function",
             fluxdb_core::ObjectKind::Column => "column",
             fluxdb_core::ObjectKind::Index => "index",
             fluxdb_core::ObjectKind::Collection => "collection",
@@ -260,6 +264,7 @@ fn ai_database_kind_label(kind: fluxdb_core::DatabaseKind) -> &'static str {
         fluxdb_core::DatabaseKind::Redis => "Redis",
         fluxdb_core::DatabaseKind::Postgres => "PostgreSQL",
         fluxdb_core::DatabaseKind::Dameng => "达梦 DM8",
+        fluxdb_core::DatabaseKind::SqlServer => "SQL Server",
     }
 }
 
@@ -269,6 +274,8 @@ fn ai_object_kind_label(kind: fluxdb_core::ObjectKind) -> &'static str {
         fluxdb_core::ObjectKind::Schema => "Schema",
         fluxdb_core::ObjectKind::Table => "表",
         fluxdb_core::ObjectKind::View => "视图",
+        fluxdb_core::ObjectKind::Procedure => "存储过程",
+        fluxdb_core::ObjectKind::Function => "函数",
         fluxdb_core::ObjectKind::Column => "列",
         fluxdb_core::ObjectKind::Index => "索引",
         fluxdb_core::ObjectKind::Collection => "集合",
@@ -306,6 +313,8 @@ impl AppController {
                     fluxdb_core::ObjectKind::Schema => "schema",
                     fluxdb_core::ObjectKind::Table => "table",
                     fluxdb_core::ObjectKind::View => "view",
+                    fluxdb_core::ObjectKind::Procedure => "procedure",
+                    fluxdb_core::ObjectKind::Function => "function",
                     fluxdb_core::ObjectKind::RedisDb => "redis_db",
                     fluxdb_core::ObjectKind::RedisKey => "redis_key",
                     fluxdb_core::ObjectKind::Collection => "collection",

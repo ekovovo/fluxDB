@@ -14,6 +14,7 @@ include!("navicat_main/filter_text.rs");
 include!("navicat_main/filter_builder.rs");
 include!("navicat_main/table_state.rs");
 include!("navicat_main/table_actions.rs");
+include!("navicat_main/routine_actions.rs");
 include!("navicat_main/query_saving.rs");
 include!("navicat_main/query_files.rs");
 include!("navicat_main/connection_tree.rs");

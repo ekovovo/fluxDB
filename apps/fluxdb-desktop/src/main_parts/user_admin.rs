@@ -293,6 +293,17 @@ impl NavicatMain {
                 self.start_user_admin_pg_roles_load(tab_id, cx);
                 return;
             }
+            let is_sqlserver = self
+                .controller
+                .state()
+                .connections
+                .iter()
+                .find(|connection| connection.config.id == connection_id)
+                .is_some_and(|connection| connection.config.kind == DatabaseKind::SqlServer);
+            if is_sqlserver {
+                self.start_sqlserver_security_load(tab_id, cx);
+                return;
+            }
             self.start_user_admin_users_load(tab_id, cx);
             self.start_user_admin_database_options_load(tab_id, cx);
         }
@@ -389,6 +400,14 @@ impl NavicatMain {
 struct UserAdminSqlPreviewDraft {
     statements: Vec<String>,
     danger: bool,
+}
+
+#[cfg(test)]
+fn user_admin_general_sql_preview_for_test(
+    provider: fluxdb_core::DatabaseUserAdminProvider,
+    admin: &UserAdminState,
+) -> Option<UserAdminSqlPreviewDraft> {
+    user_admin_general_sql_preview(provider, admin)
 }
 
 impl UserAdminSqlPreviewDraft {
@@ -628,6 +647,10 @@ fn user_admin_content(
         .find(|connection| connection.config.id == admin.connection_id);
     let provider = connection.and_then(|connection| database_user_admin_provider(connection.config.kind));
     let is_postgres = connection.is_some_and(|connection| connection.config.kind == DatabaseKind::Postgres);
+    let is_sqlserver = connection.is_some_and(|connection| connection.config.kind == DatabaseKind::SqlServer);
+    this.user_admin_search_input.update(cx, |input, cx| {
+        input.set_placeholder(if is_sqlserver { tr("app.sqlserver_security.search") } else { tr("app.placeholder.search_user_host") }, window, cx);
+    });
     let supported = provider.is_some() || is_postgres;
     let connection_name = connection
         .map(|connection| connection.config.name.clone())
@@ -637,6 +660,17 @@ fn user_admin_content(
     // 不套 MySQL 的 SQL 预览/apply 流程（provider 为 None 时该流程无意义）。
     if is_postgres {
         return pg_role_admin_content(tab_id, admin, connection_name, this, window, colors, cx);
+    }
+    if is_sqlserver {
+        return sqlserver_security_content(
+            tab_id,
+            admin,
+            connection_name,
+            this,
+            window,
+            colors,
+            cx,
+        );
     }
 
     let mut root = div()
@@ -830,6 +864,7 @@ fn user_admin_toolbar(
 ) -> Div {
     let supported = provider.is_some();
     let can_save = provider.is_some_and(|provider| user_admin_can_save_all(provider, admin));
+    let can_cancel = !admin.applying && (admin.creating_user || can_save);
     div()
         .h(px(44.))
         .px_3()
@@ -861,11 +896,31 @@ fn user_admin_toolbar(
                 !can_save,
                 colors,
             )
+            .debug_selector(|| "user-admin-save".into())
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, _, cx| {
                     if supported {
                         this.preview_user_admin_all_sql(tab_id, cx);
+                    }
+                    cx.stop_propagation();
+                }),
+            ),
+        )
+        .child(
+            user_admin_button(
+                tr("app.common.cancel"),
+                AppIcon::Undo,
+                false,
+                !can_cancel,
+                colors,
+            )
+            .debug_selector(|| "user-admin-cancel".into())
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _, _, cx| {
+                    if can_cancel {
+                        this.dispatch(AppCommand::DiscardUserAdminEdits(tab_id), cx);
                     }
                     cx.stop_propagation();
                 }),
@@ -883,6 +938,7 @@ fn user_admin_toolbar(
                 !supported || admin.loading_users,
                 colors,
             )
+            .debug_selector(|| "user-admin-refresh".into())
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, _, cx| {
@@ -908,6 +964,7 @@ fn user_admin_toolbar(
                         .is_some_and(user_admin_is_system_account),
                 colors,
             )
+            .debug_selector(|| "user-admin-delete".into())
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, _, cx| {
@@ -2422,6 +2479,7 @@ fn user_admin_add_user_button(disabled: bool, colors: UiColors) -> Stateful<Div>
         .items_center()
         .justify_center()
         .id("user-admin-add-user")
+        .debug_selector(|| "user-admin-add-user".into())
         .tooltip(|window, cx| {
             Tooltip::new(tr("app.user_admin.add_user")).build(window, cx)
         })

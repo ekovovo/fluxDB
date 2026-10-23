@@ -16,15 +16,19 @@ fn dm_execute_query_with_progress(
         return Err(Error::new(ErrorKind::Query, "查询不能为空"));
     }
     let mut client = dm_connect(config)?;
-    if request.options.read_only {
-        dm_execute(&mut client, "SET TRANSACTION READ ONLY", &[])?;
-    }
     let pagination = query_execution_pagination(request.options.page_offset, request.options.page_size);
     let mut execution = QueryExecutionResult {
         summaries: Vec::new(),
         results: Vec::new(),
         rollback_snapshots: Vec::new(),
     };
+    // 只读入口：达梦的 `SET TRANSACTION READ ONLY` 只影响后续事务，单独发送不会
+    // 覆盖自动提交语句。这里用驱动事务关掉自动提交，执行后无条件回滚；
+    // 策略层漏掉的写语句也不会落库。
+    let read_only_wrap = request.options.read_only;
+    if read_only_wrap {
+        client.begin().map_err(|error| dm_error("开启只读事务失败", error))?;
+    }
     for statement in statements {
         if should_cancel() {
             push_query_summary(
@@ -69,13 +73,23 @@ fn dm_execute_query_with_progress(
                 execution.results.push(page);
             }
             Ok(ExecuteResult::Affected(affected)) | Ok(ExecuteResult::Call { affected, .. }) => {
+                // 只读入口出现无结果集的命令，说明策略层漏掉了写语句；
+                // 事务随后会回滚，必须明确报“未提交”，不能声称执行成功。
+                let (success, message) = if read_only_wrap {
+                    (
+                        false,
+                        format!("只读入口拒绝：该语句不是只读查询，已回滚（影响 {affected} 行未提交）"),
+                    )
+                } else {
+                    (true, format!("OK，影响 {affected} 行"))
+                };
                 push_query_summary(
                     &mut execution,
                     QueryExecutionSummary {
                         sql: statement,
                         kind: QueryStatementKind::Command,
-                        success: true,
-                        message: format!("OK，影响 {affected} 行"),
+                        success,
+                        message,
                         returned_rows: 0,
                         affected_rows: affected,
                         elapsed_ms: elapsed_ms(started),
@@ -99,6 +113,16 @@ fn dm_execute_query_with_progress(
                     break;
                 }
             }
+        }
+    }
+    if read_only_wrap {
+        // 回滚失败不能把未提交说成成功；记录日志并让连接丢弃。
+        if let Err(error) = client.rollback() {
+            tracing::warn!(
+                target: "fluxdb_connectors",
+                message = %error,
+                "达梦只读事务回滚失败"
+            );
         }
     }
     client.close();
@@ -150,7 +174,22 @@ fn dm_execute_parameterized(
     let mut client = dm_connect(config)?;
     let started = std::time::Instant::now();
     let pagination = query_execution_pagination(request.options.page_offset, request.options.page_size);
+    let read_only_wrap = request.options.read_only;
+    if read_only_wrap {
+        client
+            .begin()
+            .map_err(|error| dm_error("开启只读事务失败", error))?;
+    }
     let result = dm_execute(&mut client, &statement, &params)?;
+    if read_only_wrap
+        && let Err(error) = client.rollback()
+    {
+        tracing::warn!(
+            target: "fluxdb_connectors",
+            message = %error,
+            "达梦参数化只读事务回滚失败"
+        );
+    }
     client.close();
     match result {
         ExecuteResult::Query { columns, rows } => {
@@ -175,12 +214,20 @@ fn dm_execute_parameterized(
             })
         }
         ExecuteResult::Affected(affected) | ExecuteResult::Call { affected, .. } => {
+            let (success, message) = if read_only_wrap {
+                (
+                    false,
+                    format!("只读入口拒绝：该语句不是只读查询，已回滚（影响 {affected} 行未提交）"),
+                )
+            } else {
+                (true, format!("OK，影响 {affected} 行"))
+            };
             Ok(QueryExecutionResult {
                 summaries: vec![QueryExecutionSummary {
                     sql: statement,
                     kind: QueryStatementKind::Command,
-                    success: true,
-                    message: format!("OK，影响 {affected} 行"),
+                    success,
+                    message,
                     returned_rows: 0,
                     affected_rows: affected,
                     elapsed_ms: elapsed_ms(started),

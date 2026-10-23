@@ -19,7 +19,11 @@ impl NavicatMain {
             .save_connections(&self.controller.connection_configs())
         {
             self.controller = previous;
-            self.show_message(tr("app.connection.error.delete_failed").replace("%{error}", &error.to_string()), AppMessageKind::Error, cx);
+            self.show_message(
+                tr("app.connection.error.delete_failed").replace("%{error}", &error.to_string()),
+                AppMessageKind::Error,
+                cx,
+            );
             cx.notify();
             return;
         }
@@ -72,9 +76,14 @@ impl NavicatMain {
                 .save_connections(&self.controller.connection_configs())
             {
                 self.controller = previous;
-                self.new_connection_form.test_status =
-                    Some(ConnectionTestStatus::Error(tr("app.connection.error.save_failed").replace("%{error}", &error.to_string())));
-                self.show_message(tr("app.connection.error.save_failed").replace("%{error}", &error.to_string()), AppMessageKind::Error, cx);
+                self.new_connection_form.test_status = Some(ConnectionTestStatus::Error(
+                    tr("app.connection.error.save_failed").replace("%{error}", &error.to_string()),
+                ));
+                self.show_message(
+                    tr("app.connection.error.save_failed").replace("%{error}", &error.to_string()),
+                    AppMessageKind::Error,
+                    cx,
+                );
                 self.saving_connection = false;
                 cx.notify();
                 return;
@@ -93,8 +102,9 @@ impl NavicatMain {
         let test_config = draft.clone().into_config(fluxdb_core::ConnectionId(0));
         // 建连测试是真实网络 I/O：交给后台线程跑，既不让弹框卡住主线程，也让驱动里可能的
         // panic 不再落进 GPUI 主线程的 C 回调栈帧（该栈不能 unwind，会 abort 整个进程）。
-        self.new_connection_form.test_status =
-            Some(ConnectionTestStatus::Pending(tr("app.connection.status.testing").to_string()));
+        self.new_connection_form.test_status = Some(ConnectionTestStatus::Pending(
+            tr("app.connection.status.testing").to_string(),
+        ));
         let mut controller = self.controller.clone();
         self._test_connection_task = Some(cx.spawn(async move |view, cx| {
             let event = cx
@@ -145,8 +155,9 @@ impl NavicatMain {
                 return;
             }
             _ => {
-                self.new_connection_form.test_status =
-                    Some(ConnectionTestStatus::Error(tr("app.connection.status.failed_unsaved").to_string()));
+                self.new_connection_form.test_status = Some(ConnectionTestStatus::Error(
+                    tr("app.connection.status.failed_unsaved").to_string(),
+                ));
                 self.saving_connection = false;
                 cx.notify();
                 return;
@@ -161,9 +172,14 @@ impl NavicatMain {
             .save_connections(&self.controller.connection_configs())
         {
             self.controller = previous;
-            self.new_connection_form.test_status =
-                Some(ConnectionTestStatus::Error(tr("app.connection.error.save_failed").replace("%{error}", &error.to_string())));
-            self.show_message(tr("app.connection.error.save_failed").replace("%{error}", &error.to_string()), AppMessageKind::Error, cx);
+            self.new_connection_form.test_status = Some(ConnectionTestStatus::Error(
+                tr("app.connection.error.save_failed").replace("%{error}", &error.to_string()),
+            ));
+            self.show_message(
+                tr("app.connection.error.save_failed").replace("%{error}", &error.to_string()),
+                AppMessageKind::Error,
+                cx,
+            );
             self.saving_connection = false;
             cx.notify();
             return;
@@ -284,21 +300,36 @@ impl NavicatMain {
         // 下拉值已与表单字段一致，不再经过展示文案转换。
         let ssh_auth = self.new_connection_form.ssh_auth.clone();
         let cloud_provider = self.new_connection_form.cloud_provider.clone();
-        self.new_connection_inputs.ssh_auth_select.update(cx, |select, cx| {
-            select.set_selected_value(&ssh_auth, window, cx);
-        });
-        self.new_connection_inputs.cloud_provider_select.update(cx, |select, cx| {
-            select.set_selected_value(&cloud_provider, window, cx);
-        });
+        self.new_connection_inputs
+            .ssh_auth_select
+            .update(cx, |select, cx| {
+                select.set_selected_value(&ssh_auth, window, cx);
+            });
+        self.new_connection_inputs
+            .cloud_provider_select
+            .update(cx, |select, cx| {
+                select.set_selected_value(&cloud_provider, window, cx);
+            });
         // SSL 模式下拉回填：选项值与表单字段值相同，直接同步光标。
         let pg_ssl_mode = self.new_connection_form.pg_tls_ssl_mode.clone();
-        self.new_connection_inputs.pg_ssl_mode_select.update(cx, |select, cx| {
-            select.set_selected_value(&pg_ssl_mode, window, cx);
-        });
+        self.new_connection_inputs
+            .pg_ssl_mode_select
+            .update(cx, |select, cx| {
+                select.set_selected_value(&pg_ssl_mode, window, cx);
+            });
         let mysql_ssl_mode = self.new_connection_form.mysql_tls_ssl_mode.clone();
-        self.new_connection_inputs.mysql_ssl_mode_select.update(cx, |select, cx| {
-            select.set_selected_value(&mysql_ssl_mode, window, cx);
-        });
+        self.new_connection_inputs
+            .mysql_ssl_mode_select
+            .update(cx, |select, cx| {
+                select.set_selected_value(&mysql_ssl_mode, window, cx);
+            });
+        // SQL Server 加密模式同样由下拉独立维护光标，编辑连接时必须从档案回填。
+        let sqlserver_encryption = self.new_connection_form.sqlserver_encryption.clone();
+        self.new_connection_inputs
+            .sqlserver_encryption_select
+            .update(cx, |select, cx| {
+                select.set_selected_value(&sqlserver_encryption, window, cx);
+            });
     }
 
     fn cancel_new_connection(&mut self, cx: &mut Context<Self>) {
@@ -387,6 +418,11 @@ impl NavicatMain {
             ConnectionField::MysqlConnectTimeout => form.mysql_connect_timeout_secs = value,
             ConnectionField::MysqlQueryTimeout => form.mysql_query_timeout_secs = value,
             ConnectionField::MysqlIdleTtl => form.mysql_idle_ttl_secs = value,
+            ConnectionField::SqlServerSchema => form.sqlserver_schema = value,
+            ConnectionField::SqlServerInstance => form.sqlserver_instance = value,
+            ConnectionField::SqlServerConnectTimeout => form.sqlserver_connect_timeout_secs = value,
+            ConnectionField::SqlServerQueryTimeout => form.sqlserver_query_timeout_secs = value,
+            ConnectionField::SqlServerApplicationName => form.sqlserver_application_name = value,
             ConnectionField::SentinelMasterName => form.sentinel_master_name = value,
             ConnectionField::SentinelEndpoints => form.sentinel_endpoints = value,
             ConnectionField::ClusterStartNodes => form.cluster_start_nodes = value,
@@ -448,13 +484,15 @@ impl NavicatMain {
                     Ok(Ok(None)) => {}
                     Ok(Err(error)) => {
                         this.new_connection_form.test_status = Some(ConnectionTestStatus::Error(
-                            tr("app.connection.error.sqlite_picker").replace("%{error}", &error.to_string()),
+                            tr("app.connection.error.sqlite_picker")
+                                .replace("%{error}", &error.to_string()),
                         ));
                         cx.notify();
                     }
                     Err(error) => {
                         this.new_connection_form.test_status = Some(ConnectionTestStatus::Error(
-                            tr("app.connection.error.sqlite_picker").replace("%{error}", &error.to_string()),
+                            tr("app.connection.error.sqlite_picker")
+                                .replace("%{error}", &error.to_string()),
                         ));
                         cx.notify();
                     }
@@ -499,13 +537,15 @@ impl NavicatMain {
                     Ok(Ok(None)) => {}
                     Ok(Err(error)) => {
                         this.new_connection_form.test_status = Some(ConnectionTestStatus::Error(
-                            tr("app.connection.error.file_picker").replace("%{error}", &error.to_string()),
+                            tr("app.connection.error.file_picker")
+                                .replace("%{error}", &error.to_string()),
                         ));
                         cx.notify();
                     }
                     Err(error) => {
                         this.new_connection_form.test_status = Some(ConnectionTestStatus::Error(
-                            tr("app.connection.error.file_picker").replace("%{error}", &error.to_string()),
+                            tr("app.connection.error.file_picker")
+                                .replace("%{error}", &error.to_string()),
                         ));
                         cx.notify();
                     }
@@ -528,8 +568,9 @@ impl NavicatMain {
                 let config = self
                     .new_connection_draft(kind)
                     .into_config(fluxdb_core::ConnectionId(0));
-                self.new_connection_form.test_status =
-                    Some(ConnectionTestStatus::Pending(tr("app.connection.status.testing").to_string()));
+                self.new_connection_form.test_status = Some(ConnectionTestStatus::Pending(
+                    tr("app.connection.status.testing").to_string(),
+                ));
                 let mut controller = self.controller.clone();
                 self._test_connection_task = Some(cx.spawn(async move |view, cx| {
                     let event = cx
@@ -544,7 +585,9 @@ impl NavicatMain {
                         view.update(cx, |this, cx| {
                             this.new_connection_form.test_status = Some(match event {
                                 fluxdb_app::AppEvent::ConnectionTested(_, Ok(())) => {
-                                    ConnectionTestStatus::Success(tr("app.connection.status.test_success").to_string())
+                                    ConnectionTestStatus::Success(
+                                        tr("app.connection.status.test_success").to_string(),
+                                    )
                                 }
                                 fluxdb_app::AppEvent::ConnectionTested(_, Err(error)) => {
                                     ConnectionTestStatus::Error(error.to_string())
@@ -552,7 +595,9 @@ impl NavicatMain {
                                 fluxdb_app::AppEvent::Failed(error) => ConnectionTestStatus::Error(
                                     format!("{}：{}", error.title, error.message),
                                 ),
-                                _ => ConnectionTestStatus::Error(tr("app.connection.status.test_failed").to_string()),
+                                _ => ConnectionTestStatus::Error(
+                                    tr("app.connection.status.test_failed").to_string(),
+                                ),
                             });
                             this._test_connection_task = None;
                             cx.notify();
@@ -605,6 +650,32 @@ impl NavicatMain {
                     return Err(message);
                 }
             }
+            DatabaseKind::SqlServer => {
+                let profile = form.build_sqlserver_profile();
+                if let Some(message) = profile.validate() {
+                    return Err(message);
+                }
+                if !profile.basic.instance.trim().is_empty() {
+                    return Err(tr("app.connection.sqlserver.instance_requires_port").to_string());
+                }
+                let connect_timeout = form
+                    .sqlserver_connect_timeout_secs
+                    .trim()
+                    .parse::<u32>()
+                    .map_err(|_| {
+                        tr("app.connection.sqlserver.connect_timeout_invalid").to_string()
+                    })?;
+                let query_timeout = form
+                    .sqlserver_query_timeout_secs
+                    .trim()
+                    .parse::<u32>()
+                    .map_err(|_| {
+                        tr("app.connection.sqlserver.query_timeout_invalid").to_string()
+                    })?;
+                if connect_timeout == 0 || connect_timeout > 86400 || query_timeout > 86400 {
+                    return Err(tr("app.connection.sqlserver.timeout_out_of_range").to_string());
+                }
+            }
             _ => {
                 if form.host.trim().is_empty() {
                     return Err(tr("app.connection.error.host_required").to_string());
@@ -653,7 +724,8 @@ impl NavicatMain {
             | DatabaseKind::TiDb
             | DatabaseKind::Redis
             | DatabaseKind::Postgres
-            | DatabaseKind::Dameng => Endpoint::Tcp {
+            | DatabaseKind::Dameng
+            | DatabaseKind::SqlServer => Endpoint::Tcp {
                 host: form.host.trim().to_string(),
                 port: form
                     .port
@@ -701,6 +773,13 @@ impl NavicatMain {
         } else {
             None
         };
+        // SQL Server 档案是拨号、加密模式与 schema 作用域的事实来源；
+        // 密码仍在 storage 落盘前按连接 ID 写入加密凭据表。
+        let sqlserver_profile = if kind == DatabaseKind::SqlServer {
+            Some(form.build_sqlserver_profile())
+        } else {
+            None
+        };
 
         ConnectionDraft {
             name: form.name.trim().to_string(),
@@ -711,6 +790,7 @@ impl NavicatMain {
             mysql_profile,
             postgres_profile,
             dameng_profile,
+            sqlserver_profile,
         }
     }
 
@@ -726,13 +806,15 @@ impl NavicatMain {
         let connection_string = self.new_connection_form.discovery_uri.clone();
         let provider = self.new_connection_form.cloud_provider.clone();
         if connection_string.trim().is_empty() {
-            self.new_connection_form.test_status =
-                Some(ConnectionTestStatus::Error(tr("app.connection.error.redis_uri_required").to_string()));
+            self.new_connection_form.test_status = Some(ConnectionTestStatus::Error(
+                tr("app.connection.error.redis_uri_required").to_string(),
+            ));
             cx.notify();
             return;
         }
-        self.new_connection_form.test_status =
-            Some(ConnectionTestStatus::Pending(tr("app.connection.status.parsing_uri").to_string()));
+        self.new_connection_form.test_status = Some(ConnectionTestStatus::Pending(
+            tr("app.connection.status.parsing_uri").to_string(),
+        ));
         let mut controller = self.controller.clone();
         self._redis_discover_task = Some(cx.spawn(async move |view, cx| {
             let event = cx
@@ -765,7 +847,9 @@ impl NavicatMain {
                         }
                         _ => {
                             this.new_connection_form.test_status =
-                                Some(ConnectionTestStatus::Error(tr("app.connection.error.redis_uri_parse").to_string()));
+                                Some(ConnectionTestStatus::Error(
+                                    tr("app.connection.error.redis_uri_parse").to_string(),
+                                ));
                         }
                     }
                     this._redis_discover_task = None;
@@ -780,11 +864,7 @@ impl NavicatMain {
     ///
     /// 注意：异步回调里拿不到 `Window`，此处只更新表单数据 + 打「待同步输入框」标记；
     /// 真正的输入框实体同步放在 `NavicatMain::render`（有 `Window`）里消费该标记。
-    fn apply_redis_discovered_draft(
-        &mut self,
-        draft: &ConnectionDraft,
-        _cx: &mut Context<Self>,
-    ) {
+    fn apply_redis_discovered_draft(&mut self, draft: &ConnectionDraft, _cx: &mut Context<Self>) {
         if let Some(profile) = draft.redis_profile.as_ref() {
             // 连接串里没有的云 provider 保留用户当前选择。
             let current_provider = self.new_connection_form.cloud_provider.clone();
@@ -800,7 +880,6 @@ impl NavicatMain {
         }
         self.redis_discovery_pending_sync = true;
     }
-
 }
 
 /// 从 `key=value&key2=value2` 里挑出 Redis 认识的连接选项。

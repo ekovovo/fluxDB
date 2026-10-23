@@ -625,9 +625,12 @@ fn table_menu_item(
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Stateful<Div> {
+    let label = label.into();
+    let selector = format!("table-menu-item:{label}");
     let object_path = menu.object_path.clone();
     let action_path = menu.object_path.clone();
     table_inert_menu_item(label, icon, destructive, colors)
+        .debug_selector(move || selector)
         .on_mouse_move(cx.listener(move |this, _, _, cx| {
             this.set_table_context_submenu(object_path.clone(), None, cx);
             cx.stop_propagation();
@@ -651,8 +654,11 @@ fn table_menu_submenu_item(
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Stateful<Div> {
+    let label = label.into();
+    let selector = format!("table-menu-item:{label}");
     let object_path = menu.object_path.clone();
     table_inert_menu_item(label, icon, false, colors)
+        .debug_selector(move || selector)
         .on_mouse_move(cx.listener(move |this, _, _, cx| {
             this.set_table_context_submenu(object_path.clone(), Some(submenu), cx);
             cx.stop_propagation();
@@ -668,14 +674,18 @@ fn table_submenu_action_item(
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Stateful<Div> {
+    let label = label.into();
+    let selector = format!("table-submenu-item:{label}");
     let action_path = menu.object_path.clone();
-    table_inert_menu_item(label, icon, false, colors).on_mouse_down(
-        MouseButton::Left,
-        cx.listener(move |this, _, window, cx| {
-            this.handle_table_menu_action(action, action_path.clone(), window, cx);
-            cx.stop_propagation();
-        }),
-    )
+    table_inert_menu_item(label, icon, false, colors)
+        .debug_selector(move || selector)
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |this, _, window, cx| {
+                this.handle_table_menu_action(action, action_path.clone(), window, cx);
+                cx.stop_propagation();
+            }),
+        )
 }
 
 fn table_inert_menu_item(

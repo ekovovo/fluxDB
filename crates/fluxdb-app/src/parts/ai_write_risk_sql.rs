@@ -59,8 +59,12 @@ enum ConnectorGuarantee {
 /// `bounded_capable` 是连接器能力（是否实现有界提交），不由 SQL 文本推断；
 /// 但能力不等于本次适用：有界提交只覆盖单表唯一键等值 UPDATE，
 /// 因此两者都满足时才按"有界保证"评分，否则退回普通执行路径。
-pub fn sql_write_risk_facts(sql: &str, dialect: SqlDialectKind, bounded_capable: bool) -> WriteRiskFacts {
-    let shape = write_shape(sql, dialect);
+pub fn sql_write_risk_facts(
+    sql: &str,
+    policy: &dyn SqlPolicy,
+    bounded_capable: bool,
+) -> WriteRiskFacts {
+    let shape = write_shape(sql, policy);
     let bounded = bounded_capable && shape_is_bounded_update(&shape);
     let guarantee = if bounded {
         ConnectorGuarantee::Bounded
@@ -188,7 +192,7 @@ fn sql_evidence_json(shape: &WriteShape, guarantee: ConnectorGuarantee) -> Strin
 
 /// 解析 SQL 形状。解析失败或语句数不为 1 时给出"无法证明影响面"的形状，
 /// 由评分函数落到硬信号上，绝不把"看不懂"当作安全。
-fn write_shape(sql: &str, dialect: SqlDialectKind) -> WriteShape {
+fn write_shape(sql: &str, policy: &dyn SqlPolicy) -> WriteShape {
     let unknown = WriteShape {
         operation: "unknown",
         single_statement: false,
@@ -200,8 +204,7 @@ fn write_shape(sql: &str, dialect: SqlDialectKind) -> WriteShape {
         value_rows: 0,
         has_side_clauses: false,
     };
-    let Ok(statements) =
-        sqlparser::parser::Parser::parse_sql(dialect.parser_dialect().as_ref(), sql.trim())
+    let Ok(statements) = sqlparser::parser::Parser::parse_sql(policy.parser_dialect(), sql.trim())
     else {
         return unknown;
     };

@@ -14,7 +14,8 @@ fn new_query_scope_modal(
     let mut connection_list = div().flex().flex_col().gap_1();
     for connection in &state.connections {
         let connection_id = connection.config.id;
-        let selected = Some(connection_id) == selected_connection.map(|connection| connection.config.id);
+        let selected =
+            Some(connection_id) == selected_connection.map(|connection| connection.config.id);
         connection_list = connection_list.child(
             div()
                 .h(px(34.))
@@ -24,7 +25,11 @@ fn new_query_scope_modal(
                 .flex()
                 .items_center()
                 .gap_2()
-                .bg(if selected { colors.hover } else { colors.panel_bg })
+                .bg(if selected {
+                    colors.hover
+                } else {
+                    colors.panel_bg
+                })
                 .hover(move |style| style.bg(colors.hover))
                 .on_mouse_down(
                     MouseButton::Left,
@@ -190,7 +195,13 @@ fn new_query_database_list(
     }
 
     if !connection.connected {
-        return list.child(new_query_connect_state(connection_id, connecting, error, colors, cx));
+        return list.child(new_query_connect_state(
+            connection_id,
+            connecting,
+            error,
+            colors,
+            cx,
+        ));
     }
 
     let mut has_database = false;
@@ -216,11 +227,16 @@ fn new_query_database_list(
 fn automatic_query_database(config: &ConnectionConfig) -> Option<String> {
     match config.kind {
         DatabaseKind::Sqlite => Some("main".to_string()),
-        DatabaseKind::Redis => connection_default_database(config).or_else(|| Some("0".to_string())),
+        DatabaseKind::Redis => {
+            connection_default_database(config).or_else(|| Some("0".to_string()))
+        }
         DatabaseKind::MySql | DatabaseKind::TiDb | DatabaseKind::MongoDb => None,
         DatabaseKind::Postgres => Some("postgres".to_string()),
-        DatabaseKind::Dameng => connection_default_database(config)
-            .or_else(|| Some("DAMENG".to_string())),
+        DatabaseKind::Dameng => {
+            connection_default_database(config).or_else(|| Some("DAMENG".to_string()))
+        }
+        // SQL Server 登录默认库可由服务端决定；未填写时交给连接器回读 `DB_NAME()`。
+        DatabaseKind::SqlServer => connection_default_database(config),
     }
 }
 
@@ -280,7 +296,11 @@ fn new_query_connect_state(
                 .text_size(px(13.))
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .text_color(colors.text)
-                .bg(if connecting { colors.hover } else { colors.panel_alt })
+                .bg(if connecting {
+                    colors.hover
+                } else {
+                    colors.panel_alt
+                })
                 .when(!connecting, |this| {
                     this.cursor_pointer()
                         .hover(move |style| style.bg(colors.hover))

@@ -28,7 +28,9 @@ use fluxdb_app::{
     PgGrantEditOp, PgGrantObjectKind, PgRoleDraftUiExt, PgRoleSaveStatus, QueryEditorState,
     QueryHistoryEntry, QueryHistoryKind, QueryHistoryTransactionState, QueryOrigin,
     RedisAddKeyKind, RedisAddKeyRequest, RedisConnectionOverview, RedisListDirection,
-    RedisWorkbenchState, TabId, TabKind, TabState, TabWorkspace, TableInfoState, TableInfoTab,
+    RedisWorkbenchState, SqlServerSecurityFormField, SqlServerSecurityFormFlag,
+    SqlServerSecurityFormKind, SqlServerSecurityListFilter, SqlServerSecuritySaveStatus,
+    SqlServerSecurityState, TabId, TabKind, TabState, TabWorkspace, TableInfoState, TableInfoTab,
     UserAdminDetailTab, UserAdminState, compress_sql_text, copy_table_sql_preview_with_source_ddl,
     create_table_common_type_options, create_table_provider, create_table_special_type_options,
     drop_table_sql_preview, er_neighborhood_included_tables, er_place_avoiding_overlaps,
@@ -46,10 +48,10 @@ use fluxdb_core::{
     PgRoleMembership, PgValidUntilOp, PostgresSslMode, QueryExecutionOptions,
     QueryExecutionSummary, RedisHashFieldTtl, RedisServerVersion, ResultsPlacement, Row,
     RowIdentity, SavedQuery, ScrollbarMode, Settings, SidebarOrderEntry, SortDirection, SortSpec,
-    SqlDialect as _, Theme as AppTheme, TriggerInfo, UiDensity, UserResourceLimits,
-    WorkbenchHistoryItem, WorkbenchHistoryScope, WorkbenchHistoryStore, data_table_page_size_max,
-    database_user_admin_provider, role_memberships_from_grants, sql_dialect,
-    sqlite_attached_database_path, supports_database_user_admin,
+    SqlDialect as _, SqlServerPrincipalKind, Theme as AppTheme, TriggerInfo, UiDensity,
+    UserResourceLimits, WorkbenchHistoryItem, WorkbenchHistoryScope, WorkbenchHistoryStore,
+    data_table_page_size_max, database_user_admin_provider, role_memberships_from_grants,
+    sql_dialect, sqlite_attached_database_path, supports_database_user_admin,
 };
 use fluxdb_storage::{
     FileStorage, QueryHistoryRecord, RedisKeySearchHistoryRecord, RedisWorkbenchHistoryRecord,
@@ -135,6 +137,8 @@ include!("main_parts/tabs_workspace.rs");
 include!("main_parts/sidebar.rs");
 include!("main_parts/menus_dialogs.rs");
 include!("main_parts/user_admin.rs");
+include!("main_parts/sqlserver_user_admin.rs");
+include!("main_parts/sqlserver_security_database.rs");
 include!("main_parts/pg_user_admin/mod.rs");
 include!("main_parts/pg_user_admin/general.rs");
 include!("main_parts/pg_user_admin/advanced.rs");

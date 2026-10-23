@@ -1160,6 +1160,13 @@ struct PendingCopyTable {
 }
 
 #[derive(Clone, Debug)]
+struct PendingRoutineDdl {
+    object_path: ObjectPath,
+    ddl: Option<String>,
+    error: Option<String>,
+}
+
+#[derive(Clone, Debug)]
 struct PendingColumnChoices {
     tab_id: TabId,
     object_path: ObjectPath,

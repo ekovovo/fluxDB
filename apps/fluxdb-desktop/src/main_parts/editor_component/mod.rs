@@ -2669,10 +2669,10 @@ impl Editor {
         self.suppress_next_auto_completion = true;
         self.completion_visible = false;
         self.completion_loading = false;
-        if self
+        let applied = self
             .apply_edit(&insert_text, new_cursor, new_cursor, true, cx)
-            .is_none()
-        {
+            .is_some();
+        if !applied {
             self.suppress_next_auto_completion = false;
         }
         // 有占位符时进入 snippet 会话：选中首个占位，Tab/Shift-Tab 切换。

@@ -119,34 +119,16 @@ fn is_quote_char(ch: char) -> bool {
     ch == '"' || ch == '`' || ch == '['
 }
 
-fn unquote_ident(value: &str) -> &str {
-    if value.len() < 2 {
-        return value;
-    }
-    let opener = value.as_bytes()[0];
-    let closer = value.as_bytes()[value.len() - 1];
-    if matches!((opener, closer), (b'"', b'"') | (b'`', b'`') | (b'[', b']')) {
-        &value[1..value.len() - 1]
-    } else {
-        value
-    }
-}
-
 /// 反扫 `schema.table.` 的一段标识符，返回 `(起点, 是否带引号)`。
 fn scan_ident(text: &str, end: usize) -> (usize, bool) {
-    if let Some(closer) = text[..end].chars().next_back() {
-        let opener = match closer {
-            '"' | '`' => Some(closer),
-            ']' => Some('['),
-            _ => None,
-        };
-        if let Some(opener) = opener
-            && let Some(open) = text[..end - closer.len_utf8()].rfind(opener)
-        {
-            return (open, true);
-        }
+    // 已闭合的引号标识符（含 `[a]]b]` 转义）用正向配对定位起点；否则反扫普通标识符。
+    if let Some(closer) = text[..end].chars().next_back()
+        && let Some(opener) = matching_quote_opener(closer)
+        && let Some((offset, opened)) = open_quote_before(text, end - closer.len_utf8())
+        && opened == opener
+    {
+        return (offset, true);
     }
-
     let mut start = end;
     for (offset, ch) in text[..end].char_indices().rev() {
         if is_ident_char(ch) {
@@ -158,6 +140,32 @@ fn scan_ident(text: &str, end: usize) -> (usize, bool) {
     (start, false)
 }
 
+fn matching_quote_opener(closer: char) -> Option<char> {
+    match closer {
+        '"' | '`' => Some(closer),
+        ']' => Some('['),
+        _ => None,
+    }
+}
+
+/// 去掉标识符两端的引号，并还原内部成对转义（`[a]]b]` → `a]b`）。
+fn unquote_identifier(value: &str) -> String {
+    let mut chars = value.chars();
+    let Some(opener) = chars.next() else {
+        return String::new();
+    };
+    let closer = match opener {
+        '[' => ']',
+        '"' | '`' => opener,
+        _ => return value.to_string(),
+    };
+    if !value.ends_with(closer) || value.len() < opener.len_utf8() + closer.len_utf8() {
+        return value.to_string();
+    }
+    let inner = &value[opener.len_utf8()..value.len() - closer.len_utf8()];
+    inner.replace(&format!("{closer}{closer}"), &closer.to_string())
+}
+
 /// 光标是否位于一个未闭合的引号标识符内；是则返回开引号的位置与字符。
 ///
 /// 引号标识符可以含空格（`"my tab`），因此不能用标识符字符反扫。必须从语句头正向
@@ -165,19 +173,23 @@ fn scan_ident(text: &str, end: usize) -> (usize, bool) {
 /// 导致 `from \`3d_user\` u left` 的词起点被拉到闭引号之后。
 fn open_quote_before(text: &str, cursor: usize) -> Option<(usize, char)> {
     let mut open: Option<(usize, char)> = None;
-    for (offset, ch) in text[..cursor].char_indices() {
-        if !is_quote_char(ch) {
+    let mut chars = text[..cursor].char_indices().peekable();
+    while let Some((offset, ch)) = chars.next() {
+        if let Some((_, opened)) = open {
+            let closer = if opened == '[' { ']' } else { opened };
+            if ch != closer {
+                continue;
+            }
+            // 双写闭引号是转义字符，不结束标识符（`[a]]b]`、`"a""b"`）。
+            if matches!(chars.peek(), Some((_, next)) if *next == closer) {
+                chars.next();
+                continue;
+            }
+            open = None;
             continue;
         }
-        let closer = if ch == '[' { ']' } else { ch };
-        match open {
-            // 同类引号成对：遇到闭引号即出栈。
-            Some((_, opened)) if (if opened == '[' { ']' } else { opened }) == closer => {
-                open = None;
-            }
-            // 不同类型引号各自独立，不互相闭合。
-            Some(_) => {}
-            None => open = Some((offset, ch)),
+        if is_quote_char(ch) {
+            open = Some((offset, ch));
         }
     }
     open
@@ -263,16 +275,11 @@ pub(crate) fn word_context(text: &str, cursor: usize, dialect: &dyn Dialect) -> 
     // 向前吃掉 `a.b.` 形式的限定符链；`schema.tbl.col` 整体作为 qualifier。
     let mut seg_end = replace_start;
     while let Some((qual_end, '.')) = text[..seg_end].char_indices().next_back() {
-        let (qual_start, quoted) = scan_ident(text, qual_end);
+        let (qual_start, _quoted) = scan_ident(text, qual_end);
         if qual_start == qual_end {
             break;
         }
-        let segment = &text[qual_start..qual_end];
-        qualifier_segments.push(if quoted {
-            unquote_ident(segment).to_string()
-        } else {
-            segment.to_string()
-        });
+        qualifier_segments.push(unquote_identifier(&text[qual_start..qual_end]));
         replace_start = qual_start;
         // 继续向前：可能是 `schema.table.` 的上一级。
         if !text[..qual_start].ends_with('.') {
@@ -366,6 +373,22 @@ mod tests {
         assert_eq!(c.word_part, "");
         assert_eq!(c.qualifier.as_deref(), Some("u"));
         assert_eq!(c.replace_start, 7);
+    }
+
+    #[test]
+    fn captures_closed_quoted_qualifiers_with_escaped_delimiters() {
+        for (text, qualifier) in [
+            ("SELECT * FROM [app].|", "app"),
+            ("SELECT * FROM [a]]b].|", "a]b"),
+            ("SELECT * FROM [a[b].|", "a[b"),
+            (r#"SELECT * FROM "a""b".|"#, "a\"b"),
+            ("SELECT * FROM `a``b`.|", "a`b"),
+        ] {
+            let c = ctx(text);
+            assert_eq!(c.qualifier.as_deref(), Some(qualifier), "{text}");
+            assert_eq!(c.word_part, "", "{text}");
+            assert_eq!(c.prefix_start, text.len() - 1, "{text}");
+        }
     }
 
     #[test]

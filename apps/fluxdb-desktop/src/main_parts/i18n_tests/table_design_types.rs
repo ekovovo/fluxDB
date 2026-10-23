@@ -31,6 +31,7 @@ fn postgres_design_types_are_selected_instead_of_showing_placeholder(cx: &mut Te
         mysql_profile: None,
         postgres_profile: None,
         dameng_profile: None,
+        sqlserver_profile: None,
     };
     controller.dispatch(AppCommand::ReplaceConnections(vec![config.clone()]));
     let object = ObjectPath {
@@ -372,6 +373,7 @@ fn mysql_enum_members_fit_and_can_be_added_in_options_panel(cx: &mut TestAppCont
         mysql_profile: None,
         postgres_profile: None,
         dameng_profile: None,
+        sqlserver_profile: None,
     };
     controller.dispatch(AppCommand::ReplaceConnections(vec![config.clone()]));
     let object = ObjectPath {

@@ -53,6 +53,7 @@ fn sqlite_design_table_loads_metadata_before_installing_tab() {
         mysql_profile: None,
         postgres_profile: None,
         dameng_profile: None,
+        sqlserver_profile: None,
     };
     execute(
         &config,

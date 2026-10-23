@@ -1,5 +1,6 @@
 struct MySqlTableActionSqlProvider;
 struct SqliteTableActionSqlProvider;
+struct SqlServerTableActionSqlProvider;
 struct UnsupportedTableActionSqlProvider;
 
 impl TableActionSqlProvider for MySqlTableActionSqlProvider {
@@ -247,6 +248,8 @@ fn quoted_identifier_end(bytes: &[u8], start: usize, quote: u8) -> Result<usize,
 static MYSQL_TABLE_ACTION_SQL_PROVIDER: MySqlTableActionSqlProvider = MySqlTableActionSqlProvider;
 static SQLITE_TABLE_ACTION_SQL_PROVIDER: SqliteTableActionSqlProvider =
     SqliteTableActionSqlProvider;
+static SQLSERVER_TABLE_ACTION_SQL_PROVIDER: SqlServerTableActionSqlProvider =
+    SqlServerTableActionSqlProvider;
 static POSTGRES_TABLE_ACTION_SQL_PROVIDER: PostgresTableActionSqlProvider =
     PostgresTableActionSqlProvider;
 static UNSUPPORTED_TABLE_ACTION_SQL_PROVIDER: UnsupportedTableActionSqlProvider =
@@ -256,6 +259,7 @@ fn table_action_sql_provider(database_kind: DatabaseKind) -> &'static dyn TableA
     match database_kind {
         DatabaseKind::MySql | DatabaseKind::TiDb => &MYSQL_TABLE_ACTION_SQL_PROVIDER,
         DatabaseKind::Sqlite => &SQLITE_TABLE_ACTION_SQL_PROVIDER,
+        DatabaseKind::SqlServer => &SQLSERVER_TABLE_ACTION_SQL_PROVIDER,
         DatabaseKind::Postgres => &POSTGRES_TABLE_ACTION_SQL_PROVIDER,
         DatabaseKind::MongoDb | DatabaseKind::Redis => &UNSUPPORTED_TABLE_ACTION_SQL_PROVIDER,
         DatabaseKind::Dameng => &DAMENG_TABLE_ACTION_SQL_PROVIDER,
@@ -335,6 +339,493 @@ impl TableActionSqlProvider for DamengTableActionSqlProvider {
 
 static DAMENG_TABLE_ACTION_SQL_PROVIDER: DamengTableActionSqlProvider =
     DamengTableActionSqlProvider;
+
+impl TableActionSqlProvider for SqlServerTableActionSqlProvider {
+    fn rename_table_sql(
+        &self,
+        schema: Option<&str>,
+        old_name: &str,
+        new_name: &str,
+    ) -> Result<String, String> {
+        sqlserver_table_rename_statement(schema, old_name, new_name)
+    }
+
+    fn copy_table_sql(
+        &self,
+        schema: Option<&str>,
+        source_name: &str,
+        target_name: &str,
+        copy_data: bool,
+        source_ddl: Option<&str>,
+    ) -> Result<String, String> {
+        let source_ddl =
+            source_ddl.ok_or_else(|| "未读取到源表 SQL Server DDL，无法复制表".to_string())?;
+        sqlserver_copy_table_sql(schema, source_name, target_name, copy_data, source_ddl)
+    }
+
+    fn drop_table_sql(
+        &self,
+        kind: ObjectKind,
+        schema: Option<&str>,
+        table_name: &str,
+    ) -> Result<String, String> {
+        Ok(format!(
+            "DROP {} {};",
+            if kind == ObjectKind::View { "VIEW" } else { "TABLE" },
+            sqlserver_action_qualified(schema, table_name)
+        ))
+    }
+
+    fn truncate_table_sql(
+        &self,
+        schema: Option<&str>,
+        table_name: &str,
+        _: bool,
+    ) -> Result<String, String> {
+        Ok(format!(
+            "TRUNCATE TABLE {};",
+            sqlserver_action_qualified(schema, table_name)
+        ))
+    }
+
+    fn with_foreign_key_check(
+        &self,
+        sql: String,
+        foreign_key_check: ForeignKeyCheckMode,
+    ) -> Result<String, String> {
+        match foreign_key_check {
+            ForeignKeyCheckMode::Default => Ok(sql),
+            ForeignKeyCheckMode::Enable | ForeignKeyCheckMode::Disable => Err(
+                "SQL Server 不支持连接级临时禁用外键检查；请先删除依赖外键或改用 DELETE"
+                    .to_string(),
+            ),
+        }
+    }
+}
+
+fn sqlserver_action_qualified(schema: Option<&str>, name: &str) -> String {
+    match schema.map(str::trim).filter(|schema| !schema.is_empty()) {
+        Some(schema) => format!(
+            "{}.{}",
+            fluxdb_core::SqlServerDialect.quote_identifier(schema),
+            fluxdb_core::SqlServerDialect.quote_identifier(name.trim())
+        ),
+        None => fluxdb_core::SqlServerDialect.quote_identifier(name.trim()),
+    }
+}
+
+fn sqlserver_table_rename_statement(
+    schema: Option<&str>,
+    old_name: &str,
+    new_name: &str,
+) -> Result<String, String> {
+    if new_name.contains('.') {
+        return Err("重命名只接受单段新表名（不带 schema）".to_string());
+    }
+    Ok(format!(
+        "EXEC sp_rename N'{}', N'{}', 'OBJECT';",
+        sqlserver_action_qualified(schema, old_name).replace('\'', "''"),
+        new_name.trim().replace('\'', "''")
+    ))
+}
+
+fn sqlserver_copy_table_sql(
+    schema: Option<&str>,
+    source_name: &str,
+    target_name: &str,
+    copy_data: bool,
+    source_ddl: &str,
+) -> Result<String, String> {
+    let source = sqlserver_action_qualified(schema, source_name);
+    let target = sqlserver_action_qualified(schema, target_name);
+    let statements = sqlserver_split_ddl_statements(source_ddl)?;
+    if statements.is_empty() {
+        return Err("未读取到可复制的 SQL Server 表结构 DDL".to_string());
+    }
+
+    let mut rewritten = Vec::with_capacity(statements.len() + 3);
+    for statement in statements {
+        let trimmed = statement.trim();
+        let lower = trimmed.to_ascii_lowercase();
+        if lower.starts_with("create table") {
+            rewritten.push(sqlserver_replace_create_table_name(
+                trimmed,
+                schema,
+                target_name,
+            )?);
+        } else if lower.starts_with("create index")
+            || lower.starts_with("create unique index")
+        {
+            rewritten.push(sqlserver_rewrite_copy_index(
+                trimmed,
+                &source,
+                &target,
+                target_name,
+            )?);
+        } else if lower.starts_with("alter table") {
+            rewritten.push(sqlserver_rewrite_copy_foreign_key(
+                trimmed,
+                &source,
+                &target,
+                target_name,
+            )?);
+        } else {
+            rewritten.push(trimmed.to_string());
+        }
+    }
+
+    if copy_data {
+        let columns = sqlserver_copy_columns(source_ddl)?;
+        if columns.is_empty() {
+            rewritten.push(format!("INSERT INTO {target} SELECT * FROM {source};"));
+        } else {
+            let column_list = columns
+                .iter()
+                .map(|column| fluxdb_core::SqlServerDialect.quote_identifier(column))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let identity_columns = sqlserver_copy_identity_columns(source_ddl)?;
+            let insert = format!(
+                "INSERT INTO {target} ({column_list}) SELECT {column_list} FROM {source};"
+            );
+            if identity_columns.is_empty() {
+                rewritten.push(insert);
+            } else {
+                // 显式复制 IDENTITY 值：SQL Server 同一会话仅允许一张表开启。
+                rewritten.push(format!("SET IDENTITY_INSERT {target} ON;"));
+                rewritten.push(insert);
+                rewritten.push(format!("SET IDENTITY_INSERT {target} OFF;"));
+            }
+        }
+    }
+    Ok(rewritten.join("\n"))
+}
+
+fn sqlserver_replace_create_table_name(
+    statement: &str,
+    schema: Option<&str>,
+    target_name: &str,
+) -> Result<String, String> {
+    let trimmed = statement.trim().trim_end_matches(';').trim();
+    let upper = trimmed.to_ascii_uppercase();
+    let Some(create_pos) = upper.find("CREATE TABLE") else {
+        return Err("SQL Server 表 DDL 缺少 CREATE TABLE".to_string());
+    };
+    let name_start = create_pos + "CREATE TABLE".len();
+    let mut index = skip_ascii_whitespace(trimmed, name_start);
+    for keyword in ["IF", "NOT", "EXISTS"] {
+        if ascii_keyword_at(trimmed, index, keyword) {
+            index += keyword.len();
+            index = skip_ascii_whitespace(trimmed, index);
+        }
+    }
+    let Some(open) = trimmed[index..].find('(') else {
+        return Err("SQL Server CREATE TABLE 缺少字段定义".to_string());
+    };
+    let body_start = index + open;
+    let target = sqlserver_action_qualified(schema, target_name);
+    Ok(format!(
+        "CREATE TABLE {target}\n{};",
+        sqlserver_rename_copy_constraints(&trimmed[body_start..], target_name)?
+    ))
+}
+
+fn sqlserver_rename_copy_constraints(
+    statement: &str,
+    target_name: &str,
+) -> Result<String, String> {
+    let mut output = String::with_capacity(statement.len());
+    let mut rest = statement;
+    while let Some(offset) = rest.to_ascii_uppercase().find("CONSTRAINT") {
+        let keyword_end = offset + "CONSTRAINT".len();
+        output.push_str(&rest[..keyword_end]);
+        let after = rest[keyword_end..].trim_start();
+        let whitespace = &rest[keyword_end..keyword_end + (rest[keyword_end..].len() - after.len())];
+        output.push_str(whitespace);
+        let Some(_first) = after.chars().next() else {
+            output.push_str(after);
+            return Ok(output);
+        };
+        let Ok((old_name, end)) = sqlserver_parse_ddl_identifier(after) else {
+            output.push_str(after);
+            return Ok(output);
+        };
+        let new_name = sqlserver_copy_object_name(target_name, &old_name);
+        output.push_str(&fluxdb_core::SqlServerDialect.quote_identifier(&new_name));
+        rest = &after[end..];
+    }
+    output.push_str(rest);
+    Ok(output)
+}
+
+fn sqlserver_rewrite_copy_index(
+    statement: &str,
+    source: &str,
+    target: &str,
+    target_name: &str,
+) -> Result<String, String> {
+    let trimmed = statement.trim().trim_end_matches(';').trim();
+    let upper = trimmed.to_ascii_uppercase();
+    let Some(index_pos) = upper.find("INDEX") else {
+        return Err("SQL Server 索引 DDL 缺少 INDEX".to_string());
+    };
+    let after_index = &trimmed[index_pos + "INDEX".len()..];
+    let name_start = after_index
+        .char_indices()
+        .find(|(_, ch)| !ch.is_whitespace())
+        .map(|(index, _)| index)
+        .ok_or_else(|| "SQL Server 索引 DDL 缺少索引名".to_string())?;
+    let name_rest = &after_index[name_start..];
+    let (old_name, old_end) = sqlserver_parse_ddl_identifier(name_rest)?;
+    let before_name = &trimmed[..index_pos + "INDEX".len() + name_start];
+    let after_name = &name_rest[old_end..];
+    let upper_after = after_name.to_ascii_uppercase();
+    let Some(on_pos) = upper_after.find(" ON ") else {
+        return Err("SQL Server 索引 DDL 缺少 ON".to_string());
+    };
+    let table_start = on_pos + " ON ".len();
+    let table_rest = &after_name[table_start..];
+    let table_identifier = table_rest.split_whitespace().next().unwrap_or("");
+    if !sqlserver_ddl_identifier_matches(table_identifier, source) {
+        return Err("SQL Server 索引 DDL 引用了非源表，无法安全复制".to_string());
+    }
+    let table_end = table_rest
+        .find(char::is_whitespace)
+        .or_else(|| table_rest.find('('))
+        .ok_or_else(|| "SQL Server 索引 DDL 缺少字段".to_string())?;
+    let new_name = sqlserver_copy_object_name(target_name, &old_name);
+    Ok(format!(
+        "{before_name}{}{} ON {target}{};",
+        fluxdb_core::SqlServerDialect.quote_identifier(&new_name),
+        &after_name[..on_pos],
+        &table_rest[table_end..]
+    ))
+}
+
+/// 复制表的外键约束也必须换成新名称。SQL Server 的约束名在 schema 内唯一；
+/// 保留源约束名会让 `ALTER TABLE ... ADD CONSTRAINT` 与源表冲突。
+fn sqlserver_rewrite_copy_foreign_key(
+    statement: &str,
+    source: &str,
+    target: &str,
+    target_name: &str,
+) -> Result<String, String> {
+    let trimmed = statement.trim().trim_end_matches(';').trim();
+    let upper = trimmed.to_ascii_uppercase();
+    let Some(alter_pos) = upper.find("ALTER TABLE") else {
+        return Err("SQL Server 外键 DDL 缺少 ALTER TABLE".to_string());
+    };
+    let table_start = skip_ascii_whitespace(trimmed, alter_pos + "ALTER TABLE".len());
+    let source_table = &trimmed[table_start..];
+    let (parsed_table, table_end) = sqlserver_parse_qualified_ddl_identifier(source_table)?;
+    let (source_name, _) = sqlserver_parse_qualified_ddl_identifier(source)?;
+    if !parsed_table.eq_ignore_ascii_case(&source_name) {
+        return Err("SQL Server 外键 DDL 引用了非源表，无法安全复制".to_string());
+    }
+    let after_table = &source_table[table_end..];
+    let upper_after = after_table.to_ascii_uppercase();
+    let Some(add_pos) = upper_after.find("ADD") else {
+        return Err(format!(
+            "SQL Server 外键 DDL 缺少 ADD：{}",
+            after_table.trim()
+        ));
+    };
+    let constraint_keyword = skip_ascii_whitespace(after_table, add_pos + "ADD".len());
+    if !ascii_keyword_at(after_table, constraint_keyword, "CONSTRAINT") {
+        return Err("SQL Server 外键 DDL 缺少 CONSTRAINT".to_string());
+    }
+    let constraint_start =
+        skip_ascii_whitespace(after_table, constraint_keyword + "CONSTRAINT".len());
+    let constraint_rest = &after_table[constraint_start..];
+    let (old_name, constraint_end) = sqlserver_parse_ddl_identifier(constraint_rest)?;
+    let remainder = &constraint_rest[constraint_end..];
+    if !remainder.to_ascii_uppercase().contains("FOREIGN KEY") {
+        return Err("SQL Server 复制仅支持重写外键约束".to_string());
+    }
+    let new_name = sqlserver_copy_object_name(target_name, &old_name);
+    Ok(format!(
+        "ALTER TABLE {target}{}{}{};",
+        &after_table[..constraint_start],
+        fluxdb_core::SqlServerDialect.quote_identifier(&new_name),
+        remainder,
+    ))
+}
+
+fn sqlserver_parse_qualified_ddl_identifier(value: &str) -> Result<(String, usize), String> {
+    let (first, first_end) = sqlserver_parse_ddl_identifier(value)?;
+    let mut parts = vec![first];
+    let mut end = first_end;
+    loop {
+        let dot = skip_ascii_whitespace(value, end);
+        if !value[dot..].starts_with('.') {
+            break;
+        }
+        let next_start = skip_ascii_whitespace(value, dot + 1);
+        let (part, part_end) = sqlserver_parse_ddl_identifier(&value[next_start..])?;
+        parts.push(part);
+        end = next_start + part_end;
+    }
+    Ok((parts.join("."), end))
+}
+
+fn sqlserver_ddl_identifier_matches(identifier: &str, qualified: &str) -> bool {
+    let identifier = identifier.trim().to_ascii_lowercase();
+    let qualified = qualified.trim().to_ascii_lowercase();
+    identifier == qualified
+        || identifier
+            == qualified
+                .rsplit_once('.')
+                .map(|(_, table)| table)
+                .unwrap_or(&qualified)
+}
+
+fn sqlserver_split_ddl_statements(sql: &str) -> Result<Vec<String>, String> {
+    let mut statements = Vec::new();
+    let mut start = 0usize;
+    let mut quote = None;
+    let mut bracket = false;
+    for (index, ch) in sql.char_indices() {
+        if bracket {
+            if ch == ']' {
+                bracket = false;
+            }
+            continue;
+        }
+        if let Some(end_quote) = quote {
+            if ch == end_quote {
+                quote = None;
+            }
+            continue;
+        }
+        match ch {
+            '\'' | '"' => quote = Some(ch),
+            '[' => bracket = true,
+            ';' => {
+                let statement = sql[start..index].trim();
+                if !statement.is_empty() {
+                    statements.push(format!("{statement};"));
+                }
+                start = index + 1;
+            }
+            _ => {}
+        }
+    }
+    if quote.is_some() || bracket {
+        return Err("SQL Server 表结构 DDL 引号未闭合".to_string());
+    }
+    let tail = sql[start..].trim();
+    if !tail.is_empty() {
+        statements.push(format!("{tail};"));
+    }
+    Ok(statements)
+}
+
+fn sqlserver_parse_ddl_identifier(value: &str) -> Result<(String, usize), String> {
+    let value = value.trim_start();
+    let first = value.chars().next().ok_or_else(|| "缺少标识符".to_string())?;
+    match first {
+        '[' => {
+            let end = value[1..]
+                .find(']')
+                .map(|index| index + 2)
+                .ok_or_else(|| "SQL Server 标识符引用未闭合".to_string())?;
+            Ok((value[1..end - 1].replace("]]", "]"), end))
+        }
+        '"' | '`' => {
+            let end = value[1..]
+                .find(first)
+                .map(|index| index + 2)
+                .ok_or_else(|| "SQL Server 标识符引用未闭合".to_string())?;
+            Ok((value[1..end - 1].to_string(), end))
+        }
+        _ => {
+            let end = value
+                .find(char::is_whitespace)
+                .or_else(|| value.find('('))
+                .unwrap_or(value.len());
+            Ok((value[..end].to_string(), end))
+        }
+    }
+}
+
+fn sqlserver_copy_object_name(target_name: &str, old_name: &str) -> String {
+    format!("{}_{}", target_name.trim(), old_name.trim())
+        .chars()
+        .take(128)
+        .collect()
+}
+
+fn sqlserver_copy_columns(source_ddl: &str) -> Result<Vec<String>, String> {
+    let Some(open) = source_ddl.find('(') else {
+        return Ok(Vec::new());
+    };
+    let Some(close) = sqlserver_matching_paren(source_ddl, open) else {
+        return Err("SQL Server CREATE TABLE 字段列表未闭合".to_string());
+    };
+    let entries = dameng_split_top_level_entries(&source_ddl[open + 1..close]);
+    Ok(entries
+        .into_iter()
+        .filter_map(|entry| {
+            let upper = entry.trim().to_ascii_uppercase();
+            if upper.starts_with("CONSTRAINT")
+                || upper.starts_with("PRIMARY")
+                || upper.starts_with("FOREIGN")
+                || upper.starts_with("CHECK")
+                || upper.starts_with("UNIQUE")
+            {
+                return None;
+            }
+            sqlserver_parse_ddl_identifier(&entry).ok().map(|(name, _)| name)
+        })
+        .collect())
+}
+
+fn sqlserver_copy_identity_columns(source_ddl: &str) -> Result<Vec<String>, String> {
+    let Some(open) = source_ddl.find('(') else {
+        return Ok(Vec::new());
+    };
+    let Some(close) = sqlserver_matching_paren(source_ddl, open) else {
+        return Err("SQL Server CREATE TABLE 字段列表未闭合".to_string());
+    };
+    Ok(dameng_split_top_level_entries(&source_ddl[open + 1..close])
+        .into_iter()
+        .filter(|entry| entry.to_ascii_uppercase().contains(" IDENTITY"))
+        .filter_map(|entry| sqlserver_parse_ddl_identifier(&entry).ok().map(|(name, _)| name))
+        .collect())
+}
+
+fn sqlserver_matching_paren(value: &str, start: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut quote = None;
+    let mut bracket = false;
+    for (index, ch) in value.char_indices().skip_while(|(index, _)| *index < start) {
+        if bracket {
+            if ch == ']' {
+                bracket = false;
+            }
+            continue;
+        }
+        if let Some(end_quote) = quote {
+            if ch == end_quote {
+                quote = None;
+            }
+            continue;
+        }
+        match ch {
+            '\'' | '"' => quote = Some(ch),
+            '[' => bracket = true,
+            '(' => depth += 1,
+            ')' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some(index);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
 
 fn dameng_action_qualified(schema: Option<&str>, name: &str) -> String {
     match schema.map(str::trim).filter(|schema| !schema.is_empty()) {
@@ -751,5 +1242,120 @@ mod dameng_table_action_tests {
         .expect("copy formatted DDL");
         assert!(sql.contains("IDENTITY"));
         assert!(sql.contains("SET IDENTITY_INSERT \"APPS\".\"ORDERS_COPY\" ON;"));
+    }
+}
+
+#[cfg(test)]
+mod sqlserver_table_action_tests {
+    use super::*;
+
+    #[test]
+    fn sqlserver_rename_drop_and_truncate_are_schema_qualified() {
+        assert_eq!(
+            rename_table_sql_preview(DatabaseKind::SqlServer, Some("sales"), "orders", "orders_2")
+                .expect("rename SQL"),
+            "EXEC sp_rename N'[sales].[orders]', N'orders_2', 'OBJECT';"
+        );
+        assert!(rename_table_sql_preview(
+            DatabaseKind::SqlServer,
+            Some("sales"),
+            "orders",
+            "dbo.orders_2",
+        )
+        .is_err());
+        assert_eq!(
+            drop_table_sql_preview(
+                DatabaseKind::SqlServer,
+                ObjectKind::View,
+                Some("sales"),
+                "orders_view",
+                ForeignKeyCheckMode::Default,
+            )
+            .expect("drop view SQL"),
+            "DROP VIEW [sales].[orders_view];"
+        );
+        assert_eq!(
+            truncate_table_sql_preview(
+                DatabaseKind::SqlServer,
+                Some("sales"),
+                "orders",
+                false,
+                ForeignKeyCheckMode::Default,
+            )
+            .expect("truncate SQL"),
+            "TRUNCATE TABLE [sales].[orders];"
+        );
+        assert!(drop_table_sql_preview(
+            DatabaseKind::SqlServer,
+            ObjectKind::Table,
+            Some("sales"),
+            "orders",
+            ForeignKeyCheckMode::Disable,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn sqlserver_copy_keeps_constraints_indexes_and_identity_values() {
+        let ddl = "CREATE TABLE [sales].[orders] (\n  [id] int IDENTITY(1,1) NOT NULL,\n  [name] nvarchar(80) NULL,\n  CONSTRAINT [PK_orders] PRIMARY KEY ([id])\n);\nCREATE UNIQUE INDEX [IX_orders_name] ON [sales].[orders] ([name] ASC);";
+        let sql = copy_table_sql_preview_with_source_ddl(
+            DatabaseKind::SqlServer,
+            Some("sales"),
+            "orders",
+            "orders_copy",
+            true,
+            Some(ddl),
+        )
+        .expect("copy SQL");
+
+        assert!(sql.contains("CREATE TABLE [sales].[orders_copy]"));
+        assert!(sql.contains("CONSTRAINT [orders_copy_PK_orders] PRIMARY KEY ([id])"));
+        assert!(!sql.contains("SELECT * INTO"));
+        assert!(sql.contains("CREATE UNIQUE INDEX [orders_copy_IX_orders_name] ON [sales].[orders_copy]"));
+        assert!(sql.contains("SET IDENTITY_INSERT [sales].[orders_copy] ON;"));
+        assert!(sql.contains(
+            "INSERT INTO [sales].[orders_copy] ([id], [name]) SELECT [id], [name] FROM [sales].[orders];"
+        ));
+        assert!(sql.contains("SET IDENTITY_INSERT [sales].[orders_copy] OFF;"));
+    }
+
+    #[test]
+    fn sqlserver_copy_accepts_formatted_bracket_identifiers() {
+        // 展示层 sqlformat 曾经把 `[id]` 变成 `[ id ]`，复制表会把它当作真实列名。
+        // SQL Server DDL 必须先保护方括号标识符再格式化。
+        let ddl = "CREATE TABLE [dbo].[orders] (\n  [id] int IDENTITY(1,1) NOT NULL,\n  [name] nvarchar(80) NULL,\n  CONSTRAINT [PK_orders] PRIMARY KEY ([id])\n);";
+        let formatted = format_sql_text_for_dialect(ddl, DatabaseKind::SqlServer);
+        assert!(formatted.contains("[id]"), "{formatted}");
+        assert!(!formatted.contains("[ id ]"), "{formatted}");
+        let sql = copy_table_sql_preview_with_source_ddl(
+            DatabaseKind::SqlServer,
+            Some("dbo"),
+            "orders",
+            "orders_copy",
+            true,
+            Some(&formatted),
+        )
+        .expect("copy formatted SQL Server DDL");
+        assert!(!sql.contains("[ id ]"), "{sql}");
+        assert!(sql.contains("[id]"), "{sql}");
+    }
+
+    #[test]
+    fn sqlserver_copy_renames_foreign_key_constraints() {
+        let ddl = "CREATE TABLE [finance].[order_items] (\n  [id] int NOT NULL,\n  [order_id] int NOT NULL,\n  CONSTRAINT [PK_order_items] PRIMARY KEY ([id])\n);\nALTER TABLE [finance].[order_items] ADD CONSTRAINT [fk_oi_order] FOREIGN KEY ([order_id]) REFERENCES [finance].[orders] ([id]);";
+        let sql = copy_table_sql_preview_with_source_ddl(
+            DatabaseKind::SqlServer,
+            Some("finance"),
+            "order_items",
+            "order_items_copy",
+            false,
+            Some(ddl),
+        )
+        .expect("copy SQL with foreign key");
+
+        assert!(sql.contains(
+            "ALTER TABLE [finance].[order_items_copy] ADD CONSTRAINT [order_items_copy_fk_oi_order] FOREIGN KEY ([order_id]) REFERENCES [finance].[orders] ([id]);"
+        ));
+        assert!(!sql.contains("ADD CONSTRAINT [fk_oi_order]"));
     }
 }

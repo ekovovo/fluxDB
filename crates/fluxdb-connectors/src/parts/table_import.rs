@@ -22,6 +22,7 @@ pub fn table_data_import(kind: DatabaseKind) -> fluxdb_core::Result<Box<dyn Tabl
         DatabaseKind::Postgres => Ok(Box::new(PostgresTableImport)),
         DatabaseKind::Sqlite => Ok(Box::new(SqliteTableImport)),
         DatabaseKind::Dameng => Ok(Box::new(DamengTableImport)),
+        DatabaseKind::SqlServer => Ok(Box::new(SqlServerTableImport)),
         DatabaseKind::Redis | DatabaseKind::MongoDb => Err(Error::new(
             ErrorKind::Unsupported,
             "当前连接类型没有可导入的表数据",
@@ -34,6 +35,7 @@ struct TiDbTableImport;
 struct PostgresTableImport;
 struct SqliteTableImport;
 struct DamengTableImport;
+struct SqlServerTableImport;
 
 impl TableDataImport for MySqlTableImport {
     fn kind(&self) -> DatabaseKind {
@@ -144,6 +146,8 @@ impl TableDataImport for DamengTableImport {
         preview_relational(DatabaseKind::Dameng, request)
     }
 }
+
+include!("table_import/sqlserver.rs");
 
 #[derive(Debug)]
 struct ParsedTable {
@@ -396,6 +400,21 @@ fn build_import_batch_sql(
                         )
                     } else {
                         format!("${index}")
+                    }
+                }
+                DatabaseKind::SqlServer => {
+                    let column = &target_columns[*target_index];
+                    if matches!(value, CellValue::Null)
+                        && fluxdb_core::is_binary_type_name(
+                            column.type_name.as_deref().unwrap_or(""),
+                        )
+                    {
+                        // 无类型 NULL 参数默认声明为 nvarchar；与同一 VALUES 中的
+                        // varbinary 参数混用时 SQL Server 会拒绝隐式转换（257）。
+                        "NULL".to_string()
+                    } else {
+                        parameters.push(parameter);
+                        format!("@P{}", parameters.len())
                     }
                 }
                 _ => {
@@ -806,7 +825,9 @@ fn ddl_import_column_flags(
             continue;
         };
         let upper = entry.to_ascii_uppercase();
-        if kind == DatabaseKind::Postgres && upper.contains("IDENTITY") {
+        if matches!(kind, DatabaseKind::Postgres | DatabaseKind::SqlServer)
+            && upper.contains("IDENTITY")
+        {
             identities.insert(name.to_ascii_uppercase());
         } else if (kind == DatabaseKind::Dameng && upper.contains("IDENTITY"))
             || (upper.contains("GENERATED")
@@ -871,6 +892,10 @@ fn ddl_entry_name(entry: &str) -> Option<String> {
         let end = trimmed[1..].find(first)? + 2;
         return Some(trimmed[1..end - 1].to_string());
     }
+    if first == '[' {
+        let end = trimmed[1..].find(']')? + 2;
+        return Some(trimmed[1..end - 1].replace("]]", "]"));
+    }
     trimmed.split_whitespace().next().map(str::to_string)
 }
 
@@ -920,6 +945,28 @@ fn import_qualified_table(
                 fluxdb_core::DamengDialect.quote_identifier(&request.object.name)
             ))
         }
+        DatabaseKind::SqlServer => {
+            let schema = request
+                .object
+                .schema
+                .as_deref()
+                .map(str::trim)
+                .filter(|schema| !schema.is_empty())
+                .or_else(|| {
+                    request
+                        .config
+                        .sqlserver_profile
+                        .as_ref()
+                        .map(|profile| profile.basic.schema.trim())
+                        .filter(|schema| !schema.is_empty())
+                })
+                .unwrap_or("dbo");
+            Ok(format!(
+                "{}.{}",
+                fluxdb_core::SqlServerDialect.quote_identifier(schema),
+                fluxdb_core::SqlServerDialect.quote_identifier(&request.object.name)
+            ))
+        }
         DatabaseKind::Redis | DatabaseKind::MongoDb => Err(Error::new(
             ErrorKind::Unsupported,
             "当前连接类型没有可导入的表数据",
@@ -935,6 +982,7 @@ fn import_quote_identifier(kind: DatabaseKind, identifier: &str) -> String {
         DatabaseKind::Postgres => fluxdb_core::PostgresDialect.quote_identifier(identifier),
         DatabaseKind::Sqlite => fluxdb_core::SqliteDialect.quote_identifier(identifier),
         DatabaseKind::Dameng => fluxdb_core::DamengDialect.quote_identifier(identifier),
+        DatabaseKind::SqlServer => fluxdb_core::SqlServerDialect.quote_identifier(identifier),
         DatabaseKind::Redis | DatabaseKind::MongoDb => identifier.to_string(),
     }
 }
@@ -1031,7 +1079,27 @@ fn import_sql_parameter_for_column(
             Ok(SqlParameter::Decimal(value.to_string()))
         }
         CellValue::Text(value) | CellValue::Json(value) => {
-            if matches!(
+            if fluxdb_core::is_binary_type_name(&base) {
+                let hex = value
+                    .trim()
+                    .strip_prefix("0x")
+                    .or_else(|| value.trim().strip_prefix("0X"))
+                    .unwrap_or(value.trim())
+                    .chars()
+                    .filter(|ch| !ch.is_whitespace())
+                    .collect::<String>();
+                if hex.len() % 2 != 0 {
+                    return Err(Error::new(ErrorKind::Query, "导入二进制值格式无效"));
+                }
+                let bytes = (0..hex.len())
+                    .step_by(2)
+                    .map(|index| {
+                        u8::from_str_radix(&hex[index..index + 2], 16)
+                            .map_err(|_| Error::new(ErrorKind::Query, "导入二进制值格式无效"))
+                    })
+                    .collect::<fluxdb_core::Result<Vec<_>>>()?;
+                Ok(SqlParameter::Bytes(bytes))
+            } else if matches!(
                 base.as_str(),
                 "tinyint" | "smallint" | "mediumint" | "int" | "integer" | "bigint" | "int2"
                     | "int4" | "int8" | "serial" | "bigserial" | "smallserial"
@@ -1153,6 +1221,7 @@ mod table_import_tests {
                 mysql_profile: None,
                 postgres_profile: None,
                 dameng_profile: None,
+                sqlserver_profile: None,
             },
             object: crate::ObjectPath {
                 connection_id: crate::ConnectionId(1),
@@ -1316,6 +1385,71 @@ mod table_import_tests {
             comment: None,
             stable: None,
         }
+    }
+
+    #[test]
+    fn sqlserver_binary_text_values_are_bound_as_bytes() {
+        for (type_name, value, expected) in [
+            ("varbinary(8)", "0x00FF10", vec![0x00, 0xff, 0x10]),
+            ("binary(2)", "00ff", vec![0x00, 0xff]),
+            ("image", "0X01A2", vec![0x01, 0xa2]),
+            ("varbinary(max)", "0x", Vec::new()),
+        ] {
+            let parameter = import_sql_parameter_for_column(
+                &CellValue::Text(value.into()),
+                &completion_column("PAYLOAD", type_name),
+            )
+            .expect("binary import value");
+            assert_eq!(parameter, SqlParameter::Bytes(expected), "{type_name}");
+        }
+        for value in ["not-hex", "0x123", "0xGG"] {
+            let error = import_sql_parameter_for_column(
+                &CellValue::Text(value.into()),
+                &completion_column("PAYLOAD", "varbinary(max)"),
+            )
+            .expect_err("invalid binary text must be rejected");
+            assert_eq!(error.message, "导入二进制值格式无效", "{value}");
+        }
+        assert_eq!(
+            import_sql_parameter_for_column(
+                &CellValue::Null,
+                &completion_column("PAYLOAD", "varbinary(max)"),
+            )
+            .expect("NULL binary"),
+            SqlParameter::Null
+        );
+    }
+
+    #[test]
+    fn sqlserver_binary_null_uses_typed_sql_null() {
+        let columns = [
+            completion_column("PAYLOAD", "varbinary(8)"),
+            completion_column("NOTE", "nvarchar(8)"),
+        ];
+        let (sql, parameters) = build_import_batch_sql(
+            DatabaseKind::SqlServer,
+            "[dbo].[sample]",
+            "[PAYLOAD], [NOTE]",
+            "",
+            &[(0, 0), (1, 1)],
+            &columns,
+            &[vec![CellValue::Null, CellValue::Null]],
+        )
+        .expect("build SQL Server import SQL");
+        assert_eq!(sql, "INSERT INTO [dbo].[sample] ([PAYLOAD], [NOTE]) VALUES (NULL, @P1)");
+        assert_eq!(parameters, vec![SqlParameter::Null]);
+    }
+
+    #[test]
+    fn text_columns_keep_hex_looking_text_as_text() {
+        assert_eq!(
+            import_sql_parameter_for_column(
+                &CellValue::Text("0x1234".into()),
+                &completion_column("CODE", "nvarchar(20)"),
+            )
+            .expect("text value"),
+            SqlParameter::Text("0x1234".into())
+        );
     }
 
     #[test]

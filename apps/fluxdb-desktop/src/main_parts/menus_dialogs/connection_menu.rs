@@ -197,6 +197,8 @@ fn database_context_menu(
     pinned_databases: &BTreeSet<String>,
     is_redis: bool,
     is_postgres: bool,
+    is_sqlserver: bool,
+    is_dameng: bool,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
@@ -330,7 +332,7 @@ fn database_context_menu(
                 colors,
                 cx,
             ))
-            .when(is_postgres, |this| {
+            .when(is_postgres || is_sqlserver || is_dameng, |this| {
                 this.child(database_menu_item(
                     tr("app.connection_menu.new_schema").to_string(),
                     "folder-open",

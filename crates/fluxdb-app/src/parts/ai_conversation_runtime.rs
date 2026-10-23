@@ -65,6 +65,7 @@ impl AiRuntimeHandle {
                                     | DatabaseKind::TiDb
                                     | DatabaseKind::Postgres
                                     | DatabaseKind::Dameng
+                                    | DatabaseKind::SqlServer
                             )
                         })
                         .cloned()
@@ -97,11 +98,18 @@ impl AiRuntimeHandle {
                         &job.turn_id,
                         Some(storage.root_dir().join("ai-results")),
                     )));
+                    let has_sql_dialect = pinned
+                        .as_ref()
+                        .is_some_and(|config| policy_for(config.kind).is_some());
                     let mut tools = if pinned
                         .as_ref()
                         .is_some_and(|config| config.kind == fluxdb_core::DatabaseKind::Redis)
                     {
                         standard_redis_catalog(Arc::clone(&resolver), include_write)?
+                    } else if pinned.is_some() && !has_sql_dialect {
+                        // 没有 SQL 策略的连接类型（Redis 之外的文档型/键值型）不装配 db.*，
+                        // 避免暴露后每次调用都以 unsupported_database 失败。
+                        ToolCatalog::new(Vec::new())
                     } else {
                         standard_sql_catalog_with_results(
                             Arc::clone(&resolver),

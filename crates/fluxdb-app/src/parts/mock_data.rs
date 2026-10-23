@@ -13,6 +13,7 @@ fn mock_connections() -> Vec<ConnectionConfig> {
             mysql_profile: None,
             postgres_profile: None,
             dameng_profile: None,
+            sqlserver_profile: None,
         },
         ConnectionConfig {
             id: ConnectionId(2),
@@ -28,6 +29,7 @@ fn mock_connections() -> Vec<ConnectionConfig> {
             mysql_profile: None,
             postgres_profile: None,
             dameng_profile: None,
+            sqlserver_profile: None,
         },
     ]
 }

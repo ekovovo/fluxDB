@@ -1,5 +1,8 @@
 fn copy_table_requires_source_ddl(database_kind: DatabaseKind) -> bool {
-    matches!(database_kind, DatabaseKind::Sqlite | DatabaseKind::Dameng)
+    matches!(
+        database_kind,
+        DatabaseKind::Sqlite | DatabaseKind::Dameng | DatabaseKind::SqlServer
+    )
 }
 
 impl NavicatMain {
@@ -606,18 +609,16 @@ impl NavicatMain {
     }
 
     fn refresh_database_children_for_table(&mut self, object: &ObjectPath, cx: &mut Context<Self>) {
-        // PG 按 schema 懒加载：只刷新该表所在 schema，避免 DB 级重载按 schema_scope=None
-        // 清空整库所有表/视图（见 replace_loaded_children）。复制/删除/清空等表操作统一走这里。
-        if matches!(
+        // schema 分桶数据库只刷新表所在 schema，避免库级刷新清掉其他 schema。
+        let (target, key) = if matches!(
             self.table_database_kind(object),
-            Some(DatabaseKind::Postgres | DatabaseKind::Dameng)
+            Some(DatabaseKind::Postgres | DatabaseKind::Dameng | DatabaseKind::SqlServer)
         ) {
             let (Some(database), Some(schema)) = (object.database.clone(), object.schema.clone())
             else {
                 return;
             };
-            let key = schema_tree_key(object.connection_id, &database, &schema);
-            self.load_database_children(
+            (
                 ObjectPath {
                     connection_id: object.connection_id,
                     database: Some(database.clone()),
@@ -625,18 +626,22 @@ impl NavicatMain {
                     name: schema.clone(),
                     kind: ObjectKind::Schema,
                 },
-                key,
-                cx,
-            );
-            return;
-        }
-        if let Some(parent) = database_parent_path(object) {
+                schema_tree_key(object.connection_id, &database, &schema),
+            )
+        } else {
+            let Some(parent) = database_parent_path(object) else {
+                return;
+            };
             let database = parent
                 .database
                 .clone()
                 .unwrap_or_else(|| parent.name.clone());
-            self.load_database_children(parent, database_tree_key(object.connection_id, &database), cx);
-        }
+            (
+                parent,
+                database_tree_key(object.connection_id, &database),
+            )
+        };
+        self.refresh_database_children(target, key, cx);
     }
 
     fn refresh_open_data_tabs_for_table(&mut self, object: &ObjectPath, cx: &mut Context<Self>) {

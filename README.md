@@ -2,7 +2,7 @@
 
 **原生跨平台数据库客户端与 SQL 编辑器：在一个窗口中完成查询、数据编辑、结构管理和 Redis 调试。**
 
-FluxDB 使用 Rust + GPUI 构建，不依赖 Electron 或 WebView。它把 MySQL、PostgreSQL、SQLite、TiDB、达梦 DM8 和 Redis 放进同一套桌面工作流，并提供有明确权限边界的 AI Agent。
+FluxDB 使用 Rust + GPUI 构建，不依赖 Electron 或 WebView。它把 MySQL、PostgreSQL、SQL Server、SQLite、TiDB、达梦 DM8 和 Redis 放进同一套桌面工作流，并提供有明确权限边界的 AI Agent。
 
 **简体中文 | [English](./README.en.md)**
 
@@ -69,7 +69,7 @@ FluxDB 使用 Rust + GPUI 构建，不依赖 Electron 或 WebView。它把 MySQL
 
 ## 演示
 
-**完整演示视频** 
+**完整演示视频**
 
 https://github.com/user-attachments/assets/f6075999-a87f-4644-9d14-dbda49a7981d
 
@@ -82,11 +82,12 @@ https://github.com/user-attachments/assets/f6075999-a87f-4644-9d14-dbda49a7981d
 | MySQL | SQL 查询、对象浏览、表结构管理、数据编辑、导入导出、原生客户端工具入口 | `mysqldump` 逻辑备份，SQL 恢复 | TLS / SSL、SSH 隧道、代理、超时、字符集 |
 | TiDB | 复用 MySQL 协议链路，适配 SQL 方言、补全与表结构管理 | 复用 MySQL 逻辑备份能力 | 连接能力与 MySQL 一致 |
 | PostgreSQL | SQL 查询、Schema / 对象浏览、表结构管理、数据编辑、用户与角色管理、psql 工具入口 | `pg_dump` plain SQL 备份，`psql` 恢复 | TLS、SSH、代理、Schema 作用域、超时 |
+| SQL Server | T-SQL 查询、数据库与 Schema 对象浏览、表结构管理、数据编辑、导入导出、用户/角色/权限管理、逻辑备份与恢复、AI 页面上下文与受控执行 | 对象级逻辑 SQL 备份与恢复 | SQL 认证、TLS、显式端口；命名实例需填写实际端口 |
 | SQLite | 本地文件连接、SQL 查询、对象浏览、表结构管理、数据编辑 | `VACUUM INTO` 完整一致快照；恢复到新文件并检查完整性与外键 | 本地文件路径 |
 | 达梦 DM8 | Schema / 对象浏览、SQL 查询、表结构管理与设计、数据编辑、表数据导入 | 逻辑备份与 SQL 恢复；当前恢复面向单 Schema | 实例与 Schema 连接配置 |
 | Redis | 键空间浏览、键值编辑、TTL、Workbench、CLI、Pub/Sub | 不提供数据库级备份恢复 | TLS、SSH、Sentinel、Cluster、URI / Cloud；Cluster 仅支持 DB 0 |
 
-MongoDB、MariaDB 和 SQL Server 尚未支持。它们只出现在规划中，不应被视为当前能力。
+MongoDB 和 MariaDB 尚未支持。它们只出现在规划中，不应被视为当前能力。
 
 ## AI Agent
 
@@ -187,7 +188,6 @@ macOS 可使用仓库脚本生成包含动态库的 `.app` 和 `.dmg`：
 
 - **MongoDB**：文档型数据源浏览与编辑。
 - **MariaDB**：独立方言、系统表与备份参数适配。
-- **SQL Server**：T-SQL 方言、连接协议与对象管理。
 - **更多数据库**：按社区需求评估 Oracle、ClickHouse、DuckDB、Elasticsearch / OpenSearch 等方向。
 
 路线图不代表当前版本已经支持。

@@ -50,6 +50,7 @@ use sqlparser::ast::{Expr, ObjectName, ObjectNamePart, Statement};
 
 // First-pass source split: included files remain in crate-root scope while module boundaries are refined.
 include!("parts/ai_conversation_state.rs");
+include!("parts/sqlserver_user_admin_state.rs");
 include!("parts/state.rs");
 include!("parts/ai_model_catalog.rs");
 include!("parts/create_table_model.rs");
@@ -70,6 +71,7 @@ include!("parts/mock_data.rs");
 include!("parts/sql_format.rs");
 include!("parts/table_info.rs");
 include!("parts/user_admin.rs");
+include!("parts/sqlserver_user_admin.rs");
 include!("parts/completion_index.rs");
 include!("parts/query_completion.rs");
 include!("parts/completion_engine.rs");
@@ -148,7 +150,9 @@ include!("parts/ai_file_content.rs");
 include!("parts/ai_reference_details.rs");
 include!("parts/ai_database_context.rs");
 include!("parts/ai_connection_tools.rs");
-include!("parts/ai_sql_policy.rs");
+#[path = "parts/ai_sql_policy/mod.rs"]
+mod ai_sql_policy;
+pub use ai_sql_policy::*;
 include!("parts/ai_sql_exec.rs");
 include!("parts/ai_sql_receipt.rs");
 include!("parts/ai_sql_tools.rs");

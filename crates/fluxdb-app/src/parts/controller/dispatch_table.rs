@@ -25,7 +25,16 @@ impl AppController {
                                     .as_ref()
                                     .map(|profile| profile.basic.schema.clone())
                             })
+                            .or_else(|| {
+                                config
+                                    .sqlserver_profile
+                                    .as_ref()
+                                    .map(|profile| profile.basic.schema.clone())
+                            })
                             .filter(|schema| !schema.trim().is_empty())
+                    })
+                    .or_else(|| {
+                        (database_kind == DatabaseKind::SqlServer).then(|| "dbo".to_string())
                     })
                     .unwrap_or_default();
                 let tab_id = self.next_tab_id();
@@ -157,8 +166,12 @@ impl AppController {
                     return self.fail(Error::new(ErrorKind::Connection, "连接不存在"));
                 };
                 let new_name = new_name.trim().to_string();
-                let source_ddl = if matches!(config.kind, DatabaseKind::Sqlite | DatabaseKind::Dameng)
-                {
+                // SQLite/达梦/SQL Server 的复制表要在客户端重写 DDL（保留约束与索引），
+                // 需要先读取源表定义。
+                let source_ddl = if matches!(
+                    config.kind,
+                    DatabaseKind::Sqlite | DatabaseKind::Dameng | DatabaseKind::SqlServer
+                ) {
                     match self.load_table_ddl(&object) {
                         Ok(ddl) => Some(ddl),
                         Err(error) => return self.fail(error),
@@ -177,6 +190,17 @@ impl AppController {
                     Ok(sql) => sql,
                     Err(message) => return self.fail(Error::new(ErrorKind::Query, message)),
                 };
+                let (sql, split_statements) = if config.kind == DatabaseKind::SqlServer {
+                    // DDL 后置的索引/外键失败时，不能留下只建了一半的复制表。
+                    (
+                        format!(
+                            "BEGIN TRY\nBEGIN TRANSACTION;\n{sql}\nCOMMIT TRANSACTION;\nEND TRY\nBEGIN CATCH\nIF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;\nTHROW;\nEND CATCH"
+                        ),
+                        false,
+                    )
+                } else {
+                    (sql, true)
+                };
                 let request = QueryRequest {
                     connection_id: object.connection_id,
                     database: object.database.clone(),
@@ -186,7 +210,7 @@ impl AppController {
                     mode: fluxdb_core::QueryMode::All,
                     options: QueryExecutionOptions {
                         continue_on_error: false,
-                        split_statements: true,
+                        split_statements,
                         ..QueryExecutionOptions::default()
                     },
                 };
@@ -362,7 +386,9 @@ impl AppController {
                                 create.is_design()
                                     && matches!(
                                         create.database_kind,
-                                        DatabaseKind::Postgres | DatabaseKind::Dameng
+                                        DatabaseKind::Postgres
+                                            | DatabaseKind::Dameng
+                                            | DatabaseKind::SqlServer
                                     )
                             }
                             _ => false,

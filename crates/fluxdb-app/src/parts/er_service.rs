@@ -36,7 +36,7 @@ pub fn load_er_tables_in_background(
         name: String::new(),
         kind: ObjectKind::Schema,
     };
-    let summaries = if matches!(config.kind, DatabaseKind::Postgres | DatabaseKind::Dameng) {
+    let summaries = if database_kind_uses_schemas(config.kind) {
         let mut all = Vec::new();
         let database_path = ObjectPath {
             kind: ObjectKind::Database,
@@ -114,7 +114,7 @@ pub fn load_er_relations_from_db_with(
     // 当前账号有权访问（可见）的表身份集合：目录已按权限过滤，这里回填同一口径，
     // 用于剔除外键指向「无权访问的表」的悬空边，避免经 ER 导出/计数泄露被隐藏的表名。
     let mut visible_refs: BTreeSet<ErTableRef> = BTreeSet::new();
-    if matches!(config.kind, DatabaseKind::Postgres | DatabaseKind::Dameng) {
+    if database_kind_uses_schemas(config.kind) {
         let root = ObjectPath {
             connection_id: config.id,
             database: Some(database.clone()),
@@ -165,13 +165,13 @@ pub fn load_er_relations_from_db_with(
     }
 
     let mut edges = Vec::new();
-    if config.kind == DatabaseKind::Postgres {
+    if database_kind_uses_schemas(config.kind) {
         for path in &table_paths {
-            // 本端结构化身份：所在 schema（未声明时按 pg default public）+ 裸名。
+            // 本端结构化身份：所在 schema（未声明时按各库默认 schema）+ 裸名。
             let from_schema = path
                 .schema
                 .clone()
-                .unwrap_or_else(|| "public".to_string());
+                .unwrap_or_else(|| default_schema_for_kind(config.kind).to_string());
             for fk in connector.list_foreign_keys(path)? {
                 // 被引用端 schema：FK 元数据带则用之，否则继承本端 schema（同 schema 引用的常见情形）。
                 let to_schema = fk
@@ -310,7 +310,7 @@ fn load_er_columns_for_tables_from_db(
     // 按 display 名（与 ErTableNode.name 对齐：PG schema.table，其余裸名）分组列。
     let mut by_display: BTreeMap<String, Vec<ErColumn>> = BTreeMap::new();
     for col in columns {
-        let display = if config.kind == DatabaseKind::Postgres {
+        let display = if database_kind_uses_schemas(config.kind) {
             match (&col.schema, col.table.as_str()) {
                 (Some(s), name) => format!("{s}.{name}"),
                 (None, name) => name.to_string(),
@@ -340,7 +340,7 @@ pub fn load_er_graph_in_background(
 ) -> fluxdb_core::Result<ErGraphData> {
     let mut tables = load_er_tables_in_background(config, database, schema)?;
     // 查询用裸表名（PG 展示名 `schema.table` 拆出裸名；其余即裸名）。
-    let bare_query: Vec<String> = if config.kind == DatabaseKind::Postgres {
+    let bare_query: Vec<String> = if database_kind_uses_schemas(config.kind) {
         tables
             .iter()
             .map(|t| {
@@ -365,6 +365,22 @@ pub fn load_er_graph_in_background(
         edges,
         relation_status: ErLoadStatus::Loaded,
     })
+}
+
+/// 这些数据库的对象树是 database → schema → table 两层；ER 必须逐 schema 读取，
+/// 否则同库跨 schema 的同名表会被合并成一个节点。
+fn database_kind_uses_schemas(kind: DatabaseKind) -> bool {
+    matches!(
+        kind,
+        DatabaseKind::Postgres | DatabaseKind::Dameng | DatabaseKind::SqlServer
+    )
+}
+
+fn default_schema_for_kind(kind: DatabaseKind) -> &'static str {
+    match kind {
+        DatabaseKind::SqlServer => "dbo",
+        _ => "public",
+    }
 }
 
 /// 兼容入口：以 `center` 展示名（或裸名）为中心 `depth` 跳邻域子图 + 显式 `extra` 种子。

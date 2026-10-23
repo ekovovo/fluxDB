@@ -976,6 +976,62 @@ pub fn pg_render_role_plan(
     Ok(stmts)
 }
 
+#[cfg(test)]
+mod pg_role_plan_order_tests {
+    use super::*;
+    use fluxdb_core::{
+        PgObjectGrantScope, PgRelationKind, PgRoleAttributes, PgRoleChange, PgRoleSavePlan,
+    };
+
+    #[test]
+    fn create_role_precedes_membership_and_object_grants() {
+        let plan = PgRoleSavePlan {
+            database: Some("fluxdb_demo".into()),
+            role_name: "created_role".into(),
+            changes: vec![
+                PgRoleChange::GrantObject {
+                    privilege: "SELECT".into(),
+                    scope: PgObjectGrantScope::Relation {
+                        schema: "public".into(),
+                        name: "items".into(),
+                        kind: PgRelationKind::Table,
+                    },
+                    grantee: "created_role".into(),
+                    grant_option: false,
+                },
+                PgRoleChange::GrantMembership {
+                    role: "created_role".into(),
+                    member: "app_user".into(),
+                    admin: false,
+                    inherit: true,
+                    set: true,
+                },
+                PgRoleChange::Create {
+                    name: "created_role".into(),
+                    can_login: true,
+                    password: PgPasswordOp::Keep,
+                    attributes: PgRoleAttributes::default(),
+                },
+            ],
+        };
+        let statements = pg_render_role_plan(&plan, true, true).expect("render plan");
+        let create = statements
+            .iter()
+            .position(|sql| sql.starts_with("CREATE ROLE"))
+            .expect("CREATE ROLE");
+        let membership = statements
+            .iter()
+            .position(|sql| sql.starts_with("GRANT \"created_role\" TO"))
+            .expect("membership grant");
+        let object = statements
+            .iter()
+            .position(|sql| sql.starts_with("GRANT SELECT ON"))
+            .expect("object grant");
+        assert!(create < membership, "{statements:?}");
+        assert!(create < object, "{statements:?}");
+    }
+}
+
 /// 应用变更计划：同一数据库会话内的单事务（BEGIN/COMMIT），失败整批回滚。
 ///
 /// 替代循环调用单项接口的伪原子提交；对象授权与角色 DDL 共用一个连接

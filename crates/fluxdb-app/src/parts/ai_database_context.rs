@@ -42,12 +42,9 @@ impl AppController {
             DatabaseKind::Redis => "redis",
             DatabaseKind::MongoDb => "mongodb",
             DatabaseKind::Dameng => "dameng",
+            DatabaseKind::SqlServer => "sqlserver",
         };
-        let sql_dialect = dialect_for(config.kind).map(|dialect| match dialect {
-            SqlDialectKind::MySql => "mysql",
-            SqlDialectKind::Postgres => "postgres",
-            SqlDialectKind::Sqlite => "sqlite",
-        });
+        let sql_dialect = policy_for(config.kind).map(|policy| policy.label());
         Ok(serde_json::json!({
             "status":"available",
             "connection_id":config.id.0,

@@ -47,6 +47,7 @@ fn smoke_config() -> Option<ConnectionConfig> {
                 application_name: "FluxDB test".into(),
             },
         }),
+        sqlserver_profile: None,
     })
 }
 

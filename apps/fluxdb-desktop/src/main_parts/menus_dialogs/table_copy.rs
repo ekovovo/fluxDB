@@ -43,6 +43,7 @@ fn copy_table_mode_row(
 ) -> impl IntoElement {
     let label: SharedString = label.into();
     div()
+        .debug_selector(move || format!("copy-table-mode:{copy_data}"))
         .h(px(34.))
         .px_3()
         .rounded(colors.radius)

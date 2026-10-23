@@ -507,17 +507,6 @@ fn looks_like_decimal(value: &str) -> bool {
     }
 }
 
-fn dialect_for(kind: fluxdb_core::DatabaseKind) -> Option<SqlDialectKind> {
-    match kind {
-        fluxdb_core::DatabaseKind::MySql | fluxdb_core::DatabaseKind::TiDb => {
-            Some(SqlDialectKind::MySql)
-        }
-        fluxdb_core::DatabaseKind::Postgres => Some(SqlDialectKind::Postgres),
-        fluxdb_core::DatabaseKind::Sqlite => Some(SqlDialectKind::Sqlite),
-        _ => None,
-    }
-}
-
 fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

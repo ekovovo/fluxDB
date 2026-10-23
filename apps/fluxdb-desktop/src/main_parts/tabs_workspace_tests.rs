@@ -30,6 +30,7 @@ mod tabs_workspace_tests {
                 mysql_profile: None,
                 postgres_profile: None,
                 dameng_profile: None,
+                sqlserver_profile: None,
             },
             ConnectionConfig {
                 id: ConnectionId(11),
@@ -44,6 +45,7 @@ mod tabs_workspace_tests {
                 mysql_profile: None,
                 postgres_profile: None,
                 dameng_profile: None,
+                sqlserver_profile: None,
             },
         ]));
 

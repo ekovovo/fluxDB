@@ -1,3 +1,9 @@
+/// 失败结果对应的修复请求：结果页序号用于回查本次执行来源。
+struct QueryFailureRepair {
+    result_index: usize,
+    summary: QueryExecutionSummary,
+}
+
 impl NavicatMain {
     /// 抽屉发送时自动绑定当前 SQL 选区。
     ///
@@ -52,7 +58,7 @@ impl NavicatMain {
     fn begin_ai_sql_editor_edit(
         &mut self,
         tab_id: TabId,
-        failure: Option<QueryExecutionSummary>,
+        failure: Option<QueryFailureRepair>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -107,27 +113,65 @@ impl NavicatMain {
         };
         let snapshot = editor.read(cx).buffer.snapshot();
         let selected = editor.read(cx).selection_range().sorted();
+        let current_statements = self.query_statement_runs(tab_id, cx);
+        let mut range_is_selection = false;
         let mut range = if let Some(failure) = failure.as_ref() {
-            // 只接受唯一的完整语句匹配；重复 SQL 或参数替换后无法定位时不猜位置。
-            let expected = failure.sql.trim().trim_end_matches(';').trim();
-            let matches = self
-                .query_statement_runs(tab_id, cx)
-                .into_iter()
-                .filter(|statement| statement.text.trim().trim_end_matches(';').trim() == expected)
-                .collect::<Vec<_>>();
-            if matches.len() != 1 {
-                self.show_message(
-                    tr("app.ai.sql_edit.locate_failed"),
-                    AppMessageKind::Warning,
-                    cx,
-                );
-                return;
+            // 优先按执行时记录的语句身份定位。连接器展示的 SQL 可能已追加 LIMIT、
+            // 去掉注释或替换参数，不能再用它和编辑器原文做逐字匹配。
+            let source_range = query_result_statement_ordinal_for_tab(
+                self.controller.state(),
+                tab_id,
+                failure.result_index,
+            )
+            .and_then(|summary_index| {
+                query_execution_source_range(
+                    self.query_execution_sources
+                        .get(&tab_id)
+                        .map(Vec::as_slice),
+                    summary_index,
+                    &current_statements,
+                )
+            });
+            if let Some(range) = source_range {
+                fluxdb_editor_core::Range::new(range.start, range.end)
+            } else {
+                // 兼容没有来源快照的旧结果；仅在完整语句唯一匹配时使用。
+                let expected = failure
+                    .summary
+                    .sql
+                    .trim()
+                    .trim_end_matches(';')
+                    .trim();
+                let matches = current_statements
+                    .iter()
+                    .filter(|statement| {
+                        statement.text.trim().trim_end_matches(';').trim() == expected
+                    })
+                    .collect::<Vec<_>>();
+                if matches.len() == 1 {
+                    let range = &matches[0].range;
+                    fluxdb_editor_core::Range::new(range.start, range.end)
+                } else if selected.start < selected.end {
+                    range_is_selection = true;
+                    selected
+                } else {
+                    self.show_message(
+                        tr("app.ai.sql_edit.locate_failed"),
+                        AppMessageKind::Warning,
+                        cx,
+                    );
+                    return;
+                }
             }
-            let range = &matches[0].range;
-            fluxdb_editor_core::Range::new(range.start, range.end)
         } else if selected.start < selected.end {
+            range_is_selection = true;
             selected
-        } else if let Some(statement) = self.current_statement(tab_id, cx) {
+        } else if let Some(statement) = {
+            let cursor = editor.read(cx).cursor_offset().min(snapshot.len());
+            current_statements
+                .iter()
+                .find(|statement| statement.range.start <= cursor && cursor <= statement.range.end)
+        } {
             fluxdb_editor_core::Range::new(statement.range.start, statement.range.end)
         } else {
             self.show_message(
@@ -139,7 +183,7 @@ impl NavicatMain {
         };
         // 语句切分范围不含分号；整条语句改写包含其分隔符，避免替换后留下双分号。
         // 显式选区则严格保留用户指定的边界。
-        if (failure.is_some() || selected.is_empty())
+        if !range_is_selection
             && range.end < snapshot.len()
             && snapshot.text_in_range(fluxdb_editor_core::Range::new(range.end, range.end + 1))
                 == ";"
@@ -161,7 +205,12 @@ impl NavicatMain {
         if let Some(failure) = failure {
             let prompt = tr("app.ai.sql_edit.repair_prompt").replace(
                 "%{error}",
-                &failure.message.chars().take(4096).collect::<String>(),
+                &failure
+                    .summary
+                    .message
+                    .chars()
+                    .take(4096)
+                    .collect::<String>(),
             );
             if self.ai_chat.loaded {
                 self.ai_chat
@@ -219,6 +268,64 @@ impl NavicatMain {
                 cx,
             ),
         }
+    }
+}
+
+/// 按本次执行的语句快照定位当前编辑器范围。
+///
+/// `sources` 与执行结果摘要同序：整篇执行时为语句顺序，单条执行为单元素。
+/// 语句 id 含序号和原文，因此重复 SQL 也能区分；执行后若目标语句内容或序号变化，
+/// 返回 `None` 而不是猜测位置。
+fn query_execution_source_range(
+    sources: Option<&[SqlStatementRun]>,
+    summary_index: usize,
+    current_statements: &[SqlStatementRun],
+) -> Option<std::ops::Range<usize>> {
+    let source = sources?.get(summary_index)?;
+    current_statements
+        .iter()
+        .find(|statement| statement.id == source.id && statement.text == source.text)
+        .map(|statement| statement.range.clone())
+}
+
+#[cfg(test)]
+mod query_execution_source_tests {
+    use super::*;
+
+    #[test]
+    fn repeated_sql_uses_the_executed_summary_index() {
+        let statements =
+            sql_editor_adapter::build_statement_runs("SELECT 1;\nSELECT 1;\nSELECT 3;");
+        let range = query_execution_source_range(Some(&statements), 1, &statements)
+            .expect("second repeated statement");
+
+        assert_eq!(range, statements[1].range);
+        assert_ne!(range, statements[0].range);
+    }
+
+    #[test]
+    fn single_statement_execution_maps_to_its_editor_statement() {
+        let statements = sql_editor_adapter::build_statement_runs(
+            "SELECT 'first';\nSELEC 1;\nSELECT 3;",
+        );
+        let sources = vec![statements[1].clone()];
+        let range = query_execution_source_range(Some(&sources), 0, &statements)
+            .expect("failed statement");
+
+        assert_eq!(range, statements[1].range);
+    }
+
+    #[test]
+    fn edited_source_is_not_reused_for_a_different_statement() {
+        let sources =
+            sql_editor_adapter::build_statement_runs("SELECT 1;\nSELEC 1;");
+        let current =
+            sql_editor_adapter::build_statement_runs("SELECT 1;\nSELECT 3;");
+
+        assert_eq!(
+            query_execution_source_range(Some(&sources), 1, &current),
+            None
+        );
     }
 }
 

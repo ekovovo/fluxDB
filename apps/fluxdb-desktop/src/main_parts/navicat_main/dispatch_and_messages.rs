@@ -762,6 +762,7 @@ impl NavicatMain {
                     .retain(|key, _| key.tab_id != *tab_id);
                 self.query_editors.remove(tab_id);
                 self.query_statement_statuses.remove(tab_id);
+                self.query_execution_sources.remove(tab_id);
                 self.query_save_targets.remove(tab_id);
                 self._query_editor_subscriptions.remove(tab_id);
                 self.redis_workbench_inputs.remove(tab_id);

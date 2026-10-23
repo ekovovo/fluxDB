@@ -231,6 +231,8 @@ impl NavicatMain {
             return;
         }
 
+        self.query_execution_sources
+            .insert(tab_id, vec![statement.clone()]);
         self.set_statement_status(tab_id, statement.id, SqlStatementStatus::Running, cx);
         self.dispatch(AppCommand::StartQueryExecution(tab_id), cx);
         let mut controller = self.controller.clone();
@@ -327,6 +329,7 @@ impl NavicatMain {
             return;
         }
 
+        self.query_execution_sources.remove(&tab_id);
         self.dispatch(AppCommand::StartQueryExecution(tab_id), cx);
         let mut controller = self.controller.clone();
         let task = cx.spawn(async move |view, cx| {
@@ -376,6 +379,7 @@ impl NavicatMain {
             return;
         }
 
+        self.query_execution_sources.remove(&request.tab_id);
         self.dispatch(AppCommand::StartQueryExecution(request.tab_id), cx);
         let mut controller = self.controller.clone();
         let task = cx.spawn(async move |view, cx| {
@@ -541,6 +545,8 @@ impl NavicatMain {
             return;
         }
 
+        self.query_execution_sources
+            .insert(tab_id, statements.clone());
         for statement in &statements {
             self.set_statement_status(tab_id, statement.id, SqlStatementStatus::Running, cx);
         }

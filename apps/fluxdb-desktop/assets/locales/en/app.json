@@ -979,7 +979,7 @@
       "busy": "An AI task or SQL edit is already pending. Finish or cancel it first.",
       "unavailable": "The SQL edit target is no longer available. Start a new edit from the editor.",
       "invalid": "Select a non-empty SQL range or statement of at most 64 KiB. Replacement must be plain SQL.",
-      "locate_failed": "The failed SQL cannot be located uniquely. Select the SQL to edit instead.",
+      "locate_failed": "The failed SQL no longer maps to an editor statement. Select the SQL to edit and try again.",
       "conflict": "The SQL editor or its database target changed. No AI edit was applied; start again.",
       "cancelled": "SQL editing was cancelled. No pending edit will be applied.",
       "timeout": "Timed out waiting for the SQL editor. No late edit will be applied.",

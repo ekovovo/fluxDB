@@ -4339,7 +4339,15 @@ fn query_result_error_state(
             .disabled(ai_busy)
             .debug_selector(|| "query-ai-fix".into())
             .on_click(cx.listener(move |this, _, window, cx| {
-                this.begin_ai_sql_editor_edit(tab_id, Some(summary_for_ai.clone()), window, cx);
+                this.begin_ai_sql_editor_edit(
+                    tab_id,
+                    Some(QueryFailureRepair {
+                        result_index,
+                        summary: summary_for_ai.clone(),
+                    }),
+                    window,
+                    cx,
+                );
             })),
         );
 

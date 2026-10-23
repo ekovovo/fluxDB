@@ -979,7 +979,7 @@
       "busy": "已有 AI 任务或待发送的 SQL 修改，请先完成或取消。",
       "unavailable": "SQL 修改目标已不可用，请从编辑器重新发起。",
       "invalid": "请选择非空且不超过 64 KiB 的 SQL 选区或语句；替换内容必须是纯 SQL。",
-      "locate_failed": "无法唯一定位失败的 SQL，请改为选中要修改的 SQL。",
+      "locate_failed": "未找到与失败 SQL 对应的编辑器语句，请选中要修改的 SQL 后重试。",
       "conflict": "SQL 编辑器内容或数据库目标已变化，未应用 AI 修改，请重新发起。",
       "cancelled": "SQL 修改已取消，待处理修改不会继续写入。",
       "timeout": "等待 SQL 编辑器超时，迟到的修改不会写入。",

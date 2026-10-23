@@ -3285,6 +3285,7 @@ fn navicat_main_new(
                             _data_export_object_select_subscriptions: BTreeMap::new(),
                             query_editors: BTreeMap::new(),
                             query_statement_statuses: BTreeMap::new(),
+                            query_execution_sources: BTreeMap::new(),
                             query_save_targets: BTreeMap::new(),
                             // 初始为空，首帧后由 load_persisted_history_in_background 异步填充。
                             saved_queries: Vec::new(),

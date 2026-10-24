@@ -20,6 +20,7 @@
     "running": "Running...",
     "execute": "Execute",
     "add": "Add",
+    "undo": "Undo",
     "confirm": "Confirm",
     "create": "Create",
     "message_separator": ": "
@@ -388,6 +389,17 @@
     "add_condition": "Add condition",
     "reset_conditions": "Reset conditions",
     "apply": "Apply filters",
+    "advanced_condition": "Advanced condition",
+    "input_unsupported": "This data source does not support SQL filter expressions",
+    "mode": {
+      "builder": "Form",
+      "input": "Input"
+    },
+    "completion": {
+      "field": "Current-page field",
+      "operator": "Filter operator",
+      "dialect": "%{dialect} keyword"
+    },
     "no_pending_sql_comment": "-- No pending SQL",
     "filter_value": "Filter value",
     "input_value": "Input value"
@@ -3480,6 +3492,7 @@
       "current_version": "Current version",
       "available_version": "New version v%{version} is available",
       "download": "Download update",
+      "downloading_percent": "Downloading %{percent}%",
       "downloading_detail": "You can keep using the application while downloading. Cancelling will not install the update.",
       "ready_detail": "The update package passed signature and SHA-256 verification. Restart to install and reopen the application.",
       "installing_detail": "Starting the platform installer. The application will exit shortly.",

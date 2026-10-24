@@ -119,7 +119,7 @@ struct NavicatMain {
     _local_filter_search_subscription: Subscription,
     data_filter_search_input: Entity<InputState>,
     _data_filter_search_subscription: Subscription,
-    data_filter_text_input: Entity<InputState>,
+    data_filter_text_input: Entity<gpui_component::input::EditorState>,
     _data_filter_text_subscription: Subscription,
     data_sort_text_input: Entity<InputState>,
     _data_sort_text_subscription: Subscription,
@@ -900,9 +900,13 @@ struct NavicatMain {
     data_sort_rules: BTreeMap<TabId, Vec<DataSortRule>>,
     data_filter_draft_rules: BTreeMap<TabId, Vec<DataFilterRule>>,
     data_sort_draft_rules: BTreeMap<TabId, Vec<DataSortRule>>,
+    /// 最近一次清空排序前的草稿，用于标签区的单步撤销。
+    data_sort_clear_undo: BTreeMap<TabId, Vec<DataSortRule>>,
     data_filter_grouped_tabs: BTreeSet<TabId>,
     data_filter_modes: BTreeMap<TabId, DataFilterMode>,
     data_filter_texts: BTreeMap<TabId, String>,
+    data_filter_condition_completion_signatures:
+        BTreeMap<TabId, (Vec<String>, sql_editor_adapter::SqlDialect, DatabaseKind)>,
     data_sort_texts: BTreeMap<TabId, String>,
     data_filter_panel_heights: BTreeMap<TabId, f32>,
     data_filter_panel_resize_start: Option<DataFilterPanelResizeStart>,

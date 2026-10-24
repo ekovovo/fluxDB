@@ -84,6 +84,24 @@ impl Connector for DamengConnector {
         )
     }
 
+    fn load_data_expression(
+        &self,
+        path: &ObjectPath,
+        offset: u64,
+        limit: u64,
+        sort: &[SortSpec],
+        expression: &fluxdb_core::FilterExpression,
+    ) -> fluxdb_core::Result<DataPage> {
+        dm_load_data_expression(
+            self.config("达梦数据读取需要连接配置上下文")?,
+            path,
+            offset,
+            limit,
+            sort,
+            expression,
+        )
+    }
+
     fn apply_changes(&self, changes: &DataChangeSet) -> fluxdb_core::Result<AppliedChangeOutcome> {
         dm_apply_changes(
             self.config("达梦数据提交需要连接配置上下文")?,

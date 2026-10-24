@@ -97,14 +97,6 @@ fn data_filter_popover_layer(
             colors,
             cx,
         ),
-        DataFilterPopoverKind::SortMenu => data_sort_action_menu(
-            tab_id,
-            popover.sort_index.unwrap_or(0),
-            sort_rules.get(popover.sort_index.unwrap_or(0)),
-            DATA_FILTER_POPOVER_TOP + 66.,
-            colors,
-            cx,
-        ),
     };
 
     div()
@@ -141,35 +133,95 @@ fn data_filter_popover_layer(
 
 const DATA_FILTER_POPOVER_TOP: f32 = 94.;
 
-fn data_filter_panel_height(rules: &[DataFilterRule], mode: DataFilterMode) -> f32 {
-    if mode == DataFilterMode::Text {
-        return 166.;
-    }
+fn data_filter_panel_height(
+    rules: &[DataFilterRule],
+    mode: DataFilterMode,
+    available_data_height: f32,
+) -> f32 {
+    let max_height = (available_data_height * DATA_FILTER_PANEL_MAX_DATA_RATIO)
+        .clamp(DATA_FILTER_PANEL_MIN_HEIGHT, DATA_FILTER_PANEL_MAX_HEIGHT)
+        .min(available_data_height);
     let filter_height = if rules.is_empty() {
         28.
     } else {
         let mut height: f32 = 0.;
-        let mut index = 0;
-        while index < rules.len() {
-            if rules[index].grouped {
-                let mut group_count = 0.;
-                while index < rules.len() && rules[index].grouped {
-                    group_count += 1.;
-                    index += 1;
-                }
-                height += 36. + group_count * 24.;
+        let mut previous_depth = 0u8;
+        for rule in rules {
+            if rule.group_depth > previous_depth {
+                height += f32::from(rule.group_depth - previous_depth) * 18.;
+            } else if rule.group_depth < previous_depth {
+                height += f32::from(previous_depth - rule.group_depth) * 18.;
+            }
+            previous_depth = rule.group_depth;
+            if rule.advanced_expression.is_some() {
+                height += 36.;
+            } else if rule.group_depth > 0 {
+                height += 24.;
             } else {
                 height += 28.;
-                index += 1;
             }
         }
+        height += f32::from(previous_depth) * 18.;
         height
     };
-    (28. + filter_height + 12. + 38. + 38.).max(166.)
+    let fixed_height = 38. + 38.;
+    let content_height = if mode == DataFilterMode::Text {
+        112.
+    } else {
+        filter_height
+    };
+    (content_height + fixed_height)
+        .max(DATA_FILTER_PANEL_MIN_HEIGHT)
+        .min(max_height)
 }
 
-fn clamp_data_filter_panel_height(height: f32) -> f32 {
-    height.clamp(DATA_FILTER_PANEL_MIN_HEIGHT, DATA_FILTER_PANEL_MAX_HEIGHT)
+fn clamp_data_filter_panel_height(height: f32, available_data_height: f32) -> f32 {
+    let max_height = (available_data_height * DATA_FILTER_PANEL_MAX_DATA_RATIO)
+        .clamp(DATA_FILTER_PANEL_MIN_HEIGHT, DATA_FILTER_PANEL_MAX_HEIGHT)
+        .min(available_data_height);
+    height.clamp(DATA_FILTER_PANEL_MIN_HEIGHT, max_height)
+}
+
+#[cfg(test)]
+mod data_filter_panel_height_tests {
+    use super::*;
+
+    fn rule(index: usize) -> DataFilterRule {
+        DataFilterRule {
+            enabled: true,
+            field: Some(format!("field_{index}")),
+            operator: DataFilterOperator::Eq,
+            values: vec![index.to_string()],
+            advanced_expression: None,
+            typed_values: None,
+            connector: fluxdb_core::FilterCombinator::And,
+            group_depth: 0,
+            group_end: 0,
+        }
+    }
+
+    #[test]
+    fn many_rules_never_exceed_thirty_five_percent_of_data_area() {
+        let rules = (0..40).map(rule).collect::<Vec<_>>();
+        for available in [400., 700., 1000., 1600.] {
+            let height = data_filter_panel_height(&rules, DataFilterMode::Builder, available);
+            assert!(height <= available * DATA_FILTER_PANEL_MAX_DATA_RATIO);
+            assert!(height >= DATA_FILTER_PANEL_MIN_HEIGHT);
+        }
+    }
+
+    #[test]
+    fn text_mode_and_user_height_keep_fixed_actions_within_the_cap() {
+        let available = 700.;
+        let max = available * DATA_FILTER_PANEL_MAX_DATA_RATIO;
+        let default_height =
+            data_filter_panel_height(&[], DataFilterMode::Text, available);
+        assert!(default_height <= max);
+        assert_eq!(
+            clamp_data_filter_panel_height(DATA_FILTER_PANEL_MAX_HEIGHT, available),
+            max
+        );
+    }
 }
 
 fn data_filter_builder_rows(
@@ -183,72 +235,76 @@ fn data_filter_builder_rows(
         return data_filter_empty_rule_row(tab_id, default_field, colors, cx);
     }
 
-    let mut list = div()
-        .bg(if colors.is_dark {
-            rgb(0x18314d)
-        } else {
-            rgb(0xd8eefc)
-        })
-        .flex()
-        .flex_col();
+    let mut list = div().flex().flex_col();
 
     let mut index = 0;
+    let mut current_depth = 0u8;
     while index < rules.len() {
         let rule = &rules[index];
-        let show_and = index + 1 < rules.len();
-        if rule.grouped {
-            let group_start = index;
-            let mut group_end = index;
-            while group_end + 1 < rules.len() && rules[group_end + 1].grouped {
-                group_end += 1;
+        if rule.group_depth > current_depth {
+            for depth in current_depth + 1..=rule.group_depth {
+                list = list.child(data_filter_group_open_row(depth, colors));
             }
-            list = list.child(data_filter_group_open_row(colors));
-            for group_index in group_start..=group_end {
-                list = list.child(data_filter_rule_row(
+            current_depth = rule.group_depth;
+        } else if rule.group_depth < current_depth {
+            while current_depth > rule.group_depth {
+                let closing_depth = current_depth;
+                current_depth -= 1;
+                list = list.child(data_filter_group_close_row(
                     tab_id,
-                    group_index,
-                    &rules[group_index],
+                    index.saturating_sub(1),
+                    closing_depth,
+                    current_depth == rule.group_depth,
+                    rules[index.saturating_sub(1)].connector,
+                    false,
                     default_field.clone(),
-                    true,
-                    group_index < group_end,
                     colors,
                     cx,
                 ));
             }
-            list = list.child(data_filter_group_close_row(
-                tab_id,
-                group_end,
-                default_field.clone(),
-                group_end + 1 < rules.len(),
-                colors,
-                cx,
-            ));
-            index = group_end + 1;
-        } else {
-            list = list.child(data_filter_rule_row(
-                tab_id,
-                index,
-                rule,
-                default_field.clone(),
-                false,
-                show_and,
-                colors,
-                cx,
-            ));
-            index += 1;
         }
+        let show_connector = rules
+            .get(index + 1)
+            .is_some_and(|next| next.group_depth >= rule.group_depth);
+        list = list.child(data_filter_rule_row(
+            tab_id,
+            index,
+            rule,
+            default_field.clone(),
+            rule.group_depth,
+            show_connector,
+            colors,
+            cx,
+        ));
+        index += 1;
+    }
+    while current_depth > 0 {
+        let closing_depth = current_depth;
+        current_depth -= 1;
+        list = list.child(data_filter_group_close_row(
+            tab_id,
+            rules.len().saturating_sub(1),
+            closing_depth,
+            false,
+            rules.last().map(|rule| rule.connector).unwrap_or_default(),
+            current_depth == 0,
+            default_field.clone(),
+            colors,
+            cx,
+        ));
     }
     list
 }
 
-fn data_filter_group_open_row(_colors: UiColors) -> Div {
+fn data_filter_group_open_row(depth: u8, colors: UiColors) -> Div {
     div()
         .h(px(18.))
-        .px_3()
+        .pl(px(12. + f32::from(depth.saturating_sub(1)) * 24.))
+        .pr_3()
         .flex()
         .items_center()
         .gap_2()
-        .hover(move |style| style.bg(_colors.hover))
+        .hover(move |style| style.bg(colors.hover))
         .child(div().w(px(28.)))
         .child(
             div()
@@ -263,16 +319,20 @@ fn data_filter_group_open_row(_colors: UiColors) -> Div {
 
 fn data_filter_group_close_row(
     tab_id: TabId,
-    group_end_index: usize,
+    last_rule_index: usize,
+    group_depth: u8,
+    show_connector: bool,
+    connector: fluxdb_core::FilterCombinator,
+    show_actions: bool,
     default_field: Option<String>,
-    show_and: bool,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
     let group_default_field = default_field.clone();
     div()
         .h(px(18.))
-        .px_3()
+        .pl(px(12. + f32::from(group_depth.saturating_sub(1)) * 24.))
+        .pr_3()
         .flex()
         .items_center()
         .gap_2()
@@ -286,24 +346,24 @@ fn data_filter_group_close_row(
                 .text_color(rgb(0x006bd6))
                 .child(")"),
         )
-        .when(show_and, |this| {
-            this.child(
-                div()
-                    .text_size(px(12.))
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .text_color(rgb(0x006bd6))
-                    .child("and"),
-            )
+        .when(show_connector, |this| {
+            this.child(data_filter_connector_button(
+                tab_id,
+                last_rule_index,
+                connector,
+                colors,
+                cx,
+            ))
         })
-        .when(!show_and, |this| {
+        .when(show_actions, |this| {
             this.child(data_filter_small_button("+", colors).on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, _, cx| {
                     this.add_data_filter_rule_after(
                         tab_id,
-                        group_end_index,
+                        last_rule_index,
                         default_field.clone(),
-                        false,
+                        group_depth.saturating_sub(1),
                         cx,
                     );
                     cx.stop_propagation();
@@ -314,9 +374,9 @@ fn data_filter_group_close_row(
                 cx.listener(move |this, _, _, cx| {
                     this.add_data_filter_rule_after(
                         tab_id,
-                        group_end_index,
+                        last_rule_index,
                         group_default_field.clone(),
-                        true,
+                        group_depth,
                         cx,
                     );
                     cx.stop_propagation();
@@ -371,11 +431,25 @@ fn data_filter_rule_row(
     rule_index: usize,
     rule: &DataFilterRule,
     default_field: Option<String>,
-    nested: bool,
+    group_depth: u8,
     show_and: bool,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
+    if let Some(expression) = rule.advanced_expression.as_deref() {
+        return data_filter_advanced_rule_row(
+            tab_id,
+            rule_index,
+            expression,
+            rule.enabled,
+            show_and,
+            rule.connector,
+            group_depth,
+            default_field.clone(),
+            colors,
+            cx,
+        );
+    }
     let fallback_field = tr("app.filter.field");
     let selected_field = rule
         .field
@@ -384,15 +458,14 @@ fn data_filter_rule_row(
         .unwrap_or(fallback_field.as_str());
     let add_default_field = default_field.clone();
     let group_default_field = default_field.clone();
-    let indent = if nested { 40. } else { 12. };
-    let add_grouped = nested;
-    let group_button_grouped = true;
+    let nested = group_depth > 0;
+    let indent = 12. + f32::from(group_depth) * 24.;
     // 值形态决定值槽文案与弹层形态：单值只显示那一个值，区间/列表显示值个数。
     let arity = rule.operator.value_arity();
     let selected_values = rule
         .operator
         .requires_values()
-        .then(|| rule.values.iter().cloned().collect::<Vec<_>>());
+        .then(|| rule.values.to_vec());
     let value_label = selected_values
         .as_deref()
         .map(data_filter_value_label);
@@ -404,6 +477,13 @@ fn data_filter_rule_row(
         .flex()
         .items_center()
         .gap_2()
+        .when(rule.enabled, |this| {
+            this.bg(if colors.is_dark {
+                rgb(0x18314d)
+            } else {
+                rgb(0xeaf4fe)
+            })
+        })
         .hover(move |style| style.bg(colors.hover))
         .child(data_filter_check(rule.enabled, colors).on_mouse_down(
             MouseButton::Left,
@@ -466,15 +546,130 @@ fn data_filter_rule_row(
             })
         })
         .when(show_and, |this| {
-            this.child(
-                div()
-                    .text_size(px(12.))
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .text_color(rgb(0x006bd6))
-                    .child("and"),
-            )
+            this.child(data_filter_connector_button(
+                tab_id,
+                rule_index,
+                rule.connector,
+                colors,
+                cx,
+            ))
         })
         .when(!show_and, |this| {
+            this.child(
+                data_filter_small_button("+", colors)
+                    .debug_selector(move || format!("data-filter-add-rule-{rule_index}"))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _, _, cx| {
+                            this.add_data_filter_rule_after(
+                                tab_id,
+                                rule_index,
+                                add_default_field.clone(),
+                                group_depth,
+                                cx,
+                            );
+                            cx.stop_propagation();
+                        }),
+                    ),
+            )
+            .child(
+                data_filter_small_button("()", colors)
+                    .debug_selector(move || format!("data-filter-add-group-{rule_index}"))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _, _, cx| {
+                            this.add_data_filter_rule_after(
+                                tab_id,
+                                rule_index,
+                                group_default_field.clone(),
+                                group_depth.saturating_add(1),
+                                cx,
+                            );
+                            cx.stop_propagation();
+                        }),
+                    ),
+            )
+        })
+        .child(div().flex_1())
+        .child(data_filter_delete_button(colors).on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |this, _, _, cx| {
+                this.delete_data_filter_rule(tab_id, rule_index, cx);
+                cx.stop_propagation();
+            }),
+        ))
+}
+
+/// 输入条件无法无损拆成字段/运算符/值时保留的高级条件行。
+/// 它只读，但和普通规则一样可禁用/删除并显示全局 AND/OR。
+fn data_filter_advanced_rule_row(
+    tab_id: TabId,
+    rule_index: usize,
+    expression: &str,
+    enabled: bool,
+    show_and: bool,
+    connector: fluxdb_core::FilterCombinator,
+    group_depth: u8,
+    default_field: Option<String>,
+    colors: UiColors,
+    cx: &mut Context<NavicatMain>,
+) -> Div {
+    div()
+        .h(px(36.))
+        .pl(px(12. + f32::from(group_depth) * 24.))
+        .pr_3()
+        .flex()
+        .items_center()
+        .gap_2()
+        .when(enabled, |this| {
+            this.bg(if colors.is_dark {
+                rgb(0x18314d)
+            } else {
+                rgb(0xeaf4fe)
+            })
+        })
+        .hover(move |style| style.bg(colors.hover))
+        .child(data_filter_check(enabled, colors).on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |this, _, _, cx| {
+                this.toggle_data_filter_rule_enabled(tab_id, rule_index, cx);
+                cx.stop_propagation();
+            }),
+        ))
+        .child(
+            div()
+                .debug_selector(|| format!("data-filter-advanced-rule-{rule_index}"))
+                .flex()
+                .flex_col()
+                .min_w(px(0.))
+                .flex_1()
+                .overflow_hidden()
+                .child(
+                    div()
+                        .text_size(px(12.))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(colors.text)
+                        .child(tr("app.filter.advanced_condition").to_string()),
+                )
+                .child(
+                    div()
+                        .text_size(px(11.))
+                        .text_color(colors.muted)
+                        .child(expression.to_string()),
+                ),
+        )
+        .when(show_and, |this| {
+            this.child(data_filter_connector_button(
+                tab_id,
+                rule_index,
+                connector,
+                colors,
+                cx,
+            ))
+        })
+        .when(!show_and, |this| {
+            let add_default_field = default_field.clone();
+            let group_default_field = default_field;
             this.child(data_filter_small_button("+", colors).on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, _, cx| {
@@ -482,7 +677,7 @@ fn data_filter_rule_row(
                         tab_id,
                         rule_index,
                         add_default_field.clone(),
-                        add_grouped,
+                        group_depth,
                         cx,
                     );
                     cx.stop_propagation();
@@ -495,14 +690,13 @@ fn data_filter_rule_row(
                         tab_id,
                         rule_index,
                         group_default_field.clone(),
-                        group_button_grouped,
+                        group_depth.saturating_add(1),
                         cx,
                     );
                     cx.stop_propagation();
                 }),
             ))
         })
-        .child(div().flex_1())
         .child(data_filter_delete_button(colors).on_mouse_down(
             MouseButton::Left,
             cx.listener(move |this, _, _, cx| {
@@ -510,6 +704,42 @@ fn data_filter_rule_row(
                 cx.stop_propagation();
             }),
         ))
+}
+
+fn data_filter_connector_button(
+    tab_id: TabId,
+    rule_index: usize,
+    connector: fluxdb_core::FilterCombinator,
+    colors: UiColors,
+    cx: &mut Context<NavicatMain>,
+) -> Div {
+    div()
+        .debug_selector(move || format!("data-filter-connector-{rule_index}"))
+        .h(px(18.))
+        .px_1()
+        .rounded(colors.radius * 0.5)
+        .text_size(px(12.))
+        .font_weight(gpui::FontWeight::SEMIBOLD)
+        .text_color(rgb(0x006bd6))
+        .cursor_pointer()
+        .flex()
+        .items_center()
+        .justify_center()
+        .hover(move |style| {
+            style.bg(if colors.is_dark {
+                rgb(0x244565)
+            } else {
+                rgb(0xc8e5fb)
+            })
+        })
+        .child(filter_combinator_label(connector))
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |this, _, _, cx| {
+                this.toggle_data_filter_combinator(tab_id, rule_index, cx);
+                cx.stop_propagation();
+            }),
+        )
 }
 
 fn data_filter_value_label(selected_values: &[String]) -> String {
@@ -533,8 +763,7 @@ fn data_filter_single_value_slot(
 ) -> Div {
     let label = rule
         .values
-        .iter()
-        .next()
+        .first()
         .cloned()
         .unwrap_or_else(|| "<?>".to_string());
     data_filter_clickable_text(label, colors).on_mouse_down(
@@ -552,66 +781,109 @@ fn data_filter_single_value_slot(
     )
 }
 
-fn data_sort_empty_rule(
-    tab_id: TabId,
-    default_field: Option<String>,
-    colors: UiColors,
-    cx: &mut Context<NavicatMain>,
-) -> Div {
-    div()
-        .flex()
-        .items_center()
-        .gap_3()
-        .child(data_filter_small_button("+", colors).on_mouse_down(
-            MouseButton::Left,
-            cx.listener(move |this, _, _, cx| {
-                this.add_data_sort_rule(tab_id, default_field.clone(), cx);
-                cx.stop_propagation();
-            }),
-        ))
-        .child(
-            div()
-                .text_size(px(12.))
-                .text_color(colors.muted)
-                .child(tr("app.filter.add_sort_hint")),
-        )
-}
-
 fn data_sort_builder_section(
     tab_id: TabId,
     sort_rules: &[DataSortRule],
+    can_undo_clear: bool,
     default_field: Option<String>,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
-    let mut content = div()
-        .h(px(38.))
-        .px_3()
+    let mut pills = div()
+        .flex_1()
+        .min_w(px(0.))
         .flex()
+        .flex_wrap()
         .items_center()
-        .gap_3()
-        .child(data_filter_section_label(tr("app.filter.sort_mode"), colors));
-
-    if sort_rules.is_empty() {
-        content = content.child(data_sort_empty_rule(tab_id, default_field, colors, cx));
-    } else {
-        let add_field = sort_rules
-            .last()
-            .map(|rule| rule.field.clone())
-            .or(default_field);
-        for (sort_index, rule) in sort_rules.iter().enumerate() {
-            content = content.child(data_sort_rule_row(tab_id, sort_index, rule, colors, cx));
-        }
-        content = content.child(data_filter_small_button("+", colors).on_mouse_down(
-            MouseButton::Left,
-            cx.listener(move |this, _, _, cx| {
-                this.add_data_sort_rule(tab_id, add_field.clone(), cx);
-                cx.stop_propagation();
-            }),
+        .gap_2();
+    let add_field = sort_rules
+        .last()
+        .map(|rule| rule.field.clone())
+        .or_else(|| default_field.clone());
+    for (sort_index, rule) in sort_rules.iter().enumerate() {
+        pills = pills.child(data_sort_rule_pill(
+            tab_id,
+            sort_index,
+            rule,
+            colors,
+            cx,
         ));
     }
-
-    content
+    pills = pills.child(
+        data_filter_small_button("+", colors)
+            .debug_selector(|| "data-sort-add".into())
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _, _, cx| {
+                    this.add_data_sort_rule(tab_id, add_field.clone(), cx);
+                    cx.stop_propagation();
+                }),
+            ),
+    );
+    if !sort_rules.is_empty() {
+        pills = pills
+            .child(
+                div()
+                    .w(px(1.))
+                    .h(px(16.))
+                    .bg(colors.border_soft)
+                    .flex_shrink_0(),
+            )
+            .child(
+                div()
+                    .debug_selector(|| "data-sort-clear".into())
+                    .size(px(24.))
+                    .rounded(colors.radius)
+                    .cursor_pointer()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .hover(move |style| style.bg(colors.hover))
+                    .child(app_icon(AppIcon::Trash, 13., colors.muted))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _, _, cx| {
+                            this.clear_data_sort_rules(tab_id, cx);
+                            cx.stop_propagation();
+                        }),
+                    ),
+            );
+    }
+    if can_undo_clear {
+        pills = pills.child(
+            div()
+                .debug_selector(|| "data-sort-undo-clear".into())
+                .h(px(24.))
+                .px_2()
+                .rounded(colors.radius)
+                .border_1()
+                .border_color(colors.border)
+                .text_size(px(12.))
+                .text_color(colors.text)
+                .cursor_pointer()
+                .flex()
+                .items_center()
+                .hover(move |style| style.bg(colors.hover))
+                .child(tr("app.common.undo"))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, _, _, cx| {
+                        this.undo_clear_data_sort_rules(tab_id, cx);
+                        cx.stop_propagation();
+                    }),
+                ),
+        );
+    }
+    div()
+        .min_h(px(38.))
+        .px_3()
+        .py_1()
+        .flex()
+        .flex_wrap()
+        .items_center()
+        .gap_3()
+        .child(data_filter_section_label(tr("app.filter.sort_mode"), colors))
+        .child(pills)
 }
 
 fn data_filter_section_label(label: impl Into<SharedString>, colors: UiColors) -> Div {
@@ -623,20 +895,6 @@ fn data_filter_section_label(label: impl Into<SharedString>, colors: UiColors) -
         .child(label)
 }
 
-fn data_sort_rule_row(
-    tab_id: TabId,
-    sort_index: usize,
-    rule: &DataSortRule,
-    colors: UiColors,
-    cx: &mut Context<NavicatMain>,
-) -> Div {
-    div()
-        .flex()
-        .items_center()
-        .gap_2()
-        .child(data_sort_rule_pill(tab_id, sort_index, rule, colors, cx))
-}
-
 fn data_sort_rule_pill(
     tab_id: TabId,
     sort_index: usize,
@@ -644,24 +902,68 @@ fn data_sort_rule_pill(
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
+    let direction_tooltip: SharedString = if rule.ascending {
+        tr("app.context.sort_desc")
+    } else {
+        tr("app.context.sort_asc")
+    };
     div()
-        .h(px(22.))
+        .debug_selector(move || format!("data-sort-pill-{sort_index}"))
+        .h(px(24.))
         .rounded(colors.radius)
         .border_1()
-        .border_color(rgb(0x1677ff))
+        .border_color(colors.border)
         .bg(if colors.is_dark {
             rgb(0x13233a)
         } else {
-            rgb(0xeaf4ff)
+            rgb(0xf7faff)
         })
         .flex()
         .items_center()
         .overflow_hidden()
-        .text_color(rgb(0x1677ff))
+        .text_color(colors.text)
+        .on_drop(cx.listener(move |this, drag: &DataSortDrag, _, cx| {
+            if drag.tab_id == tab_id {
+                this.move_data_sort_rule(tab_id, drag.from, sort_index, cx);
+            }
+            cx.stop_propagation();
+        }))
+        .drag_over::<DataSortDrag>(move |style, _, _, _| {
+            style.border_color(rgb(0x1677ff)).bg(if colors.is_dark {
+                rgb(0x18314d)
+            } else {
+                rgb(0xeaf4ff)
+            })
+        })
         .child(
             div()
+                .id(("data-sort-handle", sort_index))
+                .debug_selector(move || format!("data-sort-handle-{sort_index}"))
                 .h_full()
-                .px_2()
+                .w(px(20.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .cursor_move()
+                .child(app_icon(AppIcon::GripVertical, 12., colors.muted))
+                .on_drag(
+                    DataSortDrag {
+                        tab_id,
+                        from: sort_index,
+                        field: rule.field.clone(),
+                        colors,
+                    },
+                    |drag, _, _, cx| {
+                        cx.stop_propagation();
+                        cx.new(|_| drag.clone())
+                    },
+                ),
+        )
+        .child(
+            div()
+                .debug_selector(move || format!("data-sort-field-{sort_index}"))
+                .h_full()
+                .px_1()
                 .flex()
                 .items_center()
                 .text_size(px(12.))
@@ -686,13 +988,18 @@ fn data_sort_rule_pill(
         )
         .child(
             div()
+                .id(("data-sort-direction", sort_index))
+                .debug_selector(move || format!("data-sort-direction-{sort_index}"))
                 .h_full()
-                .w(px(26.))
+                .w(px(24.))
                 .flex()
                 .items_center()
                 .justify_center()
                 .cursor_pointer()
                 .hover(move |style| style.bg(colors.hover))
+                .tooltip(move |window, cx| {
+                    Tooltip::new(direction_tooltip.clone()).build(window, cx)
+                })
                 .child(data_sort_direction_icon(rule.ascending, colors))
                 .on_mouse_down(
                     MouseButton::Left,
@@ -704,25 +1011,19 @@ fn data_sort_rule_pill(
         )
         .child(
             div()
+                .debug_selector(move || format!("data-sort-remove-{sort_index}"))
                 .h_full()
-                .w(px(24.))
+                .w(px(22.))
                 .flex()
                 .items_center()
                 .justify_center()
                 .cursor_pointer()
                 .hover(move |style| style.bg(colors.hover))
-                .child(app_icon(AppIcon::ChevronDown, 13., rgb(0x1677ff)))
+                .child(app_icon(AppIcon::Close, 11., colors.muted))
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, _, _, cx| {
-                        this.data_filter_popover = Some(DataFilterPopover {
-                            tab_id,
-                            kind: DataFilterPopoverKind::SortMenu,
-                            rule_index: None,
-                            sort_index: Some(sort_index),
-                        });
-                        this.sync_table_hover_overlay_block(cx);
-                        cx.notify();
+                        this.delete_data_sort_rule(tab_id, sort_index, cx);
                         cx.stop_propagation();
                     }),
                 ),
@@ -921,171 +1222,6 @@ fn data_filter_operator_menu(
         .child(list)
 }
 
-fn data_sort_action_menu(
-    tab_id: TabId,
-    sort_index: usize,
-    sort_rule: Option<&DataSortRule>,
-    top: f32,
-    colors: UiColors,
-    cx: &mut Context<NavicatMain>,
-) -> Div {
-    let ascending = sort_rule.map(|rule| rule.ascending).unwrap_or(true);
-
-    data_filter_menu_surface(270., 216., colors)
-        .top(px(top))
-        .left(px(116.))
-        .child(
-            data_sort_menu_item(
-                tr("app.filter.change_field").to_string(),
-                None,
-                false,
-                colors,
-            )
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |this, _, _, cx| {
-                    this.open_data_sort_field_menu(tab_id, sort_index, cx);
-                    cx.stop_propagation();
-                }),
-            ),
-        )
-        .child(data_sort_menu_separator(colors))
-        .child(
-            data_sort_menu_item(
-                tr("app.context.sort_asc").to_string(),
-                None,
-                ascending,
-                colors,
-            )
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |this, _, _, cx| {
-                    this.set_data_sort_direction(tab_id, sort_index, true, cx);
-                    cx.stop_propagation();
-                }),
-            ),
-        )
-        .child(
-            data_sort_menu_item(
-                tr("app.context.sort_desc").to_string(),
-                None,
-                !ascending,
-                colors,
-            )
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |this, _, _, cx| {
-                    this.set_data_sort_direction(tab_id, sort_index, false, cx);
-                    cx.stop_propagation();
-                }),
-            ),
-        )
-        .child(data_sort_menu_separator(colors))
-        .child(data_sort_menu_item(
-            tr("app.filter.move_left").to_string(),
-            Some("Ctrl+Left"),
-            false,
-            colors,
-        ))
-        .child(data_sort_menu_item(
-            tr("app.filter.move_right").to_string(),
-            Some("Ctrl+Right"),
-            false,
-            colors,
-        ))
-        .child(data_sort_menu_separator(colors))
-        .child(
-            data_sort_menu_item(
-                tr("app.common.delete").to_string(),
-                None,
-                false,
-                colors,
-            )
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |this, _, _, cx| {
-                    this.delete_data_sort_rule(tab_id, sort_index, cx);
-                    cx.stop_propagation();
-                }),
-            ),
-        )
-        .child(
-            data_sort_menu_item(
-                tr("app.filter.clear_sorts").to_string(),
-                None,
-                false,
-                colors,
-            )
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |this, _, _, cx| {
-                    this.data_sort_draft_rules.remove(&tab_id);
-                    this.data_filter_popover = None;
-                    this.sync_table_hover_overlay_block(cx);
-                    cx.notify();
-                    cx.stop_propagation();
-                }),
-            ),
-        )
-        .child(
-            data_sort_menu_item(
-                tr("app.filter.clear_all").to_string(),
-                None,
-                false,
-                colors,
-            )
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |this, _, _, cx| {
-                    this.clear_data_filter_and_sort_rules(tab_id, cx);
-                    cx.stop_propagation();
-                }),
-            ),
-        )
-}
-
-fn data_sort_menu_item(
-    label: impl Into<String>,
-    shortcut: Option<&'static str>,
-    checked: bool,
-    colors: UiColors,
-) -> Div {
-    let label = label.into();
-    div()
-        .h(px(24.))
-        .px_2()
-        .flex()
-        .items_center()
-        .gap_2()
-        .text_size(px(12.))
-        .text_color(colors.text)
-        .cursor_pointer()
-        .hover(move |style| style.bg(colors.hover))
-        .child(
-            div()
-                .w(px(14.))
-                .text_size(px(12.))
-                .text_color(colors.text)
-                .child(if checked { "✓" } else { "" }),
-        )
-        .child(div().flex_1().child(label))
-        .when_some(shortcut, |this, shortcut| {
-            this.child(
-                div()
-                    .text_size(px(12.))
-                    .text_color(colors.muted)
-                    .child(shortcut),
-            )
-        })
-}
-
-fn data_sort_menu_separator(colors: UiColors) -> Div {
-    div()
-        .h(px(8.))
-        .flex()
-        .items_center()
-        .child(div().h(px(1.)).w_full().bg(colors.border_soft))
-}
 
 /// 单值形态的值弹层：输入框 + 建议值 + 搜索 + 确定/取消（对齐 Navicat 的单值编辑）。
 ///
@@ -1666,7 +1802,7 @@ fn data_filter_batch_toggle(open: &bool, colors: UiColors) -> Div {
 /// 已选值标签区：短值横向排列自动换行，UUID 等长值截断并提示查看；数量多时限制高度滚动。
 fn data_filter_selected_values_tags(
     tab_id: TabId,
-    selected: &BTreeSet<String>,
+    selected: &[String],
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
@@ -1870,7 +2006,7 @@ fn data_filter_suggested_values_list(
     tab_id: TabId,
     rule_index: usize,
     values: &[String],
-    selected: &BTreeSet<String>,
+    selected: &[String],
     search: &str,
     colors: &UiColors,
     cx: &mut Context<NavicatMain>,

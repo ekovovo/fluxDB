@@ -78,7 +78,7 @@ impl AppController {
         let page = if query_result {
             before_page.clone()
         } else {
-            self.load_data_page(&object, pagination, &sort, &filters)
+            self.load_data_page(&object, pagination, &sort, &filters, None)
                 .map_err(|error| {
                     let mut user_error = UserFacingError::from(error);
                     user_error.title = "刷新失败".to_string();

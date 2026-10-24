@@ -5,11 +5,12 @@ impl AppController {
         pagination: Pagination,
         sort: &[SortSpec],
         filters: &[FilterSpec],
+        expression: Option<&FilterExpression>,
     ) -> fluxdb_core::Result<DataPage> {
         let config = self
             .connection_config(object.connection_id)
             .ok_or_else(|| Error::new(ErrorKind::Connection, "连接不存在"))?;
-        load_data_for_connection(config, object, pagination, sort, filters)
+        load_data_for_connection(config, object, pagination, sort, filters, expression)
     }
 
     fn load_table_info(
@@ -48,6 +49,7 @@ impl AppController {
         generation: u64,
         sort: Vec<SortSpec>,
         filters: Vec<FilterSpec>,
+        expression: Option<FilterExpression>,
     ) -> AppEvent {
         let Some(tab) = self.find_tab(tab_id) else {
             return self.fail(Error::new(ErrorKind::Internal, "数据编辑器标签页不存在"));
@@ -78,7 +80,7 @@ impl AppController {
             editor.error = None;
         }
 
-        match self.load_data_page(&object, pagination, &sort, &filters) {
+        match self.load_data_page(&object, pagination, &sort, &filters, expression.as_ref()) {
             Ok(page) => {
                 if let Some(tab) = self.find_tab_mut(tab_id)
                     && let TabKind::DataEditor(editor) = &mut tab.kind
@@ -131,7 +133,7 @@ impl AppController {
             return self.fail(Error::new(ErrorKind::Internal, "Redis 数据编辑器标签页不存在"));
         };
 
-        match self.load_data_page(&object, Pagination::new(0, 1), &[], &[]) {
+        match self.load_data_page(&object, Pagination::new(0, 1), &[], &[], None) {
             Ok(page) => AppEvent::DataLoaded(tab_id, page),
             Err(error) => {
                 let user_error = UserFacingError::from(error);
@@ -327,7 +329,7 @@ impl AppController {
                     name: new_key,
                     kind: ObjectKind::RedisKey,
                 };
-                match self.load_data_page(&key_object, Pagination::new(0, 1), &[], &[]) {
+                match self.load_data_page(&key_object, Pagination::new(0, 1), &[], &[], None) {
                     Ok(page) => AppEvent::DataLoaded(tab_id, page),
                     Err(error) => {
                         let mut user_error = UserFacingError::from(error);
@@ -999,7 +1001,7 @@ impl AppController {
         };
         let connector = RedisConnector::with_config(config);
         match apply(&connector, &object) {
-            Ok(()) => match self.load_data_page(&object, Pagination::new(0, 1), &[], &[]) {
+            Ok(()) => match self.load_data_page(&object, Pagination::new(0, 1), &[], &[], None) {
                 Ok(page) => AppEvent::DataLoaded(tab_id, page),
                 Err(error) => {
                     let mut user_error = UserFacingError::from(error);

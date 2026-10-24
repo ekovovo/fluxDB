@@ -345,8 +345,13 @@ impl NavicatMain {
             (self.update_ui.downloaded_bytes as f32 / self.update_ui.total_bytes as f32 * 100.)
                 .clamp(0., 100.)
         };
+        let progress_percent = progress.round() as u32;
         let notes_empty = notes.is_empty();
-        let mut notes_view = div().flex().flex_col().gap_2();
+        let mut notes_view = div()
+            .debug_selector(|| "update-dialog-notes".into())
+            .flex()
+            .flex_col()
+            .gap_2();
         for (release_version, note) in notes {
             notes_view = notes_view
                 .child(
@@ -543,7 +548,8 @@ impl NavicatMain {
                     .child(
                         div()
                             .flex_1()
-                            .min_h(px(0.))
+                            // 弹窗高度由内容决定；正文不能再被 flex 收缩到 0，否则说明和进度都不可见。
+                            .min_h(px(220.))
                             .overflow_y_scrollbar()
                             .p_4()
                             .child(match status {
@@ -596,15 +602,33 @@ impl NavicatMain {
                                     .flex_col()
                                     .gap_3()
                                     .child(
-                                        Progress::new("update-download-progress")
-                                            .value(progress)
-                                            .color(colors.info)
-                                            .w_full(),
+                                        div()
+                                            .debug_selector(|| "update-download-progress".into())
+                                            .child(
+                                                Progress::new("update-download-progress")
+                                                    .value(progress)
+                                                    .color(colors.info)
+                                                    .accessibility_label(
+                                                        tr("app.settings.update.downloading_percent")
+                                                            .replace(
+                                                                "%{percent}",
+                                                                &progress_percent.to_string(),
+                                                            ),
+                                                    )
+                                                    .w_full(),
+                                            ),
                                     )
                                     .child(
                                         div()
+                                            .debug_selector(|| "update-download-status".into())
+                                            .flex()
+                                            .items_center()
+                                            .justify_between()
+                                            .gap_3()
                                             .text_size(px(11.))
                                             .text_color(colors.muted)
+                                            .child(tr("app.settings.update.downloading_percent")
+                                                .replace("%{percent}", &progress_percent.to_string()))
                                             .child(format!(
                                                 "{} / {}",
                                                 format_bytes(self.update_ui.downloaded_bytes),

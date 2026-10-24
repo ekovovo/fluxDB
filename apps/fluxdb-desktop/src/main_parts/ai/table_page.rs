@@ -587,6 +587,7 @@ impl NavicatMain {
                         generation,
                         sort: Vec::new(),
                         filters: Vec::new(),
+                        expression: None,
                     })
                 })
                 .await;
@@ -739,7 +740,11 @@ impl NavicatMain {
                 field: Some(item.field.clone()),
                 operator,
                 values: item.values.iter().cloned().collect(),
-                grouped: false,
+                advanced_expression: None,
+                typed_values: None,
+                connector: fluxdb_core::FilterCombinator::And,
+                group_depth: 0,
+                        group_end: 0,
             });
         }
         let sorts = query

@@ -32,6 +32,7 @@ use std::{
 
 // First-pass source split: included files remain in crate-root scope while connector modules are refined.
 include!("parts/common.rs");
+pub mod filter_dialects;
 include!("parts/mock.rs");
 include!("parts/transport.rs");
 include!("parts/mysql.rs");
@@ -54,3 +55,8 @@ mod mysql_native_tools;
 pub use mysql_native_tools::*;
 
 include!("parts/backup_restore.rs");
+
+/// 注册进程级筛选方言实现。由 app 初始化调用；重复调用安全。
+pub fn register_filter_dialects() {
+    fluxdb_core::register_filter_dialect_resolver(filter_dialects::filter_dialect);
+}

@@ -2,8 +2,7 @@ fn data_filter_rule_sql(rule: &DataFilterRule, db_kind: DatabaseKind) -> Option<
     if !rule.enabled {
         return None;
     }
-    let field = rule.field.as_deref()?;
-    let field = sql_quote_ident(field, db_kind);
+    let field = sql_quote_ident(rule.field.as_deref()?, db_kind);
     let normalized_values = rule
         .values
         .iter()
@@ -95,73 +94,27 @@ fn data_filter_multi_value_sql(
     }
 }
 
-fn data_filter_rules_sql(rules: &[DataFilterRule], db_kind: DatabaseKind) -> String {
-    let mut clauses = Vec::new();
-    let mut index = 0;
-    while index < rules.len() {
-        let rule = &rules[index];
-        if rule.grouped {
-            let mut group_clauses = Vec::new();
-            while index < rules.len() && rules[index].grouped {
-                if let Some(sql) = data_filter_rule_sql(&rules[index], db_kind) {
-                    group_clauses.push(sql);
-                }
-                index += 1;
-            }
-            if !group_clauses.is_empty() {
-                clauses.push(format!("({})", group_clauses.join(" AND ")));
-            }
-        } else {
-            if let Some(sql) = data_filter_rule_sql(rule, db_kind) {
-                clauses.push(sql);
-            }
-            index += 1;
-        }
-    }
-    clauses.join(" AND ")
+fn data_filter_rules_sql(
+    rules: &[DataFilterRule],
+    db_kind: DatabaseKind,
+    columns: &[GdbColumn],
+) -> String {
+    data_filter_expression_from_rules(rules, columns)
+        .ok()
+        .and_then(|expression| {
+            fluxdb_core::filter_dialect_for(db_kind)?
+                .render_with_columns(&expression, columns)
+                .ok()
+        })
+        .unwrap_or_default()
 }
 
-fn data_filter_rules_sql_pretty(rules: &[DataFilterRule], db_kind: DatabaseKind) -> String {
-    let mut lines = Vec::new();
-    let mut index = 0;
-    while index < rules.len() {
-        if rules[index].grouped {
-            let group_start = index;
-            let mut group_lines = Vec::new();
-            while index < rules.len() && rules[index].grouped {
-                if let Some(sql) = data_filter_rule_sql(&rules[index], db_kind) {
-                    group_lines.push(sql);
-                }
-                index += 1;
-            }
-            if !group_lines.is_empty() {
-                lines.push(if group_start == 0 {
-                    "(".to_string()
-                } else {
-                    "AND (".to_string()
-                });
-                for (group_index, sql) in group_lines.iter().enumerate() {
-                    let suffix = if group_index + 1 < group_lines.len() {
-                        " AND"
-                    } else {
-                        ""
-                    };
-                    lines.push(format!("  {sql}{suffix}"));
-                }
-                lines.push(")".to_string());
-            }
-        } else {
-            if let Some(sql) = data_filter_rule_sql(&rules[index], db_kind) {
-                lines.push(if lines.is_empty() {
-                    sql
-                } else {
-                    format!("AND {sql}")
-                });
-            }
-            index += 1;
-        }
-    }
-    lines.join("\n")
+fn data_filter_rules_sql_pretty(
+    rules: &[DataFilterRule],
+    db_kind: DatabaseKind,
+    columns: &[GdbColumn],
+) -> String {
+    data_filter_rules_sql(rules, db_kind, columns)
 }
 
 fn parse_data_filter_rule_text(text: &str) -> Option<DataFilterRule> {
@@ -233,7 +186,7 @@ fn parse_data_filter_rules_text(text: &str) -> Option<Vec<DataFilterRule>> {
             if inner_parts.len() > 1 {
                 for inner_part in inner_parts {
                     let mut rule = parse_data_filter_rule_text(inner_part)?;
-                    rule.grouped = true;
+                    rule.group_depth = 1;
                     rules.push(rule);
                 }
             } else if let Some(rule) = parse_data_filter_rule_text(inner) {
@@ -351,7 +304,7 @@ fn parse_data_filter_multi_value_rule(
     }
 
     let mut field = None;
-    let mut values = BTreeSet::new();
+    let mut values = Vec::new();
     for part in parts {
         let (part_field, part_operator, value) = parse_data_filter_simple_piece(part)?;
         if part_operator != operator {
@@ -362,8 +315,8 @@ fn parse_data_filter_multi_value_rule(
             None => field = Some(part_field),
             _ => {}
         }
-        if !value.is_empty() && value != "?" {
-            values.insert(value);
+        if !value.is_empty() && value != "?" && !values.contains(&value) {
+            values.push(value);
         }
     }
 
@@ -372,7 +325,11 @@ fn parse_data_filter_multi_value_rule(
         field,
         operator,
         values,
-        grouped: false,
+        advanced_expression: None,
+        typed_values: None,
+        connector: fluxdb_core::FilterCombinator::And,
+        group_depth: 0,
+                        group_end: 0,
     })
 }
 
@@ -394,8 +351,12 @@ fn parse_data_filter_null_rule(text: &str) -> Option<DataFilterRule> {
             enabled: true,
             field: Some(parse_sql_identifier(field)?),
             operator: DataFilterOperator::IsNotNull,
-            values: BTreeSet::new(),
-            grouped: false,
+            values: Vec::new(),
+            advanced_expression: None,
+            typed_values: None,
+            connector: fluxdb_core::FilterCombinator::And,
+            group_depth: 0,
+                        group_end: 0,
         });
     }
     if let Some(field) = trim_suffix_case_insensitive(text, " IS NULL") {
@@ -403,8 +364,12 @@ fn parse_data_filter_null_rule(text: &str) -> Option<DataFilterRule> {
             enabled: true,
             field: Some(parse_sql_identifier(field)?),
             operator: DataFilterOperator::IsNull,
-            values: BTreeSet::new(),
-            grouped: false,
+            values: Vec::new(),
+            advanced_expression: None,
+            typed_values: None,
+            connector: fluxdb_core::FilterCombinator::And,
+            group_depth: 0,
+                        group_end: 0,
         });
     }
     if let Some(field) = trim_suffix_case_insensitive(text, " IS NOT EMPTY") {
@@ -412,8 +377,12 @@ fn parse_data_filter_null_rule(text: &str) -> Option<DataFilterRule> {
             enabled: true,
             field: Some(parse_sql_identifier(field)?),
             operator: DataFilterOperator::IsNotEmpty,
-            values: BTreeSet::new(),
-            grouped: false,
+            values: Vec::new(),
+            advanced_expression: None,
+            typed_values: None,
+            connector: fluxdb_core::FilterCombinator::And,
+            group_depth: 0,
+                        group_end: 0,
         });
     }
     if let Some(field) = trim_suffix_case_insensitive(text, " IS EMPTY") {
@@ -421,8 +390,12 @@ fn parse_data_filter_null_rule(text: &str) -> Option<DataFilterRule> {
             enabled: true,
             field: Some(parse_sql_identifier(field)?),
             operator: DataFilterOperator::IsEmpty,
-            values: BTreeSet::new(),
-            grouped: false,
+            values: Vec::new(),
+            advanced_expression: None,
+            typed_values: None,
+            connector: fluxdb_core::FilterCombinator::And,
+            group_depth: 0,
+                        group_end: 0,
         });
     }
 
@@ -433,8 +406,12 @@ fn parse_data_filter_null_rule(text: &str) -> Option<DataFilterRule> {
                 enabled: true,
                 field: Some(parse_sql_identifier(field)?),
                 operator: DataFilterOperator::IsNotEmpty,
-                values: BTreeSet::new(),
-                grouped: false,
+                values: Vec::new(),
+                advanced_expression: None,
+                typed_values: None,
+                connector: fluxdb_core::FilterCombinator::And,
+                group_depth: 0,
+                        group_end: 0,
             });
         }
     }
@@ -445,8 +422,12 @@ fn parse_data_filter_null_rule(text: &str) -> Option<DataFilterRule> {
                 enabled: true,
                 field: Some(parse_sql_identifier(field)?),
                 operator: DataFilterOperator::IsEmpty,
-                values: BTreeSet::new(),
-                grouped: false,
+                values: Vec::new(),
+                advanced_expression: None,
+                typed_values: None,
+                connector: fluxdb_core::FilterCombinator::And,
+                group_depth: 0,
+                        group_end: 0,
             });
         }
     }
@@ -465,11 +446,11 @@ fn parse_data_filter_between_rule(text: &str) -> Option<DataFilterRule> {
                 return None;
             }
             let field = parse_sql_identifier(field)?;
-            let mut values = BTreeSet::new();
+            let mut values = Vec::new();
             for part in parts {
                 let value = parse_sql_literal(part.trim()).unwrap_or_else(|| part.trim().to_string());
                 if !value.is_empty() {
-                    values.insert(value);
+                    values.push(value);
                 }
             }
             return Some(DataFilterRule {
@@ -477,7 +458,11 @@ fn parse_data_filter_between_rule(text: &str) -> Option<DataFilterRule> {
                 field: Some(field),
                 operator,
                 values,
-                grouped: false,
+                advanced_expression: None,
+                typed_values: None,
+                connector: fluxdb_core::FilterCombinator::And,
+                group_depth: 0,
+                        group_end: 0,
             });
         }
     }
@@ -490,11 +475,11 @@ fn parse_data_filter_in_rule(text: &str) -> Option<DataFilterRule> {
             let rest = rest.trim();
             let rest = rest.strip_prefix('(')?.strip_suffix(')')?;
             let field = parse_sql_identifier(field)?;
-            let mut values = BTreeSet::new();
+            let mut values = Vec::new();
             for part in split_top_level_sql_list(rest) {
                 let value = parse_sql_literal(part.trim()).unwrap_or_else(|| part.trim().to_string());
                 if !value.is_empty() {
-                    values.insert(value);
+                    values.push(value);
                 }
             }
             return Some(DataFilterRule {
@@ -502,7 +487,11 @@ fn parse_data_filter_in_rule(text: &str) -> Option<DataFilterRule> {
                 field: Some(field),
                 operator,
                 values,
-                grouped: false,
+                advanced_expression: None,
+                typed_values: None,
+                connector: fluxdb_core::FilterCombinator::And,
+                group_depth: 0,
+                        group_end: 0,
             });
         }
     }
@@ -510,32 +499,40 @@ fn parse_data_filter_in_rule(text: &str) -> Option<DataFilterRule> {
 }
 
 fn parse_data_filter_like_rule(text: &str) -> Option<DataFilterRule> {
-    let (field, operator, values) = parse_data_filter_like_piece(text)?;
-    let mut set = BTreeSet::new();
-    if !values.is_empty() && values != "?" {
-        set.insert(values);
-    }
+    let (field, operator, parsed_value) = parse_data_filter_like_piece(text)?;
+    let values = (!parsed_value.is_empty() && parsed_value != "?")
+        .then_some(parsed_value)
+        .into_iter()
+        .collect();
     Some(DataFilterRule {
         enabled: true,
         field: Some(field),
         operator,
-        values: set,
-        grouped: false,
+        values,
+        advanced_expression: None,
+        typed_values: None,
+        connector: fluxdb_core::FilterCombinator::And,
+        group_depth: 0,
+                        group_end: 0,
     })
 }
 
 fn parse_data_filter_comparison_rule(text: &str) -> Option<DataFilterRule> {
-    let (field, operator, values) = parse_data_filter_comparison_piece(text)?;
-    let mut set = BTreeSet::new();
-    if !values.is_empty() && values != "?" {
-        set.insert(values);
-    }
+    let (field, operator, parsed_value) = parse_data_filter_comparison_piece(text)?;
+    let values = (!parsed_value.is_empty() && parsed_value != "?")
+        .then_some(parsed_value)
+        .into_iter()
+        .collect();
     Some(DataFilterRule {
         enabled: true,
         field: Some(field),
         operator,
-        values: set,
-        grouped: false,
+        values,
+        advanced_expression: None,
+        typed_values: None,
+        connector: fluxdb_core::FilterCombinator::And,
+        group_depth: 0,
+                        group_end: 0,
     })
 }
 
@@ -659,7 +656,10 @@ fn split_top_level_sql_list(text: &str) -> Vec<&str> {
 }
 
 fn trim_start_matches_case_insensitive<'a>(text: &'a str, prefix: &str) -> &'a str {
-    if text.len() >= prefix.len() && text[..prefix.len()].eq_ignore_ascii_case(prefix) {
+    if text
+        .get(..prefix.len())
+        .is_some_and(|value| value.eq_ignore_ascii_case(prefix))
+    {
         &text[prefix.len()..]
     } else {
         text
@@ -667,12 +667,10 @@ fn trim_start_matches_case_insensitive<'a>(text: &'a str, prefix: &str) -> &'a s
 }
 
 fn trim_suffix_case_insensitive<'a>(text: &'a str, suffix: &str) -> Option<&'a str> {
-    if text.len() >= suffix.len() && text[text.len() - suffix.len()..].eq_ignore_ascii_case(suffix)
-    {
-        Some(&text[..text.len() - suffix.len()])
-    } else {
-        None
-    }
+    let start = text.len().checked_sub(suffix.len())?;
+    let tail = text.get(start..)?;
+    tail.eq_ignore_ascii_case(suffix)
+        .then(|| &text[..start])
 }
 
 fn is_sql_word_at(text: &str, index: usize, word: &str) -> bool {
@@ -1275,10 +1273,7 @@ fn row_tsv_rows_text(rows: &[&[RowFieldSnapshot]]) -> String {
 }
 
 fn tsv_cell(value: &str) -> String {
-    value
-        .replace('\t', " ")
-        .replace('\r', " ")
-        .replace('\n', " ")
+    value.replace(['\t', '\r', '\n'], " ")
 }
 
 fn row_insert_sql(
@@ -1397,5 +1392,35 @@ fn sql_preview_cell_literal(value: &CellValue, db_kind: DatabaseKind) -> String 
                 format!("X'{}'", hex.to_uppercase())
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod sql_parser_tests {
+    use super::*;
+
+    #[test]
+    fn sql_panel_parses_multibyte_literals_and_nested_conditions() {
+        let sql = "SELECT * FROM `fluxdb_demo`.`customers` WHERE (`id` = 1 OR ((`signup_date` < '2026-01-05' AND `signup_date` >= '2026-04-19') OR `name` LIKE '%等等%')) LIMIT 100";
+
+        let parsed = parse_data_editor_sql_text(sql).expect("multibyte SQL panel text");
+
+        assert_eq!(
+            parsed.filter_text,
+            "(`id` = 1 OR ((`signup_date` < '2026-01-05' AND `signup_date` >= '2026-04-19') OR `name` LIKE '%等等%'))"
+        );
+        assert_eq!(parsed.limit, Some(100));
+    }
+
+    #[test]
+    fn suffix_trimming_does_not_split_multibyte_text() {
+        assert_eq!(
+            trim_suffix_case_insensitive("name LIKE '%等等%' IS NULL", " IS NULL"),
+            Some("name LIKE '%等等%'")
+        );
+        assert_eq!(
+            trim_suffix_case_insensitive("名字 IS NULL", " IS NULL"),
+            Some("名字")
+        );
     }
 }

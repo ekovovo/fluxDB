@@ -264,6 +264,28 @@ fn clamp_cell_detail_drawer_height(height: f32) -> f32 {
     height.clamp(CELL_DETAIL_DRAWER_MIN_HEIGHT, CELL_DETAIL_DRAWER_MAX_HEIGHT)
 }
 
+#[cfg(test)]
+mod cell_detail_drawer_height_tests {
+    use super::*;
+
+    #[test]
+    fn minimum_height_keeps_edit_controls_and_value_area_visible() {
+        let outer_padding = 16.;
+        let flex_gaps = 4. * 8.;
+        let fixed_rows = 8. + 54. + 22. + 26.;
+        let minimum_value_area = 56.;
+
+        assert!(
+            CELL_DETAIL_DRAWER_MIN_HEIGHT
+                >= outer_padding + flex_gaps + fixed_rows + minimum_value_area
+        );
+        assert_eq!(
+            clamp_cell_detail_drawer_height(0.),
+            CELL_DETAIL_DRAWER_MIN_HEIGHT
+        );
+    }
+}
+
 fn cell_detail_value_header(
     tab_id: TabId,
     mode: CellDetailMode,

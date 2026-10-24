@@ -2640,16 +2640,9 @@ impl Editor {
             op = "completion_accept",
             session = self.session_state().as_str(),
         );
-        let cursor = self.cursor_offset();
-        let prefix = self.completion_prefix();
-        let fallback_start = cursor.saturating_sub(prefix.len());
-        let requested = item
-            .replace_range
-            .unwrap_or_else(|| CoreRange::new(fallback_start, cursor));
-        let replace_start = requested.start.min(self.buffer.len());
-        let replace_end = requested.end.min(self.buffer.len()).max(replace_start);
-        let replace_start = replace_start.min(self.buffer.len());
-        let replace_end = replace_end.min(self.buffer.len()).max(replace_start);
+        let replacement = self.completion_replacement_range(&item);
+        let replace_start = replacement.start;
+        let replace_end = replacement.end;
         // Snippet 解析：仅显式声明 Snippet 格式时解析 tabstop，否则原样插入。
         let (insert_text, tabstops) = match item.insert_text_format {
             InsertTextFormat::Snippet => match fluxdb_editor_core::parse_snippet(&item.insert_text) {
@@ -2786,10 +2779,22 @@ impl Editor {
         cx.notify();
     }
 
+    pub(crate) fn completion_replacement_range(&self, item: &CompletionItem) -> CoreRange {
+        let cursor = self.cursor_offset();
+        let prefix = self.completion_prefix();
+        let fallback_start = cursor.saturating_sub(prefix.len());
+        let requested = item
+            .replace_range
+            .unwrap_or_else(|| CoreRange::new(fallback_start, cursor));
+        clamp_completion_range_to_char_boundaries(&self.buffer.snapshot(), requested)
+    }
+
     /// 把光标定位到 `offset`（字节）并请求重绘，供宿主「跳转到某条语句」使用。
     /// 当前 `ensure_cursor_visible` 为空实现，故此处仅移动光标/选区。
     pub(crate) fn reveal_offset(&mut self, offset: usize, cx: &mut Context<Self>) {
-        let offset = offset.min(self.buffer.len());
+        let offset = self
+            .buffer
+            .clamp_to_char_boundary(offset.min(self.buffer.len()));
         self.selection = Selection::new(offset, offset);
         cx.notify();
     }
@@ -3611,6 +3616,17 @@ fn filter_completion_items_preserving_order(items: Vec<CompletionItem>, query: &
     items.into_iter().filter(|item| item.match_score(query).is_some()).collect()
 }
 
+fn clamp_completion_range_to_char_boundaries(
+    snapshot: &fluxdb_editor_core::BufferSnapshot,
+    requested: CoreRange,
+) -> CoreRange {
+    let start = snapshot.clamp_to_char_boundary(requested.start.min(snapshot.len()));
+    let end = snapshot
+        .clamp_to_char_boundary(requested.end.min(snapshot.len()))
+        .max(start);
+    CoreRange::new(start, end)
+}
+
 // ---------------------------------------------------------------- 光标移动目标
 
 #[derive(Clone, Copy)]
@@ -3678,6 +3694,20 @@ impl Editor {
 
     pub(crate) fn line_height(&self, _window: &Window) -> gpui::Pixels {
         gpui::px(self.line_height.max(self.font_size + 1.))
+    }
+}
+
+#[cfg(test)]
+mod multibyte_completion_tests {
+    use super::*;
+
+    #[test]
+    fn completion_replacement_range_is_clamped_to_char_boundaries() {
+        let buffer = EditorBuffer::new_from("等等");
+        let range =
+            clamp_completion_range_to_char_boundaries(&buffer.snapshot(), CoreRange::new(1, 4));
+
+        assert_eq!(range, CoreRange::new(0, 3));
     }
 }
 

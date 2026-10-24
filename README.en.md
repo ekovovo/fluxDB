@@ -19,7 +19,19 @@ FluxDB is built with Rust and GPUI, without Electron or a WebView. It brings MyS
 
 ## Latest changes
 
-### Since v0.1.10 (unreleased)
+### v0.1.12
+
+- **Bidirectional filter form and SQL input**: switch between form and condition-input editing in either direction. Form values populate the input automatically, and typed conditions can be parsed back into editable form rules while preserving groups, AND/OR combinations and sort rules.
+- **All SQL data sources**: MySQL, TiDB, PostgreSQL, SQL Server, SQLite and Dameng DM8 apply their own dialect behavior for types, operators, identifiers and `LIKE` wildcard escaping.
+- **Complex conditions**: edit multiple rules, nested parentheses and per-row AND/OR connectors; condition input includes completion and a synchronized highlighted SQL preview.
+- **Filter and sort interaction**: the mode switch appears only while filters are expanded; conditions scroll while sort and apply actions stay fixed, with the expanded area limited to 35% of the data region. Sort rules support field changes, direction, removal, clear/undo and drag reordering by a six-dot handle.
+- **Field detail sizing**: the detail drawer now has a 220px minimum height so metadata, the value editor and save actions remain visible while resizing.
+- **Stability**: fixed UTF-8 character-boundary crashes in filter parsing, SQL editor completion and diagnostic positioning, with cross-dialect, nested-condition and round-trip coverage.
+- **Update experience**: in-app updates show the download percentage, downloaded size and total size, and display localized release notes in the update dialog.
+
+[Full release notes](./release-notes/v0.1.12/en.md) · [All releases](https://github.com/fluxdb-alt/fluxDB/releases)
+
+### v0.1.11
 
 - **SQL Server support**: SQL authentication, TLS, database/schema/object browsing, T-SQL queries, table design and data editing, table import/export, logins, database users, role membership and explicit permissions, object-level logical backup/restore, and AI page context with controlled execution.
 - **SQL Server first-release limits**: Windows integrated authentication, Azure AD, contained database users, column-level permission editing, user-defined server roles, automatic named-instance discovery, and database-level physical backup are not implemented yet. See [Database support](#database-support).
@@ -27,15 +39,6 @@ FluxDB is built with Rust and GPUI, without Electron or a WebView. It brings MyS
 - **Table designer**: expanded dialect-specific types and adaptive column options, on-demand enum/custom-type editing, validated lengths and precision, and consistent PostgreSQL/MySQL type display.
 - **Results and Redis workspace**: query-summary metadata columns are more compact, long column comments wrap correctly, and Redis tabs are grouped by connection as top-level workspaces.
 - **AI repair targeting**: failed-SQL repair now locates the editor statement using the actual execution source, so it remains correct after SQL rewriting.
-
-### v0.1.10
-
-- **Dameng DM8 support**: connections, schema and object browsing, SQL queries, table design and data editing.
-- **Table data import wizard**: TXT, CSV, JSON and XML with column mapping, append/truncate modes and import logs.
-- **More AI Agent permissions**: query a table with explicit page access, or rewrite an authorized SQL range without automatically executing it.
-- **In-app updates**: check GitHub Releases and verify the signed manifest and package checksum before installing.
-
-[Full release notes](./release-notes/v0.1.10/en.md) · [All releases](https://github.com/fluxdb-alt/fluxDB/releases)
 
 ## Why FluxDB
 

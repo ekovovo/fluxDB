@@ -24,6 +24,13 @@ impl NavicatMain {
 
         let sort = self.data_sort_specs_for_tab(tab_id);
         let filters = self.data_filter_specs_for_tab(tab_id);
+        let expression = match self.data_filter_expression_for_tab(tab_id) {
+            Ok(expression) => expression,
+            Err(error) => {
+                self.show_message(error.to_string(), AppMessageKind::Warning, cx);
+                return;
+            }
+        };
         let event = self
             .controller
             .dispatch(AppCommand::BeginDataPageLoad(tab_id));
@@ -37,6 +44,7 @@ impl NavicatMain {
                 generation,
                 sort,
                 filters,
+                expression: Some(expression),
             },
             move |this, event, cx| {
                 if matches!(event, AppEvent::DataPageLoadDiscarded { .. }) {

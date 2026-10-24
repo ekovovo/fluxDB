@@ -1,5 +1,6 @@
 impl AppController {
     pub fn new() -> Self {
+        fluxdb_connectors::register_filter_dialects();
         Self {
             state: AppState::default(),
             next_connection_id: 1,
@@ -134,7 +135,7 @@ impl AppController {
         sort: &[SortSpec],
         filters: &[FilterSpec],
     ) -> fluxdb_core::Result<DataPage> {
-        self.load_data_page(object, Pagination::new(offset, limit), sort, filters)
+        self.load_data_page(object, Pagination::new(offset, limit), sort, filters, None)
     }
 
     /// 一致快照分页导出（PG 经单 REPEATABLE READ 事务，其余默认逐页）。

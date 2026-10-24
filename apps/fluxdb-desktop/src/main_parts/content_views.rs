@@ -672,7 +672,6 @@ fn data_editor_content(
     let local_filter_draft_values = this.local_filter_draft_values.clone();
     let data_filter_search_input = this.data_filter_search_input.clone();
     let data_filter_text_input = this.data_filter_text_input.clone();
-    let data_sort_text_input = this.data_sort_text_input.clone();
     let data_sql_panel_input = this.data_sql_panel_input.clone();
     let data_page_input = this.data_page_input.clone();
     let data_search_input = this.data_search_input.clone();
@@ -683,14 +682,20 @@ fn data_editor_content(
         .get(&tab_id)
         .copied()
         .unwrap_or(DataFilterMode::Builder);
+    let available_data_height =
+        (f32::from(window.viewport_size().height) - 40. - 24.).max(0.);
     let default_filter_panel_height =
-        data_filter_panel_height(filter_rules.as_slice(), filter_mode);
+        data_filter_panel_height(filter_rules.as_slice(), filter_mode, available_data_height);
     let filter_panel_height = this
         .data_filter_panel_heights
         .get(&tab_id)
         .copied()
-        .map(clamp_data_filter_panel_height)
+        .map(|height| clamp_data_filter_panel_height(height, available_data_height))
         .unwrap_or(default_filter_panel_height);
+    let filter_panel_max_height =
+        (available_data_height * DATA_FILTER_PANEL_MAX_DATA_RATIO)
+            .clamp(DATA_FILTER_PANEL_MIN_HEIGHT, DATA_FILTER_PANEL_MAX_HEIGHT)
+            .min(available_data_height);
     let filter_text = this
         .data_filter_texts
         .get(&tab_id)
@@ -713,6 +718,11 @@ fn data_editor_content(
             builder.child(data_editor_toolbar(
                 tab_id,
                 filter_open,
+                this.data_filter_modes
+                    .get(&tab_id)
+                    .copied()
+                    .unwrap_or(DataFilterMode::Builder),
+                this.connection_database_kind(editor.object.connection_id),
                 search_open,
                 field_filter_open,
                 None,
@@ -776,6 +786,7 @@ fn data_editor_content(
     let db_kind = this.connection_database_kind(editor.object.connection_id);
     let sql = data_editor_sql_preview(
         &editor.object,
+        &page.columns,
         filter_rules.as_slice(),
         sort_rules.as_slice(),
         filter_mode,
@@ -835,6 +846,8 @@ fn data_editor_content(
         builder.child(data_editor_toolbar(
             tab_id,
             filter_open,
+            filter_mode,
+            db_kind,
             search_open,
             field_filter_open,
             field_count,
@@ -852,11 +865,13 @@ fn data_editor_content(
             page,
             filter_rules.as_slice(),
             sort_rules.as_slice(),
+            this.data_sort_clear_undo.contains_key(&tab_id),
             filter_mode,
             filter_panel_height,
+            filter_panel_max_height,
             filter_applying,
             data_filter_text_input,
-            data_sort_text_input,
+            db_kind,
             colors,
             window,
             cx,
@@ -5636,6 +5651,8 @@ fn redis_key_search_history_occlude(colors: UiColors, cx: &mut Context<NavicatMa
 fn data_editor_toolbar(
     tab_id: TabId,
     filter_open: bool,
+    filter_mode: DataFilterMode,
+    database_kind: DatabaseKind,
     search_open: bool,
     field_filter_open: bool,
     field_count: Option<(usize, usize)>,
@@ -5644,6 +5661,7 @@ fn data_editor_toolbar(
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
+    let filter_dialect = sql_editor_adapter::SqlDialect::from_database_kind(database_kind);
     div()
         .h(px(40.))
         .border_b_1()
@@ -5658,14 +5676,61 @@ fn data_editor_toolbar(
                 .items_center()
                 .gap_2()
                 .when(show_table_tools, |this| this.child(
-                    data_editor_action(tr("app.data.toolbar.filter_sort"), colors)
-                        .when(filter_open, |this| {
-                            this.border_color(rgb(0x7db4ff)).bg(if colors.is_dark {
+                    div()
+                        .debug_selector(|| "data-filter-sort-toggle".into())
+                        .h(px(28.))
+                        .px_3()
+                        .rounded(colors.radius_lg)
+                        .border_1()
+                        .border_color(if filter_open {
+                            rgb(0x7db4ff)
+                        } else {
+                            colors.border
+                        })
+                        .bg(if filter_open {
+                            if colors.is_dark {
                                 rgb(0x16345f)
                             } else {
                                 rgb(0xe8f2ff)
-                            })
+                            }
+                        } else {
+                            colors.panel_alt
                         })
+                        .text_size(px(13.))
+                        .text_color(if filter_open {
+                            rgb(0x1677ff)
+                        } else {
+                            colors.text
+                        })
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .cursor_pointer()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .hover(move |style| style.bg(colors.hover))
+                        .child(app_icon(
+                            AppIcon::Filter,
+                            15.,
+                            if filter_open {
+                                rgb(0x1677ff)
+                            } else {
+                                colors.text
+                            },
+                        ))
+                        .child(tr("app.data.toolbar.filter_sort"))
+                        .child(app_icon(
+                            if filter_open {
+                                AppIcon::ChevronUp
+                            } else {
+                                AppIcon::ChevronDown
+                            },
+                            13.,
+                            if filter_open {
+                                rgb(0x1677ff)
+                            } else {
+                                colors.muted
+                            },
+                        ))
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(move |this, _, window, cx| {
@@ -5674,6 +5739,15 @@ fn data_editor_toolbar(
                             }),
                         ),
                 ))
+                .when(filter_open, |this| {
+                    this.child(data_filter_toolbar_mode_switch(
+                        tab_id,
+                        filter_mode,
+                        colors,
+                        filter_dialect,
+                        cx,
+                    ))
+                })
                 .when(show_table_tools, |this| this.child(
                     data_editor_action_state(tr("app.data.toolbar.search"), search_open, colors).on_mouse_down(
                         MouseButton::Left,

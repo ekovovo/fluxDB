@@ -8,6 +8,29 @@ fn dm_load_data(
     sort: &[SortSpec],
     filters: &[FilterSpec],
 ) -> fluxdb_core::Result<DataPage> {
+    dm_load_data_with_expression(config, path, offset, limit, sort, filters, None)
+}
+
+fn dm_load_data_expression(
+    config: &ConnectionConfig,
+    path: &ObjectPath,
+    offset: u64,
+    limit: u64,
+    sort: &[SortSpec],
+    expression: &fluxdb_core::FilterExpression,
+) -> fluxdb_core::Result<DataPage> {
+    dm_load_data_with_expression(config, path, offset, limit, sort, &[], Some(expression))
+}
+
+fn dm_load_data_with_expression(
+    config: &ConnectionConfig,
+    path: &ObjectPath,
+    offset: u64,
+    limit: u64,
+    sort: &[SortSpec],
+    filters: &[FilterSpec],
+    expression: Option<&fluxdb_core::FilterExpression>,
+) -> fluxdb_core::Result<DataPage> {
     if !matches!(path.kind, ObjectKind::Table | ObjectKind::View) {
         return Err(Error::new(ErrorKind::Unsupported, "仅表和视图支持数据读取"));
     }
@@ -16,7 +39,10 @@ fn dm_load_data(
     let mut client = dm_connect(config)?;
     let columns = dm_load_columns(&mut client, &schema, &path.name)?;
     let table = dm_qualified_table(&schema, &path.name);
-    let (where_sql, params) = dm_where_params(filters, &columns)?;
+    let (where_sql, params) = match expression {
+        Some(expression) => dm_expression_where_params(expression, &columns)?,
+        None => dm_where_params(filters, &columns)?,
+    };
     let order = dm_order_by_clause(sort, &columns, DM_DATA_SOURCE_ALIAS);
     // 多取一行只用于判断是否还有下一页，不把它展示给调用方。
     let fetch_limit = pagination.limit.saturating_add(1);
@@ -113,6 +139,183 @@ fn dm_where_params(
         Ok((String::new(), params))
     } else {
         Ok((format!(" WHERE {}", clauses.join(" AND ")), params))
+    }
+}
+
+fn dm_expression_where_params(
+    expression: &fluxdb_core::FilterExpression,
+    columns: &[Column],
+) -> fluxdb_core::Result<(String, Vec<Param>)> {
+    let mut params = Vec::new();
+    let sql = dm_expression_sql(expression, columns, &mut params)?;
+    if sql.trim().is_empty() {
+        Ok((String::new(), params))
+    } else {
+        Ok((format!(" WHERE {sql}"), params))
+    }
+}
+
+fn dm_expression_sql(
+    expression: &fluxdb_core::FilterExpression,
+    columns: &[Column],
+    params: &mut Vec<Param>,
+) -> fluxdb_core::Result<String> {
+    use fluxdb_core::FilterExpression;
+    Ok(match expression {
+        FilterExpression::Condition(condition) => {
+            let column = columns
+                .iter()
+                .find(|column| column.name == condition.field)
+                .ok_or_else(|| {
+                    Error::new(
+                        ErrorKind::Query,
+                        format!("过滤引用了不存在的列: {}", condition.field),
+                    )
+                })?;
+            dm_expression_condition(condition, column, params)?
+        }
+        FilterExpression::And(items) => {
+            let sql = items
+                .iter()
+                .map(|item| dm_expression_sql(item, columns, params))
+                .collect::<fluxdb_core::Result<Vec<_>>>()?
+                .into_iter()
+                .filter(|item| !item.is_empty())
+                .collect::<Vec<_>>();
+            if sql.len() <= 1 {
+                sql.into_iter().next().unwrap_or_default()
+            } else {
+                format!("({})", sql.join(" AND "))
+            }
+        }
+        FilterExpression::Or(items) => {
+            let sql = items
+                .iter()
+                .map(|item| dm_expression_sql(item, columns, params))
+                .collect::<fluxdb_core::Result<Vec<_>>>()?
+                .into_iter()
+                .filter(|item| !item.is_empty())
+                .collect::<Vec<_>>();
+            if sql.len() <= 1 {
+                sql.into_iter().next().unwrap_or_default()
+            } else {
+                format!("({})", sql.join(" OR "))
+            }
+        }
+        FilterExpression::Not(inner) => {
+            format!("NOT ({})", dm_expression_sql(inner, columns, params)?)
+        }
+        FilterExpression::Raw(raw) => raw.clone(),
+    })
+}
+
+fn dm_expression_condition(
+    condition: &fluxdb_core::FilterCondition,
+    column: &Column,
+    params: &mut Vec<Param>,
+) -> fluxdb_core::Result<String> {
+    use fluxdb_core::{FilterOperator, FilterValue};
+    let name = fluxdb_core::DamengDialect.quote_identifier(&column.name);
+    let bind = |params: &mut Vec<Param>, value: &FilterValue| {
+        params.push(dm_filter_param(value));
+        "?"
+    };
+    let first = || {
+        condition
+            .values
+            .first()
+            .ok_or_else(|| Error::new(ErrorKind::Query, "过滤条件缺少必要的比较值"))
+    };
+    Ok(match condition.op {
+        FilterOperator::Eq => format!("{name} = {}", bind(params, first()?)),
+        FilterOperator::Ne => format!("{name} != {}", bind(params, first()?)),
+        FilterOperator::Lt => format!("{name} < {}", bind(params, first()?)),
+        FilterOperator::Le => format!("{name} <= {}", bind(params, first()?)),
+        FilterOperator::Gt => format!("{name} > {}", bind(params, first()?)),
+        FilterOperator::Ge => format!("{name} >= {}", bind(params, first()?)),
+        FilterOperator::IsNull => format!("{name} IS NULL"),
+        FilterOperator::IsNotNull => format!("{name} IS NOT NULL"),
+        FilterOperator::IsEmpty => format!("{name} = ''"),
+        FilterOperator::IsNotEmpty => format!("{name} != ''"),
+        FilterOperator::Contains
+        | FilterOperator::NotContains
+        | FilterOperator::StartsWith
+        | FilterOperator::NotStartsWith
+        | FilterOperator::EndsWith
+        | FilterOperator::NotEndsWith => {
+            let text = fluxdb_core::filter_value_text(first()?);
+            let pattern = crate::filter_dialects::like_pattern(condition.op, &text)
+                .ok_or_else(|| Error::new(ErrorKind::Query, "未知的 LIKE 运算符"))?;
+            let negative = matches!(
+                condition.op,
+                FilterOperator::NotContains
+                    | FilterOperator::NotStartsWith
+                    | FilterOperator::NotEndsWith
+            );
+            let like_name = if crate::filter_dialects::filter_column_is_text(column) {
+                name.clone()
+            } else {
+                format!("CAST({name} AS VARCHAR(4000))")
+            };
+            format!(
+                "{like_name}{}LIKE {}{}",
+                if negative { " NOT " } else { " " },
+                bind(params, &FilterValue::Text(pattern)),
+                if crate::filter_dialects::like_value_needs_escape(&text) {
+                    crate::filter_dialects::LIKE_ESCAPE_CLAUSE
+                } else {
+                    ""
+                }
+            )
+        }
+        FilterOperator::Between | FilterOperator::NotBetween => {
+            let start = condition.values.first().ok_or_else(|| {
+                Error::new(ErrorKind::Query, "过滤条件缺少区间起点")
+            })?;
+            let end = condition.values.get(1).ok_or_else(|| {
+                Error::new(ErrorKind::Query, "过滤条件缺少区间终点")
+            })?;
+            let first = bind(params, start);
+            let second = bind(params, end);
+            format!(
+                "{name}{} BETWEEN {first} AND {second}",
+                if condition.op == FilterOperator::NotBetween {
+                    " NOT"
+                } else {
+                    ""
+                }
+            )
+        }
+        FilterOperator::InList | FilterOperator::NotInList => {
+            if condition.values.is_empty() {
+                return Err(Error::new(ErrorKind::Query, "过滤条件缺少列表值"));
+            }
+            let values = condition
+                .values
+                .iter()
+                .map(|value| bind(params, value))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "{name}{} IN ({values})",
+                if condition.op == FilterOperator::NotInList {
+                    " NOT"
+                } else {
+                    ""
+                }
+            )
+        }
+    })
+}
+
+fn dm_filter_param(value: &fluxdb_core::FilterValue) -> Param {
+    use fluxdb_core::FilterValue;
+    match value {
+        FilterValue::Null => Param::Null,
+        FilterValue::Text(value) => Param::Str(value.clone()),
+        FilterValue::Integer(value) => Param::Int(*value),
+        FilterValue::Float(value) => Param::Float(*value),
+        FilterValue::Boolean(value) => Param::Bool(*value),
     }
 }
 

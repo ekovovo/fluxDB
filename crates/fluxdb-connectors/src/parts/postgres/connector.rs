@@ -485,6 +485,18 @@ impl Connector for PostgresConnector {
         pg_load_data(config, path, offset, limit, sort, filters)
     }
 
+    fn load_data_expression(
+        &self,
+        path: &ObjectPath,
+        offset: u64,
+        limit: u64,
+        sort: &[SortSpec],
+        expression: &fluxdb_core::FilterExpression,
+    ) -> fluxdb_core::Result<DataPage> {
+        let config = self.config.as_ref().ok_or_else(|| Error::new(ErrorKind::Connection, "PostgreSQL 数据读取需要连接配置上下文"))?;
+        pg_load_data_expression(config, path, offset, limit, sort, expression)
+    }
+
     fn preview_data_export(
         &self,
         path: &ObjectPath,

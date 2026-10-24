@@ -26,6 +26,194 @@ fn sqlserver_where_clause(
     })
 }
 
+fn sqlserver_expression_where_clause(
+    expression: &fluxdb_core::FilterExpression,
+    columns: &[Column],
+    alias: Option<&str>,
+    parameters: &mut Vec<fluxdb_core::SqlParameter>,
+) -> fluxdb_core::Result<String> {
+    let sql = sqlserver_expression_sql(expression, columns, alias, parameters)?;
+    Ok(if sql.trim().is_empty() {
+        String::new()
+    } else {
+        format!(" WHERE {sql}")
+    })
+}
+
+fn sqlserver_expression_sql(
+    expression: &fluxdb_core::FilterExpression,
+    columns: &[Column],
+    alias: Option<&str>,
+    parameters: &mut Vec<fluxdb_core::SqlParameter>,
+) -> fluxdb_core::Result<String> {
+    use fluxdb_core::FilterExpression;
+    Ok(match expression {
+        FilterExpression::Condition(condition) => {
+            let column = columns
+                .iter()
+                .find(|column| column.name == condition.field)
+                .ok_or_else(|| {
+                    Error::new(
+                        ErrorKind::Query,
+                        format!("过滤引用了不存在的列: {}", condition.field),
+                    )
+                })?;
+            let name = match alias {
+                Some(alias) => format!(
+                    "{}.{}",
+                    fluxdb_core::SqlServerDialect.quote_identifier(alias),
+                    fluxdb_core::SqlServerDialect.quote_identifier(&column.name)
+                ),
+                None => fluxdb_core::SqlServerDialect.quote_identifier(&column.name),
+            };
+            sqlserver_expression_condition(condition, &name, column, parameters)?
+        }
+        FilterExpression::And(items) => {
+            let sql = items
+                .iter()
+                .map(|item| sqlserver_expression_sql(item, columns, alias, parameters))
+                .collect::<fluxdb_core::Result<Vec<_>>>()?
+                .into_iter()
+                .filter(|item| !item.is_empty())
+                .collect::<Vec<_>>();
+            if sql.len() <= 1 {
+                sql.into_iter().next().unwrap_or_default()
+            } else {
+                format!("({})", sql.join(" AND "))
+            }
+        }
+        FilterExpression::Or(items) => {
+            let sql = items
+                .iter()
+                .map(|item| sqlserver_expression_sql(item, columns, alias, parameters))
+                .collect::<fluxdb_core::Result<Vec<_>>>()?
+                .into_iter()
+                .filter(|item| !item.is_empty())
+                .collect::<Vec<_>>();
+            if sql.len() <= 1 {
+                sql.into_iter().next().unwrap_or_default()
+            } else {
+                format!("({})", sql.join(" OR "))
+            }
+        }
+        FilterExpression::Not(inner) => format!(
+            "NOT ({})",
+            sqlserver_expression_sql(inner, columns, alias, parameters)?
+        ),
+        FilterExpression::Raw(raw) => raw.clone(),
+    })
+}
+
+fn sqlserver_expression_condition(
+    condition: &fluxdb_core::FilterCondition,
+    name: &str,
+    column: &Column,
+    parameters: &mut Vec<fluxdb_core::SqlParameter>,
+) -> fluxdb_core::Result<String> {
+    use fluxdb_core::{FilterOperator, FilterValue};
+    let bind = |parameters: &mut Vec<fluxdb_core::SqlParameter>, value: &FilterValue| {
+        parameters.push(sqlserver_filter_parameter(value));
+        sqlserver_placeholder(parameters.len())
+    };
+    let first = || {
+        condition
+            .values
+            .first()
+            .ok_or_else(|| Error::new(ErrorKind::Query, "过滤条件缺少必要的比较值"))
+    };
+    Ok(match condition.op {
+        FilterOperator::Eq => format!("{name} = {}", bind(parameters, first()?)),
+        FilterOperator::Ne => format!("{name} != {}", bind(parameters, first()?)),
+        FilterOperator::Lt => format!("{name} < {}", bind(parameters, first()?)),
+        FilterOperator::Le => format!("{name} <= {}", bind(parameters, first()?)),
+        FilterOperator::Gt => format!("{name} > {}", bind(parameters, first()?)),
+        FilterOperator::Ge => format!("{name} >= {}", bind(parameters, first()?)),
+        FilterOperator::IsNull => format!("{name} IS NULL"),
+        FilterOperator::IsNotNull => format!("{name} IS NOT NULL"),
+        FilterOperator::IsEmpty => format!("{name} = N''"),
+        FilterOperator::IsNotEmpty => format!("{name} <> N''"),
+        FilterOperator::Contains
+        | FilterOperator::NotContains
+        | FilterOperator::StartsWith
+        | FilterOperator::NotStartsWith
+        | FilterOperator::EndsWith
+        | FilterOperator::NotEndsWith => {
+            let text = fluxdb_core::filter_value_text(first()?);
+            let pattern = crate::filter_dialects::like_pattern(condition.op, &text)
+                .ok_or_else(|| Error::new(ErrorKind::Query, "未知的 LIKE 运算符"))?;
+            let negative = matches!(
+                condition.op,
+                FilterOperator::NotContains
+                    | FilterOperator::NotStartsWith
+                    | FilterOperator::NotEndsWith
+            );
+            let like_name = if crate::filter_dialects::filter_column_is_text(column) {
+                name.to_string()
+            } else {
+                format!("CAST({name} AS NVARCHAR(MAX))")
+            };
+            format!(
+                "{like_name}{}LIKE {}{}",
+                if negative { " NOT " } else { " " },
+                bind(parameters, &FilterValue::Text(pattern)),
+                if crate::filter_dialects::like_value_needs_escape(&text) {
+                    crate::filter_dialects::LIKE_ESCAPE_CLAUSE
+                } else {
+                    ""
+                }
+            )
+        }
+        FilterOperator::Between | FilterOperator::NotBetween => {
+            let start = condition.values.first().ok_or_else(|| {
+                Error::new(ErrorKind::Query, "过滤条件缺少区间起点")
+            })?;
+            let end = condition.values.get(1).ok_or_else(|| {
+                Error::new(ErrorKind::Query, "过滤条件缺少区间终点")
+            })?;
+            format!(
+                "{name}{} BETWEEN {} AND {}",
+                if condition.op == FilterOperator::NotBetween {
+                    " NOT"
+                } else {
+                    ""
+                },
+                bind(parameters, start),
+                bind(parameters, end)
+            )
+        }
+        FilterOperator::InList | FilterOperator::NotInList => {
+            if condition.values.is_empty() {
+                return Err(Error::new(ErrorKind::Query, "过滤条件缺少列表值"));
+            }
+            let values = condition
+                .values
+                .iter()
+                .map(|value| bind(parameters, value))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "{name}{} IN ({values})",
+                if condition.op == FilterOperator::NotInList {
+                    " NOT"
+                } else {
+                    ""
+                }
+            )
+        }
+    })
+}
+
+fn sqlserver_filter_parameter(value: &fluxdb_core::FilterValue) -> fluxdb_core::SqlParameter {
+    use fluxdb_core::{FilterValue, SqlParameter};
+    match value {
+        FilterValue::Null => SqlParameter::Null,
+        FilterValue::Boolean(value) => SqlParameter::Bool(*value),
+        FilterValue::Integer(value) => SqlParameter::I64(value.to_string()),
+        FilterValue::Float(value) => SqlParameter::F64(*value),
+        FilterValue::Text(value) => SqlParameter::Text(value.clone()),
+    }
+}
+
 fn sqlserver_push_filter(
     clauses: &mut Vec<String>,
     parameters: &mut Vec<fluxdb_core::SqlParameter>,

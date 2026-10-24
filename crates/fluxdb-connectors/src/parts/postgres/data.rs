@@ -24,6 +24,29 @@ fn pg_load_data(
     sort: &[SortSpec],
     filters: &[FilterSpec],
 ) -> fluxdb_core::Result<DataPage> {
+    pg_load_data_with_expression(config, path, offset, limit, sort, filters, None)
+}
+
+fn pg_load_data_expression(
+    config: &ConnectionConfig,
+    path: &ObjectPath,
+    offset: u64,
+    limit: u64,
+    sort: &[SortSpec],
+    expression: &fluxdb_core::FilterExpression,
+) -> fluxdb_core::Result<DataPage> {
+    pg_load_data_with_expression(config, path, offset, limit, sort, &[], Some(expression))
+}
+
+fn pg_load_data_with_expression(
+    config: &ConnectionConfig,
+    path: &ObjectPath,
+    offset: u64,
+    limit: u64,
+    sort: &[SortSpec],
+    filters: &[FilterSpec],
+    expression: Option<&fluxdb_core::FilterExpression>,
+) -> fluxdb_core::Result<DataPage> {
     if !matches!(path.kind, ObjectKind::Table | ObjectKind::View) {
         return Err(Error::new(ErrorKind::Unsupported, "仅表和视图支持数据读取"));
     }
@@ -44,7 +67,10 @@ fn pg_load_data(
             "SELECT {select_list}\nFROM {table} AS {}",
             fluxdb_core::PostgresDialect.quote_identifier(PG_DATA_SOURCE_ALIAS)
         );
-        let (where_sql, params) = pg_where_params(filters, &columns)?;
+        let (where_sql, params) = match expression {
+            Some(expression) => pg_expression_where_params(expression, &columns)?,
+            None => pg_where_params(filters, &columns)?,
+        };
         sql.push_str(&where_sql);
         sql.push_str(&pg_order_by_clause(sort, &columns));
         // limit+1 探测是否还有下一页。
@@ -388,6 +414,159 @@ fn pg_where_params(filters: &[FilterSpec], columns: &[Column]) -> fluxdb_core::R
     }
 }
 
+fn pg_expression_where_params(
+    expression: &fluxdb_core::FilterExpression,
+    columns: &[Column],
+) -> fluxdb_core::Result<(String, Vec<Box<dyn ToSql + Sync>>)> {
+    let mut params: Vec<Box<dyn ToSql + Sync>> = Vec::new();
+    let sql = pg_expression_sql(expression, columns, &mut params)?;
+    if sql.trim().is_empty() {
+        Ok((String::new(), params))
+    } else {
+        Ok((format!("\nWHERE {sql}"), params))
+    }
+}
+
+fn pg_expression_sql(
+    expression: &fluxdb_core::FilterExpression,
+    columns: &[Column],
+    params: &mut Vec<Box<dyn ToSql + Sync>>,
+) -> fluxdb_core::Result<String> {
+    use fluxdb_core::FilterExpression;
+    Ok(match expression {
+        FilterExpression::Condition(condition) => {
+            let column = columns
+                .iter()
+                .find(|column| column.name == condition.field)
+                .ok_or_else(|| {
+                    Error::new(
+                        ErrorKind::Query,
+                        format!("过滤引用了不存在的列: {}", condition.field),
+                    )
+                })?;
+            pg_filter_expression_condition(condition, column, params)?
+        }
+        FilterExpression::And(items) => {
+            let sql = items
+                .iter()
+                .map(|item| pg_expression_sql(item, columns, params))
+                .collect::<fluxdb_core::Result<Vec<_>>>()?
+                .into_iter()
+                .filter(|item| !item.is_empty())
+                .collect::<Vec<_>>();
+            if sql.len() <= 1 {
+                sql.into_iter().next().unwrap_or_default()
+            } else {
+                format!("({})", sql.join(" AND "))
+            }
+        }
+        FilterExpression::Or(items) => {
+            let sql = items
+                .iter()
+                .map(|item| pg_expression_sql(item, columns, params))
+                .collect::<fluxdb_core::Result<Vec<_>>>()?
+                .into_iter()
+                .filter(|item| !item.is_empty())
+                .collect::<Vec<_>>();
+            if sql.len() <= 1 {
+                sql.into_iter().next().unwrap_or_default()
+            } else {
+                format!("({})", sql.join(" OR "))
+            }
+        }
+        FilterExpression::Not(inner) => {
+            format!("NOT ({})", pg_expression_sql(inner, columns, params)?)
+        }
+        FilterExpression::Raw(raw) => raw.clone(),
+    })
+}
+
+fn pg_filter_expression_condition(
+    condition: &fluxdb_core::FilterCondition,
+    column: &Column,
+    params: &mut Vec<Box<dyn ToSql + Sync>>,
+) -> fluxdb_core::Result<String> {
+    let field = fluxdb_core::PostgresDialect.quote_identifier(&column.name);
+    let bind = |params: &mut Vec<Box<dyn ToSql + Sync>>, value: &fluxdb_core::FilterValue| {
+        pg_bind_sql(params, column, &pg_filter_value_cell(value))
+    };
+    let first = condition.values.first();
+    let field_sql = match condition.op {
+        fluxdb_core::FilterOperator::Eq => {
+            format!("{field} = {}", bind(params, first.ok_or_else(|| Error::new(ErrorKind::Query, "过滤条件缺少值"))?))
+        }
+        fluxdb_core::FilterOperator::Ne => {
+            format!("{field} != {}", bind(params, first.ok_or_else(|| Error::new(ErrorKind::Query, "过滤条件缺少值"))?))
+        }
+        fluxdb_core::FilterOperator::Lt => {
+            format!("{field} < {}", bind(params, first.ok_or_else(|| Error::new(ErrorKind::Query, "过滤条件缺少值"))?))
+        }
+        fluxdb_core::FilterOperator::Le => {
+            format!("{field} <= {}", bind(params, first.ok_or_else(|| Error::new(ErrorKind::Query, "过滤条件缺少值"))?))
+        }
+        fluxdb_core::FilterOperator::Gt => {
+            format!("{field} > {}", bind(params, first.ok_or_else(|| Error::new(ErrorKind::Query, "过滤条件缺少值"))?))
+        }
+        fluxdb_core::FilterOperator::Ge => {
+            format!("{field} >= {}", bind(params, first.ok_or_else(|| Error::new(ErrorKind::Query, "过滤条件缺少值"))?))
+        }
+        fluxdb_core::FilterOperator::IsNull => format!("{field} IS NULL"),
+        fluxdb_core::FilterOperator::IsNotNull => format!("{field} IS NOT NULL"),
+        fluxdb_core::FilterOperator::IsEmpty => format!("{field} = ''"),
+        fluxdb_core::FilterOperator::IsNotEmpty => format!("{field} != ''"),
+        fluxdb_core::FilterOperator::Contains
+        | fluxdb_core::FilterOperator::NotContains
+        | fluxdb_core::FilterOperator::StartsWith
+        | fluxdb_core::FilterOperator::NotStartsWith
+        | fluxdb_core::FilterOperator::EndsWith
+        | fluxdb_core::FilterOperator::NotEndsWith => {
+            let value = first.ok_or_else(|| Error::new(ErrorKind::Query, "过滤条件缺少值"))?;
+            let text = fluxdb_core::filter_value_text(value);
+            let pattern = crate::filter_dialects::like_pattern(condition.op, &text)
+                .ok_or_else(|| Error::new(ErrorKind::Query, "未知的 LIKE 运算符"))?;
+            let negative = matches!(condition.op, fluxdb_core::FilterOperator::NotContains | fluxdb_core::FilterOperator::NotStartsWith | fluxdb_core::FilterOperator::NotEndsWith);
+            let like_field = if pg_text_ok_column(column.type_name.as_deref().unwrap_or("")) {
+                field.clone()
+            } else {
+                format!("CAST({field} AS TEXT)")
+            };
+            format!(
+                "{like_field}{} LIKE {}{}",
+                if negative { " NOT" } else { "" },
+                bind(params, &fluxdb_core::FilterValue::Text(pattern)),
+                if crate::filter_dialects::like_value_needs_escape(&text) {
+                    crate::filter_dialects::LIKE_ESCAPE_CLAUSE
+                } else {
+                    ""
+                }
+            )
+        }
+        fluxdb_core::FilterOperator::Between | fluxdb_core::FilterOperator::NotBetween => {
+            let start = condition.values.first().ok_or_else(|| Error::new(ErrorKind::Query, "过滤条件缺少区间起点"))?;
+            let end = condition.values.get(1).ok_or_else(|| Error::new(ErrorKind::Query, "过滤条件缺少区间终点"))?;
+            format!("{field}{} BETWEEN {} AND {}", if condition.op == fluxdb_core::FilterOperator::NotBetween { " NOT" } else { "" }, bind(params, start), bind(params, end))
+        }
+        fluxdb_core::FilterOperator::InList | fluxdb_core::FilterOperator::NotInList => {
+            if condition.values.is_empty() {
+                return Err(Error::new(ErrorKind::Query, "过滤条件缺少列表值"));
+            }
+            let values = condition.values.iter().map(|value| bind(params, value)).collect::<Vec<_>>().join(", ");
+            format!("{field}{} IN ({values})", if condition.op == fluxdb_core::FilterOperator::NotInList { " NOT" } else { "" })
+        }
+    };
+    Ok(field_sql)
+}
+
+fn pg_filter_value_cell(value: &fluxdb_core::FilterValue) -> CellValue {
+    match value {
+        fluxdb_core::FilterValue::Text(value) => CellValue::Text(value.clone()),
+        fluxdb_core::FilterValue::Integer(value) => CellValue::I64(*value),
+        fluxdb_core::FilterValue::Float(value) => CellValue::F64(*value),
+        fluxdb_core::FilterValue::Boolean(value) => CellValue::Bool(*value),
+        fluxdb_core::FilterValue::Null => CellValue::Null,
+    }
+}
+
 /// 缺值过滤的明确错误（对齐「非法操作不静默忽略」）。
 fn filter_clause_error(filter: &FilterSpec) -> fluxdb_core::Error {
     let op = format!("{:?}", filter.op).to_uppercase();
@@ -446,14 +625,33 @@ fn pg_filter_clause(
                 filter.op,
                 FilterOp::NotContains | FilterOp::NotStartsWith | FilterOp::NotEndsWith
             );
-            let pattern = match filter.op {
-                FilterOp::Contains | FilterOp::NotContains => format!("%{}%", pg_text(&filter.values[0])),
-                FilterOp::StartsWith | FilterOp::NotStartsWith => format!("{}%", pg_text(&filter.values[0])),
-                FilterOp::EndsWith | FilterOp::NotEndsWith => format!("%{}", pg_text(&filter.values[0])),
+            let operator = match filter.op {
+                FilterOp::Contains => fluxdb_core::FilterOperator::Contains,
+                FilterOp::NotContains => fluxdb_core::FilterOperator::NotContains,
+                FilterOp::StartsWith => fluxdb_core::FilterOperator::StartsWith,
+                FilterOp::NotStartsWith => fluxdb_core::FilterOperator::NotStartsWith,
+                FilterOp::EndsWith => fluxdb_core::FilterOperator::EndsWith,
+                FilterOp::NotEndsWith => fluxdb_core::FilterOperator::NotEndsWith,
                 _ => unreachable!(),
             };
+            let pattern = crate::filter_dialects::like_pattern(operator, &pg_text(&filter.values[0]))
+                .ok_or_else(|| Error::new(ErrorKind::Query, "未知的 LIKE 运算符"))?;
             let param = pg_next_param(params, &CellValue::Text(pattern), None);
-            format!("{column}{} LIKE {param}", if neg { " NOT" } else { "" })
+            let like_column = if pg_text_ok_column(col.type_name.as_deref().unwrap_or("")) {
+                column.clone()
+            } else {
+                format!("CAST({column} AS TEXT)")
+            };
+            let text = pg_text(&filter.values[0]);
+            format!(
+                "{like_column}{} LIKE {param}{}",
+                if neg { " NOT" } else { "" },
+                if crate::filter_dialects::like_value_needs_escape(&text) {
+                    crate::filter_dialects::LIKE_ESCAPE_CLAUSE
+                } else {
+                    ""
+                }
+            )
         }
         FilterOp::GreaterThan
         | FilterOp::GreaterThanOrEqual
@@ -517,6 +715,7 @@ fn pg_text_ok_column(column_type: &str) -> bool {
 ///   直接序列化到 numeric 等推断参数类型（网格编辑数值 → F64 绑定 numeric 会报
 ///   `error serializing parameter 0`）；
 /// - 外层 `AS <type>` 在服务端把 text 转成目标列类型完成赋值。
+///
 /// 字符串列（text/varchar/char/bpchar/name/citext）与整型列直绑原生值即可。
 fn pg_bind_sql(params: &mut Vec<Box<dyn ToSql + Sync>>, column: &Column, value: &CellValue) -> String {
     let type_name = column.type_name.as_deref().unwrap_or("");
@@ -649,4 +848,87 @@ pub fn pg_export_pages(
         let _ = client.batch_execute("ROLLBACK").await;
         result
     })
+}
+
+#[cfg(test)]
+mod pg_filter_binding_tests {
+    use super::*;
+
+    fn column(name: &str, type_name: &str) -> Column {
+        Column {
+            name: name.into(),
+            type_name: Some(type_name.into()),
+            nullable: false,
+            primary_key: false,
+            comment: None,
+        }
+    }
+
+    #[test]
+    fn numeric_filter_uses_text_bridge_for_float_value() {
+        let columns = [column("amount", "numeric(12,4)")];
+        let expression = fluxdb_core::FilterExpression::Condition(fluxdb_core::FilterCondition {
+            field: "amount".into(),
+            op: fluxdb_core::FilterOperator::Eq,
+            values: vec![fluxdb_core::FilterValue::Float(2.5)],
+        });
+
+        let (sql, params) =
+            pg_expression_where_params(&expression, &columns).expect("PostgreSQL filter SQL");
+
+        assert_eq!(
+            sql,
+            "\nWHERE \"amount\" = CAST(CAST($1 AS text) AS numeric(12,4))"
+        );
+        assert_eq!(params.len(), 1);
+    }
+
+    #[test]
+    fn integer_filter_binds_native_integer_width() {
+        let columns = [column("id", "integer")];
+        let expression = fluxdb_core::FilterExpression::Condition(fluxdb_core::FilterCondition {
+            field: "id".into(),
+            op: fluxdb_core::FilterOperator::Eq,
+            values: vec![fluxdb_core::FilterValue::Integer(1)],
+        });
+
+        let (sql, params) =
+            pg_expression_where_params(&expression, &columns).expect("PostgreSQL filter SQL");
+
+        assert_eq!(sql, "\nWHERE \"id\" = $1");
+        assert_eq!(params.len(), 1);
+        assert!(matches!(
+            params[0].to_sql_checked(
+                &tokio_postgres::types::Type::INT4,
+                &mut tokio_postgres::types::private::BytesMut::new()
+            ),
+            Ok(tokio_postgres::types::IsNull::No)
+        ));
+    }
+
+    #[test]
+    fn integer_contains_casts_to_text_and_binds_escaped_pattern() {
+        let columns = [column("id", "integer")];
+        let expression = fluxdb_core::FilterExpression::Condition(fluxdb_core::FilterCondition {
+            field: "id".into(),
+            op: fluxdb_core::FilterOperator::Contains,
+            values: vec![fluxdb_core::FilterValue::Text("10%_1".into())],
+        });
+
+        let (sql, params) =
+            pg_expression_where_params(&expression, &columns).expect("PostgreSQL LIKE SQL");
+
+        assert_eq!(
+            sql,
+            "\nWHERE CAST(\"id\" AS TEXT) LIKE $1 ESCAPE '!'"
+        );
+        assert_eq!(params.len(), 1);
+        assert!(matches!(
+            params[0].to_sql_checked(
+                &tokio_postgres::types::Type::TEXT,
+                &mut tokio_postgres::types::private::BytesMut::new()
+            ),
+            Ok(tokio_postgres::types::IsNull::No)
+        ));
+    }
 }

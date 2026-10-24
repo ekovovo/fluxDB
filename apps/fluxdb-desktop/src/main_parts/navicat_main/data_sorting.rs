@@ -1,5 +1,15 @@
 impl NavicatMain {
     fn start_data_filter_sort_load(&mut self, tab_id: TabId, cx: &mut Context<Self>) {
+        // 先解析表达式再领取新 generation：录入错误应直接提示并终止本次应用，
+        // 不能清空上一页结果或让加载态悬空。
+        let expression = match self.data_filter_expression_for_tab(tab_id) {
+            Ok(expression) => Some(expression),
+            Err(error) => {
+                self.data_filter_applying_tabs.remove(&tab_id);
+                self.show_message(error.to_string(), AppMessageKind::Warning, cx);
+                return;
+            }
+        };
         // 用户再次应用筛选时直接接管：领取新令牌，旧请求的结果会在回写时被丢弃。
         let event = self
             .controller
@@ -24,6 +34,7 @@ impl NavicatMain {
                         generation,
                         sort,
                         filters,
+                        expression,
                     }) {
                         AppEvent::DataLoaded(_, page) => Ok(Some(page)),
                         // 已被新的加载或用户操作取代：不写回、不提示。
@@ -132,6 +143,58 @@ impl NavicatMain {
         specs
     }
 
+    fn data_filter_expression_for_tab(
+        &self,
+        tab_id: TabId,
+    ) -> fluxdb_core::Result<fluxdb_core::FilterExpression> {
+        if self
+            .data_filter_modes
+            .get(&tab_id)
+            .copied()
+            .unwrap_or(DataFilterMode::Builder)
+            == DataFilterMode::Text
+        {
+            let text = self
+                .data_filter_texts
+                .get(&tab_id)
+                .map(String::as_str)
+                .unwrap_or_default();
+            let kind = self.data_editor_database_kind(tab_id);
+            if text.trim().is_empty() {
+                return Ok(fluxdb_core::FilterExpression::And(Vec::new()));
+            }
+            return fluxdb_core::filter_dialect_for(kind)
+                .ok_or_else(|| {
+                    fluxdb_core::Error::new(
+                        fluxdb_core::ErrorKind::Unsupported,
+                        "当前数据源不支持 SQL 条件筛选",
+                    )
+                })?
+                .parse(text)
+                .map(|parsed| parsed.expression)
+                .map_err(|error| {
+                    fluxdb_core::Error::new(fluxdb_core::ErrorKind::Query, error.to_string())
+                });
+        }
+        let rules = self
+            .data_filter_rules
+            .get(&tab_id)
+            .cloned()
+            .unwrap_or_default();
+        let columns = self
+            .controller
+            .state()
+            .tabs
+            .iter()
+            .find_map(|tab| match &tab.kind {
+                TabKind::DataEditor(editor) if tab.id == tab_id => editor.page.as_ref(),
+                _ => None,
+            })
+            .map(|page| page.columns.clone())
+            .unwrap_or_default();
+        data_filter_expression_from_rules(&rules, &columns)
+    }
+
     fn data_changes_for_tab(&self, tab_id: TabId) -> Option<DataChangeSet> {
         self.controller
             .state()
@@ -178,16 +241,6 @@ impl NavicatMain {
         direction: Option<DataTableSortDirection>,
         cx: &mut Context<Self>,
     ) {
-        if self
-            .data_filter_modes
-            .get(&tab_id)
-            .copied()
-            .unwrap_or(DataFilterMode::Builder)
-            == DataFilterMode::Text
-        {
-            self.sync_data_filter_text_to_builder(tab_id);
-        }
-
         let current = self
             .data_sort_draft_rules
             .get(&tab_id)

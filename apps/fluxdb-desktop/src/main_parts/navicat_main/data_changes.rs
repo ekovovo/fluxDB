@@ -428,8 +428,12 @@ impl NavicatMain {
                 enabled: true,
                 field: Some(menu.column_name.clone()),
                 operator,
-                values: BTreeSet::from([menu.value.clone()]),
-                grouped: false,
+                values: vec![menu.value.clone()],
+                advanced_expression: None,
+                typed_values: None,
+                connector: fluxdb_core::FilterCombinator::And,
+                group_depth: 0,
+                        group_end: 0,
             }],
         );
         self.data_cell_context_menu = None;

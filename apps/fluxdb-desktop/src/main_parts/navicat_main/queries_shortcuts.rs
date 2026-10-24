@@ -711,7 +711,6 @@ impl NavicatMain {
             &self.local_filter_value_input,
             &self.local_filter_search_input,
             &self.data_filter_search_input,
-            &self.data_filter_text_input,
             &self.data_sort_text_input,
             &self.data_sql_panel_input,
             &self.data_page_input,
@@ -728,6 +727,11 @@ impl NavicatMain {
         .any(|input| input.read(cx).focus_handle(cx).is_focused(window));
 
         input_focused
+            || self
+                .data_filter_text_input
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window)
             || self
                 .query_editors
                 .values()

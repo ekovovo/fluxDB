@@ -5,11 +5,13 @@ fn data_filter_panel(
     page: &DataPage,
     rules: &[DataFilterRule],
     sort_rules: &[DataSortRule],
+    clear_sort_undo_available: bool,
     mode: DataFilterMode,
     panel_height: f32,
+    panel_max_height: f32,
     applying: bool,
     data_filter_text_input: Entity<gpui_component::input::EditorState>,
-    database_kind: DatabaseKind,
+    _database_kind: DatabaseKind,
     colors: UiColors,
     window: &mut Window,
     cx: &mut Context<NavicatMain>,
@@ -23,8 +25,8 @@ fn data_filter_panel(
     let default_field_for_row = default_field.clone();
     let default_sort_field = default_field.clone();
     let view = cx.entity();
-    let dialect = sql_editor_adapter::SqlDialect::from_database_kind(database_kind);
     div()
+        .debug_selector(|| "data-filter-panel".into())
         .relative()
         .h(px(panel_height))
         .overflow_hidden()
@@ -37,36 +39,44 @@ fn data_filter_panel(
         })
         .flex()
         .flex_col()
-        .child(data_filter_mode_header(
-            tab_id,
-            mode,
-            colors,
-            dialect,
-            cx,
-        ))
-        .child(match mode {
-            DataFilterMode::Builder => data_filter_builder_rows(
-                tab_id,
-                rules,
-                default_field_for_row,
-                colors,
-                cx,
-            ),
-            DataFilterMode::Text => data_filter_condition_editor(
-                data_filter_text_input,
-                colors,
-            ),
-        })
-        .child(div().flex_1().border_b_1().border_color(colors.border_soft))
+        .child(
+            div()
+                .debug_selector(|| "data-filter-scroll-area".into())
+                .flex_1()
+                .min_h(px(0.))
+                .overflow_y_scrollbar()
+                .child(match mode {
+                    DataFilterMode::Builder => data_filter_builder_rows(
+                        tab_id,
+                        rules,
+                        default_field_for_row,
+                        colors,
+                        cx,
+                    ),
+                    DataFilterMode::Text => data_filter_condition_editor(
+                        data_filter_text_input,
+                        colors,
+                    ),
+                }),
+        )
+        .child(
+            div()
+                .debug_selector(|| "data-filter-fixed-actions".into())
+                .flex_shrink_0()
+                .border_t_1()
+                .border_color(colors.border_soft),
+        )
         .child(data_sort_builder_section(
             tab_id,
             sort_rules,
+            clear_sort_undo_available,
             default_sort_field,
             colors,
             cx,
         ))
         .child(
             div()
+                .debug_selector(|| "data-filter-apply-row".into())
                 .h(px(38.))
                 .px_3()
                 .flex()
@@ -90,6 +100,7 @@ fn data_filter_panel(
         .child(data_filter_panel_resize_handle(
             tab_id,
             panel_height,
+            panel_max_height,
             colors,
             cx,
         ))
@@ -138,7 +149,7 @@ fn data_filter_apply_button(colors: UiColors, applying: bool) -> Div {
     }
 }
 
-fn data_filter_mode_header(
+fn data_filter_toolbar_mode_switch(
     tab_id: TabId,
     mode: DataFilterMode,
     colors: UiColors,
@@ -146,63 +157,50 @@ fn data_filter_mode_header(
     cx: &mut Context<NavicatMain>,
 ) -> Div {
     div()
-        .h(px(36.))
-        .px_3()
+        .debug_selector(|| "data-filter-toolbar-mode-switch".into())
+        .h(px(28.))
         .flex()
         .items_center()
-        .justify_between()
-        .child(
-            div()
-                .text_size(px(12.))
-                .font_weight(gpui::FontWeight::SEMIBOLD)
-                .text_color(colors.text)
-                .child(tr("app.filter.title")),
+        .gap_1()
+        .flex_shrink_0()
+        .child(data_filter_mode_button(
+            "data-filter-mode-builder",
+            tr("app.filter.mode.builder"),
+            mode == DataFilterMode::Builder,
+            colors,
         )
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .gap_1()
-                .flex_shrink_0()
-                .child(data_filter_mode_button(
-                    "data-filter-mode-builder",
-                    tr("app.filter.mode.builder"),
-                    mode == DataFilterMode::Builder,
-                    colors,
-                )
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |this, _, window, cx| {
-                        this.set_data_filter_mode(
-                            tab_id,
-                            DataFilterMode::Builder,
-                            dialect,
-                            window,
-                            cx,
-                        );
-                        cx.stop_propagation();
-                    }),
-                ))
-                .child(data_filter_mode_button(
-                    "data-filter-mode-input",
-                    tr("app.filter.mode.input"),
-                    mode == DataFilterMode::Text,
-                    colors,
-                )
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |this, _, window, cx| {
-                        this.set_data_filter_mode(
-                            tab_id,
-                            DataFilterMode::Text,
-                            dialect,
-                            window,
-                            cx,
-                        );
-                        cx.stop_propagation();
-                    }),
-                )),
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |this, _, window, cx| {
+                this.set_data_filter_mode(
+                    tab_id,
+                    DataFilterMode::Builder,
+                    dialect,
+                    window,
+                    cx,
+                );
+                cx.stop_propagation();
+            }),
+        ))
+        .child(data_filter_mode_button(
+            "data-filter-mode-input",
+            tr("app.filter.mode.input"),
+            mode == DataFilterMode::Text,
+            colors,
         )
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |this, _, window, cx| {
+                this.set_data_filter_mode(
+                    tab_id,
+                    DataFilterMode::Text,
+                    dialect,
+                    window,
+                    cx,
+                );
+                cx.stop_propagation();
+            }),
+        ))
 }
 
 fn data_filter_mode_button(
@@ -213,8 +211,8 @@ fn data_filter_mode_button(
 ) -> Div {
     div()
         .debug_selector(move || debug_id.into())
-        .h(px(24.))
-        .min_w(px(52.))
+        .h(px(22.))
+        .min_w(px(48.))
         .px_2()
         .rounded(colors.radius)
         .border_1()
@@ -228,7 +226,7 @@ fn data_filter_mode_button(
         } else {
             colors.panel_bg
         })
-        .text_size(px(11.))
+        .text_size(px(12.))
         .font_weight(gpui::FontWeight::SEMIBOLD)
         .text_color(if active { rgb(0x006bd6) } else { colors.muted })
         .cursor_pointer()
@@ -278,6 +276,7 @@ fn data_filter_condition_editor(
 fn data_filter_panel_resize_handle(
     tab_id: TabId,
     panel_height: f32,
+    panel_max_height: f32,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> impl IntoElement {
@@ -323,7 +322,11 @@ fn data_filter_panel_resize_handle(
                     if start.tab_id == tab_id {
                         let delta = f32::from(event.event.position.y) - start.y;
                         this.data_filter_panel_heights
-                            .insert(tab_id, clamp_data_filter_panel_height(start.height + delta));
+                            .insert(
+                                tab_id,
+                                (start.height + delta)
+                                    .clamp(DATA_FILTER_PANEL_MIN_HEIGHT, panel_max_height),
+                            );
                         cx.notify();
                     }
                 }

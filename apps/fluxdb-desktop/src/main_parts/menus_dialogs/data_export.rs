@@ -1956,6 +1956,7 @@ fn data_export_filter_sort_builder(
         .child(data_sort_builder_section(
             export_filter_tab_id,
             sort_rules.as_slice(),
+            false,
             default_field,
             colors,
             cx,

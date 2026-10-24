@@ -260,36 +260,10 @@ impl NavicatMain {
         let parsed = dialect
             .parse(text)
             .map_err(|error| error.to_string())?;
-        let projection = fluxdb_core::filter_form_projection_from_expression(
+        let (rules, _) = data_filter_rules_from_expression(
             &parsed.expression,
             |expression| dialect.render(expression).unwrap_or_default(),
         );
-        let rules = projection
-            .rules
-            .into_iter()
-            .map(|rule| {
-                let advanced_expression = rule
-                    .field
-                    .is_none()
-                    .then(|| rule.values.first().cloned())
-                    .flatten()
-                    .map(|value| fluxdb_core::filter_value_text(&value));
-                DataFilterRule {
-                    enabled: rule.enabled,
-                    field: rule.field,
-                    operator: data_filter_operator_from_core(rule.operator),
-                    typed_values: Some(rule.values.clone()),
-                    values: rule
-                        .values
-                        .iter()
-                        .map(fluxdb_core::filter_value_text)
-                        .collect(),
-                    advanced_expression,
-                    connector: projection.combinator,
-                    grouped: rule.grouped,
-                }
-            })
-            .collect::<Vec<_>>();
         self.data_filter_draft_rules
             .insert(tab_id, rules);
         Ok(())

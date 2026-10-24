@@ -99,9 +99,29 @@ pub trait FilterDialect: Send + Sync {
         expression: &FilterExpression,
     ) -> std::result::Result<String, FilterExpressionError>;
 
+    /// 使用当前数据页列元数据渲染预览 SQL。
+    ///
+    /// 方言可据此避免对文本列生成无意义的 `CAST`；默认实现保持旧契约。
+    fn render_with_columns(
+        &self,
+        expression: &FilterExpression,
+        _columns: &[crate::Column],
+    ) -> std::result::Result<String, FilterExpressionError> {
+        self.render(expression)
+    }
+
     /// 把表达式编译为连接器可执行的条件；参数以占位符绑定，禁止拼接字面量。
     fn compile(&self, expression: &FilterExpression)
     -> std::result::Result<CompiledFilterExpression, FilterExpressionError>;
+
+    /// 使用列元数据编译表达式；默认实现保持旧行为。
+    fn compile_with_columns(
+        &self,
+        expression: &FilterExpression,
+        _columns: &[crate::Column],
+    ) -> std::result::Result<CompiledFilterExpression, FilterExpressionError> {
+        self.compile(expression)
+    }
 }
 
 type FilterDialectResolver =
@@ -248,6 +268,12 @@ pub enum FilterCombinator {
 /// 单个条件映射为一条规则；无法无损扁平化的子树保留为只读高级规则。
 pub struct FilterFormProjection {
     pub rules: Vec<FilterFormRule>,
+    /// 与 `rules` 等长，第 i 项表示该规则之后与下一项的连接符。
+    pub connectors: Vec<FilterCombinator>,
+    /// 与 `rules` 等长，0 表示顶层，正值表示所在括号嵌套深度。
+    pub group_depths: Vec<u8>,
+    /// 与 `rules` 等长；规则 i 之后关闭到该值，0 表示不关闭。
+    pub group_ends: Vec<u8>,
     pub combinator: FilterCombinator,
 }
 
@@ -255,42 +281,176 @@ pub fn filter_form_projection_from_expression(
     expression: &FilterExpression,
     render_raw: impl Fn(&FilterExpression) -> String,
 ) -> FilterFormProjection {
-    let mut projection = FilterFormProjection {
-        rules: Vec::new(),
-        combinator: FilterCombinator::And,
-    };
-    let items = match expression {
-        FilterExpression::And(items) => items.as_slice(),
-        FilterExpression::Or(items) => {
-            projection.combinator = FilterCombinator::Or;
-            items.as_slice()
+    let (root_combinator, projected) = match expression {
+        FilterExpression::And(items) if !items.is_empty() => (
+            FilterCombinator::And,
+            project_level(
+                items,
+                FilterCombinator::And,
+                FilterCombinator::And,
+                0,
+                &render_raw,
+            ),
+        ),
+        FilterExpression::Or(items) if !items.is_empty() => (
+            FilterCombinator::Or,
+            project_level(
+                items,
+                FilterCombinator::Or,
+                FilterCombinator::Or,
+                0,
+                &render_raw,
+            ),
+        ),
+        FilterExpression::And(_) | FilterExpression::Or(_) => {
+            (FilterCombinator::And, Some(ProjectedSequence::default()))
         }
-        FilterExpression::Condition(_) | FilterExpression::Not(_) | FilterExpression::Raw(_) => {
-            std::slice::from_ref(expression)
-        }
+        _ => (
+            FilterCombinator::And,
+            project_simple_term(expression, 0, &render_raw)
+                .map(|rule| ProjectedSequence::from_rule(rule, FilterCombinator::And, 0)),
+        ),
     };
-    for item in items {
-        match item {
-            FilterExpression::Condition(condition) => {
-                projection.rules.push(FilterFormRule {
+    match projected {
+        Some(projected) => FilterFormProjection {
+            rules: projected.rules,
+            connectors: projected.connectors,
+            group_depths: projected.group_depths,
+            group_ends: projected.group_ends,
+            combinator: root_combinator,
+        },
+        None => {
+            let raw = render_raw(expression);
+            FilterFormProjection {
+                rules: vec![FilterFormRule {
                     enabled: true,
-                    field: Some(condition.field.clone()),
-                    operator: condition.op,
-                    values: condition.values.clone(),
+                    field: None,
+                    operator: FilterOperator::Eq,
+                    values: vec![FilterValue::Text(raw)],
                     grouped: false,
-                });
+                }],
+                connectors: vec![FilterCombinator::And],
+                group_depths: vec![0],
+                group_ends: vec![0],
+                combinator: FilterCombinator::And,
             }
-            FilterExpression::And(items) | FilterExpression::Or(items) if items.is_empty() => {}
-            _ => projection.rules.push(FilterFormRule {
-                enabled: true,
-                field: None,
-                operator: FilterOperator::Eq,
-                values: vec![FilterValue::Text(render_raw(item))],
-                grouped: false,
-            }),
         }
     }
-    projection
+}
+
+#[derive(Default)]
+struct ProjectedSequence {
+    rules: Vec<FilterFormRule>,
+    connectors: Vec<FilterCombinator>,
+    group_depths: Vec<u8>,
+    group_ends: Vec<u8>,
+}
+
+impl ProjectedSequence {
+    fn from_rule(rule: FilterFormRule, connector: FilterCombinator, depth: u8) -> Self {
+        Self {
+            rules: vec![rule],
+            connectors: vec![connector],
+            group_depths: vec![depth],
+            group_ends: vec![0],
+        }
+    }
+}
+
+fn project_level(
+    items: &[FilterExpression],
+    combinator: FilterCombinator,
+    outer: FilterCombinator,
+    depth: u8,
+    render_raw: &impl Fn(&FilterExpression) -> String,
+) -> Option<ProjectedSequence> {
+    let mut projected = ProjectedSequence::default();
+    for item in items {
+        let sequence = match item {
+            FilterExpression::Condition(_) | FilterExpression::Raw(_) | FilterExpression::Not(_) => {
+                ProjectedSequence::from_rule(
+                    project_simple_term(item, depth, render_raw)?,
+                    combinator,
+                    depth,
+                )
+            }
+            FilterExpression::And(children) | FilterExpression::Or(children)
+                if children.is_empty() =>
+            {
+                continue;
+            }
+            FilterExpression::And(children) if combinator == FilterCombinator::And => {
+                project_level(children, combinator, combinator, depth, render_raw)?
+            }
+            FilterExpression::Or(children) if combinator == FilterCombinator::Or => {
+                project_level(children, combinator, combinator, depth, render_raw)?
+            }
+            FilterExpression::And(children) => {
+                project_level(children, FilterCombinator::And, combinator, depth + 1, render_raw)?
+            }
+            FilterExpression::Or(children) => {
+                let sequence =
+                    project_level(children, FilterCombinator::Or, combinator, depth + 1, render_raw)?;
+                let mut sequence = sequence;
+                if let Some(first) = sequence.group_depths.first_mut() {
+                    *first = depth + 1;
+                }
+                ProjectedSequence {
+                    rules: sequence.rules,
+                    connectors: sequence.connectors,
+                    group_depths: sequence.group_depths,
+                    group_ends: sequence.group_ends,
+                }
+            }
+        };
+        if sequence.rules.is_empty() {
+            continue;
+        }
+        projected.rules.extend(sequence.rules);
+        projected.connectors.extend(sequence.connectors);
+        projected.group_depths.extend(sequence.group_depths);
+        projected.group_ends.extend(sequence.group_ends);
+    }
+    if depth > 0
+        && let Some(last) = projected.group_ends.last_mut()
+    {
+        *last = (*last).max(depth);
+    }
+    let last_depth = projected.group_depths.last().copied().unwrap_or(depth);
+    if last_depth > depth
+        && let Some(last) = projected.group_ends.last_mut()
+    {
+        *last = last_depth;
+    }
+    if let Some(last) = projected.connectors.last_mut() {
+        *last = outer;
+    }
+    Some(projected)
+}
+
+fn project_simple_term(
+    expression: &FilterExpression,
+    depth: u8,
+    render_raw: &impl Fn(&FilterExpression) -> String,
+) -> Option<FilterFormRule> {
+    let rule = match expression {
+        FilterExpression::Condition(condition) => FilterFormRule {
+            enabled: true,
+            field: Some(condition.field.clone()),
+            operator: condition.op,
+            values: condition.values.clone(),
+            grouped: depth > 0,
+        },
+        FilterExpression::Not(_) | FilterExpression::Raw(_) => FilterFormRule {
+            enabled: true,
+            field: None,
+            operator: FilterOperator::Eq,
+            values: vec![FilterValue::Text(render_raw(expression))],
+            grouped: depth > 0,
+        },
+        FilterExpression::And(_) | FilterExpression::Or(_) => return None,
+    };
+    Some(rule)
 }
 
 pub fn filter_value_text(value: &FilterValue) -> String {

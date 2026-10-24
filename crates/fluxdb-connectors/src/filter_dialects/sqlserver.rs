@@ -16,10 +16,26 @@ impl FilterDialect for SqlServerFilterDialect {
         super::render_for_syntax(super::FilterSyntax::SqlServer, expression)
     }
 
+    fn render_with_columns(
+        &self,
+        expression: &FilterExpression,
+        columns: &[fluxdb_core::Column],
+    ) -> Result<String, FilterExpressionError> {
+        super::render_for_syntax_with_columns(super::FilterSyntax::SqlServer, expression, columns)
+    }
+
     fn compile(
         &self,
         expression: &FilterExpression,
     ) -> Result<CompiledFilterExpression, FilterExpressionError> {
         super::compile_for_syntax(super::FilterSyntax::SqlServer, expression)
+    }
+
+    fn compile_with_columns(
+        &self,
+        expression: &FilterExpression,
+        columns: &[fluxdb_core::Column],
+    ) -> Result<CompiledFilterExpression, FilterExpressionError> {
+        super::compile_for_syntax_with_columns(super::FilterSyntax::SqlServer, expression, columns)
     }
 }

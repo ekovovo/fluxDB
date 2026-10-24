@@ -20,6 +20,7 @@
     "running": "执行中",
     "execute": "执行",
     "add": "添加",
+    "undo": "撤销",
     "confirm": "确认",
     "create": "新建",
     "message_separator": "："

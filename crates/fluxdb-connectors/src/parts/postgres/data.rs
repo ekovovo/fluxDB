@@ -522,13 +522,24 @@ fn pg_filter_expression_condition(
         | fluxdb_core::FilterOperator::NotEndsWith => {
             let value = first.ok_or_else(|| Error::new(ErrorKind::Query, "过滤条件缺少值"))?;
             let text = fluxdb_core::filter_value_text(value);
-            let pattern = match condition.op {
-                fluxdb_core::FilterOperator::Contains | fluxdb_core::FilterOperator::NotContains => format!("%{text}%"),
-                fluxdb_core::FilterOperator::StartsWith | fluxdb_core::FilterOperator::NotStartsWith => format!("{text}%"),
-                _ => format!("%{text}"),
-            };
+            let pattern = crate::filter_dialects::like_pattern(condition.op, &text)
+                .ok_or_else(|| Error::new(ErrorKind::Query, "未知的 LIKE 运算符"))?;
             let negative = matches!(condition.op, fluxdb_core::FilterOperator::NotContains | fluxdb_core::FilterOperator::NotStartsWith | fluxdb_core::FilterOperator::NotEndsWith);
-            format!("{field}{} LIKE {}", if negative { " NOT" } else { "" }, bind(params, &fluxdb_core::FilterValue::Text(pattern)))
+            let like_field = if pg_text_ok_column(column.type_name.as_deref().unwrap_or("")) {
+                field.clone()
+            } else {
+                format!("CAST({field} AS TEXT)")
+            };
+            format!(
+                "{like_field}{} LIKE {}{}",
+                if negative { " NOT" } else { "" },
+                bind(params, &fluxdb_core::FilterValue::Text(pattern)),
+                if crate::filter_dialects::like_value_needs_escape(&text) {
+                    crate::filter_dialects::LIKE_ESCAPE_CLAUSE
+                } else {
+                    ""
+                }
+            )
         }
         fluxdb_core::FilterOperator::Between | fluxdb_core::FilterOperator::NotBetween => {
             let start = condition.values.first().ok_or_else(|| Error::new(ErrorKind::Query, "过滤条件缺少区间起点"))?;
@@ -614,14 +625,33 @@ fn pg_filter_clause(
                 filter.op,
                 FilterOp::NotContains | FilterOp::NotStartsWith | FilterOp::NotEndsWith
             );
-            let pattern = match filter.op {
-                FilterOp::Contains | FilterOp::NotContains => format!("%{}%", pg_text(&filter.values[0])),
-                FilterOp::StartsWith | FilterOp::NotStartsWith => format!("{}%", pg_text(&filter.values[0])),
-                FilterOp::EndsWith | FilterOp::NotEndsWith => format!("%{}", pg_text(&filter.values[0])),
+            let operator = match filter.op {
+                FilterOp::Contains => fluxdb_core::FilterOperator::Contains,
+                FilterOp::NotContains => fluxdb_core::FilterOperator::NotContains,
+                FilterOp::StartsWith => fluxdb_core::FilterOperator::StartsWith,
+                FilterOp::NotStartsWith => fluxdb_core::FilterOperator::NotStartsWith,
+                FilterOp::EndsWith => fluxdb_core::FilterOperator::EndsWith,
+                FilterOp::NotEndsWith => fluxdb_core::FilterOperator::NotEndsWith,
                 _ => unreachable!(),
             };
+            let pattern = crate::filter_dialects::like_pattern(operator, &pg_text(&filter.values[0]))
+                .ok_or_else(|| Error::new(ErrorKind::Query, "未知的 LIKE 运算符"))?;
             let param = pg_next_param(params, &CellValue::Text(pattern), None);
-            format!("{column}{} LIKE {param}", if neg { " NOT" } else { "" })
+            let like_column = if pg_text_ok_column(col.type_name.as_deref().unwrap_or("")) {
+                column.clone()
+            } else {
+                format!("CAST({column} AS TEXT)")
+            };
+            let text = pg_text(&filter.values[0]);
+            format!(
+                "{like_column}{} LIKE {param}{}",
+                if neg { " NOT" } else { "" },
+                if crate::filter_dialects::like_value_needs_escape(&text) {
+                    crate::filter_dialects::LIKE_ESCAPE_CLAUSE
+                } else {
+                    ""
+                }
+            )
         }
         FilterOp::GreaterThan
         | FilterOp::GreaterThanOrEqual
@@ -870,6 +900,32 @@ mod pg_filter_binding_tests {
         assert!(matches!(
             params[0].to_sql_checked(
                 &tokio_postgres::types::Type::INT4,
+                &mut tokio_postgres::types::private::BytesMut::new()
+            ),
+            Ok(tokio_postgres::types::IsNull::No)
+        ));
+    }
+
+    #[test]
+    fn integer_contains_casts_to_text_and_binds_escaped_pattern() {
+        let columns = [column("id", "integer")];
+        let expression = fluxdb_core::FilterExpression::Condition(fluxdb_core::FilterCondition {
+            field: "id".into(),
+            op: fluxdb_core::FilterOperator::Contains,
+            values: vec![fluxdb_core::FilterValue::Text("10%_1".into())],
+        });
+
+        let (sql, params) =
+            pg_expression_where_params(&expression, &columns).expect("PostgreSQL LIKE SQL");
+
+        assert_eq!(
+            sql,
+            "\nWHERE CAST(\"id\" AS TEXT) LIKE $1 ESCAPE '!'"
+        );
+        assert_eq!(params.len(), 1);
+        assert!(matches!(
+            params[0].to_sql_checked(
+                &tokio_postgres::types::Type::TEXT,
                 &mut tokio_postgres::types::private::BytesMut::new()
             ),
             Ok(tokio_postgres::types::IsNull::No)

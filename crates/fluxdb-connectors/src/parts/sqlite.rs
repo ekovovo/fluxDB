@@ -270,6 +270,7 @@ fn sqlite_load_data_with_expression(
             if let Some(tree) = crate::filter_dialects::compile_filter_tree(
                 DatabaseKind::Sqlite,
                 expression,
+                &columns,
             )
             .map_err(|error| Error::new(ErrorKind::Query, error.to_string()))?
             {

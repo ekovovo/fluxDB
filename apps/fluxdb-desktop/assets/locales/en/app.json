@@ -20,6 +20,7 @@
     "running": "Running...",
     "execute": "Execute",
     "add": "Add",
+    "undo": "Undo",
     "confirm": "Confirm",
     "create": "Create",
     "message_separator": ": "

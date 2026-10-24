@@ -317,6 +317,7 @@ pub fn statement_around_snapshot(
     snapshot: &fluxdb_editor_core::BufferSnapshot,
     offset: usize,
 ) -> Option<(usize, usize)> {
+    let offset = snapshot.clamp_to_char_boundary(offset.min(snapshot.len()));
     split_statement_ranges_snapshot(snapshot)
         .into_iter()
         .find(|range| offset >= range.start && offset <= range.end)
@@ -328,6 +329,10 @@ pub fn statement_around_snapshot(
 /// 若 offset 位于语句边界处（等于某结束端），归入该语句；否则返回
 /// `None` 供调用方决定回退策略。
 pub fn statement_around(text: &str, offset: usize) -> Option<(usize, usize)> {
+    let mut offset = offset.min(text.len());
+    while offset > 0 && !text.is_char_boundary(offset) {
+        offset -= 1;
+    }
     let statements = split_statements(text);
     for stmt in &statements {
         if offset >= stmt.start && offset <= stmt.end {

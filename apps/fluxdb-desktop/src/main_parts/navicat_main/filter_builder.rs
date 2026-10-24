@@ -14,7 +14,7 @@ impl NavicatMain {
         default_field: Option<String>,
         cx: &mut Context<Self>,
     ) {
-        self.insert_data_filter_rule(tab_id, None, default_field, false, cx);
+        self.insert_data_filter_rule(tab_id, None, default_field, 0, cx);
     }
 
     fn add_data_filter_rule_after(
@@ -22,10 +22,16 @@ impl NavicatMain {
         tab_id: TabId,
         rule_index: usize,
         default_field: Option<String>,
-        grouped: bool,
+        group_depth: u8,
         cx: &mut Context<Self>,
     ) {
-        self.insert_data_filter_rule(tab_id, Some(rule_index + 1), default_field, grouped, cx);
+        self.insert_data_filter_rule(
+            tab_id,
+            Some(rule_index + 1),
+            default_field,
+            group_depth,
+            cx,
+        );
     }
 
     fn insert_data_filter_rule(
@@ -33,12 +39,14 @@ impl NavicatMain {
         tab_id: TabId,
         insert_at: Option<usize>,
         default_field: Option<String>,
-        grouped: bool,
+        group_depth: u8,
         cx: &mut Context<Self>,
     ) {
-        let mut rule = DataFilterRule::default();
-        rule.field = default_field;
-        rule.grouped = grouped;
+        let rule = DataFilterRule {
+            field: default_field,
+            group_depth,
+            ..DataFilterRule::default()
+        };
         let rules = self.data_filter_draft_rules.entry(tab_id).or_default();
         if let Some(insert_at) = insert_at {
             rules.insert(insert_at.min(rules.len()), rule);
@@ -97,7 +105,7 @@ impl NavicatMain {
         default_field: Option<String>,
         cx: &mut Context<Self>,
     ) {
-        self.insert_data_filter_rule(tab_id, None, default_field, true, cx);
+        self.insert_data_filter_rule(tab_id, None, default_field, 1, cx);
     }
 
     fn toggle_data_filter_popover(
@@ -704,6 +712,7 @@ impl NavicatMain {
         let Some(field) = default_field else {
             return;
         };
+        self.data_sort_clear_undo.remove(&tab_id);
         let rules = self.data_sort_draft_rules.entry(tab_id).or_default();
         rules.push(DataSortRule {
             enabled: true,
@@ -722,6 +731,7 @@ impl NavicatMain {
         field: String,
         cx: &mut Context<Self>,
     ) {
+        self.data_sort_clear_undo.remove(&tab_id);
         let rules = self.data_sort_draft_rules.entry(tab_id).or_default();
         if sort_index >= rules.len() {
             rules.push(DataSortRule {
@@ -748,47 +758,14 @@ impl NavicatMain {
             .get_mut(&tab_id)
             .and_then(|rules| rules.get_mut(sort_index))
         {
+            self.data_sort_clear_undo.remove(&tab_id);
             rule.ascending = !rule.ascending;
             cx.notify();
         }
     }
 
-    fn set_data_sort_direction(
-        &mut self,
-        tab_id: TabId,
-        sort_index: usize,
-        ascending: bool,
-        cx: &mut Context<Self>,
-    ) {
-        if let Some(rule) = self
-            .data_sort_draft_rules
-            .get_mut(&tab_id)
-            .and_then(|rules| rules.get_mut(sort_index))
-        {
-            rule.ascending = ascending;
-        }
-        self.data_filter_popover = None;
-        self.sync_table_hover_overlay_block(cx);
-        cx.notify();
-    }
-
-    fn open_data_sort_field_menu(
-        &mut self,
-        tab_id: TabId,
-        sort_index: usize,
-        cx: &mut Context<Self>,
-    ) {
-        self.data_filter_popover = Some(DataFilterPopover {
-            tab_id,
-            kind: DataFilterPopoverKind::SortField,
-            rule_index: None,
-            sort_index: Some(sort_index),
-        });
-        self.sync_table_hover_overlay_block(cx);
-        cx.notify();
-    }
-
     fn delete_data_sort_rule(&mut self, tab_id: TabId, sort_index: usize, cx: &mut Context<Self>) {
+        self.data_sort_clear_undo.remove(&tab_id);
         if let Some(rules) = self.data_sort_draft_rules.get_mut(&tab_id) {
             if sort_index < rules.len() {
                 rules.remove(sort_index);
@@ -807,9 +784,52 @@ impl NavicatMain {
         cx.notify();
     }
 
+    fn move_data_sort_rule(
+        &mut self,
+        tab_id: TabId,
+        from: usize,
+        to: usize,
+        cx: &mut Context<Self>,
+    ) {
+        if from == to {
+            return;
+        }
+        if let Some(rules) = self.data_sort_draft_rules.get_mut(&tab_id)
+            && from < rules.len()
+            && to < rules.len()
+        {
+            let rule = rules.remove(from);
+            rules.insert(to, rule);
+            self.data_sort_clear_undo.remove(&tab_id);
+            self.sync_data_filter_builder_to_text(tab_id);
+            cx.notify();
+        }
+    }
+
+    fn clear_data_sort_rules(&mut self, tab_id: TabId, cx: &mut Context<Self>) {
+        let Some(previous) = self.data_sort_draft_rules.remove(&tab_id) else {
+            return;
+        };
+        self.data_sort_clear_undo.insert(tab_id, previous);
+        self.sync_data_filter_builder_to_text(tab_id);
+        self.data_filter_popover = None;
+        self.sync_table_hover_overlay_block(cx);
+        cx.notify();
+    }
+
+    fn undo_clear_data_sort_rules(&mut self, tab_id: TabId, cx: &mut Context<Self>) {
+        let Some(previous) = self.data_sort_clear_undo.remove(&tab_id) else {
+            return;
+        };
+        self.data_sort_draft_rules.insert(tab_id, previous);
+        self.sync_data_filter_builder_to_text(tab_id);
+        cx.notify();
+    }
+
     fn clear_data_filter_and_sort_rules(&mut self, tab_id: TabId, cx: &mut Context<Self>) {
         self.data_filter_draft_rules.remove(&tab_id);
         self.data_sort_draft_rules.remove(&tab_id);
+        self.data_sort_clear_undo.remove(&tab_id);
         self.data_filter_rules.remove(&tab_id);
         self.data_sort_rules.remove(&tab_id);
         self.data_filter_grouped_tabs.remove(&tab_id);
@@ -834,13 +854,7 @@ impl NavicatMain {
     ) {
         if self.data_filter_panels.contains(&tab_id) {
             self.data_filter_panels.remove(&tab_id);
-            self.data_filter_draft_rules.remove(&tab_id);
-            self.data_sort_draft_rules.remove(&tab_id);
-            self.data_filter_grouped_tabs.remove(&tab_id);
-            self.data_filter_modes.remove(&tab_id);
-            self.data_filter_texts.remove(&tab_id);
             self.data_filter_condition_completion_signatures.remove(&tab_id);
-            self.data_sort_texts.remove(&tab_id);
             if self
                 .data_filter_popover
                 .is_some_and(|popover| popover.tab_id == tab_id)
@@ -849,15 +863,17 @@ impl NavicatMain {
             }
         } else {
             self.data_filter_panels.insert(tab_id);
-            if let Some(rule) = self.data_filter_rules.get(&tab_id).cloned() {
+            if !self.data_filter_draft_rules.contains_key(&tab_id)
+                && !self.data_filter_texts.contains_key(&tab_id)
+                && let Some(rule) = self.data_filter_rules.get(&tab_id).cloned()
+            {
                 self.data_filter_draft_rules.insert(tab_id, rule);
-            } else {
-                self.data_filter_draft_rules.remove(&tab_id);
             }
-            if let Some(rule) = self.data_sort_rules.get(&tab_id).cloned() {
+            if !self.data_sort_draft_rules.contains_key(&tab_id)
+                && !self.data_sort_texts.contains_key(&tab_id)
+                && let Some(rule) = self.data_sort_rules.get(&tab_id).cloned()
+            {
                 self.data_sort_draft_rules.insert(tab_id, rule);
-            } else {
-                self.data_sort_draft_rules.remove(&tab_id);
             }
             self.sync_data_filter_text_inputs(tab_id, window, cx);
         }

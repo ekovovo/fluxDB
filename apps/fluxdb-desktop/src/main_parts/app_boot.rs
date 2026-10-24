@@ -3572,6 +3572,7 @@ fn navicat_main_new(
                             data_sort_rules: BTreeMap::new(),
                             data_filter_draft_rules: BTreeMap::new(),
                             data_sort_draft_rules: BTreeMap::new(),
+                            data_sort_clear_undo: BTreeMap::new(),
                             data_filter_grouped_tabs: BTreeSet::new(),
                             data_filter_modes: BTreeMap::new(),
                             data_filter_texts: BTreeMap::new(),

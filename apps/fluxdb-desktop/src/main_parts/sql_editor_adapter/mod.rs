@@ -162,11 +162,13 @@ const CODE_LENS_SYNC_SCAN_LIMIT: usize = 128 * 1024;
 const CODE_LENS_VISIBLE_WINDOW_BYTES: usize = 16 * 1024;
 
 fn completion_window(snapshot: &BufferSnapshot, cursor: usize) -> (String, usize) {
-    let cursor = cursor.min(snapshot.len());
-    let start = cursor.saturating_sub(COMPLETION_WINDOW_BYTES);
-    let end = cursor
-        .saturating_add(COMPLETION_WINDOW_BYTES)
-        .min(snapshot.len());
+    let cursor = snapshot.clamp_to_char_boundary(cursor.min(snapshot.len()));
+    let start = snapshot.clamp_to_char_boundary(cursor.saturating_sub(COMPLETION_WINDOW_BYTES));
+    let end = snapshot.clamp_to_char_boundary(
+        cursor
+            .saturating_add(COMPLETION_WINDOW_BYTES)
+            .min(snapshot.len()),
+    );
     (snapshot.text_in_range(Range::new(start, end)), start)
 }
 
@@ -208,6 +210,86 @@ fn build_code_lenses_from_snapshot(snapshot: &BufferSnapshot) -> Vec<CodeLens> {
             ]
         })
         .collect()
+}
+
+#[cfg(test)]
+mod completion_multibyte_safety_tests {
+    use super::*;
+    use fluxdb_editor_core::EditorBuffer;
+
+    #[test]
+    fn completion_window_never_splits_chinese_characters() {
+        let prefix = "a".repeat(COMPLETION_WINDOW_BYTES - 1);
+        let text = format!("{prefix}等等 SELECT 1");
+        let buffer = EditorBuffer::new_from(&text);
+        let cursor = text.find('等').expect("Chinese suffix");
+
+        let (window, offset) = completion_window(&buffer.snapshot(), cursor + 1);
+
+        assert!(text.is_char_boundary(offset));
+        assert!(window.is_char_boundary(window.len()));
+    }
+
+    #[test]
+    fn incremental_diagnostics_shift_to_valid_boundaries_after_chinese_edit() {
+        let adapter = SqlAdapter::new(SqlDialect::Mysql);
+        let mut buffer = EditorBuffer::new_from("SELECT '等等';\nSELECT 2;");
+        let _ = buffer.edit(
+            Range::new(0, "SELECT '等等';\nSELECT 2;".len()),
+            "中",
+            0,
+            0,
+            false,
+        );
+        let first = buffer.snapshot();
+        *adapter.diagnostics_cache.lock().expect("diagnostics cache") =
+            Some(SqlDiagnosticsCache {
+                version: first.version(),
+                text_bytes: first.len(),
+                diagnostics: vec![Diagnostic {
+                    range: Range::new(0, "SELECT '等等'".len()),
+                    severity: fluxdb_editor_core::DiagnosticSeverity::Warning,
+                    message: "fixture".into(),
+                    source: "test".into(),
+                }],
+                statement_ranges: split_statement_ranges_snapshot(&first),
+            });
+
+        let edit = buffer.edit(
+            Range::new(0, first.len()),
+            "中",
+            0,
+            0,
+            false,
+        );
+        let snapshot = buffer.snapshot();
+        *adapter.diagnostics_cache.lock().expect("diagnostics cache") =
+            Some(SqlDiagnosticsCache {
+                version: first.version(),
+                text_bytes: first.len(),
+                diagnostics: vec![Diagnostic {
+                    range: Range::new(0, first.len()),
+                    severity: fluxdb_editor_core::DiagnosticSeverity::Warning,
+                    message: "fixture".into(),
+                    source: "test".into(),
+                }],
+                statement_ranges: split_statement_ranges_snapshot(&first),
+            });
+        let diagnostics = adapter
+            .diagnostics_incremental(
+                &snapshot,
+                InputEdit::new(
+                    edit.changes[0].old_range,
+                    edit.changes[0].new_text.clone(),
+                    edit.changes[0].version,
+                ),
+            )
+            .into_iter()
+            .filter(|diagnostic| diagnostic.source == "test")
+            .collect::<Vec<_>>();
+
+        assert!(diagnostics.is_empty());
+    }
 }
 
 /// 语句执行状态仓库别名：`Arc<Mutex<SqlStatementStatusMap>>`，供宿主与适配器共享。
@@ -878,8 +960,10 @@ impl SqlAdapter {
         };
         let delta = changed.new_text.len() as isize - old_range.len() as isize;
         let new_statement = Range::new(
-            old_statement.start,
-            shifted_offset(old_statement.end, delta).min(snapshot.len()),
+            snapshot.clamp_to_char_boundary(old_statement.start),
+            snapshot.clamp_to_char_boundary(
+                shifted_offset(old_statement.end, delta).min(snapshot.len()),
+            ),
         );
         if new_statement.start >= new_statement.end {
             *self.diagnostics_cache.lock().ok()? = Some(cache);
@@ -900,6 +984,8 @@ impl SqlAdapter {
             } else if diagnostic.range.start >= old_statement.end {
                 diagnostic.range.start = shifted_offset(diagnostic.range.start, delta);
                 diagnostic.range.end = shifted_offset(diagnostic.range.end, delta);
+                diagnostic.range.start = snapshot.clamp_to_char_boundary(diagnostic.range.start);
+                diagnostic.range.end = snapshot.clamp_to_char_boundary(diagnostic.range.end);
                 diagnostics.push(diagnostic);
             }
         }
@@ -911,6 +997,8 @@ impl SqlAdapter {
             } else if range.start >= old_statement.end {
                 range.start = shifted_offset(range.start, delta).min(snapshot.len());
                 range.end = shifted_offset(range.end, delta).min(snapshot.len());
+                range.start = snapshot.clamp_to_char_boundary(range.start);
+                range.end = snapshot.clamp_to_char_boundary(range.end);
             }
         }
         cache.version = snapshot.version();
@@ -1089,8 +1177,10 @@ impl CompletionProvider for SqlAdapter {
         }
         // 统一取光标前局部窗口文本，供字符串/注释与函数签名上下文共用。
         let before = request.document.as_ref().map(|snapshot| {
-            let cursor = request.cursor.min(snapshot.len());
-            let start = cursor.saturating_sub(COMPLETION_WINDOW_BYTES);
+            let cursor =
+                snapshot.clamp_to_char_boundary(request.cursor.min(snapshot.len()));
+            let start = snapshot
+                .clamp_to_char_boundary(cursor.saturating_sub(COMPLETION_WINDOW_BYTES));
             snapshot.text_in_range(Range::new(start, cursor))
         });
         if !request.query.is_empty() {
@@ -1141,7 +1231,10 @@ impl CompletionProvider for SqlAdapter {
         {
             let document_bytes = snapshot.len();
             let (text, text_offset) = completion_window(&snapshot, request.cursor);
-            let cursor = request.cursor.saturating_sub(text_offset).min(text.len());
+            let cursor = snapshot
+                .clamp_to_char_boundary(request.cursor.min(snapshot.len()))
+                .saturating_sub(text_offset)
+                .min(text.len());
             let explicit = request.explicit;
             let query = request.query;
             let fallback_items = self.build_completion_items();

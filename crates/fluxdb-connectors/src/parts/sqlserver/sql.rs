@@ -66,7 +66,7 @@ fn sqlserver_expression_sql(
                 ),
                 None => fluxdb_core::SqlServerDialect.quote_identifier(&column.name),
             };
-            sqlserver_expression_condition(condition, &name, parameters)?
+            sqlserver_expression_condition(condition, &name, column, parameters)?
         }
         FilterExpression::And(items) => {
             let sql = items
@@ -107,6 +107,7 @@ fn sqlserver_expression_sql(
 fn sqlserver_expression_condition(
     condition: &fluxdb_core::FilterCondition,
     name: &str,
+    column: &Column,
     parameters: &mut Vec<fluxdb_core::SqlParameter>,
 ) -> fluxdb_core::Result<String> {
     use fluxdb_core::{FilterOperator, FilterValue};
@@ -138,25 +139,28 @@ fn sqlserver_expression_condition(
         | FilterOperator::EndsWith
         | FilterOperator::NotEndsWith => {
             let text = fluxdb_core::filter_value_text(first()?);
-            let pattern = match condition.op {
-                FilterOperator::Contains | FilterOperator::NotContains => {
-                    format!("%{text}%")
-                }
-                FilterOperator::StartsWith | FilterOperator::NotStartsWith => {
-                    format!("{text}%")
-                }
-                _ => format!("%{text}"),
-            };
+            let pattern = crate::filter_dialects::like_pattern(condition.op, &text)
+                .ok_or_else(|| Error::new(ErrorKind::Query, "未知的 LIKE 运算符"))?;
             let negative = matches!(
                 condition.op,
                 FilterOperator::NotContains
                     | FilterOperator::NotStartsWith
                     | FilterOperator::NotEndsWith
             );
+            let like_name = if crate::filter_dialects::filter_column_is_text(column) {
+                name.to_string()
+            } else {
+                format!("CAST({name} AS NVARCHAR(MAX))")
+            };
             format!(
-                "{name}{}LIKE {}",
+                "{like_name}{}LIKE {}{}",
                 if negative { " NOT " } else { " " },
-                bind(parameters, &FilterValue::Text(pattern))
+                bind(parameters, &FilterValue::Text(pattern)),
+                if crate::filter_dialects::like_value_needs_escape(&text) {
+                    crate::filter_dialects::LIKE_ESCAPE_CLAUSE
+                } else {
+                    ""
+                }
             )
         }
         FilterOperator::Between | FilterOperator::NotBetween => {

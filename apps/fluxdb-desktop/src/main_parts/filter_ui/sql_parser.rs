@@ -102,7 +102,9 @@ fn data_filter_rules_sql(
     data_filter_expression_from_rules(rules, columns)
         .ok()
         .and_then(|expression| {
-            fluxdb_core::filter_dialect_for(db_kind)?.render(&expression).ok()
+            fluxdb_core::filter_dialect_for(db_kind)?
+                .render_with_columns(&expression, columns)
+                .ok()
         })
         .unwrap_or_default()
 }
@@ -184,7 +186,7 @@ fn parse_data_filter_rules_text(text: &str) -> Option<Vec<DataFilterRule>> {
             if inner_parts.len() > 1 {
                 for inner_part in inner_parts {
                     let mut rule = parse_data_filter_rule_text(inner_part)?;
-                    rule.grouped = true;
+                    rule.group_depth = 1;
                     rules.push(rule);
                 }
             } else if let Some(rule) = parse_data_filter_rule_text(inner) {
@@ -326,7 +328,8 @@ fn parse_data_filter_multi_value_rule(
         advanced_expression: None,
         typed_values: None,
         connector: fluxdb_core::FilterCombinator::And,
-        grouped: false,
+        group_depth: 0,
+                        group_end: 0,
     })
 }
 
@@ -352,7 +355,8 @@ fn parse_data_filter_null_rule(text: &str) -> Option<DataFilterRule> {
             advanced_expression: None,
             typed_values: None,
             connector: fluxdb_core::FilterCombinator::And,
-            grouped: false,
+            group_depth: 0,
+                        group_end: 0,
         });
     }
     if let Some(field) = trim_suffix_case_insensitive(text, " IS NULL") {
@@ -364,7 +368,8 @@ fn parse_data_filter_null_rule(text: &str) -> Option<DataFilterRule> {
             advanced_expression: None,
             typed_values: None,
             connector: fluxdb_core::FilterCombinator::And,
-            grouped: false,
+            group_depth: 0,
+                        group_end: 0,
         });
     }
     if let Some(field) = trim_suffix_case_insensitive(text, " IS NOT EMPTY") {
@@ -376,7 +381,8 @@ fn parse_data_filter_null_rule(text: &str) -> Option<DataFilterRule> {
             advanced_expression: None,
             typed_values: None,
             connector: fluxdb_core::FilterCombinator::And,
-            grouped: false,
+            group_depth: 0,
+                        group_end: 0,
         });
     }
     if let Some(field) = trim_suffix_case_insensitive(text, " IS EMPTY") {
@@ -388,7 +394,8 @@ fn parse_data_filter_null_rule(text: &str) -> Option<DataFilterRule> {
             advanced_expression: None,
             typed_values: None,
             connector: fluxdb_core::FilterCombinator::And,
-            grouped: false,
+            group_depth: 0,
+                        group_end: 0,
         });
     }
 
@@ -403,7 +410,8 @@ fn parse_data_filter_null_rule(text: &str) -> Option<DataFilterRule> {
                 advanced_expression: None,
                 typed_values: None,
                 connector: fluxdb_core::FilterCombinator::And,
-                grouped: false,
+                group_depth: 0,
+                        group_end: 0,
             });
         }
     }
@@ -418,7 +426,8 @@ fn parse_data_filter_null_rule(text: &str) -> Option<DataFilterRule> {
                 advanced_expression: None,
                 typed_values: None,
                 connector: fluxdb_core::FilterCombinator::And,
-                grouped: false,
+                group_depth: 0,
+                        group_end: 0,
             });
         }
     }
@@ -452,7 +461,8 @@ fn parse_data_filter_between_rule(text: &str) -> Option<DataFilterRule> {
                 advanced_expression: None,
                 typed_values: None,
                 connector: fluxdb_core::FilterCombinator::And,
-                grouped: false,
+                group_depth: 0,
+                        group_end: 0,
             });
         }
     }
@@ -480,7 +490,8 @@ fn parse_data_filter_in_rule(text: &str) -> Option<DataFilterRule> {
                 advanced_expression: None,
                 typed_values: None,
                 connector: fluxdb_core::FilterCombinator::And,
-                grouped: false,
+                group_depth: 0,
+                        group_end: 0,
             });
         }
     }
@@ -501,7 +512,8 @@ fn parse_data_filter_like_rule(text: &str) -> Option<DataFilterRule> {
         advanced_expression: None,
         typed_values: None,
         connector: fluxdb_core::FilterCombinator::And,
-        grouped: false,
+        group_depth: 0,
+                        group_end: 0,
     })
 }
 
@@ -519,7 +531,8 @@ fn parse_data_filter_comparison_rule(text: &str) -> Option<DataFilterRule> {
         advanced_expression: None,
         typed_values: None,
         connector: fluxdb_core::FilterCombinator::And,
-        grouped: false,
+        group_depth: 0,
+                        group_end: 0,
     })
 }
 
@@ -643,7 +656,10 @@ fn split_top_level_sql_list(text: &str) -> Vec<&str> {
 }
 
 fn trim_start_matches_case_insensitive<'a>(text: &'a str, prefix: &str) -> &'a str {
-    if text.len() >= prefix.len() && text[..prefix.len()].eq_ignore_ascii_case(prefix) {
+    if text
+        .get(..prefix.len())
+        .is_some_and(|value| value.eq_ignore_ascii_case(prefix))
+    {
         &text[prefix.len()..]
     } else {
         text
@@ -651,12 +667,10 @@ fn trim_start_matches_case_insensitive<'a>(text: &'a str, prefix: &str) -> &'a s
 }
 
 fn trim_suffix_case_insensitive<'a>(text: &'a str, suffix: &str) -> Option<&'a str> {
-    if text.len() >= suffix.len() && text[text.len() - suffix.len()..].eq_ignore_ascii_case(suffix)
-    {
-        Some(&text[..text.len() - suffix.len()])
-    } else {
-        None
-    }
+    let start = text.len().checked_sub(suffix.len())?;
+    let tail = text.get(start..)?;
+    tail.eq_ignore_ascii_case(suffix)
+        .then(|| &text[..start])
 }
 
 fn is_sql_word_at(text: &str, index: usize, word: &str) -> bool {
@@ -1378,5 +1392,35 @@ fn sql_preview_cell_literal(value: &CellValue, db_kind: DatabaseKind) -> String 
                 format!("X'{}'", hex.to_uppercase())
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod sql_parser_tests {
+    use super::*;
+
+    #[test]
+    fn sql_panel_parses_multibyte_literals_and_nested_conditions() {
+        let sql = "SELECT * FROM `fluxdb_demo`.`customers` WHERE (`id` = 1 OR ((`signup_date` < '2026-01-05' AND `signup_date` >= '2026-04-19') OR `name` LIKE '%等等%')) LIMIT 100";
+
+        let parsed = parse_data_editor_sql_text(sql).expect("multibyte SQL panel text");
+
+        assert_eq!(
+            parsed.filter_text,
+            "(`id` = 1 OR ((`signup_date` < '2026-01-05' AND `signup_date` >= '2026-04-19') OR `name` LIKE '%等等%'))"
+        );
+        assert_eq!(parsed.limit, Some(100));
+    }
+
+    #[test]
+    fn suffix_trimming_does_not_split_multibyte_text() {
+        assert_eq!(
+            trim_suffix_case_insensitive("name LIKE '%等等%' IS NULL", " IS NULL"),
+            Some("name LIKE '%等等%'")
+        );
+        assert_eq!(
+            trim_suffix_case_insensitive("名字 IS NULL", " IS NULL"),
+            Some("名字")
+        );
     }
 }

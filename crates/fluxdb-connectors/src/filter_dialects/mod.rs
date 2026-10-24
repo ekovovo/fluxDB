@@ -7,7 +7,7 @@ use fluxdb_core::{
     CompiledFilterExpression, CompiledFilterNode, DatabaseKind, FilterCondition, FilterDialect,
     FilterExpression, FilterExpressionError, FilterOperator, FilterValue, ParsedFilterExpression,
 };
-use sqlparser::ast::{BinaryOperator, Expr, Ident, UnaryOperator, Value};
+use sqlparser::ast::{BinaryOperator, DataType, Expr, Ident, UnaryOperator, Value};
 use sqlparser::dialect::{
     Dialect as SqlParserDialect, MsSqlDialect, MySqlDialect, PostgreSqlDialect, SQLiteDialect,
 };
@@ -33,12 +33,13 @@ pub fn filter_dialect(kind: DatabaseKind) -> Option<&'static dyn FilterDialect> 
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum FilterSyntax {
     Postgres,
     MySql,
     SqlServer,
     Sqlite,
+    Dameng,
 }
 
 impl FilterDialect for FilterSyntax {
@@ -56,11 +57,27 @@ impl FilterDialect for FilterSyntax {
         render_expression(expression, *self)
     }
 
+    fn render_with_columns(
+        &self,
+        expression: &FilterExpression,
+        columns: &[fluxdb_core::Column],
+    ) -> std::result::Result<String, FilterExpressionError> {
+        render_expression_with_columns(expression, *self, columns)
+    }
+
     fn compile(
         &self,
         expression: &FilterExpression,
     ) -> std::result::Result<CompiledFilterExpression, FilterExpressionError> {
         compile_expression(expression, *self)
+    }
+
+    fn compile_with_columns(
+        &self,
+        expression: &FilterExpression,
+        columns: &[fluxdb_core::Column],
+    ) -> std::result::Result<CompiledFilterExpression, FilterExpressionError> {
+        compile_expression_with_columns(expression, *self, columns)
     }
 }
 
@@ -68,11 +85,12 @@ impl FilterDialect for FilterSyntax {
 pub fn compile_filter_tree(
     kind: DatabaseKind,
     expression: &FilterExpression,
+    columns: &[fluxdb_core::Column],
 ) -> Result<Option<CompiledFilterNode>, FilterExpressionError> {
     let Some(syntax) = filter_syntax(kind) else {
         return Ok(None);
     };
-    let tree = compile_tree(expression, syntax)?;
+    let tree = compile_tree(expression, syntax, columns)?;
     if let CompiledFilterNode::And(items) = &tree
         && items.is_empty()
     {
@@ -87,7 +105,7 @@ fn filter_syntax(kind: DatabaseKind) -> Option<FilterSyntax> {
         DatabaseKind::Postgres => Some(FilterSyntax::Postgres),
         DatabaseKind::Sqlite => Some(FilterSyntax::Sqlite),
         DatabaseKind::SqlServer => Some(FilterSyntax::SqlServer),
-        DatabaseKind::Dameng => Some(FilterSyntax::Postgres),
+        DatabaseKind::Dameng => Some(FilterSyntax::Dameng),
         DatabaseKind::MongoDb | DatabaseKind::Redis => None,
     }
 }
@@ -102,6 +120,8 @@ fn parser_dialect(syntax: FilterSyntax) -> &'static dyn SqlParserDialect {
         FilterSyntax::MySql => &MYSQL,
         FilterSyntax::SqlServer => &SQLSERVER,
         FilterSyntax::Sqlite => &SQLITE,
+        // 达梦沿用 SQL 表达式语义，仅渲染目标类型与标识符规则单独处理。
+        FilterSyntax::Dameng => &POSTGRES,
     }
 }
 
@@ -173,10 +193,29 @@ fn expression_from_sql(
                     BinaryOperator::GtEq => FilterOperator::Ge,
                     _ => unreachable!(),
                 };
+                // 表单里的「是空的/是非空的」渲染为等值空文本；回填时恢复专用运算符，
+                // 避免表单 → 输入 → 表单后语义仍相同但显示成普通等值条件。
+                let operator = match (operator, &value) {
+                    (FilterOperator::Eq, FilterValue::Text(value)) if value.is_empty() => {
+                        FilterOperator::IsEmpty
+                    }
+                    (FilterOperator::Ne, FilterValue::Text(value)) if value.is_empty() => {
+                        FilterOperator::IsNotEmpty
+                    }
+                    _ => operator,
+                };
+                let values = if matches!(
+                    operator,
+                    FilterOperator::IsEmpty | FilterOperator::IsNotEmpty
+                ) {
+                    Vec::new()
+                } else {
+                    vec![value]
+                };
                 Ok(FilterExpression::Condition(FilterCondition {
                     field,
                     op: operator,
-                    values: vec![value],
+                    values,
                 }))
             }
             _ => Ok(FilterExpression::Raw(raw)),
@@ -209,14 +248,18 @@ fn expression_from_sql(
             negated,
             expr,
             pattern,
+            escape_char,
             ..
         } => {
-            let field = field_name(expr)
+            let field = like_field_name(expr)
                 .ok_or_else(|| FilterExpressionError::new("LIKE 左侧必须是字段"))?;
             let Some(FilterValue::Text(pattern)) = literal_value(pattern) else {
                 return Ok(FilterExpression::Raw(raw));
             };
-            let (op, value) = like_operator(*negated, pattern);
+            let escape = escape_char.as_ref().and_then(single_char_literal);
+            let Some((op, value)) = like_operator(*negated, pattern, escape) else {
+                return Ok(FilterExpression::Raw(raw));
+            };
             Ok(FilterExpression::Condition(FilterCondition {
                 field,
                 op,
@@ -284,12 +327,47 @@ fn field_name(expression: &Expr) -> Option<String> {
     }
 }
 
+fn like_field_name(expression: &Expr) -> Option<String> {
+    match expression {
+        Expr::Cast {
+            expr, data_type, ..
+        } if is_text_cast_type(data_type) => field_name(expr),
+        _ => field_name(expression),
+    }
+}
+
+fn is_text_cast_type(data_type: &DataType) -> bool {
+    matches!(
+        data_type,
+        DataType::Text
+            | DataType::TinyText
+            | DataType::MediumText
+            | DataType::LongText
+            | DataType::String(_)
+            | DataType::Char(_)
+            | DataType::Character(_)
+            | DataType::Varchar(_)
+            | DataType::Nvarchar(_)
+            | DataType::CharacterVarying(_)
+            | DataType::CharVarying(_)
+    )
+}
+
+fn single_char_literal(value: &sqlparser::ast::ValueWithSpan) -> Option<char> {
+    let Value::SingleQuotedString(value) = &value.value else {
+        return None;
+    };
+    let mut chars = value.chars();
+    let escape = chars.next()?;
+    chars.next().is_none().then_some(escape)
+}
+
 fn literal_value(expression: &Expr) -> Option<FilterValue> {
     match expression {
         Expr::Value(value) => match &value.value {
-            Value::SingleQuotedString(value) | Value::DoubleQuotedString(value) => {
-                Some(FilterValue::Text(value.clone()))
-            }
+            Value::SingleQuotedString(value)
+            | Value::DoubleQuotedString(value)
+            | Value::NationalStringLiteral(value) => Some(FilterValue::Text(value.clone())),
             Value::DollarQuotedString(value) => Some(FilterValue::Text(value.value.clone())),
             Value::Number(value, _) => Some(if let Ok(value) = value.parse::<i64>() {
                 FilterValue::Integer(value)
@@ -313,11 +391,24 @@ fn literal_value(expression: &Expr) -> Option<FilterValue> {
     }
 }
 
-fn like_operator(negated: bool, pattern: String) -> (FilterOperator, String) {
+fn like_operator(
+    negated: bool,
+    pattern: String,
+    escape: Option<char>,
+) -> Option<(FilterOperator, String)> {
     let starts = pattern.starts_with('%');
-    let ends = pattern.ends_with('%');
-    let value = pattern.trim_matches('%').to_string();
-    match (negated, starts, ends) {
+    let ends = pattern.len() > 1 && ends_with_unescaped_percent(&pattern, escape);
+    let start = usize::from(starts);
+    let end = pattern.len().saturating_sub(usize::from(ends));
+    if start > end {
+        return None;
+    }
+    let body = &pattern[start..end];
+    if has_unescaped_like_wildcard(body, escape) {
+        return None;
+    }
+    let value = unescape_like_literal(body, escape)?;
+    Some(match (negated, starts, ends) {
         (false, false, false) => (FilterOperator::Eq, value),
         (false, true, false) => (FilterOperator::EndsWith, value),
         (false, false, true) => (FilterOperator::StartsWith, value),
@@ -326,7 +417,53 @@ fn like_operator(negated: bool, pattern: String) -> (FilterOperator, String) {
         (true, true, false) => (FilterOperator::NotEndsWith, value),
         (true, false, true) => (FilterOperator::NotStartsWith, value),
         (true, true, true) => (FilterOperator::NotContains, value),
+    })
+}
+
+fn ends_with_unescaped_percent(value: &str, escape: Option<char>) -> bool {
+    if !value.ends_with('%') {
+        return false;
     }
+    let Some(escape) = escape else {
+        return true;
+    };
+    let preceding_escapes = value[..value.len() - 1]
+        .chars()
+        .rev()
+        .take_while(|ch| *ch == escape)
+        .count();
+    preceding_escapes % 2 == 0
+}
+
+fn has_unescaped_like_wildcard(value: &str, escape: Option<char>) -> bool {
+    let mut escaped = false;
+    for ch in value.chars() {
+        if escape == Some(ch) && !escaped {
+            escaped = true;
+            continue;
+        }
+        if !escaped && matches!(ch, '%' | '_') {
+            return true;
+        }
+        escaped = false;
+    }
+    escaped
+}
+
+fn unescape_like_literal(value: &str, escape: Option<char>) -> Option<String> {
+    let Some(escape) = escape else {
+        return Some(value.to_string());
+    };
+    let mut result = String::with_capacity(value.len());
+    let mut chars = value.chars();
+    while let Some(ch) = chars.next() {
+        if ch == escape {
+            result.push(chars.next()?);
+        } else {
+            result.push(ch);
+        }
+    }
+    Some(result)
 }
 
 fn parse_with_syntax(
@@ -352,6 +489,14 @@ pub(crate) fn render_for_syntax(
     render_expression(expression, syntax)
 }
 
+pub(crate) fn render_for_syntax_with_columns(
+    syntax: FilterSyntax,
+    expression: &FilterExpression,
+    columns: &[fluxdb_core::Column],
+) -> Result<String, FilterExpressionError> {
+    render_expression_with_columns(expression, syntax, columns)
+}
+
 pub(crate) fn compile_for_syntax(
     syntax: FilterSyntax,
     expression: &FilterExpression,
@@ -359,23 +504,47 @@ pub(crate) fn compile_for_syntax(
     compile_expression(expression, syntax)
 }
 
+pub(crate) fn compile_for_syntax_with_columns(
+    syntax: FilterSyntax,
+    expression: &FilterExpression,
+    columns: &[fluxdb_core::Column],
+) -> Result<CompiledFilterExpression, FilterExpressionError> {
+    compile_expression_with_columns(expression, syntax, columns)
+}
+
 fn render_expression(
     expression: &FilterExpression,
     syntax: FilterSyntax,
 ) -> Result<String, FilterExpressionError> {
+    render_expression_with_columns(expression, syntax, &[])
+}
+
+fn render_expression_with_columns(
+    expression: &FilterExpression,
+    syntax: FilterSyntax,
+    columns: &[fluxdb_core::Column],
+) -> Result<String, FilterExpressionError> {
     match expression {
-        FilterExpression::Condition(condition) => render_condition(condition, syntax),
-        FilterExpression::And(items) => Ok(render_group(items, syntax, "AND")),
-        FilterExpression::Or(items) => Ok(render_group(items, syntax, "OR")),
-        FilterExpression::Not(inner) => Ok(format!("NOT ({})", render_expression(inner, syntax)?)),
+        FilterExpression::Condition(condition) => render_condition(condition, syntax, columns),
+        FilterExpression::And(items) => Ok(render_group(items, syntax, columns, "AND")),
+        FilterExpression::Or(items) => Ok(render_group(items, syntax, columns, "OR")),
+        FilterExpression::Not(inner) => Ok(format!(
+            "NOT ({})",
+            render_expression_with_columns(inner, syntax, columns)?
+        )),
         FilterExpression::Raw(raw) => Ok(raw.clone()),
     }
 }
 
-fn render_group(items: &[FilterExpression], syntax: FilterSyntax, operator: &str) -> String {
+fn render_group(
+    items: &[FilterExpression],
+    syntax: FilterSyntax,
+    columns: &[fluxdb_core::Column],
+    operator: &str,
+) -> String {
     let rendered = items
         .iter()
-        .map(|item| render_expression(item, syntax).unwrap_or_default())
+        .map(|item| render_expression_with_columns(item, syntax, columns).unwrap_or_default())
         .filter(|item| !item.is_empty())
         .collect::<Vec<_>>();
     if rendered.len() <= 1 {
@@ -388,6 +557,7 @@ fn render_group(items: &[FilterExpression], syntax: FilterSyntax, operator: &str
 fn render_condition(
     condition: &FilterCondition,
     syntax: FilterSyntax,
+    columns: &[fluxdb_core::Column],
 ) -> Result<String, FilterExpressionError> {
     let field = quote_identifier(&condition.field, syntax);
     let value = |index: usize| {
@@ -401,8 +571,12 @@ fn render_condition(
         return Ok(match condition.op {
             FilterOperator::IsNull => format!("{field} IS NULL"),
             FilterOperator::IsNotNull => format!("{field} IS NOT NULL"),
-            FilterOperator::IsEmpty => format!("{field} = ''"),
-            FilterOperator::IsNotEmpty => format!("{field} != ''"),
+            FilterOperator::IsEmpty => {
+                format!("{field} = {}", empty_string_literal(syntax))
+            }
+            FilterOperator::IsNotEmpty => {
+                format!("{field} != {}", empty_string_literal(syntax))
+            }
             _ => unreachable!(),
         });
     }
@@ -423,46 +597,39 @@ fn render_condition(
         FilterOperator::Le => format!("{field} <= {}", value(0)?),
         FilterOperator::Gt => format!("{field} > {}", value(0)?),
         FilterOperator::Ge => format!("{field} >= {}", value(0)?),
-        FilterOperator::Contains => {
+        FilterOperator::Contains
+        | FilterOperator::NotContains
+        | FilterOperator::StartsWith
+        | FilterOperator::NotStartsWith
+        | FilterOperator::EndsWith
+        | FilterOperator::NotEndsWith => {
+            let FilterValue::Text(value) = &condition.values[0] else {
+                return Err(FilterExpressionError::new("LIKE 需要文本值"));
+            };
+            let pattern = like_pattern(condition.op, value)
+                .ok_or_else(|| FilterExpressionError::new("未知的 LIKE 运算符"))?;
+            let escape = like_value_needs_escape(value);
             format!(
-                "{field} LIKE {}",
-                render_like("%", &condition.values[0], "%")
-            )
-        }
-        FilterOperator::NotContains => {
-            format!(
-                "{field} NOT LIKE {}",
-                render_like("%", &condition.values[0], "%")
-            )
-        }
-        FilterOperator::StartsWith => {
-            format!(
-                "{field} LIKE {}",
-                render_like("", &condition.values[0], "%")
-            )
-        }
-        FilterOperator::NotStartsWith => {
-            format!(
-                "{field} NOT LIKE {}",
-                render_like("", &condition.values[0], "%")
-            )
-        }
-        FilterOperator::EndsWith => {
-            format!(
-                "{field} LIKE {}",
-                render_like("%", &condition.values[0], "")
-            )
-        }
-        FilterOperator::NotEndsWith => {
-            format!(
-                "{field} NOT LIKE {}",
-                render_like("%", &condition.values[0], "")
+                "{}{} LIKE {}{}",
+                like_field_sql(&field, &condition.field, syntax, columns),
+                if matches!(
+                    condition.op,
+                    FilterOperator::NotContains
+                        | FilterOperator::NotStartsWith
+                        | FilterOperator::NotEndsWith
+                ) {
+                    " NOT"
+                } else {
+                    ""
+                },
+                render_literal(&FilterValue::Text(pattern), syntax),
+                if escape { LIKE_ESCAPE_CLAUSE } else { "" }
             )
         }
         FilterOperator::IsNull => format!("{field} IS NULL"),
         FilterOperator::IsNotNull => format!("{field} IS NOT NULL"),
-        FilterOperator::IsEmpty => format!("{field} = ''"),
-        FilterOperator::IsNotEmpty => format!("{field} != ''"),
+        FilterOperator::IsEmpty => format!("{field} = {}", empty_string_literal(syntax)),
+        FilterOperator::IsNotEmpty => format!("{field} != {}", empty_string_literal(syntax)),
         FilterOperator::Between => format!("{field} BETWEEN {} AND {}", value(0)?, value(1)?),
         FilterOperator::NotBetween => {
             format!("{field} NOT BETWEEN {} AND {}", value(0)?, value(1)?)
@@ -488,13 +655,6 @@ fn render_condition(
     })
 }
 
-fn render_like(prefix: &str, value: &FilterValue, suffix: &str) -> String {
-    let FilterValue::Text(value) = value else {
-        return "'".to_string();
-    };
-    format!("'{}{}{}'", prefix, value.replace('\'', "''"), suffix)
-}
-
 fn render_literal(value: &FilterValue, syntax: FilterSyntax) -> String {
     match value {
         FilterValue::Text(value) => format!("'{}'", value.replace('\'', "''")),
@@ -515,6 +675,93 @@ fn render_literal(value: &FilterValue, syntax: FilterSyntax) -> String {
     }
 }
 
+pub(crate) const LIKE_ESCAPE_CLAUSE: &str = " ESCAPE '!'";
+
+/// 构造可安全作为 LIKE 字面量匹配的模式；`!` 由 SQL 的 ESCAPE 子句声明为转义符。
+pub(crate) fn like_pattern(operator: FilterOperator, value: &str) -> Option<String> {
+    let escaped = escape_like_literal(value);
+    Some(match operator {
+        FilterOperator::Contains | FilterOperator::NotContains => format!("%{escaped}%"),
+        FilterOperator::StartsWith | FilterOperator::NotStartsWith => format!("{escaped}%"),
+        FilterOperator::EndsWith | FilterOperator::NotEndsWith => format!("%{escaped}"),
+        _ => return None,
+    })
+}
+
+fn escape_like_literal(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for ch in value.chars() {
+        if matches!(ch, '!' | '%' | '_') {
+            escaped.push('!');
+        }
+        escaped.push(ch);
+    }
+    escaped
+}
+
+pub(crate) fn like_value_needs_escape(value: &str) -> bool {
+    value.chars().any(|ch| matches!(ch, '!' | '%' | '_'))
+}
+
+fn like_field_sql(
+    field: &str,
+    field_name: &str,
+    syntax: FilterSyntax,
+    columns: &[fluxdb_core::Column],
+) -> String {
+    if matches!(syntax, FilterSyntax::MySql | FilterSyntax::Sqlite) {
+        return field.to_string();
+    }
+    let column = columns.iter().find(|column| column.name == field_name);
+    if column.is_none_or(filter_column_is_text) {
+        return field.to_string();
+    }
+    let target = match syntax {
+        FilterSyntax::Postgres | FilterSyntax::Sqlite => "TEXT",
+        FilterSyntax::MySql => "CHAR",
+        FilterSyntax::SqlServer => "NVARCHAR(MAX)",
+        FilterSyntax::Dameng => "VARCHAR(4000)",
+    };
+    format!("CAST({field} AS {target})")
+}
+
+pub(crate) fn filter_column_is_text(column: &fluxdb_core::Column) -> bool {
+    let Some(type_name) = column.type_name.as_deref() else {
+        return false;
+    };
+    let base = type_name
+        .trim()
+        .to_ascii_lowercase()
+        .split('(')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    matches!(
+        base.as_str(),
+        "text"
+            | "tinytext"
+            | "mediumtext"
+            | "longtext"
+            | "varchar"
+            | "varchar2"
+            | "nvarchar"
+            | "nvarchar2"
+            | "char"
+            | "nchar"
+            | "character"
+            | "character varying"
+            | "char varying"
+            | "bpchar"
+            | "name"
+            | "citext"
+            | "clob"
+            | "string"
+            | "enum"
+            | "set"
+    )
+}
+
 fn quote_identifier(value: &str, syntax: FilterSyntax) -> String {
     match syntax {
         FilterSyntax::MySql => format!("`{}`", value.replace('`', "``")),
@@ -523,26 +770,45 @@ fn quote_identifier(value: &str, syntax: FilterSyntax) -> String {
     }
 }
 
+fn empty_string_literal(syntax: FilterSyntax) -> &'static str {
+    if matches!(syntax, FilterSyntax::SqlServer) {
+        "N''"
+    } else {
+        "''"
+    }
+}
+
 fn compile_expression(
     expression: &FilterExpression,
     syntax: FilterSyntax,
 ) -> Result<CompiledFilterExpression, FilterExpressionError> {
+    compile_expression_with_columns(expression, syntax, &[])
+}
+
+fn compile_expression_with_columns(
+    expression: &FilterExpression,
+    syntax: FilterSyntax,
+    columns: &[fluxdb_core::Column],
+) -> Result<CompiledFilterExpression, FilterExpressionError> {
     let mut parameters = Vec::new();
-    let sql = compile_sql(expression, syntax, &mut parameters)?;
+    let sql = compile_sql(expression, syntax, columns, &mut parameters)?;
     Ok(CompiledFilterExpression { sql, parameters })
 }
 
 fn compile_sql(
     expression: &FilterExpression,
     syntax: FilterSyntax,
+    columns: &[fluxdb_core::Column],
     parameters: &mut Vec<FilterValue>,
 ) -> Result<String, FilterExpressionError> {
     match expression {
-        FilterExpression::Condition(condition) => compile_condition(condition, syntax, parameters),
+        FilterExpression::Condition(condition) => {
+            compile_condition(condition, syntax, columns, parameters)
+        }
         FilterExpression::And(items) => {
             let sql = items
                 .iter()
-                .map(|item| compile_sql(item, syntax, parameters))
+                .map(|item| compile_sql(item, syntax, columns, parameters))
                 .collect::<Result<Vec<_>, _>>()?
                 .into_iter()
                 .filter(|item| !item.is_empty())
@@ -556,7 +822,7 @@ fn compile_sql(
         FilterExpression::Or(items) => {
             let sql = items
                 .iter()
-                .map(|item| compile_sql(item, syntax, parameters))
+                .map(|item| compile_sql(item, syntax, columns, parameters))
                 .collect::<Result<Vec<_>, _>>()?
                 .into_iter()
                 .filter(|item| !item.is_empty())
@@ -567,9 +833,10 @@ fn compile_sql(
                 format!("({})", sql.join(" OR "))
             })
         }
-        FilterExpression::Not(inner) => {
-            Ok(format!("NOT ({})", compile_sql(inner, syntax, parameters)?))
-        }
+        FilterExpression::Not(inner) => Ok(format!(
+            "NOT ({})",
+            compile_sql(inner, syntax, columns, parameters)?
+        )),
         FilterExpression::Raw(raw) => Ok(raw.clone()),
     }
 }
@@ -577,27 +844,28 @@ fn compile_sql(
 fn compile_tree(
     expression: &FilterExpression,
     syntax: FilterSyntax,
+    columns: &[fluxdb_core::Column],
 ) -> Result<CompiledFilterNode, FilterExpressionError> {
     match expression {
         FilterExpression::Condition(condition) => {
             let mut parameters = Vec::new();
-            let sql = compile_condition(condition, syntax, &mut parameters)?;
+            let sql = compile_condition(condition, syntax, columns, &mut parameters)?;
             Ok(CompiledFilterNode::Condition { sql, parameters })
         }
         FilterExpression::And(items) => Ok(CompiledFilterNode::And(
             items
                 .iter()
-                .map(|item| compile_tree(item, syntax))
+                .map(|item| compile_tree(item, syntax, columns))
                 .collect::<Result<Vec<_>, _>>()?,
         )),
         FilterExpression::Or(items) => Ok(CompiledFilterNode::Or(
             items
                 .iter()
-                .map(|item| compile_tree(item, syntax))
+                .map(|item| compile_tree(item, syntax, columns))
                 .collect::<Result<Vec<_>, _>>()?,
         )),
         FilterExpression::Not(inner) => Ok(CompiledFilterNode::Not(Box::new(compile_tree(
-            inner, syntax,
+            inner, syntax, columns,
         )?))),
         FilterExpression::Raw(raw) => Ok(CompiledFilterNode::Condition {
             sql: raw.clone(),
@@ -609,6 +877,7 @@ fn compile_tree(
 fn compile_condition(
     condition: &FilterCondition,
     syntax: FilterSyntax,
+    columns: &[fluxdb_core::Column],
     parameters: &mut Vec<FilterValue>,
 ) -> Result<String, FilterExpressionError> {
     let field = quote_identifier(&condition.field, syntax);
@@ -631,8 +900,12 @@ fn compile_condition(
         return Ok(match condition.op {
             FilterOperator::IsNull => format!("{field} IS NULL"),
             FilterOperator::IsNotNull => format!("{field} IS NOT NULL"),
-            FilterOperator::IsEmpty => format!("{field} = ''"),
-            FilterOperator::IsNotEmpty => format!("{field} != ''"),
+            FilterOperator::IsEmpty => {
+                format!("{field} = {}", empty_string_literal(syntax))
+            }
+            FilterOperator::IsNotEmpty => {
+                format!("{field} != {}", empty_string_literal(syntax))
+            }
             _ => unreachable!(),
         });
     }
@@ -668,25 +941,21 @@ fn compile_condition(
             let FilterValue::Text(value) = value(0)? else {
                 return Err(FilterExpressionError::new("LIKE 需要文本值"));
             };
-            let pattern = match condition.op {
-                FilterOperator::Contains | FilterOperator::NotContains => {
-                    format!("%{value}%")
-                }
-                FilterOperator::StartsWith | FilterOperator::NotStartsWith => {
-                    format!("{value}%")
-                }
-                _ => format!("%{value}"),
-            };
+            let pattern = like_pattern(condition.op, &value)
+                .ok_or_else(|| FilterExpressionError::new("未知的 LIKE 运算符"))?;
+            let escape = like_value_needs_escape(&value);
             let placeholder = bind(parameters, FilterValue::Text(pattern));
             format!(
-                "{field}{} LIKE {placeholder}",
-                if negated { " NOT" } else { "" }
+                "{}{} LIKE {placeholder}{}",
+                like_field_sql(&field, &condition.field, syntax, columns),
+                if negated { " NOT" } else { "" },
+                if escape { LIKE_ESCAPE_CLAUSE } else { "" }
             )
         }
         FilterOperator::IsNull => format!("{field} IS NULL"),
         FilterOperator::IsNotNull => format!("{field} IS NOT NULL"),
-        FilterOperator::IsEmpty => format!("{field} = ''"),
-        FilterOperator::IsNotEmpty => format!("{field} != ''"),
+        FilterOperator::IsEmpty => format!("{field} = {}", empty_string_literal(syntax)),
+        FilterOperator::IsNotEmpty => format!("{field} != {}", empty_string_literal(syntax)),
         FilterOperator::Between | FilterOperator::NotBetween => {
             let first = bind(parameters, value(0)?);
             let second = bind(parameters, value(1)?);
@@ -832,5 +1101,511 @@ mod filter_dialect_tests {
                 .unwrap(),
             "\"score\" BETWEEN 100 AND 10"
         );
+    }
+
+    #[test]
+    fn like_patterns_escape_literal_wildcards_and_escape_character() {
+        for (operator, expected) in [
+            (FilterOperator::Contains, "%a!%b!_c!!d%"),
+            (FilterOperator::NotContains, "%a!%b!_c!!d%"),
+            (FilterOperator::StartsWith, "a!%b!_c!!d%"),
+            (FilterOperator::NotStartsWith, "a!%b!_c!!d%"),
+            (FilterOperator::EndsWith, "%a!%b!_c!!d"),
+            (FilterOperator::NotEndsWith, "%a!%b!_c!!d"),
+        ] {
+            assert_eq!(
+                like_pattern(operator, "a%b_c!d").as_deref(),
+                Some(expected),
+                "{operator:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn each_dialect_keeps_text_like_plain_and_casts_numeric_fields() {
+        let expression = FilterExpression::Condition(FilterCondition {
+            field: "name".into(),
+            op: FilterOperator::Contains,
+            values: vec![FilterValue::Text("a%b_c!d".into())],
+        });
+        let name_column = fluxdb_core::Column {
+            name: "name".into(),
+            type_name: Some("varchar(128)".into()),
+            nullable: true,
+            primary_key: false,
+            comment: None,
+        };
+        let numeric_expression = FilterExpression::Condition(FilterCondition {
+            field: "name".into(),
+            op: FilterOperator::Contains,
+            values: vec![FilterValue::Text("AD".into())],
+        });
+        let numeric_column = fluxdb_core::Column {
+            type_name: Some("integer".into()),
+            ..name_column.clone()
+        };
+        for (syntax, plain_field, cast_field) in [
+            (FilterSyntax::Postgres, "\"name\"", "CAST(\"name\" AS TEXT)"),
+            (FilterSyntax::MySql, "`name`", "`name`"),
+            (
+                FilterSyntax::SqlServer,
+                "[name]",
+                "CAST([name] AS NVARCHAR(MAX))",
+            ),
+            (FilterSyntax::Sqlite, "\"name\"", "\"name\""),
+            (
+                FilterSyntax::Dameng,
+                "\"name\"",
+                "CAST(\"name\" AS VARCHAR(4000))",
+            ),
+        ] {
+            let rendered = render_for_syntax_with_columns(
+                syntax,
+                &expression,
+                std::slice::from_ref(&name_column),
+            )
+            .expect("rendered text LIKE SQL");
+            assert_eq!(
+                rendered,
+                format!("{plain_field} LIKE '%a!%b!_c!!d%' ESCAPE '!'"),
+                "{syntax:?}"
+            );
+
+            let parsed = parse_for_syntax(syntax, &rendered).expect("LIKE round trip");
+            assert_eq!(
+                parsed.expression,
+                FilterExpression::Condition(FilterCondition {
+                    field: "name".into(),
+                    op: FilterOperator::Contains,
+                    values: vec![FilterValue::Text("a%b_c!d".into())],
+                }),
+                "{syntax:?}"
+            );
+
+            let plain = render_for_syntax_with_columns(
+                syntax,
+                &numeric_expression,
+                std::slice::from_ref(&name_column),
+            )
+            .expect("rendered plain LIKE SQL");
+            assert_eq!(plain, format!("{plain_field} LIKE '%AD%'"), "{syntax:?}");
+
+            let casted = render_for_syntax_with_columns(
+                syntax,
+                &numeric_expression,
+                std::slice::from_ref(&numeric_column),
+            )
+            .expect("rendered numeric LIKE SQL");
+            assert_eq!(casted, format!("{cast_field} LIKE '%AD%'"), "{syntax:?}");
+
+            let compiled = compile_for_syntax_with_columns(
+                syntax,
+                &expression,
+                std::slice::from_ref(&name_column),
+            )
+            .expect("compiled LIKE SQL");
+            assert!(compiled.sql.contains(plain_field), "{syntax:?}");
+            assert!(
+                compiled.sql.contains(" LIKE ") && compiled.sql.contains(" ESCAPE '!'"),
+                "{syntax:?}: {}",
+                compiled.sql
+            );
+            assert_eq!(
+                compiled.parameters,
+                vec![FilterValue::Text("%a!%b!_c!!d%".into())],
+                "{syntax:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn dialect_specific_integer_like_and_empty_string_sql_stay_canonical() {
+        let columns = [
+            fluxdb_core::Column {
+                name: "id".into(),
+                type_name: Some("integer".into()),
+                nullable: false,
+                primary_key: true,
+                comment: None,
+            },
+            fluxdb_core::Column {
+                name: "name".into(),
+                type_name: Some("varchar(128)".into()),
+                nullable: true,
+                primary_key: false,
+                comment: None,
+            },
+        ];
+        let integer_like = FilterExpression::Condition(FilterCondition {
+            field: "id".into(),
+            op: FilterOperator::Contains,
+            values: vec![FilterValue::Text("1".into())],
+        });
+        for (syntax, expected, compiled_sql) in [
+            (FilterSyntax::MySql, "`id` LIKE '%1%'", "`id` LIKE ?"),
+            (FilterSyntax::Sqlite, "\"id\" LIKE '%1%'", "\"id\" LIKE ?"),
+            (
+                FilterSyntax::Postgres,
+                "CAST(\"id\" AS TEXT) LIKE '%1%'",
+                "CAST(\"id\" AS TEXT) LIKE $1",
+            ),
+            (
+                FilterSyntax::SqlServer,
+                "CAST([id] AS NVARCHAR(MAX)) LIKE '%1%'",
+                "CAST([id] AS NVARCHAR(MAX)) LIKE @P1",
+            ),
+            (
+                FilterSyntax::Dameng,
+                "CAST(\"id\" AS VARCHAR(4000)) LIKE '%1%'",
+                "CAST(\"id\" AS VARCHAR(4000)) LIKE ?",
+            ),
+        ] {
+            assert_eq!(
+                render_for_syntax_with_columns(syntax, &integer_like, &columns).unwrap(),
+                expected,
+                "{syntax:?}"
+            );
+            assert_eq!(
+                compile_for_syntax_with_columns(syntax, &integer_like, &columns)
+                    .unwrap()
+                    .sql,
+                compiled_sql,
+                "{syntax:?}"
+            );
+        }
+
+        let empty = FilterExpression::Condition(FilterCondition {
+            field: "name".into(),
+            op: FilterOperator::IsEmpty,
+            values: Vec::new(),
+        });
+        assert_eq!(
+            render_for_syntax_with_columns(FilterSyntax::Postgres, &empty, &columns).unwrap(),
+            "\"name\" = ''"
+        );
+        assert_eq!(
+            render_for_syntax_with_columns(FilterSyntax::SqlServer, &empty, &columns).unwrap(),
+            "[name] = N''"
+        );
+    }
+
+    #[test]
+    fn comparison_in_list_and_boolean_follow_each_dialect() {
+        let columns = [
+            fluxdb_core::Column {
+                name: "id".into(),
+                type_name: Some("integer".into()),
+                nullable: false,
+                primary_key: true,
+                comment: None,
+            },
+            fluxdb_core::Column {
+                name: "active".into(),
+                type_name: Some("boolean".into()),
+                nullable: true,
+                primary_key: false,
+                comment: None,
+            },
+            fluxdb_core::Column {
+                name: "name".into(),
+                type_name: Some("varchar(128)".into()),
+                nullable: true,
+                primary_key: false,
+                comment: None,
+            },
+        ];
+        let expression = FilterExpression::And(vec![
+            FilterExpression::Condition(FilterCondition {
+                field: "id".into(),
+                op: FilterOperator::Eq,
+                values: vec![FilterValue::Integer(1)],
+            }),
+            FilterExpression::Condition(FilterCondition {
+                field: "active".into(),
+                op: FilterOperator::Eq,
+                values: vec![FilterValue::Boolean(true)],
+            }),
+            FilterExpression::Condition(FilterCondition {
+                field: "name".into(),
+                op: FilterOperator::InList,
+                values: vec![FilterValue::Text("O'Reilly".into())],
+            }),
+        ]);
+        for (syntax, expected) in [
+            (
+                FilterSyntax::MySql,
+                "(`id` = 1 AND `active` = true AND `name` IN ('O''Reilly'))",
+            ),
+            (
+                FilterSyntax::Postgres,
+                "(\"id\" = 1 AND \"active\" = true AND \"name\" IN ('O''Reilly'))",
+            ),
+            (
+                FilterSyntax::Sqlite,
+                "(\"id\" = 1 AND \"active\" = true AND \"name\" IN ('O''Reilly'))",
+            ),
+            (
+                FilterSyntax::SqlServer,
+                "([id] = 1 AND [active] = 1 AND [name] IN ('O''Reilly'))",
+            ),
+            (
+                FilterSyntax::Dameng,
+                "(\"id\" = 1 AND \"active\" = true AND \"name\" IN ('O''Reilly'))",
+            ),
+        ] {
+            assert_eq!(
+                render_for_syntax_with_columns(syntax, &expression, &columns).unwrap(),
+                expected,
+                "{syntax:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn mixed_and_or_conditions_render_and_compile_across_dialects() {
+        let columns = [
+            fluxdb_core::Column {
+                name: "id".into(),
+                type_name: Some("integer".into()),
+                nullable: false,
+                primary_key: true,
+                comment: None,
+            },
+            fluxdb_core::Column {
+                name: "name".into(),
+                type_name: Some("varchar(128)".into()),
+                nullable: true,
+                primary_key: false,
+                comment: None,
+            },
+        ];
+        let expression = FilterExpression::Or(vec![
+            FilterExpression::And(vec![
+                FilterExpression::Condition(FilterCondition {
+                    field: "id".into(),
+                    op: FilterOperator::Gt,
+                    values: vec![FilterValue::Integer(1)],
+                }),
+                FilterExpression::Condition(FilterCondition {
+                    field: "name".into(),
+                    op: FilterOperator::Contains,
+                    values: vec![FilterValue::Text("a".into())],
+                }),
+            ]),
+            FilterExpression::Condition(FilterCondition {
+                field: "id".into(),
+                op: FilterOperator::Lt,
+                values: vec![FilterValue::Integer(10)],
+            }),
+        ]);
+        let cases = [
+            (
+                FilterSyntax::MySql,
+                "((`id` > 1 AND `name` LIKE '%a%') OR `id` < 10)",
+            ),
+            (
+                FilterSyntax::Postgres,
+                "((\"id\" > 1 AND \"name\" LIKE '%a%') OR \"id\" < 10)",
+            ),
+            (
+                FilterSyntax::Sqlite,
+                "((\"id\" > 1 AND \"name\" LIKE '%a%') OR \"id\" < 10)",
+            ),
+            (
+                FilterSyntax::SqlServer,
+                "(([id] > 1 AND [name] LIKE '%a%') OR [id] < 10)",
+            ),
+            (
+                FilterSyntax::Dameng,
+                "((\"id\" > 1 AND \"name\" LIKE '%a%') OR \"id\" < 10)",
+            ),
+        ];
+        for (syntax, expected) in cases {
+            let rendered =
+                render_for_syntax_with_columns(syntax, &expression, &columns).expect("rendered");
+            assert_eq!(rendered, expected, "{syntax:?}");
+            let parsed = parse_for_syntax(syntax, &rendered).expect("parsed combined SQL");
+            assert_eq!(
+                render_for_syntax_with_columns(syntax, &parsed.expression, &columns)
+                    .expect("canonical rendered"),
+                rendered,
+                "{syntax:?}"
+            );
+            let compiled = compile_for_syntax_with_columns(syntax, &expression, &columns)
+                .expect("compiled combined SQL");
+            assert_eq!(
+                compiled.parameters,
+                vec![
+                    FilterValue::Integer(1),
+                    FilterValue::Text("%a%".into()),
+                    FilterValue::Integer(10)
+                ],
+                "{syntax:?}"
+            );
+            assert!(compiled.sql.contains(" AND "), "{syntax:?}");
+            assert!(compiled.sql.contains(" OR "), "{syntax:?}");
+        }
+    }
+
+    #[test]
+    fn like_round_trip_preserves_all_boundary_operators() {
+        for (operator, value) in [
+            (FilterOperator::Contains, "100%"),
+            (FilterOperator::NotContains, "100%"),
+            (FilterOperator::StartsWith, "100%"),
+            (FilterOperator::NotStartsWith, "100%"),
+            (FilterOperator::EndsWith, "100%"),
+            (FilterOperator::NotEndsWith, "100%"),
+        ] {
+            let expression = FilterExpression::Condition(FilterCondition {
+                field: "id".into(),
+                op: operator,
+                values: vec![FilterValue::Text(value.into())],
+            });
+            let rendered =
+                render_for_syntax(FilterSyntax::Postgres, &expression).expect("rendered LIKE SQL");
+            let parsed =
+                parse_for_syntax(FilterSyntax::Postgres, &rendered).expect("parsed LIKE SQL");
+            assert_eq!(parsed.expression, expression, "{operator:?}");
+        }
+    }
+
+    #[test]
+    fn unsupported_like_wildcards_remain_raw_instead_of_changing_semantics() {
+        let parsed = postgres::POSTGRES_SYNTAX
+            .parse("name LIKE 'a%b'")
+            .expect("valid SQL");
+        assert!(matches!(parsed.expression, FilterExpression::Raw(_)));
+    }
+
+    #[test]
+    fn every_form_operator_round_trips_for_each_sql_database() {
+        use fluxdb_core::{FilterCombinator, FilterFormRule};
+
+        let columns = vec![
+            fluxdb_core::Column {
+                name: "id".into(),
+                type_name: Some("integer".into()),
+                nullable: false,
+                primary_key: true,
+                comment: None,
+            },
+            fluxdb_core::Column {
+                name: "name".into(),
+                type_name: Some("varchar(128)".into()),
+                nullable: true,
+                primary_key: false,
+                comment: None,
+            },
+        ];
+        let cases = [
+            ("id", FilterOperator::Eq, vec![FilterValue::Integer(2)]),
+            ("id", FilterOperator::Ne, vec![FilterValue::Integer(2)]),
+            ("id", FilterOperator::Lt, vec![FilterValue::Integer(2)]),
+            ("id", FilterOperator::Le, vec![FilterValue::Integer(2)]),
+            ("id", FilterOperator::Gt, vec![FilterValue::Integer(2)]),
+            ("id", FilterOperator::Ge, vec![FilterValue::Integer(2)]),
+            (
+                "name",
+                FilterOperator::Contains,
+                vec![FilterValue::Text("AD".into())],
+            ),
+            (
+                "name",
+                FilterOperator::NotContains,
+                vec![FilterValue::Text("AD".into())],
+            ),
+            (
+                "name",
+                FilterOperator::StartsWith,
+                vec![FilterValue::Text("An".into())],
+            ),
+            (
+                "name",
+                FilterOperator::NotStartsWith,
+                vec![FilterValue::Text("An".into())],
+            ),
+            (
+                "name",
+                FilterOperator::EndsWith,
+                vec![FilterValue::Text("ra".into())],
+            ),
+            (
+                "name",
+                FilterOperator::NotEndsWith,
+                vec![FilterValue::Text("ra".into())],
+            ),
+            ("name", FilterOperator::IsNull, Vec::new()),
+            ("name", FilterOperator::IsNotNull, Vec::new()),
+            ("name", FilterOperator::IsEmpty, Vec::new()),
+            ("name", FilterOperator::IsNotEmpty, Vec::new()),
+            (
+                "id",
+                FilterOperator::Between,
+                vec![FilterValue::Integer(1), FilterValue::Integer(3)],
+            ),
+            (
+                "id",
+                FilterOperator::NotBetween,
+                vec![FilterValue::Integer(1), FilterValue::Integer(3)],
+            ),
+            (
+                "name",
+                FilterOperator::InList,
+                vec![
+                    FilterValue::Text("Andorra".into()),
+                    FilterValue::Text("Angola".into()),
+                ],
+            ),
+            (
+                "name",
+                FilterOperator::NotInList,
+                vec![
+                    FilterValue::Text("Andorra".into()),
+                    FilterValue::Text("Angola".into()),
+                ],
+            ),
+        ];
+        let database_kinds = [
+            DatabaseKind::MySql,
+            DatabaseKind::TiDb,
+            DatabaseKind::Postgres,
+            DatabaseKind::Sqlite,
+            DatabaseKind::SqlServer,
+            DatabaseKind::Dameng,
+        ];
+
+        for kind in database_kinds {
+            let syntax = filter_syntax(kind).expect("SQL filter dialect");
+            for (field, operator, values) in cases.clone() {
+                let rule = FilterFormRule {
+                    enabled: true,
+                    field: Some(field.into()),
+                    operator,
+                    values,
+                    grouped: false,
+                };
+                let expression = fluxdb_core::filter_expression_from_form(
+                    std::slice::from_ref(&rule),
+                    FilterCombinator::And,
+                )
+                .expect("form expression");
+                let text = render_for_syntax_with_columns(syntax, &expression, &columns)
+                    .expect("form SQL");
+                let parsed = parse_for_syntax(syntax, &text).expect("parsed form SQL");
+                let projection = fluxdb_core::filter_form_projection_from_expression(
+                    &parsed.expression,
+                    |expression| {
+                        render_for_syntax_with_columns(syntax, expression, &columns)
+                            .unwrap_or_default()
+                    },
+                );
+                assert_eq!(
+                    projection.rules,
+                    vec![rule],
+                    "{kind:?} {operator:?}: {text}"
+                );
+            }
+        }
     }
 }

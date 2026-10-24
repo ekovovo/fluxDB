@@ -255,12 +255,49 @@ pub fn parameter_replacement_target(
 /// 由编辑器统一维护撤销/重做与补全状态。`range` 越界时安全退化（截断）。
 #[allow(dead_code)] // 参数替换流程暂未接入宿主，保留纯文本变换工具。
 pub fn replace_text_in_range(text: &str, range: ByteRange, replacement: &str) -> String {
-    let start = range.start.min(text.len());
-    let end = range.end.min(text.len());
+    let mut start = range.start.min(text.len());
+    let mut end = range.end.min(text.len());
+    while start > 0 && !text.is_char_boundary(start) {
+        start -= 1;
+    }
+    while end > start && !text.is_char_boundary(end) {
+        end -= 1;
+    }
     let mut out = String::with_capacity(text.len() + replacement.len());
     out.push_str(&text[..start]);
     out.push_str(replacement);
     out.push_str(&text[end..]);
     out
+}
+
+#[cfg(test)]
+mod statement_multibyte_safety_tests {
+    use super::*;
+    use fluxdb_editor_core::EditorBuffer;
+
+    #[test]
+    fn statement_lookup_snaps_offsets_inside_chinese_text() {
+        let text = "SELECT '等等';\nSELECT 2;";
+        let offset_on_first_statement = text.find('等').expect("Chinese literal") + 1;
+        assert!(!text.is_char_boundary(offset_on_first_statement));
+
+        let (start, end) =
+            statement_around(text, offset_on_first_statement).expect("first statement");
+        assert_eq!(&text[start..end], "SELECT '等等'");
+
+        let buffer = EditorBuffer::new_from(text);
+        let (start, end) = statement_around_snapshot(&buffer.snapshot(), offset_on_first_statement)
+            .expect("snapshot statement");
+        assert_eq!(&text[start..end], "SELECT '等等'");
+    }
+
+    #[test]
+    fn parameter_replacement_snaps_range_inside_chinese_text() {
+        let text = "SELECT '等等';";
+        let offset_inside = text.find('等').expect("Chinese literal") + 1;
+        let replaced =
+            replace_text_in_range(text, offset_inside..offset_inside, "X");
+        assert_eq!(replaced, "SELECT 'X等等';");
+    }
 }
 

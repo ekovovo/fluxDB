@@ -172,7 +172,7 @@ fn dm_expression_sql(
                         format!("过滤引用了不存在的列: {}", condition.field),
                     )
                 })?;
-            dm_expression_condition(condition, &column.name, params)?
+            dm_expression_condition(condition, column, params)?
         }
         FilterExpression::And(items) => {
             let sql = items
@@ -211,11 +211,11 @@ fn dm_expression_sql(
 
 fn dm_expression_condition(
     condition: &fluxdb_core::FilterCondition,
-    field: &str,
+    column: &Column,
     params: &mut Vec<Param>,
 ) -> fluxdb_core::Result<String> {
     use fluxdb_core::{FilterOperator, FilterValue};
-    let name = fluxdb_core::DamengDialect.quote_identifier(field);
+    let name = fluxdb_core::DamengDialect.quote_identifier(&column.name);
     let bind = |params: &mut Vec<Param>, value: &FilterValue| {
         params.push(dm_filter_param(value));
         "?"
@@ -244,25 +244,28 @@ fn dm_expression_condition(
         | FilterOperator::EndsWith
         | FilterOperator::NotEndsWith => {
             let text = fluxdb_core::filter_value_text(first()?);
-            let pattern = match condition.op {
-                FilterOperator::Contains | FilterOperator::NotContains => {
-                    format!("%{text}%")
-                }
-                FilterOperator::StartsWith | FilterOperator::NotStartsWith => {
-                    format!("{text}%")
-                }
-                _ => format!("%{text}"),
-            };
+            let pattern = crate::filter_dialects::like_pattern(condition.op, &text)
+                .ok_or_else(|| Error::new(ErrorKind::Query, "未知的 LIKE 运算符"))?;
             let negative = matches!(
                 condition.op,
                 FilterOperator::NotContains
                     | FilterOperator::NotStartsWith
                     | FilterOperator::NotEndsWith
             );
+            let like_name = if crate::filter_dialects::filter_column_is_text(column) {
+                name.clone()
+            } else {
+                format!("CAST({name} AS VARCHAR(4000))")
+            };
             format!(
-                "{name}{}LIKE {}",
+                "{like_name}{}LIKE {}{}",
                 if negative { " NOT " } else { " " },
-                bind(params, &FilterValue::Text(pattern))
+                bind(params, &FilterValue::Text(pattern)),
+                if crate::filter_dialects::like_value_needs_escape(&text) {
+                    crate::filter_dialects::LIKE_ESCAPE_CLAUSE
+                } else {
+                    ""
+                }
             )
         }
         FilterOperator::Between | FilterOperator::NotBetween => {

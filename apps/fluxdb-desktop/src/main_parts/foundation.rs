@@ -32,10 +32,13 @@ const CONNECTION_BROWSER_MIN_WIDTH: f32 = 180.;
 const CONNECTION_BROWSER_MAX_WIDTH: f32 = 600.;
 const DATA_FILTER_PANEL_MIN_HEIGHT: f32 = 126.;
 const DATA_FILTER_PANEL_MAX_HEIGHT: f32 = 420.;
+/// 编辑器展开筛选时，筛选+排序+应用区最多占数据内容区的 35%。
+const DATA_FILTER_PANEL_MAX_DATA_RATIO: f32 = 0.35;
 const TABLE_INFO_MIN_WIDTH: f32 = 260.;
 const TABLE_INFO_MAX_WIDTH: f32 = 800.;
-const CELL_DETAIL_DRAWER_DEFAULT_HEIGHT: f32 = 160.;
-const CELL_DETAIL_DRAWER_MIN_HEIGHT: f32 = 128.;
+const CELL_DETAIL_DRAWER_DEFAULT_HEIGHT: f32 = 220.;
+/// 预留字段信息、值标题、编辑区和保存操作，避免压缩到内容与按钮不可见。
+const CELL_DETAIL_DRAWER_MIN_HEIGHT: f32 = 220.;
 const CELL_DETAIL_DRAWER_MAX_HEIGHT: f32 = 360.;
 const SQL_HIGHLIGHT_LANGUAGE: &str = "sql";
 const MYSQL_DDL_HIGHLIGHT_LANGUAGE: &str = "mysql-ddl";
@@ -353,6 +356,7 @@ enum AppIcon {
     FolderInput,
     FolderUp,
     Github,
+    GripVertical,
     Home,
     Info,
     Key,
@@ -425,6 +429,7 @@ fn app_icon_path(icon: AppIcon) -> &'static str {
         AppIcon::FolderInput => "icons/folder-input.svg",
         AppIcon::FolderUp => "icons/folder-up.svg",
         AppIcon::Github => "icons/github.svg",
+        AppIcon::GripVertical => "icons/grip-vertical.svg",
         AppIcon::Home => "icons/home.svg",
         AppIcon::Info => "icons/info.svg",
         AppIcon::Key => "icons/key.svg",

@@ -743,7 +743,8 @@ impl NavicatMain {
                 advanced_expression: None,
                 typed_values: None,
                 connector: fluxdb_core::FilterCombinator::And,
-                grouped: false,
+                group_depth: 0,
+                        group_end: 0,
             });
         }
         let sorts = query

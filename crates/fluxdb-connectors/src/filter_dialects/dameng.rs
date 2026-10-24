@@ -11,17 +11,33 @@ pub(crate) const DAMENG_SYNTAX: DamengFilterDialect = DamengFilterDialect;
 
 impl FilterDialect for DamengFilterDialect {
     fn parse(&self, text: &str) -> Result<ParsedFilterExpression, FilterExpressionError> {
-        super::parse_for_syntax(super::FilterSyntax::Postgres, text)
+        super::parse_for_syntax(super::FilterSyntax::Dameng, text)
     }
 
     fn render(&self, expression: &FilterExpression) -> Result<String, FilterExpressionError> {
-        super::render_for_syntax(super::FilterSyntax::Postgres, expression)
+        super::render_for_syntax(super::FilterSyntax::Dameng, expression)
+    }
+
+    fn render_with_columns(
+        &self,
+        expression: &FilterExpression,
+        columns: &[fluxdb_core::Column],
+    ) -> Result<String, FilterExpressionError> {
+        super::render_for_syntax_with_columns(super::FilterSyntax::Dameng, expression, columns)
     }
 
     fn compile(
         &self,
         expression: &FilterExpression,
     ) -> Result<CompiledFilterExpression, FilterExpressionError> {
-        super::compile_for_syntax(super::FilterSyntax::Postgres, expression)
+        super::compile_for_syntax(super::FilterSyntax::Dameng, expression)
+    }
+
+    fn compile_with_columns(
+        &self,
+        expression: &FilterExpression,
+        columns: &[fluxdb_core::Column],
+    ) -> Result<CompiledFilterExpression, FilterExpressionError> {
+        super::compile_for_syntax_with_columns(super::FilterSyntax::Dameng, expression, columns)
     }
 }

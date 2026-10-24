@@ -900,6 +900,8 @@ struct NavicatMain {
     data_sort_rules: BTreeMap<TabId, Vec<DataSortRule>>,
     data_filter_draft_rules: BTreeMap<TabId, Vec<DataFilterRule>>,
     data_sort_draft_rules: BTreeMap<TabId, Vec<DataSortRule>>,
+    /// 最近一次清空排序前的草稿，用于标签区的单步撤销。
+    data_sort_clear_undo: BTreeMap<TabId, Vec<DataSortRule>>,
     data_filter_grouped_tabs: BTreeSet<TabId>,
     data_filter_modes: BTreeMap<TabId, DataFilterMode>,
     data_filter_texts: BTreeMap<TabId, String>,

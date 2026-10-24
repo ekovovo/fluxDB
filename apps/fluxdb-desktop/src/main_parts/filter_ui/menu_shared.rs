@@ -382,7 +382,7 @@ fn data_filter_check(checked: bool, colors: UiColors) -> Div {
 
 fn data_filter_small_button(label: &'static str, colors: UiColors) -> Div {
     let content = match label {
-        "+" => app_icon(AppIcon::Plus, 13., rgb(0x1677ff)),
+        "+" => app_icon(AppIcon::Plus, 9., rgb(0x1677ff)),
         "()" => data_filter_group_icon(colors).into_any_element(),
         _ => div()
             .h_full()
@@ -397,8 +397,8 @@ fn data_filter_small_button(label: &'static str, colors: UiColors) -> Div {
     };
 
     div()
-        .w(px(28.))
-        .h(px(20.))
+        .w(px(18.))
+        .h(px(16.))
         .rounded(colors.radius)
         .border_1()
         .border_color(rgb(0x1677ff))
@@ -420,13 +420,13 @@ fn data_filter_small_button(label: &'static str, colors: UiColors) -> Div {
 fn data_filter_group_icon(_colors: UiColors) -> Div {
     div()
         .relative()
-        .w(px(18.))
-        .h(px(15.))
+        .w(px(12.))
+        .h(px(11.))
         .flex()
         .items_center()
         .justify_center()
-        .text_size(px(12.))
-        .line_height(px(12.))
+        .text_size(px(9.))
+        .line_height(px(9.))
         .font_weight(gpui::FontWeight::SEMIBOLD)
         .text_color(rgb(0x1677ff))
         .child("()")
@@ -434,12 +434,12 @@ fn data_filter_group_icon(_colors: UiColors) -> Div {
             div()
                 .absolute()
                 .right(px(-2.))
-                .top(px(-1.))
-                .size(px(8.))
+                .top(px(-2.))
+                .size(px(5.))
                 .flex()
                 .items_center()
                 .justify_center()
-                .child(app_icon(AppIcon::Plus, 7., rgb(0x1677ff))),
+                .child(app_icon(AppIcon::Plus, 5., rgb(0x1677ff))),
         )
 }
 

@@ -170,7 +170,11 @@
     "set_default_database": "设置默认数据库",
     "set_default_schema": "设置默认 schema",
     "ungroup": "取消分组",
-    "user_admin": "用户与权限"
+    "user_admin": "用户与权限",
+    "mongo_info": "显示连接信息",
+    "mongo_performance": "查看性能指标",
+    "new_collection": "创建集合",
+    "mongo_cli": "命令行终端"
   },
   "confirm": {
     "apply_changes_summary": "即将提交 %{changes} 处修改，执行 %{statements} 条 SQL。",
@@ -1324,7 +1328,8 @@
       "group": {
         "common": "公共",
         "artifact": "产物",
-        "relationship": "关系"
+        "relationship": "关系",
+        "mongo": "MongoDB"
       },
       "risk": {
         "artifact": "产物 / 本地",
@@ -1380,7 +1385,8 @@
         "file_search_content": "搜索已授权附件正文",
         "file_read": "读取已授权附件正文",
         "context_read": "读取已授权引用",
-        "plan_update": "更新公开执行计划"
+        "plan_update": "更新公开执行计划",
+        "mongo_read_documents": "有界读取已授权 MongoDB 集合页的文档快照，不重新查询数据库"
       }
     },
     "jev": {
@@ -1992,7 +1998,9 @@
       "host_required": "请填写主机",
       "redis_uri_required": "请先输入 Redis 连接串",
       "redis_uri_parse": "连接串解析失败",
-      "create_first": "请先创建连接"
+      "create_first": "请先创建连接",
+      "mongo_uri_required": "请填写 MongoDB 连接串",
+      "mongo_uri_parse": "解析 MongoDB 连接串失败"
     },
     "tls": {
       "title": "传输层安全 (TLS)",
@@ -2119,7 +2127,8 @@
       "sqlite": "选择 SQLite 数据库文件"
     },
     "toast": {
-      "redis_imported": "已导入 Redis 连接串"
+      "redis_imported": "已导入 Redis 连接串",
+      "mongo_imported": "已导入 MongoDB 连接串"
     },
     "copy_name": "%{name} 副本",
     "label": "连接",
@@ -2131,9 +2140,19 @@
       "procedures": "存储过程",
       "functions": "函数",
       "backup": "备份",
-      "er_diagram": "ER 图"
+      "er_diagram": "ER 图",
+      "collections": "集合"
     },
-    "fallback": "连接 %{id}"
+    "fallback": "连接 %{id}",
+    "mongo": {
+      "srv": "SRV（MongoDB Atlas）",
+      "auth_default": "默认（驱动协商）",
+      "auth_scram256": "SCRAM-SHA-256",
+      "auth_scram1": "SCRAM-SHA-1",
+      "auth_x509": "MONGODB-X509",
+      "uri": "连接串 / URI",
+      "import_action": "导入"
+    }
   },
   "home": {
     "common_actions": "常用操作",
@@ -3987,7 +4006,10 @@
       "create": "新建表"
     },
     "backup_list": "备份列表",
-    "er_diagram": "ER 关系图"
+    "er_diagram": "ER 关系图",
+    "mongo": {
+      "collection": "MongoDB 集合"
+    }
   },
   "terminal": {
     "transcript": {
@@ -4067,7 +4089,8 @@
     "er_related": "%{table} · 关联 ER",
     "design_table_named": "设计表: %{table}",
     "redis_pubsub": "Redis Pub/Sub - DB %{database}",
-    "global": "全局"
+    "global": "全局",
+    "mongo_cli": "MongoDB 命令行 - %{database}"
   },
   "backend_error": {
     "sqlserver_connection_task_failed": "SQL Server 连接任务异常结束",
@@ -5485,5 +5508,140 @@
     "tmpl_295": "达梦目标 schema %{0} 非空；当前恢复只允许导入空 schema",
     "tmpl_296": "达梦恢复执行失败，可能已留下部分对象：%{0}",
     "tmpl_297": "XML 第 %{0} 行格式无效"
+  },
+  "mongo": {
+    "error": {
+      "title": "MongoDB 加载失败",
+      "no_result": "后台任务未返回结果，请重试"
+    },
+    "loading": "加载中…",
+    "empty": "没有匹配的文档",
+    "read_only": "只读",
+    "query": {
+      "filter": "过滤",
+      "projection": "投影",
+      "sort": "排序",
+      "limit": "条数",
+      "find": "查询",
+      "reset": "重置",
+      "filter_placeholder": "{}",
+      "projection_placeholder": "可选，如 { \"name\": 1 }",
+      "sort_placeholder": "可选，如 { \"createdAt\": -1 }",
+      "limit_placeholder": "每页条数",
+      "aggregation_placeholder": "[ { \"$match\": {} } ]"
+    },
+    "aggregation": {
+      "hint": "聚合管道（Extended JSON 数组）",
+      "run": "执行",
+      "empty": "管道没有返回文档"
+    },
+    "section": {
+      "documents": "文档",
+      "aggregation": "聚合",
+      "indexes": "索引",
+      "info": "集合信息"
+    },
+    "display": {
+      "documents": "文档",
+      "table": "表格",
+      "json": "JSON"
+    },
+    "result": {
+      "total": "共 %{count} 条",
+      "returned": "返回 %{count} 条",
+      "none": "尚无结果"
+    },
+    "copy_document": "复制文档",
+    "document_detail": "文档详情",
+    "table": {
+      "id": "_id",
+      "missing": "—"
+    },
+    "extended_json": "Extended JSON",
+    "bson_preserved": "保留 BSON 类型",
+    "not_ai_context": "文档内容不进入 AI 上下文，需要时由 AI 按权限只读读取。",
+    "pager": {
+      "range": "范围",
+      "previous": "上一页",
+      "next": "下一页"
+    },
+    "indexes": {
+      "unique": "唯一",
+      "sparse": "稀疏",
+      "building": "构建中",
+      "empty": "没有索引"
+    },
+    "info": {
+      "name": "集合名",
+      "type": "类型",
+      "database": "数据库",
+      "documents": "文档数",
+      "avg_size": "平均文档大小",
+      "data_size": "数据大小",
+      "storage_size": "磁盘占用",
+      "indexes": "索引数",
+      "unknown": "未知",
+      "view_on": "来源集合",
+      "kind": {
+        "collection": "集合",
+        "view": "视图",
+        "timeseries": "时间序列集合"
+      }
+    },
+    "info_dialog": {
+      "title": "连接信息",
+      "loading": "正在读取服务端信息…",
+      "refresh": "刷新",
+      "close": "关闭",
+      "error": "读取连接信息失败",
+      "section": {
+        "server": "服务器",
+        "topology": "拓扑",
+        "databases": "数据库"
+      },
+      "version": "版本",
+      "edition": "发行版",
+      "topology": "拓扑类型",
+      "replica_set": "副本集",
+      "primary": "主节点",
+      "hosts": "成员",
+      "wire": "协议版本",
+      "uptime": "运行时长",
+      "topology_kind": {
+        "standalone": "单机",
+        "replica_set": "副本集",
+        "sharded": "分片集群",
+        "unknown": "未知"
+      },
+      "database_empty": "空库",
+      "database_size": "%{size}",
+      "database_no_size": "大小未知",
+      "databases_empty": "没有可见数据库",
+      "uptime_value": "%{days} 天 %{hours} 小时",
+      "uptime_short": "%{hours} 小时"
+    },
+    "create_collection": {
+      "title": "创建集合",
+      "field": "集合名",
+      "placeholder": "例如 orders",
+      "running": "创建中…",
+      "created": "集合 %{name} 已创建",
+      "failed": "创建集合失败：%{error}",
+      "database": "所属数据库"
+    },
+    "create_database": {
+      "first_collection": "首个集合",
+      "first_collection_placeholder": "例如 orders",
+      "enter_collection": "请输入首个集合名"
+    },
+    "cli": {
+      "title": "MongoDB 命令行",
+      "hint": "输入 Extended JSON 命令，例如 {\"ping\": 1}；↑/↓ 翻历史，Tab 补全",
+      "prompt": "%{database}> ",
+      "busy": "执行中…",
+      "idle": "就绪",
+      "failed": "命令执行失败：%{error}",
+      "started": "已连接 %{database}，输入 Extended JSON 命令（如 {\"ping\": 1}）"
+    }
   }
 }

@@ -156,6 +156,12 @@ pub const AI_AGENT_TOOL_CATALOG: &[(&str, &str, &str, bool)] = &[
         false,
     ),
     (
+        "mongo.read_documents",
+        "mongo",
+        "Read bounded documents from the authorized MongoDB collection page snapshot; never re-queries the database",
+        false,
+    ),
+    (
         "result.read_page",
         "common",
         "Read a result snapshot already obtained",
@@ -229,6 +235,7 @@ mod ai_tool_management_tests {
             "editor.read_range",
             "editor.search",
             "page.read_rows",
+            "mongo.read_documents",
             "file.read",
             "file.search",
             "file.search_content",

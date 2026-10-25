@@ -660,6 +660,9 @@ struct NavicatMain {
     _create_database_owner_subscription: Subscription,
     create_database_template_input: Entity<InputState>,
     _create_database_template_subscription: Subscription,
+    /// MongoDB「首个集合」输入框（建库时隐式建集合）。
+    create_database_first_collection_input: Entity<InputState>,
+    _create_database_first_collection_subscription: Subscription,
     danger_table_foreign_key_check_select: Entity<SelectState<SearchableVec<ForeignKeyCheckOption>>>,
     _danger_table_foreign_key_check_select_subscription: Subscription,
     rename_table_input: Entity<InputState>,
@@ -676,6 +679,13 @@ struct NavicatMain {
     _tree_refresh_task: Option<Task<()>>,
     _database_tasks: BTreeMap<String, Task<()>>,
     _data_load_tasks: BTreeMap<u64, Task<()>>,
+    // —— MongoDB 集合工作台 ——
+    /// 查询面板输入框（按集合标签页缓存；标签页关闭时释放）。
+    pub(crate) mongo_query_inputs: BTreeMap<TabId, Entity<MongoQueryInputs>>,
+    _mongo_load_tasks: BTreeMap<u64, Task<()>>,
+    _mongo_aggregation_tasks: BTreeMap<u64, Task<()>>,
+    _mongo_info_tasks: BTreeMap<u64, Task<()>>,
+    _mongo_index_tasks: BTreeMap<u64, Task<()>>,
     _query_execute_tasks: BTreeMap<u64, Task<()>>,
     /// Redis Workbench 命令的后台执行任务，按标签页 id 去重：同一标签页执行中再次触发
     /// （Run / 重跑 / 历史「运行此条」）时直接提示，不并发发起第二条网络请求。
@@ -738,6 +748,14 @@ struct NavicatMain {
     pending_rename_table_folder: Option<PendingRenameTableFolder>,
     pending_delete_connection: Option<ConnectionId>,
     pending_delete_database: Option<PendingDeleteDatabase>,
+    /// MongoDB「显示连接信息」弹框：None 表示关闭；Some 为已加载（或加载中 / 失败）的服务端信息。
+    mongo_info_dialog: Option<MongoInfoDialog>,
+    /// MongoDB「创建集合」弹框：连接 + 库 + 集合名；None 表示关闭。
+    pending_create_collection: Option<MongoCreateCollectionForm>,
+    create_collection_running: bool,
+    create_collection_input: Entity<InputState>,
+    _create_collection_subscription: Subscription,
+    _create_mongo_collection_task: Option<Task<()>>,
     pending_disconnect_connection: Option<PendingDisconnectConnection>,
     pending_close_workspace: Option<PendingCloseWorkspace>,
     pending_new_query_connection: Option<ConnectionId>,

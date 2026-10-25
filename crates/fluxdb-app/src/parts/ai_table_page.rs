@@ -871,6 +871,7 @@ mod ai_table_page_tests {
             mysql_profile: None,
             postgres_profile: None,
             dameng_profile: None,
+            mongo_profile: None,
             sqlserver_profile: None,
         }
     }
@@ -1008,6 +1009,7 @@ mod ai_table_page_tests {
             mysql_profile: None,
             postgres_profile: None,
             dameng_profile: None,
+            mongo_profile: None,
             sqlserver_profile: None,
         };
         let controller = AppController::new();
@@ -1422,6 +1424,7 @@ mod ai_table_page_tests {
             mysql_profile: None,
             postgres_profile: None,
             dameng_profile: None,
+            mongo_profile: None,
             sqlserver_profile: None,
         }]));
         let table = ObjectPath {

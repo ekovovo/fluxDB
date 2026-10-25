@@ -373,6 +373,12 @@ impl Render for NavicatMain {
                     .connections
                     .iter()
                     .any(|c| c.config.id == menu.connection_id && c.config.kind == DatabaseKind::Dameng);
+                let is_mongo = self
+                    .controller
+                    .state()
+                    .connections
+                    .iter()
+                    .any(|c| c.config.id == menu.connection_id && c.config.kind == DatabaseKind::MongoDb);
                 this.child(database_context_menu(
                     menu,
                     &self.pinned_databases,
@@ -380,6 +386,7 @@ impl Render for NavicatMain {
                     is_postgres,
                     is_sqlserver,
                     is_dameng,
+                    is_mongo,
                     colors,
                     cx,
                 ))
@@ -750,6 +757,7 @@ impl Render for NavicatMain {
                     self.create_database_collation_select.clone(),
                     self.create_database_owner_input.clone(),
                     self.create_database_template_input.clone(),
+                    self.create_database_first_collection_input.clone(),
                     running,
                     self.focus_handle.clone(),
                     colors,
@@ -773,6 +781,20 @@ impl Render for NavicatMain {
                     ))
                 },
             )
+            .when_some(self.mongo_info_dialog.as_ref(), |this, dialog| {
+                let name = connection_name(&state, dialog.connection_id);
+                this.child(mongo_info_dialog_view(dialog, name, colors, cx))
+            })
+            .when_some(self.pending_create_collection.clone(), |this, form| {
+                this.child(mongo_create_collection_modal(
+                    form,
+                    self.create_collection_input.clone(),
+                    self.create_collection_running,
+                    self.focus_handle.clone(),
+                    colors,
+                    cx,
+                ))
+            })
             .when_some(self.pending_query_save, |this, tab_id| {
                 this.child(query_save_choice_modal(
                     tab_id,
@@ -948,8 +970,19 @@ fn render_tab_kind_snapshot(kind: &TabKind) -> TabKind {
         TabKind::BackupList(list) => TabKind::BackupList(list.clone()),
         // ER 图 tab 状态只有连接+库+schema 标识，图数据在 desktop 侧缓存，快照直接克隆。
         TabKind::ErDiagram(er) => TabKind::ErDiagram(er.clone()),
+        // 集合工作台快照丢掉文档与元数据，只保留定位与查询草稿。
+        TabKind::MongoCollection(collection) => {
+            let mut snapshot = collection.clone();
+            snapshot.page = None;
+            snapshot.info = LoadState::NotLoaded;
+            snapshot.indexes = LoadState::NotLoaded;
+            snapshot.selected_document = None;
+            TabKind::MongoCollection(snapshot)
+        }
         // Redis CLI 状态本身很轻量，快照直接克隆即可（会话复用依赖 connection_id + database）。
         TabKind::RedisCli(cli) => TabKind::RedisCli(cli.clone()),
+        // MongoDB 命令行同理：只记连接 + 库，REPL 会话在桌面端。
+        TabKind::MongoCli(cli) => TabKind::MongoCli(cli.clone()),
         // Redis Pub/Sub 状态很轻量（仅 connection_id + database），快照直接克隆。
         TabKind::RedisPubSub(pubsub) => TabKind::RedisPubSub(pubsub.clone()),
 

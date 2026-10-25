@@ -266,8 +266,10 @@ fn push_connection_visible_rows(
             .database
             .clone()
             .unwrap_or_else(|| database.path.name.clone());
+        // Mongo 库只有「集合」一个分组；其余连接沿用 SQL 型分组集合。
+        let groups = ObjectGroup::for_kind(connection.config.kind);
         let matching_groups = if search_active {
-            ObjectGroup::ALL
+            groups
                 .iter()
                 .copied()
                 .filter(|group| match group {
@@ -357,13 +359,13 @@ fn push_connection_visible_rows(
                     }
                 }
             } else if show_groups {
-                for group in ObjectGroup::ALL {
+                for group in groups {
                     push_object_group_visible_rows(
                         connection,
                         &database,
                         &database_name,
                         None,
-                        group,
+                        *group,
                         group_id,
                         indent + 2,
                         search_active,
@@ -433,13 +435,13 @@ fn push_connection_visible_rows(
                         );
                     }
                 } else {
-                    for group in ObjectGroup::ALL {
+                    for group in groups {
                         push_object_group_visible_rows(
                             connection,
                             &database,
                             &database_name,
                             Some(&schema),
-                            group,
+                            *group,
                             group_id,
                             indent + 3,
                             search_active,
@@ -854,6 +856,8 @@ fn build_sidebar_row(
             let connection_color_hex = connection
                 .map(|connection| connection_config_color_hex(&connection.config.options))
                 .unwrap_or("#9ca3af");
+            let is_mongo = connection
+                .is_some_and(|connection| connection.config.kind == DatabaseKind::MongoDb);
             table_tree(
                 &object,
                 row.indent,
@@ -861,6 +865,7 @@ fn build_sidebar_row(
                 connection_color_hex,
                 pinned,
                 search_opt,
+                is_mongo,
                 colors,
                 cx,
             )

@@ -91,6 +91,7 @@ fn user_admin_toolbars_share_the_same_actions_and_button_metrics(cx: &mut TestAp
             mysql_profile: None,
             postgres_profile: None,
             dameng_profile: None,
+            mongo_profile: None,
             sqlserver_profile: None,
         };
         let tab_id = cx.update(|_, cx| {
@@ -249,6 +250,7 @@ fn user_admin_cancel_actions_are_wired_for_mysql_and_postgres(cx: &mut TestAppCo
             mysql_profile: None,
             postgres_profile: None,
             dameng_profile: None,
+            mongo_profile: None,
             sqlserver_profile: None,
         };
         let tab_id = cx.update(|_, cx| {

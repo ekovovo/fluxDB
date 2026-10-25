@@ -17,6 +17,7 @@ impl AppController {
     fn find_tab_by_session_key(&self, key: &fluxdb_core::terminal::TerminalSessionKey) -> Option<TabId> {
         self.state.tabs.iter().find_map(|tab| match &tab.kind {
             TabKind::RedisCli(cli) if cli.session_key() == *key => Some(tab.id),
+            TabKind::MongoCli(cli) if cli.session_key() == *key => Some(tab.id),
             _ => None,
         })
     }

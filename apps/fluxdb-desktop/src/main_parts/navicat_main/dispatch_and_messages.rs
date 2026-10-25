@@ -660,6 +660,7 @@ impl NavicatMain {
                 }
                 self.start_data_page_load_if_needed(*tab_id, cx);
                 self.start_completion_index_warmup_for_tab(*tab_id, cx);
+                self.start_mongo_load_if_needed(*tab_id, cx);
             }
             AppEvent::TableInfoChanged(tab_id, tab) => {
                 self.start_table_info_load_if_needed(*tab_id, *tab, cx);
@@ -750,6 +751,7 @@ impl NavicatMain {
             }
             AppEvent::TabClosed(tab_id) => {
                 self.ai_chat_tab_closed(*tab_id, cx);
+                self.close_mongo_tab_state(*tab_id);
                 if self.hovered_tab == Some(*tab_id) {
                     self.hovered_tab = None;
                 }

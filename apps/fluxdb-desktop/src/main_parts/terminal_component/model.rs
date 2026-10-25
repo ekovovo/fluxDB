@@ -101,8 +101,8 @@ pub(crate) struct TerminalComponent {
     pub completion: Box<dyn TerminalCompletionAdapter>,
     /// 会话状态机。
     pub state: TerminalSessionState,
-    /// 真实 PTY 传输（None = 尚未拉起或已关闭）。
-    pub transport: Option<TerminalPty>,
+    /// 终端后端（PTY 或进程内 REPL；None = 尚未拉起或已关闭）。
+    pub transport: Option<TerminalBackend>,
     /// PTY 创建失败时保留底层错误，供状态栏给出可操作的诊断信息。
     pub failure_reason: Option<String>,
     /// 等待危险命令确认的原始命令（非空时渲染确认条并拦截 Enter / 输入）。
@@ -217,6 +217,25 @@ impl TerminalComponent {
         TermPoint { x, y }
     }
 
+    /// 拉起 MongoDB 命令行 REPL（进程内，无子进程；仅一次）。
+    ///
+    /// 与 PTY 会话共用 grid / 输入 / 渲染：REPL 自己负责回显与 prompt，输出按终端字节流回放。
+    pub fn spawn_mongo_repl(
+        &mut self,
+        config: fluxdb_core::ConnectionConfig,
+        database: String,
+        cx: &mut Context<Self>,
+    ) {
+        if self.transport.is_some() {
+            return;
+        }
+        let repl = fluxdb_app::MongoReplTransport::new(config, database);
+        self.state = TerminalSessionState::Ready;
+        self.failure_reason = None;
+        self.transport = Some(TerminalBackend::Repl(repl));
+        cx.notify();
+    }
+
     /// 拉起真实 PTY 子进程（仅一次）。
     pub fn spawn_process(&mut self, cx: &mut Context<Self>) {
         if self.transport.is_some() {
@@ -228,7 +247,7 @@ impl TerminalComponent {
                 self.state = TerminalSessionState::PtyRunning;
                 self.failure_reason = None;
                 self.grid.resize(spec.cols, spec.rows);
-                self.transport = Some(pty);
+                self.transport = Some(TerminalBackend::Pty(pty));
                 self.adapter.on_output(&[], &mut self.state);
             }
             Err(err) => {

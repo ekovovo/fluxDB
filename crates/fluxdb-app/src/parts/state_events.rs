@@ -152,6 +152,8 @@ pub enum AppEvent {
     ConnectionTested(ConnectionId, fluxdb_core::Result<()>),
     /// 自动发现 / 连接串导入成功，弹框可据此预填一条 Redis 连接草稿。
     RedisConnectionDiscovered(ConnectionDraft),
+    /// MongoDB 连接串导入成功，弹框可据此预填一条 MongoDB 连接草稿。
+    MongoConnectionDiscovered(ConnectionDraft),
     ObjectsLoaded(Option<ObjectPath>, Vec<ObjectSummary>),
     /// schema 新建成功；UI 据此失效该库 schema 缓存并重取，使新 schema 出现在树。
     SchemaCreated {
@@ -358,5 +360,40 @@ pub enum AppEvent {
     SettingsSaved,
     /// Redis Workbench 命令历史已变化（新增/删除/清空），供桌面层做持久化 diff 与刷新。
     RedisWorkbenchHistoryChanged,
+    /// 一次 MongoDB 文档加载开始（携带本次令牌）。
+    MongoLoadStarted { tab_id: TabId, generation: u64 },
+    /// 后台结果属于已被取代的加载，未写入集合页。
+    MongoLoadDiscarded { tab_id: TabId, generation: u64 },
+    /// 文档页已回写。
+    MongoDocumentsLoaded(TabId, MongoDocumentsPage),
+    /// 集合信息已回写。
+    MongoCollectionInfoLoaded(TabId, MongoCollectionInfo),
+    /// 索引列表已回写。
+    MongoIndexesLoaded(TabId, Vec<MongoIndexInfo>),
+    /// 聚合开始（携带本次令牌）。
+    MongoAggregationStarted { tab_id: TabId, generation: u64 },
+    /// 聚合结果。
+    MongoAggregationLoaded(TabId, MongoDocumentsPage),
+    /// 连接信息加载完成（`Err` 为读取失败）。
+    MongoServerInfoLoaded(ConnectionId, std::result::Result<MongoServerInfo, UserFacingError>),
+    /// 集合创建成功；UI 据此刷新该库的对象树并提示。
+    MongoCollectionCreated {
+        connection_id: ConnectionId,
+        database: String,
+        collection: String,
+    },
+    /// 集合已删除；UI 关闭对应标签页并刷新对象树。
+    MongoCollectionDropped {
+        connection_id: ConnectionId,
+        database: String,
+        collection: String,
+    },
+    /// 数据库命令执行成功，`result` 为 Relaxed Extended JSON 文本。
+    MongoCommandExecuted {
+        connection_id: ConnectionId,
+        database: String,
+        command: String,
+        result: String,
+    },
     Failed(UserFacingError),
 }

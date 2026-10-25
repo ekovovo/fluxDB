@@ -29,6 +29,7 @@ fn copy_table_failure_is_shown_once_by_alert(cx: &mut TestAppContext) {
         mysql_profile: None,
         postgres_profile: None,
         dameng_profile: None,
+        mongo_profile: None,
         sqlserver_profile: None,
     }]));
     cx.update(|cx| {

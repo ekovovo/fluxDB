@@ -180,6 +180,7 @@ fn sqlserver_tiberius_config(
             postgres_profile: None,
             dameng_profile: None,
             sqlserver_profile: Some(profile.clone()),
+            mongo_profile: None,
         },
         profile,
     ) {

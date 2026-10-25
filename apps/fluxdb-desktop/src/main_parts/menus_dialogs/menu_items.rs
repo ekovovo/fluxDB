@@ -142,6 +142,9 @@ fn menu_icon(icon: &'static str, destructive: bool, colors: UiColors) -> gpui::A
         "copy" => Some(AppIcon::Copy),
         "save" => Some(AppIcon::Save),
         "delete" => Some(AppIcon::Trash),
+        "info" => Some(AppIcon::Info),
+        "activity" => Some(AppIcon::Activity),
+        "collection" => Some(AppIcon::List),
         _ => None,
     };
 
@@ -324,6 +327,8 @@ fn connection_menu_item(
 ) -> impl IntoElement {
     let label = label.into();
     let enabled = action.is_some();
+    // 无头 E2E 按「菜单项文案」定位真实菜单项；文案随语言包变化，故用渲染串本身。
+    let selector = format!("connection-menu-item:{label}");
     let hides_group_submenu = !matches!(
         action,
         Some(ConnectionMenuAction::MoveToGroup(_) | ConnectionMenuAction::MoveToNewGroup)
@@ -333,6 +338,7 @@ fn connection_menu_item(
             "connection-menu-item",
             menu_item_hash(connection_id, icon, &label),
         ))
+        .debug_selector(move || selector)
         .h(px(32.))
         .rounded(colors.radius_lg)
         .px_2()
@@ -416,11 +422,14 @@ fn database_menu_item(
     cx: &mut Context<NavicatMain>,
 ) -> impl IntoElement {
     let label = label.into();
+    // 同「连接菜单」：E2E 用真实文案定位，不引入额外的测试专用稳定 id。
+    let selector = format!("database-menu-item:{label}");
     div()
         .id((
             "database-menu-item",
             menu_item_hash(menu.connection_id, icon, &label),
         ))
+        .debug_selector(move || selector)
         .h(px(32.))
         .rounded(colors.radius_lg)
         .px_2()

@@ -177,6 +177,8 @@ fn tab_belongs_to_database(tab: &TabState, connection_id: ConnectionId, database
         TabKind::RedisPubSub(pubsub) => {
             pubsub.connection_id == connection_id && pubsub.database.to_string() == database
         }
+        // MongoDB 命令行按「连接 + 库」归属。
+        TabKind::MongoCli(cli) => cli.connection_id == connection_id && cli.database == database,
         // 备份列表 tab 按「连接 + 库」归属（与侧边栏备份节点一一对应）。
         TabKind::BackupList(list) => {
             list.connection_id == connection_id && list.database == database
@@ -187,6 +189,10 @@ fn tab_belongs_to_database(tab: &TabState, connection_id: ConnectionId, database
         }),
         // ER 图 tab 按「连接 + 库」归属（与侧边栏 ER 节点一一对应）。
         TabKind::ErDiagram(er) => er.connection_id == connection_id && er.database == database,
+        TabKind::MongoCollection(collection) => {
+            collection.object.connection_id == connection_id
+                && path_database_name(&collection.object) == database
+        }
         TabKind::UserAdmin(_) => false,
     }
 }
@@ -211,10 +217,12 @@ fn tab_belongs_to_connection(tab: &TabState, connection_id: ConnectionId) -> boo
         TabKind::RedisWorkbench(workbench) => workbench.connection_id == connection_id,
         TabKind::RedisCli(cli) => cli.connection_id == connection_id,
         TabKind::RedisPubSub(pubsub) => pubsub.connection_id == connection_id,
+        TabKind::MongoCli(cli) => cli.connection_id == connection_id,
         TabKind::CreateTable(create) => create.connection_id == connection_id,
         TabKind::UserAdmin(admin) => admin.connection_id == connection_id,
         TabKind::BackupList(list) => list.connection_id == connection_id,
         TabKind::ErDiagram(er) => er.connection_id == connection_id,
+        TabKind::MongoCollection(collection) => collection.object.connection_id == connection_id,
         TabKind::Settings(_) => false,
         TabKind::AiChat { workspace } => workspace
             .as_ref()

@@ -173,6 +173,7 @@ mod i18n_e2e_tests {
                 mysql_profile: None,
                 postgres_profile: None,
                 dameng_profile: None,
+                mongo_profile: None,
                 sqlserver_profile: None,
             },
         ]));
@@ -290,6 +291,7 @@ mod i18n_e2e_tests {
                 mysql_profile: None,
                 postgres_profile: None,
                 dameng_profile: None,
+                mongo_profile: None,
                 sqlserver_profile: None,
             },
         ]));
@@ -1042,6 +1044,7 @@ mod i18n_e2e_tests {
             mysql_profile: None,
             postgres_profile: None,
             dameng_profile: None,
+            mongo_profile: None,
             sqlserver_profile: None,
         }]));
         controller.dispatch(AppCommand::SaveSettings(Settings {

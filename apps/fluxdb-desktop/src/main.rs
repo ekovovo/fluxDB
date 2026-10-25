@@ -24,7 +24,8 @@ use fluxdb_app::{
     CreateTableIndexColumnField, CreateTableIndexField, CreateTableMode, CreateTableOptionField,
     CreateTablePartitionField, CreateTableState, CreateTableTab, CreateTableTrigger,
     CreateTableTriggerEvent, CreateTableTriggerField, DataEditorState, ErDiagramState,
-    ErLayoutResult, ForeignKeyCheckMode, LoadState, ObjectListState, PgDraftAttrField,
+    ErLayoutResult, ForeignKeyCheckMode, LoadState, MongoCollectionState, MongoDisplayMode,
+    MongoQueryDraft, MongoSection, ObjectListState, PgDraftAttrField,
     PgGrantEditOp, PgGrantObjectKind, PgRoleDraftUiExt, PgRoleSaveStatus, QueryEditorState,
     QueryHistoryEntry, QueryHistoryKind, QueryHistoryTransactionState, QueryOrigin,
     RedisAddKeyKind, RedisAddKeyRequest, RedisConnectionOverview, RedisListDirection,
@@ -148,6 +149,7 @@ include!("main_parts/pg_user_admin/sql_preview.rs");
 include!("main_parts/user_admin_privileges.rs");
 include!("main_parts/create_table.rs");
 include!("main_parts/content_views.rs");
+include!("main_parts/mongo_collection.rs");
 include!("main_parts/backup_tab.rs");
 include!("main_parts/er/canvas.rs");
 include!("main_parts/er/model.rs");

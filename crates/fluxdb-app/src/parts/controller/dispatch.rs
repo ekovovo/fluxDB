@@ -38,6 +38,26 @@ impl AppController {
                 self.dispatch_ai_table_page(command)
             }
             AppCommand::AiConversation(command) => return self.dispatch_ai_conversation(command),
+            command @ (AppCommand::OpenMongoCollection { .. }
+            | AppCommand::BeginMongoLoad(_)
+            | AppCommand::LoadMongoDocuments { .. }
+            | AppCommand::FinishMongoDocuments { .. }
+            | AppCommand::LoadMongoCollectionInfo(_)
+            | AppCommand::FinishMongoCollectionInfo { .. }
+            | AppCommand::LoadMongoIndexes(_)
+            | AppCommand::FinishMongoIndexes { .. }
+            | AppCommand::LoadMongoServerInfo(_)
+            | AppCommand::CreateMongoCollection { .. }
+            | AppCommand::DropMongoCollection { .. }
+            | AppCommand::MongoRunCommand { .. }
+            | AppCommand::SelectMongoSection { .. }
+            | AppCommand::SelectMongoDisplayMode { .. }
+            | AppCommand::SelectMongoDocument { .. }
+            | AppCommand::SetMongoOffset { .. }
+            | AppCommand::UpdateMongoAggregation { .. }
+            | AppCommand::BeginMongoAggregation(_)
+            | AppCommand::RunMongoAggregation { .. }
+            | AppCommand::FinishMongoAggregation { .. }) => self.dispatch_mongo_command(command),
             command @ (AppCommand::PrepareBackup { .. }
             | AppCommand::RunBackup(_)
             | AppCommand::PrepareRestore(_)
@@ -264,8 +284,44 @@ impl AppController {
                             postgres_profile: None,
                             dameng_profile: None,
                             sqlserver_profile: None,
+                            mongo_profile: None,
                         };
                         AppEvent::RedisConnectionDiscovered(draft)
+                    }
+                    Err(message) => self.fail(Error::new(ErrorKind::Connection, message)),
+                }
+            }
+            AppCommand::DiscoverMongoConnection { connection_string } => {
+                // Mongo 连接串导入：解析出的档案保留 SRV 语义，密码只进 `SecretRef::inline`，
+                // 不回写 `options`，也不出现在 `Endpoint` 里。
+                match fluxdb_core::MongoConnectionProfile::from_uri(&connection_string) {
+                    Ok(profile) => {
+                        let (host, port) = profile.dial_endpoint();
+                        let name = if host.is_empty() {
+                            "MongoDB-新连接".to_string()
+                        } else if profile.srv {
+                            host.clone()
+                        } else {
+                            format!("{host}:{port}")
+                        };
+                        let draft = ConnectionDraft {
+                            name,
+                            kind: DatabaseKind::MongoDb,
+                            endpoint: Endpoint::Tcp {
+                                host,
+                                port,
+                                database: Some(profile.basic.default_database.clone())
+                                    .filter(|database| !database.is_empty()),
+                            },
+                            options: BTreeMap::new(),
+                            redis_profile: None,
+                            mysql_profile: None,
+                            postgres_profile: None,
+                            dameng_profile: None,
+                            sqlserver_profile: None,
+                            mongo_profile: Some(profile),
+                        };
+                        AppEvent::MongoConnectionDiscovered(draft)
                     }
                     Err(message) => self.fail(Error::new(ErrorKind::Connection, message)),
                 }

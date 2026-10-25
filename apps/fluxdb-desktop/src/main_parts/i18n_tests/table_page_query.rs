@@ -45,6 +45,7 @@ fn ai_page_query_opens_sidebar_table_fills_conditions_and_shows_rows(cx: &mut Te
         mysql_profile: None,
         postgres_profile: None,
         dameng_profile: None,
+        mongo_profile: None,
         sqlserver_profile: None,
     }]));
     let event = controller.dispatch(AppCommand::SaveAiModel(AiModelSaveInput {
@@ -611,6 +612,7 @@ fn typed_and_like_form_filters_change_query_results(cx: &mut TestAppContext) {
         mysql_profile: None,
         postgres_profile: None,
         dameng_profile: None,
+        mongo_profile: None,
         sqlserver_profile: None,
     }]));
     cx.update(|cx| {
@@ -1253,6 +1255,7 @@ fn data_filter_mode_round_trip_for_database(
         mysql_profile: None,
         postgres_profile: None,
         dameng_profile: None,
+        mongo_profile: None,
         sqlserver_profile: None,
     }]));
     cx.update(|cx| {
@@ -1439,6 +1442,7 @@ fn data_editor_with_filter_panel(
         mysql_profile: None,
         postgres_profile: None,
         dameng_profile: None,
+        mongo_profile: None,
         sqlserver_profile: None,
     }]));
     cx.update(|cx| {

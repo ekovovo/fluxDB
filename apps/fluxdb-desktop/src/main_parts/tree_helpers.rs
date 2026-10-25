@@ -674,6 +674,8 @@ fn table_folder_tree(
         )
 }
 
+/// `is_mongo` 由调用方按连接类型给出：Mongo 集合走集合工作台，其余走数据编辑器。
+#[allow(clippy::too_many_arguments)]
 fn table_tree(
     object: &ObjectSummary,
     indent: u8,
@@ -681,6 +683,7 @@ fn table_tree(
     connection_color_hex: &str,
     pinned: bool,
     search_query: Option<&str>,
+    is_mongo: bool,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
@@ -691,6 +694,7 @@ fn table_tree(
         object.path.kind,
         ObjectKind::Procedure | ObjectKind::Function
     );
+    let mongo_read_only = object.path.kind == ObjectKind::View;
     let selected = active_object_path == Some(&object.path);
     tree_with_highlight(
         empty_arrow_element(),
@@ -720,6 +724,14 @@ fn table_tree(
             this.close_context_menus(cx);
             if is_routine {
                 this.open_routine_ddl(path.clone(), cx);
+            } else if is_mongo {
+                this.dispatch(
+                    AppCommand::OpenMongoCollection {
+                        object: path.clone(),
+                        read_only: mongo_read_only,
+                    },
+                    cx,
+                );
             } else {
                 this.dispatch(AppCommand::OpenDataEditor(path.clone()), cx);
             }
@@ -1091,6 +1103,11 @@ fn group_objects<'a>(
             ObjectGroup::Views => object.path.kind == ObjectKind::View,
             ObjectGroup::Procedures => object.path.kind == ObjectKind::Procedure,
             ObjectGroup::Functions => object.path.kind == ObjectKind::Function,
+            // Mongo 库里视图也是只读集合，与集合同列；其余连接不会出现该分组。
+            ObjectGroup::Collections => matches!(
+                object.path.kind,
+                ObjectKind::Collection | ObjectKind::View
+            ),
             ObjectGroup::Queries
             | ObjectGroup::Backup
             // ER 图节点单击开 tab、不展开子行，故不从对象目录取行。
@@ -1372,6 +1389,7 @@ fn connection_has_loaded_children(connection: &ConnectionState, database: &str) 
             | ObjectKind::View
             | ObjectKind::Procedure
             | ObjectKind::Function
+            | ObjectKind::Collection
             | ObjectKind::RedisKey
         ) && object.path.database.as_deref().unwrap_or("main") == database
     })

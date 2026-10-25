@@ -14,17 +14,25 @@ impl NavicatMain {
         }
         // 连接菜单此前未做视口收敛，右键底部连接时菜单会超出窗口（与表菜单同类问题）。
         // 注意：项数需与 connection_menu.rs 的 connection_context_menu 渲染保持一致：
-        // Redis 少 3 项（用户与权限/执行 SQL 文件/新建数据库/选择显示数据库中的非 Redis 项），
-        // 已分组多 1 项（取消分组）。
+        // Redis 8 项、MongoDB 9 项、SQL 11 项；已分组再多 1 项（取消分组）。
         let state = self.controller.state();
         let connection = state
             .connections
             .iter()
             .find(|connection| connection.config.id == connection_id);
-        let is_redis = connection
-            .is_some_and(|connection| connection.config.kind == DatabaseKind::Redis);
+        let kind = connection.map(|connection| connection.config.kind);
+        let is_redis = kind == Some(DatabaseKind::Redis);
+        let is_mongo = kind == Some(DatabaseKind::MongoDb);
         let grouped = state.sidebar_layout.is_connection_grouped(connection_id);
-        let items = if is_redis { 8. } else { 11. } + i32::from(grouped) as f32;
+        // MongoDB 保留「新建数据库」，去掉新建查询 / 用户 / 执行 SQL 文件 / 选择显示数据库，
+        // 加上「显示连接信息」「查看性能指标」：净 9 项。
+        let items = if is_redis {
+            8.
+        } else if is_mongo {
+            9.
+        } else {
+            11.
+        } + i32::from(grouped) as f32;
         let clamped_position = clamp_context_menu_position(
             position,
             230.,

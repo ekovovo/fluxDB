@@ -12,6 +12,8 @@ pub mod terminal {
     pub enum TerminalSessionKind {
         RedisCli,
         MySqlCli,
+        /// MongoDB 命令行：库内执行 Extended JSON 命令的 REPL（不经 PTY）。
+        MongoCli,
         SshShell,
         GenericShell,
     }
@@ -40,6 +42,7 @@ pub mod terminal {
     pub enum TerminalSessionKey {
         Redis { connection_id: u64, database: u32 },
         MySql { connection_id: u64, database: Option<String>, schema: Option<String> },
+        Mongo { connection_id: u64, database: String },
         Ssh { host: String, port: u16, user: String, profile: String },
         GenericShell { profile_id: String, working_dir: String },
     }

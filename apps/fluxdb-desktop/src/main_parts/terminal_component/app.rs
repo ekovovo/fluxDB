@@ -49,6 +49,7 @@ impl NavicatMain {
                 postgres_profile: None,
                 dameng_profile: None,
                 sqlserver_profile: None,
+                mongo_profile: None,
             });
 
         let adapter: Box<dyn TerminalSessionAdapter> =
@@ -63,6 +64,71 @@ impl NavicatMain {
             session.spawn_process(session_cx);
         });
 
+        self.terminal_sessions.insert(tab_id, component.clone());
+        component
+    }
+
+    /// 取 / 建指定 MongoDB CLI tab 的终端会话实体。
+    ///
+    /// 与 Redis CLI 共用同一套 grid / 输入 / 渲染，只是后端换成进程内 REPL：
+    /// 没有子进程，密码不会进入任何 argv。
+    pub(crate) fn terminal_component_for_mongo(
+        &mut self,
+        tab_id: TabId,
+        cli: &fluxdb_app::MongoCliState,
+        cx: &mut Context<NavicatMain>,
+    ) -> Entity<TerminalComponent> {
+        self.ensure_terminal_pump(cx);
+        if let Some(session) = self.terminal_sessions.get(&tab_id) {
+            return session.clone();
+        }
+        let Some(config) = self
+            .controller
+            .state()
+            .connections
+            .iter()
+            .find(|connection| connection.config.id == cli.connection_id)
+            .map(|connection| connection.config.clone())
+        else {
+            // 连接已被删除：仍建会话，REPL 首条命令会给出连不上的原因，而不是空白终端。
+            return self.insert_mongo_terminal(tab_id, cli, None, cx);
+        };
+        self.insert_mongo_terminal(tab_id, cli, Some(config), cx)
+    }
+
+    fn insert_mongo_terminal(
+        &mut self,
+        tab_id: TabId,
+        cli: &fluxdb_app::MongoCliState,
+        config: Option<fluxdb_core::ConnectionConfig>,
+        cx: &mut Context<NavicatMain>,
+    ) -> Entity<TerminalComponent> {
+        let adapter_config = config.clone().unwrap_or_else(|| fluxdb_core::ConnectionConfig {
+            id: cli.connection_id,
+            name: String::new(),
+            kind: fluxdb_core::DatabaseKind::MongoDb,
+            endpoint: fluxdb_core::Endpoint::Tcp {
+                host: String::new(),
+                port: 0,
+                database: Some(cli.database.clone()),
+            },
+            options: std::collections::BTreeMap::new(),
+            redis_profile: None,
+            mysql_profile: None,
+            postgres_profile: None,
+            dameng_profile: None,
+            sqlserver_profile: None,
+            mongo_profile: None,
+        });
+        let adapter: Box<dyn TerminalSessionAdapter> =
+            Box::new(fluxdb_app::MongoCliAdapter::new(&adapter_config, cli.database.clone()));
+        let completion: Box<dyn TerminalCompletionAdapter> =
+            Box::new(fluxdb_app::MongoCliCompletion);
+        let component = cx.new(|child_cx| TerminalComponent::new(adapter, completion, child_cx));
+        let database = cli.database.clone();
+        component.update(cx, |session, session_cx| {
+            session.spawn_mongo_repl(adapter_config.clone(), database, session_cx);
+        });
         self.terminal_sessions.insert(tab_id, component.clone());
         component
     }

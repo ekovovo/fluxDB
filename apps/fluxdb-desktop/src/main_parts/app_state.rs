@@ -521,6 +521,22 @@ struct PendingDeleteDatabase {
     database: String,
 }
 
+/// MongoDB「显示连接信息」弹框状态：加载中 / 已加载 / 加载失败。
+///
+/// 内容全部来自服务端命令（`hello` / `buildInfo` / `listDatabases`），UI 不补造字段。
+struct MongoInfoDialog {
+    connection_id: ConnectionId,
+    state: LoadState<fluxdb_core::MongoServerInfo>,
+}
+
+/// MongoDB「创建集合」弹框：`MongoDB` 的库由首个集合隐式创建，故只需连接 + 库 + 集合名。
+#[derive(Clone, Debug)]
+struct MongoCreateCollectionForm {
+    connection_id: ConnectionId,
+    database: String,
+    collection: String,
+}
+
 #[derive(Clone, Debug)]
 struct ErRelationshipSelectOption {
     id: String,
@@ -1382,6 +1398,8 @@ struct CreateDatabaseForm {
     owner: String,
     /// PostgreSQL TEMPLATE（可选）。
     template: String,
+    /// MongoDB 首个集合名：Mongo 的库由首个集合隐式创建，缺了它库不会真正存在。
+    first_collection: String,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

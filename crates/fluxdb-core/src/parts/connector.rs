@@ -606,6 +606,73 @@ pub trait Connector {
     fn table_ddl(&self, _: &ObjectPath) -> Result<String> {
         Err(Error::new(ErrorKind::Unsupported, "暂不支持 DDL 元数据"))
     }
+
+    /// —— 文档型数据库（MongoDB）——
+
+    /// 执行一次 `find`。`path.database` 为库名，`request.collection` 为集合名。
+    ///
+    /// 与 `load_data` 分开：文档没有固定列，值以 Extended JSON 文本返回并保留 BSON 类型。
+    fn mongo_find(
+        &self,
+        _: &ObjectPath,
+        _: &MongoFindRequest,
+        _should_cancel: &dyn Fn() -> bool,
+    ) -> Result<MongoDocumentsPage> {
+        Err(Error::new(ErrorKind::Unsupported, "暂不支持文档查询"))
+    }
+
+    /// 执行聚合管道。`pipeline` 是 Extended JSON 数组文本（如 `[{"$group": …}]`），
+    /// 结果按文档返回（字段不固定，因此同样用 Extended JSON 承载）。
+    fn mongo_aggregate(&self, _: &ObjectPath, _pipeline: &str) -> Result<MongoDocumentsPage> {
+        Err(Error::new(ErrorKind::Unsupported, "暂不支持聚合查询"))
+    }
+
+    /// 读取集合/视图元数据；拿不到的统计留空。
+    fn mongo_collection_info(&self, _: &ObjectPath) -> Result<MongoCollectionInfo> {
+        Err(Error::new(ErrorKind::Unsupported, "暂不支持集合信息"))
+    }
+
+    /// 列出集合索引。
+    fn mongo_indexes(&self, _: &ObjectPath) -> Result<Vec<MongoIndexInfo>> {
+        Err(Error::new(ErrorKind::Unsupported, "暂不支持索引元数据"))
+    }
+
+    /// 在 `database` 内创建集合。MongoDB 的库由首个集合隐式创建，因此建集合即建库。
+    fn mongo_create_collection(
+        &self,
+        _: ConnectionId,
+        _database: &str,
+        _collection: &str,
+    ) -> Result<()> {
+        Err(Error::new(ErrorKind::Unsupported, "暂不支持创建集合"))
+    }
+
+    /// 删除集合。
+    fn mongo_drop_collection(&self, _: ConnectionId, _database: &str, _collection: &str) -> Result<()> {
+        Err(Error::new(ErrorKind::Unsupported, "暂不支持删除集合"))
+    }
+
+    /// 删除整个数据库（MongoDB 为 `dropDatabase`，会连带删除其中全部集合）。
+    fn mongo_drop_database(&self, _: ConnectionId, _database: &str) -> Result<()> {
+        Err(Error::new(ErrorKind::Unsupported, "暂不支持删除数据库"))
+    }
+
+    /// 执行任意数据库命令并返回其 Extended JSON 结果（命令行终端用）。
+    fn mongo_run_command(
+        &self,
+        _: ConnectionId,
+        _database: &str,
+        _command: &str,
+    ) -> Result<String> {
+        Err(Error::new(ErrorKind::Unsupported, "暂不支持执行数据库命令"))
+    }
+
+    /// 连接信息（「显示连接信息」弹框）：拓扑、版本、成员与库大小。
+    ///
+    /// 由连接器统一从服务端命令收集，UI 不直连驱动。
+    fn mongo_server_info(&self, _: ConnectionId) -> Result<MongoServerInfo> {
+        Err(Error::new(ErrorKind::Unsupported, "暂不支持读取连接信息"))
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

@@ -167,6 +167,12 @@ impl AiRuntimeHandle {
                         add_ai_sql_editor_edit_tool(&mut tools, grant, Arc::clone(actions))?;
                     }
                     add_ai_page_tools(&mut tools, take_page_data_grant(&job.turn_id), job)?;
+                    // MongoDB 文档值同理：发送时登记、装配目录时取走，不落盘、不预填进首条消息。
+                    add_ai_mongo_documents_tool(
+                        &mut tools,
+                        take_mongo_documents_grant(&job.turn_id),
+                        job,
+                    )?;
                     // 配置读取/提案是全局能力，不依赖当前页面。
                     if let Some(actions) = ui_actions.as_ref() {
                         add_ai_config_tools(&mut tools, storage.clone(), Arc::clone(actions))?;

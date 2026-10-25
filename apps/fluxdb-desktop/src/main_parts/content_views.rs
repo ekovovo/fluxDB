@@ -132,6 +132,20 @@ fn content(
             };
             redis_pubsub_content(tab.id, pubsub, this, window, colors, cx)
         }
+        Some(tab) if matches!(tab.kind, TabKind::MongoCli(_)) => {
+            let TabKind::MongoCli(cli) = &tab.kind else {
+                unreachable!();
+            };
+            mongo_cli_content(tab.id, cli, this, window, colors, cx)
+        }
+        Some(tab) if matches!(tab.kind, TabKind::MongoCollection(_)) => {
+            let TabKind::MongoCollection(collection) = &tab.kind else {
+                unreachable!();
+            };
+            div().size_full().min_h(px(0.)).flex().flex_col().child(
+                this.mongo_collection_content(tab.id, collection, window, colors, cx),
+            )
+        }
         Some(tab) if matches!(tab.kind, TabKind::CreateTable(_)) => {
             let TabKind::CreateTable(create) = &tab.kind else {
                 unreachable!();
@@ -1420,6 +1434,42 @@ fn redis_cli_content(
                 // Entity<TerminalComponent> 自身即完整终端表面（Render 带回 key context / 焦点 / 自绘 canvas）。
                 .child(component),
         )
+}
+
+/// MongoDB CLI 终端内容：库内执行 Extended JSON 命令的进程内 REPL。
+///
+/// 与 Redis CLI 对称：顶部一条连接/库信息条，交互全部交给 TerminalComponent
+/// （grid、光标、状态栏、危险命令确认、历史与补全）。
+fn mongo_cli_content(
+    tab_id: TabId,
+    cli: &fluxdb_app::MongoCliState,
+    this: &mut NavicatMain,
+    _window: &mut Window,
+    colors: UiColors,
+    cx: &mut Context<NavicatMain>,
+) -> Div {
+    let component = this.terminal_component_for_mongo(tab_id, cli, cx);
+    let connection = connection_name(this.controller.state(), cli.connection_id);
+    div()
+        .relative()
+        .flex_1()
+        .bg(colors.panel_bg)
+        .flex()
+        .flex_col()
+        .child(
+            div()
+                .h(px(28.))
+                .border_b_1()
+                .border_color(colors.border)
+                .bg(colors.panel_alt)
+                .flex()
+                .items_center()
+                .px_3()
+                .text_size(px(12.))
+                .text_color(colors.muted)
+                .child(format!("{connection} · {} · MongoDB CLI", cli.database)),
+        )
+        .child(div().flex_1().min_h(px(0.)).child(component))
 }
 
 /// Redis Pub/Sub 页面：订阅 / 发布实时消息流。

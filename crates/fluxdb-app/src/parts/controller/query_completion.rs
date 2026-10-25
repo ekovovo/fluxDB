@@ -1400,6 +1400,7 @@ mod dameng_completion_index_tests {
                 },
             }),
             sqlserver_profile: None,
+            mongo_profile: None,
         }
     }
 
@@ -1422,6 +1423,7 @@ mod dameng_completion_index_tests {
             postgres_profile: None,
             dameng_profile: None,
             sqlserver_profile: None,
+            mongo_profile: None,
         }
     }
 
@@ -1497,6 +1499,7 @@ mod dameng_completion_index_tests {
             postgres_profile: None,
             dameng_profile: None,
             sqlserver_profile: None,
+            mongo_profile: None,
         };
         let mut controller = AppController::new();
         controller.dispatch(AppCommand::ReplaceConnections(vec![config.clone()]));
@@ -1986,6 +1989,7 @@ mod dameng_completion_index_tests {
             postgres_profile: None,
             dameng_profile: None,
             sqlserver_profile: None,
+            mongo_profile: None,
         };
         let mut controller = AppController::new();
         let connection_id = config.id;
@@ -2141,6 +2145,7 @@ mod dameng_completion_index_tests {
             ),
             dameng_profile: None,
             sqlserver_profile: None,
+            mongo_profile: None,
         };
         let mut controller = AppController::new();
         let connection_id = config.id;
@@ -2210,6 +2215,7 @@ mod postgres_completion_index_tests {
             postgres_profile: Some(PostgresConnectionProfile::default()),
             dameng_profile: None,
             sqlserver_profile: None,
+            mongo_profile: None,
         }
     }
 

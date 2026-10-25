@@ -26,7 +26,8 @@ use fluxdb_core::{
     DataExportPreview, DataPage, DatabaseKind, DatabasePrivilegeGrant, DatabaseUserIdentity,
     Endpoint, ErColumn, ErForeignKeyEdge, ErGraphData, ErLoadStatus, ErRelationship, ErTableNode,
     ErTableRef, Error, ErrorKind, ExecutionPolicy, ExecutionPolicySettings, FilterExpression,
-    FilterSpec, ForeignKeyInfo, IndexInfo, InsertTextFormat, ModelRisk, ObjectKind, ObjectPath,
+    FilterSpec, ForeignKeyInfo, IndexInfo, InsertTextFormat, ModelRisk, MongoCollectionInfo,
+    MongoDocumentsPage, MongoIndexInfo, MongoServerInfo, ObjectKind, ObjectPath,
     ObjectSummary, Pagination, PgEffectivePrivilege, PgGrantTargetLists, PgObjectGrantScope,
     PgObjectGrants, PgPasswordOp, PgRelationKind, PgRole, PgRoleChange, PgRoleDraft,
     PgRoleMembership, PgRoleSavePlan, PgValidUntilOp, PrivilegeScope, QueryCompletionItem,
@@ -51,6 +52,7 @@ use sqlparser::ast::{Expr, ObjectName, ObjectNamePart, Statement};
 // First-pass source split: included files remain in crate-root scope while module boundaries are refined.
 include!("parts/ai_conversation_state.rs");
 include!("parts/sqlserver_user_admin_state.rs");
+include!("parts/mongo_collection_state.rs");
 include!("parts/state.rs");
 include!("parts/ai_model_catalog.rs");
 include!("parts/create_table_model.rs");
@@ -78,6 +80,7 @@ include!("parts/completion_engine.rs");
 include!("parts/redis_commands.rs");
 include!("parts/redis_completion.rs");
 include!("parts/terminal_redis.rs");
+include!("parts/terminal_mongo.rs");
 include!("parts/native_client_io.rs");
 include!("parts/updater.rs");
 include!("parts/pg_client_tools.rs");

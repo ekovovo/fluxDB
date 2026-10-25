@@ -19,6 +19,10 @@ fn connection_context_menu(
     // 选择显示数据库四项仅在非 Redis 连接下显示。
     let is_redis = connection
         .is_some_and(|connection| connection.config.kind == DatabaseKind::Redis);
+    // MongoDB 没有 SQL 概念：不显示用户与权限 / 执行 SQL 文件 / 新建查询 / 选择显示数据库，
+    // 改为「显示连接信息」与「查看性能指标」（后者首版置灰）。
+    let is_mongo = connection
+        .is_some_and(|connection| connection.config.kind == DatabaseKind::MongoDb);
 
     let mut menu_view = div()
         .absolute()
@@ -70,17 +74,19 @@ fn connection_context_menu(
                 cx,
             )
         })
-        .child(connection_menu_item(
-            tr("app.connection_menu.new_query").to_string(),
-            "query",
-            None,
-            false,
-            Some(ConnectionMenuAction::NewQuery),
-            menu.connection_id,
-            colors,
-            cx,
-        ))
-        .when(!is_redis, |this| {
+        .when(!is_mongo, |this| {
+            this.child(connection_menu_item(
+                tr("app.connection_menu.new_query").to_string(),
+                "query",
+                None,
+                false,
+                Some(ConnectionMenuAction::NewQuery),
+                menu.connection_id,
+                colors,
+                cx,
+            ))
+        })
+        .when(!is_redis && !is_mongo, |this| {
             this.child(connection_menu_item(
                 tr("app.connection_menu.user_admin").to_string(),
                 "users",
@@ -92,7 +98,7 @@ fn connection_context_menu(
                 cx,
             ))
         })
-        .when(!is_redis, |this| {
+        .when(!is_redis && !is_mongo, |this| {
             this.child(connection_menu_item(
                 tr("app.connection_menu.run_sql_file").to_string(),
                 "file-sql",
@@ -147,7 +153,30 @@ fn connection_context_menu(
             colors,
             cx,
         ))
-        .when(!is_redis, |this| {
+        .when(is_mongo, |this| {
+            this.child(connection_menu_item(
+                tr("app.connection_menu.mongo_info").to_string(),
+                "info",
+                None,
+                false,
+                Some(ConnectionMenuAction::MongoInfo),
+                menu.connection_id,
+                colors,
+                cx,
+            ))
+            // 首版未采集指标：置灰占位，避免点了没有反馈。
+            .child(connection_menu_item(
+                tr("app.connection_menu.mongo_performance").to_string(),
+                "activity",
+                None,
+                false,
+                None,
+                menu.connection_id,
+                colors,
+                cx,
+            ))
+        })
+        .when(!is_redis && !is_mongo, |this| {
             this.child(connection_menu_item(
                 tr("app.connection_menu.select_databases").to_string(),
                 "filter",
@@ -199,6 +228,7 @@ fn database_context_menu(
     is_postgres: bool,
     is_sqlserver: bool,
     is_dameng: bool,
+    is_mongo: bool,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
@@ -301,8 +331,50 @@ fn database_context_menu(
             colors,
             cx,
         ))
+        // MongoDB：创建集合 / 命令行终端 / 刷新 / 删除数据库（无表、无默认库语义）。
+        .when(is_mongo, |this| {
+            let menu = menu.clone();
+            this.child(connection_menu_separator(colors))
+                .child(database_menu_item(
+                    tr("app.connection_menu.new_collection").to_string(),
+                    "collection",
+                    false,
+                    DatabaseMenuAction::NewCollection,
+                    menu.clone(),
+                    colors,
+                    cx,
+                ))
+                .child(database_menu_item(
+                    tr("app.connection_menu.mongo_cli").to_string(),
+                    "terminal",
+                    false,
+                    DatabaseMenuAction::MongoCli,
+                    menu.clone(),
+                    colors,
+                    cx,
+                ))
+                .child(connection_menu_separator(colors))
+                .child(database_menu_item(
+                    tr("app.connection_menu.refresh").to_string(),
+                    "refresh",
+                    false,
+                    DatabaseMenuAction::Refresh,
+                    menu.clone(),
+                    colors,
+                    cx,
+                ))
+                .child(database_menu_item(
+                    tr("app.connection_menu.delete_database").to_string(),
+                    "delete",
+                    true,
+                    DatabaseMenuAction::Delete,
+                    menu,
+                    colors,
+                    cx,
+                ))
+        })
         // 置顶/设置默认数据库仅对 SQL 型连接有意义（Redis 无默认库语义）。
-        .when(!is_redis, |this| {
+        .when(!is_redis && !is_mongo, |this| {
             this.child(database_menu_item(
                 pin_label,
                 "pin",
@@ -363,15 +435,18 @@ fn database_context_menu(
                 cx,
             ))
         })
-        .child(database_menu_item(
-            query_label,
-            "query",
-            false,
-            DatabaseMenuAction::NewQuery,
-            menu.clone(),
-            colors,
-            cx,
-        ))
+        .when(!is_mongo, |this| {
+            let menu = menu.clone();
+            this.child(database_menu_item(
+                query_label,
+                "query",
+                false,
+                DatabaseMenuAction::NewQuery,
+                menu,
+                colors,
+                cx,
+            ))
+        })
         // Redis CLI 终端：独立 terminal tab，仅在 Redis 连接下显示。
         .when(is_redis, |this| {
             this.child(database_menu_item(
@@ -398,7 +473,7 @@ fn database_context_menu(
         })
         .child(connection_menu_separator(colors))
         // 在数据库中查找（表级搜索）仅对 SQL 型连接有意义。
-        .when(!is_redis, |this| {
+        .when(!is_redis && !is_mongo, |this| {
             this.child(database_menu_item(
                 tr("app.connection_menu.find_in_database").to_string(),
                 "file-search",
@@ -409,27 +484,31 @@ fn database_context_menu(
                 cx,
             ))
         })
-        .child(database_menu_item(
-            tr("app.connection_menu.refresh").to_string(),
-            "refresh",
-            false,
-            DatabaseMenuAction::Refresh,
-            menu.clone(),
-            colors,
-            cx,
-        ))
-        // 删除数据库仅对 SQL 型连接有意义（Redis 逻辑库为内建索引，不可删除）。
-        .when(!is_redis, |this| {
-            this.child(connection_menu_separator(colors))
-                .child(database_menu_item(
-                    tr("app.connection_menu.delete_database").to_string(),
-                    "delete",
-                    true,
-                    DatabaseMenuAction::Delete,
-                    menu,
-                    colors,
-                    cx,
-                ))
+        // Mongo 的刷新/删除数据库已在上方分支渲染，这里仅处理其余连接类型。
+        .when(!is_mongo, |this| {
+            let menu = menu.clone();
+            this.child(database_menu_item(
+                tr("app.connection_menu.refresh").to_string(),
+                "refresh",
+                false,
+                DatabaseMenuAction::Refresh,
+                menu.clone(),
+                colors,
+                cx,
+            ))
+            // 删除数据库仅对 SQL 型连接有意义（Redis 逻辑库为内建索引，不可删除）。
+            .when(!is_redis, |this| {
+                this.child(connection_menu_separator(colors))
+                    .child(database_menu_item(
+                        tr("app.connection_menu.delete_database").to_string(),
+                        "delete",
+                        true,
+                        DatabaseMenuAction::Delete,
+                        menu,
+                        colors,
+                        cx,
+                    ))
+            })
         })
 }
 

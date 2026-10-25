@@ -1,0 +1,469 @@
+impl AppController {
+    /// MongoDB 集合工作台 / 连接信息 / 集合增删 / 命令执行。
+    fn dispatch_mongo_command(&mut self, command: AppCommand) -> AppEvent {
+        match command {
+            AppCommand::OpenMongoCollection { object, read_only } => {
+                self.open_mongo_collection(object, read_only)
+            }
+            AppCommand::BeginMongoLoad(tab_id) => self.begin_mongo_load(tab_id),
+            AppCommand::LoadMongoDocuments {
+                tab_id,
+                generation,
+                query,
+            } => self.load_mongo_documents(tab_id, generation, query),
+            AppCommand::FinishMongoDocuments {
+                tab_id,
+                generation,
+                result,
+            } => self.finish_mongo_documents(tab_id, generation, result),
+            AppCommand::LoadMongoCollectionInfo(tab_id) => self.load_mongo_collection_info(tab_id),
+            AppCommand::FinishMongoCollectionInfo { tab_id, result } => {
+                self.finish_mongo_collection_info(tab_id, result)
+            }
+            AppCommand::LoadMongoIndexes(tab_id) => self.load_mongo_indexes(tab_id),
+            AppCommand::FinishMongoIndexes { tab_id, result } => {
+                self.finish_mongo_indexes(tab_id, result)
+            }
+            AppCommand::LoadMongoServerInfo(connection_id) => {
+                let Some(config) = self.connection_config(connection_id).cloned() else {
+                    return self.fail(Error::new(ErrorKind::Connection, "连接不存在"));
+                };
+                match connector_for(&config).and_then(|connector| {
+                    connector.mongo_server_info(connection_id)
+                }) {
+                    Ok(info) => AppEvent::MongoServerInfoLoaded(connection_id, Ok(info)),
+                    Err(error) => {
+                        let user_error = UserFacingError::from(error);
+                        self.state.last_error = Some(user_error.clone());
+                        AppEvent::MongoServerInfoLoaded(connection_id, Err(user_error))
+                    }
+                }
+            }
+            AppCommand::CreateMongoCollection {
+                connection_id,
+                database,
+                collection,
+            } => self.create_mongo_collection(connection_id, database, collection),
+            AppCommand::DropMongoCollection {
+                connection_id,
+                database,
+                collection,
+            } => self.drop_mongo_collection(connection_id, database, collection),
+            AppCommand::MongoRunCommand {
+                connection_id,
+                database,
+                command,
+            } => self.run_mongo_command(connection_id, database, command),
+            AppCommand::OpenMongoCli {
+                connection_id,
+                database,
+            } => self.open_mongo_cli(connection_id, database),
+            AppCommand::SelectMongoSection { tab_id, section } => {
+                let Some(state) = self.find_mongo_collection_mut(tab_id) else {
+                    return self.fail(Error::new(ErrorKind::Internal, "集合标签页不存在"));
+                };
+                state.section = section;
+                AppEvent::TabActivated(tab_id)
+            }
+            AppCommand::SelectMongoDisplayMode { tab_id, mode } => {
+                let Some(state) = self.find_mongo_collection_mut(tab_id) else {
+                    return self.fail(Error::new(ErrorKind::Internal, "集合标签页不存在"));
+                };
+                state.display = mode;
+                AppEvent::TabActivated(tab_id)
+            }
+            AppCommand::SetMongoOffset { tab_id, offset } => {
+                let Some(state) = self.find_mongo_collection_mut(tab_id) else {
+                    return self.fail(Error::new(ErrorKind::Internal, "集合标签页不存在"));
+                };
+                state.pagination = Pagination::new(offset, state.pagination.limit);
+                AppEvent::TabActivated(tab_id)
+            }
+            AppCommand::SelectMongoDocument { tab_id, index } => {
+                let Some(state) = self.find_mongo_collection_mut(tab_id) else {
+                    return self.fail(Error::new(ErrorKind::Internal, "集合标签页不存在"));
+                };
+                // 下标越界（换页后旧选中）视为关闭抽屉，不留悬空选中态。
+                state.selected_document = index.filter(|index| {
+                    state
+                        .page
+                        .as_ref()
+                        .is_some_and(|page| *index < page.documents.len())
+                });
+                AppEvent::TabActivated(tab_id)
+            }
+            AppCommand::UpdateMongoAggregation { tab_id, pipeline } => {
+                let Some(state) = self.find_mongo_collection_mut(tab_id) else {
+                    return self.fail(Error::new(ErrorKind::Internal, "集合标签页不存在"));
+                };
+                state.aggregation_pipeline = pipeline;
+                AppEvent::TabActivated(tab_id)
+            }
+            AppCommand::BeginMongoAggregation(tab_id) => {
+                let Some(state) = self.find_mongo_collection_mut(tab_id) else {
+                    return self.fail(Error::new(ErrorKind::Internal, "集合标签页不存在"));
+                };
+                let generation = state.begin_aggregation();
+                AppEvent::MongoAggregationStarted { tab_id, generation }
+            }
+            AppCommand::RunMongoAggregation {
+                tab_id,
+                generation,
+                pipeline,
+            } => self.run_mongo_aggregation(tab_id, generation, pipeline),
+            AppCommand::FinishMongoAggregation {
+                tab_id,
+                generation,
+                result,
+            } => self.finish_mongo_aggregation(tab_id, generation, result),
+            _ => self.fail(Error::new(ErrorKind::Internal, "非 MongoDB 命令")),
+        }
+    }
+
+    /// 打开集合工作台：同一集合复用已有标签页，视图以只读打开。
+    fn open_mongo_collection(&mut self, object: ObjectPath, read_only: bool) -> AppEvent {
+        if let Some(tab_id) = self.state.tabs.iter().find_map(|tab| match &tab.kind {
+            TabKind::MongoCollection(state) if state.object == object => Some(tab.id),
+            _ => None,
+        }) {
+            self.state.active_tab = Some(tab_id);
+            return AppEvent::TabActivated(tab_id);
+        }
+        let tab_id = self.next_tab_id();
+        let page_size = self.state.settings.data_table_page_size;
+        let title = object.name.clone();
+        self.push_tab(TabState {
+            id: tab_id,
+            title,
+            kind: TabKind::MongoCollection(MongoCollectionState::new(object, read_only, page_size)),
+            dirty: false,
+        });
+        AppEvent::TabOpened(tab_id)
+    }
+
+    /// 打开（或复用）MongoDB 命令行标签页：同一连接 + 同一库只保留一个。
+    fn open_mongo_cli(&mut self, connection_id: ConnectionId, database: String) -> AppEvent {
+        let cli = MongoCliState {
+            connection_id,
+            database,
+        };
+        if let Some(tab_id) = self.find_tab_by_session_key(&cli.session_key()) {
+            self.state.active_tab = Some(tab_id);
+            return AppEvent::TabActivated(tab_id);
+        }
+        let tab_id = self.next_tab_id();
+        let title = format!("MongoDB CLI - {}", cli.database);
+        self.push_tab(TabState {
+            id: tab_id,
+            title,
+            kind: TabKind::MongoCli(cli),
+            dirty: false,
+        });
+        AppEvent::TabOpened(tab_id)
+    }
+
+    fn find_mongo_collection_mut(&mut self, tab_id: TabId) -> Option<&mut MongoCollectionState> {
+        self.find_tab_mut(tab_id)
+            .and_then(|tab| match &mut tab.kind {
+                TabKind::MongoCollection(state) => Some(state),
+                _ => None,
+            })
+    }
+
+    fn begin_mongo_load(&mut self, tab_id: TabId) -> AppEvent {
+        let Some(state) = self.find_mongo_collection_mut(tab_id) else {
+            return self.fail(Error::new(ErrorKind::Internal, "集合标签页不存在"));
+        };
+        let generation = state.begin_load();
+        AppEvent::MongoLoadStarted { tab_id, generation }
+    }
+
+    /// 执行查询。查询草稿在这里落到标签页（`applied_query`），后台只用快照，避免并发改表单。
+    fn load_mongo_documents(
+        &mut self,
+        tab_id: TabId,
+        generation: u64,
+        query: MongoQueryDraft,
+    ) -> AppEvent {
+        let Some(tab) = self.find_tab(tab_id) else {
+            return self.fail(Error::new(ErrorKind::Internal, "集合标签页不存在"));
+        };
+        let TabKind::MongoCollection(state) = &tab.kind else {
+            return self.fail(Error::new(ErrorKind::Internal, "集合标签页不存在"));
+        };
+        if !state.accepts_load(generation) {
+            return AppEvent::MongoLoadDiscarded { tab_id, generation };
+        }
+        let object = state.object.clone();
+        let offset = state.pagination.offset;
+        let limit = query
+            .limit
+            .trim()
+            .parse::<u64>()
+            .ok()
+            .filter(|limit| *limit > 0)
+            .unwrap_or(state.pagination.limit);
+
+        if let Some(state) = self.find_mongo_collection_mut(tab_id) {
+            state.pagination = Pagination::new(offset, limit);
+            state.applied_query = query.clone();
+            state.loading = true;
+            state.error = None;
+            state.selected_document = None;
+        }
+
+        let Some(config) = self.connection_config(object.connection_id).cloned() else {
+            return self.fail(Error::new(ErrorKind::Connection, "连接不存在"));
+        };
+        let request = query.to_request(&object.name, offset);
+        match connector_for(&config)
+            .and_then(|connector| connector.mongo_find(&object, &request, &|| false))
+        {
+            Ok(page) => AppEvent::MongoDocumentsLoaded(tab_id, page),
+            Err(error) => AppEvent::Failed(UserFacingError::from(error)),
+        }
+    }
+
+    fn finish_mongo_documents(
+        &mut self,
+        tab_id: TabId,
+        generation: u64,
+        result: std::result::Result<MongoDocumentsPage, UserFacingError>,
+    ) -> AppEvent {
+        let Some(state) = self.find_mongo_collection_mut(tab_id) else {
+            return self.fail(Error::new(ErrorKind::Internal, "集合标签页不存在"));
+        };
+        if !state.accepts_load(generation) {
+            return AppEvent::MongoLoadDiscarded { tab_id, generation };
+        }
+        state.loading = false;
+        match result {
+            Ok(page) => {
+                state.error = None;
+                state.page = Some(page.clone());
+                AppEvent::MongoDocumentsLoaded(tab_id, page)
+            }
+            Err(error) => {
+                state.error = Some(error.clone());
+                self.state.last_error = Some(error.clone());
+                AppEvent::Failed(error)
+            }
+        }
+    }
+
+    fn run_mongo_aggregation(&mut self, tab_id: TabId, generation: u64, pipeline: String) -> AppEvent {
+        let Some(state) = self.find_mongo_collection_mut(tab_id) else {
+            return self.fail(Error::new(ErrorKind::Internal, "集合标签页不存在"));
+        };
+        if !state.accepts_aggregation(generation) {
+            return AppEvent::MongoLoadDiscarded { tab_id, generation };
+        }
+        state.aggregation_pipeline = pipeline.clone();
+        let object = state.object.clone();
+        let Some(config) = self.connection_config(object.connection_id).cloned() else {
+            return self.fail(Error::new(ErrorKind::Connection, "连接不存在"));
+        };
+        match connector_for(&config).and_then(|connector| connector.mongo_aggregate(&object, &pipeline)) {
+            Ok(page) => AppEvent::MongoAggregationLoaded(tab_id, page),
+            Err(error) => AppEvent::Failed(UserFacingError::from(error)),
+        }
+    }
+
+    fn finish_mongo_aggregation(
+        &mut self,
+        tab_id: TabId,
+        generation: u64,
+        result: std::result::Result<MongoDocumentsPage, UserFacingError>,
+    ) -> AppEvent {
+        let Some(state) = self.find_mongo_collection_mut(tab_id) else {
+            return self.fail(Error::new(ErrorKind::Internal, "集合标签页不存在"));
+        };
+        if !state.accepts_aggregation(generation) {
+            return AppEvent::MongoLoadDiscarded { tab_id, generation };
+        }
+        match result {
+            Ok(page) => {
+                state.aggregation = LoadState::Loaded(page.clone());
+                AppEvent::MongoAggregationLoaded(tab_id, page)
+            }
+            Err(error) => {
+                state.aggregation = LoadState::Failed(error.clone());
+                self.state.last_error = Some(error.clone());
+                AppEvent::Failed(error)
+            }
+        }
+    }
+
+    fn load_mongo_collection_info(&mut self, tab_id: TabId) -> AppEvent {
+        let Some(state) = self.find_mongo_collection_mut(tab_id) else {
+            return self.fail(Error::new(ErrorKind::Internal, "集合标签页不存在"));
+        };
+        state.info = LoadState::Loading;
+        let object = state.object.clone();
+        let Some(config) = self.connection_config(object.connection_id).cloned() else {
+            return self.fail(Error::new(ErrorKind::Connection, "连接不存在"));
+        };
+        match connector_for(&config).and_then(|connector| connector.mongo_collection_info(&object))
+        {
+            Ok(info) => AppEvent::MongoCollectionInfoLoaded(tab_id, info),
+            Err(error) => AppEvent::Failed(UserFacingError::from(error)),
+        }
+    }
+
+    fn finish_mongo_collection_info(
+        &mut self,
+        tab_id: TabId,
+        result: std::result::Result<MongoCollectionInfo, UserFacingError>,
+    ) -> AppEvent {
+        let Some(state) = self.find_mongo_collection_mut(tab_id) else {
+            return self.fail(Error::new(ErrorKind::Internal, "集合标签页不存在"));
+        };
+        match result {
+            Ok(info) => {
+                state.info = LoadState::Loaded(info.clone());
+                AppEvent::MongoCollectionInfoLoaded(tab_id, info)
+            }
+            Err(error) => {
+                state.info = LoadState::Failed(error.clone());
+                AppEvent::Failed(error)
+            }
+        }
+    }
+
+    fn load_mongo_indexes(&mut self, tab_id: TabId) -> AppEvent {
+        let Some(state) = self.find_mongo_collection_mut(tab_id) else {
+            return self.fail(Error::new(ErrorKind::Internal, "集合标签页不存在"));
+        };
+        state.indexes = LoadState::Loading;
+        let object = state.object.clone();
+        let Some(config) = self.connection_config(object.connection_id).cloned() else {
+            return self.fail(Error::new(ErrorKind::Connection, "连接不存在"));
+        };
+        match connector_for(&config).and_then(|connector| connector.mongo_indexes(&object)) {
+            Ok(indexes) => AppEvent::MongoIndexesLoaded(tab_id, indexes),
+            Err(error) => AppEvent::Failed(UserFacingError::from(error)),
+        }
+    }
+
+    fn finish_mongo_indexes(
+        &mut self,
+        tab_id: TabId,
+        result: std::result::Result<Vec<MongoIndexInfo>, UserFacingError>,
+    ) -> AppEvent {
+        let Some(state) = self.find_mongo_collection_mut(tab_id) else {
+            return self.fail(Error::new(ErrorKind::Internal, "集合标签页不存在"));
+        };
+        match result {
+            Ok(indexes) => {
+                state.indexes = LoadState::Loaded(indexes.clone());
+                AppEvent::MongoIndexesLoaded(tab_id, indexes)
+            }
+            Err(error) => {
+                state.indexes = LoadState::Failed(error.clone());
+                AppEvent::Failed(error)
+            }
+        }
+    }
+
+    /// 创建集合，并按新的对象树回填连接（新集合立刻出现在侧边栏）。
+    fn create_mongo_collection(
+        &mut self,
+        connection_id: ConnectionId,
+        database: String,
+        collection: String,
+    ) -> AppEvent {
+        let Some(connection) = self
+            .state
+            .connections
+            .iter_mut()
+            .find(|connection| connection.config.id == connection_id)
+        else {
+            return self.fail(Error::new(ErrorKind::Connection, "连接不存在"));
+        };
+        let config = connection.config.clone();
+        if let Err(error) = connector_for(&config)
+            .and_then(|connector| connector.mongo_create_collection(connection_id, &database, &collection))
+        {
+            return self.fail(error);
+        }
+        match list_objects_for_connection(&config, None) {
+            Ok(objects) => {
+                self.state.last_error = None;
+                connection.connected = true;
+                connection.expanded = true;
+                replace_connection_level0(connection, objects);
+                AppEvent::MongoCollectionCreated {
+                    connection_id,
+                    database,
+                    collection,
+                }
+            }
+            Err(error) => self.fail(error),
+        }
+    }
+
+    /// 删除集合：成功则关闭对应标签页并刷新对象树。
+    fn drop_mongo_collection(
+        &mut self,
+        connection_id: ConnectionId,
+        database: String,
+        collection: String,
+    ) -> AppEvent {
+        let Some(config) = self.connection_config(connection_id).cloned() else {
+            return self.fail(Error::new(ErrorKind::Connection, "连接不存在"));
+        };
+        if let Err(error) = connector_for(&config).and_then(|connector| {
+            connector.mongo_drop_collection(connection_id, &database, &collection)
+        }) {
+            return self.fail(error);
+        }
+        self.state.tabs.retain(|tab| match &tab.kind {
+            TabKind::MongoCollection(state) => {
+                state.object.connection_id != connection_id
+                    || state.object.database.as_deref() != Some(database.as_str())
+                    || state.object.name != collection
+            }
+            _ => true,
+        });
+        match list_objects_for_connection(&config, None) {
+            Ok(objects) => {
+                if let Some(connection) = self
+                    .state
+                    .connections
+                    .iter_mut()
+                    .find(|connection| connection.config.id == connection_id)
+                {
+                    replace_connection_level0(connection, objects);
+                }
+                AppEvent::MongoCollectionDropped {
+                    connection_id,
+                    database,
+                    collection,
+                }
+            }
+            Err(error) => self.fail(error),
+        }
+    }
+
+    fn run_mongo_command(
+        &mut self,
+        connection_id: ConnectionId,
+        database: String,
+        command: String,
+    ) -> AppEvent {
+        let Some(config) = self.connection_config(connection_id).cloned() else {
+            return self.fail(Error::new(ErrorKind::Connection, "连接不存在"));
+        };
+        match connector_for(&config)
+            .and_then(|connector| connector.mongo_run_command(connection_id, &database, &command))
+        {
+            Ok(result) => AppEvent::MongoCommandExecuted {
+                connection_id,
+                database,
+                command,
+                result,
+            },
+            Err(error) => self.fail(error),
+        }
+    }
+}

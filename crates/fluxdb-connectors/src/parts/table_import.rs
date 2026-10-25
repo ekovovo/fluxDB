@@ -1221,6 +1221,7 @@ mod table_import_tests {
                 mysql_profile: None,
                 postgres_profile: None,
                 dameng_profile: None,
+                mongo_profile: None,
                 sqlserver_profile: None,
             },
             object: crate::ObjectPath {

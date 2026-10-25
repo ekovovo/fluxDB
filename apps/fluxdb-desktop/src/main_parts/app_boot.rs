@@ -378,6 +378,46 @@ fn navicat_main_new(
                                 cx,
                             )
                         });
+                        let create_database_first_collection_input =
+                            cx.new(|cx| {
+                                InputState::new(window, cx)
+                                    .placeholder(tr("app.mongo.create_database.first_collection_placeholder"))
+                            });
+                        let create_database_first_collection_subscription = cx.subscribe_in(
+                            &create_database_first_collection_input,
+                            window,
+                            |this: &mut NavicatMain, input, event: &InputEvent, window, cx| {
+                                if matches!(event, InputEvent::Change)
+                                    && let Some(form) = &mut this.pending_create_database
+                                {
+                                    form.first_collection = input.read(cx).value().to_string();
+                                    cx.notify();
+                                }
+                                if matches!(event, InputEvent::PressEnter { .. }) {
+                                    this.confirm_create_database(window, cx);
+                                }
+                            },
+                        );
+                        let create_collection_input =
+                            cx.new(|cx| {
+                                InputState::new(window, cx)
+                                    .placeholder(tr("app.mongo.create_collection.placeholder"))
+                            });
+                        let create_collection_subscription = cx.subscribe_in(
+                            &create_collection_input,
+                            window,
+                            |this: &mut NavicatMain, input, event: &InputEvent, window, cx| {
+                                if matches!(event, InputEvent::Change)
+                                    && let Some(form) = &mut this.pending_create_collection
+                                {
+                                    form.collection = input.read(cx).value().to_string();
+                                    cx.notify();
+                                }
+                                if matches!(event, InputEvent::PressEnter { .. }) {
+                                    this.confirm_create_collection(window, cx);
+                                }
+                            },
+                        );
                         let create_schema_name_input =
                             cx.new(|cx| {
                                 InputState::new(window, cx)
@@ -3302,6 +3342,9 @@ fn navicat_main_new(
                             create_database_template_input,
                             _create_database_template_subscription:
                                 create_database_template_subscription,
+                            create_database_first_collection_input,
+                            _create_database_first_collection_subscription:
+                                create_database_first_collection_subscription,
                             danger_table_foreign_key_check_select,
                             _danger_table_foreign_key_check_select_subscription:
                                 danger_table_foreign_key_check_select_subscription,
@@ -3318,6 +3361,11 @@ fn navicat_main_new(
                             _tree_refresh_task: None,
                             _database_tasks: BTreeMap::new(),
                             _data_load_tasks: BTreeMap::new(),
+                            mongo_query_inputs: BTreeMap::new(),
+                            _mongo_load_tasks: BTreeMap::new(),
+                            _mongo_aggregation_tasks: BTreeMap::new(),
+                            _mongo_info_tasks: BTreeMap::new(),
+                            _mongo_index_tasks: BTreeMap::new(),
                             _redis_key_value_apply_tasks: BTreeMap::new(),
                             _query_execute_tasks: BTreeMap::new(),
                             _redis_workbench_tasks: BTreeMap::new(),
@@ -3374,6 +3422,12 @@ fn navicat_main_new(
                             pending_rename_table_folder: None,
                             pending_delete_connection: None,
                             pending_delete_database: None,
+                            mongo_info_dialog: None,
+                            pending_create_collection: None,
+                            create_collection_running: false,
+                            create_collection_input,
+                            _create_collection_subscription: create_collection_subscription,
+                            _create_mongo_collection_task: None,
                             pending_disconnect_connection: None,
                             pending_close_workspace: None,
                             pending_new_query_connection: None,

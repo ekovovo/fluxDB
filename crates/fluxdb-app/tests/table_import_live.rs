@@ -49,6 +49,7 @@ fn sqlite_imports_all_export_formats() {
         mysql_profile: None,
         postgres_profile: None,
         dameng_profile: None,
+        mongo_profile: None,
         sqlserver_profile: None,
     };
     execute(
@@ -158,6 +159,7 @@ fn mysql_imports_all_export_formats() {
         }),
         postgres_profile: None,
         dameng_profile: None,
+        mongo_profile: None,
         sqlserver_profile: None,
     }
     .mysql_resolved();
@@ -288,6 +290,7 @@ fn postgres_imports_all_export_formats() {
             ..PostgresConnectionProfile::default()
         }),
         dameng_profile: None,
+        mongo_profile: None,
         sqlserver_profile: None,
     }
     .postgres_resolved();
@@ -410,6 +413,7 @@ fn sqlite_import_append_and_truncate_modes() {
         mysql_profile: None,
         postgres_profile: None,
         dameng_profile: None,
+        mongo_profile: None,
         sqlserver_profile: None,
     };
     let object = ObjectPath {

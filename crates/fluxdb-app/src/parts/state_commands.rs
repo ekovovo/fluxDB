@@ -45,6 +45,8 @@ pub enum AppCommand {
         provider: String,
         connection_string: String,
     },
+    /// 从 `mongodb://` / `mongodb+srv://` 连接串导入一条 MongoDB 连接草稿。
+    DiscoverMongoConnection { connection_string: String },
     OpenConnection(ConnectionId),
     ToggleConnectionExpanded(ConnectionId),
     DisconnectConnection(ConnectionId),
@@ -510,6 +512,11 @@ pub enum AppCommand {
     OpenRedisCli {
         connection_id: ConnectionId,
         database: u32,
+    },
+    /// 打开（或复用）MongoDB 命令行终端标签页。
+    OpenMongoCli {
+        connection_id: ConnectionId,
+        database: String,
     },
     OpenRedisPubSub {
         connection_id: ConnectionId,
@@ -1491,4 +1498,95 @@ pub enum AppCommand {
         dirty: bool,
     },
     ClearCompletionIndexCache,
+
+    // —— MongoDB 集合工作台 ——
+
+    /// 打开（或激活已打开的）集合工作台标签页。`read_only` 由视图决定，写入入口据此禁用。
+    OpenMongoCollection {
+        object: ObjectPath,
+        read_only: bool,
+    },
+    /// 开始一次文档加载：递增令牌，旧后台结果据此丢弃。
+    BeginMongoLoad(TabId),
+    /// 执行查询（后台线程调用）。`query` 为空时用标签页里已生效的查询。
+    LoadMongoDocuments {
+        tab_id: TabId,
+        generation: u64,
+        query: MongoQueryDraft,
+    },
+    /// 文档加载完成回写（UI 线程）。
+    FinishMongoDocuments {
+        tab_id: TabId,
+        generation: u64,
+        result: std::result::Result<MongoDocumentsPage, UserFacingError>,
+    },
+    /// 读取集合信息（后台）。
+    LoadMongoCollectionInfo(TabId),
+    FinishMongoCollectionInfo {
+        tab_id: TabId,
+        result: std::result::Result<MongoCollectionInfo, UserFacingError>,
+    },
+    /// 读取集合索引（后台）。
+    LoadMongoIndexes(TabId),
+    FinishMongoIndexes {
+        tab_id: TabId,
+        result: std::result::Result<Vec<MongoIndexInfo>, UserFacingError>,
+    },
+    /// 读取连接信息（「显示连接信息」弹框）。
+    LoadMongoServerInfo(ConnectionId),
+    /// 在库内创建集合（建库/建集合共用；MongoDB 的库由首个集合隐式创建）。
+    CreateMongoCollection {
+        connection_id: ConnectionId,
+        database: String,
+        collection: String,
+    },
+    /// 删除集合。
+    DropMongoCollection {
+        connection_id: ConnectionId,
+        database: String,
+        collection: String,
+    },
+    /// 执行任意数据库命令（命令行终端逐行提交）。
+    MongoRunCommand {
+        connection_id: ConnectionId,
+        database: String,
+        command: String,
+    },
+    /// 切换集合工作台分节（文档 / 聚合 / 索引 / 集合信息）。
+    SelectMongoSection {
+        tab_id: TabId,
+        section: MongoSection,
+    },
+    /// 切换结果展示方式（文档 / 表格 / JSON）。
+    SelectMongoDisplayMode {
+        tab_id: TabId,
+        mode: MongoDisplayMode,
+    },
+    /// 选中/取消选中右侧详情抽屉的文档（按本页下标）。
+    SelectMongoDocument {
+        tab_id: TabId,
+        index: Option<usize>,
+    },
+    /// 设置翻页偏移（下一页 / 上一页 / 新查询回到第一页）。
+    SetMongoOffset {
+        tab_id: TabId,
+        offset: u64,
+    },
+    /// 回写聚合管道草稿（Extended JSON 数组文本），不执行。
+    UpdateMongoAggregation {
+        tab_id: TabId,
+        pipeline: String,
+    },
+    /// 开始一次聚合（分配令牌），随后由 `RunMongoAggregation` 执行。
+    BeginMongoAggregation(TabId),
+    RunMongoAggregation {
+        tab_id: TabId,
+        generation: u64,
+        pipeline: String,
+    },
+    FinishMongoAggregation {
+        tab_id: TabId,
+        generation: u64,
+        result: std::result::Result<MongoDocumentsPage, UserFacingError>,
+    },
 }

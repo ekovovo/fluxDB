@@ -29,6 +29,7 @@ fn table_context_menu_fits_at_bottom_of_viewport(cx: &mut TestAppContext) {
         mysql_profile: None,
         postgres_profile: None,
         dameng_profile: None,
+        mongo_profile: None,
         sqlserver_profile: None,
     }]));
     cx.update(|cx| {
@@ -120,6 +121,7 @@ fn table_import_dialog_renders_with_disabled_create_option(cx: &mut TestAppConte
         mysql_profile: None,
         postgres_profile: None,
         dameng_profile: None,
+        mongo_profile: None,
         sqlserver_profile: None,
     }]));
     cx.update(|cx| {
@@ -207,6 +209,7 @@ fn table_import_failure_log_shows_reason_once(cx: &mut TestAppContext) {
         mysql_profile: None,
         postgres_profile: None,
         dameng_profile: None,
+        mongo_profile: None,
         sqlserver_profile: None,
     }]));
     cx.update(|cx| {

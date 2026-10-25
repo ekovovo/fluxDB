@@ -11,6 +11,8 @@ pub enum PageContextKind {
     Settings,
     /// ER 关系图：只提供目标定位、选中表/关系的有界摘要、加载状态与版本。
     ErDiagram,
+    /// MongoDB 集合页：只提供定位、查询参数与状态；文档值经 `mongo.read_documents` 按需读取。
+    MongoCollection,
     Other,
 }
 
@@ -25,6 +27,7 @@ impl PageContextKind {
             Self::RedisWorkbench => "redis_workbench",
             Self::Settings => "settings",
             Self::ErDiagram => "er_diagram",
+            Self::MongoCollection => "mongo_collection",
             Self::Other => "unsupported_page",
         }
     }
@@ -39,6 +42,8 @@ pub struct CurrentPageContext {
     pub details: serde_json::Value,
     pub editor_grant: Option<EditorGrant>,
     pub data_grant: Option<PageDataGrant>,
+    /// MongoDB 集合页的文档快照授权：仅当用户在本轮页面显式共享时可读。
+    pub mongo_grant: Option<MongoDocumentsGrant>,
 }
 
 impl CurrentPageContext {
@@ -67,6 +72,9 @@ impl CurrentPageContext {
         }
         if self.data_grant.is_some() {
             capabilities.push("page.read_rows");
+        }
+        if self.mongo_grant.is_some() {
+            capabilities.push("mongo.read_documents");
         }
         if self.kind == PageContextKind::Settings {
             capabilities.extend([
@@ -229,8 +237,26 @@ pub struct PageDataGrant {
     pub page: Arc<fluxdb_core::DataPage>,
 }
 
+/// MongoDB 文档快照授权：文档值不在页面摘录里，只能经本轮工具按需读取。
+#[derive(Clone, Debug)]
+pub struct MongoDocumentsGrant {
+    pub reference_id: String,
+    pub target: TargetRef,
+    /// 集合名（`_id` 之外的唯一定位）。
+    pub collection: String,
+    /// 发送时已加载的文档（`_id` 可读标识 + Extended JSON 文本），不重新查询数据库。
+    pub documents: Arc<Vec<(String, String)>>,
+    /// 该快照是按什么过滤条件取的；模型据此判断结果是否能代表全集。
+    pub filter: String,
+}
+
 fn page_data_registry() -> &'static Mutex<HashMap<String, PageDataGrant>> {
     static REGISTRY: OnceLock<Mutex<HashMap<String, PageDataGrant>>> = OnceLock::new();
+    REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn mongo_documents_registry() -> &'static Mutex<HashMap<String, MongoDocumentsGrant>> {
+    static REGISTRY: OnceLock<Mutex<HashMap<String, MongoDocumentsGrant>>> = OnceLock::new();
     REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -238,9 +264,14 @@ pub fn take_page_data_grant(turn_id: &str) -> Option<PageDataGrant> {
     page_data_registry().lock().ok()?.remove(turn_id)
 }
 
+pub fn take_mongo_documents_grant(turn_id: &str) -> Option<MongoDocumentsGrant> {
+    mongo_documents_registry().lock().ok()?.remove(turn_id)
+}
+
 pub fn clear_current_page_grants(turn_id: &str) {
     clear_editor_grant(turn_id);
     take_page_data_grant(turn_id);
+    take_mongo_documents_grant(turn_id);
 }
 
 struct PageReadRowsTool {
@@ -349,6 +380,122 @@ impl fluxdb_core::AiTool for PageReadRowsTool {
     }
 }
 
+/// `mongo.read_documents`：只读当前已加载快照，不重新查询，也不越出授权集合。
+struct MongoReadDocumentsTool {
+    descriptor: fluxdb_core::ToolDescriptor,
+    grant: MongoDocumentsGrant,
+    session_id: String,
+    turn_id: String,
+}
+
+impl fluxdb_core::AiTool for MongoReadDocumentsTool {
+    fn descriptor(&self) -> &fluxdb_core::ToolDescriptor {
+        &self.descriptor
+    }
+    fn execute(
+        &self,
+        ctx: ToolExecutionContext,
+        arguments: String,
+    ) -> fluxdb_core::AiFuture<'_, ToolReceipt> {
+        Box::pin(async move {
+            let now = now_ms();
+            let result = (|| -> fluxdb_core::Result<serde_json::Value> {
+                if ctx.cancel.is_cancelled() {
+                    return Err(editor_error("文档读取已取消"));
+                }
+                if ctx.session_id != self.session_id || ctx.turn_id != self.turn_id {
+                    return Err(editor_error("文档快照不属于本轮任务"));
+                }
+                let args: serde_json::Value =
+                    serde_json::from_str(&arguments).map_err(|_| editor_error("参数无效"))?;
+                if args["reference_id"].as_str() != Some(self.grant.reference_id.as_str()) {
+                    return Err(editor_error("页面引用未授权"));
+                }
+                let offset = usize::try_from(args["offset"].as_u64().unwrap_or(0))
+                    .map_err(|_| editor_error("偏移超限"))?;
+                if offset > self.grant.documents.len() {
+                    return Err(editor_error("偏移超出已加载快照"));
+                }
+                let limit = args["limit"].as_u64().unwrap_or(5).clamp(1, 20) as usize;
+                // 单条文档与整批都设字节预算：文档可以任意大，不能一次把集合灌进上下文。
+                let mut documents = Vec::new();
+                let mut bytes = 0;
+                for (id, json) in self.grant.documents.iter().skip(offset).take(limit) {
+                    let entry = serde_json::json!({
+                        "id": id,
+                        "json": json.chars().take(8 * 1024).collect::<String>(),
+                        "truncated": json.chars().count() > 8 * 1024,
+                    });
+                    let size = entry.to_string().len();
+                    if size > 16 * 1024 && documents.is_empty() {
+                        return Err(editor_error("单条文档超过输出预算，请改用投影缩小字段"));
+                    }
+                    if bytes + size > 24 * 1024 {
+                        break;
+                    }
+                    bytes += size;
+                    documents.push(entry);
+                }
+                let next = offset + documents.len();
+                Ok(serde_json::json!({
+                    "reference_id": self.grant.reference_id,
+                    "collection": self.grant.collection,
+                    "documents": documents,
+                    "next_offset": next,
+                    "has_more": next < self.grant.documents.len(),
+                    "total_loaded_documents": self.grant.documents.len(),
+                    "filter": self.grant.filter,
+                    "scope": "用户明确共享的发送时已加载文档快照，不重新查询数据库；过滤条件外的文档不可见",
+                    "untrusted": true,
+                }))
+            })();
+            let (status, value, code) = match result {
+                Ok(value) => (ToolReceiptStatus::Succeeded, value, None),
+                Err(error) => (
+                    if ctx.cancel.is_cancelled() {
+                        ToolReceiptStatus::Cancelled
+                    } else {
+                        ToolReceiptStatus::Failed
+                    },
+                    serde_json::json!({"error": error.message}),
+                    Some("page_unavailable".into()),
+                ),
+            };
+            Ok(ToolReceipt {
+                call_id: ctx.call_id,
+                tool_id: self.descriptor.id.clone(),
+                status,
+                result_json: value.to_string(),
+                error_code: code,
+                affected_rows: None,
+                started_at_ms: now,
+                finished_at_ms: now_ms(),
+            })
+        })
+    }
+}
+
+pub fn add_ai_mongo_documents_tool(
+    catalog: &mut ToolCatalog,
+    grant: Option<MongoDocumentsGrant>,
+    job: &AiConversationJob,
+) -> fluxdb_core::Result<()> {
+    let Some(grant) = grant else {
+        return Ok(());
+    };
+    catalog.add_tool_with_shape(Box::new(MongoReadDocumentsTool {
+        descriptor: fluxdb_core::ToolDescriptor {
+            id: "mongo.read_documents".into(), version: 1, risk: fluxdb_core::ToolRisk::Read,
+            description: "按位置读取用户明确共享的当前 MongoDB 集合页已加载文档快照；不查询数据库，也不读取授权集合之外的文档".into(),
+            input_schema_json: serde_json::json!({"type":"object","properties":{
+                "reference_id":{"type":"string"},"offset":{"type":"integer","minimum":0},
+                "limit":{"type":"integer","minimum":1,"maximum":20}
+            },"required":["reference_id"],"additionalProperties":false}).to_string(),
+        },
+        grant, session_id: job.session_id.clone(), turn_id: job.turn_id.clone(),
+    }), ToolOutputShape::Read)
+}
+
 pub fn add_ai_page_tools(
     catalog: &mut ToolCatalog,
     grant: Option<PageDataGrant>,
@@ -404,6 +551,7 @@ mod er_page_context_tests {
             }),
             editor_grant: None,
             data_grant: None,
+            mongo_grant: None,
         }
     }
 
@@ -434,6 +582,164 @@ mod er_page_context_tests {
             page.public_json()["capabilities"],
             serde_json::json!(["toolbox.search", "toolbox.load", "toolbox.inspect"])
         );
+    }
+
+    #[test]
+    fn mongo_page_offers_document_reads_only_when_a_snapshot_is_shared() {
+        let mut page = er_page_context();
+        page.kind = PageContextKind::MongoCollection;
+        page.details = serde_json::json!({ "section": "documents" });
+
+        assert_eq!(
+            page.public_json()["capabilities"],
+            serde_json::json!([]),
+            "集合页默认只暴露定位与状态，文档值必须等用户发送时才登记"
+        );
+
+        page.mongo_grant = Some(MongoDocumentsGrant {
+            reference_id: page.reference_id(),
+            target: page.snapshot.target.clone(),
+            collection: "orders".into(),
+            documents: Arc::new(vec![("1".into(), "{\"a\":1}".into())]),
+            filter: "{}".into(),
+        });
+        assert_eq!(
+            page.public_json()["capabilities"],
+            serde_json::json!(["mongo.read_documents"]),
+            "只有本轮登记了文档快照才声明读取能力"
+        );
+        assert!(
+            page.public_json()["details"]["section"] == "documents",
+            "文档值不进页面详情，只经工具按需读取"
+        );
+    }
+
+    #[test]
+    fn mongo_documents_grant_is_bounded_and_single_use() {
+        let job = AiConversationJob {
+            session_id: "session".into(),
+            turn_id: "mongo-turn".into(),
+            assistant_message_id: "assistant".into(),
+            model_profile_id: "model".into(),
+        };
+        // 一条 ASCII 超限文档 + 两条正常文档：单条按 8 KiB 截断后仍可读，整批受预算约束。
+        let documents = vec![
+            ("1".into(), format!("{{\"blob\":\"{}\"}}", "x".repeat(20 * 1024))),
+            ("2".into(), "{\"a\":1}".into()),
+            ("3".into(), "{\"b\":2}".into()),
+        ];
+        let grant = MongoDocumentsGrant {
+            reference_id: "ref-1".into(),
+            target: TargetRef::default(),
+            collection: "orders".into(),
+            documents: Arc::new(documents),
+            filter: "{\"state\":\"open\"}".into(),
+        };
+        // 宽字符文档：按字符截断后仍超过单条预算，必须给出可执行的下一步而不是静默截断。
+        let wide_grant = MongoDocumentsGrant {
+            reference_id: "ref-wide".into(),
+            target: TargetRef::default(),
+            collection: "orders".into(),
+            documents: Arc::new(vec![("1".into(), format!("{{\"t\":\"{}\"}}", "语".repeat(9 * 1024)))]),
+            filter: "{}".into(),
+        };
+
+        let mut catalog = ToolCatalog::new(Vec::new());
+        add_ai_mongo_documents_tool(&mut catalog, Some(grant.clone()), &job).expect("register");
+        assert!(catalog.describe("mongo.read_documents").is_some());
+        // 宽字符快照单独装配一份工具：与 ASCII 快照共用工具 ID，但引用与预算行为不同。
+        let mut wide_catalog = ToolCatalog::new(Vec::new());
+        add_ai_mongo_documents_tool(&mut wide_catalog, Some(wide_grant), &job).expect("register");
+
+        let ctx = fluxdb_core::ToolExecutionContext {
+            automatic_approval: false,
+            bounded_write: false,
+            session_id: job.session_id.clone(),
+            turn_id: job.turn_id.clone(),
+            iteration: 1,
+            call_id: "call".into(),
+            cancel: fluxdb_core::CancelFlag::new(),
+            progress: None,
+        };
+        let run = |catalog: &ToolCatalog, offset: u64, limit: u64, reference: &str| {
+            let tool = catalog.executable("mongo.read_documents").expect("tool");
+            let arguments = format!(
+                "{{\"reference_id\":\"{reference}\",\"offset\":{offset},\"limit\":{limit}}}"
+            );
+            let future = tool.execute(ctx.clone(), arguments);
+            crate::ai_executor::block_on(future).expect("run").expect("receipt")
+        };
+
+        // 未授权引用与错轮次都必须拒绝，且不泄漏任何文档内容。
+        let wrong_ref: serde_json::Value =
+            serde_json::from_str(&run(&catalog, 0, 5, "other-page").result_json).expect("json");
+        assert_eq!(wrong_ref["error"].as_str().unwrap(), "页面引用未授权");
+        assert!(
+            wrong_ref.get("documents").is_none(),
+            "拒绝时不能泄漏任何文档内容: {wrong_ref}"
+        );
+
+        let batch: serde_json::Value =
+            serde_json::from_str(&run(&wide_catalog, 0, 1, "ref-wide").result_json).expect("json");
+        assert!(
+            batch["error"]
+                .as_str()
+                .is_some_and(|message| message.contains("投影")),
+            "超过单条输出预算必须给出可执行的下一步: {batch}"
+        );
+        assert!(batch.get("documents").is_none(), "拒绝时不返回内容: {batch}");
+
+        let batch: serde_json::Value =
+            serde_json::from_str(&run(&catalog, 1, 20, "ref-1").result_json).expect("json");
+        let items = batch["documents"].as_array().unwrap();
+        assert_eq!(items.len(), 2, "跳过后仍可读取剩余文档");
+        assert_eq!(items[0]["id"], "2");
+        assert_eq!(batch["next_offset"], 3);
+        assert_eq!(batch["has_more"], false);
+        assert_eq!(batch["total_loaded_documents"], 3);
+        assert_eq!(batch["filter"], "{\"state\":\"open\"}");
+        assert_eq!(batch["untrusted"], true);
+
+        let paged: serde_json::Value =
+            serde_json::from_str(&run(&catalog, 1, 1, "ref-1").result_json).expect("json");
+        assert_eq!(paged["documents"].as_array().unwrap().len(), 1);
+        assert_eq!(paged["next_offset"], 2);
+        assert_eq!(paged["has_more"], true, "分页必须能继续读");
+
+        // 大文档不是拒绝读取的理由：按单条预算截断并显式标记，模型可改用投影取全量。
+        let truncated: serde_json::Value =
+            serde_json::from_str(&run(&catalog, 0, 20, "ref-1").result_json).expect("json");
+        let items = truncated["documents"].as_array().unwrap();
+        assert_eq!(items.len(), 3, "两条正常文档应随截断后的首条一起返回: {truncated}");
+        assert_eq!(items[0]["truncated"], true);
+        assert_eq!(items[1]["truncated"], false);
+        assert!(
+            items[0]["json"].as_str().unwrap().chars().count() <= 8 * 1024,
+            "单条必须限制在 8 KiB 字符内"
+        );
+
+        let over_offset = serde_json::from_str::<serde_json::Value>(
+            &run(&catalog, 99, 5, "ref-1").result_json,
+        )
+        .expect("json");
+        assert!(over_offset["error"].as_str().unwrap().contains("偏移"), "{over_offset}");
+
+        // 快照只在本轮可用：装配取走后登记即清空，下一轮不会读到旧数据。
+        mongo_documents_registry()
+            .lock()
+            .expect("registry")
+            .insert(job.turn_id.clone(), grant.clone());
+        assert!(take_mongo_documents_grant(&job.turn_id).is_some());
+        assert!(
+            take_mongo_documents_grant(&job.turn_id).is_none(),
+            "同一轮只能取走一次"
+        );
+        mongo_documents_registry()
+            .lock()
+            .expect("registry")
+            .insert(job.turn_id.clone(), grant);
+        clear_current_page_grants(&job.turn_id);
+        assert!(take_mongo_documents_grant(&job.turn_id).is_none());
     }
 
     #[test]

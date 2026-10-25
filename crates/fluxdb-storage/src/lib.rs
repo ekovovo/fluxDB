@@ -764,6 +764,14 @@ impl FileStorage {
                 slot.key.clear();
             }
         }
+        if let Some(profile) = connection.mongo_profile.as_mut() {
+            for (kind, slot) in mongo_profile_secret_slots_mut(profile) {
+                if slot.inline.is_none() {
+                    slot.inline = self.best_effort_secret_read(id, kind);
+                }
+                slot.key.clear();
+            }
+        }
         Ok(connection)
     }
 
@@ -1087,6 +1095,12 @@ fn strip_plaintext_secrets(connection: &ConnectionConfig) -> ConnectionConfig {
             slot.inline = None;
         }
     }
+    // MongoDB 档案：只清密码受控值；TLS 证书路径是引用键而非密钥正文，保留在档案里。
+    if let Some(profile) = connection.mongo_profile.as_mut() {
+        for (_, slot) in mongo_profile_secret_slots_mut(profile) {
+            slot.inline = None;
+        }
+    }
     connection
 }
 
@@ -1107,6 +1121,9 @@ fn profile_secret_slots_combined(connection: &ConnectionConfig) -> Vec<(&'static
     }
     if let Some(profile) = connection.sqlserver_profile.as_ref() {
         slots.extend(sqlserver_profile_secret_slots(profile));
+    }
+    if let Some(profile) = connection.mongo_profile.as_ref() {
+        slots.extend(mongo_profile_secret_slots(profile));
     }
     slots
 }
@@ -1285,6 +1302,25 @@ fn sqlserver_profile_secret_slots(
 
 fn sqlserver_profile_secret_slots_mut(
     profile: &mut SqlServerConnectionProfile,
+) -> Vec<(&'static str, &mut SecretRef)> {
+    vec![(
+        connection_secrets::DATABASE_PASSWORD,
+        &mut profile.basic.password,
+    )]
+}
+
+/// MongoDB 档案里唯一的密码槽位；TLS 证书走文件路径引用，不进加密凭据表。
+fn mongo_profile_secret_slots(
+    profile: &fluxdb_core::MongoConnectionProfile,
+) -> Vec<(&'static str, &SecretRef)> {
+    vec![(
+        connection_secrets::DATABASE_PASSWORD,
+        &profile.basic.password,
+    )]
+}
+
+fn mongo_profile_secret_slots_mut(
+    profile: &mut fluxdb_core::MongoConnectionProfile,
 ) -> Vec<(&'static str, &mut SecretRef)> {
     vec![(
         connection_secrets::DATABASE_PASSWORD,

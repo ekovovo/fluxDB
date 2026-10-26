@@ -373,6 +373,12 @@ impl Render for NavicatMain {
                     .connections
                     .iter()
                     .any(|c| c.config.id == menu.connection_id && c.config.kind == DatabaseKind::Dameng);
+                let is_oracle = self
+                    .controller
+                    .state()
+                    .connections
+                    .iter()
+                    .any(|c| c.config.id == menu.connection_id && c.config.kind == DatabaseKind::Oracle);
                 this.child(database_context_menu(
                     menu,
                     &self.pinned_databases,
@@ -380,6 +386,7 @@ impl Render for NavicatMain {
                     is_postgres,
                     is_sqlserver,
                     is_dameng,
+                    is_oracle,
                     colors,
                     cx,
                 ))

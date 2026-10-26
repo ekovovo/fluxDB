@@ -86,10 +86,13 @@ impl NavicatMain {
             .find(|statement| statement.range.start <= cursor && cursor <= statement.range.end)
     }
 
-    /// 当前选中语句的 EXPLAIN 版本（EXPLAIN / SELECT / WITH 可解释）。
+    /// 当前选中语句的 EXPLAIN 版本（仅 `EXPLAIN` 前缀方言的 EXPLAIN / SELECT / WITH）。
     fn selected_explain_sql_text(&self, tab_id: TabId, cx: &Context<Self>) -> Option<String> {
         let statement = self.selected_complete_statement(tab_id, cx)?;
-        sql_editor_adapter::explain_sql_text(&statement.text)
+        sql_editor_adapter::explain_sql_text(
+            &statement.text,
+            self.query_editor_database_kind(tab_id),
+        )
     }
 
     /// 编辑器触发 Execute 事件时的统一入口：按区间还原语句执行，否则按文本执行。
@@ -127,7 +130,10 @@ impl NavicatMain {
                     .read(cx)
                     .text_in_range(fluxdb_editor_core::Range::new(range.start, range.end)),
             };
-            match sql_editor_adapter::explain_sql_text(&source) {
+            match sql_editor_adapter::explain_sql_text(
+                &source,
+                self.query_editor_database_kind(tab_id),
+            ) {
                 Some(explain) => {
                     self.start_query_text_execution(tab_id, explain, window, cx);
                 }

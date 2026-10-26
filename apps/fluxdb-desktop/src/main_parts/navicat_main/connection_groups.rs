@@ -238,7 +238,25 @@ impl NavicatMain {
                 );
             }
             DatabaseMenuAction::NewSchema => {
-                self.show_create_schema_modal(menu.database_path.clone(), window, cx);
+                // Oracle 的 schema 就是账号，且必须带口令、按需授登录权限才能用。
+                // 复用「用户与权限」里的新建账号表单，不另造一个只填名字的入口：
+                // 那样只能生成一个随机口令、无法登录的空 schema。
+                let is_oracle = self
+                    .controller
+                    .state()
+                    .connections
+                    .iter()
+                    .find(|connection| connection.config.id == menu.connection_id)
+                    .is_some_and(|connection| connection.config.kind == DatabaseKind::Oracle);
+                if is_oracle {
+                    // 打开面板会把该页签置为活动页，随后直接进入新建账号表单。
+                    self.open_user_admin_for_connection(menu.connection_id, cx);
+                    if let Some(tab_id) = self.active_user_admin_tab_id() {
+                        self.dispatch(AppCommand::BeginOracleCreateUser(tab_id), cx);
+                    }
+                } else {
+                    self.show_create_schema_modal(menu.database_path.clone(), window, cx);
+                }
             }
             DatabaseMenuAction::FindInDatabase => {
                 self.show_message(

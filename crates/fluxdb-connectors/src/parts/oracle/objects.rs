@@ -92,14 +92,20 @@ fn oracle_list_relations(
     let owner = oracle_resolve_owner(&connection, &requested)?;
     // 只列可浏览的表与视图：物化视图按视图展示；同义词/序列/过程不在数据页范畴，
     // 需要时另行接入，避免在这里给出点开却没有数据的节点。
+    //
+    // 行数取 `ALL_TABLES.NUM_ROWS`（优化器统计值，与 MySQL 的 `information_schema.tables`
+    // 同一性质）：它可能滞后于真实行数、也可能因为从未收集统计而为 NULL，此时按「未知」
+    // 留空，不用 `COUNT(*)` 去把树加载变成全表扫描。
     let rows = oracle_query(
         &connection,
         "SELECT O.OBJECT_NAME, O.OBJECT_TYPE, O.OBJECT_ID, \
                 TO_CHAR(O.LAST_DDL_TIME, 'YYYY-MM-DD HH24:MI:SS') AS MODIFIED_AT, \
-                C.COMMENTS \
+                C.COMMENTS, T.NUM_ROWS \
          FROM ALL_OBJECTS O \
          LEFT JOIN ALL_TAB_COMMENTS C \
            ON C.OWNER = O.OWNER AND C.TABLE_NAME = O.OBJECT_NAME AND C.TABLE_TYPE = O.OBJECT_TYPE \
+         LEFT JOIN ALL_TABLES T \
+           ON T.OWNER = O.OWNER AND T.TABLE_NAME = O.OBJECT_NAME \
          WHERE O.OWNER = :1 AND O.OBJECT_TYPE IN ('TABLE','VIEW','MATERIALIZED VIEW') \
            AND O.GENERATED = 'N' AND O.SECONDARY = 'N' \
          ORDER BY O.OBJECT_NAME",
@@ -123,7 +129,7 @@ fn oracle_list_relations(
                     ObjectKind::View
                 },
             },
-            rows: None,
+            rows: oracle_meta_u64(row, 5),
             modified_at: oracle_meta_text(row, 3),
             comment: oracle_meta_text(row, 4),
             stable: oracle_meta_u64(row, 2),

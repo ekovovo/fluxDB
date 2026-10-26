@@ -45,9 +45,17 @@ type ByteRange = std::ops::Range<usize>;
 /// 生成可执行的 EXPLAIN SQL 文本。
 ///
 /// 原定义于旧 `sql_editor/execution.rs`，在移除旧兜编辑器模块后迁移到本 adapter 供宿主
-/// （loading.rs 的 selected_explain_sql_text 等）与单测使用。逻辑保持不变：仅对
-/// explain / select / with 开头的语句返回可执行文本，其余返回 `None`。
-pub(crate) fn explain_sql_text(statement: &str) -> Option<String> {
+/// （loading.rs 的 selected_explain_sql_text 等）与单测使用。仅对 explain / select / with
+/// 开头的语句返回可执行文本，其余返回 `None`。
+///
+/// 只有「`EXPLAIN <sql>` 前缀」方言能这样改写，取 `SqlPolicy::explain_mode` 判定：
+/// Oracle 只认 `EXPLAIN PLAN FOR`（会写 PLAN_TABLE，有副作用），SQL Server 要 SHOWPLAN
+/// 专用会话，两条路径都无法靠拼前缀得到计划。对它们返回 `None`，让 Explain 按钮禁用，
+/// 而不是发出必然失败的 SQL。
+pub(crate) fn explain_sql_text(statement: &str, kind: DatabaseKind) -> Option<String> {
+    if fluxdb_app::policy_for(kind)?.explain_mode() != fluxdb_app::ExplainMode::Prefix {
+        return None;
+    }
     let text = statement.trim();
     let keyword = first_sql_keyword(text)?;
     match keyword.as_str() {
@@ -326,6 +334,30 @@ mod statement_multibyte_safety_tests {
         let replaced =
             replace_text_in_range(text, offset_inside..offset_inside, "X");
         assert_eq!(replaced, "SELECT 'X等等';");
+    }
+
+    /// Oracle / SQL Server 没有 `EXPLAIN <sql>` 前缀写法：拼出来必然是解析失败，
+    /// 因此不许生成；两者各自的计划入口（`EXPLAIN PLAN FOR` / SHOWPLAN）另行实现。
+    #[test]
+    fn explain_is_not_prefixed_for_dialects_without_prefix_support() {
+        for kind in [DatabaseKind::Oracle, DatabaseKind::SqlServer] {
+            assert_eq!(explain_sql_text("SELECT 1 FROM DUAL", kind), None, "{kind:?}");
+            assert_eq!(explain_sql_text("WITH x AS (SELECT 1) SELECT * FROM x", kind), None);
+        }
+        assert_eq!(
+            explain_sql_text("SELECT 1", DatabaseKind::MySql).as_deref(),
+            Some("EXPLAIN SELECT 1")
+        );
+        assert_eq!(
+            explain_sql_text("SELECT 1", DatabaseKind::Postgres).as_deref(),
+            Some("EXPLAIN SELECT 1")
+        );
+        // 已手写 EXPLAIN 的语句原样执行，不做二次包装。
+        assert_eq!(
+            explain_sql_text("EXPLAIN SELECT 1", DatabaseKind::MySql).as_deref(),
+            Some("EXPLAIN SELECT 1")
+        );
+        assert_eq!(explain_sql_text("INSERT INTO t VALUES (1)", DatabaseKind::MySql), None);
     }
 }
 

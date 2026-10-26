@@ -66,6 +66,29 @@ Oracle 连接表单不能只有“地址、端口、数据库名”。
 
 不能为了“统一”把所有对象名转小写，也不能把用户输入的 `employees` 直接包装为 `"employees"`，误以为它一定对应普通创建的 `EMPLOYEES`。
 
+### 已实现：元数据批量读取与安全点取消
+
+Oracle 原先每张表各登录一次读外键（ER 关系拓扑会读遍整库），列与补全也逐次建连。
+现在按 **Owner 一次登录**读完：
+
+- `oracle_load_foreign_keys_for_tables` / `oracle_load_completion_columns_for_tables`
+  按 `ORACLE_IN_BATCH = 900` 切片（Oracle `IN (...)` 上限 1000）拼 `IN` 谓词；
+  外键一次取回 `ALL_CONSTRAINTS` + `ALL_CONS_COLUMNS` 的全部行，再按
+  (表, 约束名) 合并多列外键，避免每列一次往返。
+- `Connector::list_foreign_keys_for_tables` 的 `tables` 为空表示「该 Owner 全部表」，
+  供 ER 整库使用；未覆盖批量的方言（PG）由 trait 默认实现逐表回退，结果不变。
+- `*_with_cancel` 变体在建连前、每个 `IN` 分片之间、查询返回后各检查一次 `should_cancel()`，
+  取消时返回空结果而不是半截数据。驱动是同步阻塞实现、没有中断 API，已发出的单条查询
+  仍会跑完——与执行器「只在安全点取消」的语义一致，不假装能打断在途语句。
+- 单表外键走同一批量实现（多一条 `IN` 谓词、不增加往返），取消行为与批量路径一致。
+
+### 已实现：对象树的行数取 `ALL_TABLES.NUM_ROWS`
+
+对象树过去对 Oracle 一律返回 `rows: None`，MySQL 却填了
+`information_schema.tables.table_rows`。现在 `oracle_list_relations` 左连
+`ALL_TABLES` 取 `NUM_ROWS`。这是**优化器统计值**：未收集统计时为 `NULL`（显示为未知），
+也可能滞后于真实行数；刻意不用 `COUNT(*)`，否则打开对象树就变成全表扫描。
+
 ## 4. 数据展示与编辑：最危险的是“看起来正常，实际失真”
 
 建议把以下语义作为独立验收项：
@@ -263,6 +286,15 @@ Oracle 至少要分清：
 
 建议把用户权限管理作为独立阶段，不要为了功能齐全而先套用其他数据库的数据模型。
 
+### 已实现：「新建 schema」走新建账号表单
+
+数据库右键菜单的「新建 schema」原先只对 PostgreSQL / SQL Server / 达梦可见，Oracle 被排除，
+尽管 `OracleConnector::create_schema` 已实现。现在对 Oracle 也可见，但**不**弹只填名字的
+建库框：Oracle 的 schema 就是账号，`create_schema` 只能建一个随机口令、未授 `CONNECT`
+的账号，用户既看不到口令也登不进去，等于产出一个不可用的 schema。改为直接打开
+「用户与权限」的新建账号表单（口令、可选 `GRANT CONNECT`、表空间/配额/Profile 都可填），
+复用 `OracleUserAdminChange::CreateUser`，不新增 UI 与文案。
+
 ## 9. SQL 编辑器和补全：PL/SQL 是一个重点
 
 Oracle 不只是普通 SQL 关键字有差异，**语句边界也不同**。
@@ -400,6 +432,15 @@ AI 授权至少要绑定到连接、服务/容器、Schema 和对象。
 Oracle 不能直接复用现有的 `EXPLAIN <SQL>`。
 
 `EXPLAIN PLAN FOR` 会写计划表；读取已有游标计划则有另外的权限和信息边界。应明确实现哪一种，不能把“执行计划工具”直接当成完全无副作用的普通只读查询。
+
+### 已实现：Explain 按钮按方言关闭
+
+SQL 编辑器的 Explain 原先对所有连接都拼 `EXPLAIN <sql>` 前缀，Oracle 拿到的是
+`EXPLAIN SELECT …`，必然解析失败；SQL Server 则要 `SET SHOWPLAN_ALL ON` 专用会话。
+现在 `sql_editor_adapter::explain_sql_text` 先查 `SqlPolicy::explain_mode`，只有
+`ExplainMode::Prefix`（MySQL / PG / SQLite / 达梦）才生成包装文本，Oracle / SQL Server
+返回 `None`，工具栏按钮与 `cmd-shift-e` 一并禁用，不再发出注定失败的语句。
+真正的计划入口（`EXPLAIN PLAN FOR` + `PLAN_TABLE` 清理、SHOWPLAN 会话）仍未实现。
 
 ### 已实现：只读入口在执行前拒绝
 

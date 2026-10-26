@@ -166,13 +166,27 @@ pub fn load_er_relations_from_db_with(
 
     let mut edges = Vec::new();
     if database_kind_uses_schemas(config.kind) {
+        // 按 schema 分组后走批量外键接口：Oracle 一次登录读完整组，避免逐表 N+1；
+        // 未覆盖批量的方言（PG）由 trait 默认实现逐表回退，结果不变。
+        let mut by_schema: BTreeMap<String, Vec<String>> = BTreeMap::new();
         for path in &table_paths {
             // 本端结构化身份：所在 schema（未声明时按各库默认 schema）+ 裸名。
             let from_schema = path
                 .schema
                 .clone()
                 .unwrap_or_else(|| default_schema_for_kind(config.kind).to_string());
-            for fk in connector.list_foreign_keys(path)? {
+            by_schema
+                .entry(from_schema)
+                .or_default()
+                .push(path.name.clone());
+        }
+        for (from_schema, tables) in by_schema {
+            let batch = connector.list_foreign_keys_for_tables(
+                Some(&database),
+                Some(&from_schema),
+                &tables,
+            )?;
+            for (source_table, fk) in batch {
                 // 被引用端 schema：FK 元数据带则用之，否则继承本端 schema（同 schema 引用的常见情形）。
                 let to_schema = fk
                     .ref_schema
@@ -181,7 +195,7 @@ pub fn load_er_relations_from_db_with(
                 let from_ref = ErTableRef {
                     database: database.clone(),
                     schema: Some(from_schema.clone()),
-                    name: path.name.clone(),
+                    name: source_table,
                 };
                 let to_ref = ErTableRef {
                     database: database.clone(),

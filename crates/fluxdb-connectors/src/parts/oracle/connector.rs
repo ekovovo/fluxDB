@@ -185,6 +185,56 @@ impl Connector for OracleConnector {
         )
     }
 
+    /// 一次登录读完整个 Owner 的外键，替代逐表 N+1（ER 整库关系拓扑会读遍全部表）。
+    /// `tables` 为空表示该 Owner 下的全部表；schema 缺省时回退连接档案的默认 owner。
+    fn list_foreign_keys_for_tables(
+        &self,
+        database: Option<&str>,
+        schema: Option<&str>,
+        tables: &[String],
+    ) -> fluxdb_core::Result<Vec<(String, ForeignKeyInfo)>> {
+        let config = self.config("Oracle 外键元数据需要连接配置上下文")?;
+        let owner = oracle_request_schema(
+            config,
+            &ObjectPath {
+                connection_id: config.id,
+                database: database.map(str::to_string),
+                schema: schema.map(str::to_string),
+                name: String::new(),
+                kind: ObjectKind::Schema,
+            },
+        )?;
+        let connection = oracle_connect_with_schema(config, Some(&owner))?;
+        if tables.is_empty() {
+            // 空列表在 trait 里表示「全部表」，先取该 Owner 的表名再批量查外键。
+            let tables = oracle_load_table_names(&connection, &owner)?;
+            return oracle_load_foreign_keys_for_tables(&connection, &owner, &tables, &|| false);
+        }
+        oracle_load_foreign_keys_for_tables(&connection, &owner, tables, &|| false)
+    }
+
+    fn list_foreign_keys_with_cancel(
+        &self,
+        path: &ObjectPath,
+        should_cancel: &dyn Fn() -> bool,
+    ) -> fluxdb_core::Result<Vec<ForeignKeyInfo>> {
+        if should_cancel() {
+            return Ok(Vec::new());
+        }
+        let config = self.config("Oracle 外键元数据需要连接配置上下文")?;
+        let owner = oracle_request_schema(config, path)?;
+        // 单表外键走批量实现，多一条 `IN` 谓词但不增加往返，取消行为与批量路径一致。
+        let fks = oracle_connect_with_schema(config, Some(&owner)).and_then(|connection| {
+            oracle_load_foreign_keys_for_tables(
+                &connection,
+                &owner,
+                std::slice::from_ref(&path.name),
+                should_cancel,
+            )
+        })?;
+        Ok(fks.into_iter().map(|(_, fk)| fk).collect())
+    }
+
     fn list_triggers(&self, path: &ObjectPath) -> fluxdb_core::Result<Vec<TriggerInfo>> {
         oracle_triggers_for(self.config("Oracle 触发器元数据需要连接配置上下文")?, path)
     }
@@ -263,6 +313,39 @@ impl Connector for OracleConnector {
         )?)
     }
 
+    /// 补全可取消：建连与目录查询之间各检查一次，取消后返回空结果。
+    /// 驱动是同步阻塞实现，没有中断 API，已发出的单条查询仍然跑完
+    /// （与执行器"只在安全点取消"的语义一致）。
+    fn list_completion_tables_with_cancel(
+        &self,
+        database: Option<&str>,
+        schema: Option<&str>,
+        filter: &str,
+        limit: u64,
+        should_cancel: &dyn Fn() -> bool,
+    ) -> fluxdb_core::Result<Vec<CompletionTable>> {
+        if should_cancel() {
+            return Ok(Vec::new());
+        }
+        let config = self.config("Oracle 补全元数据需要连接配置上下文")?;
+        let schema = oracle_request_schema(
+            config,
+            &ObjectPath {
+                connection_id: config.id,
+                database: database.map(str::to_string),
+                schema: schema.map(str::to_string),
+                name: String::new(),
+                kind: ObjectKind::Schema,
+            },
+        )?;
+        let connection = oracle_connect(config)?;
+        if should_cancel() {
+            return Ok(Vec::new());
+        }
+        let tables = oracle_completion_tables(&connection, Some(&schema), filter, limit, database)?;
+        Ok(if should_cancel() { Vec::new() } else { tables })
+    }
+
     fn list_completion_tables_all_schemas(
         &self,
         database: Option<&str>,
@@ -271,6 +354,24 @@ impl Connector for OracleConnector {
     ) -> fluxdb_core::Result<Vec<CompletionTable>> {
         let connection = oracle_connect(self.config("Oracle 补全元数据需要连接配置上下文")?)?;
         oracle_completion_tables(&connection, None, filter, limit, database)
+    }
+
+    fn list_completion_tables_all_schemas_with_cancel(
+        &self,
+        database: Option<&str>,
+        filter: &str,
+        limit: u64,
+        should_cancel: &dyn Fn() -> bool,
+    ) -> fluxdb_core::Result<Vec<CompletionTable>> {
+        if should_cancel() {
+            return Ok(Vec::new());
+        }
+        let connection = oracle_connect(self.config("Oracle 补全元数据需要连接配置上下文")?)?;
+        if should_cancel() {
+            return Ok(Vec::new());
+        }
+        let tables = oracle_completion_tables(&connection, None, filter, limit, database)?;
+        Ok(if should_cancel() { Vec::new() } else { tables })
     }
 
     fn list_completion_columns(
@@ -306,6 +407,52 @@ impl Connector for OracleConnector {
                 stable: None,
             })
             .collect())
+    }
+
+    /// 一次登录读完一批表的列（ER 字段面板按 schema 整批请求）。
+    fn list_completion_columns_for_tables(
+        &self,
+        database: Option<&str>,
+        schema: Option<&str>,
+        tables: &[String],
+    ) -> fluxdb_core::Result<Vec<CompletionColumn>> {
+        self.list_completion_columns_for_tables_with_cancel(
+            database,
+            schema,
+            tables,
+            &|| false,
+        )
+    }
+
+    fn list_completion_columns_for_tables_with_cancel(
+        &self,
+        database: Option<&str>,
+        schema: Option<&str>,
+        tables: &[String],
+        should_cancel: &dyn Fn() -> bool,
+    ) -> fluxdb_core::Result<Vec<CompletionColumn>> {
+        if should_cancel() || tables.is_empty() {
+            return Ok(Vec::new());
+        }
+        let config = self.config("Oracle 补全元数据需要连接配置上下文")?;
+        let owner = oracle_request_schema(
+            config,
+            &ObjectPath {
+                connection_id: config.id,
+                database: database.map(str::to_string),
+                schema: schema.map(str::to_string),
+                name: String::new(),
+                kind: ObjectKind::Schema,
+            },
+        )?;
+        let connection = oracle_connect(config)?;
+        oracle_load_completion_columns_for_tables(
+            &connection,
+            &owner,
+            tables,
+            database,
+            should_cancel,
+        )
     }
 
     fn list_completion_routines(
@@ -365,6 +512,21 @@ impl Connector for OracleConnector {
         Ok(routines)
     }
 
+    fn list_completion_routines_with_cancel(
+        &self,
+        database: Option<&str>,
+        schema: Option<&str>,
+        filter: &str,
+        limit: u64,
+        should_cancel: &dyn Fn() -> bool,
+    ) -> fluxdb_core::Result<Vec<CompletionRoutine>> {
+        if should_cancel() {
+            return Ok(Vec::new());
+        }
+        let routines = self.list_completion_routines(database, schema, filter, limit)?;
+        Ok(if should_cancel() { Vec::new() } else { routines })
+    }
+
     fn list_completion_triggers(
         &self,
         _database: Option<&str>,
@@ -407,6 +569,21 @@ impl Connector for OracleConnector {
                 })
             })
             .collect())
+    }
+
+    fn list_completion_triggers_with_cancel(
+        &self,
+        database: Option<&str>,
+        schema: Option<&str>,
+        filter: &str,
+        limit: u64,
+        should_cancel: &dyn Fn() -> bool,
+    ) -> fluxdb_core::Result<Vec<CompletionTrigger>> {
+        if should_cancel() {
+            return Ok(Vec::new());
+        }
+        let triggers = self.list_completion_triggers(database, schema, filter, limit)?;
+        Ok(if should_cancel() { Vec::new() } else { triggers })
     }
 }
 

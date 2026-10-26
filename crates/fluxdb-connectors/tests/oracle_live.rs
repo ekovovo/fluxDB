@@ -978,3 +978,155 @@ fn run_import_datetime_text(config: &ConnectionConfig) -> Result<(), String> {
     let _ = std::fs::remove_file(&source);
     Ok(())
 }
+
+#[test]
+#[ignore = "需要 FLUXDB_ORACLE_SMOKE=host:port:service:user:password 指向可达的 Oracle"]
+fn oracle_live_batch_metadata_and_object_row_counts() {
+    let Some(config) = smoke_config() else {
+        return;
+    };
+    if let Err(failure) = run_batch_metadata(&config) {
+        eprintln!("FAIL: {failure}");
+        std::process::exit(1);
+    }
+}
+
+/// 批量元数据（ER 用）必须与逐表读取等价，同时对象树给出统计行数。
+///
+/// 这三条覆盖的是「一次登录读整组」的重写：外键分组、复合键列序、列信息（类型文本 +
+/// 主键标记）都不能因为合并查询而退化。
+fn run_batch_metadata(config: &ConnectionConfig) -> Result<(), String> {
+    let connector = connector_for(config).map_err(|error| error.message)?;
+    let parent = "FLUXDB_TEST_BATCH_PARENT";
+    let child = "FLUXDB_TEST_BATCH_CHILD";
+    drop_table(config, child)?;
+    drop_table(config, parent)?;
+    execute(
+        config,
+        &format!(
+            "CREATE TABLE {parent} (\
+               ID NUMBER(10) PRIMARY KEY, \
+               CODE VARCHAR2(20 CHAR) NOT NULL, \
+               NOTE CLOB)"
+        ),
+    )?;
+    execute(
+        config,
+        &format!(
+            "CREATE TABLE {child} (\
+               ID NUMBER(10) PRIMARY KEY, \
+               PARENT_ID NUMBER(10), \
+               PARENT_CODE VARCHAR2(20 CHAR), \
+               CONSTRAINT FK_BATCH_CHILD_PARENT FOREIGN KEY (PARENT_ID, PARENT_CODE) \
+                 REFERENCES {parent} (ID, CODE))"
+        ),
+    )?;
+    // 统计值要更新到目录，NUM_ROWS 才有内容；失败不影响其它断言（统计可能被禁用）。
+    let _ = execute(
+        config,
+        &format!("ANALYZE TABLE {parent} COMPUTE STATISTICS"),
+    );
+
+    let schema = owner(config).unwrap_or_default();
+    let tables = vec![parent.to_string(), child.to_string()];
+
+    // 批量外键：同一份结果，复合键按列序两列。
+    let batch = connector
+        .list_foreign_keys_for_tables(None, Some(&schema), &tables)
+        .map_err(|error| error.message)?;
+    let (_, fk) = batch
+        .iter()
+        .find(|(table, _)| table == child)
+        .ok_or("批量外键缺少子表结果")?;
+    if fk.name != "FK_BATCH_CHILD_PARENT" || fk.ref_table != parent {
+        return Err(format!("批量外键目标不符：{fk:?}"));
+    }
+    if fk.columns != ["PARENT_ID", "PARENT_CODE"] || fk.ref_columns != ["ID", "CODE"] {
+        return Err(format!(
+            "复合外键列序不符：{:?} → {:?}",
+            fk.columns, fk.ref_columns
+        ));
+    }
+    // 与逐表接口同源：单表结果必须一致。
+    let single = connector
+        .list_foreign_keys(&table(config, child))
+        .map_err(|error| error.message)?;
+    if single.len() != 1 || single[0].columns != fk.columns {
+        return Err(format!("单表外键与批量结果不一致：{single:?}"));
+    }
+
+    // 空 tables 表示整个 Owner：至少要包含刚建的两张表。
+    let all = connector
+        .list_foreign_keys_for_tables(None, Some(&schema), &[])
+        .map_err(|error| error.message)?;
+    if !all.iter().any(|(table, _)| table == child) {
+        return Err("空表清单的批量外键没有覆盖该 Owner 的全部表".into());
+    }
+
+    // 批量列：类型文本保留 CHAR 语义，主键标记只落在主键列上。
+    let columns = connector
+        .list_completion_columns_for_tables(None, Some(&schema), &tables)
+        .map_err(|error| error.message)?;
+    let parent_columns = columns
+        .iter()
+        .filter(|column| column.table == parent)
+        .collect::<Vec<_>>();
+    if parent_columns.len() != 3 {
+        return Err(format!("父表列数应为 3，实际 {}", parent_columns.len()));
+    }
+    let code = parent_columns
+        .iter()
+        .find(|column| column.name == "CODE")
+        .ok_or("父表缺少 CODE 列")?;
+    if code.type_name.as_deref() != Some("VARCHAR2(20 CHAR)") {
+        return Err(format!("列类型文本不符：{:?}", code.type_name));
+    }
+    if code.nullable {
+        return Err("CODE 声明为 NOT NULL，批量列却标记可空".into());
+    }
+    if !code.comment.is_none() && code.comment.as_deref() != Some("") {
+        return Err(format!("无注释列的 comment 应为空：{:?}", code.comment));
+    }
+    let pk_columns = parent_columns
+        .iter()
+        .filter(|column| column.primary_key)
+        .map(|column| column.name.as_str())
+        .collect::<Vec<_>>();
+    if pk_columns != ["ID"] {
+        return Err(format!("主键列不符：{pk_columns:?}"));
+    }
+
+    // 取消：已取消的批量列读取返回空结果，而不是报错。
+    let cancelled = connector
+        .list_completion_columns_for_tables_with_cancel(None, Some(&schema), &tables, &|| true)
+        .map_err(|error| error.message)?;
+    if !cancelled.is_empty() {
+        return Err("已取消的批量列读取应返回空结果".into());
+    }
+
+    // 对象树：行数取目录统计值，长期未收集时允许为空，但不能是 0 以外的错误值。
+    let database_path = ObjectPath {
+        connection_id: config.id,
+        database: None,
+        schema: None,
+        name: schema.clone(),
+        kind: ObjectKind::Database,
+    };
+    let objects = connector
+        .list_objects(Some(&database_path))
+        .map_err(|error| error.message)?;
+    let parent_object = objects
+        .iter()
+        .find(|object| object.path.name == parent)
+        .ok_or("对象树缺少父表")?;
+    if parent_object.rows.is_some_and(|rows| rows > 0) {
+        return Err(format!(
+            "空表的目录统计行数应为 0 或未知，实际 {:?}",
+            parent_object.rows
+        ));
+    }
+
+    drop_table(config, child)?;
+    drop_table(config, parent)?;
+    Ok(())
+}

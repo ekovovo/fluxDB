@@ -4,6 +4,9 @@
 // 类型文本以目录里的声明为准：驱动给出的 `VARCHAR2(n)` 按字节计，
 // 会把 `VARCHAR2(24 CHAR)` 显示成 `VARCHAR2(96)`。
 
+/// Oracle 单个 `IN (...)` 列表最多 1000 项，批量元数据查询按此切片。
+const ORACLE_IN_BATCH: usize = 900;
+
 #[derive(Clone, Debug)]
 struct OracleColumnInfo {
     name: String,
@@ -266,34 +269,84 @@ fn oracle_load_foreign_keys(
     schema: &str,
     table: &str,
 ) -> fluxdb_core::Result<Vec<ForeignKeyInfo>> {
-    let rows = oracle_query(
-        connection,
-        "SELECT C.CONSTRAINT_NAME, CC.COLUMN_NAME, R.OWNER, R.TABLE_NAME, RCC.COLUMN_NAME \
-         FROM ALL_CONSTRAINTS C \
-         JOIN ALL_CONS_COLUMNS CC \
-           ON CC.OWNER = C.OWNER AND CC.CONSTRAINT_NAME = C.CONSTRAINT_NAME \
-         JOIN ALL_CONSTRAINTS R \
-           ON R.OWNER = C.R_OWNER AND R.CONSTRAINT_NAME = C.R_CONSTRAINT_NAME \
-         JOIN ALL_CONS_COLUMNS RCC \
-           ON RCC.OWNER = R.OWNER AND RCC.CONSTRAINT_NAME = R.CONSTRAINT_NAME \
-          AND RCC.POSITION = CC.POSITION \
-         WHERE C.OWNER = :1 AND C.TABLE_NAME = :2 AND C.CONSTRAINT_TYPE = 'R' \
-         ORDER BY C.CONSTRAINT_NAME, CC.POSITION",
-        &[
-            OracleBindValue::Text(schema.to_string()),
-            OracleBindValue::Text(table.to_string()),
-        ],
-    )?;
-    let mut foreign_keys: Vec<ForeignKeyInfo> = Vec::new();
-    for row in &rows {
-        let Some(name) = oracle_meta_text(row, 0) else {
+    Ok(
+        oracle_load_foreign_keys_for_tables(connection, schema, &[table.to_string()], &|| false)?
+            .into_iter()
+            .map(|(_, foreign_key)| foreign_key)
+            .collect(),
+    )
+}
+
+/// 批量读取同一 Owner 下多张表的外键，返回 `(源表名, 外键)`；复合键每列占一行。
+///
+/// ER 打开整库关系时要读全部表的外键，逐表调用会为每一张表各登录一次（Oracle 登录
+/// 含 2 次 `ALTER SESSION`，N+1 代价明显）。这里一次连接、按 `IN` 分批查询；
+/// Oracle 的 `IN` 列表上限是 1000 项，故按 [`ORACLE_IN_BATCH`] 切片，
+/// 每片之间检查取消。
+fn oracle_load_foreign_keys_for_tables(
+    connection: &OracleConnection,
+    schema: &str,
+    tables: &[String],
+    should_cancel: &dyn Fn() -> bool,
+) -> fluxdb_core::Result<Vec<(String, ForeignKeyInfo)>> {
+    let mut out = Vec::new();
+    for chunk in tables.chunks(ORACLE_IN_BATCH) {
+        if should_cancel() {
+            return Ok(out);
+        }
+        if chunk.is_empty() {
+            continue;
+        }
+        let mut binds = vec![OracleBindValue::Text(schema.to_string())];
+        let placeholders = chunk
+            .iter()
+            .map(|table| oracle_placeholder(&mut binds, OracleBindValue::Text(table.clone())))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let rows = oracle_query(
+            connection,
+            &format!(
+                "SELECT C.TABLE_NAME, C.CONSTRAINT_NAME, CC.COLUMN_NAME, \
+                        R.OWNER, R.TABLE_NAME, RCC.COLUMN_NAME \
+                 FROM ALL_CONSTRAINTS C \
+                 JOIN ALL_CONS_COLUMNS CC \
+                   ON CC.OWNER = C.OWNER AND CC.CONSTRAINT_NAME = C.CONSTRAINT_NAME \
+                 JOIN ALL_CONSTRAINTS R \
+                   ON R.OWNER = C.R_OWNER AND R.CONSTRAINT_NAME = C.R_CONSTRAINT_NAME \
+                 JOIN ALL_CONS_COLUMNS RCC \
+                   ON RCC.OWNER = R.OWNER AND RCC.CONSTRAINT_NAME = R.CONSTRAINT_NAME \
+                  AND RCC.POSITION = CC.POSITION \
+                 WHERE C.OWNER = :1 AND C.CONSTRAINT_TYPE = 'R' \
+                   AND C.TABLE_NAME IN ({placeholders}) \
+                 ORDER BY C.TABLE_NAME, C.CONSTRAINT_NAME, CC.POSITION"
+            ),
+            &binds,
+        )?;
+        oracle_group_foreign_key_rows(&rows, &mut out);
+    }
+    Ok(out)
+}
+
+/// 把「源表 + 约束」相同的行合并成一个 [`ForeignKeyInfo`]，复合键按列序累积。
+fn oracle_group_foreign_key_rows(
+    rows: &[OracleRow],
+    out: &mut Vec<(String, ForeignKeyInfo)>,
+) {
+    for row in rows {
+        let Some(table) = oracle_meta_text(row, 0) else {
             continue;
         };
-        let column = oracle_meta_text(row, 1).unwrap_or_default();
-        let ref_schema = oracle_meta_text(row, 2);
-        let ref_table = oracle_meta_text(row, 3).unwrap_or_default();
-        let ref_column = oracle_meta_text(row, 4).unwrap_or_default();
-        if let Some(foreign_key) = foreign_keys.iter_mut().find(|fk| fk.name == name) {
+        let Some(name) = oracle_meta_text(row, 1) else {
+            continue;
+        };
+        let column = oracle_meta_text(row, 2).unwrap_or_default();
+        let ref_schema = oracle_meta_text(row, 3);
+        let ref_table = oracle_meta_text(row, 4).unwrap_or_default();
+        let ref_column = oracle_meta_text(row, 5).unwrap_or_default();
+        if let Some((_, foreign_key)) = out
+            .iter_mut()
+            .find(|(source, fk)| source == &table && fk.name == name)
+        {
             foreign_key.columns.push(column.clone());
             foreign_key.ref_columns.push(ref_column);
             foreign_key.column = foreign_key
@@ -308,17 +361,117 @@ fn oracle_load_foreign_keys(
                 .unwrap_or_default();
             continue;
         }
-        foreign_keys.push(ForeignKeyInfo {
-            name,
-            column: column.clone(),
-            ref_schema,
-            ref_table,
-            ref_column: ref_column.clone(),
-            columns: vec![column],
-            ref_columns: vec![ref_column],
-        });
+        out.push((
+            table,
+            ForeignKeyInfo {
+                name,
+                column: column.clone(),
+                ref_schema,
+                ref_table,
+                ref_column: ref_column.clone(),
+                columns: vec![column],
+                ref_columns: vec![ref_column],
+            },
+        ));
     }
-    Ok(foreign_keys)
+}
+
+/// 读取某个 Owner 下的全部表名（不含视图），用于「批量读全库外键」的空表清单。
+fn oracle_load_table_names(
+    connection: &OracleConnection,
+    schema: &str,
+) -> fluxdb_core::Result<Vec<String>> {
+    let rows = oracle_query(
+        connection,
+        "SELECT TABLE_NAME FROM ALL_TABLES WHERE OWNER = :1 ORDER BY TABLE_NAME",
+        &[OracleBindValue::Text(schema.to_string())],
+    )?;
+    Ok(rows
+        .iter()
+        .filter_map(|row| oracle_meta_text(row, 0))
+        .collect())
+}
+
+/// 批量读取同一 Owner 下多张表的列，供 ER 字段面板与补全使用。
+///
+/// 与逐表调用等价（同样的列、类型文本、主键标记与注释），但只登录一次。
+/// 这里不读身份列/虚拟列：那两项只服务设计表 DDL，补全与 ER 都不需要，
+/// 单表路径仍走 [`oracle_load_column_infos`]。
+fn oracle_load_completion_columns_for_tables(
+    connection: &OracleConnection,
+    schema: &str,
+    tables: &[String],
+    database: Option<&str>,
+    should_cancel: &dyn Fn() -> bool,
+) -> fluxdb_core::Result<Vec<CompletionColumn>> {
+    let mut out = Vec::new();
+    for chunk in tables.chunks(ORACLE_IN_BATCH) {
+        if should_cancel() {
+            return Ok(out);
+        }
+        if chunk.is_empty() {
+            continue;
+        }
+        let mut binds = vec![
+            OracleBindValue::Text(schema.to_string()),
+            OracleBindValue::Text(schema.to_string()),
+        ];
+        let placeholders = chunk
+            .iter()
+            .map(|table| oracle_placeholder(&mut binds, OracleBindValue::Text(table.clone())))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let rows = oracle_query(
+            connection,
+            &format!(
+                "SELECT C.TABLE_NAME, C.COLUMN_NAME, C.DATA_TYPE, C.DATA_LENGTH, \
+                        C.CHAR_LENGTH, C.CHAR_USED, C.DATA_PRECISION, C.DATA_SCALE, \
+                        C.NULLABLE, CC.COMMENTS, \
+                        CASE WHEN PK.COLUMN_NAME IS NULL THEN 0 ELSE 1 END AS IS_PK \
+                 FROM ALL_TAB_COLS C \
+                 LEFT JOIN ALL_COL_COMMENTS CC \
+                   ON CC.OWNER = C.OWNER AND CC.TABLE_NAME = C.TABLE_NAME \
+                  AND CC.COLUMN_NAME = C.COLUMN_NAME \
+                 LEFT JOIN (SELECT CO.OWNER, CO.TABLE_NAME, CC2.COLUMN_NAME \
+                            FROM ALL_CONSTRAINTS CO \
+                            JOIN ALL_CONS_COLUMNS CC2 \
+                              ON CC2.OWNER = CO.OWNER AND CC2.CONSTRAINT_NAME = CO.CONSTRAINT_NAME \
+                            WHERE CO.CONSTRAINT_TYPE = 'P' AND CO.OWNER = :1) PK \
+                   ON PK.OWNER = C.OWNER AND PK.TABLE_NAME = C.TABLE_NAME \
+                  AND PK.COLUMN_NAME = C.COLUMN_NAME \
+                 WHERE C.OWNER = :2 AND C.HIDDEN_COLUMN = 'NO' \
+                   AND C.TABLE_NAME IN ({placeholders}) \
+                 ORDER BY C.TABLE_NAME, C.COLUMN_ID"
+            ),
+            &binds,
+        )?;
+        for row in &rows {
+            let (Some(table), Some(name)) = (oracle_meta_text(row, 0), oracle_meta_text(row, 1))
+            else {
+                continue;
+            };
+            out.push(CompletionColumn {
+                database: database.map(str::to_string),
+                schema: Some(schema.to_string()),
+                table,
+                name,
+                type_name: Some(oracle_column_type_name(
+                    &oracle_meta_text(row, 2).unwrap_or_default(),
+                    oracle_meta_u64(row, 3).unwrap_or(0),
+                    oracle_meta_u64(row, 4).unwrap_or(0),
+                    &oracle_meta_text(row, 5).unwrap_or_default(),
+                    oracle_meta_i64(row, 6),
+                    oracle_meta_i64(row, 7),
+                )),
+                nullable: oracle_meta_text(row, 8)
+                    .is_some_and(|value| value.eq_ignore_ascii_case("Y")),
+                primary_key: oracle_meta_u64(row, 10).unwrap_or(0) != 0,
+                comment: oracle_meta_text(row, 9),
+                stable: None,
+            });
+        }
+    }
+    Ok(out)
 }
 
 fn oracle_triggers_for(

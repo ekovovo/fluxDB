@@ -1307,7 +1307,9 @@ fn table_data_import_options_bar(
         .child(
             div()
                 .flex()
-                .items_center()
+                // 字段是「标签 + 控件」两行，开关只有一行；居中对齐会让开关飘在
+                // 标签与控件之间，底部对齐才和下拉框同一水平线。
+                .items_end()
                 .gap_5()
                 .child(table_data_import_field(
                     tr("app.data.data_import.mode").as_ref(),

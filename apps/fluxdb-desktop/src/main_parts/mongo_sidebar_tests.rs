@@ -892,6 +892,23 @@ mod mongo_sidebar_tests {
             .unwrap_or(false),
             "未选文件时弹窗不应有预览"
         );
+        // 分隔符是「标签 + 控件」两行、开关只有一行，两者必须底部对齐；
+        // 居中对齐会把开关推到标签和控件之间，看起来像浮在空处。
+        let delimiter_field = redraw_and_bounds(
+            cx,
+            selector("mongo-import-delimiter-field".to_string()),
+        )
+        .expect("分隔符字段必须渲染");
+        let empty_null_toggle = redraw_and_bounds(
+            cx,
+            selector("mongo-import-empty-null".to_string()),
+        )
+        .expect("空值开关必须渲染");
+        let bottom_gap = (delimiter_field.bottom() - empty_null_toggle.bottom()).abs();
+        assert!(
+            bottom_gap <= gpui::px(2.),
+            "空值开关必须与分隔符下拉框底部对齐，实际相差 {bottom_gap:?}"
+        );
         let import_close = wait_until(cx, "导入弹窗关闭按钮", |cx| {
             redraw_and_bounds(cx, selector("mongo-import-close".to_string()))
         });

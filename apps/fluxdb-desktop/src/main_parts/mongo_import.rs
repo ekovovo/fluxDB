@@ -945,13 +945,19 @@ fn mongo_import_options_bar(
         .child(
             div()
                 .flex()
-                .items_center()
+                // 分隔符是「标签 + 控件」两行，开关只有一行；居中对齐会让开关
+                // 飘在标签与控件之间，底部对齐才和下拉框同一水平线。
+                .items_end()
                 .gap_5()
-                .child(table_data_import_field(
-                    tr("app.mongo.import.delimiter").as_ref(),
-                    mongo_import_delimiter_dropdown(form, csv, cx).into_any_element(),
-                    colors,
-                ))
+                .child(
+                    div()
+                        .debug_selector(|| "mongo-import-delimiter-field".into())
+                        .child(table_data_import_field(
+                            tr("app.mongo.import.delimiter").as_ref(),
+                            mongo_import_delimiter_dropdown(form, csv, cx).into_any_element(),
+                            colors,
+                        )),
+                )
                 // 开关自带文案，不再套一层「标签 + 控件」，否则同一句话出现两次。
                 .child(mongo_import_option_toggle(
                     "mongo-import-empty-null",
@@ -1038,6 +1044,7 @@ fn mongo_import_option_toggle(
 ) -> impl IntoElement {
     div()
         .id(id)
+        .debug_selector(move || id.into())
         .h(px(28.))
         .px_3()
         .rounded(px(14.))

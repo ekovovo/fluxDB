@@ -25,6 +25,7 @@ mod i18n_e2e_tests {
     include!("i18n_tests/table_copy_error.rs");
     include!("i18n_tests/table_danger_layout.rs");
     include!("i18n_tests/table_context_menu_layout.rs");
+    include!("i18n_tests/mongo_collection_menu.rs");
     include!("i18n_tests/sqlserver_table_context.rs");
     include!("i18n_tests/user_admin_toolbar.rs");
     include!("i18n_tests/sqlserver_security.rs");

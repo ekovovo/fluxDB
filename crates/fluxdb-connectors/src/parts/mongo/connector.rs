@@ -211,6 +211,16 @@ impl Connector for MongoConnector {
         mongo_drop_collection(self.config()?, database, collection)
     }
 
+    fn mongo_rename_collection(
+        &self,
+        _: ConnectionId,
+        database: &str,
+        collection: &str,
+        new_name: &str,
+    ) -> fluxdb_core::Result<()> {
+        mongo_rename_collection(self.config()?, database, collection, new_name)
+    }
+
     fn mongo_drop_database(&self, _: ConnectionId, database: &str) -> fluxdb_core::Result<()> {
         mongo_drop_database(self.config()?, database)
     }

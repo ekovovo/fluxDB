@@ -367,6 +367,7 @@ impl Render for NavicatMain {
                     || self.database_context_menu.is_some()
                     || self.schema_context_menu.is_some()
                     || self.table_context_menu.is_some()
+                    || self.collection_context_menu.is_some()
                     || self.table_group_context_menu.is_some()
                     || self.table_folder_context_menu.is_some()
                     || self.tab_context_menu.is_some()
@@ -420,6 +421,9 @@ impl Render for NavicatMain {
                     window,
                     cx,
                 ))
+            })
+            .when_some(self.collection_context_menu.clone(), |this, menu| {
+                this.child(collection_context_menu(menu, &self.pinned_tables, colors, cx))
             })
             .when_some(self.table_group_context_menu.clone(), |this, menu| {
                 this.child(table_group_context_menu(menu, colors, cx))
@@ -826,6 +830,33 @@ impl Render for NavicatMain {
                     form,
                     self.create_collection_input.clone(),
                     self.create_collection_running,
+                    self.focus_handle.clone(),
+                    colors,
+                    cx,
+                ))
+            })
+            .when_some(self.pending_rename_collection.clone(), |this, form| {
+                this.child(mongo_rename_collection_modal(
+                    form,
+                    self.rename_collection_input.clone(),
+                    self._rename_mongo_collection_task.is_some(),
+                    self.focus_handle.clone(),
+                    colors,
+                    cx,
+                ))
+            })
+            .when_some(self.pending_drop_collection.clone(), |this, form| {
+                this.child(mongo_drop_collection_modal(
+                    form,
+                    self._drop_mongo_collection_task.is_some(),
+                    self.focus_handle.clone(),
+                    colors,
+                    cx,
+                ))
+            })
+            .when_some(self.pending_mongo_export.clone(), |this, form| {
+                this.child(mongo_export_modal(
+                    form,
                     self.focus_handle.clone(),
                     colors,
                     cx,

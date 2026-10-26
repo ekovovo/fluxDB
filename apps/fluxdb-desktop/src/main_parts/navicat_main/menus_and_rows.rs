@@ -46,6 +46,7 @@ impl NavicatMain {
         });
         self.database_context_menu = None;
         self.table_context_menu = None;
+        self.collection_context_menu = None;
         self.table_group_context_menu = None;
         self.table_folder_context_menu = None;
         self.tab_context_menu = None;
@@ -71,6 +72,7 @@ impl NavicatMain {
         self.schema_context_menu = None;
         self.connection_context_menu = None;
         self.table_context_menu = None;
+        self.collection_context_menu = None;
         self.table_group_context_menu = None;
         self.table_folder_context_menu = None;
         self.tab_context_menu = None;
@@ -96,6 +98,7 @@ impl NavicatMain {
         self.connection_context_menu = None;
         self.database_context_menu = None;
         self.table_context_menu = None;
+        self.collection_context_menu = None;
         self.table_group_context_menu = None;
         self.table_folder_context_menu = None;
         self.tab_context_menu = None;
@@ -132,6 +135,35 @@ impl NavicatMain {
         cx.notify();
     }
 
+    fn show_collection_context_menu(
+        &mut self,
+        mut menu: CollectionContextMenu,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // 项数/分隔符数必须与 `collection_context_menu` 渲染一致，否则贴底右键会被裁切。
+        menu.position = clamp_context_menu_position(
+            menu.position,
+            208.,
+            collection_context_menu_height(menu.read_only),
+            window,
+        );
+        self.collection_context_menu = Some(menu);
+        self.connection_context_menu = None;
+        self.database_context_menu = None;
+        self.schema_context_menu = None;
+        self.table_context_menu = None;
+        self.table_group_context_menu = None;
+        self.table_folder_context_menu = None;
+        self.tab_context_menu = None;
+        self.data_cell_context_menu = None;
+        self.data_row_context_menu = None;
+        self.tab_switcher = None;
+        self.group_context_menu = None;
+        self.focus_handle.focus(window, cx);
+        cx.notify();
+    }
+
     fn show_table_group_context_menu(
         &mut self,
         mut menu: TableGroupContextMenu,
@@ -147,6 +179,7 @@ impl NavicatMain {
         self.database_context_menu = None;
         self.schema_context_menu = None;
         self.table_context_menu = None;
+        self.collection_context_menu = None;
         self.table_folder_context_menu = None;
         self.tab_context_menu = None;
         self.data_cell_context_menu = None;
@@ -172,6 +205,7 @@ impl NavicatMain {
         self.database_context_menu = None;
         self.schema_context_menu = None;
         self.table_context_menu = None;
+        self.collection_context_menu = None;
         self.table_group_context_menu = None;
         self.tab_context_menu = None;
         self.data_cell_context_menu = None;
@@ -197,6 +231,7 @@ impl NavicatMain {
         self.database_context_menu = None;
         self.schema_context_menu = None;
         self.table_context_menu = None;
+        self.collection_context_menu = None;
         self.table_group_context_menu = None;
         self.table_folder_context_menu = None;
         self.data_cell_context_menu = None;
@@ -225,6 +260,7 @@ impl NavicatMain {
         self.database_context_menu = None;
         self.schema_context_menu = None;
         self.table_context_menu = None;
+        self.collection_context_menu = None;
         self.table_group_context_menu = None;
         self.table_folder_context_menu = None;
         self.tab_context_menu = None;
@@ -250,6 +286,7 @@ impl NavicatMain {
         self.database_context_menu = None;
         self.schema_context_menu = None;
         self.table_context_menu = None;
+        self.collection_context_menu = None;
         self.table_group_context_menu = None;
         self.table_folder_context_menu = None;
         self.tab_context_menu = None;
@@ -274,6 +311,7 @@ impl NavicatMain {
         self.database_context_menu = None;
         self.schema_context_menu = None;
         self.table_context_menu = None;
+        self.collection_context_menu = None;
         self.table_group_context_menu = None;
         self.table_folder_context_menu = None;
         self.tab_context_menu = None;
@@ -321,6 +359,7 @@ impl NavicatMain {
         cx: &mut Context<Self>,
     ) {
         self.table_context_menu = None;
+        self.collection_context_menu = None;
         match action {
             TableMenuAction::TogglePin => {
                 let table_key = table_tree_key(&object_path);
@@ -395,6 +434,49 @@ impl NavicatMain {
             }
             TableMenuAction::RemoveFromGroup => {
                 self.remove_table_from_group(object_path, cx);
+            }
+        }
+        cx.notify();
+    }
+
+    fn handle_collection_menu_action(
+        &mut self,
+        action: CollectionMenuAction,
+        menu: CollectionContextMenu,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.collection_context_menu = None;
+        let object_path = menu.object_path;
+        match action {
+            CollectionMenuAction::TogglePin => {
+                let key = table_tree_key(&object_path);
+                if !self.pinned_tables.remove(&key) {
+                    self.pinned_tables.insert(key);
+                }
+            }
+            CollectionMenuAction::CopyName => {
+                cx.write_to_clipboard(ClipboardItem::new_string(object_path.name.clone()));
+                self.show_message(
+                    tr("app.table.toast.name_copied").as_ref(),
+                    AppMessageKind::Success,
+                    cx,
+                );
+            }
+            CollectionMenuAction::Refresh => {
+                self.refresh_mongo_collection_object(&object_path, cx);
+            }
+            CollectionMenuAction::Rename => {
+                self.open_rename_collection_modal(object_path, window, cx);
+            }
+            CollectionMenuAction::Import => {
+                self.open_mongo_import_for_object(object_path, cx);
+            }
+            CollectionMenuAction::Export => {
+                self.open_mongo_export_dialog(object_path, window, cx);
+            }
+            CollectionMenuAction::Drop => {
+                self.open_drop_collection_modal(object_path, cx);
             }
         }
         cx.notify();
@@ -514,6 +596,7 @@ impl NavicatMain {
         cx: &mut Context<Self>,
     ) {
         self.table_context_menu = None;
+        self.collection_context_menu = None;
         self.table_folder_assignments
             .insert(table_tree_key(&object_path), (parent_key, folder));
         self.persist_sidebar_layout();
@@ -522,6 +605,7 @@ impl NavicatMain {
 
     fn remove_table_from_group(&mut self, object_path: ObjectPath, cx: &mut Context<Self>) {
         self.table_context_menu = None;
+        self.collection_context_menu = None;
         self.table_folder_assignments
             .remove(&table_tree_key(&object_path));
         self.persist_sidebar_layout();
@@ -1291,6 +1375,16 @@ fn table_context_menu_height() -> f32 {
     context_menu_height(17., 3.)
 }
 
+// MongoDB 集合菜单：置顶/复制名称/刷新/重命名/导入/导出/删除 + 2 个分隔符；
+// 视图只读时去掉重命名、导入、删除，留 4 项 1 个分隔符。
+fn collection_context_menu_height(read_only: bool) -> f32 {
+    if read_only {
+        context_menu_height(4., 1.)
+    } else {
+        context_menu_height(7., 2.)
+    }
+}
+
 fn data_cell_context_menu_height(menu: &DataCellContextMenu) -> f32 {
     // data_cell_context_menu：基础 10 个菜单项 + 4 个分隔符；
     // 选中复制/选中导出各追加 1 项，任一存在时追加 1 个分隔符。
@@ -1307,9 +1401,10 @@ fn data_cell_context_menu_height(menu: &DataCellContextMenu) -> f32 {
     context_menu_height(items, separators)
 }
 
-// 菜单容器高度 = 菜单项 + 分隔符 + 内边距。
+// 菜单容器高度 = 菜单项 + 分隔符 + 内边距 + 边框。
 // 菜单项高 26px（table_inert_menu_item 的 h(px(26.))）；
-// 分隔符实际占 9px（1px 线 + 上下各 4px my_1）；容器 p_1 上下共 8px。
+// 分隔符实际占 9px（1px 线 + 上下各 4px my_1）；容器 p_1 上下共 8px；
+// 边框 border_1 上下各 1px，漏算会让贴底菜单溢出视口 2px。
 fn context_menu_height(items: f32, separators: f32) -> f32 {
-    items * 26. + separators * 9. + 8.
+    items * 26. + separators * 9. + 8. + 2.
 }

@@ -464,6 +464,25 @@ fn navicat_main_new(
             }
         },
     );
+    let rename_collection_input = cx.new(|cx| {
+        InputState::new(window, cx).placeholder(tr("app.mongo.rename.field_placeholder"))
+    });
+    let rename_collection_subscription = cx.subscribe_in(
+        &rename_collection_input,
+        window,
+        |this: &mut NavicatMain, input, event: &InputEvent, window, cx| {
+            if matches!(event, InputEvent::Change)
+                && let Some(form) = &mut this.pending_rename_collection
+            {
+                form.new_name = input.read(cx).value().to_string();
+                form.error = None;
+                cx.notify();
+            }
+            if matches!(event, InputEvent::PressEnter { .. }) {
+                this.confirm_rename_collection(window, cx);
+            }
+        },
+    );
     let copy_table_input =
         cx.new(|cx| InputState::new(window, cx).placeholder(tr("app.placeholder.table_name")));
     let copy_table_subscription = cx.subscribe_in(
@@ -3012,6 +3031,7 @@ fn navicat_main_new(
         database_context_menu: None,
         schema_context_menu: None,
         table_context_menu: None,
+        collection_context_menu: None,
         table_group_context_menu: None,
         table_folder_context_menu: None,
         tab_context_menu: None,
@@ -3055,6 +3075,14 @@ fn navicat_main_new(
         _data_export_preview_task: None,
         pending_table_data_export_after_load: None,
         pending_rename_table: None,
+        pending_rename_collection: None,
+        rename_collection_input,
+        _rename_collection_subscription: rename_collection_subscription,
+        _rename_mongo_collection_task: None,
+        pending_drop_collection: None,
+        _drop_mongo_collection_task: None,
+        pending_mongo_export: None,
+        _mongo_export_task: None,
         pending_copy_table: None,
         pending_routine_ddl: None,
         pending_column_choices: None,

@@ -318,6 +318,51 @@ fn mongo_drop_collection(
     .map(|_| ())
 }
 
+/// 重命名集合（同库内）。
+///
+/// `renameCollection` 只能对 `admin` 库执行，且两个名字都必须带库名前缀；
+/// 视图不可重命名（服务端会拒绝），因此这里不额外区分，错误原样上抛。
+fn mongo_rename_collection(
+    config: &ConnectionConfig,
+    database: &str,
+    collection: &str,
+    new_name: &str,
+) -> fluxdb_core::Result<()> {
+    let database = database.trim();
+    let collection = collection.trim();
+    let new_name = new_name.trim();
+    if database.is_empty() || collection.is_empty() {
+        return Err(Error::new(ErrorKind::Query, "请指定数据库与集合"));
+    }
+    if new_name.is_empty() {
+        return Err(Error::new(ErrorKind::Query, "请填写新的集合名"));
+    }
+    if new_name == collection {
+        return Err(Error::new(ErrorKind::Query, "集合名没有变化"));
+    }
+    if new_name.contains(['$', '\0']) {
+        return Err(Error::new(ErrorKind::Query, "集合名不能包含 $ 或空字符"));
+    }
+    if MONGO_SYSTEM_DATABASES.contains(&database) {
+        return Err(Error::new(ErrorKind::Query, "系统库不允许修改集合"));
+    }
+
+    let client = mongo_connect(config)?;
+    let from = format!("{database}.{collection}");
+    let to = format!("{database}.{new_name}");
+    mongo_block_on(60, "重命名集合", async move {
+        client
+            .database("admin")
+            .run_command(doc! {
+                "renameCollection": from,
+                "to": to,
+                "dropTarget": false,
+            })
+            .await
+    })
+    .map(|_| ())
+}
+
 /// 整篇替换文档：`_id` 取自原文档的原始 BSON 值，新文档的 `_id` 必须与之相等。
 ///
 /// 用原文档的 `_id`（而不是 UI 上的可读 id 文本）做定位条件，ObjectId / 字符串 /

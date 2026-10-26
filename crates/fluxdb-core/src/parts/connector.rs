@@ -708,6 +708,17 @@ pub trait Connector {
         Err(Error::new(ErrorKind::Unsupported, "暂不支持删除集合"))
     }
 
+    /// 重命名集合（同库内）。视图不支持重命名，由实现方拒绝。
+    fn mongo_rename_collection(
+        &self,
+        _: ConnectionId,
+        _database: &str,
+        _collection: &str,
+        _new_name: &str,
+    ) -> Result<()> {
+        Err(Error::new(ErrorKind::Unsupported, "暂不支持重命名集合"))
+    }
+
     /// 删除整个数据库（MongoDB 为 `dropDatabase`，会连带删除其中全部集合）。
     fn mongo_drop_database(&self, _: ConnectionId, _database: &str) -> Result<()> {
         Err(Error::new(ErrorKind::Unsupported, "暂不支持删除数据库"))

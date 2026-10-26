@@ -484,6 +484,135 @@ fn table_context_menu(
         ))
 }
 
+/// MongoDB 集合/视图右键菜单。视图只读：不渲染重命名/导入/删除。
+fn collection_context_menu(
+    menu: CollectionContextMenu,
+    pinned_tables: &BTreeSet<String>,
+    colors: UiColors,
+    cx: &mut Context<NavicatMain>,
+) -> Div {
+    let pin_label = if pinned_tables.contains(&table_tree_key(&menu.object_path)) {
+        tr("app.context.unpin")
+    } else {
+        tr("app.context.pin")
+    };
+    div()
+        .debug_selector(|| "collection-context-menu".into())
+        .absolute()
+        .top(menu.position.y)
+        .left(menu.position.x)
+        .w(px(208.))
+        .rounded(colors.radius_lg)
+        .border_1()
+        .border_color(colors.border)
+        .bg(menu_surface_bg(colors))
+        .occlude()
+        .shadow(vec![box_shadow(
+            px(0.),
+            px(14.),
+            px(30.),
+            px(0.),
+            hsla(0., 0., 0., 0.18),
+        )])
+        .p_1()
+        .text_size(px(13.))
+        .font_weight(gpui::FontWeight::BOLD)
+        .text_color(colors.text)
+        .key_context("CollectionContextMenu")
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+        .child(collection_menu_item(
+            pin_label.to_string(),
+            AppIcon::Pin,
+            false,
+            CollectionMenuAction::TogglePin,
+            &menu,
+            colors,
+            cx,
+        ))
+        .child(collection_menu_item(
+            tr("app.context.copy_name").to_string(),
+            AppIcon::Copy,
+            false,
+            CollectionMenuAction::CopyName,
+            &menu,
+            colors,
+            cx,
+        ))
+        .child(data_cell_menu_separator(colors))
+        .child(collection_menu_item(
+            tr("app.context.refresh").to_string(),
+            AppIcon::Refresh,
+            false,
+            CollectionMenuAction::Refresh,
+            &menu,
+            colors,
+            cx,
+        ))
+        .child(collection_menu_item(
+            tr("app.context.export").to_string(),
+            AppIcon::Save,
+            false,
+            CollectionMenuAction::Export,
+            &menu,
+            colors,
+            cx,
+        ))
+        .when(!menu.read_only, |this| {
+            this.child(collection_menu_item(
+                tr("app.context.rename").to_string(),
+                AppIcon::Edit,
+                false,
+                CollectionMenuAction::Rename,
+                &menu,
+                colors,
+                cx,
+            ))
+            .child(collection_menu_item(
+                tr("app.context.import_data").to_string(),
+                AppIcon::FolderInput,
+                false,
+                CollectionMenuAction::Import,
+                &menu,
+                colors,
+                cx,
+            ))
+            .child(data_cell_menu_separator(colors))
+            .child(collection_menu_item(
+                tr("app.mongo.drop_collection.action").to_string(),
+                AppIcon::Trash,
+                true,
+                CollectionMenuAction::Drop,
+                &menu,
+                colors,
+                cx,
+            ))
+        })
+}
+
+fn collection_menu_item(
+    label: impl Into<String>,
+    icon: AppIcon,
+    destructive: bool,
+    action: CollectionMenuAction,
+    menu: &CollectionContextMenu,
+    colors: UiColors,
+    cx: &mut Context<NavicatMain>,
+) -> Stateful<Div> {
+    let label = label.into();
+    let selector = format!("collection-menu-item:{label}");
+    let menu = menu.clone();
+    table_inert_menu_item(label, icon, destructive, colors)
+        .debug_selector(move || selector)
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |this, _, window, cx| {
+                this.handle_collection_menu_action(action, menu.clone(), window, cx);
+                cx.stop_propagation();
+            }),
+        )
+}
+
 fn table_export_submenu(
     menu: &TableContextMenu,
     colors: UiColors,

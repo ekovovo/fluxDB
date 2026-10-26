@@ -742,19 +742,32 @@ fn table_tree(
             cx.stop_propagation();
         }),
     )
-    .when(is_table, |this| {
+    .when(is_table || is_mongo, |this| {
+        let mongo_menu_path = menu_path.clone();
         this.on_mouse_down(
             MouseButton::Right,
             cx.listener(move |this, event: &MouseDownEvent, window, cx| {
-                this.show_table_context_menu(
-                    TableContextMenu {
-                        object_path: menu_path.clone(),
-                        position: event.position,
-                        submenu: None,
-                    },
-                    window,
-                    cx,
-                );
+                if is_mongo {
+                    this.show_collection_context_menu(
+                        CollectionContextMenu {
+                            object_path: mongo_menu_path.clone(),
+                            position: event.position,
+                            read_only: mongo_read_only,
+                        },
+                        window,
+                        cx,
+                    );
+                } else {
+                    this.show_table_context_menu(
+                        TableContextMenu {
+                            object_path: menu_path.clone(),
+                            position: event.position,
+                            submenu: None,
+                        },
+                        window,
+                        cx,
+                    );
+                }
                 cx.stop_propagation();
             }),
         )

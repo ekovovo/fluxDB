@@ -1571,6 +1571,13 @@ pub enum AppCommand {
         database: String,
         collection: String,
     },
+    /// 重命名集合（同库内）；成功后重取该连接对象树并改写已打开标签页。
+    RenameMongoCollection {
+        connection_id: ConnectionId,
+        database: String,
+        collection: String,
+        new_name: String,
+    },
     /// 执行任意数据库命令（命令行终端逐行提交）。
     MongoRunCommand {
         connection_id: ConnectionId,

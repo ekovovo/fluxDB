@@ -5717,6 +5717,44 @@
       "no_result": "导入任务未返回结果，请重试",
       "done": "导入完成：成功 %{inserted} 条，失败 %{failed} 条",
       "done_cancelled": "已停止：成功 %{inserted} 条，失败 %{failed} 条"
+    },
+    "rename": {
+      "title": "重命名集合",
+      "current": "当前集合：%{name}",
+      "field": "新集合名",
+      "field_placeholder": "输入新的集合名",
+      "empty": "请填写新的集合名",
+      "done": "已将 %{from} 重命名为 %{to}",
+      "failed": "重命名失败：%{error}"
+    },
+    "drop_collection": {
+      "action": "删除集合",
+      "title": "删除集合",
+      "message": "确定删除集合 %{name} 吗？",
+      "count": "该集合当前约 %{count} 条文档。",
+      "count_unknown": "集合文档数未知。",
+      "warning": "删除后集合及其文档、索引无法恢复。",
+      "confirm": "删除",
+      "done": "集合 %{name} 已删除",
+      "failed": "删除集合失败：%{error}"
+    },
+    "export": {
+      "title": "导出文档",
+      "format": "格式",
+      "query_preview": "导出查询",
+      "scope_all": "全量",
+      "scope_hint": "「全量」导出整个集合；「当前筛选条件」按集合工作台的筛选 / 投影 / 排序导出，下方展示对应查询。",
+      "running_no_close": "导出进行中，请先取消或等待完成",
+      "log_started": "开始导出集合 %{collection}（%{format}）",
+      "log_path": "保存到 %{path}",
+      "log_page": "已写入 %{count} 条文档",
+      "log_documents": "已导出 %{count} 条文档",
+      "stage": {
+        "prepare": "准备",
+        "write": "写入",
+        "page": "分页",
+        "done": "完成"
+      }
     }
   }
 }

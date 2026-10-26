@@ -421,6 +421,13 @@ pub enum AppEvent {
         database: String,
         collection: String,
     },
+    /// 集合重命名成功；UI 据此刷新该库对象树。
+    MongoCollectionRenamed {
+        connection_id: ConnectionId,
+        database: String,
+        collection: String,
+        new_name: String,
+    },
     /// 数据库命令执行成功，`result` 为 Relaxed Extended JSON 文本。
     MongoCommandExecuted {
         connection_id: ConnectionId,

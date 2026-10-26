@@ -5717,6 +5717,44 @@
       "no_result": "The import task returned no result, please retry",
       "done": "Import finished: %{inserted} inserted, %{failed} failed",
       "done_cancelled": "Stopped: %{inserted} inserted, %{failed} failed"
+    },
+    "rename": {
+      "title": "Rename collection",
+      "current": "Current collection: %{name}",
+      "field": "New collection name",
+      "field_placeholder": "Enter a new collection name",
+      "empty": "Enter a new collection name",
+      "done": "Renamed %{from} to %{to}",
+      "failed": "Rename failed: %{error}"
+    },
+    "drop_collection": {
+      "action": "Drop collection",
+      "title": "Drop collection",
+      "message": "Drop collection %{name}?",
+      "count": "This collection has about %{count} documents.",
+      "count_unknown": "Document count is unknown.",
+      "warning": "The collection, its documents and indexes cannot be recovered.",
+      "confirm": "Drop",
+      "done": "Collection %{name} dropped",
+      "failed": "Drop collection failed: %{error}"
+    },
+    "export": {
+      "title": "Export documents",
+      "format": "Format",
+      "query_preview": "Export query",
+      "scope_all": "All documents",
+      "scope_hint": "\"All documents\" exports the whole collection; \"Current filter\" follows the collection workspace filter/projection/sort, shown below.",
+      "running_no_close": "Export is running; cancel it or wait for it to finish",
+      "log_started": "Exporting collection %{collection} (%{format})",
+      "log_path": "Saving to %{path}",
+      "log_page": "%{count} documents written",
+      "log_documents": "%{count} documents exported",
+      "stage": {
+        "prepare": "Prepare",
+        "write": "Write",
+        "page": "Page",
+        "done": "Done"
+      }
     }
   }
 }

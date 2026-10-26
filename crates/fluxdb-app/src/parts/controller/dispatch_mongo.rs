@@ -49,6 +49,12 @@ impl AppController {
                 database,
                 collection,
             } => self.drop_mongo_collection(connection_id, database, collection),
+            AppCommand::RenameMongoCollection {
+                connection_id,
+                database,
+                collection,
+                new_name,
+            } => self.rename_mongo_collection(connection_id, database, collection, new_name),
             AppCommand::MongoRunCommand {
                 connection_id,
                 database,
@@ -573,6 +579,55 @@ impl AppController {
                     connection_id,
                     database,
                     collection,
+                }
+            }
+            Err(error) => self.fail(error),
+        }
+    }
+
+    /// 重命名集合：成功后重取对象树，并就地改写已打开的集合标签页（标题 + 对象）。
+    fn rename_mongo_collection(
+        &mut self,
+        connection_id: ConnectionId,
+        database: String,
+        collection: String,
+        new_name: String,
+    ) -> AppEvent {
+        let Some(config) = self.connection_config(connection_id).cloned() else {
+            return self.fail(Error::new(ErrorKind::Connection, "连接不存在"));
+        };
+        if let Err(error) = connector_for(&config).and_then(|connector| {
+            connector.mongo_rename_collection(connection_id, &database, &collection, &new_name)
+        }) {
+            return self.fail(error);
+        }
+        for tab in &mut self.state.tabs {
+            if let TabKind::MongoCollection(state) = &mut tab.kind
+                && state.object.connection_id == connection_id
+                && state.object.database.as_deref() == Some(database.as_str())
+                && state.object.name == collection
+            {
+                state.object.name = new_name.clone();
+                tab.title = new_name.clone();
+            }
+        }
+        match list_objects_for_connection(&config, None) {
+            Ok(objects) => {
+                self.state.last_error = None;
+                if let Some(connection) = self
+                    .state
+                    .connections
+                    .iter_mut()
+                    .find(|connection| connection.config.id == connection_id)
+                {
+                    connection.connected = true;
+                    replace_connection_level0(connection, objects);
+                }
+                AppEvent::MongoCollectionRenamed {
+                    connection_id,
+                    database,
+                    collection,
+                    new_name,
                 }
             }
             Err(error) => self.fail(error),

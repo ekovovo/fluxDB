@@ -175,6 +175,18 @@ enum TableMenuAction {
     RemoveFromGroup,
 }
 
+/// MongoDB 集合右键菜单动作（视图只读时不会渲染写入类项）。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CollectionMenuAction {
+    TogglePin,
+    CopyName,
+    Refresh,
+    Rename,
+    Import,
+    Export,
+    Drop,
+}
+
 #[derive(Clone, Copy, Debug)]
 enum TableGroupMenuAction {
     NewTable,

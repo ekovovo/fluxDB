@@ -174,6 +174,8 @@ Oracle 需要独立处理：
 
 完整复制还要处理约束/索引名称冲突、Identity/序列关系、触发器是否启用、外键是否仍指向源表。不能只对 DDL 做全局字符串替换。
 
+当前实现：复制表先经 `table_ddl` 读取源表 DDL，再按语句结构重写表名、约束名、索引名和注释目标，`结构和数据` 额外生成显式列表的 `INSERT … SELECT`（跳过 `GENERATED ALWAYS AS IDENTITY` 列）。触发器与授权不在复制范围内。UI 与 controller 共用 `copy_table_requires_source_ddl` 判定是否需要预读 DDL，避免两处白名单漂移。
+
 ### 清空和删除
 
 - `DELETE` 与 `TRUNCATE` 的事务、触发器、权限、外键行为不同，必须分别说明。

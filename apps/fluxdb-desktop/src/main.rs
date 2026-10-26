@@ -33,10 +33,11 @@ use fluxdb_app::{
     SqlServerSecurityListFilter, SqlServerSecuritySaveStatus, SqlServerSecurityState,
     SqlServerUserAdminTab, TabId, TabKind, TabState, TabWorkspace, TableInfoState, TableInfoTab,
     UserAdminDetailTab, UserAdminMySqlTab, UserAdminState, compress_sql_text,
-    copy_table_sql_preview_with_source_ddl, create_table_common_type_options,
-    create_table_provider, create_table_special_type_options, drop_table_sql_preview,
-    er_neighborhood_included_tables, er_place_avoiding_overlaps, er_relation_layout,
-    format_sql_text_for_dialect, rename_table_sql_preview, truncate_table_sql_preview,
+    copy_table_requires_source_ddl, copy_table_sql_preview_with_source_ddl,
+    create_table_common_type_options, create_table_provider, create_table_special_type_options,
+    drop_table_sql_preview, er_neighborhood_included_tables, er_place_avoiding_overlaps,
+    er_relation_layout, format_sql_text_for_dialect, rename_table_sql_preview,
+    truncate_table_sql_preview,
 };
 use fluxdb_core::{
     BinaryUpdatePayload, CellValue, Column as GdbColumn, CommandBulk, CommandExecutionItem,

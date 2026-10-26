@@ -1,15 +1,3 @@
-fn copy_table_requires_source_ddl(database_kind: DatabaseKind) -> bool {
-    // Oracle 的完整复制要重写源 DDL（约束/索引/注释/Identity），
-    // `CREATE TABLE … AS SELECT` 只复制列和数据，不是克隆。
-    matches!(
-        database_kind,
-        DatabaseKind::Sqlite
-            | DatabaseKind::Dameng
-            | DatabaseKind::SqlServer
-            | DatabaseKind::Oracle
-    )
-}
-
 impl NavicatMain {
     fn open_design_table_in_background(&mut self, object: ObjectPath, cx: &mut Context<Self>) {
         let key = table_tree_key(&object);

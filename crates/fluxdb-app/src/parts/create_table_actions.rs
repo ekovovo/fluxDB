@@ -1575,6 +1575,34 @@ mod dameng_table_action_tests {
 }
 
 #[cfg(test)]
+mod oracle_table_action_tests {
+    use super::*;
+
+    #[test]
+    fn oracle_copy_rewrites_table_index_and_comment_to_target() {
+        // UI 与 controller 共用同一判定：漏掉 Oracle 会让 source_ddl 恒为 None。
+        assert!(copy_table_requires_source_ddl(DatabaseKind::Oracle));
+        let ddl = "CREATE TABLE \"FLUXDB_DEMO\".\"CLOB_SAMPLES\" (\n  \"ID\" NUMBER NOT NULL,\n  \"DATA\" CLOB,\n  CONSTRAINT \"PK_CLOB_SAMPLES\" PRIMARY KEY (\"ID\")\n);\nCREATE INDEX \"IX_CLOB_SAMPLES_DATA\" ON \"FLUXDB_DEMO\".\"CLOB_SAMPLES\" (\"DATA\");\nCOMMENT ON TABLE \"FLUXDB_DEMO\".\"CLOB_SAMPLES\" IS 'samples';";
+        let sql = copy_table_sql_preview_with_source_ddl(
+            DatabaseKind::Oracle,
+            Some("FLUXDB_DEMO"),
+            "CLOB_SAMPLES",
+            "CLOB_SAMPLES_copy",
+            false,
+            Some(ddl),
+        )
+        .expect("copy SQL");
+
+        assert!(sql.contains("CREATE TABLE \"FLUXDB_DEMO\".\"CLOB_SAMPLES_copy\""));
+        assert!(sql.contains("CONSTRAINT \"CLOB_SAMPLES_copy_PK_CLOB_SAMPLES\""));
+        assert!(sql.contains("CREATE INDEX \"CLOB_SAMPLES_copy_IX_CLOB_SAMPLES_DATA\""));
+        assert!(sql.contains("COMMENT ON TABLE \"FLUXDB_DEMO\".\"CLOB_SAMPLES_copy\" IS 'samples';"));
+        // 仅结构：不生成插数语句。
+        assert!(!sql.contains("INSERT INTO"));
+    }
+}
+
+#[cfg(test)]
 mod sqlserver_table_action_tests {
     use super::*;
 

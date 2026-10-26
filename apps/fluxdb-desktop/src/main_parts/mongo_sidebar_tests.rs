@@ -909,6 +909,31 @@ mod mongo_sidebar_tests {
             bottom_gap <= gpui::px(2.),
             "空值开关必须与分隔符下拉框底部对齐，实际相差 {bottom_gap:?}"
         );
+        // 与表数据导入一致要有「常规 / 消息日志」两个页签：日志页只读，
+        // 写入动作留在常规页，因此用按钮集合而不是纯状态断言它真的换了页。
+        let log_tab = wait_until(cx, "消息日志页签", |cx| {
+            redraw_and_bounds(cx, selector("import-dialog-tab:Log".to_string()))
+        });
+        assert!(
+            redraw_and_bounds(cx, selector("import-dialog-tab:General".to_string())).is_some(),
+            "导入弹窗必须有常规页签"
+        );
+        cx.simulate_click(log_tab.center(), Modifiers::default());
+        wait_until(cx, "切到消息日志页", |cx| {
+            (redraw_and_bounds(cx, selector("mongo-import-copy-log".to_string())).is_some()
+                && redraw_and_bounds(cx, selector("mongo-import-start".to_string())).is_none())
+            .then_some(())
+        });
+        assert!(
+            redraw_and_bounds(cx, selector("mongo-import-start".to_string())).is_none(),
+            "日志页只应保留复制日志与关闭，不该出现开始导入"
+        );
+        let general_tab = redraw_and_bounds(cx, selector("import-dialog-tab:General".to_string()))
+            .expect("常规页签仍在");
+        cx.simulate_click(general_tab.center(), Modifiers::default());
+        wait_until(cx, "切回常规页", |cx| {
+            redraw_and_bounds(cx, selector("mongo-import-start".to_string()))
+        });
         let import_close = wait_until(cx, "导入弹窗关闭按钮", |cx| {
             redraw_and_bounds(cx, selector("mongo-import-close".to_string()))
         });

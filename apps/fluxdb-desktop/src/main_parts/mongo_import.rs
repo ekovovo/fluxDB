@@ -24,6 +24,12 @@ struct MongoImportForm {
     report: Option<fluxdb_core::MongoImportReport>,
     /// 运行中用于中止；未运行时为空。
     cancel: Option<Arc<AtomicBool>>,
+    /// 当前页签：常规配置 / 消息日志。
+    tab: ImportDialogTab,
+    /// 消息日志：每条进度一行，与表数据导入同一版式。
+    logs: Vec<ImportDialogLogEntry>,
+    started_at: Option<Instant>,
+    finished_at: Option<Instant>,
 }
 
 impl MongoImportForm {
@@ -40,7 +46,44 @@ impl MongoImportForm {
             progress: None,
             report: None,
             cancel: None,
+            tab: ImportDialogTab::General,
+            logs: Vec::new(),
+            started_at: None,
+            finished_at: None,
         }
+    }
+
+    /// 日志页需要的会话快照；行数单位是「文档」，措辞单独取。
+    fn log_view(&self) -> ImportDialogLogView<'_> {
+        ImportDialogLogView {
+            running: self.running,
+            finished: self.finished_at.is_some(),
+            imported_label: tr("app.mongo.import.log_documents").replace(
+                "%{count}",
+                &self
+                    .report
+                    .as_ref()
+                    .map(|report| report.inserted.to_string())
+                    .unwrap_or_else(|| "0".to_string()),
+            ),
+            started_at: self.started_at,
+            finished_at: self.finished_at,
+            logs: &self.logs,
+        }
+    }
+
+    /// 追加一条日志，耗时相对本次导入开始时间。
+    fn push_log(&mut self, stage: String, message: String, success: bool) {
+        let elapsed_ms = self
+            .started_at
+            .map(|start| start.elapsed().as_millis() as u64)
+            .unwrap_or(0);
+        self.logs.push(ImportDialogLogEntry {
+            stage,
+            message,
+            success,
+            elapsed_ms,
+        });
     }
 
     fn source_name(&self) -> Option<String> {
@@ -274,6 +317,16 @@ impl NavicatMain {
             current.report = None;
             current.progress = Some(tr("app.mongo.import.stage_prepare").to_string());
             current.cancel = Some(cancel.clone());
+            current.logs.clear();
+            current.started_at = Some(Instant::now());
+            current.finished_at = None;
+            // 开始时切到日志页，与表数据导入一致：进度直接可见，而不是埋在底部小字里。
+            current.tab = ImportDialogTab::Log;
+            current.push_log(
+                tr("app.data.data_import.stage_prepare").to_string(),
+                tr("app.mongo.import.log_starting").to_string(),
+                true,
+            );
         }
 
         let controller = self.controller.clone();
@@ -309,6 +362,8 @@ impl NavicatMain {
                             if let Some(current) = this.pending_mongo_import.as_mut() {
                                 current.progress =
                                     Some(format!("{} · {}", progress.stage, progress.message));
+                                // 批次进度同时进日志页；底部那行只留最新一条。
+                                current.push_log(progress.stage, progress.message, true);
                             }
                             cx.notify();
                         });
@@ -325,6 +380,7 @@ impl NavicatMain {
                                 if let Some(current) = this.pending_mongo_import.as_mut() {
                                     current.progress =
                                         Some(format!("{} · {}", progress.stage, progress.message));
+                                    current.push_log(progress.stage, progress.message, true);
                                 }
                             });
                         });
@@ -358,12 +414,6 @@ impl NavicatMain {
     fn finish_mongo_import(&mut self, event: AppEvent, tab_id: TabId, cx: &mut Context<Self>) {
         match event {
             AppEvent::MongoDocumentsImported { report, .. } => {
-                if let Some(current) = self.pending_mongo_import.as_mut() {
-                    current.running = false;
-                    current.cancel = None;
-                    current.progress = None;
-                    current.report = Some(report.clone());
-                }
                 let template = if report.cancelled {
                     tr("app.mongo.import.done_cancelled")
                 } else {
@@ -372,6 +422,28 @@ impl NavicatMain {
                 let message = template
                     .replace("%{inserted}", &report.inserted.to_string())
                     .replace("%{failed}", &report.failed.to_string());
+                if let Some(current) = self.pending_mongo_import.as_mut() {
+                    current.running = false;
+                    current.cancel = None;
+                    current.progress = None;
+                    current.report = Some(report.clone());
+                    current.finished_at = Some(Instant::now());
+                    current.tab = ImportDialogTab::Log;
+                    current.push_log(
+                        tr("app.data.data_import.stage_done").to_string(),
+                        message.clone(),
+                        report.failed == 0 && !report.cancelled,
+                    );
+                    // 失败明细进日志：报告本身只保留前若干条，正好够逐条展示。
+                    for error in report.errors.iter() {
+                        let error = crate::localize_backend_error_text(error);
+                        current.push_log(
+                            tr("app.data.data_import.stage_failed").to_string(),
+                            error,
+                            false,
+                        );
+                    }
+                }
                 let kind = if report.failed == 0 && !report.cancelled {
                     AppMessageKind::Success
                 } else {
@@ -390,6 +462,13 @@ impl NavicatMain {
                     current.running = false;
                     current.cancel = None;
                     current.progress = None;
+                    current.finished_at = Some(Instant::now());
+                    current.tab = ImportDialogTab::Log;
+                    current.push_log(
+                        tr("app.data.data_import.stage_failed").to_string(),
+                        message.clone(),
+                        false,
+                    );
                     current.error = Some(message);
                 }
             }
@@ -424,6 +503,50 @@ impl NavicatMain {
         self.pending_mongo_import = None;
         self._mongo_import_task = None;
         cx.notify();
+    }
+
+    /// 把导入日志复制为纯文本，格式与表数据导入保持一致。
+    fn copy_mongo_import_log(&mut self, cx: &mut Context<Self>) {
+        let Some(form) = self.pending_mongo_import.as_ref() else {
+            return;
+        };
+        let mut lines = vec![
+            tr("app.mongo.import.log_collection").replace("%{name}", &form.object.name),
+            tr("app.data.data_import.log_file").replace(
+                "%{name}",
+                &form
+                    .source_name()
+                    .unwrap_or_else(|| tr("app.mongo.import.no_file").to_string()),
+            ),
+            form.log_view().imported_label,
+        ];
+        if let Some(start) = form.started_at {
+            let end = form.finished_at.unwrap_or_else(Instant::now);
+            lines.push(
+                tr("app.data.data_import.log_elapsed").replace(
+                    "%{ms}",
+                    &end.saturating_duration_since(start).as_millis().to_string(),
+                ),
+            );
+        }
+        if let Some(error) = &form.error {
+            lines.push(error.clone());
+        }
+        for (index, entry) in form.logs.iter().enumerate() {
+            lines.push(format!(
+                "#{} [{}] {} ms {}",
+                index + 1,
+                entry.stage,
+                entry.elapsed_ms,
+                entry.message
+            ));
+        }
+        cx.write_to_clipboard(ClipboardItem::new_string(lines.join("\n")));
+        self.show_message(
+            tr("app.data.data_import.log_copied"),
+            AppMessageKind::Success,
+            cx,
+        );
     }
 }
 
@@ -465,8 +588,14 @@ fn mongo_import_modal(
         .debug_selector(|| "mongo-import-modal".into())
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .child(mongo_import_header(&form, colors, cx))
-        .child(
-            div()
+        .child(import_dialog_tabs(
+            form.tab,
+            ImportDialogOwner::MongoDocuments,
+            colors,
+            cx,
+        ))
+        .child(match form.tab {
+            ImportDialogTab::General => div()
                 .flex_1()
                 .min_h(px(0.))
                 .flex()
@@ -485,8 +614,12 @@ fn mongo_import_modal(
                         })
                         .child(mongo_import_preview_panel(&form, colors)),
                 )
-                .child(mongo_import_options_bar(&form, colors, cx)),
-        )
+                .child(mongo_import_options_bar(&form, colors, cx))
+                .into_any_element(),
+            ImportDialogTab::Log => {
+                import_dialog_log_body(form.log_view(), colors).into_any_element()
+            }
+        })
         .child(mongo_import_footer(&form, can_import, colors, cx));
 
     div()
@@ -1122,39 +1255,74 @@ fn mongo_import_footer(
         .items_center()
         .justify_end()
         .gap_2()
-        .when(form.running, |this| {
-            this.child(
-                Button::new("mongo-import-stop")
-                    .debug_selector(|| "mongo-import-stop".into())
-                    .label(tr("app.mongo.import.stop"))
+        // 日志页：运行中同样要给「停止」，开始后界面自动切到这里。
+        .when(form.tab == ImportDialogTab::Log, |this| {
+            this.when(form.running, |this| {
+                this.child(
+                    Button::new("mongo-import-stop-log")
+                        .debug_selector(|| "mongo-import-stop-log".into())
+                        .label(tr("app.mongo.import.stop"))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.cancel_mongo_import_run(cx);
+                            cx.stop_propagation();
+                        })),
+                )
+            })
+            .child(
+                Button::new("mongo-import-copy-log")
+                    .debug_selector(|| "mongo-import-copy-log".into())
+                    .label(tr("app.data.data_import.copy_log"))
+                    .disabled(form.logs.is_empty())
                     .on_click(cx.listener(|this, _, _, cx| {
-                        this.cancel_mongo_import_run(cx);
+                        this.copy_mongo_import_log(cx);
+                        cx.stop_propagation();
+                    })),
+            )
+            .child(
+                Button::new("mongo-import-close-log")
+                    .label(tr("app.common.close"))
+                    .disabled(form.running)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.close_mongo_import_dialog(cx);
                         cx.stop_propagation();
                     })),
             )
         })
-        .child(
-            Button::new("mongo-import-cancel")
-                .label(if form.running {
-                    tr("app.mongo.import.running_short")
-                } else {
-                    tr("app.common.close")
-                })
-                .disabled(form.running)
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.close_mongo_import_dialog(cx);
-                    cx.stop_propagation();
-                })),
-        )
-        .child(
-            Button::new("mongo-import-start")
-                .debug_selector(|| "mongo-import-start".into())
-                .label(tr("app.mongo.import.start"))
-                .primary()
-                .disabled(!can_import)
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.confirm_mongo_import(cx);
-                    cx.stop_propagation();
-                })),
-        )
+        .when(form.tab == ImportDialogTab::General, |this| {
+            this.when(form.running, |this| {
+                this.child(
+                    Button::new("mongo-import-stop")
+                        .debug_selector(|| "mongo-import-stop".into())
+                        .label(tr("app.mongo.import.stop"))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.cancel_mongo_import_run(cx);
+                            cx.stop_propagation();
+                        })),
+                )
+            })
+            .child(
+                Button::new("mongo-import-cancel")
+                    .label(if form.running {
+                        tr("app.mongo.import.running_short")
+                    } else {
+                        tr("app.common.close")
+                    })
+                    .disabled(form.running)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.close_mongo_import_dialog(cx);
+                        cx.stop_propagation();
+                    })),
+            )
+            .child(
+                Button::new("mongo-import-start")
+                    .debug_selector(|| "mongo-import-start".into())
+                    .label(tr("app.mongo.import.start"))
+                    .primary()
+                    .disabled(!can_import)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.confirm_mongo_import(cx);
+                        cx.stop_propagation();
+                    })),
+            )
+        })
 }

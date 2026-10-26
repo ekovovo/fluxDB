@@ -168,7 +168,7 @@ fn table_import_dialog_renders_with_disabled_create_option(cx: &mut TestAppConte
         assert!(form.source.is_none());
         assert!(form.format.is_none());
         // 与导出弹框一致：默认常规页，日志页初始为空且未开始。
-        assert_eq!(form.tab, crate::TableDataImportTab::General);
+        assert_eq!(form.tab, crate::ImportDialogTab::General);
         assert!(form.logs.is_empty());
         assert!(form.started_at.is_none());
         this.pending_data_import = Some(form);
@@ -249,9 +249,9 @@ fn table_import_failure_log_shows_reason_once(cx: &mut TestAppContext) {
                 name: "items".into(),
                 kind: ObjectKind::Table,
             });
-            form.tab = crate::TableDataImportTab::Log;
+            form.tab = crate::ImportDialogTab::Log;
             form.error = Some("SQL Server 驱动错误：测试失败".into());
-            form.logs.push(crate::TableDataImportLogEntry {
+            form.logs.push(crate::ImportDialogLogEntry {
                 stage: crate::tr("app.data.data_import.stage_failed").to_string(),
                 message: "SQL Server 驱动错误：测试失败".into(),
                 success: false,

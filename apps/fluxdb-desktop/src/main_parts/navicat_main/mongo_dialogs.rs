@@ -37,10 +37,12 @@ impl NavicatMain {
                         Err(error) => LoadState::Failed(error),
                     },
                     AppEvent::Failed(error) => LoadState::Failed(error),
-                    _ => LoadState::Failed(fluxdb_core::UserFacingError::from(fluxdb_core::Error::new(
-                        fluxdb_core::ErrorKind::Internal,
-                        tr("app.mongo.info_dialog.error").to_string(),
-                    ))),
+                    _ => LoadState::Failed(fluxdb_core::UserFacingError::from(
+                        fluxdb_core::Error::new(
+                            fluxdb_core::ErrorKind::Internal,
+                            tr("app.mongo.info_dialog.error").to_string(),
+                        ),
+                    )),
                 };
                 cx.notify();
             },
@@ -112,10 +114,21 @@ impl NavicatMain {
                 match event {
                     AppEvent::MongoCollectionCreated { .. } => {
                         this.pending_create_collection = None;
-                        this.loaded_database_children.insert(database_tree_key(
-                            form.connection_id,
-                            &database,
-                        ));
+                        // 控制器只替换了第一层（库列表），该库的集合仍是创建前的快照。
+                        // 必须重取子节点，否则新集合要等手动刷新才出现；这里不能用
+                        // 直接标记 loaded 的方式，那只是把过期数据当成已加载。
+                        let key = database_tree_key(form.connection_id, &database);
+                        this.refresh_database_children(
+                            ObjectPath {
+                                connection_id: form.connection_id,
+                                database: Some(database.clone()),
+                                schema: None,
+                                name: database.clone(),
+                                kind: ObjectKind::Database,
+                            },
+                            key,
+                            cx,
+                        );
                         this.show_message(
                             tr("app.mongo.create_collection.created")
                                 .replace("%{name}", &collection_for_task),
@@ -172,21 +185,17 @@ fn mongo_info_dialog_view(
             .flex_col()
             .gap_2()
             .text_size(px(13.))
-            .child(
-                div()
-                    .text_color(colors.danger)
-                    .child(error.message.clone()),
-            )
-            .child(
-                backup_text_button(tr("app.mongo.info_dialog.refresh"), colors, cx.listener(
-                    move |this, _, _, cx| {
-                        if let Some(dialog) = this.mongo_info_dialog.as_mut() {
-                            dialog.state = LoadState::Loading;
-                        }
-                        this.load_mongo_server_info(connection_id, cx);
-                    },
-                )),
-            ),
+            .child(div().text_color(colors.danger).child(error.message.clone()))
+            .child(backup_text_button(
+                tr("app.mongo.info_dialog.refresh"),
+                colors,
+                cx.listener(move |this, _, _, cx| {
+                    if let Some(dialog) = this.mongo_info_dialog.as_mut() {
+                        dialog.state = LoadState::Loading;
+                    }
+                    this.load_mongo_server_info(connection_id, cx);
+                }),
+            )),
         LoadState::Loaded(info) => mongo_info_sections(info, colors),
     };
 
@@ -300,14 +309,16 @@ fn mongo_info_dialog_view(
                         .justify_end()
                         .gap_2()
                         .child(
-                            backup_text_button(tr("app.mongo.info_dialog.refresh"), colors, cx.listener(
-                                move |this, _, _, cx| {
+                            backup_text_button(
+                                tr("app.mongo.info_dialog.refresh"),
+                                colors,
+                                cx.listener(move |this, _, _, cx| {
                                     if let Some(dialog) = this.mongo_info_dialog.as_mut() {
                                         dialog.state = LoadState::Loading;
                                     }
                                     this.load_mongo_server_info(connection_id, cx);
-                                },
-                            ))
+                                }),
+                            )
                             .debug_selector(|| "mongo-info-refresh".into()),
                         )
                         .child(
@@ -329,8 +340,12 @@ fn mongo_info_dialog_view(
 fn mongo_info_sections(info: &fluxdb_core::MongoServerInfo, colors: UiColors) -> Div {
     let unknown = tr("app.mongo.info.unknown").to_string();
     let topology = match info.topology {
-        fluxdb_core::MongoTopology::Standalone => tr("app.mongo.info_dialog.topology_kind.standalone"),
-        fluxdb_core::MongoTopology::ReplicaSet => tr("app.mongo.info_dialog.topology_kind.replica_set"),
+        fluxdb_core::MongoTopology::Standalone => {
+            tr("app.mongo.info_dialog.topology_kind.standalone")
+        }
+        fluxdb_core::MongoTopology::ReplicaSet => {
+            tr("app.mongo.info_dialog.topology_kind.replica_set")
+        }
         fluxdb_core::MongoTopology::Sharded => tr("app.mongo.info_dialog.topology_kind.sharded"),
         fluxdb_core::MongoTopology::Unknown => tr("app.mongo.info_dialog.topology_kind.unknown"),
     };
@@ -471,17 +486,13 @@ fn mongo_info_sections(info: &fluxdb_core::MongoServerInfo, colors: UiColors) ->
 }
 
 fn mongo_info_block(title: String, rows: Vec<(String, String)>, colors: UiColors) -> Div {
-    let mut block = div()
-        .flex()
-        .flex_col()
-        .gap_2()
-        .child(
-            div()
-                .text_size(px(12.))
-                .font_weight(gpui::FontWeight::SEMIBOLD)
-                .text_color(colors.muted)
-                .child(title),
-        );
+    let mut block = div().flex().flex_col().gap_2().child(
+        div()
+            .text_size(px(12.))
+            .font_weight(gpui::FontWeight::SEMIBOLD)
+            .text_color(colors.muted)
+            .child(title),
+    );
     for (label, value) in rows {
         block = block.child(
             div()
@@ -496,13 +507,7 @@ fn mongo_info_block(title: String, rows: Vec<(String, String)>, colors: UiColors
                         .text_color(colors.muted)
                         .child(label),
                 )
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w(px(0.))
-                        .text_size(px(13.))
-                        .child(value),
-                ),
+                .child(div().flex_1().min_w(px(0.)).text_size(px(13.)).child(value)),
         );
     }
     block

@@ -900,6 +900,91 @@ mod mongo_sidebar_tests {
             (redraw_and_bounds(cx, import_modal).is_none()).then_some(())
         });
 
+        // 10.4 创建集合：库行右键 → 菜单 → 填名 → 确认，新集合必须**自动**出现在树里，
+        // 不需要用户手动刷新。这条正是「创建集合后没刷新该库」的回归点：控制器只替换
+        // 第一层（库列表），UI 必须自己重取该库子节点。
+        let created_collection = format!("fluxdb_ui_probe_{}", std::process::id());
+        let database_row = redraw_and_bounds(cx, database_selector).expect("库行仍在");
+        cx.simulate_event(MouseDownEvent {
+            position: database_row.center(),
+            modifiers: Modifiers::default(),
+            button: MouseButton::Right,
+            click_count: 1,
+            first_mouse: false,
+        });
+        let new_collection_item = wait_until(cx, "库右键菜单出现", |cx| {
+            redraw_and_bounds(
+                cx,
+                selector("database-menu-item:Create collection".to_string()),
+            )
+        });
+        cx.simulate_click(new_collection_item.center(), Modifiers::default());
+        wait_until(cx, "创建集合弹窗", |cx| {
+            redraw_and_bounds(cx, selector("mongo-create-collection-modal".to_string()))
+        });
+        let _ = redraw_and_bounds(cx, selector("mongo-create-collection-input".to_string()))
+            .expect("集合名输入框");
+        // 弹窗打开时已把焦点给输入框；这里不能再点外层容器——那层包着标签，
+        // 点中心很容易落在标签/间隙上，反而把焦点从输入框移走，模拟输入就丢了。
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+        });
+        cx.simulate_input(&created_collection);
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+        });
+        assert_eq!(
+            cx.update(|_, cx| {
+                view.read(cx)
+                    .create_collection_input
+                    .read(cx)
+                    .value()
+                    .to_string()
+            }),
+            created_collection,
+            "集合名没写进输入框"
+        );
+        let confirm =
+            redraw_and_bounds(cx, selector("mongo-create-collection-confirm".to_string()))
+                .expect("确认按钮");
+        cx.simulate_click(confirm.center(), Modifiers::default());
+        // 不点刷新、不重开连接：对象树里的集合清单必须靠创建成功后的自动重取更新。
+        // 先断言状态层真的拿到了新集合（这才是「刷新」的实质），再看界面行。
+        wait_until(cx, "对象树状态出现新集合", |cx| {
+            cx.update(|_, cx| {
+                view.read(cx)
+                    .controller
+                    .state()
+                    .connections
+                    .iter()
+                    .find(|connection| connection.config.id == connection_id)
+                    .filter(|connection| {
+                        connection.objects.iter().any(|object| {
+                            object.path.kind == ObjectKind::Collection
+                                && object.path.name == created_collection
+                                && object.path.database.as_deref() == Some(database.as_str())
+                        })
+                    })
+                    .map(|connection| connection.objects.len())
+            })
+        });
+        wait_until(cx, "新集合行渲染", |cx| {
+            redraw_and_bounds(cx, selector(format!("table-tree-row:{created_collection}")))
+        });
+        // 清理探针集合（与第 12 步一致，直接发服务端命令），避免污染真实库。
+        cx.update(|_, cx| {
+            view.update(cx, |this, cx| {
+                this.dispatch(
+                    AppCommand::MongoRunCommand {
+                        connection_id,
+                        database: database.clone(),
+                        command: format!(r#"{{ "drop": "{created_collection}" }}"#),
+                    },
+                    cx,
+                );
+            });
+        });
+
         // 11. 编辑入口：卡头编辑按钮打开抽屉即编辑器；改一处值 → 保存 → 抽屉关闭、
         // 重新查询后服务端返回新值。用真实服务端确认写入真的落地，而不只是界面状态变化。
         let editor_selector = selector("mongo-document-editor".to_string());
@@ -1125,7 +1210,7 @@ mod mongo_sidebar_tests {
                         r#"{{ "delete": "{collection}", "deletes": [ {{ "q": {{ "name": "{duplicate_name}" }}, "limit": 0 }} ] }}"#
                     ),
                     format!(
-                        r#"{{ "delete": "{collection}", "deletes": [ {{ "q": {{ "_id": {{ "$oid": "{insert_id}" }} }}, "limit": 1 }} ] }}"#
+                        r#"{{ "delete": "{collection}", "deletes": [ {{ "q": {{ "name": "{insert_name}" }}, "limit": 0 }} ] }}"#
                     ),
                 ] {
                     this.dispatch(

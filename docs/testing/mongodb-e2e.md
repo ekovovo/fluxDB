@@ -10,7 +10,7 @@
 | --- | --- | --- |
 | URI 解析 / 档案往返 | `crates/fluxdb-core/src/parts/mongo_profile.rs` 内 `#[cfg(test)]` | 否 |
 | 错误文本脱敏、Extended JSON | `crates/fluxdb-connectors/src/parts/mongo/client.rs` 内 `mongo_wire_tests` | 否 |
-| 导入：格式嗅探 / 类型推断 / 单元格转换 / JSON 错误定位 | `crates/fluxdb-connectors/src/parts/mongo/import.rs` 内 `mongo_import_engine_tests`（6 个用例） | 否 |
+| 导入：格式嗅探 / 类型推断 / 单元格转换 / JSON 错误定位 / 非 ASCII 与宽表预览 | `crates/fluxdb-connectors/src/parts/mongo/import.rs` 内 `mongo_import_engine_tests`（8 个用例） | 否 |
 | 刷新替换语义 | `crates/fluxdb-app/src/parts/table_info.rs` 内 `replace_loaded_children_tests` | 否 |
 | 连接器端到端 | `crates/fluxdb-connectors/tests/mongo_live.rs` | 是 |
 | UI 端到端（生产视图） | `apps/fluxdb-desktop/src/main_parts/mongo_sidebar_tests.rs` | 是 |
@@ -78,6 +78,7 @@ cargo test --locked -p fluxdb-desktop --bin fluxdb-desktop \
 10.2. 新增文档：点结果条 `mongo-results-insert`（先断言它落在窗口内，越界点击会被静默丢弃）→ 等 `mongo-document-insert-drawer` 出现，断言初值只有 `_id` 一个字段且是 `$oid` 包装 → 把草稿补成「同一个 `_id` + 一个探针 `name`」→ 点 `mongo-document-insert-confirm` → 等本页出现 `id` **等于预填 `_id`** 的文档（预填的 id 必须真的落库，不能只是界面假象）→ 断言抽屉已关闭
 10.3. 导入文档：点结果条 `mongo-results-import`（先断言落在窗口内）→ 等 `mongo-import-modal` 出现 → 断言此时 `pending_mongo_import.source/preview` 都为空（未选文件不出预览）→ 点 `mongo-import-close` → 等弹窗消失。
 	- 选文件走系统原生对话框（`prompt_for_paths`），无头环境无法驱动，因此本步只验证入口、弹窗与关闭；解析与写入链路由连接器用例 `mongo_live_import_documents_from_csv_and_json` 覆盖，不在这里假装验证。
+10.4. 创建集合后自动刷新：库行右键（`MouseDownEvent` + `MouseButton::Right`）→ 等 `database-menu-item:Create collection` → 点开 `mongo-create-collection-modal` → 在 `mongo-create-collection-input` 输入探针集合名 → 点 `mongo-create-collection-confirm` → **不点刷新**，直接等 `table-tree-row:{集合}` 出现。这是「创建集合后没刷新该库」的回归点：控制器只替换第一层库列表，界面必须自己重取该库子节点，只标记「已加载」会把过期快照当成最新。结束后用 `MongoRunCommand` 发 `{"drop": …}` 清理探针集合。
 11. 文档编辑抽屉：断言 `mongo-document-editor` 初始不存在 → 先临时插入一篇固定 `_id`（`fluxdb-e2e-switch`）的探针文档并重查（演示库集合可能只剩一篇，未保存切换需要两张卡片），把展开着的卡片逐个收起让卡头都落进窗口 → 点卡片头 `mongo-document-detail:0` → 等抽屉出现
 	- 断言编辑框初值等于会话基线 `base_json`（未改动时保存按钮禁用）
 	- 取本页首篇文档，把第一个顶层标量字段改掉（字符串追加 `[fluxdb-e2e]`，没有字符串才退回数值 +1；`_id` 一律不动），通过真实编辑框 `set_value` 替换全文（不直接调保存函数）

@@ -260,23 +260,27 @@ fn mongo_looks_like_number(value: &str) -> bool {
 }
 
 /// `2024-01-02` 或 `2024-01-02T03:04:05…` / `2024-01-02 03:04:05…`。
+///
+/// 全部按**字节**判断：日期前缀必须是 ASCII，非 ASCII 值（中文、emoji 等）直接否掉。
+/// 不能用 `&value[..10]`——那要求第 10 字节恰好是字符边界，中文首字符是 3 字节，
+/// 切在中间会 panic。
 fn mongo_looks_like_date(value: &str) -> bool {
     let bytes = value.as_bytes();
     if bytes.len() < 10 {
         return false;
     }
-    let head = &value[..10];
-    if !head.as_bytes()[4].eq(&b'-') || !head.as_bytes()[7].eq(&b'-') {
+    let head = &bytes[..10];
+    if head[4] != b'-' || head[7] != b'-' {
         return false;
     }
-    let date_ok = head[..4].chars().all(|char| char.is_ascii_digit())
-        && head[5..7].chars().all(|char| char.is_ascii_digit())
-        && head[8..10].chars().all(|char| char.is_ascii_digit());
+    let date_ok = head[..4].iter().all(u8::is_ascii_digit)
+        && head[5..7].iter().all(u8::is_ascii_digit)
+        && head[8..10].iter().all(u8::is_ascii_digit);
     if !date_ok {
         return false;
     }
     // 只认日期，或日期后紧跟时间（T / 空格）。
-    value.len() == 10 || matches!(bytes[10], b'T' | b' ')
+    bytes.len() == 10 || matches!(bytes[10], b'T' | b' ')
 }
 
 /// 24 位十六进制（兼容 `ObjectId("…")` / `ObjectId(…)` 两种导出写法）。
@@ -648,6 +652,60 @@ mod mongo_import_engine_tests {
         // 半成品数字/日期不能被当成对应类型。
         assert_eq!(mongo_detect_csv_type("-", "n"), "string");
         assert_eq!(mongo_detect_csv_type("2024-01", "d"), "string");
+    }
+
+    /// 非 ASCII 值不能被日期嗅探按字节切到字符中间——那是 panic，不是类型判断。
+    #[test]
+    fn non_ascii_values_are_not_dates() {
+        for value in [
+            "长文本：数据数据数据数据",
+            "测试专用 nvar",
+            "“引号开头的长中文”",
+            "emoji 😀😀😀😀",
+            "中文开头 2024-01-02",
+        ] {
+            assert_eq!(mongo_detect_csv_type(value, "c"), "string", "{value}");
+            assert!(!mongo_looks_like_date(value), "{value}");
+        }
+        // 纯 ASCII 日期仍要认出来。
+        assert!(mongo_looks_like_date("2024-01-02"));
+        assert!(mongo_looks_like_date("2024-01-02T03:04:05Z"));
+    }
+
+    /// 整表预览必须能吃下「宽表 + 中文长文本 + 二进制占位 + XML」这类真实导出，
+    /// 不能因为某一列的类型嗅探 panic。样本取自 SQL Server 全类型导出。
+    #[test]
+    fn previews_wide_csv_with_non_ascii_and_binary_placeholders() {
+        let header = "id,c_tinyint,c_bit,c_decimal,c_date,c_time,c_datetime,c_char,\
+                      c_nchar,c_nvarchar,c_max,c_binary,c_uniqueid,c_xml,c_variant";
+        let long_text = "长文本：数据数据数据数据数据数据数据数据数据数据数据数据";
+        let row = format!(
+            "6,11,true,12345678901234567890.1234567890,9999-12-31,23:59:59.999999900,\
+             1753-01-01 00:00:00,ABC       ,??        ,测试专用 nvar,{long_text},\
+             (BLOB) 8 bytes,6f9619ff-8b86-d011-b42d-00c04fc964ff,\
+             <root><item type=\"a\">1</item></root>,42"
+        );
+        let text = format!("{header}\n{row}\n");
+        let preview =
+            mongo_preview_csv(&text, &MongoImportOptions::new()).expect("宽表预览不能失败");
+        let detected = |name: &str| {
+            preview
+                .fields
+                .iter()
+                .find(|field| field.name == name)
+                .map(|field| field.detected.as_str())
+                .unwrap_or_default()
+        };
+        assert_eq!(preview.fields.len(), 15);
+        assert_eq!(detected("c_date"), "date");
+        assert_eq!(detected("c_datetime"), "date");
+        // 时间列不是日期：`23:59:59…` 不能因为前缀像而误判（也不许 panic）。
+        assert_eq!(detected("c_time"), "string");
+        for column in ["c_nchar", "c_nvarchar", "c_max", "c_xml", "c_binary"] {
+            assert_eq!(detected(column), "string", "{column}");
+        }
+        assert_eq!(detected("id"), "int32");
+        assert_eq!(detected("c_bit"), "boolean");
     }
 
     /// 逐列取多数类型；用户覆盖优先于推断。

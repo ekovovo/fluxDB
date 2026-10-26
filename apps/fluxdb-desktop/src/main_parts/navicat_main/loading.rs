@@ -26,7 +26,7 @@ impl NavicatMain {
     /// 取当前全部语句列表（带稳定 id）。
     fn query_statement_runs(&self, tab_id: TabId, cx: &Context<Self>) -> Vec<SqlStatementRun> {
         let text = self.query_editor_text(tab_id, cx);
-        sql_editor_adapter::build_statement_runs(&text)
+        sql_editor_adapter::build_statement_runs(&text, self.query_editor_database_kind(tab_id))
     }
 
     /// 语句执行状态映射：写入某条语句状态（语句被编辑后 id 变化自然衰减）。
@@ -67,7 +67,7 @@ impl NavicatMain {
         let text = self.query_editor_text(tab_id, cx);
         let range = self.query_selection_range(tab_id, cx);
         let trimmed = trim_range(&text, range);
-        sql_editor_adapter::build_statement_runs(&text)
+        sql_editor_adapter::build_statement_runs(&text, self.query_editor_database_kind(tab_id))
             .into_iter()
             .find(|statement| trim_range(&text, statement.range.clone()).as_ref() == trimmed.as_ref())
     }
@@ -81,7 +81,7 @@ impl NavicatMain {
             .map(|editor| editor.read(cx).cursor_offset())
             .unwrap_or(0)
             .min(text.len());
-        sql_editor_adapter::build_statement_runs(&text)
+        sql_editor_adapter::build_statement_runs(&text, self.query_editor_database_kind(tab_id))
             .into_iter()
             .find(|statement| statement.range.start <= cursor && cursor <= statement.range.end)
     }
@@ -111,7 +111,8 @@ impl NavicatMain {
         // 按 range 还原成语句（用于状态追踪）；匹配不到则按该区间文本执行。
         // 事件不再携带全文，文本在此按需从编辑器读取。
         let full = editor.read(cx).text();
-        let statement = sql_editor_adapter::build_statement_runs(&full)
+        let statement =
+            sql_editor_adapter::build_statement_runs(&full, self.query_editor_database_kind(tab_id))
             .into_iter()
             .find(|statement| {
                 statement.range.start == range.start && statement.range.end == range.end

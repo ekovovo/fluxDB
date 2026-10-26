@@ -956,6 +956,7 @@ fn render_tab_kind_snapshot(kind: &TabKind) -> TabKind {
         TabKind::UserAdmin(admin) => TabKind::UserAdmin(UserAdminState {
             connection_id: admin.connection_id,
             sqlserver: admin.sqlserver.clone(),
+            oracle: admin.oracle.clone(),
             active_detail_tab: admin.active_detail_tab,
             users: Vec::new(),
             selected_user: admin.selected_user.clone(),
@@ -1000,6 +1001,8 @@ fn render_tab_kind_snapshot(kind: &TabKind) -> TabKind {
             role_membership_edits: admin.role_membership_edits.clone(),
             member_grant_edits: admin.member_grant_edits.clone(),
             pending_sql: admin.pending_sql.clone(),
+            // 弹框意图只在 app 层 dispatch 里用；渲染快照不需要带着它。
+            pending_sql_awaits_preview: admin.pending_sql_awaits_preview,
             pending_delete_user: admin.pending_delete_user.clone(),
             pg_grant_kind: admin.pg_grant_kind,
             pg_grant_schema: admin.pg_grant_schema.clone(),
@@ -1026,7 +1029,6 @@ fn render_tab_kind_snapshot(kind: &TabKind) -> TabKind {
             pg_plan_error: admin.pg_plan_error.clone(),
             pg_plan_preview: None,
             pg_preview_loading: admin.pg_preview_loading,
-            pg_plan_preview_masked: false,
             pg_role_filter: admin.pg_role_filter.clone(),
             pg_pending_delete: admin.pg_pending_delete.clone(),
             pg_pending_switch: admin.pg_pending_switch.clone(),

@@ -423,7 +423,7 @@ impl AppController {
             }
             _ => state.edit_selected(),
         }
-        admin.active_detail_tab = UserAdminDetailTab::General;
+        admin.active_detail_tab = admin.active_detail_tab.general();
         Ok(())
     }
 }

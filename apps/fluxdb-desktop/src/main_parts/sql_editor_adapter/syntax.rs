@@ -9,6 +9,8 @@
 pub struct SqlLanguage {
     /// 当前方言。
     pub dialect: SqlDialect,
+    /// 语句切分用的数据库类型（折叠边界与执行边界必须一致）。
+    database_kind: DatabaseKind,
     /// 按文档版本缓存折叠范围；布局重绘不会重复扫描全文。
     fold_cache: Mutex<Option<(u64, usize, usize, Vec<Range>)>>,
 }
@@ -16,9 +18,11 @@ pub struct SqlLanguage {
 impl SqlLanguage {
     /// 以指定方言构造。
     #[allow(dead_code)]
-    pub fn new(dialect: SqlDialect) -> Self {
+    /// 以「高亮方言 + 切分数据库类型」构造；Oracle / 达梦走精确规则。
+    pub fn new(dialect: SqlDialect, database_kind: DatabaseKind) -> Self {
         Self {
             dialect,
+            database_kind,
             fold_cache: Mutex::new(None),
         }
     }
@@ -56,7 +60,7 @@ impl LanguageDefinition for SqlLanguage {
                     .map(|(cached, bytes, lines, _)| (*cached, *bytes, *lines))
                     != Some((version, snapshot.len(), snapshot.line_count()))
                 {
-                    let ranges = split_statement_ranges_snapshot(snapshot)
+                    let ranges = split_statement_ranges_snapshot(snapshot, self.database_kind)
                         .into_iter()
                         .filter(|range| {
                             snapshot.offset_to_point(range.start).row
@@ -73,7 +77,7 @@ impl LanguageDefinition for SqlLanguage {
                     .unwrap_or_default()
             }
             Err(_) => {
-                split_statement_ranges_snapshot(snapshot)
+                split_statement_ranges_snapshot(snapshot, self.database_kind)
                     .into_iter()
                     .filter(|range| {
                         snapshot.offset_to_point(range.start).row
@@ -860,6 +864,7 @@ fn try_local_statement_highlight(
 fn try_local_statement_window_highlight(
     snapshot: &BufferSnapshot,
     dialect: SqlDialect,
+    kind: DatabaseKind,
     changed: &InputEdit,
     version: u64,
     cache: &Arc<Mutex<Option<SqlSyntaxCache>>>,
@@ -930,7 +935,7 @@ fn try_local_statement_window_highlight(
         new_window,
         snapshot.len(),
     );
-    let local_ranges = split_statements(&window_text)
+    let local_ranges = split_statements(&window_text, kind)
         .into_iter()
         .map(|range| Range::new(range.start + new_window.start, range.end + new_window.start));
     let mut updated_ranges = Vec::with_capacity(cached.statement_ranges.len() + 2);
@@ -1077,10 +1082,11 @@ fn parse_statement_highlights(
 fn highlight_normalized_statements_snapshot(
     snapshot: &BufferSnapshot,
     dialect: SqlDialect,
+    kind: DatabaseKind,
     latest_request: &AtomicU64,
     request_id: u64,
 ) -> Option<(Vec<Highlight>, Vec<Range>)> {
-    let statement_ranges = split_statement_ranges_snapshot(snapshot);
+    let statement_ranges = split_statement_ranges_snapshot(snapshot, kind);
     // 纯注释（如整篇 `--`/`#`/`//`/`/* */` 注释）按 statement 切分会得到空区间，
     // 导致注释完全失去高亮；此时把整篇当作一个 statement 解析，保证注释仍可着色。
     let statement_ranges = if statement_ranges.is_empty() && snapshot.len() > 0 {
@@ -1116,6 +1122,7 @@ fn highlight_normalized_statements_snapshot(
 fn highlight_sql_tree_sitter_cached_snapshot(
     snapshot: &BufferSnapshot,
     dialect: SqlDialect,
+    kind: DatabaseKind,
     changed: &InputEdit,
     version: u64,
     cache: &Arc<Mutex<Option<SqlSyntaxCache>>>,
@@ -1151,7 +1158,7 @@ fn highlight_sql_tree_sitter_cached_snapshot(
                 .parse("", None)
                 .expect("tree-sitter should parse an empty document");
             let highlights = tokenize_sql_snapshot(snapshot, dialect);
-            let statement_ranges = split_statement_ranges_snapshot(snapshot);
+            let statement_ranges = split_statement_ranges_snapshot(snapshot, kind);
             store_syntax_cache(
                 cache,
                 SqlSyntaxCache {
@@ -1178,6 +1185,7 @@ fn highlight_sql_tree_sitter_cached_snapshot(
             let Some((highlights, statement_ranges)) = highlight_normalized_statements_snapshot(
                 snapshot,
                 dialect,
+                kind,
                 latest_request,
                 request_id,
             ) else {
@@ -1219,7 +1227,7 @@ fn highlight_sql_tree_sitter_cached_snapshot(
         let Some(highlights) = highlights else {
             return (Vec::new(), "full_cancelled");
         };
-        let statement_ranges = split_statement_ranges_snapshot(snapshot);
+        let statement_ranges = split_statement_ranges_snapshot(snapshot, kind);
         let changed_subtree_highlights =
             changed_subtree_highlight_cache(&tree, &highlights);
         store_syntax_cache(
@@ -1258,6 +1266,7 @@ fn highlight_sql_tree_sitter_cached_snapshot(
         let Some((highlights, statement_ranges)) = highlight_normalized_statements_snapshot(
             snapshot,
             dialect,
+            kind,
             latest_request,
             request_id,
         ) else {
@@ -1585,7 +1594,7 @@ fn highlight_sql_tree_sitter_cached_snapshot(
     cached.parser_normalized = parser_normalized;
     cached.snapshot = snapshot.clone();
     cached.version = version;
-    cached.statement_ranges = split_statement_ranges_snapshot(snapshot);
+    cached.statement_ranges = split_statement_ranges_snapshot(snapshot, kind);
     cached.statement_highlights = statement_highlight_cache(&cached.statement_ranges, &highlights);
     if cached.tree_valid && !cached.parser_normalized {
         let previous = cached.changed_subtree_highlights.clone();
@@ -2035,6 +2044,7 @@ fn sql_diagnostics_tree_sitter_for_dialect_cancellable(
 pub(crate) fn sql_diagnostics_snapshot_cancellable(
     snapshot: &BufferSnapshot,
     dialect: SqlDialect,
+    kind: DatabaseKind,
     latest_request: &AtomicU64,
     request_id: u64,
 ) -> Option<Vec<Diagnostic>> {
@@ -2042,7 +2052,7 @@ pub(crate) fn sql_diagnostics_snapshot_cancellable(
         // 归一化只影响 parser 输入；按 statement 读取快照，避免为 1MB/10MB 文档
         // 创建一份完整副本。每个局部 parser 的诊断范围再平移回文档坐标。
         let mut diagnostics = Vec::new();
-        for statement in split_statement_ranges_snapshot(snapshot) {
+        for statement in split_statement_ranges_snapshot(snapshot, kind) {
             if latest_request.load(Ordering::Acquire) != request_id {
                 return None;
             }
@@ -2380,7 +2390,7 @@ pub fn tokenize_sql(text: &str, dialect: SqlDialect) -> Vec<Highlight> {
                 let kind = if dialect
                     .keywords()
                     .iter()
-                    .any(|def| def.word == lower && def.kind == CompletionKind::Function)
+                    .any(|def| def.matches(&lower) && def.kind == CompletionKind::Function)
                 {
                     "function"
                 } else if matches!(
@@ -2554,7 +2564,7 @@ pub fn tokenize_sql_snapshot(
                 let kind = if dialect
                     .keywords()
                     .iter()
-                    .any(|def| def.word == lower && def.kind == CompletionKind::Function)
+                    .any(|def| def.matches(&lower) && def.kind == CompletionKind::Function)
                 {
                     "function"
                 } else if matches!(
@@ -2603,6 +2613,6 @@ pub fn tokenize_sql_snapshot(
 /// 便利：把方言包装成语言定义（用于向编辑器注册 provider）。
 #[allow(dead_code)] // 语法 provider 接入时用于注册语言定义，保留。
 pub fn sql_language(dialect: SqlDialect) -> SqlLanguage {
-    SqlLanguage::new(dialect)
+    SqlLanguage::new(dialect, dialect.database_kind())
 }
 

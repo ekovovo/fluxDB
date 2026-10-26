@@ -10,6 +10,7 @@
 // `use` 统一放在本文件顶部，其余文件直接引用同一模块作用域下的类型，不重复 `use`。
 
 use crate::tr;
+use fluxdb_core::DatabaseKind;
 use gpui::SharedString;
 use std::future::Future;
 use std::pin::Pin;
@@ -46,8 +47,11 @@ struct SqlDiagnosticsCache {
 /// 读取后还原为行背景装饰。作为「状态 → 装饰」的桥，SQL 语义（语句切分、id）全部
 /// 收敛在本适配器，通用编辑器只渲染通用的状态行背景。
 pub struct SqlAdapter {
-    /// 当前 SQL 方言。
+    /// 当前 SQL 方言（高亮 / 补全 / 注释标记）。
     dialect: SqlDialect,
+    /// 语句切分用的数据库类型。与 `dialect` 分开：`from_database_kind` 会把
+    /// Oracle / 达梦归成 PostgreSQL，那样切分拿不到 `/` 分隔符与 PL/SQL 块规则。
+    database_kind: DatabaseKind,
     /// 与宿主编辑器绑定的性能日志 id；未绑定时为 0。
     editor_id: AtomicU64,
     /// 注入的补全来源（schema / 补全索引），保存为 trait object 以解耦具体业务实现。
@@ -172,8 +176,8 @@ fn completion_window(snapshot: &BufferSnapshot, cursor: usize) -> (String, usize
     (snapshot.text_in_range(Range::new(start, end)), start)
 }
 
-fn build_code_lenses(text: &str) -> Vec<CodeLens> {
-    split_statements(text)
+fn build_code_lenses(text: &str, kind: DatabaseKind) -> Vec<CodeLens> {
+    split_statements(text, kind)
         .into_iter()
         .flat_map(|range| {
             [
@@ -192,8 +196,8 @@ fn build_code_lenses(text: &str) -> Vec<CodeLens> {
         .collect()
 }
 
-fn build_code_lenses_from_snapshot(snapshot: &BufferSnapshot) -> Vec<CodeLens> {
-    split_statement_ranges_snapshot(snapshot)
+fn build_code_lenses_from_snapshot(snapshot: &BufferSnapshot, kind: DatabaseKind) -> Vec<CodeLens> {
+    split_statement_ranges_snapshot(snapshot, kind)
         .into_iter()
         .flat_map(|range| {
             [
@@ -232,7 +236,7 @@ mod completion_multibyte_safety_tests {
 
     #[test]
     fn incremental_diagnostics_shift_to_valid_boundaries_after_chinese_edit() {
-        let adapter = SqlAdapter::new(SqlDialect::Mysql);
+        let adapter = SqlAdapter::new(SqlDialect::Mysql, DatabaseKind::MySql);
         let mut buffer = EditorBuffer::new_from("SELECT '等等';\nSELECT 2;");
         let _ = buffer.edit(
             Range::new(0, "SELECT '等等';\nSELECT 2;".len()),
@@ -252,7 +256,7 @@ mod completion_multibyte_safety_tests {
                     message: "fixture".into(),
                     source: "test".into(),
                 }],
-                statement_ranges: split_statement_ranges_snapshot(&first),
+                statement_ranges: split_statement_ranges_snapshot(&first, DatabaseKind::MySql),
             });
 
         let edit = buffer.edit(
@@ -273,7 +277,7 @@ mod completion_multibyte_safety_tests {
                     message: "fixture".into(),
                     source: "test".into(),
                 }],
-                statement_ranges: split_statement_ranges_snapshot(&first),
+                statement_ranges: split_statement_ranges_snapshot(&first, DatabaseKind::MySql),
             });
         let diagnostics = adapter
             .diagnostics_incremental(
@@ -299,10 +303,14 @@ mod completion_multibyte_safety_tests {
 pub type SqlStatusStore = Arc<Mutex<SqlStatementStatusMap>>;
 
 impl SqlAdapter {
-    /// 以指定方言构造适配器。
-    pub fn new(dialect: SqlDialect) -> Self {
+    /// 以「高亮方言 + 切分数据库类型」构造适配器。
+    ///
+    /// 两者必须分开传：`SqlDialect` 里没有 Oracle 变体，`from_database_kind` 会把
+    /// Oracle / 达梦归成 PostgreSQL，只凭方言切分拿不到 `/` 分隔符与 PL/SQL 块规则。
+    pub fn new(dialect: SqlDialect, database_kind: DatabaseKind) -> Self {
         Self {
             dialect,
+            database_kind,
             editor_id: AtomicU64::new(0),
             sources: Vec::new(),
             status: None,
@@ -413,6 +421,7 @@ impl SqlAdapter {
     #[allow(dead_code)] // 接入层公开 API，方言在建构造时固定，保留供运行时切换。
     pub fn set_dialect(&mut self, dialect: SqlDialect) {
         self.dialect = dialect;
+        self.database_kind = dialect.database_kind();
         self.completion_items_cache = OnceLock::new();
         self.diagnostics_cache = Arc::new(Mutex::new(None));
     }
@@ -579,6 +588,7 @@ impl SyntaxProvider for SqlAdapter {
     ) -> Pin<Box<dyn Future<Output = SyntaxResult> + Send>> {
         let version = snapshot.version();
         let dialect = self.dialect;
+        let kind = self.database_kind;
         let syntax_cache = self.syntax_cache.clone();
         let latest_request = self.syntax_latest_request.clone();
         let request_id = latest_request.request_id();
@@ -611,6 +621,7 @@ impl SyntaxProvider for SqlAdapter {
                     try_local_statement_window_highlight(
                         &snapshot,
                         dialect,
+                        kind,
                         &changed,
                         version,
                         &syntax_cache,
@@ -672,6 +683,7 @@ impl SyntaxProvider for SqlAdapter {
             let (highlights, cache_mode) = highlight_sql_tree_sitter_cached_snapshot(
                 &snapshot,
                 dialect,
+                kind,
                 &changed,
                 version,
                 &syntax_cache,
@@ -770,13 +782,18 @@ impl fluxdb_completion::MetadataSource for SqlDiagnosticMetadata<'_> {
     }
 }
 
-/// 编辑器方言 → 补全引擎方言（诊断复用引擎的容错解析器）。
+/// 编辑器方言 → 补全引擎方言。
+///
+/// 入参是 `SqlDialect` 而非 `DatabaseKind`：两者现在一一对应（Oracle / 达梦
+/// 都有自己的变体），诊断拿到的解析方言与候选词表与连接一致。
 fn completion_dialect(dialect: SqlDialect) -> &'static dyn fluxdb_completion::CompletionDialect {
     match dialect {
         SqlDialect::Mysql => &fluxdb_completion::MYSQL,
         SqlDialect::Postgres => &fluxdb_completion::POSTGRES,
         SqlDialect::SqlServer => &fluxdb_completion::SQLSERVER,
         SqlDialect::Sqlite => &fluxdb_completion::SQLITE,
+        SqlDialect::Oracle => &fluxdb_completion::ORACLE,
+        SqlDialect::Dameng => &fluxdb_completion::DAMENG,
     }
 }
 
@@ -831,13 +848,14 @@ impl DiagnosticProvider for SqlAdapter {
         let mut result = sql_diagnostics_snapshot_cancellable(
             snapshot,
             self.dialect,
+            self.database_kind,
             self.diagnostics_latest_request.inner(),
             request_id,
         )
         .unwrap_or_default();
-        // 语义诊断（未知表 / schema / 列）复用补全引擎的容错解析与符号表；按语句局部
-        // materialize，范围扫描直接读 Rope chunks，不把整篇文档拼成完整 String。
-        let statement_ranges = split_statement_ranges_snapshot(snapshot);
+        // 语义诊断（未知表 / schema / 列）复用补全引擎的容错解析与符号表；
+        // 语句范围沿用同一套方言切分，与执行路径看到的是同一条语句。
+        let statement_ranges = split_statement_ranges_snapshot(snapshot, self.database_kind);
         let semantic_started = Instant::now();
         let semantic = self.semantic_diagnostics(
             snapshot,
@@ -1412,7 +1430,9 @@ impl ExecutionAdapter for SqlAdapter {
         }
         // 无选区时执行光标所在语句。
         let cursor = selection.cursor.min(snapshot.len());
-        if let Some((start, end)) = statement_around_snapshot(snapshot, cursor) {
+        if let Some((start, end)) =
+            statement_around_snapshot(snapshot, cursor, self.database_kind)
+        {
             let unit_text = snapshot.text_in_range(Range::new(start, end));
             let mode = self.detect_mode(&unit_text);
             return vec![ExecutionUnit {
@@ -1446,7 +1466,8 @@ impl CodeLensProvider for SqlAdapter {
                 {
                     cache_hit = true;
                 } else if snapshot.len() <= CODE_LENS_SYNC_SCAN_LIMIT {
-                    let lenses = build_code_lenses_from_snapshot(snapshot);
+                    let lenses =
+                        build_code_lenses_from_snapshot(snapshot, self.database_kind);
                     *cache = Some((version, snapshot.len(), snapshot.line_count(), lenses));
                 }
                 if let Some((_, _, _, lenses)) =
@@ -1472,7 +1493,10 @@ impl CodeLensProvider for SqlAdapter {
                         .end
                         .saturating_add(CODE_LENS_VISIBLE_WINDOW_BYTES)
                         .min(snapshot.len());
-                    let lenses = build_code_lenses(&snapshot.text_in_range(Range::new(start, end)));
+                    let lenses = build_code_lenses(
+                        &snapshot.text_in_range(Range::new(start, end)),
+                        self.database_kind,
+                    );
                     lenses
                         .into_iter()
                         .map(|mut lens| {
@@ -1559,7 +1583,8 @@ impl DecorationProvider for SqlAdapter {
                             })
                         })
                         .unwrap_or_else(|| {
-                            let ranges = split_statement_ranges_snapshot(snapshot);
+                            let ranges =
+                                split_statement_ranges_snapshot(snapshot, self.database_kind);
                             Arc::new(build_statement_runs_from_snapshot(snapshot, &ranges))
                         });
                     *cache = Some((key.0, key.1, key.2, runs.clone()));
@@ -1567,7 +1592,7 @@ impl DecorationProvider for SqlAdapter {
                 }
             }
             Err(_) => {
-                let ranges = split_statement_ranges_snapshot(snapshot);
+                let ranges = split_statement_ranges_snapshot(snapshot, self.database_kind);
                 Arc::new(build_statement_runs_from_snapshot(snapshot, &ranges))
             }
         };

@@ -301,7 +301,7 @@ fn sqlserver_backup_literal(value: &CellValue) -> fluxdb_core::Result<String> {
         CellValue::BinarySummary(summary) if summary.is_null => "NULL".into(),
         _ => {
             return Err(task_error(
-                "数据包含未加载的二进制值或非有限浮点数，请改用原生备份",
+                "数据包含未加载的二进制值、截断的 LOB 或非有限浮点数，请改用原生备份",
             ));
         }
     })

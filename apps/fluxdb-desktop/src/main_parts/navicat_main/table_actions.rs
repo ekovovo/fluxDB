@@ -1,7 +1,12 @@
 fn copy_table_requires_source_ddl(database_kind: DatabaseKind) -> bool {
+    // Oracle 的完整复制要重写源 DDL（约束/索引/注释/Identity），
+    // `CREATE TABLE … AS SELECT` 只复制列和数据，不是克隆。
     matches!(
         database_kind,
-        DatabaseKind::Sqlite | DatabaseKind::Dameng | DatabaseKind::SqlServer
+        DatabaseKind::Sqlite
+            | DatabaseKind::Dameng
+            | DatabaseKind::SqlServer
+            | DatabaseKind::Oracle
     )
 }
 
@@ -612,7 +617,12 @@ impl NavicatMain {
         // schema 分桶数据库只刷新表所在 schema，避免库级刷新清掉其他 schema。
         let (target, key) = if matches!(
             self.table_database_kind(object),
-            Some(DatabaseKind::Postgres | DatabaseKind::Dameng | DatabaseKind::SqlServer)
+            Some(
+                DatabaseKind::Postgres
+                    | DatabaseKind::Dameng
+                    | DatabaseKind::SqlServer
+                    | DatabaseKind::Oracle
+            )
         ) {
             let (Some(database), Some(schema)) = (object.database.clone(), object.schema.clone())
             else {

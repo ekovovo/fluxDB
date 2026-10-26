@@ -3,12 +3,11 @@
 // 本文件定义 `SqlDialect` 枚举与 `KeywordDef` 关键字定义，以及各方言的
 // 关键字列表、注释标记等纯逻辑能力；不依赖 GPUI 或数据库。
 
-use fluxdb_core::DatabaseKind;
-
 /// 单条关键字定义：词形 + 补全类型。
 #[derive(Clone, Copy, Debug)]
 pub struct KeywordDef {
-    /// 关键字 / 内置函数名（小写）。
+    /// 关键字 / 内置函数名。手写表用小写，从补全引擎生成的表保持大写原样，
+    /// 因此匹配一律走 [`KeywordDef::matches`]，不要直接比较字符串。
     pub word: &'static str,
     /// 补全类型：关键字 / 函数。
     pub kind: CompletionKind,
@@ -28,6 +27,11 @@ impl KeywordDef {
             kind: CompletionKind::Function,
         }
     }
+
+    /// 与已小写化的词比对（大小写不敏感，兼容大写词表）。
+    pub fn matches(&self, word_lower: &str) -> bool {
+        self.word.eq_ignore_ascii_case(word_lower)
+    }
 }
 
 /// 支持的 SQL 方言。
@@ -43,6 +47,11 @@ pub enum SqlDialect {
     #[allow(dead_code)] // 同上，保留 SQL Server 方言契约。
     /// SQL Server。
     SqlServer,
+    /// Oracle。语法树仍由 tree-sitter-sequel 解析（它没有 PL/SQL 语法），
+    /// 但关键字表、补全方言与标识符引用按 Oracle 走。
+    Oracle,
+    /// 达梦。PL/SQL 与 Oracle 同源，关键字表共用；分页/`TOP` 差异走补全引擎的词表。
+    Dameng,
 }
 
 impl SqlDialect {
@@ -54,6 +63,8 @@ impl SqlDialect {
             SqlDialect::Postgres => "sql_postgres",
             SqlDialect::Sqlite => "sql_sqlite",
             SqlDialect::SqlServer => "sql_sqlserver",
+            SqlDialect::Oracle => "sql_oracle",
+            SqlDialect::Dameng => "sql_dameng",
         }
     }
 
@@ -64,6 +75,8 @@ impl SqlDialect {
             SqlDialect::Postgres => "PostgreSQL",
             SqlDialect::Sqlite => "SQLite",
             SqlDialect::SqlServer => "SQL Server",
+            SqlDialect::Oracle => "Oracle",
+            SqlDialect::Dameng => "Dameng",
         }
     }
 
@@ -75,6 +88,8 @@ impl SqlDialect {
             SqlDialect::Postgres => "--",
             SqlDialect::Sqlite => "--",
             SqlDialect::SqlServer => "--",
+            SqlDialect::Oracle => "--",
+            SqlDialect::Dameng => "--",
         })
     }
 
@@ -85,12 +100,18 @@ impl SqlDialect {
     }
 
     /// 该方言的关键字 / 函数表。
+    ///
+    /// Oracle / 达梦没有手抄一份：直接取补全引擎的方言词表（[`fluxdb_completion`]），
+    /// 保证「高亮认的词」与「补全给的词」永远一致。多词条目（如 `LEFT JOIN`）
+    /// 词法器匹配不到单 token，建表时滤掉。
     pub fn keywords(&self) -> &'static [KeywordDef] {
         match self {
             SqlDialect::Mysql => MYSQL_KEYWORDS,
             SqlDialect::Postgres => POSTGRES_KEYWORDS,
             SqlDialect::Sqlite => SQLITE_KEYWORDS,
             SqlDialect::SqlServer => SQLSERVER_KEYWORDS,
+            SqlDialect::Oracle => ORACLE_TABLE.as_slice(),
+            SqlDialect::Dameng => DAMENG_TABLE.as_slice(),
         }
     }
 
@@ -103,17 +124,62 @@ impl SqlDialect {
             DatabaseKind::MySql | DatabaseKind::TiDb => SqlDialect::Mysql,
             DatabaseKind::Sqlite => SqlDialect::Sqlite,
             DatabaseKind::Postgres => SqlDialect::Postgres,
-            DatabaseKind::Dameng => SqlDialect::Postgres,
+            DatabaseKind::Dameng => SqlDialect::Dameng,
+            DatabaseKind::Oracle => SqlDialect::Oracle,
             DatabaseKind::SqlServer => SqlDialect::SqlServer,
             DatabaseKind::MongoDb | DatabaseKind::Redis => SqlDialect::Mysql,
+        }
+    }
+
+    /// 反向映射：编辑器方言对应的数据库类型。
+    ///
+    /// 与 [`SqlDialect::from_database_kind`] 互逆（TiDB 归到 MySQL：两者语法一致，
+    /// 该枚举不区分）。
+    pub fn database_kind(&self) -> DatabaseKind {
+        match self {
+            SqlDialect::Mysql => DatabaseKind::MySql,
+            SqlDialect::Postgres => DatabaseKind::Postgres,
+            SqlDialect::Sqlite => DatabaseKind::Sqlite,
+            SqlDialect::SqlServer => DatabaseKind::SqlServer,
+            SqlDialect::Oracle => DatabaseKind::Oracle,
+            SqlDialect::Dameng => DatabaseKind::Dameng,
         }
     }
 
     /// 判断某个词是否为该方言的关键字 / 函数（不区分大小写）。
     pub fn is_keyword(&self, word: &str) -> bool {
         let lower = word.to_ascii_lowercase();
-        self.keywords().iter().any(|def| def.word == lower)
+        self.keywords().iter().any(|def| def.matches(&lower))
     }
+}
+
+/// Oracle 关键字 / 函数表，由补全引擎的 `ORACLE` 词表生成。
+static ORACLE_TABLE: std::sync::LazyLock<Vec<KeywordDef>> =
+    std::sync::LazyLock::new(|| completion_keyword_defs(&fluxdb_completion::ORACLE));
+
+/// 达梦关键字 / 函数表，由补全引擎的 `DAMENG` 词表生成。
+static DAMENG_TABLE: std::sync::LazyLock<Vec<KeywordDef>> =
+    std::sync::LazyLock::new(|| completion_keyword_defs(&fluxdb_completion::DAMENG));
+
+/// 把补全方言的关键字 / 函数词表转成 [`KeywordDef`]。
+///
+/// 直接借用补全引擎的 `'static` 词条，不再另抄一份（两处词表迟早分叉）。
+/// 多词条目（`LEFT JOIN`、`IS NOT NULL`）在补全候选里照常出现，词法器则单个
+/// token 匹配不到，因此两边都不受影响。
+fn completion_keyword_defs(
+    dialect: &'static dyn fluxdb_completion::CompletionDialect,
+) -> Vec<KeywordDef> {
+    dialect
+        .keywords()
+        .iter()
+        .map(|keyword| KeywordDef::kw(keyword))
+        .chain(
+            dialect
+                .functions()
+                .iter()
+                .map(|function| KeywordDef::func(function)),
+        )
+        .collect()
 }
 
 /// 数据页筛选条件输入使用的关键字表。
@@ -140,6 +206,9 @@ pub fn data_filter_keywords(kind: DatabaseKind) -> Vec<KeywordDef> {
             );
             keywords
         }
+        // Oracle 不合并 PostgreSQL 词表：PG 的 `LIMIT` 在 Oracle 不存在，
+        // 补进候选会让人写出无法执行的筛选条件。
+        DatabaseKind::Oracle => ORACLE_FILTER_KEYWORDS.to_vec(),
         DatabaseKind::MongoDb | DatabaseKind::Redis => Vec::new(),
     }
 }
@@ -153,6 +222,7 @@ pub fn data_filter_dialect_name(kind: DatabaseKind) -> &'static str {
         DatabaseKind::Postgres => "PostgreSQL",
         DatabaseKind::Dameng => "Dameng",
         DatabaseKind::SqlServer => "SQL Server",
+        DatabaseKind::Oracle => "Oracle",
         DatabaseKind::MongoDb => "MongoDB",
         DatabaseKind::Redis => "Redis",
     }
@@ -173,6 +243,28 @@ static DAMENG_FILTER_KEYWORDS: &[KeywordDef] = &[
     KeywordDef::func("substr"),
     KeywordDef::func("trunc"),
     KeywordDef::func("listagg"),
+];
+
+/// Oracle 筛选补全词表：只放 Oracle 真实存在的伪列与函数。
+static ORACLE_FILTER_KEYWORDS: &[KeywordDef] = &[
+    KeywordDef::kw("rownum"),
+    KeywordDef::kw("connect"),
+    KeywordDef::kw("start"),
+    KeywordDef::kw("prior"),
+    KeywordDef::kw("nulls"),
+    KeywordDef::func("sysdate"),
+    KeywordDef::func("systimestamp"),
+    KeywordDef::func("nvl"),
+    KeywordDef::func("nvl2"),
+    KeywordDef::func("decode"),
+    KeywordDef::func("to_char"),
+    KeywordDef::func("to_date"),
+    KeywordDef::func("to_number"),
+    KeywordDef::func("instr"),
+    KeywordDef::func("substr"),
+    KeywordDef::func("trunc"),
+    KeywordDef::func("listagg"),
+    KeywordDef::func("coalesce"),
 ];
 
 /// MySQL 关键字 / 内置函数表。
@@ -530,3 +622,47 @@ static SQLSERVER_KEYWORDS: &[KeywordDef] = &[
     KeywordDef::func("isnull"),
     KeywordDef::func("coalesce"),
 ];
+
+#[cfg(test)]
+mod dialect_oracle_tests {
+    use super::*;
+
+    /// Oracle / 达梦不能落回 PostgreSQL 方言：那会让 `/` 分隔符、PL/SQL 块边界
+    /// 和 `LIMIT`（Oracle 不存在）一起漏进来。映射必须一一对应。
+    #[test]
+    fn oracle_and_dameng_keep_their_own_dialect() {
+        for (kind, expected) in [
+            (DatabaseKind::Oracle, SqlDialect::Oracle),
+            (DatabaseKind::Dameng, SqlDialect::Dameng),
+        ] {
+            let dialect = SqlDialect::from_database_kind(kind);
+            assert_eq!(dialect, expected, "{kind:?}");
+            assert_eq!(dialect.database_kind(), kind, "{kind:?} 往返不能失真");
+        }
+    }
+
+    /// 词表取自补全引擎，PL/SQL 词必须能高亮；Oracle 没有 `LIMIT`，不能借 PG 的词。
+    #[test]
+    fn oracle_keywords_carry_plsql_and_drop_limit() {
+        let dialect = SqlDialect::Oracle;
+        for word in ["begin", "declare", "procedure", "loop", "exception", "nextval"] {
+            assert!(dialect.is_keyword(word), "{word} 应被 Oracle 词表收录");
+        }
+        assert!(!dialect.is_keyword("limit"), "Oracle 没有 LIMIT");
+        assert!(dialect.is_keyword("rownum"));
+    }
+
+    /// 高亮路径按词表分类：函数名要给 `function` 颜色，不能被当成关键字。
+    #[test]
+    fn oracle_functions_are_classified_as_functions() {
+        let is_function = |word: &str| {
+            SqlDialect::Oracle
+                .keywords()
+                .iter()
+                .any(|def| def.matches(word) && def.kind == CompletionKind::Function)
+        };
+        assert!(is_function("nvl"));
+        assert!(is_function("to_char"));
+        assert!(!is_function("begin"));
+    }
+}

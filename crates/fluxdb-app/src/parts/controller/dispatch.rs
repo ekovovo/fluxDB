@@ -264,6 +264,7 @@ impl AppController {
                             postgres_profile: None,
                             dameng_profile: None,
                             sqlserver_profile: None,
+                            oracle_profile: None,
                         };
                         AppEvent::RedisConnectionDiscovered(draft)
                     }
@@ -1601,6 +1602,49 @@ impl AppController {
                     Err(error) => self.fail(error),
                 }
             }
+            AppCommand::LoadCellText {
+                tab_id,
+                row,
+                column,
+            } => match self.load_cell_text(tab_id, row, column) {
+                Ok(text) => AppEvent::CellTextLoaded {
+                    tab_id,
+                    row,
+                    column,
+                    text,
+                },
+                Err(error) => self.fail(error),
+            },
+            AppCommand::FinishCellTextLoad {
+                tab_id,
+                row,
+                column,
+                result,
+            } => {
+                let Some(editor) = self.find_editable_data_editor_mut(tab_id) else {
+                    return self.fail(Error::new(ErrorKind::Internal, "数据结果不存在"));
+                };
+                let active = editor.cell_detail_panel.active_cell;
+                match result {
+                    Ok(text) => {
+                        // 只写回仍处于同一单元格的面板：后台期间用户可能已经切走。
+                        if active == Some(CellPosition { row, column }) {
+                            editor.cell_detail_panel.full_value = Some(text.clone());
+                            editor.cell_detail_panel.edit_value = text;
+                            // 用户是在编辑动作里触发的加载：读完后直接进编辑态。
+                            if editor.cell_detail_panel.pending_edit {
+                                editor.cell_detail_panel.pending_edit = false;
+                                editor.cell_detail_panel.mode = CellDetailMode::Edit;
+                            }
+                        }
+                        AppEvent::TabActivated(tab_id)
+                    }
+                    Err(user_error) => {
+                        self.state.last_error = Some(user_error.clone());
+                        AppEvent::Failed(user_error)
+                    }
+                }
+            }
             AppCommand::DownloadBinaryCell {
                 tab_id,
                 row,
@@ -1646,13 +1690,25 @@ impl AppController {
                 };
                 match current_cell_value(editor, row, column) {
                     Ok(value) => {
+                        // 截断值先按预览打开面板，再请 UI 后台补读完整文本。
+                        let needs_full_text = value.is_truncated();
                         editor.cell_detail_panel = CellDetailPanelState {
                             open: true,
                             active_cell: Some(CellPosition { row, column }),
                             mode: CellDetailMode::View,
                             edit_value: cell_value_edit_text(&value),
+                            full_value: None,
+                            pending_edit: false,
                         };
-                        AppEvent::TabActivated(tab_id)
+                        if needs_full_text {
+                            AppEvent::CellTextLoadRequested {
+                                tab_id,
+                                row,
+                                column,
+                            }
+                        } else {
+                            AppEvent::TabActivated(tab_id)
+                        }
                     }
                     Err(error) => self.fail(error),
                 }
@@ -1676,6 +1732,32 @@ impl AppController {
                             ErrorKind::Unsupported,
                             "大二进制值不能直接 Hex 编辑，请使用下载、上传替换或设为 NULL",
                         ))
+                    }
+                    // 预览不是完整值：先按需加载完整文本，读到之前不进入编辑态。
+                    Ok(CellValue::TruncatedText { .. }) => {
+                        let active_cell = editor.cell_detail_panel.active_cell;
+                        match (
+                            editor.cell_detail_panel.full_value.clone(),
+                            active_cell,
+                        ) {
+                            (Some(text), _) => {
+                                editor.cell_detail_panel.mode = CellDetailMode::Edit;
+                                editor.cell_detail_panel.edit_value = text;
+                                AppEvent::TabActivated(tab_id)
+                            }
+                            (None, Some(cell)) => {
+                                editor.cell_detail_panel.pending_edit = true;
+                                AppEvent::CellTextLoadRequested {
+                                    tab_id,
+                                    row: cell.row,
+                                    column: cell.column,
+                                }
+                            }
+                            (None, None) => self.fail(Error::new(
+                                ErrorKind::Internal,
+                                "未选择单元格",
+                            )),
+                        }
                     }
                     Ok(value) => {
                         editor.cell_detail_panel.mode = CellDetailMode::Edit;
@@ -1749,7 +1831,15 @@ impl AppController {
                 };
                 match active_original_cell_value(editor) {
                     Ok(value) => {
-                        editor.cell_detail_panel.edit_value = cell_value_edit_text(&value);
+                        // 原始值可能只是预览：有完整值就用完整值，别把编辑框降级成片段。
+                        editor.cell_detail_panel.edit_value = match &value {
+                            CellValue::TruncatedText { .. } => editor
+                                .cell_detail_panel
+                                .full_value
+                                .clone()
+                                .unwrap_or_else(|| cell_value_edit_text(&value)),
+                            _ => cell_value_edit_text(&value),
+                        };
                         AppEvent::TabActivated(tab_id)
                     }
                     Err(error) => self.fail(error),
@@ -2704,7 +2794,8 @@ impl AppController {
                     admin.member_grant_edits.clear();
                     admin.privilege_rows.clear();
                     admin.base_privilege_rows.clear();
-                    admin.create_user = "new_user".to_string();
+                    // 用户名留空：与 PG / SQL Server / Oracle 的新建表单一致，不预填占位名。
+                    admin.create_user.clear();
                     admin.create_host = "%".to_string();
                     admin.auth_plugin = "caching_sha2_password".to_string();
                     admin.password_expiry_policy = "DEFAULT".to_string();
@@ -3201,8 +3292,10 @@ impl AppController {
                         let Some(config) = self.connection_config(connection_id).cloned() else {
                             return self.fail(Error::new(ErrorKind::Connection, "连接不存在"));
                         };
+                        // 与 MySQL 预览一致：展示与执行同源的完整语句（含明文口令）。
+                        // 口令不落日志、历史或 AI 上下文；执行路径另取脱敏副本做审计。
                         match role_operation_for_connection(&config, |connector| {
-                            connector.render_role_plan(connection_id, &plan, true)
+                            connector.render_role_plan(connection_id, &plan, false)
                         }) {
                             Ok(stmts) => AppEvent::UserAdminPgPlanPreview(tab_id, stmts),
                             Err(error) => AppEvent::Failed(UserFacingError::from(error)),
@@ -3214,13 +3307,20 @@ impl AppController {
             AppCommand::FinishPgPlanPreview { tab_id, result } => {
                 if let Some(admin) = self.user_admin_state_mut(tab_id) {
                     admin.pg_preview_loading = false;
+                    let confirm = std::mem::take(&mut admin.pending_sql_awaits_preview);
                     match result {
                         Ok(stmts) => {
-                            admin.pg_plan_preview = Some(stmts.clone());
-                            admin.pg_plan_preview_masked =
-                                admin.pg_draft.as_ref().is_some_and(|draft| {
-                                    matches!(&draft.password, PgPasswordOp::Set(_))
+                            if confirm {
+                                // 「保存」触发的预览：直接把它放进确认框，不再等用户切页签。
+                                let danger = stmts.iter().any(|sql| sql.starts_with("DROP "));
+                                admin.pending_sql = Some(UserAdminPendingSql {
+                                    sql: stmts.join("\n"),
+                                    danger,
+                                    kind: UserAdminPendingKind::Postgres,
                                 });
+                                admin.apply_error = None;
+                            }
+                            admin.pg_plan_preview = Some(stmts);
                             admin.pg_plan_error = None;
                         }
                         Err(error) => {
@@ -3290,6 +3390,9 @@ impl AppController {
                 result,
             } => {
                 if let Some(admin) = self.user_admin_state_mut(tab_id) {
+                    // 确认框已用完（失败保留草稿，但不重复弹旧 SQL）。
+                    admin.pending_sql = None;
+                    admin.pending_sql_awaits_preview = false;
                     match result {
                         Ok(_) => {
                             admin.pg_save_status = PgRoleSaveStatus::Idle;
@@ -3507,7 +3610,7 @@ impl AppController {
                     state.edit_selected();
                     state.preview = None;
                     state.preview_error = None;
-                    admin.active_detail_tab = UserAdminDetailTab::General;
+                    admin.active_detail_tab = admin.active_detail_tab.general();
                     AppEvent::TabActivated(tab_id)
                 } else {
                     self.fail(Error::new(ErrorKind::Internal, "SQL Server 用户与权限标签页不存在"))
@@ -3554,7 +3657,7 @@ impl AppController {
                             | SqlServerSecurityFormKind::CreateRole
                     ) {
                         state.selected = None;
-                        admin.active_detail_tab = UserAdminDetailTab::General;
+                        admin.active_detail_tab = admin.active_detail_tab.general();
                     }
                     AppEvent::TabActivated(tab_id)
                 } else {
@@ -3699,7 +3802,7 @@ impl AppController {
                     state.preview_loading = true;
                     state.preview = None;
                     state.preview_error = None;
-                    admin.active_detail_tab = UserAdminDetailTab::SqlPreview;
+                    admin.active_detail_tab = UserAdminDetailTab::SqlServer(SqlServerUserAdminTab::SqlPreview);
                     AppEvent::TabActivated(tab_id)
                 } else {
                     self.fail(Error::new(ErrorKind::Internal, "SQL Server 用户与权限标签页不存在"))
@@ -3723,12 +3826,28 @@ impl AppController {
                 {
                     state.preview_loading = false;
                     if state.revision != revision {
+                        // 草稿已变，这批预览作废；「保存」的弹框意图也一并作废。
+                        admin.pending_sql_awaits_preview = false;
                         return AppEvent::TabActivated(tab_id);
                     }
+                    let confirm = std::mem::take(&mut admin.pending_sql_awaits_preview);
                     match result {
                         Ok(statements) => {
                             state.preview = Some(statements);
                             state.preview_error = None;
+                            if confirm {
+                                // 「保存」触发的预览：直接放进确认框。
+                                // 连接器返回的是脱敏副本，这里按预览页同一套规则还原口令，
+                                // 保证「确认框看到的」与「预览页看到的」逐字一致。
+                                let shown = state.preview_for_display();
+                                let danger = shown.iter().any(|sql| sql.starts_with("DROP "));
+                                admin.pending_sql = Some(UserAdminPendingSql {
+                                    sql: shown.join("\n"),
+                                    danger,
+                                    kind: UserAdminPendingKind::SqlServer,
+                                });
+                                admin.apply_error = None;
+                            }
                         }
                         Err(error) => state.preview_error = Some(error),
                     }
@@ -3780,6 +3899,7 @@ impl AppController {
                     && let Some(state) = admin.sqlserver.as_mut()
                 {
                     state.applying = false;
+                    admin.pending_sql = None;
                     match result {
                         Ok(_) => {
                             state.save_status = SqlServerSecuritySaveStatus::Idle;
@@ -3812,7 +3932,7 @@ impl AppController {
                             state.preview = None;
                             if state.save_status == SqlServerSecuritySaveStatus::Idle {
                                 state.restore_failed_form();
-                                admin.active_detail_tab = UserAdminDetailTab::General;
+                                admin.active_detail_tab = admin.active_detail_tab.general();
                             }
                             state.apply_error = Some(error);
                         }
@@ -3897,6 +4017,291 @@ impl AppController {
                     AppEvent::TabActivated(tab_id)
                 } else {
                     self.fail(Error::new(ErrorKind::Internal, "SQL Server 用户与权限标签页不存在"))
+                }
+            }
+            AppCommand::StartOracleUsersLoad(tab_id) => {
+                if let Some(state) = self.oracle_user_admin_state_mut(tab_id) {
+                    state.loading = true;
+                    state.error = None;
+                    AppEvent::TabActivated(tab_id)
+                } else {
+                    self.fail(Error::new(ErrorKind::Internal, "Oracle 用户与权限标签页不存在"))
+                }
+            }
+            AppCommand::LoadOracleUsers(tab_id) => match self.load_oracle_user_admin(tab_id) {
+                Ok(snapshot) => AppEvent::OracleUsersLoaded(tab_id, snapshot),
+                Err(error) => AppEvent::Failed(UserFacingError::from(error)),
+            },
+            AppCommand::FinishOracleUsersLoad { tab_id, result } => {
+                self.finish_oracle_users_load(tab_id, result)
+            }
+            AppCommand::SelectOracleUser { tab_id, name } => {
+                self.oracle_select_user(tab_id, name)
+            }
+            AppCommand::SetOracleGrantDraftField {
+                tab_id,
+                field,
+                value,
+            } => {
+                if let Some(state) = self.oracle_user_admin_state_mut(tab_id) {
+                    state.set_grant_field(field, value);
+                    AppEvent::TabActivated(tab_id)
+                } else {
+                    self.fail(Error::new(ErrorKind::Internal, "Oracle 用户与权限标签页不存在"))
+                }
+            }
+            AppCommand::SetOracleGrantDraftOption {
+                tab_id,
+                with_option,
+            } => {
+                if let Some(state) = self.oracle_user_admin_state_mut(tab_id) {
+                    state.grant.with_option = with_option;
+                    AppEvent::TabActivated(tab_id)
+                } else {
+                    self.fail(Error::new(ErrorKind::Internal, "Oracle 用户与权限标签页不存在"))
+                }
+            }
+            // 授权编辑器一次只放一条草稿：加入待执行列表后清空，便于同一次保存带多条授权。
+            // 类型由所在页签决定，先写进草稿再入列，避免沿用上一个页签的类型。
+            AppCommand::QueueOracleGrantDraft { tab_id, kind } => {
+                if let Some(state) = self.oracle_user_admin_state_mut(tab_id) {
+                    state.grant.kind = kind;
+                }
+                match self
+                    .oracle_user_admin_state_mut(tab_id)
+                    .map(|state| state.queue_grant_draft())
+                {
+                    Some(Ok(())) => AppEvent::TabActivated(tab_id),
+                    Some(Err(error)) => AppEvent::Failed(UserFacingError::from(error)),
+                    None => self.fail(Error::new(
+                        ErrorKind::Internal,
+                        "Oracle 用户与权限标签页不存在",
+                    )),
+                }
+            }
+            AppCommand::RemoveOraclePendingGrant { tab_id, index } => {
+                if let Some(state) = self.oracle_user_admin_state_mut(tab_id) {
+                    state.remove_pending_grant(index);
+                    AppEvent::TabActivated(tab_id)
+                } else {
+                    self.fail(Error::new(ErrorKind::Internal, "Oracle 用户与权限标签页不存在"))
+                }
+            }
+            AppCommand::RevokeOracleRole { tab_id, role } => {
+                match self
+                    .oracle_user_admin_state_mut(tab_id)
+                    .map(|state| state.queue_revoke_role(&role))
+                {
+                    Some(Ok(())) => AppEvent::TabActivated(tab_id),
+                    Some(Err(error)) => AppEvent::Failed(UserFacingError::from(error)),
+                    None => self.fail(Error::new(
+                        ErrorKind::Internal,
+                        "Oracle 用户与权限标签页不存在",
+                    )),
+                }
+            }
+            AppCommand::RevokeOracleSystemPrivilege {
+                tab_id,
+                privilege,
+            } => {
+                match self
+                    .oracle_user_admin_state_mut(tab_id)
+                    .map(|state| state.queue_revoke_system_privilege(&privilege))
+                {
+                    Some(Ok(())) => AppEvent::TabActivated(tab_id),
+                    Some(Err(error)) => AppEvent::Failed(UserFacingError::from(error)),
+                    None => self.fail(Error::new(
+                        ErrorKind::Internal,
+                        "Oracle 用户与权限标签页不存在",
+                    )),
+                }
+            }
+            AppCommand::RevokeOracleObjectPrivilege {
+                tab_id,
+                owner,
+                object,
+                privilege,
+            } => {
+                match self.oracle_user_admin_state_mut(tab_id).map(|state| {
+                    state.queue_revoke_object_privilege(&owner, &object, &privilege)
+                }) {
+                    Some(Ok(())) => AppEvent::TabActivated(tab_id),
+                    Some(Err(error)) => AppEvent::Failed(UserFacingError::from(error)),
+                    None => self.fail(Error::new(
+                        ErrorKind::Internal,
+                        "Oracle 用户与权限标签页不存在",
+                    )),
+                }
+            }
+            AppCommand::BeginOracleCreateUser(tab_id) => {
+                if let Some(state) = self.oracle_user_admin_state_mut(tab_id) {
+                    state.creating = Some(OracleCreateDraft::default());
+                    AppEvent::TabActivated(tab_id)
+                } else {
+                    self.fail(Error::new(ErrorKind::Internal, "Oracle 用户与权限标签页不存在"))
+                }
+            }
+            AppCommand::CancelOracleCreateUser(tab_id) => {
+                if let Some(state) = self.oracle_user_admin_state_mut(tab_id) {
+                    state.creating = None;
+                    AppEvent::TabActivated(tab_id)
+                } else {
+                    self.fail(Error::new(ErrorKind::Internal, "Oracle 用户与权限标签页不存在"))
+                }
+            }
+            AppCommand::SetOracleCreateDraftField {
+                tab_id,
+                field,
+                value,
+            } => {
+                if let Some(state) = self.oracle_user_admin_state_mut(tab_id) {
+                    state.set_create_field(field, value);
+                    AppEvent::TabActivated(tab_id)
+                } else {
+                    self.fail(Error::new(ErrorKind::Internal, "Oracle 用户与权限标签页不存在"))
+                }
+            }
+            AppCommand::SetOracleCreateDraftFlag {
+                tab_id,
+                grant_connect_role,
+            } => {
+                if let Some(state) = self.oracle_user_admin_state_mut(tab_id) {
+                    state.set_create_flag(grant_connect_role);
+                    AppEvent::TabActivated(tab_id)
+                } else {
+                    self.fail(Error::new(ErrorKind::Internal, "Oracle 用户与权限标签页不存在"))
+                }
+            }
+            // 口令只留在内存草稿里，保存时再进计划；这里不做校验也不落任何记录。
+            AppCommand::SetOracleUserPassword { tab_id, password } => {
+                if let Some(state) = self.oracle_user_admin_state_mut(tab_id) {
+                    state.new_password = password;
+                }
+                AppEvent::TabActivated(tab_id)
+            }
+            AppCommand::SetOracleUserLocked { tab_id, locked } => {
+                match self
+                    .oracle_user_admin_state_mut(tab_id)
+                    .map(|state| state.queue_account_locked(locked))
+                {
+                    Some(Ok(())) => AppEvent::TabActivated(tab_id),
+                    Some(Err(error)) => AppEvent::Failed(UserFacingError::from(error)),
+                    None => self.fail(Error::new(
+                        ErrorKind::Internal,
+                        "Oracle 用户与权限标签页不存在",
+                    )),
+                }
+            }
+            AppCommand::DiscardOracleUserChanges(tab_id) => {
+                if let Some(state) = self.oracle_user_admin_state_mut(tab_id) {
+                    state.discard_changes();
+                    AppEvent::TabActivated(tab_id)
+                } else {
+                    self.fail(Error::new(ErrorKind::Internal, "Oracle 用户与权限标签页不存在"))
+                }
+            }
+            // 「保存」第一步：把草稿渲染成预览 SQL 放进确认框，不碰数据库。
+            AppCommand::PreviewOracleApply(tab_id) => {
+                let Some(state) = self.oracle_user_admin_state_mut(tab_id) else {
+                    return self.fail(Error::new(ErrorKind::Internal, "Oracle 用户与权限标签页不存在"));
+                };
+                match state.compose_preview() {
+                    Ok(statements) if !statements.is_empty() => {
+                        let danger = statements
+                            .iter()
+                            .any(|sql| sql.trim_start().starts_with("DROP "));
+                        let sql = statements.join("\n");
+                        if let Some(admin) = self.user_admin_state_mut(tab_id) {
+                            admin.pending_sql = Some(UserAdminPendingSql {
+                                sql,
+                                danger,
+                                kind: UserAdminPendingKind::Oracle,
+                            });
+                            admin.apply_error = None;
+                        }
+                        AppEvent::TabActivated(tab_id)
+                    }
+                    // 空草稿与合成失败都不弹框：没有可执行的语句。
+                    Ok(_) => AppEvent::TabActivated(tab_id),
+                    Err(error) => AppEvent::Failed(UserFacingError::from(error)),
+                }
+            }
+            // 确认框点「执行」后：先合成计划，成功才置位执行中；`ApplyOraclePlan` 直接跑这一份。
+            AppCommand::StartOracleApply(tab_id) => {
+                let Some(state) = self.oracle_user_admin_state_mut(tab_id) else {
+                    return self.fail(Error::new(ErrorKind::Internal, "Oracle 用户与权限标签页不存在"));
+                };
+                state.apply_error = None;
+                match state.compose_plan() {
+                    Ok(plan) => {
+                        state.pending_plan = Some(plan);
+                        state.applying = true;
+                        AppEvent::TabActivated(tab_id)
+                    }
+                    Err(error) => AppEvent::Failed(UserFacingError::from(error)),
+                }
+            }
+            AppCommand::ApplyOraclePlan(tab_id) => match self.apply_oracle_user_admin_plan(tab_id) {
+                Ok(statements) => AppEvent::OraclePlanApplied(tab_id, statements),
+                Err(error) => AppEvent::Failed(UserFacingError::from(error)),
+            },
+            AppCommand::FinishOracleApply { tab_id, result } => {
+                self.oracle_finish_apply(tab_id, result)
+            }
+            AppCommand::BeginDeleteOracleUser(tab_id) => {
+                if let Some(state) = self.oracle_user_admin_state_mut(tab_id) {
+                    let Some(name) = state.selected.clone() else {
+                        return AppEvent::TabActivated(tab_id);
+                    };
+                    // SYS 等自带账号与当前登录账号不允许从这里删除。
+                    let protected = state
+                        .snapshot
+                        .as_ref()
+                        .and_then(|snapshot| snapshot.user(&name))
+                        .is_some_and(|user| user.oracle_maintained)
+                        || state
+                            .snapshot
+                            .as_ref()
+                            .is_some_and(|snapshot| snapshot.current_user.eq_ignore_ascii_case(&name));
+                    if protected {
+                        return AppEvent::Failed(UserFacingError::from(Error::new(
+                            ErrorKind::Permission,
+                            "该 Oracle 账号受保护（系统账号或当前登录账号），不能删除",
+                        )));
+                    }
+                    state.pending_delete = Some(name);
+                    AppEvent::TabActivated(tab_id)
+                } else {
+                    self.fail(Error::new(ErrorKind::Internal, "Oracle 用户与权限标签页不存在"))
+                }
+            }
+            AppCommand::CancelDeleteOracleUser(tab_id) => {
+                if let Some(state) = self.oracle_user_admin_state_mut(tab_id) {
+                    state.pending_delete = None;
+                    AppEvent::TabActivated(tab_id)
+                } else {
+                    self.fail(Error::new(ErrorKind::Internal, "Oracle 用户与权限标签页不存在"))
+                }
+            }
+            AppCommand::SetOracleDeleteCascade { tab_id, cascade } => {
+                if let Some(state) = self.oracle_user_admin_state_mut(tab_id) {
+                    state.delete_cascade = cascade;
+                    AppEvent::TabActivated(tab_id)
+                } else {
+                    self.fail(Error::new(ErrorKind::Internal, "Oracle 用户与权限标签页不存在"))
+                }
+            }
+            AppCommand::ConfirmDeleteOracleUser(tab_id) => {
+                match self
+                    .oracle_user_admin_state_mut(tab_id)
+                    .map(|state| state.queue_delete())
+                {
+                    Some(Ok(())) => AppEvent::TabActivated(tab_id),
+                    Some(Err(error)) => AppEvent::Failed(UserFacingError::from(error)),
+                    None => self.fail(Error::new(
+                        ErrorKind::Internal,
+                        "Oracle 用户与权限标签页不存在",
+                    )),
                 }
             }
             AppCommand::PgBeginDeleteRole(tab_id) => {
@@ -4253,14 +4658,24 @@ impl AppController {
                     self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
                 }
             }
+            // 「保存」第一步：只弹框展示，不碰数据库。真正执行要等用户点确认。
             AppCommand::PreviewUserAdminSql {
                 tab_id,
                 sql,
                 danger,
+                kind,
             } => {
                 if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                    admin.pending_sql = Some(UserAdminPendingSql { sql, danger });
+                    admin.pending_sql = Some(UserAdminPendingSql { sql, danger, kind });
                     admin.apply_error = None;
+                    AppEvent::TabActivated(tab_id)
+                } else {
+                    self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
+                }
+            }
+            AppCommand::BeginUserAdminSqlConfirm(tab_id) => {
+                if let Some(admin) = self.user_admin_state_mut(tab_id) {
+                    admin.pending_sql_awaits_preview = true;
                     AppEvent::TabActivated(tab_id)
                 } else {
                     self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
@@ -4269,6 +4684,7 @@ impl AppController {
             AppCommand::ClearUserAdminPendingSql(tab_id) => {
                 if let Some(admin) = self.user_admin_state_mut(tab_id) {
                     admin.pending_sql = None;
+                    admin.pending_sql_awaits_preview = false;
                     admin.apply_error = None;
                     AppEvent::TabActivated(tab_id)
                 } else {

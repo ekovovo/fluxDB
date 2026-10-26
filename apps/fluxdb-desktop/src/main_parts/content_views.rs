@@ -3563,8 +3563,11 @@ fn query_output_tab_button(
                         // 新编辑器：依据全文切分语句并按 ordinal 取目标语句。
                         this.query_editors.get(&tab_id).and_then(|editor| {
                             let text = editor.read(cx).text();
-                            sql_editor_adapter::build_statement_runs(&text)
-                                .get(ordinal)
+                            sql_editor_adapter::build_statement_runs(
+                                &text,
+                                this.query_editor_database_kind(tab_id),
+                            )
+                            .get(ordinal)
                                 .cloned()
                         })
                     })

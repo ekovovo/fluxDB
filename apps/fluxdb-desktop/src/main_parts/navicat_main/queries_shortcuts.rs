@@ -498,7 +498,11 @@ impl NavicatMain {
                         // 新编辑器：依据光标偏移取光标所在语句文本。
                         let text = sql_editor.read(cx).text();
                         let offset = sql_editor.read(cx).cursor_offset().min(text.len());
-                        sql_editor_adapter::statement_around(&text, offset)
+                        sql_editor_adapter::statement_around(
+                            &text,
+                            offset,
+                            self.connection_database_kind(editor.connection_id),
+                        )
                             .map(|(start, end)| text[start..end].to_string())
                     })
                     .and_then(|sql| query_history_sql_tables(&sql).into_iter().next());
@@ -832,6 +836,7 @@ impl NavicatMain {
             return;
         }
 
+        // 「保存」确认框：Esc 等同「取消」，只关弹框，不执行 SQL。
         if let Some(tab_id) = self.active_user_admin_tab_id()
             && self
                 .controller

@@ -49,6 +49,7 @@ impl NavicatMain {
                 postgres_profile: None,
                 dameng_profile: None,
                 sqlserver_profile: None,
+                oracle_profile: None,
             });
 
         let adapter: Box<dyn TerminalSessionAdapter> =

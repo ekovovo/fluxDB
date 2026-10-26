@@ -200,9 +200,18 @@ impl AppController {
             },
             DatabaseKind::Postgres => PrivilegeScope::Postgres,
             DatabaseKind::SqlServer => PrivilegeScope::SqlServer,
+            // 达梦账号模型与 Oracle 同源（账号 = schema，角色 + 系统权限 + 对象权限），
+            // 复用同一套面板，差异只体现在渲染方言（见 `UserAdminSqlDialect`）。
+            DatabaseKind::Oracle | DatabaseKind::Dameng => PrivilegeScope::Oracle,
             _ => {
                 return self.fail(Error::new(ErrorKind::Unsupported, "暂不支持该连接的用户与权限管理"));
             }
+        };
+        // 方言跟着连接类型走：借用 `connection` 之前先取出，避免与后面的可变借用冲突。
+        let dialect = if connection.config.kind == DatabaseKind::Dameng {
+            UserAdminSqlDialect::Dameng
+        } else {
+            UserAdminSqlDialect::Oracle
         };
         let database = connection
             .config
@@ -225,9 +234,15 @@ impl AppController {
                 ..SqlServerSecurityState::default()
             });
         }
+        if scope == PrivilegeScope::Oracle {
+            admin.oracle = Some(OracleUserAdminState {
+                dialect,
+                ..OracleUserAdminState::default()
+            });
+        }
         // PG：面板以「成员关系」为主视图，默认停在 MemberOf，选角色即自动加载成员（无 MySQL 权限页）。
         if scope == PrivilegeScope::Postgres {
-            admin.active_detail_tab = UserAdminDetailTab::MemberOf;
+            admin.active_detail_tab = UserAdminDetailTab::Postgres(PgUserAdminTab::MemberOf);
         }
         self.push_tab(TabState {
             id: tab_id,

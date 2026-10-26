@@ -42,7 +42,7 @@ fn pg_execute_query_with_progress(
     config: &ConnectionConfig, request: &QueryRequest,
     on_summary: &mut dyn FnMut(QueryExecutionSummary), should_cancel: &dyn Fn() -> bool,
 ) -> fluxdb_core::Result<QueryExecutionResult> {
-    let statements = query_statements_for_execution(request);
+    let statements = query_statements_for_execution(request, config.kind);
     if statements.is_empty() { return Err(Error::new(ErrorKind::Query, "查询不能为空")); }
     pg_runtime().block_on(async {
         let database = pg_request_database(config, request.database.as_deref());
@@ -182,7 +182,10 @@ async fn pg_run_statement(
             let result = pg_collect_statement(&session.client, statement, request).await;
             // 无论成功与否都结束事务：不回滚会把连接留在 idle-in-transaction，并让后续写工具失败。
             if let Err(error) = session.client.batch_execute("ROLLBACK").await {
+                // 回滚没确认：只读事务不会写入数据，但会话仍留在事务里，
+                // 必须让调用方知道本次收尾失败，不能把结果当干净地交回去。
                 tracing::warn!(target: "fluxdb_connectors", message = %error, "PostgreSQL 只读事务 ROLLBACK 失败");
+                return Err(Error::new(ErrorKind::Query, format!("回滚 PostgreSQL 只读事务失败：{error}")));
             }
             return result;
         }

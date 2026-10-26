@@ -1,4 +1,12 @@
-fn split_sql_statements(sql: &str) -> Vec<String> {
+/// 按方言切分脚本。词法（`q'…'`、`#`、`\'`、`$$…$$`）与块边界交给 [`crate::script_syntax`]；
+/// 词法器失败时退回 [`legacy_split_sql_statements`]，保持这些输入的历史行为。
+fn split_sql_statements(sql: &str, kind: DatabaseKind) -> Vec<String> {
+    crate::script_syntax::split(sql, kind).unwrap_or_else(|| legacy_split_sql_statements(sql))
+}
+
+/// 历史手写扫描器。仅在词法器失败时使用：Oracle 条件编译 `$IF $$x` 会被当成美元引号。
+/// 它没有方言概念，`#` 一律按行注释、`\` 一律按转义——正是新切分器要修的两处。
+fn legacy_split_sql_statements(sql: &str) -> Vec<String> {
     let mut statements = Vec::new();
     let mut start = 0;
     let mut quote: Option<char> = None;
@@ -107,9 +115,9 @@ fn create_trigger_statement_needs_more(statement: &str) -> bool {
     is_create_trigger && upper.contains("BEGIN") && upper.split_whitespace().last() != Some("END")
 }
 
-fn query_statements_for_execution(request: &QueryRequest) -> Vec<String> {
+fn query_statements_for_execution(request: &QueryRequest, kind: DatabaseKind) -> Vec<String> {
     if request.options.split_statements {
-        return split_sql_statements(&request.text);
+        return split_sql_statements(&request.text, kind);
     }
 
     let statement = request.text.trim();
@@ -340,6 +348,11 @@ fn data_filter_literal(value: &CellValue) -> String {
         CellValue::F64(value) => value.to_string(),
         CellValue::Text(value) | CellValue::Json(value) => {
             format!("'{}'", value.replace('\'', "''"))
+        }
+        // 筛选只做前缀比较：预览是完整值的前缀，等值/前缀语义都成立，
+        // 不会因为只有预览而漏掉真正匹配的行。
+        CellValue::TruncatedText { preview, .. } => {
+            format!("'{}'", preview.replace('\'', "''"))
         }
         CellValue::Bytes(value) => {
             let hex = value
@@ -736,6 +749,7 @@ fn data_filter_value_text(value: &CellValue) -> String {
         CellValue::I64(value) => value.to_string(),
         CellValue::F64(value) => value.to_string(),
         CellValue::Text(value) | CellValue::Json(value) => value.clone(),
+        CellValue::TruncatedText { preview, .. } => preview.clone(),
         CellValue::Bytes(value) => value.iter().map(|byte| format!("{byte:02X}")).collect(),
         CellValue::BinarySummary(_) => value.display_label(),
     }

@@ -295,7 +295,10 @@ mod query_execution_source_tests {
     #[test]
     fn repeated_sql_uses_the_executed_summary_index() {
         let statements =
-            sql_editor_adapter::build_statement_runs("SELECT 1;\nSELECT 1;\nSELECT 3;");
+            sql_editor_adapter::build_statement_runs(
+                "SELECT 1;\nSELECT 1;\nSELECT 3;",
+                fluxdb_core::DatabaseKind::MySql,
+            );
         let range = query_execution_source_range(Some(&statements), 1, &statements)
             .expect("second repeated statement");
 
@@ -307,6 +310,7 @@ mod query_execution_source_tests {
     fn single_statement_execution_maps_to_its_editor_statement() {
         let statements = sql_editor_adapter::build_statement_runs(
             "SELECT 'first';\nSELEC 1;\nSELECT 3;",
+            fluxdb_core::DatabaseKind::MySql,
         );
         let sources = vec![statements[1].clone()];
         let range = query_execution_source_range(Some(&sources), 0, &statements)
@@ -318,9 +322,15 @@ mod query_execution_source_tests {
     #[test]
     fn edited_source_is_not_reused_for_a_different_statement() {
         let sources =
-            sql_editor_adapter::build_statement_runs("SELECT 1;\nSELEC 1;");
+            sql_editor_adapter::build_statement_runs(
+                "SELECT 1;\nSELEC 1;",
+                fluxdb_core::DatabaseKind::MySql,
+            );
         let current =
-            sql_editor_adapter::build_statement_runs("SELECT 1;\nSELECT 3;");
+            sql_editor_adapter::build_statement_runs(
+                "SELECT 1;\nSELECT 3;",
+                fluxdb_core::DatabaseKind::MySql,
+            );
 
         assert_eq!(
             query_execution_source_range(Some(&sources), 1, &current),

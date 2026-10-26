@@ -423,6 +423,15 @@ impl NavicatMain {
             ConnectionField::SqlServerConnectTimeout => form.sqlserver_connect_timeout_secs = value,
             ConnectionField::SqlServerQueryTimeout => form.sqlserver_query_timeout_secs = value,
             ConnectionField::SqlServerApplicationName => form.sqlserver_application_name = value,
+            // —— Oracle 专用 ——
+            ConnectionField::OracleServiceName => form.oracle_service_name = value,
+            ConnectionField::OracleSid => form.oracle_sid = value,
+            ConnectionField::OracleSchema => form.oracle_schema = value,
+            ConnectionField::OracleConnectTimeout => form.oracle_connect_timeout_secs = value,
+            ConnectionField::OracleQueryTimeout => form.oracle_query_timeout_secs = value,
+            ConnectionField::OracleApplicationName => form.oracle_application_name = value,
+            ConnectionField::OracleWalletLocation => form.oracle_wallet_location = value,
+            ConnectionField::OracleWalletPassword => form.oracle_wallet_password = value,
             ConnectionField::SentinelMasterName => form.sentinel_master_name = value,
             ConnectionField::SentinelEndpoints => form.sentinel_endpoints = value,
             ConnectionField::ClusterStartNodes => form.cluster_start_nodes = value,
@@ -676,6 +685,26 @@ impl NavicatMain {
                     return Err(tr("app.connection.sqlserver.timeout_out_of_range").to_string());
                 }
             }
+            // Oracle：Service Name 与 SID 互斥，超时范围与 SQL Server 一致。
+            DatabaseKind::Oracle => {
+                let profile = form.build_oracle_profile();
+                if let Some(message) = profile.validate() {
+                    return Err(message);
+                }
+                let connect_timeout = form
+                    .oracle_connect_timeout_secs
+                    .trim()
+                    .parse::<u32>()
+                    .map_err(|_| tr("app.connection.oracle.connect_timeout_invalid").to_string())?;
+                let query_timeout = form
+                    .oracle_query_timeout_secs
+                    .trim()
+                    .parse::<u32>()
+                    .map_err(|_| tr("app.connection.oracle.query_timeout_invalid").to_string())?;
+                if connect_timeout == 0 || connect_timeout > 86400 || query_timeout > 86400 {
+                    return Err(tr("app.connection.oracle.timeout_out_of_range").to_string());
+                }
+            }
             _ => {
                 if form.host.trim().is_empty() {
                     return Err(tr("app.connection.error.host_required").to_string());
@@ -733,6 +762,16 @@ impl NavicatMain {
                     .unwrap_or_else(|_| database_default_port_u16(kind)),
                 database: non_empty_option(&form.database),
             },
+            // Oracle 没有「数据库名」：endpoint 里记当前生效的 Service Name 或 SID，
+            // 供对象树与补全复用；具体是哪一种由档案里的 connect_kind 区分。
+            DatabaseKind::Oracle => Endpoint::Tcp {
+                host: form.host.trim().to_string(),
+                port: form
+                    .port
+                    .parse()
+                    .unwrap_or_else(|_| database_default_port_u16(kind)),
+                database: non_empty_option(form.oracle_target_name()),
+            },
             DatabaseKind::Sqlite => Endpoint::SqliteFile {
                 path: form.sqlite_path.trim().into(),
                 read_only: false,
@@ -780,6 +819,13 @@ impl NavicatMain {
         } else {
             None
         };
+        // Oracle 档案是拨号目标（Service Name / SID）、登录身份与 Wallet 的事实来源；
+        // 密码与 Wallet 口令在落盘前由 storage 按连接 ID 写入加密凭据表。
+        let oracle_profile = if kind == DatabaseKind::Oracle {
+            Some(form.build_oracle_profile())
+        } else {
+            None
+        };
 
         ConnectionDraft {
             name: form.name.trim().to_string(),
@@ -791,6 +837,7 @@ impl NavicatMain {
             postgres_profile,
             dameng_profile,
             sqlserver_profile,
+            oracle_profile,
         }
     }
 

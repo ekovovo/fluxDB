@@ -48,6 +48,29 @@ pub fn execute_sql_with_parameters(
     )
 }
 
+/// 连接器错误 → 工具错误码。
+///
+/// `OutcomeUnknown` 必须单独成码：它是「提交/回滚未确认」，回执要标成
+/// `Unknown` 让 Agent 循环停下来人工核实；笼统归成 `execution_error` 会让
+/// 模型把它当普通失败再写一次。
+fn sql_exec_error_from_connector(
+    error: fluxdb_core::Error,
+    prefix: &str,
+    unsupported_code: &'static str,
+) -> SqlExecError {
+    let code = match error.kind {
+        fluxdb_core::ErrorKind::OutcomeUnknown => "write_outcome_unknown",
+        fluxdb_core::ErrorKind::Unsupported => unsupported_code,
+        _ => "execution_error",
+    };
+    let message = if code == "write_outcome_unknown" {
+        "提交或回滚结果未知，禁止自动重试，请人工核实".to_string()
+    } else {
+        format!("{prefix}: {error}")
+    };
+    SqlExecError::new(code, message)
+}
+
 /// 执行链的可选模式。集中成一个结构，避免继续增加位置参数。
 #[derive(Clone, Copy, Debug, Default)]
 struct SqlExecRunOptions {
@@ -119,7 +142,7 @@ fn execute_sql_with_parameters_and_progress(
     let fetch_rows = max_rows.saturating_add(1);
     // SQL Server 的 SHOWPLAN 会话里不能再套 TOP，否则返回的是改写后的语句计划。
     let bounded = if explain_only && config.kind == DatabaseKind::SqlServer {
-        strip_sql_comments(sql)
+        strip_sql_comments(sql, config.kind)
     } else {
         sql_text_for_execution(sql, fetch_rows, config.kind)
     };
@@ -162,7 +185,7 @@ fn execute_sql_with_parameters_and_progress(
                 should_cancel,
             )
             .map_err(|error| {
-                if error.kind == fluxdb_core::ErrorKind::Internal {
+                if error.kind == fluxdb_core::ErrorKind::OutcomeUnknown {
                     SqlExecError::new(
                         "write_outcome_unknown",
                         "提交或回滚结果未知，禁止自动重试，请人工核实",
@@ -199,7 +222,7 @@ fn execute_sql_with_parameters_and_progress(
                 },
                 should_cancel,
             )
-            .map_err(|error| SqlExecError::new("execution_error", format!("执行失败: {error}")))?
+            .map_err(|error| sql_exec_error_from_connector(error, "执行失败", "execution_error"))?
     } else {
         // 有参数就必须真 bind；不支持绑定的连接器由默认实现明确拒绝（绝不插值）。
         connector
@@ -207,16 +230,7 @@ fn execute_sql_with_parameters_and_progress(
                 request: request.clone(),
                 parameters: parameters.to_vec(),
             })
-            .map_err(|error| {
-                SqlExecError::new(
-                    if error.kind == fluxdb_core::ErrorKind::Unsupported {
-                        "parameters_unsupported"
-                    } else {
-                        "execution_error"
-                    },
-                    format!("参数化执行失败: {}", error.message),
-                )
-            })?
+            .map_err(|error| sql_exec_error_from_connector(error, "参数化执行失败", "parameters_unsupported"))?
     };
     let elapsed_ms = started.elapsed().as_millis() as u64;
     if should_cancel() {

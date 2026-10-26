@@ -644,6 +644,14 @@ fn new_connection_modal(
                                             true,
                                             colors,
                                             cx,
+                                        ))
+                                        .child(kind_tile(
+                                            "Oracle",
+                                            DatabaseKind::Oracle,
+                                            kind,
+                                            editing,
+                                            colors,
+                                            cx,
                                         )),
                                 ),
                         )
@@ -866,6 +874,7 @@ fn database_kind_element_suffix(kind: DatabaseKind) -> &'static str {
         DatabaseKind::Postgres => "postgres",
         DatabaseKind::Dameng => "dameng",
         DatabaseKind::SqlServer => "sqlserver",
+        DatabaseKind::Oracle => "oracle",
     }
 }
 
@@ -883,6 +892,7 @@ fn database_kind_icon_path(kind: DatabaseKind) -> &'static str {
         DatabaseKind::Postgres => "db/postgres.svg",
         DatabaseKind::Dameng => "db/dm.svg",
         DatabaseKind::SqlServer => "db/sqlserver.svg",
+        DatabaseKind::Oracle => "db/oracle.svg",
     }
 }
 
@@ -948,6 +958,8 @@ fn new_connection_tab_content(
             | DatabaseKind::Redis
             | DatabaseKind::Postgres => tls_form(kind, form, inputs, colors, window, cx),
             DatabaseKind::SqlServer => sqlserver_encryption_form(inputs, colors, window, cx),
+            // Oracle 的证书校验由 Wallet（含 TCPS 凭据）承担，没有独立开关。
+            DatabaseKind::Oracle => oracle_wallet_form(inputs, colors, window, cx),
             _ => redis_only_settings_hint(colors),
         },
         NewConnectionTab::Ssh => match kind {
@@ -964,6 +976,7 @@ fn new_connection_tab_content(
             DatabaseKind::Postgres => postgres_advanced_form(form, inputs, colors, window, cx),
             DatabaseKind::Redis => advanced_form(form, inputs, colors, window, cx),
             DatabaseKind::SqlServer => sqlserver_advanced_form(inputs, colors, window, cx),
+            DatabaseKind::Oracle => oracle_advanced_form(inputs, colors, window, cx),
             _ => redis_only_settings_hint(colors),
         },
     }
@@ -1203,6 +1216,86 @@ fn sqlserver_advanced_form(
             .child(field_row_light(
                 tr("app.connection.sqlserver.application_name"),
                 ConnectionField::SqlServerApplicationName,
+                inputs,
+                false,
+                colors,
+                window,
+                cx,
+            )),
+    )
+}
+
+/// Oracle TLS 页签：Wallet 目录与口令。
+/// Oracle 的证书校验通过 Wallet 承载，这里不提供「跳过校验」开关。
+fn oracle_wallet_form(
+    inputs: &NewConnectionInputs,
+    colors: UiColors,
+    window: &mut Window,
+    cx: &mut Context<NavicatMain>,
+) -> Div {
+    div()
+        .flex()
+        .flex_col()
+        .gap_4()
+        .child(redis_section_label(
+            tr("app.connection.oracle.wallet_title"),
+            colors,
+        ))
+        .child(
+            h_form()
+                .label_width(px(112.))
+                .child(field_row_light(
+                    tr("app.connection.oracle.wallet_location"),
+                    ConnectionField::OracleWalletLocation,
+                    inputs,
+                    false,
+                    colors,
+                    window,
+                    cx,
+                ))
+                .child(field_row_light(
+                    tr("app.connection.oracle.wallet_password"),
+                    ConnectionField::OracleWalletPassword,
+                    inputs,
+                    true,
+                    colors,
+                    window,
+                    cx,
+                )),
+        )
+}
+
+/// Oracle 高级页签：超时与应用名。
+fn oracle_advanced_form(
+    inputs: &NewConnectionInputs,
+    colors: UiColors,
+    window: &mut Window,
+    cx: &mut Context<NavicatMain>,
+) -> Div {
+    div().w_full().child(
+        h_form()
+            .label_width(px(112.))
+            .child(field_row_light(
+                tr("app.connection.oracle.connect_timeout"),
+                ConnectionField::OracleConnectTimeout,
+                inputs,
+                false,
+                colors,
+                window,
+                cx,
+            ))
+            .child(field_row_light(
+                tr("app.connection.oracle.query_timeout"),
+                ConnectionField::OracleQueryTimeout,
+                inputs,
+                false,
+                colors,
+                window,
+                cx,
+            ))
+            .child(field_row_light(
+                tr("app.connection.oracle.application_name"),
+                ConnectionField::OracleApplicationName,
                 inputs,
                 false,
                 colors,
@@ -2086,6 +2179,75 @@ fn connection_form(
                 window,
                 cx,
             )),
+        // Oracle：Service Name 与 SID 互斥，只显示当前寻址方式对应的输入框。
+        DatabaseKind::Oracle => {
+            let form = base
+                .child(connection_select_field(
+                    tr("app.connection.oracle.connect_kind"),
+                    &inputs.oracle_connect_kind_select,
+                    "",
+                ))
+                .child(host_port_row_light(
+                    tr("app.connection.field.host"),
+                    inputs,
+                    colors,
+                    window,
+                    cx,
+                ))
+                .child(field_row_light(
+                    tr("app.connection.field.username"),
+                    ConnectionField::Username,
+                    inputs,
+                    false,
+                    colors,
+                    window,
+                    cx,
+                ))
+                .child(field_row_light(
+                    tr("app.connection.field.password"),
+                    ConnectionField::Password,
+                    inputs,
+                    true,
+                    colors,
+                    window,
+                    cx,
+                ));
+            let form = if form_state.oracle_connect_kind == "sid" {
+                form.child(field_row_light(
+                    tr("app.connection.oracle.sid"),
+                    ConnectionField::OracleSid,
+                    inputs,
+                    false,
+                    colors,
+                    window,
+                    cx,
+                ))
+            } else {
+                form.child(field_row_light(
+                    tr("app.connection.oracle.service_name"),
+                    ConnectionField::OracleServiceName,
+                    inputs,
+                    false,
+                    colors,
+                    window,
+                    cx,
+                ))
+            };
+            form.child(field_row_light(
+                tr("app.connection.oracle.schema"),
+                ConnectionField::OracleSchema,
+                inputs,
+                false,
+                colors,
+                window,
+                cx,
+            ))
+            .child(connection_select_field(
+                tr("app.connection.oracle.privilege"),
+                &inputs.oracle_privilege_select,
+                "",
+            ))
+        }
         DatabaseKind::SqlServer => base
             .child(host_port_row_light(
                 tr("app.connection.field.host"),

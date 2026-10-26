@@ -415,9 +415,32 @@ fn save_cell_detail_edit(editor: &mut DataEditorState) -> fluxdb_core::Result<()
         .active_cell
         .ok_or_else(|| Error::new(ErrorKind::Internal, "未选择单元格"))?;
     let current_value = current_cell_value(editor, active_cell.row, active_cell.column)?;
-    let next_value =
-        cell_value_from_edit_text(&current_value, &editor.cell_detail_panel.edit_value)?;
+    // 截断值以按需加载的完整文本为准：拿预览当原值既判不出「没改」，也会把片段写回。
+    let original = match &current_value {
+        CellValue::TruncatedText { .. } => CellValue::Text(detail_full_text(editor)?),
+        other => other.clone(),
+    };
+    let next_value = cell_value_from_edit_text(&original, &editor.cell_detail_panel.edit_value)?;
+    if next_value == original {
+        // 内容没变：只退出编辑态，不产生一条把完整值重写回去的更新。
+        editor.cell_detail_panel.mode = CellDetailMode::View;
+        return Ok(());
+    }
     set_cell_detail_value(editor, next_value)
+}
+
+/// 详情面板里已加载的完整文本；没有就说明预览还没换成完整值，不能编辑。
+fn detail_full_text(editor: &DataEditorState) -> fluxdb_core::Result<String> {
+    editor
+        .cell_detail_panel
+        .full_value
+        .clone()
+        .ok_or_else(|| {
+            Error::new(
+                ErrorKind::Unsupported,
+                "该单元格只加载了预览（截断的 CLOB），请先加载完整值再编辑",
+            )
+        })
 }
 
 fn set_cell_detail_value(editor: &mut DataEditorState, value: CellValue) -> fluxdb_core::Result<()> {
@@ -478,6 +501,9 @@ fn cell_value_edit_text(value: &CellValue) -> String {
         CellValue::I64(value) => value.to_string(),
         CellValue::F64(value) => value.to_string(),
         CellValue::Text(value) | CellValue::Json(value) => value.clone(),
+        // 预览可以展示、不能编辑：编辑框里只有片段，保存时会被拒绝（见
+        // `cell_value_from_edit_text`）。完整值需先走详情加载。
+        CellValue::TruncatedText { preview, .. } => preview.clone(),
         CellValue::Bytes(value) => value
             .iter()
             .map(|byte| format!("{byte:02x}"))
@@ -509,6 +535,13 @@ fn cell_value_from_edit_text(original: &CellValue, value: &str) -> fluxdb_core::
             CellValue::Bytes(parse_hex_bytes(value)?)
         }
         CellValue::Json(_) => CellValue::Json(value.to_string()),
+        // 编辑框里只有预览片段，拿它生成新值等于用片段覆盖完整数据。
+        CellValue::TruncatedText { .. } => {
+            return Err(Error::new(
+                ErrorKind::Unsupported,
+                "该单元格只加载了预览（截断的 CLOB），请先加载完整值再编辑",
+            ));
+        }
     };
 
     Ok(value)
@@ -647,4 +680,33 @@ fn postgres_changes_with_original_values(changes: &DataChangeSet, page: &DataPag
         }
     }
     Ok(changes)
+}
+
+#[cfg(test)]
+mod cell_detail_truncated_tests {
+    use super::cell_value_edit_text;
+    use super::cell_value_from_edit_text;
+    use fluxdb_core::CellValue;
+
+    fn truncated() -> CellValue {
+        CellValue::TruncatedText {
+            preview: "前 4000 字符".to_string(),
+            total_chars: 100_000,
+        }
+    }
+
+    /// 预览可以显示（否则详情面板空白），但绝不能变成可保存的完整值。
+    #[test]
+    fn preview_is_displayable_but_not_editable() {
+        assert_eq!(cell_value_edit_text(&truncated()), "前 4000 字符");
+        assert!(cell_value_from_edit_text(&truncated(), "改过的文本").is_err());
+    }
+
+    /// 完整文本照常编辑，不受截断保护影响。
+    #[test]
+    fn complete_text_round_trips() {
+        let value = CellValue::Text("完整内容".to_string());
+        let edited = cell_value_from_edit_text(&value, "新内容").expect("complete text is editable");
+        assert_eq!(edited, CellValue::Text("新内容".to_string()));
+    }
 }

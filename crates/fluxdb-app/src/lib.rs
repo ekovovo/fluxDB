@@ -35,9 +35,9 @@ use fluxdb_core::{
     QueryRollbackRowSnapshot, QueryRollbackSnapshot, QueryStatementKind,
     QueryUpdateRollbackSnapshot, RedisConnectionProfile, RedisHashFieldTtl, RedisServerVersion,
     RoutineRef, Row, RowIdentity, RowUpdate, Settings, SidebarLayout, SortSpec, SqlDialect as _,
-    TableFingerprint, TableRef, TriggerInfo, TriggerRef, UserFacingError, UserRoleMember,
-    UserRoleMembership, WorkbenchHistoryItem, WorkbenchHistoryScope, WorkbenchHistoryStore,
-    WriteCommit, WriteReviewOutcome, WriteRiskDecision, WriteRiskFacts,
+    TableFingerprint, TableRef, TriggerInfo, TriggerRef, UserAdminSqlDialect, UserFacingError,
+    UserRoleMember, UserRoleMembership, WorkbenchHistoryItem, WorkbenchHistoryScope,
+    WorkbenchHistoryStore, WriteCommit, WriteReviewOutcome, WriteRiskDecision, WriteRiskFacts,
     database_user_admin_provider, grants_from_query_result, infer_cloud_from_host,
     redact_uri_password, role_memberships_from_grants, set_sqlite_attached_database,
     sqlite_attached_database_path,
@@ -51,6 +51,7 @@ use sqlparser::ast::{Expr, ObjectName, ObjectNamePart, Statement};
 // First-pass source split: included files remain in crate-root scope while module boundaries are refined.
 include!("parts/ai_conversation_state.rs");
 include!("parts/sqlserver_user_admin_state.rs");
+include!("parts/oracle_user_admin_state.rs");
 include!("parts/state.rs");
 include!("parts/ai_model_catalog.rs");
 include!("parts/create_table_model.rs");
@@ -65,6 +66,7 @@ include!("parts/create_table_provider.rs");
 include!("parts/create_table_postgres.rs");
 include!("parts/create_table_postgres_design.rs");
 include!("parts/create_table_dameng.rs");
+include!("parts/create_table_oracle.rs");
 include!("parts/controller.rs");
 include!("parts/data_editor.rs");
 include!("parts/mock_data.rs");
@@ -72,6 +74,7 @@ include!("parts/sql_format.rs");
 include!("parts/table_info.rs");
 include!("parts/user_admin.rs");
 include!("parts/sqlserver_user_admin.rs");
+include!("parts/oracle_user_admin.rs");
 include!("parts/completion_index.rs");
 include!("parts/query_completion.rs");
 include!("parts/completion_engine.rs");
@@ -97,6 +100,10 @@ pub use fluxdb_connectors::{
     MySqlClientVersion, MySqlDumpInvocation, MySqlDumpOptions, mysql_client_version,
     mysql_dump_invocation,
 };
+// 编辑器语句切分与执行侧共用同一套方言规则：`;` / 独占一行的 `/` / `GO`、
+// `q'…'` 与块深度都由 connectors 的词法层判定，UI 只消费字节区间。
+// 名字带 `byte_ranges`：本 crate 内 `sql_statement_ranges` 已是另一个只看分号的旧实现。
+pub use fluxdb_connectors::script_syntax::statement_ranges as sql_statement_byte_ranges;
 
 include!("parts/ai_transport.rs");
 include!("parts/ai_retry.rs");

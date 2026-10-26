@@ -230,6 +230,61 @@ impl NavicatMain {
         Some(self.cell_detail_input.read(cx).value().to_string())
     }
 
+    /// 后台读取截断单元格的完整文本。
+    ///
+    /// 详情面板先显示预览，完整值到达后经 `FinishCellTextLoad` 写回；数据库 I/O
+    /// 一律在后台线程，避免打开详情时卡住 UI。
+    fn spawn_cell_text_load(
+        &mut self,
+        tab_id: TabId,
+        row: usize,
+        column: usize,
+        cx: &mut Context<Self>,
+    ) {
+        let key = (tab_id, row, column);
+        if self._cell_text_load_tasks.contains_key(&key) {
+            return;
+        }
+        let mut controller = self.controller.clone();
+        let task = cx.spawn(async move |view, cx| {
+            let result = cx
+                .background_spawn(async move {
+                    match controller.dispatch(AppCommand::LoadCellText {
+                        tab_id,
+                        row,
+                        column,
+                    }) {
+                        AppEvent::CellTextLoaded { text, .. } => Ok(text),
+                        AppEvent::Failed(error) => Err(error),
+                        _ => Err(fluxdb_core::UserFacingError {
+                            title: tr("app.data.error.load_full_text").to_string(),
+                            message: tr("app.data.error.full_text_no_result").to_string(),
+                            detail: None,
+                            retryable: true,
+                        }),
+                    }
+                })
+                .await;
+            let _ = cx.update(|cx| {
+                let Some(view) = view.upgrade() else {
+                    return;
+                };
+                view.update(cx, |this, cx| {
+                    this._cell_text_load_tasks.remove(&key);
+                    let event = this.controller.dispatch(AppCommand::FinishCellTextLoad {
+                        tab_id,
+                        row,
+                        column,
+                        result,
+                    });
+                    this.apply_app_event(&event, cx);
+                    cx.notify();
+                });
+            });
+        });
+        self._cell_text_load_tasks.insert(key, task);
+    }
+
     fn download_active_cell(&mut self, cx: &mut Context<Self>) {
         let Some((tab_id, row, column)) =
             self.controller
@@ -569,6 +624,13 @@ impl NavicatMain {
 
     fn apply_app_event(&mut self, event: &AppEvent, cx: &mut Context<Self>) {
         match event {
+            AppEvent::CellTextLoadRequested {
+                tab_id,
+                row,
+                column,
+            } => {
+                self.spawn_cell_text_load(*tab_id, *row, *column, cx);
+            }
             AppEvent::ErRelationshipsLoaded {
                 scope_key,
                 relationships,

@@ -11,7 +11,7 @@ fn dm_execute_query_with_progress(
     on_summary: &mut dyn FnMut(QueryExecutionSummary),
     should_cancel: &dyn Fn() -> bool,
 ) -> fluxdb_core::Result<QueryExecutionResult> {
-    let statements = query_statements_for_execution(request);
+    let statements = query_statements_for_execution(request, config.kind);
     if statements.is_empty() {
         return Err(Error::new(ErrorKind::Query, "查询不能为空"));
     }
@@ -116,13 +116,19 @@ fn dm_execute_query_with_progress(
         }
     }
     if read_only_wrap {
-        // 回滚失败不能把未提交说成成功；记录日志并让连接丢弃。
+        // 回滚失败不能把「已回滚」说成事实：连接随后丢弃，未提交的更改由服务端
+        // 在会话结束时回滚，但这次调用不能返回成功。
         if let Err(error) = client.rollback() {
+            client.close();
             tracing::warn!(
                 target: "fluxdb_connectors",
                 message = %error,
                 "达梦只读事务回滚失败"
             );
+            return Err(Error::new(
+                ErrorKind::Query,
+                "达梦只读事务回滚失败，本次结果未确认",
+            ));
         }
     }
     client.close();
@@ -180,17 +186,20 @@ fn dm_execute_parameterized(
             .begin()
             .map_err(|error| dm_error("开启只读事务失败", error))?;
     }
-    let result = dm_execute(&mut client, &statement, &params)?;
-    if read_only_wrap
-        && let Err(error) = client.rollback()
-    {
-        tracing::warn!(
-            target: "fluxdb_connectors",
-            message = %error,
-            "达梦参数化只读事务回滚失败"
-        );
-    }
+    let result = dm_execute(&mut client, &statement, &params);
+    // 执行失败也要先收尾：未回滚的事务会留在连接上，而连接随后即被丢弃。
+    let finish = if read_only_wrap {
+        client.rollback()
+    } else {
+        Ok(())
+    };
     client.close();
+    if let Err(error) = finish {
+        let error = Error::new(ErrorKind::Query, format!("达梦只读事务回滚失败：{error}"));
+        tracing::warn!(target: "fluxdb_connectors", message = %error.message, "达梦参数化会话收尾失败");
+        return Err(error);
+    }
+    let result = result?;
     match result {
         ExecuteResult::Query { columns, rows } => {
             let columns = columns

@@ -370,15 +370,22 @@ pub fn load_er_graph_in_background(
 /// 这些数据库的对象树是 database → schema → table 两层；ER 必须逐 schema 读取，
 /// 否则同库跨 schema 的同名表会被合并成一个节点。
 fn database_kind_uses_schemas(kind: DatabaseKind) -> bool {
+    // Oracle 的 schema 就是对象 Owner，也必须逐 Owner 读取，否则同名表会被合并。
     matches!(
         kind,
-        DatabaseKind::Postgres | DatabaseKind::Dameng | DatabaseKind::SqlServer
+        DatabaseKind::Postgres
+            | DatabaseKind::Dameng
+            | DatabaseKind::SqlServer
+            | DatabaseKind::Oracle
     )
 }
 
 fn default_schema_for_kind(kind: DatabaseKind) -> &'static str {
     match kind {
         DatabaseKind::SqlServer => "dbo",
+        // Oracle 没有跨会话稳定的默认 Owner：名称解析目标由连接档案的
+        // `CURRENT_SCHEMA` 决定，这里宁可留空也不伪造成某个固定 schema。
+        DatabaseKind::Oracle => "",
         _ => "public",
     }
 }

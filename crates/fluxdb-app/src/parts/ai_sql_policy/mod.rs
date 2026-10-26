@@ -19,12 +19,14 @@ use std::ops::ControlFlow;
 
 mod dameng;
 mod mysql;
+mod oracle;
 mod postgres;
 mod sqlite;
 mod sqlserver;
 
 pub use dameng::DAMENG;
 pub use mysql::MYSQL;
+pub use oracle::ORACLE;
 pub use postgres::POSTGRES;
 pub use sqlite::SQLITE;
 pub use sqlserver::SQLSERVER;
@@ -60,6 +62,8 @@ pub enum ExplainMode {
     Prefix,
     /// SQL Server 的 `SET SHOWPLAN_ALL ON` 专用会话。
     Showplan,
+    /// 方言没有真正无副作用的计划入口（Oracle 的 `EXPLAIN PLAN FOR` 会写计划表）。
+    Unsupported,
 }
 
 /// 数据库方言的安全策略。
@@ -102,6 +106,22 @@ pub trait SqlPolicy: Send + Sync {
         &[]
     }
 
+    /// 已知无副作用的内置函数表。为 `Some` 时，不在表内的函数调用一律视为
+    /// 无法证明只读（Oracle 用户函数可有自治事务）。
+    fn known_functions(&self) -> Option<&'static [&'static str]> {
+        None
+    }
+
+    /// 表达式的已知副作用（如 `seq.NEXTVAL`）。
+    fn expression_side_effect(&self, _: &Expr) -> Option<&'static str> {
+        None
+    }
+
+    /// 对象限定名的范围问题（如 `table@dblink`）。
+    fn relation_scope_reason(&self, _: &str) -> Option<&'static str> {
+        None
+    }
+
     fn explain_mode(&self) -> ExplainMode {
         ExplainMode::Prefix
     }
@@ -115,6 +135,7 @@ pub fn policy_for(kind: DatabaseKind) -> Option<&'static dyn SqlPolicy> {
         DatabaseKind::Sqlite => Some(&SQLITE),
         DatabaseKind::SqlServer => Some(&SQLSERVER),
         DatabaseKind::Dameng => Some(&DAMENG),
+        DatabaseKind::Oracle => Some(&ORACLE),
         DatabaseKind::MongoDb | DatabaseKind::Redis => None,
     }
 }
@@ -296,6 +317,15 @@ pub fn analyze_sql(sql: &str, policy: &dyn SqlPolicy) -> SqlRisk {
     if let Some(table) = first_denied_relation(statement, policy) {
         reasons.push(format!("denied_table:{table}"));
     }
+    if let Some(reason) = first_expression_side_effect(statement, policy) {
+        reasons.push(format!("denied_syntax:{reason}"));
+    }
+    if let Some(name) = first_unknown_function(statement, policy) {
+        reasons.push(format!("unknown_function:{name}"));
+    }
+    if let Some(name) = first_scoped_relation(statement, policy) {
+        reasons.push(format!("scope_unproven:{name}"));
+    }
 
     if reasons.is_empty() {
         SqlRisk::ReadOnly
@@ -372,6 +402,80 @@ fn first_denied_relation(statement: &Statement, policy: &dyn SqlPolicy) -> Optio
     let _ = sqlparser::ast::visit_relations(statement, |name| {
         if relation_denied(policy, name) {
             found = Some(name.to_string().to_ascii_lowercase());
+            return ControlFlow::Break(());
+        }
+        ControlFlow::Continue(())
+    });
+    found
+}
+
+fn first_expression_side_effect(
+    statement: &Statement,
+    policy: &dyn SqlPolicy,
+) -> Option<&'static str> {
+    struct SideEffectScan<'a> {
+        policy: &'a dyn SqlPolicy,
+    }
+    impl Visitor for SideEffectScan<'_> {
+        type Break = &'static str;
+
+        fn pre_visit_expr(&mut self, expr: &Expr) -> ControlFlow<&'static str> {
+            match self.policy.expression_side_effect(expr) {
+                Some(reason) => ControlFlow::Break(reason),
+                None => ControlFlow::Continue(()),
+            }
+        }
+    }
+    match statement.visit(&mut SideEffectScan { policy }) {
+        ControlFlow::Break(reason) => Some(reason),
+        ControlFlow::Continue(()) => None,
+    }
+}
+
+/// 只有声明了已知函数表的方言才做正向白名单：表外的函数一律视为副作用未知。
+fn first_unknown_function(statement: &Statement, policy: &dyn SqlPolicy) -> Option<String> {
+    let known = policy.known_functions()?;
+    struct UnknownFunctions<'a> {
+        known: &'a [&'a str],
+    }
+    impl Visitor for UnknownFunctions<'_> {
+        type Break = String;
+
+        fn pre_visit_expr(&mut self, expr: &Expr) -> ControlFlow<String> {
+            let Expr::Function(function) = expr else {
+                return ControlFlow::Continue(());
+            };
+            let name = function
+                .name
+                .to_string()
+                .rsplit('.')
+                .next()
+                .unwrap_or_default()
+                .to_ascii_uppercase();
+            if self
+                .known
+                .iter()
+                .any(|known| known.eq_ignore_ascii_case(&name))
+            {
+                ControlFlow::Continue(())
+            } else {
+                ControlFlow::Break(function.name.to_string().to_ascii_lowercase())
+            }
+        }
+    }
+    match statement.visit(&mut UnknownFunctions { known }) {
+        ControlFlow::Break(name) => Some(name),
+        ControlFlow::Continue(()) => None,
+    }
+}
+
+/// 对象名的范围无法从语句文本证明（如数据库链接）。
+fn first_scoped_relation(statement: &Statement, policy: &dyn SqlPolicy) -> Option<String> {
+    let mut found = None;
+    let _ = sqlparser::ast::visit_relations(statement, |name| {
+        let full = name.to_string().to_ascii_lowercase();
+        if policy.relation_scope_reason(&full).is_some() {
+            found = Some(full);
             return ControlFlow::Break(());
         }
         ControlFlow::Continue(())

@@ -129,7 +129,7 @@ impl Connector for MockConnector {
         on_summary: &mut dyn FnMut(QueryExecutionSummary),
         should_cancel: &dyn Fn() -> bool,
     ) -> fluxdb_core::Result<QueryExecutionResult> {
-        let statements = query_statements_for_execution(request);
+        let statements = query_statements_for_execution(request, self.kind);
         if statements.is_empty() {
             return Err(Error::new(ErrorKind::Query, "查询不能为空"));
         }

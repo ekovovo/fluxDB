@@ -43,6 +43,11 @@ fn reference_page_excerpt(page: &fluxdb_core::DataPage) -> (String, bool) {
                         truncated |= text.chars().count() > 128;
                         serde_json::json!(text.chars().take(128).collect::<String>())
                     }
+                    // 预览本身就不完整：无论取多少都标 truncated，别让 AI 当完整值用。
+                    fluxdb_core::CellValue::TruncatedText { preview, .. } => {
+                        truncated = true;
+                        serde_json::json!(preview.chars().take(128).collect::<String>())
+                    }
                     other => serde_json::to_value(other).unwrap_or(serde_json::Value::Null),
                 })
                 .collect::<Vec<_>>()

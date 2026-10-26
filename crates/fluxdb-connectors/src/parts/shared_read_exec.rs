@@ -256,7 +256,7 @@ fn mysql_execute_query_with_progress(
     on_summary: &mut dyn FnMut(QueryExecutionSummary),
     should_cancel: &dyn Fn() -> bool,
 ) -> fluxdb_core::Result<QueryExecutionResult> {
-    let statements = query_statements_for_execution(request);
+    let statements = query_statements_for_execution(request, config.kind);
     if statements.is_empty() {
         return Err(Error::new(ErrorKind::Query, "查询不能为空"));
     }
@@ -434,7 +434,7 @@ fn sqlite_execute_query_with_progress(
     on_summary: &mut dyn FnMut(QueryExecutionSummary),
     should_cancel: &dyn Fn() -> bool,
 ) -> fluxdb_core::Result<QueryExecutionResult> {
-    let statements = query_statements_for_execution(request);
+    let statements = query_statements_for_execution(request, config.kind);
     if statements.is_empty() {
         return Err(Error::new(ErrorKind::Query, "查询不能为空"));
     }

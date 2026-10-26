@@ -1062,7 +1062,7 @@ pub fn pg_apply_role_plan(
             .map_err(pg_error)?;
         match client.batch_execute(&stmts.join("\n")).await {
             Ok(()) => {
-                client.batch_execute("COMMIT").await.map_err(pg_error)?;
+                client.batch_execute("COMMIT").await.map_err(pg_commit_error)?;
                 Ok(masked)
             }
             Err(error) => {

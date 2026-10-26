@@ -67,6 +67,7 @@ impl NavicatMain {
             postgres_profile: config.postgres_profile.clone(),
             dameng_profile: config.dameng_profile.clone(),
             sqlserver_profile: config.sqlserver_profile.clone(),
+            oracle_profile: config.oracle_profile.clone(),
         };
         let event = self
             .controller

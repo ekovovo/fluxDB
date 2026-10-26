@@ -263,7 +263,336 @@ fn table_action_sql_provider(database_kind: DatabaseKind) -> &'static dyn TableA
         DatabaseKind::Postgres => &POSTGRES_TABLE_ACTION_SQL_PROVIDER,
         DatabaseKind::MongoDb | DatabaseKind::Redis => &UNSUPPORTED_TABLE_ACTION_SQL_PROVIDER,
         DatabaseKind::Dameng => &DAMENG_TABLE_ACTION_SQL_PROVIDER,
+        DatabaseKind::Oracle => &ORACLE_TABLE_ACTION_SQL_PROVIDER,
     }
+}
+
+/// Oracle 表操作。
+///
+/// 复制表不能用 `CREATE TABLE … AS SELECT`：那会丢掉约束、索引和注释，也会把
+/// identity 变成普通列。这里改为重写源表 DDL 再显式插数。
+struct OracleTableActionSqlProvider;
+
+impl TableActionSqlProvider for OracleTableActionSqlProvider {
+    fn rename_table_sql(
+        &self,
+        schema: Option<&str>,
+        old_name: &str,
+        new_name: &str,
+    ) -> Result<String, String> {
+        if new_name.contains('.') {
+            return Err("重命名只接受单段新表名（不带 schema）".to_string());
+        }
+        Ok(format!(
+            "ALTER TABLE {} RENAME TO {};",
+            oracle_action_qualified(schema, old_name),
+            fluxdb_core::OracleDialect.quote_identifier(new_name.trim())
+        ))
+    }
+
+    fn copy_table_sql(
+        &self,
+        schema: Option<&str>,
+        source_name: &str,
+        target_name: &str,
+        copy_data: bool,
+        source_ddl: Option<&str>,
+    ) -> Result<String, String> {
+        let source_ddl =
+            source_ddl.ok_or_else(|| "未读取到源表 Oracle DDL，无法复制表".to_string())?;
+        oracle_copy_table_sql(schema, source_name, target_name, copy_data, source_ddl)
+    }
+
+    fn drop_table_sql(
+        &self,
+        kind: ObjectKind,
+        schema: Option<&str>,
+        table_name: &str,
+    ) -> Result<String, String> {
+        Ok(format!(
+            "DROP {} {};",
+            if kind == ObjectKind::View { "VIEW" } else { "TABLE" },
+            oracle_action_qualified(schema, table_name)
+        ))
+    }
+
+    fn truncate_table_sql(
+        &self,
+        schema: Option<&str>,
+        table_name: &str,
+        _: bool,
+    ) -> Result<String, String> {
+        Ok(format!(
+            "TRUNCATE TABLE {};",
+            oracle_action_qualified(schema, table_name)
+        ))
+    }
+
+    fn with_foreign_key_check(
+        &self,
+        sql: String,
+        foreign_key_check: ForeignKeyCheckMode,
+    ) -> Result<String, String> {
+        match foreign_key_check {
+            ForeignKeyCheckMode::Default => Ok(sql),
+            // Oracle 只能 ALTER TABLE … DISABLE CONSTRAINT（DDL 且需要表级权限），
+            // 没有连接级开关；不生成会静默失败或改坏约束的语句。
+            ForeignKeyCheckMode::Enable | ForeignKeyCheckMode::Disable => Err(
+                "Oracle 不支持以连接级开关临时禁用外键检查；请先删除依赖外键或改用 DELETE"
+                    .to_string(),
+            ),
+        }
+    }
+}
+
+static ORACLE_TABLE_ACTION_SQL_PROVIDER: OracleTableActionSqlProvider =
+    OracleTableActionSqlProvider;
+
+fn oracle_action_qualified(schema: Option<&str>, name: &str) -> String {
+    match schema.map(str::trim).filter(|schema| !schema.is_empty()) {
+        Some(schema) => format!(
+            "{}.{}",
+            fluxdb_core::OracleDialect.quote_identifier(schema),
+            fluxdb_core::OracleDialect.quote_identifier(name.trim())
+        ),
+        None => fluxdb_core::OracleDialect.quote_identifier(name.trim()),
+    }
+}
+
+fn oracle_copy_table_sql(
+    schema: Option<&str>,
+    source_name: &str,
+    target_name: &str,
+    copy_data: bool,
+    source_ddl: &str,
+) -> Result<String, String> {
+    let source = oracle_action_qualified(schema, source_name);
+    let target = oracle_action_qualified(schema, target_name);
+    let statements = oracle_split_sql_statements(source_ddl)?;
+    if statements.is_empty() {
+        return Err("未读取到可复制的 Oracle 表结构 DDL".to_string());
+    }
+    let mut rewritten = Vec::with_capacity(statements.len() + 2);
+    for statement in &statements {
+        rewritten.push(oracle_rewrite_copy_statement(
+            statement,
+            &source,
+            &target,
+            target_name,
+        )?);
+    }
+    if copy_data {
+        let columns = oracle_copy_columns(source_ddl, true);
+        let insert = if columns.is_empty() {
+            // 没有可写列（全为 ALWAYS identity）时不生成插数语句，避免必然失败。
+            return Ok(rewritten.join("\n"));
+        } else {
+            let column_list = columns
+                .iter()
+                .map(|column| fluxdb_core::OracleDialect.quote_identifier(column))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("INSERT INTO {target} ({column_list}) SELECT {column_list} FROM {source};")
+        };
+        rewritten.push(insert);
+    }
+    Ok(rewritten.join("\n"))
+}
+
+fn oracle_split_sql_statements(sql: &str) -> Result<Vec<String>, String> {
+    let mut statements = Vec::new();
+    let mut start = 0usize;
+    let mut quote: Option<char> = None;
+    for (index, ch) in sql.char_indices() {
+        if let Some(end_quote) = quote {
+            if ch == end_quote {
+                quote = None;
+            }
+            continue;
+        }
+        match ch {
+            '\'' | '"' => quote = Some(ch),
+            ';' => {
+                let statement = sql[start..index].trim();
+                if !statement.is_empty() {
+                    statements.push(format!("{statement};"));
+                }
+                start = index + 1;
+            }
+            _ => {}
+        }
+    }
+    if quote.is_some() {
+        return Err("Oracle 表结构 DDL 引号未闭合".to_string());
+    }
+    let tail = sql[start..].trim();
+    if !tail.is_empty() {
+        statements.push(format!("{tail};"));
+    }
+    Ok(statements)
+}
+
+fn oracle_rewrite_copy_statement(
+    statement: &str,
+    source: &str,
+    target: &str,
+    target_name: &str,
+) -> Result<String, String> {
+    let trimmed = statement.trim();
+    let upper = trimmed.to_ascii_uppercase();
+    if upper.starts_with("CREATE TABLE ") {
+        return oracle_rewrite_create_table(trimmed, target, target_name);
+    }
+    if upper.starts_with("CREATE INDEX ")
+        || upper.starts_with("CREATE UNIQUE INDEX ")
+        || upper.starts_with("CREATE BITMAP INDEX ")
+    {
+        return oracle_rewrite_index(trimmed, target, target_name);
+    }
+    if upper.starts_with("COMMENT ON ") {
+        // COMMENT ON TABLE/COLUMN 的目标必须是新表；其余文本原样保留。
+        return Ok(trimmed.replacen(source, target, 1));
+    }
+    Ok(trimmed.to_string())
+}
+
+fn oracle_rewrite_create_table(
+    statement: &str,
+    target: &str,
+    target_name: &str,
+) -> Result<String, String> {
+    let upper = statement.to_ascii_uppercase();
+    let Some(create_pos) = upper.find("CREATE TABLE") else {
+        return Err("Oracle DDL 缺少 CREATE TABLE".to_string());
+    };
+    let name_start = create_pos + "CREATE TABLE".len();
+    let Some(paren_offset) = statement[name_start..].find('(') else {
+        return Err("Oracle CREATE TABLE 缺少字段定义".to_string());
+    };
+    let body_start = name_start + paren_offset;
+    let mut body = format!(
+        "CREATE TABLE {target}\n{}",
+        oracle_rename_constraint_names(&statement[body_start..], target_name)
+    );
+    if !body.trim_end().ends_with(';') {
+        body.push(';');
+    }
+    Ok(body)
+}
+
+/// 复制出来的约束必须换名：同一 schema 内约束名唯一，沿用源名会报 ORA-02264。
+fn oracle_rename_constraint_names(statement: &str, target_name: &str) -> String {
+    let mut output = String::with_capacity(statement.len());
+    let mut rest = statement;
+    while let Some(offset) = rest.to_ascii_uppercase().find("CONSTRAINT") {
+        let keyword_end = offset + "CONSTRAINT".len();
+        output.push_str(&rest[..keyword_end]);
+        let after = rest[keyword_end..].trim_start();
+        let whitespace = &rest[keyword_end..keyword_end + (rest[keyword_end..].len() - after.len())];
+        output.push_str(whitespace);
+        if !after.starts_with('"') {
+            output.push_str(after);
+            return output;
+        }
+        let Some(end) = after[1..].find('"').map(|index| index + 2) else {
+            output.push_str(after);
+            return output;
+        };
+        let old_name = &after[1..end - 1];
+        output.push('"');
+        output.push_str(&oracle_copy_object_name(target_name, old_name).replace('"', "\"\""));
+        output.push('"');
+        rest = &after[end..];
+    }
+    output.push_str(rest);
+    output
+}
+
+fn oracle_rewrite_index(
+    statement: &str,
+    target: &str,
+    target_name: &str,
+) -> Result<String, String> {
+    let upper = statement.to_ascii_uppercase();
+    let Some(index_pos) = upper.find("INDEX") else {
+        return Err("Oracle 索引 DDL 缺少 INDEX".to_string());
+    };
+    let after_index = &statement[index_pos + "INDEX".len()..];
+    let name_start = after_index
+        .char_indices()
+        .find(|(_, ch)| !ch.is_whitespace())
+        .map(|(index, _)| index)
+        .ok_or_else(|| "Oracle 索引 DDL 缺少索引名".to_string())?;
+    let name_rest = &after_index[name_start..];
+    let (old_name, old_end) = oracle_parse_quoted_identifier(name_rest)?;
+    let before_name = &statement[..index_pos + "INDEX".len() + name_start];
+    let after_name = &name_rest[old_end..];
+    let upper_after = after_name.to_ascii_uppercase();
+    let Some(on_pos) = upper_after.find(" ON ") else {
+        return Err("Oracle 索引 DDL 缺少 ON".to_string());
+    };
+    let table_start = on_pos + " ON ".len();
+    let table_rest = &after_name[table_start..];
+    let table_end = table_rest
+        .find(char::is_whitespace)
+        .or_else(|| table_rest.find('('))
+        .ok_or_else(|| "Oracle 索引 DDL 缺少索引字段".to_string())?;
+    let new_name = oracle_copy_object_name(target_name, &old_name);
+    Ok(format!(
+        "{before_name}\"{new_name}\"{} ON {target}{}",
+        &after_name[..on_pos],
+        &table_rest[table_end..]
+    ))
+}
+
+fn oracle_parse_quoted_identifier(value: &str) -> Result<(String, usize), String> {
+    if !value.starts_with('"') {
+        return Err("Oracle DDL 标识符未引用".to_string());
+    }
+    let end = value[1..]
+        .find('"')
+        .map(|index| index + 2)
+        .ok_or_else(|| "Oracle DDL 标识符引用未闭合".to_string())?;
+    Ok((value[1..end - 1].to_string(), end))
+}
+
+fn oracle_copy_object_name(target_name: &str, old_name: &str) -> String {
+    // Oracle 标识符上限 30 字节（12.2 之前）/128（之后），统一按 128 截断。
+    format!("{}_{}", target_name.trim(), old_name.trim())
+        .chars()
+        .take(128)
+        .collect()
+}
+
+/// 复制时用于 INSERT 的列清单。
+///
+/// `GENERATED ALWAYS AS IDENTITY` 列不接受显式写入（ORA-32795），必须排除；
+/// `BY DEFAULT` 列可以写，保留原值。
+fn oracle_copy_columns(source_ddl: &str, exclude_always_identity: bool) -> Vec<String> {
+    let Some(open) = source_ddl.find('(') else {
+        return Vec::new();
+    };
+    let body = &source_ddl[open + 1..];
+    let mut columns = Vec::new();
+    for entry in dameng_split_top_level_entries(body) {
+        let trimmed = entry.trim();
+        let upper = trimmed.to_ascii_uppercase();
+        if trimmed.is_empty()
+            || ["CONSTRAINT", "PRIMARY", "FOREIGN", "CHECK", "UNIQUE"]
+                .iter()
+                .any(|keyword| upper.starts_with(keyword))
+        {
+            continue;
+        }
+        if exclude_always_identity && upper.contains("GENERATED ALWAYS AS IDENTITY") {
+            continue;
+        }
+        let Some(name) = dameng_ddl_identifier(trimmed) else {
+            continue;
+        };
+        columns.push(name);
+    }
+    columns
 }
 
 struct DamengTableActionSqlProvider;

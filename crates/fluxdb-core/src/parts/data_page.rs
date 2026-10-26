@@ -84,6 +84,12 @@ pub enum CellValue {
     Bytes(Vec<u8>),
     BinarySummary(BinaryCellSummary),
     Json(String),
+    /// 只加载了前缀的文本（如超过预览上限的 Oracle CLOB）。
+    ///
+    /// 必须与 `Text` 区分开：导出、备份、写回都会把 `Text` 当权威数据，
+    /// 拿预览去写等于用片段覆盖完整值。消费方要么拒绝，要么先取完整值，
+    /// 不能像旧实现那样把预览和一句说明拼成 `Text` 混进数据。
+    TruncatedText { preview: String, total_chars: u64 },
 }
 
 impl CellValue {
@@ -107,7 +113,16 @@ impl CellValue {
                 }
             }
             CellValue::Json(value) => value.clone(),
+            CellValue::TruncatedText {
+                preview,
+                total_chars,
+            } => format!("{preview}\n…（共 {total_chars} 字符，仅预览）"),
         }
+    }
+
+    /// 该值是否只是预览（不是完整数据）。
+    pub fn is_truncated(&self) -> bool {
+        matches!(self, CellValue::TruncatedText { .. })
     }
 }
 

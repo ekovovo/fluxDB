@@ -11,7 +11,7 @@ fn sqlserver_execute_query_with_progress(
     on_summary: &mut dyn FnMut(QueryExecutionSummary),
     should_cancel: &dyn Fn() -> bool,
 ) -> fluxdb_core::Result<QueryExecutionResult> {
-    let statements = query_statements_for_execution(request);
+    let statements = query_statements_for_execution(request, config.kind);
     if statements.is_empty() {
         return Err(Error::new(ErrorKind::Query, "查询不能为空"));
     }
@@ -207,11 +207,17 @@ async fn sqlserver_execute_on_client(
         if let Err(error) =
             sqlserver_exec_transaction(client, "IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION").await
         {
+            // 未提交的事务会随连接断开由服务端回滚，但这次调用不能返回成功：
+            // 「已回滚」是事实陈述，不能只说日志里。
             tracing::warn!(
                 target: "fluxdb_connectors",
                 message = %error.message,
                 "SQL Server 只读事务回滚失败"
             );
+            return Err(Error::new(
+                ErrorKind::Query,
+                format!("SQL Server 只读事务回滚失败：{}", error.message),
+            ));
         }
     }
     if explain_only && !connection_broken {

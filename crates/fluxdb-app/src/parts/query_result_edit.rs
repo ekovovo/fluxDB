@@ -96,18 +96,29 @@ fn editable_query_object(request: &QueryRequest, kind: DatabaseKind) -> Option<O
         return None;
     }
 
-    // 二段名的含义随方言不同（§8.4/R30）：PG/SQL Server 是 schema.table，
+    // 二段名的含义随方言不同（§8.4/R30）：PG/SQL Server/Oracle 是 schema.table，
     // MySQL/TiDB/SQLite 是 database.table。三段名统一视为 database.schema.table。
+    // Oracle 的 schema 就是对象 Owner，两段名 `OWNER.TABLE` 同样按 schema 解析。
     let (database, schema, name) = match (kind, parts.as_slice()) {
-        (DatabaseKind::Postgres | DatabaseKind::Dameng | DatabaseKind::SqlServer, [name]) => {
-            (request.database.clone(), None, name.clone())
-        }
         (
-            DatabaseKind::Postgres | DatabaseKind::Dameng | DatabaseKind::SqlServer,
+            DatabaseKind::Postgres
+            | DatabaseKind::Dameng
+            | DatabaseKind::SqlServer
+            | DatabaseKind::Oracle,
+            [name],
+        ) => (request.database.clone(), None, name.clone()),
+        (
+            DatabaseKind::Postgres
+            | DatabaseKind::Dameng
+            | DatabaseKind::SqlServer
+            | DatabaseKind::Oracle,
             [schema, name],
         ) => (request.database.clone(), Some(schema.clone()), name.clone()),
         (
-            DatabaseKind::Postgres | DatabaseKind::Dameng | DatabaseKind::SqlServer,
+            DatabaseKind::Postgres
+            | DatabaseKind::Dameng
+            | DatabaseKind::SqlServer
+            | DatabaseKind::Oracle,
             [database, schema, name],
         ) => (Some(database.clone()), Some(schema.clone()), name.clone()),
         (_, [name]) => (request.database.clone(), None, name.clone()),
@@ -196,10 +207,11 @@ fn parse_sql_identifier(input: &str, kind: DatabaseKind) -> Option<(String, &str
         return None;
     }
     let raw = &input[..end];
-    let name = if matches!(kind, DatabaseKind::Postgres | DatabaseKind::Dameng) {
-        raw.to_ascii_lowercase()
-    } else {
-        raw.to_string()
+    // 未加引号的标识符：PG/达梦折叠小写，Oracle 折叠大写，其余按原样。
+    let name = match kind {
+        DatabaseKind::Postgres | DatabaseKind::Dameng => raw.to_ascii_lowercase(),
+        DatabaseKind::Oracle => raw.to_ascii_uppercase(),
+        _ => raw.to_string(),
     };
     Some((name, &input[end..]))
 }

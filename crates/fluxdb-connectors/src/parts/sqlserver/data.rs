@@ -376,6 +376,10 @@ fn sqlserver_preview_value_literal(value: &CellValue) -> String {
         CellValue::Text(value) | CellValue::Json(value) => {
             format!("N'{}'", value.replace('\'', "''"))
         }
+        // 预览 SQL 里不能出现半截值：写 NULL 并用注释说明，避免用户把它当可执行导出。
+        CellValue::TruncatedText { total_chars, .. } => {
+            format!("NULL /* 截断的 CLOB：共 {total_chars} 字符，需完整读取 */")
+        }
         CellValue::Bytes(value) => format!(
             "0x{}",
             value

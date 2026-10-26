@@ -161,6 +161,8 @@ fn cell_value_label(value: &CellValue) -> String {
         CellValue::I64(value) => value.to_string(),
         CellValue::F64(value) => value.to_string(),
         CellValue::Text(value) => value.clone(),
+        // 预览必须带标记，否则用户会当成完整值。
+        CellValue::TruncatedText { .. } => value.display_label(),
         CellValue::Bytes(value) => format!("(BLOB) {} bytes", value.len()),
         CellValue::BinarySummary(_) => value.display_label(),
         CellValue::Json(value) => value.clone(),

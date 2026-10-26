@@ -43,6 +43,7 @@ impl AppController {
             DatabaseKind::MongoDb => "mongodb",
             DatabaseKind::Dameng => "dameng",
             DatabaseKind::SqlServer => "sqlserver",
+            DatabaseKind::Oracle => "oracle",
         };
         let sql_dialect = policy_for(config.kind).map(|policy| policy.label());
         Ok(serde_json::json!({

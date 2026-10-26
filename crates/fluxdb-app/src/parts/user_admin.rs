@@ -203,12 +203,24 @@ impl AppController {
         };
         let execution = self.execute_query(&request)?;
         // 连接器把单条语句错误放在 execution.summaries（success=false）而非抛 Err，
-        // 以便查询编辑器批处理时不中断其他语句。这里需要「整批要么全成、要么全败」的
-        // 语义，故显式检查是否有失败语句，避免 DROP USER 等被权限拒绝却误判成功。
-        if let Some(failed) = execution.summaries.iter().find(|summary| !summary.success) {
+        // 以便查询编辑器批处理时不中断其他语句。这里一次保存会带多条账号 DDL，
+        // 失败时把原始错误连同「已执行几条」一起抛出：MySQL 多 DDL 不做原子回滚，
+        // 用户需要知道哪些已经生效。
+        let total = execution.summaries.len();
+        if let Some((index, failed)) = execution
+            .summaries
+            .iter()
+            .enumerate()
+            .find(|(_, summary)| !summary.success)
+        {
             return Err(Error::new(
                 ErrorKind::Query,
-                format!("数据库执行失败：{}", failed.message),
+                format!(
+                    "数据库执行失败（已执行 {}/{} 条）：{}",
+                    index,
+                    total,
+                    failed.message
+                ),
             ));
         }
         Ok(())

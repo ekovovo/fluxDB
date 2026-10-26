@@ -436,16 +436,10 @@ impl NavicatMain {
         let initial_text = editor.text.clone();
         let settings = self.controller.state().settings.clone();
         // 构造 SQL 接入层：按连接类型选择方言，注入通用编辑器的补全 / 语法 / 执行通道。
-        let dialect = self
-            .controller
-            .state()
-            .connections
-            .iter()
-            .find(|connection| connection.config.id == editor.connection_id)
-            .map(|connection| {
-                sql_editor_adapter::SqlDialect::from_database_kind(connection.config.kind)
-            })
-            .unwrap_or(sql_editor_adapter::SqlDialect::Mysql);
+        // 切分用的数据库类型单独保留：Oracle / 达梦在 `SqlDialect` 里都归成 PostgreSQL，
+        // 只靠方言会丢掉 `/` 分隔符与 PL/SQL 块边界，编辑器就会把匿名块按 `;` 切碎。
+        let database_kind = self.connection_database_kind(editor.connection_id);
+        let dialect = sql_editor_adapter::SqlDialect::from_database_kind(database_kind);
         // 语句执行状态仓库：宿主与适配器共享，宿主写状态、适配器还原为行背景装饰。
         let status_store: sql_editor_adapter::SqlStatusStore =
             std::sync::Arc::new(std::sync::Mutex::new(sql_editor_adapter::SqlStatementStatusMap::default()));
@@ -554,7 +548,7 @@ impl NavicatMain {
                 signature_controller.sql_function_signature(signature_connection_id, name)
             });
         let adapter = std::sync::Arc::new(
-            sql_editor_adapter::SqlAdapter::new(dialect)
+            sql_editor_adapter::SqlAdapter::new(dialect, database_kind)
                 .with_status_store(status_store)
                 .with_schema(schema)
                 .with_completion_resolver(completion_resolver)
@@ -564,7 +558,7 @@ impl NavicatMain {
         let language_registry = std::sync::Arc::new(fluxdb_editor_core::LanguageRegistry::new());
         language_registry.register(
             dialect.language_id(),
-            std::sync::Arc::new(sql_editor_adapter::SqlLanguage::new(dialect)),
+            std::sync::Arc::new(sql_editor_adapter::SqlLanguage::new(dialect, database_kind)),
             Some(adapter.clone() as _),
         );
         let providers = editor_component::Providers {

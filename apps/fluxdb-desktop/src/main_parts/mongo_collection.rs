@@ -9,8 +9,6 @@ const MONGO_SECTION_HEIGHT: f32 = 38.;
 const MONGO_TOOLBAR_HEIGHT: f32 = 38.;
 const MONGO_PAGER_HEIGHT: f32 = 34.;
 const MONGO_INSPECTOR_WIDTH: f32 = 380.;
-/// 表格单元格最大字符数：超长值截断，完整内容看详情抽屉。
-const MONGO_VALUE_MAX_CHARS: usize = 240;
 
 /// 分节页签顺序与文案 key（顺序即页签顺序）。
 const MONGO_SECTIONS: [(MongoSection, &str); 4] = [
@@ -64,6 +62,14 @@ impl NavicatMain {
             .bg(colors.panel_bg)
             .flex()
             .flex_col()
+            .debug_selector({
+                let namespace = format!(
+                    "{}/{}",
+                    state.object.database.clone().unwrap_or_default(),
+                    state.object.name
+                );
+                move || format!("mongo-collection-page:{namespace}")
+            })
             .child(mongo_namespace_strip(state, colors))
             .child(section_bar)
             .child(body)
@@ -77,6 +83,16 @@ impl NavicatMain {
         colors: UiColors,
         cx: &mut Context<NavicatMain>,
     ) -> Div {
+        let collapsed_documents = self
+            .mongo_collapsed_documents
+            .get(&tab_id)
+            .cloned()
+            .unwrap_or_default();
+        let expanded_fields = self
+            .mongo_expanded_fields
+            .get(&tab_id)
+            .cloned()
+            .unwrap_or_default();
         let selected = state.selected_document.and_then(|index| {
             state
                 .page
@@ -84,14 +100,36 @@ impl NavicatMain {
                 .and_then(|page| page.documents.get(index))
                 .map(|document| (index, document))
         });
-        let results = mongo_results(tab_id, state, colors, cx);
-        let body = match selected {
-            Some((index, document)) => div()
+        let json_fold_toggles = self
+            .mongo_json_fold_toggles
+            .get(&tab_id)
+            .cloned()
+            .unwrap_or_default();
+        let documents = MongoDocumentView {
+            tab_id,
+            collapsed_documents: &collapsed_documents,
+            expanded_fields: &expanded_fields,
+            json_fold_toggles: &json_fold_toggles,
+            colors,
+        };
+        let results = mongo_results(state, &documents, colors, cx);
+        // 抽屉只有两种形态：编辑中的文档给编辑器，其余给只读详情。
+        let drawer = match (&self.mongo_document_editor, selected) {
+            (Some(editor), _) if editor.tab_id == tab_id => {
+                Some(mongo_document_editor_drawer(editor, colors, cx))
+            }
+            (_, Some((index, document))) => {
+                Some(mongo_inspector(tab_id, index, document, colors, cx))
+            }
+            _ => None,
+        };
+        let body = match drawer {
+            Some(drawer) => div()
                 .flex_1()
                 .min_h(px(0.))
                 .flex()
                 .child(results)
-                .child(mongo_inspector(tab_id, index, document, colors, cx)),
+                .child(drawer),
             None => results,
         };
 
@@ -141,14 +179,14 @@ impl NavicatMain {
                     }),
             )
             .child(div().flex_1())
-            .child(
-                backup_text_button(tr("app.mongo.aggregation.run"), colors, cx.listener(
-                    move |this, _, _, cx| {
-                        this.run_mongo_aggregation(tab_id, cx);
-                        cx.stop_propagation();
-                    },
-                )),
-            );
+            .child(backup_text_button(
+                tr("app.mongo.aggregation.run"),
+                colors,
+                cx.listener(move |this, _, _, cx| {
+                    this.run_mongo_aggregation(tab_id, cx);
+                    cx.stop_propagation();
+                }),
+            ));
 
         let body = match &state.aggregation {
             LoadState::Loading => center_loading_message(tr("app.mongo.loading"), colors),
@@ -158,21 +196,17 @@ impl NavicatMain {
             LoadState::Loaded(page) if !page.documents.is_empty() => div()
                 .flex_1()
                 .min_h(px(0.))
-                .child(
-                    div()
-                        .overflow_y_scrollbar()
-                        .flex()
-                        .flex_col()
-                        .children(page.documents.iter().map(|document| {
-                            let mut component = JsonComponent::new(JsonEditorConfig::default());
-                            component.load(&document.json);
-                            div()
-                                .p_2()
-                                .border_b_1()
-                                .border_color(colors.border_soft)
-                                .child(component.render_preview(colors))
-                        })),
-                ),
+                .child(div().overflow_y_scrollbar().flex().flex_col().children(
+                    page.documents.iter().map(|document| {
+                        let mut component = JsonComponent::new(JsonEditorConfig::default());
+                        component.load(&document.json);
+                        div()
+                            .p_2()
+                            .border_b_1()
+                            .border_color(colors.border_soft)
+                            .child(component.render_preview(colors))
+                    }),
+                )),
             LoadState::Loaded(_) | LoadState::NotLoaded => {
                 center_message(tr("app.mongo.aggregation.empty"), colors)
             }
@@ -308,22 +342,22 @@ fn mongo_query_panel(
                     true,
                     colors,
                 ))
-                .child(
-                    backup_text_button(tr("app.mongo.query.find"), colors, cx.listener(
-                        move |this, _, _, cx| {
-                            this.run_mongo_query(tab_id, cx);
-                            cx.stop_propagation();
-                        },
-                    )),
-                )
-                .child(
-                    backup_text_button(tr("app.mongo.query.reset"), colors, cx.listener(
-                        move |this, _, window, cx| {
-                            this.reset_mongo_query(tab_id, window, cx);
-                            cx.stop_propagation();
-                        },
-                    )),
-                ),
+                .child(backup_text_button(
+                    tr("app.mongo.query.find"),
+                    colors,
+                    cx.listener(move |this, _, _, cx| {
+                        this.run_mongo_query(tab_id, cx);
+                        cx.stop_propagation();
+                    }),
+                ))
+                .child(backup_text_button(
+                    tr("app.mongo.query.reset"),
+                    colors,
+                    cx.listener(move |this, _, window, cx| {
+                        this.reset_mongo_query(tab_id, window, cx);
+                        cx.stop_propagation();
+                    }),
+                )),
         )
         .child(
             div()
@@ -391,7 +425,11 @@ fn mongo_results_toolbar(
     let view = cx.entity().downgrade();
     let bar = MONGO_DISPLAY_MODES
         .iter()
-        .map(|(_, label)| Tab::from(tr(label)))
+        .map(|(mode, label)| {
+            // 展示方式页签需要稳定选择器，无头用例才能点击 JSON 视图。
+            let mode = *mode;
+            Tab::from(tr(label)).debug_selector(move || format!("mongo-display-tab:{mode:?}"))
+        })
         .fold(
             TabBar::new(("mongo-display-tabs", tab_id.0))
                 .segmented()
@@ -436,31 +474,113 @@ fn mongo_results_toolbar(
                 .child(summary),
         )
         .child(div().flex_1())
-        .child(
-            query_toolbar_icon_button(
-                tr("app.common.refresh"),
-                AppIcon::Refresh,
-                !state.loading,
-                state.loading,
-                colors.text,
-                colors,
-            )
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |this, _, _, cx| {
-                    this.run_mongo_query(tab_id, cx);
-                    cx.stop_propagation();
-                }),
-            ),
-        )
+        .when(!state.read_only, |bar| {
+            bar.child(mongo_results_insert_button(tab_id, colors, cx))
+                .child(mongo_results_import_button(tab_id, colors, cx))
+        })
+        .child(mongo_results_refresh_button(
+            tab_id,
+            state.loading,
+            colors,
+            cx,
+        ))
+}
+
+/// 结果条右侧的「新增文档」按钮：打开与编辑 / 复制同一个抽屉，初值只有 `_id`。
+///
+/// 只读对象（视图）不渲染：视图不能写入，摆一个点了就报错的按钮只会误导用户。
+fn mongo_results_insert_button(
+    tab_id: TabId,
+    colors: UiColors,
+    cx: &mut Context<NavicatMain>,
+) -> Stateful<Div> {
+    mongo_card_icon_button(
+        format!("mongo-results-insert-{}", tab_id.0),
+        "mongo-results-insert".to_string(),
+        AppIcon::Plus,
+        tr("app.mongo.insert_document"),
+        colors.text,
+        true,
+        false,
+        colors,
+    )
+    .on_mouse_down(
+        MouseButton::Left,
+        cx.listener(move |this, _, window, cx| {
+            this.open_mongo_document_insert(tab_id, window, cx);
+            cx.stop_propagation();
+        }),
+    )
+}
+
+/// 结果条右侧的「导入文档」按钮：从 JSON / CSV 文件批量写入当前集合。
+///
+/// 与新增按钮同样只读对象不渲染；导入过程中弹窗自带中止入口。
+fn mongo_results_import_button(
+    tab_id: TabId,
+    colors: UiColors,
+    cx: &mut Context<NavicatMain>,
+) -> Stateful<Div> {
+    mongo_card_icon_button(
+        format!("mongo-results-import-{}", tab_id.0),
+        "mongo-results-import".to_string(),
+        AppIcon::FolderInput,
+        tr("app.mongo.import.action"),
+        colors.text,
+        true,
+        false,
+        colors,
+    )
+    .on_mouse_down(
+        MouseButton::Left,
+        cx.listener(move |this, _, _, cx| {
+            this.open_mongo_import_dialog(tab_id, cx);
+            cx.stop_propagation();
+        }),
+    )
+}
+
+/// 结果条右侧的刷新按钮。
+///
+/// 结果条只有 38px 高、旁边是 11px 统计文字：通用 30px 描边工具栏按钮在这行里显得过大，
+/// 改用卡片头 / 抽屉头同款的 24px 无边框图标按钮。查询在途让刷新图标自身旋转：
+/// 反馈就落在用户刚点的那颗按钮上，不额外引入第二种图形。
+fn mongo_results_refresh_button(
+    tab_id: TabId,
+    loading: bool,
+    colors: UiColors,
+    cx: &mut Context<NavicatMain>,
+) -> Stateful<Div> {
+    mongo_card_icon_button(
+        format!("mongo-results-refresh-{}", tab_id.0),
+        "mongo-results-refresh".to_string(),
+        AppIcon::Refresh,
+        tr("app.common.refresh"),
+        colors.text,
+        !loading,
+        // 刷新在途：图标自转，而不是换成另一个图形。
+        loading,
+        colors,
+    )
+    // 在途时按钮降为不可用样式，但点击仍要吞掉，避免连点重复发查询。
+    .on_mouse_down(
+        MouseButton::Left,
+        cx.listener(move |this, _, _, cx| {
+            if !loading {
+                this.run_mongo_query(tab_id, cx);
+            }
+            cx.stop_propagation();
+        }),
+    )
 }
 
 fn mongo_results(
-    tab_id: TabId,
     state: &MongoCollectionState,
+    documents: &MongoDocumentView<'_>,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
+    let tab_id = documents.tab_id;
     let container = div().flex_1().min_w(px(0.)).min_h(px(0.));
     if let Some(error) = &state.error {
         return container.child(mongo_error_block(
@@ -472,6 +592,9 @@ fn mongo_results(
         ));
     }
     let Some(page) = &state.page else {
+        // 结果区容器默认不是 flex，直接塞居中提示会只按文本高度布局而贴顶；
+        // 空态分支显式开 flex，让提示占满结果区并垂直居中。
+        let container = container.flex();
         return container.child(if state.loading {
             center_loading_message(tr("app.mongo.loading"), colors)
         } else {
@@ -479,10 +602,13 @@ fn mongo_results(
         });
     };
     if page.documents.is_empty() {
-        return container.child(center_message(tr("app.mongo.empty"), colors));
+        return container
+            .flex()
+            .child(center_message(tr("app.mongo.empty"), colors));
     }
+    // 文档与 JSON 共用卡片列表（交互稿同一套卡头），只有正文不同；表格单独成表。
     match state.display {
-        MongoDisplayMode::Documents => container.child(
+        MongoDisplayMode::Documents | MongoDisplayMode::Json => container.child(
             div()
                 .overflow_y_scrollbar()
                 .flex()
@@ -490,21 +616,12 @@ fn mongo_results(
                 .gap_2()
                 .p_2()
                 .children(page.documents.iter().enumerate().map(|(index, document)| {
-                    mongo_document_card(tab_id, index, document, state, colors, cx)
+                    mongo_document_card(documents, index, document, state, cx)
                 })),
         ),
+        // 表格的数据区横向滚动（操作列固定在右侧不动），纵向滚动由表格自身承担。
         MongoDisplayMode::Table => {
-            container.child(div().overflow_y_scrollbar().child(mongo_document_table(page, colors)))
-        }
-        MongoDisplayMode::Json => {
-            let mut component = JsonComponent::new(JsonEditorConfig::default());
-            component.load(&mongo_page_json(page));
-            container.child(
-                div()
-                    .p_2()
-                    .overflow_y_scrollbar()
-                    .child(component.render_preview(colors)),
-            )
+            container.child(mongo_document_table(documents, page, state, colors, cx))
         }
     }
 }
@@ -552,210 +669,6 @@ fn mongo_error_block(
         ))
 }
 
-/// 一条文档卡片：序号 + `_id`、复制、打开详情；正文是折叠好的只读 JSON。
-fn mongo_document_card(
-    tab_id: TabId,
-    index: usize,
-    document: &fluxdb_core::MongoDocument,
-    state: &MongoCollectionState,
-    colors: UiColors,
-    cx: &mut Context<NavicatMain>,
-) -> Div {
-    let selected = state.selected_document == Some(index);
-    let mut component = JsonComponent::new(JsonEditorConfig::default());
-    component.load(&document.json);
-    let json = document.json.clone();
-    let view = cx.entity().downgrade();
-    div()
-        .rounded(colors.radius)
-        .border_1()
-        .border_color(if selected { colors.info } else { colors.border })
-        .bg(colors.panel_alt)
-        .flex()
-        .flex_col()
-        .child(
-            div()
-                .h(px(28.))
-                .px_2()
-                .flex()
-                .items_center()
-                .gap_2()
-                .border_b_1()
-                .border_color(colors.border_soft)
-                .child(
-                    div()
-                        .text_size(px(11.))
-                        .text_color(colors.muted)
-                        .child(SharedString::from(format!("#{}", index + 1))),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .overflow_hidden()
-                        .text_size(px(11.))
-                        .text_color(colors.muted)
-                        .child(SharedString::from(format!("_id: {}", document.id))),
-                )
-                .child(
-                    query_toolbar_icon_button(
-                        tr("app.mongo.copy_document"),
-                        AppIcon::Copy,
-                        true,
-                        false,
-                        colors.text,
-                        colors,
-                    )
-                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                        cx.write_to_clipboard(ClipboardItem::new_string(json.clone()));
-                        cx.stop_propagation();
-                    }),
-                )
-                .child(
-                    query_toolbar_icon_button(
-                        tr("app.mongo.document_detail"),
-                        AppIcon::PanelRight,
-                        true,
-                        false,
-                        if selected { colors.info } else { colors.text },
-                        colors,
-                    )
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, _, _, cx| {
-                            this.select_mongo_document(
-                                tab_id,
-                                if selected { None } else { Some(index) },
-                                cx,
-                            );
-                            cx.stop_propagation();
-                        }),
-                    ),
-                ),
-        )
-        .child(
-            div()
-                .p_2()
-                .max_h(px(260.))
-                .overflow_hidden()
-                .child(component.render_preview(colors)),
-        )
-        // 点卡片正文同样打开详情，与原型一致。
-        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-            let _ = view.update(cx, |this, cx| {
-                this.select_mongo_document(tab_id, Some(index), cx);
-            });
-        })
-}
-
-/// 表格视图：`_id` 一列 + 各顶层字段一列；缺字段的文档留空。
-fn mongo_document_table(page: &fluxdb_core::MongoDocumentsPage, colors: UiColors) -> Div {
-    let rows = page
-        .documents
-        .iter()
-        .map(|document| mongo_document_fields(&document.json))
-        .collect::<Vec<_>>();
-    let columns = rows
-        .iter()
-        .flat_map(|(_, fields)| fields.iter().map(|(key, _)| key.clone()))
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect::<Vec<_>>();
-
-    div()
-        .flex()
-        .flex_col()
-        .child(
-            div()
-                .flex()
-                .border_b_1()
-                .border_color(colors.border)
-                .bg(colors.panel_alt)
-                .child(mongo_table_cell(tr("app.mongo.table.id"), true, colors))
-                .children(columns.iter().map(|column| {
-                    mongo_table_cell(SharedString::from(column.clone()), true, colors)
-                })),
-        )
-        .children(rows.into_iter().map(|(id, fields)| {
-            div()
-                .flex()
-                .border_b_1()
-                .border_color(colors.border_soft)
-                .child(mongo_table_cell(SharedString::from(id), false, colors))
-                .children(columns.iter().map(|column| {
-                    let value = fields
-                        .iter()
-                        .find(|(key, _)| key == column)
-                        .map(|(_, value)| value.clone())
-                        .unwrap_or_else(|| tr("app.mongo.table.missing").to_string());
-                    mongo_table_cell(SharedString::from(value), false, colors)
-                }))
-        }))
-}
-
-fn mongo_table_cell(text: SharedString, header: bool, colors: UiColors) -> Div {
-    let text: String = text.chars().take(MONGO_VALUE_MAX_CHARS).collect();
-    div()
-        .w(px(180.))
-        .flex_none()
-        .h(px(24.))
-        .px_2()
-        .flex()
-        .items_center()
-        .overflow_hidden()
-        .text_size(px(11.))
-        .text_color(if header { colors.muted } else { colors.text })
-        .child(SharedString::from(text))
-}
-
-/// 文档 JSON 的 `_id` 与顶层字段（值取紧凑文本）：表格列头 / 单元格取值。
-fn mongo_document_fields(json: &str) -> (String, Vec<(String, String)>) {
-    let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(json) else {
-        return (String::new(), Vec::new());
-    };
-    let id = map
-        .get("_id")
-        .map(|value| match value {
-            serde_json::Value::Object(object) => object
-                .get("$oid")
-                .and_then(|oid| oid.as_str())
-                .map(str::to_string)
-                .unwrap_or_else(|| serde_json::to_string(value).unwrap_or_default()),
-            other => other
-                .as_str()
-                .map(str::to_string)
-                .unwrap_or_else(|| other.to_string()),
-        })
-        .unwrap_or_default();
-    let fields = map
-        .into_iter()
-        .filter(|(key, _)| key != "_id")
-        .map(|(key, value)| {
-            let text = match &value {
-                serde_json::Value::Object(object) => format!("{{ {} }}", object.len()),
-                serde_json::Value::Array(items) => format!("[ {} ]", items.len()),
-                other => other
-                    .as_str()
-                    .map(str::to_string)
-                    .unwrap_or_else(|| other.to_string()),
-            };
-            (key, text)
-        })
-        .collect();
-    (id, fields)
-}
-
-fn mongo_page_json(page: &fluxdb_core::MongoDocumentsPage) -> String {
-    let documents = page
-        .documents
-        .iter()
-        .map(|document| {
-            serde_json::from_str::<serde_json::Value>(&document.json)
-                .unwrap_or(serde_json::Value::Null)
-        })
-        .collect::<Vec<_>>();
-    serde_json::to_string_pretty(&documents).unwrap_or_else(|_| "[]".to_string())
-}
-
 /// 右侧详情抽屉：整篇文档的 Extended JSON（只读）。
 fn mongo_inspector(
     tab_id: TabId,
@@ -793,18 +706,21 @@ fn mongo_inspector(
                         .child(tr("app.mongo.document_detail")),
                 )
                 .child(
-                    query_toolbar_icon_button(
-                        tr("app.common.close"),
+                    // 与编辑 / 复制抽屉同一档：38px 头部里放 30px 描边按钮会顶满整条，显得笨重。
+                    mongo_card_icon_button(
+                        format!("mongo-inspector-close-{}", tab_id.0),
+                        "mongo-inspector-close".to_string(),
                         AppIcon::Close,
+                        tr("app.common.close"),
+                        colors.text,
                         true,
                         false,
-                        colors.text,
                         colors,
                     )
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, _, _, cx| {
-                            this.select_mongo_document(tab_id, None, cx);
+                            this.close_mongo_document_drawer(tab_id, cx);
                             cx.stop_propagation();
                         }),
                     ),
@@ -941,14 +857,21 @@ fn mongo_indexes_section(
     let container = div().flex_1().min_h(px(0.));
     match &state.indexes {
         LoadState::Loading | LoadState::NotLoaded => {
-            container.child(center_loading_message(tr("app.mongo.loading"), colors))
+            // 提示靠 flex_1 撑满：容器不开 flex 时只按文本高度布局而贴顶。
+            container
+                .flex()
+                .child(center_loading_message(tr("app.mongo.loading"), colors))
         }
-        LoadState::Failed(error) => {
-            container.child(mongo_error_block(tab_id, MongoRetry::Indexes, error, colors, cx))
-        }
-        LoadState::Loaded(indexes) if indexes.is_empty() => {
-            container.child(center_message(tr("app.mongo.indexes.empty"), colors))
-        }
+        LoadState::Failed(error) => container.child(mongo_error_block(
+            tab_id,
+            MongoRetry::Indexes,
+            error,
+            colors,
+            cx,
+        )),
+        LoadState::Loaded(indexes) if indexes.is_empty() => container
+            .flex()
+            .child(center_message(tr("app.mongo.indexes.empty"), colors)),
         LoadState::Loaded(indexes) => container.child(
             div()
                 .overflow_y_scrollbar()
@@ -1033,11 +956,18 @@ fn mongo_info_section(
     let container = div().flex_1().min_h(px(0.));
     match &state.info {
         LoadState::Loading | LoadState::NotLoaded => {
-            container.child(center_loading_message(tr("app.mongo.loading"), colors))
+            // 同索引页：提示需要 flex 容器才能垂直居中。
+            container
+                .flex()
+                .child(center_loading_message(tr("app.mongo.loading"), colors))
         }
-        LoadState::Failed(error) => {
-            container.child(mongo_error_block(tab_id, MongoRetry::Info, error, colors, cx))
-        }
+        LoadState::Failed(error) => container.child(mongo_error_block(
+            tab_id,
+            MongoRetry::Info,
+            error,
+            colors,
+            cx,
+        )),
         LoadState::Loaded(info) => {
             let rows = [
                 (tr("app.mongo.info.name"), info.name.clone()),

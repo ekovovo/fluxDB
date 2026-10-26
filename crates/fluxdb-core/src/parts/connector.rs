@@ -30,13 +30,7 @@ pub trait Connector {
     fn list_roles(&self, _: ConnectionId) -> Result<Vec<PgRole>> {
         Err(Error::new(ErrorKind::Unsupported, "暂不支持角色管理"))
     }
-    fn create_role(
-        &self,
-        _: ConnectionId,
-        _: &str,
-        _: bool,
-        _: Option<&str>,
-    ) -> Result<()> {
+    fn create_role(&self, _: ConnectionId, _: &str, _: bool, _: Option<&str>) -> Result<()> {
         Err(Error::new(ErrorKind::Unsupported, "暂不支持创建角色"))
     }
     fn alter_role_password(&self, _: ConnectionId, _: &str, _: &str) -> Result<()> {
@@ -109,7 +103,10 @@ pub trait Connector {
     }
     /// 服务端是否支持成员级 INHERIT/SET 选项（PG16+）。PG≤15 返回 false。
     fn supports_member_options(&self, _: ConnectionId) -> Result<bool> {
-        Err(Error::new(ErrorKind::Unsupported, "暂不支持探测成员选项版本"))
+        Err(Error::new(
+            ErrorKind::Unsupported,
+            "暂不支持探测成员选项版本",
+        ))
     }
     /// 列对象权限：(grantee, privilege, grant_option)；grantee 空表示 PUBLIC。
     fn list_relation_grants(
@@ -157,19 +154,28 @@ pub trait Connector {
         _plan: &PgRoleSavePlan,
         _mask_secrets: bool,
     ) -> Result<Vec<String>> {
-        Err(Error::new(ErrorKind::Unsupported, "暂不支持渲染角色变更计划"))
+        Err(Error::new(
+            ErrorKind::Unsupported,
+            "暂不支持渲染角色变更计划",
+        ))
     }
     /// 在**同一数据库会话的单事务**内应用角色变更计划（失败整批回滚）。
     ///
     /// 替代「循环调用单项接口」的伪原子提交：角色 DDL、成员关系与对象 ACL 全部
     /// 在一个 BEGIN/COMMIT 中执行，任何一条失败即回滚，不产生半完成状态。
     fn apply_role_plan(&self, _: ConnectionId, _: &PgRoleSavePlan) -> Result<Vec<String>> {
-        Err(Error::new(ErrorKind::Unsupported, "暂不支持应用角色变更计划"))
+        Err(Error::new(
+            ErrorKind::Unsupported,
+            "暂不支持应用角色变更计划",
+        ))
     }
     /// 列权限页可选目标：数据库 / schema / 表·视图·序列 / 函数（含签名）。
     /// 关系与函数返回 `schema.name`（函数为 `schema.name(参数类型列表)`）形式字符串。
     fn list_grant_targets(&self, _: ConnectionId, _database: &str) -> Result<PgGrantTargetLists> {
-        Err(Error::new(ErrorKind::Unsupported, "暂不支持读取权限目标列表"))
+        Err(Error::new(
+            ErrorKind::Unsupported,
+            "暂不支持读取权限目标列表",
+        ))
     }
     /// SQL Server 用户与权限第一阶段：读取服务器登录名、目标库用户/角色和成员关系。
     fn sqlserver_security_snapshot(
@@ -299,7 +305,10 @@ pub trait Connector {
         _request: &ParameterizedQueryRequest,
         _should_cancel: &dyn Fn() -> bool,
     ) -> Result<QueryExecutionResult> {
-        Err(Error::new(ErrorKind::Unsupported, "该连接尚不支持有界写入提交"))
+        Err(Error::new(
+            ErrorKind::Unsupported,
+            "该连接尚不支持有界写入提交",
+        ))
     }
     /// 参数化执行：**必须**由驱动真实 bind（如 MySQL/SQLite 的 `?`、PostgreSQL 的 `$n`）。
     ///
@@ -596,10 +605,7 @@ pub trait Connector {
     }
 
     /// 可先返回字段等首屏数据，`details_loaded=false` 表示索引等详情需后台补齐。
-    fn load_table_design_base_metadata(
-        &self,
-        path: &ObjectPath,
-    ) -> Result<TableDesignMetadata> {
+    fn load_table_design_base_metadata(&self, path: &ObjectPath) -> Result<TableDesignMetadata> {
         self.load_table_design_metadata(path)
     }
 
@@ -607,7 +613,7 @@ pub trait Connector {
         Err(Error::new(ErrorKind::Unsupported, "暂不支持 DDL 元数据"))
     }
 
-    /// —— 文档型数据库（MongoDB）——
+    // —— 文档型数据库（MongoDB）——
 
     /// 执行一次 `find`。`path.database` 为库名，`request.collection` 为集合名。
     ///
@@ -637,6 +643,51 @@ pub trait Connector {
         Err(Error::new(ErrorKind::Unsupported, "暂不支持索引元数据"))
     }
 
+    /// 用 `after_json` 整篇替换一篇已存在的文档（`_id` 必须与原文档一致）。
+    ///
+    /// 以原文档的 `_id` 作为定位条件，而不是解析后的可读 id：`_id` 可能是 ObjectId、
+    /// 字符串或内嵌文档，只有原始 BSON 值才能精确命中。
+    fn mongo_replace_document(
+        &self,
+        _: ConnectionId,
+        _database: &str,
+        _collection: &str,
+        _before_json: &str,
+        _after_json: &str,
+    ) -> Result<()> {
+        Err(Error::new(ErrorKind::Unsupported, "暂不支持修改文档"))
+    }
+
+    /// 删除一篇文档。
+    ///
+    /// 与整篇替换一致，定位条件取自原文档的原始 BSON `_id`（`document_json` 是界面上
+    /// 呈现的那份 Extended JSON）：`_id` 可能是 ObjectId、字符串或内嵌文档，只有原始值
+    /// 才能精确命中。删除数为 0 视为失败，不能谎报成功。
+    fn mongo_delete_document(
+        &self,
+        _: ConnectionId,
+        _database: &str,
+        _collection: &str,
+        _document_json: &str,
+    ) -> Result<()> {
+        Err(Error::new(ErrorKind::Unsupported, "暂不支持删除文档"))
+    }
+
+    /// 往集合里插入一篇新文档，返回新文档的 `_id`（Extended JSON 文本）。
+    ///
+    /// `document_json` 是 Extended JSON 对象；**不含 `_id`** 时由服务端生成，这样
+    /// 「复制文档」不必自己造 `_id`，也不会与源文档撞键。含 `_id` 时必须是 ObjectId
+    /// （界面「新增文档」会先在本机生成一个，插入后可直接拿去查询）。
+    fn mongo_insert_document(
+        &self,
+        _: ConnectionId,
+        _database: &str,
+        _collection: &str,
+        _document_json: &str,
+    ) -> Result<String> {
+        Err(Error::new(ErrorKind::Unsupported, "暂不支持新增文档"))
+    }
+
     /// 在 `database` 内创建集合。MongoDB 的库由首个集合隐式创建，因此建集合即建库。
     fn mongo_create_collection(
         &self,
@@ -648,7 +699,12 @@ pub trait Connector {
     }
 
     /// 删除集合。
-    fn mongo_drop_collection(&self, _: ConnectionId, _database: &str, _collection: &str) -> Result<()> {
+    fn mongo_drop_collection(
+        &self,
+        _: ConnectionId,
+        _database: &str,
+        _collection: &str,
+    ) -> Result<()> {
         Err(Error::new(ErrorKind::Unsupported, "暂不支持删除集合"))
     }
 
@@ -672,6 +728,24 @@ pub trait Connector {
     /// 由连接器统一从服务端命令收集，UI 不直连驱动。
     fn mongo_server_info(&self, _: ConnectionId) -> Result<MongoServerInfo> {
         Err(Error::new(ErrorKind::Unsupported, "暂不支持读取连接信息"))
+    }
+
+    /// 解析导入文件样本，返回格式、字段与类型推断；不写数据库。
+    fn mongo_preview_import(
+        &self,
+        _: &MongoImportPreviewRequest,
+    ) -> Result<MongoImportPreview> {
+        Err(Error::new(ErrorKind::Unsupported, "暂不支持导入 MongoDB 文档"))
+    }
+
+    /// 把文件里的文档批量写入集合。坏文档跳过并计入报告，不中断整批。
+    fn mongo_import_documents(
+        &self,
+        _: &MongoImportRequest,
+        _cancel: &AtomicBool,
+        _progress: &mut dyn FnMut(MongoImportProgress),
+    ) -> Result<MongoImportReport> {
+        Err(Error::new(ErrorKind::Unsupported, "暂不支持导入 MongoDB 文档"))
     }
 }
 

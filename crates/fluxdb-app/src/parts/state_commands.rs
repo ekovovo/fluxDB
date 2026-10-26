@@ -3,12 +3,27 @@ pub enum AppCommand {
     /// 测试专用：以给定连接配置构造一条已连接的 SQL Server 对象树。
     #[cfg(test)]
     LoadTestConnectionTree(ConnectionConfig),
-    BrowseAiTableObjects { connection_id: ConnectionId, parent: Option<ObjectPath> },
-    FinishAiTableObjects { connection_id: ConnectionId, parent: Option<ObjectPath>, objects: Vec<ObjectSummary> },
+    BrowseAiTableObjects {
+        connection_id: ConnectionId,
+        parent: Option<ObjectPath>,
+    },
+    FinishAiTableObjects {
+        connection_id: ConnectionId,
+        parent: Option<ObjectPath>,
+        objects: Vec<ObjectSummary>,
+    },
     LoadAiTableColumns(ObjectPath),
     RememberAiTableObject(ObjectPath),
-    BeginAiTableQuery { tab_id: TabId, limit: u64 },
-    LoadAiTablePage { tab_id: TabId, generation: u64, object: ObjectPath, query: AiTableQuery },
+    BeginAiTableQuery {
+        tab_id: TabId,
+        limit: u64,
+    },
+    LoadAiTablePage {
+        tab_id: TabId,
+        generation: u64,
+        object: ObjectPath,
+        query: AiTableQuery,
+    },
     AiConversation(AiConversationCommand),
     PrepareBackup {
         request: BackupRequest,
@@ -46,7 +61,9 @@ pub enum AppCommand {
         connection_string: String,
     },
     /// 从 `mongodb://` / `mongodb+srv://` 连接串导入一条 MongoDB 连接草稿。
-    DiscoverMongoConnection { connection_string: String },
+    DiscoverMongoConnection {
+        connection_string: String,
+    },
     OpenConnection(ConnectionId),
     ToggleConnectionExpanded(ConnectionId),
     DisconnectConnection(ConnectionId),
@@ -1100,7 +1117,10 @@ pub enum AppCommand {
         tab_id: TabId,
         result: Result<Vec<String>, UserFacingError>,
     },
-    SelectSqlServerSecurityDatabase { tab_id: TabId, database: String },
+    SelectSqlServerSecurityDatabase {
+        tab_id: TabId,
+        database: String,
+    },
     StartSqlServerSecurityLoad(TabId),
     LoadSqlServerSecurity(TabId),
     FinishSqlServerSecurityLoad {
@@ -1427,8 +1447,14 @@ pub enum AppCommand {
         profile_id: String,
         connection_id: i64,
     },
-    RefreshMcpClients { binary_path: String },
-    SetMcpClientRegistration { client_key: String, registered: bool, binary_path: String },
+    RefreshMcpClients {
+        binary_path: String,
+    },
+    SetMcpClientRegistration {
+        client_key: String,
+        registered: bool,
+        binary_path: String,
+    },
     /// 只维护已显式选择且配置归属未改变的客户端。
     SyncMcpClients {
         /// Server 可执行文件绝对路径；有待维护的接入记录时必须可用。
@@ -1500,7 +1526,6 @@ pub enum AppCommand {
     ClearCompletionIndexCache,
 
     // —— MongoDB 集合工作台 ——
-
     /// 打开（或激活已打开的）集合工作台标签页。`read_only` 由视图决定，写入入口据此禁用。
     OpenMongoCollection {
         object: ObjectPath,
@@ -1566,6 +1591,28 @@ pub enum AppCommand {
     SelectMongoDocument {
         tab_id: TabId,
         index: Option<usize>,
+    },
+    /// 整篇替换一篇文档（后台）；`before_json` 只用于取原始 `_id` 作定位条件。
+    SaveMongoDocument {
+        tab_id: TabId,
+        before_json: String,
+        after_json: String,
+    },
+    /// 删除一篇文档（后台）；`document_json` 只用于取原始 `_id` 作定位条件。
+    DeleteMongoDocument {
+        tab_id: TabId,
+        document_json: String,
+    },
+    /// 往集合里插入一篇新文档（后台）；`document_json` 不得自带 `_id`。
+    InsertMongoDocument {
+        tab_id: TabId,
+        document_json: String,
+    },
+    /// 从文件批量导入文档（后台，带取消与进度）。
+    ImportMongoDocuments {
+        object: ObjectPath,
+        source: PathBuf,
+        options: MongoImportOptions,
     },
     /// 设置翻页偏移（下一页 / 上一页 / 新查询回到第一页）。
     SetMongoOffset {

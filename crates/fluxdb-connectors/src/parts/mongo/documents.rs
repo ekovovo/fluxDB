@@ -66,11 +66,11 @@ fn mongo_list_collections(
 /// 把驱动游标读空（游标本身按批拉取，单批失败即整体失败，不静默丢数据）。
 fn mongo_collect_cursor<T>(cursor: mongodb::Cursor<T>) -> fluxdb_core::Result<Vec<T>>
 where
-    T: serde::de::DeserializeOwned,
+    T: serde::de::DeserializeOwned + Send,
 {
-    mongo_runtime().block_on(async move {
+    mongo_block_on(120, "读取 MongoDB 游标", async move {
         use futures_util::TryStreamExt as _;
-        cursor.try_collect::<Vec<T>>().await.map_err(mongo_error)
+        cursor.try_collect::<Vec<T>>().await
     })
 }
 
@@ -92,9 +92,17 @@ fn mongo_find(
     let sort = mongo_parse_object("Sort", &request.sort)?;
     mongo_validate_sort(&sort)?;
 
-    let limit = request.limit.clamp(1, MONGO_MAX_DOCUMENTS_PER_QUERY);
+    // `limit = 0` 表示调用方未填页大小，按默认页处理；直接夹到 1 会让人误判集合只有
+    // 一条数据（真实Atlas用例即如此），因此这里显式给默认值而不是静默取 1。
+    let limit = match request.limit {
+        0 => fluxdb_core::Pagination::DEFAULT_LIMIT,
+        value => value,
+    }
+    .clamp(1, MONGO_MAX_DOCUMENTS_PER_QUERY);
     let client = mongo_connect(config)?;
-    let collection = client.database(database).collection::<Document>(&request.collection);
+    let collection = client
+        .database(database)
+        .collection::<Document>(&request.collection);
 
     let mut find = collection.find(filter);
     if !projection.is_empty() {
@@ -109,34 +117,31 @@ fn mongo_find(
         .limit(limit.saturating_add(1) as i64)
         .batch_size(limit.min(200) as u32);
 
-    let mut cursor = mongo_block_on(60, "MongoDB 查询", async move { find.await })?;
-
-    let mut documents = Vec::new();
-    let mut fetched: u64 = 0;
-    loop {
-        if should_cancel() {
-            return Err(Error::new(ErrorKind::Cancelled, "查询已取消"));
-        }
-        let next = mongo_runtime().block_on(async {
-            use futures_util::TryStreamExt as _;
-            cursor.try_next().await
-        });
-        match next {
-            Ok(Some(document)) => {
-                fetched += 1;
-                if fetched > limit {
-                    // 多取到的那条只用于判定还有下一页，不返回。
-                    break;
-                }
-                documents.push(MongoDocument {
-                    id: mongo_document_id(&document),
-                    json: mongo_json_text(Bson::Document(document)),
-                });
-            }
-            Ok(None) => break,
-            Err(error) => return Err(mongo_error(error)),
-        }
+    if should_cancel() {
+        return Err(Error::new(ErrorKind::Cancelled, "查询已取消"));
     }
+
+    // 游标读取必须在放大栈的线程里一次做完：驱动解码结果文档的代码同样跑在调用方
+    // 线程上，逐条 `block_on` 既会继承小栈，也会退化成「每条文档开一个线程」。
+    // 单次读取上限是 `limit + 1`（≤ 501 条），因此取消只在进入前判断即可。
+    let mut cursor = mongo_block_on(60, "MongoDB 查询", async move { find.await })?;
+    let (documents, fetched) = mongo_block_on(60, "读取 MongoDB 游标", async move {
+        use futures_util::TryStreamExt as _;
+        let mut documents = Vec::new();
+        let mut fetched: u64 = 0;
+        while let Some(document) = cursor.try_next().await? {
+            fetched += 1;
+            if fetched > limit {
+                // 多取到的那条只用于判定还有下一页，不返回。
+                break;
+            }
+            documents.push(MongoDocument {
+                id: mongo_document_id(&document),
+                json: mongo_json_text(Bson::Document(document)),
+            });
+        }
+        Ok((documents, fetched))
+    })?;
 
     let has_more = fetched > limit;
     // 不足一页时总数可确定（skip + 本页条数），无需再查。
@@ -173,7 +178,10 @@ fn mongo_aggregate(
         Vec::new()
     } else {
         let value: serde_json::Value = serde_json::from_str(text).map_err(|error| {
-            Error::new(ErrorKind::Query, format!("聚合管道不是合法的 JSON：{error}"))
+            Error::new(
+                ErrorKind::Query,
+                format!("聚合管道不是合法的 JSON：{error}"),
+            )
         })?;
         let value = Bson::try_from(value).map_err(|error| {
             Error::new(
@@ -189,7 +197,12 @@ fn mongo_aggregate(
                     _ => Err(Error::new(ErrorKind::Query, "聚合管道的每个阶段必须是对象")),
                 })
                 .collect::<fluxdb_core::Result<Vec<_>>>()?,
-            _ => return Err(Error::new(ErrorKind::Query, "聚合管道必须是 Extended JSON 数组")),
+            _ => {
+                return Err(Error::new(
+                    ErrorKind::Query,
+                    "聚合管道必须是 Extended JSON 数组",
+                ));
+            }
         }
     };
 
@@ -303,6 +316,150 @@ fn mongo_drop_collection(
             .await
     })
     .map(|_| ())
+}
+
+/// 整篇替换文档：`_id` 取自原文档的原始 BSON 值，新文档的 `_id` 必须与之相等。
+///
+/// 用原文档的 `_id`（而不是 UI 上的可读 id 文本）做定位条件，ObjectId / 字符串 /
+/// 内嵌文档都能精确命中；同时拒绝改 `_id`——MongoDB 不支持更新 `_id`，这里提前报错
+/// 而不是让驱动抛一个难以理解的写错误。
+fn mongo_replace_document(
+    config: &ConnectionConfig,
+    database: &str,
+    collection: &str,
+    before_json: &str,
+    after_json: &str,
+) -> fluxdb_core::Result<()> {
+    let database = database.trim();
+    let collection = collection.trim();
+    if database.is_empty() || collection.is_empty() {
+        return Err(Error::new(ErrorKind::Query, "请指定数据库与集合"));
+    }
+    let before = mongo_parse_object("原文档", before_json)?;
+    let after = mongo_parse_object("新文档", after_json)?;
+    let Some(id) = before.get("_id").cloned() else {
+        return Err(Error::new(
+            ErrorKind::Query,
+            "原文档缺少 _id，无法定位要修改的文档",
+        ));
+    };
+    match after.get("_id") {
+        Some(next) if next == &id => {}
+        Some(_) => {
+            return Err(Error::new(ErrorKind::Query, "不支持修改 _id"));
+        }
+        None => return Err(Error::new(ErrorKind::Query, "新文档不能删除 _id")),
+    }
+
+    let client = mongo_connect(config)?;
+    let database = database.to_string();
+    let collection = collection.to_string();
+    let result = mongo_block_on(60, "修改文档", async move {
+        client
+            .database(&database)
+            .collection::<Document>(&collection)
+            .replace_one(doc! {"_id": id}, &after)
+            .await
+    })?;
+    // 匹配数为 0：文档在编辑期间被别处删掉或改了 `_id`，不能静默当成成功。
+    if result.matched_count == 0 {
+        return Err(Error::new(
+            ErrorKind::Query,
+            "文档不存在或已被删除，未做任何修改",
+        ));
+    }
+    Ok(())
+}
+
+/// 删除一篇文档：定位条件取自原文档的原始 BSON `_id`，与整篇替换用同一套规则。
+///
+/// 删除数为 0 说明文档已被别处删掉或 `_id` 已改变，必须报错而不是当成成功——
+/// 界面会据此提示"文档不存在"，而不是假装删掉了再刷新出一模一样的列表。
+fn mongo_delete_document(
+    config: &ConnectionConfig,
+    database: &str,
+    collection: &str,
+    document_json: &str,
+) -> fluxdb_core::Result<()> {
+    let database = database.trim();
+    let collection = collection.trim();
+    if database.is_empty() || collection.is_empty() {
+        return Err(Error::new(ErrorKind::Query, "请指定数据库与集合"));
+    }
+    let document = mongo_parse_object("文档", document_json)?;
+    let Some(id) = document.get("_id").cloned() else {
+        return Err(Error::new(
+            ErrorKind::Query,
+            "文档缺少 _id，无法定位要删除的文档",
+        ));
+    };
+
+    let client = mongo_connect(config)?;
+    let database = database.to_string();
+    let collection = collection.to_string();
+    let result = mongo_block_on(60, "删除文档", async move {
+        client
+            .database(&database)
+            .collection::<Document>(&collection)
+            .delete_one(doc! {"_id": id})
+            .await
+    })?;
+    if result.deleted_count == 0 {
+        return Err(Error::new(
+            ErrorKind::Query,
+            "文档不存在或已被删除，未做任何修改",
+        ));
+    }
+    Ok(())
+}
+
+/// 插入一篇新文档，返回新文档的 `_id`（Extended JSON 文本）。
+///
+/// `_id` 可省略（「复制文档」传来的副本已剥掉 `_id`），由服务端生成；也可显式给出
+/// ObjectId（界面「新增文档」预填的那个）。返回它是因为界面需要确认「插进去的到底是
+/// 哪一篇」，而不是只报一句成功。
+fn mongo_insert_document(
+    config: &ConnectionConfig,
+    database: &str,
+    collection: &str,
+    document_json: &str,
+) -> fluxdb_core::Result<String> {
+    let database = database.trim();
+    let collection = collection.trim();
+    if database.is_empty() || collection.is_empty() {
+        return Err(Error::new(ErrorKind::Query, "请指定数据库与集合"));
+    }
+    let document = mongo_parse_object("文档", document_json)?;
+    // 自带 `_id` 允许，但必须是 ObjectId：界面「新增文档」会预填一个，插完可立即拿去查询。
+    // 其它类型（尤其内嵌文档 / 数组）拒绝——那多半是把 `_id` 当成普通字段误填，
+    // 与其让它在集合里制造一个和既有数据对不上的主键，不如当场说明。
+    if let Some(id) = document
+        .get("_id")
+        .filter(|id| !matches!(id, Bson::ObjectId(_)))
+    {
+        return Err(Error::new(
+            ErrorKind::Query,
+            format!(
+                "_id 必须是 ObjectId（形如 {{\"$oid\": \"…\"}} 或 24 位十六进制字符串），当前是 {id:?}"
+            ),
+        ));
+    }
+
+    let client = mongo_connect(config)?;
+    let database = database.to_string();
+    let collection = collection.to_string();
+    let inserted_id = mongo_block_on(60, "新增文档", async move {
+        // 先拿 BSON 值再转回扩展 JSON：让它按真实类型（ObjectId 等）呈现。
+        client
+            .database(&database)
+            .collection::<Document>(&collection)
+            .insert_one(&document)
+            .await
+            .map(|result| result.inserted_id)
+    })?;
+    // 返回的是 `_id` 的值本身（如 `{"$oid":"…"}`），不是包着 `_id` 的整篇文档：
+    // 调用方多半要拿它拼过滤条件，多一层包装会变成一个匹配不到的查询。
+    Ok(inserted_id.into_relaxed_extjson().to_string())
 }
 
 /// 删除数据库（连带其中全部集合）。

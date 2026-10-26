@@ -3,12 +3,22 @@ pub enum AppEvent {
     /// 测试专用：已加载的 SQL Server `database → schema → table` 树直接安装到连接状态。
     #[cfg(test)]
     TestConnectionLoaded(ConnectionConfig),
-    AiTableObjectsLoaded { connection_id: ConnectionId, parent: Option<ObjectPath>, objects: Vec<ObjectSummary> },
+    AiTableObjectsLoaded {
+        connection_id: ConnectionId,
+        parent: Option<ObjectPath>,
+        objects: Vec<ObjectSummary>,
+    },
     AiTableColumnsLoaded(ObjectPath, Vec<Column>),
     /// 表页已开始一次新加载；generation 用于丢弃旧的后台结果。
-    DataPageLoadStarted { tab_id: TabId, generation: u64 },
+    DataPageLoadStarted {
+        tab_id: TabId,
+        generation: u64,
+    },
     /// 后台结果或终态属于已被取代的加载，未写入表页。
-    DataPageLoadDiscarded { tab_id: TabId, generation: u64 },
+    DataPageLoadDiscarded {
+        tab_id: TabId,
+        generation: u64,
+    },
     ConfigProposalApplied(ConfigApplyOutcome),
     AiConversationLoaded(AiConversationView),
     /// AI 设置列表已刷新。
@@ -361,21 +371,44 @@ pub enum AppEvent {
     /// Redis Workbench 命令历史已变化（新增/删除/清空），供桌面层做持久化 diff 与刷新。
     RedisWorkbenchHistoryChanged,
     /// 一次 MongoDB 文档加载开始（携带本次令牌）。
-    MongoLoadStarted { tab_id: TabId, generation: u64 },
+    MongoLoadStarted {
+        tab_id: TabId,
+        generation: u64,
+    },
     /// 后台结果属于已被取代的加载，未写入集合页。
-    MongoLoadDiscarded { tab_id: TabId, generation: u64 },
+    MongoLoadDiscarded {
+        tab_id: TabId,
+        generation: u64,
+    },
     /// 文档页已回写。
     MongoDocumentsLoaded(TabId, MongoDocumentsPage),
+    /// 一篇文档已整篇替换成功（UI 据此重查本页并退出编辑态）。
+    MongoDocumentSaved(TabId),
+    /// 一篇文档已删除（UI 据此重查本页并提示）。
+    MongoDocumentDeleted(TabId),
+    /// 一篇文档已插入，携带服务端生成的新 `_id`（Extended JSON 文本）。
+    MongoDocumentInserted(TabId, String),
+    /// 文档批量导入结束（`report` 已带成功/失败条数）。
+    MongoDocumentsImported {
+        object: ObjectPath,
+        report: MongoImportReport,
+    },
     /// 集合信息已回写。
     MongoCollectionInfoLoaded(TabId, MongoCollectionInfo),
     /// 索引列表已回写。
     MongoIndexesLoaded(TabId, Vec<MongoIndexInfo>),
     /// 聚合开始（携带本次令牌）。
-    MongoAggregationStarted { tab_id: TabId, generation: u64 },
+    MongoAggregationStarted {
+        tab_id: TabId,
+        generation: u64,
+    },
     /// 聚合结果。
     MongoAggregationLoaded(TabId, MongoDocumentsPage),
     /// 连接信息加载完成（`Err` 为读取失败）。
-    MongoServerInfoLoaded(ConnectionId, std::result::Result<MongoServerInfo, UserFacingError>),
+    MongoServerInfoLoaded(
+        ConnectionId,
+        std::result::Result<MongoServerInfo, UserFacingError>,
+    ),
     /// 集合创建成功；UI 据此刷新该库的对象树并提示。
     MongoCollectionCreated {
         connection_id: ConnectionId,

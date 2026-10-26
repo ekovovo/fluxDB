@@ -27,12 +27,9 @@ impl MongoConnector {
     }
 
     fn config(&self) -> fluxdb_core::Result<&ConnectionConfig> {
-        self.config.as_ref().ok_or_else(|| {
-            Error::new(
-                ErrorKind::Connection,
-                "MongoDB 操作需要连接配置上下文",
-            )
-        })
+        self.config
+            .as_ref()
+            .ok_or_else(|| Error::new(ErrorKind::Connection, "MongoDB 操作需要连接配置上下文"))
     }
 
     /// 执行任意数据库命令（命令行终端）。
@@ -63,7 +60,10 @@ impl Connector for MongoConnector {
             }
         };
         mongo_block_on(20, "连接 MongoDB", async move {
-            client.database(&database).run_command(doc! {"ping": 1}).await
+            client
+                .database(&database)
+                .run_command(doc! {"ping": 1})
+                .await
         })
         .map(|_| ())
     }
@@ -156,6 +156,43 @@ impl Connector for MongoConnector {
         mongo_indexes(config, &database, &path.name)
     }
 
+    fn mongo_replace_document(
+        &self,
+        _: ConnectionId,
+        database: &str,
+        collection: &str,
+        before_json: &str,
+        after_json: &str,
+    ) -> fluxdb_core::Result<()> {
+        mongo_replace_document(
+            self.config()?,
+            database,
+            collection,
+            before_json,
+            after_json,
+        )
+    }
+
+    fn mongo_delete_document(
+        &self,
+        _: ConnectionId,
+        database: &str,
+        collection: &str,
+        document_json: &str,
+    ) -> fluxdb_core::Result<()> {
+        mongo_delete_document(self.config()?, database, collection, document_json)
+    }
+
+    fn mongo_insert_document(
+        &self,
+        _: ConnectionId,
+        database: &str,
+        collection: &str,
+        document_json: &str,
+    ) -> fluxdb_core::Result<String> {
+        mongo_insert_document(self.config()?, database, collection, document_json)
+    }
+
     fn mongo_create_collection(
         &self,
         _: ConnectionId,
@@ -191,6 +228,22 @@ impl Connector for MongoConnector {
         mongo_server_info(self.config()?)
     }
 
+    fn mongo_preview_import(
+        &self,
+        request: &MongoImportPreviewRequest,
+    ) -> fluxdb_core::Result<MongoImportPreview> {
+        mongo_preview_import(request)
+    }
+
+    fn mongo_import_documents(
+        &self,
+        request: &MongoImportRequest,
+        cancel: &AtomicBool,
+        progress: &mut dyn FnMut(MongoImportProgress),
+    ) -> fluxdb_core::Result<MongoImportReport> {
+        mongo_import_documents(self.config()?, request, cancel, progress)
+    }
+
     fn create_database(&self, request: &CreateDatabaseRequest) -> fluxdb_core::Result<()> {
         // MongoDB 的库由首个集合隐式创建：没有集合就删掉，库也就不存在。
         // 因此 CreateDatabaseRequest 必须带集合名（`charset` 位置在该语义下复用为集合名，
@@ -220,7 +273,10 @@ impl Connector for MongoConnector {
         // 命令行走 `mongo_run_command`：查询编辑器与命令行终端共用同一实现，
         // 单条命令的结果作为一行 `result`（Extended JSON）返回。
         let started = std::time::Instant::now();
-        let database = request.database.clone().unwrap_or_else(|| "admin".to_string());
+        let database = request
+            .database
+            .clone()
+            .unwrap_or_else(|| "admin".to_string());
         let text = mongo_run_command(self.config()?, &database, &request.text)?;
         let page = mongo_result_set(text);
         Ok(QueryExecutionResult {
@@ -240,11 +296,7 @@ impl Connector for MongoConnector {
 }
 
 /// 文档页转统一 `DataPage`（表格/编辑器首屏用）。每行固定两列：`_id` 与文档 JSON。
-fn mongo_page_to_data_page(
-    page: MongoDocumentsPage,
-    offset: u64,
-    limit: u64,
-) -> DataPage {
+fn mongo_page_to_data_page(page: MongoDocumentsPage, offset: u64, limit: u64) -> DataPage {
     let columns = vec![
         Column {
             name: "_id".to_string(),

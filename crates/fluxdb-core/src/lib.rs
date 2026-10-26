@@ -29,6 +29,7 @@ include!("parts/changes.rs");
 include!("parts/table_import.rs");
 include!("parts/write_value.rs");
 include!("parts/mongo.rs");
+include!("parts/mongo_import.rs");
 include!("parts/connector.rs");
 include!("parts/command_workbench.rs");
 include!("parts/workbench_history.rs");

@@ -15,5 +15,16 @@ members = [
 exclude = ["crates/dm-pure", "crates/tiberius"]
 resolver = "3"
 
+# 开发构建的优化档位：GPUI 应用每帧都在跑布局（taffy）与文字排版，依赖全量以
+# opt-level 0 编译时，一屏十几个展开的文档卡片就能把单帧拖到 100ms 以上（实测
+# `cargo run` 默认开发构建在 MongoDB 集合页只有 8 fps）。这里给依赖开满优化、
+# 本仓库代码开轻量优化：编译时间增加有限，但开发时的交互流畅度回到可用范围。
+# 发布构建不受影响。
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
 [workspace.dependencies]
 sqlparser = { version = "0.62.0", features = ["visitor"] }

@@ -105,10 +105,7 @@ impl NavicatMain {
         mode: MongoDisplayMode,
         cx: &mut Context<Self>,
     ) {
-        self.dispatch(
-            AppCommand::SelectMongoDisplayMode { tab_id, mode },
-            cx,
-        );
+        self.dispatch(AppCommand::SelectMongoDisplayMode { tab_id, mode }, cx);
     }
 
     /// 打开/关闭文档详情抽屉；`None` 关闭。
@@ -179,10 +176,23 @@ impl NavicatMain {
     /// 关闭标签页时释放输入框实体。
     pub(crate) fn close_mongo_tab_state(&mut self, tab_id: TabId) {
         self.mongo_query_inputs.remove(&tab_id);
+        self.mongo_collapsed_documents.remove(&tab_id);
+        self.mongo_expanded_fields.remove(&tab_id);
+        self.mongo_json_fold_toggles.remove(&tab_id);
         self._mongo_load_tasks.remove(&tab_id.0);
         self._mongo_aggregation_tasks.remove(&tab_id.0);
         self._mongo_info_tasks.remove(&tab_id.0);
         self._mongo_index_tasks.remove(&tab_id.0);
+        // 编辑抽屉是纯界面会话：关标签即丢弃草稿，不留悬挂的编辑器实体。
+        if self
+            .mongo_document_editor
+            .as_ref()
+            .is_some_and(|editor| editor.tab_id == tab_id)
+        {
+            self.mongo_document_editor = None;
+            self._mongo_document_editor_task = None;
+            self._mongo_document_insert_task = None;
+        }
     }
 }
 
@@ -193,9 +203,10 @@ fn mongo_query_seed(state: &AppState, tab_id: TabId) -> (MongoQueryDraft, String
         .iter()
         .find(|tab| tab.id == tab_id)
         .and_then(|tab| match &tab.kind {
-            TabKind::MongoCollection(state) => {
-                Some((state.applied_query.clone(), state.aggregation_pipeline.clone()))
-            }
+            TabKind::MongoCollection(state) => Some((
+                state.applied_query.clone(),
+                state.aggregation_pipeline.clone(),
+            )),
             _ => None,
         })
         .unwrap_or_else(|| {

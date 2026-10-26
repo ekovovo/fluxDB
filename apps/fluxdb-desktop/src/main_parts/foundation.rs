@@ -4,10 +4,8 @@
 // 下列 gpui / std 导入、`EDITOR_FONT` 与 `rgba_with_alpha`，被终端、建表、菜单等模块
 // 无前缀引用。旧 sql_editor 模块移除后，在此原样重建以保持其余模块可解析。
 // ---------------------------------------------------------------
+use gpui::{Action, ElementInputHandler, GlobalElementId, LayoutId, TextRun, UTF16Selection, fill};
 use std::ops::Range;
-use gpui::{
-    Action, ElementInputHandler, GlobalElementId, LayoutId, TextRun, UTF16Selection, fill,
-};
 // SQL 语句运行相关类型（`SqlStatementRun` / `SqlStatementId` / `SqlStatementStatus`）
 // 已从旧 sql_editor/model.rs 迁移到 sql_editor_adapter；此处在 crate 根统一引入，
 // 使宿主各模块可如旧版一样无前缀使用。
@@ -344,7 +342,10 @@ enum AppIcon {
     CircleCheck,
     CircleSlash,
     Close,
+    /// 复制到剪贴板（两张纸）。
     Copy,
+    /// 复制成一条新记录（两张纸 + 加号）。
+    CopyPlus,
     Database,
     Edit,
     Eye,
@@ -417,7 +418,8 @@ fn app_icon_path(icon: AppIcon) -> &'static str {
         AppIcon::CircleCheck => "icons/circle-check.svg",
         AppIcon::CircleSlash => "icons/circle-slash.svg",
         AppIcon::Close => "icons/x.svg",
-        AppIcon::Copy => "icons/copy-plus.svg",
+        AppIcon::Copy => "icons/copy.svg",
+        AppIcon::CopyPlus => "icons/copy-plus.svg",
         AppIcon::Database => "icons/database.svg",
         AppIcon::Edit => "icons/pencil.svg",
         AppIcon::Eye => "icons/eye.svg",
@@ -491,9 +493,21 @@ fn app_icon_box(icon: AppIcon, box_size: f32, icon_size: f32, color: gpui::Rgba)
 /// 蓝 / 青绿 / 紫 / 橙 / 玫红，明暗主题各一组，不按表名随机上色。
 fn er_palette(is_dark: bool) -> [gpui::Rgba; 5] {
     if is_dark {
-        [rgb(0x5b7fbf), rgb(0x4f9a8b), rgb(0x8f6fbf), rgb(0xbf8f5b), rgb(0xbf5f7f)]
+        [
+            rgb(0x5b7fbf),
+            rgb(0x4f9a8b),
+            rgb(0x8f6fbf),
+            rgb(0xbf8f5b),
+            rgb(0xbf5f7f),
+        ]
     } else {
-        [rgb(0x6b8fc0), rgb(0x5aa392), rgb(0x9a7fc0), rgb(0xc09a6b), rgb(0xc07a8f)]
+        [
+            rgb(0x6b8fc0),
+            rgb(0x5aa392),
+            rgb(0x9a7fc0),
+            rgb(0xc09a6b),
+            rgb(0xc07a8f),
+        ]
     }
 }
 

@@ -8,6 +8,8 @@ include!("navicat_main/command_tasks.rs");
 include!("navicat_main/data_editor_loading.rs");
 include!("navicat_main/mongo_loading.rs");
 include!("navicat_main/mongo_inputs.rs");
+include!("mongo_document_edit.rs");
+include!("mongo_import.rs");
 include!("navicat_main/data_sorting.rs");
 include!("navicat_main/local_filter.rs");
 include!("navicat_main/field_visibility_search.rs");

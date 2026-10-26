@@ -70,6 +70,18 @@ fn set_table_info_failed(
     }
 }
 
+/// 库级懒加载会整体替换的对象类型。
+///
+/// 集合必须在内：MongoDB 的集合列表与表同级加载，漏掉它会让每次刷新都把整份
+/// 集合清单再追加一遍，侧边栏出现重复行。
+const TABLE_LIKE_KINDS: &[ObjectKind] = &[
+    ObjectKind::Table,
+    ObjectKind::View,
+    ObjectKind::Procedure,
+    ObjectKind::Function,
+    ObjectKind::Collection,
+];
+
 fn replace_loaded_children(
     current: &mut Vec<ObjectSummary>,
     parent: &ObjectPath,
@@ -83,32 +95,16 @@ fn replace_loaded_children(
     // PostgreSQL 按 schema 懒加载：展开某一 schema 时只替换该 schema 的表/视图，
     // 不得清掉同库其他 schema 已加载的对象（跨 schema 同名同时保留）。
     let schema_scope = object_path_schema(parent);
-    // DB 级加载（schema_scope=None）时，仅当本次 children 真的是表/视图清单（MySQL/TiDB）
+    // DB 级加载（schema_scope=None）时，仅当本次 children 真的是表/视图/集合清单
     // 才按整库清单替换；若是 PG 返回的 schema 列表（不含表/视图），则不能据此清空整库表，
     // 否则数据库节点上右键刷新会把所有已加载的表/视图误删。
     let clears_database_tables = schema_scope.is_none()
         && children
             .iter()
-            .any(|child| {
-                matches!(
-                    child.path.kind,
-                    ObjectKind::Table
-                        | ObjectKind::View
-                        | ObjectKind::Procedure
-                        | ObjectKind::Function
-                )
-            });
+            .any(|child| TABLE_LIKE_KINDS.contains(&child.path.kind));
     current.retain(|object| {
         let same_database = object.path.database.as_deref().unwrap_or("main") == database;
-        if !(same_database
-            && matches!(
-                object.path.kind,
-                ObjectKind::Table
-                    | ObjectKind::View
-                    | ObjectKind::Procedure
-                    | ObjectKind::Function
-            ))
-        {
+        if !(same_database && TABLE_LIKE_KINDS.contains(&object.path.kind)) {
             return true;
         }
         match schema_scope {
@@ -230,3 +226,72 @@ fn tab_belongs_to_connection(tab: &TabState, connection_id: ConnectionId) -> boo
     }
 }
 
+
+#[cfg(test)]
+mod replace_loaded_children_tests {
+    use super::*;
+
+    fn object(database: &str, name: &str, kind: ObjectKind) -> ObjectSummary {
+        ObjectSummary {
+            path: ObjectPath {
+                connection_id: ConnectionId(1),
+                database: Some(database.into()),
+                schema: None,
+                name: name.into(),
+                kind,
+            },
+            rows: None,
+            modified_at: None,
+            comment: None,
+            stable: None,
+        }
+    }
+
+    fn names(objects: &[ObjectSummary]) -> Vec<String> {
+        objects
+            .iter()
+            .map(|object| object.path.name.clone())
+            .collect()
+    }
+
+    // 回归：MongoDB 集合列表刷新必须替换而不是追加，否则侧边栏每次刷新都多一份重复行。
+    #[test]
+    fn refresh_replaces_mongo_collections() {
+        let database = ObjectPath {
+            connection_id: ConnectionId(1),
+            database: Some("demo".into()),
+            schema: None,
+            name: "demo".into(),
+            kind: ObjectKind::Database,
+        };
+        let mut current = vec![
+            object("demo", "customers", ObjectKind::Collection),
+            object("demo", "orders", ObjectKind::Collection),
+        ];
+        replace_loaded_children(
+            &mut current,
+            &database,
+            vec![object("demo", "customers", ObjectKind::Collection)],
+        );
+        assert_eq!(names(&current), vec!["customers"]);
+    }
+
+    // 库级加载若返回的是 PG 的 schema 列表（不含表/视图/集合），不得清空已加载的表。
+    #[test]
+    fn schema_list_does_not_clear_tables() {
+        let database = ObjectPath {
+            connection_id: ConnectionId(1),
+            database: Some("demo".into()),
+            schema: None,
+            name: "demo".into(),
+            kind: ObjectKind::Database,
+        };
+        let mut current = vec![object("demo", "users", ObjectKind::Table)];
+        replace_loaded_children(
+            &mut current,
+            &database,
+            vec![object("demo", "public", ObjectKind::Schema)],
+        );
+        assert!(names(&current).contains(&"users".to_string()), "{current:?}");
+    }
+}

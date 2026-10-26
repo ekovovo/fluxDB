@@ -32,11 +32,11 @@ impl AppController {
 
         match command {
             command @ (AppCommand::BrowseAiTableObjects { .. }
-                | AppCommand::FinishAiTableObjects { .. } | AppCommand::LoadAiTableColumns(_)
-                | AppCommand::RememberAiTableObject(_)
-                | AppCommand::BeginAiTableQuery { .. } | AppCommand::LoadAiTablePage { .. }) => {
-                self.dispatch_ai_table_page(command)
-            }
+            | AppCommand::FinishAiTableObjects { .. }
+            | AppCommand::LoadAiTableColumns(_)
+            | AppCommand::RememberAiTableObject(_)
+            | AppCommand::BeginAiTableQuery { .. }
+            | AppCommand::LoadAiTablePage { .. }) => self.dispatch_ai_table_page(command),
             AppCommand::AiConversation(command) => return self.dispatch_ai_conversation(command),
             command @ (AppCommand::OpenMongoCollection { .. }
             | AppCommand::BeginMongoLoad(_)
@@ -53,6 +53,9 @@ impl AppController {
             | AppCommand::SelectMongoSection { .. }
             | AppCommand::SelectMongoDisplayMode { .. }
             | AppCommand::SelectMongoDocument { .. }
+            | AppCommand::SaveMongoDocument { .. }
+            | AppCommand::DeleteMongoDocument { .. }
+            | AppCommand::InsertMongoDocument { .. }
             | AppCommand::SetMongoOffset { .. }
             | AppCommand::UpdateMongoAggregation { .. }
             | AppCommand::BeginMongoAggregation(_)
@@ -63,7 +66,8 @@ impl AppController {
             | AppCommand::PrepareRestore(_)
             | AppCommand::ProbeRestore(_)
             | AppCommand::RunRestore { .. }
-            | AppCommand::ImportTableData { .. }) => {
+            | AppCommand::ImportTableData { .. }
+            | AppCommand::ImportMongoDocuments { .. }) => {
                 self.dispatch_database_task(command, &AtomicBool::new(false), &mut |_| {})
             }
             AppCommand::LoadConnections => {
@@ -1090,14 +1094,14 @@ impl AppController {
                             detail: None,
                             retryable: false,
                         })?;
-                    let source = self.er_relationship_source().ok_or_else(|| {
-                        UserFacingError {
+                    let source = self
+                        .er_relationship_source()
+                        .ok_or_else(|| UserFacingError {
                             title: "关系建议采纳失败".into(),
                             message: "ER 存储尚未初始化".into(),
                             detail: None,
                             retryable: true,
-                        }
-                    })?;
+                        })?;
                     er_validate_proposals_for_adoption(
                         &config,
                         &scope_key,
@@ -1110,14 +1114,14 @@ impl AppController {
                         detail: Some(error.code.into()),
                         retryable: false,
                     })?;
-                    let service = self
-                        .er_model_service(scope_key.clone())
-                        .ok_or_else(|| UserFacingError {
+                    let service = self.er_model_service(scope_key.clone()).ok_or_else(|| {
+                        UserFacingError {
                             title: "关系建议采纳失败".into(),
                             message: "ER 存储尚未初始化".into(),
                             detail: None,
                             retryable: true,
-                        })?;
+                        }
+                    })?;
                     let adopted = service
                         .create_confirmed_batch(proposals.clone(), "user")
                         .map_err(|error| UserFacingError {
@@ -1146,9 +1150,7 @@ impl AppController {
                                         "关系建议卡片内容损坏，无法记录采纳结果",
                                     )
                                 })?;
-                            if payload
-                                .get("batch_id")
-                                .and_then(serde_json::Value::as_str)
+                            if payload.get("batch_id").and_then(serde_json::Value::as_str)
                                 != Some(batch_id.as_str())
                             {
                                 return Err(Error::new(
@@ -1157,18 +1159,16 @@ impl AppController {
                                 ));
                             }
                             let mut ready = 0usize;
-                            if let Some(items) =
-                                payload.get_mut("items").and_then(serde_json::Value::as_array_mut)
+                            if let Some(items) = payload
+                                .get_mut("items")
+                                .and_then(serde_json::Value::as_array_mut)
                             {
                                 for item in items {
                                     let item_id = item
                                         .get("item_id")
                                         .and_then(serde_json::Value::as_str)
                                         .map(str::to_string);
-                                    if item_id
-                                        .as_ref()
-                                        .is_some_and(|id| adopted_ids.contains(id))
-                                    {
+                                    if item_id.as_ref().is_some_and(|id| adopted_ids.contains(id)) {
                                         item["status"] = serde_json::json!("adopted");
                                         item["relationship"] = serde_json::Value::Null;
                                     }
@@ -1184,7 +1184,8 @@ impl AppController {
                                 .get("review")
                                 .and_then(|review| review.get("adopted"))
                                 .and_then(serde_json::Value::as_u64)
-                                .unwrap_or(0) as usize;
+                                .unwrap_or(0)
+                                as usize;
                             payload["review"] = serde_json::json!({
                                 "status": if ready == 0 { "complete" } else { "partial" },
                                 "adopted": previously_adopted + adopted.len(),
@@ -1289,7 +1290,8 @@ impl AppController {
                 let generation = match self.find_data_editor_mut(tab_id) {
                     Some(editor) => editor.begin_load(),
                     None => {
-                        return self.fail(Error::new(ErrorKind::Internal, "数据编辑器标签页不存在"));
+                        return self
+                            .fail(Error::new(ErrorKind::Internal, "数据编辑器标签页不存在"));
                     }
                 };
                 self.load_data_page_command(tab_id, generation, Vec::new(), Vec::new(), None)
@@ -3375,8 +3377,11 @@ impl AppController {
                 }
             }
             AppCommand::LoadSqlServerSecurityDatabases(tab_id) => {
-                AppEvent::SqlServerSecurityDatabasesLoaded(tab_id,
-                    self.load_sqlserver_security_databases(tab_id).map_err(UserFacingError::from))
+                AppEvent::SqlServerSecurityDatabasesLoaded(
+                    tab_id,
+                    self.load_sqlserver_security_databases(tab_id)
+                        .map_err(UserFacingError::from),
+                )
             }
             AppCommand::FinishSqlServerSecurityDatabases { tab_id, result } => {
                 if let Some(admin) = self.user_admin_state_mut(tab_id)
@@ -3384,12 +3389,18 @@ impl AppController {
                 {
                     state.loading = false;
                     match result {
-                        Ok(databases) => { state.databases = databases; state.error = None; }
+                        Ok(databases) => {
+                            state.databases = databases;
+                            state.error = None;
+                        }
                         Err(error) => state.error = Some(error),
                     }
                     AppEvent::TabActivated(tab_id)
                 } else {
-                    self.fail(Error::new(ErrorKind::Internal, "SQL Server 用户与权限标签页不存在"))
+                    self.fail(Error::new(
+                        ErrorKind::Internal,
+                        "SQL Server 用户与权限标签页不存在",
+                    ))
                 }
             }
             AppCommand::SelectSqlServerSecurityDatabase { tab_id, database } => {
@@ -3401,7 +3412,10 @@ impl AppController {
                         Err(error) => AppEvent::Failed(UserFacingError::from(error)),
                     }
                 } else {
-                    self.fail(Error::new(ErrorKind::Internal, "SQL Server 用户与权限标签页不存在"))
+                    self.fail(Error::new(
+                        ErrorKind::Internal,
+                        "SQL Server 用户与权限标签页不存在",
+                    ))
                 }
             }
             AppCommand::StartSqlServerSecurityLoad(tab_id) => {
@@ -3412,15 +3426,18 @@ impl AppController {
                     state.error = None;
                     AppEvent::TabActivated(tab_id)
                 } else {
-                    self.fail(Error::new(ErrorKind::Internal, "SQL Server 用户与权限标签页不存在"))
+                    self.fail(Error::new(
+                        ErrorKind::Internal,
+                        "SQL Server 用户与权限标签页不存在",
+                    ))
                 }
             }
-            AppCommand::LoadSqlServerSecurity(tab_id) => match self.load_sqlserver_security(tab_id) {
+            AppCommand::LoadSqlServerSecurity(tab_id) => match self.load_sqlserver_security(tab_id)
+            {
                 Ok(snapshot) => AppEvent::UserAdminSqlServerLoaded(tab_id, Ok(snapshot)),
-                Err(error) => AppEvent::UserAdminSqlServerLoaded(
-                    tab_id,
-                    Err(UserFacingError::from(error)),
-                ),
+                Err(error) => {
+                    AppEvent::UserAdminSqlServerLoaded(tab_id, Err(UserFacingError::from(error)))
+                }
             },
             AppCommand::FinishSqlServerSecurityLoad { tab_id, result } => {
                 if let Some(admin) = self.user_admin_state_mut(tab_id)
@@ -3450,10 +3467,9 @@ impl AppController {
                             state.save_status = SqlServerSecuritySaveStatus::Idle;
                             state.selected = previous
                                 .filter(|principal| {
-                                    state
-                                        .snapshot
-                                        .as_ref()
-                                        .is_some_and(|snapshot| snapshot.contains_principal(principal))
+                                    state.snapshot.as_ref().is_some_and(|snapshot| {
+                                        snapshot.contains_principal(principal)
+                                    })
                                 })
                                 .or(current_login)
                                 .or_else(|| {
@@ -3474,7 +3490,10 @@ impl AppController {
                     }
                     AppEvent::TabActivated(tab_id)
                 } else {
-                    self.fail(Error::new(ErrorKind::Internal, "SQL Server 用户与权限标签页不存在"))
+                    self.fail(Error::new(
+                        ErrorKind::Internal,
+                        "SQL Server 用户与权限标签页不存在",
+                    ))
                 }
             }
             AppCommand::StartSqlServerPermissionsLoad { tab_id, principal } => {
@@ -3495,7 +3514,10 @@ impl AppController {
                     }
                     AppEvent::TabActivated(tab_id)
                 } else {
-                    self.fail(Error::new(ErrorKind::Internal, "SQL Server 用户与权限标签页不存在"))
+                    self.fail(Error::new(
+                        ErrorKind::Internal,
+                        "SQL Server 用户与权限标签页不存在",
+                    ))
                 }
             }
             AppCommand::LoadSqlServerPermissions { tab_id, principal } => {
@@ -3537,7 +3559,10 @@ impl AppController {
                     }
                     AppEvent::TabActivated(tab_id)
                 } else {
-                    self.fail(Error::new(ErrorKind::Internal, "SQL Server 用户与权限标签页不存在"))
+                    self.fail(Error::new(
+                        ErrorKind::Internal,
+                        "SQL Server 用户与权限标签页不存在",
+                    ))
                 }
             }
             AppCommand::SelectSqlServerPrincipal { tab_id, principal } => {
@@ -3566,7 +3591,10 @@ impl AppController {
                     admin.active_detail_tab = UserAdminDetailTab::General;
                     AppEvent::TabActivated(tab_id)
                 } else {
-                    self.fail(Error::new(ErrorKind::Internal, "SQL Server 用户与权限标签页不存在"))
+                    self.fail(Error::new(
+                        ErrorKind::Internal,
+                        "SQL Server 用户与权限标签页不存在",
+                    ))
                 }
             }
             AppCommand::SetSqlServerSecurityFilter { tab_id, filter } => {
@@ -3576,7 +3604,10 @@ impl AppController {
                     state.list_filter = filter;
                     AppEvent::TabActivated(tab_id)
                 } else {
-                    self.fail(Error::new(ErrorKind::Internal, "SQL Server 用户与权限标签页不存在"))
+                    self.fail(Error::new(
+                        ErrorKind::Internal,
+                        "SQL Server 用户与权限标签页不存在",
+                    ))
                 }
             }
             AppCommand::OpenSqlServerSecurityForm { tab_id, kind } => {
@@ -3587,7 +3618,10 @@ impl AppController {
                         || state.applying
                         || state.save_status == SqlServerSecuritySaveStatus::NeedsVerify
                     {
-                        return AppEvent::Failed(UserFacingError::from(Error::new(ErrorKind::Query, "请先保存或取消当前 SQL Server 安全变更")));
+                        return AppEvent::Failed(UserFacingError::from(Error::new(
+                            ErrorKind::Query,
+                            "请先保存或取消当前 SQL Server 安全变更",
+                        )));
                     }
                     let grant_on_login = kind == SqlServerSecurityFormKind::GrantPermission
                         && state.selected_kind() == Some(SqlServerPrincipalKind::Login);
@@ -3598,9 +3632,13 @@ impl AppController {
                     };
                     *form = SqlServerSecurityForm::open(kind);
                     match kind {
-                        SqlServerSecurityFormKind::CreateLogin => form.default_value = state.database.clone(),
+                        SqlServerSecurityFormKind::CreateLogin => {
+                            form.default_value = state.database.clone()
+                        }
                         SqlServerSecurityFormKind::CreateUser => form.default_value = "dbo".into(),
-                        SqlServerSecurityFormKind::GrantPermission if grant_on_login => form.permission_scope = "SERVER".into(),
+                        SqlServerSecurityFormKind::GrantPermission if grant_on_login => {
+                            form.permission_scope = "SERVER".into()
+                        }
                         _ => {}
                     }
                     if matches!(
@@ -3614,7 +3652,10 @@ impl AppController {
                     }
                     AppEvent::TabActivated(tab_id)
                 } else {
-                    self.fail(Error::new(ErrorKind::Internal, "SQL Server 用户与权限标签页不存在"))
+                    self.fail(Error::new(
+                        ErrorKind::Internal,
+                        "SQL Server 用户与权限标签页不存在",
+                    ))
                 }
             }
             AppCommand::CloseSqlServerPermissionComposer(tab_id) => {
@@ -3660,7 +3701,10 @@ impl AppController {
                     }
                     AppEvent::TabActivated(tab_id)
                 } else {
-                    self.fail(Error::new(ErrorKind::Internal, "SQL Server 用户与权限标签页不存在"))
+                    self.fail(Error::new(
+                        ErrorKind::Internal,
+                        "SQL Server 用户与权限标签页不存在",
+                    ))
                 }
             }
             AppCommand::SetSqlServerSecurityFormFlag {
@@ -3676,16 +3720,26 @@ impl AppController {
                     }
                     AppEvent::TabActivated(tab_id)
                 } else {
-                    self.fail(Error::new(ErrorKind::Internal, "SQL Server 用户与权限标签页不存在"))
+                    self.fail(Error::new(
+                        ErrorKind::Internal,
+                        "SQL Server 用户与权限标签页不存在",
+                    ))
                 }
             }
             AppCommand::DiscardSqlServerSecurityChanges(tab_id) => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id) && let Some(state) = admin.sqlserver.as_mut() {
+                if let Some(admin) = self.user_admin_state_mut(tab_id)
+                    && let Some(state) = admin.sqlserver.as_mut()
+                {
                     match state.discard_changes() {
                         Ok(()) => AppEvent::TabActivated(tab_id),
                         Err(error) => AppEvent::Failed(UserFacingError::from(error)),
                     }
-                } else { self.fail(Error::new(ErrorKind::Internal, "SQL Server 用户与权限标签页不存在")) }
+                } else {
+                    self.fail(Error::new(
+                        ErrorKind::Internal,
+                        "SQL Server 用户与权限标签页不存在",
+                    ))
+                }
             }
             AppCommand::SubmitSqlServerSecurityForm(tab_id) => {
                 match self.submit_sqlserver_security_form(tab_id) {
@@ -3705,7 +3759,10 @@ impl AppController {
                     state.queue_role_toggle(scope, &role, &member);
                     AppEvent::TabActivated(tab_id)
                 } else {
-                    self.fail(Error::new(ErrorKind::Internal, "SQL Server 用户与权限标签页不存在"))
+                    self.fail(Error::new(
+                        ErrorKind::Internal,
+                        "SQL Server 用户与权限标签页不存在",
+                    ))
                 }
             }
             AppCommand::SetSqlServerSelectedLoginEnabled { tab_id, enabled } => {
@@ -3717,12 +3774,10 @@ impl AppController {
                         .selected_login()
                         .is_some_and(|login| login.is_sql_login())
                 {
-                    state.queue_change(
-                        fluxdb_core::SqlServerSecurityChange::SetLoginEnabled {
-                            name: principal.name,
-                            enabled,
-                        },
-                    );
+                    state.queue_change(fluxdb_core::SqlServerSecurityChange::SetLoginEnabled {
+                        name: principal.name,
+                        enabled,
+                    });
                     AppEvent::TabActivated(tab_id)
                 } else {
                     self.fail(Error::new(ErrorKind::Internal, "SQL Server 登录名不存在"))
@@ -3734,7 +3789,8 @@ impl AppController {
             } => {
                 if let Some(admin) = self.user_admin_state_mut(tab_id)
                     && let Some(state) = admin.sqlserver.as_mut()
-                    && let Some(permission) = state.effective_permissions().get(permission_index).cloned()
+                    && let Some(permission) =
+                        state.effective_permissions().get(permission_index).cloned()
                 {
                     state.queue_permission_revoke(&permission);
                     AppEvent::TabActivated(tab_id)
@@ -3758,7 +3814,10 @@ impl AppController {
                     admin.active_detail_tab = UserAdminDetailTab::SqlPreview;
                     AppEvent::TabActivated(tab_id)
                 } else {
-                    self.fail(Error::new(ErrorKind::Internal, "SQL Server 用户与权限标签页不存在"))
+                    self.fail(Error::new(
+                        ErrorKind::Internal,
+                        "SQL Server 用户与权限标签页不存在",
+                    ))
                 }
             }
             AppCommand::LoadSqlServerSecurityPreview(tab_id) => {
@@ -3773,7 +3832,11 @@ impl AppController {
                     },
                 }
             }
-            AppCommand::FinishSqlServerSecurityPreview { tab_id, revision, result } => {
+            AppCommand::FinishSqlServerSecurityPreview {
+                tab_id,
+                revision,
+                result,
+            } => {
                 if let Some(admin) = self.user_admin_state_mut(tab_id)
                     && let Some(state) = admin.sqlserver.as_mut()
                 {
@@ -3790,7 +3853,10 @@ impl AppController {
                     }
                     AppEvent::TabActivated(tab_id)
                 } else {
-                    self.fail(Error::new(ErrorKind::Internal, "SQL Server 用户与权限标签页不存在"))
+                    self.fail(Error::new(
+                        ErrorKind::Internal,
+                        "SQL Server 用户与权限标签页不存在",
+                    ))
                 }
             }
             AppCommand::StartSqlServerSecurityApply(tab_id) => {
@@ -3800,7 +3866,10 @@ impl AppController {
                     if state.save_status == SqlServerSecuritySaveStatus::NeedsVerify
                         || !state.has_pending_changes()
                     {
-                        return AppEvent::Failed(UserFacingError::from(Error::new(ErrorKind::Query, "请先预览或刷新核实 SQL Server 安全变更")));
+                        return AppEvent::Failed(UserFacingError::from(Error::new(
+                            ErrorKind::Query,
+                            "请先预览或刷新核实 SQL Server 安全变更",
+                        )));
                     }
                     if state.applying {
                         return AppEvent::TabActivated(tab_id);
@@ -3810,7 +3879,10 @@ impl AppController {
                     state.save_status = SqlServerSecuritySaveStatus::Saving;
                     AppEvent::TabActivated(tab_id)
                 } else {
-                    self.fail(Error::new(ErrorKind::Internal, "SQL Server 用户与权限标签页不存在"))
+                    self.fail(Error::new(
+                        ErrorKind::Internal,
+                        "SQL Server 用户与权限标签页不存在",
+                    ))
                 }
             }
             AppCommand::ApplySqlServerSecurityPlan(tab_id) => {
@@ -3875,7 +3947,10 @@ impl AppController {
                     }
                     AppEvent::TabActivated(tab_id)
                 } else {
-                    self.fail(Error::new(ErrorKind::Internal, "SQL Server 用户与权限标签页不存在"))
+                    self.fail(Error::new(
+                        ErrorKind::Internal,
+                        "SQL Server 用户与权限标签页不存在",
+                    ))
                 }
             }
             AppCommand::BeginDeleteSqlServerPrincipal(tab_id) => {
@@ -3902,9 +3977,9 @@ impl AppController {
                                 principal.name.eq_ignore_ascii_case(&snapshot.current_user)
                             }) || !state.selected_user_is_editable()
                         }
-                        SqlServerPrincipalKind::Role => state
-                            .selected_role()
-                            .is_some_and(|role| role.is_fixed),
+                        SqlServerPrincipalKind::Role => {
+                            state.selected_role().is_some_and(|role| role.is_fixed)
+                        }
                     };
                     if protected {
                         return AppEvent::Failed(UserFacingError::from(Error::new(
@@ -3915,7 +3990,10 @@ impl AppController {
                     state.pending_delete = Some(principal);
                     AppEvent::TabActivated(tab_id)
                 } else {
-                    self.fail(Error::new(ErrorKind::Internal, "SQL Server 用户与权限标签页不存在"))
+                    self.fail(Error::new(
+                        ErrorKind::Internal,
+                        "SQL Server 用户与权限标签页不存在",
+                    ))
                 }
             }
             AppCommand::ConfirmDeleteSqlServerPrincipal(tab_id) => {
@@ -3952,7 +4030,10 @@ impl AppController {
                     state.pending_delete = None;
                     AppEvent::TabActivated(tab_id)
                 } else {
-                    self.fail(Error::new(ErrorKind::Internal, "SQL Server 用户与权限标签页不存在"))
+                    self.fail(Error::new(
+                        ErrorKind::Internal,
+                        "SQL Server 用户与权限标签页不存在",
+                    ))
                 }
             }
             AppCommand::PgBeginDeleteRole(tab_id) => {
@@ -4483,7 +4564,7 @@ impl AppController {
             | AppCommand::CompleteAiAgentDelete { .. }
             | AppCommand::SaveAiAgent(_)
             | AppCommand::SaveAiMcpServerProfile(_)
-            | AppCommand::SaveExecutionPolicy {..}
+            | AppCommand::SaveExecutionPolicy { .. }
             | AppCommand::EnsureMcpControl
             | AppCommand::SaveAiMcpDatasource(_)
             | AppCommand::DeleteAiMcpDatasource { .. }
@@ -4506,12 +4587,13 @@ impl AppController {
             command @ (AppCommand::SyncMcpClients { .. }
             | AppCommand::RefreshMcpClients { .. }
             | AppCommand::SetMcpClientRegistration { .. }) => self.dispatch_mcp_clients(command),
-            AppCommand::ApplyConfirmedConfig { proposal, binary_path } => {
-                match self.apply_confirmed_config(&proposal, &binary_path) {
-                    Ok(outcome) => AppEvent::ConfigProposalApplied(outcome),
-                    Err(error) => AppEvent::AiSettingsError(error.message),
-                }
-            }
+            AppCommand::ApplyConfirmedConfig {
+                proposal,
+                binary_path,
+            } => match self.apply_confirmed_config(&proposal, &binary_path) {
+                Ok(outcome) => AppEvent::ConfigProposalApplied(outcome),
+                Err(error) => AppEvent::AiSettingsError(error.message),
+            },
             AppCommand::SaveSettings(settings) => {
                 self.state.settings = settings;
                 AppEvent::SettingsSaved
@@ -4770,10 +4852,7 @@ COMMIT;"
     /// 外部 DDL 保护：保存前重查表结构，与打开设计器时的 DDL 不一致就拒绝应用（§9.2）。
     ///
     /// 不拿过期快照覆盖别人的改动；用户刷新后重新预览即可继续。
-    fn ensure_design_not_stale(
-        &self,
-        create: &CreateTableState,
-    ) -> fluxdb_core::Result<()> {
+    fn ensure_design_not_stale(&self, create: &CreateTableState) -> fluxdb_core::Result<()> {
         let CreateTableMode::Design {
             object,
             original_ddl: Some(original_ddl),

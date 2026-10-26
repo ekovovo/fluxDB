@@ -2155,7 +2155,17 @@ fn connection_form(
                 window,
                 cx,
             )),
+        // 连接串导入放在最上方当主入口：Atlas 等托管服务的用户基本是粘贴 URI 起手，
+        // 导入会回填下方的主机/SRV/账号/默认库/认证库，沉到表单底部等于看不见。
         DatabaseKind::MongoDb => base
+            .child(discovery_uri_row(
+                inputs,
+                tr("app.connection.mongo.uri"),
+                tr("app.connection.mongo.import_action"),
+                colors,
+                window,
+                cx,
+            ))
             .child(host_port_row_light(
                 tr("app.connection.field.host"),
                 inputs,
@@ -2211,14 +2221,6 @@ fn connection_form(
                 tr("app.connection.field.auth_mechanism"),
                 &inputs.mongo_auth_mechanism_select,
                 "",
-            ))
-            .child(discovery_uri_row(
-                inputs,
-                tr("app.connection.mongo.uri"),
-                tr("app.connection.mongo.import_action"),
-                colors,
-                window,
-                cx,
             )),
         DatabaseKind::Redis => base
             .child(host_port_row_light(

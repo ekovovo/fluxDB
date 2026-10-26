@@ -28,9 +28,9 @@ impl AppController {
                 let Some(config) = self.connection_config(connection_id).cloned() else {
                     return self.fail(Error::new(ErrorKind::Connection, "连接不存在"));
                 };
-                match connector_for(&config).and_then(|connector| {
-                    connector.mongo_server_info(connection_id)
-                }) {
+                match connector_for(&config)
+                    .and_then(|connector| connector.mongo_server_info(connection_id))
+                {
                     Ok(info) => AppEvent::MongoServerInfoLoaded(connection_id, Ok(info)),
                     Err(error) => {
                         let user_error = UserFacingError::from(error);
@@ -92,6 +92,19 @@ impl AppController {
                 });
                 AppEvent::TabActivated(tab_id)
             }
+            AppCommand::SaveMongoDocument {
+                tab_id,
+                before_json,
+                after_json,
+            } => self.save_mongo_document(tab_id, before_json, after_json),
+            AppCommand::DeleteMongoDocument {
+                tab_id,
+                document_json,
+            } => self.delete_mongo_document(tab_id, document_json),
+            AppCommand::InsertMongoDocument {
+                tab_id,
+                document_json,
+            } => self.insert_mongo_document(tab_id, document_json),
             AppCommand::UpdateMongoAggregation { tab_id, pipeline } => {
                 let Some(state) = self.find_mongo_collection_mut(tab_id) else {
                     return self.fail(Error::new(ErrorKind::Internal, "集合标签页不存在"));
@@ -251,7 +264,12 @@ impl AppController {
         }
     }
 
-    fn run_mongo_aggregation(&mut self, tab_id: TabId, generation: u64, pipeline: String) -> AppEvent {
+    fn run_mongo_aggregation(
+        &mut self,
+        tab_id: TabId,
+        generation: u64,
+        pipeline: String,
+    ) -> AppEvent {
         let Some(state) = self.find_mongo_collection_mut(tab_id) else {
             return self.fail(Error::new(ErrorKind::Internal, "集合标签页不存在"));
         };
@@ -263,7 +281,9 @@ impl AppController {
         let Some(config) = self.connection_config(object.connection_id).cloned() else {
             return self.fail(Error::new(ErrorKind::Connection, "连接不存在"));
         };
-        match connector_for(&config).and_then(|connector| connector.mongo_aggregate(&object, &pipeline)) {
+        match connector_for(&config)
+            .and_then(|connector| connector.mongo_aggregate(&object, &pipeline))
+        {
             Ok(page) => AppEvent::MongoAggregationLoaded(tab_id, page),
             Err(error) => AppEvent::Failed(UserFacingError::from(error)),
         }
@@ -290,6 +310,120 @@ impl AppController {
                 state.aggregation = LoadState::Failed(error.clone());
                 self.state.last_error = Some(error.clone());
                 AppEvent::Failed(error)
+            }
+        }
+    }
+
+    /// 整篇替换文档。只读（视图）标签页直接拒绝，避免把写入送到不可写的集合。
+    fn save_mongo_document(
+        &mut self,
+        tab_id: TabId,
+        before_json: String,
+        after_json: String,
+    ) -> AppEvent {
+        let Some(state) = self.find_mongo_collection_mut(tab_id) else {
+            return self.fail(Error::new(ErrorKind::Internal, "集合标签页不存在"));
+        };
+        if state.read_only {
+            return self.fail(Error::new(ErrorKind::Query, "视图不可修改"));
+        }
+        let object = state.object.clone();
+        let Some(config) = self.connection_config(object.connection_id).cloned() else {
+            return self.fail(Error::new(ErrorKind::Connection, "连接不存在"));
+        };
+        let database = object.database.clone().unwrap_or_default();
+        match connector_for(&config).and_then(|connector| {
+            connector.mongo_replace_document(
+                object.connection_id,
+                &database,
+                &object.name,
+                &before_json,
+                &after_json,
+            )
+        }) {
+            Ok(()) => {
+                if let Some(state) = self.find_mongo_collection_mut(tab_id) {
+                    // 保存后立即关闭抽屉：重新查询会重建本页文档，旧下标已无意义。
+                    state.selected_document = None;
+                }
+                AppEvent::MongoDocumentSaved(tab_id)
+            }
+            Err(error) => {
+                let user_error = UserFacingError::from(error);
+                self.state.last_error = Some(user_error.clone());
+                AppEvent::Failed(user_error)
+            }
+        }
+    }
+
+    /// 删除一篇文档。只读（视图）标签页直接拒绝，与整篇替换同一条前置检查。
+    fn delete_mongo_document(&mut self, tab_id: TabId, document_json: String) -> AppEvent {
+        let Some(state) = self.find_mongo_collection_mut(tab_id) else {
+            return self.fail(Error::new(ErrorKind::Internal, "集合标签页不存在"));
+        };
+        if state.read_only {
+            return self.fail(Error::new(ErrorKind::Query, "视图不可修改"));
+        }
+        let object = state.object.clone();
+        let Some(config) = self.connection_config(object.connection_id).cloned() else {
+            return self.fail(Error::new(ErrorKind::Connection, "连接不存在"));
+        };
+        let database = object.database.clone().unwrap_or_default();
+        match connector_for(&config).and_then(|connector| {
+            connector.mongo_delete_document(
+                object.connection_id,
+                &database,
+                &object.name,
+                &document_json,
+            )
+        }) {
+            Ok(()) => {
+                if let Some(state) = self.find_mongo_collection_mut(tab_id) {
+                    // 本页文档已重排，旧下标（抽屉/选中态）不再指向被删的那篇。
+                    state.selected_document = None;
+                }
+                AppEvent::MongoDocumentDeleted(tab_id)
+            }
+            Err(error) => {
+                let user_error = UserFacingError::from(error);
+                self.state.last_error = Some(user_error.clone());
+                AppEvent::Failed(user_error)
+            }
+        }
+    }
+
+    /// 插入一篇新文档。只读（视图）标签页同样拒绝，与删除/替换一致。
+    fn insert_mongo_document(&mut self, tab_id: TabId, document_json: String) -> AppEvent {
+        let Some(state) = self.find_mongo_collection_mut(tab_id) else {
+            return self.fail(Error::new(ErrorKind::Internal, "集合标签页不存在"));
+        };
+        if state.read_only {
+            return self.fail(Error::new(ErrorKind::Query, "视图不可修改"));
+        }
+        let object = state.object.clone();
+        let Some(config) = self.connection_config(object.connection_id).cloned() else {
+            return self.fail(Error::new(ErrorKind::Connection, "连接不存在"));
+        };
+        let database = object.database.clone().unwrap_or_default();
+        match connector_for(&config).and_then(|connector| {
+            connector.mongo_insert_document(
+                object.connection_id,
+                &database,
+                &object.name,
+                &document_json,
+            )
+        }) {
+            Ok(id) => {
+                if let Some(state) = self.find_mongo_collection_mut(tab_id) {
+                    // 新文档的 `_id` 由服务端生成，旧下标/抽屉不再对应当前页。
+                    state.selected_document = None;
+                }
+                AppEvent::MongoDocumentInserted(tab_id, id)
+            }
+            Err(error) => {
+                let user_error = UserFacingError::from(error);
+                self.state.last_error = Some(user_error.clone());
+                AppEvent::Failed(user_error)
             }
         }
     }
@@ -381,9 +515,9 @@ impl AppController {
             return self.fail(Error::new(ErrorKind::Connection, "连接不存在"));
         };
         let config = connection.config.clone();
-        if let Err(error) = connector_for(&config)
-            .and_then(|connector| connector.mongo_create_collection(connection_id, &database, &collection))
-        {
+        if let Err(error) = connector_for(&config).and_then(|connector| {
+            connector.mongo_create_collection(connection_id, &database, &collection)
+        }) {
             return self.fail(error);
         }
         match list_objects_for_connection(&config, None) {

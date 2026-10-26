@@ -22,12 +22,30 @@ struct JsonViewRow {
 
 /// 将编辑器 display 文本拆成结构化行列表，供查看态渲染。
 fn json_editor_rows(state: &JsonEditorState) -> Vec<JsonViewRow> {
-    let indent_size = state.config.indent_size.max(1);
     let display = if state.display.is_empty() {
         state.source.clone()
     } else {
         state.display.clone()
     };
+    // 诊断错误行：diagnostic.line 是「未折叠 source」中的行号，仅在无折叠时线性对齐到 display。
+    // 存在折叠时行号可能错位，因此只在没有任何折叠节点时启用行级错误高亮；并受 `diagnostics` 配置开关控制。
+    let error_line = (state.config.diagnostics && !state.nodes.iter().any(|n| n.folded))
+        .then(|| state.diagnostic.as_ref().map(|dia| dia.line))
+        .flatten();
+    json_rows_from_display(&display, &state.nodes, state.config.indent_size, error_line)
+}
+
+/// 由「展示文本 + 折叠节点」拆出可见行。
+///
+/// 与 `JsonEditorState` 解耦：MongoDB 文档卡片只有 pretty 文本和节点列表，
+/// 没有编辑器状态，也走同一条渲染路径。
+fn json_rows_from_display(
+    display: &str,
+    nodes: &[JsonFoldNode],
+    indent_size: usize,
+    error_line: Option<usize>,
+) -> Vec<JsonViewRow> {
+    let indent_size = indent_size.max(1);
     let mut lines = display.lines().collect::<Vec<_>>();
     if lines.is_empty() {
         lines = vec![""];
@@ -35,18 +53,8 @@ fn json_editor_rows(state: &JsonEditorState) -> Vec<JsonViewRow> {
 
     // 折叠节点按起始行索引：标记折叠态并给起始行携带可点击的 fold_path。
     let mut node_by_line = std::collections::HashMap::new();
-    for node in &state.nodes {
+    for node in nodes {
         node_by_line.insert(node.start_line, node);
-    }
-
-    // 诊断错误行：diagnostic.line 是「未折叠 source」中的行号，仅在无折叠时线性对齐到 display。
-    // 存在折叠时行号可能错位，因此只在没有任何折叠节点时启用行级错误高亮；并受 `diagnostics` 配置开关控制。
-    let any_fold = state.nodes.iter().any(|n| n.folded);
-    let mut error_line = None;
-    if state.config.diagnostics && !any_fold {
-        if let Some(dia) = &state.diagnostic {
-            error_line = Some(dia.line);
-        }
     }
 
     lines
@@ -111,22 +119,34 @@ fn json_tokenize_line(text: &str) -> Vec<JsonTok> {
                 .find(|(_, ch)| !ch.is_whitespace())
                 .map(|(i, _)| i)
                 .unwrap_or(rest.len());
-            out.push(JsonTok { text: rest[..end].to_string(), kind: JsonTokKind::Whitespace });
+            out.push(JsonTok {
+                text: rest[..end].to_string(),
+                kind: JsonTokKind::Whitespace,
+            });
             rest = &rest[end..];
         } else if c == '"' {
             // 字符串：读到闭合引号（处理 `\` 转义）。若紧跟 `:` 则为 key。
             let len = json_string_len(rest);
             if rest[len..].starts_with(':') {
-                out.push(JsonTok { text: rest[..len + 1].to_string(), kind: JsonTokKind::Key });
+                out.push(JsonTok {
+                    text: rest[..len + 1].to_string(),
+                    kind: JsonTokKind::Key,
+                });
                 rest = &rest[len + 1..];
             } else {
-                out.push(JsonTok { text: rest[..len].to_string(), kind: JsonTokKind::String });
+                out.push(JsonTok {
+                    text: rest[..len].to_string(),
+                    kind: JsonTokKind::String,
+                });
                 rest = &rest[len..];
             }
         } else if c.is_ascii_digit() || c == '-' {
             // number token：数字、`.`、`e/E`、`+/-`。
             let len = json_number_len(rest);
-            out.push(JsonTok { text: rest[..len].to_string(), kind: JsonTokKind::Number });
+            out.push(JsonTok {
+                text: rest[..len].to_string(),
+                kind: JsonTokKind::Number,
+            });
             rest = &rest[len..];
         } else if c.is_ascii_alphabetic() {
             // boolean / null 字面量；其它字母单词视为标点/中性色。
@@ -137,17 +157,26 @@ fn json_tokenize_line(text: &str) -> Vec<JsonTok> {
             } else {
                 JsonTokKind::Punct
             };
-            out.push(JsonTok { text: word.to_string(), kind });
+            out.push(JsonTok {
+                text: word.to_string(),
+                kind,
+            });
             rest = &rest[len..];
         } else {
             // 单个字符标点（`{` `}` `[` `]` `:` `,` 等）。
             let len = c.len_utf8();
-            out.push(JsonTok { text: rest[..len].to_string(), kind: JsonTokKind::Punct });
+            out.push(JsonTok {
+                text: rest[..len].to_string(),
+                kind: JsonTokKind::Punct,
+            });
             rest = &rest[len..];
         }
     }
     if out.is_empty() {
-        out.push(JsonTok { text: text.to_string(), kind: JsonTokKind::Punct });
+        out.push(JsonTok {
+            text: text.to_string(),
+            kind: JsonTokKind::Punct,
+        });
     }
     out
 }
@@ -203,16 +232,22 @@ fn redis_json_value_panel(
     cx: &mut Context<NavicatMain>,
 ) -> Div {
     let key = detail.key.clone();
-    let state = this.redis_string_values.get(&(tab_id, key.clone())).cloned();
-    let loaded_all = state.as_ref().map(|state| state.loaded_all).unwrap_or(false);
+    let state = this
+        .redis_string_values
+        .get(&(tab_id, key.clone()))
+        .cloned();
+    let loaded_all = state
+        .as_ref()
+        .map(|state| state.loaded_all)
+        .unwrap_or(false);
     let len = state.as_ref().map(|state| state.len);
     let loading = this.redis_json_editor_busy
         || this
             .redis_string_loading
             .as_ref()
             .is_some_and(|loading| loading.0 == tab_id && loading.1 == key);
-    let editing = this.redis_json_editor.state().editing
-        && this.redis_json_editor_is_active(tab_id, &key);
+    let editing =
+        this.redis_json_editor.state().editing && this.redis_json_editor_is_active(tab_id, &key);
     let active_editable = this.redis_json_editor.state().config.editable
         && loaded_all
         && !applying
@@ -238,10 +273,7 @@ fn redis_json_value_panel(
                         .gap_2()
                         .child(redis_string_value_hint(len, loaded_all, loading, colors))
                         .child(redis_json_toolbar_format_button(
-                            editing,
-                            applying,
-                            colors,
-                            cx,
+                            editing, applying, colors, cx,
                         ))
                         .child(redis_string_copy_button(
                             tab_id,
@@ -296,7 +328,8 @@ fn redis_json_toolbar_format_button(
         .text_size(px(12.))
         .text_color(if enabled { colors.text } else { colors.muted })
         .when(enabled, |this| {
-            this.cursor_pointer().hover(move |style| style.bg(colors.hover))
+            this.cursor_pointer()
+                .hover(move |style| style.bg(colors.hover))
         })
         .on_mouse_down(
             MouseButton::Left,
@@ -316,11 +349,7 @@ fn redis_json_toolbar_format_button(
 }
 
 /// 编辑按钮：完整加载 + 非二进制 + 非保存/编辑中才可进入编辑态。
-fn redis_json_edit_button(
-    enabled: bool,
-    colors: UiColors,
-    cx: &mut Context<NavicatMain>,
-) -> Div {
+fn redis_json_edit_button(enabled: bool, colors: UiColors, cx: &mut Context<NavicatMain>) -> Div {
     div()
         .h(px(24.))
         .px_1()
@@ -331,7 +360,8 @@ fn redis_json_edit_button(
         .text_size(px(12.))
         .text_color(if enabled { colors.text } else { colors.muted })
         .when(enabled, |this| {
-            this.cursor_pointer().hover(move |style| style.bg(colors.hover))
+            this.cursor_pointer()
+                .hover(move |style| style.bg(colors.hover))
         })
         .on_mouse_down(
             MouseButton::Left,
@@ -377,12 +407,7 @@ fn redis_json_value_body(
 
     if editing {
         return body.child(redis_json_edit_body(
-            tab_id,
-            detail,
-            applying,
-            this,
-            colors,
-            cx,
+            tab_id, detail, applying, this, colors, cx,
         ));
     }
 
@@ -406,16 +431,14 @@ fn redis_json_value_body(
                         .text_size(px(13.))
                         .line_height(px(19.))
                         .text_color(colors.text)
-                        .child(
-                            div().px_3().py_2().child(if preview.is_empty() {
-                                div()
-                                    .text_color(colors.muted)
-                                    .child(placeholder)
-                                    .into_any_element()
-                            } else {
-                                format!("{preview}\n…").into_any_element()
-                            }),
-                        ),
+                        .child(div().px_3().py_2().child(if preview.is_empty() {
+                            div()
+                                .text_color(colors.muted)
+                                .child(placeholder)
+                                .into_any_element()
+                        } else {
+                            format!("{preview}\n…").into_any_element()
+                        })),
                 )
                 .child(
                     div()
@@ -476,17 +499,13 @@ fn redis_json_edit_body(
         .py_2()
         .gap_2()
         .child(
-            div()
-                .flex_1()
-                .min_h(px(0.))
-                .w_full()
-                .child(
-                    div()
-                        .w_full()
-                        .h_full()
-                        .min_h(px(min_rows_px))
-                        .child(this.redis_json_editor.render_edit_body(colors, applying)),
-                ),
+            div().flex_1().min_h(px(0.)).w_full().child(
+                div()
+                    .w_full()
+                    .h_full()
+                    .min_h(px(min_rows_px))
+                    .child(this.redis_json_editor.render_edit_body(colors, applying)),
+            ),
         )
         // 错误提示完全位于编辑器内：错误 token 处的红波浪下划线 + 悬停气泡，
         // 底部不再放置任何提示行/横幅。
@@ -552,74 +571,199 @@ fn redis_json_save_button(
 }
 
 /// 完整加载查看态：按 pretty 行渲染，带一致性 gutter（折叠按钮 + 层级线）与错误行高亮。
+///
+/// 渲染统一走 `json_fold_view`（与 MongoDB 文档卡片同一实现），这里只把编辑器的
+/// 配置翻译成视图参数，并注入 Redis 自己的折叠回调。
 fn redis_json_view_rows(
     tab_id: TabId,
     this: &mut NavicatMain,
     colors: UiColors,
     cx: &Context<NavicatMain>,
 ) -> gpui::Stateful<Div> {
-    let theme = JsonEditorTheme::from_colors(colors);
     let state = this.redis_json_editor.state();
     let cfg = &state.config;
-    let indent_size = cfg.indent_size.max(1);
-    let rows = json_editor_rows(state);
-    let show_gutter = cfg.show_gutter && cfg.folding;
-    let enable_fold = cfg.folding;
-    let highlight = cfg.syntax_highlight;
-    let show_numbers = cfg.line_numbers;
+    let displayed = if state.display.is_empty() {
+        state.source.clone()
+    } else {
+        state.display.clone()
+    };
+    let mut view = JsonFoldView::panel(&displayed, &state.nodes, cfg.syntax_highlight);
+    view.indent_size = cfg.indent_size.max(1);
+    // 诊断行只在无折叠时有效（折叠后行号会重建），与 `json_editor_rows` 的判定保持一致。
+    view.error_line = json_editor_rows(state)
+        .iter()
+        .find(|row| row.is_error)
+        .map(|row| row.line);
+    // gutter 即「行号 + 折叠图标」这一列，两者随 `show_gutter` 一起开关（与改造前一致）。
+    view.line_num_width = (cfg.show_gutter && cfg.line_numbers).then_some(JSON_LINE_NUM_WIDTH);
+    view.folding = cfg.show_gutter && cfg.folding;
 
-    // 紧凑 gutter 列：融合「行号 + 折叠图标」为同一容器，顺序 [行号][折叠图标][正文]。
-    // gutter 背景透明（与编辑器背景一致），不再使用独立大灰色折叠栏。
-    // 折叠状态由 `JsonViewRow.fold_path` 直接携带（行号在折叠后会重建，不能反查节点）。
+    let entity = cx.entity().downgrade();
+    json_fold_view(&view, colors, move |path, window, cx| {
+        let _ = entity.update(cx, |this: &mut NavicatMain, cx| {
+            this.redis_json_toggle_fold(path, window, cx);
+        });
+    })
+    .id(("redis-json-value-view", tab_id.0))
+    .size_full()
+}
+
+/// 只读 JSON 视图（带行号 / 折叠箭头 / 语法高亮）的可配置样式。
+///
+/// 与 `NavicatMain` 解耦：调用方给一段 pretty 文本 + 折叠节点 + 样式 + 折叠回调，
+/// 就能得到完整的可折叠 JSON 视图（Redis 值详情、MongoDB 文档卡片共用）。
+pub(crate) struct JsonFoldView<'a> {
+    /// pretty 后的展示文本。
+    pub display: &'a str,
+    /// 可折叠节点（由 `build_pretty` 按同一份折叠集合产出）。
+    pub nodes: &'a [JsonFoldNode],
+    pub row_height: f32,
+    /// 行号列宽度；`None` 表示不显示行号列。
+    pub line_num_width: Option<f32>,
+    pub line_num_text_size: f32,
+    pub text_size: f32,
+    /// 是否显示折叠箭头并允许折叠。
+    pub folding: bool,
+    /// 是否做语法高亮。
+    pub highlight: bool,
+    pub indent_size: usize,
+    /// 需要标红的行号（非法 JSON 的诊断行）；`None` 表示不高亮任何行。
+    pub error_line: Option<usize>,
+    /// 可选的选择器前缀：给出时每个 gutter 行带 `{前缀}:{行号}`，无头用例才能点到折叠箭头。
+    pub selector_prefix: Option<String>,
+    /// gutter 行元素 id 前缀；同一页面有多份 JSON 视图时必须互不相同。
+    pub id_salt: SharedString,
+}
+
+impl<'a> JsonFoldView<'a> {
+    /// 与 Redis JSON 面板一致的默认样式（19px 行高、36px 行号列、13px 等宽字）。
+    pub(crate) fn panel(
+        display: &'a str,
+        nodes: &'a [JsonFoldNode],
+        highlight: bool,
+    ) -> JsonFoldView<'a> {
+        JsonFoldView {
+            display,
+            nodes,
+            row_height: JSON_ROW_HEIGHT,
+            line_num_width: Some(JSON_LINE_NUM_WIDTH),
+            line_num_text_size: 11.,
+            text_size: 13.,
+            folding: true,
+            highlight,
+            indent_size: 2,
+            error_line: None,
+            selector_prefix: None,
+            id_salt: "json-fold-panel".into(),
+        }
+    }
+}
+
+/// 渲染只读 JSON 视图；`on_toggle` 在点击折叠箭头时收到该节点的折叠路径。
+///
+/// 行拆分走 `json_rows_from_display`，与编辑器查看态同一套逻辑（折叠占位、层级缩进、
+/// 折叠后行号重建都由它保证），因此两个调用点的折叠行为不会漂移。
+pub(crate) fn json_fold_view(
+    view: &JsonFoldView<'_>,
+    colors: UiColors,
+    on_toggle: impl Fn(JsonFoldPath, &mut Window, &mut App) + 'static,
+) -> Div {
+    let theme = JsonEditorTheme::from_colors(colors);
+    let rows = json_rows_from_display(view.display, view.nodes, view.indent_size, view.error_line);
+    let on_toggle = std::rc::Rc::new(on_toggle);
+    let show_numbers = view.line_num_width.is_some();
+
     let gutter_col = div()
         .flex_none()
         .flex()
         .flex_col()
         .children(rows.iter().map(|row| {
-            redis_json_gutter_row(
-                row,
-                enable_fold.then(|| row.fold_path.clone()).flatten(),
-                show_numbers,
-                theme,
-                colors,
-                cx,
-            )
+            let toggle = on_toggle.clone();
+            let fold_path = row.fold_path.clone();
+            let is_fold_start = view.folding && fold_path.is_some();
+            // 可折叠行与非折叠行给不同选择器：无头用例据此判断哪一行是折叠箭头，
+            // 也能数出当前可见行数（折叠后行号会重建）。
+            let gutter_selector = view.selector_prefix.as_ref().map(|prefix| {
+                if is_fold_start {
+                    format!("{prefix}:{}", row.line)
+                } else {
+                    format!("{prefix}-plain:{}", row.line)
+                }
+            });
+            div()
+                .h(px(view.row_height))
+                .flex_none()
+                .flex()
+                .items_center()
+                .id((view.id_salt.clone(), row.line))
+                .when_some(gutter_selector, |this, selector| {
+                    this.debug_selector(move || selector)
+                })
+                .when(is_fold_start, |this| {
+                    let path = fold_path.clone().expect("fold start must carry path");
+                    this.hover(move |s| s.bg(theme.fold_hover))
+                        .cursor_pointer()
+                        .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                            (*toggle)(path.clone(), window, cx);
+                            cx.stop_propagation();
+                        })
+                })
+                .when(show_numbers, |this| {
+                    this.child(
+                        div()
+                            .w(px(view.line_num_width.unwrap_or_default()))
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .justify_end()
+                            .pr_1()
+                            .text_size(px(view.line_num_text_size))
+                            .text_color(colors.muted)
+                            .child((row.line + 1).to_string()),
+                    )
+                })
+                .child(
+                    div()
+                        .w(px(JSON_FOLD_COL_WIDTH))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(if is_fold_start {
+                            app_icon(
+                                if row.folded {
+                                    AppIcon::ChevronRight
+                                } else {
+                                    AppIcon::ChevronDown
+                                },
+                                12.,
+                                colors.text,
+                            )
+                            .into_any_element()
+                        } else {
+                            div().into_any_element()
+                        }),
+                )
         }));
 
-    // 正文列：随 gutter 之后开始渲染，行高一致以纵向对齐。
-    let text_col = div().flex_1().min_w(px(0.)).children(
-        rows.iter()
-            .map(|row| redis_json_text_row(row, theme, indent_size, highlight)),
-    );
-    let view = div()
-        .id(("redis-json-value-view", tab_id.0))
-        .size_full()
+    let text_col = div()
+        .flex_1()
+        .min_w(px(0.))
+        .children(rows.iter().map(|row| {
+            json_text_row_with_metrics(
+                row,
+                theme,
+                view.indent_size,
+                view.highlight,
+                view.row_height,
+                view.text_size,
+            )
+        }));
+    div()
         .flex()
-        .bg(colors.input_bg);
-    if show_gutter {
-        // 显示折叠图标时同时保留行号（若开启）；行号 + 折叠图标在同一个 gutter 容器内。
-        view.child(gutter_col).child(text_col)
-    } else if show_numbers {
-        // 不显示折叠但显示行号：仍在一个紧凑的行号列内。
-        let num_only = div().flex_none().flex().flex_col().children(
-            rows.iter().map(|row| {
-                div()
-                    .h(px(JSON_ROW_HEIGHT))
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .justify_end()
-                    .w(px(JSON_LINE_NUM_WIDTH))
-                    .pr_1()
-                    .text_size(px(11.))
-                    .text_color(colors.muted)
-                    .child((row.line + 1).to_string())
-            }),
-        );
-        view.child(num_only).child(text_col)
-    } else {
-        view.child(text_col)
-    }
+        .bg(colors.input_bg)
+        .child(gutter_col)
+        .child(text_col)
 }
 
 /// 查看态单行高度（与 gutter / 正文两列一致，保证垂直对齐）。
@@ -630,78 +774,6 @@ const JSON_LINE_NUM_WIDTH: f32 = 36.0;
 
 /// 折叠图标列宽度（约 17px，紧贴行号右侧，间距 4-6px）。
 const JSON_FOLD_COL_WIDTH: f32 = 17.0;
-
-/// gutter 行：融合「行号（可选）+ 折叠图标」为一行，顺序 [行号][折叠图标][正文]。
-///
-/// - 行号列右对齐灰色，宽度 `JSON_LINE_NUM_WIDTH`。
-/// - 折叠图标列紧贴行号右侧，间距 4-6px；无折叠节点的行保留列宽但不显示图标，保证正文对齐。
-/// - 整行作为折叠命中区，悬停高亮；gutter 背景透明，与编辑器背景一致。
-/// - 折叠点击直接携带 `fold_path`（`Some(空)` 表示根节点也可折叠），不再用行号反查节点。
-#[allow(clippy::too_many_arguments)]
-fn redis_json_gutter_row(
-    row: &JsonViewRow,
-    fold_path: Option<JsonFoldPath>,
-    show_numbers: bool,
-    theme: JsonEditorTheme,
-    colors: UiColors,
-    cx: &Context<NavicatMain>,
-) -> gpui::Stateful<Div> {
-    // 是否为可折叠节点起始行（`Some` 即代表可折叠；根节点的路径为空 `Vec` 同样可折叠）。
-    let is_fold_start = fold_path.is_some();
-    div()
-        .h(px(JSON_ROW_HEIGHT))
-        .flex_none()
-        .flex()
-        .items_center()
-        .id(("redis-json-gutter-row", row.line))
-        .when(is_fold_start, |this| {
-            // 整行作为折叠命中区（gutter 点击即折叠/展开）；`fold_path` 已随行携带，克隆供移动闭包使用。
-            let path = fold_path.clone().expect("fold start must carry path");
-            this.hover(move |s| s.bg(theme.fold_hover))
-                .cursor_pointer()
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |this, _, window, cx| {
-                        this.redis_json_toggle_fold(path.clone(), window, cx);
-                        cx.stop_propagation();
-                    }),
-                )
-        })
-        // 行号列（右对齐）。
-        .when(show_numbers, |this| {
-            this.child(
-                div()
-                    .w(px(JSON_LINE_NUM_WIDTH))
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .justify_end()
-                    .pr_1()
-                    .text_size(px(11.))
-                    .text_color(colors.muted)
-                    .child((row.line + 1).to_string()),
-            )
-        })
-        // 折叠图标列：固定宽度，紧贴行号右侧；无折叠节点时留空保持对齐。
-        .child(
-            div()
-                .w(px(JSON_FOLD_COL_WIDTH))
-                .flex_none()
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(if is_fold_start {
-                    app_icon(
-                        if row.folded { AppIcon::ChevronRight } else { AppIcon::ChevronDown },
-                        12.,
-                        colors.text,
-                    )
-                    .into_any_element()
-                } else {
-                    div().into_any_element()
-                }),
-        )
-}
 
 /// 正文行：层级竖线 + 语法高亮 token 渲染。`highlight` 为 false 时统一正文色（关闭语法高亮）。
 ///
@@ -717,12 +789,30 @@ fn redis_json_text_row(
     indent_size: usize,
     highlight: bool,
 ) -> Div {
+    json_text_row_with_metrics(row, theme, indent_size, highlight, JSON_ROW_HEIGHT, 13.)
+}
+
+/// 正文行的可配置版本：行高与字号由调用方决定（卡片视图比 Redis 面板小一号）。
+fn json_text_row_with_metrics(
+    row: &JsonViewRow,
+    theme: JsonEditorTheme,
+    indent_size: usize,
+    highlight: bool,
+    row_height: f32,
+    text_size: f32,
+) -> Div {
     let toks = json_tokenize_line(&row.text);
-    let indent_px = (indent_size as f32) * 8.0; // Menlo 13px 等宽近似
+    // 13px 等宽字下一层缩进约 8px；其它字号按比例缩放，卡片视图（11px）也保持层级清晰。
+    let indent_px = (indent_size as f32) * text_size * (8.0 / 13.0);
     let row_bg = if row.is_error {
         theme.error_bg
     } else {
-        gpui::Rgba { r: 0., g: 0., b: 0., a: 0. }
+        gpui::Rgba {
+            r: 0.,
+            g: 0.,
+            b: 0.,
+            a: 0.,
+        }
     };
 
     // 构建 token 高亮区间：仅给非空白 token 上色，区间按字节、升序、不重叠。
@@ -739,7 +829,10 @@ fn redis_json_text_row(
             text.push_str(&tok.text);
             highlights.push((
                 start..text.len(),
-                gpui::HighlightStyle { color: Some(color.into()), ..Default::default() },
+                gpui::HighlightStyle {
+                    color: Some(color.into()),
+                    ..Default::default()
+                },
             ));
         } else {
             // 空白段：不设高亮，继承默认文字色，并保持原样写入文本。
@@ -748,7 +841,7 @@ fn redis_json_text_row(
     }
 
     div()
-        .h(px(JSON_ROW_HEIGHT))
+        .h(px(row_height))
         .flex_none()
         .relative()
         .flex()
@@ -762,25 +855,20 @@ fn redis_json_text_row(
         .child(
             div()
                 .font_family(crate::PLATFORM_MONOSPACE_FONT)
-                .text_size(px(13.))
-                .line_height(px(JSON_ROW_HEIGHT))
-                .child(
-                    gpui::StyledText::new(text.clone())
-                        .with_highlights(highlights),
-                ),
+                .text_size(px(text_size))
+                .line_height(px(row_height))
+                .child(gpui::StyledText::new(text.clone()).with_highlights(highlights)),
         )
         // 层级竖线：在当前行左侧按缩进层数画竖条，跨行拼接成连续导线。
-        .children(
-            (0..row.depth.min(64)).filter(|d| *d > 0).map(move |d| {
-                div()
-                    .absolute()
-                    .left(px(indent_px * (d as f32) - 1.))
-                    .top_0()
-                    .bottom_0()
-                    .w(px(1.))
-                    .bg(theme.guide)
-            }),
-        )
+        .children((0..row.depth.min(64)).filter(|d| *d > 0).map(move |d| {
+            div()
+                .absolute()
+                .left(px(indent_px * (d as f32) - 1.))
+                .top_0()
+                .bottom_0()
+                .w(px(1.))
+                .bg(theme.guide)
+        }))
 }
 /// 根据 token 种类推断语法颜色。优先 key/字符串/数字/布尔/null/标点。
 fn color_for_json_token(tok: &JsonTok, theme: JsonEditorTheme) -> gpui::Rgba {

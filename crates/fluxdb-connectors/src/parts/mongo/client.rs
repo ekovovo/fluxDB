@@ -20,12 +20,49 @@ fn mongo_runtime() -> &'static tokio::runtime::Runtime {
     })
 }
 
+/// 驱动 future 的执行线程栈大小。
+///
+/// `Runtime::block_on` 是在**调用方线程**上 poll future 的（它只借用 runtime 的
+/// worker 去跑 IO），所以决定是否溢栈的是调用方栈，而不是 runtime 的 worker 栈。
+/// 调用方多半是 gpui 的后台任务（macOS 上是 GCD worker，栈仅约 512 KiB），而 debug
+/// 构建下驱动的 BSON 序列化 / 反序列化帧很深，实测 `listCollections` 序列化请求时
+/// 直接擦到保护页 → `abort()`（SIGILL / SIGABRT），不是可捕获的 panic。
+/// 因此所有驱动调用都必须放进放大栈的线程；线程创建代价相对一次网络往返可忽略。
+const MONGO_OP_STACK_BYTES: usize = 8 * 1024 * 1024;
+
+/// 在共享 runtime 上、放大栈的线程里执行一段异步逻辑。
+///
+/// 这是唯一允许触碰 `mongo_runtime().block_on` 的入口：任何驱动 future 直接
+/// `block_on` 都会继承调用方（可能是 512 KiB 的 GCD worker）的小栈。
+/// 线程内 panic 不吞原因，统一转成 `ErrorKind::Internal` 由调用方展示。
+fn mongo_run<T: Send>(label: &str, future: impl Future<Output = T> + Send) -> fluxdb_core::Result<T> {
+    std::thread::scope(|scope| {
+        let worker = std::thread::Builder::new()
+            .name(format!("fluxdb-mongo-{label}"))
+            .stack_size(MONGO_OP_STACK_BYTES)
+            .spawn_scoped(scope, move || mongo_runtime().block_on(future))
+            .map_err(|error| {
+                Error::new(
+                    ErrorKind::Internal,
+                    format!("启动 MongoDB 工作线程失败：{error}"),
+                )
+            })?;
+        worker.join().map_err(|_| {
+            Error::new(
+                ErrorKind::Internal,
+                format!("{label}工作线程异常退出（多为栈溢出）"),
+            )
+        })
+    })
+}
+
 /// 建连：优先使用结构化档案现场拼 URI（密码不落盘），缺失时退回 `endpoint`。
 ///
 /// 超时由驱动自身的 `connectTimeoutMS` / `serverSelectionTimeoutMS` 控制。
 /// `ClientOptions::parse` 的 SRV/TXT 解析会落到 runtime 的阻塞线程池，单纯的
 /// `tokio::time::timeout` 只能取消 future、无法中断已经卡住的 DNS 调用（实测可
 /// 无限挂住），所以整段解析放到独立线程，调用方按墙钟等待并在超时后放弃该线程。
+/// 解析与客户端构造必须在同一次大栈执行里：两者都要 poll 驱动代码。
 fn mongo_connect(config: &ConnectionConfig) -> fluxdb_core::Result<MongoClient> {
     let uri = match config.mongo_profile.as_ref() {
         Some(profile) => {
@@ -47,23 +84,22 @@ fn mongo_connect(config: &ConnectionConfig) -> fluxdb_core::Result<MongoClient> 
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::Builder::new()
         .name("fluxdb-mongo-parse".to_string())
+        .stack_size(MONGO_OP_STACK_BYTES)
         .spawn(move || {
-            let parsed = mongo_runtime().block_on(async move {
-                ClientOptions::parse(&uri).await.map_err(mongo_error)
+            let client = mongo_runtime().block_on(async move {
+                let options = ClientOptions::parse(&uri).await.map_err(mongo_error)?;
+                // 只建客户端不会真正握手（无 IO），但驱动要在 runtime 上下文里登记
+                // 连接池任务，因此仍回到共享 runtime 上构造；认证/网络问题交给首次命令暴露。
+                MongoClient::with_options(options).map_err(mongo_error)
             });
-            let _ = tx.send(parsed);
+            let _ = tx.send(client);
         })
         .map_err(|error| {
             Error::new(ErrorKind::Internal, format!("启动 MongoDB 解析线程失败：{error}"))
         })?;
 
-    let options = rx
-        .recv_timeout(Duration::from_secs(MONGO_URI_PARSE_TIMEOUT_SECS))
-        .map_err(|_| Error::new(ErrorKind::Timeout, "解析 MongoDB 连接串超时（DNS 或 SRV 查询无响应）"))??;
-
-    // 只建客户端不会真正握手（无 IO），但驱动要在 runtime 上下文里登记连接池任务，
-    // 因此仍回到共享 runtime 上构造；认证/网络问题交给首次命令暴露。
-    mongo_runtime().block_on(async move { MongoClient::with_options(options).map_err(mongo_error) })
+    rx.recv_timeout(Duration::from_secs(MONGO_URI_PARSE_TIMEOUT_SECS))
+        .map_err(|_| Error::new(ErrorKind::Timeout, "解析 MongoDB 连接串超时（DNS 或 SRV 查询无响应）"))?
 }
 
 /// 解析连接串（含 SRV 查询）的墙钟上限。
@@ -74,17 +110,23 @@ const MONGO_URI_PARSE_TIMEOUT_SECS: u64 = 20;
 /// 驱动 3.x 的操作是 action builder（只实现 `IntoFuture`，不是 `Future`），调用方
 /// 必须先包成 `async {}` 再传进来。超时统一收敛为 `ErrorKind::Timeout`，避免驱动
 /// 内部长时间等待把同步的 Connector 调用挂住。
-fn mongo_block_on<T>(
+///
+/// 游标的**读取**（`next` / `try_collect`）同样要走这里：驱动解码结果文档的代码
+/// 也是在调用方线程上跑的，不能图省事直接 `mongo_runtime().block_on`。
+fn mongo_block_on<T: Send>(
     seconds: u64,
     label: &str,
-    future: impl Future<Output = mongodb::error::Result<T>>,
+    future: impl Future<Output = mongodb::error::Result<T>> + Send,
 ) -> fluxdb_core::Result<T> {
-    mongo_runtime().block_on(async move {
+    // 线程执行结果本身就是 `Result`，这里再展开一层，把「线程启动/退出失败」
+    // 与「驱动操作失败」合成同一个错误通道。
+    mongo_run(label, async move {
         tokio::time::timeout(Duration::from_secs(seconds), future)
             .await
             .map_err(|_| Error::new(ErrorKind::Timeout, format!("{label}超时")))?
             .map_err(mongo_error)
     })
+    .and_then(std::convert::identity)
 }
 
 /// 把驱动错误映射成领域错误。

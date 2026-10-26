@@ -43,6 +43,24 @@ impl AppController {
                     });
                 })
                 .map(|report| AppEvent::TableDataImported { object, report }),
+            AppCommand::ImportMongoDocuments {
+                object,
+                source,
+                options,
+            } => self
+                .import_mongo_documents(
+                    &object,
+                    &source,
+                    options,
+                    cancel,
+                    &mut |event| {
+                        progress(DatabaseTaskProgress {
+                            stage: event.stage,
+                            message: event.message,
+                        });
+                    },
+                )
+                .map(|report| AppEvent::MongoDocumentsImported { object, report }),
             _ => Err(Error::new(ErrorKind::Internal, "不是备份恢复命令")),
         };
         result.unwrap_or_else(|error| AppEvent::Failed(error.into()))
@@ -259,6 +277,62 @@ impl AppController {
                 options,
             },
         )
+    }
+
+    /// 解析 MongoDB 导入文件样本（格式、字段与类型推断），不写数据库。
+    ///
+    /// `format` 由连接器按内容嗅探，因此调用方只需给文件与解析选项。
+    pub fn preview_mongo_import(
+        &self,
+        object: &ObjectPath,
+        source: &std::path::Path,
+        options: MongoImportOptions,
+    ) -> fluxdb_core::Result<MongoImportPreview> {
+        let config = self.mongo_connection_config(object)?;
+        connector_for(&config)?.mongo_preview_import(&fluxdb_core::MongoImportPreviewRequest {
+            object: object.clone(),
+            source: source.to_path_buf(),
+            options,
+        })
+    }
+
+    /// 把文件里的文档批量写入集合。坏文档跳过并计入报告，不中断整批。
+    pub fn import_mongo_documents(
+        &self,
+        object: &ObjectPath,
+        source: &std::path::Path,
+        options: MongoImportOptions,
+        cancel: &AtomicBool,
+        progress: &mut dyn FnMut(MongoImportProgress),
+    ) -> fluxdb_core::Result<MongoImportReport> {
+        let config = self.mongo_connection_config(object)?;
+        connector_for(&config)?.mongo_import_documents(
+            &fluxdb_core::MongoImportRequest {
+                object: object.clone(),
+                source: source.to_path_buf(),
+                options,
+            },
+            cancel,
+            progress,
+        )
+    }
+
+    /// 导入只对 MongoDB 连接有意义：别的连接类型没有「文档」这个概念。
+    fn mongo_connection_config(
+        &self,
+        object: &ObjectPath,
+    ) -> fluxdb_core::Result<ConnectionConfig> {
+        let config = self
+            .connection_config(object.connection_id)
+            .cloned()
+            .ok_or_else(|| Error::new(ErrorKind::Connection, "连接不存在"))?;
+        if config.kind != DatabaseKind::MongoDb {
+            return Err(Error::new(
+                ErrorKind::Unsupported,
+                "目标连接不是 MongoDB，无法导入文档",
+            ));
+        }
+        Ok(config)
     }
 }
 

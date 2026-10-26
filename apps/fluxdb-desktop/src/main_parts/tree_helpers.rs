@@ -460,6 +460,10 @@ fn object_group_tree(
         None,
         colors,
     )
+    .debug_selector({
+        let database = database.clone();
+        move || format!("object-group-row:{}:{database}", group.key())
+    })
     .on_mouse_down(
         MouseButton::Left,
         cx.listener(move |this, _, _, cx| {

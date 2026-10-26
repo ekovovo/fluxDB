@@ -251,7 +251,8 @@ struct NavicatMain {
     // ER 视图持久化已恢复标记（按 tab）：首次渲染本 tab 时应用上次保存的分组/坐标/固定一次。
     er_view_restored: BTreeSet<TabId>,
     er_view_save_failed: BTreeSet<TabId>,
-    er_previous_layout: BTreeMap<TabId, (BTreeMap<String, (f32, f32)>, BTreeSet<String>, ErViewport)>,
+    er_previous_layout:
+        BTreeMap<TabId, (BTreeMap<String, (f32, f32)>, BTreeSet<String>, ErViewport)>,
     // ER 作用域持久化 key（按 tab）：打开时由 ErDiagramState 生成，保存/恢复据此定位。
     er_scope_keys: BTreeMap<TabId, String>,
     er_relationship_scope_keys: BTreeMap<TabId, String>,
@@ -459,7 +460,8 @@ struct NavicatMain {
     redis_list_item_remove_confirm: Option<RedisListItemRemoveConfirmTarget>,
     redis_list_item_remove_count_input: Entity<InputState>,
     _redis_list_item_remove_count_subscription: Subscription,
-    redis_list_item_remove_select: Entity<SelectState<SearchableVec<RedisListRemovePositionOption>>>,
+    redis_list_item_remove_select:
+        Entity<SelectState<SearchableVec<RedisListRemovePositionOption>>>,
     _redis_list_item_remove_select_subscription: Subscription,
     // 「新增 Key」抽屉（对齐 RedisInsight AddKey）：公共字段 entity + 按类型子表单状态。
     redis_add_key_drawer: Option<RedisAddKeyDrawerForm>,
@@ -504,9 +506,8 @@ struct NavicatMain {
     query_history_quick_open: bool,
     query_history_quick_selected: usize,
     query_history_quick_kind_filter: QueryHistoryKindFilter,
-    query_history_connection_select: Entity<
-        SelectState<SearchableVec<QueryHistoryConnectionFilterItem>>,
-    >,
+    query_history_connection_select:
+        Entity<SelectState<SearchableVec<QueryHistoryConnectionFilterItem>>>,
     _query_history_connection_select_subscription: Subscription,
     query_history_database_select: Entity<SelectState<SearchableVec<QueryHistoryTextFilterItem>>>,
     _query_history_database_select_subscription: Subscription,
@@ -663,7 +664,8 @@ struct NavicatMain {
     /// MongoDB「首个集合」输入框（建库时隐式建集合）。
     create_database_first_collection_input: Entity<InputState>,
     _create_database_first_collection_subscription: Subscription,
-    danger_table_foreign_key_check_select: Entity<SelectState<SearchableVec<ForeignKeyCheckOption>>>,
+    danger_table_foreign_key_check_select:
+        Entity<SelectState<SearchableVec<ForeignKeyCheckOption>>>,
     _danger_table_foreign_key_check_select_subscription: Subscription,
     rename_table_input: Entity<InputState>,
     _rename_table_subscription: Subscription,
@@ -682,6 +684,29 @@ struct NavicatMain {
     // —— MongoDB 集合工作台 ——
     /// 查询面板输入框（按集合标签页缓存；标签页关闭时释放）。
     pub(crate) mongo_query_inputs: BTreeMap<TabId, Entity<MongoQueryInputs>>,
+    /// 已折叠的文档卡片，按「标签页 → 文档身份（`_id`，缺失时 `#下标`）」记录。
+    pub(crate) mongo_collapsed_documents: BTreeMap<TabId, BTreeSet<String>>,
+    /// 已展开的嵌套字段，键为 `{文档身份}/{字段路径}`；默认全收起，与原型一致。
+    pub(crate) mongo_expanded_fields: BTreeMap<TabId, BTreeSet<String>>,
+    /// JSON 展示下被用户点过的折叠节点，键为 `{文档身份}\u{1e}{折叠路径}`。
+    ///
+    /// 记录「与默认态相反」的节点而不是折叠结果：默认只有根节点展开、嵌套节点全部收起
+    /// （与 Compass 一致），点击即翻转该节点，因此空集合就代表完整默认态，无需额外初始化。
+    pub(crate) mongo_json_fold_toggles: BTreeMap<TabId, BTreeSet<String>>,
+    /// 文档编辑抽屉的一次会话（切标签页/关标签即丢弃，不写回标签页状态）。
+    mongo_document_editor: Option<MongoDocumentEditor>,
+    _mongo_document_editor_task: Option<Task<()>>,
+    /// 有未保存草稿时要切换的目标文档：等用户在确认框里选完再决定丢弃还是留下。
+    pending_mongo_document_switch: Option<PendingMongoDocumentSwitch>,
+    /// 等待确认的文档删除（删除不可撤销，必须二次确认）。
+    pending_mongo_document_delete: Option<PendingMongoDocumentDelete>,
+    _mongo_document_delete_task: Option<Task<()>>,
+    /// 有未保存草稿时点了「复制文档」或结果条的「+」：等用户在确认框里选完再决定丢弃还是留下。
+    pending_mongo_document_open: Option<PendingMongoDocumentOpen>,
+    _mongo_document_insert_task: Option<Task<()>>,
+    /// 文档导入弹窗会话；关闭即丢弃，不写回标签页状态。
+    pending_mongo_import: Option<MongoImportForm>,
+    _mongo_import_task: Option<Task<()>>,
     _mongo_load_tasks: BTreeMap<u64, Task<()>>,
     _mongo_aggregation_tasks: BTreeMap<u64, Task<()>>,
     _mongo_info_tasks: BTreeMap<u64, Task<()>>,
@@ -844,7 +869,8 @@ struct NavicatMain {
     _create_table_type_select_subscriptions: BTreeMap<(TabId, u64), Subscription>,
     create_table_custom_type_editing: Option<(TabId, u64)>,
     create_table_enum_scrolls: BTreeMap<(TabId, u64), ScrollHandle>,
-    create_table_selects: BTreeMap<CreateTableSelectKey, Entity<SelectState<SearchableVec<CreateTableSelectOption>>>>,
+    create_table_selects:
+        BTreeMap<CreateTableSelectKey, Entity<SelectState<SearchableVec<CreateTableSelectOption>>>>,
     _create_table_select_subscriptions: BTreeMap<CreateTableSelectKey, Subscription>,
     data_export_object_selects:
         BTreeMap<DataExportObjectSelectKey, Entity<SelectState<SearchableVec<String>>>>,
@@ -861,7 +887,8 @@ struct NavicatMain {
     persisted_history_loaded: bool,
     _query_editor_subscriptions: BTreeMap<TabId, Subscription>,
     /// 查询页查找/替换输入框（按 tab 缓存；宿主渲染 find 面板用）。
-    #[allow(dead_code)] // 查找面板（table_state::query_find_state 等）尚未接入宿主渲染，保留字段。
+    #[allow(dead_code)]
+    // 查找面板（table_state::query_find_state 等）尚未接入宿主渲染，保留字段。
     query_find_inputs: BTreeMap<TabId, Entity<InputState>>,
     #[allow(dead_code)] // 同上，替换输入框随查找面板一并预留。
     query_replace_inputs: BTreeMap<TabId, Entity<InputState>>,

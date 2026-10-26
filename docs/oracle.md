@@ -98,6 +98,10 @@ Oracle 连接表单不能只有“地址、端口、数据库名”。
     （没有任何上界），空 CLOB 还会被压成 NULL 与真 NULL 混同。`oracle_query` 与
     编辑器执行入口都已开启；新增查询入口时同样要开，否则 LOB 又退化成无界读取。
 - 时间、数字绑定和导出不能依赖本机或会话的 `NLS_DATE_FORMAT`、数字小数点等隐式设置。
+  连接建立时统一发送 `ALTER SESSION SET NLS_DATE_FORMAT / NLS_TIMESTAMP_FORMAT /
+  NLS_TIMESTAMP_TZ_FORMAT`（`YYYY-MM-DD HH24:MI:SS[.FF9][ TZH:TZM]`），与展示、导出文本一致；
+  否则把导出文本绑回 `DATE`/`TIMESTAMP` 列会按服务端默认 `DD-MON-RR` 解析并报 `ORA-01861`。
+  该设置只作用于本连接，不写回数据库或其它会话。
 - 编辑行优先使用可靠主键；不能把“所有显示列相等”当成唯一身份。
 - `ROWID` 若使用，只能在支持的对象和生命周期内作为受控定位手段，不能作为持久稳定主键。
 - 没有可靠行身份、不可更新视图、计算列、Identity 等场景，要正确限制编辑。

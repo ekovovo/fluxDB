@@ -902,3 +902,79 @@ fn run_plsql_block_split(config: &ConnectionConfig) -> Result<(), String> {
     }
     Ok(())
 }
+
+#[test]
+#[ignore = "需要 FLUXDB_ORACLE_SMOKE=host:port:service:user:password 指向可达的 Oracle"]
+fn oracle_live_import_datetime_text_into_date_columns() {
+    let Some(config) = smoke_config() else {
+        return;
+    };
+    if let Err(failure) = run_import_datetime_text(&config) {
+        eprintln!("FAIL: {failure}");
+        std::process::exit(1);
+    }
+}
+
+/// 复现导入 `DATE`/`TIMESTAMP` 列时的 `ORA-01861`：导出文本是
+/// `YYYY-MM-DD HH24:MI:SS[.ff]`，但如果会话 `NLS_DATE_FORMAT` 停在默认的
+/// `DD-MON-RR`，VARCHAR 绑定写进 DATE 列就会解析失败。连接建立时必须钉死 ISO 格式。
+fn run_import_datetime_text(config: &ConnectionConfig) -> Result<(), String> {
+    use fluxdb_connectors::table_data_import;
+    use fluxdb_core::{TableImportFormat, TableImportOptions, TableImportRequest};
+    use std::io::Write;
+
+    let table_name = "FLUXDB_TEST_IMPORT_DT";
+    drop_table(config, table_name)?;
+    execute(
+        config,
+        &format!(
+            "CREATE TABLE {table_name} (\
+               ID NUMBER(10) PRIMARY KEY, \
+               CREATED_AT DATE, \
+               UPDATED_AT TIMESTAMP(6))"
+        ),
+    )?;
+
+    let dir = std::env::temp_dir().join(format!("fluxdb-oracle-import-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
+    let source = dir.join("dt.csv");
+    let mut file = std::fs::File::create(&source).map_err(|error| error.to_string())?;
+    file.write_all(
+        b"ID,CREATED_AT,UPDATED_AT\n\
+          1,2024-01-02 11:22:33,2024-01-02 11:22:33\n\
+          2,2024-03-04 05:06:07,2024-03-04 05:06:07.123456\n",
+    )
+    .map_err(|error| error.to_string())?;
+
+    let request = TableImportRequest {
+        config: config.clone(),
+        object: table(config, table_name),
+        source: source.clone(),
+        format: TableImportFormat::Csv,
+        options: TableImportOptions::new(),
+        column_mapping: Vec::new(),
+    };
+    let importer = table_data_import(DatabaseKind::Oracle).map_err(|error| error.message)?;
+    let report = importer
+        .import(&request, &AtomicBool::new(false), &mut |_| {})
+        .map_err(|error| format!("导入失败：{}", error.message))?;
+    if report.imported_rows != 2 {
+        return Err(format!("应导入 2 行，实际 {}", report.imported_rows));
+    }
+
+    let connector = connector_for(config).map_err(|error| error.message)?;
+    let page = connector
+        .load_data(&table(config, table_name), 0, 10, &[], &[])
+        .map_err(|error| error.message)?;
+    let first = page.rows.first().ok_or("导入后读不到数据")?;
+    let created = first.values.iter().find_map(|value| match value {
+        fluxdb_core::CellValue::Text(text) if text.starts_with("2024-01-02") => Some(text.clone()),
+        _ => None,
+    });
+    if created.as_deref() != Some("2024-01-02 11:22:33") {
+        return Err(format!("DATE 值未按 ISO 形态落库：{created:?}"));
+    }
+    drop_table(config, table_name)?;
+    let _ = std::fs::remove_file(&source);
+    Ok(())
+}

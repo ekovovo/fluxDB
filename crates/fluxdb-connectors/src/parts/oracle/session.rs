@@ -116,6 +116,7 @@ fn oracle_connect_with_schema(
             ))))
             .map_err(|error| oracle_error("设置 Oracle 语句超时失败", error))?;
     }
+    oracle_set_iso_datetime_formats(&connection)?;
     let schema = oracle_session_schema(request_schema, profile.basic.schema.trim());
     if !schema.is_empty() {
         // 只改变未限定名的解析目标，不增加任何权限；对象引用仍带 Owner。
@@ -131,6 +132,31 @@ fn oracle_connect_with_schema(
         })?;
     }
     Ok(connection)
+}
+
+/// 把会话日期时间格式钉成 fluxDB 自己读写用的 ISO 形态。
+///
+/// 展示与导出都用 `YYYY-MM-DD HH24:MI:SS[.fffffffff]`，但 Oracle 把 VARCHAR 绑定写入
+/// `DATE`/`TIMESTAMP` 列时按会话 `NLS_DATE_FORMAT`（默认 `DD-MON-RR`）解析，导入、
+/// 行编辑和筛选都会撞 `ORA-01861`。显式设置后两端格式一致，不依赖服务端默认值。
+///
+/// 只能影响本会话：每次 `oracle_connect*` 都独立登录，不会残留到别的连接。
+fn oracle_set_iso_datetime_formats(connection: &OracleConnection) -> fluxdb_core::Result<()> {
+    oracle_execute(
+        connection,
+        "ALTER SESSION SET \
+         NLS_DATE_FORMAT = 'YYYY-MM-DD HH24:MI:SS' \
+         NLS_TIMESTAMP_FORMAT = 'YYYY-MM-DD HH24:MI:SS.FF9' \
+         NLS_TIMESTAMP_TZ_FORMAT = 'YYYY-MM-DD HH24:MI:SS.FF9 TZH:TZM'",
+        &[],
+    )
+    .map_err(|error| {
+        Error::new(
+            error.kind,
+            format!("设置 Oracle 会话日期格式失败：{}", error.message),
+        )
+    })?;
+    Ok(())
 }
 
 /// 在连接上开启只读事务：服务端拒绝 DML 与 `SELECT ... FOR UPDATE`（`ORA-01456`）。

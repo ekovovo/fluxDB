@@ -15,10 +15,6 @@ const MONGO_IMPORT_BATCH_DOCS: usize = 1000;
 /// 预览最多展示的行数。
 const MONGO_IMPORT_PREVIEW_ROWS: usize = 50;
 
-/// 推断 CSV 字段类型时最多扫描的行数。只看首行会把「第一行恰好为空」的数值列判成
-/// 字符串，扫一段样本再取多数类型更稳，同时不必读完整个文件。
-const MONGO_IMPORT_TYPE_SAMPLE_ROWS: usize = 200;
-
 /// 报告里保留的失败明细条数上限，避免整文件坏数据把内存与界面撑爆。
 const MONGO_IMPORT_MAX_ERRORS: usize = 20;
 
@@ -63,31 +59,22 @@ fn mongo_preview_csv(
 ) -> fluxdb_core::Result<MongoImportPreview> {
     let mut reader = mongo_csv_reader(text, options);
     let headers = mongo_csv_headers(&mut reader)?;
-    let sample = mongo_csv_sample(&mut reader, headers.len())?;
+    let scan = mongo_csv_scan(&mut reader, &headers)?;
     let fields = headers
         .iter()
         .enumerate()
         .map(|(index, name)| MongoImportField {
             name: name.clone(),
-            detected: mongo_csv_column_type(name, &sample, index, options),
-            sample: sample
-                .iter()
-                .map(|record| record.get(index).cloned().unwrap_or_default())
-                .find(|value| !value.is_empty())
-                .unwrap_or_default(),
+            detected: mongo_csv_column_type(name, &scan, index, options),
+            sample: scan.samples[index].clone(),
         })
-        .collect();
-    let rows = sample
-        .iter()
-        .take(MONGO_IMPORT_PREVIEW_ROWS)
-        .map(|record| record.to_vec())
         .collect();
     Ok(MongoImportPreview {
         format: MongoImportFormat::Csv,
         columns: headers,
         fields,
-        rows,
-        truncated: sample.len() > MONGO_IMPORT_PREVIEW_ROWS,
+        rows: scan.preview,
+        truncated: scan.total > MONGO_IMPORT_PREVIEW_ROWS,
     })
 }
 
@@ -138,53 +125,79 @@ fn mongo_csv_headers(reader: &mut csv::Reader<&[u8]>) -> fluxdb_core::Result<Vec
     Ok(headers)
 }
 
-/// 读取类型推断样本（跳过完全空白的行）。
-fn mongo_csv_sample(
+/// CSV 逐列扫描结果。
+struct MongoCsvScan {
+    /// 每列在文件里出现过的类型（去重，空单元格不参与）。
+    types: Vec<Vec<&'static str>>,
+    /// 每列首个非空值，给预览面板展示。
+    samples: Vec<String>,
+    /// 前若干行原文，给预览表格。
+    preview: Vec<Vec<String>>,
+    /// 非空行总数，用于判断预览是否被截断。
+    total: usize,
+}
+
+/// 扫描整份 CSV：逐列统计出现过的类型与首个非空值，并留存前若干行供预览。
+///
+/// 必须扫全文件而不是只看前几百行：类型只在后面几行才暴露的列（典型是导出文件末尾
+/// 追加的 `NULL` 行）用样本判断会得出错误的整列类型，随后整条文档被判失败。
+/// 内存只随列数与前若干行增长，不随文件行数增长。
+fn mongo_csv_scan(
     reader: &mut csv::Reader<&[u8]>,
-    width: usize,
-) -> fluxdb_core::Result<Vec<Vec<String>>> {
-    let mut sample = Vec::new();
+    headers: &[String],
+) -> fluxdb_core::Result<MongoCsvScan> {
+    let mut scan = MongoCsvScan {
+        types: vec![Vec::new(); headers.len()],
+        samples: vec![String::new(); headers.len()],
+        preview: Vec::new(),
+        total: 0,
+    };
     for record in reader.records() {
         let record =
             record.map_err(|error| Error::new(ErrorKind::Query, format!("CSV 行无效：{error}")))?;
-        let values = (0..width)
+        let values = (0..headers.len())
             .map(|index| record.get(index).unwrap_or("").trim().to_string())
             .collect::<Vec<_>>();
-        if values.iter().any(|value| !value.is_empty()) {
-            sample.push(values);
+        if values.iter().all(String::is_empty) {
+            continue;
         }
-        if sample.len() >= MONGO_IMPORT_TYPE_SAMPLE_ROWS {
-            break;
+        for (index, value) in values.iter().enumerate() {
+            if value.is_empty() {
+                continue;
+            }
+            if scan.samples[index].is_empty() {
+                scan.samples[index] = value.clone();
+            }
+            let detected = mongo_detect_csv_type(value, &headers[index]);
+            if !scan.types[index].contains(&detected) {
+                scan.types[index].push(detected);
+            }
         }
+        if scan.preview.len() < MONGO_IMPORT_PREVIEW_ROWS {
+            scan.preview.push(values);
+        }
+        scan.total += 1;
     }
-    Ok(sample)
+    Ok(scan)
 }
 
-/// 取该列样本里出现最多的非空类型；样本全空时按 `string`。
+/// 取整列类型：全列只有一种类型才用它，出现多种就是 `mixed`，写入时逐格重新嗅探。
+///
+/// 与 Compass 的 `pickFieldType` 同口径。这里**不能**取多数类型：真实导出里
+/// `NULL` 字面量与数值混排、bigint 列里 int32 占多数都很常见，按多数定类型会让
+/// 少数派的行整条失败（例如 5 行里 2 行 bigint 被当成 int32 丢掉）。
 fn mongo_csv_column_type(
     name: &str,
-    sample: &[Vec<String>],
+    scan: &MongoCsvScan,
     index: usize,
     options: &MongoImportOptions,
 ) -> String {
-    let mut counts: Vec<(String, usize)> = Vec::new();
-    for record in sample {
-        let value = record.get(index).map(String::as_str).unwrap_or("");
-        if value.is_empty() {
-            continue;
-        }
-        let detected = mongo_detect_csv_type(value, name).to_string();
-        match counts.iter_mut().find(|(kind, _)| *kind == detected) {
-            Some((_, count)) => *count += 1,
-            None => counts.push((detected, 1)),
-        }
-    }
-    let detected = counts
-        .into_iter()
-        .max_by_key(|(_, count)| *count)
-        .map(|(kind, _)| kind)
-        .unwrap_or_else(|| "string".to_string());
-    options.field_type(name, &detected)
+    let detected = match scan.types[index].as_slice() {
+        [] => "string",
+        [only] => only,
+        _ => "mixed",
+    };
+    options.field_type(name, detected)
 }
 
 /// 推断单个 CSV 值的 BSON 类型（口径取 Compass 的 `detectCSVFieldType`）。
@@ -299,6 +312,7 @@ fn mongo_parse_object_id(value: &str) -> Option<mongodb::bson::oid::ObjectId> {
 /// 单个 CSV 值按指定类型转 BSON。解析失败时返回原因，由调用方计入失败文档。
 fn mongo_csv_cell(
     value: &str,
+    name: &str,
     type_name: &str,
     options: &MongoImportOptions,
 ) -> Result<Bson, String> {
@@ -339,6 +353,12 @@ fn mongo_csv_cell(
             "" | "null" | "NULL" | "Null" => Ok(Bson::Null),
             _ => Err(format!("「{value}」不是 null")),
         },
+        // 整列类型混杂时逐格嗅探（与 Compass 的 mixed 一致）：bigint 与 int32 混排、
+        // 数值里夹 `NULL` 都是合法导出，按单一定型解析会让少数派的行整条失败。
+        "mixed" => {
+            let detected = mongo_detect_csv_type(value, name);
+            mongo_csv_cell(value, name, detected, options)
+        }
         _ => Ok(Bson::String(value.to_string())),
     }
 }
@@ -452,7 +472,7 @@ fn mongo_csv_documents(
         for (column, name) in headers.iter().enumerate() {
             let value = record.get(column).unwrap_or("").trim();
             let type_name = types.get(column).map(String::as_str).unwrap_or("string");
-            match mongo_csv_cell(value, type_name, options) {
+            match mongo_csv_cell(value, name, type_name, options) {
                 Ok(value) => {
                     document.insert(name, value);
                 }
@@ -495,11 +515,11 @@ fn mongo_import_documents(
         MongoImportFormat::Csv => {
             let mut reader = mongo_csv_reader(&text, &request.options);
             let headers = mongo_csv_headers(&mut reader)?;
-            let sample = mongo_csv_sample(&mut reader, headers.len())?;
+            let scan = mongo_csv_scan(&mut reader, &headers)?;
             let types = headers
                 .iter()
                 .enumerate()
-                .map(|(index, name)| mongo_csv_column_type(name, &sample, index, &request.options))
+                .map(|(index, name)| mongo_csv_column_type(name, &scan, index, &request.options))
                 .collect::<Vec<_>>();
             mongo_csv_documents(&text, &request.options, &headers, &types, None)?
         }
@@ -708,26 +728,71 @@ mod mongo_import_engine_tests {
         assert_eq!(detected("c_bit"), "boolean");
     }
 
-    /// 逐列取多数类型；用户覆盖优先于推断。
+    /// 单类型列沿用该类型；混类型列判 mixed，不按多数票定死；用户覆盖优先于推断。
     #[test]
-    fn column_type_uses_majority_and_honours_override() {
+    fn column_type_is_single_or_mixed_and_honours_override() {
         let mut options = MongoImportOptions::new();
-        let sample = vec![
-            vec!["1".to_string(), "".to_string()],
-            vec!["2".to_string(), "".to_string()],
-            vec!["x".to_string(), "".to_string()],
-        ];
-        assert_eq!(mongo_csv_column_type("n", &sample, 0, &options), "int32");
+        let scan = MongoCsvScan {
+            types: vec![vec!["int32"], vec![], vec!["int32", "int64"]],
+            samples: vec![String::new(); 3],
+            preview: Vec::new(),
+            total: 0,
+        };
+        assert_eq!(mongo_csv_column_type("n", &scan, 0, &options), "int32");
         // 全空列回落 string，而不是 null。
-        assert_eq!(mongo_csv_column_type("e", &sample, 1, &options), "string");
+        assert_eq!(mongo_csv_column_type("e", &scan, 1, &options), "string");
+        // 混类型必须是 mixed：取多数会让少数派的行整条失败。
+        assert_eq!(mongo_csv_column_type("m", &scan, 2, &options), "mixed");
         options.field_overrides.push(MongoImportFieldOverride {
-            name: "n".into(),
+            name: "m".into(),
             type_name: "string".into(),
         });
-        assert_eq!(mongo_csv_column_type("n", &sample, 0, &options), "string");
+        assert_eq!(mongo_csv_column_type("m", &scan, 2, &options), "string");
         assert_eq!(options.delimiter_byte(), b',');
         options.delimiter = ";extra".into();
         assert_eq!(options.delimiter_byte(), b';');
+    }
+
+    /// SQL Server 全类型导出：int32/int64 混排、数值列里夹 `NULL`，整表都要能导入。
+    #[test]
+    fn mixed_columns_import_rows_with_heterogeneous_values() {
+        let header = "id,c_bigint,c_real,c_tinyint";
+        let text = format!(
+            "{header}\n\
+             6,9223372036854775807,NULL,11\n\
+             7,-9223372036854775808,NULL,0\n\
+             8,0,340282346638528860000000000000000000000,127\n\
+             9,NULL,NULL,NULL\n\
+             10,1,1,1\n"
+        );
+        let preview = mongo_preview_csv(&text, &MongoImportOptions::new()).expect("预览");
+        let detected = |name: &str| {
+            preview
+                .fields
+                .iter()
+                .find(|field| field.name == name)
+                .map(|field| field.detected.as_str())
+                .unwrap_or_default()
+        };
+        for column in ["c_bigint", "c_real", "c_tinyint"] {
+            assert_eq!(detected(column), "mixed", "{column}");
+        }
+        let types = preview
+            .fields
+            .iter()
+            .map(|field| field.detected.clone())
+            .collect::<Vec<_>>();
+        let documents = mongo_csv_documents(&text, &MongoImportOptions::new(), &preview.columns, &types, None)
+            .expect("解析文档");
+        assert_eq!(documents.len(), 5);
+        for document in &documents {
+            assert!(document.is_ok(), "{:?}", document.as_ref().err());
+        }
+        let last = documents[4].as_ref().expect("第 5 条");
+        assert_eq!(last.get_i32("c_tinyint"), Ok(1));
+        let first = documents[0].as_ref().expect("第 1 条");
+        assert_eq!(first.get_i64("c_bigint"), Ok(9223372036854775807));
+        assert_eq!(first.get("c_real"), Some(&Bson::Null));
     }
 
     /// 空值策略与各类型转换；非法值必须报出可读原因而不是静默写成 null。
@@ -735,31 +800,31 @@ mod mongo_import_engine_tests {
     fn converts_csv_cells_to_bson() {
         let options = MongoImportOptions::new();
         assert_eq!(
-            mongo_csv_cell("", "int32", &options).expect("空值"),
+            mongo_csv_cell("", "f", "int32", &options).expect("空值"),
             Bson::Null
         );
         let mut strict = MongoImportOptions::new();
         strict.empty_as_null = false;
         assert_eq!(
-            mongo_csv_cell("", "int32", &strict).expect("空字符串"),
+            mongo_csv_cell("", "f", "int32", &strict).expect("空字符串"),
             Bson::String(String::new())
         );
         assert!(matches!(
-            mongo_csv_cell("6571c1b0a1b2c3d4e5f60001", "objectId", &options),
+            mongo_csv_cell("6571c1b0a1b2c3d4e5f60001", "f", "objectId", &options),
             Ok(Bson::ObjectId(_))
         ));
-        assert!(mongo_csv_cell("not-an-id", "objectId", &options).is_err());
-        assert!(mongo_csv_cell("abc", "int32", &options).is_err());
+        assert!(mongo_csv_cell("not-an-id", "f", "objectId", &options).is_err());
+        assert!(mongo_csv_cell("abc", "f", "int32", &options).is_err());
         assert_eq!(
-            mongo_csv_cell("0", "boolean", &options).expect("布尔"),
+            mongo_csv_cell("0", "f", "boolean", &options).expect("布尔"),
             Bson::Boolean(false)
         );
-        assert!(mongo_csv_cell("yes", "boolean", &options).is_err());
+        assert!(mongo_csv_cell("yes", "f", "boolean", &options).is_err());
         assert!(matches!(
-            mongo_csv_cell("2024-01-02T03:04:05Z", "date", &options),
+            mongo_csv_cell("2024-01-02T03:04:05Z", "f", "date", &options),
             Ok(Bson::DateTime(_))
         ));
-        assert!(mongo_csv_cell("2024-13-45", "date", &options).is_err());
+        assert!(mongo_csv_cell("2024-13-45", "f", "date", &options).is_err());
     }
 
     /// JSON 数组与 JSONL 的坏条目要带位置信息，好让用户能定位到源文件。

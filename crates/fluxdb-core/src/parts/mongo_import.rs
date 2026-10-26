@@ -8,8 +8,11 @@
 ///
 /// 只保留导入场景真正用得上的标量类型：嵌套对象/数组由 JSON 导入路径承担，
 /// 多一层 CSV 编码语法会让用户多学一套规则。
-pub const MONGO_IMPORT_FIELD_TYPES: [&str; 8] = [
-    "objectId", "string", "int32", "int64", "double", "boolean", "date", "null",
+///
+/// `mixed` 表示该列在文件里出现多种类型，写入时逐单元格重新嗅探（与 Compass 一致）；
+/// 它是推断结果，用户也可以手动选它来强制逐格判断。
+pub const MONGO_IMPORT_FIELD_TYPES: [&str; 9] = [
+    "objectId", "string", "int32", "int64", "double", "boolean", "date", "null", "mixed",
 ];
 
 /// 源文件格式。按内容嗅探，不信任扩展名（`.txt` 里放 JSON 数组是常见情况）。

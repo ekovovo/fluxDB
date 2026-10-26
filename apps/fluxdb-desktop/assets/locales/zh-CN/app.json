@@ -2303,7 +2303,6 @@
     "loading": "正在加载数据...",
     "empty": "暂无数据",
     "submitting": "正在提交更改...",
-    "applying_filter": "正在应用筛选...",
     "field_count": "%{total} 字段",
     "field_count_filtered": "%{visible}/%{total} 字段",
     "data_import": {

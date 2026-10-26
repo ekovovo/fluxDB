@@ -2303,7 +2303,6 @@
     "loading": "Loading data...",
     "empty": "No data",
     "submitting": "Submitting changes...",
-    "applying_filter": "Applying filters...",
     "field_count": "%{total} fields",
     "field_count_filtered": "%{visible}/%{total} fields",
     "data_import": {

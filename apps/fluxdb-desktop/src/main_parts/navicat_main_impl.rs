@@ -29,6 +29,7 @@ include!("navicat_main/connection_groups.rs");
 include!("navicat_main/connection_forms.rs");
 include!("navicat_main/mongo_dialogs.rs");
 include!("navicat_main/mongo_collection_menu.rs");
+include!("navicat_main/mongo_export_csv.rs");
 include!("navicat_main/mongo_export.rs");
 include!("navicat_main/queries_shortcuts.rs");
 include!("navicat_main/update.rs");

@@ -181,10 +181,36 @@ fn mongo_collection_menu_and_export_dialog_render_in_production_view(cx: &mut Te
     );
     assert!(
         cx.debug_bounds("mongo-export-query-preview").is_some(),
-        "general tab must show the shell query preview"
+        "conditions scope must show the shell query preview"
     );
-    // 全量导出同样有预览（find({})），保证页签内容不会空着。
+    assert!(
+        cx.debug_bounds("mongo-export-query-copy").is_some(),
+        "query preview must be copyable"
+    );
+    assert!(
+        cx.debug_bounds("mongo-export-summary").is_some(),
+        "footer must show the export summary"
+    );
+    let conditions_height = cx
+        .debug_bounds("mongo-export-modal")
+        .expect("export modal")
+        .size
+        .height;
+    // 与 Compass 一致：全量导出不展示查询预览（它就是 find({})）。
     form.scope = MongoExportScope::All;
     draw(form, cx);
-    assert!(cx.debug_bounds("mongo-export-query-preview").is_some());
+    assert!(
+        cx.debug_bounds("mongo-export-query-preview").is_none(),
+        "all-documents scope must hide the query preview"
+    );
+    // 少了预览区就不该留 560 的固定高度，否则弹框下半截全是空白。
+    let all_height = cx
+        .debug_bounds("mongo-export-modal")
+        .expect("export modal")
+        .size
+        .height;
+    assert!(
+        all_height < conditions_height,
+        "all-documents dialog must shrink: {all_height:?} vs {conditions_height:?}"
+    );
 }

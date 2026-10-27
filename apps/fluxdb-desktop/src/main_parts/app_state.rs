@@ -1214,10 +1214,12 @@ enum MongoExportTab {
     Log,
 }
 
-/// 只提供无损格式：CSV 需要先扫全量求字段并集，否则混字段集合会静默丢列。
+/// 导出格式。CSV 会先扫全量求列并集再写行（见 `mongo_export_csv.rs`），
+/// 因此混字段集合不会静默丢列，但导出进度会分「下载 / 写入」两段。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum MongoExportFormat {
     Json,
+    Csv,
     JsonLines,
 }
 
@@ -1225,6 +1227,7 @@ impl MongoExportFormat {
     fn label(self) -> &'static str {
         match self {
             Self::Json => "JSON",
+            Self::Csv => "CSV",
             Self::JsonLines => "JSONL",
         }
     }
@@ -1232,12 +1235,13 @@ impl MongoExportFormat {
     fn extension(self) -> &'static str {
         match self {
             Self::Json => "json",
+            Self::Csv => "csv",
             Self::JsonLines => "jsonl",
         }
     }
 
     fn all() -> &'static [Self] {
-        &[Self::Json, Self::JsonLines]
+        &[Self::Json, Self::Csv, Self::JsonLines]
     }
 }
 

@@ -4747,6 +4747,11 @@ fn query_execution_summary_view(
                 .min_h(px(0.))
                 .min_w(px(0.))
                 .id(("query-execution-summary-scroll", tab_id.0))
+                .debug_selector(|| "query-summary-scroll".into())
+                // `overflow_scrollbar()` 把本元素当作滚动区里的 flex 子项，默认交叉轴
+                // 拉伸会让表格高度恒等于视口，纵向 scroll_max 为 0、行多了只被裁掉。
+                // `self_start` 取消拉伸，高度回到内容高度，纵向滚动才成立。
+                .self_start()
                 .overflow_scrollbar()
                 .child(table),
         )

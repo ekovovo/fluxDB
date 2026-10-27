@@ -693,6 +693,9 @@ struct NavicatMain {
     /// 记录「与默认态相反」的节点而不是折叠结果：默认只有根节点展开、嵌套节点全部收起
     /// （与 Compass 一致），点击即翻转该节点，因此空集合就代表完整默认态，无需额外初始化。
     pub(crate) mongo_json_fold_toggles: BTreeMap<TabId, BTreeSet<String>>,
+    /// 文档区的渲染缓存（解析结果、表格列、虚拟列表滚动状态），按标签页持有。
+    /// 只在查询结果（`load_generation`）变化时重建，逐帧渲染只读。
+    pub(crate) mongo_document_cache: BTreeMap<TabId, MongoDocumentCache>,
     /// 文档编辑抽屉的一次会话（切标签页/关标签即丢弃，不写回标签页状态）。
     mongo_document_editor: Option<MongoDocumentEditor>,
     _mongo_document_editor_task: Option<Task<()>>,

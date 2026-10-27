@@ -172,7 +172,93 @@ fn mongo_document_key(document: &fluxdb_core::MongoDocument, index: usize) -> St
     }
 }
 
+/// 一页文档的只读快照：Extended JSON 只解析一次，三种展示方式与虚拟列表共用。
+///
+/// 放进 `Rc` 是为了让虚拟列表的逐项渲染闭包持有同一份数据（`'static`），
+/// 不必每帧克隆文档或重新解析。
+struct MongoPageData {
+    /// 与 `values` 下标一一对应的原始文档（操作按钮、复制、删除仍要原文）。
+    documents: Vec<fluxdb_core::MongoDocument>,
+    /// 每篇文档解析后的值；非法 JSON 为 `None`，界面退回纯文本。
+    values: Vec<Option<JsonValue>>,
+    table: MongoTableLayout,
+}
+
+impl MongoPageData {
+    fn build(page: Option<&fluxdb_core::MongoDocumentsPage>) -> Self {
+        let documents = page.map_or_else(Vec::new, |page| page.documents.clone());
+        let values = documents
+            .iter()
+            .map(|document| serde_json::from_str::<JsonValue>(&document.json).ok())
+            .collect::<Vec<_>>();
+        Self {
+            table: MongoTableLayout::build(&values),
+            documents,
+            values,
+        }
+    }
+}
+
+/// 一页文档的渲染缓存：数据快照 + 虚拟列表状态。
+///
+/// 逐帧重建的只有元素本身；解析结果、表格列与行文本、滚动状态都留在这里，
+/// 因此重绘不会重新 `from_str` 100 篇文档，也不会把滚动位置顶回顶部。
+/// 加载令牌（`load_generation`）、文档条数变化，或在途期间建的缓存等到结果落地时整份重建。
+struct MongoDocumentCache {
+    generation: u64,
+    /// 建缓存时查询是否仍在途。在途期间 `page` 还是上一页的旧快照（`begin_load` 已推进
+    /// 令牌但结果未回），据此建的缓存必须等结果落地后重建，光比对令牌与条数会漏判。
+    loading: bool,
+    count: usize,
+    data: Rc<MongoPageData>,
+    /// 文档 / JSON 卡片的虚拟列表状态。卡片高度随展开态变化，由 `ListState` 自行测量；
+    /// 折叠、展开、切换展示方式后由对应动作 `remeasure`。
+    card_list: ListState,
+    /// 表格纵向滚动句柄：数据区与右侧固定操作列两个列表共用，保证逐行对齐。
+    table_scroll: UniformListScrollHandle,
+}
+
+impl MongoDocumentCache {
+    fn build(state: &MongoCollectionState) -> Self {
+        let data = Rc::new(MongoPageData::build(state.page.as_ref()));
+        Self {
+            generation: state.load_generation,
+            loading: state.loading,
+            count: data.documents.len(),
+            card_list: ListState::new(data.documents.len(), ListAlignment::Top, px(400.)),
+            table_scroll: UniformListScrollHandle::new(),
+            data,
+        }
+    }
+}
+
 impl NavicatMain {
+    /// 确保标签页的文档渲染缓存在；加载令牌或条数变化时整份重建。
+    fn ensure_mongo_document_cache(&mut self, tab_id: TabId, state: &MongoCollectionState) {
+        let count = state.page.as_ref().map_or(0, |page| page.documents.len());
+        let stale = self.mongo_document_cache.get(&tab_id).is_none_or(|cache| {
+            cache.generation != state.load_generation
+                || cache.count != count
+                // 缓存是在查询在途时建的吗？那时拿到的是上一页的快照，令牌与条数都可能
+                // 与落地后的结果一模一样（同样是 14 条、同一个令牌），只有内容换了，
+                // 光比前两项会把过期内容当成最新的。结果一落地就重建。
+                || (cache.loading && !state.loading)
+        });
+        if stale {
+            self.mongo_document_cache
+                .insert(tab_id, MongoDocumentCache::build(state));
+        }
+    }
+
+    /// 卡片正文高度变了（折叠 / 展开 / 换展示方式）：让虚拟列表重新测量。
+    ///
+    /// `ListState` 只按锚点项保持滚动位置，不重测的话展开后下方卡片会按旧高度排布。
+    fn remeasure_mongo_cards(&self, tab_id: TabId) {
+        if let Some(cache) = self.mongo_document_cache.get(&tab_id) {
+            cache.card_list.remeasure();
+        }
+    }
+
     /// 折叠/展开一张文档卡片。
     pub(crate) fn toggle_mongo_document_collapsed(
         &mut self,
@@ -184,6 +270,7 @@ impl NavicatMain {
         if !collapsed.remove(&document_key) {
             collapsed.insert(document_key);
         }
+        self.remeasure_mongo_cards(tab_id);
         cx.notify();
     }
 
@@ -200,6 +287,7 @@ impl NavicatMain {
         if !toggles.remove(&key) {
             toggles.insert(key);
         }
+        self.remeasure_mongo_cards(tab_id);
         cx.notify();
     }
 
@@ -214,6 +302,7 @@ impl NavicatMain {
         if !expanded.remove(&key) {
             expanded.insert(key);
         }
+        self.remeasure_mongo_cards(tab_id);
         cx.notify();
     }
 }
@@ -221,15 +310,27 @@ impl NavicatMain {
 /// 文档展示区的渲染参数：同一标签页内不变的交互状态。
 ///
 /// 卡片与字段行是递归的，状态逐层传参会堆到 8 个参数，收进一个借用视图里更清楚。
-struct MongoDocumentView<'a> {
+/// 三个集合都是 `Rc`：虚拟列表逐项渲染的闭包要 `'static` 持有同一份状态，
+/// 每帧克隆一份 `BTreeSet` 反而更贵。
+#[derive(Clone)]
+struct MongoDocumentView {
     tab_id: TabId,
     /// 已折叠的卡片（文档身份集合）。
-    collapsed_documents: &'a BTreeSet<String>,
+    collapsed_documents: Rc<BTreeSet<String>>,
     /// 已展开的嵌套字段（`{文档身份}/{字段路径}` 集合）。
-    expanded_fields: &'a BTreeSet<String>,
+    expanded_fields: Rc<BTreeSet<String>>,
     /// 被显式展开的 JSON 节点（`{文档身份}\u{1e}{折叠路径}` 集合）；其余嵌套节点默认收起。
-    json_fold_toggles: &'a BTreeSet<String>,
+    json_fold_toggles: Rc<BTreeSet<String>>,
+    /// 本页文档快照（原文 + 解析结果），来自渲染缓存。
+    page: Rc<MongoPageData>,
     colors: UiColors,
+}
+
+impl MongoDocumentView {
+    /// 第 `index` 篇文档的解析结果；非法 JSON 为 `None`。
+    fn value(&self, index: usize) -> Option<&JsonValue> {
+        self.page.values.get(index).and_then(Option::as_ref)
+    }
 }
 
 /// 卡片内的无边框图标按钮（折叠箭头、详情、复制、删除）。
@@ -300,7 +401,7 @@ fn mongo_card_icon(icon: AppIcon, color: gpui::Rgba, spinning: bool) -> AnyEleme
 /// 与点击行为必须完全一致，否则用户换个展示方式就找不到同一个操作。
 /// 只读对象（视图）只保留「编辑」（实际打开只读详情）与「复制」。
 fn mongo_document_actions(
-    view: &MongoDocumentView<'_>,
+    view: &MongoDocumentView,
     index: usize,
     document: &fluxdb_core::MongoDocument,
     selected: bool,
@@ -408,33 +509,56 @@ fn mongo_document_actions(
     actions
 }
 
+/// 卡片渲染需要的那部分标签页状态：只读、展示方式、是否选中。
+///
+/// 虚拟列表的逐项渲染闭包必须 `'static`，借不到 `&MongoCollectionState`；
+/// 这三个都是 `Copy` 的界面状态，逐项复制即可。
+#[derive(Clone, Copy)]
+struct MongoCardContext {
+    display: MongoDisplayMode,
+    read_only: bool,
+    selected_document: Option<usize>,
+}
+
+impl MongoCardContext {
+    fn from_state(state: &MongoCollectionState) -> Self {
+        Self {
+            display: state.display,
+            read_only: state.read_only,
+            selected_document: state.selected_document,
+        }
+    }
+}
+
 /// 一条文档卡片：折叠箭头 + 序号 + `_id`、四个操作按钮；正文是字段列表。
 fn mongo_document_card(
-    view: &MongoDocumentView<'_>,
+    view: &MongoDocumentView,
     index: usize,
     document: &fluxdb_core::MongoDocument,
-    state: &MongoCollectionState,
+    context: MongoCardContext,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
     let tab_id = view.tab_id;
     let colors = view.colors;
-    let selected = state.selected_document == Some(index);
+    let selected = context.selected_document == Some(index);
     let document_key = mongo_document_key(document, index);
     let collapsed = view.collapsed_documents.contains(&document_key);
     let toggle_key = document_key.clone();
     let card_selector = format!("mongo-document-card:{index}");
     let head_selector = format!("mongo-document-head:{index}");
     let toggle_selector = format!("mongo-document-toggle:{index}");
-    let actions = mongo_document_actions(view, index, document, selected, state.read_only, cx);
+    let actions = mongo_document_actions(view, index, document, selected, context.read_only, cx);
 
+    // 解析结果来自渲染缓存：逐帧重绘不再 `from_str` 整篇文档。
+    let value = view.value(index);
     // 原型同一张卡片在「文档 / JSON」两种展示下共用卡头，只换正文：
     // 文档视图给字段列表，JSON 视图给带行号着色的整篇 JSON。
     let body = if collapsed {
         div()
-    } else if state.display == MongoDisplayMode::Json {
-        mongo_json_block(view, index, document, &document_key, cx)
+    } else if context.display == MongoDisplayMode::Json {
+        mongo_json_block(view, index, document, value, &document_key, cx)
     } else {
-        mongo_field_list(view, index, document, &document_key, cx)
+        mongo_field_list(view, index, document, value, &document_key, cx)
     };
 
     div()
@@ -524,9 +648,10 @@ fn mongo_json_fold_key(document_key: &str, path_key: &str) -> String {
 /// 折叠能力来自 `json_editor`（`build_pretty` 产出节点 + `json_fold_view` 渲染），
 /// 这里只负责按文档身份筛出该卡片自己的折叠集合，不自己实现折叠。
 fn mongo_json_block(
-    view: &MongoDocumentView<'_>,
+    view: &MongoDocumentView,
     index: usize,
     document: &fluxdb_core::MongoDocument,
+    value: Option<&JsonValue>,
     document_key: &str,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
@@ -542,9 +667,11 @@ fn mongo_json_block(
         .map(str::to_string)
         .collect::<BTreeSet<_>>();
     // 先完整解析拿到所有可折叠节点，再按「深度 > 0 且未点开」算出需要折叠的路径。
-    let folds = build_pretty(&document.json, MONGO_JSON_INDENT, &BTreeSet::new())
-        .map(|full| {
-            full.nodes
+    // 解析结果来自渲染缓存，这里只重算 pretty 文本（折叠态每帧都可能不同）。
+    let folds = value
+        .map(|value| {
+            build_pretty_value(value, MONGO_JSON_INDENT, &BTreeSet::new())
+                .nodes
                 .iter()
                 .filter(|node| {
                     !node.path.is_empty() && !toggled.contains(&json_fold_path_key(&node.path))
@@ -554,8 +681,9 @@ fn mongo_json_block(
         })
         .unwrap_or_default();
 
-    let body = match build_pretty(&document.json, MONGO_JSON_INDENT, &folds) {
-        Ok(pretty) => {
+    let body = match value {
+        Some(value) => {
+            let pretty = build_pretty_value(value, MONGO_JSON_INDENT, &folds);
             let entity = cx.entity().downgrade();
             let tab_id = view.tab_id;
             let document_key = document_key.to_string();
@@ -584,7 +712,7 @@ fn mongo_json_block(
             )
         }
         // 非法 JSON（理论上不会出现，服务端已序列化）：退回纯文本，至少可读。
-        Err(_) => div().px_2().py_2().child(
+        None => div().px_2().py_2().child(
             div()
                 .font_family(crate::PLATFORM_MONOSPACE_FONT)
                 .text_size(px(11.))
@@ -605,14 +733,15 @@ fn mongo_json_block(
 
 /// 文档正文：顶层字段逐行渲染。
 fn mongo_field_list(
-    view: &MongoDocumentView<'_>,
+    view: &MongoDocumentView,
     index: usize,
     document: &fluxdb_core::MongoDocument,
+    value: Option<&JsonValue>,
     document_key: &str,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
     let colors = view.colors;
-    let Ok(JsonValue::Object(map)) = serde_json::from_str::<JsonValue>(&document.json) else {
+    let Some(JsonValue::Object(map)) = value else {
         // 驱动只会返回 JSON；真解析不了就展示原文，别留一片空白。
         return div()
             .p_2()
@@ -630,7 +759,7 @@ fn mongo_field_list(
         .flex()
         .flex_col()
         .debug_selector(move || selector);
-    for (key, value) in &map {
+    for (key, value) in map {
         list = list.child(mongo_field_row(
             view,
             document_key,
@@ -646,7 +775,7 @@ fn mongo_field_list(
 
 /// 一个字段行：标量一行到底；对象/数组渲染成可点开的摘要 + 缩进子列表。
 fn mongo_field_row(
-    view: &MongoDocumentView<'_>,
+    view: &MongoDocumentView,
     document_key: &str,
     key: &str,
     value: &JsonValue,
@@ -792,6 +921,114 @@ struct MongoTableRow {
     fields: Vec<(String, String, MongoFieldKind)>,
 }
 
+/// 整页表格的列与行文本：随渲染缓存一起构建，切展示方式或滚动时不再重建。
+struct MongoTableLayout {
+    rows: Vec<MongoTableRow>,
+    /// 列序取字段首次出现顺序，不按字母排。
+    columns: Vec<String>,
+    /// 每个列在整页里首次出现的 BSON 类型，用于列头徽标。
+    column_kinds: Vec<Option<MongoFieldKind>>,
+}
+
+impl MongoTableLayout {
+    fn build(values: &[Option<JsonValue>]) -> Self {
+        let rows = values
+            .iter()
+            .map(|value| {
+                value
+                    .as_ref()
+                    .map_or_else(MongoTableRow::empty, mongo_table_row)
+            })
+            .collect::<Vec<_>>();
+        let mut columns: Vec<String> = Vec::new();
+        for row in &rows {
+            for (key, _, _) in &row.fields {
+                if !columns.iter().any(|column| column == key) {
+                    columns.push(key.clone());
+                }
+            }
+        }
+        let column_kinds = columns
+            .iter()
+            .map(|column| {
+                rows.iter().find_map(|row| {
+                    row.fields
+                        .iter()
+                        .find(|(key, _, _)| key == column)
+                        .map(|(_, _, kind)| *kind)
+                })
+            })
+            .collect();
+        Self {
+            rows,
+            columns,
+            column_kinds,
+        }
+    }
+}
+
+impl MongoTableRow {
+    fn empty() -> Self {
+        Self {
+            id: String::new(),
+            id_kind: MongoFieldKind::Null,
+            fields: Vec::new(),
+        }
+    }
+
+    /// 按列取值：缺列给 `None`，由调用方渲染占位符。
+    fn cell(&self, column: &str) -> Option<(&str, MongoFieldKind)> {
+        self.fields
+            .iter()
+            .find(|(key, _, _)| key == column)
+            .map(|(_, text, kind)| (text.as_str(), *kind))
+    }
+}
+
+/// 表格的一行数据：行号 + `_id` + 各列（缺列给占位符）。
+fn mongo_table_row_view(
+    index: usize,
+    row: &MongoTableRow,
+    table: &MongoTableLayout,
+    theme: JsonEditorTheme,
+    colors: UiColors,
+) -> Div {
+    div()
+        .flex()
+        .flex_none()
+        .h(px(MONGO_TABLE_ROW_HEIGHT))
+        .border_b_1()
+        .border_color(colors.border_soft)
+        .child(mongo_table_row_number(
+            (index + 1).to_string(),
+            false,
+            colors,
+        ))
+        .child(mongo_table_cell(
+            format!("mongo-table-cell:{index}:id"),
+            row.id.clone(),
+            row.id_kind,
+            theme,
+            colors,
+        ))
+        .children(table.columns.iter().map(|column| {
+            let selector = format!("mongo-table-cell:{index}:{column}");
+            match row.cell(column) {
+                Some((text, kind)) => {
+                    mongo_table_cell(selector, text.to_string(), kind, theme, colors)
+                }
+                // 该文档缺这个字段：留占位符，不伪造空字符串。
+                None => mongo_table_cell(
+                    selector,
+                    tr("app.mongo.table.missing").to_string(),
+                    MongoFieldKind::Null,
+                    theme,
+                    colors,
+                ),
+            }
+        }))
+}
+
 /// 表格视图：行号 + `_id` 一列 + 各顶层字段一列，右侧是**固定**的操作列。
 ///
 /// 对齐 Compass：列头带 BSON 类型徽标，值按类型着色、超长省略并悬停显示全文，
@@ -799,29 +1036,18 @@ struct MongoTableRow {
 /// 列序取字段首次出现顺序，不按字母排——与文档里的书写顺序一致更易读。
 ///
 /// 操作列放在横向滚动区**之外**（`flex_none` 贴着右边缘），字段一多需要左右拖动时
-/// 编辑/删除入口仍然固定在原地；纵向滚动则由外层统一承担，保证操作列与数据行逐行对齐。
+/// 编辑/删除入口仍然固定在原地。纵向滚动由两个 `uniform_list` 共享同一滚动句柄：
+/// 行高统一，因此始终逐行对齐，且只渲染视口内的行（一页 500 条也不会逐帧建满）。
 fn mongo_document_table(
-    view: &MongoDocumentView<'_>,
-    page: &fluxdb_core::MongoDocumentsPage,
-    state: &MongoCollectionState,
+    view: &MongoDocumentView,
+    cache: &MongoDocumentCache,
+    context: MongoCardContext,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> impl IntoElement {
     let theme = JsonEditorTheme::from_colors(colors);
-    let rows = page
-        .documents
-        .iter()
-        .map(|document| mongo_table_row(&document.json))
-        .collect::<Vec<_>>();
-    let mut columns: Vec<String> = Vec::new();
-    for row in &rows {
-        for (key, _, _) in &row.fields {
-            if !columns.iter().any(|column| column == key) {
-                columns.push(key.clone());
-            }
-        }
-    }
-
+    let table = &cache.data.table;
+    let item_count = table.rows.len();
     let header = div()
         .flex()
         .flex_none()
@@ -831,134 +1057,131 @@ fn mongo_document_table(
         .child(mongo_table_row_number(String::new(), true, colors))
         .child(mongo_table_header_cell(
             tr("app.mongo.table.id").to_string(),
-            rows.first().map(|row| row.id_kind),
+            table.rows.first().map(|row| row.id_kind),
             colors,
         ))
-        .children(columns.iter().map(|column| {
-            let kind = rows.iter().find_map(|row| {
-                row.fields
-                    .iter()
-                    .find(|(key, _, _)| key == column)
-                    .map(|(_, _, kind)| *kind)
-            });
-            mongo_table_header_cell(column.clone(), kind, colors)
-        }));
+        .children(
+            table
+                .columns
+                .iter()
+                .zip(&table.column_kinds)
+                .map(|(column, kind)| mongo_table_header_cell(column.clone(), *kind, colors)),
+        );
 
-    let body = div()
-        .flex()
-        .flex_col()
-        .w_auto()
-        .min_w_full()
-        .child(header)
-        .children(rows.into_iter().enumerate().map(|(index, row)| {
-            div()
-                .flex()
-                .flex_none()
-                .border_b_1()
-                .border_color(colors.border_soft)
-                .child(mongo_table_row_number(
-                    (index + 1).to_string(),
-                    false,
-                    colors,
-                ))
-                .child(mongo_table_cell(
-                    format!("mongo-table-cell:{index}:id"),
-                    row.id,
-                    row.id_kind,
-                    theme,
-                    colors,
-                ))
-                .children(columns.iter().map(|column| {
-                    let found = row
-                        .fields
-                        .iter()
-                        .find(|(key, _, _)| key == column)
-                        .map(|(_, text, kind)| (text.clone(), *kind));
-                    match found {
-                        Some((text, kind)) => mongo_table_cell(
-                            format!("mongo-table-cell:{index}:{column}"),
-                            text,
-                            kind,
-                            theme,
-                            colors,
-                        ),
-                        // 该文档缺这个字段：留占位符，不伪造空字符串。
-                        None => mongo_table_cell(
-                            format!("mongo-table-cell:{index}:{column}"),
-                            tr("app.mongo.table.missing").to_string(),
-                            MongoFieldKind::Null,
-                            theme,
-                            colors,
-                        ),
-                    }
-                }))
-        }));
+    let rows = cache.data.clone();
+    let body = uniform_list(
+        ("mongo-table-body", view.tab_id.0),
+        item_count,
+        cx.processor(move |_this, range: std::ops::Range<usize>, _, _| {
+            range
+                .map(|index| {
+                    mongo_table_row_view(index, &rows.table.rows[index], &rows.table, theme, colors)
+                        .into_any_element()
+                })
+                .collect::<Vec<_>>()
+        }),
+    )
+    .flex_1()
+    .min_h(px(0.))
+    .track_scroll(&cache.table_scroll);
 
-    // 操作列的每一行与数据行同高同序，横向滚动时不动。
-    let action_rows = page.documents.iter().enumerate().map(|(index, document)| {
-        let selected = state.selected_document == Some(index);
-        div()
-            .flex_none()
-            .h(px(MONGO_TABLE_ROW_HEIGHT))
-            .px_1()
-            .flex()
-            .items_center()
-            .justify_center()
-            .gap_1()
-            .border_b_1()
-            .border_color(colors.border_soft)
-            .children(mongo_document_actions(
-                view,
-                index,
-                document,
-                selected,
-                state.read_only,
-                cx,
-            ))
-    });
+    // 操作列的每一行与数据行同高同序，横向滚动时不动；纵向滚动与数据区共用一个句柄。
+    let action_rows = cache.data.clone();
+    let scroll = cache.table_scroll.clone();
+    let actions_list = uniform_list(
+        ("mongo-table-actions", view.tab_id.0),
+        item_count,
+        cx.processor({
+            let view = view.clone();
+            move |_this, range: std::ops::Range<usize>, _, cx| {
+                range
+                    .map(|index| {
+                        let document = &action_rows.documents[index];
+                        let selected = context.selected_document == Some(index);
+                        div()
+                            .flex_none()
+                            .h(px(MONGO_TABLE_ROW_HEIGHT))
+                            .px_1()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .gap_1()
+                            .border_b_1()
+                            .border_color(colors.border_soft)
+                            .children(mongo_document_actions(
+                                &view,
+                                index,
+                                document,
+                                selected,
+                                context.read_only,
+                                cx,
+                            ))
+                            .into_any_element()
+                    })
+                    .collect::<Vec<_>>()
+            }
+        }),
+    )
+    .flex_1()
+    .min_h(px(0.))
+    .track_scroll(&scroll);
 
+    // 横向滚动只作用于数据区（表头随数据行一起左右移动）；纵向滚动留在两个列表里。
+    // 横向位置由 `overflow_x_scrollbar` 的元素状态持有，跨帧不掉。
     div()
         .size_full()
-        .overflow_y_scrollbar()
         .debug_selector(|| "mongo-document-table".to_string())
+        .flex()
         .child(
             div()
+                .flex_1()
+                .min_w(px(0.))
+                .relative()
                 .flex()
-                .items_start()
+                .flex_col()
                 .child(
-                    // 数据区自己横向滚动；滚动条只覆盖数据区，不压在固定的操作列下面。
                     div()
+                        .id(("mongo-table-hscroll", view.tab_id.0))
                         .flex_1()
-                        .min_w(px(0.))
+                        .min_h(px(0.))
                         .overflow_x_scrollbar()
-                        .child(body),
-                )
-                .child(
-                    div()
-                        .w(px(MONGO_TABLE_ACTIONS_WIDTH))
-                        .flex_none()
-                        .flex()
-                        .flex_col()
-                        .border_l_1()
-                        .border_color(colors.border)
-                        .bg(colors.panel_bg)
                         .child(
                             div()
-                                .flex_none()
-                                .h(px(MONGO_TABLE_ROW_HEIGHT))
-                                .px_2()
+                                .h_full()
+                                .min_w_full()
                                 .flex()
-                                .items_center()
-                                .justify_center()
-                                .border_b_1()
-                                .border_color(colors.border)
-                                .bg(colors.panel_alt)
-                                .text_size(px(11.))
-                                .text_color(colors.text)
-                                .child(tr("app.mongo.table.actions")),
-                        )
-                        .children(action_rows),
-                ),
+                                .flex_col()
+                                .child(header)
+                                .child(body),
+                        ),
+                )
+                .vertical_scrollbar(&cache.table_scroll),
+        )
+        .child(
+            div()
+                .w(px(MONGO_TABLE_ACTIONS_WIDTH))
+                .flex_none()
+                .flex()
+                .flex_col()
+                .border_l_1()
+                .border_color(colors.border)
+                .bg(colors.panel_bg)
+                .child(
+                    div()
+                        .flex_none()
+                        .h(px(MONGO_TABLE_ROW_HEIGHT))
+                        .px_2()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .border_b_1()
+                        .border_color(colors.border)
+                        .bg(colors.panel_alt)
+                        .text_size(px(11.))
+                        .text_color(colors.text)
+                        .child(tr("app.mongo.table.actions")),
+                )
+                .child(actions_list),
         )
 }
 
@@ -1047,14 +1270,12 @@ fn mongo_table_cell(
         )
 }
 
-/// 文档 JSON → 表格一行（`_id` + 顶层字段，值取紧凑文本）。
-fn mongo_table_row(json: &str) -> MongoTableRow {
-    let Ok(JsonValue::Object(map)) = serde_json::from_str::<JsonValue>(json) else {
-        return MongoTableRow {
-            id: String::new(),
-            id_kind: MongoFieldKind::Null,
-            fields: Vec::new(),
-        };
+/// 文档解析结果 → 表格一行（`_id` + 顶层字段，值取紧凑文本）。
+///
+/// 入参是缓存里已解析的值：表格整页只解析一次，逐帧渲染与滚动不再碰 JSON 文本。
+fn mongo_table_row(value: &JsonValue) -> MongoTableRow {
+    let JsonValue::Object(map) = value else {
+        return MongoTableRow::empty();
     };
     let id_value = map.get("_id");
     let id = id_value
@@ -1072,16 +1293,16 @@ fn mongo_table_row(json: &str) -> MongoTableRow {
         .unwrap_or_default();
     let id_kind = id_value.map_or(MongoFieldKind::Null, mongo_field_kind);
     let fields = map
-        .into_iter()
-        .filter(|(key, _)| key != "_id")
+        .iter()
+        .filter(|(key, _)| key.as_str() != "_id")
         .map(|(key, value)| {
-            let kind = mongo_field_kind(&value);
+            let kind = mongo_field_kind(value);
             let text = if kind.is_nested() {
-                mongo_field_summary(kind, &value).to_string()
+                mongo_field_summary(kind, value).to_string()
             } else {
-                mongo_field_value_label(&value)
+                mongo_field_value_label(value)
             };
-            (key, text, kind)
+            (key.clone(), text, kind)
         })
         .collect();
     MongoTableRow {
@@ -1147,10 +1368,12 @@ mod mongo_documents_tests {
     /// 表格行保留文档内字段顺序（不按字母排），并带出列头要用的 BSON 类型。
     #[test]
     fn table_row_keeps_document_order_and_types() {
-        let row = mongo_table_row(
+        let value: JsonValue = serde_json::from_str(
             r#"{"_id":{"$oid":"66b000000000000000000001"},"amount":{"$numberDecimal":"100"},
                 "channel":"online","items":[{},{}],"meta":{"a":1}}"#,
-        );
+        )
+        .expect("json");
+        let row = mongo_table_row(&value);
         assert_eq!(row.id, "66b000000000000000000001");
         assert_eq!(row.id_kind, MongoFieldKind::Bson("ObjectId"));
         let order = row
@@ -1177,6 +1400,33 @@ mod mongo_documents_tests {
         assert_eq!(
             row.fields[3].1,
             tr("app.mongo.field_count").replace("%{count}", "1")
+        );
+    }
+
+    /// 整页表格列：取所有文档字段的并集，列序按首次出现顺序；列头类型取该列首个有值的文档。
+    #[test]
+    fn table_layout_unions_columns_in_first_seen_order() {
+        let values = [
+            Some(serde_json::json!({"a": 1, "b": "x"})),
+            Some(serde_json::json!({"b": 2, "c": true})),
+            None,
+        ];
+        let layout = MongoTableLayout::build(&values);
+        assert_eq!(layout.columns, vec!["a", "b", "c"]);
+        assert_eq!(
+            layout.column_kinds,
+            vec![
+                Some(MongoFieldKind::Int32),
+                Some(MongoFieldKind::String),
+                Some(MongoFieldKind::Boolean),
+            ]
+        );
+        assert_eq!(layout.rows.len(), 3);
+        assert!(layout.rows[2].id.is_empty(), "非法 JSON 退化为空行");
+        assert_eq!(layout.rows[1].cell("c").map(|(text, _)| text), Some("true"));
+        assert!(
+            layout.rows[0].cell("c").is_none(),
+            "缺失列必须交给界面渲染占位符"
         );
     }
 

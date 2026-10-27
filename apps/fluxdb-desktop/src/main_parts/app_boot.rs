@@ -2974,6 +2974,7 @@ fn navicat_main_new(
         mongo_collapsed_documents: BTreeMap::new(),
         mongo_expanded_fields: BTreeMap::new(),
         mongo_json_fold_toggles: BTreeMap::new(),
+        mongo_document_cache: BTreeMap::new(),
         mongo_document_editor: None,
         _mongo_document_editor_task: None,
         pending_mongo_document_switch: None,

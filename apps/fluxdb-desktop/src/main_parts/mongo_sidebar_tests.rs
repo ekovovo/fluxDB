@@ -96,6 +96,60 @@ mod mongo_sidebar_tests {
         }
     }
 
+    /// 把文档虚拟列表滚到目标卡片进入视口。
+    ///
+    /// 列表只渲染视口附近的卡片，视口外的卡片**根本不构建**，所以「找到第 N 张卡片的按钮」
+    /// 必须先像用户一样滚动过去，不能假设整页 DOM 都在。
+    ///
+    /// 「在窗口内」还不够：列表是 `overflow_hidden` 的裁剪区，贴着视口下沿的卡片
+    /// 边界仍在窗口内、但绘制与命中都被裁掉，点击会被静默丢弃。所以判定用视口缩小
+    /// 一圈后的矩形；滚不动时（已到列表末尾）才退回窗口判定，避免误报。
+    fn scroll_card_into_view(cx: &mut VisualTestContext, target: &'static str) {
+        let viewport = redraw_and_bounds(cx, selector("mongo-card-list".to_string()))
+            .expect("文档区视口必须渲染");
+        let inside = |cx: &mut VisualTestContext, rect: gpui::Bounds<gpui::Pixels>| {
+            redraw_and_bounds(cx, target).is_some_and(|bounds| rect.contains(&bounds.center()))
+        };
+        // 留 8px 余量：滚动是一格一格推进的，正好压线仍可能被裁剪。
+        let inset = gpui::px(8.);
+        let safe_viewport = gpui::Bounds {
+            origin: viewport.origin + gpui::point(inset, inset),
+            size: gpui::size(
+                viewport.size.width - inset * 2.,
+                viewport.size.height - inset * 2.,
+            ),
+        };
+        let window_bounds = cx.update(|window, _| window.bounds());
+        let wheel = |cx: &mut VisualTestContext, lines: f32| {
+            cx.simulate_event(gpui::ScrollWheelEvent {
+                position: viewport.center(),
+                delta: gpui::ScrollDelta::Lines(gpui::point(0., lines)),
+                ..Default::default()
+            });
+            cx.run_until_parked();
+        };
+        if inside(cx, safe_viewport) {
+            return;
+        }
+        // 两个方向各扫一遍：先把列表推到一端，再逐格推向另一端，目标在上方或下方都能找到。
+        for (reset, step) in [(10., -3.), (-10., 3.)] {
+            for _ in 0..60 {
+                wheel(cx, reset);
+            }
+            for _ in 0..150 {
+                if inside(cx, safe_viewport) {
+                    return;
+                }
+                wheel(cx, step);
+            }
+        }
+        // 卡片比视口还高时，贴边是滚动的极限，按钮可能永远进不了安全区：退回窗口判定。
+        if inside(cx, window_bounds) {
+            return;
+        }
+        panic!("滚动到底仍未渲染：{target}");
+    }
+
     /// 第 0 张 JSON 卡片当前渲染出的 gutter 行数（含可折叠行与普通行）。
     fn json_card_visible_rows(cx: &mut VisualTestContext) -> usize {
         cx.update(|window, cx| {
@@ -597,11 +651,11 @@ mod mongo_sidebar_tests {
                 break;
             }
         }
-        let delete_button = redraw_and_bounds(
-            cx,
-            selector(format!("mongo-document-delete:{delete_index}")),
-        )
-        .expect("待删文档的删除按钮必须渲染");
+        // 列表只渲染视口内的卡片：目标不在首屏时要先滚动过去。
+        let delete_selector = selector(format!("mongo-document-delete:{delete_index}"));
+        scroll_card_into_view(cx, delete_selector);
+        let delete_button =
+            redraw_and_bounds(cx, delete_selector).expect("待删文档的删除按钮必须渲染");
         cx.simulate_click(delete_button.center(), Modifiers::default());
         // 删除必须先确认：确认框出现前点删除不能发出写请求。
         wait_until(cx, "删除确认框出现", |cx| {
@@ -641,11 +695,9 @@ mod mongo_sidebar_tests {
         assert!(page_has_delete_probe(cx), "取消后文档必须还在");
 
         // 再来一次并确认：这次才真的删。
-        let delete_button = redraw_and_bounds(
-            cx,
-            selector(format!("mongo-document-delete:{delete_index}")),
-        )
-        .expect("取消后删除按钮仍可点");
+        scroll_card_into_view(cx, delete_selector);
+        let delete_button =
+            redraw_and_bounds(cx, delete_selector).expect("取消后删除按钮仍可点");
         cx.simulate_click(delete_button.center(), Modifiers::default());
         let confirm_button = wait_until(cx, "删除确认框再次出现", |cx| {
             redraw_and_bounds(cx, selector("mongo-document-delete-confirm".to_string()))
@@ -718,11 +770,10 @@ mod mongo_sidebar_tests {
                     })
             })
         });
-        let duplicate_button = redraw_and_bounds(
-            cx,
-            selector(format!("mongo-document-duplicate:{duplicate_index}")),
-        )
-        .expect("复制文档按钮必须渲染");
+        let duplicate_selector = selector(format!("mongo-document-duplicate:{duplicate_index}"));
+        scroll_card_into_view(cx, duplicate_selector);
+        let duplicate_button =
+            redraw_and_bounds(cx, duplicate_selector).expect("复制文档按钮必须渲染");
         cx.simulate_click(duplicate_button.center(), Modifiers::default());
         // 复制与编辑共用右侧抽屉（不再弹居中弹框），选择器区分模式。
         let duplicate_drawer = selector("mongo-document-duplicate-drawer".to_string());
@@ -752,11 +803,9 @@ mod mongo_sidebar_tests {
         });
 
         // 再打开并确认：这次真的插入。新文档由服务端生成 `_id`，所以按名字数条数。
-        let duplicate_button = redraw_and_bounds(
-            cx,
-            selector(format!("mongo-document-duplicate:{duplicate_index}")),
-        )
-        .expect("取消后复制按钮仍可点");
+        scroll_card_into_view(cx, duplicate_selector);
+        let duplicate_button =
+            redraw_and_bounds(cx, duplicate_selector).expect("取消后复制按钮仍可点");
         cx.simulate_click(duplicate_button.center(), Modifiers::default());
         let duplicate_confirm = wait_until(cx, "复制抽屉再次出现", |cx| {
             redraw_and_bounds(cx, selector("mongo-document-duplicate-confirm".to_string()))
@@ -1064,12 +1113,6 @@ mod mongo_sidebar_tests {
                 break;
             }
         }
-        let visible_edit: Vec<usize> = (0..16)
-            .filter(|index| {
-                redraw_and_bounds(cx, selector(format!("mongo-document-detail:{index}")))
-                    .is_some_and(|bounds| window_bounds.contains(&bounds.center()))
-            })
-            .collect();
         let probe_index = cx
             .update(|_, cx| {
                 view.read(cx)
@@ -1088,15 +1131,21 @@ mod mongo_sidebar_tests {
                     })
             })
             .expect("探针文档必须在本页");
-        let target_index = if visible_edit.contains(&0) {
-            0
-        } else {
-            *visible_edit
-                .first()
-                .expect("至少一张卡片的编辑按钮落在窗口内")
-        };
-        let other_index = (probe_index != target_index && visible_edit.contains(&probe_index))
-            .then_some(probe_index);
+        // 虚拟列表只构建视口附近的卡片：先滚回首篇，再从**同时可见**的卡片里另选一张，
+        // 这样两张卡片的编辑按钮都点得到（切文档的确认框需要点第二张）。
+        let target_index = 0usize;
+        scroll_card_into_view(
+            cx,
+            selector(format!("mongo-document-detail:{target_index}")),
+        );
+        let visible_edit: Vec<usize> = (0..=probe_index.max(8))
+            .filter(|index| {
+                redraw_and_bounds(cx, selector(format!("mongo-document-detail:{index}")))
+                    .is_some_and(|bounds| window_bounds.contains(&bounds.center()))
+            })
+            .collect();
+        let other_index = visible_edit.iter().copied().find(|index| *index != target_index);
+        let other_index = other_index.expect("首篇旁边必须还有一张卡片的编辑按钮落在窗口内");
         let edit_button = redraw_and_bounds(
             cx,
             selector(format!("mongo-document-detail:{target_index}")),
@@ -1137,7 +1186,11 @@ mod mongo_sidebar_tests {
             window.draw(cx).clear(cx);
         });
         let discard_selector = selector("mongo-document-discard".to_string());
-        let other_index = other_index.expect("两张卡片的编辑按钮都要落在窗口内");
+        // 抽屉占去 380px 后卡片会重新测量高度，滚动位置也可能微调；点之前再确认一次可见。
+        scroll_card_into_view(
+            cx,
+            selector(format!("mongo-document-detail:{other_index}")),
+        );
         let other_edit =
             redraw_and_bounds(cx, selector(format!("mongo-document-detail:{other_index}")))
                 .expect("另一张卡片的编辑按钮必须渲染");
@@ -1158,6 +1211,10 @@ mod mongo_sidebar_tests {
         );
 
         // 11.1.1 选「放弃并切换」：草稿丢弃、编辑会话切到目标文档。
+        scroll_card_into_view(
+            cx,
+            selector(format!("mongo-document-detail:{other_index}")),
+        );
         let other_edit =
             redraw_and_bounds(cx, selector(format!("mongo-document-detail:{other_index}")))
                 .expect("另一张卡片的编辑按钮必须渲染");
@@ -1178,6 +1235,10 @@ mod mongo_sidebar_tests {
             })
         });
         // 回到首篇继续验证保存：重新打开它并写入同一份草稿。
+        scroll_card_into_view(
+            cx,
+            selector(format!("mongo-document-detail:{target_index}")),
+        );
         let reopen = redraw_and_bounds(
             cx,
             selector(format!("mongo-document-detail:{target_index}")),

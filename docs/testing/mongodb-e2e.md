@@ -60,6 +60,8 @@ cargo test --locked -p fluxdb-desktop --bin fluxdb-desktop \
 
 走**真实生产视图**（`navicat_main_new` + `Root`），全部通过无头事件驱动，不直接调处理函数：
 
+0. 文档卡片走虚拟列表，视口外的卡片**根本不构建**，选择器查不到。需要第 N 张卡片的按钮时先用 `scroll_card_into_view` 像用户一样滚过去（滚轮回滚到顶再逐格下滚），不能假设整页 DOM 都在。
+	- 卡片下标取自上一步真实返回的 `page.documents` 里目标 `_id` 的位置，不要写死。刷新在途时渲染缓存仍是上一页快照，写死下标会点到别的文档的按钮（用例会等「待删探针文档落库」拿到下标，正是在防这一点）。
 1. 双击 `connection-row:{id}` → 等 `database-row:{db}` 出现（真实建连）
 2. 点击库行 → 等 `object-group-row:collections:{db}` 出现（懒加载集合列表）
 3. 点击分组行 → 等集合行 `table-tree-row:{name}` 出现

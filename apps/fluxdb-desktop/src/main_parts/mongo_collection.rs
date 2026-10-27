@@ -83,16 +83,7 @@ impl NavicatMain {
         colors: UiColors,
         cx: &mut Context<NavicatMain>,
     ) -> Div {
-        let collapsed_documents = self
-            .mongo_collapsed_documents
-            .get(&tab_id)
-            .cloned()
-            .unwrap_or_default();
-        let expanded_fields = self
-            .mongo_expanded_fields
-            .get(&tab_id)
-            .cloned()
-            .unwrap_or_default();
+        self.ensure_mongo_document_cache(tab_id, state);
         let selected = state.selected_document.and_then(|index| {
             state
                 .page
@@ -100,19 +91,35 @@ impl NavicatMain {
                 .and_then(|page| page.documents.get(index))
                 .map(|document| (index, document))
         });
-        let json_fold_toggles = self
-            .mongo_json_fold_toggles
-            .get(&tab_id)
-            .cloned()
-            .unwrap_or_default();
+        // 三个交互集合都按 `Rc` 取：没有改动时不复制，虚拟列表闭包也直接共享。
+        let collapsed_documents = Rc::new(
+            self.mongo_collapsed_documents
+                .get(&tab_id)
+                .cloned()
+                .unwrap_or_default(),
+        );
+        let expanded_fields = Rc::new(
+            self.mongo_expanded_fields
+                .get(&tab_id)
+                .cloned()
+                .unwrap_or_default(),
+        );
+        let json_fold_toggles = Rc::new(
+            self.mongo_json_fold_toggles
+                .get(&tab_id)
+                .cloned()
+                .unwrap_or_default(),
+        );
+        let cache = &self.mongo_document_cache[&tab_id];
         let documents = MongoDocumentView {
             tab_id,
-            collapsed_documents: &collapsed_documents,
-            expanded_fields: &expanded_fields,
-            json_fold_toggles: &json_fold_toggles,
+            collapsed_documents,
+            expanded_fields,
+            json_fold_toggles,
+            page: cache.data.clone(),
             colors,
         };
-        let results = mongo_results(state, &documents, colors, cx);
+        let results = mongo_results(state, cache, &documents, colors, cx);
         // 抽屉只有两种形态：编辑中的文档给编辑器，其余给只读详情。
         let drawer = match (&self.mongo_document_editor, selected) {
             (Some(editor), _) if editor.tab_id == tab_id => {
@@ -576,7 +583,8 @@ fn mongo_results_refresh_button(
 
 fn mongo_results(
     state: &MongoCollectionState,
-    documents: &MongoDocumentView<'_>,
+    cache: &MongoDocumentCache,
+    documents: &MongoDocumentView,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
@@ -606,22 +614,41 @@ fn mongo_results(
             .flex()
             .child(center_message(tr("app.mongo.empty"), colors));
     }
+    let context = MongoCardContext::from_state(state);
     // 文档与 JSON 共用卡片列表（交互稿同一套卡头），只有正文不同；表格单独成表。
     match state.display {
-        MongoDisplayMode::Documents | MongoDisplayMode::Json => container.child(
-            div()
-                .overflow_y_scrollbar()
-                .flex()
-                .flex_col()
-                .gap_2()
-                .p_2()
-                .children(page.documents.iter().enumerate().map(|(index, document)| {
-                    mongo_document_card(documents, index, document, state, cx)
-                })),
-        ),
-        // 表格的数据区横向滚动（操作列固定在右侧不动），纵向滚动由表格自身承担。
+        // 卡片高度随折叠态变化：虚拟列表逐项测量，只渲染视口附近的行。
+        MongoDisplayMode::Documents | MongoDisplayMode::Json => {
+            let view = documents.clone();
+            let cards = list(
+                cache.card_list.clone(),
+                cx.processor(move |_this, index: usize, _window, cx| {
+                    let document = &view.page.documents[index];
+                    // 卡片间距靠外层内边距（`list` 不提供 gap）：上边距即两卡之间与顶部的留白。
+                    div()
+                        .px_2()
+                        .pt_2()
+                        .child(mongo_document_card(&view, index, document, context, cx))
+                        .into_any_element()
+                }),
+            )
+            .size_full();
+            // 虚拟列表要有确定的可视区高度才能算出渲染范围：结果区改成撑满的 flex 列，
+            // 视口拿到剩余高度（与侧边栏虚拟树同一套写法）。
+            let viewport = div()
+                .id(("mongo-card-list", tab_id.0))
+                .debug_selector(|| "mongo-card-list".to_string())
+                .flex_1()
+                .min_h(px(0.))
+                .relative()
+                .overflow_hidden()
+                .child(cards)
+                .vertical_scrollbar(&cache.card_list);
+            container.flex().flex_col().child(viewport)
+        }
+        // 表格的数据区横向滚动（操作列固定在右侧不动），纵向滚动由两个虚拟列表共享。
         MongoDisplayMode::Table => {
-            container.child(mongo_document_table(documents, page, state, colors, cx))
+            container.child(mongo_document_table(documents, cache, context, colors, cx))
         }
     }
 }

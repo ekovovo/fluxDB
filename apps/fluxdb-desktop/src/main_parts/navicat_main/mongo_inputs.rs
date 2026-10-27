@@ -106,6 +106,9 @@ impl NavicatMain {
         cx: &mut Context<Self>,
     ) {
         self.dispatch(AppCommand::SelectMongoDisplayMode { tab_id, mode }, cx);
+        // 文档正文在「字段列表 / 整篇 JSON」之间切换后卡片高度完全不同，
+        // 虚拟列表沿用旧高度会把下方卡片排错，必须重新测量。
+        self.remeasure_mongo_cards(tab_id);
     }
 
     /// 打开/关闭文档详情抽屉；`None` 关闭。
@@ -179,6 +182,7 @@ impl NavicatMain {
         self.mongo_collapsed_documents.remove(&tab_id);
         self.mongo_expanded_fields.remove(&tab_id);
         self.mongo_json_fold_toggles.remove(&tab_id);
+        self.mongo_document_cache.remove(&tab_id);
         self._mongo_load_tasks.remove(&tab_id.0);
         self._mongo_aggregation_tasks.remove(&tab_id.0);
         self._mongo_info_tasks.remove(&tab_id.0);

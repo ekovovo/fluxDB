@@ -63,12 +63,13 @@ use gpui::prelude::*;
 use gpui::{
     Anchor, Animation, AnimationExt as _, AnyElement, App, AssetSource, Bounds, ClipboardItem,
     Context, Div, DragMoveEvent, Empty, Entity, FocusHandle, Focusable, Hsla, IntoElement,
-    KeyBinding, KeyDownEvent, Keystroke, Menu, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, NoAction, PathPromptOptions, Pixels, Point, Render, Role, ScrollHandle,
-    ScrollStrategy, SharedString, Size, Stateful, StatefulInteractiveElement, Subscription, Task,
-    TitlebarOptions, Transformation, UniformListScrollHandle, WeakEntity, Window, WindowBounds,
-    WindowControlArea, WindowOptions, actions, anchored, canvas, deferred, div, ease_in_out, hsla,
-    img, opaque_grey, percentage, point, px, rgb, size, svg, uniform_list,
+    KeyBinding, KeyDownEvent, Keystroke, ListAlignment, ListState, Menu, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, NoAction, PathPromptOptions, Pixels, Point,
+    Render, Role, ScrollHandle, ScrollStrategy, SharedString, Size, Stateful,
+    StatefulInteractiveElement, Subscription, Task, TitlebarOptions, Transformation,
+    UniformListScrollHandle, WeakEntity, Window, WindowBounds, WindowControlArea, WindowOptions,
+    actions, anchored, canvas, deferred, div, ease_in_out, hsla, img, list, opaque_grey,
+    percentage, point, px, rgb, size, svg, uniform_list,
 };
 use gpui_component::{
     ActiveTheme as _, Colorize as _, Disableable as _, IconName, IndexPath, Root, Sizable as _,

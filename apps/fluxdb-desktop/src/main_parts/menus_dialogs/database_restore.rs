@@ -227,6 +227,7 @@ impl NavicatMain {
                 | DatabaseKind::Postgres
                 | DatabaseKind::Sqlite
                 | DatabaseKind::Dameng
+                | DatabaseKind::Oracle
         ) {
             self.show_message(
                 tr("app.database_restore.unsupported"),
@@ -276,7 +277,8 @@ impl NavicatMain {
         let target_input = cx.new(|cx| InputState::new(window, cx).default_value(target_default));
         let modes = if kind == DatabaseKind::Sqlite {
             vec![restore_mode_option(RestoreTargetMode::NewFile)]
-        } else if kind == DatabaseKind::Dameng {
+        } else if matches!(kind, DatabaseKind::Dameng | DatabaseKind::Oracle) {
+            // Oracle 的 schema 就是账号，且导入只写空 schema：只提供「新建 schema」。 
             vec![restore_mode_option(RestoreTargetMode::NewSchema)]
         } else {
             vec![

@@ -542,6 +542,15 @@ fn cell_to_json(cell: &fluxdb_core::CellValue) -> serde_json::Value {
         fluxdb_core::CellValue::F64(v) => serde_json::json!(*v),
         fluxdb_core::CellValue::Text(v) => serde_json::Value::String(v.clone()),
         fluxdb_core::CellValue::Json(v) => serde_json::Value::String(v.clone()),
+        // 必须标明是预览：AI 若把片段当完整值引用或据此写回就会丢数据。
+        fluxdb_core::CellValue::TruncatedText {
+            preview,
+            total_chars,
+        } => serde_json::json!({
+            "preview": preview,
+            "total_chars": total_chars,
+            "truncated": true,
+        }),
         fluxdb_core::CellValue::Bytes(bytes) => {
             serde_json::json!({ "bytes": bytes.len() })
         }

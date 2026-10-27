@@ -295,6 +295,27 @@ mod tests {
         (output.replace_start, output.replace_end)
     }
 
+    fn labels_for(dialect: &dyn crate::dialect::CompletionDialect, text: &str) -> Vec<String> {
+        candidates_for(dialect, text)
+            .into_iter()
+            .map(|item| item.label)
+            .collect()
+    }
+
+    fn candidates_for(
+        dialect: &dyn crate::dialect::CompletionDialect,
+        text: &str,
+    ) -> Vec<Candidate> {
+        let cursor = text.find('|').expect("用例必须用 | 标记光标");
+        let sql = text.replace('|', "");
+        complete(
+            &CompletionRequest::new(&sql, cursor),
+            dialect,
+            &MockMeta::new(),
+        )
+        .items
+    }
+
     fn candidates_with(
         dialect: &dyn crate::dialect::CompletionDialect,
         text: &str,
@@ -797,5 +818,59 @@ mod tests {
     fn where_does_not_suggest_output_alias() {
         let items = labels("SELECT u.name AS n FROM users u WHERE |");
         assert!(!items.contains(&"n".to_string()), "候选：{items:?}");
+    }
+
+    /// 补全按方言出词：Oracle / 达梦 / PostgreSQL 各自的词表必须真的不同，
+    /// 否则「接上 ORACLE 实现」只是换了个名字。
+    #[test]
+    fn candidates_follow_the_requested_dialect() {
+        let oracle = labels_for(&dialect::ORACLE, "SELECT * FROM users WHERE |");
+        let postgres = labels_for(&dialect::POSTGRES, "SELECT * FROM users WHERE |");
+        // Oracle 有 MINUS/ROWNUM 语义下的函数与伪列，PostgreSQL 有 LIMIT/ILIKE/RETURNING。
+        assert!(
+            oracle.contains(&"NVL".to_string()),
+            "Oracle 应补 NVL：{oracle:?}"
+        );
+        assert!(oracle.contains(&"DECODE".to_string()), "Oracle 应补 DECODE");
+        assert!(
+            !oracle.contains(&"LIMIT".to_string()),
+            "Oracle 没有 LIMIT：{oracle:?}"
+        );
+        assert!(!oracle.contains(&"ILIKE".to_string()), "Oracle 没有 ILIKE");
+        assert!(
+            postgres.contains(&"LIMIT".to_string()),
+            "PG 应有 LIMIT：{postgres:?}"
+        );
+        assert!(!postgres.contains(&"NVL".to_string()), "PG 没有 NVL");
+    }
+
+    /// `qualify_bare_table` 的差异要落到 `insert_text` 上，而不是只留在 trait 里。
+    #[test]
+    fn bare_table_insert_text_follows_dialect_qualification() {
+        let oracle = candidates_for(&dialect::ORACLE, "SELECT * FROM |");
+        let users = oracle
+            .iter()
+            .find(|item| item.label == "users")
+            .expect("Oracle 应补 users");
+        assert_eq!(users.insert_text, "public.users");
+
+        let mysql = candidates_for(&dialect::MYSQL, "SELECT * FROM |");
+        let users = mysql
+            .iter()
+            .find(|item| item.label == "users")
+            .expect("MySQL 应补 users");
+        assert_eq!(users.insert_text, "users", "MySQL 裸表名不带 schema 限定");
+    }
+
+    /// 标识符引用字符由方言决定：函数名为包装成 `()` 插入，表名按方言引号。
+    #[test]
+    fn identifier_quote_follows_dialect() {
+        assert_eq!(dialect::MYSQL.identifier_quote(), '`');
+        assert_eq!(dialect::ORACLE.identifier_quote(), '"');
+        // SQL Server 用方括号，`quote_ident` 覆写成 `[x]`。
+        assert_eq!(dialect::SQLSERVER.identifier_quote(), '[');
+        assert_eq!(dialect::SQLSERVER.quote_ident("order"), "[order]");
+        assert_eq!(dialect::MYSQL.quote_ident("order"), "`order`");
+        assert_eq!(dialect::ORACLE.quote_ident("order"), "\"order\"");
     }
 }

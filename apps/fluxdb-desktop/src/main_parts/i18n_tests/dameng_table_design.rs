@@ -23,6 +23,7 @@ fn dameng_designer_explains_read_only_trigger_and_partition_tabs(cx: &mut TestAp
         postgres_profile: None,
         dameng_profile: None,
         sqlserver_profile: None,
+        oracle_profile: None,
     }]));
     controller.dispatch(AppCommand::SaveSettings(Settings {
         locale: "en".into(),
@@ -96,6 +97,7 @@ fn dameng_designer_uses_inline_loading_instead_of_toast(cx: &mut TestAppContext)
         postgres_profile: None,
         dameng_profile: None,
         sqlserver_profile: None,
+        oracle_profile: None,
     };
     controller.dispatch(AppCommand::ReplaceConnections(vec![config.clone()]));
     let object = ObjectPath {

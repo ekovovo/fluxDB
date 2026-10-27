@@ -46,6 +46,7 @@ fn ai_page_query_opens_sidebar_table_fills_conditions_and_shows_rows(cx: &mut Te
         postgres_profile: None,
         dameng_profile: None,
         sqlserver_profile: None,
+        oracle_profile: None,
     }]));
     let event = controller.dispatch(AppCommand::SaveAiModel(AiModelSaveInput {
         display_name: "offline page query fixture".into(),
@@ -612,6 +613,7 @@ fn typed_and_like_form_filters_change_query_results(cx: &mut TestAppContext) {
         postgres_profile: None,
         dameng_profile: None,
         sqlserver_profile: None,
+        oracle_profile: None,
     }]));
     cx.update(|cx| {
         extend_component_i18n();
@@ -1254,6 +1256,7 @@ fn data_filter_mode_round_trip_for_database(
         postgres_profile: None,
         dameng_profile: None,
         sqlserver_profile: None,
+        oracle_profile: None,
     }]));
     cx.update(|cx| {
         extend_component_i18n();
@@ -1440,6 +1443,7 @@ fn data_editor_with_filter_panel(
         postgres_profile: None,
         dameng_profile: None,
         sqlserver_profile: None,
+        oracle_profile: None,
     }]));
     cx.update(|cx| {
         extend_component_i18n();
@@ -1623,6 +1627,52 @@ fn filter_layout_caps_height_keeps_actions_fixed_and_preserves_collapsed_state(
             Some(24)
         );
     });
+}
+
+/// 已有数据时重新加载（应用筛选、翻页、刷新）只盖表格区域，
+/// 工具栏、筛选面板与 SQL 预览保持可见，不再整块替换成居中加载态。
+#[gpui::test]
+fn reloading_with_existing_rows_only_covers_table_area(cx: &mut TestAppContext) {
+    use fluxdb_app::AppCommand;
+
+    let _guard = locale_guard();
+    let (view, cx, tab_id) = data_editor_with_filter_panel(cx);
+    cx.simulate_resize(gpui::size(gpui::px(1000.), gpui::px(700.)));
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let toggle = cx
+        .debug_bounds("data-filter-sort-toggle")
+        .expect("filter toggle");
+    cx.simulate_click(toggle.center(), Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let panel_before = cx.debug_bounds("data-filter-panel").expect("filter panel");
+
+    cx.update(|_, cx| {
+        let event = view.update(cx, |this, cx| {
+            this.dispatch(AppCommand::BeginDataPageLoad(tab_id), cx)
+        });
+        assert!(
+            matches!(event, fluxdb_app::AppEvent::DataPageLoadStarted { .. }),
+            "begin reload: {event:?}"
+        );
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+
+    assert!(
+        cx.debug_bounds("data-page-loading").is_none(),
+        "已有数据时不应整块替换成居中加载态"
+    );
+    assert_eq!(
+        cx.debug_bounds("data-filter-panel"),
+        Some(panel_before),
+        "筛选面板必须保持可见"
+    );
+    let overlay = cx
+        .debug_bounds("data-table-loading-overlay")
+        .expect("table loading overlay");
+    assert!(
+        overlay.top() >= panel_before.bottom() - gpui::px(1.),
+        "加载遮罩只能覆盖表格区域，不能盖住筛选面板: {overlay:?} vs {panel_before:?}"
+    );
 }
 
 #[gpui::test]

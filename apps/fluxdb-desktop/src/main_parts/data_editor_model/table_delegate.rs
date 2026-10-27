@@ -519,10 +519,14 @@ impl TableDelegate for DataPageTableDelegate {
         let redis_cell = meta_for_menu.type_name == "redis" || redis_action_cell;
         let redis_row_selection = self.redis_page && selected_row;
         let redis_type_dark = cx.theme().is_dark();
+        // 截断值不能就地编辑：就地编辑框只有预览，保存等于用片段覆盖完整数据。
+        // 让它走详情面板，由面板先按需加载完整文本。
+        let truncated_cell = cell_value.is_some_and(CellValue::is_truncated);
         let editable_cell = self.cells_editable
             && !is_row_index_col
             && !redis_cell
             && !deleted_row
+            && !truncated_cell
             && !data_type_is_binary(meta_for_menu.type_name.as_str());
         let editing_input_value = edit_input.read(cx).value().to_string();
         let edit_state = DataCellEditState {

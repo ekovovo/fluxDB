@@ -30,6 +30,7 @@ fn copy_table_failure_is_shown_once_by_alert(cx: &mut TestAppContext) {
         postgres_profile: None,
         dameng_profile: None,
         sqlserver_profile: None,
+        oracle_profile: None,
     }]));
     cx.update(|cx| {
         extend_component_i18n();

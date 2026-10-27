@@ -64,7 +64,7 @@ fn pg_apply_changes(
                 match client
                     .batch_execute("COMMIT")
                     .await
-                    .map_err(|error| Error::new(ErrorKind::Query, pg_db_error_text(&error)))
+                    .map_err(pg_commit_error)
                 {
                     Ok(()) => {
                         tracing::info!(target: "fluxdb_connectors", table = %table, deletes = changes.deletes.len(), updates = changes.updates.len(), inserts = changes.inserts.len(), "pg_apply_changes:commit");

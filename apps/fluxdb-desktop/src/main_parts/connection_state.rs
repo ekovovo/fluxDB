@@ -359,6 +359,23 @@ enum ConnectionField {
     SqlServerQueryTimeout,
     /// 应用名（服务端 `APP_NAME()` 显示）
     SqlServerApplicationName,
+    // —— Oracle 专用文本字段 ——
+    /// Service Name（Easy Connect 目标，通常是 PDB 服务名）
+    OracleServiceName,
+    /// SID（仅 `connect_kind == sid` 时用于拼显式描述符）
+    OracleSid,
+    /// 登录后切换的默认 Schema；只改名称解析，不授予任何权限。
+    OracleSchema,
+    /// 建连超时（秒）
+    OracleConnectTimeout,
+    /// 语句超时（秒），0 表示不设限
+    OracleQueryTimeout,
+    /// 客户端程序名（`v$session.program` 可见）
+    OracleApplicationName,
+    /// Wallet 目录路径；空表示不使用 Wallet
+    OracleWalletLocation,
+    /// Wallet 口令（掩码输入，落盘走加密凭据表）
+    OracleWalletPassword,
 }
 
 /// 布尔开关类字段 ID（非文本输入，走 `set_connection_toggle_field`）。
@@ -465,6 +482,19 @@ struct NewConnectionForm {
     sqlserver_connect_timeout_secs: String,
     sqlserver_query_timeout_secs: String,
     sqlserver_application_name: String,
+    // —— Oracle 专用编辑值 ——
+    /// 监听器寻址方式："service_name" / "sid"
+    oracle_connect_kind: String,
+    /// 登录身份："normal" / "sysdba" / "sysoper"
+    oracle_privilege: String,
+    oracle_service_name: String,
+    oracle_sid: String,
+    oracle_schema: String,
+    oracle_connect_timeout_secs: String,
+    oracle_query_timeout_secs: String,
+    oracle_application_name: String,
+    oracle_wallet_location: String,
+    oracle_wallet_password: String,
     sentinel_master_name: String,
     /// Sentinel 节点列表，换行分隔
     sentinel_endpoints: String,
@@ -520,6 +550,17 @@ struct NewConnectionInputs {
     sqlserver_connect_timeout: Entity<InputState>,
     sqlserver_query_timeout: Entity<InputState>,
     sqlserver_application_name: Entity<InputState>,
+    /// —— Oracle 专用 ——
+    oracle_connect_kind_select: Entity<SelectState<SearchableVec<ConnectionSelectOption>>>,
+    oracle_privilege_select: Entity<SelectState<SearchableVec<ConnectionSelectOption>>>,
+    oracle_service_name: Entity<InputState>,
+    oracle_sid: Entity<InputState>,
+    oracle_schema: Entity<InputState>,
+    oracle_connect_timeout: Entity<InputState>,
+    oracle_query_timeout: Entity<InputState>,
+    oracle_application_name: Entity<InputState>,
+    oracle_wallet_location: Entity<InputState>,
+    oracle_wallet_password: Entity<InputState>,
     mysql_charset: Entity<InputState>,
     mysql_proxy_type: Entity<InputState>,
     mysql_ssh_connect_timeout: Entity<InputState>,
@@ -628,6 +669,16 @@ impl NewConnectionForm {
             sqlserver_connect_timeout_secs: "5".to_string(),
             sqlserver_query_timeout_secs: "0".to_string(),
             sqlserver_application_name: "FluxDB".to_string(),
+            oracle_connect_kind: "service_name".to_string(),
+            oracle_privilege: "normal".to_string(),
+            oracle_service_name: String::new(),
+            oracle_sid: String::new(),
+            oracle_schema: String::new(),
+            oracle_connect_timeout_secs: "8".to_string(),
+            oracle_query_timeout_secs: "0".to_string(),
+            oracle_application_name: "FluxDB".to_string(),
+            oracle_wallet_location: String::new(),
+            oracle_wallet_password: String::new(),
             sentinel_master_name: String::new(),
             sentinel_endpoints: String::new(),
             cluster_start_nodes: String::new(),
@@ -689,6 +740,13 @@ impl NewConnectionForm {
                 form.host = "127.0.0.1".to_string();
                 form.port = "1433".to_string();
                 form.username = "sa".to_string();
+            }
+            DatabaseKind::Oracle => {
+                form.name = format!("Oracle Local {index}");
+                form.host = "127.0.0.1".to_string();
+                form.port = "1521".to_string();
+                form.username = "system".to_string();
+                form.oracle_service_name = "FREEPDB1".to_string();
             }
         }
         form
@@ -794,7 +852,43 @@ impl NewConnectionForm {
             form.apply_sqlserver_profile(&profile);
         }
 
+        if config.kind == DatabaseKind::Oracle {
+            let profile = config.oracle_profile.clone().unwrap_or_else(|| {
+                fluxdb_core::OracleConnectionProfile::from_options(&config.options)
+            });
+            form.apply_oracle_profile(&profile);
+        }
+
         form
+    }
+
+    /// 用一份 Oracle 档案回填表单。Service Name 与 SID 分别留在各自字段里，
+    /// 由 `oracle_connect_kind` 决定哪一个生效，不合并成「数据库名」。
+    fn apply_oracle_profile(&mut self, profile: &fluxdb_core::OracleConnectionProfile) {
+        self.host = profile.basic.host.clone();
+        self.port = profile.basic.port.to_string();
+        self.username = profile.basic.username.clone();
+        self.password = profile
+            .basic
+            .password
+            .value()
+            .unwrap_or_default()
+            .to_string();
+        self.oracle_connect_kind = profile.basic.connect_kind.as_str().to_string();
+        self.oracle_service_name = profile.basic.service_name.clone();
+        self.oracle_sid = profile.basic.sid.clone();
+        self.oracle_schema = profile.basic.schema.clone();
+        self.oracle_privilege = profile.basic.privilege.as_str().to_string();
+        self.oracle_connect_timeout_secs = profile.advanced.connect_timeout_secs.to_string();
+        self.oracle_query_timeout_secs = profile.advanced.query_timeout_secs.to_string();
+        self.oracle_application_name = profile.advanced.application_name.clone();
+        self.oracle_wallet_location = profile.advanced.wallet_location.clone();
+        self.oracle_wallet_password = profile
+            .advanced
+            .wallet_password
+            .value()
+            .unwrap_or_default()
+            .to_string();
     }
 
     /// 用一份 SQL Server 档案回填表单；档案是拨号与保存的事实来源。
@@ -1337,6 +1431,49 @@ impl NewConnectionForm {
             },
         }
     }
+
+    /// 当前生效的 Oracle 寻址目标（Service Name 或 SID）。
+    fn oracle_target_name(&self) -> &str {
+        match fluxdb_core::OracleConnectKind::parse(&self.oracle_connect_kind) {
+            Some(fluxdb_core::OracleConnectKind::Sid) => self.oracle_sid.trim(),
+            _ => self.oracle_service_name.trim(),
+        }
+    }
+
+    fn build_oracle_profile(&self) -> fluxdb_core::OracleConnectionProfile {
+        fluxdb_core::OracleConnectionProfile {
+            basic: fluxdb_core::OracleBasicOptions {
+                host: self.host.trim().to_string(),
+                port: self
+                    .port
+                    .trim()
+                    .parse::<u16>()
+                    .unwrap_or_else(|_| database_default_port_u16(DatabaseKind::Oracle)),
+                connect_kind: fluxdb_core::OracleConnectKind::parse(&self.oracle_connect_kind)
+                    .unwrap_or(fluxdb_core::OracleConnectKind::ServiceName),
+                service_name: self.oracle_service_name.trim().to_string(),
+                sid: self.oracle_sid.trim().to_string(),
+                username: self.username.trim().to_string(),
+                schema: self.oracle_schema.trim().to_string(),
+                privilege: fluxdb_core::OraclePrivilege::parse(&self.oracle_privilege)
+                    .unwrap_or(fluxdb_core::OraclePrivilege::Normal),
+                password: fluxdb_core::SecretRef::inline(self.password.clone()),
+            },
+            advanced: fluxdb_core::OracleAdvancedOptions {
+                connect_timeout_secs: self
+                    .oracle_connect_timeout_secs
+                    .trim()
+                    .parse()
+                    .unwrap_or(8),
+                query_timeout_secs: self.oracle_query_timeout_secs.trim().parse().unwrap_or(0),
+                application_name: self.oracle_application_name.trim().to_string(),
+                wallet_location: self.oracle_wallet_location.trim().to_string(),
+                wallet_password: fluxdb_core::SecretRef::inline(
+                    self.oracle_wallet_password.clone(),
+                ),
+            },
+        }
+    }
 }
 
 impl NewConnectionInputs {
@@ -1386,6 +1523,29 @@ impl NewConnectionInputs {
             (
                 &self.sqlserver_application_name,
                 ConnectionField::SqlServerApplicationName,
+            ),
+            (
+                &self.oracle_service_name,
+                ConnectionField::OracleServiceName,
+            ),
+            (&self.oracle_sid, ConnectionField::OracleSid),
+            (&self.oracle_schema, ConnectionField::OracleSchema),
+            (
+                &self.oracle_connect_timeout,
+                ConnectionField::OracleConnectTimeout,
+            ),
+            (&self.oracle_query_timeout, ConnectionField::OracleQueryTimeout),
+            (
+                &self.oracle_application_name,
+                ConnectionField::OracleApplicationName,
+            ),
+            (
+                &self.oracle_wallet_location,
+                ConnectionField::OracleWalletLocation,
+            ),
+            (
+                &self.oracle_wallet_password,
+                ConnectionField::OracleWalletPassword,
             ),
             (&self.mysql_charset, ConnectionField::MysqlCharset),
             (&self.mysql_proxy_type, ConnectionField::MysqlProxyType),
@@ -1514,6 +1674,23 @@ impl NewConnectionInputs {
             input_state(ConnectionField::SqlServerQueryTimeout, false, window, cx);
         let (sqlserver_application_name, sqlserver_application_name_subscription) =
             input_state(ConnectionField::SqlServerApplicationName, false, window, cx);
+        // —— Oracle 专用文本输入 ——
+        let (oracle_service_name, oracle_service_name_subscription) =
+            input_state(ConnectionField::OracleServiceName, false, window, cx);
+        let (oracle_sid, oracle_sid_subscription) =
+            input_state(ConnectionField::OracleSid, false, window, cx);
+        let (oracle_schema, oracle_schema_subscription) =
+            input_state(ConnectionField::OracleSchema, false, window, cx);
+        let (oracle_connect_timeout, oracle_connect_timeout_subscription) =
+            input_state(ConnectionField::OracleConnectTimeout, false, window, cx);
+        let (oracle_query_timeout, oracle_query_timeout_subscription) =
+            input_state(ConnectionField::OracleQueryTimeout, false, window, cx);
+        let (oracle_application_name, oracle_application_name_subscription) =
+            input_state(ConnectionField::OracleApplicationName, false, window, cx);
+        let (oracle_wallet_location, oracle_wallet_location_subscription) =
+            input_state(ConnectionField::OracleWalletLocation, false, window, cx);
+        let (oracle_wallet_password, oracle_wallet_password_subscription) =
+            input_state(ConnectionField::OracleWalletPassword, true, window, cx);
         // —— MySQL / TiDB 专用文本输入 ——
         let (mysql_charset, mysql_charset_subscription) =
             input_state(ConnectionField::MysqlCharset, false, window, cx);
@@ -1715,6 +1892,73 @@ impl NewConnectionInputs {
             },
         );
 
+        // Oracle 寻址方式：Service Name（Easy Connect）与 SID 互斥，默认前者。
+        let oracle_connect_kind_select = cx.new(|cx| {
+            SelectState::new(
+                SearchableVec::new(vec![
+                    ConnectionSelectOption {
+                        value: "service_name".into(),
+                        label_key: "app.connection.oracle.connect_kind_service",
+                    },
+                    ConnectionSelectOption {
+                        value: "sid".into(),
+                        label_key: "app.connection.oracle.connect_kind_sid",
+                    },
+                ]),
+                Some(IndexPath::new(0)),
+                window,
+                cx,
+            )
+        });
+        let oracle_connect_kind_select_s = cx.subscribe(
+            &oracle_connect_kind_select,
+            move |this: &mut NavicatMain,
+                  _select,
+                  event: &SelectEvent<SearchableVec<ConnectionSelectOption>>,
+                  cx| {
+                let SelectEvent::Confirm(value) = event;
+                if let Some(value) = value {
+                    this.new_connection_form.oracle_connect_kind = value.value().clone();
+                    cx.notify();
+                }
+            },
+        );
+        // Oracle 登录身份：默认普通连接，特权身份必须显式选择。
+        let oracle_privilege_select = cx.new(|cx| {
+            SelectState::new(
+                SearchableVec::new(vec![
+                    ConnectionSelectOption {
+                        value: "normal".into(),
+                        label_key: "app.connection.oracle.privilege_normal",
+                    },
+                    ConnectionSelectOption {
+                        value: "sysdba".into(),
+                        label_key: "app.connection.oracle.privilege_sysdba",
+                    },
+                    ConnectionSelectOption {
+                        value: "sysoper".into(),
+                        label_key: "app.connection.oracle.privilege_sysoper",
+                    },
+                ]),
+                Some(IndexPath::new(0)),
+                window,
+                cx,
+            )
+        });
+        let oracle_privilege_select_s = cx.subscribe(
+            &oracle_privilege_select,
+            move |this: &mut NavicatMain,
+                  _select,
+                  event: &SelectEvent<SearchableVec<ConnectionSelectOption>>,
+                  cx| {
+                let SelectEvent::Confirm(value) = event;
+                if let Some(value) = value {
+                    this.new_connection_form.oracle_privilege = value.value().clone();
+                    cx.notify();
+                }
+            },
+        );
+
         Self {
             name,
             host,
@@ -1747,6 +1991,16 @@ impl NewConnectionInputs {
             sqlserver_connect_timeout,
             sqlserver_query_timeout,
             sqlserver_application_name,
+            oracle_connect_kind_select,
+            oracle_privilege_select,
+            oracle_service_name,
+            oracle_sid,
+            oracle_schema,
+            oracle_connect_timeout,
+            oracle_query_timeout,
+            oracle_application_name,
+            oracle_wallet_location,
+            oracle_wallet_password,
             mysql_ssl_mode_select,
             mysql_charset,
             mysql_proxy_type,
@@ -1819,6 +2073,16 @@ impl NewConnectionInputs {
                 discovery_uri_s,
                 ssh_auth_select_s,
                 cloud_provider_select_s,
+                oracle_service_name_subscription,
+                oracle_sid_subscription,
+                oracle_schema_subscription,
+                oracle_connect_timeout_subscription,
+                oracle_query_timeout_subscription,
+                oracle_application_name_subscription,
+                oracle_wallet_location_subscription,
+                oracle_wallet_password_subscription,
+                oracle_connect_kind_select_s,
+                oracle_privilege_select_s,
             ],
         }
     }
@@ -1854,6 +2118,14 @@ impl NewConnectionInputs {
             ConnectionField::SqlServerConnectTimeout => &self.sqlserver_connect_timeout,
             ConnectionField::SqlServerQueryTimeout => &self.sqlserver_query_timeout,
             ConnectionField::SqlServerApplicationName => &self.sqlserver_application_name,
+            ConnectionField::OracleServiceName => &self.oracle_service_name,
+            ConnectionField::OracleSid => &self.oracle_sid,
+            ConnectionField::OracleSchema => &self.oracle_schema,
+            ConnectionField::OracleConnectTimeout => &self.oracle_connect_timeout,
+            ConnectionField::OracleQueryTimeout => &self.oracle_query_timeout,
+            ConnectionField::OracleApplicationName => &self.oracle_application_name,
+            ConnectionField::OracleWalletLocation => &self.oracle_wallet_location,
+            ConnectionField::OracleWalletPassword => &self.oracle_wallet_password,
             ConnectionField::MysqlCharset => &self.mysql_charset,
             ConnectionField::MysqlProxyType => &self.mysql_proxy_type,
             ConnectionField::MysqlSshConnectTimeout => &self.mysql_ssh_connect_timeout,
@@ -1959,6 +2231,50 @@ impl NewConnectionInputs {
         self.set_value(
             ConnectionField::SqlServerApplicationName,
             &form.sqlserver_application_name,
+            window,
+            cx,
+        );
+        // —— Oracle 专用 ——
+        self.set_value(
+            ConnectionField::OracleServiceName,
+            &form.oracle_service_name,
+            window,
+            cx,
+        );
+        self.set_value(ConnectionField::OracleSid, &form.oracle_sid, window, cx);
+        self.set_value(
+            ConnectionField::OracleSchema,
+            &form.oracle_schema,
+            window,
+            cx,
+        );
+        self.set_value(
+            ConnectionField::OracleConnectTimeout,
+            &form.oracle_connect_timeout_secs,
+            window,
+            cx,
+        );
+        self.set_value(
+            ConnectionField::OracleQueryTimeout,
+            &form.oracle_query_timeout_secs,
+            window,
+            cx,
+        );
+        self.set_value(
+            ConnectionField::OracleApplicationName,
+            &form.oracle_application_name,
+            window,
+            cx,
+        );
+        self.set_value(
+            ConnectionField::OracleWalletLocation,
+            &form.oracle_wallet_location,
+            window,
+            cx,
+        );
+        self.set_value(
+            ConnectionField::OracleWalletPassword,
+            &form.oracle_wallet_password,
             window,
             cx,
         );

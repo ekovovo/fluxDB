@@ -210,6 +210,7 @@ impl TableDataExportWriter {
     }
 
     fn write_row(&mut self, fields: &[RowFieldSnapshot]) -> io::Result<()> {
+        reject_truncated_fields(fields)?;
         match self.format {
             TableDataExportFormat::Sql => writeln!(
                 self.writer,
@@ -281,6 +282,20 @@ impl TableDataExportWriter {
     }
 }
 
+/// 导出前拒绝只加载了预览的文本。
+///
+/// 预览是片段：写进导出文件等于交付一份静默截断的数据，而导出本身看起来「成功」。
+/// 这里直接失败并提示改用完整读取，不把半截内容混进结果。
+fn reject_truncated_fields(fields: &[RowFieldSnapshot]) -> io::Result<()> {
+    if let Some(field) = fields.iter().find(|field| field.value.is_truncated()) {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            tr("app.data_export.error.truncated_value").replace("%{column}", &field.name),
+        ));
+    }
+    Ok(())
+}
+
 fn write_data_row_export<W: Write>(
     writer: &mut W,
     format: DataRowExportFormat,
@@ -288,6 +303,9 @@ fn write_data_row_export<W: Write>(
     rows: &[Vec<RowFieldSnapshot>],
     db_kind: DatabaseKind,
 ) -> io::Result<()> {
+    for fields in rows {
+        reject_truncated_fields(fields)?;
+    }
     match format {
         DataRowExportFormat::Csv => write_data_row_csv_export(writer, rows),
         DataRowExportFormat::Json => write_data_row_json_export(writer, rows),

@@ -44,6 +44,7 @@
                 },
             }),
             sqlserver_profile: None,
+            oracle_profile: None,
         }
     }
 
@@ -420,6 +421,7 @@
                 postgres_profile: Some(PostgresConnectionProfile::default()),
                 dameng_profile: None,
                 sqlserver_profile: None,
+                oracle_profile: None,
             },
         ]));
         let _ = controller.dispatch(fluxdb_app::AppCommand::OpenQueryEditorInDatabase {

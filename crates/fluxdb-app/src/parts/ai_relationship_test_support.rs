@@ -21,6 +21,7 @@ pub fn er_test_connection() -> ConnectionConfig {
         postgres_profile: None,
         dameng_profile: None,
         sqlserver_profile: None,
+        oracle_profile: None,
     }
 }
 

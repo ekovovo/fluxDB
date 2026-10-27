@@ -27,7 +27,11 @@ mod i18n_e2e_tests {
     include!("i18n_tests/table_context_menu_layout.rs");
     include!("i18n_tests/sqlserver_table_context.rs");
     include!("i18n_tests/user_admin_toolbar.rs");
+    // 新建用户一次保存的真实库端到端测试（MySQL/PG/Oracle/达梦，`#[ignore]` + 环境变量门控）。
+    include!("i18n_tests/user_admin_one_shot_live.rs");
     include!("i18n_tests/sqlserver_security.rs");
+    include!("i18n_tests/oracle_security.rs");
+    include!("i18n_tests/oracle_completion.rs");
     include!("i18n_tests/query_summary_layout.rs");
 
     /// 进程级 locale 是全局状态；会切换语言的用例必须串行，否则互相污染断言。
@@ -174,6 +178,7 @@ mod i18n_e2e_tests {
                 postgres_profile: None,
                 dameng_profile: None,
                 sqlserver_profile: None,
+                oracle_profile: None,
             },
         ]));
         cx.update(|cx| {
@@ -291,6 +296,7 @@ mod i18n_e2e_tests {
                 postgres_profile: None,
                 dameng_profile: None,
                 sqlserver_profile: None,
+                oracle_profile: None,
             },
         ]));
         let fluxdb_app::AppEvent::TabOpened(db0_tab) =
@@ -1043,6 +1049,7 @@ mod i18n_e2e_tests {
             postgres_profile: None,
             dameng_profile: None,
             sqlserver_profile: None,
+            oracle_profile: None,
         }]));
         controller.dispatch(AppCommand::SaveSettings(Settings {
             locale: "ja".into(),

@@ -7,6 +7,30 @@ fn validate_data_changes(changes: &DataChangeSet) -> fluxdb_core::Result<()> {
         return Err(Error::new(ErrorKind::Query, "没有需要提交的更改"));
     }
 
+    reject_truncated_values(changes)
+}
+
+/// 拒绝提交任何只加载了预览的值。
+///
+/// 预览是片段，写回去等于用片段覆盖完整数据，且不可逆。所有连接器的写入口都先经过
+/// [`validate_data_changes`]，因此这一处校验覆盖 MySQL / SQLite / PostgreSQL / 达梦 /
+/// SQL Server / Oracle 的全部写入路径。完整值应由上层先按需加载（详情面板）再提交。
+fn reject_truncated_values(changes: &DataChangeSet) -> fluxdb_core::Result<()> {
+    let truncated_cell = |value: &CellValue| value.is_truncated();
+    let in_insert = changes
+        .inserts
+        .iter()
+        .any(|row| row.values.iter().any(truncated_cell));
+    let in_update = changes
+        .updates
+        .iter()
+        .any(|update| update.cells.iter().any(|cell| truncated_cell(&cell.value)));
+    if in_insert || in_update {
+        return Err(Error::new(
+            ErrorKind::Unsupported,
+            "提交包含只加载了预览的文本（截断的 CLOB），请先加载完整值再保存",
+        ));
+    }
     Ok(())
 }
 
@@ -83,6 +107,11 @@ fn push_mysql_bind(builder: &mut QueryBuilder<'_, MySql>, value: &CellValue) {
         CellValue::Text(value) | CellValue::Json(value) => {
             builder.push_bind(value.clone());
         }
+        // 写入路径已在 `validate_data_changes` 拒绝截断值；这里只会被筛选条件用到，
+        // 按可见预览比较即可，不会落库。
+        CellValue::TruncatedText { preview, .. } => {
+            builder.push_bind(preview.clone());
+        }
         CellValue::Bytes(value) => {
             builder.push_bind(value.clone());
         }
@@ -108,6 +137,10 @@ fn push_sqlite_bind(builder: &mut QueryBuilder<'_, Sqlite>, value: &CellValue) {
         }
         CellValue::Text(value) | CellValue::Json(value) => {
             builder.push_bind(value.clone());
+        }
+        // 同 `push_mysql_bind`：写入前已拒绝截断值，此处仅供筛选比较。
+        CellValue::TruncatedText { preview, .. } => {
+            builder.push_bind(preview.clone());
         }
         CellValue::Bytes(value) => {
             builder.push_bind(value.clone());
@@ -305,4 +338,77 @@ fn mysql_delete_database(
 
 fn sqlite_quote_string(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
+}
+
+#[cfg(test)]
+mod truncated_write_guard_tests {
+    use super::reject_truncated_values;
+    use fluxdb_core::{CellUpdate, CellValue, DataChangeSet, ObjectKind, ObjectPath, Row, RowIdentity, RowUpdate};
+    use std::collections::BTreeMap;
+
+    fn changes() -> DataChangeSet {
+        DataChangeSet {
+            object: ObjectPath {
+                connection_id: fluxdb_core::ConnectionId(1),
+                database: None,
+                schema: None,
+                name: "CLOB_SAMPLES".to_string(),
+                kind: ObjectKind::Table,
+            },
+            inserts: Vec::new(),
+            updates: Vec::new(),
+            deletes: Vec::new(),
+            insert_intents: None,
+        }
+    }
+
+    fn truncated() -> CellValue {
+        CellValue::TruncatedText {
+            preview: "前缀".to_string(),
+            total_chars: 100_000,
+        }
+    }
+
+    fn identity() -> RowIdentity {
+        RowIdentity {
+            values: BTreeMap::from([("ID".to_string(), CellValue::I64(1))]),
+        }
+    }
+
+    /// 更新里带预览必须被拒绝：所有连接器写入口共用这一处校验。
+    #[test]
+    fn rejects_truncated_value_in_update() {
+        let mut set = changes();
+        set.updates.push(RowUpdate {
+            identity: identity(),
+            cells: vec![CellUpdate {
+                column: "NOTE".to_string(),
+                value: truncated(),
+            }],
+        });
+        assert!(reject_truncated_values(&set).is_err());
+    }
+
+    #[test]
+    fn rejects_truncated_value_in_insert() {
+        let mut set = changes();
+        set.inserts.push(Row {
+            values: vec![CellValue::I64(1), truncated()],
+        });
+        assert!(reject_truncated_values(&set).is_err());
+    }
+
+    /// 完整文本（含恰好等于预览上限的内容）必须照常放行，不能误伤正常写入。
+    #[test]
+    fn allows_complete_text() {
+        let mut set = changes();
+        set.updates.push(RowUpdate {
+            identity: identity(),
+            cells: vec![CellUpdate {
+                column: "NOTE".to_string(),
+                value: CellValue::Text("完整内容".to_string()),
+            }],
+        });
+        assert!(reject_truncated_values(&set).is_ok());
+    }
 }

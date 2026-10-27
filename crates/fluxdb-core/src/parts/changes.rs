@@ -132,12 +132,14 @@ impl From<Error> for UserFacingError {
             ErrorKind::Unsupported => "暂不支持",
             ErrorKind::Timeout => "连接超时",
             ErrorKind::Internal => "内部错误",
+            ErrorKind::OutcomeUnknown => "结果未知",
         };
 
         Self {
             title: title.to_string(),
             message: error.message,
             detail: None,
+            // 结果未知绝不标记可重试：用户点重试可能造成重复写入。
             retryable: matches!(
                 error.kind,
                 ErrorKind::Connection | ErrorKind::Cancelled | ErrorKind::Timeout

@@ -46,6 +46,7 @@
                 },
                 advanced: SqlServerAdvancedOptions::default(),
             }),
+            oracle_profile: None,
         }]));
         cx.update(|cx| {
             extend_component_i18n();

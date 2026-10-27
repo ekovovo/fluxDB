@@ -31,6 +31,7 @@ fn drop_and_truncate_use_the_aligned_component_select(cx: &mut TestAppContext) {
         postgres_profile: None,
         dameng_profile: None,
         sqlserver_profile: None,
+        oracle_profile: None,
     }]));
     cx.update(|cx| {
         extend_component_i18n();

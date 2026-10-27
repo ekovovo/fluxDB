@@ -605,6 +605,177 @@ impl CompletionDialect for DamengCompletionDialect {
     }
 }
 
+/// Oracle：sqlparser 无专用方言，用 PostgreSQL 方言解析（与达梦一致）。
+///
+/// 关键字只放 Oracle 真实语法：没有 `LIMIT`（分页用 `OFFSET … FETCH NEXT` 或
+/// `ROWNUM`），没有反引号，也没有 `SHOW TABLES`。
+const ORACLE_KEYWORDS: &[&str] = &[
+    "SELECT",
+    "FROM",
+    "WHERE",
+    "JOIN",
+    "LEFT JOIN",
+    "RIGHT JOIN",
+    "INNER JOIN",
+    "FULL JOIN",
+    "CROSS JOIN",
+    "ON",
+    "AS",
+    "AND",
+    "OR",
+    "NOT",
+    "IN",
+    "IS NULL",
+    "IS NOT NULL",
+    "LIKE",
+    "BETWEEN",
+    "EXISTS",
+    "GROUP BY",
+    "HAVING",
+    "ORDER BY",
+    "NULLS FIRST",
+    "NULLS LAST",
+    "OFFSET",
+    "FETCH NEXT",
+    "ROWNUM",
+    "CONNECT BY",
+    "START WITH",
+    "PRIOR",
+    "INSERT INTO",
+    "VALUES",
+    "UPDATE",
+    "SET",
+    "DELETE FROM",
+    "MERGE INTO",
+    "CREATE",
+    "ALTER",
+    "DROP",
+    "TRUNCATE",
+    "TABLE",
+    "VIEW",
+    "INDEX",
+    "SEQUENCE",
+    "SYNONYM",
+    "SCHEMA",
+    "USER",
+    "PRIMARY KEY",
+    "FOREIGN KEY",
+    "REFERENCES",
+    "CONSTRAINT",
+    "DEFAULT",
+    "UNIQUE",
+    "CHECK",
+    "GENERATED ALWAYS AS IDENTITY",
+    "DISTINCT",
+    "UNION",
+    "UNION ALL",
+    "MINUS",
+    "INTERSECT",
+    "WITH",
+    "OVER",
+    "PARTITION BY",
+    "CASE",
+    "WHEN",
+    "THEN",
+    "ELSE",
+    "END",
+    "COMMIT",
+    "ROLLBACK",
+    "SAVEPOINT",
+    // PL/SQL：块结构与声明段。缺这些词时写 PL/SQL 补不出 `BEGIN` / `DECLARE`，
+    // 词法高亮也认不出块关键字。
+    "DECLARE",
+    "BEGIN",
+    "EXCEPTION",
+    "PROCEDURE",
+    "FUNCTION",
+    "PACKAGE",
+    "TYPE",
+    "TRIGGER",
+    "CURSOR",
+    "LOOP",
+    "WHILE",
+    "FOR",
+    "IF",
+    "ELSIF",
+    "RAISE",
+    "RETURN",
+    "EXIT",
+    "GOTO",
+    "OPEN",
+    "CLOSE",
+    "FETCH",
+    "CALL",
+    // 序列伪列（Oracle 特有，等价于 `NEXTVAL('seq')` 语法糖）。
+    "NEXTVAL",
+    "CURRVAL",
+];
+
+const ORACLE_FUNCTIONS: &[&str] = &[
+    "COUNT",
+    "SUM",
+    "AVG",
+    "MIN",
+    "MAX",
+    "NVL",
+    "NVL2",
+    "DECODE",
+    "COALESCE",
+    "NULLIF",
+    "TO_CHAR",
+    "TO_DATE",
+    "TO_NUMBER",
+    "TO_TIMESTAMP",
+    "TRUNC",
+    "ROUND",
+    "SUBSTR",
+    "INSTR",
+    "LENGTH",
+    "LOWER",
+    "UPPER",
+    "TRIM",
+    "LPAD",
+    "RPAD",
+    "REPLACE",
+    "CONCAT",
+    "LISTAGG",
+    "SYSDATE",
+    "SYSTIMESTAMP",
+    "CAST",
+    "EXTRACT",
+    "ROW_NUMBER",
+    "RANK",
+    "DENSE_RANK",
+    "LAG",
+    "LEAD",
+];
+
+pub struct OracleCompletionDialect;
+
+impl CompletionDialect for OracleCompletionDialect {
+    fn parser_dialect(&self) -> &'static dyn Dialect {
+        &PostgreSqlDialect {}
+    }
+
+    fn keywords(&self) -> &'static [&'static str] {
+        ORACLE_KEYWORDS
+    }
+
+    fn functions(&self) -> &'static [&'static str] {
+        ORACLE_FUNCTIONS
+    }
+
+    /// Oracle 的 schema 就是对象 Owner，`CURRENT_SCHEMA` 只是名称解析目标；
+    /// 裸表名补全必须带 Owner，否则会落到登录账号的同名 schema 上。
+    fn qualify_bare_table(&self) -> bool {
+        true
+    }
+
+    fn supports_routines(&self) -> bool {
+        true
+    }
+}
+
 /// SQL Server：sqlparser 的 MSSQL 方言；方括号引用标识符。
 pub struct SqlServerCompletionDialect;
 
@@ -662,4 +833,5 @@ pub static SQLITE: SqliteCompletionDialect = SqliteCompletionDialect;
 pub static POSTGRES: PostgresCompletionDialect = PostgresCompletionDialect;
 pub static DAMENG: DamengCompletionDialect = DamengCompletionDialect;
 pub static SQLSERVER: SqlServerCompletionDialect = SqlServerCompletionDialect;
+pub static ORACLE: OracleCompletionDialect = OracleCompletionDialect;
 pub static GENERIC: GenericCompletionDialect = GenericCompletionDialect;

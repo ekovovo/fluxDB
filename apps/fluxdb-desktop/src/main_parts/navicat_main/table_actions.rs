@@ -1,10 +1,3 @@
-fn copy_table_requires_source_ddl(database_kind: DatabaseKind) -> bool {
-    matches!(
-        database_kind,
-        DatabaseKind::Sqlite | DatabaseKind::Dameng | DatabaseKind::SqlServer
-    )
-}
-
 impl NavicatMain {
     fn open_design_table_in_background(&mut self, object: ObjectPath, cx: &mut Context<Self>) {
         let key = table_tree_key(&object);
@@ -612,7 +605,12 @@ impl NavicatMain {
         // schema 分桶数据库只刷新表所在 schema，避免库级刷新清掉其他 schema。
         let (target, key) = if matches!(
             self.table_database_kind(object),
-            Some(DatabaseKind::Postgres | DatabaseKind::Dameng | DatabaseKind::SqlServer)
+            Some(
+                DatabaseKind::Postgres
+                    | DatabaseKind::Dameng
+                    | DatabaseKind::SqlServer
+                    | DatabaseKind::Oracle
+            )
         ) {
             let (Some(database), Some(schema)) = (object.database.clone(), object.schema.clone())
             else {

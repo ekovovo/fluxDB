@@ -8,6 +8,8 @@ pub enum PrivilegeScope {
     MySql,
     Postgres,
     SqlServer,
+    /// Oracle：以账号为主体，权限分角色 / 系统权限 / 对象权限三类。
+    Oracle,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -417,15 +419,21 @@ pub fn database_user_admin_provider(kind: DatabaseKind) -> Option<DatabaseUserAd
         | DatabaseKind::Redis
         | DatabaseKind::Postgres
         | DatabaseKind::Dameng
-        | DatabaseKind::SqlServer => None,
+        | DatabaseKind::SqlServer
+        | DatabaseKind::Oracle => None,
     }
 }
 
 pub fn supports_database_user_admin(kind: DatabaseKind) -> bool {
     // PostgreSQL 与 SQL Server 分别走独立的角色/权限工作台，无需 MySQL 的
-    // user@host SQL 生成 provider。
-    matches!(kind, DatabaseKind::Postgres | DatabaseKind::SqlServer)
-        || database_user_admin_provider(kind).is_some()
+    // user@host SQL 生成 provider；达梦复用 Oracle 的账号面板。
+    matches!(
+        kind,
+        DatabaseKind::Postgres
+            | DatabaseKind::SqlServer
+            | DatabaseKind::Oracle
+            | DatabaseKind::Dameng
+    ) || database_user_admin_provider(kind).is_some()
 }
 
 pub fn grants_from_query_result(result: &QueryExecutionResult) -> Vec<String> {

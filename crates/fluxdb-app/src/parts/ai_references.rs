@@ -265,6 +265,7 @@ fn ai_database_kind_label(kind: fluxdb_core::DatabaseKind) -> &'static str {
         fluxdb_core::DatabaseKind::Postgres => "PostgreSQL",
         fluxdb_core::DatabaseKind::Dameng => "达梦 DM8",
         fluxdb_core::DatabaseKind::SqlServer => "SQL Server",
+        fluxdb_core::DatabaseKind::Oracle => "Oracle",
     }
 }
 

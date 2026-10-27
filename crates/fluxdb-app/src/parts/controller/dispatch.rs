@@ -46,775 +46,97 @@ impl AppController {
             | AppCommand::ImportTableData { .. }) => {
                 self.dispatch_database_task(command, &AtomicBool::new(false), &mut |_| {})
             }
-            AppCommand::LoadConnections => {
-                let connections = mock_connections();
-                self.next_connection_id = connections
-                    .iter()
-                    .map(|connection| connection.id.0)
-                    .max()
-                    .unwrap_or(0)
-                    + 1;
-                self.state.connections = connections
-                    .iter()
-                    .cloned()
-                    .map(|config| ConnectionState {
-                        config,
-                        connected: false,
-                        expanded: false,
-                        objects: Vec::new(),
-                        redis_overview: RedisConnectionOverview::default(),
-                    })
-                    .collect();
-                self.state.sidebar_layout = SidebarLayout::for_connections(&connections);
-                AppEvent::ConnectionsLoaded(connections)
-            }
-            AppCommand::ReplaceConnections(connections) => {
-                self.next_connection_id = connections
-                    .iter()
-                    .map(|connection| connection.id.0)
-                    .max()
-                    .unwrap_or(0)
-                    + 1;
-                self.state.connections = connections
-                    .iter()
-                    .cloned()
-                    .map(|config| ConnectionState {
-                        config,
-                        connected: false,
-                        expanded: false,
-                        objects: Vec::new(),
-                        redis_overview: RedisConnectionOverview::default(),
-                    })
-                    .collect();
-                self.state.sidebar_layout.repair(&connections);
-                AppEvent::ConnectionsLoaded(connections)
-            }
-            AppCommand::ReplaceSidebarLayout(mut layout) => {
-                let connections = self.connection_configs();
-                layout.repair(&connections);
-                self.next_group_id = layout
-                    .groups
-                    .iter()
-                    .map(|group| group.id.0)
-                    .max()
-                    .unwrap_or(0)
-                    + 1;
-                self.state.sidebar_layout = layout.clone();
-                AppEvent::SidebarLayoutChanged(layout)
-            }
-            AppCommand::CreateConnection(draft) => {
-                let connection_id = ConnectionId(self.next_connection_id);
-                let config = draft.into_config(connection_id);
-                self.next_connection_id += 1;
-                self.state.connections.push(ConnectionState {
-                    config: config.clone(),
-                    connected: false,
-                    expanded: false,
-                    objects: Vec::new(),
-                    redis_overview: RedisConnectionOverview::default(),
-                });
-                self.state
-                    .sidebar_layout
-                    .move_connection_to_top_level(config.id);
-                AppEvent::ConnectionCreated(config)
-            }
-            AppCommand::UpdateConnection(config) => {
-                let endpoint_changed = {
-                    let Some(connection) = self
-                        .state
-                        .connections
-                        .iter_mut()
-                        .find(|connection| connection.config.id == config.id)
-                    else {
-                        return self.fail(Error::new(ErrorKind::Connection, "连接不存在"));
-                    };
-
-                    let endpoint_changed = connection.config.kind != config.kind
-                        || connection.config.endpoint != config.endpoint;
-                    connection.config = config.clone();
-                    // 配置已变更：旧会话按旧档案建立，一律释放（含仅改密码/TLS 的情况）。
-                    fluxdb_connectors::pg_close_connection_sessions(config.id);
-                    fluxdb_connectors::sqlserver_close_connection_sessions(config.id);
-                    settle_closed_query_history(&mut self.state.query_history, config.id, None);
-                    if endpoint_changed {
-                        connection.connected = false;
-                        connection.expanded = false;
-                        connection.objects.clear();
-                    }
-                    endpoint_changed
-                };
-                if endpoint_changed {
-                    self.state
-                        .tabs
-                        .retain(|tab| !tab_belongs_to_connection(tab, config.id));
-                    if self
-                        .state
-                        .active_tab
-                        .is_some_and(|tab_id| !self.state.tabs.iter().any(|tab| tab.id == tab_id))
-                    {
-                        self.state.active_tab = self.state.tabs.last().map(|tab| tab.id);
-                    }
-                }
-                // 连接配置变更：ER 元数据缓存按连接修订整体失效，避免旧连接结果复用。
-                self.er_bump_connection_revision(config.id);
-                self.state.last_error = None;
-                AppEvent::ConnectionUpdated(config)
-            }
-            AppCommand::CreateConnectionGroup(name) => {
-                let group = ConnectionGroup {
-                    id: ConnectionGroupId(self.next_group_id),
-                    name,
-                    collapsed: false,
-                };
-                self.next_group_id += 1;
-                self.state.sidebar_layout.add_group(group.clone());
-                AppEvent::ConnectionGroupCreated(group)
-            }
-            AppCommand::RenameConnectionGroup { group_id, name } => {
-                let name = name.trim();
-                if name.is_empty() {
-                    return AppEvent::SidebarLayoutChanged(self.state.sidebar_layout.clone());
-                }
-                if let Some(group) = self
-                    .state
-                    .sidebar_layout
-                    .groups
-                    .iter_mut()
-                    .find(|group| group.id == group_id)
-                {
-                    group.name = name.to_string();
-                }
-                AppEvent::SidebarLayoutChanged(self.state.sidebar_layout.clone())
-            }
-            AppCommand::ToggleConnectionGroup(group_id) => {
-                if let Some(group) = self
-                    .state
-                    .sidebar_layout
-                    .groups
-                    .iter_mut()
-                    .find(|group| group.id == group_id)
-                {
-                    group.collapsed = !group.collapsed;
-                }
-                AppEvent::SidebarLayoutChanged(self.state.sidebar_layout.clone())
-            }
-            AppCommand::DeleteConnectionGroup(group_id) => {
-                self.state.sidebar_layout.delete_group(group_id);
-                AppEvent::ConnectionGroupDeleted(group_id)
-            }
-            AppCommand::MoveConnectionToGroup {
-                connection_id,
-                group_id,
-            } => {
-                self.state
-                    .sidebar_layout
-                    .move_connection_to_group(connection_id, group_id);
-                AppEvent::SidebarLayoutChanged(self.state.sidebar_layout.clone())
-            }
-            AppCommand::MoveConnectionToTopLevel(connection_id) => {
-                self.state
-                    .sidebar_layout
-                    .move_connection_to_top_level(connection_id);
-                AppEvent::SidebarLayoutChanged(self.state.sidebar_layout.clone())
-            }
-            AppCommand::TestConnection(config) => {
-                let result = test_connection(&config);
-                AppEvent::ConnectionTested(config.id, result)
-            }
-            AppCommand::DiscoverRedisConnection {
-                provider,
-                connection_string,
-            } => {
-                // 统一走连接串/URI 解析，作为「连接串导入 + 云自动发现」的单一入口。
-                // `from_uri` 支持 redis:// / rediss:// / redis+sentinel:// / redis-cluster://。
-                match RedisConnectionProfile::from_uri(&connection_string) {
-                    Ok(mut profile) => {
-                        // 云自动发现：把云元数据记录进档案，供弹框与后续对接展示。
-                        if !provider.is_empty() {
-                            profile.cloud.provider = provider.clone();
-                            // 记录来源需抹掉口令，避免明文口令随导入元数据落盘。
-                            profile.cloud.imported_name = redact_uri_password(&connection_string);
-                            // 从托管主机名推断资源/订阅标识，让云元数据有真实语义。
-                            let (host, _) = profile.dial_endpoint();
-                            let (resource, subscription) = infer_cloud_from_host(&provider, &host);
-                            if profile.cloud.resource.is_empty() {
-                                profile.cloud.resource = resource;
-                            }
-                            if profile.cloud.subscription.is_empty() {
-                                profile.cloud.subscription = subscription;
-                            }
-                        }
-                        let (host, port) = profile.dial_endpoint();
-                        let name = if host.is_empty() {
-                            "Redis-新连接".to_string()
-                        } else {
-                            format!("{host}:{port}")
-                        };
-                        let draft = ConnectionDraft {
-                            name,
-                            kind: DatabaseKind::Redis,
-                            endpoint: Endpoint::Tcp {
-                                host,
-                                port,
-                                database: profile.basic.database.clone(),
-                            },
-                            options: BTreeMap::new(),
-                            redis_profile: Some(profile),
-                            mysql_profile: None,
-                            postgres_profile: None,
-                            dameng_profile: None,
-                            sqlserver_profile: None,
-                        };
-                        AppEvent::RedisConnectionDiscovered(draft)
-                    }
-                    Err(message) => self.fail(Error::new(ErrorKind::Connection, message)),
-                }
-            }
-            AppCommand::OpenConnection(connection_id) => {
-                let Some(connection) = self
-                    .state
-                    .connections
-                    .iter_mut()
-                    .find(|connection| connection.config.id == connection_id)
-                else {
-                    return self.fail(Error::new(ErrorKind::Connection, "连接不存在"));
-                };
-
-                let config = connection.config.clone();
-                match list_objects_for_connection(&config, None) {
-                    Ok(objects) => {
-                        self.state.last_error = None;
-                        connection.connected = true;
-                        connection.expanded = true;
-                        connection.objects = objects.clone();
-                        AppEvent::ObjectsLoaded(None, objects)
-                    }
-                    Err(error) => self.fail(error),
-                }
-            }
-            AppCommand::ToggleConnectionExpanded(connection_id) => {
-                let Some(connection) = self
-                    .state
-                    .connections
-                    .iter_mut()
-                    .find(|connection| connection.config.id == connection_id)
-                else {
-                    return self.fail(Error::new(ErrorKind::Connection, "连接不存在"));
-                };
-
-                if connection.connected {
-                    connection.expanded = !connection.expanded;
-                }
-                AppEvent::ObjectsLoaded(None, connection.objects.clone())
-            }
-            AppCommand::DisconnectConnection(connection_id) => {
-                let Some(connection) = self
-                    .state
-                    .connections
-                    .iter_mut()
-                    .find(|connection| connection.config.id == connection_id)
-                else {
-                    return self.fail(Error::new(ErrorKind::Connection, "连接不存在"));
-                };
-
-                connection.connected = false;
-                connection.expanded = false;
-                connection.objects.clear();
-                // 断开即释放该连接的全部 PG 会话：连接驱动、SSH 桥线程随会话 drop 收敛，
-                // 不再挂到空闲 TTL（设计 §3.3）。
-                fluxdb_connectors::pg_close_connection_sessions(connection_id);
-                fluxdb_connectors::sqlserver_close_connection_sessions(connection_id);
-                settle_closed_query_history(&mut self.state.query_history, connection_id, None);
-                self.state
-                    .tabs
-                    .retain(|tab| !tab_belongs_to_connection(tab, connection_id));
-                if self
-                    .state
-                    .active_tab
-                    .is_some_and(|tab_id| !self.state.tabs.iter().any(|tab| tab.id == tab_id))
-                {
-                    self.state.active_tab = self.state.tabs.last().map(|tab| tab.id);
-                }
-                if self
-                    .state
-                    .pending_dirty_tab_close
-                    .is_some_and(|tab_id| !self.state.tabs.iter().any(|tab| tab.id == tab_id))
-                {
-                    self.state.pending_dirty_tab_close = None;
-                }
-                self.state.last_error = None;
-                AppEvent::ObjectsLoaded(None, Vec::new())
-            }
-            AppCommand::DisconnectDatabase {
-                connection_id,
-                database,
-            } => {
-                let Some(connection) = self
-                    .state
-                    .connections
-                    .iter_mut()
-                    .find(|connection| connection.config.id == connection_id)
-                else {
-                    return self.fail(Error::new(ErrorKind::Connection, "连接不存在"));
-                };
-
-                connection.objects.retain(|object| {
-                    matches!(
-                        object.path.kind,
-                        ObjectKind::Database | ObjectKind::Schema | ObjectKind::RedisDb
-                    ) || object.path.database.as_deref().unwrap_or("main") != database
-                });
-                self.state
-                    .tabs
-                    .retain(|tab| !tab_belongs_to_database(tab, connection_id, &database));
-                if self
-                    .state
-                    .active_tab
-                    .is_some_and(|tab_id| !self.state.tabs.iter().any(|tab| tab.id == tab_id))
-                {
-                    self.state.active_tab = self.state.tabs.last().map(|tab| tab.id);
-                }
-                if self
-                    .state
-                    .pending_dirty_tab_close
-                    .is_some_and(|tab_id| !self.state.tabs.iter().any(|tab| tab.id == tab_id))
-                {
-                    self.state.pending_dirty_tab_close = None;
-                }
-                self.state.last_error = None;
-                AppEvent::ObjectsLoaded(None, connection.objects.clone())
-            }
-            AppCommand::DeleteConnection(connection_id) => {
-                fluxdb_connectors::pg_close_connection_sessions(connection_id);
-                fluxdb_connectors::sqlserver_close_connection_sessions(connection_id);
-                settle_closed_query_history(&mut self.state.query_history, connection_id, None);
-                let original_len = self.state.connections.len();
-                self.state
-                    .connections
-                    .retain(|connection| connection.config.id != connection_id);
-                if self.state.connections.len() == original_len {
-                    return self.fail(Error::new(ErrorKind::Connection, "连接不存在"));
-                }
-
-                self.state
-                    .tabs
-                    .retain(|tab| !tab_belongs_to_connection(tab, connection_id));
-                if self
-                    .state
-                    .active_tab
-                    .is_some_and(|tab_id| !self.state.tabs.iter().any(|tab| tab.id == tab_id))
-                {
-                    self.state.active_tab = self.state.tabs.last().map(|tab| tab.id);
-                }
-                if self
-                    .state
-                    .pending_dirty_tab_close
-                    .is_some_and(|tab_id| !self.state.tabs.iter().any(|tab| tab.id == tab_id))
-                {
-                    self.state.pending_dirty_tab_close = None;
-                }
-                self.state.last_error = None;
-                self.state.sidebar_layout.repair(&self.connection_configs());
-                // 连接删除：清空该连接 ER 缓存与修订，避免同 id 复用旧图。
-                self.er_invalidate_connection(connection_id);
-
-                AppEvent::ConnectionDeleted(connection_id)
-            }
-            AppCommand::CreateDatabase(request) => {
-                let Some(connection) = self
-                    .state
-                    .connections
-                    .iter_mut()
-                    .find(|connection| connection.config.id == request.connection_id)
-                else {
-                    return self.fail(Error::new(ErrorKind::Connection, "连接不存在"));
-                };
-
-                let mut config = connection.config.clone();
-                if config.kind == DatabaseKind::Sqlite {
-                    let database = request.name.trim();
-                    if database.eq_ignore_ascii_case("main")
-                        || database.eq_ignore_ascii_case("temp")
-                        || sqlite_attached_database_path(&config, database).is_some()
-                    {
-                        return self.fail(Error::new(ErrorKind::Query, "SQLite 数据库名称已存在"));
-                    }
-                }
-                if let Err(error) = create_database_for_connection(&config, &request) {
-                    return self.fail(error);
-                }
-                if config.kind == DatabaseKind::Sqlite {
-                    let path = request.path.clone().ok_or_else(|| {
-                        Error::new(ErrorKind::Connection, "SQLite 新建数据库需要文件路径")
-                    });
-                    match path {
-                        Ok(path) => {
-                            set_sqlite_attached_database(&mut config, request.name.trim(), path);
-                            connection.config = config.clone();
-                        }
-                        Err(error) => return self.fail(error),
-                    }
-                }
-
-                match list_objects_for_connection(&config, None) {
-                    Ok(objects) => {
-                        self.state.last_error = None;
-                        connection.connected = true;
-                        connection.expanded = true;
-                        connection.objects = objects.clone();
-                        AppEvent::ObjectsLoaded(None, objects)
-                    }
-                    Err(error) => self.fail(error),
-                }
-            }
-            AppCommand::CreateSchema {
-                connection_id,
-                database,
-                schema,
-            } => {
-                let Some(connection) = self
-                    .state
-                    .connections
-                    .iter_mut()
-                    .find(|connection| connection.config.id == connection_id)
-                else {
-                    return self.fail(Error::new(ErrorKind::Connection, "连接不存在"));
-                };
-                let config = connection.config.clone();
-                if let Err(error) = create_schema_for_connection(
-                    &config,
-                    connection_id,
-                    database.as_str(),
-                    schema.as_str(),
-                ) {
-                    return self.fail(error);
-                }
-                // 建 schema 成功后通知 UI 失效该库 schema 缓存并重取（见 SchemaCreated 消费点）。
-                AppEvent::SchemaCreated {
-                    connection_id,
-                    schema,
-                }
-            }
-            AppCommand::LoadPgRoles(connection_id) => {
-                let Some(config) = self.connection_config(connection_id).cloned() else {
-                    return self.fail(Error::new(ErrorKind::Connection, "连接不存在"));
-                };
-                match role_operation_for_connection(&config, |connector| {
-                    connector.list_roles(connection_id)
-                }) {
-                    Ok(roles) => AppEvent::PgRolesLoaded(connection_id, roles),
-                    Err(error) => self.fail(error),
-                }
-            }
-            AppCommand::CreatePgRole {
-                connection_id,
-                name,
-                can_login,
-                password,
-            } => {
-                let Some(config) = self.connection_config(connection_id).cloned() else {
-                    return self.fail(Error::new(ErrorKind::Connection, "连接不存在"));
-                };
-                match role_operation_for_connection(&config, |connector| {
-                    connector.create_role(connection_id, &name, can_login, password.as_deref())
-                }) {
-                    Ok(()) => AppEvent::PgRoleChanged(connection_id),
-                    Err(error) => self.fail(error),
-                }
-            }
-            AppCommand::AlterPgRolePassword {
-                connection_id,
-                name,
-                password,
-            } => {
-                let Some(config) = self.connection_config(connection_id).cloned() else {
-                    return self.fail(Error::new(ErrorKind::Connection, "连接不存在"));
-                };
-                match role_operation_for_connection(&config, |connector| {
-                    connector.alter_role_password(connection_id, &name, &password)
-                }) {
-                    Ok(()) => AppEvent::PgRoleChanged(connection_id),
-                    Err(error) => self.fail(error),
-                }
-            }
-            AppCommand::RenamePgRole {
-                connection_id,
-                old_name,
-                new_name,
-            } => {
-                let Some(config) = self.connection_config(connection_id).cloned() else {
-                    return self.fail(Error::new(ErrorKind::Connection, "连接不存在"));
-                };
-                match role_operation_for_connection(&config, |connector| {
-                    connector.rename_role(connection_id, &old_name, &new_name)
-                }) {
-                    Ok(()) => AppEvent::PgRoleChanged(connection_id),
-                    Err(error) => self.fail(error),
-                }
-            }
-            AppCommand::DropPgRole {
-                connection_id,
-                name,
-            } => {
-                let Some(config) = self.connection_config(connection_id).cloned() else {
-                    return self.fail(Error::new(ErrorKind::Connection, "连接不存在"));
-                };
-                match role_operation_for_connection(&config, |connector| {
-                    connector.drop_role(connection_id, &name)
-                }) {
-                    Ok(()) => AppEvent::PgRoleChanged(connection_id),
-                    Err(error) => self.fail(error),
-                }
-            }
-            AppCommand::DeleteDatabase {
-                connection_id,
-                database,
-            } => {
-                let Some(connection) = self
-                    .state
-                    .connections
-                    .iter_mut()
-                    .find(|connection| connection.config.id == connection_id)
-                else {
-                    return self.fail(Error::new(ErrorKind::Connection, "连接不存在"));
-                };
-
-                let config = connection.config.clone();
-                if let Err(error) =
-                    delete_database_for_connection(&config, connection_id, database.as_str())
-                {
-                    return self.fail(error);
-                }
-
-                match list_objects_for_connection(&config, None) {
-                    Ok(objects) => {
-                        self.state.tabs.retain(|tab| match &tab.kind {
-                            TabKind::DataEditor(editor) => {
-                                editor.object.connection_id != connection_id
-                                    || editor.object.database.as_deref() != Some(database.as_str())
-                            }
-                            TabKind::CreateTable(create) => {
-                                create.connection_id != connection_id
-                                    || create.database.as_deref() != Some(database.as_str())
-                            }
-                            TabKind::QueryEditor(editor) => {
-                                editor.connection_id != connection_id
-                                    || editor.database.as_deref() != Some(database.as_str())
-                            }
-                            _ => true,
-                        });
-                        if self.state.active_tab.is_some_and(|tab_id| {
-                            !self.state.tabs.iter().any(|tab| tab.id == tab_id)
-                        }) {
-                            self.state.active_tab = self.state.tabs.last().map(|tab| tab.id);
-                        }
-                        self.state.last_error = None;
-                        connection.connected = true;
-                        connection.expanded = true;
-                        // 删除库后重拉连接第一层：只替换库/schema 层并保留仍存活库下已加载的表/视图，
-                        // 避免整体替换把其他已展开库的深层对象（表/视图）一并清掉。
-                        replace_connection_level0(connection, objects);
-                        AppEvent::DatabaseDeleted {
-                            connection_id,
-                            database,
-                        }
-                    }
-                    Err(error) => self.fail(error),
-                }
-            }
-            AppCommand::LoadObjectChildren(parent) => {
-                let Some(connection) = self
-                    .state
-                    .connections
-                    .iter_mut()
-                    .find(|connection| connection.config.id == parent.connection_id)
-                else {
-                    return self.fail(Error::new(ErrorKind::Connection, "连接不存在"));
-                };
-
-                let config = connection.config.clone();
-                match list_objects_for_connection(&config, Some(&parent)) {
-                    Ok(objects) => {
-                        self.state.last_error = None;
-                        replace_loaded_children(&mut connection.objects, &parent, objects.clone());
-                        AppEvent::ObjectsLoaded(Some(parent), objects)
-                    }
-                    Err(error) => self.fail(error),
-                }
-            }
-            AppCommand::RefreshObject(path) => {
-                if path.is_none() {
-                    let mut all_objects = Vec::new();
-                    for connection in &mut self.state.connections {
-                        if connection.connected || connection.expanded {
-                            let config = connection.config.clone();
-                            match list_objects_for_connection(&config, None) {
-                                Ok(objects) => {
-                                    // 刷新连接第一层：保留仍存活库下已加载的表/视图，避免整体替换
-                                    // 把其他已展开库的深层对象（表/视图）一并清掉。
-                                    replace_connection_level0(connection, objects.clone());
-                                    all_objects.extend(objects);
-                                }
-                                Err(error) => return self.fail(error),
-                            }
-                        }
-                    }
-                    for tab in &mut self.state.tabs {
-                        if let TabKind::ObjectList(list) = &mut tab.kind
-                            && list.parent.is_none()
-                        {
-                            list.objects = all_objects.clone();
-                            list.loading = false;
-                            list.error = None;
-                        }
-                    }
-                    return AppEvent::ObjectsLoaded(None, all_objects);
-                }
-
-                let objects = if let Some(path) = path.as_ref() {
-                    let Some(connection) = self
-                        .state
-                        .connections
-                        .iter()
-                        .find(|connection| connection.config.id == path.connection_id)
-                    else {
-                        return self.fail(Error::new(ErrorKind::Connection, "连接不存在"));
-                    };
-                    match list_objects_for_connection(&connection.config, Some(path)) {
-                        Ok(objects) => objects,
-                        Err(error) => return self.fail(error),
-                    }
-                } else {
-                    mock_child_objects(path.as_ref())
-                };
-                for tab in &mut self.state.tabs {
-                    if let TabKind::ObjectList(list) = &mut tab.kind
-                        && list.parent == path
-                    {
-                        list.objects = objects.clone();
-                        list.loading = false;
-                        list.error = None;
-                    }
-                }
-                AppEvent::ObjectsLoaded(path.clone(), objects)
-            }
-            // 侧边栏「刷新连接树」：只重拉树上可见（已展开）连接的第一层对象。
-            // 与 `RefreshObject(None)` 的两点区别：
-            //  1. 折叠连接不发请求（`RefreshObject` 用的是 `connected || expanded`）；
-            //  2. 只换第一层，保留已加载的表 / 视图行，不打断已展开的数据库子树。
-            // 刷新不负责建立连接，也不改变用户的折叠态，因此不写 `connected` / `expanded`。
-            AppCommand::RefreshConnectionTree => {
-                let mut first_error: Option<Error> = None;
-                for connection in &mut self.state.connections {
-                    if !connection.expanded {
-                        continue;
-                    }
-                    let config = connection.config.clone();
-                    match list_objects_for_connection(&config, None) {
-                        Ok(level0) => replace_connection_level0(connection, level0),
-                        // 单个连接失败不中断整轮刷新：保留该连接原有对象，记下首个错误继续。
-                        Err(error) => {
-                            first_error.get_or_insert(error);
-                        }
-                    }
-                }
-
-                match first_error {
-                    None => AppEvent::ObjectsLoaded(None, Vec::new()),
-                    Some(error) => self.fail(error),
-                }
-            }
-            AppCommand::OpenObjectList(parent) => {
-                let tab_id = self.next_tab_id();
-                let objects = mock_child_objects(parent.as_ref());
-                self.push_tab(TabState {
-                    id: tab_id,
-                    title: parent
-                        .as_ref()
-                        .map(|path| path.name.clone())
-                        .unwrap_or_else(|| "对象".to_string()),
-                    kind: TabKind::ObjectList(ObjectListState {
-                        parent,
-                        objects,
-                        loading: false,
-                        error: None,
-                    }),
-                    dirty: false,
-                });
-                AppEvent::TabOpened(tab_id)
-            }
-            AppCommand::OpenDataEditor(object) => {
-                if let Some(existing_tab_id) = self.state.tabs.iter().find_map(|tab| {
-                    if let TabKind::DataEditor(editor) = &tab.kind
-                        && editor.object == object
-                    {
-                        return Some(tab.id);
-                    }
-                    None
-                }) {
-                    self.state.active_tab = Some(existing_tab_id);
-                    return AppEvent::TabActivated(existing_tab_id);
-                }
-
-                let tab_id = self.next_tab_id();
-                let title = object.name.clone();
-                // 数据表默认每页行数来自「设置-数据」，与 SQL 查询结果的 page_size 无关。
-                // 经 Pagination::new 收敛到 1..=MAX_LIMIT，避免脏配置把页大小置成 0。
-                let pagination = Pagination::new(0, self.state.settings.data_table_page_size);
-
-                self.push_tab(TabState {
-                    id: tab_id,
-                    title,
-                    kind: TabKind::DataEditor(DataEditorState {
-                        object,
-                        page: None,
-                        original_page: None,
-                        pagination,
-                        load_generation: 0,
-                        changes: None,
-                        editing_cell: None,
-                        cell_detail_panel: CellDetailPanelState::default(),
-                        table_info: TableInfoState::default(),
-                        loading: true,
-                        submitting: false,
-                        error: None,
-                    }),
-                    dirty: false,
-                });
-                AppEvent::TabOpened(tab_id)
-            }
-            AppCommand::OpenBackupList(database_path) => {
-                // 按库去重：同一连接+库已有备份 tab 则激活既有 tab。
-                let database = database_path
-                    .database
-                    .clone()
-                    .unwrap_or_else(|| database_path.name.clone());
-                let connection_id = database_path.connection_id;
-                if let Some(existing_tab_id) = self.state.tabs.iter().find_map(|tab| {
-                    if let TabKind::BackupList(list) = &tab.kind
-                        && list.connection_id == connection_id
-                        && list.database == database
-                    {
-                        return Some(tab.id);
-                    }
-                    None
-                }) {
-                    self.state.active_tab = Some(existing_tab_id);
-                    return AppEvent::TabActivated(existing_tab_id);
-                }
-
-                let tab_id = self.next_tab_id();
-                self.push_tab(TabState {
-                    id: tab_id,
-                    title: format!("备份-{database}"),
-                    kind: TabKind::BackupList(BackupListState {
-                        connection_id,
-                        database,
-                    }),
-                    dirty: false,
-                });
-                AppEvent::TabOpened(tab_id)
-            }
+            AppCommand::LoadConnections
+            | AppCommand::ReplaceConnections(..)
+            | AppCommand::ReplaceSidebarLayout(..)
+            | AppCommand::CreateConnection(..)
+            | AppCommand::UpdateConnection(..)
+            | AppCommand::CreateConnectionGroup(..)
+            | AppCommand::RenameConnectionGroup { .. }
+            | AppCommand::ToggleConnectionGroup(..)
+            | AppCommand::DeleteConnectionGroup(..)
+            | AppCommand::MoveConnectionToGroup { .. }
+            | AppCommand::MoveConnectionToTopLevel(..)
+            | AppCommand::TestConnection(..)
+            | AppCommand::DiscoverRedisConnection { .. }
+            | AppCommand::OpenConnection(..)
+            | AppCommand::ToggleConnectionExpanded(..)
+            | AppCommand::DisconnectConnection(..)
+            | AppCommand::DisconnectDatabase { .. }
+            | AppCommand::DeleteConnection(..)
+            | AppCommand::CreateDatabase(..)
+            | AppCommand::CreateSchema { .. }
+            | AppCommand::DeleteDatabase { .. }
+            | AppCommand::LoadObjectChildren(..)
+            | AppCommand::RefreshObject(..)
+            | AppCommand::RefreshConnectionTree => self.dispatch_connection_command(command),
+            AppCommand::LoadPgRoles(..)
+            | AppCommand::CreatePgRole { .. }
+            | AppCommand::AlterPgRolePassword { .. }
+            | AppCommand::RenamePgRole { .. }
+            | AppCommand::DropPgRole { .. }
+            | AppCommand::SelectPgRole { .. }
+            | AppCommand::SetPgRoleSwitchPending { .. }
+            | AppCommand::PgCancelSwitchRole(..)
+            | AppCommand::DiscardPgDraftAndSelect { .. }
+            | AppCommand::PgBeginCreateRole(..)
+            | AppCommand::PgCancelDraft(..)
+            | AppCommand::DiscardPgDraftEdits(..)
+            | AppCommand::SetPgDraftName { .. }
+            | AppCommand::SetPgDraftCanLogin { .. }
+            | AppCommand::SetPgDraftAttr { .. }
+            | AppCommand::SetPgDraftConnectionLimit { .. }
+            | AppCommand::SetPgDraftValidUntil { .. }
+            | AppCommand::SetPgDraftPasswordOp { .. }
+            | AppCommand::SetPgDraftPassword { .. }
+            | AppCommand::StartUserAdminPgRolesLoad(..)
+            | AppCommand::LoadUserAdminPgRoles(..)
+            | AppCommand::FinishUserAdminPgRolesLoad { .. }
+            | AppCommand::StartPgMembershipsLoad(..)
+            | AppCommand::LoadPgMemberships(..)
+            | AppCommand::FinishPgMembershipsLoad { .. }
+            | AppCommand::PgMembershipGrant { .. }
+            | AppCommand::PgMembershipRevoke { .. }
+            | AppCommand::PgMembershipRemoveEdit { .. }
+            | AppCommand::SetPgGrantDatabase { .. }
+            | AppCommand::StartPgGrantTargetsLoad(..)
+            | AppCommand::LoadPgGrantTargets { .. }
+            | AppCommand::FinishPgGrantTargetsLoad { .. }
+            | AppCommand::PgToggleGrant { .. }
+            | AppCommand::PgRemoveGrantEdit { .. }
+            | AppCommand::StartPgPlanPreview(..)
+            | AppCommand::LoadPgPlanPreview(..)
+            | AppCommand::FinishPgPlanPreview { .. }
+            | AppCommand::StartPgPlanApply(..)
+            | AppCommand::ApplyPgRolePlan(..)
+            | AppCommand::FinishPgRolePlanApply { .. }
+            | AppCommand::PgBeginDeleteRole(..)
+            | AppCommand::PgCancelDeleteRole(..)
+            | AppCommand::SetPgRoleFilter { .. }
+            | AppCommand::SetUserAdminPgGrantTarget { .. }
+            | AppCommand::LoadUserAdminPgObjectGrants(..)
+            | AppCommand::StartUserAdminPgObjectGrantsLoad(..)
+            | AppCommand::FinishUserAdminPgObjectGrantsLoad { .. } => self.dispatch_pg_user_admin_command(command),
+            AppCommand::OpenObjectList(..)
+            | AppCommand::OpenDataEditor(..)
+            | AppCommand::OpenBackupList(..)
+            | AppCommand::OpenErDiagram(..)
+            | AppCommand::OpenQueryEditor(..)
+            | AppCommand::OpenUserAdmin(..)
+            | AppCommand::OpenSettings
+            | AppCommand::OpenAiChatTab
+            | AppCommand::OpenQueryEditorInDatabase { .. }
+            | AppCommand::OpenRedisWorkbench { .. }
+            | AppCommand::OpenRedisCli { .. }
+            | AppCommand::OpenRedisPubSub { .. }
+            | AppCommand::CloseTab(..)
+            | AppCommand::CloseTabs(..)
+            | AppCommand::ConfirmCloseDirtyTab(..)
+            | AppCommand::CancelCloseDirtyTab(..)
+            | AppCommand::ActivateTab(..)
+            | AppCommand::DeactivateTab
+            | AppCommand::PinTab(..)
+            | AppCommand::SetTabDirty { .. } => self.dispatch_tab_command(command),
             AppCommand::LoadErRelationships { scope_key } => {
                 let service =
                     self.er_model_service(scope_key.clone())
@@ -1181,53 +503,6 @@ impl AppController {
                     Ok(()) => AppEvent::ErRelationshipDeleted { scope_key, id },
                     Err(error) => AppEvent::Failed(error),
                 }
-            }
-            AppCommand::OpenErDiagram(path) => {
-                // 表级 path → 当前表关联 ER（以该表为中心 1 跳）；库/其它 → 整库 ER。
-                let database = path.database.clone().unwrap_or_else(|| path.name.clone());
-                let schema = path.schema.clone();
-                // 中心表用结构化身份（schema + 裸名）：PG 跨 schema 与含点标识符都安全；
-                // 展示名由身份统一生成，匹配关系边不靠字符串拆解。
-                let center_table =
-                    (path.kind == ObjectKind::Table).then(|| fluxdb_core::ErTableRef {
-                        database: database.clone(),
-                        schema: schema.clone(),
-                        name: path.name.clone(),
-                    });
-                let connection_id = path.connection_id;
-                // 按「连接+库+schema+中心表」去重：整库与当前表关联视图各自唯一。
-                if let Some(existing_tab_id) = self.state.tabs.iter().find_map(|tab| {
-                    if let TabKind::ErDiagram(er) = &tab.kind
-                        && er.connection_id == connection_id
-                        && er.database == database
-                        && er.schema == schema
-                        && er.center_table == center_table
-                    {
-                        return Some(tab.id);
-                    }
-                    None
-                }) {
-                    self.state.active_tab = Some(existing_tab_id);
-                    return AppEvent::TabActivated(existing_tab_id);
-                }
-
-                let tab_id = self.next_tab_id();
-                let title = match &center_table {
-                    Some(table) => format!("{} · 关联 ER", table.display()),
-                    None => format!("{database} · ER"),
-                };
-                self.push_tab(TabState {
-                    id: tab_id,
-                    title,
-                    kind: TabKind::ErDiagram(ErDiagramState {
-                        connection_id,
-                        database,
-                        schema,
-                        center_table,
-                    }),
-                    dirty: false,
-                });
-                AppEvent::TabOpened(tab_id)
             }
             AppCommand::LoadDataPage(tab_id) => {
                 let generation = match self.find_data_editor_mut(tab_id) {
@@ -1601,6 +876,49 @@ impl AppController {
                     Err(error) => self.fail(error),
                 }
             }
+            AppCommand::LoadCellText {
+                tab_id,
+                row,
+                column,
+            } => match self.load_cell_text(tab_id, row, column) {
+                Ok(text) => AppEvent::CellTextLoaded {
+                    tab_id,
+                    row,
+                    column,
+                    text,
+                },
+                Err(error) => self.fail(error),
+            },
+            AppCommand::FinishCellTextLoad {
+                tab_id,
+                row,
+                column,
+                result,
+            } => {
+                let Some(editor) = self.find_editable_data_editor_mut(tab_id) else {
+                    return self.fail(Error::new(ErrorKind::Internal, "数据结果不存在"));
+                };
+                let active = editor.cell_detail_panel.active_cell;
+                match result {
+                    Ok(text) => {
+                        // 只写回仍处于同一单元格的面板：后台期间用户可能已经切走。
+                        if active == Some(CellPosition { row, column }) {
+                            editor.cell_detail_panel.full_value = Some(text.clone());
+                            editor.cell_detail_panel.edit_value = text;
+                            // 用户是在编辑动作里触发的加载：读完后直接进编辑态。
+                            if editor.cell_detail_panel.pending_edit {
+                                editor.cell_detail_panel.pending_edit = false;
+                                editor.cell_detail_panel.mode = CellDetailMode::Edit;
+                            }
+                        }
+                        AppEvent::TabActivated(tab_id)
+                    }
+                    Err(user_error) => {
+                        self.state.last_error = Some(user_error.clone());
+                        AppEvent::Failed(user_error)
+                    }
+                }
+            }
             AppCommand::DownloadBinaryCell {
                 tab_id,
                 row,
@@ -1646,13 +964,25 @@ impl AppController {
                 };
                 match current_cell_value(editor, row, column) {
                     Ok(value) => {
+                        // 截断值先按预览打开面板，再请 UI 后台补读完整文本。
+                        let needs_full_text = value.is_truncated();
                         editor.cell_detail_panel = CellDetailPanelState {
                             open: true,
                             active_cell: Some(CellPosition { row, column }),
                             mode: CellDetailMode::View,
                             edit_value: cell_value_edit_text(&value),
+                            full_value: None,
+                            pending_edit: false,
                         };
-                        AppEvent::TabActivated(tab_id)
+                        if needs_full_text {
+                            AppEvent::CellTextLoadRequested {
+                                tab_id,
+                                row,
+                                column,
+                            }
+                        } else {
+                            AppEvent::TabActivated(tab_id)
+                        }
                     }
                     Err(error) => self.fail(error),
                 }
@@ -1676,6 +1006,32 @@ impl AppController {
                             ErrorKind::Unsupported,
                             "大二进制值不能直接 Hex 编辑，请使用下载、上传替换或设为 NULL",
                         ))
+                    }
+                    // 预览不是完整值：先按需加载完整文本，读到之前不进入编辑态。
+                    Ok(CellValue::TruncatedText { .. }) => {
+                        let active_cell = editor.cell_detail_panel.active_cell;
+                        match (
+                            editor.cell_detail_panel.full_value.clone(),
+                            active_cell,
+                        ) {
+                            (Some(text), _) => {
+                                editor.cell_detail_panel.mode = CellDetailMode::Edit;
+                                editor.cell_detail_panel.edit_value = text;
+                                AppEvent::TabActivated(tab_id)
+                            }
+                            (None, Some(cell)) => {
+                                editor.cell_detail_panel.pending_edit = true;
+                                AppEvent::CellTextLoadRequested {
+                                    tab_id,
+                                    row: cell.row,
+                                    column: cell.column,
+                                }
+                            }
+                            (None, None) => self.fail(Error::new(
+                                ErrorKind::Internal,
+                                "未选择单元格",
+                            )),
+                        }
                     }
                     Ok(value) => {
                         editor.cell_detail_panel.mode = CellDetailMode::Edit;
@@ -1749,7 +1105,15 @@ impl AppController {
                 };
                 match active_original_cell_value(editor) {
                     Ok(value) => {
-                        editor.cell_detail_panel.edit_value = cell_value_edit_text(&value);
+                        // 原始值可能只是预览：有完整值就用完整值，别把编辑框降级成片段。
+                        editor.cell_detail_panel.edit_value = match &value {
+                            CellValue::TruncatedText { .. } => editor
+                                .cell_detail_panel
+                                .full_value
+                                .clone()
+                                .unwrap_or_else(|| cell_value_edit_text(&value)),
+                            _ => cell_value_edit_text(&value),
+                        };
                         AppEvent::TabActivated(tab_id)
                     }
                     Err(error) => self.fail(error),
@@ -1848,29 +1212,6 @@ impl AppController {
             AppCommand::FinishApplyDataChanges { tab_id, result } => {
                 self.finish_apply_data_changes_command(tab_id, result)
             }
-            AppCommand::OpenQueryEditor(connection_id) => {
-                self.open_query_editor(connection_id, None, None)
-            }
-            AppCommand::OpenUserAdmin(connection_id) => self.open_user_admin(connection_id),
-            AppCommand::OpenSettings => self.open_settings(),
-            AppCommand::OpenAiChatTab => self.open_ai_chat_tab(),
-            AppCommand::OpenQueryEditorInDatabase {
-                connection_id,
-                database,
-                schema,
-            } => self.open_query_editor(connection_id, database, schema),
-            AppCommand::OpenRedisWorkbench {
-                connection_id,
-                database,
-            } => self.open_redis_workbench(connection_id, database),
-            AppCommand::OpenRedisCli {
-                connection_id,
-                database,
-            } => self.open_redis_cli(connection_id, database),
-            AppCommand::OpenRedisPubSub {
-                connection_id,
-                database,
-            } => self.open_redis_pubsub(connection_id, database),
             AppCommand::UpdateQueryText { tab_id, text } => {
                 if let Some(tab) = self.find_tab_mut(tab_id)
                     && let TabKind::QueryEditor(editor) = &mut tab.kind
@@ -2517,1905 +1858,109 @@ impl AppController {
                 }
                 AppEvent::TabActivated(tab_id)
             }
-            AppCommand::LoadUserAdminUsers(tab_id) => match self.load_user_admin_users(tab_id) {
-                Ok(users) => AppEvent::UserAdminUsersLoaded(tab_id, users),
-                Err(error) => AppEvent::Failed(UserFacingError::from(error)),
-            },
-            AppCommand::StartUserAdminUsersLoad(tab_id) => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                    admin.loading_users = true;
-                    admin.users_error = None;
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::FinishUserAdminUsersLoad { tab_id, result } => match result {
-                Ok(users) => {
-                    if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                        admin.loading_users = false;
-                        admin.users = users.clone();
-                        Self::reset_user_admin_selection_after_users_load(admin, &users);
-                        admin.users_error = None;
-                        AppEvent::UserAdminUsersLoaded(tab_id, users)
-                    } else {
-                        self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                    }
-                }
-                Err(error) => {
-                    if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                        admin.loading_users = false;
-                        admin.users.clear();
-                        admin.users_error = Some(error.clone());
-                    }
-                    self.state.last_error = Some(error.clone());
-                    AppEvent::Failed(error)
-                }
-            },
-            AppCommand::LoadUserAdminGrants { tab_id, user } => {
-                match self.load_user_admin_grants(tab_id, &user) {
-                    Ok(grants) => AppEvent::UserAdminGrantsLoaded(tab_id, grants),
-                    Err(error) => AppEvent::Failed(UserFacingError::from(error)),
-                }
-            }
-            AppCommand::LoadUserAdminMemberGrants { tab_id, role } => {
-                match self.load_user_admin_member_grants(tab_id, &role) {
-                    Ok(members) => AppEvent::UserAdminMemberGrantsLoaded(tab_id, members),
-                    Err(error) => AppEvent::Failed(UserFacingError::from(error)),
-                }
-            }
-            AppCommand::StartUserAdminGrantsLoad { tab_id, user } => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                    admin.selected_user = Some(user);
-                    admin.loading_grants = true;
-                    admin.grants_error = None;
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::FinishUserAdminGrantsLoad {
-                tab_id,
-                user,
-                result,
-            } => match result {
-                Ok(grants) => {
-                    let privilege_grants = self
-                        .user_admin_provider_for_tab(tab_id)
-                        .map(|provider| provider.privilege_grants_from_grants(&grants))
-                        .unwrap_or_default();
-                    if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                        if admin.selected_user.as_ref() != Some(&user) {
-                            return AppEvent::TabActivated(tab_id);
-                        }
-                        admin.loading_grants = false;
-                        admin.grants = grants.clone();
-                        admin.grants_loaded_user = Some(user);
-                        admin.set_privilege_grants(privilege_grants);
-                        admin.role_membership_edits.clear();
-                        admin.grants_error = None;
-                        AppEvent::UserAdminGrantsLoaded(tab_id, grants)
-                    } else {
-                        self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                    }
-                }
-                Err(error) => {
-                    if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                        if admin.selected_user.as_ref() != Some(&user) {
-                            return AppEvent::TabActivated(tab_id);
-                        }
-                        admin.loading_grants = false;
-                        admin.grants.clear();
-                        admin.grants_loaded_user = None;
-                        admin.privilege_rows.clear();
-                        admin.base_privilege_rows.clear();
-                        admin.grants_error = Some(error.clone());
-                    }
-                    self.state.last_error = Some(error.clone());
-                    AppEvent::Failed(error)
-                }
-            },
-            AppCommand::StartUserAdminMemberGrantsLoad { tab_id, role } => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                    admin.selected_user = Some(role);
-                    admin.loading_member_grants = true;
-                    admin.member_grants_error = None;
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::FinishUserAdminMemberGrantsLoad {
-                tab_id,
-                role,
-                result,
-            } => match result {
-                Ok(members) => {
-                    if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                        if admin.selected_user.as_ref() != Some(&role) {
-                            return AppEvent::TabActivated(tab_id);
-                        }
-                        admin.loading_member_grants = false;
-                        admin.member_grants = members.clone();
-                        admin.member_grants_loaded_role = Some(role);
-                        admin.member_grant_edits.clear();
-                        admin.member_grants_error = None;
-                        AppEvent::UserAdminMemberGrantsLoaded(tab_id, members)
-                    } else {
-                        self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                    }
-                }
-                Err(error) => {
-                    if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                        if admin.selected_user.as_ref() != Some(&role) {
-                            return AppEvent::TabActivated(tab_id);
-                        }
-                        admin.loading_member_grants = false;
-                        admin.member_grants.clear();
-                        admin.member_grants_loaded_role = None;
-                        admin.member_grants_error = Some(error.clone());
-                    }
-                    self.state.last_error = Some(error.clone());
-                    AppEvent::Failed(error)
-                }
-            },
-            AppCommand::SelectUserAdminUser { tab_id, user } => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                    admin.selected_user = Some(user);
-                    admin.creating_user = false;
-                    admin.grants.clear();
-                    admin.grants_loaded_user = None;
-                    admin.member_grants.clear();
-                    admin.member_grants_loaded_role = None;
-                    admin.grants_error = None;
-                    admin.member_grants_error = None;
-                    admin.role_membership_edits.clear();
-                    admin.member_grant_edits.clear();
-                    admin.privilege_rows.clear();
-                    admin.base_privilege_rows.clear();
-                    if let Some(selected) = &admin.selected_user {
-                        admin.create_user = selected.user.clone();
-                        admin.create_host = selected.host.clone();
-                        admin.auth_plugin = selected
-                            .plugin
-                            .clone()
-                            .unwrap_or_else(|| "caching_sha2_password".to_string());
-                    }
-                    admin.password_expiry_policy = "DEFAULT".to_string();
-                    admin.create_password.clear();
-                    admin.new_password.clear();
-                    admin.reset_advanced_defaults();
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::BeginUserAdminCreateUser(tab_id) => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                    admin.creating_user = true;
-                    admin.search.clear();
-                    admin.grants.clear();
-                    admin.grants_loaded_user = None;
-                    admin.member_grants.clear();
-                    admin.member_grants_loaded_role = None;
-                    admin.grants_error = None;
-                    admin.member_grants_error = None;
-                    admin.role_membership_edits.clear();
-                    admin.member_grant_edits.clear();
-                    admin.privilege_rows.clear();
-                    admin.base_privilege_rows.clear();
-                    admin.create_user = "new_user".to_string();
-                    admin.create_host = "%".to_string();
-                    admin.auth_plugin = "caching_sha2_password".to_string();
-                    admin.password_expiry_policy = "DEFAULT".to_string();
-                    admin.create_password.clear();
-                    admin.new_password.clear();
-                    admin.reset_advanced_defaults();
-                    admin.selected_user = Some(admin.draft_user_identity());
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::EndUserAdminCreateUser(tab_id) => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                    admin.creating_user = false;
-                    admin.grants.clear();
-                    admin.grants_loaded_user = None;
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::DiscardUserAdminEdits(tab_id) => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                    admin.discard_mysql_edits();
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::BeginUserAdminDeleteUser(tab_id) => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                    // 仅在选中了已有用户（非新建草稿态）时允许弹出删除确认。
-                    if let Some(selected) =
-                        admin.selected_user.clone().filter(|_| !admin.creating_user)
-                    {
-                        admin.pending_delete_user = Some(selected);
-                    }
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::CancelUserAdminDeleteUser(tab_id) => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                    admin.pending_delete_user = None;
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::SelectPgRole { tab_id, name } => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                    admin.pg_selected_role = Some(name.clone());
-                    // 切换角色是新的编辑会话：目标选择、成员/授权草稿和预览都不能带到新角色。
-                    admin.pg_reset_role_editor_session();
-                    // 从基线派生干净草稿：右侧面板始终以草稿渲染；干净草稿不计脏。
-                    admin.pg_reset_draft_from_baseline();
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::SetPgRoleSwitchPending { tab_id, target } => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                    admin.pg_pending_switch = Some(target);
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::PgCancelSwitchRole(tab_id) => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                    admin.pg_pending_switch = None;
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::DiscardPgDraftAndSelect { tab_id, name } => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                    admin.pg_selected_role = Some(name.clone());
-                    admin.pg_reset_role_editor_session();
-                    admin.pg_reset_draft_from_baseline();
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::PgBeginCreateRole(tab_id) => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                    // 新建也是独立编辑会话；旧角色的权限目标/成员状态不能带入新建表单。
-                    admin.pg_selected_role = None;
-                    admin.pg_reset_role_editor_session();
-                    admin.pg_draft = Some(PgRoleDraft::new_create());
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::PgCancelDraft(tab_id) => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                    admin.pg_draft = None;
-                    admin.pg_membership_edits.clear();
-                    admin.pg_grant_edits.clear();
-                    admin.pg_plan_preview = None;
-                    admin.pg_plan_error = None;
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::DiscardPgDraftEdits(tab_id) => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                    if admin.pg_save_status == PgRoleSaveStatus::NeedsVerify {
-                        return self.fail(Error::new(
-                            ErrorKind::Query,
-                            "提交结果待核实，请先刷新核实后再取消",
-                        ));
-                    }
-                    admin.discard_pg_edits();
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::SetPgDraftName { tab_id, name } => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                    if let Some(draft) = admin.pg_draft.as_mut() {
-                        draft.name = name;
-                    }
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::SetPgDraftCanLogin { tab_id, can_login } => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                    if let Some(draft) = admin.pg_draft.as_mut() {
-                        draft.can_login = can_login;
-                    }
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::SetPgDraftAttr {
-                tab_id,
-                field,
-                value,
-            } => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id)
-                    && let Some(draft) = admin.pg_draft.as_mut()
-                {
-                    match field {
-                        PgDraftAttrField::IsSuperuser => draft.is_superuser = value,
-                        PgDraftAttrField::CanCreateDb => draft.can_create_db = value,
-                        PgDraftAttrField::CanCreateRole => draft.can_create_role = value,
-                        PgDraftAttrField::Inherit => draft.inherit = value,
-                        PgDraftAttrField::IsReplication => draft.is_replication = value,
-                        PgDraftAttrField::BypassRls => draft.bypass_rls = value,
-                    }
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::SetPgDraftConnectionLimit { tab_id, value } => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id)
-                    && let Some(draft) = admin.pg_draft.as_mut()
-                {
-                    draft.connection_limit_text = value;
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::SetPgDraftValidUntil { tab_id, op } => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id)
-                    && let Some(draft) = admin.pg_draft.as_mut()
-                {
-                    draft.valid_until = op;
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::SetPgDraftPasswordOp { tab_id, op } => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id)
-                    && let Some(draft) = admin.pg_draft.as_mut()
-                {
-                    draft.password = op;
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::SetPgDraftPassword { tab_id, password } => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id)
-                    && let Some(draft) = admin.pg_draft.as_mut()
-                {
-                    draft.password = PgPasswordOp::Set(password);
-                }
-                AppEvent::TabActivated(tab_id)
-            }
-            AppCommand::StartUserAdminPgRolesLoad(tab_id) => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                    admin.pg_roles_error = None;
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::LoadUserAdminPgRoles(tab_id) => {
-                let Some(connection_id) = self
-                    .user_admin_state(tab_id)
-                    .map(|admin| admin.connection_id)
-                else {
-                    return self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"));
-                };
-                match self.list_pg_roles_for_connection(connection_id) {
-                    Ok(roles) => AppEvent::UserAdminPgRolesLoaded(tab_id, roles),
-                    Err(error) => AppEvent::Failed(UserFacingError::from(error)),
-                }
-            }
-            AppCommand::FinishUserAdminPgRolesLoad { tab_id, result } => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                    match result {
-                        Ok(roles) => {
-                            admin.pg_roles = roles;
-                            admin.pg_roles_error = None;
-                            // 选中角色被删除后回退到第一个角色；无角色则清空选择。
-                            let names: Vec<String> = admin
-                                .pg_roles
-                                .iter()
-                                .map(|role| role.name.clone())
-                                .collect();
-                            let pending_selection = admin.pending_selected_pg_role.take();
-                            if pending_selection
-                                .as_ref()
-                                .is_some_and(|pending| names.iter().any(|name| name == pending))
-                            {
-                                admin.pg_selected_role = pending_selection;
-                            } else if !names
-                                .iter()
-                                .any(|name| Some(name) == admin.pg_selected_role.as_ref())
-                            {
-                                admin.pg_selected_role = names.first().cloned();
-                            }
-                            // 刷新是重新读取服务端基线：右侧会话态与权限目标都回到初始态。
-                            admin.pg_reset_role_editor_session();
-                            admin.pg_reset_draft_from_baseline();
-                        }
-                        Err(error) => {
-                            // 失败保留旧数据（UI 标记未刷新），显示错误并可重试。
-                            admin.pg_roles_error = Some(error.clone());
-                        }
-                    }
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::StartPgMembershipsLoad(tab_id) => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                    admin.pg_memberships_loaded = false;
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::LoadPgMemberships(tab_id) => {
-                let Some(connection_id) = self
-                    .user_admin_state(tab_id)
-                    .map(|admin| admin.connection_id)
-                else {
-                    return self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"));
-                };
-                let Some(config) = self.connection_config(connection_id).cloned() else {
-                    return self.fail(Error::new(ErrorKind::Connection, "连接不存在"));
-                };
-                let member_options_supported =
-                    role_operation_for_connection(&config, |connector| {
-                        connector.supports_member_options(connection_id)
-                    })
-                    .unwrap_or(false);
-                match self.list_pg_memberships_for_connection(connection_id) {
-                    Ok(memberships) => AppEvent::UserAdminPgMembershipsLoaded(
-                        tab_id,
-                        memberships,
-                        member_options_supported,
-                    ),
-                    Err(error) => AppEvent::Failed(UserFacingError::from(error)),
-                }
-            }
-            AppCommand::FinishPgMembershipsLoad {
-                tab_id,
-                result,
-                member_options_supported,
-            } => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                    admin.pg_member_options_supported = Some(member_options_supported);
-                    match result {
-                        Ok(memberships) => {
-                            admin.pg_memberships = memberships;
-                            admin.pg_memberships_loaded = true;
-                        }
-                        Err(error) => {
-                            // 失败保留旧数据并标记未加载，不显示为「无成员」。
-                            admin.pg_memberships_loaded = false;
-                            admin.pg_plan_error = Some(error.clone());
-                        }
-                    }
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::PgMembershipGrant {
-                tab_id,
-                role,
-                member,
-                admin: admin_option,
-                inherit,
-                set,
-            } => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                    let edit = PgRoleChange::GrantMembership {
-                        role: role.clone(),
-                        member: member.clone(),
-                        admin: admin_option,
-                        inherit,
-                        set,
-                    };
-                    // 同 (role, member) 只保留一条最新变更，避免重复提交。
-                    if let Some(index) = admin.pg_membership_edit_index(&role, &member) {
-                        admin.pg_membership_edits[index] = edit;
-                    } else {
-                        admin.pg_membership_edits.push(edit);
-                    }
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::PgMembershipRevoke {
-                tab_id,
-                role,
-                member,
-            } => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                    let edit = PgRoleChange::RevokeMembership {
-                        role: role.clone(),
-                        member: member.clone(),
-                    };
-                    if let Some(index) = admin.pg_membership_edit_index(&role, &member) {
-                        admin.pg_membership_edits[index] = edit;
-                    } else {
-                        admin.pg_membership_edits.push(edit);
-                    }
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::PgMembershipRemoveEdit { tab_id, index } => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id)
-                    && index < admin.pg_membership_edits.len()
-                {
-                    admin.pg_membership_edits.remove(index);
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    AppEvent::TabActivated(tab_id)
-                }
-            }
-            AppCommand::SetPgGrantDatabase { tab_id, database } => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                    // 一期同批只允许一个数据库：切换数据库前 UI 已确认保存或放弃授权草稿；
-                    // 目标选择也必须清空，避免旧库的 schema/object 被带到新库。对象种类保留。
-                    let kind = admin.pg_grant_kind;
-                    admin.pg_reset_grant_target_session();
-                    admin.pg_grant_kind = kind;
-                    admin.pg_grant_database = database;
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::StartPgGrantTargetsLoad(tab_id) => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                    admin.pg_loading_targets = true;
-                    admin.pg_targets_error = None;
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::LoadPgGrantTargets { tab_id, database } => {
-                let Some(connection_id) = self
-                    .user_admin_state(tab_id)
-                    .map(|admin| admin.connection_id)
-                else {
-                    return self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"));
-                };
-                let Some(config) = self.connection_config(connection_id).cloned() else {
-                    return self.fail(Error::new(ErrorKind::Connection, "连接不存在"));
-                };
-                match role_operation_for_connection(&config, |connector| {
-                    connector.list_grant_targets(connection_id, &database)
-                }) {
-                    Ok(lists) => AppEvent::UserAdminPgGrantTargetsLoaded(tab_id, lists),
-                    Err(error) => AppEvent::Failed(UserFacingError::from(error)),
-                }
-            }
-            AppCommand::FinishPgGrantTargetsLoad { tab_id, result } => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                    admin.pg_loading_targets = false;
-                    match result {
-                        Ok(lists) => admin.pg_grant_targets = Some(lists),
-                        Err(error) => admin.pg_targets_error = Some(error),
-                    }
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::PgToggleGrant {
-                tab_id,
-                privilege,
-                scope,
-                op,
-                grant_option,
-            } => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                    let edit = match op {
-                        PgGrantEditOp::Grant => PgRoleChange::GrantObject {
-                            privilege: privilege.clone(),
-                            scope: scope.clone(),
-                            grantee: admin.pg_effective_grantee_name(),
-                            grant_option,
-                        },
-                        PgGrantEditOp::Revoke => PgRoleChange::RevokeObject {
-                            privilege: privilege.clone(),
-                            scope: scope.clone(),
-                            grantee: admin.pg_effective_grantee_name(),
-                        },
-                        PgGrantEditOp::RevokeGrantOption => PgRoleChange::RevokeGrantOption {
-                            privilege: privilege.clone(),
-                            scope: scope.clone(),
-                            grantee: admin.pg_effective_grantee_name(),
-                        },
-                    };
-                    if let Some(index) = admin.pg_grant_edit_index(&privilege, &scope) {
-                        admin.pg_grant_edits[index] = edit;
-                    } else {
-                        admin.pg_grant_edits.push(edit);
-                    }
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::PgRemoveGrantEdit { tab_id, index } => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id)
-                    && index < admin.pg_grant_edits.len()
-                {
-                    admin.pg_grant_edits.remove(index);
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    AppEvent::TabActivated(tab_id)
-                }
-            }
-            AppCommand::StartPgPlanPreview(tab_id) => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                    admin.pg_preview_loading = true;
-                    admin.pg_plan_error = None;
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::LoadPgPlanPreview(tab_id) => match self.build_pg_role_plan(tab_id) {
-                Ok(plan) => {
-                    if plan.is_empty() {
-                        AppEvent::UserAdminPgPlanPreview(tab_id, Vec::new())
-                    } else {
-                        let connection_id = self
-                            .user_admin_state(tab_id)
-                            .map(|admin| admin.connection_id);
-                        let Some(connection_id) = connection_id else {
-                            return self
-                                .fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"));
-                        };
-                        let Some(config) = self.connection_config(connection_id).cloned() else {
-                            return self.fail(Error::new(ErrorKind::Connection, "连接不存在"));
-                        };
-                        match role_operation_for_connection(&config, |connector| {
-                            connector.render_role_plan(connection_id, &plan, true)
-                        }) {
-                            Ok(stmts) => AppEvent::UserAdminPgPlanPreview(tab_id, stmts),
-                            Err(error) => AppEvent::Failed(UserFacingError::from(error)),
-                        }
-                    }
-                }
-                Err(error) => AppEvent::Failed(UserFacingError::from(error)),
-            },
-            AppCommand::FinishPgPlanPreview { tab_id, result } => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                    admin.pg_preview_loading = false;
-                    match result {
-                        Ok(stmts) => {
-                            admin.pg_plan_preview = Some(stmts.clone());
-                            admin.pg_plan_preview_masked =
-                                admin.pg_draft.as_ref().is_some_and(|draft| {
-                                    matches!(&draft.password, PgPasswordOp::Set(_))
-                                });
-                            admin.pg_plan_error = None;
-                        }
-                        Err(error) => {
-                            admin.pg_plan_preview = None;
-                            admin.pg_plan_error = Some(error);
-                        }
-                    }
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::StartPgPlanApply(tab_id) => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                    if admin.pg_save_status == PgRoleSaveStatus::Saving {
-                        return AppEvent::TabActivated(tab_id);
-                    }
-                    admin.pg_save_status = PgRoleSaveStatus::Saving;
-                    admin.pg_plan_error = None;
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::ApplyPgRolePlan(tab_id) => {
-                // 由 App 构建（校验）计划并单事务应用；结果无论成败都带计划回传 Finish。
-                match self.build_pg_role_plan(tab_id) {
-                    Ok(plan) => {
-                        let Some(connection_id) = self
-                            .user_admin_state(tab_id)
-                            .map(|admin| admin.connection_id)
-                        else {
-                            return self
-                                .fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"));
-                        };
-                        let Some(config) = self.connection_config(connection_id).cloned() else {
-                            return self.fail(Error::new(ErrorKind::Connection, "连接不存在"));
-                        };
-                        let result = role_operation_for_connection(&config, |connector| {
-                            connector.apply_role_plan(connection_id, &plan)
-                        });
-                        match result {
-                            Ok(_) => {
-                                AppEvent::UserAdminPgRolePlanFinished(tab_id, plan, Ok(Vec::new()))
-                            }
-                            Err(error) => AppEvent::UserAdminPgRolePlanFinished(
-                                tab_id,
-                                plan,
-                                Err(UserFacingError::from(error)),
-                            ),
-                        }
-                    }
-                    Err(error) => AppEvent::UserAdminPgRolePlanFinished(
-                        tab_id,
-                        PgRoleSavePlan {
-                            database: None,
-                            role_name: String::new(),
-                            changes: Vec::new(),
-                        },
-                        Err(UserFacingError::from(error)),
-                    ),
-                }
-            }
-            AppCommand::FinishPgRolePlanApply {
-                tab_id,
-                plan,
-                result,
-            } => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                    match result {
-                        Ok(_) => {
-                            admin.pg_save_status = PgRoleSaveStatus::Idle;
-                            admin.pg_draft = None;
-                            admin.pg_membership_edits.clear();
-                            admin.pg_grant_edits.clear();
-                            admin.pg_plan_preview = None;
-                            // 应用成功后对象权限基线已变化，标记过期等待重新读取。
-                            admin.pg_loaded_target.clear();
-                            // 改名后选中角色跟随新身份。
-                            admin.pg_selected_role = Some(plan.role_name.clone());
-                            admin.pending_selected_pg_role = Some(plan.role_name);
-                        }
-                        Err(error) => {
-                            // 失败保留草稿；结果不确定时（连接中断）标记待核实，不直接重试。
-                            admin.pg_save_status = if error.retryable {
-                                PgRoleSaveStatus::Idle
-                            } else {
-                                PgRoleSaveStatus::NeedsVerify
-                            };
-                            admin.pg_plan_error = Some(error.clone());
-                        }
-                    }
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::LoadSqlServerSecurityDatabases(tab_id) => {
-                AppEvent::SqlServerSecurityDatabasesLoaded(tab_id,
-                    self.load_sqlserver_security_databases(tab_id).map_err(UserFacingError::from))
-            }
-            AppCommand::FinishSqlServerSecurityDatabases { tab_id, result } => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id)
-                    && let Some(state) = admin.sqlserver.as_mut()
-                {
-                    state.loading = false;
-                    match result {
-                        Ok(databases) => { state.databases = databases; state.error = None; }
-                        Err(error) => state.error = Some(error),
-                    }
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "SQL Server 用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::SelectSqlServerSecurityDatabase { tab_id, database } => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id)
-                    && let Some(state) = admin.sqlserver.as_mut()
-                {
-                    match state.select_database(database) {
-                        Ok(()) => AppEvent::TabActivated(tab_id),
-                        Err(error) => AppEvent::Failed(UserFacingError::from(error)),
-                    }
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "SQL Server 用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::StartSqlServerSecurityLoad(tab_id) => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id)
-                    && let Some(state) = admin.sqlserver.as_mut()
-                {
-                    state.loading = true;
-                    state.error = None;
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "SQL Server 用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::LoadSqlServerSecurity(tab_id) => match self.load_sqlserver_security(tab_id) {
-                Ok(snapshot) => AppEvent::UserAdminSqlServerLoaded(tab_id, Ok(snapshot)),
-                Err(error) => AppEvent::UserAdminSqlServerLoaded(
-                    tab_id,
-                    Err(UserFacingError::from(error)),
-                ),
-            },
-            AppCommand::FinishSqlServerSecurityLoad { tab_id, result } => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id)
-                    && let Some(state) = admin.sqlserver.as_mut()
-                {
-                    state.loading = false;
-                    match result {
-                        Ok(snapshot) => {
-                            if snapshot.database != state.database {
-                                return AppEvent::TabActivated(tab_id);
-                            }
-                            let previous = state.selected.clone();
-                            let current_login = (!snapshot.current_login.is_empty()).then(|| {
-                                fluxdb_core::SqlServerPrincipalRef {
-                                    kind: SqlServerPrincipalKind::Login,
-                                    name: snapshot.current_login.clone(),
-                                }
-                            });
-                            state.snapshot = Some(snapshot);
-                            state.error = None;
-                            state.pending_changes.clear();
-                            state.preview = None;
-                            state.preview_error = None;
-                            state.apply_error = None;
-                            state.form.clear();
-                            state.pending_delete = None;
-                            state.save_status = SqlServerSecuritySaveStatus::Idle;
-                            state.selected = previous
-                                .filter(|principal| {
-                                    state
-                                        .snapshot
-                                        .as_ref()
-                                        .is_some_and(|snapshot| snapshot.contains_principal(principal))
-                                })
-                                .or(current_login)
-                                .or_else(|| {
-                                    state.snapshot.as_ref().and_then(|snapshot| {
-                                        snapshot.logins.first().map(|login| {
-                                            fluxdb_core::SqlServerPrincipalRef {
-                                                kind: SqlServerPrincipalKind::Login,
-                                                name: login.name.clone(),
-                                            }
-                                        })
-                                    })
-                                });
-                            state.permissions.clear();
-                            state.permissions_loaded_for = None;
-                            state.edit_selected();
-                        }
-                        Err(error) => state.error = Some(error),
-                    }
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "SQL Server 用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::StartSqlServerPermissionsLoad { tab_id, principal } => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id)
-                    && let Some(state) = admin.sqlserver.as_mut()
-                {
-                    state.loading_permissions = true;
-                    state.permissions_error = None;
-                    state.permissions.clear();
-                    state.permissions_loaded_for = None;
-                    if state.selected.as_ref() != Some(&principal) {
-                        state.selected = Some(principal.clone());
-                    }
-                    if state.pending_creations().contains(&principal) {
-                        state.loading_permissions = false;
-                        state.permissions_loaded_for = Some(principal);
-                        return AppEvent::TabActivated(tab_id);
-                    }
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "SQL Server 用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::LoadSqlServerPermissions { tab_id, principal } => {
-                match self.load_sqlserver_permissions(tab_id, &principal) {
-                    Ok(permissions) => AppEvent::UserAdminSqlServerPermissionsLoaded {
-                        tab_id,
-                        principal,
-                        result: Ok(permissions),
-                    },
-                    Err(error) => AppEvent::UserAdminSqlServerPermissionsLoaded {
-                        tab_id,
-                        principal,
-                        result: Err(UserFacingError::from(error)),
-                    },
-                }
-            }
-            AppCommand::FinishSqlServerPermissionsLoad {
-                tab_id,
-                principal,
-                result,
-            } => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id)
-                    && let Some(state) = admin.sqlserver.as_mut()
-                {
-                    state.loading_permissions = false;
-                    if state.selected.as_ref() == Some(&principal) {
-                        match result {
-                            Ok(permissions) => {
-                                state.permissions = permissions;
-                                state.permissions_loaded_for = Some(principal);
-                                state.permissions_error = None;
-                            }
-                            Err(error) => {
-                                state.permissions.clear();
-                                state.permissions_loaded_for = None;
-                                state.permissions_error = Some(error);
-                            }
-                        }
-                    }
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "SQL Server 用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::SelectSqlServerPrincipal { tab_id, principal } => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id)
-                    && let Some(state) = admin.sqlserver.as_mut()
-                {
-                    if state.selected.as_ref() == Some(&principal) {
-                        return AppEvent::TabActivated(tab_id);
-                    }
-                    if state.has_form_changes()
-                        || state.applying
-                        || state.save_status == SqlServerSecuritySaveStatus::NeedsVerify
-                    {
-                        return AppEvent::Failed(UserFacingError::from(Error::new(
-                            ErrorKind::Query,
-                            "请先保存或取消当前 SQL Server 安全变更",
-                        )));
-                    }
-                    state.selected = Some(principal);
-                    state.permissions.clear();
-                    state.permissions_loaded_for = None;
-                    state.permissions_error = None;
-                    state.edit_selected();
-                    state.preview = None;
-                    state.preview_error = None;
-                    admin.active_detail_tab = UserAdminDetailTab::General;
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "SQL Server 用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::SetSqlServerSecurityFilter { tab_id, filter } => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id)
-                    && let Some(state) = admin.sqlserver.as_mut()
-                {
-                    state.list_filter = filter;
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "SQL Server 用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::OpenSqlServerSecurityForm { tab_id, kind } => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id)
-                    && let Some(state) = admin.sqlserver.as_mut()
-                {
-                    if state.has_form_changes()
-                        || state.applying
-                        || state.save_status == SqlServerSecuritySaveStatus::NeedsVerify
-                    {
-                        return AppEvent::Failed(UserFacingError::from(Error::new(ErrorKind::Query, "请先保存或取消当前 SQL Server 安全变更")));
-                    }
-                    let grant_on_login = kind == SqlServerSecurityFormKind::GrantPermission
-                        && state.selected_kind() == Some(SqlServerPrincipalKind::Login);
-                    let form = if kind == SqlServerSecurityFormKind::GrantPermission {
-                        &mut state.permission_form
-                    } else {
-                        &mut state.form
-                    };
-                    *form = SqlServerSecurityForm::open(kind);
-                    match kind {
-                        SqlServerSecurityFormKind::CreateLogin => form.default_value = state.database.clone(),
-                        SqlServerSecurityFormKind::CreateUser => form.default_value = "dbo".into(),
-                        SqlServerSecurityFormKind::GrantPermission if grant_on_login => form.permission_scope = "SERVER".into(),
-                        _ => {}
-                    }
-                    if matches!(
-                        kind,
-                        SqlServerSecurityFormKind::CreateLogin
-                            | SqlServerSecurityFormKind::CreateUser
-                            | SqlServerSecurityFormKind::CreateRole
-                    ) {
-                        state.selected = None;
-                        admin.active_detail_tab = UserAdminDetailTab::General;
-                    }
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "SQL Server 用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::CloseSqlServerPermissionComposer(tab_id) => {
-                if let Some(state) = self
-                    .user_admin_state_mut(tab_id)
-                    .and_then(|admin| admin.sqlserver.as_mut())
-                {
-                    if state.permission_form.kind == SqlServerSecurityFormKind::GrantPermission {
-                        state.permission_form.clear();
-                    }
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(
-                        ErrorKind::Internal,
-                        "SQL Server 用户与权限标签页不存在",
-                    ))
-                }
-            }
-            AppCommand::SetSqlServerSecurityFormField {
-                tab_id,
-                field,
-                value,
-            } => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id)
-                    && let Some(state) = admin.sqlserver.as_mut()
-                {
-                    let form = if matches!(
-                        field,
-                        SqlServerSecurityFormField::PermissionScope
-                            | SqlServerSecurityFormField::PermissionTarget
-                            | SqlServerSecurityFormField::Permission
-                            | SqlServerSecurityFormField::PermissionState
-                    ) {
-                        &mut state.permission_form
-                    } else {
-                        &mut state.form
-                    };
-                    if form.set_field(field, value) {
-                        state.invalidate_preview();
-                        if field == SqlServerSecurityFormField::PermissionScope {
-                            state.permission_form.permission.clear();
-                        }
-                    }
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "SQL Server 用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::SetSqlServerSecurityFormFlag {
-                tab_id,
-                flag,
-                value,
-            } => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id)
-                    && let Some(state) = admin.sqlserver.as_mut()
-                {
-                    if state.permission_form.set_flag(flag, value) {
-                        state.invalidate_preview();
-                    }
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "SQL Server 用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::DiscardSqlServerSecurityChanges(tab_id) => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id) && let Some(state) = admin.sqlserver.as_mut() {
-                    match state.discard_changes() {
-                        Ok(()) => AppEvent::TabActivated(tab_id),
-                        Err(error) => AppEvent::Failed(UserFacingError::from(error)),
-                    }
-                } else { self.fail(Error::new(ErrorKind::Internal, "SQL Server 用户与权限标签页不存在")) }
-            }
-            AppCommand::SubmitSqlServerSecurityForm(tab_id) => {
-                match self.submit_sqlserver_security_form(tab_id) {
-                    Ok(()) => AppEvent::TabActivated(tab_id),
-                    Err(error) => AppEvent::Failed(UserFacingError::from(error)),
-                }
-            }
-            AppCommand::ToggleSqlServerRoleMembership {
-                tab_id,
-                scope,
-                role,
-                member,
-            } => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id)
-                    && let Some(state) = admin.sqlserver.as_mut()
-                {
-                    state.queue_role_toggle(scope, &role, &member);
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "SQL Server 用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::SetSqlServerSelectedLoginEnabled { tab_id, enabled } => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id)
-                    && let Some(state) = admin.sqlserver.as_mut()
-                    && let Some(principal) = state.selected.clone()
-                    && principal.kind == SqlServerPrincipalKind::Login
-                    && state
-                        .selected_login()
-                        .is_some_and(|login| login.is_sql_login())
-                {
-                    state.queue_change(
-                        fluxdb_core::SqlServerSecurityChange::SetLoginEnabled {
-                            name: principal.name,
-                            enabled,
-                        },
-                    );
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "SQL Server 登录名不存在"))
-                }
-            }
-            AppCommand::RevokeSqlServerPermission {
-                tab_id,
-                permission_index,
-            } => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id)
-                    && let Some(state) = admin.sqlserver.as_mut()
-                    && let Some(permission) = state.effective_permissions().get(permission_index).cloned()
-                {
-                    state.queue_permission_revoke(&permission);
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "SQL Server 权限不存在"))
-                }
-            }
-            AppCommand::StartSqlServerSecurityPreview(tab_id) => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id)
-                    && let Some(state) = admin.sqlserver.as_mut()
-                {
-                    if state.pending_changes.is_empty() {
-                        return AppEvent::Failed(UserFacingError::from(Error::new(
-                            ErrorKind::Query,
-                            "没有待预览的 SQL Server 安全变更",
-                        )));
-                    }
-                    state.preview_loading = true;
-                    state.preview = None;
-                    state.preview_error = None;
-                    admin.active_detail_tab = UserAdminDetailTab::SqlPreview;
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "SQL Server 用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::LoadSqlServerSecurityPreview(tab_id) => {
-                match self.preview_sqlserver_security_plan(tab_id) {
-                    Ok(statements) => AppEvent::UserAdminSqlServerPreview {
-                        tab_id,
-                        result: Ok(statements),
-                    },
-                    Err(error) => AppEvent::UserAdminSqlServerPreview {
-                        tab_id,
-                        result: Err(UserFacingError::from(error)),
-                    },
-                }
-            }
-            AppCommand::FinishSqlServerSecurityPreview { tab_id, revision, result } => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id)
-                    && let Some(state) = admin.sqlserver.as_mut()
-                {
-                    state.preview_loading = false;
-                    if state.revision != revision {
-                        return AppEvent::TabActivated(tab_id);
-                    }
-                    match result {
-                        Ok(statements) => {
-                            state.preview = Some(statements);
-                            state.preview_error = None;
-                        }
-                        Err(error) => state.preview_error = Some(error),
-                    }
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "SQL Server 用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::StartSqlServerSecurityApply(tab_id) => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id)
-                    && let Some(state) = admin.sqlserver.as_mut()
-                {
-                    if state.save_status == SqlServerSecuritySaveStatus::NeedsVerify
-                        || !state.has_pending_changes()
-                    {
-                        return AppEvent::Failed(UserFacingError::from(Error::new(ErrorKind::Query, "请先预览或刷新核实 SQL Server 安全变更")));
-                    }
-                    if state.applying {
-                        return AppEvent::TabActivated(tab_id);
-                    }
-                    state.applying = true;
-                    state.apply_error = None;
-                    state.save_status = SqlServerSecuritySaveStatus::Saving;
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "SQL Server 用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::ApplySqlServerSecurityPlan(tab_id) => {
-                match self.apply_sqlserver_security_plan(tab_id) {
-                    Ok((principal, statements)) => AppEvent::UserAdminSqlServerApplied {
-                        tab_id,
-                        principal,
-                        result: Ok(statements),
-                    },
-                    Err(error) => AppEvent::UserAdminSqlServerApplied {
-                        tab_id,
-                        principal: String::new(),
-                        result: Err(UserFacingError::from(error)),
-                    },
-                }
-            }
-            AppCommand::FinishSqlServerSecurityApply {
-                tab_id,
-                principal,
-                result,
-            } => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id)
-                    && let Some(state) = admin.sqlserver.as_mut()
-                {
-                    state.applying = false;
-                    match result {
-                        Ok(_) => {
-                            state.save_status = SqlServerSecuritySaveStatus::Idle;
-                            state.pending_changes.clear();
-                            state.form.clear();
-                            state.permission_form.clear();
-                            state.preview = None;
-                            state.preview_error = None;
-                            state.apply_error = None;
-                            state.permissions.clear();
-                            state.permissions_loaded_for = None;
-                            if !principal.is_empty() {
-                                state.selected = Some(fluxdb_core::SqlServerPrincipalRef {
-                                    kind: state
-                                        .selected
-                                        .as_ref()
-                                        .map(|principal| principal.kind)
-                                        .unwrap_or(SqlServerPrincipalKind::Login),
-                                    name: principal,
-                                });
-                            }
-                        }
-                        Err(error) => {
-                            // 可重试标记在这里仅由传输/取消/超时错误产生；普通服务端拒绝是确定性失败。
-                            state.save_status = if error.retryable {
-                                SqlServerSecuritySaveStatus::NeedsVerify
-                            } else {
-                                SqlServerSecuritySaveStatus::Idle
-                            };
-                            state.preview = None;
-                            if state.save_status == SqlServerSecuritySaveStatus::Idle {
-                                state.restore_failed_form();
-                                admin.active_detail_tab = UserAdminDetailTab::General;
-                            }
-                            state.apply_error = Some(error);
-                        }
-                    }
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "SQL Server 用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::BeginDeleteSqlServerPrincipal(tab_id) => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id)
-                    && let Some(state) = admin.sqlserver.as_mut()
-                {
-                    let Some(principal) = state.selected.clone() else {
-                        return AppEvent::TabActivated(tab_id);
-                    };
-                    let snapshot = state.snapshot.as_ref();
-                    let protected = match principal.kind {
-                        SqlServerPrincipalKind::Login => {
-                            principal.name.eq_ignore_ascii_case("sa")
-                                || principal.name.starts_with("##")
-                                || state
-                                    .selected_login()
-                                    .is_some_and(|login| !login.is_sql_login())
-                                || snapshot.is_some_and(|snapshot| {
-                                    principal.name.eq_ignore_ascii_case(&snapshot.current_login)
-                                })
-                        }
-                        SqlServerPrincipalKind::User => {
-                            snapshot.is_some_and(|snapshot| {
-                                principal.name.eq_ignore_ascii_case(&snapshot.current_user)
-                            }) || !state.selected_user_is_editable()
-                        }
-                        SqlServerPrincipalKind::Role => state
-                            .selected_role()
-                            .is_some_and(|role| role.is_fixed),
-                    };
-                    if protected {
-                        return AppEvent::Failed(UserFacingError::from(Error::new(
-                            ErrorKind::Permission,
-                            "该 SQL Server 主体受系统保护，不能删除",
-                        )));
-                    }
-                    state.pending_delete = Some(principal);
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "SQL Server 用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::ConfirmDeleteSqlServerPrincipal(tab_id) => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id)
-                    && let Some(state) = admin.sqlserver.as_mut()
-                    && let Some(principal) = state.pending_delete.take()
-                {
-                    state.queue_change(match principal.kind {
-                        SqlServerPrincipalKind::Login => {
-                            fluxdb_core::SqlServerSecurityChange::DropLogin {
-                                name: principal.name,
-                            }
-                        }
-                        SqlServerPrincipalKind::User => {
-                            fluxdb_core::SqlServerSecurityChange::DropUser {
-                                name: principal.name,
-                            }
-                        }
-                        SqlServerPrincipalKind::Role => {
-                            fluxdb_core::SqlServerSecurityChange::DropDatabaseRole {
-                                name: principal.name,
-                            }
-                        }
-                    });
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "SQL Server 删除目标不存在"))
-                }
-            }
-            AppCommand::CancelDeleteSqlServerPrincipal(tab_id) => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id)
-                    && let Some(state) = admin.sqlserver.as_mut()
-                {
-                    state.pending_delete = None;
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "SQL Server 用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::PgBeginDeleteRole(tab_id) => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                    if let Some(name) = admin
-                        .pg_selected_role
-                        .clone()
-                        .filter(|name| !UserAdminState::pg_is_predefined_role(name))
-                    {
-                        admin.pg_pending_delete = Some(name);
-                    }
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::PgCancelDeleteRole(tab_id) => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                    admin.pg_pending_delete = None;
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::SetPgRoleFilter { tab_id, filter } => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                    admin.pg_role_filter = filter;
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::SetUserAdminPgGrantTarget {
-                tab_id,
-                kind,
-                schema,
-                object,
-                signature,
-            } => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                    admin.pg_grant_kind = kind;
-                    admin.pg_grant_schema = schema;
-                    admin.pg_grant_object = object;
-                    admin.pg_grant_signature = signature;
-                    // 目标已变化：旧请求结果不可用；桌面层同时取消旧 Task，避免悬挂 loading。
-                    admin.loading_pg_grants = false;
-                    admin.pg_grants_error = None;
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::LoadUserAdminPgObjectGrants(tab_id) => {
-                match self.load_pg_object_grants(tab_id) {
-                    Ok(result) => AppEvent::UserAdminPgObjectGrantsLoaded(tab_id, Ok(result)),
-                    Err(error) => {
-                        AppEvent::UserAdminPgObjectGrantsLoaded(tab_id, Err(error.into()))
-                    }
-                }
-            }
-            AppCommand::StartUserAdminPgObjectGrantsLoad(tab_id) => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                    admin.loading_pg_grants = true;
-                    admin.pg_grants_error = None;
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::FinishUserAdminPgObjectGrantsLoad {
-                tab_id,
-                target_fingerprint,
-                result,
-            } => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                    // 读取期间目标可能已被用户切换；过期结果不能结束新目标的
-                    // loading，也不能覆盖新目标状态。
-                    if pg_grant_target_fingerprint(admin) == target_fingerprint {
-                        admin.loading_pg_grants = false;
-                        match result {
-                            Ok((grants, effective)) => {
-                                admin.pg_object_grants = Some(grants);
-                                admin.pg_effective_grants = effective;
-                                admin.pg_grants_error = None;
-                                // 记录已加载目标指纹，供 UI 判断选择器目标是否已过期需重取。
-                                admin.pg_loaded_target = target_fingerprint;
-                            }
-                            Err(error) => {
-                                admin.pg_object_grants = None;
-                                admin.pg_effective_grants.clear();
-                                admin.pg_grants_error = Some(error);
-                            }
-                        }
-                    }
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::SelectUserAdminDetailTab { tab_id, detail_tab } => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                    admin.active_detail_tab = detail_tab;
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::SetUserAdminSearch { tab_id, search } => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                    admin.search = search;
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::SetUserAdminPrivilegeDatabase { tab_id, database } => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                    admin.privilege_database = database;
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::SetUserAdminPrivilegeTable { tab_id, table } => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                    admin.privilege_table = table;
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::ToggleUserAdminPrivilege { tab_id, privilege } => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                    if let Some(index) = admin
-                        .selected_privileges
-                        .iter()
-                        .position(|item| item == &privilege)
-                    {
-                        admin.selected_privileges.remove(index);
-                    } else {
-                        admin.selected_privileges.push(privilege);
-                    }
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::SetUserAdminGrantOption { tab_id, enabled } => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                    admin.grant_option = enabled;
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::AddUserAdminPrivilegeRow { tab_id, database } => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                    admin.add_privilege_row(database);
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::SetUserAdminPrivilegeRowDatabase {
-                tab_id,
-                row_id,
-                database,
-            } => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                    admin.set_privilege_row_database(row_id, database);
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::ToggleUserAdminPrivilegeRowPrivilege {
-                tab_id,
-                row_id,
-                privilege,
-            } => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                    admin.toggle_privilege_row_privilege(row_id, privilege);
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::SetUserAdminPrivilegeRowGrantOption {
-                tab_id,
-                row_id,
-                enabled,
-            } => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                    admin.set_privilege_row_grant_option(row_id, enabled);
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::SetUserAdminCreateUser { tab_id, user } => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                    admin.create_user = user;
-                    if admin.creating_user {
-                        admin.selected_user = Some(admin.draft_user_identity());
-                    }
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::SetUserAdminCreateHost { tab_id, host } => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                    admin.create_host = host;
-                    if admin.creating_user {
-                        admin.selected_user = Some(admin.draft_user_identity());
-                    }
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::SetUserAdminAuthPlugin { tab_id, plugin } => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                    admin.auth_plugin = plugin;
-                    if admin.creating_user {
-                        admin.selected_user = Some(admin.draft_user_identity());
-                    }
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::SetUserAdminPasswordExpiryPolicy { tab_id, policy } => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                    admin.password_expiry_policy = policy;
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::SetUserAdminCreatePassword { tab_id, password } => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                    admin.create_password = password;
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::SetUserAdminNewPassword { tab_id, password } => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                    admin.new_password = password;
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::SetUserAdminMaxQueriesPerHour { tab_id, value } => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                    admin.max_queries_per_hour = value;
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::SetUserAdminMaxUpdatesPerHour { tab_id, value } => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                    admin.max_updates_per_hour = value;
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::SetUserAdminMaxConnectionsPerHour { tab_id, value } => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                    admin.max_connections_per_hour = value;
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::SetUserAdminMaxUserConnections { tab_id, value } => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                    admin.max_user_connections = value;
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::SetUserAdminSslType { tab_id, ssl_type } => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                    admin.ssl_type = ssl_type;
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::SetUserAdminSslCipher { tab_id, value } => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                    admin.ssl_cipher = value;
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::SetUserAdminSslIssuer { tab_id, value } => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                    admin.ssl_issuer = value;
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::SetUserAdminSslSubject { tab_id, value } => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                    admin.ssl_subject = value;
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::SetUserAdminRoleMembershipGranted {
-                tab_id,
-                role,
-                granted,
-            } => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                    admin.set_role_membership_granted(role, granted);
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::SetUserAdminRoleMembershipDefault {
-                tab_id,
-                role,
-                default_role,
-            } => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                    admin.set_role_membership_default(role, default_role);
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::SetUserAdminRoleMemberGranted {
-                tab_id,
-                member,
-                granted,
-            } => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                    admin.set_role_member_granted(member, granted);
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::PreviewUserAdminSql {
-                tab_id,
-                sql,
-                danger,
-            } => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                    admin.pending_sql = Some(UserAdminPendingSql { sql, danger });
-                    admin.apply_error = None;
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::ClearUserAdminPendingSql(tab_id) => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                    admin.pending_sql = None;
-                    admin.apply_error = None;
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::StartUserAdminSqlApply(tab_id) => {
-                if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                    admin.applying = true;
-                    admin.apply_error = None;
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                }
-            }
-            AppCommand::ApplyUserAdminSql { tab_id, sql } => {
-                match self.apply_user_admin_sql(tab_id, &sql) {
-                    Ok(()) => AppEvent::UserAdminSqlApplied(tab_id),
-                    Err(error) => AppEvent::Failed(UserFacingError::from(error)),
-                }
-            }
-            AppCommand::FinishUserAdminSqlApply { tab_id, result } => match result {
-                Ok(()) => {
-                    if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                        admin.applying = false;
-                        admin.pending_sql = None;
-                        admin.apply_error = None;
-                        if admin.creating_user {
-                            admin.pending_selected_user = Some(admin.draft_user_identity());
-                        }
-                        admin.creating_user = false;
-                        admin.create_password.clear();
-                        admin.new_password.clear();
-                        admin.grants_loaded_user = None;
-                        admin.member_grants.clear();
-                        admin.member_grants_loaded_role = None;
-                        admin.member_grants_error = None;
-                        admin.role_membership_edits.clear();
-                        admin.member_grant_edits.clear();
-                        admin.base_privilege_rows = admin.privilege_rows.clone();
-                        AppEvent::UserAdminSqlApplied(tab_id)
-                    } else {
-                        self.fail(Error::new(ErrorKind::Internal, "用户与权限标签页不存在"))
-                    }
-                }
-                Err(error) => {
-                    if let Some(admin) = self.user_admin_state_mut(tab_id) {
-                        admin.applying = false;
-                        admin.apply_error = Some(error.clone());
-                    }
-                    self.state.last_error = Some(error.clone());
-                    AppEvent::Failed(error)
-                }
-            },
-            AppCommand::CloseTab(tab_id) => {
-                if self
-                    .state
-                    .tabs
-                    .iter()
-                    .any(|tab| tab.id == tab_id && tab.dirty)
-                {
-                    self.state.pending_dirty_tab_close = Some(tab_id);
-                    return AppEvent::TabCloseRequested(tab_id);
-                }
-
-                self.release_tab_query_sessions(&[tab_id]);
-                self.state.tabs.retain(|tab| tab.id != tab_id);
-                if self.state.pending_dirty_tab_close == Some(tab_id) {
-                    self.state.pending_dirty_tab_close = None;
-                }
-                if self.state.active_tab == Some(tab_id) {
-                    self.state.active_tab = self.state.tabs.last().map(|tab| tab.id);
-                }
-                AppEvent::TabClosed(tab_id)
-            }
-            AppCommand::CloseTabs(tab_ids) => {
-                let tab_ids = tab_ids.into_iter().collect::<BTreeSet<_>>();
-                let closed = self
-                    .state
-                    .tabs
-                    .iter()
-                    .find(|tab| tab_ids.contains(&tab.id))
-                    .map(|tab| tab.id);
-                let closed_ids = tab_ids.iter().copied().collect::<Vec<_>>();
-                self.release_tab_query_sessions(&closed_ids);
-                self.state.tabs.retain(|tab| !tab_ids.contains(&tab.id));
-                if self
-                    .state
-                    .active_tab
-                    .is_some_and(|tab_id| !self.state.tabs.iter().any(|tab| tab.id == tab_id))
-                {
-                    self.state.active_tab = self.state.tabs.last().map(|tab| tab.id);
-                }
-                if self
-                    .state
-                    .pending_dirty_tab_close
-                    .is_some_and(|tab_id| !self.state.tabs.iter().any(|tab| tab.id == tab_id))
-                {
-                    self.state.pending_dirty_tab_close = None;
-                }
-                closed
-                    .map(AppEvent::TabClosed)
-                    .unwrap_or(AppEvent::TabActivated(TabId(0)))
-            }
-            AppCommand::ConfirmCloseDirtyTab(tab_id) => {
-                if self.state.pending_dirty_tab_close != Some(tab_id) {
-                    return self.fail(Error::new(ErrorKind::Internal, "没有待关闭的标签页"));
-                }
-
-                self.release_tab_query_sessions(&[tab_id]);
-                self.state.tabs.retain(|tab| tab.id != tab_id);
-                self.state.pending_dirty_tab_close = None;
-                if self.state.active_tab == Some(tab_id) {
-                    self.state.active_tab = self.state.tabs.last().map(|tab| tab.id);
-                }
-                AppEvent::TabClosed(tab_id)
-            }
-            AppCommand::CancelCloseDirtyTab(tab_id) => {
-                if self.state.pending_dirty_tab_close == Some(tab_id) {
-                    self.state.pending_dirty_tab_close = None;
-                }
-                AppEvent::TabCloseCancelled(tab_id)
-            }
-            AppCommand::ActivateTab(tab_id) => {
-                if self.state.tabs.iter().any(|tab| tab.id == tab_id) {
-                    self.state.active_tab = Some(tab_id);
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "标签页不存在"))
-                }
-            }
-            // 回首页：仅取消激活当前标签（active_tab 置空），已打开的标签保留在标签栏不关闭。
-            // 事件用 TabActivated(TabId(0)) 空态约定（与 CloseTabs 一致），供桌面清理局部状态。
-            AppCommand::DeactivateTab => {
-                self.state.active_tab = None;
-                AppEvent::TabActivated(TabId(0))
-            }
-            AppCommand::PinTab(tab_id) => {
-                if let Some(index) = self.state.tabs.iter().position(|tab| tab.id == tab_id) {
-                    let tab = self.state.tabs.remove(index);
-                    self.state.tabs.insert(0, tab);
-                    self.state.active_tab = Some(tab_id);
-                    AppEvent::TabActivated(tab_id)
-                } else {
-                    self.fail(Error::new(ErrorKind::Internal, "标签页不存在"))
-                }
-            }
+            AppCommand::LoadUserAdminUsers(..)
+            | AppCommand::StartUserAdminUsersLoad(..)
+            | AppCommand::FinishUserAdminUsersLoad { .. }
+            | AppCommand::LoadUserAdminGrants { .. }
+            | AppCommand::LoadUserAdminMemberGrants { .. }
+            | AppCommand::StartUserAdminGrantsLoad { .. }
+            | AppCommand::FinishUserAdminGrantsLoad { .. }
+            | AppCommand::StartUserAdminMemberGrantsLoad { .. }
+            | AppCommand::FinishUserAdminMemberGrantsLoad { .. }
+            | AppCommand::SelectUserAdminUser { .. }
+            | AppCommand::BeginUserAdminCreateUser(..)
+            | AppCommand::EndUserAdminCreateUser(..)
+            | AppCommand::DiscardUserAdminEdits(..)
+            | AppCommand::BeginUserAdminDeleteUser(..)
+            | AppCommand::CancelUserAdminDeleteUser(..)
+            | AppCommand::SelectUserAdminDetailTab { .. }
+            | AppCommand::SetUserAdminSearch { .. }
+            | AppCommand::SetUserAdminPrivilegeDatabase { .. }
+            | AppCommand::SetUserAdminPrivilegeTable { .. }
+            | AppCommand::ToggleUserAdminPrivilege { .. }
+            | AppCommand::SetUserAdminGrantOption { .. }
+            | AppCommand::AddUserAdminPrivilegeRow { .. }
+            | AppCommand::SetUserAdminPrivilegeRowDatabase { .. }
+            | AppCommand::ToggleUserAdminPrivilegeRowPrivilege { .. }
+            | AppCommand::SetUserAdminPrivilegeRowGrantOption { .. }
+            | AppCommand::SetUserAdminCreateUser { .. }
+            | AppCommand::SetUserAdminCreateHost { .. }
+            | AppCommand::SetUserAdminAuthPlugin { .. }
+            | AppCommand::SetUserAdminPasswordExpiryPolicy { .. }
+            | AppCommand::SetUserAdminCreatePassword { .. }
+            | AppCommand::SetUserAdminNewPassword { .. }
+            | AppCommand::SetUserAdminMaxQueriesPerHour { .. }
+            | AppCommand::SetUserAdminMaxUpdatesPerHour { .. }
+            | AppCommand::SetUserAdminMaxConnectionsPerHour { .. }
+            | AppCommand::SetUserAdminMaxUserConnections { .. }
+            | AppCommand::SetUserAdminSslType { .. }
+            | AppCommand::SetUserAdminSslCipher { .. }
+            | AppCommand::SetUserAdminSslIssuer { .. }
+            | AppCommand::SetUserAdminSslSubject { .. }
+            | AppCommand::SetUserAdminRoleMembershipGranted { .. }
+            | AppCommand::SetUserAdminRoleMembershipDefault { .. }
+            | AppCommand::SetUserAdminRoleMemberGranted { .. }
+            | AppCommand::PreviewUserAdminSql { .. }
+            | AppCommand::BeginUserAdminSqlConfirm(..)
+            | AppCommand::ClearUserAdminPendingSql(..)
+            | AppCommand::StartUserAdminSqlApply(..)
+            | AppCommand::ApplyUserAdminSql { .. }
+            | AppCommand::FinishUserAdminSqlApply { .. } => self.dispatch_user_admin_command(command),
+            AppCommand::LoadSqlServerSecurityDatabases(..)
+            | AppCommand::FinishSqlServerSecurityDatabases { .. }
+            | AppCommand::SelectSqlServerSecurityDatabase { .. }
+            | AppCommand::StartSqlServerSecurityLoad(..)
+            | AppCommand::LoadSqlServerSecurity(..)
+            | AppCommand::FinishSqlServerSecurityLoad { .. }
+            | AppCommand::StartSqlServerPermissionsLoad { .. }
+            | AppCommand::LoadSqlServerPermissions { .. }
+            | AppCommand::FinishSqlServerPermissionsLoad { .. }
+            | AppCommand::SelectSqlServerPrincipal { .. }
+            | AppCommand::SetSqlServerSecurityFilter { .. }
+            | AppCommand::OpenSqlServerSecurityForm { .. }
+            | AppCommand::CloseSqlServerPermissionComposer(..)
+            | AppCommand::SetSqlServerSecurityFormField { .. }
+            | AppCommand::SetSqlServerSecurityFormFlag { .. }
+            | AppCommand::DiscardSqlServerSecurityChanges(..)
+            | AppCommand::SubmitSqlServerSecurityForm(..)
+            | AppCommand::ToggleSqlServerRoleMembership { .. }
+            | AppCommand::SetSqlServerSelectedLoginEnabled { .. }
+            | AppCommand::RevokeSqlServerPermission { .. }
+            | AppCommand::StartSqlServerSecurityPreview(..)
+            | AppCommand::LoadSqlServerSecurityPreview(..)
+            | AppCommand::FinishSqlServerSecurityPreview { .. }
+            | AppCommand::StartSqlServerSecurityApply(..)
+            | AppCommand::ApplySqlServerSecurityPlan(..)
+            | AppCommand::FinishSqlServerSecurityApply { .. }
+            | AppCommand::BeginDeleteSqlServerPrincipal(..)
+            | AppCommand::ConfirmDeleteSqlServerPrincipal(..)
+            | AppCommand::CancelDeleteSqlServerPrincipal(..) => self.dispatch_sqlserver_user_admin_command(command),
+            AppCommand::StartOracleUsersLoad(..)
+            | AppCommand::LoadOracleUsers(..)
+            | AppCommand::FinishOracleUsersLoad { .. }
+            | AppCommand::SelectOracleUser { .. }
+            | AppCommand::SetOracleGrantDraftField { .. }
+            | AppCommand::SetOracleGrantDraftOption { .. }
+            | AppCommand::QueueOracleGrantDraft { .. }
+            | AppCommand::RemoveOraclePendingGrant { .. }
+            | AppCommand::RevokeOracleRole { .. }
+            | AppCommand::RevokeOracleSystemPrivilege { .. }
+            | AppCommand::RevokeOracleObjectPrivilege { .. }
+            | AppCommand::BeginOracleCreateUser(..)
+            | AppCommand::CancelOracleCreateUser(..)
+            | AppCommand::SetOracleCreateDraftField { .. }
+            | AppCommand::SetOracleCreateDraftFlag { .. }
+            | AppCommand::SetOracleUserPassword { .. }
+            | AppCommand::SetOracleUserLocked { .. }
+            | AppCommand::DiscardOracleUserChanges(..)
+            | AppCommand::PreviewOracleApply(..)
+            | AppCommand::StartOracleApply(..)
+            | AppCommand::ApplyOraclePlan(..)
+            | AppCommand::FinishOracleApply { .. }
+            | AppCommand::BeginDeleteOracleUser(..)
+            | AppCommand::CancelDeleteOracleUser(..)
+            | AppCommand::SetOracleDeleteCascade { .. }
+            | AppCommand::ConfirmDeleteOracleUser(..) => self.dispatch_oracle_user_admin_command(command),
             AppCommand::ReplaceQueryHistory(history) => {
                 self.state.query_history = history;
                 AppEvent::SettingsSaved
@@ -4458,12 +2003,6 @@ impl AppController {
             }
             AppCommand::SaveSettings(settings) => {
                 self.state.settings = settings;
-                AppEvent::SettingsSaved
-            }
-            AppCommand::SetTabDirty { tab_id, dirty } => {
-                if let Some(tab) = self.state.tabs.iter_mut().find(|tab| tab.id == tab_id) {
-                    tab.dirty = dirty;
-                }
                 AppEvent::SettingsSaved
             }
             AppCommand::ClearCompletionIndexCache => {

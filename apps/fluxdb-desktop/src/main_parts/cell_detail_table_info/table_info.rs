@@ -739,7 +739,7 @@ fn table_info_ddl_text(
         ddl,
         // 表结构 DDL 由服务端按该连接的方言生成；当前表属性面板不持有连接类型，
         // 按绝大多数场景（MySQL 系）取方言。高亮查询与方言无关，仅折叠/注释标记随方言。
-        sql_editor_adapter::SqlDialect::Mysql,
+        fluxdb_core::DatabaseKind::MySql,
         wrap,
         editor_theme,
         window,

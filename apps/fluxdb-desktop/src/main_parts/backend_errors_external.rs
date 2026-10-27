@@ -101,6 +101,8 @@ fn localize_backend_external_error_text(text: &str) -> Option<String> {
         "已取消排队执行" => "app.backend_error.ext_queued_execution_cancelled",
         "取消请求未确认，会话已关闭；执行结果待核实，请勿直接重试写操作" => "app.backend_error.ext_cancel_unconfirmed",
         "取消收尾超时，会话已关闭；执行结果待核实" => "app.backend_error.ext_cancel_cleanup_timeout",
+        "已取消：结果待核实" => "app.backend_error.ext_cancelled_outcome_unknown",
+        "已取消：未执行" => "app.backend_error.ext_cancelled_not_executed",
         "自动审批写入超限或已取消，事务已回滚" => "app.backend_error.ext_auto_approval_write_rolled_back",
         "有界写入回滚结果无法核实，禁止自动重试" => "app.backend_error.ext_bounded_rollback_unknown",
         "仅表对象支持数据提交" => "app.backend_error.ext_data_commit_tables_only",
@@ -174,7 +176,7 @@ fn localize_backend_external_error_text(text: &str) -> Option<String> {
             "app.backend_error.ext_dm_restore_verify_failed"
         }
         "恢复后未找到目标表" => "app.backend_error.ext_dm_restore_table_missing",
-        "数据包含未加载的二进制值或非有限浮点数，请改用原生备份" => {
+        "数据包含未加载的二进制值、截断的 LOB 或非有限浮点数，请改用原生备份" => {
             "app.backend_error.ext_backup_unloaded_binary"
         }
         "当前连接类型没有可导入的表数据" => "app.backend_error.app_msg_import_unsupported",

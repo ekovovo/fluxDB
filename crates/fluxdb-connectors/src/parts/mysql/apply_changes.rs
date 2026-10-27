@@ -18,7 +18,17 @@ fn mysql_apply_changes(config: &ConnectionConfig, changes: &DataChangeSet) -> fl
             mysql_apply_deletes(&mut transaction, &database, changes, &columns).await?;
             mysql_apply_updates(&mut transaction, &database, changes, &columns).await?;
             mysql_apply_inserts(&mut transaction, &database, changes, &columns).await?;
-            transaction.commit().await.map_err(mysql_error)?;
+            transaction.commit().await.map_err(|error| {
+                // 服务端回了错误报文 = 事务已被终止，结果是确定的失败；
+                // 没有报文（IO/连接断开）= 提交是否生效未知，必须让调用方核实。
+                let unknown = !matches!(error, sqlx::Error::Database(_));
+                let error = mysql_error(error);
+                if unknown {
+                    error.mark_outcome_unknown("提交 MySQL 事务")
+                } else {
+                    error
+                }
+            })?;
             Ok(())
         }
         .await;

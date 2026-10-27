@@ -4,6 +4,7 @@ enum CreateTableSqlDialect {
     Sqlite,
     Postgres,
     Dameng,
+    Oracle,
 }
 
 fn create_table_add_foreign_key(create: &mut CreateTableState) {
@@ -388,6 +389,7 @@ fn create_table_foreign_key_lines(
                 CreateTableSqlDialect::Sqlite => fluxdb_core::SqliteDialect.quote_identifier(column),
                 CreateTableSqlDialect::Postgres => fluxdb_core::PostgresDialect.quote_identifier(column),
                 CreateTableSqlDialect::Dameng => fluxdb_core::DamengDialect.quote_identifier(column),
+                CreateTableSqlDialect::Oracle => fluxdb_core::OracleDialect.quote_identifier(column),
             });
         }
         if columns.is_empty() {
@@ -433,6 +435,12 @@ fn create_table_foreign_key_lines(
                 columns.join(", "),
                 create_table_dameng_referenced_table(create, foreign_key)
             ),
+            CreateTableSqlDialect::Oracle => format!(
+                "CONSTRAINT {} FOREIGN KEY ({}) REFERENCES {}",
+                fluxdb_core::OracleDialect.quote_identifier(name),
+                columns.join(", "),
+                create_table_oracle_referenced_table(create, foreign_key)
+            ),
         };
         let quoted = referenced_columns
             .iter()
@@ -441,6 +449,7 @@ fn create_table_foreign_key_lines(
                 CreateTableSqlDialect::Sqlite => fluxdb_core::SqliteDialect.quote_identifier(column),
                 CreateTableSqlDialect::Postgres => fluxdb_core::PostgresDialect.quote_identifier(column),
                 CreateTableSqlDialect::Dameng => fluxdb_core::DamengDialect.quote_identifier(column),
+                CreateTableSqlDialect::Oracle => fluxdb_core::OracleDialect.quote_identifier(column),
             })
             .collect::<Vec<_>>();
         line.push_str(" (");
@@ -517,6 +526,26 @@ fn create_table_dameng_referenced_table(
         table
     } else {
         format!("{}.{table}", fluxdb_core::DamengDialect.quote_identifier(schema))
+    }
+}
+
+/// Oracle 的 schema 就是对象 Owner，引用其他 schema 的表必须写两段名。
+fn create_table_oracle_referenced_table(
+    create: &CreateTableState,
+    foreign_key: &CreateTableForeignKey,
+) -> String {
+    let referenced_database = foreign_key.referenced_database.trim();
+    let current_database = create.database.as_deref().unwrap_or("").trim();
+    let owner = if !referenced_database.is_empty() && referenced_database != current_database {
+        referenced_database
+    } else {
+        create.schema.trim()
+    };
+    let table = fluxdb_core::OracleDialect.quote_identifier(foreign_key.referenced_table.trim());
+    if owner.is_empty() {
+        table
+    } else {
+        format!("{}.{table}", fluxdb_core::OracleDialect.quote_identifier(owner))
     }
 }
 

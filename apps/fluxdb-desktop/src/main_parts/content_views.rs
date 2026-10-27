@@ -734,7 +734,10 @@ fn data_editor_content(
         })
         .when(filter_open, |builder| builder);
 
-    if editor.loading {
+    // 只有「首次加载、还没有任何数据」才整块替换成居中加载态。
+    // 已有数据时（重新应用筛选/排序、翻页、刷新）保留旧表格，只由表格区域盖遮罩，
+    // 避免筛选面板、SQL 预览和列头在等待期间整块消失。
+    if editor.loading && editor.page.is_none() {
         return content.child(
             center_loading_message(tr("app.data.loading"), colors)
                 .id(("data-page-loading", tab_id.0))
@@ -1033,12 +1036,14 @@ fn data_editor_content(
     });
     let table_area = data_table_area(
         &table_state,
-        // 提交与筛选都会离开 UI 线程，共用同一层遮罩提示，避免用户以为界面失去响应。
-        filter_applying || editor.submitting,
+        // 提交与各类加载都会离开 UI 线程，共用同一层遮罩提示，避免用户以为界面失去响应。
+        // 已有数据时的重新加载（筛选、翻页、刷新、AI 查询）同样只盖表格区域，
+        // 工具栏与筛选面板保持可见可操作。
+        filter_applying || editor.submitting || editor.loading,
         if editor.submitting {
             tr("app.data.submitting")
         } else {
-            tr("app.data.applying_filter")
+            tr("app.data.loading")
         },
         search_open.then(|| {
             data_search_bar(
@@ -3563,8 +3568,11 @@ fn query_output_tab_button(
                         // 新编辑器：依据全文切分语句并按 ordinal 取目标语句。
                         this.query_editors.get(&tab_id).and_then(|editor| {
                             let text = editor.read(cx).text();
-                            sql_editor_adapter::build_statement_runs(&text)
-                                .get(ordinal)
+                            sql_editor_adapter::build_statement_runs(
+                                &text,
+                                this.query_editor_database_kind(tab_id),
+                            )
+                            .get(ordinal)
                                 .cloned()
                         })
                     })

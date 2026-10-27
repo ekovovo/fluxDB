@@ -166,13 +166,27 @@ pub fn load_er_relations_from_db_with(
 
     let mut edges = Vec::new();
     if database_kind_uses_schemas(config.kind) {
+        // 按 schema 分组后走批量外键接口：Oracle 一次登录读完整组，避免逐表 N+1；
+        // 未覆盖批量的方言（PG）由 trait 默认实现逐表回退，结果不变。
+        let mut by_schema: BTreeMap<String, Vec<String>> = BTreeMap::new();
         for path in &table_paths {
             // 本端结构化身份：所在 schema（未声明时按各库默认 schema）+ 裸名。
             let from_schema = path
                 .schema
                 .clone()
                 .unwrap_or_else(|| default_schema_for_kind(config.kind).to_string());
-            for fk in connector.list_foreign_keys(path)? {
+            by_schema
+                .entry(from_schema)
+                .or_default()
+                .push(path.name.clone());
+        }
+        for (from_schema, tables) in by_schema {
+            let batch = connector.list_foreign_keys_for_tables(
+                Some(&database),
+                Some(&from_schema),
+                &tables,
+            )?;
+            for (source_table, fk) in batch {
                 // 被引用端 schema：FK 元数据带则用之，否则继承本端 schema（同 schema 引用的常见情形）。
                 let to_schema = fk
                     .ref_schema
@@ -181,7 +195,7 @@ pub fn load_er_relations_from_db_with(
                 let from_ref = ErTableRef {
                     database: database.clone(),
                     schema: Some(from_schema.clone()),
-                    name: path.name.clone(),
+                    name: source_table,
                 };
                 let to_ref = ErTableRef {
                     database: database.clone(),
@@ -370,15 +384,22 @@ pub fn load_er_graph_in_background(
 /// 这些数据库的对象树是 database → schema → table 两层；ER 必须逐 schema 读取，
 /// 否则同库跨 schema 的同名表会被合并成一个节点。
 fn database_kind_uses_schemas(kind: DatabaseKind) -> bool {
+    // Oracle 的 schema 就是对象 Owner，也必须逐 Owner 读取，否则同名表会被合并。
     matches!(
         kind,
-        DatabaseKind::Postgres | DatabaseKind::Dameng | DatabaseKind::SqlServer
+        DatabaseKind::Postgres
+            | DatabaseKind::Dameng
+            | DatabaseKind::SqlServer
+            | DatabaseKind::Oracle
     )
 }
 
 fn default_schema_for_kind(kind: DatabaseKind) -> &'static str {
     match kind {
         DatabaseKind::SqlServer => "dbo",
+        // Oracle 没有跨会话稳定的默认 Owner：名称解析目标由连接档案的
+        // `CURRENT_SCHEMA` 决定，这里宁可留空也不伪造成某个固定 schema。
+        DatabaseKind::Oracle => "",
         _ => "public",
     }
 }

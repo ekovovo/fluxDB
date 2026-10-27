@@ -116,6 +116,7 @@ fn data_table_area(
         .when(loading, |builder| {
             builder.child(
                 div()
+                    .debug_selector(|| "data-table-loading-overlay".into())
                     .absolute()
                     .top_0()
                     .right_0()

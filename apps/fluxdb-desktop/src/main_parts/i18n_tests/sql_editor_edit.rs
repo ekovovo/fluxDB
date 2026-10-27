@@ -45,6 +45,7 @@ fn sql_editor_edit_journey(cx: &mut TestAppContext, repair: bool) {
         postgres_profile: None,
         dameng_profile: None,
         sqlserver_profile: None,
+        oracle_profile: None,
     }]));
     let event = controller.dispatch(AppCommand::SaveAiModel(AiModelSaveInput {
         display_name: "offline SQL edit fixture".into(),
@@ -132,7 +133,10 @@ fn sql_editor_edit_journey(cx: &mut TestAppContext, repair: bool) {
             .expect("production view")
     });
     if repair {
-        let statements = crate::sql_editor_adapter::build_statement_runs(original);
+        let statements = crate::sql_editor_adapter::build_statement_runs(
+            original,
+            fluxdb_core::DatabaseKind::MySql,
+        );
         cx.update(|_, cx| {
             view.update(cx, |app, _| {
                 app.query_execution_sources

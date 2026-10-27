@@ -19,7 +19,10 @@ fn sqlserver_apply_changes(
         .await;
         match result {
             Ok(outcome) => {
-                sqlserver_exec_transaction(&mut client, "COMMIT TRANSACTION").await?;
+                // 提交途中断连：服务端可能已提交，标成结果未知；服务端拒绝仍是确定失败。
+                sqlserver_exec_transaction(&mut client, "COMMIT TRANSACTION")
+                    .await
+                    .map_err(|error| error.mark_outcome_unknown("提交 SQL Server 事务"))?;
                 Ok(outcome)
             }
             Err(error) => {

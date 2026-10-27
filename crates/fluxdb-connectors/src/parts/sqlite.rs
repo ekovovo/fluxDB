@@ -695,7 +695,16 @@ fn sqlite_apply_changes(
             sqlx::query("COMMIT")
                 .execute(&mut connection)
                 .await
-                .map_err(sqlite_error)?;
+                .map_err(|error| {
+                    // 服务端回错误报文 = 已确定未提交；IO 断连 = 提交是否生效未知。
+                    let unknown = !matches!(error, sqlx::Error::Database(_));
+                    let error = sqlite_error(error);
+                    if unknown {
+                        error.mark_outcome_unknown("提交 SQLite 事务")
+                    } else {
+                        error
+                    }
+                })?;
             Ok(())
         }
         .await;

@@ -8,6 +8,7 @@ pub enum DatabaseKind {
     Postgres,
     Dameng,
     SqlServer,
+    Oracle,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
@@ -41,6 +42,9 @@ pub struct ConnectionConfig {
     /// SQL Server 专用结构化连接档案；历史连接缺省为 `None`。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sqlserver_profile: Option<SqlServerConnectionProfile>,
+    /// Oracle 专用结构化连接档案；历史连接缺省为 `None`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oracle_profile: Option<OracleConnectionProfile>,
 }
 
 impl ConnectionConfig {
@@ -137,6 +141,25 @@ impl ConnectionConfig {
             host,
             port,
             database: non_empty_string(&profile.basic.database),
+        };
+        config.options.extend(profile.into_options());
+        config
+    }
+
+    /// 若携带 Oracle 档案，则把档案归一化进 `endpoint` / `options`。
+    ///
+    /// `endpoint.database` 记录当前生效的 Service Name 或 SID，供对象树与补全复用；
+    /// 具体是哪一种由 `options["connect_kind"]` 区分。
+    pub fn oracle_resolved(&self) -> Self {
+        let Some(profile) = self.oracle_profile.clone() else {
+            return self.clone();
+        };
+        let mut config = self.clone();
+        let (host, port) = profile.dial_endpoint();
+        config.endpoint = Endpoint::Tcp {
+            host,
+            port,
+            database: non_empty_string(profile.target_name()),
         };
         config.options.extend(profile.into_options());
         config
@@ -414,6 +437,9 @@ pub struct ConnectionDraft {
     /// SQL Server 专用结构化连接档案；见 [`ConnectionConfig::sqlserver_profile`]。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sqlserver_profile: Option<SqlServerConnectionProfile>,
+    /// Oracle 专用结构化连接档案；见 [`ConnectionConfig::oracle_profile`]。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oracle_profile: Option<OracleConnectionProfile>,
 }
 
 impl ConnectionDraft {
@@ -429,6 +455,7 @@ impl ConnectionDraft {
             postgres_profile: self.postgres_profile,
             dameng_profile: self.dameng_profile,
             sqlserver_profile: self.sqlserver_profile,
+            oracle_profile: self.oracle_profile,
         }
     }
 }

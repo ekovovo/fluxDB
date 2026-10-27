@@ -4468,7 +4468,7 @@ fn create_table_sql_preview(
     let editor = sql_preview_editor(
         SharedString::from(format!("create-table-sql-preview-{}", tab_id.0)),
         &text,
-        sql_editor_adapter::SqlDialect::from_database_kind(create.database_kind),
+        create.database_kind,
         // 预览与 DDL 页签一致：不自动换行，长语句横向滚动查看。
         false,
         editor_theme,
@@ -4529,7 +4529,7 @@ fn create_table_ddl_preview(
     let editor = sql_preview_editor(
         SharedString::from(format!("create-table-ddl-preview-{}", tab_id.0)),
         &text,
-        sql_editor_adapter::SqlDialect::from_database_kind(create.database_kind),
+        create.database_kind,
         // 与 SQL 预览一致：不自动换行，长列定义横向滚动查看。
         false,
         editor_theme,

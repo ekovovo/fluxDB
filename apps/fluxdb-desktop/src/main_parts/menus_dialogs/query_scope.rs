@@ -237,6 +237,9 @@ fn automatic_query_database(config: &ConnectionConfig) -> Option<String> {
         }
         // SQL Server 登录默认库可由服务端决定；未填写时交给连接器回读 `DB_NAME()`。
         DatabaseKind::SqlServer => connection_default_database(config),
+        // Oracle 的对象 Owner 就是 schema，没有「库」这一层可选；
+        // 连接后的默认 schema 由档案决定，这里不自动选库。
+        DatabaseKind::Oracle => None,
     }
 }
 

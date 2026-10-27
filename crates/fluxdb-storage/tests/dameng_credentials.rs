@@ -42,6 +42,7 @@ fn dameng_profile_password_is_encrypted_and_restored() {
             advanced: DamengAdvancedOptions::default(),
         }),
         sqlserver_profile: None,
+        oracle_profile: None,
     };
 
     storage

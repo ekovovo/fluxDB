@@ -6,6 +6,7 @@ pub fn database_backup(kind: DatabaseKind) -> fluxdb_core::Result<Box<dyn Databa
         DatabaseKind::Sqlite => Ok(Box::new(SqliteBackup)),
         DatabaseKind::Dameng => Ok(Box::new(DamengBackup)),
         DatabaseKind::SqlServer => Ok(Box::new(SqlServerBackup)),
+        DatabaseKind::Oracle => Ok(Box::new(OracleBackup)),
         _ => Err(task_error("该数据库尚不支持备份与恢复")),
     }
 }
@@ -17,6 +18,7 @@ struct PostgresBackup;
 struct SqliteBackup;
 struct DamengBackup;
 struct SqlServerBackup;
+struct OracleBackup;
 /// 查询服务端主版本；探测失败时返回 Unknown，由调用方决定兼容策略。
 fn mysql_server_major(config: &ConnectionConfig) -> fluxdb_core::Result<u32> {
     let connector = connector_for(config)?;

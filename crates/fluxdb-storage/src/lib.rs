@@ -44,9 +44,9 @@ pub use instance_profile::{PROFILE_ENV, instance_profile};
 use fluxdb_core::{
     ColumnRef, CompletionIndexMeta, CompletionIndexSnapshot, ConnectionConfig, ConnectionId,
     ErRebindEntity, ErRelationship, Error, ErrorKind, MysqlConnectionProfile, MysqlTransportLayer,
-    PostgresConnectionProfile, PostgresTransportLayer, RedisConnectionProfile, Result, RoutineRef,
-    SavedQuery, SecretRef, Settings, SidebarLayout, SqlServerConnectionProfile, TableRef,
-    TriggerRef,
+    OracleConnectionProfile, PostgresConnectionProfile, PostgresTransportLayer,
+    RedisConnectionProfile, Result, RoutineRef, SavedQuery, SecretRef, Settings, SidebarLayout,
+    SqlServerConnectionProfile, TableRef, TriggerRef,
 };
 
 /// ER 逻辑关系目录的 kv key 前缀：`er_rel:{scope}` 存该作用域的 `Vec<ErRelationship>`。
@@ -764,6 +764,14 @@ impl FileStorage {
                 slot.key.clear();
             }
         }
+        if let Some(profile) = connection.oracle_profile.as_mut() {
+            for (kind, slot) in oracle_profile_secret_slots_mut(profile) {
+                if slot.inline.is_none() {
+                    slot.inline = self.best_effort_secret_read(id, kind);
+                }
+                slot.key.clear();
+            }
+        }
         Ok(connection)
     }
 
@@ -832,8 +840,8 @@ impl FileStorage {
 
     fn delete_owned_secrets(&self, connection: &ConnectionConfig) {
         use connection_secrets::{
-            DATABASE_PASSWORD, ENDPOINT_URI, PROXY_PASSWORD, SSH_PASSPHRASE, SSH_PASSWORD,
-            URL_PARAMS,
+            DATABASE_PASSWORD, ENDPOINT_URI, ORACLE_WALLET_PASSWORD, PROXY_PASSWORD,
+            SSH_PASSPHRASE, SSH_PASSWORD, URL_PARAMS,
         };
         for kind in [
             DATABASE_PASSWORD,
@@ -842,6 +850,7 @@ impl FileStorage {
             PROXY_PASSWORD,
             ENDPOINT_URI,
             URL_PARAMS,
+            ORACLE_WALLET_PASSWORD,
         ] {
             self.secret_backend_delete(connection.id, kind);
         }
@@ -1087,6 +1096,11 @@ fn strip_plaintext_secrets(connection: &ConnectionConfig) -> ConnectionConfig {
             slot.inline = None;
         }
     }
+    if let Some(profile) = connection.oracle_profile.as_mut() {
+        for (_, slot) in oracle_profile_secret_slots_mut(profile) {
+            slot.inline = None;
+        }
+    }
     connection
 }
 
@@ -1107,6 +1121,9 @@ fn profile_secret_slots_combined(connection: &ConnectionConfig) -> Vec<(&'static
     }
     if let Some(profile) = connection.sqlserver_profile.as_ref() {
         slots.extend(sqlserver_profile_secret_slots(profile));
+    }
+    if let Some(profile) = connection.oracle_profile.as_ref() {
+        slots.extend(oracle_profile_secret_slots(profile));
     }
     slots
 }
@@ -1290,4 +1307,36 @@ fn sqlserver_profile_secret_slots_mut(
         connection_secrets::DATABASE_PASSWORD,
         &mut profile.basic.password,
     )]
+}
+
+/// Oracle 有两个受控槽位：登录密码与 Wallet 口令。
+/// Wallet 口令与登录密码分开存，避免改密码时误删 Wallet 凭据。
+fn oracle_profile_secret_slots(
+    profile: &OracleConnectionProfile,
+) -> Vec<(&'static str, &SecretRef)> {
+    vec![
+        (
+            connection_secrets::DATABASE_PASSWORD,
+            &profile.basic.password,
+        ),
+        (
+            connection_secrets::ORACLE_WALLET_PASSWORD,
+            &profile.advanced.wallet_password,
+        ),
+    ]
+}
+
+fn oracle_profile_secret_slots_mut(
+    profile: &mut OracleConnectionProfile,
+) -> Vec<(&'static str, &mut SecretRef)> {
+    vec![
+        (
+            connection_secrets::DATABASE_PASSWORD,
+            &mut profile.basic.password,
+        ),
+        (
+            connection_secrets::ORACLE_WALLET_PASSWORD,
+            &mut profile.advanced.wallet_password,
+        ),
+    ]
 }

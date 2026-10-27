@@ -22,7 +22,12 @@ fn cell_detail_panel(
         .and_then(|row| row.values.get(active_cell.column))
         .cloned()
         .unwrap_or(CellValue::Null);
-    let value_text = cell_value_label(&value);
+    // 完整文本已按需加载时用它（复制/格式化/编辑都以完整值为准），否则显示带标记的预览。
+    let value_text = editor
+        .cell_detail_panel
+        .full_value
+        .clone()
+        .unwrap_or_else(|| cell_value_label(&value));
     let is_json = matches!(value, CellValue::Json(_)) || looks_like_json(&value_text);
     let is_binary = matches!(value, CellValue::Bytes(_) | CellValue::BinarySummary(_));
     let row_number = page.offset + active_cell.row as u64 + 1;
@@ -476,6 +481,12 @@ fn cell_detail_value_preview(
                     tr("app.cell_detail.hex_preview").replace("%{preview}", preview)
                 })
                 .unwrap_or_else(|| tr("app.cell_detail.no_hex_preview").to_string()),
+            colors.muted,
+        ),
+        // 预览是片段：完整值还在后台加载时明确标出来，别让人以为已经看全。
+        CellValue::TruncatedText { total_chars, .. } => (
+            tr("app.cell_detail.truncated_loading")
+                .replace("%{chars}", &total_chars.to_string()),
             colors.muted,
         ),
         _ => {

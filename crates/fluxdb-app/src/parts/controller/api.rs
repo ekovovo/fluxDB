@@ -565,6 +565,45 @@ impl AppController {
         load_cell_binary_for_connection(config, &editor.object, &identity, &column_name)
     }
 
+    /// 按需读取单元格完整文本（数据页里只有预览的截断 CLOB）。
+    ///
+    /// 只有 `TruncatedText` 需要走这里；完整文本已在数据页里，重复读取没有意义。
+    pub fn load_cell_text(
+        &self,
+        tab_id: TabId,
+        row: usize,
+        column: usize,
+    ) -> fluxdb_core::Result<String> {
+        let editor = self
+            .find_tab(tab_id)
+            .and_then(|tab| editable_data_editor(&tab.kind))
+            .ok_or_else(|| Error::new(ErrorKind::Internal, "数据结果不存在"))?;
+        match current_cell_value(editor, row, column)? {
+            CellValue::TruncatedText { .. } => {}
+            _ => {
+                return Err(Error::new(
+                    ErrorKind::Unsupported,
+                    "当前单元格不是截断文本，无需完整加载",
+                ));
+            }
+        }
+        let page = editor
+            .page
+            .as_ref()
+            .ok_or_else(|| Error::new(ErrorKind::Internal, "数据页未加载"))?;
+        let column_name = page
+            .columns
+            .get(column)
+            .map(|column| column.name.clone())
+            .ok_or_else(|| Error::new(ErrorKind::Internal, "列不存在"))?;
+        let identity = row_identity(page, row)?;
+        let config = self
+            .connection_config(editor.object.connection_id)
+            .ok_or_else(|| Error::new(ErrorKind::Connection, "连接不存在"))?;
+
+        load_cell_text_for_connection(config, &editor.object, &identity, &column_name)
+    }
+
     /// F005：选中补全项的说明文档（懒加载）。表/视图→列清单、列→注释、函数等→名称。
     /// 表/视图优先读内存 CompletionIndex，索引未覆盖该对象时按 (库, schema, 表) 取一次
     /// 列元数据并写回索引；对象取不到列 / 无可用文档返回 Error。

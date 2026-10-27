@@ -31,6 +31,26 @@
 - focus 边框：明亮主题 `rgb(0x111111)`，暗黑主题 `rgb(0x8ab4ff)`；hover 不得覆盖 focus。
 - 内部 Input 使用 `appearance(false)`、`focus_bordered(false)`、`w_full()`、`h_full()`，字号约 13px，保证光标垂直居中。
 
+## 详情页页签
+- 用户与权限面板（MySQL / PostgreSQL / SQL Server / Oracle）的右侧页签条统一由 `user_admin_detail_tab_strip` 构建：
+  高 36px、`flex_1` 等分、文字居中、页签间 `border_r_1`。
+- 不要按文字宽度撑开，也不要用固定 `px_3` 让总宽超出窄窗口；两者都会让同一功能在不同库间宽度参差、末页签被裁掉。
+- 每个页签传稳定英文 key（`general` / `member-of` / `privileges` / `sql-preview` 等）作 `debug_selector` 后缀，key 不进语言包。
+- 页签集合按库独立：`UserAdminDetailTab` 是四个枚举（`UserAdminMySqlTab` / `PgUserAdminTab` /
+  `SqlServerUserAdminTab` / `OracleUserAdminTab`）的包装，不再五库共用一个。给某一库加页签只改
+  它自己的枚举与面板，其它库的穷尽 `match` 不受影响。Oracle / 达梦是五页：常规、角色、
+  系统权限、对象权限、SQL 预览（`system-privileges` / `object-privileges`）。
+- 面板按库分派只经 `user_admin_panel_for(kind)` 一个分支点（`main_parts/user_admin/shared.rs`
+  里的 `UserAdminPanel` trait），公共壳里不再写按库的 `if` 链。
+- 切换时的额外加载（拉授权、生成预览）放在调用方给的回调里，不进共用组件。
+- “保存”在所有库里都是**两段式**：点保存先弹出统一的 SQL 确认框，展示本次要执行的语句，点“执行”才提交。五种库（MySQL / PostgreSQL / SQL Server / Oracle / 达梦）共用同一个确认框，内容就是各库“SQL 预览”页同一份渲染结果（`admin.pending_sql`）。
+- 表单只做草稿，不为单个库另建“加入变更 / 待执行列表”这类中间步骤。
+- 不要为某个库单独改保存语义——五种库的保存与确认流程必须一致。确认框确认后的执行路径由 `UserAdminPendingKind` 区分（各库计划构建与提交方式不同）。
+- “SQL 预览”内容框是 `flex_1`，必须放进高度受约束的 `flex_col` 容器（自己带背景和内边距），
+  不能套 `oracle_panel_shell` 这类 `overflow_y_scrollbar` 外壳：滚动层内部高度由内容撑开，
+  `flex_1` 拿不到确定高度会坍缩成 0，用户只看到一条空白细线。相关用例断言真实高度而不只是
+  元素存在。
+
 ## 右键菜单
 - 保持紧凑宽度，文字使用略重字重。
 - 二级浮层贴齐主菜单右侧边缘，避免明显水平缝隙或垂直错位。

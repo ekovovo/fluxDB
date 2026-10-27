@@ -1322,6 +1322,10 @@ fn sql_history_value_literal_for_type(
                 format!("X'{hex}'")
             }
         }
+        // 历史里只有预览片段：写 NULL 加注释，不把半截值渲染成可回放的字面量。
+        CellValue::TruncatedText { total_chars, .. } => {
+            format!("NULL /* 截断的 CLOB：共 {total_chars} 字符，需完整读取 */")
+        }
         CellValue::BinarySummary(summary) if summary.is_null => "NULL".to_string(),
         CellValue::BinarySummary(_) => "NULL".to_string(),
     }
@@ -1334,6 +1338,8 @@ fn sql_history_value_literal_for_rollback_with_type(
 ) -> Option<String> {
     match value {
         CellValue::BinarySummary(summary) if !summary.is_null => None,
+        // 回滚语句会用字面量覆盖真值：只有预览时无法还原，宁可不生成回滚。
+        CellValue::TruncatedText { .. } => None,
         value => Some(sql_history_value_literal_for_type(value, kind, type_name)),
     }
 }

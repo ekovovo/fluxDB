@@ -3,11 +3,32 @@
 // 提供纯函数语句切分器 `split_statements` 与 `statement_around`，
 // 均可被 fluxdb-editor-core 的 `ExecutionAdapter` 复用；不执行任何 SQL。
 
-/// 把 SQL 文本按 `;` 切分成语句区间（字节偏移，半开区间 `[start, end)`）。
+/// 按数据库方言切分语句（字节偏移，半开区间 `[start, end)`）。
 ///
-/// 切分时正确跳过字符串（`'`、`"`、反引号）与注释（`--`、`#`、`/* */`）。
-/// 返回的区间已去除首尾空白，但不包含结尾分号。
-pub fn split_statements(text: &str) -> Vec<Range> {
+/// 真正决定语句边界的是 [`fluxdb_app::sql_statement_byte_ranges`]：词法（`q'…'`、`$$…$$`、
+/// `#` 注释、反斜杠转义）与块结构（`BEGIN … END`、包体、`GO`、独占一行的 `/`）
+/// 都按连接类型判定，和执行侧的切分器**同一套规则**——否则编辑器切出的语句
+/// 送到驱动后是另一个东西。
+///
+/// 块语句（`BEGIN … END;`）的区间保留结尾分号：那是 PL/SQL / T-SQL 语法的一部分；
+/// 普通 SQL 不含结尾分号，与历史行为一致。
+///
+/// 词法器失败（例如 Oracle 条件编译 `$IF $$x`）时退回 [`legacy_split_statements`]。
+pub fn split_statements(text: &str, kind: DatabaseKind) -> Vec<Range> {
+    if let Some(ranges) = fluxdb_app::sql_statement_byte_ranges(text, kind) {
+        return ranges
+            .into_iter()
+            .map(|range| Range::new(range.start, range.end))
+            .collect();
+    }
+    legacy_split_statements(text)
+}
+
+/// 无方言概念的历史扫描器：`#` 一律当行注释、`\` 一律当转义、只认 `;`。
+///
+/// 仅作为词法器失败时的兜底。它的两处方言无关假设正是本轮要修的：
+/// PostgreSQL 的 `#` 是标识符字符、标准 SQL 里 `\` 不是转义。
+fn legacy_split_statements(text: &str) -> Vec<Range> {
     let bytes = text.as_bytes();
     let n = bytes.len();
     let mut statements = Vec::new();
@@ -158,167 +179,26 @@ pub fn split_statements(text: &str) -> Vec<Range> {
     statements
 }
 
-/// 在不可变编辑器快照上切分语句，不物化全文字符串。
+/// 在不可变编辑器快照上切分语句。
 ///
-/// 该扫描器与 `split_statements` 保持同一语义，但每次只读取一个 Rope 字节，
-/// 适合折叠、诊断索引和执行定位等只需要范围的路径。
+/// 与 [`split_statements`] 同一套方言规则；词法器需要完整 `&str`，因此这里把快照
+/// 拼成字符串。调用方（折叠、诊断、执行定位）都在编辑后的单次扫描里，复制一次
+/// 远小于「切错语句再执行」的代价。
 pub fn split_statement_ranges_snapshot(
     snapshot: &fluxdb_editor_core::BufferSnapshot,
+    kind: DatabaseKind,
 ) -> Vec<Range> {
-    let n = snapshot.len();
-    let mut statements = Vec::new();
-    let mut bytes = snapshot
-        .text_chunks_in_range(Range::new(0, n))
-        .flat_map(|chunk| chunk.iter().copied())
-        .enumerate()
-        .peekable();
-    let mut start_ptr = None;
-    let mut quote = None;
-    let mut in_block = false;
-    let mut in_line = false;
-
-    while let Some((i, b)) = bytes.next() {
-        if let Some(q) = quote {
-            if b == b'\\' && bytes.peek().is_some() {
-                bytes.next();
-                continue;
-            }
-            if b == q {
-                if bytes.peek().is_some_and(|(_, next)| *next == q) {
-                    bytes.next();
-                } else {
-                    quote = None;
-                }
-                continue;
-            }
-            continue;
-        }
-        if in_line {
-            if b == b'\n' {
-                in_line = false;
-            }
-            continue;
-        }
-        if in_block {
-            if b == b'*' && bytes.peek().is_some_and(|(_, next)| *next == b'/') {
-                in_block = false;
-                bytes.next();
-            }
-            continue;
-        }
-        // PG dollar-quoting：与 split_statements 同语义，跳过 `$tag$...$tag$`（含未闭合）。
-        if b == b'$' {
-            let at = |pos: usize| snapshot.byte_at(pos);
-            let mut j = i + 1;
-            let mut tag_start = 0usize;
-            let mut tag_len = 0usize;
-            let is_opener = match at(j) {
-                Some(b'$') => true, // `$$`：空标签
-                Some(c) if c.is_ascii_alphabetic() || c == b'_' => {
-                    tag_start = j;
-                    j += 1;
-                    while at(j).is_some_and(|c| c.is_ascii_alphanumeric() || c == b'_') {
-                        j += 1;
-                    }
-                    if at(j) == Some(b'$') {
-                        tag_len = j - tag_start;
-                        true
-                    } else {
-                        false
-                    }
-                }
-                _ => false,
-            };
-            if is_opener {
-                let opener_end = j + 1; // `$` 之后
-                let mut k = opener_end;
-                let mut closed = false;
-                while k + tag_len + 1 <= n {
-                    if at(k) == Some(b'$')
-                        && at(k + tag_len) == Some(b'$')
-                        && snapshot.text_in_range(Range::new(k + 1, k + 1 + tag_len))
-                            == snapshot.text_in_range(Range::new(tag_start, tag_start + tag_len))
-                    {
-                        // 跳到结束 `$` 之后：少消费 1 个（当前位已由外层 next 取过）。
-                        for _ in 0..(k + tag_len + 1 - i) {
-                            bytes.next();
-                        }
-                        closed = true;
-                        break;
-                    }
-                    k += 1;
-                }
-                if !closed {
-                    // 未闭合：消费到结尾。
-                    while bytes.next().is_some() {}
-                }
-                continue;
-            }
-            continue; // 非开启符，按普通字符（后续若为分号自然切分）
-        }
-        if b == b'\'' || b == b'"' || b == b'`' {
-            quote = Some(b);
-            continue;
-        }
-        if (b == b'-' && bytes.peek().is_some_and(|(_, next)| *next == b'-'))
-            || b == b'#'
-            || (b == b'/' && bytes.peek().is_some_and(|(_, next)| *next == b'/'))
-        {
-            in_line = true;
-            if b != b'#' {
-                bytes.next();
-            }
-            continue;
-        }
-        if b == b'/' && bytes.peek().is_some_and(|(_, next)| *next == b'*') {
-            in_block = true;
-            bytes.next();
-            continue;
-        }
-        if b == b';' {
-            if let Some(s) = start_ptr {
-                let mut end = i;
-                while end > s
-                    && snapshot
-                        .byte_at(end.saturating_sub(1))
-                        .is_some_and(|byte| byte.is_ascii_whitespace())
-                {
-                    end -= 1;
-                }
-                if end > s {
-                    statements.push(Range::new(s, end));
-                }
-                start_ptr = None;
-            }
-            continue;
-        }
-        if start_ptr.is_none() && !b.is_ascii_whitespace() {
-            start_ptr = Some(i);
-        }
-    }
-    if let Some(s) = start_ptr {
-        let mut end = n;
-        while end > s
-            && snapshot
-                .byte_at(end.saturating_sub(1))
-                .is_some_and(|byte| byte.is_ascii_whitespace())
-        {
-            end -= 1;
-        }
-        if end > s {
-            statements.push(Range::new(s, end));
-        }
-    }
-    statements
+    split_statements(&snapshot.to_string(), kind)
 }
 
-/// 在快照上定位光标所在语句，避免为执行单条 SQL 复制全文。
+/// 在快照上定位光标所在语句。
 pub fn statement_around_snapshot(
     snapshot: &fluxdb_editor_core::BufferSnapshot,
     offset: usize,
+    kind: DatabaseKind,
 ) -> Option<(usize, usize)> {
     let offset = snapshot.clamp_to_char_boundary(offset.min(snapshot.len()));
-    split_statement_ranges_snapshot(snapshot)
+    split_statement_ranges_snapshot(snapshot, kind)
         .into_iter()
         .find(|range| offset >= range.start && offset <= range.end)
         .map(|range| (range.start, range.end))
@@ -328,12 +208,12 @@ pub fn statement_around_snapshot(
 ///
 /// 若 offset 位于语句边界处（等于某结束端），归入该语句；否则返回
 /// `None` 供调用方决定回退策略。
-pub fn statement_around(text: &str, offset: usize) -> Option<(usize, usize)> {
+pub fn statement_around(text: &str, offset: usize, kind: DatabaseKind) -> Option<(usize, usize)> {
     let mut offset = offset.min(text.len());
     while offset > 0 && !text.is_char_boundary(offset) {
         offset -= 1;
     }
-    let statements = split_statements(text);
+    let statements = split_statements(text, kind);
     for stmt in &statements {
         if offset >= stmt.start && offset <= stmt.end {
             return Some((stmt.start, stmt.end));

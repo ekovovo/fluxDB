@@ -14,6 +14,7 @@ fn mock_connections() -> Vec<ConnectionConfig> {
             postgres_profile: None,
             dameng_profile: None,
             sqlserver_profile: None,
+            oracle_profile: None,
         },
         ConnectionConfig {
             id: ConnectionId(2),
@@ -30,6 +31,7 @@ fn mock_connections() -> Vec<ConnectionConfig> {
             postgres_profile: None,
             dameng_profile: None,
             sqlserver_profile: None,
+            oracle_profile: None,
         },
     ]
 }
@@ -414,6 +416,15 @@ fn load_cell_binary_for_connection(
     column: &str,
 ) -> fluxdb_core::Result<Vec<u8>> {
     connector_for(config)?.load_cell_binary(object, identity, column)
+}
+
+fn load_cell_text_for_connection(
+    config: &ConnectionConfig,
+    object: &ObjectPath,
+    identity: &RowIdentity,
+    column: &str,
+) -> fluxdb_core::Result<String> {
+    connector_for(config)?.load_cell_text(object, identity, column)
 }
 
 fn load_table_info_for_connection(

@@ -326,6 +326,7 @@ pub(crate) fn stage_error_code(error: &fluxdb_core::Error) -> String {
         fluxdb_core::ErrorKind::Query => "query",
         fluxdb_core::ErrorKind::Unsupported => "unsupported",
         fluxdb_core::ErrorKind::Internal => "internal",
+        fluxdb_core::ErrorKind::OutcomeUnknown => "write_outcome_unknown",
     }
     .to_string()
 }

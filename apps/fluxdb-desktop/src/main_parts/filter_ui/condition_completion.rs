@@ -161,7 +161,7 @@ fn data_filter_condition_completion_insert_text(
     dialect: sql_editor_adapter::SqlDialect,
 ) -> String {
     if item.kind == Some(CompletionItemKind::FIELD) {
-        sql_quote_ident(&item.label, database_kind_for_dialect(dialect))
+        sql_quote_ident(&item.label, dialect.database_kind())
     } else {
         item.insert_text
             .clone()
@@ -169,14 +169,6 @@ fn data_filter_condition_completion_insert_text(
     }
 }
 
-fn database_kind_for_dialect(dialect: sql_editor_adapter::SqlDialect) -> DatabaseKind {
-    match dialect {
-        sql_editor_adapter::SqlDialect::Mysql => DatabaseKind::MySql,
-        sql_editor_adapter::SqlDialect::Postgres => DatabaseKind::Postgres,
-        sql_editor_adapter::SqlDialect::Sqlite => DatabaseKind::Sqlite,
-        sql_editor_adapter::SqlDialect::SqlServer => DatabaseKind::SqlServer,
-    }
-}
 
 const DATA_FILTER_CONDITION_OPERATORS: &[(&str, &str)] = &[
     ("=", " = "),

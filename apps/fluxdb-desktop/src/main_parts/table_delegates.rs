@@ -253,6 +253,10 @@ const DATA_CELL_DISPLAY_LIMIT: usize = 300;
 fn data_cell_clipped_text(value: &CellValue) -> String {
     match value {
         CellValue::Text(text) | CellValue::Json(text) => clip_cell_text(text),
+        // 预览最长 4000 字符，不裁剪会每帧复制整段；补标记说明不是完整值。
+        CellValue::TruncatedText { preview, .. } => {
+            format!("{} …（仅预览）", clip_cell_text(preview))
+        }
         _ => data_cell_display_text(value),
     }
 }
@@ -279,6 +283,8 @@ fn cell_value_equals(value: &CellValue, expected: &str) -> bool {
         CellValue::I64(value) => value.to_string() == expected,
         CellValue::F64(value) => value.to_string() == expected,
         CellValue::Text(value) | CellValue::Json(value) => value == expected,
+        // 预览是前缀，只可能匹配到以它开头的选项。
+        CellValue::TruncatedText { preview, .. } => preview == expected,
     }
 }
 

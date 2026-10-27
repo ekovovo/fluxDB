@@ -799,6 +799,8 @@ pub struct UserAdminState {
     pub connection_id: ConnectionId,
     /// SQL Server 使用独立的 Login/User/Role 安全模型，避免与 MySQL/PG 字段混用。
     pub sqlserver: Option<SqlServerSecurityState>,
+    /// Oracle 用户与权限：账号即 schema，权限模型独立，不复用 MySQL/SQL Server 字段。
+    pub oracle: Option<OracleUserAdminState>,
     pub active_detail_tab: UserAdminDetailTab,
     pub users: Vec<DatabaseUserIdentity>,
     pub selected_user: Option<DatabaseUserIdentity>,
@@ -843,7 +845,16 @@ pub struct UserAdminState {
     pub ssl_subject: String,
     pub role_membership_edits: Vec<UserRoleMembership>,
     pub member_grant_edits: Vec<UserRoleMember>,
+    /// 「保存」后弹出的 SQL 确认框内容（五种库共用）。
+    ///
+    /// 保存是两段式：先把本次草稿渲染成的 SQL 放进这里并弹框展示，用户点「执行」
+    /// 才真正提交。`None` 表示没有待确认的 SQL。
     pub pending_sql: Option<UserAdminPendingSql>,
+    /// 本次预览是「点保存」触发的：预览完成时直接弹确认框，而不是只填预览页。
+    ///
+    /// PG / SQL Server 的预览要读服务端（版本探测等），只能异步生成；没有这个标记
+    /// 就分不清「用户切到预览页」和「用户点了保存」。Oracle 与 MySQL 同步渲染，不用它。
+    pub pending_sql_awaits_preview: bool,
     /// 待确认删除的用户（MySQL 用户与权限删除确认弹框）。
     pub pending_delete_user: Option<DatabaseUserIdentity>,
     /// PostgreSQL 对象权限（T27）：授权目标种类 + schema/对象/函数签名。
@@ -885,12 +896,10 @@ pub struct UserAdminState {
     pub pg_save_status: PgRoleSaveStatus,
     /// 变更计划构建/渲染错误。
     pub pg_plan_error: Option<UserFacingError>,
-    /// SQL 预览页内容（脱敏渲染结果）；None 表示尚未生成。
+    /// SQL 预览页内容（与执行同源的完整语句，含口令明文本；不进历史/日志/AI 上下文）；None 表示尚未生成。
     pub pg_plan_preview: Option<Vec<String>>,
     /// 预览生成中（后台任务未返回）。
     pub pg_preview_loading: bool,
-    /// 预览中是否包含被脱敏的密码语句（UI 标注「不能直接执行」）。
-    pub pg_plan_preview_masked: bool,
     /// 角色列表筛选：all / login / nologin / predefined。
     pub pg_role_filter: String,
     /// 待确认删除的角色（PG 删除确认弹框）。
@@ -1026,8 +1035,25 @@ pub struct UserAdminPrivilegeRow {
     pub grant_option: bool,
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+/// 用户与权限右栏页签。每个库一套，互不影响：
+///
+/// MySQL 一侧是「用户」，PG 一侧是「角色」，SQL Server 与 Oracle 是「账号/主体」，
+/// 页签集合本来就不同。曾经五库共用一个枚举，导致任何一库加页签都要改其它库的
+/// 穷尽 `match`；现在按库分开，新增页签只动自己那一支。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UserAdminDetailTab {
+    /// MySQL / TiDB：常规 / 高级 / 所属角色 / 角色成员 / 权限 / SQL 预览。
+    MySql(UserAdminMySqlTab),
+    /// PostgreSQL：常规 / 高级 / 成员关系 / 权限 / SQL 预览。
+    Postgres(PgUserAdminTab),
+    /// SQL Server：常规 / 角色 / 权限 / SQL 预览。
+    SqlServer(SqlServerUserAdminTab),
+    /// Oracle / 达梦：常规 / 角色 / 系统权限 / 对象权限 / SQL 预览。
+    Oracle(OracleUserAdminTab),
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum UserAdminMySqlTab {
     #[default]
     General,
     Advanced,
@@ -1035,6 +1061,75 @@ pub enum UserAdminDetailTab {
     Members,
     Privileges,
     SqlPreview,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PgUserAdminTab {
+    #[default]
+    General,
+    Advanced,
+    MemberOf,
+    Privileges,
+    SqlPreview,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SqlServerUserAdminTab {
+    #[default]
+    General,
+    Roles,
+    Permissions,
+    SqlPreview,
+}
+
+/// Oracle / 达梦的授权模型是三份独立清单，页签直接对应，不再挤在「权限」一个页里选类型。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum OracleUserAdminTab {
+    #[default]
+    General,
+    Roles,
+    SystemPrivileges,
+    ObjectPrivileges,
+    SqlPreview,
+}
+
+impl UserAdminDetailTab {
+    /// 新建标签页时的默认页签：按连接类型给出对应那一套的「常规」。
+    pub fn initial_for(scope: PrivilegeScope) -> Self {
+        match scope {
+            PrivilegeScope::Postgres => Self::Postgres(PgUserAdminTab::General),
+            PrivilegeScope::SqlServer => Self::SqlServer(SqlServerUserAdminTab::General),
+            PrivilegeScope::Oracle => Self::Oracle(OracleUserAdminTab::General),
+            _ => Self::MySql(UserAdminMySqlTab::General),
+        }
+    }
+
+    /// 回到「常规」页：各库各自的常规页。
+    pub fn general(self) -> Self {
+        match self {
+            Self::MySql(_) => Self::MySql(UserAdminMySqlTab::General),
+            Self::Postgres(_) => Self::Postgres(PgUserAdminTab::General),
+            Self::SqlServer(_) => Self::SqlServer(SqlServerUserAdminTab::General),
+            Self::Oracle(_) => Self::Oracle(OracleUserAdminTab::General),
+        }
+    }
+
+    /// MySQL 页签判定：非 MySQL 一律 `false`，调用方无需先判断库类型。
+    pub fn is_mysql(self, tab: UserAdminMySqlTab) -> bool {
+        self == Self::MySql(tab)
+    }
+
+    pub fn is_postgres(self, tab: PgUserAdminTab) -> bool {
+        self == Self::Postgres(tab)
+    }
+
+    pub fn is_sqlserver(self, tab: SqlServerUserAdminTab) -> bool {
+        self == Self::SqlServer(tab)
+    }
+
+    pub fn is_oracle(self, tab: OracleUserAdminTab) -> bool {
+        self == Self::Oracle(tab)
+    }
 }
 
 impl UserAdminState {
@@ -1046,7 +1141,8 @@ impl UserAdminState {
         Self {
             connection_id,
             sqlserver: None,
-            active_detail_tab: UserAdminDetailTab::General,
+            oracle: None,
+            active_detail_tab: UserAdminDetailTab::initial_for(scope),
             users: Vec::new(),
             selected_user: None,
             pending_selected_user: None,
@@ -1090,6 +1186,7 @@ impl UserAdminState {
             role_membership_edits: Vec::new(),
             member_grant_edits: Vec::new(),
             pending_sql: None,
+            pending_sql_awaits_preview: false,
             pending_delete_user: None,
             pg_grant_kind: PgGrantObjectKind::default(),
             pg_grant_schema: String::new(),
@@ -1116,7 +1213,6 @@ impl UserAdminState {
             pg_plan_error: None,
             pg_plan_preview: None,
             pg_preview_loading: false,
-            pg_plan_preview_masked: false,
             pg_role_filter: "all".to_string(),
             pg_pending_delete: None,
             pg_pending_switch: None,
@@ -1147,11 +1243,11 @@ impl UserAdminState {
     /// MySQL/TiDB 工具栏「取消」：丢弃本地草稿，回到当前选中用户的服务端基线。
     ///
     /// 新建态没有基线，取消即结束新建并回到已选中用户（没有则清空表单）；对象权限行
-    /// 回到基线副本，成员/授权草稿、待执行 SQL 与密码字段全部丢弃。
+    /// 回到基线副本，成员/授权草稿与密码字段全部丢弃。
     pub fn discard_mysql_edits(&mut self) {
         self.creating_user = false;
         self.pending_selected_user = None;
-        self.active_detail_tab = UserAdminDetailTab::General;
+        self.active_detail_tab = self.active_detail_tab.general();
         self.pending_sql = None;
         self.apply_error = None;
         self.grants.clear();
@@ -1208,7 +1304,6 @@ impl UserAdminState {
         self.pg_grant_edits.clear();
         self.pg_plan_preview = None;
         self.pg_preview_loading = false;
-        self.pg_plan_preview_masked = false;
         self.pg_plan_error = None;
         self.pg_pending_switch = None;
         self.pg_reset_grant_target_session();
@@ -1218,7 +1313,7 @@ impl UserAdminState {
         } else {
             self.pg_reset_draft_from_baseline();
         }
-        self.active_detail_tab = UserAdminDetailTab::General;
+        self.active_detail_tab = self.active_detail_tab.general();
     }
     /// 清空权限页目标选择及其读取结果；数据库/Schema/对象都必须由用户重新显式选择。
     pub fn pg_reset_grant_target_session(&mut self) {
@@ -1247,9 +1342,8 @@ impl UserAdminState {
         self.pg_pending_switch = None;
         self.pg_plan_preview = None;
         self.pg_preview_loading = false;
-        self.pg_plan_preview_masked = false;
         self.pg_plan_error = None;
-        self.active_detail_tab = UserAdminDetailTab::General;
+        self.active_detail_tab = self.active_detail_tab.general();
     }
 
     /// 预定义角色（pg_ 前缀）：不提供属性编辑/删除，仅可查看权限与按授权能力管理成员。
@@ -1296,7 +1390,12 @@ impl UserAdminState {
     }
 
     /// 「所属角色」：当前角色直接所在的组角色（读取 pg_auth_members 过滤）。
+    ///
+    /// 新建草稿在服务端还没有角色行，返回空 —— 新角色的成员关系只能靠追加。
     pub fn pg_member_of_roles(&self) -> Vec<&PgRoleMembership> {
+        if self.pg_draft.as_ref().is_some_and(|draft| draft.create) {
+            return Vec::new();
+        }
         let selected = self.pg_selected_role.as_deref();
         self.pg_memberships
             .iter()
@@ -1306,6 +1405,9 @@ impl UserAdminState {
 
     /// 「此角色的成员」：把当前角色授予了哪些成员。
     pub fn pg_members_of_role(&self) -> Vec<&PgRoleMembership> {
+        if self.pg_draft.as_ref().is_some_and(|draft| draft.create) {
+            return Vec::new();
+        }
         let selected = self.pg_selected_role.as_deref();
         self.pg_memberships
             .iter()
@@ -1351,7 +1453,9 @@ impl UserAdminState {
     }
 
     pub fn effective_role_memberships(&self) -> Vec<UserRoleMembership> {
-        let Some(user) = self.selected_user.as_ref().filter(|_| !self.creating_user) else {
+        // 新建草稿也走这里：草稿用户没有服务端授权，基线天然全为「未授予」，
+        // 勾选只会产生 GRANT，随创建语句在同一次保存里提交。
+        let Some(user) = self.selected_user.as_ref() else {
             return Vec::new();
         };
         let mut memberships = role_memberships_from_grants(&self.users, &self.grants, user);
@@ -1392,9 +1496,26 @@ impl UserAdminState {
     }
 
     pub fn effective_role_members(&self) -> Vec<UserRoleMember> {
-        let Some(role) = self.selected_user.as_ref().filter(|_| !self.creating_user) else {
+        let Some(role) = self.selected_user.as_ref() else {
             return Vec::new();
         };
+        // 新建草稿不在服务端，没有可读的成员基线：候选取现有账号列表，全部按
+        // 「未授予」起算，勾选只会生成 GRANT。
+        if self.creating_user {
+            return self
+                .users
+                .iter()
+                .filter(|user| *user != role)
+                .map(|user| UserRoleMember {
+                    member: user.clone(),
+                    granted: self
+                        .member_grant_edits
+                        .iter()
+                        .find(|edit| edit.member == *user)
+                        .is_some_and(|edit| edit.granted),
+                })
+                .collect();
+        }
         let mut members = self
             .member_grants
             .iter()
@@ -1547,6 +1668,31 @@ impl UserAdminState {
     }
 }
 
+/// 「保存」确认框里待执行的 SQL（五种库共用同一弹框）。
+///
+/// 只存在内存里：不落历史、日志或 AI 上下文；口令按草稿原样显示，与「SQL 预览」页一致。
+#[derive(Clone, Debug, PartialEq)]
+pub struct UserAdminPendingSql {
+    pub sql: String,
+    /// 是否包含破坏性语句（DROP / REVOKE 等），决定确认按钮用危险色。
+    pub danger: bool,
+    /// 确认后走哪条执行路径：各库的计划构建与提交方式不同，不能按 SQL 文本猜。
+    pub kind: UserAdminPendingKind,
+}
+
+/// 确认框确认后要调用的执行路径。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum UserAdminPendingKind {
+    /// MySQL / TiDB：直接执行渲染出的语句。
+    MySql,
+    /// PostgreSQL：重新构建角色计划并单事务提交。
+    Postgres,
+    /// SQL Server：重新构建安全计划并事务提交。
+    SqlServer,
+    /// Oracle / 达梦：重新合成计划后逐条提交（不可整体回滚）。
+    Oracle,
+}
+
 fn normalized_user_admin_privilege_rows(
     rows: &[UserAdminPrivilegeRow],
 ) -> Vec<(String, Vec<String>, bool)> {
@@ -1562,12 +1708,6 @@ fn normalized_user_admin_privilege_rows(
         .collect::<Vec<_>>();
     rows.sort();
     rows
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct UserAdminPendingSql {
-    pub sql: String,
-    pub danger: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1695,6 +1835,12 @@ pub struct CellDetailPanelState {
     pub active_cell: Option<CellPosition>,
     pub mode: CellDetailMode,
     pub edit_value: String,
+    /// 按需读到的完整文本；`None` 表示面板里只有数据页带的预览。
+    ///
+    /// 预览是片段，不能当完整值保存，因此编辑前必须先有这里的完整值。
+    pub full_value: Option<String>,
+    /// 用户已点「编辑」，但完整文本还在加载：读完后直接进编辑态，不用再点一次。
+    pub pending_edit: bool,
 }
 
 impl Default for CellDetailPanelState {
@@ -1704,6 +1850,8 @@ impl Default for CellDetailPanelState {
             active_cell: None,
             mode: CellDetailMode::View,
             edit_value: String::new(),
+            full_value: None,
+            pending_edit: false,
         }
     }
 }

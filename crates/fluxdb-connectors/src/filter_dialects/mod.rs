@@ -15,6 +15,7 @@ use sqlparser::parser::Parser;
 
 pub mod dameng;
 pub mod mysql;
+pub mod oracle;
 pub mod postgres;
 pub mod sqlite;
 pub mod sqlserver;
@@ -29,6 +30,7 @@ pub fn filter_dialect(kind: DatabaseKind) -> Option<&'static dyn FilterDialect> 
         // 达梦当前连接器使用 Oracle 风格标识符和 LIMIT/OFFSET；以 PostgreSQL
         // 的表达式语法为基础，差异只在引用与函数层，后续可独立替换实现。
         DatabaseKind::Dameng => Some(&dameng::DAMENG_SYNTAX),
+        DatabaseKind::Oracle => Some(&oracle::ORACLE_SYNTAX),
         DatabaseKind::MongoDb | DatabaseKind::Redis => None,
     }
 }
@@ -40,6 +42,7 @@ pub enum FilterSyntax {
     SqlServer,
     Sqlite,
     Dameng,
+    Oracle,
 }
 
 impl FilterDialect for FilterSyntax {
@@ -106,6 +109,7 @@ fn filter_syntax(kind: DatabaseKind) -> Option<FilterSyntax> {
         DatabaseKind::Sqlite => Some(FilterSyntax::Sqlite),
         DatabaseKind::SqlServer => Some(FilterSyntax::SqlServer),
         DatabaseKind::Dameng => Some(FilterSyntax::Dameng),
+        DatabaseKind::Oracle => Some(FilterSyntax::Oracle),
         DatabaseKind::MongoDb | DatabaseKind::Redis => None,
     }
 }
@@ -122,6 +126,9 @@ fn parser_dialect(syntax: FilterSyntax) -> &'static dyn SqlParserDialect {
         FilterSyntax::Sqlite => &SQLITE,
         // 达梦沿用 SQL 表达式语义，仅渲染目标类型与标识符规则单独处理。
         FilterSyntax::Dameng => &POSTGRES,
+        // Oracle 条件表达式与 PostgreSQL 足够接近（`IS NULL`/`LIKE … ESCAPE`/`BETWEEN`），
+        // 差异集中在引用、占位符与假值语义，由渲染层处理。
+        FilterSyntax::Oracle => &POSTGRES,
     }
 }
 
@@ -571,12 +578,8 @@ fn render_condition(
         return Ok(match condition.op {
             FilterOperator::IsNull => format!("{field} IS NULL"),
             FilterOperator::IsNotNull => format!("{field} IS NOT NULL"),
-            FilterOperator::IsEmpty => {
-                format!("{field} = {}", empty_string_literal(syntax))
-            }
-            FilterOperator::IsNotEmpty => {
-                format!("{field} != {}", empty_string_literal(syntax))
-            }
+            FilterOperator::IsEmpty => empty_condition_sql(&field, syntax, false),
+            FilterOperator::IsNotEmpty => empty_condition_sql(&field, syntax, true),
             _ => unreachable!(),
         });
     }
@@ -628,8 +631,8 @@ fn render_condition(
         }
         FilterOperator::IsNull => format!("{field} IS NULL"),
         FilterOperator::IsNotNull => format!("{field} IS NOT NULL"),
-        FilterOperator::IsEmpty => format!("{field} = {}", empty_string_literal(syntax)),
-        FilterOperator::IsNotEmpty => format!("{field} != {}", empty_string_literal(syntax)),
+        FilterOperator::IsEmpty => empty_condition_sql(&field, syntax, false),
+        FilterOperator::IsNotEmpty => empty_condition_sql(&field, syntax, true),
         FilterOperator::Between => format!("{field} BETWEEN {} AND {}", value(0)?, value(1)?),
         FilterOperator::NotBetween => {
             format!("{field} NOT BETWEEN {} AND {}", value(0)?, value(1)?)
@@ -661,7 +664,9 @@ fn render_literal(value: &FilterValue, syntax: FilterSyntax) -> String {
         FilterValue::Integer(value) => value.to_string(),
         FilterValue::Float(value) => value.to_string(),
         FilterValue::Boolean(value) => {
-            if matches!(syntax, FilterSyntax::SqlServer) {
+            // SQL Server 与 Oracle 都没有可在 WHERE 中直接使用的布尔字面量：
+            // Oracle 的 BOOLEAN 只在 PL/SQL 中可用，SQL 层统一按 1/0 表达。
+            if matches!(syntax, FilterSyntax::SqlServer | FilterSyntax::Oracle) {
                 if *value {
                     "1".to_string()
                 } else {
@@ -721,6 +726,7 @@ fn like_field_sql(
         FilterSyntax::MySql => "CHAR",
         FilterSyntax::SqlServer => "NVARCHAR(MAX)",
         FilterSyntax::Dameng => "VARCHAR(4000)",
+        FilterSyntax::Oracle => "VARCHAR2(4000)",
     };
     format!("CAST({field} AS {target})")
 }
@@ -770,11 +776,31 @@ fn quote_identifier(value: &str, syntax: FilterSyntax) -> String {
     }
 }
 
+/// 空字符串字面量。
+///
+/// Oracle 把长度 0 的字符串当作 NULL，`col = ''` 永远不成立，因此 Oracle 的
+/// 「是空的 / 非空的」不走本函数，而由 [`empty_condition_sql`] 渲染成
+/// `IS NULL` / `IS NOT NULL`。
 fn empty_string_literal(syntax: FilterSyntax) -> &'static str {
     if matches!(syntax, FilterSyntax::SqlServer) {
         "N''"
     } else {
         "''"
+    }
+}
+
+/// 「是空的 / 是非空的」条件。
+///
+/// Oracle 无法区分空字符串与 NULL（`''` 即 NULL），只能表达 `IS [NOT] NULL`；
+/// 其它方言沿用 `= ''` / `!= ''`。
+fn empty_condition_sql(field: &str, syntax: FilterSyntax, negated: bool) -> String {
+    match syntax {
+        FilterSyntax::Oracle => format!("{field} IS {}NULL", if negated { "NOT " } else { "" }),
+        _ => format!(
+            "{field} {} {}",
+            if negated { "!=" } else { "=" },
+            empty_string_literal(syntax)
+        ),
     }
 }
 
@@ -893,6 +919,9 @@ fn compile_condition(
         match syntax {
             FilterSyntax::Postgres => format!("${}", parameters.len()),
             FilterSyntax::SqlServer => format!("@P{}", parameters.len()),
+            // Oracle 只接受 `:N` 位置绑定，且同一个 `:N` 出现在多处时驱动会要求
+            // 提供同等数量的绑定值；因此这里按出现顺序生成唯一的 `:1, :2, …`。
+            FilterSyntax::Oracle => format!(":{}", parameters.len()),
             _ => "?".to_string(),
         }
     };
@@ -900,12 +929,8 @@ fn compile_condition(
         return Ok(match condition.op {
             FilterOperator::IsNull => format!("{field} IS NULL"),
             FilterOperator::IsNotNull => format!("{field} IS NOT NULL"),
-            FilterOperator::IsEmpty => {
-                format!("{field} = {}", empty_string_literal(syntax))
-            }
-            FilterOperator::IsNotEmpty => {
-                format!("{field} != {}", empty_string_literal(syntax))
-            }
+            FilterOperator::IsEmpty => empty_condition_sql(&field, syntax, false),
+            FilterOperator::IsNotEmpty => empty_condition_sql(&field, syntax, true),
             _ => unreachable!(),
         });
     }
@@ -954,8 +979,8 @@ fn compile_condition(
         }
         FilterOperator::IsNull => format!("{field} IS NULL"),
         FilterOperator::IsNotNull => format!("{field} IS NOT NULL"),
-        FilterOperator::IsEmpty => format!("{field} = {}", empty_string_literal(syntax)),
-        FilterOperator::IsNotEmpty => format!("{field} != {}", empty_string_literal(syntax)),
+        FilterOperator::IsEmpty => empty_condition_sql(&field, syntax, false),
+        FilterOperator::IsNotEmpty => empty_condition_sql(&field, syntax, true),
         FilterOperator::Between | FilterOperator::NotBetween => {
             let first = bind(parameters, value(0)?);
             let second = bind(parameters, value(1)?);

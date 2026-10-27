@@ -388,6 +388,9 @@ fn database_backup_general_body(
                 .replace("%{name}", &resolve_backup_file_name(form)),
             if form.database_kind == DatabaseKind::Sqlite {
                 tr("app.database_backup.sqlite_snapshot_note")
+            } else if form.database_kind == DatabaseKind::Oracle {
+                // Oracle 没有可用的本机原生备份：产出是逻辑导出，不能让人误以为可完整恢复。
+                tr("app.database_backup.oracle_logical_note")
             } else {
                 "".into()
             }

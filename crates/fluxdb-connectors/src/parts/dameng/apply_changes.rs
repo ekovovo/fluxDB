@@ -95,7 +95,8 @@ fn dm_apply_changes(
             if let Err(error) = client.commit().map_err(|error| dm_error("提交达梦事务失败", error)) {
                 let _ = client.rollback();
                 client.close();
-                return Err(error);
+                // 传输层失败（断连/超时）= 提交是否生效未知；服务端拒绝仍是确定失败。
+                return Err(error.mark_outcome_unknown("提交达梦事务"));
             }
             client.close();
             Ok(AppliedChangeOutcome::default())

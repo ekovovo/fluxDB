@@ -393,6 +393,7 @@ fn localize_backend_error_text(text: &str) -> String {
         "ER 关系删除失败" => "app.backend_error.title_er_delete_failed",
         "连接失败" => "app.backend_error.title_connection_failed",
         "连接超时" => "app.backend_error.title_connection_timeout",
+        "结果未知" => "app.backend_error.title_outcome_unknown",
         "摘要未正常结束，拒绝提交" => "app.backend_error.app_msg_summary_unfinished",
         "解析器已结束" => "app.backend_error.app_msg_parser_finished",
         "模型 token 用量无效" => "app.backend_error.app_msg_model_token_usage_invalid",

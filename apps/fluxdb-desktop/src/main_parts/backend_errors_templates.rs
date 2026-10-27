@@ -337,6 +337,13 @@ fn localize_backend_template_error(text: &str) -> Option<String> {
             "达梦恢复执行失败，可能已留下部分对象：{}",
         ),
         ("app.backend_error.tmpl_297", "XML 第 {} 行格式无效"),
+        // Oracle 查询超时：驱动发 INTERRUPT 打断语句，改了哪些行无从得知。
+        ("app.backend_error.tmpl_298", "已超时：结果待核实（{}）"),
+        // Oracle 页满即止：`returned` 是「读了多行」而不是结果集总行数，不能沿用上面那条。
+        (
+            "app.backend_error.tmpl_299",
+            "已读取 {} 行，当前仅展示 {} 行（结果已截断）",
+        ),
     ];
     for (key, template) in TEMPLATES {
         if let Some(values) = match_backend_template(text, template) {

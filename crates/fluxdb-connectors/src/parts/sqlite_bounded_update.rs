@@ -208,8 +208,17 @@ fn sqlite_bounded_update(
             sqlx::query("COMMIT")
                 .execute(&mut connection)
                 .await
-                .map_err(|_| {
-                    Error::new(ErrorKind::Internal, "有界写入提交结果未知，禁止自动重试")
+                .map_err(|error| {
+                    // 服务端回了错误报文（BUSY/约束等）= 事务未被提交，是确定失败；
+                    // 没有报文说明是 IO 断连，提交是否生效未知，禁止自动重试。
+                    if matches!(error, sqlx::Error::Database(_)) {
+                        Error::new(ErrorKind::Query, format!("有界写入提交失败：{error}"))
+                    } else {
+                        Error::new(
+                            ErrorKind::OutcomeUnknown,
+                            format!("有界写入提交结果未知，禁止自动重试：{error}"),
+                        )
+                    }
                 })?;
             Ok(result)
         }
@@ -222,7 +231,7 @@ fn sqlite_bounded_update(
                 .is_err()
             {
                 return Err(Error::new(
-                    ErrorKind::Internal,
+                    ErrorKind::OutcomeUnknown,
                     "有界写入回滚结果无法核实，禁止自动重试",
                 ));
             }

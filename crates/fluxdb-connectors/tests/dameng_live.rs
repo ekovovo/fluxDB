@@ -241,10 +241,7 @@ fn dameng_live_connection_objects_query_and_transaction() {
                 }],
                 updates: vec![RowUpdate {
                     identity: RowIdentity { values: identity },
-                    cells: vec![CellUpdate {
-                        column: "NAME".into(),
-                        value: CellValue::Text("updated".into()),
-                    }],
+                    cells: vec![CellUpdate::new("NAME", CellValue::Text("updated".into()))],
                 }],
                 deletes: vec![RowIdentity {
                     values: [("ID".to_string(), CellValue::I64(2))].into(),

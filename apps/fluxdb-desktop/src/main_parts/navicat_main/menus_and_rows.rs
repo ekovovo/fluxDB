@@ -733,6 +733,19 @@ impl NavicatMain {
         if row_snapshots.is_empty() {
             return;
         };
+        // 行里有只加载了预览的字段：复制成 SQL/TSV 会带出片段或占位 NULL，
+        // 贴回去就是覆盖真值，直接拒绝并指路。
+        if row_snapshots
+            .iter()
+            .any(|snapshot| snapshot.fields.iter().any(|field| field.value.is_truncated()))
+        {
+            self.show_message(
+                tr("app.cell_detail.large_copy_disabled"),
+                AppMessageKind::Warning,
+                cx,
+            );
+            return;
+        }
         let object = row_snapshots[0].object.clone();
         // 复制为 SQL 时按该连接方言渲染字面量/标识符（PG 双引号 + `'\x..'::bytea`）。
         let copy_db_kind = object
@@ -803,6 +816,13 @@ impl NavicatMain {
         }
     }
 
+    /// 选区里是否有只加载了预览的单元格（复制/导出前统一拦一次）。
+    fn selection_has_truncated_cells(&self, tab_id: TabId, cx: &App) -> bool {
+        self.data_table_states
+            .get(&tab_id)
+            .is_some_and(|table| table.read(cx).delegate().selection_contains_truncated())
+    }
+
     fn data_table_selection_export(
         &self,
         tab_id: TabId,
@@ -814,6 +834,14 @@ impl NavicatMain {
     }
 
     fn copy_data_table_selection(&mut self, tab_id: TabId, cx: &mut Context<Self>) -> bool {
+        if self.selection_has_truncated_cells(tab_id, cx) {
+            self.show_message(
+                tr("app.cell_detail.large_copy_disabled"),
+                AppMessageKind::Warning,
+                cx,
+            );
+            return false;
+        }
         let Some(export) = self.data_table_selection_export(tab_id, cx) else {
             return false;
         };
@@ -829,6 +857,14 @@ impl NavicatMain {
     }
 
     fn export_data_table_selection(&mut self, tab_id: TabId, cx: &mut Context<Self>) -> bool {
+        if self.selection_has_truncated_cells(tab_id, cx) {
+            self.show_message(
+                tr("app.data_export.error.truncated_value").replace("%{column}", ""),
+                AppMessageKind::Warning,
+                cx,
+            );
+            return false;
+        }
         let Some(export) = self.data_table_selection_export(tab_id, cx) else {
             return false;
         };

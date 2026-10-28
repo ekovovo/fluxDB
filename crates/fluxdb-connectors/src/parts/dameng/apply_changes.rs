@@ -3,6 +3,7 @@ fn dm_apply_changes(
     changes: &DataChangeSet,
 ) -> fluxdb_core::Result<AppliedChangeOutcome> {
     validate_data_changes(changes)?;
+    reject_streamed_values(changes)?;
     let schema = dm_request_schema(config, &changes.object)?;
     let mut client = dm_connect(config)?;
     let columns = dm_load_columns(&mut client, &schema, &changes.object.name)?;
@@ -32,7 +33,7 @@ fn dm_apply_changes(
                 .iter()
                 .map(|cell| {
                     ensure_column_exists(&cell.column, &columns)?;
-                    params.push(dm_param(&cell.value));
+                    params.push(dm_param(cell.value.placeholder()));
                     Ok(format!(
                         "{} = ?",
                         fluxdb_core::DamengDialect.quote_identifier(&cell.column)

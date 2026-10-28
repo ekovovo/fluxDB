@@ -15,10 +15,11 @@ fn data_editor_footer(
     let page_size = data_page_limit(page.limit);
     let page_no = data_page_number(page.offset, page_size);
     let can_previous = page.offset > 0;
-    let can_next = page.has_more && page_no < DATA_EDITOR_MAX_PAGE;
+    // 预算截断的短页也是「还有内容」：但它停在未展示行上，必须从真实消费位置继续。
+    let can_next = (page.has_more || page.incomplete.is_some()) && page_no < DATA_EDITOR_MAX_PAGE;
     let can_last = can_next;
     let previous_offset = page.offset.saturating_sub(page_size);
-    let next_offset = page.offset.saturating_add(page_size);
+    let next_offset = page.next_offset();
     let last_offset = data_page_offset_for_supported_page(DATA_EDITOR_MAX_PAGE, page_size);
     let has_changes = change_count.is_some_and(|count| count > 0);
     // 提交在后台进行时禁用写操作：避免用户在同一批数据上继续改动或重复提交。
@@ -226,6 +227,10 @@ fn data_editor_footer(
         )
 }
 
+/// 本页被资源上限截断时在页脚说明原因。
+///
+/// 预算截断不是普通「还有下一页」：用户必须知道这一页少了行、以及为什么少了，
+/// 否则会以为数据本身就只有这么多。
 const DATA_EDITOR_MAX_PAGE: u64 = 100;
 
 fn data_page_limit(limit: u64) -> u64 {
@@ -893,4 +898,57 @@ fn center_loading_message(text: impl Into<String>, colors: UiColors) -> Div {
         .text_color(colors.muted)
         .child(loading_spinner_with_color(20., colors.muted))
         .child(text.into())
+}
+
+#[cfg(test)]
+mod data_page_advance_tests {
+    use fluxdb_core::{CellValue, Column, DataPage, Row};
+
+    fn page(offset: u64, limit: u64, rows: usize, has_more: bool, incomplete: bool) -> DataPage {
+        DataPage {
+            columns: vec![Column {
+                name: "id".into(),
+                type_name: Some("int".into()),
+                nullable: false,
+                primary_key: true,
+                comment: None,
+            }],
+            rows: (0..rows)
+                .map(|index| Row {
+                    values: vec![CellValue::I64((offset + index as u64) as i64)],
+                })
+                .collect(),
+            offset,
+            limit,
+            has_more,
+            incomplete: incomplete.then(|| fluxdb_core::PageIncomplete {
+                reason: "预算不足".into(),
+            }),
+        }
+    }
+
+    /// 配置页大小 100、实际只消费 20 行：下一页必须从 20 继续，不能跳到 100。
+    #[test]
+    fn truncated_short_page_advances_from_consumed_rows() {
+        let page = page(0, 100, 20, false, true);
+        assert_eq!(page.next_offset(), 20);
+        assert_ne!(page.next_offset(), page.offset + page.limit);
+        let can_next = page.has_more || page.incomplete.is_some();
+        assert!(can_next, "截断的短页仍可继续翻页");
+    }
+
+    /// 普通完整页保持原行为：按行数推进。
+    #[test]
+    fn complete_full_page_advances_by_rows() {
+        let page = page(100, 100, 100, true, false);
+        assert_eq!(page.next_offset(), 200);
+        assert!(page.has_more);
+    }
+
+    /// 最后一页没有更多内容：不可继续。
+    #[test]
+    fn last_page_disables_next() {
+        let page = page(200, 100, 13, false, false);
+        assert!(!(page.has_more || page.incomplete.is_some()));
+    }
 }

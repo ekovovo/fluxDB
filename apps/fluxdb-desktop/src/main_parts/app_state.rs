@@ -1293,7 +1293,10 @@ struct DataCellContextMenu {
     column_name: String,
     type_name: String,
     nullable: bool,
+    /// 单元格显示值；截断/超大字段时带「仅预览」标记，不能当权威数据复制。
     value: String,
+    /// 该值只是预览（截断的 CLOB 或超大字段）：复制必须拒绝，改走完整读取或流式保存。
+    value_truncated: bool,
     submenu: Option<DataCellContextSubmenu>,
     selection_row_count: usize,
     selection_copy_label: Option<String>,
@@ -1711,6 +1714,18 @@ enum TemporalEditTarget {
 struct QueryResultCellDetail {
     row: usize,
     column: usize,
+}
+
+/// 详情面板里大字段的分段只读窗口（UI 侧状态）。
+///
+/// 完整内容不进 UI 进程：这里只存按块读到的有上限窗口。键与打开中的详情一致，
+/// 换单元格、关闭面板、关闭标签都要丢掉，避免把旧窗口错挂到新单元格上。
+#[derive(Clone, Debug, PartialEq)]
+struct LargeValueWindows {
+    /// 窗口所属单元格（可编辑结果用 `row/column`；只读结果同样用它）。
+    row: usize,
+    column: usize,
+    view: fluxdb_app::LargeValueView,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

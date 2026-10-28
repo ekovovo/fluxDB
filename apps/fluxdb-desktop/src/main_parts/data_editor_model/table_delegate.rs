@@ -549,6 +549,7 @@ impl TableDelegate for DataPageTableDelegate {
             nullable: meta_for_menu.nullable,
             // 完整值在右键打开菜单时再取，避免渲染期复制大 TEXT。
             value: String::new(),
+            value_truncated: false,
             submenu: None,
             selection_row_count: 0,
             selection_copy_label: None,
@@ -569,6 +570,8 @@ impl TableDelegate for DataPageTableDelegate {
 
         div()
             .id(("data-cell", row_ix.saturating_mul(10_000) + col_ix))
+            // 无头 UI 用例按单元格定位；仅 debug 构建记录 selector。
+            .debug_selector(move || format!("data-cell:{row_ix}:{col_ix}"))
             .relative()
             .size_full()
             .bg(if highlighted {
@@ -778,7 +781,9 @@ impl TableDelegate for DataPageTableDelegate {
                 )
             })
             .when(hovered && !redis_cell, |this| {
-                this.child(data_table_cell_hover_action(cx).on_mouse_down(
+                this.child(data_table_cell_hover_action(cx).debug_selector(move || {
+                    format!("data-cell-detail:{row_ix}:{col_ix}")
+                }).on_mouse_down(
                     MouseButton::Left,
                     move |_, _, cx| {
                         if !is_row_index_col {
@@ -955,6 +960,12 @@ impl TableDelegate for DataPageTableDelegate {
                         let mut menu = context_menu.clone();
                         menu.position = event.position;
                         menu.value = delegate.data_cell_full_text(row_ix, col_ix);
+                        menu.value_truncated = delegate
+                            .page
+                            .rows
+                            .get(row_ix)
+                            .and_then(|row| row.values.get(menu.source_col))
+                            .is_some_and(fluxdb_core::CellValue::is_truncated);
                         menu.selection_row_count = delegate.selected_row_count();
                         menu.selection_copy_label = delegate.selection_copy_label();
                         menu.selection_export_label = delegate.selection_export_label();

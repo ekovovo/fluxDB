@@ -102,6 +102,7 @@ fn mock_data_page(offset: u64, limit: u64) -> DataPage {
         offset: pagination.offset,
         limit: pagination.limit,
         has_more: false,
+        incomplete: None,
     }
 }
 

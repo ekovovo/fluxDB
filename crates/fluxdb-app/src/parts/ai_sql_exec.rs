@@ -551,6 +551,15 @@ fn cell_to_json(cell: &fluxdb_core::CellValue) -> serde_json::Value {
             "total_chars": total_chars,
             "truncated": true,
         }),
+        // 超大字段：只给预览、大小与不透明引用；**不含**任何文件路径，
+        // AI 要用完整值必须走有界只读工具。
+        fluxdb_core::CellValue::LargeValue(large) => serde_json::json!({
+            "preview": large.preview,
+            "byte_length": large.byte_length,
+            "preview_truncated": large.preview_truncated,
+            "content_ref": large.content_id,
+            "truncated": true,
+        }),
         fluxdb_core::CellValue::Bytes(bytes) => {
             serde_json::json!({ "bytes": bytes.len() })
         }

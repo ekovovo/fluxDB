@@ -97,14 +97,22 @@ fn mysql_load_data_with_expression(
         builder.push(" OFFSET ");
         builder.push_bind(pagination.offset);
 
-        let rows = builder
-            .build()
-            .fetch_all(&mut connection)
-            .await
-            .map_err(mysql_error)?;
+        // 流式取行：大字段行一读进来就外置，整页超出预算就停读，
+        // 不会像 `fetch_all` 那样先把整个结果集堆进内存。
+        let stream = builder.build().fetch(&mut connection);
+        let owner = fluxdb_core::table_content_owner(path);
+        let (page, _read_rows) = collect_sqlx_page(
+            stream,
+            columns,
+            pagination,
+            0,
+            &owner,
+            |row, _index, column| mysql_cell_value(row, column),
+            mysql_error,
+        )
+        .await?;
         connection.close().await.map_err(mysql_error)?;
-
-        Ok(mysql_rows_to_page(columns, rows, pagination))
+        Ok(page)
     })
 }
 

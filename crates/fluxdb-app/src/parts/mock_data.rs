@@ -374,6 +374,7 @@ fn load_redis_key_metadata_for_connection(
             offset: 0,
             limit: 0,
             has_more: false,
+            incomplete: None,
         });
     }
     if config
@@ -387,6 +388,7 @@ fn load_redis_key_metadata_for_connection(
             offset: 0,
             limit: 0,
             has_more: false,
+            incomplete: None,
         });
     }
     RedisConnector::with_config(config.clone()).load_key_metadata(object, keys)

@@ -354,6 +354,10 @@ fn data_filter_literal(value: &CellValue) -> String {
         CellValue::TruncatedText { preview, .. } => {
             format!("'{}'", preview.replace('\'', "''"))
         }
+        // 大字段同理：预览是完整值的前缀，前缀/等值筛选语义成立。
+        CellValue::LargeValue(large) => {
+            format!("'{}'", large.preview.replace('\'', "''"))
+        }
         CellValue::Bytes(value) => {
             let hex = value
                 .iter()
@@ -750,6 +754,7 @@ fn data_filter_value_text(value: &CellValue) -> String {
         CellValue::F64(value) => value.to_string(),
         CellValue::Text(value) | CellValue::Json(value) => value.clone(),
         CellValue::TruncatedText { preview, .. } => preview.clone(),
+        CellValue::LargeValue(large) => large.preview.clone(),
         CellValue::Bytes(value) => value.iter().map(|byte| format!("{byte:02X}")).collect(),
         CellValue::BinarySummary(_) => value.display_label(),
     }

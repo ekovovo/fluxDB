@@ -334,6 +334,7 @@ fn long_column_comment_wraps_inside_header_tooltip(cx: &mut TestAppContext) {
             offset: 0,
             limit: 1,
             has_more: false,
+        incomplete: None,
         });
         let edit_input = app.read(cx).data_cell_edit_input.clone();
         let delegate = DataPageTableDelegate::from_page_with_rule(

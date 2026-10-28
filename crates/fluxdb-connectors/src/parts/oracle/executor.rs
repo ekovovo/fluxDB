@@ -62,18 +62,27 @@ fn oracle_execute_query_with_progress(
             continue;
         }
         let started = std::time::Instant::now();
+        let owner =
+            fluxdb_core::result_content_owner(request.session_id, request.connection_id);
         match oracle_execute_statement(
             &connection,
             &statement,
             &[],
             pagination,
             request.options.read_only,
+            &owner,
             should_cancel,
         ) {
             Ok(OracleStatementOutcome::Rows(page, returned)) => {
                 // 页满即止之后 `returned` 只是「读到多少行」，不再是结果集总行数：
                 // 说「返回 N 行」会把没读完的部分谎报成不存在。
-                let message = if page.has_more {
+                let message = if let Some(incomplete) = &page.incomplete {
+                    format!(
+                        "已读取 {returned} 行，当前仅展示 {} 行（{}）",
+                        page.rows.len(),
+                        incomplete.reason
+                    )
+                } else if page.has_more {
                     format!(
                         "已读取 {returned} 行，当前仅展示 {} 行（结果已截断）",
                         page.rows.len()
@@ -226,6 +235,7 @@ fn oracle_execute_statement(
     binds: &[OracleBindValue],
     pagination: Pagination,
     read_only: bool,
+    owner: &str,
     should_cancel: &dyn Fn() -> bool,
 ) -> fluxdb_core::Result<OracleStatementOutcome> {
     let refs = oracle_bind_refs(binds);
@@ -271,6 +281,7 @@ fn oracle_execute_statement(
         let capacity = query_execution_row_capacity(pagination.limit);
         let mut rows = Vec::new();
         let mut has_more = false;
+        let mut incomplete: Option<fluxdb_core::PageIncomplete> = None;
         let mut stored_bytes = 0usize;
         for item in cursor {
             // 驱动的取行是阻塞调用，取消只能在两次取行之间生效；这里是唯一的安全点。
@@ -287,14 +298,31 @@ fn oracle_execute_statement(
                 has_more = true;
                 break;
             }
-            let row = oracle_row(&mut row, &columns);
+            let mut row = oracle_row(&mut row, &columns);
             let row_bytes = row_storage_bytes(&row);
             // 行数上限管不住宽表/长 CLOB：100 行也可能是几百 MB，再兜一层字节预算。
+            // 超预算时先把大字段外置成内容引用再试；外置后仍放不下才标资源不完整，
+            // 并停在这一行——把没读进来的行说成「还有更多」会让用户以为翻页就能看到。
             if stored_bytes.saturating_add(row_bytes) > ORACLE_RESULT_BYTES {
-                has_more = true;
-                break;
+                let budget_left = ORACLE_RESULT_BYTES.saturating_sub(stored_bytes);
+                match spill_row_into_budget(owner, &mut row.values, budget_left) {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        incomplete = Some(fluxdb_core::PageIncomplete {
+                            reason: "单行内容超过内存预算且无法外置；本页到此为止，下一页从该行继续"
+                                .to_string(),
+                        });
+                        break;
+                    }
+                    Err(error) => {
+                        incomplete = Some(fluxdb_core::PageIncomplete {
+                            reason: error.message,
+                        });
+                        break;
+                    }
+                }
             }
-            stored_bytes += row_bytes;
+            stored_bytes += row_storage_bytes(&row);
             rows.push(row);
         }
         return Ok(OracleStatementOutcome::Rows(
@@ -303,7 +331,8 @@ fn oracle_execute_statement(
                 rows,
                 offset: pagination.offset,
                 limit: pagination.limit,
-                has_more,
+                has_more: has_more && incomplete.is_none(),
+                incomplete,
             },
             returned_rows,
         ));
@@ -368,12 +397,14 @@ fn oracle_execute_parameterized(
         query_execution_pagination(request.options.page_offset, request.options.page_size);
     // 参数化入口没有取消通道（AI 写操作路径走 `execute_bounded_update`），
     // 传恒 false 保持原行为；上限与字节预算同样生效。
+    let owner = fluxdb_core::result_content_owner(request.session_id, request.connection_id);
     let outcome = oracle_execute_statement(
         &connection,
         &statement,
         &binds,
         pagination,
         request.options.read_only,
+        &owner,
         &|| false,
     );
     let finish = oracle_finish_session(&connection, request.options.read_only);

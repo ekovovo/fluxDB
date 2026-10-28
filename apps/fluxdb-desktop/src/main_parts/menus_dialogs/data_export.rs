@@ -1997,6 +1997,7 @@ fn table_data_export_filter_page(form: &TableDataExportForm) -> DataPage {
         offset: 0,
         limit: 0,
         has_more: false,
+        incomplete: None,
     }
 }
 

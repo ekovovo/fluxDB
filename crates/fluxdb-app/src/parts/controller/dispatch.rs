@@ -858,24 +858,6 @@ impl AppController {
                     self.fail(Error::new(ErrorKind::Internal, "数据结果不存在"))
                 }
             }
-            AppCommand::LoadBinaryPreview {
-                tab_id,
-                row,
-                column,
-            } => {
-                let Some(editor) = self.find_editable_data_editor_mut(tab_id) else {
-                    return self.fail(Error::new(ErrorKind::Internal, "数据结果不存在"));
-                };
-                match binary_preview(editor, row, column) {
-                    Ok(preview) => AppEvent::BinaryPreviewLoaded {
-                        tab_id,
-                        row,
-                        column,
-                        preview,
-                    },
-                    Err(error) => self.fail(error),
-                }
-            }
             AppCommand::LoadCellText {
                 tab_id,
                 row,
@@ -919,6 +901,34 @@ impl AppController {
                     }
                 }
             }
+            AppCommand::LoadCellContentChunk {
+                tab_id,
+                row,
+                column,
+                content_id,
+                kind,
+                offset,
+            } => match self.load_cell_content_chunk(&content_id, kind, offset) {
+                Ok(chunk) => AppEvent::CellContentChunkLoaded {
+                    tab_id,
+                    row,
+                    column,
+                    chunk,
+                },
+                Err(error) => self.fail(error),
+            },
+            AppCommand::SaveCellContentToFile {
+                tab_id,
+                content_id,
+                path,
+            } => match self.save_cell_content_to_file(&content_id, &path) {
+                Ok(bytes) => AppEvent::CellContentSaved { tab_id, bytes },
+                Err(error) => {
+                    let user_error = UserFacingError::from(error);
+                    self.state.last_error = Some(user_error.clone());
+                    AppEvent::Failed(user_error)
+                }
+            },
             AppCommand::DownloadBinaryCell {
                 tab_id,
                 row,
@@ -942,7 +952,7 @@ impl AppController {
                 tab_id,
                 row,
                 column,
-            } => self.update_binary_cell_command(tab_id, row, column, BinaryUpdatePayload::SetNull),
+            } => self.update_binary_cell_command(tab_id, row, column, UploadPayload::SetNull),
             AppCommand::ReplaceBinaryCellFromFile {
                 tab_id,
                 row,
@@ -952,7 +962,7 @@ impl AppController {
                 tab_id,
                 row,
                 column,
-                BinaryUpdatePayload::FilePath(path),
+                UploadPayload::FilePath(path),
             ),
             AppCommand::OpenCellDetail {
                 tab_id,
@@ -964,8 +974,7 @@ impl AppController {
                 };
                 match current_cell_value(editor, row, column) {
                     Ok(value) => {
-                        // 截断值先按预览打开面板，再请 UI 后台补读完整文本。
-                        let needs_full_text = value.is_truncated();
+                        let needs_full_text = matches!(value, CellValue::TruncatedText { .. });
                         editor.cell_detail_panel = CellDetailPanelState {
                             open: true,
                             active_cell: Some(CellPosition { row, column }),
@@ -999,14 +1008,20 @@ impl AppController {
                     return self.fail(Error::new(ErrorKind::Internal, "数据结果不存在"));
                 };
                 match active_detail_cell_value(editor) {
-                    Ok(CellValue::BinarySummary(summary))
-                        if summary.byte_length > HEX_EDIT_LIMIT =>
-                    {
+                    // 二进制一律不进编辑态：编辑框只可能拿到 64 字节 hex 预览，
+                    // 保存会用预览覆盖整值。改内容请走「上传替换」，清空请走「设为 NULL」。
+                    Ok(CellValue::Bytes(_) | CellValue::BinarySummary(_)) => {
                         self.fail(Error::new(
                             ErrorKind::Unsupported,
-                            "大二进制值不能直接 Hex 编辑，请使用下载、上传替换或设为 NULL",
+                            "二进制字段不支持就地编辑，请使用上传替换或设为 NULL",
                         ))
                     }
+                    // 超大字段（含等着提交的流式上传占位值）不进编辑态：正文在内容
+                    // 存储里，编辑框只可能拿到预览。改内容走「上传替换」，清空走「设为 NULL」。
+                    Ok(CellValue::LargeValue(_)) => self.fail(Error::new(
+                        ErrorKind::Unsupported,
+                        "超大字段不支持就地编辑；请使用分段查看或上传替换",
+                    )),
                     // 预览不是完整值：先按需加载完整文本，读到之前不进入编辑态。
                     Ok(CellValue::TruncatedText { .. }) => {
                         let active_cell = editor.cell_detail_panel.active_cell;
@@ -2031,6 +2046,35 @@ impl AppController {
             for tab_id in tab_ids {
                 if let Some(flag) = flags.remove(tab_id) {
                     flag.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+        }
+        // 标签关闭后它结果页里外置的大字段内容没有消费者：按归属整批释放。
+        // 查询结果按标签归属，表浏览按「连接 + 表」归属（同表翻页共用一份）。
+        if let Some(store) = fluxdb_core::cell_content_store() {
+            for tab in &self.state.tabs {
+                if !tab_ids.contains(&tab.id) {
+                    continue;
+                }
+                match &tab.kind {
+                    TabKind::QueryEditor(editor) => store.release_owner(
+                        &fluxdb_core::result_content_owner(
+                            Some(fluxdb_core::QuerySessionId(tab.id.0)),
+                            editor.connection_id,
+                        ),
+                    ),
+                    // 同一张表可能同时开着多个标签，共用一个归属：还有别的标签在用就不释放。
+                    TabKind::DataEditor(editor)
+                        if !self.state.tabs.iter().any(|other| {
+                            !tab_ids.contains(&other.id)
+                                && matches!(&other.kind,
+                                    TabKind::DataEditor(other_editor)
+                                        if other_editor.object == editor.object)
+                        }) =>
+                    {
+                        store.release_owner(&fluxdb_core::table_content_owner(&editor.object))
+                    }
+                    _ => {}
                 }
             }
         }

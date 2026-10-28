@@ -80,6 +80,18 @@ impl AppController {
             editor.error = None;
         }
 
+        // 换页/刷新会替换这个表页的结果：上一页外置的大字段内容不再有消费者。
+        // 不释放会一直占配额，翻几页大字段表就会触发「配额不足」。
+        // 同一张表可能同时开在别的标签里（共用归属），那时不能动，否则别人的引用会失效。
+        if let Some(store) = fluxdb_core::cell_content_store()
+            && !self.state.tabs.iter().any(|tab| {
+                tab.id != tab_id
+                    && matches!(&tab.kind,
+                        TabKind::DataEditor(other) if other.object == object)
+            })
+        {
+            store.release_owner(&fluxdb_core::table_content_owner(&object));
+        }
         match self.load_data_page(&object, pagination, &sort, &filters, expression.as_ref()) {
             Ok(page) => {
                 if let Some(tab) = self.find_tab_mut(tab_id)
@@ -285,22 +297,13 @@ impl AppController {
         };
         let mut cells = Vec::new();
         if new_key != key {
-            cells.push(CellUpdate {
-                column: "键".to_string(),
-                value: CellValue::Text(new_key.clone()),
-            });
+            cells.push(CellUpdate::new("键", CellValue::Text(new_key.clone())));
         }
         if let Some(ttl) = ttl {
-            cells.push(CellUpdate {
-                column: "TTL".to_string(),
-                value: CellValue::Text(ttl),
-            });
+            cells.push(CellUpdate::new("TTL", CellValue::Text(ttl)));
         }
         if let Some(value) = value {
-            cells.push(CellUpdate {
-                column: "值".to_string(),
-                value: CellValue::Text(value),
-            });
+            cells.push(CellUpdate::new("值", CellValue::Text(value)));
         }
         if cells.is_empty() {
             return self.fail(Error::new(ErrorKind::Internal, "Redis Key 没有需要保存的修改"));
@@ -1076,7 +1079,6 @@ impl AppController {
             .find_tab(tab_id)
             .and_then(|tab| editable_data_editor(&tab.kind))
             .ok_or_else(|| Error::new(ErrorKind::Internal, "数据结果不存在"))?;
-        ensure_binary_cell(editor, row, column)?;
 
         match current_cell_value(editor, row, column)? {
             CellValue::Bytes(bytes) => Ok(bytes),
@@ -1084,6 +1086,7 @@ impl AppController {
                 Err(Error::new(ErrorKind::Query, "NULL 二进制没有可下载内容"))
             }
             CellValue::BinarySummary(_) => self.load_cell_binary(tab_id, row, column),
+            // 文本大字段走详情面板的流式保存，不走这里的二进制下载。
             _ => Err(Error::new(
                 ErrorKind::Unsupported,
                 "当前单元格不是二进制字段",
@@ -1096,12 +1099,19 @@ impl AppController {
         tab_id: TabId,
         row: usize,
         column: usize,
-        payload: BinaryUpdatePayload,
+        payload: UploadPayload,
     ) -> AppEvent {
+        // 流式能力要在这里就判定：不支持分块追加的库，超过阈值的文件必须当场拒绝，
+        // 不能先落几百 MiB 暂存再在提交阶段失败。
+        let streamed_supported = self
+            .find_tab(tab_id)
+            .and_then(|tab| editable_data_editor(&tab.kind))
+            .and_then(|editor| self.connection_kind(editor.object.connection_id))
+            .is_some_and(DatabaseKind::supports_streamed_lob_write);
         if let Some(tab) = self.find_tab_mut(tab_id)
             && let Some(editor) = editable_data_editor_mut(&mut tab.kind)
         {
-            match update_binary_cell(editor, row, column, payload) {
+            match update_binary_cell(editor, row, column, payload, streamed_supported) {
                 Ok(()) => {
                     tab.dirty = editor
                         .changes

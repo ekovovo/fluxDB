@@ -126,6 +126,7 @@
             offset: 0,
             limit: 100,
             has_more: false,
+        incomplete: None,
         };
         assert!(matches!(
             controller.dispatch(AppCommand::FinishDataPageLoad {

@@ -114,6 +114,7 @@ impl Connector for MockConnector {
         if changes.is_empty() {
             return Err(Error::new(ErrorKind::Query, "没有需要提交的更改"));
         }
+        reject_streamed_values(changes)?;
 
         // Mock 不产生真实身份：INSERT 补偿回退到编辑器已知的主键值。
         Ok(AppliedChangeOutcome::default())

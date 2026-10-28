@@ -367,6 +367,8 @@ fn oracle_bind_cell(value: &CellValue) -> OracleBindValue {
         CellValue::Text(value) | CellValue::Json(value) => OracleBindValue::Text(value.clone()),
         // 预览不是完整值：绑进去等于用片段覆盖真值。
         CellValue::TruncatedText { .. } => OracleBindValue::Null,
+        // 大字段只有预览：同样不能拿片段覆盖真值。
+        CellValue::LargeValue(_) => OracleBindValue::Null,
         CellValue::Bytes(value) => OracleBindValue::Bytes(value.clone()),
         // 二进制预览不是真值，只有完整字节才能写回。
         CellValue::BinarySummary(_) => OracleBindValue::Null,

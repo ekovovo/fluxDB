@@ -1492,6 +1492,7 @@ mod ai_table_page_tests {
             offset: 0,
             limit,
             has_more: false,
+            incomplete: None,
         }
     }
 

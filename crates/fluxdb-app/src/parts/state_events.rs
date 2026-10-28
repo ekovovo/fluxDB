@@ -295,12 +295,6 @@ pub enum AppEvent {
         object: ObjectPath,
         key: String,
     },
-    BinaryPreviewLoaded {
-        tab_id: TabId,
-        row: usize,
-        column: usize,
-        preview: BinaryPreviewResponse,
-    },
     BinaryCellDownloaded {
         tab_id: TabId,
         row: usize,
@@ -320,6 +314,15 @@ pub enum AppEvent {
         row: usize,
         column: usize,
     },
+    /// 大字段下一块已读入（UI 存进自己的窗口状态并重绘）。
+    CellContentChunkLoaded {
+        tab_id: TabId,
+        row: usize,
+        column: usize,
+        chunk: CellContentChunk,
+    },
+    /// 大字段完整内容已流式保存到用户选定路径。
+    CellContentSaved { tab_id: TabId, bytes: u64 },
     QueryCompletionsLoaded(TabId, u64, QueryCompletionResult),
     CompletionIndexWarmed(ConnectionId, Option<String>),
     QueryFinished(TabId, QueryExecutionResult),

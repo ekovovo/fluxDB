@@ -148,6 +148,8 @@ fn dm_param(value: &CellValue) -> Param {
         CellValue::Text(value) | CellValue::Json(value) => Param::Str(value.clone()),
         // 截断文本只作筛选前缀；写入前已由 `validate_data_changes` 拒绝。
         CellValue::TruncatedText { preview, .. } => Param::Str(preview.clone()),
+        // 大字段只按预览前缀参与筛选；写入前已由 `validate_data_changes` 拒绝。
+        CellValue::LargeValue(large) => Param::Str(large.preview.clone()),
         CellValue::Bytes(value) => Param::Bytes(value.clone()),
         CellValue::BinarySummary(_) => Param::Null,
     }

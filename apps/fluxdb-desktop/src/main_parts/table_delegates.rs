@@ -235,11 +235,19 @@ impl DataPageTableDelegate {
 /// 单元格显示文本：把换行折成空格，避免撑破单行网格。
 /// 只在可见格渲染/搜索/导出时调用，不预生成整页文本副本。
 fn data_cell_display_text(value: &CellValue) -> String {
-    let text = cell_value_label(value);
+    match value {
+        // 直接折叠，不先整串 clone 再 replace：复制量随字段大小线性增长，
+        // 一帧里每个可见格都做一次就足以让 8 MB 单元格拖垮滚动。
+        CellValue::Text(text) | CellValue::Json(text) => fold_cell_newlines(text),
+        _ => fold_cell_newlines(&cell_value_label(value)),
+    }
+}
+
+fn fold_cell_newlines(text: &str) -> String {
     if text.contains(['\r', '\n']) {
         text.replace(['\r', '\n'], " ")
     } else {
-        text
+        text.to_string()
     }
 }
 
@@ -257,12 +265,19 @@ fn data_cell_clipped_text(value: &CellValue) -> String {
         CellValue::TruncatedText { preview, .. } => {
             format!("{} …（仅预览）", clip_cell_text(preview))
         }
+        // 超大字段同理：只有有界预览，标记不能省。
+        CellValue::LargeValue(large) => {
+            format!("{} …（仅预览）", clip_cell_text(&large.preview))
+        }
         _ => data_cell_display_text(value),
     }
 }
 
 /// 只扫描前 `DATA_CELL_DISPLAY_LIMIT` 个字符：按 `char` 迭代保证不会切在多字节
 /// 字符中间，扫描量也因此有界，不受字段总长度影响。
+///
+/// 直接接收 `&str`（不经过 `cell_value_label`）：那里会 `clone()` 整串，
+/// 8 MB 字段每帧复制一次就是滚动卡顿的主因。
 fn clip_cell_text(text: &str) -> String {
     let mut shown = String::new();
     for (count, ch) in text.chars().enumerate() {
@@ -285,6 +300,7 @@ fn cell_value_equals(value: &CellValue, expected: &str) -> bool {
         CellValue::Text(value) | CellValue::Json(value) => value == expected,
         // 预览是前缀，只可能匹配到以它开头的选项。
         CellValue::TruncatedText { preview, .. } => preview == expected,
+        CellValue::LargeValue(large) => large.preview == expected,
     }
 }
 

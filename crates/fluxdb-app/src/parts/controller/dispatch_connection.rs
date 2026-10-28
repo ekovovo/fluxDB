@@ -282,6 +282,27 @@ impl AppController {
                 fluxdb_connectors::pg_close_connection_sessions(connection_id);
                 fluxdb_connectors::sqlserver_close_connection_sessions(connection_id);
                 settle_closed_query_history(&mut self.state.query_history, connection_id, None);
+                // 断开后这些标签页的结果页里外置的大字段内容没有消费者，随之释放配额。
+                if let Some(store) = fluxdb_core::cell_content_store() {
+                    for tab in self
+                        .state
+                        .tabs
+                        .iter()
+                        .filter(|tab| tab_belongs_to_connection(tab, connection_id))
+                    {
+                        match &tab.kind {
+                            TabKind::QueryEditor(editor) => store.release_owner(
+                                &fluxdb_core::result_content_owner(
+                                    Some(fluxdb_core::QuerySessionId(tab.id.0)),
+                                    editor.connection_id,
+                                ),
+                            ),
+                            TabKind::DataEditor(editor) => store
+                                .release_owner(&fluxdb_core::table_content_owner(&editor.object)),
+                            _ => {}
+                        }
+                    }
+                }
                 self.state
                     .tabs
                     .retain(|tab| !tab_belongs_to_connection(tab, connection_id));

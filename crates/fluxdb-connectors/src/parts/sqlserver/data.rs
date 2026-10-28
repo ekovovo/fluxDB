@@ -85,6 +85,7 @@ fn sqlserver_load_data_with_expression(
         offset: pagination.offset,
         limit: pagination.limit,
         has_more,
+        incomplete: None,
     })
 }
 
@@ -380,6 +381,11 @@ fn sqlserver_preview_value_literal(value: &CellValue) -> String {
         CellValue::TruncatedText { total_chars, .. } => {
             format!("NULL /* 截断的 CLOB：共 {total_chars} 字符，需完整读取 */")
         }
+        // 同理：大字段只有预览，不能当可执行导出。
+        CellValue::LargeValue(large) => match large.byte_length {
+            Some(length) => format!("NULL /* 超大字段：共 {length} 字节，需按内容引用读取 */"),
+            None => "NULL /* 超大字段：完整大小未知，需按内容引用读取 */".to_string(),
+        },
         CellValue::Bytes(value) => format!(
             "0x{}",
             value

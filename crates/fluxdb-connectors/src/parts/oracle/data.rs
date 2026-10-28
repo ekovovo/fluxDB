@@ -132,6 +132,7 @@ fn oracle_load_data_with_expression(
         offset: pagination.offset,
         limit: pagination.limit,
         has_more,
+        incomplete: None,
     })
 }
 

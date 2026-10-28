@@ -338,6 +338,7 @@ enum AppIcon {
     ChevronLeft,
     ChevronRight,
     ChevronUp,
+    ChevronsDown,
     ChevronsLeft,
     ChevronsRight,
     Circle,
@@ -346,6 +347,7 @@ enum AppIcon {
     Close,
     Copy,
     Database,
+    Download,
     Edit,
     Eye,
     EyeOff,
@@ -393,6 +395,7 @@ enum AppIcon {
     Workflow,
     Text,
     TriangleAlert,
+    Upload,
     WrapText,
 }
 
@@ -411,6 +414,7 @@ fn app_icon_path(icon: AppIcon) -> &'static str {
         AppIcon::ChevronLeft => "icons/chevron-left.svg",
         AppIcon::ChevronRight => "icons/chevron-right.svg",
         AppIcon::ChevronUp => "icons/chevron-up.svg",
+        AppIcon::ChevronsDown => "icons/chevrons-down.svg",
         AppIcon::ChevronsLeft => "icons/chevrons-left.svg",
         AppIcon::ChevronsRight => "icons/chevrons-right.svg",
         AppIcon::Circle => "icons/circle.svg",
@@ -419,6 +423,7 @@ fn app_icon_path(icon: AppIcon) -> &'static str {
         AppIcon::Close => "icons/x.svg",
         AppIcon::Copy => "icons/copy-plus.svg",
         AppIcon::Database => "icons/database.svg",
+        AppIcon::Download => "icons/download.svg",
         AppIcon::Edit => "icons/pencil.svg",
         AppIcon::Eye => "icons/eye.svg",
         AppIcon::EyeOff => "icons/eye-off.svg",
@@ -466,6 +471,7 @@ fn app_icon_path(icon: AppIcon) -> &'static str {
         AppIcon::Workflow => "icons/workflow.svg",
         AppIcon::Text => "icons/text.svg",
         AppIcon::TriangleAlert => "icons/triangle-alert.svg",
+        AppIcon::Upload => "icons/upload.svg",
         AppIcon::WrapText => "icons/wrap-text.svg",
     }
 }

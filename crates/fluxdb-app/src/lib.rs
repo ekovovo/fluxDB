@@ -16,31 +16,31 @@ pub use fluxdb_connectors::{
     pg_sslmode_value, pg_tool_major_version,
 };
 use fluxdb_core::{
-    AppliedChangeOutcome, BinaryCellSummary, BinaryPreviewResponse, BinaryUpdatePayload,
-    COMPLETION_INDEX_VERSION, CellUpdate, CellValue, Column, ColumnRef, CommandExecutionSource,
-    CommandExecutionSummary, CommandExecutionTarget, CommandResultsMode, CommandRunMode,
-    CommandWorkbenchExecution, CommandWorkbenchRequest, CompletionColumn, CompletionIndexMeta,
-    CompletionIndexSnapshot, CompletionRoutine, CompletionRoutineKind, CompletionTable,
-    CompletionTrigger, ConnectionConfig, ConnectionDraft, ConnectionGroup, ConnectionGroupId,
-    ConnectionId, ConnectionOverview, Connector, CreateDatabaseRequest, DataChangeSet,
-    DataExportPreview, DataPage, DatabaseKind, DatabasePrivilegeGrant, DatabaseUserIdentity,
-    Endpoint, ErColumn, ErForeignKeyEdge, ErGraphData, ErLoadStatus, ErRelationship, ErTableNode,
-    ErTableRef, Error, ErrorKind, ExecutionPolicy, ExecutionPolicySettings, FilterExpression,
-    FilterSpec, ForeignKeyInfo, IndexInfo, InsertTextFormat, ModelRisk, ObjectKind, ObjectPath,
-    ObjectSummary, Pagination, PgEffectivePrivilege, PgGrantTargetLists, PgObjectGrantScope,
-    PgObjectGrants, PgPasswordOp, PgRelationKind, PgRole, PgRoleChange, PgRoleDraft,
-    PgRoleMembership, PgRoleSavePlan, PgValidUntilOp, PrivilegeScope, QueryCompletionItem,
-    QueryCompletionKind, QueryCompletionResult, QueryDeleteRollbackSnapshot, QueryExecutionOptions,
+    AppliedChangeOutcome, BinaryCellSummary, COMPLETION_INDEX_VERSION, CellUpdate, CellUpdateValue,
+    CellValue, Column, ColumnRef, CommandExecutionSource, CommandExecutionSummary,
+    CommandExecutionTarget, CommandResultsMode, CommandRunMode, CommandWorkbenchExecution,
+    CommandWorkbenchRequest, CompletionColumn, CompletionIndexMeta, CompletionIndexSnapshot,
+    CompletionRoutine, CompletionRoutineKind, CompletionTable, CompletionTrigger, ConnectionConfig,
+    ConnectionDraft, ConnectionGroup, ConnectionGroupId, ConnectionId, ConnectionOverview,
+    Connector, CreateDatabaseRequest, DataChangeSet, DataExportPreview, DataPage, DatabaseKind,
+    DatabasePrivilegeGrant, DatabaseUserIdentity, Endpoint, ErColumn, ErForeignKeyEdge,
+    ErGraphData, ErLoadStatus, ErRelationship, ErTableNode, ErTableRef, Error, ErrorKind,
+    ExecutionPolicy, ExecutionPolicySettings, FilterExpression, FilterSpec, ForeignKeyInfo,
+    IndexInfo, InsertTextFormat, ModelRisk, ObjectKind, ObjectPath, ObjectSummary, Pagination,
+    PgEffectivePrivilege, PgGrantTargetLists, PgObjectGrantScope, PgObjectGrants, PgPasswordOp,
+    PgRelationKind, PgRole, PgRoleChange, PgRoleDraft, PgRoleMembership, PgRoleSavePlan,
+    PgValidUntilOp, PrivilegeScope, QueryCompletionItem, QueryCompletionKind,
+    QueryCompletionResult, QueryDeleteRollbackSnapshot, QueryExecutionOptions,
     QueryExecutionResult, QueryExecutionSummary, QueryInsertRollbackSnapshot, QueryRequest,
     QueryRollbackRowSnapshot, QueryRollbackSnapshot, QueryStatementKind,
     QueryUpdateRollbackSnapshot, RedisConnectionProfile, RedisHashFieldTtl, RedisServerVersion,
     RoutineRef, Row, RowIdentity, RowUpdate, Settings, SidebarLayout, SortSpec, SqlDialect as _,
-    TableFingerprint, TableRef, TriggerInfo, TriggerRef, UserAdminSqlDialect, UserFacingError,
-    UserRoleMember, UserRoleMembership, WorkbenchHistoryItem, WorkbenchHistoryScope,
-    WorkbenchHistoryStore, WriteCommit, WriteReviewOutcome, WriteRiskDecision, WriteRiskFacts,
-    database_user_admin_provider, grants_from_query_result, infer_cloud_from_host,
-    redact_uri_password, role_memberships_from_grants, set_sqlite_attached_database,
-    sqlite_attached_database_path,
+    TableFingerprint, TableRef, TriggerInfo, TriggerRef, UploadPayload, UserAdminSqlDialect,
+    UserFacingError, UserRoleMember, UserRoleMembership, WorkbenchHistoryItem,
+    WorkbenchHistoryScope, WorkbenchHistoryStore, WriteCommit, WriteReviewOutcome,
+    WriteRiskDecision, WriteRiskFacts, database_user_admin_provider, grants_from_query_result,
+    infer_cloud_from_host, redact_uri_password, role_memberships_from_grants,
+    set_sqlite_attached_database, sqlite_attached_database_path,
 };
 pub use fluxdb_core::{
     TableDataImport, TableImportFormat, TableImportProgress, TableImportReport, TableImportRequest,
@@ -69,6 +69,8 @@ include!("parts/create_table_dameng.rs");
 include!("parts/create_table_oracle.rs");
 include!("parts/controller.rs");
 include!("parts/data_editor.rs");
+include!("parts/cell_content_store.rs");
+include!("parts/cell_content_view.rs");
 include!("parts/mock_data.rs");
 include!("parts/sql_format.rs");
 include!("parts/table_info.rs");

@@ -17,6 +17,7 @@ fn redis_load_data(
             offset,
             limit,
             has_more: false,
+            incomplete: None,
         });
     }
     if path.kind != ObjectKind::RedisDb {
@@ -50,6 +51,7 @@ fn redis_load_data(
                         offset,
                         limit,
                         has_more: false,
+                        incomplete: None,
                     });
                 }
                 cursor = (next_cursor != "0").then_some(next_cursor);
@@ -86,6 +88,7 @@ fn redis_load_data(
         offset,
         limit: limit as u64,
         has_more,
+        incomplete: None,
     })
 }
 
@@ -120,6 +123,7 @@ fn redis_key_metadata(
         offset: 0,
         limit: keys.len() as u64,
         has_more: false,
+        incomplete: None,
     })
 }
 

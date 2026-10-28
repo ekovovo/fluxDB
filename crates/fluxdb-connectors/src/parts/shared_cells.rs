@@ -149,54 +149,246 @@ fn percent_encode(value: &str) -> String {
     encoded
 }
 
-fn mysql_rows_to_page(
-    columns: Vec<Column>,
-    rows: Vec<MySqlRow>,
-    pagination: Pagination,
-) -> DataPage {
-    let has_more = rows.len() > pagination.limit as usize;
-    let rows = rows
-        .into_iter()
-        .take(pagination.limit as usize)
-        .map(|row| Row {
-            values: (0..columns.len())
-                .map(|index| mysql_cell_value(&row, &columns[index]))
-                .collect(),
-        })
-        .collect();
+/// 行需要外置或超出内存预算时，把超过单格阈值的大字段换成内容引用，而不是把整行丢掉。
+///
+/// 返回 `Ok(true)` 表示整行已收进页（可能含 [`fluxdb_core::CellValue::LargeValue`]）；
+/// 返回 `Ok(false)` 表示这一行无论如何放不下，调用方必须把页标成资源不完整。
+fn spill_row_into_budget(
+    owner: &str,
+    values: &mut [CellValue],
+    budget_left: usize,
+) -> fluxdb_core::Result<bool> {
+    let mut stored = 0usize;
+    for value in values.iter_mut() {
+        // 最大的那个字段先外置，尽量让一行整体落进预算。
+        if let Some(text) = cell_full_text(value) {
+            if text.len() > fluxdb_core::CELL_SPILL_THRESHOLD_BYTES {
+                let kind = if matches!(value, CellValue::Json(_)) {
+                    fluxdb_core::LargeValueKind::Json
+                } else {
+                    fluxdb_core::LargeValueKind::Text
+                };
+                *value = fluxdb_core::spill_large_value(owner, kind, text.as_bytes())?;
+            }
+        } else if let CellValue::Bytes(bytes) = value
+            && bytes.len() > fluxdb_core::CELL_SPILL_THRESHOLD_BYTES
+        {
+            let bytes = std::mem::take(bytes);
+            *value = fluxdb_core::spill_large_value(owner, fluxdb_core::LargeValueKind::Binary, &bytes)?;
+        }
+        stored += cell_stored_bytes(value);
+    }
+    Ok(stored <= budget_left)
+}
 
-    DataPage {
-        columns,
-        rows,
-        offset: pagination.offset,
-        limit: pagination.limit,
-        has_more,
+/// 单元格仍是完整文本时取出引用（外置前用）。
+fn cell_full_text(value: &CellValue) -> Option<&str> {
+    match value {
+        CellValue::Text(text) | CellValue::Json(text) => Some(text),
+        _ => None,
     }
 }
 
-fn sqlite_rows_to_page(
-    columns: Vec<Column>,
-    rows: Vec<SqliteRow>,
-    pagination: Pagination,
-) -> DataPage {
-    let has_more = rows.len() > pagination.limit as usize;
-    let rows = rows
-        .into_iter()
-        .take(pagination.limit as usize)
-        .map(|row| Row {
-            values: (0..columns.len())
-                .map(|index| sqlite_cell_value(&row, &columns[index]))
-                .collect(),
-        })
-        .collect();
+/// 单元格收进结果页后的实际内存占用（大字段只剩预览）。
+fn cell_stored_bytes(value: &CellValue) -> usize {
+    match value {
+        CellValue::Text(text) | CellValue::Json(text) => text.len(),
+        CellValue::Bytes(bytes) => bytes.len(),
+        CellValue::LargeValue(large) => large.preview.len() + 64,
+        CellValue::BinarySummary(_) => 64,
+        CellValue::Null => 0,
+        _ => 16,
+    }
+}
 
-    DataPage {
+/// 资源不足时的页状态说明（用户可见原因）。
+fn incomplete_page(reason: impl Into<String>) -> fluxdb_core::PageIncomplete {
+    fluxdb_core::PageIncomplete { reason: reason.into() }
+}
+
+/// 把一行放进当前结果页的预算内。
+///
+/// 单格超过 [`fluxdb_core::CELL_SPILL_THRESHOLD_BYTES`] 时**先无条件外置**：
+/// 一页预算再大也不该让几十 MB 的单元格常驻内存（渲染与克隆都会随值大小线性变慢）。
+/// 外置后若整行仍超出预算，则把页标成资源不完整（附原因）并返回 `Ok(false)`，
+/// 调用方必须停在**这一行**——既不能收下它，也不能越过它继续收后面的行，
+/// 否则未展示的记录会被翻页跳过。
+fn fit_row_into_page(
+    owner: &str,
+    page: &mut DataPage,
+    values: &mut [CellValue],
+    row_bytes: usize,
+    budget_left: usize,
+) -> fluxdb_core::Result<bool> {
+    let needs_spill = row_bytes > budget_left
+        || values.iter().any(|value| cell_stored_bytes(value) > fluxdb_core::CELL_SPILL_THRESHOLD_BYTES);
+    let fitted = if !needs_spill {
+        true
+    } else {
+        match spill_row_into_budget(owner, values, budget_left) {
+            Ok(fitted) => fitted,
+            Err(error) => {
+                page.incomplete = Some(incomplete_page(error.message));
+                false
+            }
+        }
+    };
+    if !fitted {
+        if page.incomplete.is_none() {
+            page.incomplete = Some(incomplete_page(
+                "单行内容超过内存预算且无法外置；本页到此为止，下一页从该行继续",
+            ));
+        }
+        // 预算截断与「正常还有更多」互斥：停在未收录行的页不能同时声称 has_more。
+        page.has_more = false;
+    }
+    Ok(fitted)
+}
+
+/// 按行顺序收页：单格先外置，整页按 [`fluxdb_core::RESULT_PAGE_BUDGET_BYTES`] 封顶。
+///
+/// 超预算就停在**当前这一行**（不收、不越过），由 `next_offset()` 让下一页从它继续；
+/// 绝不能因为预算把中间的行丢掉——那会让用户看不到数据却毫不知情。
+/// `rows` 由调用方按容量截好；本函数只负责逐行决定收或不收。
+///
+/// 生产路径都用流式的 [`collect_sqlx_page`]，这个内存版只服务于单测里
+/// 可造大批行、不依赖驱动的场景。
+#[cfg(test)]
+fn rows_within_budget<T>(
+    columns: Vec<Column>,
+    rows: impl Iterator<Item = T>,
+    pagination: Pagination,
+    owner: &str,
+    cell_value: impl Fn(&T, usize, &Column) -> CellValue,
+) -> DataPage {
+    let mut page = DataPage {
         columns,
-        rows,
+        rows: Vec::new(),
         offset: pagination.offset,
         limit: pagination.limit,
-        has_more,
+        has_more: false,
+        incomplete: None,
+    };
+    let mut stored_bytes = 0usize;
+    for row in rows {
+        let mut values = page
+            .columns
+            .iter()
+            .enumerate()
+            .map(|(index, column)| cell_value(&row, index, column))
+            .collect::<Vec<_>>();
+        let row_bytes = values.iter().map(cell_stored_bytes).sum::<usize>();
+        let budget_left = fluxdb_core::RESULT_PAGE_BUDGET_BYTES.saturating_sub(stored_bytes);
+        match fit_row_into_page(owner, &mut page, &mut values, row_bytes, budget_left) {
+            Ok(true) => {
+                stored_bytes += values.iter().map(cell_stored_bytes).sum::<usize>();
+                page.rows.push(Row { values });
+            }
+            // 放不下（或外置失败）：页已标不完整并停在当前行，后面的行留给下一页。
+            Ok(false) => return page,
+            Err(error) => {
+                page.incomplete = Some(incomplete_page(error.message));
+                return page;
+            }
+        }
     }
+    page
+}
+
+/// 驱动的行流边读边收进一页：**不再 `fetch_all` 整个结果集**。
+///
+/// 这是大字段卡顿/爆内存的根因修复：`fetch_all` 会把每一行的完整值先堆进
+/// `Vec<Row>`，一条 8 MB 的行乘以页大小就是几百 MB，整表结果更是几个 GB——
+/// 预算与单格外置都在它之后才生效，救不了那次物化。改成流式后，单格超阈值
+/// 立刻外置落盘、整页超出 [`fluxdb_core::RESULT_PAGE_BUDGET_BYTES`] 立刻停读，
+/// 未读的行留给下一页（`next_offset()` 保证不跳过）。
+///
+/// `skip_rows` 是流里已经取到、但不属于本页的行数（SQL 已带 OFFSET 时传 0，
+/// 否则传 `pagination.offset`）。页容量由 `pagination.limit` 决定（0 = 不限制）。
+/// `columns` 为空时按第一行的服务端描述补全
+/// （查询编辑器不知道列结构，表浏览已知）。
+/// 返回 `(页, 从流里读到的行数)`；后者只用于执行摘要，不代表「结果总行数」。
+async fn collect_sqlx_page<S, R>(
+    stream: S,
+    columns: Vec<Column>,
+    pagination: Pagination,
+    skip_rows: u64,
+    owner: &str,
+    cell_value: impl Fn(&R, usize, &Column) -> CellValue,
+    map_error: impl Fn(sqlx::Error) -> fluxdb_core::Error,
+) -> fluxdb_core::Result<(DataPage, u64)>
+where
+    S: futures_util::Stream<Item = Result<R, sqlx::Error>>,
+    R: sqlx::Row,
+{
+    futures_util::pin_mut!(stream);
+    let mut page = DataPage {
+        columns,
+        rows: Vec::new(),
+        offset: pagination.offset,
+        limit: pagination.limit,
+        has_more: false,
+        incomplete: None,
+    };
+    let row_capacity = query_execution_row_capacity(pagination.limit);
+    let mut stored_bytes = 0usize;
+    let mut read_rows = 0u64;
+    while let Some(item) = futures_util::StreamExt::next(&mut stream).await {
+        let row = item.map_err(&map_error)?;
+        read_rows += 1;
+        if page.columns.is_empty() {
+            page.columns = sqlx_row_columns(&row);
+        }
+        if read_rows <= skip_rows {
+            continue;
+        }
+        if page.rows.len() >= row_capacity {
+            // 读满页容量：再往后还有行，这是「正常还有更多」，不是资源截断。
+            page.has_more = true;
+            break;
+        }
+        let mut values = page
+            .columns
+            .iter()
+            .enumerate()
+            .map(|(index, column)| cell_value(&row, index, column))
+            .collect::<Vec<_>>();
+        let row_bytes = values.iter().map(cell_stored_bytes).sum::<usize>();
+        let budget_left = fluxdb_core::RESULT_PAGE_BUDGET_BYTES.saturating_sub(stored_bytes);
+        match fit_row_into_page(owner, &mut page, &mut values, row_bytes, budget_left) {
+            Ok(true) => {
+                stored_bytes += values.iter().map(cell_stored_bytes).sum::<usize>();
+                page.rows.push(Row { values });
+            }
+            // 停在未收录行：页已标不完整，后面的行交给下一页。
+            Ok(false) => break,
+            Err(error) => {
+                page.incomplete = Some(incomplete_page(error.message));
+                break;
+            }
+        }
+    }
+    if page.incomplete.is_some() {
+        // 预算截断与「正常还有更多」互斥。
+        page.has_more = false;
+    }
+    Ok((page, read_rows))
+}
+
+/// 按服务端描述构造列定义（查询编辑器结果用）。
+fn sqlx_row_columns<R: sqlx::Row>(row: &R) -> Vec<Column> {
+    row.columns()
+        .iter()
+        .map(|column| {
+            Column {
+                name: column.name().to_string(),
+                type_name: Some(column.type_info().name().to_string()),
+                nullable: true,
+                primary_key: false,
+                comment: None,
+            }
+        })
+        .collect()
 }
 
 fn mysql_cell_value(row: &MySqlRow, column: &Column) -> CellValue {
@@ -369,5 +561,188 @@ fn binary_summary(
         is_null,
         byte_length,
         preview_hex,
+    }
+}
+
+#[cfg(test)]
+mod page_budget_tests {
+    use super::{cell_stored_bytes, fit_row_into_page, rows_within_budget};
+    use fluxdb_core::{
+        CellContentMeta, CellContentStore, CellValue, Column, DataPage, LargeValueKind, Pagination,
+    };
+    use std::sync::Arc;
+
+    struct MemoryStore;
+
+    impl CellContentStore for MemoryStore {
+        fn put(&self, owner: &str, _kind: LargeValueKind, bytes: &[u8]) -> fluxdb_core::Result<String> {
+            Ok(format!("{owner}-{}", bytes.len()))
+        }
+
+        fn stat(&self, _content_id: &str) -> Option<CellContentMeta> {
+            None
+        }
+
+        fn read(
+            &self,
+            _content_id: &str,
+            _offset: u64,
+            _len: usize,
+        ) -> fluxdb_core::Result<Vec<u8>> {
+            Ok(Vec::new())
+        }
+
+        fn release(&self, _content_id: &str) {}
+
+        fn release_owner(&self, _owner: &str) {}
+    }
+
+    /// 内容归属只做标识；内存桩不区分归属，固定一个即可。
+    const OWNER: &str = "result-once-7";
+
+    fn page() -> DataPage {
+        DataPage {
+            columns: Vec::new(),
+            rows: Vec::new(),
+            offset: 0,
+            limit: 100,
+            has_more: false,
+            incomplete: None,
+        }
+    }
+
+    fn register_store() {
+        fluxdb_core::register_cell_content_store(Arc::new(MemoryStore));
+    }
+
+    /// 单行超大文本放不下预算时：外置成内容引用后仍保留这一行，不能丢行。
+    #[test]
+    fn oversized_text_row_is_kept_as_content_reference() {
+        register_store();
+        let mut page = page();
+        let text = "x".repeat(fluxdb_core::CELL_SPILL_THRESHOLD_BYTES + 1);
+        let mut values = vec![CellValue::Text(text.clone())];
+        // 预算只够预览 + 引用头：外置后必须放得下。
+        let budget = fluxdb_core::CELL_PREVIEW_CHARS + 128;
+        let fitted = fit_row_into_page(OWNER, &mut page, &mut values, text.len(), budget)
+            .expect("spill succeeds");
+        assert!(fitted, "外置后必须收下这一行");
+        assert!(page.incomplete.is_none(), "能外置就不是资源不完整");
+        let large = values[0].large_value().expect("内容引用");
+        assert_eq!(large.byte_length, Some(text.len() as u64));
+        assert!(large.preview_truncated, "预览必须标明只是片段");
+        assert!(cell_stored_bytes(&values[0]) < 4096, "页里只留预览");
+    }
+
+    /// JSON 与二进制同样只留预览 + 内容引用，行不能丢。
+    #[test]
+    fn oversized_json_and_binary_rows_are_kept_as_references() {
+        register_store();
+        let json = format!("{{\"note\":\"{}\"}}", "y".repeat(fluxdb_core::CELL_SPILL_THRESHOLD_BYTES));
+        let binary = vec![0xABu8; fluxdb_core::CELL_SPILL_THRESHOLD_BYTES + 1];
+        for (value, kind) in [
+            (CellValue::Json(json.clone()), LargeValueKind::Json),
+            (CellValue::Bytes(binary.clone()), LargeValueKind::Binary),
+        ] {
+            let mut page = page();
+            let mut values = vec![value];
+            let row_bytes = cell_stored_bytes(&values[0]);
+            let budget = fluxdb_core::CELL_PREVIEW_CHARS + 256;
+            let fitted = fit_row_into_page(OWNER, &mut page, &mut values, row_bytes, budget)
+                .expect("spill succeeds");
+            assert!(fitted, "{kind:?} 外置后必须收下这一行");
+            let large = values[0].large_value().expect("内容引用");
+            assert_eq!(large.kind, kind);
+            assert!(large.preview_truncated);
+            // 引用里只有预览，不能塞整份内容：预览必须短于原值。
+            let original_len = match kind {
+                LargeValueKind::Json => json.len(),
+                _ => binary.len(),
+            };
+            assert!((large.preview.len() as u64) < original_len as u64);
+        }
+    }
+
+    /// 无法外置（一堆小字段总和超预算）时显式标不完整，并停在未收录行。
+    #[test]
+    fn unspillable_row_marks_page_incomplete_without_has_more() {
+        register_store();
+        let mut page = page();
+        page.has_more = true;
+        let mut values = vec![CellValue::Text("a".repeat(900)); 4];
+        let fitted =
+            fit_row_into_page(OWNER, &mut page, &mut values, 3600, 1000).expect("no spill");
+        assert!(!fitted, "放不下时不能伪造成功");
+        assert!(page.rows.is_empty(), "未收录行不能进页");
+        assert!(page.incomplete.is_some(), "必须显式给出不完整原因");
+        assert!(!page.has_more, "预算截断与「还有更多」互斥");
+        assert_eq!(page.next_offset(), 0, "下一页仍从这一行开始");
+    }
+
+    /// 正常放得下的行：状态不变，普通分页不回归。
+    #[test]
+    fn fitting_row_keeps_page_complete() {
+        register_store();
+        let mut page = page();
+        let mut values = vec![CellValue::Text("ok".into())];
+        assert!(fit_row_into_page(OWNER, &mut page, &mut values, 2, 1024).unwrap());
+        assert!(page.incomplete.is_none());
+        assert!(!page.has_more);
+    }
+
+    /// 页预算还很宽裕时，单格超过阈值也必须外置。
+    ///
+    /// 这是卡顿的根因：只有「整行超预算」才外置的话，一条 8 MB 单元格会作为
+    /// 普通 `Text` 常驻页里，随后被渲染、事件、快照反复整串克隆。
+    #[test]
+    fn oversized_cell_spills_even_when_budget_is_ample() {
+        register_store();
+        let mut page = page();
+        let text = "x".repeat(8 * 1024 * 1024);
+        let mut values = vec![CellValue::Text(text.clone())];
+        let budget = fluxdb_core::RESULT_PAGE_BUDGET_BYTES;
+        assert!(fit_row_into_page(OWNER, &mut page, &mut values, text.len(), budget).unwrap());
+        assert!(
+            values[0].large_value().is_some(),
+            "预算宽裕也必须把 8 MB 单元格换成内容引用"
+        );
+        assert!(cell_stored_bytes(&values[0]) < 8192, "页里只留预览");
+        assert!(page.incomplete.is_none(), "外置成功不算资源不完整");
+    }
+
+    /// 整页超预算时停在未收录行，`next_offset()` 从它继续，绝不跳过记录。
+    #[test]
+    fn page_budget_stops_at_uncollected_row_without_skipping() {
+        register_store();
+        let columns = vec![Column {
+            name: "note".into(),
+            type_name: Some("VARCHAR".into()),
+            nullable: true,
+            primary_key: false,
+            comment: None,
+        }];
+        // 每行都低于单格外置阈值（所以都不会被外置），但加起来超过整页预算：
+        // 收下的行数由预算决定，剩下的必须留给下一页。
+        const ROW_BYTES: usize = 60_000;
+        let expected_rows = fluxdb_core::RESULT_PAGE_BUDGET_BYTES / ROW_BYTES;
+        let rows = (0..expected_rows + 5)
+            .map(|_| CellValue::Text("y".repeat(ROW_BYTES)))
+            .collect::<Vec<_>>()
+            .into_iter();
+        let page = rows_within_budget(
+            columns,
+            rows,
+            Pagination::new(0, 500),
+            OWNER,
+            |value: &CellValue, _index: usize, _column: &Column| value.clone(),
+        );
+        assert_eq!(page.rows.len(), expected_rows);
+        assert!(page.incomplete.is_some(), "预算截断必须显式说明");
+        assert!(!page.has_more, "预算截断与「还有更多」互斥");
+        assert_eq!(
+            page.next_offset(),
+            expected_rows as u64,
+            "下一页必须从第一条未展示行继续"
+        );
     }
 }

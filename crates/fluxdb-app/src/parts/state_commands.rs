@@ -419,11 +419,6 @@ pub enum AppCommand {
         column: usize,
         value: CellValue,
     },
-    LoadBinaryPreview {
-        tab_id: TabId,
-        row: usize,
-        column: usize,
-    },
     /// 按需读取单元格完整文本（截断的 CLOB）。数据库 I/O 在后台执行，
     /// 结果经 [`AppCommand::FinishCellTextLoad`] 写回，避免阻塞 UI。
     LoadCellText {
@@ -437,6 +432,25 @@ pub enum AppCommand {
         column: usize,
         result: std::result::Result<String, UserFacingError>,
     },
+    /// 读取大字段内容引用的下一块（详情面板分段只读）。
+    ///
+    /// 块从 `offset` 开始、上限 [`fluxdb_core::CELL_CHUNK_BYTES`]；同一份不可变内容，
+    /// 不重查数据库。只传不透明引用，不传路径。结果经
+    /// [`AppEvent::CellContentChunkLoaded`] 回到 UI。
+    LoadCellContentChunk {
+        tab_id: TabId,
+        row: usize,
+        column: usize,
+        content_id: String,
+        kind: fluxdb_core::LargeValueKind,
+        offset: u64,
+    },
+    /// 把大字段完整内容流式写到用户选定的文件（UI 先弹保存对话框）。
+    SaveCellContentToFile {
+        tab_id: TabId,
+        content_id: String,
+        path: PathBuf,
+    },
     DownloadBinaryCell {
         tab_id: TabId,
         row: usize,
@@ -446,7 +460,7 @@ pub enum AppCommand {
         tab_id: TabId,
         row: usize,
         column: usize,
-        payload: BinaryUpdatePayload,
+        payload: UploadPayload,
     },
     SetBinaryCellNull {
         tab_id: TabId,

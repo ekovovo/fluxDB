@@ -4,7 +4,7 @@
 // `pg_connect` 每次拨一条全新连接（非注册表复用），因此在本会话上 `BEGIN…COMMIT`
 // 不会与其它请求串事务；语句经 `&Client` 顺序执行，错误时 `ROLLBACK` 兜底。
 // PG 不经过 sqlx QueryBuilder：SQL 自行拼接，值一律 `$n` 参数化绑定，标识符 `SqlDialect::quote_identifier`。
-// 二进制（bytea）写入以 `Vec<u8>` 直接绑定；Hex 编辑回写前由 app 转成 `CellValue::Bytes`。
+// 二进制（bytea）写入以 `Vec<u8>` 直接绑定或按块追加（流式上传），见 `pg_apply_blob_stream`。
 
 /// 把 tokio-postgres/PG 服务端错误转成可读文本。
 ///
@@ -222,17 +222,93 @@ async fn pg_apply_updates(
         }
         validate_identity(&update.identity, columns)?;
 
+        let (plain, streamed) = split_update_cells(update);
         let location = pg_lock_original_row(client, table, &update.identity, columns).await?;
-        let (mut sql, mut params) = pg_update_sql(table, &update.cells, &update.identity, columns)?;
-        pg_append_row_location(&mut sql, &mut params, location);
-        // 行数检查：期望恰好 1 行。0 行=目标消失/并发冲突，>1=身份不唯一；均回滚。
+        if !plain.is_empty() {
+            let (mut sql, mut params) = pg_update_sql(table, &plain, &update.identity, columns)?;
+            pg_append_row_location(&mut sql, &mut params, location.clone());
+            // 行数检查：期望恰好 1 行。0 行=目标消失/并发冲突，>1=身份不唯一；均回滚。
+            let affected = client
+                .execute(&sql, &pg_params_refs(&params))
+                .await
+                .map_err(|error| Error::new(ErrorKind::Query, pg_db_error_text(&error)))?;
+            if affected != 1 {
+                return Err(update_conflict_error(affected));
+            }
+        }
+
+        for (cell, stream) in streamed {
+            pg_apply_blob_stream(client, table, cell, stream, &update.identity, columns, &location)
+                .await?;
+        }
+    }
+    Ok(())
+}
+
+/// 流式写入一个大字段单元格：先清空，再按块 `c = COALESCE(c, …) || $1` 追加。
+///
+/// 文本列用 `''::text` 起点、二进制列用 `''::bytea`：bytea 不能用文本空串拼接
+/// （类型不匹配），text 列也不接受 bytea 参数。分块边界已由 `streamed_chunk_at`
+/// 对齐到 UTF-8 字符边界，因此每一块都是合法文本。
+///
+/// 注意代价：bytea/text 都是不可变值，每次追加都由服务端重写整值，整体是 O(n²)。
+/// 这就是分块取 [`fluxdb_core::BLOB_STREAM_CHUNK_BYTES`]（16 MiB）而不用几 MB 的原因；
+/// 真流式需要 `lo_*` 大对象 API，跨驱动不可移植，此处不做。
+///
+/// 事务内已经 `FOR UPDATE` 锁住目标行，因此这里仍逐块带行位置条件，任何一块没命中
+/// 唯一行都直接失败并整体回滚。
+async fn pg_apply_blob_stream(
+    client: &tokio_postgres::Client,
+    table: &str,
+    cell: &fluxdb_core::CellUpdate,
+    stream: &fluxdb_core::StreamedValue,
+    identity: &RowIdentity,
+    columns: &[Column],
+    location: &(u32, String),
+) -> fluxdb_core::Result<()> {
+    let quoted = fluxdb_core::SqlDialect::quote_identifier(&fluxdb_core::PostgresDialect, &cell.column);
+    let is_text = stream.is_text();
+    // 清空：用空串/空 bytea 而不是 NULL，目标列可能是 NOT NULL。
+    let empty = if is_text { "''::text" } else { "''::bytea" };
+    let (where_sql, mut clear_params) = pg_identity_params(identity, columns)?;
+    let mut sql = format!("UPDATE {table} SET {quoted} = {empty}{where_sql}");
+    pg_append_row_location(&mut sql, &mut clear_params, location.clone());
+    let affected = client
+        .execute(&sql, &pg_params_refs(&clear_params))
+        .await
+        .map_err(|error| Error::new(ErrorKind::Query, pg_db_error_text(&error)))?;
+    require_single_streamed_row(affected, &cell.column)?;
+
+    // 读一块、发一条：tokio-postgres 不支持把 bytea 参数分片发送，只能按块重复
+    // 执行语句，进程内存峰值等于一块。
+    let mut offset = 0u64;
+    while let Some(chunk) = streamed_chunk_at(stream, offset)? {
+        let chunk_len = chunk.len() as u64;
+        let (where_sql, mut params) = pg_identity_params(identity, columns)?;
+        let cast = if is_text { "::text" } else { "::bytea" };
+        let param: Box<dyn ToSql + Sync> = if is_text {
+            Box::new(String::from_utf8(chunk).map_err(|_| {
+                Error::new(
+                    ErrorKind::Unsupported,
+                    "待写入文本不是合法的 UTF-8，已取消提交",
+                )
+            })?)
+        } else {
+            Box::new(chunk)
+        };
+        params.push(param);
+        let chunk_index = params.len();
+        let mut sql = format!(
+            "UPDATE {table} SET {quoted} = COALESCE({quoted}, {empty}) || ${chunk_index}{cast}{where_sql}"
+        );
+        pg_append_row_location(&mut sql, &mut params, location.clone());
         let affected = client
             .execute(&sql, &pg_params_refs(&params))
             .await
             .map_err(|error| Error::new(ErrorKind::Query, pg_db_error_text(&error)))?;
-        if affected != 1 {
-            return Err(update_conflict_error(affected));
-        }
+        require_single_streamed_row(affected, &cell.column)?;
+        // 按实际读到的长度推进，不能按请求长度：存储可能提前返回较短的块。
+        offset += chunk_len;
     }
     Ok(())
 }
@@ -299,7 +375,7 @@ fn pg_insert_sql(
 
 fn pg_update_sql(
     table: &str,
-    cells: &[fluxdb_core::CellUpdate],
+    cells: &[&fluxdb_core::CellUpdate],
     identity: &fluxdb_core::RowIdentity,
     columns: &[Column],
 ) -> fluxdb_core::Result<(String, Vec<Box<dyn ToSql + Sync>>)> {
@@ -314,7 +390,7 @@ fn pg_update_sql(
             Ok(format!(
                 "{} = {}",
                 fluxdb_core::PostgresDialect.quote_identifier(&cell.column),
-                pg_bind_sql(&mut params, col, &cell.value)
+                pg_bind_sql(&mut params, col, cell.value.placeholder())
             ))
         })
         .collect::<Result<Vec<_>, _>>()?

@@ -105,7 +105,117 @@ pub struct RowUpdate {
 #[derive(Clone, Debug, PartialEq)]
 pub struct CellUpdate {
     pub column: String,
-    pub value: CellValue,
+    pub value: CellUpdateValue,
+}
+
+impl CellUpdate {
+    /// 普通值写入：值就在内存里，按常规参数绑定即可。
+    pub fn new(column: impl Into<String>, value: CellValue) -> Self {
+        Self {
+            column: column.into(),
+            value: CellUpdateValue::Value(value),
+        }
+    }
+
+    /// 流式写入：完整内容在受控内容存储里，必须按块追加。
+    pub fn streamed(column: impl Into<String>, stream: StreamedValue) -> Self {
+        Self {
+            column: column.into(),
+            value: CellUpdateValue::Stream(stream),
+        }
+    }
+}
+
+/// 一个待写单元格的内容来源。
+///
+/// 用枚举而不是「可选字段」，是为了让每个写入口在编译期就必须决定怎么处理
+/// 流式值：漏掉分支编不过，不会出现「把占位值当成真数据绑进去」的静默损坏。
+#[derive(Clone, Debug, PartialEq)]
+pub enum CellUpdateValue {
+    /// 内存里的完整值。
+    Value(CellValue),
+    /// 完整内容在受控内容存储里，只带不透明引用。
+    Stream(StreamedValue),
+}
+
+impl CellUpdateValue {
+    /// 展示、历史、预览、SQL 回顾能看到的**只有占位值**，绝不是权威内容。
+    pub fn placeholder(&self) -> &CellValue {
+        match self {
+            Self::Value(value) => value,
+            Self::Stream(stream) => &stream.placeholder,
+        }
+    }
+
+    pub fn stream(&self) -> Option<&StreamedValue> {
+        match self {
+            Self::Stream(stream) => Some(stream),
+            Self::Value(_) => None,
+        }
+    }
+}
+
+impl From<CellValue> for CellUpdateValue {
+    fn from(value: CellValue) -> Self {
+        Self::Value(value)
+    }
+}
+
+/// 待写入的大字段内容引用。
+///
+/// 只保存不透明引用与字节数，**不保存文件路径**：事件、日志、快照与 AI 上下文
+/// 都不得出现路径或正文。写入方按块从内容存储读取。
+///
+/// 完整内容由 [`StagedContent`] 持有：改动集被丢弃（提交成功清空、换页、关标签、
+/// 用户重新替换同一格）时自动释放暂存内容，不需要在每个清理点单独记账。
+#[derive(Clone, Debug)]
+pub struct StreamedValue {
+    pub staged: std::sync::Arc<StagedContent>,
+    pub byte_length: u64,
+    /// 内容种类决定连接器怎么追加：二进制按字节拼，文本必须落在 UTF-8 字符边界上，
+    /// 并用文本拼接语法（SQLite 的 `||` 对 blob 会改类型，SQL Server 的 `.WRITE`
+    /// 只对 binary 有明确的长度语义）。同一个上传入口因此要带上它。
+    pub kind: LargeValueKind,
+    /// 写入前/写入期间界面显示的值（只有类型与大小，不含正文）。
+    pub placeholder: CellValue,
+}
+
+impl StreamedValue {
+    pub fn content_id(&self) -> &str {
+        &self.staged.content_id
+    }
+}
+
+// 只按不透明引用比较：同一份内容的不同句柄不相等，避免改动集把两次上传当成同一个改动。
+impl PartialEq for StreamedValue {
+    fn eq(&self, other: &Self) -> bool {
+        self.staged.content_id == other.staged.content_id
+            && self.byte_length == other.byte_length
+            && self.kind == other.kind
+            && self.placeholder == other.placeholder
+    }
+}
+
+impl StreamedValue {
+    /// 把已暂存的内容包成待写入引用；`placeholder` 只用于界面/历史展示。
+    pub fn new(
+        staged: std::sync::Arc<StagedContent>,
+        kind: LargeValueKind,
+        placeholder: CellValue,
+    ) -> Self {
+        let byte_length = staged.byte_length;
+        Self {
+            staged,
+            byte_length,
+            kind,
+            placeholder,
+        }
+    }
+
+    /// 内容是否是文本（追加时必须按 UTF-8 字符边界切块）。
+    pub fn is_text(&self) -> bool {
+        !matches!(self.kind, LargeValueKind::Binary)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

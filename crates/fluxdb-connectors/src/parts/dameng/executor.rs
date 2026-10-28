@@ -151,6 +151,7 @@ fn dm_rows_to_page(columns: Vec<Column>, rows: Vec<Vec<Value>>, pagination: Pagi
         offset: pagination.offset,
         limit: pagination.limit,
         has_more,
+        incomplete: None,
     }
 }
 

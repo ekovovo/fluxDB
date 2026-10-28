@@ -6,8 +6,16 @@ pub struct AiDiscoveredModel {
     pub max_output_tokens: Option<i64>,
 }
 
-pub const HEX_EDIT_LIMIT: u64 = 64 * 1024;
-pub const BINARY_FILE_UPLOAD_LIMIT: u64 = 64 * 1024 * 1024;
+/// 单次上传替换的文件上限（字节）。
+///
+/// 与暂存归属配额（`CELL_CONTENT_OWNER_QUOTA_BYTES`，256 MiB）取齐：暂存内容
+/// 必须落在受控目录里等提交，超过配额就在暂存阶段失败，报错点会离用户操作很远。
+/// 上限设在配额上，用户看到的是「文件太大」，而不是「结果内容配额不足」。
+///
+/// 这个上限不由流式能力决定——超过阈值的文件本来就按块写入，内存占用与大小无关；
+/// 真正的天花板是各库的类型上限与追加代价（MySQL/SQLite/PG 追加会重写整值，
+/// 见 `BLOB_STREAM_CHUNK_BYTES` 的说明）。
+pub const BINARY_FILE_UPLOAD_LIMIT: u64 = 256 * 1024 * 1024;
 const COMPLETION_METADATA_LIMIT: u64 = 500;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

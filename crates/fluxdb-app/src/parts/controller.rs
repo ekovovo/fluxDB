@@ -14,6 +14,7 @@ include!("controller/query_execution.rs");
 include!("controller/dispatch_table.rs");
 include!("controller/tabs.rs");
 include!("controller/data_loading.rs");
+include!("controller/cell_content.rs");
 include!("controller/ai_table_page.rs");
 include!("controller/query_completion.rs");
 #[cfg(test)]

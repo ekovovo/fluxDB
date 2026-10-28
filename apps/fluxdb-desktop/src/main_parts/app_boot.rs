@@ -73,6 +73,8 @@ fn main() {
             let mut controller = AppController::new();
             controller.set_completion_index_storage(storage.clone());
             controller.set_ai_storage(storage.clone());
+            // 大字段完整内容的受控存储：连接器外置与详情分段读取共用。
+            controller.set_cell_content_storage(storage.clone());
             // 首帧后加载 AI 设置列表，避免阻塞开窗；空列表由设置页给出空状态。
             let _ = controller.dispatch(AppCommand::RefreshAiSettings);
             controller.set_er_model_storage(storage.clone());
@@ -3553,6 +3555,8 @@ fn navicat_main_new(
                             _create_table_reference_columns_tasks: BTreeMap::new(),
                             _cell_binary_download_tasks: BTreeMap::new(),
                             _cell_text_load_tasks: BTreeMap::new(),
+                            _cell_content_chunk_tasks: BTreeMap::new(),
+                            _cell_content_save_tasks: BTreeMap::new(),
                             _data_export_tasks: BTreeMap::new(),
                             _data_export_cancel_flags: BTreeMap::new(),
                             _backup_tasks: BTreeMap::new(),
@@ -3780,6 +3784,7 @@ fn navicat_main_new(
                             query_output_resize_start: None,
                             query_result_sort_rules: BTreeMap::new(),
                             query_result_cell_detail: BTreeMap::new(),
+                            large_value_windows: BTreeMap::new(),
                             data_change_sql_preview_tabs: BTreeSet::new(),
                             data_filter_panels: BTreeSet::new(),
                             data_filter_rules: BTreeMap::new(),

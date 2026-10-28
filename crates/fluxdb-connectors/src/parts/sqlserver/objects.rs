@@ -180,6 +180,7 @@ fn cell_text(value: &CellValue) -> Option<String> {
         CellValue::Bool(value) => Some(value.to_string()),
         // 预览不是元数据：只取预览会得到被截断的名称/注释。
         CellValue::TruncatedText { .. }
+        | CellValue::LargeValue(_)
         | CellValue::Bytes(_)
         | CellValue::BinarySummary(_)
         | CellValue::Null => None,

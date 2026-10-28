@@ -469,14 +469,27 @@
     "binary_hint": "二进制数据，%{bytes} bytes，可使用下载操作保存。",
     "download": "下载",
     "edit": "编辑",
-    "edit_hex": "Hex 编辑",
     "format_json": "格式化 JSON",
     "hex_preview": "预览 Hex: %{preview}",
+    "large_copy_disabled": "该值只加载了预览（超大字段或截断文本），不能复制或导出；请打开单元格详情查看或保存完整内容",
+    "large_complete": "已到底",
+    "large_load_failed": "读取大字段内容失败",
+    "large_loading": "加载中…",
+    "large_partial": "仅片段",
+    "large_range": "当前范围 %{range}",
+    "large_save_choose_failed": "选择保存位置失败：%{error}",
+    "large_save_done": "完整内容已保存（%{size}）",
+    "large_unavailable": "大字段窗口尚未就绪",
     "no_hex_preview": "暂无 Hex 预览",
     "replace_upload": "上传替换",
     "restore_original": "恢复原值",
     "set_null": "设为 NULL",
-    "truncated_loading": "共 %{chars} 字符，仅显示预览"
+    "truncated_loading": "共 %{chars} 字符，仅显示预览",
+    "large_download_tip": "下载完整内容到文件",
+    "large_upload_tip": "用本地文件整值替换该字段",
+    "large_load_more_tip": "继续读取下一段",
+    "upload_tip": "用本地文件替换该字段",
+    "large_total_tip": "完整大小 %{size}"
   },
   "row": {
     "characters": "%{count} 字符",
@@ -2394,10 +2407,9 @@
       "rows_copied": "已复制 %{count} 行",
       "copied": "已复制",
       "cells_copied": "已复制 %{count} 个单元格",
-      "downloading_binary": "正在下载二进制数据",
-      "path_copied": "已保存文件路径到剪贴板",
       "file_read": "已读取文件，提交后生效",
-      "submitting": "改动正在提交"
+      "submitting": "改动正在提交",
+      "downloading": "正在下载，请稍候…"
     },
     "count": {
       "rows": "%{count} 行",
@@ -2409,7 +2421,6 @@
       "binary_no_result": "二进制下载没有返回结果",
       "load_full_text": "加载完整内容失败",
       "full_text_no_result": "完整内容读取没有返回结果",
-      "temp_file": "写入临时文件失败",
       "file_picker": "选择文件失败：%{error}",
       "replace": "替换失败",
       "window_closed": "窗口已关闭",
@@ -2427,10 +2438,11 @@
       "set": "字段 %{field} 不支持该 SET 值",
       "integer": "字段 %{field} 需要整数",
       "number": "字段 %{field} 需要数字",
-      "time_format": "字段 %{field} 的时间格式不正确"
+      "time_format": "字段 %{field} 的时间格式不正确",
+      "save_file": "保存文件失败：%{error}"
     },
     "picker": {
-      "binary_file": "选择要写入二进制字段的文件"
+      "upload_file": "选择要写入该字段的文件"
     },
     "action": {
       "acknowledge": "知道了",
@@ -4224,7 +4236,7 @@
     "user_admin_unsupported": "暂不支持该连接的用户与权限管理",
     "column_missing": "列不存在",
     "cell_missing": "单元格不存在",
-    "large_binary_hex_unsupported": "大二进制值不能直接 Hex 编辑，请使用下载、上传替换或设为 NULL",
+    "binary_edit_unsupported": "二进制字段不支持就地编辑，请使用上传替换或设为 NULL",
     "row_match_failed": "无法匹配原始行，请刷新后重试",
     "task_target_invalid_json": "任务目标不是合法 JSON",
     "model_error_finish": "模型返回错误结束",
@@ -4302,8 +4314,6 @@
     "query_result_missing": "查询结果不存在",
     "query_result_not_editable": "查询结果不可编辑",
     "original_data_page_not_loaded": "原始数据页未加载",
-    "hex_length_even": "Hex 长度必须是偶数",
-    "hex_charset_invalid": "Hex 只能包含 0-9、A-F",
     "row_identity_binary_ambiguous": "无唯一键且包含二进制摘要，无法可靠定位原始行",
     "row_identity_locate_failed": "无法定位行身份",
     "row_identity_not_unique": "原始行身份不唯一，已取消提交",
@@ -4549,7 +4559,7 @@
     "note_block_body_too_long": "说明块正文超过长度上限",
     "impact_scope_unverifiable": "影响范围或回滚能力无法核实，需要人工审核",
     "auto_approval_threshold_invalid": "自动放行阈值必须在 0–1 之间",
-    "dyn_upload_too_large": "上传文件超过 %{value} MB，请等待大文件流式上传支持",
+    "dyn_upload_too_large": "上传文件超过 %{value} MB，超过单个大字段的暂存上限，请拆分或缩小文件后重试",
     "dyn_artifact_schema_unsupported": "不支持的产物 schema 版本 %{first}（当前 %{second}）",
     "dyn_readwrite_statement_rejected": "允许读写仅放行数据修改（INSERT/UPDATE/DELETE），当前语句被拒绝：%{value}",
     "dyn_builtin_capability_registry_mismatch": "内置能力 %{value} 与存储层插件注册表不一致",
@@ -5617,6 +5627,21 @@
     "ext_cancelled_outcome_unknown": "已取消：结果待核实",
     "ext_cancelled_not_executed": "已取消：未执行",
     "tmpl_298": "已超时：结果待核实（%{0}）",
-    "tmpl_299": "已读取 %{0} 行，当前仅展示 %{1} 行（结果已截断）"
+    "tmpl_299": "已读取 %{0} 行，当前仅展示 %{1} 行（结果已截断）",
+    "tmpl_300": "大字段内容超过单个归属的配额（%{0} MiB），无法继续保留；请缩小查询范围或关闭部分结果后再试",
+    "tmpl_301": "超大字段内容总量超过本进程配额（%{0} MiB），请关闭部分结果后再试",
+    "tmpl_302": "待写入内容提前结束（已读 %{0} / %{1} 字节），已取消提交",
+    "tmpl_303": "字段 %{0} 的流式写入没有命中唯一一行，已取消提交；请刷新后重试",
+    "tmpl_304": "当前数据库不支持流式写入大字段，单个文件请控制在 %{0} 以内",
+    "streamed_write_unsupported": "当前数据库暂不支持流式写入大字段，请改用较小的文件",
+    "streamed_write_insert_unsupported": "新增行不支持流式写入，请先提交后再修改该字段",
+    "cell_content_expired": "大字段内容已失效（结果已关闭或已翻页），请重新执行查询",
+    "cell_content_store_missing": "大字段内容存储未初始化，无法读写完整内容",
+    "tmpl_305": "上传失败：%{0} 是 %{1}，最多支持 %{2}，当前文件 %{3}",
+    "upload_cell_unsupported": "当前单元格不支持上传替换，请使用文本或二进制大字段",
+    "upload_file_not_utf8": "文件不是合法的 UTF-8 文本，无法写入文本字段",
+    "streamed_text_not_utf8": "待写入文本不是合法的 UTF-8，已取消提交",
+    "streamed_text_chunk_too_small": "文本分块过小，无法切在字符边界上；请调大分块阈值后重试",
+    "large_edit_unsupported": "超大字段不支持就地编辑；请使用分段查看或上传替换"
   }
 }

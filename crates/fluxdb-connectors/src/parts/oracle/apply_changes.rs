@@ -11,6 +11,7 @@ fn oracle_apply_changes(
     changes: &DataChangeSet,
 ) -> fluxdb_core::Result<AppliedChangeOutcome> {
     validate_data_changes(changes)?;
+    reject_streamed_values(changes)?;
     let schema = oracle_request_schema(config, &changes.object)?;
     let connection = oracle_connect(config)?;
     let columns = oracle_load_columns(&connection, &schema, &changes.object.name)?;
@@ -36,7 +37,7 @@ fn oracle_apply_changes(
             let mut assignments = Vec::new();
             for cell in &update.cells {
                 ensure_column_exists(&cell.column, &columns)?;
-                let placeholder = oracle_placeholder(&mut binds, oracle_bind_cell(&cell.value));
+                let placeholder = oracle_placeholder(&mut binds, oracle_bind_cell(cell.value.placeholder()));
                 assignments.push(format!(
                     "{} = {placeholder}",
                     fluxdb_core::OracleDialect.quote_identifier(&cell.column)

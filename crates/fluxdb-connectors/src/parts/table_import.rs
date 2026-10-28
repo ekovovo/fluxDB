@@ -389,6 +389,10 @@ fn preview_cell_text(value: &CellValue) -> String {
         CellValue::F64(value) => value.to_string(),
         CellValue::Text(value) | CellValue::Json(value) => value.clone(),
         CellValue::TruncatedText { total_chars, .. } => format!("<截断文本：共 {total_chars} 字符>"),
+        CellValue::LargeValue(large) => match large.byte_length {
+            Some(length) => format!("<超大字段：共 {length} 字节>"),
+            None => "<超大字段：大小未知>".to_string(),
+        },
         CellValue::Bytes(value) => format!("<{} 字节>", value.len()),
         CellValue::BinarySummary(_) => "<二进制>".to_string(),
     }
@@ -1119,6 +1123,13 @@ fn import_sql_parameter(value: &CellValue) -> fluxdb_core::Result<SqlParameter> 
                 "导入不支持只加载了预览的文本（截断的 CLOB），请先加载完整值",
             ));
         }
+        // 大字段只有预览：导入会用它覆盖目标表的完整值。
+        CellValue::LargeValue(_) => {
+            return Err(Error::new(
+                ErrorKind::Unsupported,
+                "导入不支持只加载了预览的超大字段，请先按内容引用读取完整值",
+            ));
+        }
         CellValue::Bytes(value) => SqlParameter::Bytes(value.clone()),
         CellValue::BinarySummary(_) => {
             return Err(Error::new(
@@ -1150,7 +1161,8 @@ fn import_sql_parameter_for_column(
         | CellValue::Bool(_)
         | CellValue::Bytes(_)
         | CellValue::BinarySummary(_)
-        | CellValue::TruncatedText { .. } => import_sql_parameter(value),
+        | CellValue::TruncatedText { .. }
+        | CellValue::LargeValue(_) => import_sql_parameter(value),
         CellValue::I64(value)
             if matches!(
                 base.as_str(),

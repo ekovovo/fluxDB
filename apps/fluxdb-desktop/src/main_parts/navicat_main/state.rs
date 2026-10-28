@@ -731,6 +731,10 @@ struct NavicatMain {
     _create_table_reference_columns_tasks: BTreeMap<(TabId, u64), Task<()>>,
     _cell_binary_download_tasks: BTreeMap<(TabId, usize, usize), Task<()>>,
     _cell_text_load_tasks: BTreeMap<(TabId, usize, usize), Task<()>>,
+    /// 大字段分段读取任务，按单元格去重：连点「读取更多」不并发读同一窗口。
+    _cell_content_chunk_tasks: BTreeMap<(TabId, String), Task<()>>,
+    /// 大字段流式保存任务，按单元格去重。
+    _cell_content_save_tasks: BTreeMap<(TabId, usize, usize), Task<()>>,
     _data_export_tasks: BTreeMap<u64, Task<()>>,
     _data_export_cancel_flags: BTreeMap<u64, Arc<AtomicBool>>,
     _backup_tasks: BTreeMap<u64, Task<()>>,
@@ -926,6 +930,8 @@ struct NavicatMain {
     query_output_resize_start: Option<QueryOutputResizeStart>,
     query_result_sort_rules: BTreeMap<QueryResultSortKey, Vec<DataSortRule>>,
     query_result_cell_detail: BTreeMap<TabId, QueryResultCellDetail>,
+    /// 详情面板打开中的大字段分段窗口（键 = 标签页）。
+    large_value_windows: BTreeMap<TabId, LargeValueWindows>,
     data_change_sql_preview_tabs: BTreeSet<TabId>,
     data_filter_panels: BTreeSet<TabId>,
     data_filter_rules: BTreeMap<TabId, Vec<DataFilterRule>>,

@@ -11,6 +11,26 @@ pub enum DatabaseKind {
     Oracle,
 }
 
+impl DatabaseKind {
+    /// 是否支持「按块追加写入」大字段（上传替换的流式路径）。
+    ///
+    /// 只有实现了逐块追加的连接器才返回 true。Oracle/达梦暂时为 false：
+    /// 它们的真流式路径依赖 LOB 定位符与驱动侧写接口，尚未在本仓库验证过，
+    /// 与其给出一个可能写坏数据的路径，不如让上层明确拒绝超阈值上传。
+    ///
+    /// 判定必须在上传暂存**之前**使用，避免先落几百 MiB 再在提交时失败。
+    pub fn supports_streamed_lob_write(self) -> bool {
+        matches!(
+            self,
+            DatabaseKind::MySql
+                | DatabaseKind::TiDb
+                | DatabaseKind::Sqlite
+                | DatabaseKind::Postgres
+                | DatabaseKind::SqlServer
+        )
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
 pub struct ConnectionId(pub u64);
 

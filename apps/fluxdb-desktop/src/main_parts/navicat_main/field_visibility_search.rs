@@ -643,6 +643,7 @@ fn redis_filter_page(page: &DataPage, type_filter: &str, query: &str) -> DataPag
         offset: page.offset,
         limit: page.limit,
         has_more: page.has_more,
+            incomplete: page.incomplete.clone(),
     }
 }
 

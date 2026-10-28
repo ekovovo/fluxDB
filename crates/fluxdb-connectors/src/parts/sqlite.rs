@@ -295,14 +295,21 @@ fn sqlite_load_data_with_expression(
         builder.push(" OFFSET ");
         builder.push_bind(pagination.offset as i64);
 
-        let rows = builder
-            .build()
-            .fetch_all(&mut connection)
-            .await
-            .map_err(sqlite_error)?;
-
+        // 流式取行：与 MySQL 表浏览同一套预算规则，见 `collect_sqlx_page`。
+        let stream = builder.build().fetch(&mut connection);
+        let owner = fluxdb_core::table_content_owner(path);
+        let (page, _read_rows) = collect_sqlx_page(
+            stream,
+            columns,
+            pagination,
+            0,
+            &owner,
+            |row, _index, column| sqlite_cell_value(row, column),
+            sqlite_error,
+        )
+        .await?;
         connection.close().await.map_err(sqlite_error)?;
-        Ok(sqlite_rows_to_page(columns, rows, pagination))
+        Ok(page)
     })
 }
 
@@ -766,24 +773,87 @@ async fn sqlite_apply_updates(
             continue;
         }
         validate_identity(&update.identity, columns)?;
-
-        let mut builder = QueryBuilder::<Sqlite>::new(format!("UPDATE {table_name} SET "));
-        for (index, cell) in update.cells.iter().enumerate() {
+        for cell in &update.cells {
             ensure_column_exists(&cell.column, columns)?;
-            if index > 0 {
-                builder.push(", ");
-            }
-            builder
-                .push(fluxdb_core::SqliteDialect.quote_identifier(&cell.column))
-                .push(" = ");
-            push_sqlite_bind(&mut builder, &cell.value);
         }
-        push_sqlite_identity_where(&mut builder, &update.identity, columns)?;
-        builder
-            .build()
-            .execute(&mut *connection)
-            .await
-            .map_err(sqlite_error)?;
+
+        let (plain, streamed) = split_update_cells(update);
+        if !plain.is_empty() {
+            let mut builder = QueryBuilder::<Sqlite>::new(format!("UPDATE {table_name} SET "));
+            for (index, cell) in plain.iter().enumerate() {
+                if index > 0 {
+                    builder.push(", ");
+                }
+                builder
+                    .push(fluxdb_core::SqliteDialect.quote_identifier(&cell.column))
+                    .push(" = ");
+                push_sqlite_bind(&mut builder, cell.value.placeholder());
+            }
+            push_sqlite_identity_where(&mut builder, &update.identity, columns)?;
+            builder
+                .build()
+                .execute(&mut *connection)
+                .await
+                .map_err(sqlite_error)?;
+        }
+
+        // 流式大字段：清空后按块追加，每块一条 UPDATE。
+        //
+        // 关键坑：SQLite 的 `||` 在任一操作数不是 TEXT 时返回 TEXT，
+        // `x'' || ?blob` 会用 TEXT 类型写回 BLOB 列（值看似正确，typeof 已变）。
+        // 必须用 `CAST(... AS BLOB)` 把结果转回 blob，否则二进制内容会被当成文本服务。
+        // 文本走 `COALESCE(c,'') || ?`，二进制必须 `CAST(... AS BLOB)`：
+        // SQLite 的 `||` 在任一操作数不是 TEXT 时返回 TEXT，BLOB 列会被改类型。
+        for (cell, stream) in streamed {
+            let quoted = fluxdb_core::SqliteDialect.quote_identifier(&cell.column);
+            let empty = if stream.is_text() { "''" } else { "x''" };
+            let mut clear = QueryBuilder::<Sqlite>::new(format!(
+                "UPDATE {table_name} SET {quoted} = {empty}"
+            ));
+            push_sqlite_identity_where(&mut clear, &update.identity, columns)?;
+            let affected = clear
+                .build()
+                .execute(&mut *connection)
+                .await
+                .map_err(sqlite_error)?
+                .rows_affected();
+            require_single_streamed_row(affected, &cell.column)?;
+
+            let mut offset = 0u64;
+            while let Some(bytes) = streamed_chunk_at(stream, offset)? {
+                offset += bytes.len() as u64;
+                let mut builder = if stream.is_text() {
+                    let text = String::from_utf8(bytes).map_err(|_| {
+                        Error::new(
+                            ErrorKind::Unsupported,
+                            "待写入文本不是合法的 UTF-8，已取消提交",
+                        )
+                    })?;
+                    let mut builder = QueryBuilder::<Sqlite>::new(format!(
+                        "UPDATE {table_name} SET {quoted} = COALESCE({quoted}, '') || "
+                    ));
+                    builder.push_bind(text);
+                    builder
+                } else {
+                    let mut builder = QueryBuilder::<Sqlite>::new(format!(
+                        "UPDATE {table_name} SET {quoted} = CAST(COALESCE({quoted}, x'') || "
+                    ));
+                    builder.push_bind(bytes);
+                    builder.push(" AS BLOB)");
+                    builder
+                };
+                push_sqlite_identity_where(&mut builder, &update.identity, columns)?;
+                builder
+                    .build()
+                    .execute(&mut *connection)
+                    .await
+                    .map_err(sqlite_error)?
+                    .rows_affected()
+                    .eq(&1)
+                    .then_some(())
+                    .ok_or_else(|| streamed_row_lost_error(&cell.column))?;
+            }
+        }
     }
 
     Ok(())

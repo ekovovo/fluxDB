@@ -29,6 +29,14 @@ impl AppController {
         let Some(request) = request else {
             return self.fail(Error::new(ErrorKind::Internal, "查询编辑器标签页不存在"));
         };
+        // 重新执行会替换掉这个标签上一次的结果页：上一页外置的大字段内容随之失效。
+        // 不释放会一直占配额，也会让用户拿着已经不属于当前结果的旧引用。
+        if let Some(store) = fluxdb_core::cell_content_store() {
+            store.release_owner(&fluxdb_core::result_content_owner(
+                request.session_id,
+                request.connection_id,
+            ));
+        }
 
         let cancel_flag = self.query_cancel_flag(tab_id);
         let result =

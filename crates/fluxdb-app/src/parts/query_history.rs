@@ -161,6 +161,7 @@ impl AppController {
             offset: 0,
             limit: 0,
             has_more: false,
+            incomplete: None,
         });
         annotate_snapshot_columns(self, config, request, spec.table_name(), &mut page);
         sanitize_snapshot_page(&mut page);
@@ -653,7 +654,19 @@ fn data_change_history_entries(
                 format!(
                     "{} = {}",
                     sql_history_quote_ident_for(&cell.column, kind),
-                    sql_history_value_literal_for_type(&cell.value, kind, column_type)
+                    // 流式写入的正文不在内存里，历史只能记占位说明：写成可回放的字面量
+                    // 等于凭空编一份内容，回滚时会把它当真数据写回。
+                    match cell.value.stream() {
+                        Some(stream) => format!(
+                            "NULL /* 超大字段：共 {} 字节，需按内容引用读取 */",
+                            stream.byte_length
+                        ),
+                        None => sql_history_value_literal_for_type(
+                            cell.value.placeholder(),
+                            kind,
+                            column_type,
+                        ),
+                    }
                 )
             })
             .collect::<Vec<_>>()
@@ -1326,6 +1339,11 @@ fn sql_history_value_literal_for_type(
         CellValue::TruncatedText { total_chars, .. } => {
             format!("NULL /* 截断的 CLOB：共 {total_chars} 字符，需完整读取 */")
         }
+        // 同上：超大字段只有预览，不渲染成可回放的字面量。
+        CellValue::LargeValue(large) => match large.byte_length {
+            Some(length) => format!("NULL /* 超大字段：共 {length} 字节，需按内容引用读取 */"),
+            None => "NULL /* 超大字段：完整大小未知，需按内容引用读取 */".to_string(),
+        },
         CellValue::BinarySummary(summary) if summary.is_null => "NULL".to_string(),
         CellValue::BinarySummary(_) => "NULL".to_string(),
     }
@@ -1339,7 +1357,7 @@ fn sql_history_value_literal_for_rollback_with_type(
     match value {
         CellValue::BinarySummary(summary) if !summary.is_null => None,
         // 回滚语句会用字面量覆盖真值：只有预览时无法还原，宁可不生成回滚。
-        CellValue::TruncatedText { .. } => None,
+        CellValue::TruncatedText { .. } | CellValue::LargeValue(_) => None,
         value => Some(sql_history_value_literal_for_type(value, kind, type_name)),
     }
 }

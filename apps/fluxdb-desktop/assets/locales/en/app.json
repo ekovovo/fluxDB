@@ -469,14 +469,27 @@
     "binary_hint": "Binary data, %{bytes} bytes. Use Download to save it.",
     "download": "Download",
     "edit": "Edit",
-    "edit_hex": "Edit Hex",
     "format_json": "Format JSON",
     "hex_preview": "Hex preview: %{preview}",
+    "large_copy_disabled": "Only a preview is loaded (oversized field or truncated text); copy and export are disabled. Open the cell detail to view or save the full value",
+    "large_complete": "Complete",
+    "large_load_failed": "Failed to read the large value",
+    "large_loading": "Loading…",
+    "large_partial": "Partial",
+    "large_range": "Current range %{range}",
+    "large_save_choose_failed": "Failed to choose a save location: %{error}",
+    "large_save_done": "Full content saved (%{size})",
+    "large_unavailable": "Large value window is not ready",
     "no_hex_preview": "No Hex preview",
     "replace_upload": "Upload replacement",
     "restore_original": "Restore original",
     "set_null": "Set to NULL",
-    "truncated_loading": "%{chars} characters in total; preview only"
+    "truncated_loading": "%{chars} characters in total; preview only",
+    "large_download_tip": "Download the full value to a file",
+    "large_upload_tip": "Replace the whole value with a local file",
+    "large_load_more_tip": "Load the next chunk",
+    "upload_tip": "Replace the value with a local file",
+    "large_total_tip": "Full size %{size}"
   },
   "row": {
     "characters": "%{count} characters",
@@ -2394,10 +2407,9 @@
       "rows_copied": "Copied %{count} rows",
       "copied": "Copied",
       "cells_copied": "Copied %{count} cells",
-      "downloading_binary": "Downloading binary data",
-      "path_copied": "File path copied to the clipboard",
       "file_read": "File read; changes apply after submit",
-      "submitting": "Changes are being submitted"
+      "submitting": "Changes are being submitted",
+      "downloading": "Download in progress, please wait…"
     },
     "count": {
       "rows": "%{count} rows",
@@ -2409,7 +2421,6 @@
       "binary_no_result": "The binary download returned no result",
       "load_full_text": "Could not load the full content",
       "full_text_no_result": "Loading the full content returned no result",
-      "temp_file": "Could not write the temporary file",
       "file_picker": "Could not choose the file: %{error}",
       "replace": "Replace failed",
       "window_closed": "The window has closed",
@@ -2427,10 +2438,11 @@
       "set": "Field %{field} does not accept this SET value",
       "integer": "Field %{field} requires an integer",
       "number": "Field %{field} requires a number",
-      "time_format": "Field %{field} has an invalid time format"
+      "time_format": "Field %{field} has an invalid time format",
+      "save_file": "Could not save the file: %{error}"
     },
     "picker": {
-      "binary_file": "Choose a file to write into the binary field"
+      "upload_file": "Choose a file to write into this field"
     },
     "action": {
       "acknowledge": "Got it",
@@ -4224,7 +4236,7 @@
     "user_admin_unsupported": "User & permission management is not supported for this connection",
     "column_missing": "Column not found",
     "cell_missing": "Cell not found",
-    "large_binary_hex_unsupported": "Large binary values cannot be Hex-edited directly; download, replace by upload, or set NULL",
+    "binary_edit_unsupported": "Binary columns cannot be edited in place; upload a replacement or set NULL",
     "row_match_failed": "Could not match the original row; refresh and try again",
     "task_target_invalid_json": "Task target is not valid JSON",
     "model_error_finish": "The model finished with an error",
@@ -4302,8 +4314,6 @@
     "query_result_missing": "Query result not found",
     "query_result_not_editable": "Query result is not editable",
     "original_data_page_not_loaded": "The original data page is not loaded",
-    "hex_length_even": "Hex length must be even",
-    "hex_charset_invalid": "Hex may only contain 0-9 and A-F",
     "row_identity_binary_ambiguous": "No unique key and a binary digest is present; the original row cannot be located reliably",
     "row_identity_locate_failed": "Unable to locate the row identity",
     "row_identity_not_unique": "Original row identity is not unique; commit cancelled",
@@ -4549,7 +4559,7 @@
     "note_block_body_too_long": "Note block body exceeds the length limit",
     "impact_scope_unverifiable": "Impact scope or rollback capability cannot be verified; manual review is required",
     "auto_approval_threshold_invalid": "The automatic approval threshold must be between 0 and 1",
-    "dyn_upload_too_large": "The upload exceeds %{value} MB; large-file streaming upload is not supported yet",
+    "dyn_upload_too_large": "The upload exceeds %{value} MB, the staging limit for a single large field; split or shrink the file and retry",
     "dyn_artifact_schema_unsupported": "Unsupported artifact schema version %{first} (current %{second})",
     "dyn_readwrite_statement_rejected": "Read-write mode only allows data changes (INSERT/UPDATE/DELETE); the statement was rejected: %{value}",
     "dyn_builtin_capability_registry_mismatch": "Built-in capability %{value} is inconsistent with the storage plugin registry",
@@ -5617,6 +5627,21 @@
     "ext_cancelled_outcome_unknown": "Cancelled: result pending verification",
     "ext_cancelled_not_executed": "Cancelled: not executed",
     "tmpl_298": "Timed out: result pending verification (%{0})",
-    "tmpl_299": "Read %{0} rows; showing only %{1} rows (result truncated)"
+    "tmpl_299": "Read %{0} rows; showing only %{1} rows (result truncated)",
+    "tmpl_300": "Large-field content exceeds the quota for a single owner (%{0} MiB) and cannot be kept; narrow the query or close some results and retry",
+    "tmpl_301": "Total large-field content exceeds this process quota (%{0} MiB); close some results and retry",
+    "tmpl_302": "The pending content ended early (%{0} / %{1} bytes read); the commit was cancelled",
+    "tmpl_303": "The streaming write for column %{0} did not match exactly one row; the commit was cancelled. Refresh and retry",
+    "tmpl_304": "This database cannot stream large-field writes; keep each file within %{0}",
+    "streamed_write_unsupported": "This database does not support streaming large-field writes yet; use a smaller file",
+    "streamed_write_insert_unsupported": "New rows cannot be streamed; commit first, then change this field",
+    "cell_content_expired": "The large-field content has expired (result closed or paged); run the query again",
+    "cell_content_store_missing": "Large-field content storage is not initialized; full content cannot be read or written",
+    "tmpl_305": "Upload failed: %{0} is %{1}, which holds at most %{2}; the current file is %{3}",
+    "upload_cell_unsupported": "This cell does not accept upload replacement; use a text or binary large field",
+    "upload_file_not_utf8": "The file is not valid UTF-8 text and cannot be written into a text field",
+    "streamed_text_not_utf8": "The pending content is not valid UTF-8; the commit was cancelled",
+    "streamed_text_chunk_too_small": "The streamed text chunk is too small to align on a character boundary; raise the chunk size and retry",
+    "large_edit_unsupported": "Very large values cannot be edited in place; use the chunked view or upload replacement"
   }
 }

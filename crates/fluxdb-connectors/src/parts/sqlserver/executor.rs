@@ -143,7 +143,12 @@ async fn sqlserver_execute_on_client(
                         let returned_rows = set.rows.len() as u64;
                         let mut page = sqlserver_query_page(set.columns, set.rows, pagination);
                         if batch_truncated {
-                            page.has_more = true;
+                            // 驱动侧上限截断：后面的行根本没读进来，不能声称「还有更多」。
+                            page.incomplete = Some(fluxdb_core::PageIncomplete {
+                                reason: "结果超过 16 MiB，后续行未载入；请缩小查询范围"
+                                    .to_string(),
+                            });
+                            page.has_more = false;
                         }
                         push_query_summary(
                             &mut execution,
@@ -278,6 +283,7 @@ fn sqlserver_query_page(
         offset: pagination.offset,
         limit: pagination.limit,
         has_more,
+        incomplete: None,
     }
 }
 
@@ -312,14 +318,27 @@ fn sqlserver_execute_parameterized(
             elapsed_ms: elapsed_ms(started),
         });
     } else {
+        let batch_truncated = batch.truncated;
         for set in batch.result_sets {
             let returned = set.rows.len() as u64;
-            let page = sqlserver_query_page(set.columns, set.rows, pagination);
+            let mut page = sqlserver_query_page(set.columns, set.rows, pagination);
+            // 驱动侧 16 MiB 上限截断的是「后面的行还没读」，不是「这一页翻完了」：
+            // 必须标资源不完整，否则用户看不到的数据既没进页、也没提示。
+            if batch_truncated {
+                page.incomplete = Some(fluxdb_core::PageIncomplete {
+                    reason: "结果超过 16 MiB，后续行未载入；请缩小查询范围".to_string(),
+                });
+                page.has_more = false;
+            }
             summaries.push(QueryExecutionSummary {
                 sql: statement.clone(),
                 kind: QueryStatementKind::ResultSet,
                 success: true,
-                message: format!("返回 {returned} 行结果表（参数化绑定）"),
+                message: if batch_truncated {
+                    "结果超过 16 MiB，后续行未载入（参数化绑定）".to_string()
+                } else {
+                    format!("返回 {returned} 行结果表（参数化绑定）")
+                },
                 returned_rows: returned,
                 affected_rows: 0,
                 elapsed_ms: elapsed_ms(started),

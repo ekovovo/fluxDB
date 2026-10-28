@@ -69,6 +69,15 @@ impl AppController {
         self.ai_storage = Some(storage);
     }
 
+    /// 注入大字段内容存储：连接器取数时经进程级注册表把超大字段外置到这里。
+    ///
+    /// 同时清理上次进程崩溃遗留的内容目录（结果页内容不跨进程复用）。
+    pub fn set_cell_content_storage(&mut self, storage: fluxdb_storage::FileStorage) {
+        let _ = crate::sweep_stale_cell_contents(storage.root_dir());
+        let store = std::sync::Arc::new(crate::CellContentFileStore::new(storage.root_dir()));
+        fluxdb_core::register_cell_content_store(store);
+    }
+
     pub fn set_completion_index_storage(&mut self, storage: fluxdb_storage::FileStorage) {
         self.completion_index_storage = Some(storage);
     }

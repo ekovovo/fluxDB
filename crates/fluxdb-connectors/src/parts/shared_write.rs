@@ -21,14 +21,150 @@ fn reject_truncated_values(changes: &DataChangeSet) -> fluxdb_core::Result<()> {
         .inserts
         .iter()
         .any(|row| row.values.iter().any(truncated_cell));
-    let in_update = changes
-        .updates
-        .iter()
-        .any(|update| update.cells.iter().any(|cell| truncated_cell(&cell.value)));
+    let in_update = changes.updates.iter().any(|update| {
+        update.cells.iter().any(|cell| {
+            // 流式写入的占位值本身就是 `LargeValue`（只有内容引用与大小），
+            // 正文在内容存储里，由连接器按块读取——这不是「只加载了预览」。
+            cell.value.stream().is_none() && truncated_cell(cell.value.placeholder())
+        })
+    });
     if in_insert || in_update {
         return Err(Error::new(
             ErrorKind::Unsupported,
             "提交包含只加载了预览的文本（截断的 CLOB），请先加载完整值再保存",
+        ));
+    }
+    Ok(())
+}
+
+/// 拆出一行更新里的「普通值」与「流式值」，供连接器分别处理。
+///
+/// 同一行既有普通改动又有流式改动是允许的：普通列照常 SET，流式列按块追加。
+fn split_update_cells(
+    update: &RowUpdate,
+) -> (
+    Vec<&fluxdb_core::CellUpdate>,
+    Vec<(&fluxdb_core::CellUpdate, &fluxdb_core::StreamedValue)>,
+) {
+    let mut plain = Vec::new();
+    let mut streamed = Vec::new();
+    for cell in &update.cells {
+        match cell.value.stream() {
+            Some(stream) => streamed.push((cell, stream)),
+            None => plain.push(cell),
+        }
+    }
+    (plain, streamed)
+}
+
+/// 读取流式内容的下一块（按 [`fluxdb_core::BLOB_STREAM_CHUNK_BYTES`] 步长）。
+///
+/// 返回 `None` 表示已经读完。连接器自己驱动「读一块、发一条」的循环：各库的执行
+/// 都是异步的，闭包式回调没法在里面 `await`。进程内存峰值等于一块。
+///
+/// 读到空块但偏移还没走完，说明暂存内容被提前释放了（例如暂存归属被清理）：
+/// 这时必须报错而不是当读完，否则会静默写入半份内容。
+fn streamed_chunk_at(
+    stream: &fluxdb_core::StreamedValue,
+    offset: u64,
+) -> fluxdb_core::Result<Option<Vec<u8>>> {
+    if offset >= stream.byte_length {
+        return Ok(None);
+    }
+    let store = fluxdb_core::cell_content_store().ok_or_else(|| {
+        Error::new(
+            ErrorKind::Internal,
+            "大字段内容存储未初始化，无法读写完整内容",
+        )
+    })?;
+    let take = (stream.byte_length - offset).min(fluxdb_core::BLOB_STREAM_CHUNK_BYTES as u64) as usize;
+    let bytes = store.read(stream.content_id(), offset, take)?;
+    if bytes.is_empty() {
+        return Err(Error::new(
+            ErrorKind::Internal,
+            format!(
+                "待写入内容提前结束（已读 {offset} / {} 字节），已取消提交",
+                stream.byte_length
+            ),
+        ));
+    }
+    let bytes = if stream.is_text() {
+        truncate_to_char_boundary(bytes, offset, stream.byte_length)?
+    } else {
+        bytes
+    };
+    Ok(Some(bytes))
+}
+
+/// 文本分块必须落在 UTF-8 字符边界上。
+///
+/// 为什么不能靠「服务端自己拼」：分块追加是多次独立写入，中途每一块都会被当作
+/// 文本存进去；把多字节字符劈成两半会写进非法字节序列，整列文本从此不再合法。
+/// 这里把块尾回退到最近的字符边界，剩下的字节留给下一块——**只回退不丢弃**。
+///
+/// 极端情况：单块里一个完整字符都装不下（分块阈值被调到几个字节），说明配置本身
+/// 有问题，直接报错而不是死循环。
+fn truncate_to_char_boundary(
+    mut bytes: Vec<u8>,
+    offset: u64,
+    total: u64,
+) -> fluxdb_core::Result<Vec<u8>> {
+    let mut keep = bytes.len();
+    while keep > 0 && std::str::from_utf8(&bytes[..keep]).is_err() {
+        // 只在「结尾被截断」时回退；中间的非法字节属于内容本身有问题，
+        // 继续回退永远拼不出合法文本，交给数据库如实报错。
+        let consumed = offset + keep as u64;
+        if consumed >= total {
+            break;
+        }
+        let error = std::str::from_utf8(&bytes[..keep]).expect_err("just checked");
+        if error.error_len().is_some() {
+            break;
+        }
+        keep -= 1;
+    }
+    if keep == 0 && !bytes.is_empty() {
+        return Err(Error::new(
+            ErrorKind::Unsupported,
+            "文本分块过小，无法切在字符边界上；请调大分块阈值后重试",
+        ));
+    }
+    bytes.truncate(keep);
+    Ok(bytes)
+}
+
+/// 流式写入开始前清空目标列的影响行数校验：必须恰好 1 行，否则取消。
+///
+/// 0 行=目标行在提交期间被删除；>1=身份条件不唯一。两种情况继续追加都会写错行。
+fn require_single_streamed_row(affected: u64, column: &str) -> fluxdb_core::Result<()> {
+    if affected == 1 {
+        Ok(())
+    } else {
+        Err(streamed_row_lost_error(column))
+    }
+}
+
+fn streamed_row_lost_error(column: &str) -> Error {
+    Error::new(
+        ErrorKind::Query,
+        format!("字段 {column} 的流式写入没有命中唯一一行，已取消提交；请刷新后重试"),
+    )
+}
+
+/// 尚未实现分块追加的连接器（Oracle / 达梦 / Redis / Mock）在入口显式拒绝流式值。
+///
+/// 必须显式拒绝：这些连接器的绑定函数只看占位值，若放过去就等于把「类型 + 大小」
+/// 写进数据库，静默毁掉用户数据。
+fn reject_streamed_values(changes: &DataChangeSet) -> fluxdb_core::Result<()> {
+    if changes
+        .updates
+        .iter()
+        .flat_map(|update| update.cells.iter())
+        .any(|cell| cell.value.stream().is_some())
+    {
+        return Err(Error::new(
+            ErrorKind::Unsupported,
+            "当前数据库暂不支持流式写入大字段，请改用较小的文件",
         ));
     }
     Ok(())
@@ -112,6 +248,10 @@ fn push_mysql_bind(builder: &mut QueryBuilder<'_, MySql>, value: &CellValue) {
         CellValue::TruncatedText { preview, .. } => {
             builder.push_bind(preview.clone());
         }
+        // 大字段同样只有预览；写入前已被 `validate_data_changes` 拒绝。
+        CellValue::LargeValue(large) => {
+            builder.push_bind(large.preview.clone());
+        }
         CellValue::Bytes(value) => {
             builder.push_bind(value.clone());
         }
@@ -141,6 +281,9 @@ fn push_sqlite_bind(builder: &mut QueryBuilder<'_, Sqlite>, value: &CellValue) {
         // 同 `push_mysql_bind`：写入前已拒绝截断值，此处仅供筛选比较。
         CellValue::TruncatedText { preview, .. } => {
             builder.push_bind(preview.clone());
+        }
+        CellValue::LargeValue(large) => {
+            builder.push_bind(large.preview.clone());
         }
         CellValue::Bytes(value) => {
             builder.push_bind(value.clone());
@@ -381,10 +524,7 @@ mod truncated_write_guard_tests {
         let mut set = changes();
         set.updates.push(RowUpdate {
             identity: identity(),
-            cells: vec![CellUpdate {
-                column: "NOTE".to_string(),
-                value: truncated(),
-            }],
+            cells: vec![CellUpdate::new("NOTE", truncated())],
         });
         assert!(reject_truncated_values(&set).is_err());
     }
@@ -404,10 +544,7 @@ mod truncated_write_guard_tests {
         let mut set = changes();
         set.updates.push(RowUpdate {
             identity: identity(),
-            cells: vec![CellUpdate {
-                column: "NOTE".to_string(),
-                value: CellValue::Text("完整内容".to_string()),
-            }],
+            cells: vec![CellUpdate::new("NOTE", CellValue::Text("完整内容".to_string()))],
         });
         assert!(reject_truncated_values(&set).is_ok());
     }

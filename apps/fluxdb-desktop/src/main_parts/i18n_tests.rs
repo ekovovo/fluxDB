@@ -13,6 +13,7 @@ mod i18n_e2e_tests {
         init_i18n, navicat_main_new,
     };
 
+    include!("i18n_tests/large_value_window.rs");
     include!("i18n_tests/redis_stream.rs");
     include!("i18n_tests/config_proposal.rs");
     include!("i18n_tests/sql_editor_edit.rs");

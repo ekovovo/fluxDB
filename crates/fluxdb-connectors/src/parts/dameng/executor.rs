@@ -17,6 +17,9 @@ fn dm_execute_query_with_progress(
     }
     let mut client = dm_connect(config)?;
     let pagination = query_execution_pagination(request.options.page_offset, request.options.page_size);
+    // 结果里的超大字段按本次执行归属外置：重新执行/关标签时整批释放。
+    let content_owner =
+        fluxdb_core::result_content_owner(request.session_id, request.connection_id);
     let mut execution = QueryExecutionResult {
         summaries: Vec::new(),
         results: Vec::new(),
@@ -51,8 +54,20 @@ fn dm_execute_query_with_progress(
                     .map(|column| dm_column(column, false))
                     .collect::<Vec<_>>();
                 let returned_rows = rows.len() as u64;
-                let page = dm_rows_to_page(columns, rows, pagination);
-                let message = if page.has_more {
+                let page = dm_collect_page(
+                    columns,
+                    rows.into_iter(),
+                    pagination,
+                    pagination.offset,
+                    &content_owner,
+                );
+                let message = if let Some(incomplete) = &page.incomplete {
+                    format!(
+                        "已读取 {returned_rows} 行，当前仅展示 {} 行（{}）",
+                        page.rows.len(),
+                        incomplete.reason
+                    )
+                } else if page.has_more {
                     format!("返回 {returned_rows} 行，当前仅展示 {} 行（结果已截断）", page.rows.len())
                 } else {
                     format!("返回 {returned_rows} 行")
@@ -135,24 +150,64 @@ fn dm_execute_query_with_progress(
     Ok(execution)
 }
 
-fn dm_rows_to_page(columns: Vec<Column>, rows: Vec<Vec<Value>>, pagination: Pagination) -> DataPage {
-    let offset = pagination.offset.min(rows.len() as u64) as usize;
+/// 逐行收页：单格超阈值先外置成内容引用，整页按 [`fluxdb_core::RESULT_PAGE_BUDGET_BYTES`] 封顶。
+///
+/// 放不下就停在**当前这一行**（不收、不越过），由 `next_offset()` 让下一页从它继续；
+/// 不能因为预算把中间的行丢掉——那会让用户看不到数据却毫不知情。
+/// `skip_rows` 是 SQL 未做 OFFSET 时需要在内存里跳过的行数（已带 OFFSET 时传 0）。
+///
+/// ponytail: 达梦驱动（`DmClient::execute`）在返回前就把整个结果集物化，
+/// 所以这里的预算只能约束「结果页留下多少」，管不住驱动那一次物化。
+/// 要做真流式得改用 `execute_lazy`（当前只对参数化查询开放），
+/// 需要可达的 DM8 实例验证协议后再改。
+fn dm_collect_page(
+    columns: Vec<Column>,
+    rows: impl Iterator<Item = Vec<Value>>,
+    pagination: Pagination,
+    skip_rows: u64,
+    owner: &str,
+) -> DataPage {
+    let width = columns.len();
     let capacity = query_execution_row_capacity(pagination.limit);
-    let has_more = rows.len().saturating_sub(offset) > capacity;
-    let rows = rows
-        .into_iter()
-        .skip(offset)
-        .take(capacity)
-        .map(|row| dm_row(&row))
-        .collect();
-    DataPage {
+    let mut page = DataPage {
         columns,
-        rows,
+        rows: Vec::new(),
         offset: pagination.offset,
         limit: pagination.limit,
-        has_more,
+        has_more: false,
         incomplete: None,
+    };
+    let mut stored_bytes = 0usize;
+    for (index, row) in rows.enumerate() {
+        if (index as u64) < skip_rows {
+            continue;
+        }
+        if page.rows.len() >= capacity {
+            // 读满页容量：后面还有行，这是「正常还有更多」，不是资源截断。
+            page.has_more = true;
+            break;
+        }
+        let mut values = dm_page_values(row, width);
+        let row_bytes = values.iter().map(cell_stored_bytes).sum::<usize>();
+        let budget_left = fluxdb_core::RESULT_PAGE_BUDGET_BYTES.saturating_sub(stored_bytes);
+        match fit_row_into_page(owner, &mut page, &mut values, row_bytes, budget_left) {
+            Ok(true) => {
+                stored_bytes += values.iter().map(cell_stored_bytes).sum::<usize>();
+                page.rows.push(Row { values });
+            }
+            // 停在未收录行：页已标不完整，后面的行交给下一页。
+            Ok(false) => break,
+            Err(error) => {
+                page.incomplete = Some(incomplete_page(error.message));
+                break;
+            }
+        }
     }
+    if page.incomplete.is_some() {
+        // 预算截断与「正常还有更多」互斥。
+        page.has_more = false;
+    }
+    page
 }
 
 fn dm_execute_parameterized(
@@ -181,6 +236,8 @@ fn dm_execute_parameterized(
     let mut client = dm_connect(config)?;
     let started = std::time::Instant::now();
     let pagination = query_execution_pagination(request.options.page_offset, request.options.page_size);
+    let content_owner =
+        fluxdb_core::result_content_owner(request.session_id, request.connection_id);
     let read_only_wrap = request.options.read_only;
     if read_only_wrap {
         client
@@ -208,13 +265,26 @@ fn dm_execute_parameterized(
                 .map(|column| dm_column(column, false))
                 .collect::<Vec<_>>();
             let returned = rows.len() as u64;
-            let page = dm_rows_to_page(columns, rows, pagination);
+            let page = dm_collect_page(
+                columns,
+                rows.into_iter(),
+                pagination,
+                pagination.offset,
+                &content_owner,
+            );
             Ok(QueryExecutionResult {
                 summaries: vec![QueryExecutionSummary {
                     sql: statement,
                     kind: QueryStatementKind::ResultSet,
                     success: true,
-                    message: format!("返回 {returned} 行结果表（参数化绑定）"),
+                    message: match &page.incomplete {
+                        Some(incomplete) => format!(
+                            "已读取 {returned} 行，当前仅展示 {} 行（{}，参数化绑定）",
+                            page.rows.len(),
+                            incomplete.reason
+                        ),
+                        None => format!("返回 {returned} 行结果表（参数化绑定）"),
+                    },
                     returned_rows: returned,
                     affected_rows: 0,
                     elapsed_ms: elapsed_ms(started),
@@ -246,5 +316,103 @@ fn dm_execute_parameterized(
                 rollback_snapshots: Vec::new(),
             })
         }
+    }
+}
+
+#[cfg(test)]
+mod dameng_page_tests {
+    use super::*;
+    use fluxdb_core::{CellContentMeta, CellContentStore, LargeValueKind};
+    use std::sync::Arc;
+
+    /// 只记录落盘长度、不真写文件的存储桩：这里验证的是「行有没有丢」。
+    struct MemoryStore;
+
+    impl CellContentStore for MemoryStore {
+        fn put(
+            &self,
+            owner: &str,
+            _kind: LargeValueKind,
+            bytes: &[u8],
+        ) -> fluxdb_core::Result<String> {
+            Ok(format!("{owner}-{}", bytes.len()))
+        }
+
+        fn stat(&self, _content_id: &str) -> Option<CellContentMeta> {
+            None
+        }
+
+        fn read(
+            &self,
+            _content_id: &str,
+            _offset: u64,
+            _len: usize,
+        ) -> fluxdb_core::Result<Vec<u8>> {
+            Ok(Vec::new())
+        }
+
+        fn release(&self, _content_id: &str) {}
+
+        fn release_owner(&self, _owner: &str) {}
+    }
+
+    fn columns() -> Vec<Column> {
+        vec![
+            Column {
+                name: "id".into(),
+                type_name: Some("INT".into()),
+                nullable: false,
+                primary_key: true,
+                comment: None,
+            },
+            Column {
+                name: "body".into(),
+                type_name: Some("BLOB".into()),
+                nullable: true,
+                primary_key: false,
+                comment: None,
+            },
+        ]
+    }
+
+    fn row(id: i32, body: Value) -> Vec<Value> {
+        vec![Value::Int(id), body]
+    }
+
+    #[test]
+    fn page_keeps_short_rows_and_skips_offset() {
+        fluxdb_core::register_cell_content_store(Arc::new(MemoryStore));
+        let rows = (0..3).map(|id| row(id, Value::Str("x".into()))).collect::<Vec<_>>();
+        let page = dm_collect_page(
+            columns(),
+            rows.into_iter(),
+            Pagination::new(1, 10),
+            1,
+            "result-1-c",
+        );
+        assert_eq!(page.rows.len(), 2);
+        assert_eq!(page.rows[0].values[0], CellValue::I64(1));
+        assert!(!page.has_more);
+        assert!(page.incomplete.is_none());
+    }
+
+    /// 超大字段不能把整行挤出页：外置成内容引用后这行必须还在，且不留正文。
+    #[test]
+    fn oversized_cell_is_spilled_and_row_kept() {
+        fluxdb_core::register_cell_content_store(Arc::new(MemoryStore));
+        let oversized = Value::Bytes(vec![7u8; fluxdb_core::CELL_SPILL_THRESHOLD_BYTES + 1]);
+        let page = dm_collect_page(
+            columns(),
+            std::iter::once(row(1, oversized)),
+            Pagination::new(0, 10),
+            0,
+            "result-1-c",
+        );
+        assert_eq!(page.rows.len(), 1, "大字段行必须留在页里");
+        assert!(page.incomplete.is_none(), "单格外置成功不算资源截断");
+        assert!(matches!(
+            page.rows[0].values[1],
+            CellValue::LargeValue(_)
+        ));
     }
 }

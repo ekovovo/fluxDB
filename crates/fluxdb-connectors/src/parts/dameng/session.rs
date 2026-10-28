@@ -107,32 +107,33 @@ fn dm_meta_i64(value: &Value) -> Option<i64> {
     dm_value_i64(value).or_else(|| dm_value_text(value)?.trim().parse().ok())
 }
 
-fn dm_cell_value(value: &Value) -> CellValue {
+/// 驱动值转单元格。按值消费：`Value::Bytes` 动辄几十 MB，clone 一次等于把峰值翻倍。
+fn dm_cell_value(value: Value) -> CellValue {
     match value {
         Value::Null => CellValue::Null,
-        Value::Bool(value) => CellValue::Bool(*value),
-        Value::TinyInt(value) => CellValue::I64(i64::from(*value)),
-        Value::SmallInt(value) => CellValue::I64(i64::from(*value)),
-        Value::Int(value) => CellValue::I64(i64::from(*value)),
-        Value::BigInt(value) => CellValue::I64(*value),
+        Value::Bool(value) => CellValue::Bool(value),
+        Value::TinyInt(value) => CellValue::I64(i64::from(value)),
+        Value::SmallInt(value) => CellValue::I64(i64::from(value)),
+        Value::Int(value) => CellValue::I64(i64::from(value)),
+        Value::BigInt(value) => CellValue::I64(value),
         Value::Real(value) => {
             if value.is_finite() {
-                CellValue::F64(f64::from(*value))
+                CellValue::F64(f64::from(value))
             } else {
                 CellValue::Text(value.to_string())
             }
         }
         Value::Double(value) => {
             if value.is_finite() {
-                CellValue::F64(*value)
+                CellValue::F64(value)
             } else {
                 CellValue::Text(value.to_string())
             }
         }
         Value::Decimal(value) | Value::Str(value) | Value::Interval(value) => {
-            CellValue::Text(value.clone())
+            CellValue::Text(value)
         }
-        Value::Bytes(value) | Value::Raw(value) => CellValue::Bytes(value.clone()),
+        Value::Bytes(value) | Value::Raw(value) => CellValue::Bytes(value),
         Value::Date(value) => CellValue::Text(value.to_string()),
         Value::Time(value) => CellValue::Text(value.to_string()),
         Value::DateTime(value) => CellValue::Text(value.to_string()),
@@ -179,10 +180,17 @@ fn dm_column(value: &dm_pure::Column, primary_key: bool) -> Column {
     }
 }
 
-fn dm_row(values: &[Value]) -> Row {
-    Row {
-        values: values.iter().map(dm_cell_value).collect(),
-    }
+/// 结果行转单元格，并按列宽补 `NULL`：驱动返回的行长度可能短于描述列数。
+///
+/// 按值消费：`Value::Bytes` 动辄几十 MB，clone 一次等于把峰值翻倍。
+fn dm_page_values(row: Vec<Value>, width: usize) -> Vec<CellValue> {
+    let mut values = row
+        .into_iter()
+        .take(width)
+        .map(dm_cell_value)
+        .collect::<Vec<_>>();
+    values.resize(width, CellValue::Null);
+    values
 }
 
 fn dm_qualified_table(schema: &str, table: &str) -> String {

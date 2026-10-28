@@ -129,6 +129,47 @@ fn sqlite_select_expr(column: &Column) -> String {
     format!("CAST({name} AS TEXT) AS {name}")
 }
 
+/// SQL Server 的二进制列投影：与 MySQL/SQLite 同一口径，正文永不进结果页。
+///
+/// `DATALENGTH` 对 `varchar`/`nvarchar`/`varbinary` 都给真实字节数（`LEN` 会把
+/// `nvarchar` 算成字符数、且忽略尾随空格，不能用）；`CONVERT(..., 2)` 是十六进制
+/// 样式，`SUBSTRING` 一基且对二进制按字节切。`image` 不能直接进 `SUBSTRING`，
+/// 先 `CAST(... AS varbinary(max))`（对 `binary`/`varbinary` 也无副作用）。
+fn sqlserver_select_expr(column: &Column) -> String {
+    let name = fluxdb_core::SqlServerDialect.quote_identifier(&column.name);
+    if is_binary_column(column) {
+        let is_null =
+            fluxdb_core::SqlServerDialect.quote_identifier(&binary_alias(&column.name, "is_null"));
+        let byte_length =
+            fluxdb_core::SqlServerDialect.quote_identifier(&binary_alias(&column.name, "byte_length"));
+        let preview_hex =
+            fluxdb_core::SqlServerDialect.quote_identifier(&binary_alias(&column.name, "preview_hex"));
+        return format!(
+            "CAST(CASE WHEN {name} IS NULL THEN 1 ELSE 0 END AS int) AS {is_null}, \
+             COALESCE(DATALENGTH({name}), 0) AS {byte_length}, \
+             CONVERT(varchar(max), SUBSTRING(CAST({name} AS varbinary(max)), 1, 64), 2) AS {preview_hex}"
+        );
+    }
+
+    sqlserver_single_select_expr(column)
+}
+
+/// 单列投影：`sql_variant` 转文本（驱动解码是 `todo!()`，直接取会 abort 进程）。
+fn sqlserver_single_select_expr(column: &Column) -> String {
+    let quoted = fluxdb_core::SqlServerDialect.quote_identifier(&column.name);
+    if column.type_name.as_deref().is_some_and(|type_name| {
+        type_name
+            .trim()
+            .split(['(', ' '])
+            .next()
+            .is_some_and(|base| base.eq_ignore_ascii_case("sql_variant"))
+    }) {
+        format!("CAST({quoted} AS nvarchar(max)) AS {quoted}")
+    } else {
+        quoted
+    }
+}
+
 fn is_binary_column(column: &Column) -> bool {
     column.type_name.as_deref().is_some_and(is_binary_type_name)
 }

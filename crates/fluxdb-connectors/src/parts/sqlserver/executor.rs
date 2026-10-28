@@ -79,6 +79,10 @@ async fn sqlserver_execute_on_client(
         rollback_snapshots: Vec::new(),
     };
     let mut connection_broken = false;
+    // 查询结果里的超大字段按本次执行归属外置：重新执行/关标签时整批释放。
+    // 与 MySQL/PG 同一公式，否则内容会一直占配额直到进程重启。
+    let content_owner =
+        fluxdb_core::result_content_owner(request.session_id, request.connection_id);
     // SQL Server 没有 `EXPLAIN`；`SET SHOWPLAN_ALL ON` 让后续语句只返回计划。
     // 该开关是会话级且会自动回滚在事务内，因此这里不开显式事务（见下方）。
     let explain_only = request.options.explain_only;
@@ -112,6 +116,7 @@ async fn sqlserver_execute_on_client(
             &statement,
             query_timeout,
             should_cancel,
+            Some(&content_owner),
         )
         .await
         {
@@ -243,9 +248,10 @@ async fn sqlserver_run_batch_cancellable(
     statement: &str,
     query_timeout: Duration,
     should_cancel: &dyn Fn() -> bool,
+    owner: Option<&str>,
 ) -> fluxdb_core::Result<SqlServerBatchResult> {
     let started = std::time::Instant::now();
-    let run = sqlserver_run_batch(client, statement);
+    let run = sqlserver_run_batch_with(client, statement, owner);
     tokio::pin!(run);
     loop {
         tokio::select! {
@@ -300,8 +306,12 @@ fn sqlserver_execute_parameterized(
     let mut client = sqlserver_connect_database(config, Some(&database))?;
     let started = std::time::Instant::now();
     let pagination = query_execution_pagination(request.options.page_offset, request.options.page_size);
+    let content_owner =
+        fluxdb_core::result_content_owner(request.session_id, request.connection_id);
     let batch = sqlserver_block_on(async {
-        let batch = sqlserver_run_query(&mut client, &statement, parameters).await?;
+        let batch =
+            sqlserver_run_query_with(&mut client, &statement, parameters, Some(&content_owner))
+                .await?;
         sqlserver_close(client).await;
         Ok(batch)
     })?;

@@ -1,6 +1,7 @@
+/// 弹层表面：宽高固定，位置由调用方用 `anchored` 贴住触发点，不在此写死坐标。
 fn data_filter_menu_surface(width: f32, height: f32, colors: UiColors) -> Div {
     div()
-        .absolute()
+        .debug_selector(|| "data-filter-popover-menu".into())
         .w(px(width))
         .h(px(height))
         .rounded(colors.radius_lg)

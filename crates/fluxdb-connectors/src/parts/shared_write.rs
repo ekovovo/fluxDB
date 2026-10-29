@@ -7,7 +7,32 @@ fn validate_data_changes(changes: &DataChangeSet) -> fluxdb_core::Result<()> {
         return Err(Error::new(ErrorKind::Query, "没有需要提交的更改"));
     }
 
-    reject_truncated_values(changes)
+    reject_truncated_values(changes)?;
+    reject_truncated_identities(changes)
+}
+
+/// 拒绝用只加载了预览的值定位原始行。
+///
+/// 无主键表的行身份是整行值；其中若有大字段，身份里只有预览。按预览拼出的
+/// WHERE 永远匹配不到库里的完整值，UPDATE/DELETE 会「成功」但命中 0 行：
+/// 界面显示提交成功，刷新后行仍是原样或根本没删掉。此时无法安全定位该行，
+/// 只能要求用户提供主键/唯一键。
+fn reject_truncated_identities(changes: &DataChangeSet) -> fluxdb_core::Result<()> {
+    let truncated = |identity: &fluxdb_core::RowIdentity| {
+        identity.values.values().any(CellValue::is_truncated)
+    };
+    let found = changes
+        .updates
+        .iter()
+        .any(|update| truncated(&update.identity))
+        || changes.deletes.iter().any(truncated);
+    if found {
+        return Err(Error::new(
+            ErrorKind::Unsupported,
+            "行身份包含只加载了预览的大字段，无法可靠定位原始行；请为该表添加主键或唯一键后重试",
+        ));
+    }
+    Ok(())
 }
 
 /// 拒绝提交任何只加载了预览的值。
@@ -485,6 +510,7 @@ fn sqlite_quote_string(value: &str) -> String {
 
 #[cfg(test)]
 mod truncated_write_guard_tests {
+    use super::reject_truncated_identities;
     use super::reject_truncated_values;
     use fluxdb_core::{CellUpdate, CellValue, DataChangeSet, ObjectKind, ObjectPath, Row, RowIdentity, RowUpdate};
     use std::collections::BTreeMap;
@@ -547,5 +573,57 @@ mod truncated_write_guard_tests {
             cells: vec![CellUpdate::new("NOTE", CellValue::Text("完整内容".to_string()))],
         });
         assert!(reject_truncated_values(&set).is_ok());
+    }
+
+    fn large_value() -> CellValue {
+        CellValue::LargeValue(fluxdb_core::LargeCellValue {
+            content_id: "content-1".to_string(),
+            kind: fluxdb_core::LargeValueKind::Text,
+            byte_length: Some(1_000_000),
+            preview: "前 4000 字符".to_string(),
+            preview_truncated: true,
+        })
+    }
+
+    /// 无主键表的整行身份里可能带大字段预览：按预览拼 WHERE 会命中 0 行，
+    /// 提交却报成功。必须在提交前拒绝并提示补主键/唯一键。
+    #[test]
+    fn rejects_large_value_in_update_identity() {
+        let mut set = changes();
+        set.updates.push(RowUpdate {
+            identity: RowIdentity {
+                values: BTreeMap::from([
+                    ("ID".to_string(), CellValue::I64(1)),
+                    ("NOTE".to_string(), large_value()),
+                ]),
+            },
+            cells: vec![CellUpdate::new("NAME", CellValue::Text("改".to_string()))],
+        });
+        let error = reject_truncated_identities(&set).expect_err("预览身份必须被拒绝");
+        assert!(error.message.contains("主键或唯一键"));
+    }
+
+    #[test]
+    fn rejects_truncated_text_in_delete_identity() {
+        let mut set = changes();
+        set.deletes.push(RowIdentity {
+            values: BTreeMap::from([
+                ("ID".to_string(), CellValue::I64(1)),
+                ("NOTE".to_string(), truncated()),
+            ]),
+        });
+        assert!(reject_truncated_identities(&set).is_err());
+    }
+
+    /// 完整值身份照常放行，不能误伤普通行的删除/更新。
+    #[test]
+    fn allows_complete_identity() {
+        let mut set = changes();
+        set.deletes.push(identity());
+        set.updates.push(RowUpdate {
+            identity: identity(),
+            cells: vec![CellUpdate::new("NAME", CellValue::Text("改".to_string()))],
+        });
+        assert!(reject_truncated_identities(&set).is_ok());
     }
 }

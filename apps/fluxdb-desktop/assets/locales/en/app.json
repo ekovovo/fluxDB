@@ -4318,6 +4318,7 @@
     "original_data_page_not_loaded": "The original data page is not loaded",
     "row_identity_binary_ambiguous": "No unique key and a binary digest is present; the original row cannot be located reliably",
     "row_identity_large_value_unlocatable": "The row identity contains a value that was only partially loaded (large field); the row cannot be located safely. Refresh and retry, or locate it by primary key.",
+    "row_identity_preview_ambiguous": "The row identity contains a preview-only large field; the original row cannot be located reliably. Add a primary or unique key to this table and retry",
     "row_identity_locate_failed": "Unable to locate the row identity",
     "row_identity_not_unique": "Original row identity is not unique; commit cancelled",
     "tool_args_not_object": "Tool arguments must be an object",

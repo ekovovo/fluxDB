@@ -114,6 +114,7 @@ impl Connector for MockConnector {
         if changes.is_empty() {
             return Err(Error::new(ErrorKind::Query, "没有需要提交的更改"));
         }
+        reject_streamed_values(changes)?;
 
         // Mock 不产生真实身份：INSERT 补偿回退到编辑器已知的主键值。
         Ok(AppliedChangeOutcome::default())
@@ -129,7 +130,7 @@ impl Connector for MockConnector {
         on_summary: &mut dyn FnMut(QueryExecutionSummary),
         should_cancel: &dyn Fn() -> bool,
     ) -> fluxdb_core::Result<QueryExecutionResult> {
-        let statements = query_statements_for_execution(request);
+        let statements = query_statements_for_execution(request, self.kind);
         if statements.is_empty() {
             return Err(Error::new(ErrorKind::Query, "查询不能为空"));
         }

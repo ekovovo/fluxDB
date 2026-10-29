@@ -1,6 +1,6 @@
 #[gpui::test]
 fn sqlserver_security_forms_keep_pending_state_and_password_preview(cx: &mut TestAppContext) {
-    use fluxdb_app::{AppCommand, AppEvent, TabKind, UserAdminDetailTab};
+    use fluxdb_app::{AppCommand, AppEvent, SqlServerUserAdminTab, TabKind, UserAdminDetailTab};
     use fluxdb_core::{
         ConnectionConfig, ConnectionId, DatabaseKind, Endpoint, SecretRef,
         SqlServerAdvancedOptions, SqlServerBasicOptions, SqlServerConnectionProfile,
@@ -47,6 +47,7 @@ fn sqlserver_security_forms_keep_pending_state_and_password_preview(cx: &mut Tes
                 ..SqlServerAdvancedOptions::default()
             },
         }),
+        oracle_profile: None,
     };
     let snapshot = SqlServerSecuritySnapshot {
         schemas: vec!["app".into(), "dbo".into()],
@@ -416,7 +417,7 @@ fn sqlserver_security_forms_keep_pending_state_and_password_preview(cx: &mut Tes
                 .expect("admin");
             let state = admin.sqlserver.as_ref().expect("security");
             assert_eq!(state.selected.as_ref().map(|p| p.name.as_str()), Some(if scenario == "user" { "test_user" } else { "test_login" }));
-            assert_eq!(admin.active_detail_tab, UserAdminDetailTab::MemberOf);
+            assert_eq!(admin.active_detail_tab, UserAdminDetailTab::SqlServer(SqlServerUserAdminTab::Roles));
             if scenario == "login" {
                 assert_eq!(state.form.kind, fluxdb_app::SqlServerSecurityFormKind::CreateLogin);
                 assert_eq!(state.form.password, "FluxDB_Test!123");
@@ -450,7 +451,7 @@ fn sqlserver_security_forms_keep_pending_state_and_password_preview(cx: &mut Tes
                 .user_admin_state_for(tab_id)
                 .expect("admin");
             let state = admin.sqlserver.as_ref().expect("security");
-            assert_eq!(admin.active_detail_tab, UserAdminDetailTab::Privileges);
+            assert_eq!(admin.active_detail_tab, UserAdminDetailTab::SqlServer(SqlServerUserAdminTab::Permissions));
             assert!(!state.loading_permissions);
             assert!(state.selected.is_some());
         });
@@ -488,7 +489,7 @@ fn sqlserver_security_forms_keep_pending_state_and_password_preview(cx: &mut Tes
                 let state = admin.sqlserver.as_ref().expect("security");
                 assert_eq!(
                     admin.active_detail_tab,
-                    UserAdminDetailTab::Privileges,
+                    UserAdminDetailTab::SqlServer(SqlServerUserAdminTab::Permissions),
                     "adding permission must keep the user on the permissions tab"
                 );
                 assert_eq!(
@@ -561,7 +562,7 @@ fn sqlserver_security_forms_keep_pending_state_and_password_preview(cx: &mut Tes
                     .and_then(|admin| admin.sqlserver)
                     .expect("security");
                 let admin = view.read(cx).user_admin_state_for(tab_id).expect("admin");
-                assert_eq!(admin.active_detail_tab, UserAdminDetailTab::Privileges);
+                assert_eq!(admin.active_detail_tab, UserAdminDetailTab::SqlServer(SqlServerUserAdminTab::Permissions));
                 assert!(state.effective_permissions().iter().any(|permission| {
                     permission.permission == "CONNECT SQL"
                         && permission.target == fluxdb_core::SqlServerPermissionTarget::Server
@@ -585,7 +586,7 @@ fn sqlserver_security_forms_keep_pending_state_and_password_preview(cx: &mut Tes
             );
         }
 
-        // The last scenario verifies that Save executes the staged plan directly, matching PG.
+        // The last scenario verifies Save opens the confirmation modal first (same as PG / MySQL / Oracle).
         if scenario != "user" {
             continue;
         }
@@ -593,6 +594,35 @@ fn sqlserver_security_forms_keep_pending_state_and_password_preview(cx: &mut Tes
             .debug_bounds("sqlserver-security-save")
             .expect("toolbar save");
         cx.simulate_click(save.center(), Modifiers::default());
+        // 预览要过连接器渲染，异步完成；等确认框出现。
+        let modal_deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            cx.run_until_parked();
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            if cx.debug_bounds("user-admin-sql-preview-modal").is_some() {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < modal_deadline,
+                "{scenario} Save must open the SQL confirmation modal"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        // 只弹框、不落库。
+        let applying_before_confirm = cx.update(|_, cx| {
+            view.read(cx)
+                .user_admin_state_for(tab_id)
+                .and_then(|admin| admin.sqlserver)
+                .is_some_and(|state| state.applying)
+        });
+        assert!(
+            !applying_before_confirm,
+            "{scenario} Save must not execute before confirmation"
+        );
+        let execute = cx
+            .debug_bounds("user-admin-sql-preview-execute")
+            .expect("modal execute button");
+        cx.simulate_click(execute.center(), Modifiers::default());
         let execution_deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         loop {
             cx.run_until_parked();
@@ -609,7 +639,7 @@ fn sqlserver_security_forms_keep_pending_state_and_password_preview(cx: &mut Tes
             }
             assert!(
                 std::time::Instant::now() < execution_deadline,
-                "{scenario} Save did not enter direct execution"
+                "{scenario} confirmed execution did not start"
             );
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
@@ -639,7 +669,7 @@ fn sqlserver_security_forms_keep_pending_state_and_password_preview(cx: &mut Tes
 
 #[gpui::test]
 fn failed_create_login_rename_refreshes_preview_without_the_old_identity(cx: &mut TestAppContext) {
-    use fluxdb_app::{AppCommand, AppEvent, TabKind, UserAdminDetailTab};
+    use fluxdb_app::{AppCommand, AppEvent, SqlServerUserAdminTab, TabKind, UserAdminDetailTab};
     use fluxdb_core::{
         ConnectionConfig, ConnectionId, DatabaseKind, Endpoint, SecretRef,
         SqlServerAdvancedOptions, SqlServerBasicOptions, SqlServerConnectionProfile,
@@ -686,6 +716,7 @@ fn failed_create_login_rename_refreshes_preview_without_the_old_identity(cx: &mu
                 ..SqlServerAdvancedOptions::default()
             },
         }),
+        oracle_profile: None,
     };
     let snapshot = SqlServerSecuritySnapshot {
         schemas: vec!["dbo".into()],
@@ -866,7 +897,7 @@ fn failed_create_login_rename_refreshes_preview_without_the_old_identity(cx: &mu
             admin.sqlserver.is_some(),
             "SQL Server state must survive preview"
         );
-        assert_eq!(admin.active_detail_tab, UserAdminDetailTab::SqlPreview);
+        assert_eq!(admin.active_detail_tab, UserAdminDetailTab::SqlServer(SqlServerUserAdminTab::SqlPreview));
         assert!(view.read(cx).controller.state().tabs.iter().any(|tab| {
             tab.id == tab_id
                 && matches!(&tab.kind, TabKind::UserAdmin(admin) if admin.sqlserver.is_some())

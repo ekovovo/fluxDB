@@ -161,6 +161,8 @@ fn cell_value_label(value: &CellValue) -> String {
         CellValue::I64(value) => value.to_string(),
         CellValue::F64(value) => value.to_string(),
         CellValue::Text(value) => value.clone(),
+        // 预览必须带标记，否则用户会当成完整值。
+        CellValue::TruncatedText { .. } | CellValue::LargeValue(_) => value.display_label(),
         CellValue::Bytes(value) => format!("(BLOB) {} bytes", value.len()),
         CellValue::BinarySummary(_) => value.display_label(),
         CellValue::Json(value) => value.clone(),
@@ -178,11 +180,21 @@ fn data_cell_edit_text_unchanged(current: &CellValue, input: &str) -> bool {
     data_cell_edit_text(current) == input
 }
 
+/// 单元格长度：文本按字符数算，不经过 `cell_value_label`。
+///
+/// 那里对 `Text`/`Json` 会整串 `clone()`——详情面板每帧统计一次长度，
+/// 8 MB 字段就是每帧 8 MB 复制。这里直接数原字符串，零分配。
 fn cell_value_length(value: &CellValue) -> usize {
     match value {
         CellValue::Null => 0,
         CellValue::Bytes(value) => value.len(),
         CellValue::BinarySummary(summary) => summary.byte_length as usize,
+        CellValue::Text(text) | CellValue::Json(text) => text.chars().count(),
+        CellValue::TruncatedText { total_chars, .. } => *total_chars as usize,
+        CellValue::LargeValue(large) => large
+            .byte_length
+            .map(|length| length as usize)
+            .unwrap_or(large.preview.chars().count()),
         _ => cell_value_label(value).chars().count(),
     }
 }
@@ -494,4 +506,29 @@ fn table_icon(size: f32, colors: UiColors) -> impl IntoElement {
         .items_center()
         .justify_center()
         .child(app_icon(AppIcon::Table, size * 0.58, rgb(0xeaf7ff)))
+}
+
+#[cfg(test)]
+mod cell_value_length_tests {
+    use super::*;
+
+    /// 大字段长度必须直接给出完整内容的大小，而不是预览的字符数：
+    /// 详情面板靠它告诉用户「看到的是片段」。
+    #[test]
+    fn large_value_reports_full_length_not_preview_length() {
+        let value = CellValue::LargeValue(fluxdb_core::LargeCellValue {
+            content_id: "opaque-id".into(),
+            kind: fluxdb_core::LargeValueKind::Text,
+            byte_length: Some(8 * 1024 * 1024),
+            preview: "预览".into(),
+            preview_truncated: true,
+        });
+        assert_eq!(cell_value_length(&value), 8 * 1024 * 1024);
+    }
+
+    #[test]
+    fn text_length_counts_chars_without_building_a_label() {
+        assert_eq!(cell_value_length(&CellValue::Text("汉字abc".into())), 5);
+        assert_eq!(cell_value_length(&CellValue::Null), 0);
+    }
 }

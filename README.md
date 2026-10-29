@@ -2,7 +2,7 @@
 
 **原生跨平台数据库客户端与 SQL 编辑器，面向高性能、低开销的桌面体验设计：在一个窗口中完成查询、数据编辑、结构管理和 Redis 调试。**
 
-FluxDB 使用 Rust + GPUI 构建，不依赖 Electron 或 WebView。它把 MySQL、PostgreSQL、SQL Server、SQLite、TiDB、达梦 DM8 和 Redis 放进同一套桌面工作流，并提供有明确权限边界的 AI Agent。
+FluxDB 使用 Rust + GPUI 构建，不依赖 Electron 或 WebView。它把 MySQL、PostgreSQL、SQL Server、Oracle、SQLite、TiDB、达梦 DM8 和 Redis 放进同一套桌面工作流，并提供有明确权限边界的 AI Agent。
 
 **简体中文 | [English](./README.en.md)**
 
@@ -17,10 +17,19 @@ FluxDB 使用 Rust + GPUI 构建，不依赖 Electron 或 WebView。它把 MySQL
 
 ## 最近更新
 
+### v0.1.13
+
+- **新增 Oracle 数据源**：Service Name / SID 连接、Schema / 对象浏览、SQL 查询、表结构管理与设计、数据编辑、筛选与排序、SQL 补全、用户与权限管理、本机逻辑导出，以及 AI 页面上下文与受控执行。
+- **Oracle 首版边界**：不提供服务器端 Data Pump 备份，导出是本机逻辑导出（DDL + 逐页数据），既不是服务器端原生备份，也不保证跨页一致快照；非当前账号的授权明细不可读，界面不把它画成可撤销授权；详见[数据库支持](#数据库支持)。
+- **用户与权限五页签**：常规 / 角色 / 系统权限 / 对象权限 / SQL 预览，每个页签顶部是类型锁死的授权编辑器；Oracle「新建 schema」改为打开新建账号表单，达梦复用同一面板。
+- **稳定性修复**：修复 Oracle 导入的 `ORA-01861`、复制表读不到源表 DDL、Explain 发出必然失败语句，以及账号变更失败时不显示已执行条数。
+
+[完整更新说明](./release-notes/v0.1.13/zh-CN.md) · [历史版本](https://github.com/fluxdb-alt/fluxDB/releases)
+
 ### v0.1.12
 
 - **筛选表单与 SQL 输入双向切换**：筛选项可在表单和条件输入之间往返编辑；表单内容会自动带入输入框，输入框中的条件可解析回可编辑表单，并保留括号分组、AND / OR 组合与排序规则。
-- **覆盖所有 SQL 数据源**：MySQL、TiDB、PostgreSQL、SQL Server、SQLite 和达梦 DM8 分别按方言处理类型、运算符、标识符和 `LIKE` 通配符转义。
+- **覆盖所有 SQL 数据源**：MySQL、TiDB、PostgreSQL、SQL Server、Oracle、SQLite 和达梦 DM8 分别按方言处理类型、运算符、标识符和 `LIKE` 通配符转义。
 - **复杂条件编辑**：支持多条件、多层括号嵌套和逐行切换 AND / OR；条件输入提供搜索条件补全，并同步高亮 SQL 预览。
 - **筛选与排序交互优化**：模式切换只在筛选展开时显示；条件区域可滚动，排序与应用操作保持固定，展开区最多占数据区域 35%。排序规则支持字段切换、升降序、删除、清空与撤销，并可通过六点手柄拖动调整优先级。
 - **字段详情高度优化**：拖拽调整字段详情时最低保留 220px，确保字段信息、值编辑区和保存操作始终可见。
@@ -28,15 +37,6 @@ FluxDB 使用 Rust + GPUI 构建，不依赖 Electron 或 WebView。它把 MySQL
 - **更新体验**：应用内更新显示下载百分比、已下载大小和总大小，并在弹窗中展示版本更新说明。
 
 [完整更新说明](./release-notes/v0.1.12/zh-CN.md) · [历史版本](https://github.com/fluxdb-alt/fluxDB/releases)
-
-### v0.1.11
-
-- **新增 SQL Server 数据源**：SQL 认证、TLS、数据库 / Schema / 对象浏览、T-SQL 查询、表结构管理与数据编辑、表数据导入导出、登录名 / 数据库用户 / 角色成员 / 显式权限管理、对象级逻辑备份恢复，以及 AI 页面上下文与受控执行。
-- **SQL Server 首版边界**：暂不支持 Windows 集成认证、Azure AD、包含数据库用户、列级权限编辑、用户自定义服务器角色、命名实例自动解析和数据库级物理备份；详见[数据库支持](#数据库支持)。
-- **SQL 编辑与补全优化**：裸表名补全可跨 Schema，并继续补全下一级限定；修复中文等 UTF-8 SQL 中的补全定位偏移。
-- **表设计优化**：按数据库方言扩充类型与适配列选项，支持枚举 / 自定义类型按需编辑、长度与精度校验，统一 PostgreSQL / MySQL 类型展示。
-- **查询结果与 Redis 工作区优化**：压缩查询摘要的元数据列，改善长列注释换行；Redis 标签按连接聚合为一级工作区。
-- **AI 修复定位优化**：执行失败后的 SQL 修复按实际执行来源定位编辑器语句，避免在改写 SQL 后定位错行。
 
 ## 为什么选择 FluxDB
 
@@ -97,6 +97,7 @@ https://github.com/user-attachments/assets/f6075999-a87f-4644-9d14-dbda49a7981d
 | SQL Server | T-SQL 查询、数据库 / Schema / 对象浏览、表结构管理与数据编辑、表数据导入导出、登录名 / 数据库用户 / 角色成员 / 显式权限管理、对象级逻辑备份恢复、AI 页面上下文与受控执行 | 对象级逻辑 SQL 备份与恢复 | SQL Server 认证、TLS、显式端口；命名实例需填写实际端口 | Windows 集成认证、Azure AD、包含数据库用户、列级权限编辑、用户自定义服务器角色、SQL Browser / 命名实例自动解析、数据库级物理备份（`BACKUP DATABASE`）。对象级逻辑备份恢复不能替代数据库级灾难恢复。 |
 | SQLite | 本地文件连接、SQL 查询、对象浏览、表结构管理、数据编辑 | `VACUUM INTO` 完整一致快照；恢复到新文件并检查完整性与外键 | 本地文件路径 | - |
 | 达梦 DM8 | Schema / 对象浏览、SQL 查询、表结构管理与设计、数据编辑、表数据导入 | 逻辑备份与 SQL 恢复；当前恢复面向单 Schema | 实例与 Schema 连接配置 | - |
+| Oracle | SQL 查询、Schema / 对象浏览、表结构管理与设计、数据编辑、筛选与排序、SQL 补全、用户与权限（只读当前账号授权明细）、逻辑导出、AI 页面上下文与受控执行 | 本机逻辑导出（DDL + 逐页数据），恢复按 SQL 重放 | Service Name 或 SID、CDB / PDB 目标；未加引号的标识符按大写折叠 | 服务器端 Data Pump 备份、非当前账号的授权明细（`DBA_*` / `ALL_SYS_PRIVS` 需要额外权限）、跨页一致快照导出。逐页导出不是一致快照，也不是服务器端原生备份。 |
 | Redis | 键空间浏览、键值编辑、TTL、Workbench、CLI、Pub/Sub | 不提供数据库级备份恢复 | TLS、SSH、Sentinel、Cluster、URI / Cloud；Cluster 仅支持 DB 0 | - |
 
 MongoDB 和 MariaDB 尚未支持。它们只出现在规划中，不应被视为当前能力。
@@ -200,9 +201,15 @@ macOS 可使用仓库脚本生成包含动态库的 `.app` 和 `.dmg`：
 
 - **MongoDB**：文档型数据源浏览、查询与编辑。
 - **MariaDB**：独立方言、系统表与备份参数适配。
-- **更多数据库**：按社区需求评估 Oracle、ClickHouse、DuckDB、Elasticsearch / OpenSearch 等方向。
+- **更多数据库**：按社区需求评估 ClickHouse、DuckDB、Elasticsearch / OpenSearch 等方向。
 
 路线图不代表当前版本已经支持。
+
+## 交流讨论
+
+欢迎扫码加入 FluxDB 微信交流群，交流使用体验、反馈问题和提出建议。需要跟踪的 Bug 和功能需求，请同时提交到 [Issues](https://github.com/fluxdb-alt/fluxDB/issues)。
+
+<img src="docs/screenshots/weichatgroup.png" alt="FluxDB 微信交流群二维码" width="200">
 
 ## 支持与赞助
 
@@ -212,7 +219,7 @@ macOS 可使用仓库脚本生成包含动态库的 `.app` 和 `.dmg`：
 
 | 支付宝 | 微信 |
 | :---: | :---: |
-| <img src="docs/sponsor/alipay.png" alt="支付宝赞助二维码" width="220"> | <img src="docs/sponsor/wechat.png" alt="微信赞助二维码" width="220"> |
+| <img src="docs/sponsor/alipay.png" alt="支付宝赞助二维码" width="160"> | <img src="docs/sponsor/wechat.png" alt="微信赞助二维码" width="160"> |
 
 ## 致谢
 

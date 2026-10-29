@@ -39,6 +39,7 @@ fn mongo_collection_menu_and_export_dialog_render_in_production_view(cx: &mut Te
         dameng_profile: None,
         mongo_profile: None,
         sqlserver_profile: None,
+        oracle_profile: None,
     }]));
     cx.update(|cx| {
         extend_component_i18n();

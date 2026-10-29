@@ -88,6 +88,9 @@ impl CreateTableState {
         if database_kind == DatabaseKind::Dameng {
             create_table_apply_dameng_design_ddl(&mut create, ddl.as_deref());
         }
+        if database_kind == DatabaseKind::Oracle {
+            create_table_apply_oracle_design_ddl(&mut create, ddl.as_deref());
+        }
         if database_kind == DatabaseKind::SqlServer {
             create_table_apply_sqlserver_design_ddl(&mut create, ddl.as_deref());
         }

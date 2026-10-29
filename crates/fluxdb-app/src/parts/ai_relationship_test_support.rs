@@ -22,6 +22,7 @@ pub fn er_test_connection() -> ConnectionConfig {
         dameng_profile: None,
         mongo_profile: None,
         sqlserver_profile: None,
+        oracle_profile: None,
     }
 }
 

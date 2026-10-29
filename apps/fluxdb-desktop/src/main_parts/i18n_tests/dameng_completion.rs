@@ -45,6 +45,7 @@
             }),
             sqlserver_profile: None,
             mongo_profile: None,
+            oracle_profile: None,
         }
     }
 
@@ -422,6 +423,7 @@
                 dameng_profile: None,
                 mongo_profile: None,
                 sqlserver_profile: None,
+                oracle_profile: None,
             },
         ]));
         let _ = controller.dispatch(fluxdb_app::AppCommand::OpenQueryEditorInDatabase {

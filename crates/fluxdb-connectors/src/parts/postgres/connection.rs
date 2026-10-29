@@ -470,3 +470,15 @@ fn pg_error(error: tokio_postgres::Error) -> Error {
     // 无 SQLSTATE 的底层 IO/协议错误 → 连接层。
     Error::new(ErrorKind::Connection, text)
 }
+
+/// 提交专用：服务端回错误报文（有 SQLSTATE）说明事务已被终止，确定未提交；
+/// 没有报文则说明提交途中失去连接，是否生效未知。
+fn pg_commit_error(error: tokio_postgres::Error) -> Error {
+    let unknown = error.code().is_none();
+    let mapped = pg_error(error);
+    if unknown {
+        mapped.mark_outcome_unknown("提交 PostgreSQL 事务")
+    } else {
+        mapped
+    }
+}

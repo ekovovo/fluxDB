@@ -90,15 +90,22 @@ fn pg_load_data_with_expression(
             "PostgreSQL 数据页查询"
         );
 
-        let rows = tokio::time::timeout(
+        // 流式收行：`query` 会把整页原始行先攒进内存，一条 100 MB 的字段
+        // 乘以行数就是几个 GB；这里边读边按预算收页、单格立刻外置。
+        let stream = session
+            .client
+            .query_raw(&sql, pg_params_refs(&params))
+            .await
+            .map_err(pg_error)?;
+        let owner = fluxdb_core::table_content_owner(path);
+        let page = tokio::time::timeout(
             Duration::from_secs(30),
-            session.client.query(&sql, &pg_params_refs(&params)),
+            pg_collect_data_page(columns, stream, &positions, pagination, &owner),
         )
         .await
-        .map_err(|_| Error::new(ErrorKind::Query, "查询超时"))?
-        .map_err(pg_error)?;
+        .map_err(|_| Error::new(ErrorKind::Query, "查询超时"))??;
 
-        Ok(pg_data_rows_to_page(columns, rows, positions, pagination))
+        Ok(page)
     })
 }
 
@@ -156,6 +163,51 @@ fn pg_server_text_type(type_name: &Option<String>) -> bool {
 }
 
 /// 把查询行按投影位置回填为 DataPage；`positions` 描述了每个真实列（下标 → SELECT 投影下标）。
+/// 表浏览的流式收页：列结构已知（`columns` + `positions` 投影表），逐行解码进预算。
+///
+/// SQL 自带 `OFFSET`，所以不做 `skip`；`LIMIT n+1` 多取的那一行只用来判断
+/// 是否「正常还有更多」——它本身不收进页，也不消耗额外内存（读到就停）。
+async fn pg_collect_data_page(
+    columns: Vec<Column>,
+    stream: impl futures_util::Stream<
+        Item = std::result::Result<tokio_postgres::Row, tokio_postgres::Error>,
+    >,
+    positions: &[(Vec<usize>, usize)],
+    pagination: Pagination,
+    owner: &str,
+) -> fluxdb_core::Result<DataPage> {
+    let capacity = pagination.limit as usize;
+    let mut page = DataPage {
+        columns,
+        rows: Vec::new(),
+        offset: pagination.offset,
+        limit: pagination.limit,
+        has_more: false,
+        incomplete: None,
+    };
+    futures_util::pin_mut!(stream);
+    while let Some(row) = futures_util::StreamExt::next(&mut stream).await {
+        let row = row.map_err(pg_error)?;
+        // `LIMIT n+1` 的探测行：页已满，说明正常还有更多。
+        if page.rows.len() >= capacity {
+            page.has_more = true;
+            break;
+        }
+        let mut values = positions
+            .iter()
+            .map(|(idxs, col_idx)| {
+                pg_projected_position_value(&row, idxs, &page.columns[*col_idx])
+            })
+            .collect::<Vec<_>>();
+        spill_large_cells(owner, &mut values)?;
+        page.rows.push(Row { values });
+    }
+    if page.incomplete.is_some() {
+        page.has_more = false;
+    }
+    Ok(page)
+}
+
 fn pg_data_rows_to_page(
     columns: Vec<Column>,
     rows: Vec<tokio_postgres::Row>,
@@ -182,6 +234,7 @@ fn pg_data_rows_to_page(
         offset: pagination.offset,
         limit: pagination.limit,
         has_more,
+        incomplete: None,
     }
 }
 
@@ -688,6 +741,13 @@ fn pg_next_param(
         },
         CellValue::F64(value) => params.push(Box::new(*value)),
         CellValue::Text(value) | CellValue::Json(value) => params.push(Box::new(value.clone())),
+        // 截断文本只作为筛选条件的前缀参与比较；写入路径已在
+        // `validate_data_changes` 拒绝，不会把预览落库。
+        CellValue::TruncatedText { preview, .. } => params.push(Box::new(preview.clone())),
+        // 大字段同样只有预览：筛选只能按前缀比较；写入值由
+        // `validate_data_changes` 拒绝，行身份由 PG 提交前的原值过滤与
+        // `pg_identity_where` 兜底拒绝，预览不会进入 WHERE。
+        CellValue::LargeValue(large) => params.push(Box::new(large.preview.clone())),
         // 文件/预览二进制：真实内容走 Bytes；BinarySummary 只读预览不参与过滤筛选内容。
         CellValue::Bytes(value) => params.push(Box::new(value.clone())),
         CellValue::BinarySummary(_) => params.push(Box::new(Option::<String>::None)),

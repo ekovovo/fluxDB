@@ -4,7 +4,7 @@
 // `pg_connect` 每次拨一条全新连接（非注册表复用），因此在本会话上 `BEGIN…COMMIT`
 // 不会与其它请求串事务；语句经 `&Client` 顺序执行，错误时 `ROLLBACK` 兜底。
 // PG 不经过 sqlx QueryBuilder：SQL 自行拼接，值一律 `$n` 参数化绑定，标识符 `SqlDialect::quote_identifier`。
-// 二进制（bytea）写入以 `Vec<u8>` 直接绑定；Hex 编辑回写前由 app 转成 `CellValue::Bytes`。
+// 二进制（bytea）写入以 `Vec<u8>` 直接绑定或按块追加（流式上传），见 `pg_apply_blob_stream`。
 
 /// 把 tokio-postgres/PG 服务端错误转成可读文本。
 ///
@@ -64,7 +64,7 @@ fn pg_apply_changes(
                 match client
                     .batch_execute("COMMIT")
                     .await
-                    .map_err(|error| Error::new(ErrorKind::Query, pg_db_error_text(&error)))
+                    .map_err(pg_commit_error)
                 {
                     Ok(()) => {
                         tracing::info!(target: "fluxdb_connectors", table = %table, deletes = changes.deletes.len(), updates = changes.updates.len(), inserts = changes.inserts.len(), "pg_apply_changes:commit");
@@ -222,17 +222,93 @@ async fn pg_apply_updates(
         }
         validate_identity(&update.identity, columns)?;
 
+        let (plain, streamed) = split_update_cells(update);
         let location = pg_lock_original_row(client, table, &update.identity, columns).await?;
-        let (mut sql, mut params) = pg_update_sql(table, &update.cells, &update.identity, columns)?;
-        pg_append_row_location(&mut sql, &mut params, location);
-        // 行数检查：期望恰好 1 行。0 行=目标消失/并发冲突，>1=身份不唯一；均回滚。
+        if !plain.is_empty() {
+            let (mut sql, mut params) = pg_update_sql(table, &plain, &update.identity, columns)?;
+            pg_append_row_location(&mut sql, &mut params, location.clone());
+            // 行数检查：期望恰好 1 行。0 行=目标消失/并发冲突，>1=身份不唯一；均回滚。
+            let affected = client
+                .execute(&sql, &pg_params_refs(&params))
+                .await
+                .map_err(|error| Error::new(ErrorKind::Query, pg_db_error_text(&error)))?;
+            if affected != 1 {
+                return Err(update_conflict_error(affected));
+            }
+        }
+
+        for (cell, stream) in streamed {
+            pg_apply_blob_stream(client, table, cell, stream, &update.identity, columns, &location)
+                .await?;
+        }
+    }
+    Ok(())
+}
+
+/// 流式写入一个大字段单元格：先清空，再按块 `c = COALESCE(c, …) || $1` 追加。
+///
+/// 文本列用 `''::text` 起点、二进制列用 `''::bytea`：bytea 不能用文本空串拼接
+/// （类型不匹配），text 列也不接受 bytea 参数。分块边界已由 `streamed_chunk_at`
+/// 对齐到 UTF-8 字符边界，因此每一块都是合法文本。
+///
+/// 注意代价：bytea/text 都是不可变值，每次追加都由服务端重写整值，整体是 O(n²)。
+/// 这就是分块取 [`fluxdb_core::BLOB_STREAM_CHUNK_BYTES`]（16 MiB）而不用几 MB 的原因；
+/// 真流式需要 `lo_*` 大对象 API，跨驱动不可移植，此处不做。
+///
+/// 事务内已经 `FOR UPDATE` 锁住目标行，因此这里仍逐块带行位置条件，任何一块没命中
+/// 唯一行都直接失败并整体回滚。
+async fn pg_apply_blob_stream(
+    client: &tokio_postgres::Client,
+    table: &str,
+    cell: &fluxdb_core::CellUpdate,
+    stream: &fluxdb_core::StreamedValue,
+    identity: &RowIdentity,
+    columns: &[Column],
+    location: &(u32, String),
+) -> fluxdb_core::Result<()> {
+    let quoted = fluxdb_core::SqlDialect::quote_identifier(&fluxdb_core::PostgresDialect, &cell.column);
+    let is_text = stream.is_text();
+    // 清空：用空串/空 bytea 而不是 NULL，目标列可能是 NOT NULL。
+    let empty = if is_text { "''::text" } else { "''::bytea" };
+    let (where_sql, mut clear_params) = pg_identity_params(identity, columns)?;
+    let mut sql = format!("UPDATE {table} SET {quoted} = {empty}{where_sql}");
+    pg_append_row_location(&mut sql, &mut clear_params, location.clone());
+    let affected = client
+        .execute(&sql, &pg_params_refs(&clear_params))
+        .await
+        .map_err(|error| Error::new(ErrorKind::Query, pg_db_error_text(&error)))?;
+    require_single_streamed_row(affected, &cell.column)?;
+
+    // 读一块、发一条：tokio-postgres 不支持把 bytea 参数分片发送，只能按块重复
+    // 执行语句，进程内存峰值等于一块。
+    let mut offset = 0u64;
+    while let Some(chunk) = streamed_chunk_at(stream, offset)? {
+        let chunk_len = chunk.len() as u64;
+        let (where_sql, mut params) = pg_identity_params(identity, columns)?;
+        let cast = if is_text { "::text" } else { "::bytea" };
+        let param: Box<dyn ToSql + Sync> = if is_text {
+            Box::new(String::from_utf8(chunk).map_err(|_| {
+                Error::new(
+                    ErrorKind::Unsupported,
+                    "待写入文本不是合法的 UTF-8，已取消提交",
+                )
+            })?)
+        } else {
+            Box::new(chunk)
+        };
+        params.push(param);
+        let chunk_index = params.len();
+        let mut sql = format!(
+            "UPDATE {table} SET {quoted} = COALESCE({quoted}, {empty}) || ${chunk_index}{cast}{where_sql}"
+        );
+        pg_append_row_location(&mut sql, &mut params, location.clone());
         let affected = client
             .execute(&sql, &pg_params_refs(&params))
             .await
             .map_err(|error| Error::new(ErrorKind::Query, pg_db_error_text(&error)))?;
-        if affected != 1 {
-            return Err(update_conflict_error(affected));
-        }
+        require_single_streamed_row(affected, &cell.column)?;
+        // 按实际读到的长度推进，不能按请求长度：存储可能提前返回较短的块。
+        offset += chunk_len;
     }
     Ok(())
 }
@@ -299,7 +375,7 @@ fn pg_insert_sql(
 
 fn pg_update_sql(
     table: &str,
-    cells: &[fluxdb_core::CellUpdate],
+    cells: &[&fluxdb_core::CellUpdate],
     identity: &fluxdb_core::RowIdentity,
     columns: &[Column],
 ) -> fluxdb_core::Result<(String, Vec<Box<dyn ToSql + Sync>>)> {
@@ -314,7 +390,7 @@ fn pg_update_sql(
             Ok(format!(
                 "{} = {}",
                 fluxdb_core::PostgresDialect.quote_identifier(&cell.column),
-                pg_bind_sql(&mut params, col, &cell.value)
+                pg_bind_sql(&mut params, col, cell.value.placeholder())
             ))
         })
         .collect::<Result<Vec<_>, _>>()?
@@ -337,6 +413,14 @@ fn pg_identity_where(
     for (column, value) in &identity.values {
         if !columns.iter().any(|col| &col.name == column) {
             return Err(Error::new(ErrorKind::Query, "行身份引用了不存在的列"));
+        }
+        // 预览值（超大字段/截断文本/二进制摘要）不是权威内容：按它拼 WHERE
+        // 只会静默命中 0 行，把并发冲突误报成“目标行已不存在”。
+        if value.is_truncated() || matches!(value, CellValue::BinarySummary(_)) {
+            return Err(Error::new(
+                ErrorKind::Unsupported,
+                "行身份包含未完整加载的大字段，无法安全定位行；请刷新后重试或改用主键定位",
+            ));
         }
         let quoted = fluxdb_core::PostgresDialect.quote_identifier(column);
         if matches!(value, CellValue::Null) {
@@ -370,4 +454,66 @@ fn pg_append_row_location(sql: &mut String, params: &mut Vec<Box<dyn ToSql + Syn
     params.push(Box::new(location.0)); let oid = params.len();
     params.push(Box::new(location.1)); let tid = params.len();
     sql.push_str(&format!(" AND tableoid = ${oid}::oid AND ctid = CAST(${tid}::text AS tid)"));
+}
+
+#[cfg(test)]
+mod pg_identity_guard_tests {
+    use super::*;
+
+    /// 预览值不能拼成 WHERE：否则会静默命中 0 行，把并发冲突误报成“目标行已不存在”。
+    #[test]
+    fn identity_rejects_truncated_value() {
+        let identity = RowIdentity {
+            values: std::collections::BTreeMap::from([(
+                "payload".to_string(),
+                CellValue::TruncatedText {
+                    preview: "前 4000 字符".to_string(),
+                    total_chars: 100_000,
+                },
+            )]),
+        };
+        let columns = vec![Column {
+            name: "payload".to_string(),
+            type_name: Some("text".to_string()),
+            nullable: true,
+            primary_key: false,
+            comment: None,
+        }];
+        let mut params: Vec<Box<dyn ToSql + Sync>> = Vec::new();
+
+        let error = pg_identity_where(&mut params, &identity, &columns)
+            .expect_err("预览身份必须被拒绝");
+
+        assert_eq!(error.kind, ErrorKind::Unsupported);
+        assert!(error.message.contains("大字段"), "{}", error.message);
+    }
+
+    #[test]
+    fn identity_rejects_binary_summary() {
+        let identity = RowIdentity {
+            values: std::collections::BTreeMap::from([(
+                "payload".to_string(),
+                CellValue::BinarySummary(fluxdb_core::BinaryCellSummary {
+                    type_name: "bytea".to_string(),
+                    is_null: false,
+                    byte_length: 4096,
+                    preview_hex: Some("00ff".to_string()),
+                }),
+            )]),
+        };
+        let columns = vec![Column {
+            name: "payload".to_string(),
+            type_name: Some("bytea".to_string()),
+            nullable: true,
+            primary_key: false,
+            comment: None,
+        }];
+        let mut params: Vec<Box<dyn ToSql + Sync>> = Vec::new();
+
+        let error = pg_identity_where(&mut params, &identity, &columns)
+            .expect_err("二进制摘要身份必须被拒绝");
+
+        assert_eq!(error.kind, ErrorKind::Unsupported);
+        assert!(error.message.contains("大字段"), "{}", error.message);
+    }
 }

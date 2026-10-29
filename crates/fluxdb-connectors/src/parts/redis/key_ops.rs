@@ -213,6 +213,7 @@ fn redis_emit_key_create(
 }
 
 fn redis_apply_changes(config: &ConnectionConfig, changes: &DataChangeSet) -> fluxdb_core::Result<()> {
+    reject_streamed_values(changes)?;
     let database = redis_path_database(&changes.object)?;
     let mut connection = redis_connect(config)?;
     redis_select(&mut connection, database)?;
@@ -355,7 +356,7 @@ fn redis_apply_key_update(
 
     for cell in &update.cells {
         if cell.column == "键" {
-            let new_key = redis_text_cell(&cell.value, "Redis Key 名称必须是文本")?;
+            let new_key = redis_text_cell(cell.value.placeholder(), "Redis Key 名称必须是文本")?;
             redis_rename_key(connection, key.as_str(), new_key)?;
             key = new_key.to_string();
         }
@@ -366,7 +367,7 @@ fn redis_apply_key_update(
             "值" => redis_set_key_value(
                 connection,
                 key.as_str(),
-                redis_text_cell(&cell.value, "Redis 值修改仅支持文本内容")?,
+                redis_text_cell(cell.value.placeholder(), "Redis 值修改仅支持文本内容")?,
             )?,
             _ => {
                 return Err(Error::new(
@@ -381,7 +382,7 @@ fn redis_apply_key_update(
             redis_set_key_ttl(
                 connection,
                 key.as_str(),
-                redis_text_cell(&cell.value, "Redis TTL 必须是文本")?,
+                redis_text_cell(cell.value.placeholder(), "Redis TTL 必须是文本")?,
             )?;
         }
     }

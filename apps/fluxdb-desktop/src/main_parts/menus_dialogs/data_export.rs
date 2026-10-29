@@ -742,6 +742,13 @@ fn run_table_data_export(
                 &sort,
                 &filters,
             )?;
+            if let Some(incomplete) = &page.incomplete {
+                let _ = fs::remove_file(&temp_path);
+                return Err(anyhow::anyhow!(
+                    tr("app.data_export.error.incomplete_page")
+                        .replace("%{reason}", &incomplete.reason)
+                ));
+            }
             let rows = writer.write_page(&page)?;
             exported += rows;
             let _ = sender.send(TableDataExportProgress {
@@ -752,7 +759,7 @@ fn run_table_data_export(
             if rows == 0 || !page.has_more {
                 break;
             }
-            offset += rows;
+            offset = page.next_offset();
         }
         cancel_flag.load(Ordering::Relaxed)
     };
@@ -1997,6 +2004,7 @@ fn table_data_export_filter_page(form: &TableDataExportForm) -> DataPage {
         offset: 0,
         limit: 0,
         has_more: false,
+        incomplete: None,
     }
 }
 

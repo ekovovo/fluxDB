@@ -438,10 +438,37 @@ pub enum AppCommand {
         column: usize,
         value: CellValue,
     },
-    LoadBinaryPreview {
+    /// 按需读取单元格完整文本（截断的 CLOB）。数据库 I/O 在后台执行，
+    /// 结果经 [`AppCommand::FinishCellTextLoad`] 写回，避免阻塞 UI。
+    LoadCellText {
         tab_id: TabId,
         row: usize,
         column: usize,
+    },
+    FinishCellTextLoad {
+        tab_id: TabId,
+        row: usize,
+        column: usize,
+        result: std::result::Result<String, UserFacingError>,
+    },
+    /// 读取大字段内容引用的下一块（详情面板分段只读）。
+    ///
+    /// 块从 `offset` 开始、上限 [`fluxdb_core::CELL_CHUNK_BYTES`]；同一份不可变内容，
+    /// 不重查数据库。只传不透明引用，不传路径。结果经
+    /// [`AppEvent::CellContentChunkLoaded`] 回到 UI。
+    LoadCellContentChunk {
+        tab_id: TabId,
+        row: usize,
+        column: usize,
+        content_id: String,
+        kind: fluxdb_core::LargeValueKind,
+        offset: u64,
+    },
+    /// 把大字段完整内容流式写到用户选定的文件（UI 先弹保存对话框）。
+    SaveCellContentToFile {
+        tab_id: TabId,
+        content_id: String,
+        path: PathBuf,
     },
     DownloadBinaryCell {
         tab_id: TabId,
@@ -452,7 +479,7 @@ pub enum AppCommand {
         tab_id: TabId,
         row: usize,
         column: usize,
-        payload: BinaryUpdatePayload,
+        payload: UploadPayload,
     },
     SetBinaryCellNull {
         tab_id: TabId,
@@ -1096,7 +1123,7 @@ pub enum AppCommand {
         tab_id: TabId,
         index: usize,
     },
-    /// 生成脱敏 SQL 预览（渲染与执行共用 connector 规则）。
+    /// 生成 SQL 预览（渲染与执行共用 connector 规则，口令按草稿如实显示）。
     StartPgPlanPreview(TabId),
     LoadPgPlanPreview(TabId),
     FinishPgPlanPreview {
@@ -1199,6 +1226,91 @@ pub enum AppCommand {
     BeginDeleteSqlServerPrincipal(TabId),
     ConfirmDeleteSqlServerPrincipal(TabId),
     CancelDeleteSqlServerPrincipal(TabId),
+    /// Oracle 用户与权限：置 loading，后台读取账号与当前授权快照。
+    StartOracleUsersLoad(TabId),
+    LoadOracleUsers(TabId),
+    FinishOracleUsersLoad {
+        tab_id: TabId,
+        result: Result<fluxdb_core::OracleUserAdminSnapshot, UserFacingError>,
+    },
+    SelectOracleUser {
+        tab_id: TabId,
+        name: String,
+    },
+    SetOracleGrantDraftField {
+        tab_id: TabId,
+        field: OracleGrantDraftField,
+        value: String,
+    },
+    SetOracleGrantDraftOption {
+        tab_id: TabId,
+        with_option: bool,
+    },
+    /// 把授权编辑器里填好的一条加入待执行列表（新建账号时可在一次保存里带多条授权）。
+    ///
+    /// `kind` 由所在页签决定（角色 / 系统权限 / 对象权限），编辑器不再自带类型选择。
+    QueueOracleGrantDraft {
+        tab_id: TabId,
+        kind: OracleGrantKind,
+    },
+    /// 从待执行授权列表移除一条（按索引）。
+    RemoveOraclePendingGrant {
+        tab_id: TabId,
+        index: usize,
+    },
+    /// 撤销当前账号的一条直接角色授权。
+    RevokeOracleRole {
+        tab_id: TabId,
+        role: String,
+    },
+    /// 撤销当前账号的一条直接系统权限。
+    RevokeOracleSystemPrivilege {
+        tab_id: TabId,
+        privilege: String,
+    },
+    /// 撤销当前账号的一条直接对象权限。
+    RevokeOracleObjectPrivilege {
+        tab_id: TabId,
+        owner: String,
+        object: String,
+        privilege: String,
+    },
+    BeginOracleCreateUser(TabId),
+    CancelOracleCreateUser(TabId),
+    SetOracleCreateDraftField {
+        tab_id: TabId,
+        field: OracleCreateDraftField,
+        value: String,
+    },
+    SetOracleCreateDraftFlag {
+        tab_id: TabId,
+        grant_connect_role: bool,
+    },
+    SetOracleUserPassword {
+        tab_id: TabId,
+        password: String,
+    },
+    SetOracleUserLocked {
+        tab_id: TabId,
+        locked: bool,
+    },
+    DiscardOracleUserChanges(TabId),
+    /// 点保存：把草稿渲染成预览 SQL 放进确认框（不执行）。
+    PreviewOracleApply(TabId),
+    /// 确认框点「执行」：合成计划并置位执行中，随后由 `ApplyOraclePlan` 执行。
+    StartOracleApply(TabId),
+    ApplyOraclePlan(TabId),
+    FinishOracleApply {
+        tab_id: TabId,
+        result: Result<Vec<String>, UserFacingError>,
+    },
+    BeginDeleteOracleUser(TabId),
+    CancelDeleteOracleUser(TabId),
+    SetOracleDeleteCascade {
+        tab_id: TabId,
+        cascade: bool,
+    },
+    ConfirmDeleteOracleUser(TabId),
     /// 删除角色确认框。
     PgBeginDeleteRole(TabId),
     PgCancelDeleteRole(TabId),
@@ -1339,11 +1451,18 @@ pub enum AppCommand {
         member: DatabaseUserIdentity,
         granted: bool,
     },
+    /// 「保存」第一步：把本次草稿渲染出的 SQL 放进确认弹框（五种库共用）。
     PreviewUserAdminSql {
         tab_id: TabId,
         sql: String,
         danger: bool,
+        /// 确认后走哪条执行路径（各库计划构建/提交方式不同）。
+        kind: UserAdminPendingKind,
     },
+    /// 「保存」但语句要读服务端才能渲染（PG / SQL Server）：先记下这次预览是给
+    /// 确认框用的，预览完成后再弹框。MySQL / Oracle 本地就能渲染，不走这条。
+    BeginUserAdminSqlConfirm(TabId),
+    /// 关闭确认弹框（取消，不执行）。
     ClearUserAdminPendingSql(TabId),
     /// MySQL：打开「删除用户」确认弹框（针对当前选中的已有用户）。
     BeginUserAdminDeleteUser(TabId),

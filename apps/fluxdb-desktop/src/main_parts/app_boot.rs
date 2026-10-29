@@ -75,6 +75,8 @@ fn main() {
             let mut controller = AppController::new();
             controller.set_completion_index_storage(storage.clone());
             controller.set_ai_storage(storage.clone());
+            // 大字段完整内容的受控存储：连接器外置与详情分段读取共用。
+            controller.set_cell_content_storage(storage.clone());
             // 首帧后加载 AI 设置列表，避免阻塞开窗；空列表由设置页给出空状态。
             let _ = controller.dispatch(AppCommand::RefreshAiSettings);
             controller.set_er_model_storage(storage.clone());
@@ -1214,12 +1216,76 @@ fn navicat_main_new(
     let sqlserver_security_default_select = cx.new(|cx| {
         SelectState::new(SearchableVec::new(Vec::new()), None, window, cx).searchable(true)
     });
-    let sqlserver_security_permission_input =
-        cx.new(|cx| InputState::new(window, cx).placeholder(tr("app.placeholder.permission_name")));
-    let sqlserver_security_permission_target_input = cx
-        .new(|cx| InputState::new(window, cx).placeholder(tr("app.placeholder.permission_target")));
-    let user_admin_max_queries_input = cx.new(|cx| InputState::new(window, cx).placeholder("0"));
-    let user_admin_max_updates_input = cx.new(|cx| InputState::new(window, cx).placeholder("0"));
+                        let sqlserver_security_permission_input = cx.new(|cx| {
+                            InputState::new(window, cx)
+                                .placeholder(tr("app.placeholder.permission_name"))
+                        });
+                        let sqlserver_security_permission_target_input = cx.new(|cx| {
+                            InputState::new(window, cx)
+                                .placeholder(tr("app.placeholder.permission_target"))
+                        });
+                        // Oracle 用户与权限：新建账号草稿字段。
+                        let oracle_security_name_input = cx.new(|cx| {
+                            InputState::new(window, cx)
+                                .placeholder(tr("app.oracle_security.name_placeholder"))
+                        });
+                        let oracle_security_password_input = cx.new(|cx| {
+                            InputState::new(window, cx)
+                                .placeholder(tr("app.placeholder.password"))
+                                .masked(true)
+                        });
+                        let oracle_security_confirm_password_input = cx.new(|cx| {
+                            InputState::new(window, cx)
+                                .placeholder(tr("app.placeholder.confirm_password"))
+                                .masked(true)
+                        });
+                        // 改密码独立于新建草稿，避免同步把正在输入的口令清掉。
+                        let oracle_security_new_password_input = cx.new(|cx| {
+                            InputState::new(window, cx)
+                                .placeholder(tr("app.oracle_security.new_password_placeholder"))
+                                .masked(true)
+                        });
+                        let oracle_security_new_password_confirm_input = cx.new(|cx| {
+                            InputState::new(window, cx)
+                                .placeholder(tr("app.placeholder.confirm_password"))
+                                .masked(true)
+                        });
+                        let oracle_security_default_ts_input = cx.new(|cx| {
+                            InputState::new(window, cx)
+                                .placeholder(tr("app.oracle_security.tablespace_placeholder"))
+                        });
+                        let oracle_security_temp_ts_input = cx.new(|cx| {
+                            InputState::new(window, cx)
+                                .placeholder(tr("app.oracle_security.tablespace_placeholder"))
+                        });
+                        let oracle_security_profile_input = cx.new(|cx| {
+                            InputState::new(window, cx)
+                                .placeholder(tr("app.oracle_security.profile_placeholder"))
+                        });
+                        let oracle_security_quota_ts_input = cx.new(|cx| {
+                            InputState::new(window, cx)
+                                .placeholder(tr("app.oracle_security.tablespace_placeholder"))
+                        });
+                        let oracle_security_quota_bytes_input = cx.new(|cx| {
+                            InputState::new(window, cx)
+                                .placeholder(tr("app.oracle_security.quota_placeholder"))
+                        });
+                        let oracle_security_grant_name_input = cx.new(|cx| {
+                            InputState::new(window, cx)
+                                .placeholder(tr("app.oracle_security.grant_name_placeholder"))
+                        });
+                        let oracle_security_grant_owner_input = cx.new(|cx| {
+                            InputState::new(window, cx)
+                                .placeholder(tr("app.oracle_security.grant_owner_placeholder"))
+                        });
+                        let oracle_security_grant_object_input = cx.new(|cx| {
+                            InputState::new(window, cx)
+                                .placeholder(tr("app.oracle_security.grant_object_placeholder"))
+                        });
+                        let user_admin_max_queries_input =
+                            cx.new(|cx| InputState::new(window, cx).placeholder("0"));
+                        let user_admin_max_updates_input =
+                            cx.new(|cx| InputState::new(window, cx).placeholder("0"));
     let user_admin_max_connections_input =
         cx.new(|cx| InputState::new(window, cx).placeholder("0"));
     let user_admin_max_user_connections_input =
@@ -2167,6 +2233,121 @@ fn navicat_main_new(
             }
         },
     );
+                        // Oracle 输入订阅：口令只进草稿，不回显到任何快照。
+                        let oracle_security_name_subscription = cx.subscribe(
+                            &oracle_security_name_input,
+                            |this: &mut NavicatMain, input, event: &InputEvent, cx| {
+                                this.oracle_create_field_changed(
+                                    input, event, fluxdb_app::OracleCreateDraftField::Name, cx,
+                                );
+                            },
+                        );
+                        let oracle_security_password_subscription = cx.subscribe(
+                            &oracle_security_password_input,
+                            |this: &mut NavicatMain, input, event: &InputEvent, cx| {
+                                this.oracle_create_field_changed(
+                                    input, event, fluxdb_app::OracleCreateDraftField::Password, cx,
+                                );
+                            },
+                        );
+                        let oracle_security_confirm_password_subscription = cx.subscribe(
+                            &oracle_security_confirm_password_input,
+                            |this: &mut NavicatMain, input, event: &InputEvent, cx| {
+                                this.oracle_create_field_changed(
+                                    input, event, fluxdb_app::OracleCreateDraftField::ConfirmPassword, cx,
+                                );
+                            },
+                        );
+                        let oracle_security_default_ts_subscription = cx.subscribe(
+                            &oracle_security_default_ts_input,
+                            |this: &mut NavicatMain, input, event: &InputEvent, cx| {
+                                this.oracle_create_field_changed(
+                                    input, event, fluxdb_app::OracleCreateDraftField::DefaultTablespace, cx,
+                                );
+                            },
+                        );
+                        let oracle_security_temp_ts_subscription = cx.subscribe(
+                            &oracle_security_temp_ts_input,
+                            |this: &mut NavicatMain, input, event: &InputEvent, cx| {
+                                this.oracle_create_field_changed(
+                                    input, event, fluxdb_app::OracleCreateDraftField::TemporaryTablespace, cx,
+                                );
+                            },
+                        );
+                        let oracle_security_profile_subscription = cx.subscribe(
+                            &oracle_security_profile_input,
+                            |this: &mut NavicatMain, input, event: &InputEvent, cx| {
+                                this.oracle_create_field_changed(
+                                    input, event, fluxdb_app::OracleCreateDraftField::Profile, cx,
+                                );
+                            },
+                        );
+                        let oracle_security_quota_ts_subscription = cx.subscribe(
+                            &oracle_security_quota_ts_input,
+                            |this: &mut NavicatMain, input, event: &InputEvent, cx| {
+                                this.oracle_create_field_changed(
+                                    input, event, fluxdb_app::OracleCreateDraftField::QuotaTablespace, cx,
+                                );
+                            },
+                        );
+                        let oracle_security_quota_bytes_subscription = cx.subscribe(
+                            &oracle_security_quota_bytes_input,
+                            |this: &mut NavicatMain, input, event: &InputEvent, cx| {
+                                this.oracle_create_field_changed(
+                                    input, event, fluxdb_app::OracleCreateDraftField::QuotaBytes, cx,
+                                );
+                            },
+                        );
+                        // 改密口令：明文只进内存草稿，保存时随计划一起执行。
+                        let oracle_security_new_password_subscription = cx.subscribe(
+                            &oracle_security_new_password_input,
+                            |this: &mut NavicatMain, input, event: &InputEvent, cx| {
+                                if matches!(event, InputEvent::Change)
+                                    && let Some(tab_id) = this.active_oracle_admin_tab_id()
+                                {
+                                    this.dispatch(
+                                        AppCommand::SetOracleUserPassword {
+                                            tab_id,
+                                            password: input.read(cx).value().to_string(),
+                                        },
+                                        cx,
+                                    );
+                                }
+                            },
+                        );
+                        // 确认框不入状态，只需重绘以刷新「两次口令不一致」提示。
+                        let oracle_security_new_password_confirm_subscription = cx.subscribe(
+                            &oracle_security_new_password_confirm_input,
+                            |_this: &mut NavicatMain, _, event: &InputEvent, cx| {
+                                if matches!(event, InputEvent::Change) {
+                                    cx.notify();
+                                }
+                            },
+                        );
+                        let oracle_security_grant_name_subscription = cx.subscribe(
+                            &oracle_security_grant_name_input,
+                            |this: &mut NavicatMain, input, event: &InputEvent, cx| {
+                                this.oracle_grant_field_changed(
+                                    input, event, fluxdb_app::OracleGrantDraftField::Name, cx,
+                                );
+                            },
+                        );
+                        let oracle_security_grant_owner_subscription = cx.subscribe(
+                            &oracle_security_grant_owner_input,
+                            |this: &mut NavicatMain, input, event: &InputEvent, cx| {
+                                this.oracle_grant_field_changed(
+                                    input, event, fluxdb_app::OracleGrantDraftField::Owner, cx,
+                                );
+                            },
+                        );
+                        let oracle_security_grant_object_subscription = cx.subscribe(
+                            &oracle_security_grant_object_input,
+                            |this: &mut NavicatMain, input, event: &InputEvent, cx| {
+                                this.oracle_grant_field_changed(
+                                    input, event, fluxdb_app::OracleGrantDraftField::Object, cx,
+                                );
+                            },
+                        );
     let user_admin_new_password_subscription = cx.subscribe(
         &user_admin_new_password_input,
         |this: &mut NavicatMain, input, event: &InputEvent, cx| {
@@ -2910,6 +3091,46 @@ fn navicat_main_new(
         _sqlserver_security_permissions_task: None,
         _sqlserver_security_preview_task: None,
         _sqlserver_security_apply_task: None,
+                            oracle_security_name_input,
+                            _oracle_security_name_subscription: oracle_security_name_subscription,
+                            oracle_security_password_input,
+                            _oracle_security_password_subscription:
+                                oracle_security_password_subscription,
+                            oracle_security_confirm_password_input,
+                            _oracle_security_confirm_password_subscription:
+                                oracle_security_confirm_password_subscription,
+                            oracle_security_new_password_input,
+                            _oracle_security_new_password_subscription:
+                                oracle_security_new_password_subscription,
+                            oracle_security_new_password_confirm_input,
+                            _oracle_security_new_password_confirm_subscription:
+                                oracle_security_new_password_confirm_subscription,
+                            oracle_security_default_ts_input,
+                            _oracle_security_default_ts_subscription:
+                                oracle_security_default_ts_subscription,
+                            oracle_security_temp_ts_input,
+                            _oracle_security_temp_ts_subscription:
+                                oracle_security_temp_ts_subscription,
+                            oracle_security_profile_input,
+                            _oracle_security_profile_subscription:
+                                oracle_security_profile_subscription,
+                            oracle_security_quota_ts_input,
+                            _oracle_security_quota_ts_subscription:
+                                oracle_security_quota_ts_subscription,
+                            oracle_security_quota_bytes_input,
+                            _oracle_security_quota_bytes_subscription:
+                                oracle_security_quota_bytes_subscription,
+                            oracle_security_grant_name_input,
+                            _oracle_security_grant_name_subscription:
+                                oracle_security_grant_name_subscription,
+                            oracle_security_grant_owner_input,
+                            _oracle_security_grant_owner_subscription:
+                                oracle_security_grant_owner_subscription,
+                            oracle_security_grant_object_input,
+                            _oracle_security_grant_object_subscription:
+                                oracle_security_grant_object_subscription,
+                            _oracle_security_load_task: None,
+                            _oracle_security_apply_task: None,
         user_admin_max_queries_input,
         _user_admin_max_queries_subscription: user_admin_max_queries_subscription,
         user_admin_max_updates_input,
@@ -3014,6 +3235,9 @@ fn navicat_main_new(
         _create_table_apply_tasks: BTreeMap::new(),
         _create_table_reference_columns_tasks: BTreeMap::new(),
         _cell_binary_download_tasks: BTreeMap::new(),
+                            _cell_text_load_tasks: BTreeMap::new(),
+                            _cell_content_chunk_tasks: BTreeMap::new(),
+                            _cell_content_save_tasks: BTreeMap::new(),
         _data_export_tasks: BTreeMap::new(),
         _data_export_cancel_flags: BTreeMap::new(),
         _backup_tasks: BTreeMap::new(),
@@ -3254,6 +3478,7 @@ fn navicat_main_new(
         query_output_resize_start: None,
         query_result_sort_rules: BTreeMap::new(),
         query_result_cell_detail: BTreeMap::new(),
+                            large_value_windows: BTreeMap::new(),
         data_change_sql_preview_tabs: BTreeSet::new(),
         data_filter_panels: BTreeSet::new(),
         data_filter_rules: BTreeMap::new(),

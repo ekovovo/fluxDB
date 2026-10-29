@@ -216,6 +216,10 @@ pub enum AppEvent {
         principal: String,
         result: Result<Vec<String>, UserFacingError>,
     },
+    /// Oracle 用户与权限快照加载完成。
+    OracleUsersLoaded(TabId, fluxdb_core::OracleUserAdminSnapshot),
+    /// Oracle 变更计划执行完成（只携带脱敏语句）。
+    OraclePlanApplied(TabId, Vec<String>),
     DataLoaded(TabId, DataPage),
     /// 惰性补齐无用的事件：元信息已由控制器合并进 `editor.page`，只用于通知 UI 续补下一批可见行。
     RedisKeyMetadataLoaded {
@@ -303,18 +307,34 @@ pub enum AppEvent {
         object: ObjectPath,
         key: String,
     },
-    BinaryPreviewLoaded {
-        tab_id: TabId,
-        row: usize,
-        column: usize,
-        preview: BinaryPreviewResponse,
-    },
     BinaryCellDownloaded {
         tab_id: TabId,
         row: usize,
         column: usize,
         bytes: Vec<u8>,
     },
+    /// 单元格完整文本已读到（截断 CLOB 的详情/编辑用）。
+    CellTextLoaded {
+        tab_id: TabId,
+        row: usize,
+        column: usize,
+        text: String,
+    },
+    /// 进入编辑前需要先读完整文本：UI 据此发起后台加载。
+    CellTextLoadRequested {
+        tab_id: TabId,
+        row: usize,
+        column: usize,
+    },
+    /// 大字段下一块已读入（UI 存进自己的窗口状态并重绘）。
+    CellContentChunkLoaded {
+        tab_id: TabId,
+        row: usize,
+        column: usize,
+        chunk: CellContentChunk,
+    },
+    /// 大字段完整内容已流式保存到用户选定路径。
+    CellContentSaved { tab_id: TabId, bytes: u64 },
     QueryCompletionsLoaded(TabId, u64, QueryCompletionResult),
     CompletionIndexWarmed(ConnectionId, Option<String>),
     QueryFinished(TabId, QueryExecutionResult),

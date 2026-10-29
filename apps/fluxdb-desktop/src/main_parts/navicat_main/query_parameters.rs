@@ -88,6 +88,8 @@ impl NavicatMain {
             return;
         };
         let sql = bind_query_parameters(&pending.sql, &values);
+        // 绑定后的 SQL 仍要按该页连接的方言重新切分语句。
+        let kind = self.query_editor_database_kind(pending.tab_id);
 
         match pending.execution {
             PendingQueryExecution::All { statements } => {
@@ -100,7 +102,7 @@ impl NavicatMain {
                             // 新编辑器：整篇替换为绑定后的 SQL，并据此重建语句运行列表。
                             let len = editor.text().len();
                             editor.replace_text_range(fluxdb_editor_core::Range::new(0, len), &sql, cx);
-                            sql_editor_adapter::build_statement_runs(&sql)
+                            sql_editor_adapter::build_statement_runs(&sql, kind)
                         });
                         self.dispatch(
                             AppCommand::UpdateQueryText {
@@ -137,6 +139,7 @@ impl NavicatMain {
                             &text,
                             selection,
                             &pending.sql,
+                            kind,
                         ) {
                             Some(sql_editor_adapter::ParameterReplacementTarget::All) => {
                                 let len = text.len();
@@ -188,7 +191,12 @@ impl NavicatMain {
                         r.start..r.end
                     };
                     if let Some(target) =
-                        sql_editor_adapter::parameter_replacement_target(&text, selection, &statement.text)
+                        sql_editor_adapter::parameter_replacement_target(
+                            &text,
+                            selection,
+                            &statement.text,
+                            kind,
+                        )
                     {
                         match target {
                             sql_editor_adapter::ParameterReplacementTarget::All => {
@@ -203,7 +211,7 @@ impl NavicatMain {
                             }
                         }
                     }
-                    sql_editor_adapter::build_statement_runs(&sql)
+                    sql_editor_adapter::build_statement_runs(&sql, kind)
                         .into_iter()
                         .next()
                         .unwrap_or(SqlStatementRun {

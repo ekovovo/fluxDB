@@ -88,6 +88,7 @@
             dameng_profile: None,
             mongo_profile: None,
             sqlserver_profile: None,
+            oracle_profile: None,
         }]));
         controller.dispatch(AppCommand::SaveSettings(Settings {
             locale: "ja".into(),
@@ -126,6 +127,7 @@
             offset: 0,
             limit: 100,
             has_more: false,
+        incomplete: None,
         };
         assert!(matches!(
             controller.dispatch(AppCommand::FinishDataPageLoad {

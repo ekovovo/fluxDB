@@ -129,6 +129,47 @@ fn sqlite_select_expr(column: &Column) -> String {
     format!("CAST({name} AS TEXT) AS {name}")
 }
 
+/// SQL Server 的二进制列投影：与 MySQL/SQLite 同一口径，正文永不进结果页。
+///
+/// `DATALENGTH` 对 `varchar`/`nvarchar`/`varbinary` 都给真实字节数（`LEN` 会把
+/// `nvarchar` 算成字符数、且忽略尾随空格，不能用）；`CONVERT(..., 2)` 是十六进制
+/// 样式，`SUBSTRING` 一基且对二进制按字节切。`image` 不能直接进 `SUBSTRING`，
+/// 先 `CAST(... AS varbinary(max))`（对 `binary`/`varbinary` 也无副作用）。
+fn sqlserver_select_expr(column: &Column) -> String {
+    let name = fluxdb_core::SqlServerDialect.quote_identifier(&column.name);
+    if is_binary_column(column) {
+        let is_null =
+            fluxdb_core::SqlServerDialect.quote_identifier(&binary_alias(&column.name, "is_null"));
+        let byte_length =
+            fluxdb_core::SqlServerDialect.quote_identifier(&binary_alias(&column.name, "byte_length"));
+        let preview_hex =
+            fluxdb_core::SqlServerDialect.quote_identifier(&binary_alias(&column.name, "preview_hex"));
+        return format!(
+            "CAST(CASE WHEN {name} IS NULL THEN 1 ELSE 0 END AS int) AS {is_null}, \
+             COALESCE(DATALENGTH({name}), 0) AS {byte_length}, \
+             CONVERT(varchar(max), SUBSTRING(CAST({name} AS varbinary(max)), 1, 64), 2) AS {preview_hex}"
+        );
+    }
+
+    sqlserver_single_select_expr(column)
+}
+
+/// 单列投影：`sql_variant` 转文本（驱动解码是 `todo!()`，直接取会 abort 进程）。
+fn sqlserver_single_select_expr(column: &Column) -> String {
+    let quoted = fluxdb_core::SqlServerDialect.quote_identifier(&column.name);
+    if column.type_name.as_deref().is_some_and(|type_name| {
+        type_name
+            .trim()
+            .split(['(', ' '])
+            .next()
+            .is_some_and(|base| base.eq_ignore_ascii_case("sql_variant"))
+    }) {
+        format!("CAST({quoted} AS nvarchar(max)) AS {quoted}")
+    } else {
+        quoted
+    }
+}
+
 fn is_binary_column(column: &Column) -> bool {
     column.type_name.as_deref().is_some_and(is_binary_type_name)
 }
@@ -149,54 +190,151 @@ fn percent_encode(value: &str) -> String {
     encoded
 }
 
-fn mysql_rows_to_page(
-    columns: Vec<Column>,
-    rows: Vec<MySqlRow>,
-    pagination: Pagination,
-) -> DataPage {
-    let has_more = rows.len() > pagination.limit as usize;
-    let rows = rows
-        .into_iter()
-        .take(pagination.limit as usize)
-        .map(|row| Row {
-            values: (0..columns.len())
-                .map(|index| mysql_cell_value(&row, &columns[index]))
-                .collect(),
-        })
-        .collect();
+/// 单格超过阈值就外置，行本身不按整页字节预算截断。
+fn spill_large_cells(owner: &str, values: &mut [CellValue]) -> fluxdb_core::Result<()> {
+    for value in values.iter_mut() {
+        if let Some(text) = cell_full_text(value) {
+            if text.len() > fluxdb_core::CELL_SPILL_THRESHOLD_BYTES {
+                let kind = if matches!(value, CellValue::Json(_)) {
+                    fluxdb_core::LargeValueKind::Json
+                } else {
+                    fluxdb_core::LargeValueKind::Text
+                };
+                *value = fluxdb_core::spill_large_value(owner, kind, text.as_bytes())?;
+            }
+        } else if let CellValue::Bytes(bytes) = value
+            && bytes.len() > fluxdb_core::CELL_SPILL_THRESHOLD_BYTES
+        {
+            let bytes = std::mem::take(bytes);
+            *value = fluxdb_core::spill_large_value(owner, fluxdb_core::LargeValueKind::Binary, &bytes)?;
+        }
+    }
+    Ok(())
+}
 
-    DataPage {
-        columns,
-        rows,
-        offset: pagination.offset,
-        limit: pagination.limit,
-        has_more,
+/// 单元格仍是完整文本时取出引用（外置前用）。
+fn cell_full_text(value: &CellValue) -> Option<&str> {
+    match value {
+        CellValue::Text(text) | CellValue::Json(text) => Some(text),
+        _ => None,
     }
 }
 
-fn sqlite_rows_to_page(
+/// 按行顺序收页：单格先外置，页容量只由行数决定。
+///
+/// `rows` 由调用方按容量截好；本函数只负责逐行决定收或不收。
+///
+/// 生产路径都用流式的 [`collect_sqlx_page`]，这个内存版只服务于单测里
+/// 可造大批行、不依赖驱动的场景。
+#[cfg(test)]
+fn rows_with_large_cells<T>(
     columns: Vec<Column>,
-    rows: Vec<SqliteRow>,
+    rows: impl Iterator<Item = T>,
     pagination: Pagination,
-) -> DataPage {
-    let has_more = rows.len() > pagination.limit as usize;
-    let rows = rows
-        .into_iter()
-        .take(pagination.limit as usize)
-        .map(|row| Row {
-            values: (0..columns.len())
-                .map(|index| sqlite_cell_value(&row, &columns[index]))
-                .collect(),
-        })
-        .collect();
-
-    DataPage {
+    owner: &str,
+    cell_value: impl Fn(&T, usize, &Column) -> CellValue,
+) -> fluxdb_core::Result<DataPage> {
+    let mut page = DataPage {
         columns,
-        rows,
+        rows: Vec::new(),
         offset: pagination.offset,
         limit: pagination.limit,
-        has_more,
+        has_more: false,
+        incomplete: None,
+    };
+    for row in rows {
+        let mut values = page
+            .columns
+            .iter()
+            .enumerate()
+            .map(|(index, column)| cell_value(&row, index, column))
+            .collect::<Vec<_>>();
+        spill_large_cells(owner, &mut values)?;
+        page.rows.push(Row { values });
     }
+    Ok(page)
+}
+
+/// 驱动的行流边读边收进一页：**不再 `fetch_all` 整个结果集**。
+///
+/// 这是大字段卡顿/爆内存的根因修复：`fetch_all` 会把每一行的完整值先堆进
+/// `Vec<Row>`，一条 8 MB 的行乘以页大小就是几百 MB，整表结果更是几个 GB——
+/// 预算与单格外置都在它之后才生效，救不了那次物化。改成流式后，单格超阈值
+/// 立刻外置落盘，页容量由行数决定。
+///
+/// `skip_rows` 是流里已经取到、但不属于本页的行数（SQL 已带 OFFSET 时传 0，
+/// 否则传 `pagination.offset`）。页容量由 `pagination.limit` 决定（0 = 不限制）。
+/// `columns` 为空时按第一行的服务端描述补全
+/// （查询编辑器不知道列结构，表浏览已知）。
+/// 返回 `(页, 从流里读到的行数)`；后者只用于执行摘要，不代表「结果总行数」。
+async fn collect_sqlx_page<S, R>(
+    stream: S,
+    columns: Vec<Column>,
+    pagination: Pagination,
+    skip_rows: u64,
+    owner: &str,
+    cell_value: impl Fn(&R, usize, &Column) -> CellValue,
+    map_error: impl Fn(sqlx::Error) -> fluxdb_core::Error,
+) -> fluxdb_core::Result<(DataPage, u64)>
+where
+    S: futures_util::Stream<Item = Result<R, sqlx::Error>>,
+    R: sqlx::Row,
+{
+    futures_util::pin_mut!(stream);
+    let mut page = DataPage {
+        columns,
+        rows: Vec::new(),
+        offset: pagination.offset,
+        limit: pagination.limit,
+        has_more: false,
+        incomplete: None,
+    };
+    let row_capacity = query_execution_row_capacity(pagination.limit);
+    let mut read_rows = 0u64;
+    while let Some(item) = futures_util::StreamExt::next(&mut stream).await {
+        let row = item.map_err(&map_error)?;
+        read_rows += 1;
+        if page.columns.is_empty() {
+            page.columns = sqlx_row_columns(&row);
+        }
+        if read_rows <= skip_rows {
+            continue;
+        }
+        if page.rows.len() >= row_capacity {
+            // 读满页容量：再往后还有行，这是「正常还有更多」，不是资源截断。
+            page.has_more = true;
+            break;
+        }
+        let mut values = page
+            .columns
+            .iter()
+            .enumerate()
+            .map(|(index, column)| cell_value(&row, index, column))
+            .collect::<Vec<_>>();
+        spill_large_cells(owner, &mut values)?;
+        page.rows.push(Row { values });
+    }
+    if page.incomplete.is_some() {
+        // 预算截断与「正常还有更多」互斥。
+        page.has_more = false;
+    }
+    Ok((page, read_rows))
+}
+
+/// 按服务端描述构造列定义（查询编辑器结果用）。
+fn sqlx_row_columns<R: sqlx::Row>(row: &R) -> Vec<Column> {
+    row.columns()
+        .iter()
+        .map(|column| {
+            Column {
+                name: column.name().to_string(),
+                type_name: Some(column.type_info().name().to_string()),
+                nullable: true,
+                primary_key: false,
+                comment: None,
+            }
+        })
+        .collect()
 }
 
 fn mysql_cell_value(row: &MySqlRow, column: &Column) -> CellValue {
@@ -369,5 +507,142 @@ fn binary_summary(
         is_null,
         byte_length,
         preview_hex,
+    }
+}
+
+#[cfg(test)]
+mod page_collection_tests {
+    use super::{rows_with_large_cells, spill_large_cells};
+    use fluxdb_core::{
+        CellContentMeta, CellContentStore, CellValue, Column, LargeValueKind, Pagination,
+    };
+    use std::sync::Arc;
+
+    struct MemoryStore;
+
+    impl CellContentStore for MemoryStore {
+        fn put(&self, owner: &str, _kind: LargeValueKind, bytes: &[u8]) -> fluxdb_core::Result<String> {
+            Ok(format!("{owner}-{}", bytes.len()))
+        }
+
+        fn stat(&self, _content_id: &str) -> Option<CellContentMeta> {
+            None
+        }
+
+        fn read(
+            &self,
+            _content_id: &str,
+            _offset: u64,
+            _len: usize,
+        ) -> fluxdb_core::Result<Vec<u8>> {
+            Ok(Vec::new())
+        }
+
+        fn release(&self, _content_id: &str) {}
+
+        fn release_owner(&self, _owner: &str) {}
+    }
+
+    /// 内容归属只做标识；内存桩不区分归属，固定一个即可。
+    const OWNER: &str = "result-once-7";
+
+    fn register_store() {
+        fluxdb_core::register_cell_content_store(Arc::new(MemoryStore));
+    }
+
+    /// 单行超大文本外置成内容引用后仍保留这一行。
+    #[test]
+    fn oversized_text_row_is_kept_as_content_reference() {
+        register_store();
+        let text = "x".repeat(fluxdb_core::CELL_SPILL_THRESHOLD_BYTES + 1);
+        let mut values = vec![CellValue::Text(text.clone())];
+        spill_large_cells(OWNER, &mut values).expect("spill succeeds");
+        let large = values[0].large_value().expect("内容引用");
+        assert_eq!(large.byte_length, Some(text.len() as u64));
+        assert!(large.preview_truncated, "预览必须标明只是片段");
+        assert!(large.preview.len() < 4096, "页里只留预览");
+    }
+
+    /// JSON 与二进制同样只留预览 + 内容引用，行不能丢。
+    #[test]
+    fn oversized_json_and_binary_rows_are_kept_as_references() {
+        register_store();
+        let json = format!("{{\"note\":\"{}\"}}", "y".repeat(fluxdb_core::CELL_SPILL_THRESHOLD_BYTES));
+        let binary = vec![0xABu8; fluxdb_core::CELL_SPILL_THRESHOLD_BYTES + 1];
+        for (value, kind) in [
+            (CellValue::Json(json.clone()), LargeValueKind::Json),
+            (CellValue::Bytes(binary.clone()), LargeValueKind::Binary),
+        ] {
+            let mut values = vec![value];
+            spill_large_cells(OWNER, &mut values).expect("spill succeeds");
+            let large = values[0].large_value().expect("内容引用");
+            assert_eq!(large.kind, kind);
+            assert!(large.preview_truncated);
+            // 引用里只有预览，不能塞整份内容：预览必须短于原值。
+            let original_len = match kind {
+                LargeValueKind::Json => json.len(),
+                _ => binary.len(),
+            };
+            assert!((large.preview.len() as u64) < original_len as u64);
+        }
+    }
+
+    /// 普通小字段保持原值，不因字段数量触发外置。
+    #[test]
+    fn fitting_row_keeps_page_complete() {
+        register_store();
+        let mut values = vec![CellValue::Text("ok".into())];
+        spill_large_cells(OWNER, &mut values).unwrap();
+        assert_eq!(values, vec![CellValue::Text("ok".into())]);
+    }
+
+    /// 页预算还很宽裕时，单格超过阈值也必须外置。
+    ///
+    /// 这是卡顿的根因：只有「整行超预算」才外置的话，一条 8 MB 单元格会作为
+    /// 普通 `Text` 常驻页里，随后被渲染、事件、快照反复整串克隆。
+    #[test]
+    fn oversized_cell_spills_even_when_budget_is_ample() {
+        register_store();
+        let text = "x".repeat(8 * 1024 * 1024);
+        let mut values = vec![CellValue::Text(text.clone())];
+        spill_large_cells(OWNER, &mut values).unwrap();
+        assert!(
+            values[0].large_value().is_some(),
+            "预算宽裕也必须把 8 MB 单元格换成内容引用"
+        );
+        let large = values[0].large_value().expect("内容引用");
+        assert!(large.preview.len() < 8192, "页里只留预览");
+    }
+
+    /// 小字段合计超过旧 16 MiB 页预算也完整收页，不再制造 incomplete 短页。
+    #[test]
+    fn small_cells_over_old_page_budget_stay_complete() {
+        register_store();
+        let columns = vec![Column {
+            name: "note".into(),
+            type_name: Some("VARCHAR".into()),
+            nullable: true,
+            primary_key: false,
+            comment: None,
+        }];
+        // 每行都低于单格外置阈值（所以都不会被外置），但加起来超过整页预算：
+        // 收下的行数由预算决定，剩下的必须留给下一页。
+        const ROW_BYTES: usize = 60_000;
+        let expected_rows = (16 * 1024 * 1024 / ROW_BYTES) + 5;
+        let rows = (0..expected_rows + 5)
+            .map(|_| CellValue::Text("y".repeat(ROW_BYTES)))
+            .collect::<Vec<_>>()
+            .into_iter();
+        let page = rows_with_large_cells(
+            columns,
+            rows,
+            Pagination::new(0, 500),
+            OWNER,
+            |value: &CellValue, _index: usize, _column: &Column| value.clone(),
+        )
+        .expect("collect rows");
+        assert_eq!(page.rows.len(), expected_rows + 5);
+        assert!(page.incomplete.is_none(), "小字段总量不再截断页");
+        assert!(!page.has_more);
     }
 }

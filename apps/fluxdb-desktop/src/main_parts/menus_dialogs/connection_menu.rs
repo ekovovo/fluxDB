@@ -229,6 +229,7 @@ fn database_context_menu(
     is_sqlserver: bool,
     is_dameng: bool,
     is_mongo: bool,
+    is_oracle: bool,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
@@ -404,7 +405,10 @@ fn database_context_menu(
                 colors,
                 cx,
             ))
-            .when(is_postgres || is_sqlserver || is_dameng, |this| {
+            // Oracle 的 schema 即账号，`create_schema` 会建账号（需 CREATE USER 权限）。
+            .when(
+                is_postgres || is_sqlserver || is_dameng || is_oracle,
+                |this| {
                 this.child(database_menu_item(
                     tr("app.connection_menu.new_schema").to_string(),
                     "folder-open",
@@ -414,7 +418,8 @@ fn database_context_menu(
                     colors,
                     cx,
                 ))
-            })
+                },
+            )
             .child(database_menu_item(
                 tr("app.connection_menu.run_sql_file").to_string(),
                 "file-sql",

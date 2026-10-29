@@ -32,6 +32,7 @@ mod tabs_workspace_tests {
                 dameng_profile: None,
                 mongo_profile: None,
                 sqlserver_profile: None,
+                oracle_profile: None,
             },
             ConnectionConfig {
                 id: ConnectionId(11),
@@ -48,6 +49,7 @@ mod tabs_workspace_tests {
                 dameng_profile: None,
                 mongo_profile: None,
                 sqlserver_profile: None,
+                oracle_profile: None,
             },
         ]));
 

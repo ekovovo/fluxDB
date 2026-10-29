@@ -45,9 +45,17 @@ type ByteRange = std::ops::Range<usize>;
 /// 生成可执行的 EXPLAIN SQL 文本。
 ///
 /// 原定义于旧 `sql_editor/execution.rs`，在移除旧兜编辑器模块后迁移到本 adapter 供宿主
-/// （loading.rs 的 selected_explain_sql_text 等）与单测使用。逻辑保持不变：仅对
-/// explain / select / with 开头的语句返回可执行文本，其余返回 `None`。
-pub(crate) fn explain_sql_text(statement: &str) -> Option<String> {
+/// （loading.rs 的 selected_explain_sql_text 等）与单测使用。仅对 explain / select / with
+/// 开头的语句返回可执行文本，其余返回 `None`。
+///
+/// 只有「`EXPLAIN <sql>` 前缀」方言能这样改写，取 `SqlPolicy::explain_mode` 判定：
+/// Oracle 只认 `EXPLAIN PLAN FOR`（会写 PLAN_TABLE，有副作用），SQL Server 要 SHOWPLAN
+/// 专用会话，两条路径都无法靠拼前缀得到计划。对它们返回 `None`，让 Explain 按钮禁用，
+/// 而不是发出必然失败的 SQL。
+pub(crate) fn explain_sql_text(statement: &str, kind: DatabaseKind) -> Option<String> {
+    if fluxdb_app::policy_for(kind)?.explain_mode() != fluxdb_app::ExplainMode::Prefix {
+        return None;
+    }
     let text = statement.trim();
     let keyword = first_sql_keyword(text)?;
     match keyword.as_str() {
@@ -76,11 +84,11 @@ pub(crate) fn first_sql_keyword(statement: &str) -> Option<String> {
 /// 复用 `split_statements` 的切分语义（跳过字符串/注释），为每条语句分配
 /// ordinal 与基于「序号 + 语句文本」哈希的 id，并换算首/尾行号与字节区间。
 /// 语句的 `start_row`/`end_row` 为 0 起始行号（`end_row` 为语句结束行，闭区间）。
-pub fn build_statement_runs(text: &str) -> Vec<SqlStatementRun> {
+pub fn build_statement_runs(text: &str, kind: DatabaseKind) -> Vec<SqlStatementRun> {
     let bytes = text.as_bytes();
     let mut scan_offset = 0;
     let mut row = 0;
-    split_statements(text)
+    split_statements(text, kind)
         .into_iter()
         .enumerate()
         .map(|(ordinal, range)| {
@@ -198,8 +206,13 @@ impl SqlStatementStatusMap {
     ///
     /// row 为 0 起始行号；找不到对应语句或该语句无状态时返回 `None`。
     #[allow(dead_code)] // 供宿主按行查询语句状态，当前装饰由 decorations() 直接消费，保留备用。
-    pub fn status_for_row(&self, text: &str, row: usize) -> Option<SqlStatementStatus> {
-        build_statement_runs(text)
+    pub fn status_for_row(
+        &self,
+        text: &str,
+        row: usize,
+        kind: DatabaseKind,
+    ) -> Option<SqlStatementStatus> {
+        build_statement_runs(text, kind)
             .into_iter()
             .find(|run| row >= run.start_row && row <= run.end_row)
             .and_then(|run| self.statuses.get(&run.id).copied())
@@ -231,6 +244,7 @@ pub fn parameter_replacement_target(
     text: &str,
     selection: ByteRange,
     original: &str,
+    kind: DatabaseKind,
 ) -> Option<ParameterReplacementTarget> {
     let original = original.trim();
     let selection_text = text.get(selection.clone()).map(str::trim);
@@ -240,7 +254,7 @@ pub fn parameter_replacement_target(
     if text.trim() == original {
         return Some(ParameterReplacementTarget::All);
     }
-    let (start, end) = statement_around(text, selection.start)?;
+    let (start, end) = statement_around(text, selection.start, kind)?;
     let stmt_text = text[start..end].trim();
     if stmt_text == original {
         Some(ParameterReplacementTarget::Statement(ByteRange { start, end }))
@@ -281,14 +295,36 @@ mod statement_multibyte_safety_tests {
         let offset_on_first_statement = text.find('等').expect("Chinese literal") + 1;
         assert!(!text.is_char_boundary(offset_on_first_statement));
 
-        let (start, end) =
-            statement_around(text, offset_on_first_statement).expect("first statement");
+        let (start, end) = statement_around(text, offset_on_first_statement, DatabaseKind::MySql)
+            .expect("first statement");
         assert_eq!(&text[start..end], "SELECT '等等'");
 
         let buffer = EditorBuffer::new_from(text);
-        let (start, end) = statement_around_snapshot(&buffer.snapshot(), offset_on_first_statement)
-            .expect("snapshot statement");
+        let (start, end) =
+            statement_around_snapshot(&buffer.snapshot(), offset_on_first_statement, DatabaseKind::MySql)
+                .expect("snapshot statement");
         assert_eq!(&text[start..end], "SELECT '等等'");
+    }
+
+    /// 编辑器里按 Run 走的是 `build_statement_runs`；Oracle 匿名块与 `q'…'`
+    /// 必须整条执行，否则驱动收到的是半截 PL/SQL。
+    #[test]
+    fn oracle_block_and_q_quote_stay_one_statement() {
+        let text = "BEGIN NULL; END;\nSELECT q'[a;b]' FROM dual;";
+        let runs = build_statement_runs(text, DatabaseKind::Oracle);
+        assert_eq!(runs.len(), 2, "runs = {runs:#?}");
+        // 块语句保留结尾分号，普通 SQL 不保留（与执行侧一致）。
+        assert_eq!(runs[0].text, "BEGIN NULL; END;");
+        assert_eq!(runs[1].text, "SELECT q'[a;b]' FROM dual");
+
+        // 光标落在块内部的 `;` 上仍归属整块。
+        let cursor = text.find("NULL;").expect("inner semicolon");
+        let (start, end) = statement_around(text, cursor, DatabaseKind::Oracle).expect("block");
+        assert_eq!(&text[start..end], "BEGIN NULL; END;");
+
+        // 同一段文本按 MySQL 切分会多出一条：MySQL 没有匿名 PL/SQL 块，`BEGIN NULL` 与
+        // `END` 是两个独立语句。方言参数确实生效，不是所有库都套一套规则。
+        assert_eq!(build_statement_runs(text, DatabaseKind::MySql).len(), 3);
     }
 
     #[test]
@@ -298,6 +334,30 @@ mod statement_multibyte_safety_tests {
         let replaced =
             replace_text_in_range(text, offset_inside..offset_inside, "X");
         assert_eq!(replaced, "SELECT 'X等等';");
+    }
+
+    /// Oracle / SQL Server 没有 `EXPLAIN <sql>` 前缀写法：拼出来必然是解析失败，
+    /// 因此不许生成；两者各自的计划入口（`EXPLAIN PLAN FOR` / SHOWPLAN）另行实现。
+    #[test]
+    fn explain_is_not_prefixed_for_dialects_without_prefix_support() {
+        for kind in [DatabaseKind::Oracle, DatabaseKind::SqlServer] {
+            assert_eq!(explain_sql_text("SELECT 1 FROM DUAL", kind), None, "{kind:?}");
+            assert_eq!(explain_sql_text("WITH x AS (SELECT 1) SELECT * FROM x", kind), None);
+        }
+        assert_eq!(
+            explain_sql_text("SELECT 1", DatabaseKind::MySql).as_deref(),
+            Some("EXPLAIN SELECT 1")
+        );
+        assert_eq!(
+            explain_sql_text("SELECT 1", DatabaseKind::Postgres).as_deref(),
+            Some("EXPLAIN SELECT 1")
+        );
+        // 已手写 EXPLAIN 的语句原样执行，不做二次包装。
+        assert_eq!(
+            explain_sql_text("EXPLAIN SELECT 1", DatabaseKind::MySql).as_deref(),
+            Some("EXPLAIN SELECT 1")
+        );
+        assert_eq!(explain_sql_text("INSERT INTO t VALUES (1)", DatabaseKind::MySql), None);
     }
 }
 

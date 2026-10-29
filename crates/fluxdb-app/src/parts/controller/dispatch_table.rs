@@ -166,12 +166,9 @@ impl AppController {
                     return self.fail(Error::new(ErrorKind::Connection, "连接不存在"));
                 };
                 let new_name = new_name.trim().to_string();
-                // SQLite/达梦/SQL Server 的复制表要在客户端重写 DDL（保留约束与索引），
+                // SQLite/达梦/SQL Server/Oracle 的复制表要在客户端重写 DDL（保留约束与索引），
                 // 需要先读取源表定义。
-                let source_ddl = if matches!(
-                    config.kind,
-                    DatabaseKind::Sqlite | DatabaseKind::Dameng | DatabaseKind::SqlServer
-                ) {
+                let source_ddl = if copy_table_requires_source_ddl(config.kind) {
                     match self.load_table_ddl(&object) {
                         Ok(ddl) => Some(ddl),
                         Err(error) => return self.fail(error),

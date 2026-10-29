@@ -181,6 +181,7 @@ fn sqlserver_tiberius_config(
             dameng_profile: None,
             sqlserver_profile: Some(profile.clone()),
             mongo_profile: None,
+            oracle_profile: None,
         },
         profile,
     ) {
@@ -352,16 +353,24 @@ fn sqlserver_placeholder(index: usize) -> String {
     format!("@P{index}")
 }
 
-/// 执行单条无参数批处理并累计全部 result set / affected rows。
-const SQLSERVER_RESULT_MEMORY_LIMIT: usize = 16 * 1024 * 1024;
-
 async fn sqlserver_run_batch(
     client: &mut SqlServerClient,
     sql: &str,
 ) -> fluxdb_core::Result<SqlServerBatchResult> {
+    sqlserver_run_batch_with(client, sql, None).await
+}
+
+/// `owner` 为 `Some` 时超预算的行先把大字段外置成内容引用再收，绝不整行丢弃。
+///
+/// 元数据/管理命令的行很小，走 `None` 保持原样；只有面向用户的数据页与查询
+/// 结果才需要「不丢行」这条路。
+async fn sqlserver_run_batch_with(
+    client: &mut SqlServerClient,
+    sql: &str,
+    owner: Option<&str>,
+) -> fluxdb_core::Result<SqlServerBatchResult> {
     let mut stream = client.simple_query(sql).await.map_err(sqlserver_driver_error)?;
     let mut result = SqlServerBatchResult::default();
-    let mut stored_bytes = 0usize;
     while let Some(item) = stream.try_next().await.map_err(sqlserver_driver_error)? {
         match item {
             tiberius::QueryItem::Metadata(meta) => {
@@ -371,13 +380,11 @@ async fn sqlserver_run_batch(
                 });
             }
             tiberius::QueryItem::Row(row) => {
-                let row = sqlserver_row(row);
                 sqlserver_store_row(
                     &mut result,
-                    row,
-                    &mut stored_bytes,
-                    SQLSERVER_RESULT_MEMORY_LIMIT,
-                );
+                    sqlserver_row(row),
+                    owner,
+                )?;
             }
         }
     }
@@ -389,8 +396,17 @@ async fn sqlserver_run_query(
     sql: &str,
     parameters: &[fluxdb_core::SqlParameter],
 ) -> fluxdb_core::Result<SqlServerBatchResult> {
+    sqlserver_run_query_with(client, sql, parameters, None).await
+}
+
+async fn sqlserver_run_query_with(
+    client: &mut SqlServerClient,
+    sql: &str,
+    parameters: &[fluxdb_core::SqlParameter],
+    owner: Option<&str>,
+) -> fluxdb_core::Result<SqlServerBatchResult> {
     if parameters.is_empty() {
-        return sqlserver_run_batch(client, sql).await;
+        return sqlserver_run_batch_with(client, sql, owner).await;
     }
     let mut query = tiberius::Query::new(sql);
     for parameter in parameters {
@@ -398,7 +414,6 @@ async fn sqlserver_run_query(
     }
     let mut stream = query.query(client).await.map_err(sqlserver_driver_error)?;
     let mut result = SqlServerBatchResult::default();
-    let mut stored_bytes = 0usize;
     while let Some(item) = stream.try_next().await.map_err(sqlserver_driver_error)? {
         match item {
             tiberius::QueryItem::Metadata(meta) => {
@@ -408,13 +423,11 @@ async fn sqlserver_run_query(
                 });
             }
             tiberius::QueryItem::Row(row) => {
-                let row = sqlserver_row(row);
                 sqlserver_store_row(
                     &mut result,
-                    row,
-                    &mut stored_bytes,
-                    SQLSERVER_RESULT_MEMORY_LIMIT,
-                );
+                    sqlserver_row(row),
+                    owner,
+                )?;
             }
         }
     }
@@ -520,65 +533,126 @@ fn sqlserver_qualified_table(schema: &str, table: &str) -> String {
 #[derive(Default)]
 struct SqlServerBatchResult {
     result_sets: Vec<SqlServerResultSet>,
-    truncated: bool,
-}
-
-fn sqlserver_row_storage_bytes(row: &Row) -> usize {
-    row.values
-        .iter()
-        .map(|value| match value {
-            CellValue::Text(value) | CellValue::Json(value) => value.len(),
-            CellValue::Bytes(value) => value.len(),
-            CellValue::BinarySummary(_) => 64,
-            _ => 16,
-        })
-        .sum::<usize>()
-        .saturating_add(32)
 }
 
 fn sqlserver_store_row(
     result: &mut SqlServerBatchResult,
-    row: Row,
-    stored_bytes: &mut usize,
-    limit: usize,
-) {
-    let bytes = sqlserver_row_storage_bytes(&row);
-    if let Some(set) = result.result_sets.last_mut() {
-        if stored_bytes.saturating_add(bytes) <= limit {
-            *stored_bytes += bytes;
-            set.rows.push(row);
-        } else {
-            result.truncated = true;
-        }
+    mut row: Row,
+    owner: Option<&str>,
+) -> fluxdb_core::Result<()> {
+    // 单格超阈值无条件外置；整页不再按累计字节截断。
+    if let Some(owner) = owner {
+        spill_large_cells(owner, &mut row.values)?;
     }
+    if let Some(set) = result.result_sets.last_mut() {
+            set.rows.push(row);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
-mod sqlserver_result_budget_tests {
+mod sqlserver_result_collection_tests {
     use super::*;
+    use fluxdb_core::{CellContentMeta, CellContentStore, LargeValueKind};
+    use std::sync::Arc;
 
-    #[test]
-    fn result_budget_stops_storing_rows_and_marks_truncation() {
-        let mut result = SqlServerBatchResult {
+    /// 只记录落盘长度、不真写文件的存储桩：这里验证的是「行有没有丢」。
+    struct MemoryStore;
+
+    impl CellContentStore for MemoryStore {
+        fn put(
+            &self,
+            owner: &str,
+            _kind: LargeValueKind,
+            bytes: &[u8],
+        ) -> fluxdb_core::Result<String> {
+            Ok(format!("{owner}-{}", bytes.len()))
+        }
+
+        fn stat(&self, _content_id: &str) -> Option<CellContentMeta> {
+            None
+        }
+
+        fn read(
+            &self,
+            _content_id: &str,
+            _offset: u64,
+            _len: usize,
+        ) -> fluxdb_core::Result<Vec<u8>> {
+            Ok(Vec::new())
+        }
+
+        fn release(&self, _content_id: &str) {}
+
+        fn release_owner(&self, _owner: &str) {}
+    }
+
+    fn install_store() {
+        fluxdb_core::register_cell_content_store(Arc::new(MemoryStore));
+    }
+
+    fn empty_result() -> SqlServerBatchResult {
+        SqlServerBatchResult {
             result_sets: vec![SqlServerResultSet {
                 columns: Vec::new(),
                 rows: Vec::new(),
             }],
-            truncated: false,
-        };
-        let mut stored_bytes = 0;
+        }
+    }
+
+    #[test]
+    fn small_rows_are_not_truncated_by_total_bytes() {
+        let mut result = empty_result();
         for value in ["123456", "abcdef"] {
             sqlserver_store_row(
                 &mut result,
                 Row {
                     values: vec![CellValue::Text(value.into())],
                 },
-                &mut stored_bytes,
-                60,
+                None,
+            )
+            .expect("store row");
+        }
+        assert_eq!(result.result_sets[0].rows.len(), 2);
+    }
+
+    /// 有大字段的行不能因为超预算被丢掉：外置后仍要出现在页里，且不带正文。
+    #[test]
+    fn oversized_row_is_spilled_instead_of_dropped() {
+        install_store();
+        let mut result = empty_result();
+        let oversized = vec![7u8; fluxdb_core::CELL_SPILL_THRESHOLD_BYTES + 1];
+        sqlserver_store_row(
+            &mut result,
+            Row {
+                values: vec![CellValue::Bytes(oversized.clone())],
+            },
+            Some("data-1-db.dbo.t"),
+        )
+        .expect("spill large cell");
+
+        assert_eq!(result.result_sets[0].rows.len(), 1, "外置成功后行必须留在页里");
+        let value = &result.result_sets[0].rows[0].values[0];
+        assert!(
+            matches!(value, CellValue::LargeValue(_)),
+            "大字段必须换成内容引用：{value:?}"
             );
         }
+
+    /// 没有归属的管理查询也保留大字段，不再按累计字节截断。
+    #[test]
+    fn oversized_row_without_owner_is_kept() {
+        let mut result = empty_result();
+        let oversized = vec![7u8; fluxdb_core::CELL_SPILL_THRESHOLD_BYTES + 1];
+        sqlserver_store_row(
+            &mut result,
+            Row {
+                values: vec![CellValue::Bytes(oversized)],
+            },
+            None,
+        )
+        .expect("store row");
         assert_eq!(result.result_sets[0].rows.len(), 1);
-        assert!(result.truncated);
     }
 }
 

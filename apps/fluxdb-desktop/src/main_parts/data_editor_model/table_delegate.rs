@@ -519,10 +519,14 @@ impl TableDelegate for DataPageTableDelegate {
         let redis_cell = meta_for_menu.type_name == "redis" || redis_action_cell;
         let redis_row_selection = self.redis_page && selected_row;
         let redis_type_dark = cx.theme().is_dark();
+        // 截断值不能就地编辑：就地编辑框只有预览，保存等于用片段覆盖完整数据。
+        // 让它走详情面板，由面板先按需加载完整文本。
+        let truncated_cell = cell_value.is_some_and(CellValue::is_truncated);
         let editable_cell = self.cells_editable
             && !is_row_index_col
             && !redis_cell
             && !deleted_row
+            && !truncated_cell
             && !data_type_is_binary(meta_for_menu.type_name.as_str());
         let editing_input_value = edit_input.read(cx).value().to_string();
         let edit_state = DataCellEditState {
@@ -545,6 +549,7 @@ impl TableDelegate for DataPageTableDelegate {
             nullable: meta_for_menu.nullable,
             // 完整值在右键打开菜单时再取，避免渲染期复制大 TEXT。
             value: String::new(),
+            value_truncated: false,
             submenu: None,
             selection_row_count: 0,
             selection_copy_label: None,
@@ -565,6 +570,8 @@ impl TableDelegate for DataPageTableDelegate {
 
         div()
             .id(("data-cell", row_ix.saturating_mul(10_000) + col_ix))
+            // 无头 UI 用例按单元格定位；仅 debug 构建记录 selector。
+            .debug_selector(move || format!("data-cell:{row_ix}:{col_ix}"))
             .relative()
             .size_full()
             .bg(if highlighted {
@@ -774,7 +781,9 @@ impl TableDelegate for DataPageTableDelegate {
                 )
             })
             .when(hovered && !redis_cell, |this| {
-                this.child(data_table_cell_hover_action(cx).on_mouse_down(
+                this.child(data_table_cell_hover_action(cx).debug_selector(move || {
+                    format!("data-cell-detail:{row_ix}:{col_ix}")
+                }).on_mouse_down(
                     MouseButton::Left,
                     move |_, _, cx| {
                         if !is_row_index_col {
@@ -951,6 +960,12 @@ impl TableDelegate for DataPageTableDelegate {
                         let mut menu = context_menu.clone();
                         menu.position = event.position;
                         menu.value = delegate.data_cell_full_text(row_ix, col_ix);
+                        menu.value_truncated = delegate
+                            .page
+                            .rows
+                            .get(row_ix)
+                            .and_then(|row| row.values.get(menu.source_col))
+                            .is_some_and(fluxdb_core::CellValue::is_truncated);
                         menu.selection_row_count = delegate.selected_row_count();
                         menu.selection_copy_label = delegate.selection_copy_label();
                         menu.selection_export_label = delegate.selection_export_label();

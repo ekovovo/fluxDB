@@ -51,6 +51,7 @@ fn smoke_config() -> Option<ConnectionConfig> {
         }),
         sqlserver_profile: None,
         mongo_profile: None,
+        oracle_profile: None,
     })
 }
 
@@ -867,6 +868,7 @@ fn dameng_controller_dispatch_runs_table_actions() {
                 dameng_profile: config.dameng_profile.clone(),
                 sqlserver_profile: None,
                 mongo_profile: None,
+                oracle_profile: None,
             }))
         else {
             panic!("CreateConnection must return ConnectionCreated");

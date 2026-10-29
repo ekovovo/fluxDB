@@ -55,6 +55,7 @@ fn sqlite_design_table_loads_metadata_before_installing_tab() {
         dameng_profile: None,
         mongo_profile: None,
         sqlserver_profile: None,
+        oracle_profile: None,
     };
     execute(
         &config,

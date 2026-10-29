@@ -8,6 +8,27 @@ pub enum DatabaseKind {
     Postgres,
     Dameng,
     SqlServer,
+    Oracle,
+}
+
+impl DatabaseKind {
+    /// 是否支持「按块追加写入」大字段（上传替换的流式路径）。
+    ///
+    /// 只有实现了逐块追加的连接器才返回 true。Oracle/达梦暂时为 false：
+    /// 它们的真流式路径依赖 LOB 定位符与驱动侧写接口，尚未在本仓库验证过，
+    /// 与其给出一个可能写坏数据的路径，不如让上层明确拒绝超阈值上传。
+    ///
+    /// 判定必须在上传暂存**之前**使用，避免先落几百 MiB 再在提交时失败。
+    pub fn supports_streamed_lob_write(self) -> bool {
+        matches!(
+            self,
+            DatabaseKind::MySql
+                | DatabaseKind::TiDb
+                | DatabaseKind::Sqlite
+                | DatabaseKind::Postgres
+                | DatabaseKind::SqlServer
+        )
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
@@ -44,6 +65,9 @@ pub struct ConnectionConfig {
     /// MongoDB 专用结构化连接档案（种子列表 / SRV / authSource / TLS）；历史连接缺省为 `None`。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mongo_profile: Option<MongoConnectionProfile>,
+    /// Oracle 专用结构化连接档案；历史连接缺省为 `None`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oracle_profile: Option<OracleConnectionProfile>,
 }
 
 impl ConnectionConfig {
@@ -140,6 +164,25 @@ impl ConnectionConfig {
             host,
             port,
             database: non_empty_string(&profile.basic.database),
+        };
+        config.options.extend(profile.into_options());
+        config
+    }
+
+    /// 若携带 Oracle 档案，则把档案归一化进 `endpoint` / `options`。
+    ///
+    /// `endpoint.database` 记录当前生效的 Service Name 或 SID，供对象树与补全复用；
+    /// 具体是哪一种由 `options["connect_kind"]` 区分。
+    pub fn oracle_resolved(&self) -> Self {
+        let Some(profile) = self.oracle_profile.clone() else {
+            return self.clone();
+        };
+        let mut config = self.clone();
+        let (host, port) = profile.dial_endpoint();
+        config.endpoint = Endpoint::Tcp {
+            host,
+            port,
+            database: non_empty_string(profile.target_name()),
         };
         config.options.extend(profile.into_options());
         config
@@ -420,6 +463,9 @@ pub struct ConnectionDraft {
     /// MongoDB 专用结构化连接档案；见 [`ConnectionConfig::mongo_profile`]。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mongo_profile: Option<MongoConnectionProfile>,
+    /// Oracle 专用结构化连接档案；见 [`ConnectionConfig::oracle_profile`]。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oracle_profile: Option<OracleConnectionProfile>,
 }
 
 impl ConnectionDraft {
@@ -436,6 +482,7 @@ impl ConnectionDraft {
             dameng_profile: self.dameng_profile,
             sqlserver_profile: self.sqlserver_profile,
             mongo_profile: self.mongo_profile,
+            oracle_profile: self.oracle_profile,
         }
     }
 }

@@ -337,6 +337,42 @@ fn localize_backend_template_error(text: &str) -> Option<String> {
             "达梦恢复执行失败，可能已留下部分对象：{}",
         ),
         ("app.backend_error.tmpl_297", "XML 第 {} 行格式无效"),
+        // Oracle 查询超时：驱动发 INTERRUPT 打断语句，改了哪些行无从得知。
+        ("app.backend_error.tmpl_298", "已超时：结果待核实（{}）"),
+        // Oracle 页满即止：`returned` 是「读了多行」而不是结果集总行数，不能沿用上面那条。
+        (
+            "app.backend_error.tmpl_299",
+            "已读取 {} 行，当前仅展示 {} 行（结果已截断）",
+        ),
+        // 流式上传：大字段内容超过暂存配额，文件根本没落盘。
+        (
+            "app.backend_error.tmpl_300",
+            "大字段内容超过单个归属的配额（{} MiB），无法继续保留；请缩小查询范围或关闭部分结果后再试",
+        ),
+        (
+            "app.backend_error.tmpl_301",
+            "超大字段内容总量超过本进程配额（{} MiB），请关闭部分结果后再试",
+        ),
+        // 暂存内容在提交过程中失效/提前结束：必须整体回滚，不能写半份。
+        (
+            "app.backend_error.tmpl_302",
+            "待写入内容提前结束（已读 {} / {} 字节），已取消提交",
+        ),
+        // 流式追加没命中唯一行：行被并发删除，或身份条件不唯一。
+        (
+            "app.backend_error.tmpl_303",
+            "字段 {} 的流式写入没有命中唯一一行，已取消提交；请刷新后重试",
+        ),
+        // 不支持分块追加的库，或文件超过该库的流式阈值时的拒绝。
+        (
+            "app.backend_error.tmpl_304",
+            "当前数据库不支持流式写入大字段，单个文件请控制在 {} 以内",
+        ),
+        // 上传替换超出列类型容量（与导入共用形状，但动作是上传，不能写成「导入失败」）。
+        (
+            "app.backend_error.tmpl_305",
+            "上传失败：{} 是 {}，最多支持 {}，当前文件 {}",
+        ),
     ];
     for (key, template) in TEMPLATES {
         if let Some(values) = match_backend_template(text, template) {

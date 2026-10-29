@@ -40,6 +40,7 @@ fn mongo_query_panel_keeps_filter_row_and_collapses_options(cx: &mut TestAppCont
         dameng_profile: None,
         mongo_profile: None,
         sqlserver_profile: None,
+        oracle_profile: None,
     }]));
     cx.update(|cx| {
         extend_component_i18n();

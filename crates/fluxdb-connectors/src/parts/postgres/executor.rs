@@ -42,7 +42,7 @@ fn pg_execute_query_with_progress(
     config: &ConnectionConfig, request: &QueryRequest,
     on_summary: &mut dyn FnMut(QueryExecutionSummary), should_cancel: &dyn Fn() -> bool,
 ) -> fluxdb_core::Result<QueryExecutionResult> {
-    let statements = query_statements_for_execution(request);
+    let statements = query_statements_for_execution(request, config.kind);
     if statements.is_empty() { return Err(Error::new(ErrorKind::Query, "查询不能为空")); }
     pg_runtime().block_on(async {
         let database = pg_request_database(config, request.database.as_deref());
@@ -89,8 +89,21 @@ fn pg_execute_query_with_progress(
             for result in outcome.completed {
                 let kind = if result.page.is_some() { QueryStatementKind::ResultSet } else { QueryStatementKind::Command };
                 let message = if let Some(page) = &result.page {
-                    if page.has_more { format!("返回 {} 行，当前仅展示 {} 行（结果已截断）", result.returned_rows, page.rows.len()) }
-                    else { format!("返回 {} 行", result.returned_rows) }
+                    // 资源不足与「还有下一页」必须分开说：前者要告诉用户为什么停在这里，
+                    // 以及下一页从哪继续，不能只说「已截断」。
+                    if let Some(incomplete) = &page.incomplete {
+                        format!(
+                            "返回 {} 行，当前展示 {} 行（{}）；下一页从第 {} 行继续",
+                            result.returned_rows,
+                            page.rows.len(),
+                            incomplete.reason,
+                            page.next_offset() + 1
+                        )
+                    } else if page.has_more {
+                        format!("返回 {} 行，当前展示 {} 行（还有更多）", result.returned_rows, page.rows.len())
+                    } else {
+                        format!("返回 {} 行", result.returned_rows)
+                    }
                 } else { format!("OK，影响 {} 行", result.affected_rows) };
                 push_query_summary(&mut execution, QueryExecutionSummary {
                     sql: statement.clone(), kind, success: true, message,
@@ -182,7 +195,10 @@ async fn pg_run_statement(
             let result = pg_collect_statement(&session.client, statement, request).await;
             // 无论成功与否都结束事务：不回滚会把连接留在 idle-in-transaction，并让后续写工具失败。
             if let Err(error) = session.client.batch_execute("ROLLBACK").await {
+                // 回滚没确认：只读事务不会写入数据，但会话仍留在事务里，
+                // 必须让调用方知道本次收尾失败，不能把结果当干净地交回去。
                 tracing::warn!(target: "fluxdb_connectors", message = %error, "PostgreSQL 只读事务 ROLLBACK 失败");
+                return Err(Error::new(ErrorKind::Query, format!("回滚 PostgreSQL 只读事务失败：{error}")));
             }
             return result;
         }
@@ -256,9 +272,7 @@ async fn pg_collect_statement(client: &tokio_postgres::Client, statement: &str, 
     let mut completed = Vec::new();
     let mut page: Option<DataPage> = None;
     let mut returned_rows: u64 = 0;
-    let mut stored_bytes: usize = 0;
-    // 大单元格和很多列也受内存预算约束；展示截断不影响服务端写入是否成功。
-    const RESULT_BYTES: usize = 16 * 1024 * 1024;
+    let owner = fluxdb_core::result_content_owner(request.session_id, request.connection_id);
     while let Some(message) = stream.next().await {
         let message = match message {
             Ok(message) => message,
@@ -271,19 +285,19 @@ async fn pg_collect_statement(client: &tokio_postgres::Client, statement: &str, 
                     column.type_name = described.as_ref().and_then(|s| s.columns().get(index)).map(|c| c.type_().name().to_string());
                     column
                 }).collect();
-                page = Some(DataPage { columns, rows: vec![], offset: pagination.offset, limit: pagination.limit, has_more: false });
+                // 多语句脚本：每条结果集各自收集，不能沿用上一条的页。
+                page = Some(DataPage { columns, rows: vec![], offset: pagination.offset, limit: pagination.limit, has_more: false, incomplete: None });
                 returned_rows = 0;
             }
             tokio_postgres::SimpleQueryMessage::Row(row) => {
                 if let Some(page) = &mut page {
                     if returned_rows >= pagination.offset && page.rows.len() < row_capacity {
-                        let row_bytes = (0..row.len()).map(|i| row.get(i).map_or(0, str::len)).sum::<usize>();
-                        if stored_bytes.saturating_add(row_bytes) <= RESULT_BYTES {
-                            let values = page.columns.iter().enumerate().map(|(i, col)| pg_text_value(row.get(i), col)).collect::<fluxdb_core::Result<Vec<_>>>()?;
-                            page.rows.push(Row { values });
-                            stored_bytes += row_bytes;
-                        } else { page.has_more = true; }
-                    } else if returned_rows >= pagination.offset { page.has_more = true; }
+                        let mut values = page.columns.iter().enumerate().map(|(i, col)| pg_text_value(row.get(i), col)).collect::<fluxdb_core::Result<Vec<_>>>()?;
+                        spill_large_cells(&owner, &mut values)?;
+                        page.rows.push(Row { values });
+                    } else if returned_rows >= pagination.offset {
+                        page.has_more = true;
+                    }
                 }
                 returned_rows += 1;
             }
@@ -572,12 +586,15 @@ pub(crate) fn pg_execute_parameterized(
                 .query_raw(&prepared, bind_refs.iter().copied())
                 .await
                 .map_err(pg_error)?;
-            tokio::pin!(stream);
-            let mut rows: Vec<tokio_postgres::Row> = Vec::new();
-            while let Some(row) = stream.next().await {
-                rows.push(row.map_err(pg_error)?);
-            }
-            let page = pg_rows_to_page(&rows, pagination.offset, pagination.limit, capacity)?;
+            let page = pg_collect_page(
+                request,
+                stream,
+                pg_prepared_columns(&prepared),
+                pagination.offset,
+                pagination.limit,
+                capacity,
+            )
+            .await?;
             let returned = page.rows.len() as u64;
             return Ok(QueryExecutionResult {
                 summaries: vec![QueryExecutionSummary {
@@ -746,36 +763,34 @@ fn value_text(parameter: &fluxdb_core::SqlParameter) -> String {
 static PG_NULL: Option<i32> = None;
 static PG_NULL_TEXT: Option<String> = None;
 
-/// 按扩展协议把 `Row` 解码为 `DataPage`；列类型取自服务端描述。
-fn pg_rows_to_page(
-    rows: &[tokio_postgres::Row],
+/// 扩展协议的行流边读边收页：先按当前描述建列，再逐行预算 + 单格外置。
+///
+/// `pg_rows_to_page` 的流式版本：`query_raw` 读一行解一行，不再先攒 `Vec<Row>`
+/// （一行 100 MB 乘以行数就是用户看到的那几个 GB）。未读的行留在驱动里，
+/// 连接关掉就一起释放；`next_offset()` 保证下一页从第一条未收录行继续。
+async fn pg_collect_page(
+    request: &QueryRequest,
+    stream: impl futures_util::Stream<Item = Result<tokio_postgres::Row, tokio_postgres::Error>>,
+    columns: Vec<Column>,
     offset: u64,
     limit: u64,
     capacity: usize,
 ) -> fluxdb_core::Result<DataPage> {
-    let columns: Vec<Column> = match rows.first() {
-        Some(first) => first
-            .columns()
-            .iter()
-            .map(|col| {
-                let mut column = query_column(col.name(), col.type_().name());
-                column.type_name = Some(col.type_().name().to_string());
-                column
-            })
-            .collect(),
-        None => Vec::new(),
-    };
+    let owner = fluxdb_core::result_content_owner(request.session_id, request.connection_id);
     let mut page = DataPage {
         columns: columns.clone(),
         rows: Vec::new(),
         offset,
         limit,
         has_more: false,
+        incomplete: None,
     };
-    let mut stored_bytes = 0usize;
-    const RESULT_BYTES: usize = 16 * 1024 * 1024;
-    for (index, row) in rows.iter().enumerate() {
-        if (index as u64) < offset {
+    let mut consumed = 0u64;
+    futures_util::pin_mut!(stream);
+    while let Some(row) = stream.next().await {
+        let row = row.map_err(pg_error)?;
+        consumed += 1;
+        if consumed <= offset {
             continue;
         }
         if page.rows.len() >= capacity {
@@ -784,34 +799,34 @@ fn pg_rows_to_page(
         }
         let mut values = Vec::with_capacity(columns.len());
         for (col_index, column) in columns.iter().enumerate() {
-            values.push(pg_row_cell(row, col_index, column)?);
+            values.push(pg_row_cell(&row, col_index, column)?);
         }
-        let row_bytes = values.iter().map(pg_cell_byte_estimate).sum::<usize>();
-        if stored_bytes.saturating_add(row_bytes) > RESULT_BYTES {
-            page.has_more = true;
-            break;
-        }
-        stored_bytes += row_bytes;
+        spill_large_cells(&owner, &mut values)?;
         page.rows.push(Row { values });
     }
+    // 预算截断时后面还有行；这不是「正常还有更多」，两个状态不能同时成立。
+    if page.incomplete.is_some() {
+        page.has_more = false;
+    }
     Ok(page)
+}
+
+/// 参数化查询的列定义来自服务端 prepare 结果（零行结果也保留列结构）。
+fn pg_prepared_columns(statement: &tokio_postgres::Statement) -> Vec<Column> {
+    statement
+        .columns()
+        .iter()
+        .map(|col| {
+            let mut column = query_column(col.name(), col.type_().name());
+            column.type_name = Some(col.type_().name().to_string());
+            column
+        })
+        .collect()
 }
 
 /// numeric 单元格转为受标签文本（保留 scale），避免经 f64 丢精度。
 fn numeric_to_text(value: PgNumeric) -> CellValue {
     value.to_text()
-}
-
-/// 单元格字节估算（仅用于结果内存预算，不参与精度）。
-fn pg_cell_byte_estimate(value: &CellValue) -> usize {
-    match value {
-        CellValue::Text(text) => text.len(),
-        CellValue::Json(text) => text.len(),
-        CellValue::Bytes(bytes) => bytes.len(),
-        CellValue::BinarySummary(summary) => summary.byte_length as usize,
-        CellValue::Null => 0,
-        _ => 16,
-    }
 }
 
 /// 参数化行取单元格：按列类型的原生解码。

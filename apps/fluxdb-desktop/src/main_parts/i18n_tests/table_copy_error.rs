@@ -31,6 +31,7 @@ fn copy_table_failure_is_shown_once_by_alert(cx: &mut TestAppContext) {
         dameng_profile: None,
         mongo_profile: None,
         sqlserver_profile: None,
+        oracle_profile: None,
     }]));
     cx.update(|cx| {
         extend_component_i18n();

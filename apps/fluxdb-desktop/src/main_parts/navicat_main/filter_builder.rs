@@ -113,6 +113,7 @@ impl NavicatMain {
         tab_id: TabId,
         rule_index: Option<usize>,
         kind: DataFilterPopoverKind,
+        anchor: Point<Pixels>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -121,8 +122,16 @@ impl NavicatMain {
             kind,
             rule_index,
             sort_index: None,
+            anchor,
         };
-        self.data_filter_popover = if self.data_filter_popover == Some(next) {
+        // 只看「哪个控件的弹层」是否相同，忽略点击像素：同一控件再点一次要能收起。
+        let is_same_popover = self.data_filter_popover.is_some_and(|current| {
+            current.tab_id == next.tab_id
+                && current.kind == next.kind
+                && current.rule_index == next.rule_index
+                && current.sort_index == next.sort_index
+        });
+        self.data_filter_popover = if is_same_popover {
             None
         } else {
             self.local_filter_popover = None;

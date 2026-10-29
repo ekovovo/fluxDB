@@ -31,6 +31,7 @@ fn table_context_menu_fits_at_bottom_of_viewport(cx: &mut TestAppContext) {
         dameng_profile: None,
         mongo_profile: None,
         sqlserver_profile: None,
+        oracle_profile: None,
     }]));
     cx.update(|cx| {
         extend_component_i18n();
@@ -123,6 +124,7 @@ fn table_import_dialog_renders_with_disabled_create_option(cx: &mut TestAppConte
         dameng_profile: None,
         mongo_profile: None,
         sqlserver_profile: None,
+        oracle_profile: None,
     }]));
     cx.update(|cx| {
         extend_component_i18n();
@@ -211,6 +213,7 @@ fn table_import_failure_log_shows_reason_once(cx: &mut TestAppContext) {
         dameng_profile: None,
         mongo_profile: None,
         sqlserver_profile: None,
+        oracle_profile: None,
     }]));
     cx.update(|cx| {
         extend_component_i18n();
@@ -334,6 +337,7 @@ fn long_column_comment_wraps_inside_header_tooltip(cx: &mut TestAppContext) {
             offset: 0,
             limit: 1,
             has_more: false,
+        incomplete: None,
         });
         let edit_input = app.read(cx).data_cell_edit_input.clone();
         let delegate = DataPageTableDelegate::from_page_with_rule(

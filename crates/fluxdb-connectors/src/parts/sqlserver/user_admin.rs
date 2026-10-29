@@ -173,7 +173,6 @@ fn sqlserver_security_snapshot(
     let schemas = sqlserver_first_rows(
         &SqlServerBatchResult {
             result_sets: batch.result_sets.into_iter().skip(6).collect(),
-            truncated: batch.truncated,
         },
         "SQL Server Schema 列表返回类型异常",
     )?
@@ -367,7 +366,10 @@ fn apply_sqlserver_security_plan(
                 return Err(error);
             }
         }
-        sqlserver_exec_transaction(&mut client, "COMMIT TRANSACTION").await?;
+        // 提交途中断连：账号/权限可能已生效，标成结果未知让上层核实。
+        sqlserver_exec_transaction(&mut client, "COMMIT TRANSACTION")
+            .await
+            .map_err(|error| error.mark_outcome_unknown("提交 SQL Server 安全变更"))?;
         fluxdb_core::render_sqlserver_security_plan(plan, true)
     });
     sqlserver_block_on(sqlserver_close(client));

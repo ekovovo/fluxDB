@@ -349,6 +349,7 @@ fn mongo_page_to_data_page(page: MongoDocumentsPage, offset: u64, limit: u64) ->
         offset,
         limit,
         has_more: page.has_more,
+        incomplete: None,
     }
 }
 
@@ -384,5 +385,6 @@ fn mongo_result_set(text: String) -> DataPage {
         offset: 0,
         limit: 1,
         has_more: false,
+        incomplete: None,
     }
 }

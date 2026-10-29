@@ -998,17 +998,33 @@ fn data_cell_context_menu(
             |this| this.child(data_cell_menu_separator(colors)),
         )
         .child(
+            // 预览不是完整值：复制会让人把片段当权威数据，直接禁用并说明原因。
             data_cell_action_menu_item(
                 tr("app.context.copy").to_string(),
                 AppIcon::Copy,
-                true,
+                !menu.value_truncated,
                 &menu,
                 colors,
                 cx,
             )
+                .when(menu.value_truncated, |this| {
+                    this.tooltip(|window, cx| {
+                        Tooltip::new(tr("app.cell_detail.large_copy_disabled"))
+                            .build(window, cx)
+                    })
+                })
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, _, _, cx| {
+                        if menu_for_copy.value_truncated {
+                            this.show_message(
+                                tr("app.cell_detail.large_copy_disabled"),
+                                AppMessageKind::Warning,
+                                cx,
+                            );
+                            cx.stop_propagation();
+                            return;
+                        }
                         cx.write_to_clipboard(ClipboardItem::new_string(
                             menu_for_copy.value.clone(),
                         ));

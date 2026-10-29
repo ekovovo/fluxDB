@@ -384,21 +384,42 @@ impl Render for NavicatMain {
             })
             .when_some(self.database_context_menu.clone(), |this, menu| {
                 // Redis CLI 只对 Redis 显示；新建 schema 对支持数据库内 schema 的类型显示。
-                let is_redis = self.controller.state().connections.iter().any(|c| {
-                    c.config.id == menu.connection_id && c.config.kind == DatabaseKind::Redis
-                });
-                let is_postgres = self.controller.state().connections.iter().any(|c| {
-                    c.config.id == menu.connection_id && c.config.kind == DatabaseKind::Postgres
-                });
-                let is_sqlserver = self.controller.state().connections.iter().any(|c| {
-                    c.config.id == menu.connection_id && c.config.kind == DatabaseKind::SqlServer
-                });
-                let is_dameng = self.controller.state().connections.iter().any(|c| {
-                    c.config.id == menu.connection_id && c.config.kind == DatabaseKind::Dameng
-                });
-                let is_mongo = self.controller.state().connections.iter().any(|c| {
-                    c.config.id == menu.connection_id && c.config.kind == DatabaseKind::MongoDb
-                });
+                let is_redis = self
+                    .controller
+                    .state()
+                    .connections
+                    .iter()
+                    .any(|c| c.config.id == menu.connection_id && c.config.kind == DatabaseKind::Redis);
+                let is_postgres = self
+                    .controller
+                    .state()
+                    .connections
+                    .iter()
+                    .any(|c| c.config.id == menu.connection_id && c.config.kind == DatabaseKind::Postgres);
+                let is_sqlserver = self
+                    .controller
+                    .state()
+                    .connections
+                    .iter()
+                    .any(|c| c.config.id == menu.connection_id && c.config.kind == DatabaseKind::SqlServer);
+                let is_dameng = self
+                    .controller
+                    .state()
+                    .connections
+                    .iter()
+                    .any(|c| c.config.id == menu.connection_id && c.config.kind == DatabaseKind::Dameng);
+                let is_oracle = self
+                    .controller
+                    .state()
+                    .connections
+                    .iter()
+                    .any(|c| c.config.id == menu.connection_id && c.config.kind == DatabaseKind::Oracle);
+                let is_mongo = self
+                    .controller
+                    .state()
+                    .connections
+                    .iter()
+                    .any(|c| c.config.id == menu.connection_id && c.config.kind == DatabaseKind::MongoDb);
                 this.child(database_context_menu(
                     menu,
                     &self.pinned_databases,
@@ -407,6 +428,7 @@ impl Render for NavicatMain {
                     is_sqlserver,
                     is_dameng,
                     is_mongo,
+                    is_oracle,
                     colors,
                     cx,
                 ))
@@ -1058,6 +1080,7 @@ fn render_tab_kind_snapshot(kind: &TabKind) -> TabKind {
         TabKind::UserAdmin(admin) => TabKind::UserAdmin(UserAdminState {
             connection_id: admin.connection_id,
             sqlserver: admin.sqlserver.clone(),
+            oracle: admin.oracle.clone(),
             active_detail_tab: admin.active_detail_tab,
             users: Vec::new(),
             selected_user: admin.selected_user.clone(),
@@ -1102,6 +1125,8 @@ fn render_tab_kind_snapshot(kind: &TabKind) -> TabKind {
             role_membership_edits: admin.role_membership_edits.clone(),
             member_grant_edits: admin.member_grant_edits.clone(),
             pending_sql: admin.pending_sql.clone(),
+            // 弹框意图只在 app 层 dispatch 里用；渲染快照不需要带着它。
+            pending_sql_awaits_preview: admin.pending_sql_awaits_preview,
             pending_delete_user: admin.pending_delete_user.clone(),
             pg_grant_kind: admin.pg_grant_kind,
             pg_grant_schema: admin.pg_grant_schema.clone(),
@@ -1128,7 +1153,6 @@ fn render_tab_kind_snapshot(kind: &TabKind) -> TabKind {
             pg_plan_error: admin.pg_plan_error.clone(),
             pg_plan_preview: None,
             pg_preview_loading: admin.pg_preview_loading,
-            pg_plan_preview_masked: false,
             pg_role_filter: admin.pg_role_filter.clone(),
             pg_pending_delete: admin.pg_pending_delete.clone(),
             pg_pending_switch: admin.pg_pending_switch.clone(),

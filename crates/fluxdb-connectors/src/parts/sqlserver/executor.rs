@@ -11,7 +11,7 @@ fn sqlserver_execute_query_with_progress(
     on_summary: &mut dyn FnMut(QueryExecutionSummary),
     should_cancel: &dyn Fn() -> bool,
 ) -> fluxdb_core::Result<QueryExecutionResult> {
-    let statements = query_statements_for_execution(request);
+    let statements = query_statements_for_execution(request, config.kind);
     if statements.is_empty() {
         return Err(Error::new(ErrorKind::Query, "查询不能为空"));
     }
@@ -79,6 +79,10 @@ async fn sqlserver_execute_on_client(
         rollback_snapshots: Vec::new(),
     };
     let mut connection_broken = false;
+    // 查询结果里的超大字段按本次执行归属外置：重新执行/关标签时整批释放。
+    // 与 MySQL/PG 同一公式，否则内容会一直占配额直到进程重启。
+    let content_owner =
+        fluxdb_core::result_content_owner(request.session_id, request.connection_id);
     // SQL Server 没有 `EXPLAIN`；`SET SHOWPLAN_ALL ON` 让后续语句只返回计划。
     // 该开关是会话级且会自动回滚在事务内，因此这里不开显式事务（见下方）。
     let explain_only = request.options.explain_only;
@@ -112,6 +116,7 @@ async fn sqlserver_execute_on_client(
             &statement,
             query_timeout,
             should_cancel,
+            Some(&content_owner),
         )
         .await
         {
@@ -138,22 +143,16 @@ async fn sqlserver_execute_on_client(
                         on_summary,
                     );
                 } else {
-                    let batch_truncated = batch.truncated;
                     for set in batch.result_sets {
                         let returned_rows = set.rows.len() as u64;
-                        let mut page = sqlserver_query_page(set.columns, set.rows, pagination);
-                        if batch_truncated {
-                            page.has_more = true;
-                        }
+                        let page = sqlserver_query_page(set.columns, set.rows, pagination);
                         push_query_summary(
                             &mut execution,
                             QueryExecutionSummary {
                                 sql: statement.clone(),
                                 kind: QueryStatementKind::ResultSet,
                                 success: true,
-                                message: if batch_truncated {
-                                    "结果超过 16 MiB，后续行未载入".to_string()
-                                } else if page.has_more {
+                                message: if page.has_more {
                                     format!(
                                         "返回 {returned_rows} 行，当前仅展示 {} 行（结果已截断）",
                                         page.rows.len()
@@ -207,11 +206,17 @@ async fn sqlserver_execute_on_client(
         if let Err(error) =
             sqlserver_exec_transaction(client, "IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION").await
         {
+            // 未提交的事务会随连接断开由服务端回滚，但这次调用不能返回成功：
+            // 「已回滚」是事实陈述，不能只说日志里。
             tracing::warn!(
                 target: "fluxdb_connectors",
                 message = %error.message,
                 "SQL Server 只读事务回滚失败"
             );
+            return Err(Error::new(
+                ErrorKind::Query,
+                format!("SQL Server 只读事务回滚失败：{}", error.message),
+            ));
         }
     }
     if explain_only && !connection_broken {
@@ -232,9 +237,10 @@ async fn sqlserver_run_batch_cancellable(
     statement: &str,
     query_timeout: Duration,
     should_cancel: &dyn Fn() -> bool,
+    owner: Option<&str>,
 ) -> fluxdb_core::Result<SqlServerBatchResult> {
     let started = std::time::Instant::now();
-    let run = sqlserver_run_batch(client, statement);
+    let run = sqlserver_run_batch_with(client, statement, owner);
     tokio::pin!(run);
     loop {
         tokio::select! {
@@ -272,6 +278,7 @@ fn sqlserver_query_page(
         offset: pagination.offset,
         limit: pagination.limit,
         has_more,
+        incomplete: None,
     }
 }
 
@@ -288,8 +295,12 @@ fn sqlserver_execute_parameterized(
     let mut client = sqlserver_connect_database(config, Some(&database))?;
     let started = std::time::Instant::now();
     let pagination = query_execution_pagination(request.options.page_offset, request.options.page_size);
+    let content_owner =
+        fluxdb_core::result_content_owner(request.session_id, request.connection_id);
     let batch = sqlserver_block_on(async {
-        let batch = sqlserver_run_query(&mut client, &statement, parameters).await?;
+        let batch =
+            sqlserver_run_query_with(&mut client, &statement, parameters, Some(&content_owner))
+                .await?;
         sqlserver_close(client).await;
         Ok(batch)
     })?;

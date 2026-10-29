@@ -25,34 +25,36 @@ use fluxdb_app::{
     CreateTablePartitionField, CreateTableState, CreateTableTab, CreateTableTrigger,
     CreateTableTriggerEvent, CreateTableTriggerField, DataEditorState, ErDiagramState,
     ErLayoutResult, ForeignKeyCheckMode, LoadState, MongoCollectionState, MongoDisplayMode,
-    MongoQueryDraft, MongoSection, ObjectListState, PgDraftAttrField, PgGrantEditOp,
-    PgGrantObjectKind, PgRoleDraftUiExt, PgRoleSaveStatus, QueryEditorState, QueryHistoryEntry,
-    QueryHistoryKind, QueryHistoryTransactionState, QueryOrigin, RedisAddKeyKind,
-    RedisAddKeyRequest, RedisConnectionOverview, RedisListDirection, RedisWorkbenchState,
-    SqlServerSecurityFormField, SqlServerSecurityFormFlag, SqlServerSecurityFormKind,
-    SqlServerSecurityListFilter, SqlServerSecuritySaveStatus, SqlServerSecurityState, TabId,
-    TabKind, TabState, TabWorkspace, TableInfoState, TableInfoTab, UserAdminDetailTab,
-    UserAdminState, compress_sql_text, copy_table_sql_preview_with_source_ddl,
-    create_table_common_type_options, create_table_provider, create_table_special_type_options,
-    drop_table_sql_preview, er_neighborhood_included_tables, er_place_avoiding_overlaps,
-    er_relation_layout, format_sql_text_for_dialect, mongo_query_limit, rename_table_sql_preview,
+    MongoQueryDraft, MongoSection, ObjectListState, OracleGrantKind, OracleUserAdminState,
+    OracleUserAdminTab, PgDraftAttrField, PgGrantEditOp, PgGrantObjectKind, PgRoleDraftUiExt,
+    PgRoleSaveStatus, PgUserAdminTab, QueryEditorState, QueryHistoryEntry, QueryHistoryKind,
+    QueryHistoryTransactionState, QueryOrigin, RedisAddKeyKind, RedisAddKeyRequest,
+    RedisConnectionOverview, RedisListDirection, RedisWorkbenchState, SqlServerSecurityFormField,
+    SqlServerSecurityFormFlag, SqlServerSecurityFormKind, SqlServerSecurityListFilter,
+    SqlServerSecuritySaveStatus, SqlServerSecurityState, SqlServerUserAdminTab, TabId, TabKind,
+    TabState, TabWorkspace, TableInfoState, TableInfoTab, UserAdminDetailTab, UserAdminMySqlTab,
+    UserAdminState, compress_sql_text, copy_table_requires_source_ddl,
+    copy_table_sql_preview_with_source_ddl, create_table_common_type_options,
+    create_table_provider, create_table_special_type_options, drop_table_sql_preview,
+    er_neighborhood_included_tables, er_place_avoiding_overlaps, er_relation_layout,
+    format_sql_text_for_dialect, mongo_query_limit, rename_table_sql_preview,
     truncate_table_sql_preview,
 };
 use fluxdb_core::{
-    BinaryUpdatePayload, CellValue, Column as GdbColumn, CommandBulk, CommandExecutionItem,
-    CommandExecutionStatus, CommandReply, CommandWorkbenchExecution, ConnectionConfig,
-    ConnectionDraft, ConnectionGroupId, ConnectionId, CreateDatabaseRequest, CreatePrincipalInput,
-    DATA_TABLE_PAGE_SIZE_CHOICES, DataChangeSet, DataExportPreview, DataPage, DatabaseKind,
-    DatabaseUserIdentity, Endpoint, ErGraphData, ErLoadStatus, FilterOp, FilterSpec,
-    ForeignKeyInfo, IndexInfo, LogLevel, ObjectKind, ObjectPath, ObjectSummary, PgGrantTargetLists,
-    PgObjectGrantScope, PgPasswordOp, PgRelationKind, PgRole, PgRoleChange, PgRoleDraft,
-    PgRoleMembership, PgValidUntilOp, PostgresSslMode, QueryExecutionOptions,
-    QueryExecutionSummary, RedisHashFieldTtl, RedisServerVersion, ResultsPlacement, Row,
-    RowIdentity, SavedQuery, ScrollbarMode, Settings, SidebarOrderEntry, SortDirection, SortSpec,
-    SqlDialect as _, SqlServerPrincipalKind, Theme as AppTheme, TriggerInfo, UiDensity,
-    UserResourceLimits, WorkbenchHistoryItem, WorkbenchHistoryScope, WorkbenchHistoryStore,
-    data_table_page_size_max, database_user_admin_provider, role_memberships_from_grants,
-    sql_dialect, sqlite_attached_database_path, supports_database_user_admin,
+    CellValue, Column as GdbColumn, CommandBulk, CommandExecutionItem, CommandExecutionStatus,
+    CommandReply, CommandWorkbenchExecution, ConnectionConfig, ConnectionDraft, ConnectionGroupId,
+    ConnectionId, CreateDatabaseRequest, CreatePrincipalInput, DATA_TABLE_PAGE_SIZE_CHOICES,
+    DataChangeSet, DataExportPreview, DataPage, DatabaseKind, DatabaseUserIdentity, Endpoint,
+    ErGraphData, ErLoadStatus, FilterOp, FilterSpec, ForeignKeyInfo, IndexInfo, LogLevel,
+    ObjectKind, ObjectPath, ObjectSummary, PgGrantTargetLists, PgObjectGrantScope, PgPasswordOp,
+    PgRelationKind, PgRole, PgRoleChange, PgRoleDraft, PgRoleMembership, PgValidUntilOp,
+    PostgresSslMode, QueryExecutionOptions, QueryExecutionSummary, RedisHashFieldTtl,
+    RedisServerVersion, ResultsPlacement, Row, RowIdentity, SavedQuery, ScrollbarMode, Settings,
+    SidebarOrderEntry, SortDirection, SortSpec, SqlDialect as _, SqlServerPrincipalKind,
+    Theme as AppTheme, TriggerInfo, UiDensity, UserResourceLimits, WorkbenchHistoryItem,
+    WorkbenchHistoryScope, WorkbenchHistoryStore, data_table_page_size_max,
+    database_user_admin_provider, role_memberships_from_grants, sql_dialect,
+    sqlite_attached_database_path, supports_database_user_admin,
 };
 use fluxdb_storage::{
     FileStorage, QueryHistoryRecord, RedisKeySearchHistoryRecord, RedisWorkbenchHistoryRecord,
@@ -139,16 +141,19 @@ include!("main_parts/connection_dialog_fields.rs");
 include!("main_parts/tabs_workspace.rs");
 include!("main_parts/sidebar.rs");
 include!("main_parts/menus_dialogs.rs");
-include!("main_parts/user_admin.rs");
-include!("main_parts/sqlserver_user_admin.rs");
+// 「用户与权限」集中在本文件夹：公共壳（页签条、确认框、按钮）+ 四个库的专属面板。
+include!("main_parts/user_admin/shared.rs");
+include!("main_parts/user_admin/mysql/mod.rs");
+include!("main_parts/user_admin/mysql/privileges.rs");
+include!("main_parts/user_admin/sqlserver/mod.rs");
+include!("main_parts/user_admin/oracle/mod.rs");
 include!("main_parts/sqlserver_security_database.rs");
-include!("main_parts/pg_user_admin/mod.rs");
-include!("main_parts/pg_user_admin/general.rs");
-include!("main_parts/pg_user_admin/advanced.rs");
-include!("main_parts/pg_user_admin/membership.rs");
-include!("main_parts/pg_user_admin/privileges.rs");
-include!("main_parts/pg_user_admin/sql_preview.rs");
-include!("main_parts/user_admin_privileges.rs");
+include!("main_parts/user_admin/postgres/mod.rs");
+include!("main_parts/user_admin/postgres/general.rs");
+include!("main_parts/user_admin/postgres/advanced.rs");
+include!("main_parts/user_admin/postgres/membership.rs");
+include!("main_parts/user_admin/postgres/privileges.rs");
+include!("main_parts/user_admin/postgres/sql_preview.rs");
 include!("main_parts/create_table.rs");
 include!("main_parts/content_views.rs");
 include!("main_parts/mongo_collection.rs");

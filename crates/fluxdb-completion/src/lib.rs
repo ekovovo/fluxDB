@@ -20,7 +20,7 @@ mod word;
 
 pub use diagnose::{Diagnostic, DiagnosticKind, DiagnosticRequest, diagnose};
 pub use dialect::{
-    CompletionDialect, DAMENG, GENERIC, MYSQL, POSTGRES, SQLITE, SQLSERVER,
+    CompletionDialect, DAMENG, GENERIC, MYSQL, ORACLE, POSTGRES, SQLITE, SQLSERVER,
     builtin_function_signature,
 };
 pub use engine::{complete, fuzzy_score};

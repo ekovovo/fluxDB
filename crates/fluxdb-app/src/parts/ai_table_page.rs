@@ -873,6 +873,7 @@ mod ai_table_page_tests {
             dameng_profile: None,
             mongo_profile: None,
             sqlserver_profile: None,
+            oracle_profile: None,
         }
     }
 
@@ -1011,6 +1012,7 @@ mod ai_table_page_tests {
             dameng_profile: None,
             mongo_profile: None,
             sqlserver_profile: None,
+            oracle_profile: None,
         };
         let controller = AppController::new();
         let result = controller
@@ -1426,6 +1428,7 @@ mod ai_table_page_tests {
             dameng_profile: None,
             mongo_profile: None,
             sqlserver_profile: None,
+            oracle_profile: None,
         }]));
         let table = ObjectPath {
             connection_id: ConnectionId(1),
@@ -1492,6 +1495,7 @@ mod ai_table_page_tests {
             offset: 0,
             limit,
             has_more: false,
+            incomplete: None,
         }
     }
 

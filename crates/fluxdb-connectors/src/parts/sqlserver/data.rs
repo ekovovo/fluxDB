@@ -47,7 +47,8 @@ fn sqlserver_load_data_with_expression(
         None => sqlserver_where_clause(filters, &query_columns, None, &mut parameters)?,
     };
     let order = sqlserver_data_order_by(sort, &query_columns, None);
-    let select_list = sqlserver_data_select_list(&query_columns);
+    // 二进制列按摘要投影：正文永不进结果页，与 MySQL/PG 同一口径。
+    let (select_list, outer_list, positions) = sqlserver_page_select_list(&query_columns);
     let fetch_limit = pagination.limit.saturating_add(1);
     let sql = if pagination.offset == 0 {
         parameters.push(fluxdb_core::SqlParameter::I64(fetch_limit.to_string()));
@@ -66,17 +67,29 @@ fn sqlserver_load_data_with_expression(
         // 用 ROW_NUMBER 而不是 OFFSET/FETCH：后者要求 SQL Server 2012+，
         // 且无排序时必须额外构造 ORDER BY。ROW_NUMBER 在 2005+ 均可工作。
         // `order_by` 自带 `ORDER BY` 前缀，窗口函数内必须保留。
+        // 外层只能引用子查询的**输出**列名（二进制已折成 3 个别名），
+        // 不能再套一次投影表达式——子查询里没有原始二进制列。
         let order_by = order_by.trim_start();
         format!(
-            "SELECT {select_list} FROM (SELECT {select_list}, ROW_NUMBER() OVER ({order_by}) AS [__fluxdb_row_num] FROM {table}{where_sql}) AS [__fluxdb_page] WHERE [__fluxdb_row_num] > {skip} AND [__fluxdb_row_num] <= {skip} + {fetch} ORDER BY [__fluxdb_row_num]"
+            "SELECT {outer_list} FROM (SELECT {select_list}, ROW_NUMBER() OVER ({order_by}) AS [__fluxdb_row_num] FROM {table}{where_sql}) AS [__fluxdb_page] WHERE [__fluxdb_row_num] > {skip} AND [__fluxdb_row_num] <= {skip} + {fetch} ORDER BY [__fluxdb_row_num]"
         )
     };
+    // 大字段按内容归属外置：同一张表的多次翻页共用一个归属，重新加载时整批替换。
+    let owner = fluxdb_core::table_content_owner(path);
     let batch = sqlserver_block_on(async {
-        let batch = sqlserver_run_query(&mut client, &sql, &parameters).await?;
+        let batch = sqlserver_run_query_with(&mut client, &sql, &parameters, Some(&owner)).await?;
         sqlserver_close(client).await;
         Ok(batch)
     })?;
-    let mut rows = sqlserver_first_rows(&batch, "SQL Server 数据页返回类型异常")?;
+    let mut rows = batch
+        .result_sets
+        .into_iter()
+        .next()
+        .ok_or_else(|| Error::new(ErrorKind::Query, "SQL Server 数据页返回类型异常"))?
+        .rows
+        .into_iter()
+        .map(|row| sqlserver_project_row(row.values, &query_columns, &positions))
+        .collect::<Vec<_>>();
     let has_more = rows.len() > pagination.limit as usize;
     rows.truncate(pagination.limit as usize);
     Ok(DataPage {
@@ -85,6 +98,7 @@ fn sqlserver_load_data_with_expression(
         offset: pagination.offset,
         limit: pagination.limit,
         has_more,
+        incomplete: None,
     })
 }
 
@@ -114,6 +128,83 @@ fn sqlserver_is_sql_variant(column: &Column) -> bool {
             .next()
             .is_some_and(|base| base.eq_ignore_ascii_case("sql_variant"))
     })
+}
+
+/// 数据页专用列清单：二进制列按摘要投影（3 个输出列），其余列保持原值。
+///
+/// 不能复用 [`sqlserver_data_select_list`]：那是给导出预览生成「真实值」SQL 用的，
+/// 把摘要别名写进去等于导出一堆长度数字。返回的位置表描述每个真实列占用的
+/// 投影下标，供 [`sqlserver_project_row`] 折回一行。
+///
+/// 同时返回外层列清单：翻页 SQL 用 `ROW_NUMBER` 包了一层子查询，外层只能引用
+/// 子查询的输出列名，不能再套一次投影表达式（子查询里没有原始二进制列）。
+fn sqlserver_page_select_list(columns: &[Column]) -> (String, String, Vec<(Vec<usize>, usize)>) {
+    let mut inner = Vec::with_capacity(columns.len());
+    let mut outer = Vec::with_capacity(columns.len());
+    let mut positions = Vec::with_capacity(columns.len());
+    let mut position = 0usize;
+    for (index, column) in columns.iter().enumerate() {
+        let width = if is_binary_column(column) { 3 } else { 1 };
+        positions.push(((position..position + width).collect(), index));
+        position += width;
+        inner.push(sqlserver_select_expr(column));
+        if is_binary_column(column) {
+            outer.extend(
+                ["is_null", "byte_length", "preview_hex"].map(|suffix| {
+                    fluxdb_core::SqlServerDialect
+                        .quote_identifier(&binary_alias(&column.name, suffix))
+                }),
+            );
+        } else {
+            outer.push(fluxdb_core::SqlServerDialect.quote_identifier(&column.name));
+        }
+    }
+    (inner.join(", "), outer.join(", "), positions)
+}
+
+/// 把投影行折回真实列：二进制三列合成 `BinarySummary`，其余列原样取出。
+fn sqlserver_project_row(
+    values: Vec<CellValue>,
+    columns: &[Column],
+    positions: &[(Vec<usize>, usize)],
+) -> Row {
+    Row {
+        values: positions
+            .iter()
+            .map(|(indexes, column_index)| {
+                let column = &columns[*column_index];
+                if is_binary_column(column) {
+                    let is_null = indexes
+                        .first()
+                        .and_then(|index| values.get(*index))
+                        .and_then(cell_i64)
+                        .is_some_and(|value| value != 0);
+                    let byte_length = indexes
+                        .get(1)
+                        .and_then(|index| values.get(*index))
+                        .and_then(cell_i64)
+                        .unwrap_or(0)
+                        .max(0) as u64;
+                    let preview_hex = indexes
+                        .get(2)
+                        .and_then(|index| values.get(*index))
+                        .and_then(cell_text)
+                        .filter(|value| !value.is_empty());
+                    return CellValue::BinarySummary(binary_summary(
+                        column,
+                        is_null,
+                        byte_length,
+                        preview_hex,
+                    ));
+                }
+                indexes
+                    .first()
+                    .and_then(|index| values.get(*index))
+                    .cloned()
+                    .unwrap_or(CellValue::Null)
+            })
+            .collect(),
+    }
 }
 
 fn sqlserver_data_order_by(
@@ -376,6 +467,15 @@ fn sqlserver_preview_value_literal(value: &CellValue) -> String {
         CellValue::Text(value) | CellValue::Json(value) => {
             format!("N'{}'", value.replace('\'', "''"))
         }
+        // 预览 SQL 里不能出现半截值：写 NULL 并用注释说明，避免用户把它当可执行导出。
+        CellValue::TruncatedText { total_chars, .. } => {
+            format!("NULL /* 截断的 CLOB：共 {total_chars} 字符，需完整读取 */")
+        }
+        // 同理：大字段只有预览，不能当可执行导出。
+        CellValue::LargeValue(large) => match large.byte_length {
+            Some(length) => format!("NULL /* 超大字段：共 {length} 字节，需按内容引用读取 */"),
+            None => "NULL /* 超大字段：完整大小未知，需按内容引用读取 */".to_string(),
+        },
         CellValue::Bytes(value) => format!(
             "0x{}",
             value
@@ -400,5 +500,93 @@ fn sqlserver_column_reference(column: &str, alias: Option<&str>) -> String {
             fluxdb_core::SqlServerDialect.quote_identifier(column)
         ),
         None => fluxdb_core::SqlServerDialect.quote_identifier(column),
+    }
+}
+
+#[cfg(test)]
+mod sqlserver_page_projection_tests {
+    use super::*;
+
+    fn columns() -> Vec<Column> {
+        vec![
+            Column {
+                name: "id".into(),
+                type_name: Some("int".into()),
+                nullable: false,
+                primary_key: true,
+                comment: None,
+            },
+            Column {
+                name: "photo".into(),
+                type_name: Some("varbinary(max)".into()),
+                nullable: true,
+                primary_key: false,
+                comment: None,
+            },
+        ]
+    }
+
+    /// 翻页 SQL 的外层不能重复投影表达式：子查询里二进制列已经折成 3 个别名。
+    #[test]
+    fn outer_select_uses_projected_aliases() {
+        let (inner, outer, positions) = sqlserver_page_select_list(&columns());
+        assert!(inner.contains("[photo__byte_length]"), "内层必须投影字节数：{inner}");
+        assert!(!outer.contains("DATALENGTH"), "外层不能再用原始列计算：{outer}");
+        assert_eq!(
+            outer,
+            "[id], [photo__is_null], [photo__byte_length], [photo__preview_hex]"
+        );
+        assert_eq!(
+            positions,
+            vec![(vec![0], 0), (vec![1, 2, 3], 1)],
+            "位置表要让 3 个投影列折回 1 个真实列"
+        );
+    }
+
+    #[test]
+    fn projected_row_folds_binary_summary() {
+        let columns = columns();
+        let (_, _, positions) = sqlserver_page_select_list(&columns);
+        let row = sqlserver_project_row(
+            vec![
+                CellValue::I64(7),
+                CellValue::I64(0),
+                CellValue::I64(300),
+                CellValue::Text("0AFF".into()),
+            ],
+            &columns,
+            &positions,
+        );
+        assert_eq!(row.values[0], CellValue::I64(7));
+        assert_eq!(
+            row.values[1],
+            CellValue::BinarySummary(fluxdb_core::BinaryCellSummary {
+                type_name: "varbinary(max)".into(),
+                is_null: false,
+                byte_length: 300,
+                preview_hex: Some("0AFF".into()),
+            })
+        );
+    }
+
+    /// 空二进制不能显示成「有值但前缀为空」：`preview_hex` 必须是 `None`。
+    #[test]
+    fn empty_binary_has_no_preview() {
+        let columns = columns();
+        let (_, _, positions) = sqlserver_page_select_list(&columns);
+        let row = sqlserver_project_row(
+            vec![
+                CellValue::I64(7),
+                CellValue::I64(0),
+                CellValue::I64(0),
+                CellValue::Text(String::new()),
+            ],
+            &columns,
+            &positions,
+        );
+        assert!(matches!(
+            &row.values[1],
+            CellValue::BinarySummary(summary) if summary.preview_hex.is_none() && summary.byte_length == 0
+        ));
     }
 }

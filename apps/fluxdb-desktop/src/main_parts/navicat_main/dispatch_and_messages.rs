@@ -230,6 +230,61 @@ impl NavicatMain {
         Some(self.cell_detail_input.read(cx).value().to_string())
     }
 
+    /// 后台读取截断单元格的完整文本。
+    ///
+    /// 详情面板先显示预览，完整值到达后经 `FinishCellTextLoad` 写回；数据库 I/O
+    /// 一律在后台线程，避免打开详情时卡住 UI。
+    fn spawn_cell_text_load(
+        &mut self,
+        tab_id: TabId,
+        row: usize,
+        column: usize,
+        cx: &mut Context<Self>,
+    ) {
+        let key = (tab_id, row, column);
+        if self._cell_text_load_tasks.contains_key(&key) {
+            return;
+        }
+        let mut controller = self.controller.clone();
+        let task = cx.spawn(async move |view, cx| {
+            let result = cx
+                .background_spawn(async move {
+                    match controller.dispatch(AppCommand::LoadCellText {
+                        tab_id,
+                        row,
+                        column,
+                    }) {
+                        AppEvent::CellTextLoaded { text, .. } => Ok(text),
+                        AppEvent::Failed(error) => Err(error),
+                        _ => Err(fluxdb_core::UserFacingError {
+                            title: tr("app.data.error.load_full_text").to_string(),
+                            message: tr("app.data.error.full_text_no_result").to_string(),
+                            detail: None,
+                            retryable: true,
+                        }),
+                    }
+                })
+                .await;
+            let _ = cx.update(|cx| {
+                let Some(view) = view.upgrade() else {
+                    return;
+                };
+                view.update(cx, |this, cx| {
+                    this._cell_text_load_tasks.remove(&key);
+                    let event = this.controller.dispatch(AppCommand::FinishCellTextLoad {
+                        tab_id,
+                        row,
+                        column,
+                        result,
+                    });
+                    this.apply_app_event(&event, cx);
+                    cx.notify();
+                });
+            });
+        });
+        self._cell_text_load_tasks.insert(key, task);
+    }
+
     fn download_active_cell(&mut self, cx: &mut Context<Self>) {
         let Some((tab_id, row, column)) =
             self.controller
@@ -253,14 +308,68 @@ impl NavicatMain {
 
         let key = (tab_id, row, column);
         if self._cell_binary_download_tasks.contains_key(&key) {
-            self.show_message(tr("app.data.toast.downloading_binary").as_ref(), AppMessageKind::Warning, cx);
+            self.show_message(tr("app.data.toast.downloading").as_ref(), AppMessageKind::Warning, cx);
             return;
         }
 
-        let path = std::env::temp_dir().join(format!("gdb-cell-r{}-c{}.bin", row + 1, column + 1));
+        // 下载即「另存为」：先让用户选位置，再落盘；所选路径只用于写文件，不进日志与事件。
+        let suggested = format!("cell-r{}-c{}.bin", row + 1, column + 1);
+        let receiver = cx.prompt_for_new_path(&default_data_export_directory(), Some(&suggested));
         let mut controller = self.controller.clone();
-        self.show_message(tr("app.data.toast.downloading_binary").as_ref(), AppMessageKind::Success, cx);
         let task = cx.spawn(async move |view, cx| {
+            let path = match receiver.await {
+                Ok(Ok(Some(path))) => path,
+                // 用户取消：不算失败，安静收尾。
+                Ok(Ok(None)) => {
+                    let _ = cx.update(|cx| {
+                        let Some(view) = view.upgrade() else {
+                            return;
+                        };
+                        view.update(cx, |this, cx| {
+                            this._cell_binary_download_tasks.remove(&key);
+                            cx.notify();
+                        });
+                    });
+                    return;
+                }
+                Ok(Err(error)) => {
+                    let _ = cx.update(|cx| {
+                        let Some(view) = view.upgrade() else {
+                            return;
+                        };
+                        view.update(cx, |this, cx| {
+                            this._cell_binary_download_tasks.remove(&key);
+                            this.show_message(
+                                tr("app.data_export.error.choose_location")
+                                    .replace("%{error}", &error.to_string()),
+                                AppMessageKind::Error,
+                                cx,
+                            );
+                            cx.notify();
+                        });
+                    });
+                    return;
+                }
+                Err(error) => {
+                    let _ = cx.update(|cx| {
+                        let Some(view) = view.upgrade() else {
+                            return;
+                        };
+                        view.update(cx, |this, cx| {
+                            this._cell_binary_download_tasks.remove(&key);
+                            this.show_message(
+                                tr("app.data_export.error.choose_location")
+                                    .replace("%{error}", &error.to_string()),
+                                AppMessageKind::Error,
+                                cx,
+                            );
+                            cx.notify();
+                        });
+                    });
+                    return;
+                }
+            };
+
             let result = cx
                 .background_spawn(async move {
                     let bytes = match controller.dispatch(AppCommand::DownloadBinaryCell {
@@ -268,24 +377,26 @@ impl NavicatMain {
                         row,
                         column,
                     }) {
-                        AppEvent::BinaryCellDownloaded { bytes, .. } => Ok(bytes),
-                        AppEvent::Failed(error) => Err(error),
-                        _ => Err(fluxdb_core::UserFacingError {
+                        AppEvent::BinaryCellDownloaded { bytes, .. } => bytes,
+                        AppEvent::Failed(error) => return Err(error),
+                        _ => {
+                            return Err(fluxdb_core::UserFacingError {
                             title: tr("app.data.error.download").to_string(),
                             message: tr("app.data.error.binary_no_result").to_string(),
                             detail: None,
                             retryable: true,
-                        }),
-                    }?;
+                            });
+                        }
+                    };
 
-                    fs::write(&path, bytes)
-                        .map(|_| path)
-                        .map_err(|_| fluxdb_core::UserFacingError {
+                    fs::write(&path, &bytes).map_err(|error| fluxdb_core::UserFacingError {
                             title: tr("app.data.error.download").to_string(),
-                            message: tr("app.data.error.temp_file").to_string(),
+                        message: tr("app.data.error.save_file")
+                            .replace("%{error}", &error.to_string()),
                             detail: None,
                             retryable: true,
-                        })
+                    })?;
+                    Ok(fluxdb_core::format_byte_length(bytes.len() as u64))
                 })
                 .await;
 
@@ -296,16 +407,11 @@ impl NavicatMain {
                 view.update(cx, |this, cx| {
                     this._cell_binary_download_tasks.remove(&key);
                     match result {
-                        Ok(path) => {
-                            cx.write_to_clipboard(ClipboardItem::new_string(
-                                path.display().to_string(),
-                            ));
-                            this.show_message(
-                                tr("app.data.toast.path_copied").as_ref(),
+                        Ok(size) => this.show_message(
+                            tr("app.cell_detail.large_save_done").replace("%{size}", &size),
                                 AppMessageKind::Success,
                                 cx,
-                            );
-                        }
+                        ),
                         Err(error) => {
                             this.show_message(error.message, AppMessageKind::Error, cx);
                         }
@@ -317,51 +423,31 @@ impl NavicatMain {
         self._cell_binary_download_tasks.insert(key, task);
     }
 
+    /// 上传替换：二进制与文本大字段共用一条入口。
+    ///
+    /// 能不能替换由列类型决定（`upload_replace_kind`），与值当前长什么样无关——
+    /// 这样空文本列、已截断的 CLOB 也能直接换成文件内容。
     fn upload_active_binary_cell(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some((tab_id, row, column, is_binary)) =
-            self.controller
+        let Some((tab_id, row, column)) = self
+            .controller
                 .state()
                 .active_tab()
                 .and_then(|tab| match &tab.kind {
                     TabKind::DataEditor(editor) => {
                         let active_cell = editor.cell_detail_panel.active_cell?;
-                        let value = editor
-                            .page
-                            .as_ref()?
-                            .rows
-                            .get(active_cell.row)?
-                            .values
-                            .get(active_cell.column)?;
-                        Some((
-                            tab.id,
-                            active_cell.row,
-                            active_cell.column,
-                            matches!(value, CellValue::Bytes(_) | CellValue::BinarySummary(_)),
-                        ))
+                    Some((tab.id, active_cell.row, active_cell.column))
                     }
                     TabKind::QueryEditor(editor) => {
                         let editor = active_query_result_editor_state(editor)?;
                         let active_cell = editor.cell_detail_panel.active_cell?;
-                        let value = editor
-                            .page
-                            .as_ref()?
-                            .rows
-                            .get(active_cell.row)?
-                            .values
-                            .get(active_cell.column)?;
-                        Some((
-                            tab.id,
-                            active_cell.row,
-                            active_cell.column,
-                            matches!(value, CellValue::Bytes(_) | CellValue::BinarySummary(_)),
-                        ))
+                    Some((tab.id, active_cell.row, active_cell.column))
                     }
                     _ => None,
                 })
         else {
             return;
         };
-        if !is_binary {
+        if !self.active_upload_cell_supported(row, column) {
             return;
         }
 
@@ -369,7 +455,7 @@ impl NavicatMain {
             files: true,
             directories: false,
             multiple: false,
-            prompt: Some(tr("app.data.picker.binary_file").into()),
+            prompt: Some(tr("app.data.picker.upload_file").into()),
         });
         self._file_picker_task = Some(cx.spawn_in(window, async move |view, cx| {
             let selected = receiver.await;
@@ -468,6 +554,38 @@ impl NavicatMain {
         }));
     }
 
+    /// 当前详情单元格是否支持整值上传替换（按列类型判定）。
+    fn active_upload_cell_supported(&self, row: usize, column: usize) -> bool {
+        let Some(tab) = self.controller.state().active_tab() else {
+            return false;
+        };
+        let editor = match &tab.kind {
+            TabKind::DataEditor(editor) => editor,
+            TabKind::QueryEditor(editor) => {
+                let Some(editor) = active_query_result_editor_state(editor) else {
+                    return false;
+                };
+                editor
+            }
+            _ => return false,
+        };
+        let Some(page) = editor.page.as_ref() else {
+            return false;
+        };
+        let type_name = page
+            .columns
+            .get(column)
+            .and_then(|column| column.type_name.as_deref());
+        let Some(value) = page
+            .rows
+            .get(row)
+            .and_then(|row| row.values.get(column))
+        else {
+            return false;
+        };
+        fluxdb_core::upload_replace_kind(type_name, value).is_some()
+    }
+
     fn set_active_binary_cell_null(&mut self, tab_id: TabId, cx: &mut Context<Self>) {
         let Some((row, column)) = self.active_detail_cell_position() else {
             return;
@@ -489,36 +607,6 @@ impl NavicatMain {
             cx,
         );
         self.refresh_active_data_table(tab_id, cx);
-    }
-
-    fn save_active_binary_hex_edit(&mut self, tab_id: TabId, cx: &mut Context<Self>) {
-        let Some((row, column)) = self.active_detail_cell_position() else {
-            return;
-        };
-        let Some(value) = self.active_cell_detail_edit_value(cx) else {
-            return;
-        };
-        let event = self.controller.dispatch(AppCommand::UpdateBinaryCell {
-            tab_id,
-            row,
-            column,
-            payload: BinaryUpdatePayload::Hex(value),
-        });
-        if let AppEvent::Failed(error) = &event {
-            self.show_message(error.message.clone(), AppMessageKind::Warning, cx);
-        }
-        self.apply_app_event(&event, cx);
-        if !matches!(event, AppEvent::Failed(_)) {
-            self.dispatch(
-                AppCommand::OpenCellDetail {
-                    tab_id,
-                    row,
-                    column,
-                },
-                cx,
-            );
-            self.refresh_active_data_table(tab_id, cx);
-        }
     }
 
     fn active_detail_cell_position(&self) -> Option<(usize, usize)> {
@@ -569,6 +657,38 @@ impl NavicatMain {
 
     fn apply_app_event(&mut self, event: &AppEvent, cx: &mut Context<Self>) {
         match event {
+            AppEvent::CellTextLoadRequested {
+                tab_id,
+                row,
+                column,
+            } => {
+                self.spawn_cell_text_load(*tab_id, *row, *column, cx);
+            }
+            AppEvent::CellContentChunkLoaded {
+                tab_id,
+                row,
+                column,
+                chunk,
+            } => {
+                // 只写回仍指向同一单元格的窗口：后台期间用户可能已经切走。
+                if let Some(window) = self
+                    .large_value_windows
+                    .get_mut(tab_id)
+                    .filter(|window| window.row == *row && window.column == *column)
+                {
+                    window.view.loading = false;
+                    window.view.push_chunk(chunk.clone());
+                }
+            }
+            AppEvent::CellContentSaved { tab_id, bytes } => {
+                let _ = tab_id;
+                self.show_message(
+                    tr("app.cell_detail.large_save_done")
+                        .replace("%{size}", &fluxdb_core::format_byte_length(*bytes)),
+                    AppMessageKind::Success,
+                    cx,
+                );
+            }
             AppEvent::ErRelationshipsLoaded {
                 scope_key,
                 relationships,
@@ -763,6 +883,12 @@ impl NavicatMain {
                 self.data_table_column_widths
                     .retain(|key, _| key.tab_id != *tab_id);
                 self.query_editors.remove(tab_id);
+                // 关标签即丢弃分段窗口；内容引用由控制器按归属释放。
+                self.large_value_windows.remove(tab_id);
+                self._cell_content_chunk_tasks
+                    .retain(|(owner, _), _| owner != tab_id);
+                self._cell_content_save_tasks
+                    .retain(|(owner, _, _), _| owner != tab_id);
                 self.query_statement_statuses.remove(tab_id);
                 self.query_execution_sources.remove(tab_id);
                 self.query_save_targets.remove(tab_id);

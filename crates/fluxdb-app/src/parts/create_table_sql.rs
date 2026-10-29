@@ -1311,6 +1311,20 @@ pub fn rename_table_sql_preview(
     provider.rename_table_sql(schema, old_name, new_name)
 }
 
+/// 复制表是否需要先在客户端读取源表 DDL。
+///
+/// SQLite/达梦/SQL Server/Oracle 的完整复制要重写源 DDL（保留约束、索引、注释与
+/// identity），`CREATE TABLE … AS SELECT` 只复制列和数据，不算克隆。
+pub fn copy_table_requires_source_ddl(database_kind: DatabaseKind) -> bool {
+    matches!(
+        database_kind,
+        DatabaseKind::Sqlite
+            | DatabaseKind::Dameng
+            | DatabaseKind::SqlServer
+            | DatabaseKind::Oracle
+    )
+}
+
 pub fn copy_table_sql_preview(
     database_kind: DatabaseKind,
     schema: Option<&str>,

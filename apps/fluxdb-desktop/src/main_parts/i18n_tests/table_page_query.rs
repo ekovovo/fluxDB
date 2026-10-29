@@ -47,6 +47,7 @@ fn ai_page_query_opens_sidebar_table_fills_conditions_and_shows_rows(cx: &mut Te
         dameng_profile: None,
         mongo_profile: None,
         sqlserver_profile: None,
+        oracle_profile: None,
     }]));
     let event = controller.dispatch(AppCommand::SaveAiModel(AiModelSaveInput {
         display_name: "offline page query fixture".into(),
@@ -614,6 +615,7 @@ fn typed_and_like_form_filters_change_query_results(cx: &mut TestAppContext) {
         dameng_profile: None,
         mongo_profile: None,
         sqlserver_profile: None,
+        oracle_profile: None,
     }]));
     cx.update(|cx| {
         extend_component_i18n();
@@ -1257,6 +1259,7 @@ fn data_filter_mode_round_trip_for_database(
         dameng_profile: None,
         mongo_profile: None,
         sqlserver_profile: None,
+        oracle_profile: None,
     }]));
     cx.update(|cx| {
         extend_component_i18n();
@@ -1444,6 +1447,7 @@ fn data_editor_with_filter_panel(
         dameng_profile: None,
         mongo_profile: None,
         sqlserver_profile: None,
+        oracle_profile: None,
     }]));
     cx.update(|cx| {
         extend_component_i18n();
@@ -1627,6 +1631,52 @@ fn filter_layout_caps_height_keeps_actions_fixed_and_preserves_collapsed_state(
             Some(24)
         );
     });
+}
+
+/// 已有数据时重新加载（应用筛选、翻页、刷新）只盖表格区域，
+/// 工具栏、筛选面板与 SQL 预览保持可见，不再整块替换成居中加载态。
+#[gpui::test]
+fn reloading_with_existing_rows_only_covers_table_area(cx: &mut TestAppContext) {
+    use fluxdb_app::AppCommand;
+
+    let _guard = locale_guard();
+    let (view, cx, tab_id) = data_editor_with_filter_panel(cx);
+    cx.simulate_resize(gpui::size(gpui::px(1000.), gpui::px(700.)));
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let toggle = cx
+        .debug_bounds("data-filter-sort-toggle")
+        .expect("filter toggle");
+    cx.simulate_click(toggle.center(), Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    let panel_before = cx.debug_bounds("data-filter-panel").expect("filter panel");
+
+    cx.update(|_, cx| {
+        let event = view.update(cx, |this, cx| {
+            this.dispatch(AppCommand::BeginDataPageLoad(tab_id), cx)
+        });
+        assert!(
+            matches!(event, fluxdb_app::AppEvent::DataPageLoadStarted { .. }),
+            "begin reload: {event:?}"
+        );
+    });
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+
+    assert!(
+        cx.debug_bounds("data-page-loading").is_none(),
+        "已有数据时不应整块替换成居中加载态"
+    );
+    assert_eq!(
+        cx.debug_bounds("data-filter-panel"),
+        Some(panel_before),
+        "筛选面板必须保持可见"
+    );
+    let overlay = cx
+        .debug_bounds("data-table-loading-overlay")
+        .expect("table loading overlay");
+    assert!(
+        overlay.top() >= panel_before.bottom() - gpui::px(1.),
+        "加载遮罩只能覆盖表格区域，不能盖住筛选面板: {overlay:?} vs {panel_before:?}"
+    );
 }
 
 #[gpui::test]
@@ -1927,6 +1977,99 @@ fn compact_sort_pills_toggle_remove_clear_and_undo(cx: &mut TestAppContext) {
         assert_eq!(app.data_sort_draft_rules[&tab_id].len(), 1);
         assert!(!app.data_sort_clear_undo.contains_key(&tab_id));
     });
+}
+
+/// 字段弹层必须贴着被点的字段显示，不能浮在写死的固定坐标上。
+#[gpui::test]
+fn filter_field_popover_anchors_to_clicked_field(cx: &mut TestAppContext) {
+    let _guard = locale_guard();
+    let (view, cx, tab_id) = data_editor_with_filter_panel(cx);
+    cx.simulate_resize(gpui::size(gpui::px(1000.), gpui::px(700.)));
+    cx.update(|window, cx| {
+        view.update(cx, |this, cx| {
+            this.data_filter_panels.insert(tab_id);
+            this.data_filter_modes
+                .insert(tab_id, crate::DataFilterMode::Builder);
+            this.data_filter_draft_rules.insert(
+                tab_id,
+                vec![crate::DataFilterRule {
+                    enabled: true,
+                    field: Some("id".into()),
+                    operator: crate::DataFilterOperator::Eq,
+                    values: vec!["1".into()],
+                    advanced_expression: None,
+                    typed_values: None,
+                    connector: fluxdb_core::FilterCombinator::And,
+                    group_depth: 0,
+                    group_end: 0,
+                }],
+            );
+            cx.notify();
+        });
+        window.draw(cx).clear(cx);
+    });
+
+    let field = cx
+        .debug_bounds("data-filter-field-0")
+        .expect("field cell");
+    let click_at = field.center();
+    cx.simulate_click(click_at, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+
+    let menu = cx
+        .debug_bounds("data-filter-popover-menu")
+        .expect("field popover must open");
+    // 弹层左上角对齐点击点（纵向再下移 4px 让开被点的文字）。
+    assert!(
+        (f32::from(menu.left()) - f32::from(click_at.x)).abs() <= 2.,
+        "popover left must follow the click: menu={menu:?} click={click_at:?}"
+    );
+    assert!(
+        (f32::from(menu.top()) - f32::from(click_at.y) - 4.).abs() <= 2.,
+        "popover top must follow the click: menu={menu:?} click={click_at:?}"
+    );
+    assert!(
+        menu.right() <= gpui::px(1000.) && menu.bottom() <= gpui::px(700.),
+        "popover must stay inside the window: {menu:?}"
+    );
+}
+
+#[gpui::test]
+fn sort_field_popover_anchors_to_clicked_pill(cx: &mut TestAppContext) {
+    let _guard = locale_guard();
+    let (view, cx, tab_id) = data_editor_with_filter_panel(cx);
+    cx.simulate_resize(gpui::size(gpui::px(1000.), gpui::px(700.)));
+    cx.update(|window, cx| {
+        view.update(cx, |this, cx| {
+            this.data_filter_panels.insert(tab_id);
+            this.data_sort_draft_rules.insert(
+                tab_id,
+                vec![crate::DataSortRule {
+                    enabled: true,
+                    field: "id".into(),
+                    ascending: true,
+                }],
+            );
+            cx.notify();
+        });
+        window.draw(cx).clear(cx);
+    });
+
+    let field = cx
+        .debug_bounds("data-sort-field-0")
+        .expect("sort field cell");
+    let click_at = field.center();
+    cx.simulate_click(click_at, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+
+    let menu = cx
+        .debug_bounds("data-filter-popover-menu")
+        .expect("sort field popover must open");
+    assert!(
+        (f32::from(menu.left()) - f32::from(click_at.x)).abs() <= 2.
+            && (f32::from(menu.top()) - f32::from(click_at.y) - 4.).abs() <= 2.,
+        "sort popover must follow the click: menu={menu:?} click={click_at:?}"
+    );
 }
 
 #[gpui::test]

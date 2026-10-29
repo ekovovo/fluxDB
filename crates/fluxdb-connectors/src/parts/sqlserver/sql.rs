@@ -379,6 +379,12 @@ fn sqlserver_sql_parameter(value: &CellValue) -> fluxdb_core::SqlParameter {
         CellValue::Text(value) | CellValue::Json(value) => {
             fluxdb_core::SqlParameter::Text(value.clone())
         }
+        // 截断文本只作筛选前缀；写入前已由 `validate_data_changes` 拒绝。
+        CellValue::TruncatedText { preview, .. } => {
+            fluxdb_core::SqlParameter::Text(preview.clone())
+        }
+        // 大字段只按预览前缀参与筛选；写入前已由 `validate_data_changes` 拒绝。
+        CellValue::LargeValue(large) => fluxdb_core::SqlParameter::Text(large.preview.clone()),
         CellValue::Bytes(value) => fluxdb_core::SqlParameter::Bytes(value.clone()),
         CellValue::BinarySummary(summary) => {
             if summary.is_null {

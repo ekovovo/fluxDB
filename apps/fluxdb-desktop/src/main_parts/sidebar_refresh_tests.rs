@@ -17,6 +17,7 @@ mod sidebar_refresh_tests {
             dameng_profile: None,
             mongo_profile: None,
             sqlserver_profile: None,
+            oracle_profile: None,
         };
         ConnectionState {
             config,

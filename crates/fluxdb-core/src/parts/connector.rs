@@ -146,8 +146,8 @@ pub trait Connector {
     }
     /// 渲染 PG 角色变更计划为有序 SQL 列表（预览与执行共用同一渲染规则）。
     ///
-    /// `mask_secrets=true` 时密码语句以占位符输出（脱敏预览，不能直接执行）；
-    /// false 时输出真实可执行语句（仅供连接器执行路径使用，不得进入日志/历史）。
+    /// `mask_secrets=true` 时密码语句以占位符输出（仅用于审计回执）；
+    /// false 时输出真实可执行语句：预览与执行路径都用它，不得进入日志/历史。
     fn render_role_plan(
         &self,
         _: ConnectionId,
@@ -222,6 +222,27 @@ pub trait Connector {
             "暂不支持应用 SQL Server 用户与权限变更",
         ))
     }
+    /// Oracle 用户与权限：账号、直接/继承授权、配额与 Profile 限制。
+    fn oracle_user_admin_snapshot(
+        &self,
+        _: ConnectionId,
+    ) -> Result<OracleUserAdminSnapshot> {
+        Err(Error::new(
+            ErrorKind::Unsupported,
+            "暂不支持读取 Oracle 用户与权限",
+        ))
+    }
+    /// 逐条执行 Oracle 用户与权限计划；DDL 隐式提交，失败后无法整批回滚。
+    fn apply_oracle_user_admin_plan(
+        &self,
+        _: ConnectionId,
+        _plan: &OracleUserAdminPlan,
+    ) -> Result<Vec<String>> {
+        Err(Error::new(
+            ErrorKind::Unsupported,
+            "暂不支持应用 Oracle 用户与权限变更",
+        ))
+    }
     fn delete_database(&self, _: ConnectionId, _: &str) -> Result<()> {
         Err(Error::new(ErrorKind::Unsupported, "暂不支持删除数据库"))
     }
@@ -274,12 +295,19 @@ pub trait Connector {
             }
             let batch_size = 4096u64;
             let page = self.load_data(path, offset, batch_size, sort, filters)?;
+            if let Some(incomplete) = &page.incomplete {
+                return Err(Error::new(
+                    ErrorKind::Query,
+                    format!("结果页不完整，导出已取消：{}", incomplete.reason),
+                ));
+            }
             let count = page.rows.len() as u64;
             let has_more = page.has_more;
+            let next_offset = page.next_offset();
             if !on_page(page) {
                 return Ok(());
             }
-            offset += count;
+            offset = next_offset;
             if count == 0 || !has_more {
                 return Ok(());
             }
@@ -523,6 +551,18 @@ pub trait Connector {
         Err(Error::new(
             ErrorKind::Unsupported,
             "暂不支持二进制单元格读取",
+        ))
+    }
+
+    /// 按需读取单元格完整文本（如超过预览上限的 CLOB）。
+    ///
+    /// 数据页只装预览，`CellValue::TruncatedText` 不是完整值：详情查看与编辑必须走这里
+    /// 取一次完整内容，不能拿预览凑合。实现方仍须有界——超过上限直接报错，不把
+    /// 无限大的值读进内存。
+    fn load_cell_text(&self, _: &ObjectPath, _: &RowIdentity, _: &str) -> Result<String> {
+        Err(Error::new(
+            ErrorKind::Unsupported,
+            "暂不支持读取完整文本",
         ))
     }
 
@@ -772,4 +812,74 @@ pub trait Connector {
 pub struct DataExportPreview {
     pub sql: String,
     pub row_count: u64,
+}
+
+#[cfg(test)]
+mod export_pages_tests {
+    use super::*;
+
+    struct IncompleteConnector;
+
+    impl Connector for IncompleteConnector {
+        fn kind(&self) -> DatabaseKind {
+            DatabaseKind::Sqlite
+        }
+
+        fn test_connection(&self, _: &ConnectionConfig) -> Result<()> {
+            Ok(())
+        }
+
+        fn list_objects(&self, _: Option<&ObjectPath>) -> Result<Vec<ObjectSummary>> {
+            Ok(Vec::new())
+        }
+
+        fn load_data(
+            &self,
+            _: &ObjectPath,
+            offset: u64,
+            limit: u64,
+            _: &[SortSpec],
+            _: &[FilterSpec],
+        ) -> Result<DataPage> {
+            Ok(DataPage {
+                columns: Vec::new(),
+                rows: vec![Row { values: Vec::new() }],
+                offset,
+                limit,
+                has_more: false,
+                incomplete: Some(PageIncomplete {
+                    reason: "大字段存储失败".into(),
+                }),
+            })
+        }
+
+        fn apply_changes(&self, _: &DataChangeSet) -> Result<AppliedChangeOutcome> {
+            unreachable!()
+        }
+
+        fn execute(&self, _: &QueryRequest) -> Result<QueryExecutionResult> {
+            unreachable!()
+        }
+    }
+
+    #[test]
+    fn incomplete_page_fails_before_export_callback() {
+        let path = ObjectPath {
+            connection_id: ConnectionId(1),
+            database: Some("main".into()),
+            schema: None,
+            name: "items".into(),
+            kind: ObjectKind::Table,
+        };
+        let mut callbacks = 0;
+        let error = IncompleteConnector
+            .export_pages(&path, &[], &[], &|| false, &mut |_| {
+                callbacks += 1;
+                true
+            })
+            .expect_err("incomplete export must fail");
+        assert_eq!(error.kind, ErrorKind::Query);
+        assert!(error.message.contains("大字段存储失败"));
+        assert_eq!(callbacks, 0, "不能写出不完整页");
+    }
 }

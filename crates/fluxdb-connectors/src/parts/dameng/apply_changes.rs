@@ -3,6 +3,7 @@ fn dm_apply_changes(
     changes: &DataChangeSet,
 ) -> fluxdb_core::Result<AppliedChangeOutcome> {
     validate_data_changes(changes)?;
+    reject_streamed_values(changes)?;
     let schema = dm_request_schema(config, &changes.object)?;
     let mut client = dm_connect(config)?;
     let columns = dm_load_columns(&mut client, &schema, &changes.object.name)?;
@@ -32,7 +33,7 @@ fn dm_apply_changes(
                 .iter()
                 .map(|cell| {
                     ensure_column_exists(&cell.column, &columns)?;
-                    params.push(dm_param(&cell.value));
+                    params.push(dm_param(cell.value.placeholder()));
                     Ok(format!(
                         "{} = ?",
                         fluxdb_core::DamengDialect.quote_identifier(&cell.column)
@@ -95,7 +96,8 @@ fn dm_apply_changes(
             if let Err(error) = client.commit().map_err(|error| dm_error("提交达梦事务失败", error)) {
                 let _ = client.rollback();
                 client.close();
-                return Err(error);
+                // 传输层失败（断连/超时）= 提交是否生效未知；服务端拒绝仍是确定失败。
+                return Err(error.mark_outcome_unknown("提交达梦事务"));
             }
             client.close();
             Ok(AppliedChangeOutcome::default())

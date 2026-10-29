@@ -59,6 +59,7 @@ fn live_config() -> Option<ConnectionConfig> {
         dameng_profile: None,
         sqlserver_profile: None,
         mongo_profile: Some(profile),
+        oracle_profile: None,
     })
 }
 

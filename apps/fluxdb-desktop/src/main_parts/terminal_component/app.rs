@@ -50,6 +50,7 @@ impl NavicatMain {
                 dameng_profile: None,
                 sqlserver_profile: None,
                 mongo_profile: None,
+                oracle_profile: None,
             });
 
         let adapter: Box<dyn TerminalSessionAdapter> =
@@ -119,6 +120,7 @@ impl NavicatMain {
             dameng_profile: None,
             sqlserver_profile: None,
             mongo_profile: None,
+            oracle_profile: None,
         });
         let adapter: Box<dyn TerminalSessionAdapter> =
             Box::new(fluxdb_app::MongoCliAdapter::new(&adapter_config, cli.database.clone()));

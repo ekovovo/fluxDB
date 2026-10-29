@@ -19,6 +19,15 @@ FluxDB is built with Rust and GPUI, without Electron or a WebView. It brings MyS
 
 ## Latest changes
 
+### v0.1.13
+
+- **Oracle support**: Service Name / SID connections, schema/object browsing, SQL queries with dialect-aware completion, table design, data editing, filtering and sorting, user and permission management, local logical export, and AI page context with controlled execution.
+- **Oracle first-release limits**: no server-side Data Pump backup; export is local logical export (DDL plus paged data), which is neither a native server backup nor a cross-page consistent snapshot. Grant details of other accounts are unreadable and are not drawn as revocable grants. See [Database support](#database-support).
+- **Five-tab user administration**: General / Roles / System privileges / Object privileges / SQL preview, each opening with a type-locked grant editor. Oracle "New schema" now opens the create-account form, and Dameng reuses the same panel.
+- **Stability fixes**: fixed Oracle import `ORA-01861`, table copy not reading the source DDL, Explain sending statements that always fail, and account changes not reporting how many statements already ran.
+
+[Full release notes](./release-notes/v0.1.13/en.md) · [All releases](https://github.com/fluxdb-alt/fluxDB/releases)
+
 ### v0.1.12
 
 - **Bidirectional filter form and SQL input**: switch between form and condition-input editing in either direction. Form values populate the input automatically, and typed conditions can be parsed back into editable form rules while preserving groups, AND/OR combinations and sort rules.
@@ -30,15 +39,6 @@ FluxDB is built with Rust and GPUI, without Electron or a WebView. It brings MyS
 - **Update experience**: in-app updates show the download percentage, downloaded size and total size, and display localized release notes in the update dialog.
 
 [Full release notes](./release-notes/v0.1.12/en.md) · [All releases](https://github.com/fluxdb-alt/fluxDB/releases)
-
-### v0.1.11
-
-- **SQL Server support**: SQL authentication, TLS, database/schema/object browsing, T-SQL queries, table design and data editing, table import/export, logins, database users, role membership and explicit permissions, object-level logical backup/restore, and AI page context with controlled execution.
-- **SQL Server first-release limits**: Windows integrated authentication, Azure AD, contained database users, column-level permission editing, user-defined server roles, automatic named-instance discovery, and database-level physical backup are not implemented yet. See [Database support](#database-support).
-- **SQL editor and completion**: bare table-name completion works across schemas and continues to the next qualifier; completion offsets are fixed for UTF-8 SQL.
-- **Table designer**: expanded dialect-specific types and adaptive column options, on-demand enum/custom-type editing, validated lengths and precision, and consistent PostgreSQL/MySQL type display.
-- **Results and Redis workspace**: query-summary metadata columns are more compact, long column comments wrap correctly, and Redis tabs are grouped by connection as top-level workspaces.
-- **AI repair targeting**: failed-SQL repair now locates the editor statement using the actual execution source, so it remains correct after SQL rewriting.
 
 ## Why FluxDB
 
@@ -207,6 +207,12 @@ Current priorities are real-world coverage for existing databases, stability and
 
 The roadmap does not imply current support.
 
+## Community
+
+Scan the QR code to join the FluxDB WeChat group, share your experience, report problems and suggest improvements. Please also submit bugs and feature requests to [Issues](https://github.com/fluxdb-alt/fluxDB/issues) so they can be tracked.
+
+<img src="docs/screenshots/weichatgroup.png" alt="FluxDB WeChat group QR code" width="200">
+
 ## Support and sponsorship
 
 If FluxDB is useful to you, consider starring the repository, sharing it with others, or contributing through issues, documentation and code.
@@ -215,7 +221,7 @@ You can also sponsor ongoing development and AI tooling costs.
 
 | Alipay | WeChat |
 | :---: | :---: |
-| <img src="docs/sponsor/alipay.png" alt="Alipay sponsorship QR code" width="220"> | <img src="docs/sponsor/wechat.png" alt="WeChat sponsorship QR code" width="220"> |
+| <img src="docs/sponsor/alipay.png" alt="Alipay sponsorship QR code" width="160"> | <img src="docs/sponsor/wechat.png" alt="WeChat sponsorship QR code" width="160"> |
 
 ## Acknowledgements
 

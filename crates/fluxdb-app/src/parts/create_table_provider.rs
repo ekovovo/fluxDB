@@ -100,6 +100,7 @@ pub fn create_table_provider(kind: DatabaseKind) -> &'static dyn CreateTableProv
         DatabaseKind::Postgres => &POSTGRES_CREATE_TABLE_PROVIDER,
         DatabaseKind::Dameng => &DAMENG_CREATE_TABLE_PROVIDER,
         DatabaseKind::SqlServer => &SQLSERVER_CREATE_TABLE_PROVIDER,
+        DatabaseKind::Oracle => &ORACLE_CREATE_TABLE_PROVIDER,
         DatabaseKind::MongoDb | DatabaseKind::Redis => {
             &UNSUPPORTED_CREATE_TABLE_PROVIDER
         }
@@ -108,6 +109,7 @@ pub fn create_table_provider(kind: DatabaseKind) -> &'static dyn CreateTableProv
 
 static POSTGRES_CREATE_TABLE_PROVIDER: PostgresCreateTableProvider = PostgresCreateTableProvider;
 static DAMENG_CREATE_TABLE_PROVIDER: DamengCreateTableProvider = DamengCreateTableProvider;
+static ORACLE_CREATE_TABLE_PROVIDER: OracleCreateTableProvider = OracleCreateTableProvider;
 static SQLSERVER_CREATE_TABLE_PROVIDER: SqlServerCreateTableProvider =
     SqlServerCreateTableProvider;
 
@@ -223,6 +225,61 @@ impl CreateTableProvider for DamengCreateTableProvider {
 
     fn design_statements(&self, create: &CreateTableState) -> Result<Vec<String>, String> {
         create_table_dameng_design_statements(create)
+    }
+}
+
+/// Oracle 建表 provider。
+///
+/// 与达梦的关键差异：自增用 identity 子句而不是 `IDENTITY(1,1)`；改列类型必须
+/// 走 `ALTER TABLE … MODIFY`；没有 `UNSIGNED`/`ZEROFILL`/前缀索引。
+struct OracleCreateTableProvider;
+
+impl CreateTableProvider for OracleCreateTableProvider {
+    fn type_options(&self) -> &'static [&'static str] {
+        ORACLE_CREATE_TABLE_TYPE_OPTIONS
+    }
+
+    fn default_column_type(&self) -> &'static str {
+        "varchar2"
+    }
+
+    fn default_id_type(&self) -> &'static str {
+        "number"
+    }
+
+    fn default_length(&self, data_type: &str) -> Option<&'static str> {
+        match create_table_base_type(data_type).as_str() {
+            "char" | "varchar" | "varchar2" | "nchar" | "nvarchar2" | "raw" => Some("255"),
+            "number" | "numeric" | "decimal" => Some("10"),
+            _ => None,
+        }
+    }
+
+    fn type_capabilities(&self, data_type: &str) -> CreateTableTypeCapabilities {
+        let base = create_table_base_type(data_type);
+        CreateTableTypeCapabilities {
+            length: oracle_supports_length(&base),
+            scale: oracle_supports_scale(&base),
+            number_options: oracle_supports_scale(&base),
+            auto_increment: oracle_is_numeric_type(&base),
+            ..Default::default()
+        }
+    }
+
+    fn validation_error(&self, create: &CreateTableState) -> Option<&'static str> {
+        create_table_oracle_validation_error(create)
+    }
+
+    fn sql_preview(&self, create: &CreateTableState) -> Result<String, String> {
+        create_table_oracle_sql_preview(create)
+    }
+
+    fn design_sql_preview(&self, create: &CreateTableState) -> Result<String, String> {
+        create_table_design_sql_preview_for_provider(self, create)
+    }
+
+    fn design_statements(&self, create: &CreateTableState) -> Result<Vec<String>, String> {
+        create_table_oracle_design_statements(create)
     }
 }
 

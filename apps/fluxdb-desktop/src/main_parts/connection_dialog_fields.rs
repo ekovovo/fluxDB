@@ -39,6 +39,18 @@ fn connection_field_hint(field: ConnectionField) -> SharedString {
         ConnectionField::SqlServerApplicationName => {
             tr("app.connection.sqlserver.application_name_hint")
         }
+        ConnectionField::OracleServiceName => tr("app.connection.oracle.service_name_hint"),
+        ConnectionField::OracleSid => tr("app.connection.oracle.sid_hint"),
+        ConnectionField::OracleSchema => tr("app.connection.oracle.schema_hint"),
+        ConnectionField::OracleConnectTimeout => {
+            tr("app.connection.oracle.connect_timeout_hint")
+        }
+        ConnectionField::OracleQueryTimeout => tr("app.connection.oracle.query_timeout_hint"),
+        ConnectionField::OracleApplicationName => {
+            tr("app.connection.oracle.application_name_hint")
+        }
+        ConnectionField::OracleWalletLocation => tr("app.connection.oracle.wallet_location_hint"),
+        ConnectionField::OracleWalletPassword => tr("app.connection.oracle.wallet_password_hint"),
         _ => SharedString::default(),
     }
 }
@@ -321,6 +333,7 @@ fn database_default_port(kind: DatabaseKind) -> &'static str {
         DatabaseKind::Postgres => "5432",
         DatabaseKind::Dameng => "5236",
         DatabaseKind::SqlServer => "1433",
+        DatabaseKind::Oracle => "1521",
         DatabaseKind::Sqlite => "",
     }
 }
@@ -404,6 +417,18 @@ fn connection_fields(kind: DatabaseKind) -> &'static [ConnectionField] {
             ConnectionField::SqlServerSchema,
             ConnectionField::SqlServerInstance,
         ],
+        // Service Name 与 SID 都列出来：由「连接方式」下拉决定哪一个生效，
+        // 隐藏另一半反而让用户不清楚自己填的是哪一种寻址。
+        DatabaseKind::Oracle => &[
+            ConnectionField::Name,
+            ConnectionField::Host,
+            ConnectionField::Port,
+            ConnectionField::Username,
+            ConnectionField::Password,
+            ConnectionField::OracleServiceName,
+            ConnectionField::OracleSid,
+            ConnectionField::OracleSchema,
+        ],
     }
 }
 
@@ -459,6 +484,14 @@ fn connection_field_element_id(field: ConnectionField) -> &'static str {
         ConnectionField::SqlServerConnectTimeout => "connection-sqlserver-connect-timeout",
         ConnectionField::SqlServerQueryTimeout => "connection-sqlserver-query-timeout",
         ConnectionField::SqlServerApplicationName => "connection-sqlserver-application-name",
+        ConnectionField::OracleServiceName => "connection-oracle-service-name",
+        ConnectionField::OracleSid => "connection-oracle-sid",
+        ConnectionField::OracleSchema => "connection-oracle-schema",
+        ConnectionField::OracleConnectTimeout => "connection-oracle-connect-timeout",
+        ConnectionField::OracleQueryTimeout => "connection-oracle-query-timeout",
+        ConnectionField::OracleApplicationName => "connection-oracle-application-name",
+        ConnectionField::OracleWalletLocation => "connection-oracle-wallet-location",
+        ConnectionField::OracleWalletPassword => "connection-oracle-wallet-password",
     }
 }
 
@@ -517,6 +550,14 @@ fn connection_field_label(field: ConnectionField) -> SharedString {
         ConnectionField::SqlServerApplicationName => {
             tr("app.connection.sqlserver.application_name")
         }
+        ConnectionField::OracleServiceName => tr("app.connection.oracle.service_name"),
+        ConnectionField::OracleSid => tr("app.connection.oracle.sid"),
+        ConnectionField::OracleSchema => tr("app.connection.oracle.schema"),
+        ConnectionField::OracleConnectTimeout => tr("app.connection.oracle.connect_timeout"),
+        ConnectionField::OracleQueryTimeout => tr("app.connection.oracle.query_timeout"),
+        ConnectionField::OracleApplicationName => tr("app.connection.oracle.application_name"),
+        ConnectionField::OracleWalletLocation => tr("app.connection.oracle.wallet_location"),
+        ConnectionField::OracleWalletPassword => tr("app.connection.oracle.wallet_password"),
     }
 }
 
@@ -575,5 +616,15 @@ fn connection_field_placeholder(field: ConnectionField) -> SharedString {
         ConnectionField::SqlServerApplicationName => {
             tr("app.connection.sqlserver.application_name_optional")
         }
+        ConnectionField::OracleServiceName => "FREEPDB1 / ORCLPDB1".into(),
+        ConnectionField::OracleSid => "ORCL".into(),
+        ConnectionField::OracleSchema => tr("app.connection.oracle.schema_optional"),
+        ConnectionField::OracleConnectTimeout => "8".into(),
+        ConnectionField::OracleQueryTimeout => tr("app.connection.oracle.query_timeout_hint"),
+        ConnectionField::OracleApplicationName => {
+            tr("app.connection.oracle.application_name_optional")
+        }
+        ConnectionField::OracleWalletLocation => tr("app.connection.oracle.wallet_location_optional"),
+        ConnectionField::OracleWalletPassword => tr("app.connection.optional"),
     }
 }

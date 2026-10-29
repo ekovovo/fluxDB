@@ -748,7 +748,10 @@ fn data_editor_content(
         })
         .when(filter_open, |builder| builder);
 
-    if editor.loading {
+    // 只有「首次加载、还没有任何数据」才整块替换成居中加载态。
+    // 已有数据时（重新应用筛选/排序、翻页、刷新）保留旧表格，只由表格区域盖遮罩，
+    // 避免筛选面板、SQL 预览和列头在等待期间整块消失。
+    if editor.loading && editor.page.is_none() {
         return content.child(
             center_loading_message(tr("app.data.loading"), colors)
                 .id(("data-page-loading", tab_id.0))
@@ -1008,6 +1011,20 @@ fn data_editor_content(
         .copied()
         .map(clamp_cell_detail_drawer_height)
         .unwrap_or(CELL_DETAIL_DRAWER_DEFAULT_HEIGHT);
+    let large_value_window = editor.cell_detail_panel.open.then(|| {
+        let cell = editor.cell_detail_panel.active_cell?;
+        let large = page
+            .rows
+            .get(cell.row)?
+            .values
+            .get(cell.column)?
+            .large_value()?
+            .clone();
+        Some(this.ensure_large_value_window(tab_id, cell.row, cell.column, &large, cx))
+    }).flatten();
+    if large_value_window.is_none() {
+        this.drop_large_value_window(tab_id);
+    }
     let cell_detail_drawer = editor.cell_detail_panel.open.then(|| {
         sync_input_value(
             &cell_detail_input,
@@ -1019,6 +1036,7 @@ fn data_editor_content(
             tab_id,
             editor,
             page,
+            large_value_window.as_ref(),
             cell_detail_drawer_height,
             cell_detail_input,
             this.temporal_part_input.clone(),
@@ -1047,12 +1065,14 @@ fn data_editor_content(
     });
     let table_area = data_table_area(
         &table_state,
-        // 提交与筛选都会离开 UI 线程，共用同一层遮罩提示，避免用户以为界面失去响应。
-        filter_applying || editor.submitting,
+        // 提交与各类加载都会离开 UI 线程，共用同一层遮罩提示，避免用户以为界面失去响应。
+        // 已有数据时的重新加载（筛选、翻页、刷新、AI 查询）同样只盖表格区域，
+        // 工具栏与筛选面板保持可见可操作。
+        filter_applying || editor.submitting || editor.loading,
         if editor.submitting {
             tr("app.data.submitting")
         } else {
-            tr("app.data.applying_filter")
+            tr("app.data.loading")
         },
         search_open.then(|| {
             data_search_bar(
@@ -3613,7 +3633,10 @@ fn query_output_tab_button(
                         // 新编辑器：依据全文切分语句并按 ordinal 取目标语句。
                         this.query_editors.get(&tab_id).and_then(|editor| {
                             let text = editor.read(cx).text();
-                            sql_editor_adapter::build_statement_runs(&text)
+                            sql_editor_adapter::build_statement_runs(
+                                &text,
+                                this.query_editor_database_kind(tab_id),
+                            )
                                 .get(ordinal)
                                 .cloned()
                         })
@@ -3966,6 +3989,17 @@ fn query_result_view(
     } else {
         0.
     };
+    let readonly_panel = readonly_detail.and_then(|detail| {
+        query_result_cell_detail_panel(
+            tab_id,
+            result_page,
+            detail,
+            detail_height,
+            colors,
+            this,
+            cx,
+        )
+    });
     let table_state = this.query_result_table_state_from_sorted_page(
         tab_id,
         sorted_page.page.clone(),
@@ -3994,6 +4028,22 @@ fn query_result_view(
             data_change_sql_preview(result_page, changes, db_kind)
         });
     let change_sql_preview_open = this.data_change_sql_preview_tabs.contains(&tab_id);
+    let large_value_window = result_editor
+        .filter(|editor| editor.cell_detail_panel.open)
+        .and_then(|editor| {
+            let cell = editor.cell_detail_panel.active_cell?;
+            let large = result_page
+                .rows
+                .get(cell.row)?
+                .values
+                .get(cell.column)?
+                .large_value()?
+                .clone();
+            Some(this.ensure_large_value_window(tab_id, cell.row, cell.column, &large, cx))
+        });
+    if large_value_window.is_none() && readonly_detail.is_none() {
+        this.drop_large_value_window(tab_id);
+    }
     let cell_detail_drawer = result_editor
         .filter(|editor| editor.cell_detail_panel.open)
         .map(|editor| {
@@ -4003,6 +4053,7 @@ fn query_result_view(
                 tab_id,
                 editor,
                 result_page,
+                large_value_window.as_ref(),
                 detail_height,
                 input,
                 this.temporal_part_input.clone(),
@@ -4019,7 +4070,7 @@ fn query_result_view(
     } else {
         0.
     };
-    let page_footer_height = if page.offset > 0 || page.has_more {
+    let page_footer_height = if page.offset > 0 || page.has_more || page.incomplete.is_some() {
         36.
     } else {
         0.
@@ -4078,18 +4129,8 @@ fn query_result_view(
                 )
             })
         })
-        .when_some(readonly_detail, |this, detail| {
-            this.when_some(
-                query_result_cell_detail_panel(
-                    tab_id,
-                    result_page,
-                    detail,
-                    detail_height,
-                    colors,
-                    cx,
-                ),
-                |this, panel| this.child(panel.absolute().right_0().bottom_0().left_0()),
-            )
+        .when_some(readonly_panel, |this, panel| {
+            this.child(panel.absolute().right_0().bottom_0().left_0())
         })
         .when_some(cell_detail_drawer, |this, panel| {
             this.child(panel.absolute().right_0().bottom_0().left_0().h(px(detail_height)))
@@ -4145,9 +4186,10 @@ fn query_result_page_footer(
     let page_size = data_page_limit(page.limit);
     let page_no = data_page_number(page.offset, page_size);
     let can_previous = page.offset > 0;
-    let can_next = page.has_more;
+    // 资源不完整时同样可以继续，但不能按配置页大小越过未展示的行。
+    let can_next = page.has_more || page.incomplete.is_some();
     let previous_offset = page.offset.saturating_sub(page_size);
-    let next_offset = page.offset.saturating_add(page_size);
+    let next_offset = page.next_offset();
 
     div()
         .h(px(36.))
@@ -4159,6 +4201,23 @@ fn query_result_page_footer(
         .items_center()
         .justify_end()
         .gap_2()
+        .when_some(page.incomplete.as_ref(), |this, incomplete| {
+            this.child(
+                div()
+                    .id("query-result-incomplete")
+                    .debug_selector(|| "query-result-incomplete".into())
+                    .flex_1()
+                    .min_w(px(0.))
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .text_color(colors.warning)
+                    .child(
+                        tr("app.pagination.incomplete")
+                            .replace("%{reason}", incomplete.reason.trim()),
+                    ),
+            )
+        })
         .child(
             query_result_page_button(
                 AppIcon::ChevronsLeft,
@@ -4540,11 +4599,14 @@ fn query_result_cell_detail_panel(
     detail: QueryResultCellDetail,
     height: f32,
     colors: UiColors,
+    this: &mut NavicatMain,
     cx: &mut Context<NavicatMain>,
 ) -> Option<Div> {
     let column = page.columns.get(detail.column)?;
     let value = page.rows.get(detail.row)?.values.get(detail.column)?.clone();
-    let value_text = cell_value_label(&value);
+    let large = value.large_value().cloned();
+    // 大字段没有「复制整值」入口：不取标签文本，省掉一次（可能有界的）整串复制。
+    let value_text = large.is_none().then(|| cell_value_label(&value));
     let type_name = column
         .type_name
         .clone()
@@ -4565,6 +4627,10 @@ fn query_result_cell_detail_panel(
     } else {
         colors.border_soft
     };
+    // 大字段窗口先就绪：标题行与正文都按同一份窗口状态渲染。
+    let large_window = large.as_ref().map(|large| {
+        this.ensure_large_value_window(tab_id, detail.row, detail.column, large, cx)
+    });
 
     Some(
         div()
@@ -4639,6 +4705,7 @@ fn query_result_cell_detail_panel(
                                         MouseButton::Left,
                                         cx.listener(move |this, _, _, cx| {
                                             this.query_result_cell_detail.remove(&tab_id);
+                                            this.large_value_windows.remove(&tab_id);
                                             cx.notify();
                                             cx.stop_propagation();
                                         }),
@@ -4647,13 +4714,28 @@ fn query_result_cell_detail_panel(
                     ),
             )
             .child(query_result_cell_detail_value_header(
-                value_text, colors,
+                tab_id,
+                value_text,
+                large_window.as_ref(),
+                colors,
+                cx,
             ))
-            .child(cell_detail_value_preview(tab_id, &value, colors, cx)),
+            .child(match large_window.as_ref() {
+                // 只读结果里的大字段同样只给分段窗口；不预读，点「读取更多」才占配额。
+                Some(window) => large_value_window_view(Some(window), colors),
+                None => cell_detail_value_preview(tab_id, &value, colors, cx),
+            }),
     )
 }
 
-fn query_result_cell_detail_value_header(value_text: String, colors: UiColors) -> Div {
+fn query_result_cell_detail_value_header(
+    tab_id: TabId,
+    value_text: Option<String>,
+    large_window: Option<&LargeValueWindows>,
+    colors: UiColors,
+    cx: &mut Context<NavicatMain>,
+) -> Div {
+    let status = large_value_status(large_window, colors);
     div()
         .h(px(22.))
         .w_full()
@@ -4661,20 +4743,90 @@ fn query_result_cell_detail_value_header(value_text: String, colors: UiColors) -
         .flex()
         .items_center()
         .justify_between()
+        .gap_2()
+        .child(
+            // 左组必须让出空间：状态里的错误文案很长时，按钮不能被挤出详情面板。
+            div()
+                .flex()
+                .flex_1()
+                .items_center()
+                .gap_2()
+                .min_w(px(0.))
         .child(
             div()
+                        .flex_none()
                 .text_size(px(12.))
                 .font_weight(gpui::FontWeight::SEMIBOLD)
                 .text_color(colors.muted)
                 .child(tr("app.placeholder.value")),
         )
-        .child(cell_detail_icon_button(AppIcon::Copy, tr("app.context.copy"), colors).on_mouse_down(
+                .when_some(status, |this, status| this.child(status)),
+        )
+        .child(if large_window.is_some() {
+            // 操作按钮与可编辑结果一致放在标题行；大字段只给「下载」与「读取更多」。
+            // 未读完就保留按钮：读取中换成转圈，不让按钮凭空消失。
+            let can_load_more = large_window.is_some_and(|window| !window.view.is_complete());
+            let load_more_loading = large_window.is_some_and(|window| window.view.loading);
+            div()
+                .flex()
+                .items_center()
+                .gap_1()
+                .child(
+                    cell_detail_icon_button(
+                        AppIcon::Download,
+                        tr("app.cell_detail.large_download_tip"),
+                        colors,
+                    )
+                    .debug_selector(|| "large-value-save".into())
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _, _, cx| {
+                            this.save_large_value_to_file(tab_id, cx);
+                            cx.stop_propagation();
+                        }),
+                    ),
+                )
+                .when(can_load_more, |this| {
+                    if load_more_loading {
+                        // 读取中只转圈、不响应点击，尺寸与其它图标按钮一致。
+                        this.child(
+                            cell_detail_icon_spinner_button(
+                                tr("app.cell_detail.large_loading"),
+                                colors,
+                            )
+                            .debug_selector(|| "large-value-load-more".into()),
+                        )
+                    } else {
+                        this.child(
+                            cell_detail_icon_button(
+                                AppIcon::ChevronsDown,
+                                tr("app.cell_detail.large_load_more_tip"),
+                                colors,
+                            )
+                            .debug_selector(|| "large-value-load-more".into())
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |this, _, _, cx| {
+                                    this.load_next_large_value_chunk(tab_id, cx);
+                                    cx.notify();
+                                    cx.stop_propagation();
+                                }),
+                            ),
+                        )
+                    }
+                })
+                .into_any_element()
+        } else {
+            let copy_text = value_text.unwrap_or_default();
+            cell_detail_icon_button(AppIcon::Copy, tr("app.context.copy"), colors).on_mouse_down(
             MouseButton::Left,
             move |_, _, cx| {
-                cx.write_to_clipboard(ClipboardItem::new_string(value_text.clone()));
+                    cx.write_to_clipboard(ClipboardItem::new_string(copy_text.clone()));
                 cx.stop_propagation();
             },
-        ))
+            )
+            .into_any_element()
+        })
 }
 
 #[derive(Clone)]
@@ -4789,6 +4941,11 @@ fn query_execution_summary_view(
                 .min_h(px(0.))
                 .min_w(px(0.))
                 .id(("query-execution-summary-scroll", tab_id.0))
+                .debug_selector(|| "query-summary-scroll".into())
+                // `overflow_scrollbar()` 把本元素当作滚动区里的 flex 子项，默认交叉轴
+                // 拉伸会让表格高度恒等于视口，纵向 scroll_max 为 0、行多了只被裁掉。
+                // `self_start` 取消拉伸，高度回到内容高度，纵向滚动才成立。
+                .self_start()
                 .overflow_scrollbar()
                 .child(table),
         )

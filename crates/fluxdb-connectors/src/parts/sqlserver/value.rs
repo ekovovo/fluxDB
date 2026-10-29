@@ -217,6 +217,20 @@ fn sqlserver_bind_cell(query: &mut tiberius::Query<'_>, value: &CellValue) -> fl
             return Err(Error::new(ErrorKind::Query, "非有限浮点数不能写入 SQL Server"));
         }
         CellValue::Text(value) | CellValue::Json(value) => query.bind(value.clone()),
+        // 预览不是完整值：绑进去等于用片段覆盖真值。
+        CellValue::TruncatedText { .. } => {
+            return Err(Error::new(
+                ErrorKind::Unsupported,
+                "文本只加载了预览（截断的 CLOB），不能作为写入值",
+            ));
+        }
+        // 大字段只有预览：绑进去等于用片段覆盖真值。
+        CellValue::LargeValue(_) => {
+            return Err(Error::new(
+                ErrorKind::Unsupported,
+                "超大字段只加载了预览，不能作为写入值；请先按内容引用读取完整值",
+            ));
+        }
         CellValue::Bytes(value) => query.bind(value.clone()),
         CellValue::BinarySummary(summary) if summary.is_null => query.bind(Option::<&str>::None),
         CellValue::BinarySummary(_) => {

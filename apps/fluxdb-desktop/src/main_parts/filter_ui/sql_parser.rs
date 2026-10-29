@@ -1140,7 +1140,14 @@ fn data_change_sql_preview(
                 format!(
                     "{} = {}",
                     sql_quote_ident(&cell.column, db_kind),
-                    sql_preview_cell_literal(&cell.value, db_kind)
+                    // 流式写入的正文不在内存里：预览只说明规模，不编造一份可执行的字面量。
+                    match cell.value.stream() {
+                        Some(stream) => format!(
+                            "NULL /* 超大字段：共 {} 字节，需按内容引用分块写入 */",
+                            stream.byte_length
+                        ),
+                        None => sql_preview_cell_literal(cell.value.placeholder(), db_kind),
+                    }
                 )
             })
             .collect::<Vec<_>>()
@@ -1241,6 +1248,10 @@ fn cell_value_json(value: &CellValue) -> serde_json::Value {
         CellValue::Bytes(value) => {
             serde_json::Value::String(format!("(BLOB) {} bytes", value.len()))
         }
+        // 预览不是完整值：带标记输出，避免导出/复制出来的 JSON 被当成真数据。
+        CellValue::TruncatedText { .. } => serde_json::Value::String(value.display_label()),
+        // 超大字段同样只导出预览文本（display_label 已带「仅预览」说明）。
+        CellValue::LargeValue(_) => serde_json::Value::String(value.display_label()),
         CellValue::BinarySummary(_) => serde_json::Value::String(value.display_label()),
     }
 }
@@ -1379,6 +1390,15 @@ fn sql_preview_cell_literal(value: &CellValue, db_kind: DatabaseKind) -> String 
             }
         }
         CellValue::Text(value) => sql_quote_literal(value),
+        // 只有预览时不能渲染成可执行字面量：半截值会覆盖真数据。
+        CellValue::TruncatedText { total_chars, .. } => {
+            format!("NULL /* 截断的 CLOB：共 {total_chars} 字符，需完整读取 */")
+        }
+        // 同理：超大字段只有预览，不能渲染成会覆盖真值的字面量。
+        CellValue::LargeValue(large) => match large.byte_length {
+            Some(length) => format!("NULL /* 超大字段：共 {length} 字节，需按内容引用读取 */"),
+            None => "NULL /* 超大字段：完整大小未知，需按内容引用读取 */".to_string(),
+        },
         CellValue::BinarySummary(_) => "NULL".to_string(),
         CellValue::Bytes(value) => {
             let hex = value

@@ -18,6 +18,7 @@ fn app_completion_dialect(kind: DatabaseKind) -> &'static dyn CompletionDialect 
         DatabaseKind::Postgres => &fluxdb_completion::POSTGRES,
         DatabaseKind::Dameng => &fluxdb_completion::DAMENG,
         DatabaseKind::SqlServer => &fluxdb_completion::SQLSERVER,
+        DatabaseKind::Oracle => &fluxdb_completion::ORACLE,
         DatabaseKind::MongoDb | DatabaseKind::Redis => &fluxdb_completion::GENERIC,
     }
 }

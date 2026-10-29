@@ -61,27 +61,15 @@ fn dm_load_data_with_expression(
     // 类型展示以表元数据为准：结果描述的 VARCHAR 精度常按字节给出，
     // 直接覆盖会把 VARCHAR(24) 显示成 VARCHAR(96)。
     let output_columns = columns;
-    let mut data_rows = Vec::with_capacity(rows.len());
-    for row in rows {
-        let mut values = row
-            .into_iter()
-            .take(output_columns.len())
-            .map(|value| dm_cell_value(&value))
-            .collect::<Vec<_>>();
-        if values.len() < output_columns.len() {
-            values.resize(output_columns.len(), CellValue::Null);
-        }
-        data_rows.push(Row { values });
-    }
-    let has_more = data_rows.len() > pagination.limit as usize;
-    data_rows.truncate(pagination.limit as usize);
-    Ok(DataPage {
-        columns: output_columns,
-        rows: data_rows,
-        offset: pagination.offset,
-        limit: pagination.limit,
-        has_more,
-    })
+    // 大字段按内容归属外置：同一张表的多次翻页共用一个归属，重新加载时整批替换。
+    let owner = fluxdb_core::table_content_owner(path);
+    dm_collect_page(
+        output_columns,
+        rows.into_iter(),
+        pagination,
+        0,
+        &owner,
+    )
 }
 
 fn dm_order_by_clause(sort: &[SortSpec], columns: &[Column], alias: &str) -> String {

@@ -14,6 +14,7 @@ include!("navicat_main/data_sorting.rs");
 include!("navicat_main/local_filter.rs");
 include!("navicat_main/field_visibility_search.rs");
 include!("navicat_main/cell_editing.rs");
+include!("navicat_main/large_value_window.rs");
 include!("navicat_main/filter_text.rs");
 include!("navicat_main/filter_builder.rs");
 include!("navicat_main/table_state.rs");

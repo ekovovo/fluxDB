@@ -332,6 +332,9 @@ impl fluxdb_core::AiTool for PageReadRowsTool {
                         fluxdb_core::CellValue::BinarySummary(data) => serde_json::json!({"binary_bytes":data.byte_length,"is_null":data.is_null}),
                         fluxdb_core::CellValue::Text(text) | fluxdb_core::CellValue::Json(text) =>
                             serde_json::json!({"text": text.chars().take(1024).collect::<String>(), "truncated": text.chars().take(1025).count() > 1024}),
+                        // 数据页里只有预览：明确标出总量，避免 AI 把片段当完整值引用。
+                        fluxdb_core::CellValue::TruncatedText { preview, total_chars } =>
+                            serde_json::json!({"text": preview.chars().take(1024).collect::<String>(), "truncated": true, "total_chars": total_chars}),
                         value => serde_json::to_value(value).unwrap_or_default(),
                     }).collect();
                     let row = serde_json::json!({"values": values, "columns_truncated": column_indices.len()<row.values.len()});

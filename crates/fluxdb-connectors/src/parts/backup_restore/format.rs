@@ -22,6 +22,7 @@ pub fn format_for_execution(
         (DatabaseKind::Sqlite, BackupExecution::SqlDump) => false, // 当前只支持完整二进制快照
         (DatabaseKind::MySql | DatabaseKind::TiDb, BackupExecution::SqlDump) => true,
         (DatabaseKind::SqlServer, BackupExecution::SqlDump) => true,
+        (DatabaseKind::Oracle, BackupExecution::SqlDump) => true,
         _ => false,
     };
     matches.then(|| execution.format())

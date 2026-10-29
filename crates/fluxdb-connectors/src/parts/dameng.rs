@@ -5,4 +5,5 @@ include!("dameng/metadata.rs");
 include!("dameng/data.rs");
 include!("dameng/apply_changes.rs");
 include!("dameng/executor.rs");
+include!("dameng/user_admin.rs");
 include!("dameng/connector.rs");

@@ -170,6 +170,7 @@ impl AppController {
             ),
             DatabaseKind::Sqlite => PathBuf::new(),
             DatabaseKind::Dameng => PathBuf::new(),
+            DatabaseKind::Oracle => PathBuf::new(),
             _ => return Err(Error::new(ErrorKind::Unsupported, "此数据库尚不支持恢复")),
         };
         let plan = fluxdb_connectors::database_backup(request.config.kind)?

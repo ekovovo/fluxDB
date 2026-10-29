@@ -43,6 +43,7 @@ fn dameng_profile_password_is_encrypted_and_restored() {
         }),
         sqlserver_profile: None,
         mongo_profile: None,
+        oracle_profile: None,
     };
 
     storage

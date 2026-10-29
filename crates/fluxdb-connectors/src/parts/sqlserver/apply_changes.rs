@@ -19,7 +19,10 @@ fn sqlserver_apply_changes(
         .await;
         match result {
             Ok(outcome) => {
-                sqlserver_exec_transaction(&mut client, "COMMIT TRANSACTION").await?;
+                // 提交途中断连：服务端可能已提交，标成结果未知；服务端拒绝仍是确定失败。
+                sqlserver_exec_transaction(&mut client, "COMMIT TRANSACTION")
+                    .await
+                    .map_err(|error| error.mark_outcome_unknown("提交 SQL Server 事务"))?;
                 Ok(outcome)
             }
             Err(error) => {
@@ -101,8 +104,6 @@ async fn sqlserver_update_row(
     if update.cells.is_empty() {
         return Ok(());
     }
-    let mut assignments = Vec::new();
-    let mut values = Vec::new();
     for cell in &update.cells {
         let column = columns
             .iter()
@@ -114,33 +115,124 @@ async fn sqlserver_update_row(
                 format!("字段 {} 由数据库生成，不能更新", column.name),
             ));
         }
-        assignments.push(format!(
-            "{} = {}",
-            fluxdb_core::SqlServerDialect.quote_identifier(&cell.column),
-            sqlserver_placeholder(values.len() + 1)
-        ));
-        values.push(cell.value.clone());
     }
-    // 无主键时需要先用完整原值确认唯一行。该查询独立绑定，占位符从 @P1 开始。
-    if !columns.iter().any(|column| column.primary_key) && !update.identity.values.is_empty() {
-        let (predicate, predicate_values) =
-            sqlserver_identity_predicate_from(&update.identity, columns, 0)?;
-        sqlserver_require_single_row(client, table, &predicate, &predicate_values).await?;
+
+    let (plain, streamed) = split_update_cells(update);
+    if !plain.is_empty() {
+        let mut assignments = Vec::new();
+        let mut values = Vec::new();
+        for cell in plain {
+            assignments.push(format!(
+                "{} = {}",
+                fluxdb_core::SqlServerDialect.quote_identifier(&cell.column),
+                sqlserver_placeholder(values.len() + 1)
+            ));
+            values.push(cell.value.placeholder().clone());
+        }
+        // 无主键时需要先用完整原值确认唯一行。该查询独立绑定，占位符从 @P1 开始。
+        if !columns.iter().any(|column| column.primary_key) && !update.identity.values.is_empty() {
+            let (predicate, predicate_values) =
+                sqlserver_identity_predicate_from(&update.identity, columns, 0)?;
+            sqlserver_require_single_row(client, table, &predicate, &predicate_values).await?;
+        }
+        // SET 已经占用了 @P1..@Pn，WHERE 的占位符必须从下一个序号继续，
+        // 否则同一行谓词会绑定到被更新的值上。
+        let (where_sql, where_values) =
+            sqlserver_identity_predicate_from(&update.identity, columns, values.len())?;
+        values.extend(where_values);
+        let sql = format!("UPDATE {table} SET {}{where_sql}", assignments.join(", "));
+        let affected = sqlserver_execute_bound(client, &sql, &values)
+            .await
+            .map_err(|error| Error::new(error.kind, format!("更新失败：{}", error.message)))?;
+        if affected > 1 {
+            return Err(Error::new(
+                ErrorKind::Query,
+                format!("更新影响了 {affected} 行，事务已回滚"),
+            ));
+        }
     }
-    // SET 已经占用了 @P1..@Pn，WHERE 的占位符必须从下一个序号继续，
-    // 否则同一行谓词会绑定到被更新的值上。
-    let (where_sql, where_values) =
-        sqlserver_identity_predicate_from(&update.identity, columns, values.len())?;
-    values.extend(where_values);
-    let sql = format!("UPDATE {table} SET {}{where_sql}", assignments.join(", "));
-    let affected = sqlserver_execute_bound(client, &sql, &values)
+
+    for (cell, stream) in streamed {
+        sqlserver_apply_blob_stream(client, update, cell, stream, columns, table).await?;
+    }
+    Ok(())
+}
+
+/// 流式写入 SQL Server 的大字段单元格。
+///
+/// 二进制：`varbinary(max)` 是列内 LOB，`UPDATE ... SET c.WRITE(@chunk, NULL, @len)`
+/// 是官方就地追加写法（`NULL` 表示追加到末尾），不会像 `c = c + @chunk` 那样每次
+/// 重写整值。目标列不是 `varbinary(max)` 时服务端会直接报错，属于用户选错类型。
+///
+/// 文本：`.WRITE` 只对二进制列有效，`nvarchar(max)/varchar(max)` 只能用
+/// `c = COALESCE(c, N'') + @n`，每次追加都会重写整值（O(n²)，与 MySQL/PG 相同）。
+/// 文本参数按字符串绑定，分块边界已对齐到 UTF-8 字符边界。
+async fn sqlserver_apply_blob_stream(
+    client: &mut SqlServerClient,
+    update: &RowUpdate,
+    cell: &fluxdb_core::CellUpdate,
+    stream: &fluxdb_core::StreamedValue,
+    columns: &[SqlServerColumnInfo],
+    table: &str,
+) -> fluxdb_core::Result<()> {
+    let quoted = fluxdb_core::SqlServerDialect.quote_identifier(&cell.column);
+    let is_text = stream.is_text();
+    // 清空：写空串/空二进制而不是 NULL，目标列可能是 NOT NULL。
+    // 占位符从 @P2 开始编号，因为 @P1 已被空值占用。
+    let (clear_where, where_values) =
+        sqlserver_identity_predicate_from(&update.identity, columns, 1)?;
+    let empty = if is_text {
+        CellValue::Text(String::new())
+    } else {
+        CellValue::Bytes(Vec::new())
+    };
+    let mut clear_values = vec![empty];
+    clear_values.extend(where_values);
+    let clear_sql = format!("UPDATE {table} SET {quoted} = @P1{clear_where}");
+    let affected = sqlserver_execute_bound(client, &clear_sql, &clear_values)
         .await
         .map_err(|error| Error::new(error.kind, format!("更新失败：{}", error.message)))?;
-    if affected > 1 {
-        return Err(Error::new(
-            ErrorKind::Query,
-            format!("更新影响了 {affected} 行，事务已回滚"),
-        ));
+    require_single_streamed_row(affected, &cell.column)?;
+
+    let mut offset = 0u64;
+    while let Some(chunk) = streamed_chunk_at(stream, offset)? {
+        let chunk_len = chunk.len();
+        let (sql, values) = if is_text {
+            // 文本列没有 `.WRITE`：用 `+` 拼接，占位符只需 1 个。
+            let (identity_sql, identity_values) =
+                sqlserver_identity_predicate_from(&update.identity, columns, 1)?;
+            let text = String::from_utf8(chunk).map_err(|_| {
+                Error::new(
+                    ErrorKind::Unsupported,
+                    "待写入文本不是合法的 UTF-8，已取消提交",
+                )
+            })?;
+            let mut values = vec![CellValue::Text(text)];
+            values.extend(identity_values);
+            (
+                format!("UPDATE {table} SET {quoted} = COALESCE({quoted}, N'') + @P1{identity_sql}"),
+                values,
+            )
+        } else {
+            // `.WRITE` 的三个参数：数据块、写入起点（NULL = 追加到末尾）、字节数。
+            let (identity_sql, identity_values) =
+                sqlserver_identity_predicate_from(&update.identity, columns, 3)?;
+            let mut values = vec![
+                CellValue::Bytes(chunk),
+                CellValue::Null,
+                CellValue::I64(chunk_len as i64),
+            ];
+            values.extend(identity_values);
+            (
+                format!("UPDATE {table} SET {quoted}.WRITE(@P1, @P2, @P3){identity_sql}"),
+                values,
+            )
+        };
+        let affected = sqlserver_execute_bound(client, &sql, &values)
+            .await
+            .map_err(|error| Error::new(error.kind, format!("更新失败：{}", error.message)))?;
+        require_single_streamed_row(affected, &cell.column)?;
+        offset += chunk_len as u64;
     }
     Ok(())
 }
@@ -243,6 +335,12 @@ fn sqlserver_identity_predicate_from(
             return Err(Error::new(
                 ErrorKind::Query,
                 format!("字段不存在或已变更：{name}"),
+            ));
+        }
+        if value.is_truncated() || matches!(value, CellValue::BinarySummary(_)) {
+            return Err(Error::new(
+                ErrorKind::Unsupported,
+                "行身份包含未完整加载的大字段，无法安全定位行；请刷新后重试或改用主键定位",
             ));
         }
         let quoted = fluxdb_core::SqlServerDialect.quote_identifier(name);

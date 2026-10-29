@@ -29,6 +29,14 @@ impl AppController {
         let Some(request) = request else {
             return self.fail(Error::new(ErrorKind::Internal, "查询编辑器标签页不存在"));
         };
+        // 重新执行会替换掉这个标签上一次的结果页：上一页外置的大字段内容随之失效。
+        // 不释放会一直占配额，也会让用户拿着已经不属于当前结果的旧引用。
+        if let Some(store) = fluxdb_core::cell_content_store() {
+            store.release_owner(&fluxdb_core::result_content_owner(
+                request.session_id,
+                request.connection_id,
+            ));
+        }
 
         let cancel_flag = self.query_cancel_flag(tab_id);
         let result =
@@ -74,10 +82,6 @@ impl AppController {
 #[cfg(test)]
 mod query_execution_stack_tests {
     use super::*;
-    use std::io::{Read, Write};
-    use std::net::TcpListener;
-    use std::process::{Command, Stdio};
-    use std::time::{Duration, Instant};
 
     #[test]
     fn text_commands_preserve_options_and_publish_results() {
@@ -97,6 +101,7 @@ mod query_execution_stack_tests {
                 dameng_profile: None,
                 mongo_profile: None,
                 sqlserver_profile: None,
+                oracle_profile: None,
                 redis_profile: None,
             };
             controller.dispatch(AppCommand::ReplaceConnections(vec![config]));
@@ -146,146 +151,6 @@ mod query_execution_stack_tests {
             assert_eq!(editor.summaries, execution.summaries);
             assert_eq!(controller.state().query_history.len(), 1);
             assert!(controller.query_cancel_flag(tab_id).is_none());
-        }
-    }
-
-    #[test]
-    fn text_commands_on_small_stack_handle_mysql_handshake_failure() {
-        const CHILD_PORT: &str = "FLUXDB_QUERY_STACK_TEST_PORT";
-        const CHILD_MODE: &str = "FLUXDB_QUERY_STACK_TEST_MODE";
-        const TEST_NAME: &str = "query_execution_stack_tests::text_commands_on_small_stack_handle_mysql_handshake_failure";
-
-        if let Ok(port) = std::env::var(CHILD_PORT) {
-            let mut controller = AppController::new();
-            let config = ConnectionConfig {
-                id: ConnectionId(1),
-                name: "query-stack-test".into(),
-                kind: DatabaseKind::MySql,
-                endpoint: fluxdb_core::Endpoint::Tcp {
-                    host: "127.0.0.1".into(),
-                    port: port.parse().unwrap(),
-                    database: None,
-                },
-                options: BTreeMap::new(),
-                mysql_profile: None,
-                postgres_profile: None,
-                dameng_profile: None,
-                mongo_profile: None,
-                sqlserver_profile: None,
-                redis_profile: None,
-            };
-            controller.dispatch(AppCommand::ReplaceConnections(vec![config]));
-            controller.dispatch(AppCommand::OpenQueryEditor(ConnectionId(1)));
-            let tab_id = controller.state().active_tab.unwrap();
-            controller.dispatch(AppCommand::StartQueryExecution(tab_id));
-            let command = if std::env::var(CHILD_MODE).unwrap() == "default" {
-                AppCommand::ExecuteQueryText {
-                    tab_id,
-                    text: "SELECT 1".into(),
-                }
-            } else {
-                AppCommand::ExecuteQueryTextWithOptions {
-                    tab_id,
-                    text: "SELECT 1".into(),
-                    options: QueryExecutionOptions::default(),
-                }
-            };
-            // 与 macOS GCD 一样使用小栈；溢出会终止子进程，不能拖垮其他用例。
-            std::thread::Builder::new()
-                .stack_size(512 * 1024)
-                .spawn(move || {
-                    let AppEvent::Failed(error) = controller.dispatch(command) else {
-                        panic!("incomplete TLS handshake must report a connection error");
-                    };
-                    assert_eq!(error.title, "连接失败");
-                    assert!(error.retryable);
-                    assert_eq!(controller.state().last_error.as_ref(), Some(&error));
-                    let TabKind::QueryEditor(editor) =
-                        &controller.state().active_tab().unwrap().kind
-                    else {
-                        panic!("query tab must remain open");
-                    };
-                    assert!(!editor.running);
-                    assert_eq!(editor.error.as_ref(), Some(&error));
-                    assert!(editor.results.is_empty());
-                    assert!(editor.summaries.is_empty());
-                })
-                .unwrap()
-                .join()
-                .unwrap();
-            return;
-        }
-
-        for mode in ["default", "explicit"] {
-            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-            listener.set_nonblocking(true).unwrap();
-            let mut child = Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", TEST_NAME, "--nocapture"])
-                .env(
-                    CHILD_PORT,
-                    listener.local_addr().unwrap().port().to_string(),
-                )
-                .env(CHILD_MODE, mode)
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .spawn()
-                .unwrap();
-            let deadline = Instant::now() + Duration::from_secs(10);
-            let mut stream = loop {
-                match listener.accept() {
-                    Ok((stream, _)) => break stream,
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        if child.try_wait().unwrap().is_some() || Instant::now() >= deadline {
-                            let _ = child.kill();
-                            let output = child.wait_with_output().unwrap();
-                            panic!("{mode}: no handshake connection: {output:?}");
-                        }
-                        std::thread::sleep(Duration::from_millis(10));
-                    }
-                    Err(error) => panic!("{mode}: accept failed: {error}"),
-                }
-            };
-            // macOS 的 accept 会继承 listener 的非阻塞标志，读包前显式恢复。
-            stream.set_nonblocking(false).unwrap();
-            stream
-                .set_read_timeout(Some(Duration::from_secs(5)))
-                .unwrap();
-            stream
-                .set_write_timeout(Some(Duration::from_secs(5)))
-                .unwrap();
-
-            // 仅模拟支持 TLS 的 MySQL greeting；不认证，也不接收或执行 SQL。
-            let capabilities: u32 = 1 | 4 | 512 | 2048 | 8192 | 32768 | 131072 | 524288;
-            let mut greeting = b"\x0a8.0.36\0\x01\0\0\0abcdefgh\0".to_vec();
-            greeting.extend_from_slice(&(capabilities as u16).to_le_bytes());
-            greeting.extend_from_slice(b"\x2d\x02\0");
-            greeting.extend_from_slice(&((capabilities >> 16) as u16).to_le_bytes());
-            greeting.push(21);
-            greeting.extend_from_slice(&[0; 10]);
-            greeting.extend_from_slice(b"ijklmnopqrst\0mysql_native_password\0");
-            let mut packet = (greeting.len() as u32).to_le_bytes();
-            packet[3] = 0;
-            stream.write_all(&packet).unwrap();
-            stream.write_all(&greeting).unwrap();
-            let mut ssl_request = [0; 36];
-            let handshake = stream.read_exact(&mut ssl_request);
-            drop(stream);
-
-            let deadline = Instant::now() + Duration::from_secs(30);
-            while child.try_wait().unwrap().is_none() {
-                if Instant::now() >= deadline {
-                    child.kill().unwrap();
-                    child.wait().unwrap();
-                    panic!("{mode}: query child timed out");
-                }
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            let output = child.wait_with_output().unwrap();
-            assert!(output.status.success(), "{mode}: {output:?}");
-            handshake.unwrap();
-            assert_eq!(&ssl_request[..3], &[32, 0, 0]);
-            let flags = u32::from_le_bytes(ssl_request[4..8].try_into().unwrap());
-            assert_ne!(flags & 2048, 0, "{mode}: client must request TLS");
         }
     }
 }

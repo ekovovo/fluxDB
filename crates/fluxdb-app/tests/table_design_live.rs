@@ -134,6 +134,7 @@ fn dameng_design_snapshot_uses_one_metadata_read() {
         }),
         sqlserver_profile: None,
         mongo_profile: None,
+        oracle_profile: None,
     };
     let _ = connector_for(&config)
         .expect("DM8 connector")
@@ -202,6 +203,7 @@ fn mysql_design_snapshot_uses_one_metadata_read() {
         dameng_profile: None,
         mongo_profile: None,
         sqlserver_profile: None,
+        oracle_profile: None,
     }
     .mysql_resolved();
     let table = format!("fluxdb_design_snapshot_{}", std::process::id());

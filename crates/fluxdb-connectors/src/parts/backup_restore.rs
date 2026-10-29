@@ -19,6 +19,7 @@ mod backup_restore {
     include!("backup_restore/providers.rs");
     include!("backup_restore/dameng.rs");
     include!("backup_restore/sqlserver.rs");
+    include!("backup_restore/oracle.rs");
     include!("backup_restore/restore.rs");
 }
 pub use backup_restore::{

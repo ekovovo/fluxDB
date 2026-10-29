@@ -193,12 +193,13 @@ pub fn compress_sql_text(sql: &str) -> String {
     compressed.trim().to_string()
 }
 
-/// 组装实际下发执行的 SQL：去掉注释、按分句追加默认 LIMIT。
+/// 组装实际下发执行的 SQL：去掉注释、按分句追加默认行数上限。
 ///
 /// `db_kind` 决定双引号语义：MySQL/TiDB（以及历史行为一致的 SQLite）默认把 `"` 当字符串
 /// 定界符，用户用 `"..."` 写字符串时归一化为 `'...'`；**PostgreSQL 的 `"` 是标识符引用**
 /// （`"public"."orders"`、`"amount"`），绝不能改写，否则合法语句被换成单引号字符串导致
-/// 语法错误（connection 里输入双引号、实际下发变单引号即此 bug）。
+/// 语法错误（connection 里输入双引号、实际下发变单引号即此 bug）。Oracle 的 `"` 同样是
+/// 标识符引用，且保留大小写，更不能归一。
 fn sql_text_for_execution(sql: &str, default_limit: u64, db_kind: DatabaseKind) -> String {
     let pipeline = if matches!(
         db_kind,
@@ -206,13 +207,23 @@ fn sql_text_for_execution(sql: &str, default_limit: u64, db_kind: DatabaseKind) 
     ) {
         normalize_double_quoted_sql_strings(sql)
     } else {
-        // PG/Redis/Mongo：如实保留 `"`，不做字符串归一。
+        // PG/Oracle/Redis/Mongo：如实保留 `"`，不做字符串归一。
         sql.to_string()
     };
-    apply_default_select_limit(&strip_sql_comments(&pipeline), default_limit, db_kind)
+    apply_default_select_limit(
+        &strip_sql_comments(&pipeline, db_kind),
+        default_limit,
+        db_kind,
+    )
 }
 
-fn strip_sql_comments(sql: &str) -> String {
+/// 去掉注释。
+///
+/// Oracle 有两处特例，按其它方言处理会静默改语义：
+/// - `/*+ … */` 是优化器 hint，去掉后语句仍合法、执行计划却变了，必须原样保留；
+/// - `#` 不是注释起始符，按 MySQL 规则剥到行尾会把合法 SQL 吃掉。
+fn strip_sql_comments(sql: &str, db_kind: DatabaseKind) -> String {
+    let is_oracle = db_kind == DatabaseKind::Oracle;
     let mut stripped = String::with_capacity(sql.len());
     let mut chars = sql.chars().peekable();
 
@@ -225,14 +236,19 @@ fn strip_sql_comments(sql: &str) -> String {
                 stripped.push(' ');
                 strip_until_newline(&mut stripped, &mut chars);
             }
-            '#' => {
+            '#' if !is_oracle => {
                 stripped.push(' ');
                 strip_until_newline(&mut stripped, &mut chars);
             }
             '/' if matches!(chars.peek(), Some('*')) => {
                 chars.next();
-                stripped.push(' ');
-                strip_block_comment(&mut stripped, &mut chars);
+                if is_oracle && matches!(chars.peek(), Some('+')) {
+                    stripped.push_str("/*");
+                    copy_until_block_comment_end(&mut stripped, &mut chars);
+                } else {
+                    stripped.push(' ');
+                    strip_block_comment(&mut stripped, &mut chars);
+                }
             }
             _ => stripped.push(ch),
         }
@@ -242,18 +258,20 @@ fn strip_sql_comments(sql: &str) -> String {
 }
 
 fn apply_default_select_limit(sql: &str, default_limit: u64, db_kind: DatabaseKind) -> String {
+    let dialect = fluxdb_core::sql_dialect(db_kind);
     let mut output = String::with_capacity(sql.len() + 16);
     let mut start = 0;
     for (end, separator_len) in sql_statement_ranges(sql) {
         let statement = sql[start..end].trim();
-        let statement = if db_kind == DatabaseKind::SqlServer {
-            // T-SQL 没有 `LIMIT`，用 TOP 封顶，且不能与 OFFSET/FETCH 混用。
-            apply_sqlserver_top_limit(statement, default_limit)
-        } else {
-            limit_select_statement(
+        let statement = match dialect.render_row_limit_suffix(default_limit) {
+            // SQL Server：`TOP` 在列位置，只能单独插入，且不能与 OFFSET/FETCH 混用。
+            None => apply_sqlserver_top_limit(statement, default_limit),
+            Some(suffix) => limit_select_statement(
                 &normalize_select_limit_before_order(statement),
                 default_limit,
-            )
+                &suffix,
+                dialect.row_limit_allows_locking_clause(),
+            ),
         };
         if !statement.is_empty() {
             if !output.is_empty() {
@@ -353,7 +371,7 @@ fn apply_sqlserver_top_limit(statement: &str, page_size: u64) -> String {
 }
 
 fn normalize_select_limit_before_order(statement: &str) -> String {
-    if !starts_with_sql_keyword(statement, "select") {
+    if !sql_selects_rows(statement) {
         return statement.to_string();
     }
 
@@ -469,14 +487,23 @@ fn trim_sql_statement_range(sql: &str, range: &mut std::ops::Range<usize>) {
     }
 }
 
-/// 对单个 SELECT 应用默认 limit（封顶值）。
+/// 对单个 SELECT 应用默认上限（封顶值）。`limit_suffix` 由方言给出（` LIMIT n` /
+/// ` FETCH FIRST n ROWS ONLY`）。
 ///
-/// - `page_size == 0` 表示「不限制」：不追加 LIMIT，也不强制改写用户已写的 LIMIT。
-/// - 无 LIMIT 且 `page_size > 0`：追加 `LIMIT {page_size}`。
-/// - 有 LIMIT 且 count `> page_size`：强制改写为 `LIMIT {page_size}`（封顶）；
+/// - `page_size == 0` 表示「不限制」：不追加，也不强制改写用户已写的上限子句。
+/// - 无上限子句且 `page_size > 0`：追加 `limit_suffix`。
+/// - 已有 `LIMIT` 且 count `> page_size`：强制改写为 `LIMIT {page_size}`（封顶）；
 ///   count `<= page_size` 保持不动。
-fn limit_select_statement(statement: &str, page_size: u64) -> String {
-    if !starts_with_sql_keyword(statement, "select") || page_size == 0 {
+/// - 已有 `FETCH`/`OFFSET`（Oracle/SQL Server 语法）：不做解析改写，原样放过——
+///   猜错 count 的代价是改写用户语句，比不封顶更危险。
+/// - 有锁定子句且方言不允许共存（Oracle）：原样放过，不能为了封顶让语句直接报错。
+fn limit_select_statement(
+    statement: &str,
+    page_size: u64,
+    limit_suffix: &str,
+    allows_locking_clause: bool,
+) -> String {
+    if !sql_selects_rows(statement) || page_size == 0 {
         return statement.to_string();
     }
     if let Some(limit_start) = find_top_level_sql_keyword(statement, "limit") {
@@ -484,7 +511,40 @@ fn limit_select_statement(statement: &str, page_size: u64) -> String {
         return cap_existing_limit(statement, limit_start, page_size)
             .unwrap_or_else(|| statement.to_string());
     }
-    format!("{statement} LIMIT {page_size}")
+    if has_top_level_sql_keyword(statement, "fetch") || has_top_level_sql_keyword(statement, "offset")
+    {
+        return statement.to_string();
+    }
+    // 锁定子句（`FOR UPDATE` / `FOR SHARE`）在所有相关方言里都排在最后，
+    // 上限子句必须插在它前面，否则是语法错误。
+    let locking_start = locking_clause_start(statement);
+    if locking_start.is_some() && !allows_locking_clause {
+        return statement.to_string();
+    }
+    let insert_at = locking_start.unwrap_or(statement.len());
+    let head = statement[..insert_at].trim_end();
+    let tail = statement[insert_at..].trim();
+    if tail.is_empty() {
+        format!("{head}{limit_suffix}")
+    } else {
+        format!("{head}{limit_suffix} {tail}")
+    }
+}
+
+/// 顶层行锁子句 `FOR UPDATE` / `FOR SHARE` / `FOR NO KEY UPDATE` / `FOR KEY SHARE` 的起点。
+fn locking_clause_start(statement: &str) -> Option<usize> {
+    let mut search_from = 0;
+    while let Some(offset) = find_top_level_sql_keyword(&statement[search_from..], "for") {
+        let for_start = search_from + offset;
+        let rest = statement[for_start + "for".len()..].trim_start();
+        for keyword in ["update", "share", "no", "key"] {
+            if ascii_keyword_at(rest, 0, keyword) {
+                return Some(for_start);
+            }
+        }
+        search_from = for_start + "for".len();
+    }
+    None
 }
 
 /// 仅当用户已写 LIMIT 的单行 count 超过 page_size 时，返回重写后的字符串
@@ -537,6 +597,31 @@ fn cap_existing_limit(statement: &str, limit_start: usize, page_size: u64) -> Op
         statement[..limit_start].trim_end(),
         &statement[end..]
     ))
+}
+
+/// 该语句是否**以返回行集结束**，从而可以安全追加行数上限。
+///
+/// 只看 `SELECT` 开头会漏掉 `WITH ... SELECT`：CTE 写法在过去完全拿不到默认上限，
+/// 一条 `WITH ... SELECT * FROM 大表` 会把整表拉进内存。
+///
+/// `WITH` 后面也可能是写入（`WITH ... DELETE/UPDATE/MERGE`）。给写入加 `LIMIT`
+/// 会静默截断影响行数，所以只认「顶层第一个查询/写入关键字是 select」。
+/// CTE 定义体在括号里（depth > 0），天然被 `find_top_level_sql_keyword` 跳过。
+fn sql_selects_rows(statement: &str) -> bool {
+    if starts_with_sql_keyword(statement, "select") {
+        return true;
+    }
+    if !starts_with_sql_keyword(statement, "with") {
+        return false;
+    }
+    ["select", "insert", "update", "delete", "merge"]
+        .iter()
+        .filter_map(|keyword| {
+            find_top_level_sql_keyword(statement, keyword).map(|at| (at, *keyword))
+        })
+        // `FOR UPDATE` 之类排在 SELECT 之后，取最早出现者即主语句类型。
+        .min_by_key(|(at, _)| *at)
+        .is_some_and(|(_, keyword)| keyword == "select")
 }
 
 fn starts_with_sql_keyword(statement: &str, keyword: &str) -> bool {
@@ -905,7 +990,8 @@ fn format_sql_with_options(sql: &str, dialect: DatabaseKind) -> String {
                 | DatabaseKind::Redis
                 | DatabaseKind::Postgres
                 | DatabaseKind::Dameng
-                | DatabaseKind::SqlServer => Dialect::Generic,
+                | DatabaseKind::SqlServer
+                | DatabaseKind::Oracle => Dialect::Generic,
             },
             ..FormatOptions::default()
         },
@@ -1520,6 +1606,142 @@ mod sqlserver_limit_tests {
                 DatabaseKind::SqlServer
             ),
             "SELECT TOP (3) [from], [where] FROM [dbo].[t]"
+        );
+    }
+}
+
+#[cfg(test)]
+mod oracle_limit_tests {
+    use super::sql_text_for_execution;
+    use fluxdb_core::DatabaseKind;
+
+    #[test]
+    fn oracle_appends_fetch_first_and_never_uses_limit() {
+        let sql = sql_text_for_execution("SELECT * FROM \"HR\".\"EMPLOYEES\"", 101, DatabaseKind::Oracle);
+        assert_eq!(
+            sql,
+            "SELECT * FROM \"HR\".\"EMPLOYEES\" FETCH FIRST 101 ROWS ONLY"
+        );
+        assert!(!sql.to_ascii_uppercase().contains("LIMIT"));
+    }
+
+    #[test]
+    fn oracle_keeps_existing_row_limiting_clause() {
+        let sql = "SELECT * FROM employees ORDER BY id OFFSET 10 ROWS FETCH NEXT 5 ROWS ONLY";
+        assert_eq!(
+            sql_text_for_execution(sql, 100, DatabaseKind::Oracle),
+            sql
+        );
+    }
+
+    #[test]
+    fn oracle_keeps_optimizer_hint() {
+        let sql = sql_text_for_execution(
+            "SELECT /*+ INDEX(e emp_idx) */ id FROM employees",
+            100,
+            DatabaseKind::Oracle,
+        );
+        assert_eq!(
+            sql,
+            "SELECT /*+ INDEX(e emp_idx) */ id FROM employees FETCH FIRST 100 ROWS ONLY"
+        );
+    }
+
+    #[test]
+    fn oracle_treats_hash_as_identifier_char_not_comment() {
+        let sql = sql_text_for_execution("SELECT emp# FROM employees", 10, DatabaseKind::Oracle);
+        assert!(sql.contains("emp#"), "Oracle 的 # 不是注释起始符: {sql}");
+    }
+
+    #[test]
+    fn row_limit_goes_before_for_update() {
+        // MySQL/PG 要求行数上限排在锁定子句之前，否则语法错误。
+        assert_eq!(
+            sql_text_for_execution("SELECT * FROM t FOR UPDATE", 10, DatabaseKind::MySql),
+            "SELECT * FROM t LIMIT 10 FOR UPDATE"
+        );
+        assert_eq!(
+            sql_text_for_execution("SELECT * FROM t FOR SHARE", 10, DatabaseKind::Postgres),
+            "SELECT * FROM t LIMIT 10 FOR SHARE"
+        );
+    }
+
+    #[test]
+    fn oracle_skips_row_limit_when_for_update_present() {
+        // Oracle 的 row_limiting_clause 与 for_update_clause 互斥（ORA-02014），
+        // 封顶会让语句直接报错，只能放过。
+        let sql = "SELECT * FROM employees FOR UPDATE";
+        assert_eq!(
+            sql_text_for_execution(sql, 10, DatabaseKind::Oracle),
+            sql
+        );
+    }
+
+    #[test]
+    fn zero_page_size_does_not_add_row_limit() {
+        assert_eq!(
+            sql_text_for_execution("SELECT * FROM employees", 0, DatabaseKind::Oracle),
+            "SELECT * FROM employees"
+        );
+    }
+}
+
+#[cfg(test)]
+mod cte_row_limit_tests {
+    use super::sql_text_for_execution;
+    use fluxdb_core::DatabaseKind;
+
+    /// CTE 过去完全绕过默认上限：`WITH ... SELECT` 拿不到任何行数限制，
+    /// 一条这样的查询就能把整表拉进内存。
+    #[test]
+    fn cte_select_gets_row_limit_on_every_dialect() {
+        let sql = "WITH x AS (SELECT 1 AS n FROM dual) SELECT * FROM x";
+        assert_eq!(
+            sql_text_for_execution(sql, 100, DatabaseKind::Oracle),
+            "WITH x AS (SELECT 1 AS n FROM dual) SELECT * FROM x FETCH FIRST 100 ROWS ONLY"
+        );
+        assert_eq!(
+            sql_text_for_execution(sql, 100, DatabaseKind::Postgres),
+            "WITH x AS (SELECT 1 AS n FROM dual) SELECT * FROM x LIMIT 100"
+        );
+        assert_eq!(
+            sql_text_for_execution(sql, 100, DatabaseKind::MySql),
+            "WITH x AS (SELECT 1 AS n FROM dual) SELECT * FROM x LIMIT 100"
+        );
+        assert_eq!(
+            sql_text_for_execution(
+                "WITH x AS (SELECT [id] FROM [dbo].[t]) SELECT * FROM x",
+                100,
+                DatabaseKind::SqlServer
+            ),
+            "WITH x AS (SELECT [id] FROM [dbo].[t]) SELECT TOP (100) * FROM x"
+        );
+    }
+
+    /// `WITH ... DELETE/UPDATE` 是写入：加上限会静默截断影响行数。
+    #[test]
+    fn cte_write_statements_get_no_row_limit() {
+        for (kind, sql) in [
+            (
+                DatabaseKind::Postgres,
+                "WITH gone AS (SELECT id FROM t) DELETE FROM t WHERE id IN (SELECT id FROM gone)",
+            ),
+            (
+                DatabaseKind::Oracle,
+                "WITH src AS (SELECT id FROM t) UPDATE t SET flag = 1 WHERE id IN (SELECT id FROM src)",
+            ),
+        ] {
+            assert_eq!(sql_text_for_execution(sql, 100, kind), sql, "{kind:?}");
+        }
+    }
+
+    /// CTE 体里的 `SELECT` 在括号内，不能被当成主语句类型。
+    #[test]
+    fn select_inside_cte_body_does_not_unlock_the_limit_alone() {
+        let sql = "WITH moved AS (SELECT * FROM t) INSERT INTO archive SELECT * FROM moved";
+        assert_eq!(
+            sql_text_for_execution(sql, 100, DatabaseKind::Postgres),
+            sql
         );
     }
 }

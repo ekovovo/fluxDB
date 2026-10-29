@@ -475,6 +475,7 @@ mod mongo_repl_input_tests {
             dameng_profile: None,
             sqlserver_profile: None,
             mongo_profile: None,
+            oracle_profile: None,
         };
         let (tx, rx) = std::sync::mpsc::channel();
         (MongoRepl::new(config, "demo".into()), tx, rx)

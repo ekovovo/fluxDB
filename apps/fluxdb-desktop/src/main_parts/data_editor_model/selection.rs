@@ -169,6 +169,29 @@ impl DataPageTableDelegate {
         None
     }
 
+    /// 选区里是否有只加载了预览的单元格。
+    ///
+    /// 复制/导出会把值当权威数据带出去，片段混进去就是静默丢数据，必须由调用方拒绝。
+    fn selection_contains_truncated(&self) -> bool {
+        let cells = self.effective_selected_cells();
+        let rows = self.effective_selected_rows();
+        self.page.rows.iter().enumerate().any(|(row_ix, row)| {
+            if !rows.contains(&row_ix) && !cells.iter().any(|(cell_row, _)| *cell_row == row_ix) {
+                return false;
+            }
+            self.source_column_indexes.iter().enumerate().any(|(col_ix, index)| {
+                if col_ix == 0 {
+                    return false;
+                }
+                let selected = rows.contains(&row_ix) || cells.contains(&(row_ix, col_ix));
+                selected
+                    && index
+                        .and_then(|source| row.values.get(source))
+                        .is_some_and(fluxdb_core::CellValue::is_truncated)
+            })
+        })
+    }
+
     fn selection_export(&self) -> Option<DataTableSelectionExport> {
         let rows = self.effective_selected_rows();
         if !rows.is_empty() {

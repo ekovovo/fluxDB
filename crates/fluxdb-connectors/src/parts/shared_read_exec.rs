@@ -7,7 +7,7 @@ fn mysql_execute_query(
 
 /// 单条 MySQL 语句的执行结局：服务端产出 + 失败 + 是否用户「停止」取消。
 struct MySqlStatementOutcome {
-    rows: Option<Vec<MySqlRow>>,
+    page: Option<DataPage>,
     affected_rows: u64,
     error: Option<fluxdb_core::Error>,
     user_cancelled: bool,
@@ -31,26 +31,37 @@ async fn mysql_run_statement_cancellable(
     connection: &mut MySqlConnection,
     conn_id: u64,
     statement: &str,
+    pagination: Pagination,
+    owner: &str,
     should_cancel: &dyn Fn() -> bool,
 ) -> MySqlStatementOutcome {
     let returns_rows = statement_returns_rows(statement);
     let run = async {
         if returns_rows {
-            let rows = sqlx::query(statement)
-                .fetch_all(&mut *connection)
-                .await
-                .map(|rows| MySqlStatementOutcome {
-                    rows: Some(rows),
+            // 流式收页：`fetch_all` 会先把整个结果集堆进 `Vec<Row>`，
+            // 一条 8 MB 的行乘以行数就是几百 MB，预算在那之后才生效。
+            let page = collect_sqlx_page(
+                sqlx::query(statement).fetch(&mut *connection),
+                Vec::new(),
+                pagination,
+                pagination.offset,
+                owner,
+                mysql_query_cell_value,
+                mysql_error,
+            )
+            .await
+            .map(|(page, _read_rows)| page);
+            match page {
+                Ok(page) => MySqlStatementOutcome {
+                    page: Some(page),
                     affected_rows: 0,
                     error: None,
                     user_cancelled: false,
-                });
-            match rows {
-                Ok(outcome) => outcome,
+                },
                 Err(error) => MySqlStatementOutcome {
-                    rows: None,
+                    page: None,
                     affected_rows: 0,
-                    error: Some(mysql_error(error)),
+                    error: Some(error),
                     user_cancelled: false,
                 },
             }
@@ -63,7 +74,7 @@ async fn mysql_run_statement_cancellable(
                 .execute(&mut *connection)
                 .await
                 .map(|result| MySqlStatementOutcome {
-                    rows: None,
+                    page: None,
                     affected_rows: result.rows_affected(),
                     error: None,
                     user_cancelled: false,
@@ -71,7 +82,7 @@ async fn mysql_run_statement_cancellable(
             match outcome {
                 Ok(outcome) => outcome,
                 Err(error) => MySqlStatementOutcome {
-                    rows: None,
+                    page: None,
                     affected_rows: 0,
                     error: Some(mysql_error(error)),
                     user_cancelled: false,
@@ -182,8 +193,18 @@ pub(crate) fn mysql_execute_parameterized(
             for parameter in parameters {
                 query = mysql_bind_parameter(query, parameter)?;
             }
-            let rows = query.fetch_all(&mut connection).await.map_err(mysql_error)?;
-            let page = mysql_query_rows_to_page(rows, pagination.offset, pagination.limit);
+            let owner =
+                fluxdb_core::result_content_owner(request.session_id, request.connection_id);
+            let (page, _read_rows) = collect_sqlx_page(
+                query.fetch(&mut connection),
+                Vec::new(),
+                pagination,
+                pagination.offset,
+                &owner,
+                mysql_query_cell_value,
+                mysql_error,
+            )
+            .await?;
             let returned = page.rows.len() as u64;
             let summary = QueryExecutionSummary {
                 sql: statement,
@@ -256,7 +277,7 @@ fn mysql_execute_query_with_progress(
     on_summary: &mut dyn FnMut(QueryExecutionSummary),
     should_cancel: &dyn Fn() -> bool,
 ) -> fluxdb_core::Result<QueryExecutionResult> {
-    let statements = query_statements_for_execution(request);
+    let statements = query_statements_for_execution(request, config.kind);
     if statements.is_empty() {
         return Err(Error::new(ErrorKind::Query, "查询不能为空"));
     }
@@ -341,7 +362,13 @@ fn mysql_execute_query_with_progress(
             }
             let started = std::time::Instant::now();
             let outcome = mysql_run_statement_cancellable(
-                &url, &mut connection, conn_id, &statement, should_cancel,
+                &url,
+                &mut connection,
+                conn_id,
+                &statement,
+                query_execution_pagination(request.options.page_offset, request.options.page_size),
+                &fluxdb_core::result_content_owner(request.session_id, request.connection_id),
+                should_cancel,
             )
             .await;
             let full_statement = statement.clone();
@@ -365,12 +392,7 @@ fn mysql_execute_query_with_progress(
                 stopped = true;
                 continue;
             }
-            if let Some(rows) = outcome.rows {
-                let page = mysql_query_rows_to_page(
-                    rows,
-                    request.options.page_offset,
-                    request.options.page_size,
-                );
+            if let Some(page) = outcome.page {
                 push_query_summary(
                     &mut execution,
                     QueryExecutionSummary {
@@ -434,7 +456,7 @@ fn sqlite_execute_query_with_progress(
     on_summary: &mut dyn FnMut(QueryExecutionSummary),
     should_cancel: &dyn Fn() -> bool,
 ) -> fluxdb_core::Result<QueryExecutionResult> {
-    let statements = query_statements_for_execution(request);
+    let statements = query_statements_for_execution(request, config.kind);
     if statements.is_empty() {
         return Err(Error::new(ErrorKind::Query, "查询不能为空"));
     }
@@ -472,10 +494,25 @@ fn sqlite_execute_query_with_progress(
             }
             let started = std::time::Instant::now();
             if statement_returns_rows(&statement) {
-                let rows = match sqlx::query(&statement).fetch_all(&mut connection).await {
-                    Ok(rows) => rows,
+                let pagination = query_execution_pagination(
+                    request.options.page_offset,
+                    request.options.page_size,
+                );
+                let owner =
+                    fluxdb_core::result_content_owner(request.session_id, request.connection_id);
+                let mut page = match collect_sqlx_page(
+                    sqlx::query(&statement).fetch(&mut connection),
+                    Vec::new(),
+                    pagination,
+                    pagination.offset,
+                    &owner,
+                    sqlite_query_cell_value,
+                    sqlite_error,
+                )
+                .await
+                {
+                    Ok((page, _read_rows)) => page,
                     Err(error) => {
-                        let error = sqlite_error(error);
                         push_query_summary(
                             &mut execution,
                             failed_query_summary(
@@ -493,7 +530,6 @@ fn sqlite_execute_query_with_progress(
                     }
                 };
                 let elapsed_ms = elapsed_ms(started);
-                let mut page = sqlite_query_rows_to_page(rows, request.options.page_offset, request.options.page_size);
                 if page.columns.is_empty() {
                     // 零行结果不能丢列结构；只准备语句元数据，不重新执行查询取数。
                     let description = sqlx::Executor::describe(&mut connection, &statement)
@@ -559,32 +595,6 @@ fn sqlite_execute_query_with_progress(
     })
 }
 
-fn mysql_query_rows_to_page(rows: Vec<MySqlRow>, offset: u64, limit: u64) -> DataPage {
-    let columns = rows
-        .first()
-        .map(|row| {
-            row.columns()
-                .iter()
-                .map(|column| query_column(column.name(), column.type_info().name()))
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    query_rows_to_page(columns, rows, offset, limit, mysql_query_cell_value)
-}
-
-fn sqlite_query_rows_to_page(rows: Vec<SqliteRow>, offset: u64, limit: u64) -> DataPage {
-    let columns = rows
-        .first()
-        .map(|row| {
-            row.columns()
-                .iter()
-                .map(|column| query_column(column.name(), column.type_info().name()))
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    query_rows_to_page(columns, rows, offset, limit, sqlite_query_cell_value)
-}
-
 fn failed_query_summary(
     sql: String,
     kind: QueryStatementKind,
@@ -609,38 +619,6 @@ fn push_query_summary(
 ) {
     on_summary(summary.clone());
     execution.summaries.push(summary);
-}
-
-fn query_rows_to_page<R>(
-    columns: Vec<Column>,
-    rows: Vec<R>,
-    offset: u64,
-    limit: u64,
-    cell_value: fn(&R, usize, &Column) -> CellValue,
-) -> DataPage {
-    let pagination = query_execution_pagination(offset, limit);
-    let offset = pagination.offset.min(rows.len() as u64) as usize;
-    let row_capacity = query_execution_row_capacity(pagination.limit);
-    let has_more = rows.len().saturating_sub(offset) > row_capacity;
-    let rows = rows
-        .into_iter()
-        .skip(offset)
-        .take(row_capacity)
-        .map(|row| Row {
-            values: columns
-                .iter()
-                .enumerate()
-                .map(|(index, column)| cell_value(&row, index, column))
-                .collect(),
-        })
-        .collect();
-    DataPage {
-        columns,
-        rows,
-        offset: pagination.offset,
-        limit: pagination.limit,
-        has_more,
-    }
 }
 
 /// 查询编辑器约定 `limit == 0` 表示不限制；通用 `Pagination::new` 则会把 0
@@ -789,8 +767,29 @@ pub(crate) fn sqlite_execute_parameterized(
             for parameter in parameters {
                 query = sqlite_bind_parameter(query, parameter)?;
             }
-            let rows = query.fetch_all(&mut connection).await.map_err(sqlite_error)?;
-            let page = sqlite_query_rows_to_page(rows, pagination.offset, pagination.limit);
+            let owner =
+                fluxdb_core::result_content_owner(request.session_id, request.connection_id);
+            let (mut page, _read_rows) = collect_sqlx_page(
+                query.fetch(&mut connection),
+                Vec::new(),
+                pagination,
+                pagination.offset,
+                &owner,
+                sqlite_query_cell_value,
+                sqlite_error,
+            )
+            .await?;
+            if page.columns.is_empty() {
+                // 零行结果不能丢列结构：与脚本路径一致，只读语句元数据。
+                let description = sqlx::Executor::describe(&mut connection, &statement)
+                    .await
+                    .map_err(sqlite_error)?;
+                page.columns = description
+                    .columns()
+                    .iter()
+                    .map(|column| query_column(column.name(), column.type_info().name()))
+                    .collect();
+            }
             connection.close().await.map_err(sqlite_error)?;
             let returned = page.rows.len() as u64;
             return Ok(QueryExecutionResult {

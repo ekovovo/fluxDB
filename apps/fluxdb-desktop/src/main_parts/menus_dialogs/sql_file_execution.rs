@@ -341,7 +341,12 @@ impl NavicatMain {
         }
 
         let file_name = sql_file_name(&path);
-        let total = sql_file_execution_statement_count(&text, form.split_statements).max(1);
+        let total = sql_file_execution_statement_count(
+            &text,
+            form.split_statements,
+            self.connection_database_kind(form.connection_id),
+        )
+        .max(1);
         // 取消标志可能在「任务还没开始执行」时就已被用户点过，需要带回后台任务
         let cancel_requested = {
             let mut data = self.sql_file_modal.borrow_mut();
@@ -1576,11 +1581,16 @@ fn sql_file_task_message(task: &SqlFileExecutionTaskState) -> String {
     }
 }
 
-fn sql_file_execution_statement_count(text: &str, split_statements: bool) -> usize {
+fn sql_file_execution_statement_count(
+    text: &str,
+    split_statements: bool,
+    kind: DatabaseKind,
+) -> usize {
     if !split_statements {
         return 1;
     }
-    sql_editor_adapter::build_statement_runs(text).len()
+    // 进度条总数必须与执行侧实际切出的语句数一致（同一套方言规则）。
+    sql_editor_adapter::build_statement_runs(text, kind).len()
 }
 
 async fn read_sql_file(path: PathBuf, encoding: SqlFileEncoding) -> io::Result<String> {

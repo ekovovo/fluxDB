@@ -318,4 +318,26 @@ impl Connector for DamengConnector {
     fn table_ddl(&self, path: &ObjectPath) -> fluxdb_core::Result<String> {
         dm_table_ddl_for(self.config("达梦 DDL 元数据需要连接配置上下文")?, path)
     }
+
+    fn oracle_user_admin_snapshot(
+        &self,
+        connection_id: ConnectionId,
+    ) -> fluxdb_core::Result<OracleUserAdminSnapshot> {
+        dm_user_admin_snapshot(
+            self.config("达梦用户与权限需要连接配置上下文")?,
+            connection_id,
+        )
+    }
+
+    fn apply_oracle_user_admin_plan(
+        &self,
+        connection_id: ConnectionId,
+        plan: &OracleUserAdminPlan,
+    ) -> fluxdb_core::Result<Vec<String>> {
+        dm_apply_user_admin_plan(
+            self.config("达梦用户与权限变更需要连接配置上下文")?,
+            connection_id,
+            plan,
+        )
+    }
 }

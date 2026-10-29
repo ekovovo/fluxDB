@@ -15,6 +15,7 @@ fn mock_connections() -> Vec<ConnectionConfig> {
             dameng_profile: None,
             sqlserver_profile: None,
             mongo_profile: None,
+            oracle_profile: None,
         },
         ConnectionConfig {
             id: ConnectionId(2),
@@ -32,6 +33,7 @@ fn mock_connections() -> Vec<ConnectionConfig> {
             dameng_profile: None,
             sqlserver_profile: None,
             mongo_profile: None,
+            oracle_profile: None,
         },
     ]
 }
@@ -374,6 +376,7 @@ fn load_redis_key_metadata_for_connection(
             offset: 0,
             limit: 0,
             has_more: false,
+            incomplete: None,
         });
     }
     if config
@@ -387,6 +390,7 @@ fn load_redis_key_metadata_for_connection(
             offset: 0,
             limit: 0,
             has_more: false,
+            incomplete: None,
         });
     }
     RedisConnector::with_config(config.clone()).load_key_metadata(object, keys)
@@ -416,6 +420,15 @@ fn load_cell_binary_for_connection(
     column: &str,
 ) -> fluxdb_core::Result<Vec<u8>> {
     connector_for(config)?.load_cell_binary(object, identity, column)
+}
+
+fn load_cell_text_for_connection(
+    config: &ConnectionConfig,
+    object: &ObjectPath,
+    identity: &RowIdentity,
+    column: &str,
+) -> fluxdb_core::Result<String> {
+    connector_for(config)?.load_cell_text(object, identity, column)
 }
 
 fn load_table_info_for_connection(

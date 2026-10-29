@@ -69,6 +69,15 @@ impl AppController {
         self.ai_storage = Some(storage);
     }
 
+    /// 注入大字段内容存储：连接器取数时经进程级注册表把超大字段外置到这里。
+    ///
+    /// 同时清理上次进程崩溃遗留的内容目录（结果页内容不跨进程复用）。
+    pub fn set_cell_content_storage(&mut self, storage: fluxdb_storage::FileStorage) {
+        let _ = crate::sweep_stale_cell_contents(storage.root_dir());
+        let store = std::sync::Arc::new(crate::CellContentFileStore::new(storage.root_dir()));
+        fluxdb_core::register_cell_content_store(store);
+    }
+
     pub fn set_completion_index_storage(&mut self, storage: fluxdb_storage::FileStorage) {
         self.completion_index_storage = Some(storage);
     }
@@ -652,6 +661,45 @@ impl AppController {
             .ok_or_else(|| Error::new(ErrorKind::Connection, "连接不存在"))?;
 
         load_cell_binary_for_connection(config, &editor.object, &identity, &column_name)
+    }
+
+    /// 按需读取单元格完整文本（数据页里只有预览的截断 CLOB）。
+    ///
+    /// 只有 `TruncatedText` 需要走这里；完整文本已在数据页里，重复读取没有意义。
+    pub fn load_cell_text(
+        &self,
+        tab_id: TabId,
+        row: usize,
+        column: usize,
+    ) -> fluxdb_core::Result<String> {
+        let editor = self
+            .find_tab(tab_id)
+            .and_then(|tab| editable_data_editor(&tab.kind))
+            .ok_or_else(|| Error::new(ErrorKind::Internal, "数据结果不存在"))?;
+        match current_cell_value(editor, row, column)? {
+            CellValue::TruncatedText { .. } => {}
+            _ => {
+                return Err(Error::new(
+                    ErrorKind::Unsupported,
+                    "当前单元格不是截断文本，无需完整加载",
+                ));
+            }
+        }
+        let page = editor
+            .page
+            .as_ref()
+            .ok_or_else(|| Error::new(ErrorKind::Internal, "数据页未加载"))?;
+        let column_name = page
+            .columns
+            .get(column)
+            .map(|column| column.name.clone())
+            .ok_or_else(|| Error::new(ErrorKind::Internal, "列不存在"))?;
+        let identity = row_identity(page, row)?;
+        let config = self
+            .connection_config(editor.object.connection_id)
+            .ok_or_else(|| Error::new(ErrorKind::Connection, "连接不存在"))?;
+
+        load_cell_text_for_connection(config, &editor.object, &identity, &column_name)
     }
 
     /// F005：选中补全项的说明文档（懒加载）。表/视图→列清单、列→注释、函数等→名称。

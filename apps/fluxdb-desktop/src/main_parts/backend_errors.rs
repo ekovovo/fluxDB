@@ -50,8 +50,11 @@ fn localize_backend_error_text(text: &str) -> String {
         "暂不支持该连接的用户与权限管理" => "app.backend_error.user_admin_unsupported",
         "列不存在" => "app.backend_error.column_missing",
         "单元格不存在" => "app.backend_error.cell_missing",
-        "大二进制值不能直接 Hex 编辑，请使用下载、上传替换或设为 NULL" => {
-            "app.backend_error.large_binary_hex_unsupported"
+        "二进制字段不支持就地编辑，请使用上传替换或设为 NULL" => {
+            "app.backend_error.binary_edit_unsupported"
+        }
+        "超大字段不支持就地编辑；请使用分段查看或上传替换" => {
+            "app.backend_error.large_edit_unsupported"
         }
         "无法匹配原始行，请刷新后重试" => "app.backend_error.row_match_failed",
         "任务目标不是合法 JSON" => "app.backend_error.task_target_invalid_json",
@@ -130,9 +133,37 @@ fn localize_backend_error_text(text: &str) -> String {
         "查询结果不存在" => "app.backend_error.query_result_missing",
         "查询结果不可编辑" => "app.backend_error.query_result_not_editable",
         "原始数据页未加载" => "app.backend_error.original_data_page_not_loaded",
-        "Hex 长度必须是偶数" => "app.backend_error.hex_length_even",
-        "Hex 只能包含 0-9、A-F" => "app.backend_error.hex_charset_invalid",
+        "当前数据库暂不支持流式写入大字段，请改用较小的文件" => {
+            "app.backend_error.streamed_write_unsupported"
+        }
+        "新增行不支持流式写入，请先提交后再修改该字段" => {
+            "app.backend_error.streamed_write_insert_unsupported"
+        }
+        "大字段内容已失效（结果已关闭或已翻页），请重新执行查询" => {
+            "app.backend_error.cell_content_expired"
+        }
+        "大字段内容存储未初始化，无法读写完整内容" => {
+            "app.backend_error.cell_content_store_missing"
+        }
+        "当前单元格不支持上传替换，请使用文本或二进制大字段" => {
+            "app.backend_error.upload_cell_unsupported"
+        }
+        "文件不是合法的 UTF-8 文本，无法写入文本字段" => {
+            "app.backend_error.upload_file_not_utf8"
+        }
+        "待写入文本不是合法的 UTF-8，已取消提交" => {
+            "app.backend_error.streamed_text_not_utf8"
+        }
+        "文本分块过小，无法切在字符边界上；请调大分块阈值后重试" => {
+            "app.backend_error.streamed_text_chunk_too_small"
+        }
         "无唯一键且包含二进制摘要，无法可靠定位原始行" => "app.backend_error.row_identity_binary_ambiguous",
+        "行身份包含未完整加载的大字段，无法安全定位行；请刷新后重试或改用主键定位" => {
+            "app.backend_error.row_identity_large_value_unlocatable"
+        }
+        "行身份包含只加载了预览的大字段，无法可靠定位原始行；请为该表添加主键或唯一键后重试" => {
+            "app.backend_error.row_identity_preview_ambiguous"
+        }
         "无法定位行身份" => "app.backend_error.row_identity_locate_failed",
         "原始行身份不唯一，已取消提交" => "app.backend_error.row_identity_not_unique",
         "工具入参必须是对象" => "app.backend_error.tool_args_not_object",
@@ -393,6 +424,7 @@ fn localize_backend_error_text(text: &str) -> String {
         "ER 关系删除失败" => "app.backend_error.title_er_delete_failed",
         "连接失败" => "app.backend_error.title_connection_failed",
         "连接超时" => "app.backend_error.title_connection_timeout",
+        "结果未知" => "app.backend_error.title_outcome_unknown",
         "摘要未正常结束，拒绝提交" => "app.backend_error.app_msg_summary_unfinished",
         "解析器已结束" => "app.backend_error.app_msg_parser_finished",
         "模型 token 用量无效" => "app.backend_error.app_msg_model_token_usage_invalid",
@@ -812,7 +844,7 @@ fn localize_backend_dynamic_error(text: &str) -> Option<String> {
         (
             "app.backend_error.dyn_upload_too_large",
             "上传文件超过 ",
-            " MB，请等待大文件流式上传支持",
+            " MB，超过单个大字段的暂存上限，请拆分或缩小文件后重试",
         ),
         (
             "app.backend_error.dyn_readwrite_statement_rejected",

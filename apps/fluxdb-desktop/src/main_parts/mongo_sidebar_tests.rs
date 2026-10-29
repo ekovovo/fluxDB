@@ -63,6 +63,7 @@ mod mongo_sidebar_tests {
             dameng_profile: None,
             sqlserver_profile: None,
             mongo_profile: Some(profile),
+            oracle_profile: None,
         })
     }
 

@@ -23,6 +23,7 @@ pub fn table_data_import(kind: DatabaseKind) -> fluxdb_core::Result<Box<dyn Tabl
         DatabaseKind::Sqlite => Ok(Box::new(SqliteTableImport)),
         DatabaseKind::Dameng => Ok(Box::new(DamengTableImport)),
         DatabaseKind::SqlServer => Ok(Box::new(SqlServerTableImport)),
+        DatabaseKind::Oracle => Ok(Box::new(OracleTableImport)),
         DatabaseKind::Redis | DatabaseKind::MongoDb => Err(Error::new(
             ErrorKind::Unsupported,
             "当前连接类型没有可导入的表数据",
@@ -36,6 +37,7 @@ struct PostgresTableImport;
 struct SqliteTableImport;
 struct DamengTableImport;
 struct SqlServerTableImport;
+struct OracleTableImport;
 
 impl TableDataImport for MySqlTableImport {
     fn kind(&self) -> DatabaseKind {
@@ -144,6 +146,28 @@ impl TableDataImport for DamengTableImport {
         request: &TableImportPreviewRequest,
     ) -> fluxdb_core::Result<TableImportPreview> {
         preview_relational(DatabaseKind::Dameng, request)
+    }
+}
+
+impl TableDataImport for OracleTableImport {
+    fn kind(&self) -> DatabaseKind {
+        DatabaseKind::Oracle
+    }
+
+    fn import(
+        &self,
+        request: &TableImportRequest,
+        cancel: &AtomicBool,
+        progress: &mut dyn FnMut(TableImportProgress),
+    ) -> fluxdb_core::Result<TableImportReport> {
+        import_relational(DatabaseKind::Oracle, request, cancel, progress)
+    }
+
+    fn preview(
+        &self,
+        request: &TableImportPreviewRequest,
+    ) -> fluxdb_core::Result<TableImportPreview> {
+        preview_relational(DatabaseKind::Oracle, request)
     }
 }
 
@@ -364,6 +388,11 @@ fn preview_cell_text(value: &CellValue) -> String {
         CellValue::I64(value) => value.to_string(),
         CellValue::F64(value) => value.to_string(),
         CellValue::Text(value) | CellValue::Json(value) => value.clone(),
+        CellValue::TruncatedText { total_chars, .. } => format!("<截断文本：共 {total_chars} 字符>"),
+        CellValue::LargeValue(large) => match large.byte_length {
+            Some(length) => format!("<超大字段：共 {length} 字节>"),
+            None => "<超大字段：大小未知>".to_string(),
+        },
         CellValue::Bytes(value) => format!("<{} 字节>", value.len()),
         CellValue::BinarySummary(_) => "<二进制>".to_string(),
     }
@@ -380,6 +409,29 @@ fn build_import_batch_sql(
     rows: &[Vec<CellValue>],
 ) -> fluxdb_core::Result<(String, Vec<SqlParameter>)> {
     let mut parameters = Vec::with_capacity(selected.len() * rows.len());
+    // Oracle 不支持 `VALUES (..),(..)`；用 `INSERT ALL ... SELECT 1 FROM DUAL`
+    // 把整批做成一条语句，绑定仍是唯一的 `:N`。
+    if kind == DatabaseKind::Oracle {
+        let mut into_clauses = Vec::with_capacity(rows.len());
+        for row in rows {
+            let mut placeholders = Vec::with_capacity(selected.len());
+            for (import_index, target_index) in selected {
+                let value = row.get(*import_index).cloned().unwrap_or(CellValue::Null);
+                let parameter =
+                    import_sql_parameter_for_column(&value, &target_columns[*target_index])?;
+                parameters.push(parameter);
+                placeholders.push(format!(":{}", parameters.len()));
+            }
+            into_clauses.push(format!(
+                " INTO {table} ({column_list}) VALUES ({})",
+                placeholders.join(", ")
+            ));
+        }
+        return Ok((
+            format!("INSERT ALL{}{overriding} SELECT 1 FROM DUAL", into_clauses.join("")),
+            parameters,
+        ));
+    }
     let mut values = Vec::with_capacity(rows.len());
     for row in rows {
         let mut placeholders = Vec::with_capacity(selected.len());
@@ -829,6 +881,10 @@ fn ddl_import_column_flags(
             && upper.contains("IDENTITY")
         {
             identities.insert(name.to_ascii_uppercase());
+        } else if kind == DatabaseKind::Oracle && upper.contains("GENERATED ALWAYS AS IDENTITY")
+        {
+            // `GENERATED ALWAYS` 拒绝显式值（ORA-32795）；`BY DEFAULT` 允许，照常写入。
+            excluded.insert(name.to_ascii_uppercase());
         } else if (kind == DatabaseKind::Dameng && upper.contains("IDENTITY"))
             || (upper.contains("GENERATED")
                 && !upper.contains("IDENTITY")
@@ -967,6 +1023,30 @@ fn import_qualified_table(
                 fluxdb_core::SqlServerDialect.quote_identifier(&request.object.name)
             ))
         }
+        DatabaseKind::Oracle => {
+            // Oracle 的对象 Owner 就是 schema；当前 Schema 只影响名称解析，
+            // 因此这里优先用对象自带的 Owner，其次才回落到连接档案的默认 Schema。
+            let schema = request
+                .object
+                .schema
+                .as_deref()
+                .map(str::trim)
+                .filter(|schema| !schema.is_empty())
+                .or_else(|| {
+                    request
+                        .config
+                        .oracle_profile
+                        .as_ref()
+                        .map(|profile| profile.basic.schema.trim())
+                        .filter(|schema| !schema.is_empty())
+                })
+                .ok_or_else(|| Error::new(ErrorKind::Query, "缺少 Oracle schema 上下文"))?;
+            Ok(format!(
+                "{}.{}",
+                fluxdb_core::OracleDialect.quote_identifier(schema),
+                fluxdb_core::OracleDialect.quote_identifier(&request.object.name)
+            ))
+        }
         DatabaseKind::Redis | DatabaseKind::MongoDb => Err(Error::new(
             ErrorKind::Unsupported,
             "当前连接类型没有可导入的表数据",
@@ -983,6 +1063,7 @@ fn import_quote_identifier(kind: DatabaseKind, identifier: &str) -> String {
         DatabaseKind::Sqlite => fluxdb_core::SqliteDialect.quote_identifier(identifier),
         DatabaseKind::Dameng => fluxdb_core::DamengDialect.quote_identifier(identifier),
         DatabaseKind::SqlServer => fluxdb_core::SqlServerDialect.quote_identifier(identifier),
+        DatabaseKind::Oracle => fluxdb_core::OracleDialect.quote_identifier(identifier),
         DatabaseKind::Redis | DatabaseKind::MongoDb => identifier.to_string(),
     }
 }
@@ -1035,6 +1116,20 @@ fn import_sql_parameter(value: &CellValue) -> fluxdb_core::Result<SqlParameter> 
             return Err(Error::new(ErrorKind::Query, "导入数据包含非有限浮点数"));
         }
         CellValue::Text(value) | CellValue::Json(value) => SqlParameter::Text(value.clone()),
+        // 预览是片段，导入会用它覆盖目标表的完整值。
+        CellValue::TruncatedText { .. } => {
+            return Err(Error::new(
+                ErrorKind::Unsupported,
+                "导入不支持只加载了预览的文本（截断的 CLOB），请先加载完整值",
+            ));
+        }
+        // 大字段只有预览：导入会用它覆盖目标表的完整值。
+        CellValue::LargeValue(_) => {
+            return Err(Error::new(
+                ErrorKind::Unsupported,
+                "导入不支持只加载了预览的超大字段，请先按内容引用读取完整值",
+            ));
+        }
         CellValue::Bytes(value) => SqlParameter::Bytes(value.clone()),
         CellValue::BinarySummary(_) => {
             return Err(Error::new(
@@ -1076,9 +1171,12 @@ fn import_sql_parameter_for_column(
         .join(" ")
         .to_ascii_lowercase();
     match value {
-        CellValue::Null | CellValue::Bool(_) | CellValue::Bytes(_) | CellValue::BinarySummary(_) => {
-            import_sql_parameter(value)
-        }
+        CellValue::Null
+        | CellValue::Bool(_)
+        | CellValue::Bytes(_)
+        | CellValue::BinarySummary(_)
+        | CellValue::TruncatedText { .. }
+        | CellValue::LargeValue(_) => import_sql_parameter(value),
         CellValue::I64(value)
             if matches!(
                 base.as_str(),
@@ -1247,6 +1345,7 @@ mod table_import_tests {
                 dameng_profile: None,
                 mongo_profile: None,
                 sqlserver_profile: None,
+                oracle_profile: None,
             },
             object: crate::ObjectPath {
                 connection_id: crate::ConnectionId(1),

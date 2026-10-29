@@ -29,7 +29,7 @@ const SQL_PREVIEW_LINE_HEIGHT: f32 = SQL_PREVIEW_FONT_SIZE * 1.5;
 fn sql_preview_editor(
     editor_key: impl Into<gpui::ElementId>,
     text: &str,
-    dialect: sql_editor_adapter::SqlDialect,
+    database_kind: fluxdb_core::DatabaseKind,
     soft_wrap: bool,
     editor_theme: editor_component::EditorTheme,
     window: &mut Window,
@@ -38,13 +38,14 @@ fn sql_preview_editor(
     let editor = window.use_keyed_state(editor_key, cx, {
         let text = text.to_string();
         move |window, cx| {
+            let dialect = sql_editor_adapter::SqlDialect::from_database_kind(database_kind);
             // 只装配语法 provider：预览是只读展示，不注入补全 / 诊断 / 执行，
             // 避免为了渲染拉起无意义的异步任务。
-            let adapter = std::sync::Arc::new(sql_editor_adapter::SqlAdapter::new(dialect));
+            let adapter = std::sync::Arc::new(sql_editor_adapter::SqlAdapter::new(dialect, database_kind));
             let registry = std::sync::Arc::new(fluxdb_editor_core::LanguageRegistry::new());
             registry.register(
                 dialect.language_id(),
-                std::sync::Arc::new(sql_editor_adapter::SqlLanguage::new(dialect)),
+                std::sync::Arc::new(sql_editor_adapter::SqlLanguage::new(dialect, database_kind)),
                 Some(adapter.clone() as _),
             );
             let providers = editor_component::Providers {

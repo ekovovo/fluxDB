@@ -84,6 +84,14 @@ fn apply_explain_mode(
         // SQL Server 的计划由执行器用 SHOWPLAN 专用会话生成；这里不改写 SQL。
         return Ok(());
     }
+    if policy.explain_mode() == ExplainMode::Unsupported {
+        // Oracle 的 `EXPLAIN PLAN FOR` 会写 PLAN_TABLE，不是无副作用的只读语句；
+        // 在没有真正的计划读取入口前，明确告知不支持，而不是悄悄执行原语句。
+        return Err(SqlExecError::new(
+            "explain_unsupported",
+            "该数据库暂不支持无副作用的查询计划",
+        ));
+    }
     let trimmed = args.sql.trim_start();
     if !trimmed.to_ascii_lowercase().starts_with("explain") {
         // 包装成 plan：模型给纯 SELECT 时也必须返回计划而不是真实执行。

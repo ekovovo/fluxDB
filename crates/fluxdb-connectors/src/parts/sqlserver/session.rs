@@ -352,9 +352,6 @@ fn sqlserver_placeholder(index: usize) -> String {
     format!("@P{index}")
 }
 
-/// 执行单条无参数批处理并累计全部 result set / affected rows。
-const SQLSERVER_RESULT_MEMORY_LIMIT: usize = 16 * 1024 * 1024;
-
 async fn sqlserver_run_batch(
     client: &mut SqlServerClient,
     sql: &str,
@@ -373,7 +370,6 @@ async fn sqlserver_run_batch_with(
 ) -> fluxdb_core::Result<SqlServerBatchResult> {
     let mut stream = client.simple_query(sql).await.map_err(sqlserver_driver_error)?;
     let mut result = SqlServerBatchResult::default();
-    let mut stored_bytes = 0usize;
     while let Some(item) = stream.try_next().await.map_err(sqlserver_driver_error)? {
         match item {
             tiberius::QueryItem::Metadata(meta) => {
@@ -386,10 +382,8 @@ async fn sqlserver_run_batch_with(
                 sqlserver_store_row(
                     &mut result,
                     sqlserver_row(row),
-                    &mut stored_bytes,
-                    SQLSERVER_RESULT_MEMORY_LIMIT,
                     owner,
-                );
+                )?;
             }
         }
     }
@@ -419,7 +413,6 @@ async fn sqlserver_run_query_with(
     }
     let mut stream = query.query(client).await.map_err(sqlserver_driver_error)?;
     let mut result = SqlServerBatchResult::default();
-    let mut stored_bytes = 0usize;
     while let Some(item) = stream.try_next().await.map_err(sqlserver_driver_error)? {
         match item {
             tiberius::QueryItem::Metadata(meta) => {
@@ -432,10 +425,8 @@ async fn sqlserver_run_query_with(
                 sqlserver_store_row(
                     &mut result,
                     sqlserver_row(row),
-                    &mut stored_bytes,
-                    SQLSERVER_RESULT_MEMORY_LIMIT,
                     owner,
-                );
+                )?;
             }
         }
     }
@@ -541,62 +532,25 @@ fn sqlserver_qualified_table(schema: &str, table: &str) -> String {
 #[derive(Default)]
 struct SqlServerBatchResult {
     result_sets: Vec<SqlServerResultSet>,
-    truncated: bool,
-}
-
-fn sqlserver_row_storage_bytes(row: &Row) -> usize {
-    row.values
-        .iter()
-        .map(cell_stored_bytes)
-        .sum::<usize>()
-        .saturating_add(32)
 }
 
 fn sqlserver_store_row(
     result: &mut SqlServerBatchResult,
     mut row: Row,
-    stored_bytes: &mut usize,
-    limit: usize,
     owner: Option<&str>,
-) {
-    // 这一批已经停在某一行就不能再往后收：否则页里出现空洞，`next_offset`
-    // 会跳过那条没收下的记录，用户永远看不到它。预算按批次累计，因此整批停止。
-    if result.truncated {
-        return;
+) -> fluxdb_core::Result<()> {
+    // 单格超阈值无条件外置；整页不再按累计字节截断。
+    if let Some(owner) = owner {
+        spill_large_cells(owner, &mut row.values)?;
     }
-    let budget_left = limit.saturating_sub(*stored_bytes);
-    // 单格超阈值就无条件外置（与 `fit_row_into_page` 同一口径）：一页预算再大，
-    // 也不该让几十 MB 的单元格常驻内存。超预算时同理先外置再试，因为这条路径
-    // 原先会直接丢弃整行——用户既看不到数据、也拿不到「下一页从哪继续」。
-    let needs_spill = sqlserver_row_storage_bytes(&row) > budget_left
-        || row
-            .values
-            .iter()
-            .any(|value| cell_stored_bytes(value) > fluxdb_core::CELL_SPILL_THRESHOLD_BYTES);
-    if needs_spill
-        && let Some(owner) = owner
-        && !matches!(
-            spill_row_into_budget(owner, &mut row.values, budget_left),
-            Ok(true)
-        )
-    {
-        // 外置失败（磁盘/配额）或外置后仍放不下：这行没进页，标记截断让调用方如实说明。
-        result.truncated = true;
-        return;
-    }
-    let bytes = sqlserver_row_storage_bytes(&row);
     if let Some(set) = result.result_sets.last_mut() {
-        if stored_bytes.saturating_add(bytes) <= limit {
-            *stored_bytes += bytes;
-            set.rows.push(row);
-        } else {
-            result.truncated = true;
-        }
+        set.rows.push(row);
     }
+    Ok(())
 }
 
 #[cfg(test)]
-mod sqlserver_result_budget_tests {
+mod sqlserver_result_collection_tests {
     use super::*;
     use fluxdb_core::{CellContentMeta, CellContentStore, LargeValueKind};
     use std::sync::Arc;
@@ -642,27 +596,23 @@ mod sqlserver_result_budget_tests {
                 columns: Vec::new(),
                 rows: Vec::new(),
             }],
-            truncated: false,
         }
     }
 
     #[test]
-    fn result_budget_stops_storing_rows_and_marks_truncation() {
+    fn small_rows_are_not_truncated_by_total_bytes() {
         let mut result = empty_result();
-        let mut stored_bytes = 0;
         for value in ["123456", "abcdef"] {
             sqlserver_store_row(
                 &mut result,
                 Row {
                     values: vec![CellValue::Text(value.into())],
                 },
-                &mut stored_bytes,
-                60,
                 None,
-            );
+            )
+            .expect("store row");
         }
-        assert_eq!(result.result_sets[0].rows.len(), 1);
-        assert!(result.truncated);
+        assert_eq!(result.result_sets[0].rows.len(), 2);
     }
 
     /// 有大字段的行不能因为超预算被丢掉：外置后仍要出现在页里，且不带正文。
@@ -670,22 +620,17 @@ mod sqlserver_result_budget_tests {
     fn oversized_row_is_spilled_instead_of_dropped() {
         install_store();
         let mut result = empty_result();
-        let mut stored_bytes = 0;
         let oversized = vec![7u8; fluxdb_core::CELL_SPILL_THRESHOLD_BYTES + 1];
-        // 预算只够预览 + 引用头：外置前放不下，外置后必须放得下。
-        let limit = fluxdb_core::CELL_PREVIEW_CHARS + 512;
         sqlserver_store_row(
             &mut result,
             Row {
                 values: vec![CellValue::Bytes(oversized.clone())],
             },
-            &mut stored_bytes,
-            limit,
             Some("data-1-db.dbo.t"),
-        );
+        )
+        .expect("spill large cell");
 
         assert_eq!(result.result_sets[0].rows.len(), 1, "外置成功后行必须留在页里");
-        assert!(!result.truncated, "外置成功不算截断");
         let value = &result.result_sets[0].rows[0].values[0];
         assert!(
             matches!(value, CellValue::LargeValue(_)),
@@ -693,24 +638,20 @@ mod sqlserver_result_budget_tests {
         );
     }
 
-    /// 没有归属（元数据/管理命令）时保持原行为：丢行 + 标记截断。
+    /// 没有归属的管理查询也保留大字段，不再按累计字节截断。
     #[test]
-    fn oversized_row_without_owner_still_marks_truncation() {
+    fn oversized_row_without_owner_is_kept() {
         let mut result = empty_result();
-        let mut stored_bytes = 0;
         let oversized = vec![7u8; fluxdb_core::CELL_SPILL_THRESHOLD_BYTES + 1];
-        let limit = fluxdb_core::CELL_PREVIEW_CHARS + 512;
         sqlserver_store_row(
             &mut result,
             Row {
                 values: vec![CellValue::Bytes(oversized)],
             },
-            &mut stored_bytes,
-            limit,
             None,
-        );
-        assert_eq!(result.result_sets[0].rows.len(), 0);
-        assert!(result.truncated);
+        )
+        .expect("store row");
+        assert_eq!(result.result_sets[0].rows.len(), 1);
     }
 }
 

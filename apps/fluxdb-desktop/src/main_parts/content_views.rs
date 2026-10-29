@@ -4020,7 +4020,7 @@ fn query_result_view(
     } else {
         0.
     };
-    let page_footer_height = if page.offset > 0 || page.has_more {
+    let page_footer_height = if page.offset > 0 || page.has_more || page.incomplete.is_some() {
         36.
     } else {
         0.
@@ -4151,6 +4151,23 @@ fn query_result_page_footer(
         .items_center()
         .justify_end()
         .gap_2()
+        .when_some(page.incomplete.as_ref(), |this, incomplete| {
+            this.child(
+                div()
+                    .id("query-result-incomplete")
+                    .debug_selector(|| "query-result-incomplete".into())
+                    .flex_1()
+                    .min_w(px(0.))
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .text_color(colors.warning)
+                    .child(
+                        tr("app.pagination.incomplete")
+                            .replace("%{reason}", incomplete.reason.trim()),
+                    ),
+            )
+        })
         .child(
             query_result_page_button(
                 AppIcon::ChevronsLeft,

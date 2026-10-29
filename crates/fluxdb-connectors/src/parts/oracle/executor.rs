@@ -213,10 +213,6 @@ fn oracle_finish_session(
     })
 }
 
-/// 单条语句结果在内存里的字节预算。与 PostgreSQL 取同一口径：行数上限之外还要有
-/// 字节上限，否则「100 行」也可能是几百 MB（宽表、长 CLOB、大 BLOB）。
-const ORACLE_RESULT_BYTES: usize = 16 * 1024 * 1024;
-
 enum OracleStatementOutcome {
     Rows(DataPage, u64),
     Affected(u64, bool),
@@ -281,8 +277,6 @@ fn oracle_execute_statement(
         let capacity = query_execution_row_capacity(pagination.limit);
         let mut rows = Vec::new();
         let mut has_more = false;
-        let mut incomplete: Option<fluxdb_core::PageIncomplete> = None;
-        let mut stored_bytes = 0usize;
         for item in cursor {
             // 驱动的取行是阻塞调用，取消只能在两次取行之间生效；这里是唯一的安全点。
             if should_cancel() {
@@ -299,30 +293,7 @@ fn oracle_execute_statement(
                 break;
             }
             let mut row = oracle_row(&mut row, &columns);
-            let row_bytes = row_storage_bytes(&row);
-            // 行数上限管不住宽表/长 CLOB：100 行也可能是几百 MB，再兜一层字节预算。
-            // 超预算时先把大字段外置成内容引用再试；外置后仍放不下才标资源不完整，
-            // 并停在这一行——把没读进来的行说成「还有更多」会让用户以为翻页就能看到。
-            if stored_bytes.saturating_add(row_bytes) > ORACLE_RESULT_BYTES {
-                let budget_left = ORACLE_RESULT_BYTES.saturating_sub(stored_bytes);
-                match spill_row_into_budget(owner, &mut row.values, budget_left) {
-                    Ok(true) => {}
-                    Ok(false) => {
-                        incomplete = Some(fluxdb_core::PageIncomplete {
-                            reason: "单行内容超过内存预算且无法外置；本页到此为止，下一页从该行继续"
-                                .to_string(),
-                        });
-                        break;
-                    }
-                    Err(error) => {
-                        incomplete = Some(fluxdb_core::PageIncomplete {
-                            reason: error.message,
-                        });
-                        break;
-                    }
-                }
-            }
-            stored_bytes += row_storage_bytes(&row);
+            spill_large_cells(owner, &mut row.values)?;
             rows.push(row);
         }
         return Ok(OracleStatementOutcome::Rows(
@@ -331,8 +302,8 @@ fn oracle_execute_statement(
                 rows,
                 offset: pagination.offset,
                 limit: pagination.limit,
-                has_more: has_more && incomplete.is_none(),
-                incomplete,
+                has_more,
+                incomplete: None,
             },
             returned_rows,
         ));
@@ -345,22 +316,6 @@ fn oracle_execute_statement(
         result.rows_affected(),
         is_ddl,
     ))
-}
-
-/// 单行在内存里的近似占用，口径与 SQL Server 的实现一致：大字段按实际长度，
-/// 标量按固定值估，另加行结构开销。
-fn row_storage_bytes(row: &Row) -> usize {
-    row.values
-        .iter()
-        .map(|value| match value {
-            CellValue::Text(value) | CellValue::Json(value) => value.len(),
-            CellValue::Bytes(value) => value.len(),
-            CellValue::TruncatedText { preview, .. } => preview.len(),
-            CellValue::BinarySummary(_) => 64,
-            _ => 16,
-        })
-        .sum::<usize>()
-        .saturating_add(32)
 }
 
 /// 语句切分。词法与块边界由 [`crate::script_syntax`] 的 Oracle 规则处理：

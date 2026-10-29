@@ -176,7 +176,6 @@ async fn pg_collect_data_page(
     pagination: Pagination,
     owner: &str,
 ) -> fluxdb_core::Result<DataPage> {
-    const RESULT_BYTES: usize = fluxdb_core::RESULT_PAGE_BUDGET_BYTES;
     let capacity = pagination.limit as usize;
     let mut page = DataPage {
         columns,
@@ -186,7 +185,6 @@ async fn pg_collect_data_page(
         has_more: false,
         incomplete: None,
     };
-    let mut stored_bytes = 0usize;
     futures_util::pin_mut!(stream);
     while let Some(row) = futures_util::StreamExt::next(&mut stream).await {
         let row = row.map_err(pg_error)?;
@@ -201,12 +199,7 @@ async fn pg_collect_data_page(
                 pg_projected_position_value(&row, idxs, &page.columns[*col_idx])
             })
             .collect::<Vec<_>>();
-        let row_bytes = values.iter().map(pg_cell_byte_estimate).sum::<usize>();
-        let budget_left = RESULT_BYTES.saturating_sub(stored_bytes);
-        if !fit_row_into_page(owner, &mut page, &mut values, row_bytes, budget_left)? {
-            break;
-        }
-        stored_bytes += values.iter().map(cell_stored_bytes).sum::<usize>();
+        spill_large_cells(owner, &mut values)?;
         page.rows.push(Row { values });
     }
     if page.incomplete.is_some() {

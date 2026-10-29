@@ -63,13 +63,13 @@ fn dm_load_data_with_expression(
     let output_columns = columns;
     // 大字段按内容归属外置：同一张表的多次翻页共用一个归属，重新加载时整批替换。
     let owner = fluxdb_core::table_content_owner(path);
-    Ok(dm_collect_page(
+    dm_collect_page(
         output_columns,
         rows.into_iter(),
         pagination,
         0,
         &owner,
-    ))
+    )
 }
 
 fn dm_order_by_clause(sort: &[SortSpec], columns: &[Column], alias: &str) -> String {

@@ -6,12 +6,14 @@ enum DataFilterPopoverKind {
     SortField,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct DataFilterPopover {
     tab_id: TabId,
     kind: DataFilterPopoverKind,
     rule_index: Option<usize>,
     sort_index: Option<usize>,
+    /// 触发点的窗口坐标：弹层贴着被点的字段/条件/值显示，避免浮在固定位置。
+    anchor: Point<Pixels>,
 }
 
 #[derive(Clone, Debug, PartialEq)]

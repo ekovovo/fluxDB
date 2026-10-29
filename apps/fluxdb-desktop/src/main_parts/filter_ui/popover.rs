@@ -38,7 +38,6 @@ fn data_filter_popover_layer(
             selected_field,
             search_input.clone(),
             value_search,
-            DATA_FILTER_POPOVER_TOP,
             colors,
             cx,
         ),
@@ -46,7 +45,6 @@ fn data_filter_popover_layer(
             tab_id,
             rule_index,
             selected_operator,
-            DATA_FILTER_POPOVER_TOP,
             colors,
             cx,
         ),
@@ -77,7 +75,6 @@ fn data_filter_popover_layer(
                     batch_input,
                     value_search,
                     value_search_loading,
-                    DATA_FILTER_POPOVER_TOP,
                     colors,
                     cx,
                 )
@@ -93,7 +90,6 @@ fn data_filter_popover_layer(
                 .unwrap_or(selected_field),
             search_input.clone(),
             value_search,
-            DATA_FILTER_POPOVER_TOP + 66.,
             colors,
             cx,
         ),
@@ -128,10 +124,21 @@ fn data_filter_popover_layer(
         .on_mouse_down(MouseButton::Right, |_, _, cx| {
             cx.stop_propagation();
         })
-        .child(menu)
+        // 弹层按触发点的窗口坐标显示（下移 4px 避免盖住被点的文字），
+        // 贴近窗口边缘时由 anchored 自动避让，不再写死 top/left；
+        // deferred 让它画在表格/筛选面板之上，不被裁切。
+        .child(
+            deferred(
+                anchored()
+                    .anchor(Anchor::TopLeft)
+                    .position(popover.anchor)
+                    .offset(point(px(0.), px(4.)))
+                    .snap_to_window_with_margin(px(8.))
+                    .child(menu),
+            )
+            .with_priority(2),
+        )
 }
-
-const DATA_FILTER_POPOVER_TOP: f32 = 94.;
 
 fn data_filter_panel_height(
     rules: &[DataFilterRule],
@@ -493,28 +500,32 @@ fn data_filter_rule_row(
             }),
         ))
         .child(
-            data_filter_clickable_text(selected_field.to_string(), colors).on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |this, _, window, cx| {
-                    this.toggle_data_filter_popover(
-                        tab_id,
-                        Some(rule_index),
-                        DataFilterPopoverKind::Field,
-                        window,
-                        cx,
-                    );
-                    cx.stop_propagation();
-                }),
-            ),
+            data_filter_clickable_text(selected_field.to_string(), colors)
+                .debug_selector(move || format!("data-filter-field-{rule_index}"))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                        this.toggle_data_filter_popover(
+                            tab_id,
+                            Some(rule_index),
+                            DataFilterPopoverKind::Field,
+                            event.position,
+                            window,
+                            cx,
+                        );
+                        cx.stop_propagation();
+                    }),
+                ),
         )
         .child(
             data_filter_clickable_text(rule.operator.label().to_string(), colors).on_mouse_down(
                 MouseButton::Left,
-                cx.listener(move |this, _, window, cx| {
+                cx.listener(move |this, event: &MouseDownEvent, window, cx| {
                     this.toggle_data_filter_popover(
                         tab_id,
                         Some(rule_index),
                         DataFilterPopoverKind::Operator,
+                        event.position,
                         window,
                         cx,
                     );
@@ -532,11 +543,12 @@ fn data_filter_rule_row(
                 )
                 .on_mouse_down(
                     MouseButton::Left,
-                    cx.listener(move |this, _, window, cx| {
+                    cx.listener(move |this, event: &MouseDownEvent, window, cx| {
                         this.toggle_data_filter_popover(
                             tab_id,
                             Some(rule_index),
                             DataFilterPopoverKind::Value,
+                            event.position,
                             window,
                             cx,
                         );
@@ -768,11 +780,12 @@ fn data_filter_single_value_slot(
         .unwrap_or_else(|| "<?>".to_string());
     data_filter_clickable_text(label, colors).on_mouse_down(
         MouseButton::Left,
-        cx.listener(move |this, _, window, cx| {
+        cx.listener(move |this, event: &MouseDownEvent, window, cx| {
             this.toggle_data_filter_popover(
                 tab_id,
                 Some(rule_index),
                 DataFilterPopoverKind::Value,
+                event.position,
                 window,
                 cx,
             );
@@ -973,12 +986,13 @@ fn data_sort_rule_pill(
                 .child(rule.field.clone())
                 .on_mouse_down(
                     MouseButton::Left,
-                    cx.listener(move |this, _, _, cx| {
+                    cx.listener(move |this, event: &MouseDownEvent, _, cx| {
                         this.data_filter_popover = Some(DataFilterPopover {
                             tab_id,
                             kind: DataFilterPopoverKind::SortField,
                             rule_index: None,
                             sort_index: Some(sort_index),
+                            anchor: event.position,
                         });
                         this.sync_table_hover_overlay_block(cx);
                         cx.notify();
@@ -1085,7 +1099,6 @@ fn data_filter_field_menu(
     selected_field: &str,
     search_input: Entity<InputState>,
     search_query: &str,
-    top: f32,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
@@ -1126,8 +1139,6 @@ fn data_filter_field_menu(
     }
 
     data_filter_menu_surface(200., 260., colors)
-        .top(px(top))
-        .left(px(58.))
         .child(list)
         .child(data_filter_menu_search_footer(search_input, colors))
 }
@@ -1139,7 +1150,6 @@ fn data_sort_field_menu(
     selected_field: &str,
     search_input: Entity<InputState>,
     search_query: &str,
-    top: f32,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
@@ -1180,8 +1190,6 @@ fn data_sort_field_menu(
     }
 
     data_filter_menu_surface(200., 260., colors)
-        .top(px(top))
-        .left(px(112.))
         .child(list)
         .child(data_filter_menu_search_footer(search_input, colors))
 }
@@ -1190,7 +1198,6 @@ fn data_filter_operator_menu(
     tab_id: TabId,
     rule_index: usize,
     selected_operator: DataFilterOperator,
-    top: f32,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
@@ -1216,10 +1223,7 @@ fn data_filter_operator_menu(
         );
     }
 
-    data_filter_menu_surface(132., 300., colors)
-        .top(px(top))
-        .left(px(90.))
-        .child(list)
+    data_filter_menu_surface(132., 300., colors).child(list)
 }
 
 
@@ -1247,7 +1251,6 @@ fn data_filter_single_value_menu(
     let current_value = draft.map(|draft| draft.input.clone()).unwrap_or_default();
 
     div()
-        .absolute()
         .w(px(520.))
         .max_h(px(560.))
         .rounded(colors.radius_lg)
@@ -1261,8 +1264,6 @@ fn data_filter_single_value_menu(
             0.,
             hsla(0., 0., 0., if colors.is_dark { 0.45 } else { 0.18 }),
         )])
-        .top(px(DATA_FILTER_POPOVER_TOP))
-        .left(px(150.))
         .flex()
         .flex_col()
         .occlude()
@@ -1431,7 +1432,6 @@ fn data_filter_value_menu(
     batch_input: Entity<InputState>,
     search: &str,
     search_loading: bool,
-    top: f32,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
@@ -1444,7 +1444,6 @@ fn data_filter_value_menu(
     let selected_count = selected.len();
 
     div()
-        .absolute()
         .w(px(520.))
         .max_h(px(560.))
         .rounded(colors.radius_lg)
@@ -1458,8 +1457,6 @@ fn data_filter_value_menu(
             0.,
             hsla(0., 0., 0., if colors.is_dark { 0.45 } else { 0.18 }),
         )])
-        .top(px(top))
-        .left(px(150.))
         .flex()
         .flex_col()
         .occlude()

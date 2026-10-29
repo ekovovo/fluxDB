@@ -1975,6 +1975,99 @@ fn compact_sort_pills_toggle_remove_clear_and_undo(cx: &mut TestAppContext) {
     });
 }
 
+/// 字段弹层必须贴着被点的字段显示，不能浮在写死的固定坐标上。
+#[gpui::test]
+fn filter_field_popover_anchors_to_clicked_field(cx: &mut TestAppContext) {
+    let _guard = locale_guard();
+    let (view, cx, tab_id) = data_editor_with_filter_panel(cx);
+    cx.simulate_resize(gpui::size(gpui::px(1000.), gpui::px(700.)));
+    cx.update(|window, cx| {
+        view.update(cx, |this, cx| {
+            this.data_filter_panels.insert(tab_id);
+            this.data_filter_modes
+                .insert(tab_id, crate::DataFilterMode::Builder);
+            this.data_filter_draft_rules.insert(
+                tab_id,
+                vec![crate::DataFilterRule {
+                    enabled: true,
+                    field: Some("id".into()),
+                    operator: crate::DataFilterOperator::Eq,
+                    values: vec!["1".into()],
+                    advanced_expression: None,
+                    typed_values: None,
+                    connector: fluxdb_core::FilterCombinator::And,
+                    group_depth: 0,
+                    group_end: 0,
+                }],
+            );
+            cx.notify();
+        });
+        window.draw(cx).clear(cx);
+    });
+
+    let field = cx
+        .debug_bounds("data-filter-field-0")
+        .expect("field cell");
+    let click_at = field.center();
+    cx.simulate_click(click_at, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+
+    let menu = cx
+        .debug_bounds("data-filter-popover-menu")
+        .expect("field popover must open");
+    // 弹层左上角对齐点击点（纵向再下移 4px 让开被点的文字）。
+    assert!(
+        (f32::from(menu.left()) - f32::from(click_at.x)).abs() <= 2.,
+        "popover left must follow the click: menu={menu:?} click={click_at:?}"
+    );
+    assert!(
+        (f32::from(menu.top()) - f32::from(click_at.y) - 4.).abs() <= 2.,
+        "popover top must follow the click: menu={menu:?} click={click_at:?}"
+    );
+    assert!(
+        menu.right() <= gpui::px(1000.) && menu.bottom() <= gpui::px(700.),
+        "popover must stay inside the window: {menu:?}"
+    );
+}
+
+#[gpui::test]
+fn sort_field_popover_anchors_to_clicked_pill(cx: &mut TestAppContext) {
+    let _guard = locale_guard();
+    let (view, cx, tab_id) = data_editor_with_filter_panel(cx);
+    cx.simulate_resize(gpui::size(gpui::px(1000.), gpui::px(700.)));
+    cx.update(|window, cx| {
+        view.update(cx, |this, cx| {
+            this.data_filter_panels.insert(tab_id);
+            this.data_sort_draft_rules.insert(
+                tab_id,
+                vec![crate::DataSortRule {
+                    enabled: true,
+                    field: "id".into(),
+                    ascending: true,
+                }],
+            );
+            cx.notify();
+        });
+        window.draw(cx).clear(cx);
+    });
+
+    let field = cx
+        .debug_bounds("data-sort-field-0")
+        .expect("sort field cell");
+    let click_at = field.center();
+    cx.simulate_click(click_at, Modifiers::default());
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+
+    let menu = cx
+        .debug_bounds("data-filter-popover-menu")
+        .expect("sort field popover must open");
+    assert!(
+        (f32::from(menu.left()) - f32::from(click_at.x)).abs() <= 2.
+            && (f32::from(menu.top()) - f32::from(click_at.y) - 4.).abs() <= 2.,
+        "sort popover must follow the click: menu={menu:?} click={click_at:?}"
+    );
+}
+
 #[gpui::test]
 fn sort_rule_move_updates_priority_order(cx: &mut TestAppContext) {
     let _guard = locale_guard();

@@ -47,13 +47,6 @@ pub const CELL_CHUNK_BYTES: usize = 256 * 1024;
 pub const CELL_DETAIL_CACHE_BYTES: u64 = 1024 * 1024;
 /// 单字段超过该字节数才外置到内容存储；小字段仍作为普通 `Text`/`Json`/`Bytes` 返回。
 pub const CELL_SPILL_THRESHOLD_BYTES: usize = 64 * 1024;
-/// 一页结果的驻留内存预算（字节）。
-///
-/// 与 [`CELL_SPILL_THRESHOLD_BYTES`] 分工不同：单格阈值控制「多大就要外置」，
-/// 这里控制「整页最多留多少」。没有它，一条几十 MB 的小字段堆叠也能撑爆内存；
-/// 有了它，超出部分只能停在未收录行并标资源不完整，绝不跳过记录。
-pub const RESULT_PAGE_BUDGET_BYTES: usize = 16 * 1024 * 1024;
-
 /// 上传替换走流式写入的阈值（字节）。
 ///
 /// 小于该值的文件一次读入内存、单条语句写完：这条路径没有暂存落盘，也没有

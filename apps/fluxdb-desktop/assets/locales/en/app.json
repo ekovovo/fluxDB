@@ -2310,6 +2310,7 @@
     "last": "Last page",
     "last_unknown": "Last page cannot be determined",
     "page_size": "Per page",
+    "incomplete": "Page incomplete: %{reason}",
     "total": "%{count} total"
   },
   "data": {
@@ -2699,6 +2700,7 @@
       "choose_location": "Could not choose a save location: %{error}",
       "failed": "Export failed: %{error}",
       "write": "Could not write the export file: %{error}",
+      "incomplete_page": "Export canceled because the result page is incomplete: %{reason}",
       "insert_needs_table": "SQL INSERT export requires table object information",
       "truncated_value": "Column %{column} holds only a preview (truncated CLOB); exporting would lose content. Load the full value first."
     },

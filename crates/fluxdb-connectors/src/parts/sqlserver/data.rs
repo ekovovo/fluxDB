@@ -81,8 +81,6 @@ fn sqlserver_load_data_with_expression(
         sqlserver_close(client).await;
         Ok(batch)
     })?;
-    let batch_truncated = batch.truncated;
-    // 按值取行：这一页最多 16 MiB，再 clone 一份等于把峰值翻倍。
     let mut rows = batch
         .result_sets
         .into_iter()
@@ -99,12 +97,8 @@ fn sqlserver_load_data_with_expression(
         rows,
         offset: pagination.offset,
         limit: pagination.limit,
-        // 驱动侧截断时后面的行根本没读进来，不能声称「还有更多」。
-        has_more: has_more && !batch_truncated,
-        incomplete: batch_truncated.then(|| fluxdb_core::PageIncomplete {
-            reason: "结果超过 16 MiB 内存上限，后续行未载入；请缩小查询范围或加过滤条件"
-                .to_string(),
-        }),
+        has_more,
+        incomplete: None,
     })
 }
 

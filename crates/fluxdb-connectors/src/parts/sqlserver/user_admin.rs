@@ -173,7 +173,6 @@ fn sqlserver_security_snapshot(
     let schemas = sqlserver_first_rows(
         &SqlServerBatchResult {
             result_sets: batch.result_sets.into_iter().skip(6).collect(),
-            truncated: batch.truncated,
         },
         "SQL Server Schema 列表返回类型异常",
     )?

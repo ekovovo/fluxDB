@@ -2310,6 +2310,7 @@
     "last": "末页",
     "last_unknown": "无法确定最后一页",
     "page_size": "每页",
+    "incomplete": "本页未取完：%{reason}",
     "total": "共 %{count} 条"
   },
   "data": {
@@ -2699,6 +2700,7 @@
       "choose_location": "选择保存位置失败：%{error}",
       "failed": "导出失败：%{error}",
       "write": "导出文件落盘失败：%{error}",
+      "incomplete_page": "结果页不完整，导出已取消：%{reason}",
       "insert_needs_table": "SQL INSERT 导出需要表对象信息",
       "truncated_value": "字段 %{column} 只加载了预览（截断的 CLOB），导出会丢失内容；请先加载完整值"
     },

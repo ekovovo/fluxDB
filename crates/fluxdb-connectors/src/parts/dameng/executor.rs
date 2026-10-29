@@ -60,7 +60,7 @@ fn dm_execute_query_with_progress(
                     pagination,
                     pagination.offset,
                     &content_owner,
-                );
+                )?;
                 let message = if let Some(incomplete) = &page.incomplete {
                     format!(
                         "已读取 {returned_rows} 行，当前仅展示 {} 行（{}）",
@@ -150,10 +150,8 @@ fn dm_execute_query_with_progress(
     Ok(execution)
 }
 
-/// 逐行收页：单格超阈值先外置成内容引用，整页按 [`fluxdb_core::RESULT_PAGE_BUDGET_BYTES`] 封顶。
+/// 逐行收页：单格超阈值先外置成内容引用，页容量只由行数决定。
 ///
-/// 放不下就停在**当前这一行**（不收、不越过），由 `next_offset()` 让下一页从它继续；
-/// 不能因为预算把中间的行丢掉——那会让用户看不到数据却毫不知情。
 /// `skip_rows` 是 SQL 未做 OFFSET 时需要在内存里跳过的行数（已带 OFFSET 时传 0）。
 ///
 /// ponytail: 达梦驱动（`DmClient::execute`）在返回前就把整个结果集物化，
@@ -166,7 +164,7 @@ fn dm_collect_page(
     pagination: Pagination,
     skip_rows: u64,
     owner: &str,
-) -> DataPage {
+) -> fluxdb_core::Result<DataPage> {
     let width = columns.len();
     let capacity = query_execution_row_capacity(pagination.limit);
     let mut page = DataPage {
@@ -177,7 +175,6 @@ fn dm_collect_page(
         has_more: false,
         incomplete: None,
     };
-    let mut stored_bytes = 0usize;
     for (index, row) in rows.enumerate() {
         if (index as u64) < skip_rows {
             continue;
@@ -188,26 +185,14 @@ fn dm_collect_page(
             break;
         }
         let mut values = dm_page_values(row, width);
-        let row_bytes = values.iter().map(cell_stored_bytes).sum::<usize>();
-        let budget_left = fluxdb_core::RESULT_PAGE_BUDGET_BYTES.saturating_sub(stored_bytes);
-        match fit_row_into_page(owner, &mut page, &mut values, row_bytes, budget_left) {
-            Ok(true) => {
-                stored_bytes += values.iter().map(cell_stored_bytes).sum::<usize>();
-                page.rows.push(Row { values });
-            }
-            // 停在未收录行：页已标不完整，后面的行交给下一页。
-            Ok(false) => break,
-            Err(error) => {
-                page.incomplete = Some(incomplete_page(error.message));
-                break;
-            }
-        }
+        spill_large_cells(owner, &mut values)?;
+        page.rows.push(Row { values });
     }
     if page.incomplete.is_some() {
         // 预算截断与「正常还有更多」互斥。
         page.has_more = false;
     }
-    page
+    Ok(page)
 }
 
 fn dm_execute_parameterized(
@@ -271,7 +256,7 @@ fn dm_execute_parameterized(
                 pagination,
                 pagination.offset,
                 &content_owner,
-            );
+            )?;
             Ok(QueryExecutionResult {
                 summaries: vec![QueryExecutionSummary {
                     sql: statement,
@@ -389,7 +374,8 @@ mod dameng_page_tests {
             Pagination::new(1, 10),
             1,
             "result-1-c",
-        );
+        )
+        .expect("collect page");
         assert_eq!(page.rows.len(), 2);
         assert_eq!(page.rows[0].values[0], CellValue::I64(1));
         assert!(!page.has_more);
@@ -407,12 +393,46 @@ mod dameng_page_tests {
             Pagination::new(0, 10),
             0,
             "result-1-c",
-        );
+        )
+        .expect("collect page");
         assert_eq!(page.rows.len(), 1, "大字段行必须留在页里");
         assert!(page.incomplete.is_none(), "单格外置成功不算资源截断");
         assert!(matches!(
             page.rows[0].values[1],
             CellValue::LargeValue(_)
         ));
+    }
+
+    #[test]
+    fn spill_failure_is_query_error_not_successful_short_page() {
+        struct FailingStore;
+        impl CellContentStore for FailingStore {
+            fn put(&self, _: &str, _: LargeValueKind, _: &[u8]) -> fluxdb_core::Result<String> {
+                Err(fluxdb_core::Error::new(
+                    fluxdb_core::ErrorKind::Unsupported,
+                    "测试外置失败",
+                ))
+            }
+            fn stat(&self, _: &str) -> Option<CellContentMeta> {
+                None
+            }
+            fn read(&self, _: &str, _: u64, _: usize) -> fluxdb_core::Result<Vec<u8>> {
+                unreachable!()
+            }
+            fn release(&self, _: &str) {}
+            fn release_owner(&self, _: &str) {}
+        }
+
+        fluxdb_core::register_cell_content_store(Arc::new(FailingStore));
+        let oversized = Value::Bytes(vec![7u8; fluxdb_core::CELL_SPILL_THRESHOLD_BYTES + 1]);
+        let error = dm_collect_page(
+            columns(),
+            std::iter::once(row(1, oversized)),
+            Pagination::new(0, 10),
+            0,
+            "result-1-c",
+        )
+        .expect_err("外置失败必须冒泡");
+        assert_eq!(error.message, "测试外置失败");
     }
 }

@@ -289,12 +289,19 @@ pub trait Connector {
             }
             let batch_size = 4096u64;
             let page = self.load_data(path, offset, batch_size, sort, filters)?;
+            if let Some(incomplete) = &page.incomplete {
+                return Err(Error::new(
+                    ErrorKind::Query,
+                    format!("结果页不完整，导出已取消：{}", incomplete.reason),
+                ));
+            }
             let count = page.rows.len() as u64;
             let has_more = page.has_more;
+            let next_offset = page.next_offset();
             if !on_page(page) {
                 return Ok(());
             }
-            offset += count;
+            offset = next_offset;
             if count == 0 || !has_more {
                 return Ok(());
             }
@@ -645,4 +652,74 @@ pub trait Connector {
 pub struct DataExportPreview {
     pub sql: String,
     pub row_count: u64,
+}
+
+#[cfg(test)]
+mod export_pages_tests {
+    use super::*;
+
+    struct IncompleteConnector;
+
+    impl Connector for IncompleteConnector {
+        fn kind(&self) -> DatabaseKind {
+            DatabaseKind::Sqlite
+        }
+
+        fn test_connection(&self, _: &ConnectionConfig) -> Result<()> {
+            Ok(())
+        }
+
+        fn list_objects(&self, _: Option<&ObjectPath>) -> Result<Vec<ObjectSummary>> {
+            Ok(Vec::new())
+        }
+
+        fn load_data(
+            &self,
+            _: &ObjectPath,
+            offset: u64,
+            limit: u64,
+            _: &[SortSpec],
+            _: &[FilterSpec],
+        ) -> Result<DataPage> {
+            Ok(DataPage {
+                columns: Vec::new(),
+                rows: vec![Row { values: Vec::new() }],
+                offset,
+                limit,
+                has_more: false,
+                incomplete: Some(PageIncomplete {
+                    reason: "大字段存储失败".into(),
+                }),
+            })
+        }
+
+        fn apply_changes(&self, _: &DataChangeSet) -> Result<AppliedChangeOutcome> {
+            unreachable!()
+        }
+
+        fn execute(&self, _: &QueryRequest) -> Result<QueryExecutionResult> {
+            unreachable!()
+        }
+    }
+
+    #[test]
+    fn incomplete_page_fails_before_export_callback() {
+        let path = ObjectPath {
+            connection_id: ConnectionId(1),
+            database: Some("main".into()),
+            schema: None,
+            name: "items".into(),
+            kind: ObjectKind::Table,
+        };
+        let mut callbacks = 0;
+        let error = IncompleteConnector
+            .export_pages(&path, &[], &[], &|| false, &mut |_| {
+                callbacks += 1;
+                true
+            })
+            .expect_err("incomplete export must fail");
+        assert_eq!(error.kind, ErrorKind::Query);
+        assert!(error.message.contains("大字段存储失败"));
+        assert_eq!(callbacks, 0, "不能写出不完整页");
+    }
 }

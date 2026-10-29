@@ -767,7 +767,11 @@ fn postgres_changes_with_original_values(changes: &DataChangeSet, page: &DataPag
             page.columns.iter().position(|col| &col.name == name).and_then(|index| row.values.get(index)) == Some(value))).collect::<Vec<_>>();
         if candidates.len() != 1 { return Err(Error::new(ErrorKind::Query, "原始行身份不唯一，已取消提交")); }
         for (col, value) in page.columns.iter().zip(&candidates[0].values) {
-            if !matches!(value, CellValue::BinarySummary(_)) { identity.values.insert(col.name.clone(), value.clone()); }
+            // 预览类值不是权威数据：按预览比较永远匹配不到完整值，放进身份会让有主键的
+            // 行也定位失败（无主键表的身份本就含整行，由连接器提交校验明确拒绝）。
+            if !matches!(value, CellValue::BinarySummary(_)) && !value.is_truncated() {
+                identity.values.insert(col.name.clone(), value.clone());
+            }
         }
     }
     Ok(changes)
@@ -799,6 +803,79 @@ mod cell_detail_truncated_tests {
         let value = CellValue::Text("完整内容".to_string());
         let edited = cell_value_from_edit_text(&value, "新内容").expect("complete text is editable");
         assert_eq!(edited, CellValue::Text("新内容".to_string()));
+    }
+}
+
+#[cfg(test)]
+mod postgres_identity_preview_tests {
+    use super::postgres_changes_with_original_values;
+    use fluxdb_core::{
+        CellUpdate, CellValue, Column, ConnectionId, DataChangeSet, DataPage, LargeCellValue,
+        LargeValueKind, ObjectKind, ObjectPath, Row, RowIdentity, RowUpdate,
+    };
+    use std::collections::BTreeMap;
+
+    fn column(name: &str, primary_key: bool) -> Column {
+        Column {
+            name: name.to_string(),
+            type_name: Some("text".to_string()),
+            nullable: true,
+            primary_key,
+            comment: None,
+        }
+    }
+
+    fn large_value() -> CellValue {
+        CellValue::LargeValue(LargeCellValue {
+            content_id: "content-1".to_string(),
+            kind: LargeValueKind::Text,
+            byte_length: Some(1_000_000),
+            preview: "前 4000 字符".to_string(),
+            preview_truncated: true,
+        })
+    }
+
+    /// 原值并发校验只应收权威值：预览进身份会让有主键的行也按预览比较而定位失败。
+    #[test]
+    fn preview_columns_stay_out_of_pg_identity() {
+        let page = DataPage {
+            columns: vec![column("ID", true), column("NOTE", false), column("TITLE", false)],
+            rows: vec![Row {
+                values: vec![
+                    CellValue::I64(1),
+                    large_value(),
+                    CellValue::Text("原标题".to_string()),
+                ],
+            }],
+            offset: 0,
+            limit: 100,
+            has_more: false,
+            incomplete: None,
+        };
+        let changes = DataChangeSet {
+            object: ObjectPath {
+                connection_id: ConnectionId(1),
+                database: Some("db".to_string()),
+                schema: None,
+                name: "t".to_string(),
+                kind: ObjectKind::Table,
+            },
+            inserts: Vec::new(),
+            updates: vec![RowUpdate {
+                identity: RowIdentity {
+                    values: BTreeMap::from([("ID".to_string(), CellValue::I64(1))]),
+                },
+                cells: vec![CellUpdate::new("TITLE", CellValue::Text("新标题".to_string()))],
+            }],
+            deletes: Vec::new(),
+            insert_intents: None,
+        };
+
+        let result = postgres_changes_with_original_values(&changes, &page).expect("身份可定位");
+        let identity = &result.updates[0].identity.values;
+        assert_eq!(identity.get("ID"), Some(&CellValue::I64(1)));
+        assert_eq!(identity.get("TITLE"), Some(&CellValue::Text("原标题".to_string())));
+        assert!(!identity.contains_key("NOTE"), "预览列不能进身份");
     }
 }
 

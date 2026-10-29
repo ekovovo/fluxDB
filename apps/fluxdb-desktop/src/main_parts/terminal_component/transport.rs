@@ -18,6 +18,59 @@ enum TerminalTransportEvent {
     Exited,
 }
 
+/// 终端后端：真实 PTY（Redis CLI 等）或进程内 REPL（MongoDB 命令行，无子进程）。
+///
+/// 两者对组件暴露同一组操作，组件层不必区分「有没有子进程」，只有 spawn 入口不同。
+enum TerminalBackend {
+    Pty(TerminalPty),
+    Repl(fluxdb_app::MongoReplTransport),
+}
+
+impl TerminalBackend {
+    fn write(&mut self, data: &[u8]) {
+        match self {
+            Self::Pty(pty) => pty.write(data),
+            Self::Repl(repl) => repl.write(data),
+        }
+    }
+
+    /// 取一条读事件；`None` 表示暂无输出。
+    fn try_recv(&mut self) -> Option<TerminalTransportEvent> {
+        match self {
+            Self::Pty(pty) => pty.try_recv(),
+            // REPL 用空片段表示「会话结束」（Ctrl+D），非空片段即输出。
+            Self::Repl(repl) => repl.try_recv().map(|bytes| {
+                if bytes.is_empty() {
+                    TerminalTransportEvent::Exited
+                } else {
+                    TerminalTransportEvent::Output(bytes)
+                }
+            }),
+        }
+    }
+
+    fn resize(&mut self, cols: u16, rows: u16) {
+        if let Self::Pty(pty) = self {
+            pty.resize(cols, rows);
+        }
+    }
+
+    /// 真实退出状态：只有 PTY 有子进程可查；REPL 无进程，按成功退出处理。
+    fn takeover_exit_status(&mut self) -> Option<(u32, Option<String>)> {
+        match self {
+            Self::Pty(pty) => pty.takeover_exit_status(),
+            Self::Repl(_) => Some((0, None)),
+        }
+    }
+
+    fn close(&mut self) {
+        match self {
+            Self::Pty(pty) => pty.close(),
+            Self::Repl(repl) => repl.close(),
+        }
+    }
+}
+
 /// PTY 传输句柄：持有 master（供 resize）与 writer；reader 在后台线程。
 struct TerminalPty {
     master: Box<dyn portable_pty::MasterPty + Send>,

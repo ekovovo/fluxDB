@@ -201,6 +201,7 @@ fn tree_icon_path(glyph: &str) -> Option<&'static str> {
         "schema" => Some("tree/schema.svg"),
         "table" | "tables" => Some("tree/table.svg"),
         "view" | "views" => Some("tree/view.svg"),
+        "collection" => Some("tree/collection.svg"),
         "procedures" => Some("tree/procedure.svg"),
         "functions" => Some("tree/function.svg"),
         "folder" => Some("tree/folder.svg"),
@@ -460,6 +461,10 @@ fn object_group_tree(
         None,
         colors,
     )
+    .debug_selector({
+        let database = database.clone();
+        move || format!("object-group-row:{}:{database}", group.key())
+    })
     .on_mouse_down(
         MouseButton::Left,
         cx.listener(move |this, _, _, cx| {
@@ -674,6 +679,8 @@ fn table_folder_tree(
         )
 }
 
+/// `is_mongo` 由调用方按连接类型给出：Mongo 集合走集合工作台，其余走数据编辑器。
+#[allow(clippy::too_many_arguments)]
 fn table_tree(
     object: &ObjectSummary,
     indent: u8,
@@ -681,6 +688,7 @@ fn table_tree(
     connection_color_hex: &str,
     pinned: bool,
     search_query: Option<&str>,
+    is_mongo: bool,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
@@ -691,6 +699,7 @@ fn table_tree(
         object.path.kind,
         ObjectKind::Procedure | ObjectKind::Function
     );
+    let mongo_read_only = object.path.kind == ObjectKind::View;
     let selected = active_object_path == Some(&object.path);
     tree_with_highlight(
         empty_arrow_element(),
@@ -720,25 +729,46 @@ fn table_tree(
             this.close_context_menus(cx);
             if is_routine {
                 this.open_routine_ddl(path.clone(), cx);
+            } else if is_mongo {
+                this.dispatch(
+                    AppCommand::OpenMongoCollection {
+                        object: path.clone(),
+                        read_only: mongo_read_only,
+                    },
+                    cx,
+                );
             } else {
                 this.dispatch(AppCommand::OpenDataEditor(path.clone()), cx);
             }
             cx.stop_propagation();
         }),
     )
-    .when(is_table, |this| {
+    .when(is_table || is_mongo, |this| {
+        let mongo_menu_path = menu_path.clone();
         this.on_mouse_down(
             MouseButton::Right,
             cx.listener(move |this, event: &MouseDownEvent, window, cx| {
-                this.show_table_context_menu(
-                    TableContextMenu {
-                        object_path: menu_path.clone(),
-                        position: event.position,
-                        submenu: None,
-                    },
-                    window,
-                    cx,
-                );
+                if is_mongo {
+                    this.show_collection_context_menu(
+                        CollectionContextMenu {
+                            object_path: mongo_menu_path.clone(),
+                            position: event.position,
+                            read_only: mongo_read_only,
+                        },
+                        window,
+                        cx,
+                    );
+                } else {
+                    this.show_table_context_menu(
+                        TableContextMenu {
+                            object_path: menu_path.clone(),
+                            position: event.position,
+                            submenu: None,
+                        },
+                        window,
+                        cx,
+                    );
+                }
                 cx.stop_propagation();
             }),
         )
@@ -1064,7 +1094,7 @@ fn object_glyph(kind: ObjectKind) -> &'static str {
         ObjectKind::Function => "functions",
         ObjectKind::Column => "┃",
         ObjectKind::Index => "#",
-        ObjectKind::Collection => "◆",
+        ObjectKind::Collection => "collection",
         ObjectKind::RedisKey => "●",
         ObjectKind::Schema => "schema",
         ObjectKind::Database | ObjectKind::RedisDb => "database",
@@ -1091,6 +1121,11 @@ fn group_objects<'a>(
             ObjectGroup::Views => object.path.kind == ObjectKind::View,
             ObjectGroup::Procedures => object.path.kind == ObjectKind::Procedure,
             ObjectGroup::Functions => object.path.kind == ObjectKind::Function,
+            // Mongo 库里视图也是只读集合，与集合同列；其余连接不会出现该分组。
+            ObjectGroup::Collections => matches!(
+                object.path.kind,
+                ObjectKind::Collection | ObjectKind::View
+            ),
             ObjectGroup::Queries
             | ObjectGroup::Backup
             // ER 图节点单击开 tab、不展开子行，故不从对象目录取行。
@@ -1372,6 +1407,7 @@ fn connection_has_loaded_children(connection: &ConnectionState, database: &str) 
             | ObjectKind::View
             | ObjectKind::Procedure
             | ObjectKind::Function
+            | ObjectKind::Collection
             | ObjectKind::RedisKey
         ) && object.path.database.as_deref().unwrap_or("main") == database
     })

@@ -381,20 +381,20 @@ impl NavicatMain {
                         AppEvent::Failed(error) => return Err(error),
                         _ => {
                             return Err(fluxdb_core::UserFacingError {
-                                title: tr("app.data.error.download").to_string(),
-                                message: tr("app.data.error.binary_no_result").to_string(),
-                                detail: None,
-                                retryable: true,
+                            title: tr("app.data.error.download").to_string(),
+                            message: tr("app.data.error.binary_no_result").to_string(),
+                            detail: None,
+                            retryable: true,
                             });
                         }
                     };
 
                     fs::write(&path, &bytes).map_err(|error| fluxdb_core::UserFacingError {
-                        title: tr("app.data.error.download").to_string(),
+                            title: tr("app.data.error.download").to_string(),
                         message: tr("app.data.error.save_file")
                             .replace("%{error}", &error.to_string()),
-                        detail: None,
-                        retryable: true,
+                            detail: None,
+                            retryable: true,
                     })?;
                     Ok(fluxdb_core::format_byte_length(bytes.len() as u64))
                 })
@@ -409,8 +409,8 @@ impl NavicatMain {
                     match result {
                         Ok(size) => this.show_message(
                             tr("app.cell_detail.large_save_done").replace("%{size}", &size),
-                            AppMessageKind::Success,
-                            cx,
+                                AppMessageKind::Success,
+                                cx,
                         ),
                         Err(error) => {
                             this.show_message(error.message, AppMessageKind::Error, cx);
@@ -430,20 +430,20 @@ impl NavicatMain {
     fn upload_active_binary_cell(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some((tab_id, row, column)) = self
             .controller
-            .state()
-            .active_tab()
-            .and_then(|tab| match &tab.kind {
-                TabKind::DataEditor(editor) => {
-                    let active_cell = editor.cell_detail_panel.active_cell?;
+                .state()
+                .active_tab()
+                .and_then(|tab| match &tab.kind {
+                    TabKind::DataEditor(editor) => {
+                        let active_cell = editor.cell_detail_panel.active_cell?;
                     Some((tab.id, active_cell.row, active_cell.column))
-                }
-                TabKind::QueryEditor(editor) => {
-                    let editor = active_query_result_editor_state(editor)?;
-                    let active_cell = editor.cell_detail_panel.active_cell?;
+                    }
+                    TabKind::QueryEditor(editor) => {
+                        let editor = active_query_result_editor_state(editor)?;
+                        let active_cell = editor.cell_detail_panel.active_cell?;
                     Some((tab.id, active_cell.row, active_cell.column))
-                }
-                _ => None,
-            })
+                    }
+                    _ => None,
+                })
         else {
             return;
         };
@@ -780,6 +780,7 @@ impl NavicatMain {
                 }
                 self.start_data_page_load_if_needed(*tab_id, cx);
                 self.start_completion_index_warmup_for_tab(*tab_id, cx);
+                self.start_mongo_load_if_needed(*tab_id, cx);
             }
             AppEvent::TableInfoChanged(tab_id, tab) => {
                 self.start_table_info_load_if_needed(*tab_id, *tab, cx);
@@ -870,6 +871,7 @@ impl NavicatMain {
             }
             AppEvent::TabClosed(tab_id) => {
                 self.ai_chat_tab_closed(*tab_id, cx);
+                self.close_mongo_tab_state(*tab_id);
                 if self.hovered_tab == Some(*tab_id) {
                     self.hovered_tab = None;
                 }

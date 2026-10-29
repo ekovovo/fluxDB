@@ -76,6 +76,9 @@ impl NavicatMain {
                     .dispatch(AppCommand::MoveConnectionToTopLevel(connection_id));
                 self.persist_sidebar_layout();
             }
+            ConnectionMenuAction::MongoInfo => {
+                self.show_mongo_info_dialog(connection_id, cx);
+            }
         }
         cx.notify();
     }
@@ -257,6 +260,18 @@ impl NavicatMain {
                 } else {
                     self.show_create_schema_modal(menu.database_path.clone(), window, cx);
                 }
+            }
+            DatabaseMenuAction::NewCollection => {
+                self.show_create_collection_modal(menu.connection_id, menu.database.clone(), window, cx);
+            }
+            DatabaseMenuAction::MongoCli => {
+                self.dispatch(
+                    AppCommand::OpenMongoCli {
+                        connection_id: menu.connection_id,
+                        database: menu.database.clone(),
+                    },
+                    cx,
+                );
             }
             DatabaseMenuAction::FindInDatabase => {
                 self.show_message(
@@ -830,6 +845,8 @@ impl NavicatMain {
                 | DatabaseKind::Sqlite
                 | DatabaseKind::Postgres
                 | DatabaseKind::SqlServer
+                // MongoDB 的库由首个集合隐式创建，弹框多一个「首个集合」字段。
+                | DatabaseKind::MongoDb
         ) {
             self.show_message(
                 tr("app.connection_action.new_database_unsupported"),
@@ -843,14 +860,16 @@ impl NavicatMain {
         self.group_context_menu = None;
         let is_postgres = connection.config.kind == DatabaseKind::Postgres;
         let is_sqlserver = connection.config.kind == DatabaseKind::SqlServer;
+        let is_mongo = connection.config.kind == DatabaseKind::MongoDb;
         self.pending_create_database = Some(CreateDatabaseForm {
             connection_id,
             database_kind: connection.config.kind,
             database_name: String::new(),
             // PG：charset 即 ENCODING、collation 即 LC_COLLATE/LC_CTYPE(locale)。
+            // Mongo 没有字符集概念（charset 位置改承载首个集合名，见 confirm_create_database）。
             charset: if is_postgres {
                 "UTF8".to_string()
-            } else if is_sqlserver {
+            } else if is_sqlserver || is_mongo {
                 String::new()
             } else {
                 "utf8mb4".to_string()
@@ -859,16 +878,21 @@ impl NavicatMain {
                 "C".to_string()
             } else if is_sqlserver {
                 "SQL_Latin1_General_CP1_CI_AS".to_string()
+            } else if is_mongo {
+                String::new()
             } else {
                 "utf8mb4_unicode_ci".to_string()
             },
             owner: String::new(),
             template: String::new(),
+            first_collection: String::new(),
         });
         self.create_database_name_input.update(cx, |input, cx| {
             input.set_value(String::new(), window, cx);
             input.focus(window, cx);
         });
+        self.create_database_first_collection_input
+            .update(cx, |input, cx| input.set_value(String::new(), window, cx));
         let charset_options = if is_postgres {
             pg_create_database_encoding_options()
         } else {
@@ -1090,12 +1114,31 @@ impl NavicatMain {
             );
             return;
         };
+        // MongoDB 没有字符集与排序规则：charset 位置改承载「首个集合名」，由连接器
+        // 建集合来隐式建库（没有集合的空库在 Mongo 里不存在）。
+        let is_mongo = connection_config.kind == DatabaseKind::MongoDb;
+        let first_collection = if is_mongo {
+            let collection = form.first_collection.trim().to_string();
+            if collection.is_empty() {
+                self.show_message(
+                    tr("app.mongo.create_database.enter_collection"),
+                    AppMessageKind::Warning,
+                    cx,
+                );
+                return;
+            }
+            collection
+        } else {
+            String::new()
+        };
         // MySQL/TiDB 需要 charset+collation；PG 需要 ENCODING+locale（复用 charset/collation 字段）。
         let requires_charset = matches!(
             connection_config.kind,
             DatabaseKind::MySql | DatabaseKind::TiDb | DatabaseKind::Postgres
         );
-        let charset = if requires_charset {
+        let charset = if is_mongo {
+            first_collection
+        } else if requires_charset {
             let charset = form.charset.trim().to_string();
             if charset.is_empty() {
                 self.show_message(

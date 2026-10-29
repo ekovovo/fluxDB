@@ -51,6 +51,7 @@ fn oracle_security_panel_renders_directory_and_preview(cx: &mut TestAppContext) 
             },
             ..OracleConnectionProfile::default()
         }),
+        mongo_profile: None,
     };
     // 当前账号 = FLUXDB：只有自己读得到授权明细。
     let snapshot = OracleUserAdminSnapshot {

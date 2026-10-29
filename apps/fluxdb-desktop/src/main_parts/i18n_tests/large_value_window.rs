@@ -42,6 +42,7 @@ fn large_value_detail_window_loads_chunks_from_content_store(cx: &mut TestAppCon
         dameng_profile: None,
         sqlserver_profile: None,
         oracle_profile: None,
+        mongo_profile: None,
     }]));
     cx.update(|cx| {
         extend_component_i18n();

@@ -10,14 +10,14 @@ enum TableDataImportTarget {
 
 /// 导入弹窗页签：与导出保持一致的“常规 + 消息日志”结构。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum TableDataImportTab {
+enum ImportDialogTab {
     General,
     Log,
 }
 
 /// 单条导入日志；批量写入时每条进度都会追加一行。
 #[derive(Clone, Debug)]
-struct TableDataImportLogEntry {
+struct ImportDialogLogEntry {
     stage: String,
     message: String,
     success: bool,
@@ -39,8 +39,8 @@ struct TableDataImportForm {
     error: Option<String>,
     running: bool,
     loading: bool,
-    tab: TableDataImportTab,
-    logs: Vec<TableDataImportLogEntry>,
+    tab: ImportDialogTab,
+    logs: Vec<ImportDialogLogEntry>,
     started_at: Option<Instant>,
     finished_at: Option<Instant>,
     imported_rows: u64,
@@ -59,7 +59,7 @@ impl TableDataImportForm {
             error: None,
             running: false,
             loading: false,
-            tab: TableDataImportTab::General,
+            tab: ImportDialogTab::General,
             logs: Vec::new(),
             started_at: None,
             finished_at: None,
@@ -446,8 +446,8 @@ impl NavicatMain {
             current.finished_at = None;
             current.imported_rows = 0;
             // 开始时切到日志页，让用户直接看到写入进度。
-            current.tab = TableDataImportTab::Log;
-            current.logs.push(TableDataImportLogEntry {
+            current.tab = ImportDialogTab::Log;
+            current.logs.push(ImportDialogLogEntry {
                 stage: tr("app.data.data_import.stage_prepare").to_string(),
                 message: tr("app.data.data_import.log_starting").to_string(),
                 success: true,
@@ -491,7 +491,7 @@ impl NavicatMain {
                     if let Some(current) = this.pending_data_import.as_mut() {
                         let started_at = current.started_at.unwrap_or_else(Instant::now);
                         for (stage, message) in progress_lines {
-                            current.logs.push(TableDataImportLogEntry {
+                            current.logs.push(ImportDialogLogEntry {
                                 stage,
                                 message,
                                 success: true,
@@ -505,8 +505,8 @@ impl NavicatMain {
                                 current.running = false;
                                 current.finished_at = Some(Instant::now());
                                 current.imported_rows = report.imported_rows;
-                                current.tab = TableDataImportTab::Log;
-                                current.logs.push(TableDataImportLogEntry {
+                                current.tab = ImportDialogTab::Log;
+                                current.logs.push(ImportDialogLogEntry {
                                     stage: tr("app.data.data_import.stage_done").to_string(),
                                     message: tr("app.table.import.succeeded")
                                         .replace("%{rows}", &report.imported_rows.to_string()),
@@ -517,7 +517,7 @@ impl NavicatMain {
                                         .unwrap_or(0),
                                 });
                                 for warning in &report.warnings {
-                                    current.logs.push(TableDataImportLogEntry {
+                                    current.logs.push(ImportDialogLogEntry {
                                         stage: tr("app.data.data_import.stage_warning").to_string(),
                                         message: crate::localize_backend_error_text(warning),
                                         success: false,
@@ -552,9 +552,9 @@ impl NavicatMain {
                             if let Some(current) = this.pending_data_import.as_mut() {
                                 current.running = false;
                                 current.finished_at = Some(Instant::now());
-                                current.tab = TableDataImportTab::Log;
+                                current.tab = ImportDialogTab::Log;
                                 current.error = Some(message.clone());
-                                current.logs.push(TableDataImportLogEntry {
+                                current.logs.push(ImportDialogLogEntry {
                                     stage: tr("app.data.data_import.stage_failed").to_string(),
                                     message,
                                     success: false,
@@ -610,9 +610,14 @@ fn table_data_import_modal(
         .key_context("TableDataImportModal")
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .child(table_data_import_header(&form, colors, cx))
-        .child(table_data_import_tabs(form.tab, colors, cx))
+        .child(import_dialog_tabs(
+            form.tab,
+            ImportDialogOwner::TableData,
+            colors,
+            cx,
+        ))
         .child(match form.tab {
-            TableDataImportTab::General => div()
+            ImportDialogTab::General => div()
                 .flex_1()
                 .min_h(px(0.))
                 .flex()
@@ -631,8 +636,9 @@ fn table_data_import_modal(
                 )
                 .child(table_data_import_options_bar(&form, kind, colors, cx))
                 .into_any_element(),
-            TableDataImportTab::Log => {
-                table_data_import_log_body(&form, colors).into_any_element()
+            ImportDialogTab::Log => {
+                import_dialog_log_body(table_data_import_log_view(&form), colors)
+                    .into_any_element()
             }
         })
         .child(table_data_import_footer(&form, can_import, colors, cx));
@@ -656,9 +662,17 @@ fn table_data_import_modal(
         .child(panel)
 }
 
-/// 页签栏：沿用导出弹框的样式，保持两个弹框一致。
-fn table_data_import_tabs(
-    active: TableDataImportTab,
+/// 页签栏归属哪个导入弹窗：两个弹窗共用版式，只有改哪个表单状态的差别。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ImportDialogOwner {
+    TableData,
+    MongoDocuments,
+}
+
+/// 页签栏：沿用导出弹框的样式，表数据导入与文档导入共用。
+fn import_dialog_tabs(
+    active: ImportDialogTab,
+    owner: ImportDialogOwner,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
@@ -670,31 +684,35 @@ fn table_data_import_tabs(
         .items_center()
         .border_b_1()
         .border_color(colors.border_soft)
-        .child(table_data_import_tab_button(
+        .child(import_dialog_tab_button(
             tr("app.data.data_import.tab_general"),
-            active == TableDataImportTab::General,
-            TableDataImportTab::General,
+            active == ImportDialogTab::General,
+            ImportDialogTab::General,
+            owner,
             colors,
             cx,
         ))
-        .child(table_data_import_tab_button(
+        .child(import_dialog_tab_button(
             tr("app.data.data_import.tab_log"),
-            active == TableDataImportTab::Log,
-            TableDataImportTab::Log,
+            active == ImportDialogTab::Log,
+            ImportDialogTab::Log,
+            owner,
             colors,
             cx,
         ))
 }
 
-fn table_data_import_tab_button(
+fn import_dialog_tab_button(
     label: impl Into<SharedString>,
     active: bool,
-    tab: TableDataImportTab,
+    tab: ImportDialogTab,
+    owner: ImportDialogOwner,
     colors: UiColors,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
     let label = label.into();
     div()
+        .debug_selector(move || format!("import-dialog-tab:{tab:?}"))
         .h(px(34.))
         .px_3()
         .flex()
@@ -713,8 +731,17 @@ fn table_data_import_tab_button(
         .on_mouse_down(
             MouseButton::Left,
             cx.listener(move |this, _, _, cx| {
-                if let Some(form) = this.pending_data_import.as_mut() {
-                    form.tab = tab;
+                match owner {
+                    ImportDialogOwner::TableData => {
+                        if let Some(form) = this.pending_data_import.as_mut() {
+                            form.tab = tab;
+                        }
+                    }
+                    ImportDialogOwner::MongoDocuments => {
+                        if let Some(form) = this.pending_mongo_import.as_mut() {
+                            form.tab = tab;
+                        }
+                    }
                 }
                 cx.notify();
                 cx.stop_propagation();
@@ -724,17 +751,40 @@ fn table_data_import_tab_button(
 }
 
 /// 消息日志：阶段 + 文案，失败项用错误色区分。
-fn table_data_import_log_body(form: &TableDataImportForm, colors: UiColors) -> Div {
-    let status = if form.running {
+/// 日志页正文所需的会话快照；表数据导入与文档导入各自组装。
+struct ImportDialogLogView<'a> {
+    running: bool,
+    finished: bool,
+    /// 已导入行数/文档数，由调用方带单位拼好（行 vs 文档）。
+    imported_label: String,
+    started_at: Option<Instant>,
+    finished_at: Option<Instant>,
+    logs: &'a [ImportDialogLogEntry],
+}
+
+fn table_data_import_log_view(form: &TableDataImportForm) -> ImportDialogLogView<'_> {
+    ImportDialogLogView {
+        running: form.running,
+        finished: form.finished_at.is_some(),
+        imported_label: tr("app.data.data_import.log_rows")
+            .replace("%{count}", &form.imported_rows.to_string()),
+        started_at: form.started_at,
+        finished_at: form.finished_at,
+        logs: &form.logs,
+    }
+}
+
+fn import_dialog_log_body(view: ImportDialogLogView<'_>, colors: UiColors) -> Div {
+    let status = if view.running {
         tr("app.data.data_import.log_running").to_string()
-    } else if form.finished_at.is_some() {
+    } else if view.finished {
         tr("app.data.data_import.log_finished").to_string()
     } else {
         tr("app.data.data_import.log_idle").to_string()
     };
     let mut list = div().flex().flex_col().gap_1().px_6().py_4();
     // 失败原因已经作为“失败”阶段日志写入；顶部再渲染一次会重复同一错误。
-    if form.logs.is_empty() {
+    if view.logs.is_empty() {
         list = list.child(
             div()
                 .text_size(px(11.5))
@@ -742,7 +792,7 @@ fn table_data_import_log_body(form: &TableDataImportForm, colors: UiColors) -> D
                 .child(tr("app.data.data_import.log_empty")),
         );
     }
-    for entry in form.logs.iter() {
+    for entry in view.logs.iter() {
         list = list.child(
             div()
                 .flex()
@@ -793,15 +843,12 @@ fn table_data_import_log_body(form: &TableDataImportForm, colors: UiColors) -> D
                 .gap_5()
                 .text_size(px(11.))
                 .text_color(colors.muted)
-                .child(
-                    tr("app.data.data_import.log_rows")
-                        .replace("%{count}", &form.imported_rows.to_string()),
-                )
+                .child(view.imported_label.clone())
                 .child(
                     tr("app.data.data_import.log_status")
                         .replace("%{status}", &status),
                 )
-                .when_some(form.started_at.zip(form.finished_at), |this, (start, end)| {
+                .when_some(view.started_at.zip(view.finished_at), |this, (start, end)| {
                     this.child(
                         tr("app.data.data_import.log_elapsed").replace(
                             "%{ms}",
@@ -1307,7 +1354,9 @@ fn table_data_import_options_bar(
         .child(
             div()
                 .flex()
-                .items_center()
+                // 字段是「标签 + 控件」两行，开关只有一行；居中对齐会让开关飘在
+                // 标签与控件之间，底部对齐才和下拉框同一水平线。
+                .items_end()
                 .gap_5()
                 .child(table_data_import_field(
                     tr("app.data.data_import.mode").as_ref(),
@@ -1635,7 +1684,7 @@ fn table_data_import_footer(
         .justify_end()
         .gap_2()
         // 日志页与导出一致：复制日志 / 清除任务 / 关闭。
-        .when(form.tab == TableDataImportTab::Log, |this| {
+        .when(form.tab == ImportDialogTab::Log, |this| {
             this.child(
                 Button::new("data-import-copy-log")
                     .label(tr("app.data.data_import.copy_log"))
@@ -1664,7 +1713,7 @@ fn table_data_import_footer(
                     })),
             )
         })
-        .when(form.tab == TableDataImportTab::General, |this| {
+        .when(form.tab == ImportDialogTab::General, |this| {
             this.child(
                 Button::new("data-import-cancel")
                     .label(tr("app.common.cancel"))

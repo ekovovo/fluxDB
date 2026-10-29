@@ -350,11 +350,13 @@ fn statusbar_active_connection_id(state: &AppState) -> Option<ConnectionId> {
         TabKind::QueryEditor(editor) => Some(editor.connection_id),
         TabKind::RedisWorkbench(workbench) => Some(workbench.connection_id),
         TabKind::RedisCli(cli) => Some(cli.connection_id),
+        TabKind::MongoCli(cli) => Some(cli.connection_id),
         TabKind::RedisPubSub(pubsub) => Some(pubsub.connection_id),
         TabKind::CreateTable(create) => Some(create.connection_id),
         TabKind::UserAdmin(admin) => Some(admin.connection_id),
         TabKind::BackupList(list) => Some(list.connection_id),
         TabKind::ErDiagram(er) => Some(er.connection_id),
+        TabKind::MongoCollection(collection) => Some(collection.object.connection_id),
         TabKind::Settings(_) => None,
         TabKind::AiChat { .. } => None,
     }
@@ -411,6 +413,12 @@ fn statusbar_context(state: &AppState) -> Option<String> {
             Some(&pubsub.database.to_string()),
             Some("Redis Pub/Sub"),
         ),
+        TabKind::MongoCli(cli) => connection_statusbar_context(
+            state,
+            cli.connection_id,
+            Some(&cli.database),
+            Some("MongoDB CLI"),
+        ),
         TabKind::CreateTable(create) => {
             let table_kind = if create.is_design() {
                 tr("app.statusbar.table.design")
@@ -442,6 +450,12 @@ fn statusbar_context(state: &AppState) -> Option<String> {
             er.connection_id,
             Some(&er.database),
             Some(tr("app.statusbar.er_diagram").as_ref()),
+        ),
+        TabKind::MongoCollection(collection) => connection_statusbar_context(
+            state,
+            collection.object.connection_id,
+            collection.object.database.as_deref(),
+            Some(tr("app.statusbar.mongo.collection").as_ref()),
         ),
         TabKind::Settings(_) => None,
         TabKind::AiChat { .. } => None,

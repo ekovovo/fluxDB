@@ -36,6 +36,7 @@ fn query_summary_columns_align_and_stay_readable_when_narrow(cx: &mut TestAppCon
         mysql_profile: None,
         postgres_profile: None,
         dameng_profile: None,
+        mongo_profile: None,
         sqlserver_profile: None,
         oracle_profile: None,
     }]));
@@ -163,6 +164,7 @@ fn query_summary_rows_scroll_when_they_overflow_the_output_panel(cx: &mut TestAp
         dameng_profile: None,
         sqlserver_profile: None,
         oracle_profile: None,
+        mongo_profile: None,
     }]));
     let AppEvent::TabOpened(tab_id) = controller.dispatch(AppCommand::OpenQueryEditorInDatabase {
         connection_id: ConnectionId(1),

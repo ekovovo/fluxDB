@@ -330,6 +330,13 @@ impl NavicatMain {
             .update(cx, |select, cx| {
                 select.set_selected_value(&sqlserver_encryption, window, cx);
             });
+        // MongoDB 认证机制：空串代表「默认（驱动协商）」，需要显式同步回第一项。
+        let mongo_auth_mechanism = self.new_connection_form.mongo_auth_mechanism.clone();
+        self.new_connection_inputs
+            .mongo_auth_mechanism_select
+            .update(cx, |select, cx| {
+                select.set_selected_value(&mongo_auth_mechanism, window, cx);
+            });
     }
 
     fn cancel_new_connection(&mut self, cx: &mut Context<Self>) {
@@ -461,6 +468,7 @@ impl NavicatMain {
             ConnectionToggleField::PgTcpKeepalive => form.pg_tcp_keepalive = value,
             ConnectionToggleField::PgShowOtherDatabases => form.pg_show_other_databases = value,
             ConnectionToggleField::PgShowSystemSchemas => form.pg_show_system_schemas = value,
+            ConnectionToggleField::MongoSrv => form.mongo_srv = value,
         }
         cx.notify();
     }
@@ -659,6 +667,22 @@ impl NavicatMain {
                     return Err(message);
                 }
             }
+            // MongoDB 走结构化档案校验（种子列表 / SRV 单主机 / 用户名必须带密码）。
+            DatabaseKind::MongoDb => {
+                // 种子列表里显式写了端口就必须合法，不静默回落到 27017。
+                for segment in form.host.split(',') {
+                    if let Some((_, port)) = segment.trim().rsplit_once(':') {
+                        let port = port.trim();
+                        if !port.is_empty() {
+                            parse_port(port)?;
+                        }
+                    }
+                }
+                let profile = form.build_mongo_profile();
+                if let Some(message) = profile.validate() {
+                    return Err(message);
+                }
+            }
             DatabaseKind::SqlServer => {
                 let profile = form.build_sqlserver_profile();
                 if let Some(message) = profile.validate() {
@@ -704,12 +728,6 @@ impl NavicatMain {
                 if connect_timeout == 0 || connect_timeout > 86400 || query_timeout > 86400 {
                     return Err(tr("app.connection.oracle.timeout_out_of_range").to_string());
                 }
-            }
-            _ => {
-                if form.host.trim().is_empty() {
-                    return Err(tr("app.connection.error.host_required").to_string());
-                }
-                parse_port(&form.port)?;
             }
         }
         Ok(())
@@ -837,6 +855,12 @@ impl NavicatMain {
             postgres_profile,
             dameng_profile,
             sqlserver_profile,
+            // MongoDB 档案是拨号事实来源：缺它连接器只能退回 endpoint 拼 URI，会丢 SRV/认证库。
+            mongo_profile: if kind == DatabaseKind::MongoDb {
+                Some(form.build_mongo_profile())
+            } else {
+                None
+            },
             oracle_profile,
         }
     }
@@ -905,6 +929,65 @@ impl NavicatMain {
             });
         }));
         cx.notify();
+    }
+
+    /// MongoDB 连接串导入：`mongodb://` / `mongodb+srv://` 都由 app 层统一解析，
+    /// 结果以 `AppEvent::MongoConnectionDiscovered` 回流后回填表单。
+    ///
+    /// 密码只落在表单值与档案的 `SecretRef::inline` 上，不写 `options`、不进日志。
+    fn import_mongo_connection_string(&mut self, cx: &mut Context<Self>) {
+        if !matches!(self.new_connection_kind, Some(DatabaseKind::MongoDb)) {
+            return;
+        }
+        let connection_string = self.new_connection_form.discovery_uri.clone();
+        if connection_string.trim().is_empty() {
+            self.new_connection_form.test_status = Some(ConnectionTestStatus::Error(
+                tr("app.connection.error.mongo_uri_required").to_string(),
+            ));
+            cx.notify();
+            return;
+        }
+        self.new_connection_form.test_status = Some(ConnectionTestStatus::Pending(
+            tr("app.connection.status.parsing_uri").to_string(),
+        ));
+        // 解析是纯本地计算（SRV 的真正解析在首次拨号时由驱动完成）。
+        let event = self
+            .controller
+            .dispatch(AppCommand::DiscoverMongoConnection { connection_string });
+        match event {
+            fluxdb_app::AppEvent::MongoConnectionDiscovered(draft) => {
+                self.apply_mongo_discovered_draft(&draft);
+                self.new_connection_form.test_status = Some(ConnectionTestStatus::Success(
+                    tr("app.connection.toast.mongo_imported").to_string(),
+                ));
+            }
+            fluxdb_app::AppEvent::Failed(error) => {
+                self.new_connection_form.test_status = Some(ConnectionTestStatus::Error(format!(
+                    "{}：{}",
+                    error.title, error.message
+                )));
+            }
+            _ => {
+                self.new_connection_form.test_status = Some(ConnectionTestStatus::Error(
+                    tr("app.connection.error.mongo_uri_parse").to_string(),
+                ));
+            }
+        }
+        cx.notify();
+    }
+
+    /// 把 MongoDB 连接串解析出的草稿回填进表单；已有连接名保留。
+    fn apply_mongo_discovered_draft(&mut self, draft: &ConnectionDraft) {
+        let Some(profile) = draft.mongo_profile.as_ref() else {
+            return;
+        };
+        let form = &mut self.new_connection_form;
+        form.apply_mongo_profile(profile);
+        if form.name.trim().is_empty() {
+            form.name = draft.name.clone();
+        }
+        // 回填后输入框需要重新同步（输入框是独立实体）。
+        self.redis_discovery_pending_sync = true;
     }
 
     /// 把连接串解析出的草稿（携带 `redis_profile`）回填进新建/编辑表单。

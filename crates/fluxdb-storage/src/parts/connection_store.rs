@@ -15,8 +15,8 @@ use serde::{Deserialize, Serialize};
 
 use fluxdb_core::{
     ConnectionConfig, DamengConnectionProfile, DatabaseKind, Endpoint, Error, ErrorKind,
-    MysqlConnectionProfile, OracleConnectionProfile, PostgresConnectionProfile,
-    RedisConnectionProfile, Result, SqlServerConnectionProfile,
+    MongoConnectionProfile, MysqlConnectionProfile, OracleConnectionProfile,
+    PostgresConnectionProfile, RedisConnectionProfile, Result, SqlServerConnectionProfile,
 };
 
 use crate::sqlite::sqlite_error;
@@ -68,6 +68,7 @@ struct ConnectionExtra {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     sqlserver_profile: Option<SqlServerConnectionProfile>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    mongo_profile: Option<MongoConnectionProfile>,
     oracle_profile: Option<OracleConnectionProfile>,
 }
 
@@ -284,6 +285,7 @@ fn from_config(connection: &ConnectionConfig) -> Result<StoredInsert> {
             postgres_profile: connection.postgres_profile.clone(),
             dameng_profile: connection.dameng_profile.clone(),
             sqlserver_profile: connection.sqlserver_profile.clone(),
+            mongo_profile: connection.mongo_profile.clone(),
             oracle_profile: connection.oracle_profile.clone(),
         },
     })
@@ -362,6 +364,7 @@ fn to_config(row: StoredRow) -> Result<ConnectionConfig> {
         postgres_profile: extra.postgres_profile,
         dameng_profile: extra.dameng_profile,
         sqlserver_profile: extra.sqlserver_profile,
+        mongo_profile: extra.mongo_profile,
         oracle_profile: extra.oracle_profile,
     })
 }

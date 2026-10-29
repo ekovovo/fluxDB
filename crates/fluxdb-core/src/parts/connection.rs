@@ -62,6 +62,9 @@ pub struct ConnectionConfig {
     /// SQL Server 专用结构化连接档案；历史连接缺省为 `None`。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sqlserver_profile: Option<SqlServerConnectionProfile>,
+    /// MongoDB 专用结构化连接档案（种子列表 / SRV / authSource / TLS）；历史连接缺省为 `None`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mongo_profile: Option<MongoConnectionProfile>,
     /// Oracle 专用结构化连接档案；历史连接缺省为 `None`。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub oracle_profile: Option<OracleConnectionProfile>,
@@ -457,6 +460,9 @@ pub struct ConnectionDraft {
     /// SQL Server 专用结构化连接档案；见 [`ConnectionConfig::sqlserver_profile`]。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sqlserver_profile: Option<SqlServerConnectionProfile>,
+    /// MongoDB 专用结构化连接档案；见 [`ConnectionConfig::mongo_profile`]。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mongo_profile: Option<MongoConnectionProfile>,
     /// Oracle 专用结构化连接档案；见 [`ConnectionConfig::oracle_profile`]。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub oracle_profile: Option<OracleConnectionProfile>,
@@ -475,6 +481,7 @@ impl ConnectionDraft {
             postgres_profile: self.postgres_profile,
             dameng_profile: self.dameng_profile,
             sqlserver_profile: self.sqlserver_profile,
+            mongo_profile: self.mongo_profile,
             oracle_profile: self.oracle_profile,
         }
     }

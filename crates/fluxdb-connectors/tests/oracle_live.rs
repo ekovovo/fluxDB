@@ -39,6 +39,7 @@ fn smoke_config() -> Option<ConnectionConfig> {
         postgres_profile: None,
         dameng_profile: None,
         sqlserver_profile: None,
+        mongo_profile: None,
         oracle_profile: Some(OracleConnectionProfile {
             basic: OracleBasicOptions {
                 host: parts[0].into(),

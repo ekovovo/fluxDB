@@ -105,6 +105,16 @@ pub(crate) fn build_pretty(
     }
     let value = serde_json::from_str::<Value>(src)
         .map_err(|err| json_diagnostic_from_error(src, err))?;
+    Ok(build_pretty_value(&value, indent_size, folded_paths))
+}
+
+/// 已解析值的 pretty 化：调用方缓存了 `Value`（如 MongoDB 文档卡片逐帧重绘）时
+/// 直接复用，省掉每帧一次 `from_str`。
+pub(crate) fn build_pretty_value(
+    value: &Value,
+    indent_size: usize,
+    folded_paths: &BTreeSet<String>,
+) -> PrettyJson {
     let mut builder = PrettyBuilder {
         output: String::new(),
         indent: " ".repeat(indent_size),
@@ -112,11 +122,11 @@ pub(crate) fn build_pretty(
         nodes: Vec::new(),
         folded: folded_paths,
     };
-    builder.write_value(&value, 0, &mut Vec::new());
-    Ok(PrettyJson {
+    builder.write_value(value, 0, &mut Vec::new());
+    PrettyJson {
         text: builder.output,
         nodes: builder.nodes,
-    })
+    }
 }
 
 fn json_diagnostic_from_error(src: &str, err: serde_json::Error) -> JsonEditorDiagnostic {

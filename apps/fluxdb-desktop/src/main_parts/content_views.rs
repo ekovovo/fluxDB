@@ -132,6 +132,20 @@ fn content(
             };
             redis_pubsub_content(tab.id, pubsub, this, window, colors, cx)
         }
+        Some(tab) if matches!(tab.kind, TabKind::MongoCli(_)) => {
+            let TabKind::MongoCli(cli) = &tab.kind else {
+                unreachable!();
+            };
+            mongo_cli_content(tab.id, cli, this, window, colors, cx)
+        }
+        Some(tab) if matches!(tab.kind, TabKind::MongoCollection(_)) => {
+            let TabKind::MongoCollection(collection) = &tab.kind else {
+                unreachable!();
+            };
+            div().size_full().min_h(px(0.)).flex().flex_col().child(
+                this.mongo_collection_content(tab.id, collection, window, colors, cx),
+            )
+        }
         Some(tab) if matches!(tab.kind, TabKind::CreateTable(_)) => {
             let TabKind::CreateTable(create) = &tab.kind else {
                 unreachable!();
@@ -1440,6 +1454,42 @@ fn redis_cli_content(
                 // Entity<TerminalComponent> 自身即完整终端表面（Render 带回 key context / 焦点 / 自绘 canvas）。
                 .child(component),
         )
+}
+
+/// MongoDB CLI 终端内容：库内执行 Extended JSON 命令的进程内 REPL。
+///
+/// 与 Redis CLI 对称：顶部一条连接/库信息条，交互全部交给 TerminalComponent
+/// （grid、光标、状态栏、危险命令确认、历史与补全）。
+fn mongo_cli_content(
+    tab_id: TabId,
+    cli: &fluxdb_app::MongoCliState,
+    this: &mut NavicatMain,
+    _window: &mut Window,
+    colors: UiColors,
+    cx: &mut Context<NavicatMain>,
+) -> Div {
+    let component = this.terminal_component_for_mongo(tab_id, cli, cx);
+    let connection = connection_name(this.controller.state(), cli.connection_id);
+    div()
+        .relative()
+        .flex_1()
+        .bg(colors.panel_bg)
+        .flex()
+        .flex_col()
+        .child(
+            div()
+                .h(px(28.))
+                .border_b_1()
+                .border_color(colors.border)
+                .bg(colors.panel_alt)
+                .flex()
+                .items_center()
+                .px_3()
+                .text_size(px(12.))
+                .text_color(colors.muted)
+                .child(format!("{connection} · {} · MongoDB CLI", cli.database)),
+        )
+        .child(div().flex_1().min_h(px(0.)).child(component))
 }
 
 /// Redis Pub/Sub 页面：订阅 / 发布实时消息流。
@@ -3587,7 +3637,7 @@ fn query_output_tab_button(
                                 &text,
                                 this.query_editor_database_kind(tab_id),
                             )
-                            .get(ordinal)
+                                .get(ordinal)
                                 .cloned()
                         })
                     })
@@ -4702,14 +4752,14 @@ fn query_result_cell_detail_value_header(
                 .items_center()
                 .gap_2()
                 .min_w(px(0.))
-                .child(
-                    div()
+        .child(
+            div()
                         .flex_none()
-                        .text_size(px(12.))
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .text_color(colors.muted)
-                        .child(tr("app.placeholder.value")),
-                )
+                .text_size(px(12.))
+                .font_weight(gpui::FontWeight::SEMIBOLD)
+                .text_color(colors.muted)
+                .child(tr("app.placeholder.value")),
+        )
                 .when_some(status, |this, status| this.child(status)),
         )
         .child(if large_window.is_some() {
@@ -4769,11 +4819,11 @@ fn query_result_cell_detail_value_header(
         } else {
             let copy_text = value_text.unwrap_or_default();
             cell_detail_icon_button(AppIcon::Copy, tr("app.context.copy"), colors).on_mouse_down(
-                MouseButton::Left,
-                move |_, _, cx| {
+            MouseButton::Left,
+            move |_, _, cx| {
                     cx.write_to_clipboard(ClipboardItem::new_string(copy_text.clone()));
-                    cx.stop_propagation();
-                },
+                cx.stop_propagation();
+            },
             )
             .into_any_element()
         })

@@ -44,6 +44,7 @@
                 },
             }),
             sqlserver_profile: None,
+            mongo_profile: None,
             oracle_profile: None,
         }
     }
@@ -420,6 +421,7 @@
                 mysql_profile: None,
                 postgres_profile: Some(PostgresConnectionProfile::default()),
                 dameng_profile: None,
+                mongo_profile: None,
                 sqlserver_profile: None,
                 oracle_profile: None,
             },

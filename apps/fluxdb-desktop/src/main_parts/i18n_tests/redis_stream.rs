@@ -86,6 +86,7 @@
             mysql_profile: None,
             postgres_profile: None,
             dameng_profile: None,
+            mongo_profile: None,
             sqlserver_profile: None,
             oracle_profile: None,
         }]));

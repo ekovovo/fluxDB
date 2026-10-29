@@ -2,7 +2,7 @@
 
 > 适用范围：FluxDB Desktop 当前版本（macOS）
 >
-> 支持的数据源：MySQL、TiDB、PostgreSQL、SQL Server、SQLite、达梦 DM8、Redis
+> 支持的数据源：MySQL、TiDB、PostgreSQL、SQL Server、SQLite、达梦 DM8、Redis、MongoDB
 > 项目仍处于早期开发阶段。执行写入、删除、清空、恢复或权限变更前，请先备份重要数据，并确认当前连接和数据库无误。
 
 ## 目录
@@ -85,8 +85,9 @@
 | Oracle | 主机、端口、用户名、密码、Service Name 或 SID、登录身份 | 1521 |
 | SQLite | 本地数据库文件路径 | 无 |
 | Redis | 主机、端口、用户名、密码、参数 | 6379 |
+| MongoDB | 连接串（`mongodb://` / `mongodb+srv://`）、主机、端口、SRV、用户名、密码、默认库、认证库 | 27017 |
 
-MongoDB 目前仍在规划中，不能作为完整可用的数据源使用。
+MongoDB 连接建议直接粘贴连接串导入，详见 [MongoDB 支持](mongodb.md)。
 
 ### 2.3 填写连接信息
 

@@ -220,9 +220,46 @@ impl AppController {
                             postgres_profile: None,
                             dameng_profile: None,
                             sqlserver_profile: None,
+                            mongo_profile: None,
                             oracle_profile: None,
                         };
                         AppEvent::RedisConnectionDiscovered(draft)
+                    }
+                    Err(message) => self.fail(Error::new(ErrorKind::Connection, message)),
+                }
+            }
+            AppCommand::DiscoverMongoConnection { connection_string } => {
+                // Mongo 连接串导入：解析出的档案保留 SRV 语义，密码只进 `SecretRef::inline`，
+                // 不回写 `options`，也不出现在 `Endpoint` 里。
+                match fluxdb_core::MongoConnectionProfile::from_uri(&connection_string) {
+                    Ok(profile) => {
+                        let (host, port) = profile.dial_endpoint();
+                        let name = if host.is_empty() {
+                            "MongoDB-新连接".to_string()
+                        } else if profile.srv {
+                            host.clone()
+                        } else {
+                            format!("{host}:{port}")
+                        };
+                        let draft = ConnectionDraft {
+                            name,
+                            kind: DatabaseKind::MongoDb,
+                            endpoint: Endpoint::Tcp {
+                                host,
+                                port,
+                                database: Some(profile.basic.default_database.clone())
+                                    .filter(|database| !database.is_empty()),
+                            },
+                            options: BTreeMap::new(),
+                            redis_profile: None,
+                            mysql_profile: None,
+                            postgres_profile: None,
+                            dameng_profile: None,
+                            sqlserver_profile: None,
+                            mongo_profile: Some(profile),
+                            oracle_profile: None,
+                        };
+                        AppEvent::MongoConnectionDiscovered(draft)
                     }
                     Err(message) => self.fail(Error::new(ErrorKind::Connection, message)),
                 }

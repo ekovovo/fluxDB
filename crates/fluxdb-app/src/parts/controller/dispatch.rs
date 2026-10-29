@@ -32,18 +32,43 @@ impl AppController {
 
         match command {
             command @ (AppCommand::BrowseAiTableObjects { .. }
-                | AppCommand::FinishAiTableObjects { .. } | AppCommand::LoadAiTableColumns(_)
-                | AppCommand::RememberAiTableObject(_)
-                | AppCommand::BeginAiTableQuery { .. } | AppCommand::LoadAiTablePage { .. }) => {
-                self.dispatch_ai_table_page(command)
-            }
+            | AppCommand::FinishAiTableObjects { .. }
+            | AppCommand::LoadAiTableColumns(_)
+            | AppCommand::RememberAiTableObject(_)
+            | AppCommand::BeginAiTableQuery { .. }
+            | AppCommand::LoadAiTablePage { .. }) => self.dispatch_ai_table_page(command),
             AppCommand::AiConversation(command) => return self.dispatch_ai_conversation(command),
+            command @ (AppCommand::OpenMongoCollection { .. }
+            | AppCommand::BeginMongoLoad(_)
+            | AppCommand::LoadMongoDocuments { .. }
+            | AppCommand::FinishMongoDocuments { .. }
+            | AppCommand::LoadMongoCollectionInfo(_)
+            | AppCommand::FinishMongoCollectionInfo { .. }
+            | AppCommand::LoadMongoIndexes(_)
+            | AppCommand::FinishMongoIndexes { .. }
+            | AppCommand::LoadMongoServerInfo(_)
+            | AppCommand::CreateMongoCollection { .. }
+            | AppCommand::DropMongoCollection { .. }
+            | AppCommand::RenameMongoCollection { .. }
+            | AppCommand::MongoRunCommand { .. }
+            | AppCommand::SelectMongoSection { .. }
+            | AppCommand::SelectMongoDisplayMode { .. }
+            | AppCommand::SelectMongoDocument { .. }
+            | AppCommand::SaveMongoDocument { .. }
+            | AppCommand::DeleteMongoDocument { .. }
+            | AppCommand::InsertMongoDocument { .. }
+            | AppCommand::SetMongoOffset { .. }
+            | AppCommand::UpdateMongoAggregation { .. }
+            | AppCommand::BeginMongoAggregation(_)
+            | AppCommand::RunMongoAggregation { .. }
+            | AppCommand::FinishMongoAggregation { .. }) => self.dispatch_mongo_command(command),
             command @ (AppCommand::PrepareBackup { .. }
             | AppCommand::RunBackup(_)
             | AppCommand::PrepareRestore(_)
             | AppCommand::ProbeRestore(_)
             | AppCommand::RunRestore { .. }
-            | AppCommand::ImportTableData { .. }) => {
+            | AppCommand::ImportTableData { .. }
+            | AppCommand::ImportMongoDocuments { .. }) => {
                 self.dispatch_database_task(command, &AtomicBool::new(false), &mut |_| {})
             }
             AppCommand::LoadConnections
@@ -356,14 +381,14 @@ impl AppController {
                             detail: None,
                             retryable: false,
                         })?;
-                    let source = self.er_relationship_source().ok_or_else(|| {
-                        UserFacingError {
+                    let source = self
+                        .er_relationship_source()
+                        .ok_or_else(|| UserFacingError {
                             title: "关系建议采纳失败".into(),
                             message: "ER 存储尚未初始化".into(),
                             detail: None,
                             retryable: true,
-                        }
-                    })?;
+                        })?;
                     er_validate_proposals_for_adoption(
                         &config,
                         &scope_key,
@@ -376,14 +401,14 @@ impl AppController {
                         detail: Some(error.code.into()),
                         retryable: false,
                     })?;
-                    let service = self
-                        .er_model_service(scope_key.clone())
-                        .ok_or_else(|| UserFacingError {
+                    let service = self.er_model_service(scope_key.clone()).ok_or_else(|| {
+                        UserFacingError {
                             title: "关系建议采纳失败".into(),
                             message: "ER 存储尚未初始化".into(),
                             detail: None,
                             retryable: true,
-                        })?;
+                        }
+                    })?;
                     let adopted = service
                         .create_confirmed_batch(proposals.clone(), "user")
                         .map_err(|error| UserFacingError {
@@ -412,9 +437,7 @@ impl AppController {
                                         "关系建议卡片内容损坏，无法记录采纳结果",
                                     )
                                 })?;
-                            if payload
-                                .get("batch_id")
-                                .and_then(serde_json::Value::as_str)
+                            if payload.get("batch_id").and_then(serde_json::Value::as_str)
                                 != Some(batch_id.as_str())
                             {
                                 return Err(Error::new(
@@ -423,18 +446,16 @@ impl AppController {
                                 ));
                             }
                             let mut ready = 0usize;
-                            if let Some(items) =
-                                payload.get_mut("items").and_then(serde_json::Value::as_array_mut)
+                            if let Some(items) = payload
+                                .get_mut("items")
+                                .and_then(serde_json::Value::as_array_mut)
                             {
                                 for item in items {
                                     let item_id = item
                                         .get("item_id")
                                         .and_then(serde_json::Value::as_str)
                                         .map(str::to_string);
-                                    if item_id
-                                        .as_ref()
-                                        .is_some_and(|id| adopted_ids.contains(id))
-                                    {
+                                    if item_id.as_ref().is_some_and(|id| adopted_ids.contains(id)) {
                                         item["status"] = serde_json::json!("adopted");
                                         item["relationship"] = serde_json::Value::Null;
                                     }
@@ -450,7 +471,8 @@ impl AppController {
                                 .get("review")
                                 .and_then(|review| review.get("adopted"))
                                 .and_then(serde_json::Value::as_u64)
-                                .unwrap_or(0) as usize;
+                                .unwrap_or(0)
+                                as usize;
                             payload["review"] = serde_json::json!({
                                 "status": if ready == 0 { "complete" } else { "partial" },
                                 "adopted": previously_adopted + adopted.len(),
@@ -508,7 +530,8 @@ impl AppController {
                 let generation = match self.find_data_editor_mut(tab_id) {
                     Some(editor) => editor.begin_load(),
                     None => {
-                        return self.fail(Error::new(ErrorKind::Internal, "数据编辑器标签页不存在"));
+                        return self
+                            .fail(Error::new(ErrorKind::Internal, "数据编辑器标签页不存在"));
                     }
                 };
                 self.load_data_page_command(tab_id, generation, Vec::new(), Vec::new(), None)
@@ -902,9 +925,9 @@ impl AppController {
                 }
             }
             AppCommand::LoadCellContentChunk {
-                tab_id,
-                row,
-                column,
+                        tab_id,
+                        row,
+                        column,
                 content_id,
                 kind,
                 offset,
@@ -914,8 +937,8 @@ impl AppController {
                     row,
                     column,
                     chunk,
-                },
-                Err(error) => self.fail(error),
+                    },
+                    Err(error) => self.fail(error),
             },
             AppCommand::SaveCellContentToFile {
                 tab_id,
@@ -990,8 +1013,8 @@ impl AppController {
                                 column,
                             }
                         } else {
-                            AppEvent::TabActivated(tab_id)
-                        }
+                        AppEvent::TabActivated(tab_id)
+                    }
                     }
                     Err(error) => self.fail(error),
                 }
@@ -1987,7 +2010,7 @@ impl AppController {
             | AppCommand::CompleteAiAgentDelete { .. }
             | AppCommand::SaveAiAgent(_)
             | AppCommand::SaveAiMcpServerProfile(_)
-            | AppCommand::SaveExecutionPolicy {..}
+            | AppCommand::SaveExecutionPolicy { .. }
             | AppCommand::EnsureMcpControl
             | AppCommand::SaveAiMcpDatasource(_)
             | AppCommand::DeleteAiMcpDatasource { .. }
@@ -2010,12 +2033,13 @@ impl AppController {
             command @ (AppCommand::SyncMcpClients { .. }
             | AppCommand::RefreshMcpClients { .. }
             | AppCommand::SetMcpClientRegistration { .. }) => self.dispatch_mcp_clients(command),
-            AppCommand::ApplyConfirmedConfig { proposal, binary_path } => {
-                match self.apply_confirmed_config(&proposal, &binary_path) {
-                    Ok(outcome) => AppEvent::ConfigProposalApplied(outcome),
-                    Err(error) => AppEvent::AiSettingsError(error.message),
-                }
-            }
+            AppCommand::ApplyConfirmedConfig {
+                proposal,
+                binary_path,
+            } => match self.apply_confirmed_config(&proposal, &binary_path) {
+                Ok(outcome) => AppEvent::ConfigProposalApplied(outcome),
+                Err(error) => AppEvent::AiSettingsError(error.message),
+            },
             AppCommand::SaveSettings(settings) => {
                 self.state.settings = settings;
                 AppEvent::SettingsSaved
@@ -2297,10 +2321,7 @@ COMMIT;"
     /// 外部 DDL 保护：保存前重查表结构，与打开设计器时的 DDL 不一致就拒绝应用（§9.2）。
     ///
     /// 不拿过期快照覆盖别人的改动；用户刷新后重新预览即可继续。
-    fn ensure_design_not_stale(
-        &self,
-        create: &CreateTableState,
-    ) -> fluxdb_core::Result<()> {
+    fn ensure_design_not_stale(&self, create: &CreateTableState) -> fluxdb_core::Result<()> {
         let CreateTableMode::Design {
             object,
             original_ddl: Some(original_ddl),

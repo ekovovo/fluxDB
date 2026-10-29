@@ -449,6 +449,7 @@ fn tab_width(tab: &TabState, compact: bool) -> f32 {
         TabKind::QueryEditor(_) => 210.,
         TabKind::RedisWorkbench(_) => 210.,
         TabKind::RedisCli(_) => 210.,
+        TabKind::MongoCli(_) => 210.,
         TabKind::RedisPubSub(_) => 210.,
         TabKind::CreateTable(_) => 210.,
         TabKind::UserAdmin(_) => 180.,
@@ -456,6 +457,7 @@ fn tab_width(tab: &TabState, compact: bool) -> f32 {
         TabKind::AiChat { .. } => 180.,
         TabKind::BackupList(_) => 210.,
         TabKind::ErDiagram(_) => 210.,
+        TabKind::MongoCollection(_) => 210.,
     };
 
     if compact { base.min(180.) } else { base }
@@ -501,6 +503,8 @@ fn localized_tab_title(tab: &TabState) -> String {
             .replace("%{database}", &workbench.database.to_string()),
         TabKind::RedisCli(cli) => tr("app.tabs.redis_cli")
             .replace("%{database}", &cli.database.to_string()),
+        TabKind::MongoCli(cli) => tr("app.tabs.mongo_cli")
+            .replace("%{database}", &cli.database),
         TabKind::RedisPubSub(pubsub) => tr("app.tabs.redis_pubsub")
             .replace("%{database}", &pubsub.database.to_string()),
         TabKind::BackupList(list) => tr("app.tabs.backup")
@@ -509,6 +513,16 @@ fn localized_tab_title(tab: &TabState) -> String {
             Some(table) => tr("app.tabs.er_related").replace("%{table}", &table.display()),
             None => tr("app.tabs.er").replace("%{database}", &er.database),
         },
+        // 集合页标题是「库/集合」，跨库同名集合不至于看起来重复。
+        TabKind::MongoCollection(collection) => format!(
+            "{}",
+            collection
+                .object
+                .database
+                .as_ref()
+                .map(|database| format!("{database}/{}", collection.object.name))
+                .unwrap_or_else(|| collection.object.name.clone())
+        ),
         _ => tab.title.clone(),
     }
 }
@@ -524,12 +538,14 @@ fn tab_icon(
         TabKind::QueryEditor(_) | TabKind::RedisWorkbench(_) | TabKind::RedisCli(_) => {
             AppIcon::Query
         }
+        TabKind::MongoCli(_) => AppIcon::Query,
         TabKind::RedisPubSub(_) => AppIcon::Broadcast,
         TabKind::UserAdmin(_) => AppIcon::Users,
         TabKind::Settings(_) => AppIcon::Settings,
         TabKind::AiChat { .. } => AppIcon::Bot,
         TabKind::BackupList(_) => AppIcon::Save,
         TabKind::ErDiagram(_) => AppIcon::Schema,
+        TabKind::MongoCollection(_) => AppIcon::Table,
     };
     let color = if active { colors.text } else { colors.muted };
 

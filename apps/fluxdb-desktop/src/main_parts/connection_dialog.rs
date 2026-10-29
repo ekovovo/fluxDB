@@ -641,7 +641,7 @@ fn new_connection_modal(
                                             "MongoDB",
                                             DatabaseKind::MongoDb,
                                             kind,
-                                            true,
+                                            false,
                                             colors,
                                             cx,
                                         ))
@@ -1812,19 +1812,28 @@ fn advanced_form(
         .child(
             h_form()
                 .label_width(px(112.))
-                .child(discovery_uri_row(inputs, colors, window, cx)),
+                .child(discovery_uri_row(
+                    inputs,
+                    tr("app.connection.redis.uri"),
+                    tr("app.connection.redis.import_action"),
+                    colors,
+                    window,
+                    cx,
+                )),
         )
 }
 
 /// 连接串导入行：URI 输入框 + 「导入/发现」按钮。
 fn discovery_uri_row(
     inputs: &NewConnectionInputs,
+    label: SharedString,
+    action_label: SharedString,
     colors: UiColors,
     window: &mut Window,
     cx: &mut Context<NavicatMain>,
 ) -> Field {
     field()
-        .label(tr("app.connection.redis.uri"))
+        .label(label)
         .items_center()
         .child(
             div()
@@ -1864,11 +1873,17 @@ fn discovery_uri_row(
                         .text_color(rgb(0x1687ff))
                         .cursor_pointer()
                         .hover(move |style| style.bg(colors.hover))
-                        .child(tr("app.connection.redis.import_action"))
+                        .child(action_label)
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(|this, _, _, cx| {
-                                this.import_redis_connection_string(cx);
+                                // 当前选中的数据库类型决定走哪套 URI 解析。
+                                match this.new_connection_kind {
+                                    Some(DatabaseKind::MongoDb) => {
+                                        this.import_mongo_connection_string(cx)
+                                    }
+                                    _ => this.import_redis_connection_string(cx),
+                                }
                                 cx.stop_propagation();
                             }),
                         ),
@@ -2022,6 +2037,7 @@ fn connection_toggle_id(field: ConnectionToggleField) -> &'static str {
         ConnectionToggleField::PgShowSystemSchemas => {
             "new-connection-toggle-pg-show-system-schemas"
         }
+        ConnectionToggleField::MongoSrv => "new-connection-toggle-mongo-srv",
     }
 }
 
@@ -2301,12 +2317,16 @@ fn connection_form(
                 window,
                 cx,
             )),
+        // 连接串导入放在最上方当主入口：Atlas 等托管服务的用户基本是粘贴 URI 起手，
+        // 导入会回填下方的主机/SRV/账号/默认库/认证库，沉到表单底部等于看不见。
         DatabaseKind::MongoDb => base
-            .child(connection_method_row_light(
-                tr("app.connection.field.method"),
-                tr("app.connection.method.form"),
-                "URL",
+            .child(discovery_uri_row(
+                inputs,
+                tr("app.connection.mongo.uri"),
+                tr("app.connection.mongo.import_action"),
                 colors,
+                window,
+                cx,
             ))
             .child(host_port_row_light(
                 tr("app.connection.field.host"),
@@ -2315,7 +2335,14 @@ fn connection_form(
                 window,
                 cx,
             ))
-            .child(checkbox_row_light("SRV (MongoDB Atlas)", colors))
+            // SRV 是拨号语义（DNS 拓扑发现），必须真的写进档案，不能只是装饰。
+            .child(toggle_row_light(
+                tr("app.connection.mongo.srv"),
+                ConnectionToggleField::MongoSrv,
+                form_state.mongo_srv,
+                colors,
+                cx,
+            ))
             .child(field_row_light(
                 tr("app.connection.field.username"),
                 ConnectionField::Username,
@@ -2352,10 +2379,10 @@ fn connection_form(
                 window,
                 cx,
             ))
-            .child(dropdown_row_light(
+            .child(connection_select_field(
                 tr("app.connection.field.auth_mechanism"),
-                tr("app.connection.method.default"),
-                colors,
+                &inputs.mongo_auth_mechanism_select,
+                "",
             )),
         DatabaseKind::Redis => base
             .child(host_port_row_light(

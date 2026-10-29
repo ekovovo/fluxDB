@@ -424,7 +424,7 @@ fn backup_text_button(
     label: impl Into<SharedString>,
     colors: UiColors,
     on_click: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
-) -> impl IntoElement {
+) -> Div {
     let label = label.into();
     div()
         .h(px(22.))

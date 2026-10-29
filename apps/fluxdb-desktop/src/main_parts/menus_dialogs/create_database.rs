@@ -81,6 +81,7 @@ fn create_database_modal(
     collation_select: Entity<SelectState<SearchableVec<String>>>,
     owner_input: Entity<InputState>,
     template_input: Entity<InputState>,
+    first_collection_input: Entity<InputState>,
     running: bool,
     focus_handle: FocusHandle,
     colors: UiColors,
@@ -92,8 +93,11 @@ fn create_database_modal(
     );
     let is_postgres = form.database_kind == DatabaseKind::Postgres;
     let is_sqlserver = form.database_kind == DatabaseKind::SqlServer;
+    // MongoDB 的库由首个集合隐式创建：数据库名与集合名都必须填。
+    let is_mongo = form.database_kind == DatabaseKind::MongoDb;
     let can_submit = !running
         && !form.database_name.trim().is_empty()
+        && (!is_mongo || !form.first_collection.trim().is_empty())
         && (!needs_charset
             || (!form.charset.trim().is_empty() && !form.collation.trim().is_empty()));
 
@@ -154,6 +158,14 @@ fn create_database_modal(
                             running,
                             colors,
                         ))
+                        .when(is_mongo, |this| {
+                            this.child(create_database_text_field(
+                                tr("app.mongo.create_database.first_collection"),
+                                first_collection_input,
+                                running,
+                                colors,
+                            ))
+                        })
                         .when(needs_charset && !is_sqlserver, |this| {
                             this.child(create_database_select_field(
                                 if is_postgres {

@@ -43,6 +43,7 @@ fn smoke_config(database: &str) -> ConnectionConfig {
         postgres_profile: None,
         dameng_profile: None,
         sqlserver_profile: None,
+        mongo_profile: None,
         oracle_profile: None,
     }
     .mysql_resolved()

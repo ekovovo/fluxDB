@@ -20,6 +20,7 @@ mod controller_dispatch_tests {
             postgres_profile: None,
             dameng_profile: None,
             sqlserver_profile: None,
+            mongo_profile: None,
             oracle_profile: None,
         }
     }
@@ -214,6 +215,7 @@ mod controller_dispatch_tests {
                 postgres_profile: None,
                 dameng_profile: None,
                 sqlserver_profile: None,
+                mongo_profile: None,
                 oracle_profile: None,
                 redis_profile: None,
             };

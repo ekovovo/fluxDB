@@ -1144,11 +1144,25 @@ fn import_sql_parameter_for_column(
     value: &CellValue,
     column: &CompletionColumn,
 ) -> fluxdb_core::Result<SqlParameter> {
-    let base = column
-        .type_name
-        .as_deref()
-        .unwrap_or("")
-        .trim()
+    let type_name = column.type_name.as_deref().unwrap_or("").trim();
+    // 数组列在 PG 中恒走文本桥接（`CAST(CAST($n AS text) AS <type>[])`），
+    // 内层 `$n` 必须是 text 参数，否则与非文本标签绑定冲突。
+    if type_name.ends_with("[]")
+        && matches!(
+            value,
+            CellValue::Text(_)
+                | CellValue::Json(_)
+                | CellValue::I64(_)
+                | CellValue::F64(_)
+                | CellValue::Bool(_)
+        )
+    {
+        return Ok(SqlParameter::Text(match value {
+            CellValue::Text(text) | CellValue::Json(text) => text.clone(),
+            other => other.display_label(),
+        }));
+    }
+    let base = type_name
         .split('(')
         .next()
         .unwrap_or("")
@@ -1235,14 +1249,24 @@ fn import_sql_parameter_for_column(
 }
 
 fn pg_import_needs_text_cast(value: &CellValue, column: &CompletionColumn) -> bool {
+    let type_name = column.type_name.as_deref().unwrap_or("").trim();
+    // 数组列必须走文本桥接：`$n` 会被服务端推断为元素数组类型（如 `_numeric`），
+    // 客户端只能以 text 参数绑定，再由外层 `CAST(... AS <type>[])` 还原。
+    // 判定须在剥 `(modifiers)` 之前，否则 `numeric(12,4)[]` 会被当成标量 numeric 直绑。
+    if type_name.ends_with("[]") {
+        return matches!(
+            value,
+            CellValue::Text(_)
+                | CellValue::Json(_)
+                | CellValue::I64(_)
+                | CellValue::F64(_)
+                | CellValue::Bool(_)
+        );
+    }
     if !matches!(value, CellValue::Text(_) | CellValue::Json(_)) {
         return false;
     }
-    let base = column
-        .type_name
-        .as_deref()
-        .unwrap_or("")
-        .trim()
+    let base = type_name
         .split('(')
         .next()
         .unwrap_or("")
@@ -1319,6 +1343,7 @@ mod table_import_tests {
                 mysql_profile: None,
                 postgres_profile: None,
                 dameng_profile: None,
+                mongo_profile: None,
                 sqlserver_profile: None,
                 oracle_profile: None,
             },
@@ -1548,6 +1573,41 @@ mod table_import_tests {
             )
             .expect("text value"),
             SqlParameter::Text("0x1234".into())
+        );
+    }
+
+    #[test]
+    fn postgres_array_columns_use_text_cast() {
+        // `numeric(12,4)[]` 曾被当成标量 numeric 直绑 `$n`，服务端把占位符推断为
+        // `_numeric`（元素数组），客户端 text 参数无法直绑 → 导入报类型不兼容。
+        let columns = [
+            completion_column("AMOUNTS", "numeric(12,4)[]"),
+            completion_column("AMOUNT", "numeric(12,4)"),
+        ];
+        let (sql, parameters) = build_import_batch_sql(
+            DatabaseKind::Postgres,
+            "\"s\".\"t\"",
+            "\"AMOUNTS\", \"AMOUNT\"",
+            "",
+            &[(0, 0), (1, 1)],
+            &columns,
+            &[vec![
+                CellValue::Text("{1.0000,2.5000}".into()),
+                CellValue::Text("1.0000".into()),
+            ]],
+        )
+        .expect("build PostgreSQL import SQL");
+        assert_eq!(
+            sql,
+            "INSERT INTO \"s\".\"t\" (\"AMOUNTS\", \"AMOUNT\") VALUES \
+             (CAST(CAST($1 AS text) AS numeric(12,4)[]), $2)"
+        );
+        assert_eq!(
+            parameters,
+            vec![
+                SqlParameter::Text("{1.0000,2.5000}".into()),
+                SqlParameter::Decimal("1.0000".into())
+            ]
         );
     }
 

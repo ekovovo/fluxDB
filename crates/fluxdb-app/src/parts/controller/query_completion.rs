@@ -1400,6 +1400,7 @@ mod dameng_completion_index_tests {
                 },
             }),
             sqlserver_profile: None,
+            mongo_profile: None,
             oracle_profile: None,
         }
     }
@@ -1423,6 +1424,7 @@ mod dameng_completion_index_tests {
             postgres_profile: None,
             dameng_profile: None,
             sqlserver_profile: None,
+            mongo_profile: None,
             oracle_profile: None,
         }
     }
@@ -1499,6 +1501,7 @@ mod dameng_completion_index_tests {
             postgres_profile: None,
             dameng_profile: None,
             sqlserver_profile: None,
+            mongo_profile: None,
             oracle_profile: None,
         };
         let mut controller = AppController::new();
@@ -1989,6 +1992,7 @@ mod dameng_completion_index_tests {
             postgres_profile: None,
             dameng_profile: None,
             sqlserver_profile: None,
+            mongo_profile: None,
             oracle_profile: None,
         };
         let mut controller = AppController::new();
@@ -2145,6 +2149,7 @@ mod dameng_completion_index_tests {
             ),
             dameng_profile: None,
             sqlserver_profile: None,
+            mongo_profile: None,
             oracle_profile: None,
         };
         let mut controller = AppController::new();
@@ -2215,6 +2220,7 @@ mod postgres_completion_index_tests {
             postgres_profile: Some(PostgresConnectionProfile::default()),
             dameng_profile: None,
             sqlserver_profile: None,
+            mongo_profile: None,
             oracle_profile: None,
         }
     }

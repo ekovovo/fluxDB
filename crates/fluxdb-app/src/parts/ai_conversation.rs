@@ -348,7 +348,7 @@ impl AppController {
         context: &str,
         editor_grant: Option<EditorGrant>,
     ) -> fluxdb_core::Result<AiConversationJob> {
-        self.prepare_ai_conversation_with_grants(prompt, target, context, editor_grant, None)
+        self.prepare_ai_conversation_with_grants(prompt, target, context, editor_grant, None, None)
     }
 
     pub fn prepare_ai_conversation_page(
@@ -361,10 +361,10 @@ impl AppController {
             .as_ref()
             .map(|p| p.public_json().to_string())
             .unwrap_or_default();
-        let (editor, data) = page
-            .map(|p| (p.editor_grant, p.data_grant))
+        let (editor, data, mongo) = page
+            .map(|p| (p.editor_grant, p.data_grant, p.mongo_grant))
             .unwrap_or_default();
-        self.prepare_ai_conversation_with_grants(prompt, target, &context, editor, data)
+        self.prepare_ai_conversation_with_grants(prompt, target, &context, editor, data, mongo)
     }
 
     fn prepare_ai_conversation_with_grants(
@@ -374,6 +374,7 @@ impl AppController {
         context: &str,
         editor_grant: Option<EditorGrant>,
         page_grant: Option<PageDataGrant>,
+        mongo_grant: Option<MongoDocumentsGrant>,
     ) -> fluxdb_core::Result<AiConversationJob> {
         if context.len() > 64 * 1024 {
             return Err(fluxdb_core::Error::new(
@@ -587,6 +588,14 @@ impl AppController {
                 })?;
                 registry.insert(turn_id.clone(), grant);
             }
+            if let Some(grant) = mongo_grant {
+                let mut registry = mongo_documents_registry().lock().map_err(|_| {
+                    clear_editor_grant(&turn_id);
+                    take_page_data_grant(&turn_id);
+                    editor_error("文档快照登记失败")
+                })?;
+                registry.insert(turn_id.clone(), grant);
+            }
             if let Err(error) = fluxdb_storage::ai_platform::conversation::send(
                 conn,
                 ai_chat_now(),
@@ -599,8 +608,7 @@ impl AppController {
                 &target_json,
                 &snapshot.to_string(),
             ) {
-                clear_editor_grant(&turn_id);
-                take_page_data_grant(&turn_id);
+                clear_current_page_grants(&turn_id);
                 return Err(error.into());
             }
             // 路由决策落成运行事件：验收与 UI 都能核对"Provider 实际用哪个模型"。

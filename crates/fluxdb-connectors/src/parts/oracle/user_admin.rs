@@ -301,6 +301,7 @@ mod oracle_user_admin_plan_tests {
             postgres_profile: None,
             dameng_profile: None,
             sqlserver_profile: None,
+            mongo_profile: None,
             oracle_profile: None,
         };
         let error = oracle_apply_user_admin_plan(

@@ -715,6 +715,10 @@ impl TabState {
                 connection_id: cli.connection_id,
                 database: cli.database.to_string(),
             }),
+            TabKind::MongoCli(cli) => Some(TabWorkspace {
+                connection_id: cli.connection_id,
+                database: cli.database.clone(),
+            }),
             TabKind::RedisPubSub(pubsub) => Some(TabWorkspace {
                 connection_id: pubsub.connection_id,
                 database: pubsub.database.to_string(),
@@ -745,6 +749,14 @@ impl TabState {
                 connection_id: er.connection_id,
                 database: er.database.clone(),
             }),
+            TabKind::MongoCollection(collection) => Some(TabWorkspace {
+                connection_id: collection.object.connection_id,
+                database: collection
+                    .object
+                    .database
+                    .clone()
+                    .unwrap_or_else(|| "main".to_string()),
+            }),
             TabKind::Settings(_) => None,
             TabKind::AiChat { workspace } => workspace.clone(),
         }
@@ -769,6 +781,8 @@ pub enum TabKind {
     QueryEditor(QueryEditorState),
     RedisWorkbench(RedisWorkbenchState),
     RedisCli(RedisCliState),
+    /// MongoDB 命令行终端（库内执行 Extended JSON 命令的 REPL）。
+    MongoCli(MongoCliState),
     RedisPubSub(RedisPubSubState),
     CreateTable(CreateTableState),
     UserAdmin(UserAdminState),
@@ -777,6 +791,8 @@ pub enum TabKind {
     BackupList(BackupListState),
     /// ER 关系图 tab（侧边栏「ER 图」节点单击打开，按库一个；画布原型）。
     ErDiagram(ErDiagramState),
+    /// MongoDB 集合工作台（文档 / 聚合 / 索引 / 集合信息）。
+    MongoCollection(MongoCollectionState),
 }
 
 /// 备份列表 tab 的标识状态：仅记录连接 + 库；行数据由 UI 侧渲染时
@@ -1947,6 +1963,24 @@ impl RedisCliState {
         fluxdb_core::terminal::TerminalSessionKey::Redis {
             connection_id: self.connection_id.0,
             database: self.database,
+        }
+    }
+}
+
+/// MongoDB 命令行标签页：只定位到「某个连接的某个库」。真正的 REPL（行缓冲、历史、
+/// 命令执行）由桌面端终端 surface + `terminal_mongo` 的 adapter 承担，与 Redis CLI 同构。
+#[derive(Clone, Debug, PartialEq)]
+pub struct MongoCliState {
+    pub connection_id: ConnectionId,
+    pub database: String,
+}
+
+impl MongoCliState {
+    /// tab 复用 key：同一连接 + 同一库只保留一个命令行标签页。
+    pub fn session_key(&self) -> fluxdb_core::terminal::TerminalSessionKey {
+        fluxdb_core::terminal::TerminalSessionKey::Mongo {
+            connection_id: self.connection_id.0,
+            database: self.database.clone(),
         }
     }
 }

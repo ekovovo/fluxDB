@@ -28,7 +28,10 @@ impl Render for NavicatMain {
                 && std::env::var("FLUXDB_DEBUG_AI_MODEL_DIALOG").is_ok_and(|v| v == "invalid");
             self.open_ai_model_dialog(first_id, window, cx);
             if show_invalid {
-                self.set_ai_model_dialog_error(tr("app.ai.model_dialog.name_and_id_required").as_ref(), cx);
+                self.set_ai_model_dialog_error(
+                    tr("app.ai.model_dialog.name_and_id_required").as_ref(),
+                    cx,
+                );
             }
         }
         // 调试入口：首帧后打开第一个可配置插件的管理弹框（截图核对用）。
@@ -54,7 +57,13 @@ impl Render for NavicatMain {
         // 调试入口：首帧后自动对第一个模型跑一次测试连接（截图核对 Alert 与状态标签）。
         if self.ai_model_test_debug_pending {
             self.ai_model_test_debug_pending = false;
-            if let Some(id) = self.controller.state().ai_models.first().map(|m| m.id.clone()) {
+            if let Some(id) = self
+                .controller
+                .state()
+                .ai_models
+                .first()
+                .map(|m| m.id.clone())
+            {
                 self.start_ai_model_test(id, cx);
             }
         }
@@ -68,7 +77,12 @@ impl Render for NavicatMain {
             && self.settings_panel_section == SettingsPanelSection::AiAgents
             && !self.ai_agent_delete_just_removed.is_empty()
         {
-            let first = self.controller.state().ai_agents.first().map(|a| a.id.clone());
+            let first = self
+                .controller
+                .state()
+                .ai_agents
+                .first()
+                .map(|a| a.id.clone());
             self.ai_agent_delete_just_removed.clear();
             if let Some(id) = first {
                 self.open_ai_agent_editor(Some(id), window, cx);
@@ -76,10 +90,17 @@ impl Render for NavicatMain {
         }
         // 首帧异步启动恢复；命令与后续 Load/Save 共用串行队列，不在 UI 线程扫描 SQLite。
         if self.ai_chat.recovery_pending {
-            self.ai_chat.recovery_pending=false;
-            self.ai_chat_request(fluxdb_app::AiConversationCommand::RecoverOnStartup,window,cx);
+            self.ai_chat.recovery_pending = false;
+            self.ai_chat_request(
+                fluxdb_app::AiConversationCommand::RecoverOnStartup,
+                window,
+                cx,
+            );
         }
-        if self.ai_chat.debug_open_pending {self.ai_chat.debug_open_pending=false;self.open_ai_chat(window,cx);}
+        if self.ai_chat.debug_open_pending {
+            self.ai_chat.debug_open_pending = false;
+            self.open_ai_chat(window, cx);
+        }
         self.ai_chat_process(window, cx);
         let width = window.viewport_size().width;
         let compact = width < px(760.);
@@ -157,10 +178,7 @@ impl Render for NavicatMain {
             .app_message
             .as_ref()
             .map(|message| app_message_overlay(message, window, cx, colors));
-        let update_dialog = self
-            .update_ui
-            .open
-            .then(|| self.update_dialog(colors, cx));
+        let update_dialog = self.update_ui.open.then(|| self.update_dialog(colors, cx));
         let (sidebar_rows, sidebar_item_sizes) = if self.show_connection_browser {
             self.sidebar_tree_rows(
                 &state,
@@ -254,68 +272,84 @@ impl Render for NavicatMain {
                     }
                 }),
             )
-            .child(topbar(&state, self.show_connection_browser, window, colors, cx))
+            .child(topbar(
+                &state,
+                self.show_connection_browser,
+                window,
+                colors,
+                cx,
+            ))
             // 工作区只分配工具栏与状态栏之间的剩余高度，内容不得反向撑大窗口布局。
-            .child(div()
-                .id("main-workspace")
-                .debug_selector(|| "main-workspace".into())
-                .flex_1()
-                .min_h(px(0.))
-                .flex()
-                .flex_col()
-                .overflow_hidden()
-                .child(ai_chat_workspace(
+            .child(
                 div()
-                    .debug_selector(|| "database-workspace".into())
-                    .flex()
+                    .id("main-workspace")
+                    .debug_selector(|| "main-workspace".into())
                     .flex_1()
                     .min_h(px(0.))
+                    .flex()
+                    .flex_col()
                     .overflow_hidden()
-                    .when(self.show_connection_browser, |this| {
-                        this.child(sidebar(
-                            compact,
-                            connection_browser_width,
-                            &self.sidebar_tree_scroll,
-                            sidebar_rows.clone(),
-                            sidebar_item_sizes.clone(),
-                            self.table_folder_rename_input.clone(),
-                            self.rename_group_input.clone(),
-                            self.sidebar_search_input.clone(),
-                            &self.sidebar_search,
-                            colors,
-                            cx,
-                        ))
-                    })
-                    .when(!self.show_connection_browser, |this| {
-                        this.child(connection_browser_restore_button(&state, colors, cx))
-                    })
-                    .child(
+                    .child(ai_chat_workspace(
                         div()
-                            .relative()
-                            .flex_1()
-                            .min_w(px(0.))
-                            .h_full()
+                            .debug_selector(|| "database-workspace".into())
                             .flex()
-                            .flex_col()
-                            .child(tabs(compact, &state, self, window, colors, cx))
-                            .child(content(&state, self, window, colors, cx).debug_selector(|| "workspace-page".into()))
-                            .when_some(self.tab_switcher, |this, kind| {
-                                this.child(tab_switcher_popup(
-                                    kind,
-                                    &state,
-                                    active_scope.as_ref(),
-                                    self.tab_switcher_search_input.clone(),
-                                    &self.tab_switcher_search,
-                                    two_level_tabs,
-                                    &self.workspace_tab_order,
-                                    &self.tab_order,
-                                    &self.pinned_tabs,
+                            .flex_1()
+                            .min_h(px(0.))
+                            .overflow_hidden()
+                            .when(self.show_connection_browser, |this| {
+                                this.child(sidebar(
+                                    compact,
+                                    connection_browser_width,
+                                    &self.sidebar_tree_scroll,
+                                    sidebar_rows.clone(),
+                                    sidebar_item_sizes.clone(),
+                                    self.table_folder_rename_input.clone(),
+                                    self.rename_group_input.clone(),
+                                    self.sidebar_search_input.clone(),
+                                    &self.sidebar_search,
                                     colors,
                                     cx,
                                 ))
-                            }),
-                    )
-                .into_any_element(), self, window, colors, cx)))
+                            })
+                            .when(!self.show_connection_browser, |this| {
+                                this.child(connection_browser_restore_button(&state, colors, cx))
+                            })
+                            .child(
+                                div()
+                                    .relative()
+                                    .flex_1()
+                                    .min_w(px(0.))
+                                    .h_full()
+                                    .flex()
+                                    .flex_col()
+                                    .child(tabs(compact, &state, self, window, colors, cx))
+                                    .child(
+                                        content(&state, self, window, colors, cx)
+                                            .debug_selector(|| "workspace-page".into()),
+                                    )
+                                    .when_some(self.tab_switcher, |this, kind| {
+                                        this.child(tab_switcher_popup(
+                                            kind,
+                                            &state,
+                                            active_scope.as_ref(),
+                                            self.tab_switcher_search_input.clone(),
+                                            &self.tab_switcher_search,
+                                            two_level_tabs,
+                                            &self.workspace_tab_order,
+                                            &self.tab_order,
+                                            &self.pinned_tabs,
+                                            colors,
+                                            cx,
+                                        ))
+                                    }),
+                            )
+                            .into_any_element(),
+                        self,
+                        window,
+                        colors,
+                        cx,
+                    )),
+            )
             .when(show_status_bar, |this| {
                 this.child(statusbar(
                     &state,
@@ -333,6 +367,7 @@ impl Render for NavicatMain {
                     || self.database_context_menu.is_some()
                     || self.schema_context_menu.is_some()
                     || self.table_context_menu.is_some()
+                    || self.collection_context_menu.is_some()
                     || self.table_group_context_menu.is_some()
                     || self.table_folder_context_menu.is_some()
                     || self.tab_context_menu.is_some()
@@ -379,6 +414,12 @@ impl Render for NavicatMain {
                     .connections
                     .iter()
                     .any(|c| c.config.id == menu.connection_id && c.config.kind == DatabaseKind::Oracle);
+                let is_mongo = self
+                    .controller
+                    .state()
+                    .connections
+                    .iter()
+                    .any(|c| c.config.id == menu.connection_id && c.config.kind == DatabaseKind::MongoDb);
                 this.child(database_context_menu(
                     menu,
                     &self.pinned_databases,
@@ -386,6 +427,7 @@ impl Render for NavicatMain {
                     is_postgres,
                     is_sqlserver,
                     is_dameng,
+                    is_mongo,
                     is_oracle,
                     colors,
                     cx,
@@ -401,6 +443,9 @@ impl Render for NavicatMain {
                     window,
                     cx,
                 ))
+            })
+            .when_some(self.collection_context_menu.clone(), |this, menu| {
+                this.child(collection_context_menu(menu, &self.pinned_tables, colors, cx))
             })
             .when_some(self.table_group_context_menu.clone(), |this, menu| {
                 this.child(table_group_context_menu(menu, colors, cx))
@@ -469,11 +514,7 @@ impl Render for NavicatMain {
                 |this, dialog| this.child(dialog),
             )
             .when_some(
-                ai_plugin_config_dialog(
-                    self.ai_plugin_config_dialog.clone(),
-                    colors,
-                    cx,
-                ),
+                ai_plugin_config_dialog(self.ai_plugin_config_dialog.clone(), colors, cx),
                 |this, dialog| this.child(dialog),
             )
             .when_some(self.data_row_viewer.clone(), |this, viewer| {
@@ -491,6 +532,24 @@ impl Render for NavicatMain {
             })
             .when_some(state.pending_dirty_tab_close, |this, tab_id| {
                 this.child(dirty_tab_close_modal(tab_id, &state, colors, cx))
+            })
+            .when(
+                self.pending_mongo_document_switch.is_some()
+                    || self.pending_mongo_document_open.is_some(),
+                |this| {
+                    this.child(mongo_document_discard_modal(
+                        self.focus_handle.clone(),
+                        colors,
+                        cx,
+                    ))
+                },
+            )
+            .when_some(
+                self.pending_mongo_document_delete.clone(),
+                |this, pending| this.child(mongo_document_delete_modal(&pending, colors, cx)),
+            )
+            .when_some(self.pending_mongo_import.clone(), |this, form| {
+                this.child(mongo_import_modal(form, colors, cx))
             })
             .when_some(pending_apply_preview, |this, preview| {
                 this.child(apply_data_changes_modal(
@@ -529,20 +588,17 @@ impl Render for NavicatMain {
                     ))
                 },
             )
-            .when_some(
-                self.pending_config_proposal.clone(),
-                |this, proposal| {
-                    this.child(config_proposal_modal(
-                        proposal,
-                        &settings_for_config_proposal,
-                        self.config_proposal_busy,
-                        self.config_delete_confirmed,
-                        self.focus_handle.clone(),
-                        colors,
-                        cx,
-                    ))
-                },
-            )
+            .when_some(self.pending_config_proposal.clone(), |this, proposal| {
+                this.child(config_proposal_modal(
+                    proposal,
+                    &settings_for_config_proposal,
+                    self.config_proposal_busy,
+                    self.config_delete_confirmed,
+                    self.focus_handle.clone(),
+                    colors,
+                    cx,
+                ))
+            })
             // 「执行 SQL 文件」弹框已迁移到 gpui-component Dialog（window.open_dialog），
             // 由 `Root` 插件层统一渲染，不再在此条件挂载自绘弹层
             .when_some(self.pending_backup_modal.clone(), |this, form| {
@@ -578,7 +634,10 @@ impl Render for NavicatMain {
                     self.backup_note_edit_input.clone(),
                     self.backup_note_modal_path
                         .as_ref()
-                        .and_then(|path| path.file_name().map(|name| name.to_string_lossy().to_string()))
+                        .and_then(|path| {
+                            path.file_name()
+                                .map(|name| name.to_string_lossy().to_string())
+                        })
                         .unwrap_or_default(),
                     colors,
                     cx,
@@ -600,7 +659,12 @@ impl Render for NavicatMain {
                     .find(|task| task.id == task_id)
                     .cloned()
                 {
-                    this.child(database_backup_log_modal(task, &self.backup_tasks, colors, cx))
+                    this.child(database_backup_log_modal(
+                        task,
+                        &self.backup_tasks,
+                        colors,
+                        cx,
+                    ))
                 } else {
                     this
                 }
@@ -747,9 +811,7 @@ impl Render for NavicatMain {
                 ))
             })
             .when_some(self.pending_create_database.clone(), |this, form| {
-                let running = self
-                    .create_database_running
-                    .contains(&form.connection_id);
+                let running = self.create_database_running.contains(&form.connection_id);
                 this.child(create_database_modal(
                     form,
                     self.create_database_name_input.clone(),
@@ -757,6 +819,7 @@ impl Render for NavicatMain {
                     self.create_database_collation_select.clone(),
                     self.create_database_owner_input.clone(),
                     self.create_database_template_input.clone(),
+                    self.create_database_first_collection_input.clone(),
                     running,
                     self.focus_handle.clone(),
                     colors,
@@ -780,6 +843,47 @@ impl Render for NavicatMain {
                     ))
                 },
             )
+            .when_some(self.mongo_info_dialog.as_ref(), |this, dialog| {
+                let name = connection_name(&state, dialog.connection_id);
+                this.child(mongo_info_dialog_view(dialog, name, colors, cx))
+            })
+            .when_some(self.pending_create_collection.clone(), |this, form| {
+                this.child(mongo_create_collection_modal(
+                    form,
+                    self.create_collection_input.clone(),
+                    self.create_collection_running,
+                    self.focus_handle.clone(),
+                    colors,
+                    cx,
+                ))
+            })
+            .when_some(self.pending_rename_collection.clone(), |this, form| {
+                this.child(mongo_rename_collection_modal(
+                    form,
+                    self.rename_collection_input.clone(),
+                    self._rename_mongo_collection_task.is_some(),
+                    self.focus_handle.clone(),
+                    colors,
+                    cx,
+                ))
+            })
+            .when_some(self.pending_drop_collection.clone(), |this, form| {
+                this.child(mongo_drop_collection_modal(
+                    form,
+                    self._drop_mongo_collection_task.is_some(),
+                    self.focus_handle.clone(),
+                    colors,
+                    cx,
+                ))
+            })
+            .when_some(self.pending_mongo_export.clone(), |this, form| {
+                this.child(mongo_export_modal(
+                    form,
+                    self.focus_handle.clone(),
+                    colors,
+                    cx,
+                ))
+            })
             .when_some(self.pending_query_save, |this, tab_id| {
                 this.child(query_save_choice_modal(
                     tab_id,
@@ -851,7 +955,7 @@ impl Render for NavicatMain {
 
 fn render_state_snapshot(state: &AppState) -> AppState {
     AppState {
-        ai_conversation:state.ai_conversation.clone(),
+        ai_conversation: state.ai_conversation.clone(),
         ai_models: state.ai_models.clone(),
         ai_agents: state.ai_agents.clone(),
         ai_plugin_instances: state.ai_plugin_instances.clone(),
@@ -902,7 +1006,9 @@ fn render_tab_snapshot(tab: &TabState, keep_content: bool) -> TabState {
 
 fn render_tab_kind_snapshot(kind: &TabKind) -> TabKind {
     match kind {
-        TabKind::AiChat { workspace } => TabKind::AiChat { workspace: workspace.clone() },
+        TabKind::AiChat { workspace } => TabKind::AiChat {
+            workspace: workspace.clone(),
+        },
         TabKind::ObjectList(editor) => TabKind::ObjectList(ObjectListState {
             parent: editor.parent.clone(),
             objects: Vec::new(),
@@ -955,8 +1061,19 @@ fn render_tab_kind_snapshot(kind: &TabKind) -> TabKind {
         TabKind::BackupList(list) => TabKind::BackupList(list.clone()),
         // ER 图 tab 状态只有连接+库+schema 标识，图数据在 desktop 侧缓存，快照直接克隆。
         TabKind::ErDiagram(er) => TabKind::ErDiagram(er.clone()),
+        // 集合工作台快照丢掉文档与元数据，只保留定位与查询草稿。
+        TabKind::MongoCollection(collection) => {
+            let mut snapshot = collection.clone();
+            snapshot.page = None;
+            snapshot.info = LoadState::NotLoaded;
+            snapshot.indexes = LoadState::NotLoaded;
+            snapshot.selected_document = None;
+            TabKind::MongoCollection(snapshot)
+        }
         // Redis CLI 状态本身很轻量，快照直接克隆即可（会话复用依赖 connection_id + database）。
         TabKind::RedisCli(cli) => TabKind::RedisCli(cli.clone()),
+        // MongoDB 命令行同理：只记连接 + 库，REPL 会话在桌面端。
+        TabKind::MongoCli(cli) => TabKind::MongoCli(cli.clone()),
         // Redis Pub/Sub 状态很轻量（仅 connection_id + database），快照直接克隆。
         TabKind::RedisPubSub(pubsub) => TabKind::RedisPubSub(pubsub.clone()),
 

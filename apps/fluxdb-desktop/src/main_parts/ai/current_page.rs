@@ -35,6 +35,7 @@ impl NavicatMain {
             details: serde_json::json!({"available":false}),
             editor_grant: None,
             data_grant: None,
+            mongo_grant: None,
         };
         let Some(tab) = self.ai_context_source_tab() else {
             return page;
@@ -362,6 +363,76 @@ impl NavicatMain {
                                  本页引用不构成额外数据库授权，也不代表画布外没有其它关系",
                 });
                 page.snapshot.notes = vec!["关系目录与画布可见范围无关；未画出的表也可能有关系".into()];
+            }
+            TabKind::MongoCollection(collection) => {
+                // 集合页只给定位、查询参数与状态：文档值不进首条消息，发送时登记授权，
+                // 由 `mongo.read_documents` 按有界只读快照按需读取。
+                page.kind = PageContextKind::MongoCollection;
+                page.snapshot.target = TargetRef {
+                    connection_id: Some(collection.object.connection_id.0 as i64),
+                    database: collection.object.database.clone(),
+                    schema: collection.object.schema.clone(),
+                    object: Some(collection.object.name.clone()),
+                    ..Default::default()
+                };
+                let selected_id = collection
+                    .selected_document
+                    .and_then(|index| collection.page.as_ref()?.documents.get(index))
+                    .map(|document| document.id.clone());
+                page.details = serde_json::json!({
+                    "collection": collection.object.name,
+                    "object_kind": format!("{:?}", collection.object.kind),
+                    "read_only": collection.read_only,
+                    "section": format!("{:?}", collection.section),
+                    "display": format!("{:?}", collection.display),
+                    "query": {
+                        "filter": collection.applied_query.filter,
+                        "projection": collection.applied_query.projection,
+                        "sort": collection.applied_query.sort,
+                        "limit": collection.applied_query.limit,
+                    },
+                    "pagination": {
+                        "offset": collection.pagination.offset,
+                        "limit": collection.pagination.limit,
+                    },
+                    "loading": collection.loading,
+                    "error": collection.error.as_ref().map(|e| e.message.chars().take(1024).collect::<String>()),
+                    "loaded_documents": collection.page.as_ref().map(|page| page.documents.len()),
+                    "total": collection.page.as_ref().and_then(|page| page.total),
+                    "has_more": collection.page.as_ref().is_some_and(|page| page.has_more),
+                    "selected_document_id": selected_id,
+                    "aggregation": {
+                        "pipeline_edited": !collection.aggregation_pipeline.is_empty(),
+                        "state": match &collection.aggregation {
+                            fluxdb_app::LoadState::NotLoaded => "not_loaded",
+                            fluxdb_app::LoadState::Loading => "loading",
+                            fluxdb_app::LoadState::Loaded(_) => "loaded",
+                            fluxdb_app::LoadState::Failed(_) => "failed",
+                        },
+                    },
+                    "read_scope": "只含定位、查询参数与加载状态；文档值经 mongo.read_documents 按需读取，\
+                                   本页引用不构成额外数据库授权",
+                });
+                page.snapshot.notes = vec![
+                    "已加载文档不代表集合全集；过滤条件之外的文档不可见".into(),
+                ];
+                if sending && !collection.loading {
+                    if let Some(documents) = &collection.page {
+                        page.mongo_grant = Some(fluxdb_app::MongoDocumentsGrant {
+                            reference_id: page.reference_id(),
+                            target: page.snapshot.target.clone(),
+                            collection: collection.object.name.clone(),
+                            documents: std::sync::Arc::new(
+                                documents
+                                    .documents
+                                    .iter()
+                                    .map(|document| (document.id.clone(), document.json.clone()))
+                                    .collect(),
+                            ),
+                            filter: collection.applied_query.filter.clone(),
+                        });
+                    }
+                }
             }
             TabKind::RedisWorkbench(workbench) => {
                 page.kind = PageContextKind::RedisWorkbench;

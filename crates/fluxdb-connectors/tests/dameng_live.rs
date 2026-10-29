@@ -48,6 +48,7 @@ fn smoke_config() -> Option<ConnectionConfig> {
             },
         }),
         sqlserver_profile: None,
+        mongo_profile: None,
         oracle_profile: None,
     })
 }

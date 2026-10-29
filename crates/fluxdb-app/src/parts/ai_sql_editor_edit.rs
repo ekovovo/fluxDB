@@ -519,6 +519,7 @@ mod ai_sql_editor_edit_tests {
                     snapshot,
                     details: serde_json::json!({}),
                     data_grant: None,
+                    mongo_grant: None,
                     editor_grant: Some(EditorGrant {
                         tab_ref: "tab-7".into(),
                         snapshot: buffer.snapshot(),
@@ -587,6 +588,7 @@ mod ai_sql_editor_edit_tests {
                     snapshot,
                     details: serde_json::json!({}),
                     data_grant: None,
+                    mongo_grant: None,
                     editor_grant: Some(EditorGrant {
                         tab_ref: "tab-7".into(),
                         snapshot: buffer.snapshot(),

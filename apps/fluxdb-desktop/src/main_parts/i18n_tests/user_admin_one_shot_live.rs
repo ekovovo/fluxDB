@@ -78,6 +78,7 @@ fn mysql_one_shot_config(parts: &[String]) -> fluxdb_core::ConnectionConfig {
         dameng_profile: None,
         sqlserver_profile: None,
         oracle_profile: None,
+        mongo_profile: None,
     }
     .mysql_resolved()
 }
@@ -111,6 +112,7 @@ fn postgres_one_shot_config(parts: &[String]) -> fluxdb_core::ConnectionConfig {
         dameng_profile: None,
         sqlserver_profile: None,
         oracle_profile: None,
+        mongo_profile: None,
     }
     .postgres_resolved()
 }
@@ -149,6 +151,7 @@ fn oracle_one_shot_config(parts: &[String]) -> fluxdb_core::ConnectionConfig {
             },
             advanced: fluxdb_core::OracleAdvancedOptions::default(),
         }),
+        mongo_profile: None,
     }
 }
 
@@ -183,6 +186,7 @@ fn dameng_one_shot_config(parts: &[String]) -> fluxdb_core::ConnectionConfig {
         }),
         sqlserver_profile: None,
         oracle_profile: None,
+        mongo_profile: None,
     }
 }
 

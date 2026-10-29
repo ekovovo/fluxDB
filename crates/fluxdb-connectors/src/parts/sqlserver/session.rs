@@ -180,6 +180,7 @@ fn sqlserver_tiberius_config(
             postgres_profile: None,
             dameng_profile: None,
             sqlserver_profile: Some(profile.clone()),
+            mongo_profile: None,
             oracle_profile: None,
         },
         profile,
@@ -544,7 +545,7 @@ fn sqlserver_store_row(
         spill_large_cells(owner, &mut row.values)?;
     }
     if let Some(set) = result.result_sets.last_mut() {
-        set.rows.push(row);
+            set.rows.push(row);
     }
     Ok(())
 }
@@ -635,8 +636,8 @@ mod sqlserver_result_collection_tests {
         assert!(
             matches!(value, CellValue::LargeValue(_)),
             "大字段必须换成内容引用：{value:?}"
-        );
-    }
+            );
+        }
 
     /// 没有归属的管理查询也保留大字段，不再按累计字节截断。
     #[test]

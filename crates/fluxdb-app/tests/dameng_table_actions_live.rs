@@ -50,6 +50,7 @@ fn smoke_config() -> Option<ConnectionConfig> {
             advanced: DamengAdvancedOptions::default(),
         }),
         sqlserver_profile: None,
+        mongo_profile: None,
         oracle_profile: None,
     })
 }
@@ -866,6 +867,7 @@ fn dameng_controller_dispatch_runs_table_actions() {
                 postgres_profile: None,
                 dameng_profile: config.dameng_profile.clone(),
                 sqlserver_profile: None,
+                mongo_profile: None,
                 oracle_profile: None,
             }))
         else {

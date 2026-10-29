@@ -5,13 +5,22 @@ use fluxdb_core::{
     CompletionRoutine, CompletionRoutineKind, CompletionTable, CompletionTrigger, ConnectionConfig,
     ConnectionId, ConnectionOverview, Connector, CreateDatabaseRequest, DataChangeSet,
     DataExportPreview, DataPage, DatabaseKind, Endpoint, Error, ErrorKind, FilterOp, FilterSpec,
-    ForeignKeyInfo, ForeignKeyMeta, IndexColumnItem, IndexInfo, IndexMeta, ObjectKind, ObjectPath,
-    ObjectSummary, Pagination, QueryExecutionResult, QueryExecutionSummary, QueryRequest,
-    QuerySessionId, QueryStatementKind, RedisHashFieldTtl, RedisServerVersion, Row, RowIdentity,
-    RowUpdate, SortDirection, SortSpec, SqlDialect as _, TableStructure, TriggerInfo, TriggerMeta,
+    ForeignKeyInfo, ForeignKeyMeta, IndexColumnItem, IndexInfo, IndexMeta, MongoCollectionInfo,
+    MongoCollectionKind, MongoDatabaseStat, MongoDocument, MongoDocumentsPage, MongoFindRequest,
+    MongoImportField, MongoImportFormat, MongoImportOptions, MongoImportPreview,
+    MongoImportPreviewRequest, MongoImportProgress, MongoImportReport, MongoImportRequest,
+    MongoIndexInfo, MongoServerInfo, MongoTopology, ObjectKind, ObjectPath, ObjectSummary,
+    Pagination, QueryExecutionResult, QueryExecutionSummary, QueryRequest, QuerySessionId,
+    QueryStatementKind, RedisHashFieldTtl, RedisServerVersion, Row, RowIdentity, RowUpdate,
+    SortDirection, SortSpec, SqlDialect as _, TableStructure, TriggerInfo, TriggerMeta,
     UniqueKeyMeta, WriteValue, completion_fuzzy_like_pattern, is_binary_type_name,
     matches_completion_fuzzy, sqlite_attached_databases,
 };
+// MongoDB 驱动类型（crate-root include 作用域共用，避免每文件重复 use）。
+use mongodb::Client as MongoClient;
+use mongodb::bson::{Bson, Document, doc};
+use mongodb::options::{Collation, Hint, ReadPreference, SelectionCriteria};
+use mongodb::results::CollectionType;
 use sqlx::{
     Column as SqlxColumn, ColumnIndex, ConnectOptions as _, Connection as _, MySql, QueryBuilder,
     Row as SqlxRow, Sqlite, TypeInfo as _,
@@ -42,6 +51,7 @@ include!("parts/dameng.rs");
 include!("parts/sqlserver.rs");
 include!("parts/oracle.rs");
 include!("parts/redis.rs");
+include!("parts/mongo.rs");
 include!("parts/sqlite.rs");
 include!("parts/sqlite_bounded_update.rs");
 include!("parts/factory.rs");

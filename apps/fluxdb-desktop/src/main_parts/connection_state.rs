@@ -113,6 +113,8 @@ enum ConnectionMenuAction {
     MoveToNewGroup,
     MoveToGroup(ConnectionGroupId),
     Ungroup,
+    /// 显示连接信息（仅 MongoDB：拓扑 / 版本 / 成员 / 库大小）。
+    MongoInfo,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -134,6 +136,10 @@ enum DatabaseMenuAction {
     PubSub,
     /// 新建 PostgreSQL schema（仅 PG 数据库显示）。
     NewSchema,
+    /// 新建集合（仅 MongoDB 数据库显示）。
+    NewCollection,
+    /// 打开 MongoDB 命令行终端（仅 MongoDB 数据库显示）。
+    MongoCli,
 }
 
 /// PostgreSQL schema 右键菜单动作：全部 schema 作用域，不与数据库/表动作混淆。
@@ -167,6 +173,18 @@ enum TableMenuAction {
     Truncate,
     /// 从当前分组中移出该表。
     RemoveFromGroup,
+}
+
+/// MongoDB 集合右键菜单动作（视图只读时不会渲染写入类项）。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CollectionMenuAction {
+    TogglePin,
+    CopyName,
+    Refresh,
+    Rename,
+    Import,
+    Export,
+    Drop,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -210,10 +228,12 @@ enum ObjectGroup {
     Backup,
     /// ER 关系图（画布原型；单击打开整库 ER 标签页，不展开子行）。
     ErDiagram,
+    /// MongoDB 集合与视图（Mongo 没有表/存储过程分组，集合即第一层对象）。
+    Collections,
 }
 
 impl ObjectGroup {
-    const ALL: [Self; 7] = [
+    const ALL: [Self; 8] = [
         Self::Tables,
         Self::Views,
         Self::Procedures,
@@ -221,7 +241,19 @@ impl ObjectGroup {
         Self::Queries,
         Self::Backup,
         Self::ErDiagram,
+        Self::Collections,
     ];
+
+    /// MongoDB 库下只展示「集合」一个分组。
+    const MONGO: [Self; 1] = [Self::Collections];
+
+    /// 某类连接的数据库分组顺序：Mongo 与 SQL 型连接的分组语义不同。
+    fn for_kind(kind: DatabaseKind) -> &'static [Self] {
+        match kind {
+            DatabaseKind::MongoDb => &Self::MONGO,
+            _ => &Self::ALL,
+        }
+    }
 
     fn label(self) -> SharedString {
         tr(match self {
@@ -232,6 +264,7 @@ impl ObjectGroup {
             Self::Functions => "app.connection.kind.functions",
             Self::Backup => "app.connection.kind.backup",
             Self::ErDiagram => "app.connection.kind.er_diagram",
+            Self::Collections => "app.connection.kind.collections",
         })
     }
 
@@ -244,6 +277,7 @@ impl ObjectGroup {
             Self::Functions => "functions",
             Self::Backup => "backup",
             Self::ErDiagram => "er",
+            Self::Collections => "collections",
         }
     }
 
@@ -256,6 +290,7 @@ impl ObjectGroup {
             Self::Functions => "functions",
             Self::Backup => "backup",
             Self::ErDiagram => "er",
+            Self::Collections => "tables",
         }
     }
 }
@@ -399,6 +434,8 @@ enum ConnectionToggleField {
     PgShowOtherDatabases,
     /// 是否显示系统 schema（pg_catalog/information_schema 等）
     PgShowSystemSchemas,
+    /// MongoDB 是否走 `mongodb+srv://`（SRV 拓扑发现，单 DNS 名）
+    MongoSrv,
 }
 
 #[derive(Clone, Debug)]
@@ -578,6 +615,9 @@ struct NewConnectionInputs {
     cloud_subscription: Entity<InputState>,
     cloud_resource: Entity<InputState>,
     discovery_uri: Entity<InputState>,
+    /// —— MongoDB 专用 ——
+    /// 认证机制下拉（默认由驱动协商；X509 / AWS 必须显式指定）。
+    mongo_auth_mechanism_select: Entity<SelectState<SearchableVec<ConnectionSelectOption>>>,
     /// SSH 认证方式下拉（SelectState 实体，避免渲染期读 NavicatMain 触发重入 panic）。
     ssh_auth_select: Entity<SelectState<SearchableVec<ConnectionSelectOption>>>,
     /// 云提供方下拉（同上）。
@@ -626,7 +666,8 @@ impl NewConnectionForm {
             sqlite_path: String::new(),
             mongo_srv: false,
             mongo_auth_db: String::new(),
-            mongo_auth_mechanism: "默认".to_string(),
+            // 空串表示交给驱动协商认证机制。
+            mongo_auth_mechanism: String::new(),
             tls_enabled: false,
             tls_ca: String::new(),
             tls_client_cert: String::new(),
@@ -776,7 +817,7 @@ impl NewConnectionForm {
             .options
             .get("auth_mechanism")
             .cloned()
-            .unwrap_or_else(|| "默认".to_string());
+            .unwrap_or_default();
         form.test_status = None;
 
         match &config.endpoint {
@@ -852,6 +893,14 @@ impl NewConnectionForm {
             form.apply_sqlserver_profile(&profile);
         }
 
+        // MongoDB 档案同样是拨号事实来源；旧连接没有档案时按扁平参数迁移。
+        if config.kind == DatabaseKind::MongoDb {
+            let profile = config
+                .mongo_profile
+                .clone()
+                .unwrap_or_else(|| fluxdb_core::MongoConnectionProfile::from_options(&config.options));
+            form.apply_mongo_profile(&profile);
+        }
         if config.kind == DatabaseKind::Oracle {
             let profile = config.oracle_profile.clone().unwrap_or_else(|| {
                 fluxdb_core::OracleConnectionProfile::from_options(&config.options)
@@ -1432,6 +1481,91 @@ impl NewConnectionForm {
         }
     }
 
+    /// 依据当前编辑值组装一份 MongoDB 连接档案。
+    ///
+    /// 主机输入框接受 `host1:port1,host2:port2` 形式的种子列表；SRV 开关只允许一个
+    /// DNS 名（多主机时由 `validate()` 报错）。密码走 `SecretRef::inline`，存储层
+    /// 按连接 ID 写入加密凭据槽，`Endpoint` 不承载凭据。
+    fn build_mongo_profile(&self) -> fluxdb_core::MongoConnectionProfile {
+        use fluxdb_core::{
+            MongoAdvancedOptions, MongoBasicOptions, MongoConnectionProfile, MongoHost,
+            MongoTlsOptions, SecretRef,
+        };
+        let hosts: Vec<MongoHost> = self
+            .host
+            .split(',')
+            .map(str::trim)
+            .filter(|item| !item.is_empty())
+            .map(|item| match item.rsplit_once(':') {
+                Some((host, port)) if port.parse::<u16>().is_ok() => MongoHost {
+                    host: host.trim_matches(['[', ']']).to_string(),
+                    port: port.parse().unwrap_or(27017),
+                },
+                _ => MongoHost::new(item.trim_matches(['[', ']'])),
+            })
+            .collect();
+        let file_ref = |path: &str| SecretRef::ref_key(path.trim().to_string());
+        MongoConnectionProfile {
+            srv: self.mongo_srv,
+            basic: MongoBasicOptions {
+                hosts,
+                username: self.username.trim().to_string(),
+                // 空密码不写成 `inline("")`：否则 `validate()` 会误判「已填密码」。
+                password: if self.password.is_empty() {
+                    SecretRef::default()
+                } else {
+                    SecretRef::inline(self.password.clone())
+                },
+                default_database: self.database.trim().to_string(),
+                auth_database: self.mongo_auth_db.trim().to_string(),
+                auth_mechanism: self.mongo_auth_mechanism.trim().to_string(),
+            },
+            tls: MongoTlsOptions {
+                enabled: self.tls_enabled,
+                ca: file_ref(&self.tls_ca),
+                client_cert: file_ref(&self.tls_client_cert),
+                allow_invalid_certificates: !self.tls_verify,
+                allow_invalid_hostnames: false,
+                server_name: self.tls_sni.trim().to_string(),
+            },
+            advanced: MongoAdvancedOptions::default(),
+        }
+    }
+
+    /// 用一份 MongoDB 档案回填表单（连接信息、TLS、认证库为编辑态事实来源）。
+    fn apply_mongo_profile(&mut self, profile: &fluxdb_core::MongoConnectionProfile) {
+        self.mongo_srv = profile.srv;
+        // 种子列表按 `host:port` 拼回单一输入框；非默认端口才带端口，避免噪声。
+        self.host = profile
+            .basic
+            .hosts
+            .iter()
+            .map(|host| {
+                if host.port == 27017 {
+                    host.host.clone()
+                } else {
+                    format!("{}:{}", host.host, host.port)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        if let Some((_, port)) = profile.basic.hosts.first().map(|h| (h.host.clone(), h.port)) {
+            self.port = port.to_string();
+        }
+        self.username = profile.basic.username.clone();
+        if let Some(password) = profile.basic.password.inline.as_deref() {
+            self.password = password.to_string();
+        }
+        self.database = profile.basic.default_database.clone();
+        self.mongo_auth_db = profile.basic.auth_database.clone();
+        self.mongo_auth_mechanism = profile.basic.auth_mechanism.clone();
+        self.tls_enabled = profile.tls.enabled;
+        self.tls_ca = profile.tls.ca.key.clone();
+        self.tls_client_cert = profile.tls.client_cert.key.clone();
+        self.tls_sni = profile.tls.server_name.clone();
+        self.tls_verify = !profile.tls.allow_invalid_certificates;
+    }
+
     /// 当前生效的 Oracle 寻址目标（Service Name 或 SID）。
     fn oracle_target_name(&self) -> &str {
         match fluxdb_core::OracleConnectKind::parse(&self.oracle_connect_kind) {
@@ -1878,6 +2012,46 @@ impl NewConnectionInputs {
                 cx,
             )
         });
+        // MongoDB 认证机制：默认交驱动协商；X509/AWS 等必须显式指定。
+        let mongo_auth_mechanism_select = cx.new(|cx| {
+            SelectState::new(
+                SearchableVec::new(vec![
+                    ConnectionSelectOption {
+                        value: String::new(),
+                        label_key: "app.connection.mongo.auth_default",
+                    },
+                    ConnectionSelectOption {
+                        value: "SCRAM-SHA-256".into(),
+                        label_key: "app.connection.mongo.auth_scram256",
+                    },
+                    ConnectionSelectOption {
+                        value: "SCRAM-SHA-1".into(),
+                        label_key: "app.connection.mongo.auth_scram1",
+                    },
+                    ConnectionSelectOption {
+                        value: "MONGODB-X509".into(),
+                        label_key: "app.connection.mongo.auth_x509",
+                    },
+                ]),
+                Some(IndexPath::new(0)),
+                window,
+                cx,
+            )
+        });
+        let mongo_auth_mechanism_select_s = cx.subscribe(
+            &mongo_auth_mechanism_select,
+            move |this: &mut NavicatMain,
+                  _select,
+                  event: &SelectEvent<SearchableVec<ConnectionSelectOption>>,
+                  cx| {
+                let SelectEvent::Confirm(value) = event;
+                if let Some(value) = value {
+                    this.new_connection_form.mongo_auth_mechanism = value.value().clone();
+                    cx.notify();
+                }
+            },
+        );
+
         let sqlserver_encryption_select_s = cx.subscribe(
             &sqlserver_encryption_select,
             move |this: &mut NavicatMain,
@@ -2019,6 +2193,7 @@ impl NewConnectionInputs {
             cloud_subscription,
             cloud_resource,
             discovery_uri,
+            mongo_auth_mechanism_select,
             ssh_auth_select,
             cloud_provider_select,
             _subscriptions: vec![
@@ -2071,6 +2246,7 @@ impl NewConnectionInputs {
                 cloud_subscription_s,
                 cloud_resource_s,
                 discovery_uri_s,
+                mongo_auth_mechanism_select_s,
                 ssh_auth_select_s,
                 cloud_provider_select_s,
                 oracle_service_name_subscription,

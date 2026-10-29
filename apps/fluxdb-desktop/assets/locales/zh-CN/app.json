@@ -170,7 +170,11 @@
     "set_default_database": "设置默认数据库",
     "set_default_schema": "设置默认 schema",
     "ungroup": "取消分组",
-    "user_admin": "用户与权限"
+    "user_admin": "用户与权限",
+    "mongo_info": "显示连接信息",
+    "mongo_performance": "查看性能指标",
+    "new_collection": "创建集合",
+    "mongo_cli": "命令行终端"
   },
   "confirm": {
     "apply_changes_summary": "即将提交 %{changes} 处修改，执行 %{statements} 条 SQL。",
@@ -1487,7 +1491,8 @@
         "file_search_content": "搜索已授权附件正文",
         "file_read": "读取已授权附件正文",
         "context_read": "读取已授权引用",
-        "plan_update": "更新公开执行计划"
+        "plan_update": "更新公开执行计划",
+        "mongo_read_documents": "有界读取已授权 MongoDB 集合页的文档快照，不重新查询数据库"
       }
     },
     "jev": {
@@ -2099,7 +2104,9 @@
       "host_required": "请填写主机",
       "redis_uri_required": "请先输入 Redis 连接串",
       "redis_uri_parse": "连接串解析失败",
-      "create_first": "请先创建连接"
+      "create_first": "请先创建连接",
+      "mongo_uri_required": "请填写 MongoDB 连接串",
+      "mongo_uri_parse": "解析 MongoDB 连接串失败"
     },
     "tls": {
       "title": "传输层安全 (TLS)",
@@ -2258,7 +2265,8 @@
       "sqlite": "选择 SQLite 数据库文件"
     },
     "toast": {
-      "redis_imported": "已导入 Redis 连接串"
+      "redis_imported": "已导入 Redis 连接串",
+      "mongo_imported": "已导入 MongoDB 连接串"
     },
     "copy_name": "%{name} 副本",
     "label": "连接",
@@ -2270,9 +2278,19 @@
       "procedures": "存储过程",
       "functions": "函数",
       "backup": "备份",
-      "er_diagram": "ER 图"
+      "er_diagram": "ER 图",
+      "collections": "集合"
     },
-    "fallback": "连接 %{id}"
+    "fallback": "连接 %{id}",
+    "mongo": {
+      "srv": "SRV（MongoDB Atlas）",
+      "auth_default": "默认（驱动协商）",
+      "auth_scram256": "SCRAM-SHA-256",
+      "auth_scram1": "SCRAM-SHA-1",
+      "auth_x509": "MONGODB-X509",
+      "uri": "连接串 / URI",
+      "import_action": "导入"
+    }
   },
   "home": {
     "common_actions": "常用操作",
@@ -4129,7 +4147,10 @@
       "create": "新建表"
     },
     "backup_list": "备份列表",
-    "er_diagram": "ER 关系图"
+    "er_diagram": "ER 关系图",
+    "mongo": {
+      "collection": "MongoDB 集合"
+    }
   },
   "terminal": {
     "transcript": {
@@ -4209,7 +4230,8 @@
     "er_related": "%{table} · 关联 ER",
     "design_table_named": "设计表: %{table}",
     "redis_pubsub": "Redis Pub/Sub - DB %{database}",
-    "global": "全局"
+    "global": "全局",
+    "mongo_cli": "MongoDB 命令行 - %{database}"
   },
   "backend_error": {
     "sqlserver_connection_task_failed": "SQL Server 连接任务异常结束",
@@ -5647,5 +5669,304 @@
     "streamed_text_not_utf8": "待写入文本不是合法的 UTF-8，已取消提交",
     "streamed_text_chunk_too_small": "文本分块过小，无法切在字符边界上；请调大分块阈值后重试",
     "large_edit_unsupported": "超大字段不支持就地编辑；请使用分段查看或上传替换"
+  },
+  "mongo": {
+    "error": {
+      "title": "MongoDB 加载失败",
+      "no_result": "后台任务未返回结果，请重试"
+    },
+    "loading": "加载中…",
+    "empty": "没有匹配的文档",
+    "read_only": "只读",
+    "query": {
+      "filter": "过滤",
+      "projection": "投影",
+      "sort": "排序",
+      "find": "查询",
+      "reset": "重置",
+      "options": "更多选项",
+      "filter_placeholder": "{}",
+      "projection_placeholder": "可选，如 { \"name\": 1 }",
+      "sort_placeholder": "可选，如 { \"createdAt\": -1 }",
+      "collation": "排序规则",
+      "hint": "索引提示",
+      "skip": "起始位置",
+      "max_time": "执行上限",
+      "collation_placeholder": "可选，如 { \"locale\": \"zh\" }",
+      "hint_placeholder": "可选，索引名或 { \"age\": 1 }",
+      "skip_placeholder": "0",
+      "max_time_placeholder": "不限",
+      "advanced": "高级查询",
+      "optional": "可选",
+      "result_limit": "返回条数",
+      "hint_collation": "Collation",
+      "hint_skip": "Skip",
+      "hint_index": "Index Hint",
+      "builder": "条件构建",
+      "builder_field_placeholder": "字段路径，如 customer.tier",
+      "builder_value_placeholder": "值，如 \"paid\" 或 500",
+      "builder_field_menu": "从已知字段中选择",
+      "builder_remove": "移除条件",
+      "builder_add": "添加条件",
+      "builder_run_hint": "执行查询",
+      "builder_empty": "还没有条件：点「添加条件」，或直接在 Filter 里写 JSON",
+      "builder_json_error": "Filter 不是合法 JSON，请修正后再使用条件构建",
+      "builder_complex_error": "Filter 含复杂表达式（如 $or、$regex、嵌套对象），请继续编辑 JSON，避免改写查询语义",
+      "unit_ms": "ms",
+      "limit_placeholder": "每页条数",
+      "aggregation_placeholder": "[ { \"$match\": {} } ]",
+      "op": {
+        "eq": "等于",
+        "ne": "不等于",
+        "gt": "大于",
+        "gte": "大于等于",
+        "lt": "小于",
+        "lte": "小于等于",
+        "in": "包含任一",
+        "exists": "字段存在"
+      }
+    },
+    "aggregation": {
+      "hint": "聚合管道（Extended JSON 数组）",
+      "run": "执行",
+      "empty": "管道没有返回文档"
+    },
+    "section": {
+      "documents": "文档",
+      "aggregation": "聚合",
+      "indexes": "索引",
+      "info": "集合信息"
+    },
+    "display": {
+      "documents": "文档",
+      "table": "表格",
+      "json": "JSON"
+    },
+    "result": {
+      "total": "共 %{count} 条",
+      "returned": "返回 %{count} 条",
+      "none": "尚无结果"
+    },
+    "copy_document": "复制到剪贴板",
+    "duplicate_document": "复制文档",
+    "duplicate_title": "复制为新文档",
+    "duplicate_from": "源文档 _id：%{id}",
+    "duplicate_hint": "新文档的 _id 由数据库生成，内容可直接修改",
+    "duplicate_confirm": "插入",
+    "duplicate_done": "已插入新文档（_id：%{id}）",
+    "duplicate_failed": "插入失败：%{error}",
+    "insert_document": "新增文档",
+    "insert_title": "新增文档",
+    "insert_hint": "新文档的 _id 已预填，补上需要的字段即可插入",
+    "insert_confirm": "插入",
+    "insert_done": "已插入新文档（_id：%{id}）",
+    "insert_failed": "插入失败：%{error}",
+    "delete_document": "删除文档",
+    "delete_title": "删除这篇文档？",
+    "delete_message": "删除后无法恢复。即将删除 _id 为 %{id} 的文档。",
+    "delete_done": "文档已删除",
+    "delete_failed": "删除失败：%{error}",
+    "document_detail": "文档详情",
+    "edit_document": "编辑文档",
+    "collapse_document": "折叠文档",
+    "expand_document": "展开文档",
+    "field_count": "{ %{count} 个字段 }",
+    "item_count": "[ %{count} 项 ]",
+    "editor": {
+      "title": "编辑文档",
+      "hint": "整篇替换该文档；_id 不可修改",
+      "save": "保存",
+      "saved": "文档已保存",
+      "save_failed": "保存失败：%{error}",
+      "read_only": "视图不可修改",
+      "discard_title": "放弃未保存的修改？",
+      "discard_message": "当前文档有未保存的修改，继续操作会丢弃这些修改。",
+      "discard_stay": "继续编辑",
+      "discard_confirm": "放弃并切换"
+    },
+    "table": {
+      "id": "_id",
+      "missing": "—",
+      "actions": "操作"
+    },
+    "extended_json": "Extended JSON",
+    "bson_preserved": "保留 BSON 类型",
+    "not_ai_context": "文档内容不进入 AI 上下文，需要时由 AI 按权限只读读取。",
+    "pager": {
+      "range": "范围",
+      "previous": "上一页",
+      "next": "下一页"
+    },
+    "indexes": {
+      "unique": "唯一",
+      "sparse": "稀疏",
+      "building": "构建中",
+      "empty": "没有索引"
+    },
+    "info": {
+      "name": "集合名",
+      "type": "类型",
+      "database": "数据库",
+      "documents": "文档数",
+      "avg_size": "平均文档大小",
+      "data_size": "数据大小",
+      "storage_size": "磁盘占用",
+      "indexes": "索引数",
+      "unknown": "未知",
+      "view_on": "来源集合",
+      "kind": {
+        "collection": "集合",
+        "view": "视图",
+        "timeseries": "时间序列集合"
+      }
+    },
+    "info_dialog": {
+      "title": "连接信息",
+      "loading": "正在读取服务端信息…",
+      "refresh": "刷新",
+      "close": "关闭",
+      "error": "读取连接信息失败",
+      "section": {
+        "server": "服务器",
+        "topology": "拓扑",
+        "databases": "数据库"
+      },
+      "version": "版本",
+      "edition": "发行版",
+      "topology": "拓扑类型",
+      "replica_set": "副本集",
+      "primary": "主节点",
+      "hosts": "成员",
+      "wire": "协议版本",
+      "uptime": "运行时长",
+      "topology_kind": {
+        "standalone": "单机",
+        "replica_set": "副本集",
+        "sharded": "分片集群",
+        "unknown": "未知"
+      },
+      "database_empty": "空库",
+      "database_size": "%{size}",
+      "database_no_size": "大小未知",
+      "databases_empty": "没有可见数据库",
+      "uptime_value": "%{days} 天 %{hours} 小时",
+      "uptime_short": "%{hours} 小时"
+    },
+    "create_collection": {
+      "title": "创建集合",
+      "field": "集合名",
+      "placeholder": "例如 orders",
+      "running": "创建中…",
+      "created": "集合 %{name} 已创建",
+      "failed": "创建集合失败：%{error}",
+      "database": "所属数据库"
+    },
+    "create_database": {
+      "first_collection": "首个集合",
+      "first_collection_placeholder": "例如 orders",
+      "enter_collection": "请输入首个集合名"
+    },
+    "cli": {
+      "title": "MongoDB 命令行",
+      "hint": "输入 Extended JSON 命令，例如 {\"ping\": 1}；↑/↓ 翻历史，Tab 补全",
+      "prompt": "%{database}> ",
+      "busy": "执行中…",
+      "idle": "就绪",
+      "failed": "命令执行失败：%{error}",
+      "started": "已连接 %{database}，输入 Extended JSON 命令（如 {\"ping\": 1}）"
+    },
+    "copy_done": "已复制文档",
+    "import": {
+      "action": "导入文档",
+      "title": "导入文档",
+      "target": "目标集合",
+      "choose_file": "选择文件",
+      "choose_file_failed": "选择文件失败",
+      "no_file": "尚未选择文件",
+      "summary_file": "文件",
+      "summary_rows": "预览条数",
+      "format": "格式",
+      "parsing": "正在解析文件…",
+      "preview": "预览",
+      "preview_empty": "选择文件后在此查看文档预览",
+      "preview_truncated": "仅展示前 %{count} 条，导入时会处理完整文件",
+      "fields": "字段类型",
+      "sample_empty": "（样本为空）",
+      "delimiter": "分隔符",
+      "delimiter_comma": "逗号",
+      "delimiter_semicolon": "分号",
+      "delimiter_tab": "制表符",
+      "delimiter_pipe": "竖线",
+      "empty_as_null": "空值按 null",
+      "start": "开始导入",
+      "stop": "停止",
+      "stopping": "正在停止…",
+      "stage_prepare": "准备导入",
+      "log_starting": "正在准备导入",
+      "log_documents": "已导入 %{count} 篇文档",
+      "log_collection": "集合：%{name}",
+      "running": "已有导入任务在执行",
+      "running_short": "导入中",
+      "running_no_close": "导入进行中，请先停止再关闭",
+      "open_failed": "请先打开集合页面再导入",
+      "choose_first": "请先选择导入文件",
+      "no_documents": "文件没有可导入的文档",
+      "no_result": "导入任务未返回结果，请重试",
+      "done": "导入完成：成功 %{inserted} 条，失败 %{failed} 条",
+      "done_cancelled": "已停止：成功 %{inserted} 条，失败 %{failed} 条"
+    },
+    "rename": {
+      "title": "重命名集合",
+      "current": "当前集合：%{name}",
+      "field": "新集合名",
+      "field_placeholder": "输入新的集合名",
+      "empty": "请填写新的集合名",
+      "done": "已将 %{from} 重命名为 %{to}",
+      "failed": "重命名失败：%{error}"
+    },
+    "drop_collection": {
+      "action": "删除集合",
+      "title": "删除集合",
+      "message": "确定删除集合 %{name} 吗？",
+      "count": "该集合当前约 %{count} 条文档。",
+      "count_unknown": "集合文档数未知。",
+      "warning": "删除后集合及其文档、索引无法恢复。",
+      "confirm": "删除",
+      "done": "集合 %{name} 已删除",
+      "failed": "删除集合失败：%{error}"
+    },
+    "export": {
+      "title": "导出文档",
+      "format": "格式",
+      "format_hint_json": "一个 JSON 数组，适合整体备份与再次导入",
+      "format_hint_csv": "平铺为表格，适合 Excel；会丢失部分类型信息",
+      "format_hint_jsonl": "每行一条文档，适合流式处理与大文件",
+      "query_preview": "导出查询",
+      "query_hint": "只读预览，条件请回集合工作台修改",
+      "scope_all": "全量",
+      "scope_hint": "「全量」导出整个集合；「当前筛选条件」按集合工作台的筛选 / 投影 / 排序导出。",
+      "conditions_empty": "工作台当前没有筛选条件，等同于全量",
+      "footer_summary": "将导出为 %{format}，范围：%{scope}",
+      "running_no_close": "导出进行中，请先取消或等待完成",
+      "log_started": "开始导出集合 %{collection}（%{format}）",
+      "log_path": "保存到 %{path}",
+      "log_download": "已读取 %{count} 条文档，统计列中",
+      "log_page": "已写入 %{count} 条文档",
+      "log_documents": "已导出 %{count} 条文档",
+      "stage": {
+        "prepare": "准备",
+        "write": "写入",
+        "page": "分页",
+        "done": "完成"
+      }
+    },
+    "completion": {
+      "field": "字段",
+      "operator": "查询运算符",
+      "stage": "聚合阶段",
+      "value": "BSON 构造器",
+      "word": "字段取值",
+      "reference": "字段引用"
+    }
   }
 }

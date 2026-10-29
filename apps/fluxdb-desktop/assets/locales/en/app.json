@@ -170,7 +170,11 @@
     "set_default_database": "Set default database",
     "set_default_schema": "Set default schema",
     "ungroup": "Remove from group",
-    "user_admin": "Users & privileges"
+    "user_admin": "Users & privileges",
+    "mongo_info": "Show connection info",
+    "mongo_performance": "View performance metrics",
+    "new_collection": "Create collection",
+    "mongo_cli": "Command line"
   },
   "confirm": {
     "apply_changes_summary": "About to submit %{changes} changes and run %{statements} SQL statements.",
@@ -1487,7 +1491,8 @@
         "file_search_content": "Search authorized attachment content",
         "file_read": "Read authorized attachment content",
         "context_read": "Read an authorized reference",
-        "plan_update": "Update the public execution plan"
+        "plan_update": "Update the public execution plan",
+        "mongo_read_documents": "Read bounded documents from the authorized MongoDB collection page snapshot without re-querying the database"
       }
     },
     "jev": {
@@ -2099,7 +2104,9 @@
       "host_required": "Enter a host",
       "redis_uri_required": "Enter a Redis connection string first",
       "redis_uri_parse": "Could not parse the connection string",
-      "create_first": "Create a connection first"
+      "create_first": "Create a connection first",
+      "mongo_uri_required": "Enter a MongoDB connection string",
+      "mongo_uri_parse": "Failed to parse the MongoDB connection string"
     },
     "tls": {
       "title": "Transport Layer Security (TLS)",
@@ -2258,7 +2265,8 @@
       "sqlite": "Select a SQLite database file"
     },
     "toast": {
-      "redis_imported": "Redis connection string imported"
+      "redis_imported": "Redis connection string imported",
+      "mongo_imported": "MongoDB connection string imported"
     },
     "copy_name": "%{name} copy",
     "label": "Connection",
@@ -2270,9 +2278,19 @@
       "procedures": "Stored procedures",
       "functions": "Functions",
       "backup": "Backup",
-      "er_diagram": "ER diagram"
+      "er_diagram": "ER diagram",
+      "collections": "Collections"
     },
-    "fallback": "Connection %{id}"
+    "fallback": "Connection %{id}",
+    "mongo": {
+      "srv": "SRV (MongoDB Atlas)",
+      "auth_default": "Default (driver negotiated)",
+      "auth_scram256": "SCRAM-SHA-256",
+      "auth_scram1": "SCRAM-SHA-1",
+      "auth_x509": "MONGODB-X509",
+      "uri": "Connection string / URI",
+      "import_action": "Import"
+    }
   },
   "home": {
     "common_actions": "Common actions",
@@ -4129,7 +4147,10 @@
       "create": "New table"
     },
     "backup_list": "Backup list",
-    "er_diagram": "ER diagram"
+    "er_diagram": "ER diagram",
+    "mongo": {
+      "collection": "MongoDB collection"
+    }
   },
   "terminal": {
     "transcript": {
@@ -4209,7 +4230,8 @@
     "er_related": "%{table} · Related ER",
     "design_table_named": "Design table: %{table}",
     "redis_pubsub": "Redis Pub/Sub - DB %{database}",
-    "global": "Global"
+    "global": "Global",
+    "mongo_cli": "MongoDB Shell - %{database}"
   },
   "backend_error": {
     "sqlserver_connection_task_failed": "SQL Server connection task terminated unexpectedly",
@@ -5647,5 +5669,304 @@
     "streamed_text_not_utf8": "The pending content is not valid UTF-8; the commit was cancelled",
     "streamed_text_chunk_too_small": "The streamed text chunk is too small to align on a character boundary; raise the chunk size and retry",
     "large_edit_unsupported": "Very large values cannot be edited in place; use the chunked view or upload replacement"
+  },
+  "mongo": {
+    "error": {
+      "title": "MongoDB load failed",
+      "no_result": "Background task returned no result. Try again."
+    },
+    "loading": "Loading…",
+    "empty": "No documents matched",
+    "read_only": "Read-only",
+    "query": {
+      "filter": "Filter",
+      "projection": "Projection",
+      "sort": "Sort",
+      "find": "Find",
+      "reset": "Reset",
+      "options": "More options",
+      "filter_placeholder": "{}",
+      "projection_placeholder": "Optional, e.g. { \"name\": 1 }",
+      "sort_placeholder": "Optional, e.g. { \"createdAt\": -1 }",
+      "collation": "Collation",
+      "hint": "Index Hint",
+      "skip": "Skip",
+      "max_time": "Max Time MS",
+      "collation_placeholder": "optional, e.g. { \"locale\": \"en\" }",
+      "hint_placeholder": "optional, index name or { \"age\": 1 }",
+      "skip_placeholder": "0",
+      "max_time_placeholder": "unlimited",
+      "advanced": "Advanced query",
+      "optional": "Optional",
+      "result_limit": "Limit",
+      "hint_collation": "Collation",
+      "hint_skip": "Skip",
+      "hint_index": "Index Hint",
+      "builder": "Condition builder",
+      "builder_field_placeholder": "Field path, e.g. customer.tier",
+      "builder_value_placeholder": "Value, e.g. \"paid\" or 500",
+      "builder_field_menu": "Pick a known field",
+      "builder_remove": "Remove condition",
+      "builder_add": "Add condition",
+      "builder_run_hint": "Run query",
+      "builder_empty": "No conditions yet: add one, or write JSON in Filter",
+      "builder_json_error": "Filter is not valid JSON; fix it before using the builder",
+      "builder_complex_error": "Filter contains an expression the builder cannot rewrite ($or, $regex, nested objects); keep editing JSON",
+      "unit_ms": "ms",
+      "limit_placeholder": "Documents per page",
+      "aggregation_placeholder": "[ { \"$match\": {} } ]",
+      "op": {
+        "eq": "equals",
+        "ne": "not equal",
+        "gt": "greater than",
+        "gte": "greater or equal",
+        "lt": "less than",
+        "lte": "less or equal",
+        "in": "in",
+        "exists": "field exists"
+      }
+    },
+    "aggregation": {
+      "hint": "Aggregation pipeline (Extended JSON array)",
+      "run": "Run",
+      "empty": "Pipeline returned no documents"
+    },
+    "section": {
+      "documents": "Documents",
+      "aggregation": "Aggregation",
+      "indexes": "Indexes",
+      "info": "Info"
+    },
+    "display": {
+      "documents": "Documents",
+      "table": "Table",
+      "json": "JSON"
+    },
+    "result": {
+      "total": "%{count} documents",
+      "returned": "%{count} returned",
+      "none": "No results yet"
+    },
+    "copy_document": "Copy to clipboard",
+    "duplicate_document": "Duplicate document",
+    "duplicate_title": "Duplicate as new document",
+    "duplicate_from": "Source document _id: %{id}",
+    "duplicate_hint": "The database generates the new _id; edit the content as needed",
+    "duplicate_confirm": "Insert",
+    "duplicate_done": "New document inserted (_id: %{id})",
+    "duplicate_failed": "Insert failed: %{error}",
+    "insert_document": "Insert document",
+    "insert_title": "New document",
+    "insert_hint": "The _id is prefilled; add the fields you need, then insert",
+    "insert_confirm": "Insert",
+    "insert_done": "Inserted a new document (_id: %{id})",
+    "insert_failed": "Insert failed: %{error}",
+    "delete_document": "Delete document",
+    "delete_title": "Delete this document?",
+    "delete_message": "This cannot be undone. The document with _id %{id} will be deleted.",
+    "delete_done": "Document deleted",
+    "delete_failed": "Delete failed: %{error}",
+    "document_detail": "Document detail",
+    "edit_document": "Edit document",
+    "collapse_document": "Collapse document",
+    "expand_document": "Expand document",
+    "field_count": "{ %{count} fields }",
+    "item_count": "[ %{count} items ]",
+    "editor": {
+      "title": "Edit document",
+      "hint": "Replaces the whole document; _id cannot be changed",
+      "save": "Save",
+      "saved": "Document saved",
+      "save_failed": "Save failed: %{error}",
+      "read_only": "Views are read-only",
+      "discard_title": "Discard unsaved changes?",
+      "discard_message": "This document has unsaved changes; continuing will discard them.",
+      "discard_stay": "Keep editing",
+      "discard_confirm": "Discard and switch"
+    },
+    "table": {
+      "id": "_id",
+      "missing": "—",
+      "actions": "Actions"
+    },
+    "extended_json": "Extended JSON",
+    "bson_preserved": "BSON types preserved",
+    "not_ai_context": "Document contents stay out of the AI context; the AI reads them on demand with read-only, permission-scoped tools.",
+    "pager": {
+      "range": "Rows",
+      "previous": "Previous page",
+      "next": "Next page"
+    },
+    "indexes": {
+      "unique": "Unique",
+      "sparse": "Sparse",
+      "building": "Building",
+      "empty": "No indexes"
+    },
+    "info": {
+      "name": "Name",
+      "type": "Type",
+      "database": "Database",
+      "documents": "Documents",
+      "avg_size": "Avg document size",
+      "data_size": "Data size",
+      "storage_size": "Storage size",
+      "indexes": "Indexes",
+      "unknown": "Unknown",
+      "view_on": "View on",
+      "kind": {
+        "collection": "Collection",
+        "view": "View",
+        "timeseries": "Time series"
+      }
+    },
+    "info_dialog": {
+      "title": "Connection Info",
+      "loading": "Reading server info…",
+      "refresh": "Refresh",
+      "close": "Close",
+      "error": "Failed to read connection info",
+      "section": {
+        "server": "Server",
+        "topology": "Topology",
+        "databases": "Databases"
+      },
+      "version": "Version",
+      "edition": "Edition",
+      "topology": "Topology",
+      "replica_set": "Replica set",
+      "primary": "Primary",
+      "hosts": "Members",
+      "wire": "Wire version",
+      "uptime": "Uptime",
+      "topology_kind": {
+        "standalone": "Standalone",
+        "replica_set": "Replica set",
+        "sharded": "Sharded cluster",
+        "unknown": "Unknown"
+      },
+      "database_empty": "Empty",
+      "database_size": "%{size}",
+      "database_no_size": "Size unknown",
+      "databases_empty": "No visible databases",
+      "uptime_value": "%{days}d %{hours}h",
+      "uptime_short": "%{hours}h"
+    },
+    "create_collection": {
+      "title": "Create Collection",
+      "field": "Collection name",
+      "placeholder": "e.g. orders",
+      "running": "Creating…",
+      "created": "Collection %{name} created",
+      "failed": "Failed to create collection: %{error}",
+      "database": "Database"
+    },
+    "create_database": {
+      "first_collection": "First collection",
+      "first_collection_placeholder": "e.g. orders",
+      "enter_collection": "Enter the first collection name"
+    },
+    "cli": {
+      "title": "MongoDB Shell",
+      "hint": "Type Extended JSON commands, e.g. {\"ping\": 1}. ↑/↓ history, Tab completion",
+      "prompt": "%{database}> ",
+      "busy": "Running…",
+      "idle": "Ready",
+      "failed": "Command failed: %{error}",
+      "started": "Connected to %{database}. Type Extended JSON commands (e.g. {\"ping\": 1})"
+    },
+    "copy_done": "Document copied",
+    "import": {
+      "action": "Import documents",
+      "title": "Import documents",
+      "target": "Target collection",
+      "choose_file": "Choose file",
+      "choose_file_failed": "Failed to choose file",
+      "no_file": "No file selected",
+      "summary_file": "File",
+      "summary_rows": "Previewed",
+      "format": "Format",
+      "parsing": "Parsing file…",
+      "preview": "Preview",
+      "preview_empty": "Choose a file to preview documents here",
+      "preview_truncated": "Showing the first %{count} only; the full file is imported",
+      "fields": "Field types",
+      "sample_empty": "(empty sample)",
+      "delimiter": "Delimiter",
+      "delimiter_comma": "Comma",
+      "delimiter_semicolon": "Semicolon",
+      "delimiter_tab": "Tab",
+      "delimiter_pipe": "Pipe",
+      "empty_as_null": "Empty as null",
+      "start": "Start import",
+      "stop": "Stop",
+      "stopping": "Stopping…",
+      "stage_prepare": "Preparing import",
+      "log_starting": "Preparing the import",
+      "log_documents": "%{count} documents imported",
+      "log_collection": "Collection: %{name}",
+      "running": "An import is already running",
+      "running_short": "Importing",
+      "running_no_close": "Import in progress; stop it before closing",
+      "open_failed": "Open a collection tab before importing",
+      "choose_first": "Choose an import file first",
+      "no_documents": "The file has no documents to import",
+      "no_result": "The import task returned no result, please retry",
+      "done": "Import finished: %{inserted} inserted, %{failed} failed",
+      "done_cancelled": "Stopped: %{inserted} inserted, %{failed} failed"
+    },
+    "rename": {
+      "title": "Rename collection",
+      "current": "Current collection: %{name}",
+      "field": "New collection name",
+      "field_placeholder": "Enter a new collection name",
+      "empty": "Enter a new collection name",
+      "done": "Renamed %{from} to %{to}",
+      "failed": "Rename failed: %{error}"
+    },
+    "drop_collection": {
+      "action": "Drop collection",
+      "title": "Drop collection",
+      "message": "Drop collection %{name}?",
+      "count": "This collection has about %{count} documents.",
+      "count_unknown": "Document count is unknown.",
+      "warning": "The collection, its documents and indexes cannot be recovered.",
+      "confirm": "Drop",
+      "done": "Collection %{name} dropped",
+      "failed": "Drop collection failed: %{error}"
+    },
+    "export": {
+      "title": "Export documents",
+      "format": "Format",
+      "format_hint_json": "One JSON array; best for full backups and re-import",
+      "format_hint_csv": "Flattened table; best for Excel, some type information is lost",
+      "format_hint_jsonl": "One document per line; best for streaming and large files",
+      "query_preview": "Export query",
+      "query_hint": "Read-only preview; edit conditions in the collection workspace",
+      "scope_all": "All documents",
+      "scope_hint": "\"All documents\" exports the whole collection; \"Current filter\" follows the collection workspace filter/projection/sort.",
+      "conditions_empty": "The workspace has no filter conditions; same as all documents",
+      "footer_summary": "Export as %{format}, scope: %{scope}",
+      "running_no_close": "Export is running; cancel it or wait for it to finish",
+      "log_started": "Exporting collection %{collection} (%{format})",
+      "log_path": "Saving to %{path}",
+      "log_download": "%{count} documents read, collecting columns",
+      "log_page": "%{count} documents written",
+      "log_documents": "%{count} documents exported",
+      "stage": {
+        "prepare": "Prepare",
+        "write": "Write",
+        "page": "Page",
+        "done": "Done"
+      }
+    },
+    "completion": {
+      "field": "Field",
+      "operator": "Query operator",
+      "stage": "Pipeline stage",
+      "value": "BSON constructor",
+      "word": "Field value",
+      "reference": "Field reference"
+    }
   }
 }

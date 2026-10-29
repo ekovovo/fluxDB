@@ -49,6 +49,7 @@ fn oracle_completion_tab(connection_id: fluxdb_core::ConnectionId) -> Completion
                 },
                 ..OracleConnectionProfile::default()
             }),
+            mongo_profile: None,
         },
         database: "FREEPDB1".into(),
         schema: "FLUXDB".into(),
@@ -79,6 +80,7 @@ fn postgres_completion_tab(connection_id: fluxdb_core::ConnectionId) -> Completi
             dameng_profile: None,
             sqlserver_profile: None,
             oracle_profile: None,
+            mongo_profile: None,
         },
         database: "fluxdb".into(),
         schema: "public".into(),
@@ -125,6 +127,7 @@ fn dameng_completion_tab(connection_id: fluxdb_core::ConnectionId) -> Completion
             }),
             sqlserver_profile: None,
             oracle_profile: None,
+            mongo_profile: None,
         },
         database: "DAMENG".into(),
         schema: "FLUXDB".into(),

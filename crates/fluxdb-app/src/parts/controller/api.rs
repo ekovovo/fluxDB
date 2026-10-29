@@ -163,6 +163,19 @@ impl AppController {
         export_pages_for_connection(&config, object, sort, filters, on_cancel, on_page)
     }
 
+    /// 执行一次 MongoDB `find`（导出按 skip 翻页时用；`limit` 由连接器再夹上限）。
+    pub fn mongo_find_page(
+        &self,
+        object: &ObjectPath,
+        request: &fluxdb_core::MongoFindRequest,
+        on_cancel: &dyn Fn() -> bool,
+    ) -> fluxdb_core::Result<fluxdb_core::MongoDocumentsPage> {
+        let config = self
+            .connection_config(object.connection_id)
+            .ok_or_else(|| Error::new(ErrorKind::Connection, "连接不存在"))?;
+        fluxdb_connectors::connector_for(config)?.mongo_find(object, request, on_cancel)
+    }
+
     pub fn preview_data_export(
         &self,
         object: &ObjectPath,
@@ -357,6 +370,82 @@ impl AppController {
                 tab.title = new_name.to_string();
                 tab.dirty = false;
             }
+        }
+        self.state.last_error = loaded.state.last_error.clone();
+    }
+
+    /// 把后台「重命名集合」的结果合并回 live 控制器：对象树、标签页标题与对象路径。
+    pub fn merge_renamed_mongo_collection_from(
+        &mut self,
+        loaded: &Self,
+        connection_id: ConnectionId,
+        database: &str,
+        collection: &str,
+        new_name: &str,
+    ) {
+        if let Some(source) = loaded
+            .state
+            .connections
+            .iter()
+            .find(|connection| connection.config.id == connection_id)
+            && let Some(target) = self
+                .state
+                .connections
+                .iter_mut()
+                .find(|connection| connection.config.id == connection_id)
+            && target.config == source.config
+        {
+            target.objects = source.objects.clone();
+        }
+        for tab in &mut self.state.tabs {
+            if let TabKind::MongoCollection(state) = &mut tab.kind
+                && state.object.connection_id == connection_id
+                && state.object.database.as_deref() == Some(database)
+                && state.object.name == collection
+            {
+                state.object.name = new_name.to_string();
+                tab.title = new_name.to_string();
+            }
+        }
+        self.state.last_error = loaded.state.last_error.clone();
+    }
+
+    /// 把后台「删除集合」的结果合并回 live 控制器：对象树 + 关闭对应集合标签页。
+    pub fn merge_dropped_mongo_collection_from(
+        &mut self,
+        loaded: &Self,
+        connection_id: ConnectionId,
+        database: &str,
+        collection: &str,
+    ) {
+        if let Some(source) = loaded
+            .state
+            .connections
+            .iter()
+            .find(|connection| connection.config.id == connection_id)
+            && let Some(target) = self
+                .state
+                .connections
+                .iter_mut()
+                .find(|connection| connection.config.id == connection_id)
+            && target.config == source.config
+        {
+            target.objects = source.objects.clone();
+        }
+        self.state.tabs.retain(|tab| match &tab.kind {
+            TabKind::MongoCollection(state) => {
+                state.object.connection_id != connection_id
+                    || state.object.database.as_deref() != Some(database)
+                    || state.object.name != collection
+            }
+            _ => true,
+        });
+        if self
+            .state
+            .active_tab
+            .is_some_and(|tab_id| !self.state.tabs.iter().any(|tab| tab.id == tab_id))
+        {
+            self.state.active_tab = self.state.tabs.last().map(|tab| tab.id);
         }
         self.state.last_error = loaded.state.last_error.clone();
     }

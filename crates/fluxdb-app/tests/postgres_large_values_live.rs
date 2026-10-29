@@ -44,6 +44,7 @@ fn smoke_config() -> ConnectionConfig {
         }),
         dameng_profile: None,
         sqlserver_profile: None,
+        mongo_profile: None,
         oracle_profile: None,
     }
     .postgres_resolved()

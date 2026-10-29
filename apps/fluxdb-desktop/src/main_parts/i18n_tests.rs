@@ -26,6 +26,8 @@ mod i18n_e2e_tests {
     include!("i18n_tests/table_copy_error.rs");
     include!("i18n_tests/table_danger_layout.rs");
     include!("i18n_tests/table_context_menu_layout.rs");
+    include!("i18n_tests/mongo_collection_menu.rs");
+    include!("i18n_tests/mongo_query_panel.rs");
     include!("i18n_tests/sqlserver_table_context.rs");
     include!("i18n_tests/user_admin_toolbar.rs");
     // 新建用户一次保存的真实库端到端测试（MySQL/PG/Oracle/达梦，`#[ignore]` + 环境变量门控）。
@@ -179,6 +181,7 @@ mod i18n_e2e_tests {
                 mysql_profile: None,
                 postgres_profile: None,
                 dameng_profile: None,
+                mongo_profile: None,
                 sqlserver_profile: None,
                 oracle_profile: None,
             },
@@ -297,6 +300,7 @@ mod i18n_e2e_tests {
                 mysql_profile: None,
                 postgres_profile: None,
                 dameng_profile: None,
+                mongo_profile: None,
                 sqlserver_profile: None,
                 oracle_profile: None,
             },
@@ -1050,6 +1054,7 @@ mod i18n_e2e_tests {
             mysql_profile: None,
             postgres_profile: None,
             dameng_profile: None,
+            mongo_profile: None,
             sqlserver_profile: None,
             oracle_profile: None,
         }]));

@@ -521,6 +521,22 @@ struct PendingDeleteDatabase {
     database: String,
 }
 
+/// MongoDB「显示连接信息」弹框状态：加载中 / 已加载 / 加载失败。
+///
+/// 内容全部来自服务端命令（`hello` / `buildInfo` / `listDatabases`），UI 不补造字段。
+struct MongoInfoDialog {
+    connection_id: ConnectionId,
+    state: LoadState<fluxdb_core::MongoServerInfo>,
+}
+
+/// MongoDB「创建集合」弹框：`MongoDB` 的库由首个集合隐式创建，故只需连接 + 库 + 集合名。
+#[derive(Clone, Debug)]
+struct MongoCreateCollectionForm {
+    connection_id: ConnectionId,
+    database: String,
+    collection: String,
+}
+
 #[derive(Clone, Debug)]
 struct ErRelationshipSelectOption {
     id: String,
@@ -1119,6 +1135,15 @@ struct TableContextMenu {
     submenu: Option<TableContextSubmenu>,
 }
 
+/// MongoDB 集合/视图右键菜单：项与表菜单不同（无设计/复制/备份等 SQL 语义）。
+#[derive(Clone, Debug)]
+struct CollectionContextMenu {
+    object_path: ObjectPath,
+    position: Point<Pixels>,
+    /// 视图只读：隐藏重命名/删除/导入等写入入口。
+    read_only: bool,
+}
+
 #[derive(Clone, Debug)]
 struct TableGroupContextMenu {
     connection_id: ConnectionId,
@@ -1141,6 +1166,91 @@ struct PendingRenameTableFolder {
     parent_key: String,
     original_name: String,
     name: String,
+}
+
+/// MongoDB「重命名集合」弹框。
+#[derive(Clone, Debug)]
+struct PendingRenameCollection {
+    object_path: ObjectPath,
+    new_name: String,
+    error: Option<String>,
+}
+
+/// MongoDB「删除集合」确认弹框。
+#[derive(Clone, Debug)]
+struct PendingDropCollection {
+    object_path: ObjectPath,
+    /// 删除会连带丢弃文档，弹框内固定展示这句风险说明。
+    document_count: Option<u64>,
+}
+
+/// MongoDB 导出弹框：常规页（格式 + 范围 + 条件预览）与消息日志页。
+/// 与 Compass 一致，条件不需要单独页签——选「条件」时在常规页直接展示 shell 查询。
+#[derive(Clone, Debug)]
+struct MongoExportForm {
+    object: ObjectPath,
+    format: MongoExportFormat,
+    scope: MongoExportScope,
+    active_tab: MongoExportTab,
+    /// 条件导出用的 Extended JSON 文本（全量导出时被忽略）。
+    /// 直接存在表单里而不是另开输入框实体：条件只读展示，不需要编辑状态。
+    filter: String,
+    projection: String,
+    sort: String,
+    /// 导出进行中：页签可切，「导出」按钮禁用。
+    running: bool,
+    /// 取消标记；后台分页循环每取一页检查一次，已写入的临时文件随后丢弃。
+    cancel: Arc<AtomicBool>,
+    exported_documents: u64,
+    /// 消息日志页内容（沿用导入弹窗的条目结构）。
+    logs: Vec<ImportDialogLogEntry>,
+    error: Option<String>,
+    finished: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MongoExportTab {
+    General,
+    Log,
+}
+
+/// 导出格式。CSV 会先扫全量求列并集再写行（见 `mongo_export_csv.rs`），
+/// 因此混字段集合不会静默丢列，但导出进度会分「下载 / 写入」两段。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MongoExportFormat {
+    Json,
+    Csv,
+    JsonLines,
+}
+
+impl MongoExportFormat {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Json => "JSON",
+            Self::Csv => "CSV",
+            Self::JsonLines => "JSONL",
+        }
+    }
+
+    fn extension(self) -> &'static str {
+        match self {
+            Self::Json => "json",
+            Self::Csv => "csv",
+            Self::JsonLines => "jsonl",
+        }
+    }
+
+    fn all() -> &'static [Self] {
+        &[Self::Json, Self::Csv, Self::JsonLines]
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MongoExportScope {
+    /// 整个集合（空过滤）。
+    All,
+    /// 条件导出：使用弹框里的 filter/projection/sort。
+    Conditions,
 }
 
 #[derive(Clone, Debug)]
@@ -1385,6 +1495,8 @@ struct CreateDatabaseForm {
     owner: String,
     /// PostgreSQL TEMPLATE（可选）。
     template: String,
+    /// MongoDB 首个集合名：Mongo 的库由首个集合隐式创建，缺了它库不会真正存在。
+    first_collection: String,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

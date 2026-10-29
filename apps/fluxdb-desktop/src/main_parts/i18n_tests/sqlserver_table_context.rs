@@ -34,6 +34,7 @@
             mysql_profile: None,
             postgres_profile: None,
             dameng_profile: None,
+            mongo_profile: None,
             sqlserver_profile: Some(SqlServerConnectionProfile {
                 basic: SqlServerBasicOptions {
                     host: "127.0.0.1".into(),

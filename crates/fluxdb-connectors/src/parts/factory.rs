@@ -36,12 +36,7 @@ pub fn connector_for(config: &ConnectionConfig) -> fluxdb_core::Result<Box<dyn C
         DatabaseKind::SqlServer => Box::new(SqlServerConnector::with_config(config.clone())),
         DatabaseKind::Oracle => Box::new(OracleConnector::with_config(config.clone())),
         DatabaseKind::Redis => Box::new(RedisConnector::with_config(config.clone())),
-        DatabaseKind::MongoDb => {
-            return Err(Error::new(
-                ErrorKind::Unsupported,
-                "MongoDB 连接尚未支持，不展示对象数据",
-            ));
-        }
+        DatabaseKind::MongoDb => Box::new(MongoConnector::with_config(config.clone())),
     };
     Ok(connector)
 }

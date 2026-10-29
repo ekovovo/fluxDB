@@ -133,6 +133,7 @@ fn dameng_design_snapshot_uses_one_metadata_read() {
             ..fluxdb_core::DamengConnectionProfile::default()
         }),
         sqlserver_profile: None,
+        mongo_profile: None,
         oracle_profile: None,
     };
     let _ = connector_for(&config)
@@ -200,6 +201,7 @@ fn mysql_design_snapshot_uses_one_metadata_read() {
         }),
         postgres_profile: None,
         dameng_profile: None,
+        mongo_profile: None,
         sqlserver_profile: None,
         oracle_profile: None,
     }

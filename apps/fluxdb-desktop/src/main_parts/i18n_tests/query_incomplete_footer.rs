@@ -37,6 +37,7 @@ fn first_incomplete_query_page_shows_footer_reason(cx: &mut TestAppContext) {
         dameng_profile: None,
         sqlserver_profile: None,
         oracle_profile: None,
+        mongo_profile: None,
     }]));
     let AppEvent::TabOpened(tab_id) = controller.dispatch(AppCommand::OpenQueryEditorInDatabase {
         connection_id: ConnectionId(1),

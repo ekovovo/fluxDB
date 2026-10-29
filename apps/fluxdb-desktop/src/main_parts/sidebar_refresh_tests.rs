@@ -15,6 +15,7 @@ mod sidebar_refresh_tests {
             mysql_profile: None,
             postgres_profile: None,
             dameng_profile: None,
+            mongo_profile: None,
             sqlserver_profile: None,
             oracle_profile: None,
         };
@@ -139,5 +140,26 @@ mod sidebar_refresh_tests {
     #[test]
     fn first_database_load_does_not_show_empty_table_group() {
         assert!(!has_table_group_and_row(&visible_rows(true, false)));
+    }
+
+    #[test]
+    fn mongo_collection_tab_selects_its_sidebar_row() {
+        let object = ObjectPath {
+            connection_id: ConnectionId(1),
+            database: Some("fluxdb_demo".into()),
+            schema: None,
+            name: "events".into(),
+            kind: ObjectKind::Collection,
+        };
+        let mut state = AppState::default();
+        state.tabs.push(TabState {
+            id: TabId(1),
+            title: "events".into(),
+            kind: TabKind::MongoCollection(MongoCollectionState::new(object.clone(), false, 100)),
+            dirty: false,
+        });
+        state.active_tab = Some(TabId(1));
+
+        assert_eq!(active_sidebar_object_path(&state), Some(&object));
     }
 }

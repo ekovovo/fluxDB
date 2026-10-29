@@ -5520,14 +5520,49 @@
       "filter": "Filter",
       "projection": "Projection",
       "sort": "Sort",
-      "limit": "Limit",
       "find": "Find",
       "reset": "Reset",
+      "options": "More options",
       "filter_placeholder": "{}",
       "projection_placeholder": "Optional, e.g. { \"name\": 1 }",
       "sort_placeholder": "Optional, e.g. { \"createdAt\": -1 }",
+      "collation": "Collation",
+      "hint": "Index Hint",
+      "skip": "Skip",
+      "max_time": "Max Time MS",
+      "collation_placeholder": "optional, e.g. { \"locale\": \"en\" }",
+      "hint_placeholder": "optional, index name or { \"age\": 1 }",
+      "skip_placeholder": "0",
+      "max_time_placeholder": "unlimited",
+      "advanced": "Advanced query",
+      "optional": "Optional",
+      "result_limit": "Limit",
+      "hint_collation": "Collation",
+      "hint_skip": "Skip",
+      "hint_index": "Index Hint",
+      "builder": "Condition builder",
+      "builder_field_placeholder": "Field path, e.g. customer.tier",
+      "builder_value_placeholder": "Value, e.g. \"paid\" or 500",
+      "builder_field_menu": "Pick a known field",
+      "builder_remove": "Remove condition",
+      "builder_add": "Add condition",
+      "builder_run_hint": "Run query",
+      "builder_empty": "No conditions yet: add one, or write JSON in Filter",
+      "builder_json_error": "Filter is not valid JSON; fix it before using the builder",
+      "builder_complex_error": "Filter contains an expression the builder cannot rewrite ($or, $regex, nested objects); keep editing JSON",
+      "unit_ms": "ms",
       "limit_placeholder": "Documents per page",
-      "aggregation_placeholder": "[ { \"$match\": {} } ]"
+      "aggregation_placeholder": "[ { \"$match\": {} } ]",
+      "op": {
+        "eq": "equals",
+        "ne": "not equal",
+        "gt": "greater than",
+        "gte": "greater or equal",
+        "lt": "less than",
+        "lte": "less or equal",
+        "in": "in",
+        "exists": "field exists"
+      }
     },
     "aggregation": {
       "hint": "Aggregation pipeline (Extended JSON array)",
@@ -5762,6 +5797,14 @@
         "page": "Page",
         "done": "Done"
       }
+    },
+    "completion": {
+      "field": "Field",
+      "operator": "Query operator",
+      "stage": "Pipeline stage",
+      "value": "BSON constructor",
+      "word": "Field value",
+      "reference": "Field reference"
     }
   }
 }

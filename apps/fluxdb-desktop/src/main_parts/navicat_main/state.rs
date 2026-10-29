@@ -684,6 +684,23 @@ struct NavicatMain {
     // —— MongoDB 集合工作台 ——
     /// 查询面板输入框（按集合标签页缓存；标签页关闭时释放）。
     pub(crate) mongo_query_inputs: BTreeMap<TabId, Entity<MongoQueryInputs>>,
+    /// 查询面板 Options（投影/排序/条数）的显式展开态。
+    ///
+    /// 只在用户点过 Options 后写入：没记录时按「已生效查询是否带投影/排序」决定默认值，
+    /// 免得存下来的条件生效了却在收起的面板里看不见。
+    pub(crate) mongo_query_options_expanded: BTreeMap<TabId, bool>,
+    /// 「高级查询」第二层折叠的显式展开态（排序规则 / 起始 / 索引提示 / 执行上限）。
+    ///
+    /// 与 [`Self::mongo_query_options_expanded`] 分开记：两层各自展开/收起，
+    /// 点过之后互不影响；未记录时按已生效查询是否带这些低频条件推默认值。
+    pub(crate) mongo_query_advanced_expanded: BTreeMap<TabId, bool>,
+    /// 「条件构建」的显式展开态。
+    ///
+    /// 与上面两层分开记：构建器是 Filter 的另一种输入法，不是第三层筛选项。
+    /// 未记录时默认收起——它只在用户主动要图形化编辑条件时才占高度。
+    pub(crate) mongo_query_builder_expanded: BTreeMap<TabId, bool>,
+    /// 条件构建器的条件行（按标签页缓存，切走再切回来不丢草稿）。
+    pub(crate) mongo_query_builders: BTreeMap<TabId, MongoQueryBuilder>,
     /// 已折叠的文档卡片，按「标签页 → 文档身份（`_id`，缺失时 `#下标`）」记录。
     pub(crate) mongo_collapsed_documents: BTreeMap<TabId, BTreeSet<String>>,
     /// 已展开的嵌套字段，键为 `{文档身份}/{字段路径}`；默认全收起，与原型一致。
@@ -714,6 +731,8 @@ struct NavicatMain {
     _mongo_aggregation_tasks: BTreeMap<u64, Task<()>>,
     _mongo_info_tasks: BTreeMap<u64, Task<()>>,
     _mongo_index_tasks: BTreeMap<u64, Task<()>>,
+    /// 补全字段的抽样任务：每个集合标签页只跑一次，失败不重试（补全降级为仅运算符）。
+    _mongo_field_sample_tasks: BTreeMap<u64, Task<()>>,
     _query_execute_tasks: BTreeMap<u64, Task<()>>,
     /// Redis Workbench 命令的后台执行任务，按标签页 id 去重：同一标签页执行中再次触发
     /// （Run / 重跑 / 历史「运行此条」）时直接提示，不并发发起第二条网络请求。

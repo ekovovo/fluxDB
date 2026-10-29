@@ -35,7 +35,7 @@ use fluxdb_app::{
     UserAdminState, compress_sql_text, copy_table_sql_preview_with_source_ddl,
     create_table_common_type_options, create_table_provider, create_table_special_type_options,
     drop_table_sql_preview, er_neighborhood_included_tables, er_place_avoiding_overlaps,
-    er_relation_layout, format_sql_text_for_dialect, rename_table_sql_preview,
+    er_relation_layout, format_sql_text_for_dialect, mongo_query_limit, rename_table_sql_preview,
     truncate_table_sql_preview,
 };
 use fluxdb_core::{
@@ -71,6 +71,7 @@ use gpui::{
     actions, anchored, canvas, deferred, div, ease_in_out, hsla, img, list, opaque_grey,
     percentage, point, px, rgb, size, svg, uniform_list,
 };
+use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_component::{
     ActiveTheme as _, Colorize as _, Disableable as _, IconName, IndexPath, Root, Sizable as _,
     Theme as ComponentTheme, ThemeConfig, ThemeMode, ThemeRegistry, VirtualListScrollHandle,
@@ -151,6 +152,8 @@ include!("main_parts/user_admin_privileges.rs");
 include!("main_parts/create_table.rs");
 include!("main_parts/content_views.rs");
 include!("main_parts/mongo_collection.rs");
+include!("main_parts/mongo_query_completion.rs");
+include!("main_parts/mongo_query_builder.rs");
 include!("main_parts/mongo_documents.rs");
 include!("main_parts/backup_tab.rs");
 include!("main_parts/er/canvas.rs");

@@ -33,3 +33,4 @@ roxmltree = "0.21"
 # 导入文件按用户选择解码（UTF-8/GB18030 等）。
 encoding_rs = "0.8"
 mongodb = { version = "3.7", default-features = false, features = ["compat-3-0-0", "rustls-tls", "dns-resolver"] }
+json5 = "1"

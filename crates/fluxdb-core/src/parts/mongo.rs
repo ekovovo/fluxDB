@@ -5,9 +5,15 @@
 // 投影、嵌套结构与非关系型类型，因此这里用 Extended JSON 文本承载文档值，
 // 由 UI 侧复用现有 JSON 组件渲染与编辑。
 
+/// 单次 MongoDB 查询的文档上限：连接器按此夹紧 `find`/聚合，UI 的「条数」也按它封顶。
+///
+/// 放在 core 而不是连接器里：这是**产品上限**，输入框校验与请求兜底必须与连接器
+/// 用的是同一个数，否则用户能填进去一个执行时被静默改小的值。
+pub const MONGO_MAX_DOCUMENTS_PER_QUERY: u64 = 500;
+
 /// 一次 `find` 请求。所有 JSON 字段都是 **Extended JSON 文本**，由连接器解析成 BSON。
 ///
-/// 空字符串等价于未提供：`filter` 为空表示 `{}`，`projection`/`sort` 为空表示不限制。
+/// 空字符串等价于未提供：`filter` 为空表示 `{}`，其余为空表示不限制。
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct MongoFindRequest {
     /// 目标集合。
@@ -18,10 +24,16 @@ pub struct MongoFindRequest {
     pub projection: String,
     /// 排序（Extended JSON 对象，值只能是 1 / -1）。
     pub sort: String,
+    /// 排序规则（Extended JSON 对象，如 `{ "locale": "en", "strength": 2 }`）。
+    pub collation: String,
+    /// 索引提示：Extended JSON 字符串（索引名）或对象（键定义），对应 `hint`。
+    pub hint: String,
     /// 跳过文档数。
     pub skip: u64,
     /// 本页最多返回文档数（连接器负责夹到上限）。
     pub limit: u64,
+    /// 服务端执行上限（毫秒，对应 `maxTimeMS`）；`None` 表示不限制。
+    pub max_time_ms: Option<u64>,
 }
 
 impl MongoFindRequest {

@@ -20,6 +20,9 @@ impl AppController {
             AppCommand::FinishMongoCollectionInfo { tab_id, result } => {
                 self.finish_mongo_collection_info(tab_id, result)
             }
+            AppCommand::LoadMongoFieldSample { tab_id, object } => {
+                self.load_mongo_field_sample(tab_id, object)
+            }
             AppCommand::LoadMongoIndexes(tab_id) => self.load_mongo_indexes(tab_id),
             AppCommand::FinishMongoIndexes { tab_id, result } => {
                 self.finish_mongo_indexes(tab_id, result)
@@ -83,6 +86,9 @@ impl AppController {
                     return self.fail(Error::new(ErrorKind::Internal, "集合标签页不存在"));
                 };
                 state.pagination = Pagination::new(offset, state.pagination.limit);
+                // 起点只有一个来源：面板的 skip。翻页后同步写回，刷新/重开标签页才不会
+                // 拿着旧起点又从头查一遍。
+                state.applied_query.skip = offset.to_string();
                 AppEvent::TabActivated(tab_id)
             }
             AppCommand::SelectMongoDocument { tab_id, index } => {
@@ -149,7 +155,9 @@ impl AppController {
             return AppEvent::TabActivated(tab_id);
         }
         let tab_id = self.next_tab_id();
-        let page_size = self.state.settings.data_table_page_size;
+        // 条数跟随「默认查询限制」而不是数据表页大小：两者在设置里是独立项，
+        // 集合工作台查的是查询结果，语义上属于前者。
+        let page_size = mongo_query_limit(self.state.settings.page_size);
         let title = object.name.clone();
         self.push_tab(TabState {
             id: tab_id,
@@ -214,14 +222,20 @@ impl AppController {
             return AppEvent::MongoLoadDiscarded { tab_id, generation };
         }
         let object = state.object.clone();
-        let offset = state.pagination.offset;
-        let limit = query
-            .limit
-            .trim()
-            .parse::<u64>()
-            .ok()
-            .filter(|limit| *limit > 0)
-            .unwrap_or(state.pagination.limit);
+        // 输入框已按上限校验，这里再夹一次：命令也可能由 AI/恢复路径直接派发，
+        // 不能让超过连接器上限的值走到分页器（分页器按 limit 算页码，值变了页码就错）。
+        let limit = mongo_query_limit(
+            query
+                .limit
+                .trim()
+                .parse::<u64>()
+                .ok()
+                .filter(|limit| *limit > 0)
+                .unwrap_or(state.pagination.limit),
+        );
+        // 起始位置以查询面板的 `skip` 为准：用户可以手填任意起点，翻页按钮也把它写回这一格，
+        // 因此分页器必须跟着走，不能各存一份（否则页码与真实起点会对不上）。
+        let offset = query.skip_value();
 
         if let Some(state) = self.find_mongo_collection_mut(tab_id) {
             state.pagination = Pagination::new(offset, limit);
@@ -234,7 +248,7 @@ impl AppController {
         let Some(config) = self.connection_config(object.connection_id).cloned() else {
             return self.fail(Error::new(ErrorKind::Connection, "连接不存在"));
         };
-        let request = query.to_request(&object.name, offset);
+        let request = query.to_request(&object.name);
         match connector_for(&config)
             .and_then(|connector| connector.mongo_find(&object, &request, &|| false))
         {
@@ -259,6 +273,14 @@ impl AppController {
         match result {
             Ok(page) => {
                 state.error = None;
+                // 当前页本身就是最好的字段来源：抽样还没回来（或抽样失败）时，
+                // 用户至少能补全眼前这页见过的字段。
+                let documents = page
+                    .documents
+                    .iter()
+                    .map(|document| document.json.clone())
+                    .collect::<Vec<_>>();
+                state.field_catalog.extend_from_documents(&documents);
                 state.page = Some(page.clone());
                 AppEvent::MongoDocumentsLoaded(tab_id, page)
             }
@@ -468,6 +490,29 @@ impl AppController {
                 AppEvent::Failed(error)
             }
         }
+    }
+
+    /// 采样一批文档，摊平成补全用的字段目录，并并入标签页已有的目录。
+    ///
+    /// 失败不报错：字段目录只是补全的加分项，抽样失败时补全仍有运算符与构造器，
+    /// 为此在集合页弹一个错误块是本末倒置。
+    fn load_mongo_field_sample(&mut self, tab_id: TabId, object: ObjectPath) -> AppEvent {
+        let documents = self
+            .connection_config(object.connection_id)
+            .cloned()
+            .and_then(|config| connector_for(&config).ok())
+            .and_then(|connector| {
+                connector
+                    .mongo_sample_documents(&object, MONGO_FIELD_SAMPLE_SIZE)
+                    .ok()
+            })
+            .unwrap_or_default();
+        // 拿不到标签页（用户已关标签）时直接返回：抽样结果没有落点了。
+        let Some(state) = self.find_mongo_collection_mut(tab_id) else {
+            return AppEvent::MongoFieldSampleLoaded(tab_id, MongoFieldCatalog::default());
+        };
+        state.field_catalog.extend_from_documents(&documents);
+        AppEvent::MongoFieldSampleLoaded(tab_id, state.field_catalog.clone())
     }
 
     fn load_mongo_indexes(&mut self, tab_id: TabId) -> AppEvent {

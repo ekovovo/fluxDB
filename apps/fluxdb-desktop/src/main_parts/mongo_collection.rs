@@ -1,10 +1,95 @@
-// MongoDB 集合工作台（按 docs/prototype/mongodb-ui.html）：分节页签 + 查询面板 +
+// MongoDB 集合工作台：分节页签 + 查询面板 +
 // 文档/表格/JSON 三种展示 + 右侧文档详情抽屉。
 //
 // 只读边界：视图（`read_only`）不提供任何写入入口；文档值只在本页渲染，
 // 不进入 AI 上下文（AI 侧另行按需走有界只读工具）。
 
 const MONGO_QUERY_ROW_HEIGHT: f32 = 34.;
+/// 附加条件格子（投影 / 排序 / 排序规则 / 索引提示）的高度。
+///
+/// 32 是压过的：多行编辑器的上下内边距改不掉（`Input::from_state` 按
+/// `Size::Medium` 写死 8px），能调的只有字号——11px × 1.5 = 16.5px 行高，
+/// 一行占 8 + 16.5 + 8 = 32.5px，取 32 只裁掉半像素，字形中心仍在框中线上。
+/// 这四格不是主入口，压扁它们才能把纵向空间留给下面的结果区。
+const MONGO_QUERY_CONTROL_HEIGHT: f32 = 32.;
+
+/// 多行编辑器恒定加在内容区上下的内边距：`Input::from_state` 的多行分支按
+/// `Size::Medium` 写死 8px，外部改不掉。查询框的高度是倒推它的（见
+/// `MONGO_QUERY_CONTROL_HEIGHT`），布局测试也按它算首行字形中心。
+#[cfg(test)]
+pub(crate) fn mongo_query_editor_padding() -> f32 {
+    8.
+}
+
+/// 编辑器自然行高：Filter 字号 12px × 编辑器固定行高倍数 1.5。
+///
+/// 同样只用于倒推框高与校验字形居中，改字号时两边一起改。
+/// 附加条件格子用 11px，行高 [`mongo_query_option_line_height`]。
+const MONGO_QUERY_LINE_HEIGHT: f32 = 18.;
+
+#[cfg(test)]
+pub(crate) fn mongo_query_line_height() -> f32 {
+    MONGO_QUERY_LINE_HEIGHT
+}
+
+/// 附加条件格子的编辑器行高：11px × 1.5。
+#[cfg(test)]
+pub(crate) fn mongo_query_option_line_height() -> f32 {
+    16.5
+}
+/// Filter 的**一行**高度：交互稿 `.filter-input` 的 34px 量的是内容区，
+/// 加上上下各 1px 描边才是外框（`8 + 18 + 8 + 2`）。
+///
+/// 取整到 36 而不是 34：多行编辑器的内容区必须容下 `8 + 18 + 8`，否则最后一行
+/// 的底部会被裁掉 2px、编辑器还会以为自己可滚动而露出滚动条。首行字形中心仍落在
+/// 外框中线上（`1 + 8 + 9 = 18 = 36 / 2`）。
+const MONGO_QUERY_FILTER_HEIGHT: f32 = 36.;
+/// 外框描边宽度：外框高度按 border-box 算，内容区要扣掉上下两条。
+const MONGO_QUERY_BOX_BORDER: f32 = 1.;
+/// Filter 最多长到几行；再多就固定高度、由编辑器自己滚动。
+///
+/// 4 行是 Compass 的档位：再高查询面板就吃掉结果区的半屏，而剩下的行靠滚动
+/// 仍看得全——长条件本来就该在编辑器里滚，不该把结果区顶走。
+const MONGO_QUERY_FILTER_MAX_ROWS: usize = 4;
+
+/// Filter 外框高度：按内容行数长高，封顶 [`MONGO_QUERY_FILTER_MAX_ROWS`] 行。
+///
+/// 编辑器自己是 `EditorState`（要挂补全），标不出 `auto_grow`——那是
+/// `TextareaState` 才有的模式，且在 `gpui-base` 里是 `pub(super)`。所以行数由
+/// 视图数换行符推出来，框高再按「每多一行加一个行高」长。
+fn mongo_query_filter_height(text: &str) -> f32 {
+    MONGO_QUERY_FILTER_HEIGHT
+        + (mongo_query_filter_rows(text).saturating_sub(1)) as f32 * MONGO_QUERY_LINE_HEIGHT
+}
+
+/// Filter 内容占几行，已夹在 `1..=MONGO_QUERY_FILTER_MAX_ROWS`。
+///
+/// 数换行符而不是 `str::lines`：光标停在末尾换行之后那行时，`lines()` 不把空尾行
+/// 算进去，框会比内容矮一行。不折行（`soft_wrap(false)`），所以行数只由换行决定。
+pub(crate) fn mongo_query_filter_rows(text: &str) -> usize {
+    text.split('\n')
+        .count()
+        .clamp(1, MONGO_QUERY_FILTER_MAX_ROWS)
+}
+
+/// 查询行里操作按钮的高度，比 Filter 矮一档（交互稿 `.query-main .button` 的 32px，这里再压到 28）。
+///
+/// 不跟输入框同高：输入框的高度是被多行编辑器的内边距和行高撑出来的（见上），
+/// 按钮没有这层约束，做成同高只会显得又粗又笨。组内三者等高，与输入框共用行中线。
+const MONGO_QUERY_ACTION_HEIGHT: f32 = 28.;
+/// 查询行内元素间距：与 Compass query bar 的 `spacing[200]` 一致。
+const MONGO_QUERY_GAP: f32 = 8.;
+/// Filter 内嵌标签列宽：容得下英文 `Filter`。
+///
+/// 附加条件的铭牌各自量体裁宽（见 `mongo_query_cell_label`），不受这一列约束
+/// ——`Max Time MS` 这类长标签也不会把首行撑宽。
+const MONGO_QUERY_LABEL_WIDTH: f32 = 84.;
+/// 「返回条数」格宽（交互稿 110px）。铭牌只放名称，边界 `1–500` 走悬停提示。
+const MONGO_QUERY_NUMBER_WIDTH: f32 = 110.;
+/// 「起始位置」格宽：同上。
+const MONGO_QUERY_POSITION_WIDTH: f32 = 110.;
+/// 「执行上限」格宽（交互稿 `expert-options` 末列 150px）。铭牌只放名称，`ms` 走悬停提示。
+const MONGO_QUERY_MAX_TIME_WIDTH: f32 = 110.;
 const MONGO_SECTION_HEIGHT: f32 = 38.;
 const MONGO_TOOLBAR_HEIGHT: f32 = 38.;
 const MONGO_PAGER_HEIGHT: f32 = 34.;
@@ -47,7 +132,7 @@ impl NavicatMain {
         let section_bar = mongo_section_bar(tab_id, state, colors, cx);
         let body = match state.section {
             MongoSection::Documents => {
-                self.mongo_documents_section(tab_id, state, inputs, colors, cx)
+                self.mongo_documents_section(tab_id, state, inputs, colors, window, cx)
             }
             MongoSection::Aggregation => {
                 self.mongo_aggregation_section(tab_id, state, inputs, colors, cx)
@@ -70,7 +155,6 @@ impl NavicatMain {
                 );
                 move || format!("mongo-collection-page:{namespace}")
             })
-            .child(mongo_namespace_strip(state, colors))
             .child(section_bar)
             .child(body)
     }
@@ -81,6 +165,7 @@ impl NavicatMain {
         state: &MongoCollectionState,
         inputs: Entity<MongoQueryInputs>,
         colors: UiColors,
+        window: &mut Window,
         cx: &mut Context<NavicatMain>,
     ) -> Div {
         self.ensure_mongo_document_cache(tab_id, state);
@@ -140,12 +225,44 @@ impl NavicatMain {
             None => results,
         };
 
+        // 两层折叠都默认收起；用户没点过时，已生效的查询填过对应层的条件就默认展开，
+        // 免得条件生效了却藏在收起的面板里（低频参数展开时连同常用项一起展开）。
+        let options_expanded = self
+            .mongo_query_options_expanded
+            .get(&tab_id)
+            .copied()
+            .unwrap_or_else(|| mongo_has_any_options(&state.applied_query));
+        let advanced_expanded = self
+            .mongo_query_advanced_expanded
+            .get(&tab_id)
+            .copied()
+            .unwrap_or_else(|| mongo_query_has_advanced(&state.applied_query));
+        let builder_expanded = self
+            .mongo_query_builder_expanded
+            .get(&tab_id)
+            .copied()
+            .unwrap_or(false);
+        let builder = mongo_query_builder_view(&self.mongo_query_builders, tab_id);
+        let limit_ceiling = mongo_query_limit(self.controller.state().settings.page_size);
+
         div()
             .flex_1()
             .min_h(px(0.))
             .flex()
             .flex_col()
-            .child(mongo_query_panel(tab_id, inputs, colors, cx))
+            .child(mongo_query_panel(
+                tab_id,
+                state,
+                inputs,
+                options_expanded,
+                advanced_expanded,
+                builder_expanded,
+                builder,
+                limit_ceiling,
+                colors,
+                window,
+                cx,
+            ))
             .child(mongo_results_toolbar(tab_id, state, colors, cx))
             .child(body)
             .child(mongo_pager(tab_id, state, colors, cx))
@@ -160,13 +277,22 @@ impl NavicatMain {
         cx: &mut Context<NavicatMain>,
     ) -> Div {
         let running = matches!(state.aggregation, LoadState::Loading);
-        let textarea = inputs.read(cx).aggregation.clone();
+        let pipeline = inputs.read(cx).aggregation.clone();
+        // 管道是多行结构（每个 stage 一行），这里用代码编辑器并保留软换行：
+        // stage 模板补进来就是多行，硬撑着不换行会横向滚走。
         let editor = div()
             .h(px(150.))
             .border_b_1()
             .border_color(colors.border)
             .p_2()
-            .child(Textarea::new(&textarea).h(px(138.)).bordered(false));
+            .child(
+                Editor::new(&pipeline)
+                    .appearance(false)
+                    .bordered(false)
+                    .h(px(138.))
+                    .text_size(px(12.))
+                    .font_family(crate::PLATFORM_MONOSPACE_FONT),
+            );
         let bar = div()
             .h(px(MONGO_QUERY_ROW_HEIGHT))
             .px_2()
@@ -231,41 +357,7 @@ impl NavicatMain {
 }
 
 /// 命名空间条：`库 / 集合`，视图额外标注只读。
-fn mongo_namespace_strip(state: &MongoCollectionState, colors: UiColors) -> Div {
-    div()
-        .h(px(30.))
-        .px_3()
-        .flex()
-        .items_center()
-        .gap_2()
-        .border_b_1()
-        .border_color(colors.border)
-        .bg(colors.panel_alt)
-        .text_size(px(12.))
-        .text_color(colors.muted)
-        .child(app_icon(AppIcon::Database, 13., colors.muted))
-        .child(SharedString::from(
-            state.object.database.clone().unwrap_or_default(),
-        ))
-        .child(SharedString::new_static("/"))
-        .child(
-            div()
-                .text_color(colors.text)
-                .child(SharedString::from(state.object.name.clone())),
-        )
-        .when(state.read_only, |this| {
-            this.child(
-                div()
-                    .px_1p5()
-                    .rounded(colors.radius)
-                    .border_1()
-                    .border_color(colors.border)
-                    .text_color(colors.warning)
-                    .child(tr("app.mongo.read_only")),
-            )
-        })
-}
-
+/// 「库/集合」已在标签页标题里，页内不再重复一行命名空间条；只读标记移到本行右侧。
 fn mongo_section_bar(
     tab_id: TabId,
     state: &MongoCollectionState,
@@ -301,10 +393,24 @@ fn mongo_section_bar(
         .px_2()
         .flex()
         .items_center()
+        .gap_2()
         .border_b_1()
         .border_color(colors.border)
         .child(tab_bar)
         .child(div().flex_1())
+        // 只读标记原来在命名空间条上；该条已移除，这里保留同样的可辨识提示。
+        .when(state.read_only, |this| {
+            this.child(
+                div()
+                    .px_1p5()
+                    .rounded(colors.radius)
+                    .border_1()
+                    .border_color(colors.border)
+                    .text_size(px(11.))
+                    .text_color(colors.warning)
+                    .child(tr("app.mongo.read_only")),
+            )
+        })
         .when_some(mongo_index_count(state), |this, count| {
             this.child(
                 div()
@@ -322,101 +428,836 @@ fn mongo_index_count(state: &MongoCollectionState) -> Option<usize> {
     }
 }
 
-/// 查询面板：Filter 一行，Project / Sort / Limit 第二行（与原型一致，常显不折叠）。
+/// 查询面板：一张卡片，四段。
+///
+/// 1. 首行 `[Filter | 重置 | 查询 | 更多选项]`：唯一常驻的一行，结果区不被长期挤占。
+/// 2. 「条件构建」：展开后是字段/运算符/值的条件行，改动直接写回 Filter JSON。
+/// 3. 「更多选项」：一行 `[条件构建 | 投影 | 排序 | 返回条数 | 高级查询]`，全部挤在一行。
+/// 4. 「高级查询」：展开后才是 `[排序规则 | 起始位置 | 索引提示 | 执行上限]`，虚线分隔。
+///
+/// 条件构建与更多选项是两个独立入口，展开态各记各的：构建器不是第三个筛选项，
+/// 它是 Filter 的另一种输入法，收起时不该被算进「还有几个条件在生效」。
+///
+/// 格子用框内铭牌，不用「标签在上、输入在下」：标签行每个格子白吃一条 ~19px 的
+/// 横向带，四格叠起来就把结果区挤走了。铭牌右侧顺带放边界或单位（`1–500`、`ms`），
+/// 输入框附近不再有任何其他说明文字。
+///
+/// 只读视图（`read_only`）不展示写入相关的东西，这里不受影响——查询本身是只读的。
+// 渲染函数的参数就是这一屏需要的状态，包成 struct 只是把参数表挪个位置。
+#[allow(clippy::too_many_arguments)]
 fn mongo_query_panel(
     tab_id: TabId,
+    state: &MongoCollectionState,
     inputs: Entity<MongoQueryInputs>,
+    expanded: bool,
+    advanced_expanded: bool,
+    builder_expanded: bool,
+    builder: MongoQueryBuilderView,
+    limit_ceiling: u64,
     colors: UiColors,
+    window: &Window,
     cx: &mut Context<NavicatMain>,
 ) -> Div {
-    let inputs = inputs.read(cx);
+    // 输入框是独立实体：父视图不会因为输入而重绘，所以这里不按「是否改过」禁用 Reset，
+    // 否则禁用态会停在上一帧，用户改完条件仍点不动。
+    let (filter, projection, sort, collation, hint, skip, limit, max_time_ms) = {
+        let inputs = inputs.read(cx);
+        (
+            inputs.filter.clone(),
+            inputs.projection.clone(),
+            inputs.sort.clone(),
+            inputs.collation.clone(),
+            inputs.hint.clone(),
+            inputs.skip.clone(),
+            inputs.limit.clone(),
+            inputs.max_time_ms.clone(),
+        )
+    };
+    let tone = mongo_query_tone(colors);
+    // Filter 随内容增行：高度按编辑框里的换行数算，超过 4 行就固定、由编辑器滚动。
+    let filter_height = mongo_query_filter_height(&filter.read(cx).value());
+
+    // 两层各自收起时都看不见自己的格子，角标是「条件还在生效」的唯一提示：
+    // 首层收起 → 汇总两层个数；首层展开而第二层收起 → 只标第二层。
+    let (common_count, advanced_count) = mongo_query_option_counts(&state.applied_query);
+    // 字段候选来自补全用的字段目录（抽样采集）；目录为空时字段格退化成纯输入。
+    let field_paths: Vec<SharedString> = state
+        .field_catalog
+        .fields
+        .iter()
+        .map(|field| SharedString::from(field.path.clone()))
+        .collect();
+
     div()
-        .px_2()
-        .py_1p5()
-        .border_b_1()
-        .border_color(colors.border)
+        .px_3()
+        .py_2()
         .flex()
         .flex_col()
-        .gap_1()
         .child(
+            // 卡片只有一层描边 + 一层极淡投影：查询区与结果区之间不再叠分隔线。
             div()
+                .rounded(px(11.))
+                .border_1()
+                .border_color(colors.border)
+                .bg(colors.panel_bg)
+                .overflow_hidden()
+                .shadow(vec![box_shadow(
+                    px(0.),
+                    px(3.),
+                    px(12.),
+                    px(0.),
+                    hsla(0., 0., 0., if colors.is_dark { 0.28 } else { 0.03 }),
+                )])
                 .flex()
-                .items_center()
-                .gap_2()
-                .child(mongo_query_input(
-                    tr("app.mongo.query.filter"),
-                    &inputs.filter,
-                    true,
-                    colors,
-                ))
-                .child(backup_text_button(
-                    tr("app.mongo.query.find"),
-                    colors,
-                    cx.listener(move |this, _, _, cx| {
-                        this.run_mongo_query(tab_id, cx);
-                        cx.stop_propagation();
-                    }),
-                ))
-                .child(backup_text_button(
-                    tr("app.mongo.query.reset"),
-                    colors,
-                    cx.listener(move |this, _, window, cx| {
-                        this.reset_mongo_query(tab_id, window, cx);
-                        cx.stop_propagation();
-                    }),
-                )),
-        )
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .gap_2()
-                .child(mongo_query_input(
-                    tr("app.mongo.query.projection"),
-                    &inputs.projection,
-                    true,
-                    colors,
-                ))
-                .child(mongo_query_input(
-                    tr("app.mongo.query.sort"),
-                    &inputs.sort,
-                    true,
-                    colors,
-                ))
+                .flex_col()
                 .child(
                     div()
+                        .px_2()
+                        .py(px(6.))
                         .flex()
                         .items_center()
-                        .gap_1p5()
+                        .gap(px(MONGO_QUERY_GAP))
+                        // Filter 是主入口：占满剩余宽度，操作按钮固定在右侧（与 Compass 一致）。
                         .child(
                             div()
-                                .text_size(px(12.))
-                                .text_color(colors.muted)
-                                .child(tr("app.mongo.query.limit")),
+                                .flex_1()
+                                .min_w(px(0.))
+                                .debug_selector(|| "mongo-query-filter".to_string())
+                                .child(mongo_query_input(
+                                    &filter,
+                                    filter_height,
+                                    tone,
+                                    colors,
+                                    window,
+                                    cx,
+                                )),
                         )
-                        .child(div().w(px(80.)).child(Input::new(&inputs.limit).small())),
+                        // 顺序对齐交互稿：重置（图标）| 查询（主色）| 更多选项。
+                        .child(mongo_query_reset_button(tab_id, state.loading, colors, cx))
+                        .child(mongo_query_find_button(tab_id, state.loading, cx))
+                        // 收起时两层条件都看不见：角标给两层的和，用户才知道还有东西在生效。
+                        .child(mongo_query_options_button(
+                            tab_id,
+                            expanded,
+                            common_count + advanced_count,
+                            tone,
+                            colors,
+                            cx,
+                        )),
+                )
+                // 条件构建紧跟在 Filter 下面：它改的就是上面那一份 JSON，中间不隔别的段。
+                // 入口在「更多选项」网格里，网格收起时构建器一并收起（状态也在那里同步清掉）。
+                .when(expanded && builder_expanded, |this| {
+                    this.child(mongo_query_builder_section(
+                        tab_id,
+                        &builder,
+                        &field_paths,
+                        colors,
+                        tone,
+                        window,
+                        cx,
+                    ))
+                })
+                // 常用项一层：条件构建、投影/排序/返回条数、高级查询入口全部挤在一行，
+                // 高级查询展开后另起一行（交互稿 `grid-column: 1 / -1`）。
+                //
+                // 标签塞进框内左侧（与 Filter 的 `Filter` 铭牌同一套写法）：标签独占一行时
+                // 每个格子白吃掉一条 ~19px 的名称行，展开后整块逼近结果区的高度。
+                .when(expanded, |this| {
+                    this.child(
+                        div()
+                            .debug_selector(|| "mongo-query-options-grid".to_string())
+                            .px(px(12.))
+                            .py(px(7.))
+                            .border_t_1()
+                            .border_color(colors.border_soft)
+                            .bg(tone.mint)
+                            .flex()
+                            .flex_col()
+                            .gap(px(6.))
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(8.))
+                                    // 首列：条件构建入口。与「高级查询」同一档 ghost 文字按钮，
+                                    // 首行已经有实心「查询」，这里再放描边按钮会把权重拉平。
+                                    .child(div().flex_none().child(mongo_query_builder_toggle(
+                                        tab_id,
+                                        builder_expanded,
+                                        tone,
+                                        colors,
+                                        cx,
+                                    )))
+                                    .child(mongo_query_option_cell(
+                                        "projection",
+                                        None,
+                                        1.,
+                                        colors,
+                                        mongo_query_editor_box(
+                                            "projection",
+                                            &projection,
+                                            tr("app.mongo.query.projection"),
+                                            Some(tr("app.mongo.query.optional")),
+                                            tone,
+                                            colors,
+                                            window,
+                                            cx,
+                                        ),
+                                    ))
+                                    .child(mongo_query_option_cell(
+                                        "sort",
+                                        None,
+                                        1.,
+                                        colors,
+                                        mongo_query_editor_box(
+                                            "sort",
+                                            &sort,
+                                            tr("app.mongo.query.sort"),
+                                            Some(tr("app.mongo.query.optional")),
+                                            tone,
+                                            colors,
+                                            window,
+                                            cx,
+                                        ),
+                                    ))
+                                    .child(mongo_query_option_cell(
+                                        "limit",
+                                        Some(MONGO_QUERY_NUMBER_WIDTH),
+                                        0.,
+                                        colors,
+                                        mongo_query_number_box(
+                                            "limit",
+                                            &limit,
+                                            tr("app.mongo.query.result_limit"),
+                                            Some(mongo_query_limit_range(limit_ceiling)),
+                                            tone,
+                                            colors,
+                                            window,
+                                            cx,
+                                        ),
+                                    ))
+                                    // 「高级查询」挂在同一行末尾：单独占一行只为放一个
+                                    // 10px 的文字按钮，收起时白花一条 ~26px 的横向带。
+                                    .child(div().flex_none().child(
+                                        mongo_query_advanced_toggle(
+                                            tab_id,
+                                            advanced_expanded,
+                                            advanced_count,
+                                            tone,
+                                            colors,
+                                            cx,
+                                        ),
+                                    )),
+                            )
+                            .when(advanced_expanded, |this| {
+                                this.child(
+                                    div()
+                                        .debug_selector(|| "mongo-query-expert-grid".to_string())
+                                        .pt(px(6.))
+                                        .border_t_1()
+                                        .border_dashed()
+                                        .border_color(colors.border)
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(8.))
+                                        .child(mongo_query_option_cell(
+                                            "collation",
+                                            None,
+                                            1.5,
+                                            colors,
+                                            mongo_query_editor_box(
+                                                "collation",
+                                                &collation,
+                                                tr("app.mongo.query.collation"),
+                                                Some(tr("app.mongo.query.hint_collation")),
+                                                tone,
+                                                colors,
+                                                window,
+                                                cx,
+                                            ),
+                                        ))
+                                        .child(mongo_query_option_cell(
+                                            "skip",
+                                            Some(MONGO_QUERY_POSITION_WIDTH),
+                                            0.,
+                                            colors,
+                                            mongo_query_number_box(
+                                                "skip",
+                                                &skip,
+                                                tr("app.mongo.query.skip"),
+                                                Some(tr("app.mongo.query.hint_skip")),
+                                                tone,
+                                                colors,
+                                                window,
+                                                cx,
+                                            ),
+                                        ))
+                                        .child(mongo_query_option_cell(
+                                            "hint",
+                                            None,
+                                            1.5,
+                                            colors,
+                                            mongo_query_editor_box(
+                                                "hint",
+                                                &hint,
+                                                tr("app.mongo.query.hint"),
+                                                Some(tr("app.mongo.query.hint_index")),
+                                                tone,
+                                                colors,
+                                                window,
+                                                cx,
+                                            ),
+                                        ))
+                                        .child(mongo_query_option_cell(
+                                            "max_time_ms",
+                                            Some(MONGO_QUERY_MAX_TIME_WIDTH),
+                                            0.,
+                                            colors,
+                                            mongo_query_number_box(
+                                                "max_time_ms",
+                                                &max_time_ms,
+                                                tr("app.mongo.query.max_time"),
+                                                Some(tr("app.mongo.query.unit_ms")),
+                                                tone,
+                                                colors,
+                                                window,
+                                                cx,
+                                            ),
+                                        )),
+                                )
+                            }),
+                    )
+                }),
+        )
+}
+
+/// 查询面板的输入外框：圆角、自己画焦点态，高度由调用方给定。
+///
+/// Filter、附加条件格子与条件构建器共用这一层，描边与悬停规则只有一处来源。
+/// 常态填输入底色，实心框才读得成「可填写的格子」。
+///
+/// 高度不是同一个来路：Filter 与附加格子是被多行编辑器的内边距倒推出来的
+/// （[`MONGO_QUERY_FILTER_HEIGHT`] / [`MONGO_QUERY_CONTROL_HEIGHT`]），
+/// 条件构建器都是单行控件，直接取 [`MONGO_QUERY_BUILDER_CONTROL_HEIGHT`]。
+fn mongo_query_box_at(
+    height: f32,
+    focused: bool,
+    colors: UiColors,
+    control: impl IntoElement,
+) -> Div {
+    let hover_border = mongo_query_input_hover_border(colors);
+    div()
+        .h(px(height))
+        .w_full()
+        .rounded(colors.radius)
+        .border_1()
+        .border_color(if focused {
+            mongo_query_input_border(true, colors)
+        } else {
+            mongo_query_input_border(false, colors)
+        })
+        .bg(colors.input_bg)
+        .flex()
+        .items_center()
+        .overflow_hidden()
+        .hover(move |style| {
+            if focused {
+                style
+            } else {
+                style.border_color(hover_border)
+            }
+        })
+        // 内容直接挂在外框上，不再包一层 `flex_1`：那层包装会让铭牌与输入区
+        // 变成两个等分的兄弟，铭牌只要不是整格宽，输入区就被推到这一行的中间
+        // （Filter 的 `{}` 落在正中间就是这么来的）。
+        .child(control)
+}
+
+/// Filter 行：代码编辑器，带补全。
+///
+/// 用 `Editor` 而不是单行 `Input`：只有 `EditorState` 能挂补全 provider。
+/// 外观由外框接管（`appearance(false)` + `bordered(false)`），不折行——单个条件
+/// 通常一行写完，整条结构才看得全。
+fn mongo_query_input(
+    input: &Entity<EditorState>,
+    height: f32,
+    tone: MongoQueryTone,
+    colors: UiColors,
+    window: &Window,
+    cx: &App,
+) -> Div {
+    // 外层只管「在行里垂直居中」，调试选择器挂在**编辑器自己那块**尺寸上：
+    // 挂在外层的 h_full 包裹 div 上，量出来的永远是行高，与文字落点无关。
+    let selector = "mongo-query-editor:filter".to_string();
+    let focused = input.read(cx).focus_handle(cx).is_focused(window);
+    mongo_query_box_at(
+        height,
+        focused,
+        colors,
+        div()
+            .h_full()
+            .w(px(MONGO_QUERY_LABEL_WIDTH))
+            .flex_none()
+            .pl(px(11.))
+            .pr(px(11.))
+            .border_r_1()
+            .border_color(colors.border)
+            .bg(tone.mint)
+            .flex()
+            .items_center()
+            .text_size(px(10.))
+            .font_family(crate::PLATFORM_MONOSPACE_FONT)
+            .text_color(colors.muted)
+            .child(tr("app.mongo.query.filter")),
+    )
+    .child(
+        div()
+            .flex_1()
+            .min_w(px(0.))
+            .h_full()
+            .flex()
+            .items_center()
+            .child(mongo_query_editor_body(
+                input,
+                Some(selector),
+                12.,
+                Some(height - 2. * MONGO_QUERY_BOX_BORDER),
+            )),
+    )
+}
+
+/// 编辑器本体：顶边贴住内容区顶部，超出一行的高度由外层裁掉。
+///
+/// `selector` 只给布局测试用；附加条件里的编辑器不需要单独测量。
+/// `text_size` 由调用方给：Filter 是主入口用 12px，附加格子用 11px 压扁高度。
+/// `height` 只给会增高的 Filter：给了就把编辑器钉成这块高度，超出部分由编辑器
+/// 自己滚动（`Editor` 自带滚动条与滚轮处理），而不是被外层裁掉——裁掉的话光标
+/// 能跑到看不见的地方。附加格子与条件构建格仍是不定高、外层裁。
+fn mongo_query_editor_body(
+    input: &Entity<EditorState>,
+    selector: Option<String>,
+    text_size: f32,
+    height: Option<f32>,
+) -> Div {
+    // 编辑器**顶边贴在内容区顶部**，不做垂直居中。
+    //
+    // 编辑器盒子高度随内容行数变化（实测 `{}` 时就有两行、52px），所以
+    // 「把盒子居中」等于让首行的起点随行数上下漂：两行时字形中心比中线低
+    // 9px，行数一变又是另一个偏差。
+    //
+    // 顶对齐则与行数无关：首行字形中心 = 内容区顶 + 8px 内边距 + 行高/2。
+    // Filter 取 36px（1 + 8 + 18/2 = 18 = 36/2），附加格子取 32px（8 + 16.5/2 ≈ 16 = 32/2）；
+    // 更长的内容往下排、超出部分由 `overflow_hidden` 裁掉。
+    div()
+        .w_full()
+        .h_full()
+        .overflow_hidden()
+        .child(
+            div()
+                .w_full()
+                .when_some(selector, |this, selector| {
+                    this.debug_selector(move || selector.clone())
+                })
+                .child(
+                    Editor::new(input)
+                        .appearance(false)
+                        .bordered(false)
+                        .w_full()
+                        .text_size(px(text_size))
+                        // 查询语句是 JSON 片段，等宽才对得齐括号与缩进。
+                        .font_family(crate::PLATFORM_MONOSPACE_FONT)
+                        .when_some(height, |this, height| this.h(px(height))),
                 ),
         )
 }
 
-fn mongo_query_input(
+/// 附加条件里的编辑器格子（投影 / 排序 / 排序规则 / 索引提示）。
+///
+/// `field` 只用于测试选择器：格子外面还包着尺寸层（`mongo_query_option_cell`），
+/// 断言输入框本身没变形要单独量这一层。
+///
+/// 标签与 Filter 的铭牌同一套写法（框内左侧、右侧分隔线、mint 底），但更淡：
+/// 附加格子不是主入口，名称不该抢 Filter 的注意力。
+#[allow(clippy::too_many_arguments)]
+fn mongo_query_editor_box(
+    field: &'static str,
+    input: &Entity<EditorState>,
     label: SharedString,
+    hint: Option<SharedString>,
+    tone: MongoQueryTone,
+    colors: UiColors,
+    window: &Window,
+    cx: &App,
+) -> Div {
+    let focused = input.read(cx).focus_handle(cx).is_focused(window);
+    mongo_query_box_at(
+        MONGO_QUERY_CONTROL_HEIGHT,
+        focused,
+        colors,
+        mongo_query_cell_label(label, hint, tone, colors),
+    )
+    .child(
+        div()
+            .flex_1()
+            .min_w(px(0.))
+            .h_full()
+            .overflow_hidden()
+            .child(mongo_query_editor_body(input, None, 11., None)),
+    )
+    .debug_selector(move || format!("mongo-query-editor-box:{field}"))
+}
+
+/// 附加条件里的数字格子（条数 / 起始位置 / 执行上限）。
+///
+/// 保持 `InputState` 而不是换成编辑器：这几格只收数字，补全没有意义，
+/// 而 `InputState::validate` 能在按键阶段直接拒掉非法值。
+///
+/// `hint`（边界 `1–500`、单位 `ms`）走 hover 提示而不是铭牌：数字格本来就窄，
+/// 铭牌里再塞一段边界文字会把输入区挤到看不见。
+#[allow(clippy::too_many_arguments)]
+fn mongo_query_number_box(
+    field: &'static str,
     input: &Entity<InputState>,
-    flexible: bool,
+    label: SharedString,
+    hint: Option<SharedString>,
+    tone: MongoQueryTone,
+    colors: UiColors,
+    window: &Window,
+    cx: &App,
+) -> Stateful<Div> {
+    let focused = input.read(cx).focus_handle(cx).is_focused(window);
+    // 悬停提示要挂在有状态的元素上（`tooltip` 来自 `StatefulInteractiveElement`）。
+    let id = SharedString::from(format!("mongo-query-number:{field}"));
+    mongo_query_box_at(
+        MONGO_QUERY_CONTROL_HEIGHT,
+        focused,
+        colors,
+        mongo_query_cell_label(label, None, tone, colors),
+    )
+    .child(
+        // 单行 `Input` 在 `request_layout` 里自建 `Style`，只认「行高」，
+        // 外面给的 `h_full` 进不去。所以居中要在这一层做：否则 32px 的格子里
+        // 16px 高的输入段落贴顶，字形看起来比铭牌高出一截。
+        div()
+            .flex_1()
+            .min_w(px(0.))
+            .h_full()
+            .flex()
+            .items_center()
+            .child(
+                div()
+                    .debug_selector(move || format!("mongo-query-number-body:{field}"))
+                    .w_full()
+                    .child(
+                        Input::new(input)
+                            .small()
+                            .appearance(false)
+                            .focus_bordered(false)
+                            .w_full()
+                            .px_2()
+                            .text_size(px(11.))
+                            .font_family(crate::PLATFORM_MONOSPACE_FONT),
+                    ),
+            ),
+    )
+    .id(id)
+    .when_some(hint, |this, hint| {
+        this.tooltip(move |window, cx| Tooltip::new(hint.clone()).build(window, cx))
+    })
+}
+
+/// 附加格子的框内铭牌：名称在左，可选旁注（`可选`）在右，整块垫 mint 底并加一条右分隔线。
+///
+/// 用铭牌而不是框上方的标签行：标签行每个格子都白吃掉一条 ~19px 的横向带，
+/// 展开「更多选项」时四格叠起来就是一整段空白，正是结果区被挤走的来源。
+/// 数字格不传 `hint`——它们窄，边界与单位改走悬停提示。
+fn mongo_query_cell_label(
+    label: SharedString,
+    hint: Option<SharedString>,
+    tone: MongoQueryTone,
     colors: UiColors,
 ) -> Div {
     div()
+        .h_full()
+        .flex_none()
         .flex()
         .items_center()
-        .gap_1p5()
-        .when(flexible, |this| this.flex_1())
-        .child(
-            div()
-                .text_size(px(12.))
-                .text_color(colors.muted)
-                .child(label),
-        )
-        .child(div().flex_1().child(Input::new(input).small()))
+        .gap(px(5.))
+        .px(px(8.))
+        .border_r_1()
+        .border_color(colors.border)
+        .bg(tone.mint)
+        .text_size(px(10.))
+        .text_color(colors.muted)
+        .whitespace_nowrap()
+        .child(label)
+        .when_some(hint, |this, hint| {
+            this.child(
+                div()
+                    .text_size(px(9.))
+                    .text_color(colors.muted)
+                    .child(hint),
+            )
+        })
+}
+
+/// 附加条件格子的尺寸层：标签已经塞进框里，这里只剩宽度分配。
+///
+/// `width` 为空时格子吃掉整行剩余宽度；给定宽度用于数字格（固定窄框，不随窗口拉长）。
+/// `grow` 是交互稿里的列配比：投影/排序各 1 份，专家行里给对象格 1.5 份。
+fn mongo_query_option_cell(
+    field: &'static str,
+    width: Option<f32>,
+    grow: f32,
+    _colors: UiColors,
+    control: impl IntoElement,
+) -> Div {
+    let control = div().min_w(px(0.)).child(control);
+    let (control, cell) = match width {
+        // 定宽格子连外层一起钉住：数字格不该随窗口拉长，右侧留白会像漏掉的空列。
+        Some(width) => (
+            control.w(px(width)).flex_none(),
+            div().w(px(width)).flex_none(),
+        ),
+        // `flex_1` 先把基数钉成 0，再按 `grow` 分配：只写 `flex_grow` 时基数是内容宽度，
+        // 格子里的 `w_full` 会以整行为基准，把对象格压到比数字格还窄。
+        None => (
+            control.w_full(),
+            div().flex_1().flex_grow(grow).min_w(px(0.)),
+        ),
+    };
+    cell.flex()
+        .flex_col()
+        .min_w(px(0.))
+        .child(control)
+        .debug_selector(move || format!("mongo-query-field:{field}"))
+}
+
+/// 第二层折叠的入口：「高级查询」+ 箭头，展开时箭头朝上。
+///
+/// 用无框 `ghost` 按钮而不是描边控件：这已经是卡片里的第三层控件，再加一个带框按钮
+/// 会和首行的「更多选项」抢同一档视觉权重。复用 `Button` 而不是自绘 `div`，
+/// 悬停、焦点环与键盘触发才有统一来源。
+fn mongo_query_advanced_toggle(
+    tab_id: TabId,
+    expanded: bool,
+    advanced_count: usize,
+    tone: MongoQueryTone,
+    colors: UiColors,
+    cx: &mut Context<NavicatMain>,
+) -> Button {
+    Button::new(("mongo-query-advanced", tab_id.0))
+        .debug_selector(|| "mongo-query-advanced".to_string())
+        .small()
+        .h(px(20.))
+        .ghost()
+        .px(px(0.))
+        .text_size(px(10.))
+        .label(tr("app.mongo.query.advanced"))
+        // 首层开着、第二层收起时，低频条件同样不可见：这里也要给计数。
+        .when(advanced_count > 0 && !expanded, |this| {
+            this.child(mongo_query_count_badge(
+                "mongo-query-advanced-count",
+                advanced_count,
+                tone,
+                colors,
+            ))
+        })
+        .child(app_icon(
+            if expanded {
+                AppIcon::ChevronUp
+            } else {
+                AppIcon::ChevronDown
+            },
+            11.,
+            colors.muted,
+        ))
+        .on_click(cx.listener(move |this, _, _, cx| {
+            this.toggle_mongo_query_advanced(tab_id, cx);
+            cx.stop_propagation();
+        }))
+}
+
+/// 条数格的边界悬停提示：取当前生效上限，写成 `1–500`。
+fn mongo_query_limit_range(ceiling: u64) -> SharedString {
+    SharedString::from(format!("1–{ceiling}"))
+}
+
+/// 输入框外框描边：聚焦时用主题的强调线，其余用常规分隔线。
+fn mongo_query_input_border(focused: bool, colors: UiColors) -> gpui::Rgba {
+    if focused {
+        if colors.is_dark {
+            rgb(0x8ab4ff)
+        } else {
+            rgb(0x111111)
+        }
+    } else {
+        colors.border
+    }
+}
+
+/// 未聚焦时的悬停描边：比常规分隔线深一档，提示这一块可点可输入。
+fn mongo_query_input_hover_border(colors: UiColors) -> gpui::Rgba {
+    if colors.is_dark {
+        rgb(0x5b6675)
+    } else {
+        rgb(0xb8c0cc)
+    }
+}
+
+/// 查询：面板里唯一的实心按钮，也是主操作（交互稿 `.button.primary`）。
+fn mongo_query_find_button(tab_id: TabId, loading: bool, cx: &mut Context<NavicatMain>) -> Button {
+    Button::new(("mongo-query-find", tab_id.0))
+        .debug_selector(|| "mongo-query-find".to_string())
+        .small()
+        .h(px(MONGO_QUERY_ACTION_HEIGHT))
+        // 按钮不参与拉伸：Filter 是唯一该长的那一格，否则窗口一宽按钮就变成大色块。
+        .flex_none()
+        // 交互稿给主按钮 90px 下限：两个字加图标也不至于缩成小方块。
+        .min_w(px(90.))
+        .primary()
+        // 在途时按钮自带转圈并吞掉点击，避免连点重复发查询。
+        .when(loading, |this| this.loading(true))
+        .label(tr("app.mongo.query.find"))
+        .disabled(loading)
+        .on_click(cx.listener(move |this, _, _, cx| {
+            this.run_mongo_query(tab_id, cx);
+            cx.stop_propagation();
+        }))
+}
+
+/// 重置：只留图标（交互稿 `.reset-button span { display: none }`），
+/// 文案改挂 tooltip / 无障碍标签——首行已经有主按钮，第二个带字按钮会把它们拉成同等分量。
+fn mongo_query_reset_button(
+    tab_id: TabId,
+    loading: bool,
+    colors: UiColors,
+    cx: &mut Context<NavicatMain>,
+) -> Button {
+    let label = tr("app.mongo.query.reset");
+    Button::new(("mongo-query-reset", tab_id.0))
+        .debug_selector(|| "mongo-query-reset".to_string())
+        .small()
+        .h(px(MONGO_QUERY_ACTION_HEIGHT))
+        .px(px(9.))
+        .flex_none()
+        .outline()
+        .tooltip(label.clone())
+        .accessibility_label(label)
+        .child(app_icon(AppIcon::Refresh, 13., colors.muted))
+        .disabled(loading)
+        .on_click(cx.listener(move |this, _, window, cx| {
+            this.reset_mongo_query(tab_id, window, cx);
+            cx.stop_propagation();
+        }))
+}
+
+/// 折叠态计数角标（交互稿 `.option-count`）：绿色浅底 + 绿字。
+fn mongo_query_count_badge(
+    selector: &'static str,
+    count: usize,
+    tone: MongoQueryTone,
+    colors: UiColors,
+) -> Div {
+    div()
+        .debug_selector(move || selector.to_string())
+        .flex_none()
+        .h(px(15.))
+        .min_w(px(15.))
+        .px(px(3.))
+        .rounded(px(4.))
+        .bg(tone.green_soft)
+        .flex()
+        .items_center()
+        .justify_center()
+        .text_size(px(9.))
+        .font_family(crate::PLATFORM_MONOSPACE_FONT)
+        .text_color(colors.success)
+        .child(SharedString::from(count.to_string()))
+}
+
+/// 更多选项：文字 + 箭头，无描边无底色（与 Compass 的 `OptionsToggle` 一致）。
+///
+/// 这一行已有实心的查询和描边的重置，再加第三种带框控件会把三个按钮拉成
+/// 同等分量。展开时换成绿底绿字（交互稿 `[aria-expanded="true"]`）：
+/// 网点一展开，这条按钮与下方内容之间就需要一个「是我打开的」的回执。
+fn mongo_query_options_button(
+    tab_id: TabId,
+    expanded: bool,
+    option_count: usize,
+    tone: MongoQueryTone,
+    colors: UiColors,
+    cx: &mut Context<NavicatMain>,
+) -> Button {
+    Button::new(("mongo-query-options", tab_id.0))
+        .debug_selector(|| "mongo-query-options".to_string())
+        .small()
+        .h(px(MONGO_QUERY_ACTION_HEIGHT))
+        .flex_none()
+        .ghost()
+        .when(expanded, |this| {
+            this.bg(tone.green_soft)
+                .text_color(colors.success)
+                .border_1()
+                .border_color(tone.green_line)
+        })
+        .label(tr("app.mongo.query.options"))
+        // 角标只在收起且确有生效条件时出现：收起时格子不可见，这是「条件还在」的唯一提示。
+        .when(option_count > 0 && !expanded, |this| {
+            this.child(mongo_query_count_badge(
+                "mongo-query-option-count",
+                option_count,
+                tone,
+                colors,
+            ))
+        })
+        .child(app_icon(
+            if expanded {
+                AppIcon::ChevronUp
+            } else {
+                AppIcon::ChevronDown
+            },
+            11.,
+            if expanded { colors.success } else { colors.muted },
+        ))
+        .on_click(cx.listener(move |this, _, _, cx| {
+            this.toggle_mongo_query_options(tab_id, cx);
+            cx.stop_propagation();
+        }))
+}
+
+/// 条件构建入口：与投影/排序/返回条数同处一行。
+///
+/// 形态跟「高级查询」一致——ghost 文字按钮 + 图标，展开时绿字。这一行已经全是
+/// 输入框，再放一个描边大方块按钮会把整行的视觉重心拖到左边，也白占一格宽度。
+fn mongo_query_builder_toggle(
+    tab_id: TabId,
+    expanded: bool,
+    tone: MongoQueryTone,
+    colors: UiColors,
+    cx: &mut Context<NavicatMain>,
+) -> Button {
+    Button::new(("mongo-query-builder-toggle", tab_id.0))
+        .debug_selector(|| "mongo-query-builder-toggle".to_string())
+        .small()
+        .h(px(MONGO_QUERY_CONTROL_HEIGHT))
+        .ghost()
+        .px(px(8.))
+        .text_size(px(10.))
+        .when(expanded, |this| {
+            this.bg(tone.green_soft).text_color(colors.success)
+        })
+        .label(tr("app.mongo.query.builder"))
+        .child(app_icon(
+            AppIcon::Filter,
+            12.,
+            if expanded { colors.success } else { colors.muted },
+        ))
+        .on_click(cx.listener(move |this, _, window, cx| {
+            this.toggle_mongo_query_builder(tab_id, window, cx);
+            cx.stop_propagation();
+        }))
 }
 
 fn mongo_results_toolbar(
@@ -841,8 +1682,8 @@ fn mongo_pager(
             )
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(move |this, _, _, cx| {
-                    this.set_mongo_offset(tab_id, offset.saturating_sub(limit), cx);
+                cx.listener(move |this, _, window, cx| {
+                    this.set_mongo_offset(tab_id, offset.saturating_sub(limit), window, cx);
                     cx.stop_propagation();
                 }),
             ),
@@ -867,8 +1708,8 @@ fn mongo_pager(
             )
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(move |this, _, _, cx| {
-                    this.set_mongo_offset(tab_id, offset + limit, cx);
+                cx.listener(move |this, _, window, cx| {
+                    this.set_mongo_offset(tab_id, offset + limit, window, cx);
                     cx.stop_propagation();
                 }),
             ),

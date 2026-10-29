@@ -22,6 +22,7 @@ impl NavicatMain {
         if !has_page && !loading {
             self.run_mongo_query(tab_id, cx);
         }
+        self.load_mongo_field_sample(tab_id, cx);
         if section == MongoSection::Info && !has_info {
             self.load_mongo_collection_info(tab_id, cx);
         }
@@ -123,6 +124,33 @@ impl NavicatMain {
         self._mongo_aggregation_tasks.insert(tab_id.0, task);
     }
 
+    /// 抽样采集补全字段：每个标签页只跑一次，失败就保持空目录（补全仍给运算符与构造器）。
+    ///
+    /// 与集合页其他加载解耦：采样结果只影响补全候选，不进 `LoadState`，因此失败时
+    /// 集合页不会出现错误块。
+    fn load_mongo_field_sample(&mut self, tab_id: TabId, cx: &mut Context<Self>) {
+        if self._mongo_field_sample_tasks.contains_key(&tab_id.0) {
+            return;
+        }
+        let Some(object) = mongo_collection_state(self.controller.state(), tab_id)
+            .map(|state| state.object.clone())
+        else {
+            return;
+        };
+        let task = self.spawn_controller_command(
+            AppCommand::LoadMongoFieldSample { tab_id, object },
+            move |this, event, cx| {
+                this._mongo_field_sample_tasks.remove(&tab_id.0);
+                if let AppEvent::MongoFieldSampleLoaded(_, _) = event {
+                    // 目录已写进标签页状态；编辑器下次补全时自己取，这里只需重绘。
+                    cx.notify();
+                }
+            },
+            cx,
+        );
+        self._mongo_field_sample_tasks.insert(tab_id.0, task);
+    }
+
     fn load_mongo_collection_info(&mut self, tab_id: TabId, cx: &mut Context<Self>) {
         if self._mongo_info_tasks.contains_key(&tab_id.0) {
             return;
@@ -184,14 +212,24 @@ impl NavicatMain {
             return Some(saved);
         };
         let inputs = inputs.read(cx);
+        let number = |input: &Entity<InputState>, fallback: &str| match input
+            .read(cx)
+            .value()
+            .trim()
+        {
+            "" => fallback.to_string(),
+            value => value.to_string(),
+        };
         Some(MongoQueryDraft {
             filter: inputs.filter.read(cx).value().to_string(),
             projection: inputs.projection.read(cx).value().to_string(),
             sort: inputs.sort.read(cx).value().to_string(),
-            limit: match inputs.limit.read(cx).value().trim() {
-                "" => saved.limit,
-                limit => limit.to_string(),
-            },
+            collation: inputs.collation.read(cx).value().to_string(),
+            hint: inputs.hint.read(cx).value().to_string(),
+            // 起点清空即「从头开始」，不回落到上一页的偏移——否则用户清空后仍停在原页。
+            skip: number(&inputs.skip, "0"),
+            limit: number(&inputs.limit, &saved.limit),
+            max_time_ms: number(&inputs.max_time_ms, ""),
         })
     }
 }

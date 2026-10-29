@@ -1551,6 +1551,11 @@ pub enum AppCommand {
         tab_id: TabId,
         result: std::result::Result<MongoCollectionInfo, UserFacingError>,
     },
+    /// 抽样文档以采集补全字段（后台，失败静默降级）。
+    LoadMongoFieldSample {
+        tab_id: TabId,
+        object: ObjectPath,
+    },
     /// 读取集合索引（后台）。
     LoadMongoIndexes(TabId),
     FinishMongoIndexes {

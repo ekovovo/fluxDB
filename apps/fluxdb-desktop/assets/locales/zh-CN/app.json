@@ -5520,14 +5520,49 @@
       "filter": "过滤",
       "projection": "投影",
       "sort": "排序",
-      "limit": "条数",
       "find": "查询",
       "reset": "重置",
+      "options": "更多选项",
       "filter_placeholder": "{}",
       "projection_placeholder": "可选，如 { \"name\": 1 }",
       "sort_placeholder": "可选，如 { \"createdAt\": -1 }",
+      "collation": "排序规则",
+      "hint": "索引提示",
+      "skip": "起始位置",
+      "max_time": "执行上限",
+      "collation_placeholder": "可选，如 { \"locale\": \"zh\" }",
+      "hint_placeholder": "可选，索引名或 { \"age\": 1 }",
+      "skip_placeholder": "0",
+      "max_time_placeholder": "不限",
+      "advanced": "高级查询",
+      "optional": "可选",
+      "result_limit": "返回条数",
+      "hint_collation": "Collation",
+      "hint_skip": "Skip",
+      "hint_index": "Index Hint",
+      "builder": "条件构建",
+      "builder_field_placeholder": "字段路径，如 customer.tier",
+      "builder_value_placeholder": "值，如 \"paid\" 或 500",
+      "builder_field_menu": "从已知字段中选择",
+      "builder_remove": "移除条件",
+      "builder_add": "添加条件",
+      "builder_run_hint": "执行查询",
+      "builder_empty": "还没有条件：点「添加条件」，或直接在 Filter 里写 JSON",
+      "builder_json_error": "Filter 不是合法 JSON，请修正后再使用条件构建",
+      "builder_complex_error": "Filter 含复杂表达式（如 $or、$regex、嵌套对象），请继续编辑 JSON，避免改写查询语义",
+      "unit_ms": "ms",
       "limit_placeholder": "每页条数",
-      "aggregation_placeholder": "[ { \"$match\": {} } ]"
+      "aggregation_placeholder": "[ { \"$match\": {} } ]",
+      "op": {
+        "eq": "等于",
+        "ne": "不等于",
+        "gt": "大于",
+        "gte": "大于等于",
+        "lt": "小于",
+        "lte": "小于等于",
+        "in": "包含任一",
+        "exists": "字段存在"
+      }
     },
     "aggregation": {
       "hint": "聚合管道（Extended JSON 数组）",
@@ -5762,6 +5797,14 @@
         "page": "分页",
         "done": "完成"
       }
+    },
+    "completion": {
+      "field": "字段",
+      "operator": "查询运算符",
+      "stage": "聚合阶段",
+      "value": "BSON 构造器",
+      "word": "字段取值",
+      "reference": "字段引用"
     }
   }
 }

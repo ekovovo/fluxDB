@@ -1,6 +1,6 @@
 // MongoDB 集合工作台的文档展示区：可折叠文档卡片、类型化字段列表、表格视图与整页 JSON。
 //
-// 字段列表对齐 docs/prototype/mongodb-ui.html 的 `.field-list`（Compass 同款）：
+// 字段列表对齐 Compass 的 `.field-list` 写法：
 // 每行 `key: value` 带 BSON 类型徽标，对象/数组默认收起为 `{ N fields }` / `[ N items ]`。
 // 卡片与嵌套字段的展开态都是本页交互状态，按标签页记忆，不写回标签页数据。
 

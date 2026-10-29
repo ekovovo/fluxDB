@@ -658,6 +658,12 @@ impl NavicatMain {
                     self.dispatch(command, cx);
                 }
             }
+            // 集合工作台的文档查询：快捷键与面板里的「查询」按钮走同一条命令，
+            // 条件构建器下的提示（⌘↵ 执行查询）才不是空话。
+            // 只在文档分节执行：聚合分节有它自己的管道和运行按钮。
+            TabKind::MongoCollection(collection) if collection.section == MongoSection::Documents => {
+                self.run_mongo_query(tab.id, cx);
+            }
             _ => {}
         }
     }

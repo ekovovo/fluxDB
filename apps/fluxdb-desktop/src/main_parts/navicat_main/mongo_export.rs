@@ -39,7 +39,7 @@ impl NavicatMain {
         match tab.map(|tab| &tab.kind) {
             Some(TabKind::MongoCollection(state)) => (state.applied_query.clone(), state.object.clone()),
             _ => (
-                MongoQueryDraft::new(self.controller.state().settings.data_table_page_size),
+                MongoQueryDraft::new(self.controller.state().settings.page_size),
                 object_path.clone(),
             ),
         }
@@ -340,6 +340,7 @@ fn mongo_export_fetch_page(
         sort: query.sort.clone(),
         skip,
         limit: MONGO_EXPORT_PAGE_SIZE,
+        ..Default::default()
     };
     Ok(controller.mongo_find_page(&form.object, &request, &|| cancel.load(Ordering::Relaxed))?)
 }

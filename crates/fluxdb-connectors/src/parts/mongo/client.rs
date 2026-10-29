@@ -213,14 +213,56 @@ fn redact_mongo_uri_password(text: &str) -> String {
     out
 }
 
+/// 解析查询文本为 JSON 值。
+///
+/// `relaxed` 为真时先按严格 JSON 解析，失败再按 JSON5 解析（无引号键、单引号、注释、
+/// 尾逗号都收），与 Compass 查询栏一致；为假时只认严格 JSON，写文档走这条路——
+/// JSON5 会把 `NaN` / `Infinity` 静默读成 `null`，写入时那就是**静默改数据**。
+///
+/// 严格 JSON 先试一遍是必要的，不只是省事：JSON5 把所有数字读成 f64，
+/// `{"age": 41}` 会落成 BSON Double 而匹配不到存成 Int32 的字段。
+fn mongo_parse_json(label: &str, text: &str, relaxed: bool) -> fluxdb_core::Result<serde_json::Value> {
+    let strict_error = match serde_json::from_str::<serde_json::Value>(text) {
+        Ok(value) => return Ok(value),
+        Err(error) => error,
+    };
+    if !relaxed {
+        return Err(Error::new(
+            ErrorKind::Query,
+            format!("{label} 不是合法 JSON：{strict_error}"),
+        ));
+    }
+    // JSON5 独有的非有限数字会被 serde_json 读成 null，等于把查询条件悄悄换掉。
+    // 这里用朴素子串判断：能走到这一步的文本已经被严格 JSON 拒过，误判只会多报一次错，
+    // 不会改坏语义（字符串里含 `NaN` 的宽松写法确实会被误拒，代价可以接受）。
+    if text.contains("NaN") || text.contains("Infinity") {
+        return Err(Error::new(
+            ErrorKind::Query,
+            format!("{label} 不支持 NaN / Infinity"),
+        ));
+    }
+    // 失败时报严格 JSON 的错：JSON5 的错误位置对用户更难对上号，
+    // 而触发退化的写法本身通常就落在严格 JSON 报的那个位置上。
+    json5::from_str::<serde_json::Value>(text)
+        .map_err(|_| Error::new(ErrorKind::Query, format!("{label} 不是合法 JSON：{strict_error}")))
+}
+
 /// 解析 Extended JSON 对象；非对象输入直接报错（`find` 的 filter/projection/sort 都是对象）。
 fn mongo_parse_object(label: &str, text: &str) -> fluxdb_core::Result<Document> {
+    mongo_parse_object_inner(label, text, false)
+}
+
+/// 同 [`mongo_parse_object`]，但接受 Compass 查询栏的宽松写法；只用于查询条件，不用于写文档。
+fn mongo_parse_query_object(label: &str, text: &str) -> fluxdb_core::Result<Document> {
+    mongo_parse_object_inner(label, text, true)
+}
+
+fn mongo_parse_object_inner(label: &str, text: &str, relaxed: bool) -> fluxdb_core::Result<Document> {
     let trimmed = text.trim();
     if trimmed.is_empty() {
         return Ok(Document::new());
     }
-    let value: serde_json::Value = serde_json::from_str(trimmed)
-        .map_err(|error| Error::new(ErrorKind::Query, format!("{label} 不是合法 JSON：{error}")))?;
+    let value = mongo_parse_json(label, trimmed, relaxed)?;
     if !value.is_object() {
         return Err(Error::new(
             ErrorKind::Query,
@@ -287,6 +329,39 @@ mod mongo_wire_tests {
     }
 
     #[test]
+    fn accepts_compass_style_relaxed_json() {
+        // Compass 查询栏接受的无引号键 / 单引号 / 尾逗号，查询条件都要能跑。
+        let document = mongo_parse_query_object("Filter", "{ age: 41 }").expect("无引号键");
+        assert_eq!(document.get("age"), Some(&Bson::Int32(41)));
+
+        let document =
+            mongo_parse_query_object("Filter", "{'status': 'active',}").expect("单引号 + 尾逗号");
+        assert_eq!(document.get("status").and_then(Bson::as_str), Some("active"));
+
+        // 运算符键同样不带引号，这是查询栏里最常见的写法。
+        let document = mongo_parse_query_object("Filter", "{age: {$gt: 40}}").expect("无引号运算符");
+        assert!(matches!(document.get("age"), Some(Bson::Document(_))));
+
+        // 非有限数字会被 JSON5 静默读成 null，宁可报错也不能改成「等于 null」。
+        assert!(mongo_parse_query_object("Filter", "{age: NaN}").is_err());
+    }
+
+    #[test]
+    fn write_paths_still_require_strict_json() {
+        // 写文档走严格解析：宽松解析只是为了查询输入，不能顺带放宽写入。
+        assert!(mongo_parse_object("文档", "{ age: 41 }").is_err());
+        assert!(mongo_parse_object("文档", r#"{"age": 41}"#).is_ok());
+    }
+
+    #[test]
+    fn strict_json_numbers_keep_integer_type() {
+        // 严格 JSON 优先：否则 `41` 会被 JSON5 读成 f64 再落成 Double，
+        // 查不到存成 Int32 的同名字段。
+        let document = mongo_parse_object("filter", r#"{"age": 41}"#).unwrap();
+        assert_eq!(document.get("age"), Some(&Bson::Int32(41)));
+    }
+
+    #[test]
     fn document_id_prefers_readable_forms() {
         let oid = mongodb::bson::oid::ObjectId::parse_str("671700000000000000000001").unwrap();
         assert_eq!(
@@ -298,6 +373,42 @@ mod mongo_wire_tests {
     }
 
     #[test]
+    fn collation_requires_locale_and_accepts_compass_syntax() {
+        // 空 = 不设置：面板留空不能变成「非法 collation」把查询拦下。
+        assert!(mongo_parse_collation("").unwrap().is_none());
+        assert!(mongo_parse_collation("  ").unwrap().is_none());
+
+        let collation = mongo_parse_collation("{ locale: 'en', strength: 2 }")
+            .expect("宽松写法应该能解析")
+            .expect("非空 collation");
+        assert_eq!(collation.locale, "en");
+
+        // locale 是 Collation 的必填字段：缺了要明确报错，不能静默当成默认规则。
+        let error = mongo_parse_collation("{ strength: 2 }").unwrap_err();
+        assert!(error.to_string().contains("Collation"), "{error}");
+    }
+
+    #[test]
+    fn hint_accepts_index_name_or_key_document() {
+        assert!(mongo_parse_hint("").unwrap().is_none());
+        assert!(mongo_parse_hint("   ").unwrap().is_none());
+
+        // 索引名（Compass 里写成字符串）与键定义两种形态都要认。
+        assert!(matches!(
+            mongo_parse_hint("\"_id_\"").unwrap(),
+            Some(Hint::Name(name)) if name == "_id_"
+        ));
+        assert!(matches!(
+            mongo_parse_hint("{ age: 1 }").unwrap(),
+            Some(Hint::Keys(keys)) if keys.get("age").is_some()
+        ));
+
+        // 空对象当成「没填」会把用户的明确输入吞掉，直接报错更清楚。
+        assert!(mongo_parse_hint("{}").is_err());
+        assert!(mongo_parse_hint("42").is_err());
+    }
+
+    #[test]
     fn json_text_keeps_bson_types() {
         let oid = mongodb::bson::oid::ObjectId::parse_str("671700000000000000000001").unwrap();
         let text = mongo_json_text(Bson::Document(doc! {"_id": oid, "n": 1i32}));
@@ -305,3 +416,4 @@ mod mongo_wire_tests {
         assert!(text.contains("671700000000000000000001"), "{text}");
     }
 }
+

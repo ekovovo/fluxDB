@@ -5,7 +5,10 @@
 const MONGO_SIDEBAR_DATABASE_LIMIT: usize = 200;
 
 /// 单次 `find` 的文档上限：防止一次拉取把内存打爆（UI 分页远小于此值）。
-const MONGO_MAX_DOCUMENTS_PER_QUERY: u64 = 500;
+///
+/// 真值在 core（`MONGO_MAX_DOCUMENTS_PER_QUERY`）：输入框校验要用同一个上限，
+/// 这里只做别名，避免两处各写一个数后出现「填得进去、执行时被改小」。
+const MONGO_MAX_DOCUMENTS_PER_QUERY: u64 = fluxdb_core::MONGO_MAX_DOCUMENTS_PER_QUERY;
 
 /// 系统库：可以连接但不在对象树里展示（与 Compass 一致）。
 const MONGO_SYSTEM_DATABASES: [&str; 3] = ["admin", "local", "config"];
@@ -102,11 +105,10 @@ impl Connector for MongoConnector {
         let sort_json = mongo_sort_to_extjson(sort);
         let request = MongoFindRequest {
             collection: path.name.clone(),
-            filter: String::new(),
-            projection: String::new(),
             sort: sort_json,
             skip: offset,
             limit,
+            ..MongoFindRequest::default()
         };
         let database = path
             .database
@@ -136,6 +138,14 @@ impl Connector for MongoConnector {
         pipeline: &str,
     ) -> fluxdb_core::Result<MongoDocumentsPage> {
         mongo_aggregate(self.config()?, path, pipeline)
+    }
+
+    fn mongo_sample_documents(
+        &self,
+        path: &ObjectPath,
+        size: u32,
+    ) -> fluxdb_core::Result<Vec<String>> {
+        mongo_sample_documents(self.config()?, path, size)
     }
 
     fn mongo_collection_info(&self, path: &ObjectPath) -> fluxdb_core::Result<MongoCollectionInfo> {

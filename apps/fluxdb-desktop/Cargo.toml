@@ -38,6 +38,9 @@ gpui-platform = { package = "gpui-pre-platform", version = "=0.3.8", features = 
 ] }
 gpui-component = { version = "=0.7.1", features = ["tree-sitter"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
+# 条件构建反向解析要接受 Compass 查询栏那种宽松写法（无引号键、单引号、注释、
+# 尾逗号）。版本与连接器的 `mongo_parse_json` 一致，规则也在那里对齐。
+json5 = "1"
 lsp-types = "0.97"
 portable-pty = "0.9"
 regex = "1.13"

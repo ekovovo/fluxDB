@@ -651,6 +651,16 @@ fn push_table_visible_row(
     });
 }
 
+/// 侧边栏「当前选中对象」：数据编辑器与集合工作台标签都映射到各自的对象路径。
+/// 两者都不映射时（设置页、CLI、AI 聊天等）侧边栏不高亮任何对象。
+fn active_sidebar_object_path(state: &AppState) -> Option<&ObjectPath> {
+    state.active_tab().and_then(|tab| match &tab.kind {
+        TabKind::DataEditor(editor) => Some(&editor.object),
+        TabKind::MongoCollection(collection) => Some(&collection.object),
+        _ => None,
+    })
+}
+
 /// 把拉平后的一行还原为对应 `*_tree` 构建函数的渲染结果（`AnyElement`）。
 ///
 /// 行数据结构（`SidebarVisibleRow`）只存「结构标识」；expanded/pinned/selected/loading/
@@ -672,10 +682,8 @@ fn build_sidebar_row(
 ) -> AnyElement {
     let search_active = !search_query.is_empty();
     let search_opt = search_active.then_some(search_query);
-    let active_object_path = state.active_tab().and_then(|tab| match &tab.kind {
-        TabKind::DataEditor(editor) => Some(&editor.object),
-        _ => None,
-    });
+    // 集合工作台标签同样要联动侧边栏：否则 Mongo 集合行不显示选中态，库/分组也不高亮。
+    let active_object_path = active_sidebar_object_path(state);
     // 目标连接：几乎所有行都需要其 `ConnectionState`（自身 / 派生 / 颜色）。
     let connection = state
         .connections

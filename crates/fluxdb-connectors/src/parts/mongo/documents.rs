@@ -87,10 +87,14 @@ fn mongo_find(
     if request.collection.trim().is_empty() {
         return Err(Error::new(ErrorKind::Query, "请指定集合名"));
     }
-    let filter = mongo_parse_object("Filter", &request.filter)?;
-    let projection = mongo_parse_object("Projection", &request.projection)?;
-    let sort = mongo_parse_object("Sort", &request.sort)?;
+    // 查询条件接受 Compass 的宽松写法（`{ age: 41 }`），这是一次只读请求；
+    // 写文档的入口仍只认严格 JSON（见 `mongo_parse_object_inner` 的说明）。
+    let filter = mongo_parse_query_object("Filter", &request.filter)?;
+    let projection = mongo_parse_query_object("Projection", &request.projection)?;
+    let sort = mongo_parse_query_object("Sort", &request.sort)?;
     mongo_validate_sort(&sort)?;
+    let collation = mongo_parse_collation(&request.collation)?;
+    let hint = mongo_parse_hint(&request.hint)?;
 
     // `limit = 0` 表示调用方未填页大小，按默认页处理；直接夹到 1 会让人误判集合只有
     // 一条数据（真实Atlas用例即如此），因此这里显式给默认值而不是静默取 1。
@@ -110,6 +114,15 @@ fn mongo_find(
     }
     if !sort.is_empty() {
         find = find.sort(sort);
+    }
+    if let Some(collation) = collation {
+        find = find.collation(collation);
+    }
+    if let Some(hint) = hint {
+        find = find.hint(hint);
+    }
+    if let Some(max_time_ms) = request.max_time_ms.filter(|value| *value > 0) {
+        find = find.max_time(Duration::from_millis(max_time_ms));
     }
     let find = find
         .skip(request.skip)
@@ -177,12 +190,7 @@ fn mongo_aggregate(
     let stages: Vec<Document> = if text.is_empty() {
         Vec::new()
     } else {
-        let value: serde_json::Value = serde_json::from_str(text).map_err(|error| {
-            Error::new(
-                ErrorKind::Query,
-                format!("聚合管道不是合法的 JSON：{error}"),
-            )
-        })?;
+        let value = mongo_parse_json("聚合管道", text, true)?;
         let value = Bson::try_from(value).map_err(|error| {
             Error::new(
                 ErrorKind::Query,
@@ -235,6 +243,50 @@ fn mongo_aggregate(
     })
 }
 
+/// 抽样文档给补全采集字段：`$sample` 走服务端随机抽样，比 `find` 前 N 条更能覆盖字段。
+///
+/// 对齐 Compass 的 schema 采样：`promoteValues: false` 保留 BSON 类型，`secondaryPreferred`
+/// 优先打从节点，不挤占主库。抽样条数由调用方给（补全只需几百条足够）。
+fn mongo_sample_documents(
+    config: &ConnectionConfig,
+    path: &ObjectPath,
+    size: u32,
+) -> fluxdb_core::Result<Vec<String>> {
+    let database = path
+        .database
+        .as_deref()
+        .filter(|database| !database.trim().is_empty())
+        .ok_or_else(|| Error::new(ErrorKind::Query, "请指定数据库"))?;
+    let collection = path.name.trim();
+    if collection.is_empty() {
+        return Err(Error::new(ErrorKind::Query, "请指定集合名"));
+    }
+    let size = size.clamp(1, fluxdb_core::MONGO_MAX_DOCUMENTS_PER_QUERY as u32);
+    let client = mongo_connect(config)?;
+    let database = database.to_string();
+    let collection = collection.to_string();
+    let pipeline = vec![doc! {
+        "$sample": { "size": size as i64 }
+    }];
+    let cursor = mongo_block_on(30, "MongoDB 采样", async move {
+        client
+            .database(&database)
+            .collection::<Document>(&collection)
+            // 抽样只用于补全，读从节点即可。
+            .aggregate(pipeline)
+            .selection_criteria(SelectionCriteria::ReadPreference(
+                ReadPreference::SecondaryPreferred {
+                    options: Default::default(),
+                },
+            ))
+            .await
+    })?;
+    Ok(mongo_collect_cursor(cursor)?
+        .into_iter()
+        .map(|document| mongo_json_text(Bson::Document(document)))
+        .collect())
+}
+
 /// 排序校验：值只能是 1 / -1（`$meta` 等文本排序暂不支持，显式拒绝）。
 fn mongo_validate_sort(sort: &Document) -> fluxdb_core::Result<()> {
     for (field, value) in sort {
@@ -257,6 +309,50 @@ fn mongo_validate_sort(sort: &Document) -> fluxdb_core::Result<()> {
         }
     }
     Ok(())
+}
+
+/// 排序规则：Extended JSON 对象直接交给驱动的 `Collation` 反序列化。
+///
+/// 不自己逐字段翻译：`Collation` 的字段（strength / caseLevel / numericOrdering …）
+/// 与 wire protocol 一一对应，手写映射只会漏字段、也容易把拼写错误静默吞成默认值。
+/// 因此这里只做「空 → 不设置」和「解析失败 → 明确指出是 Collation 的问题」。
+fn mongo_parse_collation(text: &str) -> fluxdb_core::Result<Option<Collation>> {
+    let document = mongo_parse_query_object("Collation", text)?;
+    if document.is_empty() {
+        return Ok(None);
+    }
+    mongodb::bson::from_document::<Collation>(document)
+        .map(Some)
+        .map_err(|error| {
+            Error::new(
+                ErrorKind::Query,
+                format!("Collation 无法识别（locale 必填）：{error}"),
+            )
+        })
+}
+
+/// 索引提示：`"indexName"` 或 `{ field: 1 }`（与 Compass 的 Index Hint 一致）。
+fn mongo_parse_hint(text: &str) -> fluxdb_core::Result<Option<Hint>> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    match mongo_parse_json("Index Hint", trimmed, true)? {
+        serde_json::Value::String(name) if !name.trim().is_empty() => {
+            Ok(Some(Hint::Name(name.trim().to_string())))
+        }
+        value @ serde_json::Value::Object(_) => match Bson::try_from(value) {
+            Ok(Bson::Document(keys)) if !keys.is_empty() => Ok(Some(Hint::Keys(keys))),
+            _ => Err(Error::new(
+                ErrorKind::Query,
+                "Index Hint 必须是索引名或非空的键定义对象",
+            )),
+        },
+        _ => Err(Error::new(
+            ErrorKind::Query,
+            "Index Hint 必须是索引名或键定义对象，如 \"_id_\" 或 { \"age\": 1 }",
+        )),
+    }
 }
 
 /// 创建集合。MongoDB 的库由首个集合隐式创建，因此这里也承担"建库"职责。

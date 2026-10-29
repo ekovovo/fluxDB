@@ -395,6 +395,8 @@ pub enum AppEvent {
     },
     /// 集合信息已回写。
     MongoCollectionInfoLoaded(TabId, MongoCollectionInfo),
+    /// 补全字段目录已采集（按标签页；失败时是空目录，UI 仍可补全运算符）。
+    MongoFieldSampleLoaded(TabId, MongoFieldCatalog),
     /// 索引列表已回写。
     MongoIndexesLoaded(TabId, Vec<MongoIndexInfo>),
     /// 聚合开始（携带本次令牌）。

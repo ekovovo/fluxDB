@@ -741,6 +741,14 @@ pub trait Connector {
         Err(Error::new(ErrorKind::Unsupported, "暂不支持读取连接信息"))
     }
 
+    /// 抽样若干篇文档，仅供补全采集字段路径；返回 Relaxed Extended JSON 文本。
+    ///
+    /// 与 `mongo_find` 分开：这是**辅助**查询，失败只该让补全少几条字段，
+    /// 不该让整个集合页报错，因此调用方对错误一律静默降级。
+    fn mongo_sample_documents(&self, _: &ObjectPath, _size: u32) -> Result<Vec<String>> {
+        Err(Error::new(ErrorKind::Unsupported, "暂不支持文档抽样"))
+    }
+
     /// 解析导入文件样本，返回格式、字段与类型推断；不写数据库。
     fn mongo_preview_import(
         &self,

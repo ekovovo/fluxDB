@@ -1,4 +1,3 @@
-use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
 
 // T028 原生面板，唯一内容树共享 Input 实体，切换形式不创建运行时或重复订阅。
 // 已核对 0.6.0：Sheet.resizable 未消费该属性；复用 ResizablePanelGroup 实现硬比例范围和 resize 回调。

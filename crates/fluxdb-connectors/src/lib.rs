@@ -19,6 +19,7 @@ use fluxdb_core::{
 // MongoDB 驱动类型（crate-root include 作用域共用，避免每文件重复 use）。
 use mongodb::Client as MongoClient;
 use mongodb::bson::{Bson, Document, doc};
+use mongodb::options::{Collation, Hint, ReadPreference, SelectionCriteria};
 use mongodb::results::CollectionType;
 use sqlx::{
     Column as SqlxColumn, ColumnIndex, ConnectOptions as _, Connection as _, MySql, QueryBuilder,

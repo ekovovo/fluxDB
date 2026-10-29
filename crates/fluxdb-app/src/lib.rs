@@ -54,6 +54,7 @@ use sqlparser::ast::{Expr, ObjectName, ObjectNamePart, Statement};
 include!("parts/ai_conversation_state.rs");
 include!("parts/sqlserver_user_admin_state.rs");
 include!("parts/mongo_collection_state.rs");
+include!("parts/mongo_fields.rs");
 include!("parts/state.rs");
 include!("parts/ai_model_catalog.rs");
 include!("parts/create_table_model.rs");
